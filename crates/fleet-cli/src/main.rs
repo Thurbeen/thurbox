@@ -502,6 +502,7 @@ enum EventCommand {
     /// range, and the session reads them with list. While that notice is
     /// still to deliver, no other notice is queued for the subscription.
     Subscribe {
+        /// The Task whose session hears of the events.
         task: String,
         #[command(flatten)]
         filter: EventFilter,
@@ -512,6 +513,7 @@ enum EventCommand {
     },
     /// Remove a Task's subscription to a Board with the same filter.
     Unsubscribe {
+        /// The Task that subscribes.
         task: String,
         #[command(flatten)]
         filter: EventFilter,
