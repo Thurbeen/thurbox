@@ -933,8 +933,9 @@ pub enum Ingest {
 /// Pending until the Task's `status.outbox`, as a (generation, offset)
 /// pair, reaches the line's end. TaskController appends a line's event
 /// before it moves the cursor past it, so from then on the event is on the
-/// board, unless `lastSkipped` names the line: a line the store refused is
-/// skipped even when its key matches an older event. Otherwise the event is
+/// board, unless `lastSkipped` names the line in its own generation: a
+/// line the store refused is skipped even when its key matches an older
+/// event, and a skip in a later file is another line's. Otherwise the event is
 /// above the head read before the append, or at or below it for a key the
 /// Task already used. A Board made again since then holds no event
 /// from before the line, so any event found there is new. A line whose event
@@ -955,7 +956,9 @@ pub fn ingested(store: &dyn Store, line: &QueuedLine) -> Result<Ingest, StoreErr
     if (outbox.generation, outbox.offset) < (line.generation, line.end) {
         return Ok(Ingest::Pending);
     }
-    if let Some(why) = outbox.skipped_at(line.offset) {
+    if outbox.generation == line.generation
+        && let Some(why) = outbox.skipped_at(line.offset)
+    {
         return Ok(Ingest::Skipped(why.to_string()));
     }
     let same_board = board_uid(store, &line.board)? == line.board_uid;

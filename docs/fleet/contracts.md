@@ -1341,7 +1341,7 @@ line, so the event is then on the Board, from that Task by name and uid,
 under that key. `before_append` also keeps the Board's uid, read before
 and after the head, and reads both again (at most 3 times) when the uid
 changed between them. Once the cursor is past the line, a `lastSkipped`
-that names the line's offset answers first: the store refuses a line, such
+that names the line's offset in the line's generation answers first: the store refuses a line, such
 as one above `maxDataBytes`, before it looks at its key. While the Board's
 uid is the same, the event is first looked for above the head read
 before the append, then once from the start up to that head: an event found
