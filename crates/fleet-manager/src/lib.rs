@@ -457,9 +457,7 @@ impl Manager<'_> {
                         report,
                     )?;
                     busy |= stepped;
-                    waiting.extend(
-                        rest.and_then(|o| self.waiting_on_agent(&o, outbox_drained.clone())),
-                    );
+                    waiting.extend(rest);
                     moved = true;
                 }
                 let fresh = |moved: bool, report: &mut RunReport| -> Option<Object> {
@@ -1889,10 +1887,11 @@ impl Manager<'_> {
         lease: &mut LeaseToken,
         ttl: Millis,
         report: &mut RunReport,
-    ) -> Result<(bool, Option<Object>), StoreError> {
+    ) -> Result<(bool, Option<WaitingOnAgent>), StoreError> {
         let mut current = obj.clone();
         let mut busy = false;
         for _ in 0..STARTUP_STEPS_IN_A_ROW {
+            let before = self.waiting_on_agent(&current, outbox_drained.clone());
             let step = telemetry::reconcile(
                 "TaskController",
                 &current,
@@ -1905,7 +1904,7 @@ impl Manager<'_> {
                 return Ok((busy, None));
             }
             if !stepped {
-                return Ok((busy, Some(current)));
+                return Ok((busy, before));
             }
             match self.store.get(task::KIND, &obj.metadata.name) {
                 Observation::Known(Some(next)) if starting(&next) && self.due(&next) => {
@@ -1958,7 +1957,7 @@ impl Manager<'_> {
             let (stepped, rest) =
                 self.reconcile_while_starting(&obj, &w.outbox_drained, lease, ttl, report)?;
             busy |= stepped;
-            still.extend(rest.and_then(|o| self.waiting_on_agent(&o, w.outbox_drained)));
+            still.extend(rest);
         }
         *waiting = still;
         Ok(busy)
