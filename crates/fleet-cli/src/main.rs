@@ -1164,7 +1164,7 @@ fn run(cli: Cli) -> Result<(), Failure> {
                 .max(gateway.as_ref().map_or(0, |g| g.operation_bound()))
                 .max(fleet_api::plugin::Plugins::operation_bound(&plugins));
             let lease_ttl_ms = lease_for(bound, lease_ttl_ms)?;
-            let holder = holder.unwrap_or_else(|| fleet_store::holder::local("fleet"));
+            let holder = holder.unwrap_or_else(|| fleet_store::holder::local(false));
             let manager = Manager {
                 store,
                 runtime: runtime.as_ref(),
@@ -1594,7 +1594,7 @@ fn cmd_up(
         store,
         runtime: runtime.as_ref(),
         clock: &SystemClock,
-        holder: fleet_store::holder::local("fleet-up"),
+        holder: fleet_store::holder::local(true),
         forge: forge.as_ref().map(|f| f as &dyn Forge),
         signals: Some(&signals),
         agent_telemetry: agent_collector(),
