@@ -2346,6 +2346,7 @@ fn cmd_event_watch(
     use std::io::Write;
     let mut out = std::io::stdout().lock();
     loop {
+        let from = cursor.after;
         let events = match cursor.next(store, fleet_manager::verbs::MAX_EVENT_LIST) {
             Ok(Page::Events(events)) => events,
             Ok(Page::Expired { oldest }) => {
@@ -2360,7 +2361,7 @@ fn cmd_event_watch(
             }
             Err(e) => return Err(e.into()),
         };
-        if events.is_empty() {
+        if events.is_empty() && cursor.after == from {
             sleep_ms(poll_ms);
             continue;
         }

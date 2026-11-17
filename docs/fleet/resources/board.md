@@ -195,12 +195,14 @@ fleet event publish --type git.push --data '{"branch": "main"}' --wait --timeout
 
 These rules apply:
 
+- When `status.outbox.lastSkipped` names the line's offset, Fleet skipped
+  the line. The command prints that reason and exits 1, even when the
+  Task used the line's key before.
 - TaskController appends an event before it moves `status.outbox` past
   its line. When the Board has no event for the line after that, the line
   is not on the Board: Fleet skipped it, retention dropped its event, or
   the outbox was made again. The command says that the line was skipped or
-  is not on the Board, and exits 1. When `status.outbox.lastSkipped` names
-  the line's offset, it also prints that reason.
+  is not on the Board, and exits 1.
 - When the Task used the line's key before, the Board keeps the first
   event. The command prints that event with `(already published under
   this key)`. When the Board was deleted and made again after the command

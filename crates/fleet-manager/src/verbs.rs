@@ -693,19 +693,25 @@ pub struct EventCursor {
     pub filter: Filter,
 }
 
+/// The most pages of the log one [`EventCursor::next`] reads, so a reader
+/// behind a Board that grows faster than it reads still returns between
+/// pages to check its deadline and hand on what it kept.
+pub const MAX_EVENT_PAGES: usize = 4;
+
 impl EventCursor {
     /// The events after `after` that `filter` keeps, at most `limit`, oldest
     /// first, read through the store without a lock. `after` moves past each
     /// event read, kept or not, and stops at the last event answered when
     /// `limit` cuts the answer, so the next call neither repeats an event nor
-    /// passes one over. An empty answer means the reader has caught up with
-    /// the log. A read that expires or fails after some events were kept
+    /// passes one over. It reads at most [`MAX_EVENT_PAGES`] pages: an empty
+    /// answer means the reader has caught up with the log only when `after`
+    /// did not move. A read that expires or fails after some events were kept
     /// answers those events, and the next call meets it again. `Expired`
     /// and an error leave `after` where the last read left it.
     pub fn next(&mut self, store: &dyn Store, limit: usize) -> Result<Page, StoreError> {
         check_event_limit(limit)?;
         let mut kept = Vec::new();
-        loop {
+        for _ in 0..MAX_EVENT_PAGES {
             let read = store.read_events(&self.board, self.after, EVENT_READ_PAGE);
             let events = match read {
                 Ok(Page::Events(events)) => events,
@@ -723,9 +729,10 @@ impl EventCursor {
                 }
             }
             if caught_up {
-                return Ok(Page::Events(kept));
+                break;
             }
         }
+        Ok(Page::Events(kept))
     }
 }
 
@@ -764,9 +771,10 @@ impl Poll<'_> {
 }
 
 /// `fleet event wait`: the first answer of `cursor` that holds an event, or
-/// `Expired`, reading again every poll until the clock reaches `deadline`.
-/// A [transient](is_transient) read is warned of and read again. `None`
-/// when no event came by then.
+/// `Expired`, reading again until the clock reaches `deadline`: at once
+/// while the cursor still moves, every poll once it has caught up. A
+/// [transient](is_transient) read is warned of and read again. `None` when
+/// no event came by then.
 pub fn wait_events(
     store: &dyn Store,
     clock: &dyn Clock,
@@ -776,13 +784,18 @@ pub fn wait_events(
     poll: &mut Poll<'_>,
 ) -> Result<Option<Page>, StoreError> {
     loop {
+        let from = cursor.after;
         match cursor.next(store, limit) {
             Ok(Page::Events(events)) if events.is_empty() => {}
             Ok(page) => return Ok(Some(page)),
             Err(e) if is_transient(&e) => (poll.warn)(&e),
             Err(e) => return Err(e),
         }
-        if !poll.until(clock, deadline) {
+        let behind = cursor.after != from;
+        if behind && clock.now() >= deadline {
+            return Ok(None);
+        }
+        if !behind && !poll.until(clock, deadline) {
             return Ok(None);
         }
     }
@@ -816,17 +829,32 @@ pub fn before_append(
         .iter()
         .find(|t| fleet_api::session::session_key(&t.metadata.name, &t.metadata.uid) == session_key)
         .ok_or_else(|| StoreError::NotFound(format!("no Task runs the session {session_key}")))?;
-    let head = match store.event_head(board) {
-        Err(StoreError::NotFound(_)) => 0,
-        head => head?,
-    };
+    let (head, board_uid) = board_head(store, board)?;
     Ok(BeforeAppend {
         task: owner.metadata.name.clone(),
         uid: owner.metadata.uid.clone(),
         outbox: outbox_of(owner)?,
         head,
-        board_uid: board_uid(store, board)?,
+        board_uid,
     })
+}
+
+const BOARD_HEAD_TRIES: u32 = 3;
+
+fn board_head(store: &dyn Store, board: &str) -> Result<(u64, Option<String>), StoreError> {
+    for _ in 0..BOARD_HEAD_TRIES {
+        let uid = board_uid(store, board)?;
+        let head = match store.event_head(board) {
+            Err(StoreError::NotFound(_)) => 0,
+            head => head?,
+        };
+        if board_uid(store, board)? == uid {
+            return Ok((head, uid));
+        }
+    }
+    Err(StoreError::Busy(format!(
+        "Board/{board} was made again during each of {BOARD_HEAD_TRIES} reads of its head"
+    )))
 }
 
 fn board_uid(store: &dyn Store, board: &str) -> Result<Option<String>, StoreError> {
@@ -905,8 +933,10 @@ pub enum Ingest {
 /// Pending until the Task's `status.outbox`, as a (generation, offset)
 /// pair, reaches the line's end. TaskController appends a line's event
 /// before it moves the cursor past it, so from then on the event is on the
-/// board: above the head read before the append, or at or below it for a
-/// key the Task already used. A Board made again since then holds no event
+/// board, unless `lastSkipped` names the line: a line the store refused is
+/// skipped even when its key matches an older event. Otherwise the event is
+/// above the head read before the append, or at or below it for a key the
+/// Task already used. A Board made again since then holds no event
 /// from before the line, so any event found there is new. A line whose event
 /// is in neither place was skipped, or is no longer on the board.
 pub fn ingested(store: &dyn Store, line: &QueuedLine) -> Result<Ingest, StoreError> {
@@ -925,6 +955,9 @@ pub fn ingested(store: &dyn Store, line: &QueuedLine) -> Result<Ingest, StoreErr
     if (outbox.generation, outbox.offset) < (line.generation, line.end) {
         return Ok(Ingest::Pending);
     }
+    if let Some(why) = outbox.skipped_at(line.offset) {
+        return Ok(Ingest::Skipped(why.to_string()));
+    }
     let same_board = board_uid(store, &line.board)? == line.board_uid;
     let fresh_after = if same_board { line.head } else { 0 };
     if let Some(event) = find_published(store, line, fresh_after, u64::MAX)? {
@@ -939,13 +972,10 @@ pub fn ingested(store: &dyn Store, line: &QueuedLine) -> Result<Ingest, StoreErr
             duplicate: true,
         });
     }
-    Ok(Ingest::Skipped(match outbox.skipped_at(line.offset) {
-        Some(why) => why.to_string(),
-        None => format!(
-            "offset {}: Board/{} holds no event for the line: Fleet skipped it, retention dropped its event, or the outbox was made again",
-            line.offset, line.board
-        ),
-    }))
+    Ok(Ingest::Skipped(format!(
+        "offset {}: Board/{} holds no event for the line: Fleet skipped it, retention dropped its event, or the outbox was made again",
+        line.offset, line.board
+    )))
 }
 
 /// `fleet event publish --wait` inside a session: [`ingested`] every poll

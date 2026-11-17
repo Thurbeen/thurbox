@@ -269,6 +269,8 @@ struct HookedBoard<'a> {
     inner: &'a fleet_store::FileStore,
     reads: std::cell::Cell<u32>,
     before_read: ReadHook<'a>,
+    heads: std::cell::Cell<u32>,
+    after_head: ReadHook<'a>,
 }
 
 impl<'a> HookedBoard<'a> {
@@ -277,7 +279,14 @@ impl<'a> HookedBoard<'a> {
             inner,
             reads: std::cell::Cell::new(0),
             before_read,
+            heads: std::cell::Cell::new(0),
+            after_head: Box::new(|_, _, _| Ok(())),
         }
+    }
+
+    fn after_head(mut self, hook: ReadHook<'a>) -> HookedBoard<'a> {
+        self.after_head = hook;
+        self
     }
 }
 
@@ -312,7 +321,10 @@ impl Store for HookedBoard<'_> {
         self.inner.read_events(board, after, limit)
     }
     fn event_head(&self, board: &str) -> Result<u64, StoreError> {
-        self.inner.event_head(board)
+        let head = self.inner.event_head(board);
+        self.heads.set(self.heads.get() + 1);
+        (self.after_head)(self.inner, board, self.heads.get())?;
+        head
     }
     fn get(&self, kind: &str, name: &str) -> Observation<Option<Object>> {
         self.inner.get(kind, name)
@@ -1967,4 +1979,130 @@ fn publish_wait_on_a_board_made_again_since_the_append_prints_the_event_as_new()
     let run = reconcile_until_done(&env, child);
     run.ok().stdout_has("scratch/1 new.a from task/a");
     assert!(!run.stdout.contains("already"), "{}", run.stdout);
+}
+
+struct TickingClock(std::cell::Cell<u64>);
+
+impl fleet_api::Clock for TickingClock {
+    fn now(&self) -> u64 {
+        self.0.set(self.0.get() + 1);
+        self.0.get()
+    }
+}
+
+#[test]
+fn a_wait_behind_a_board_that_grows_by_whole_pages_checks_its_deadline_between_pages() {
+    let env = board_env("board-wait-growing");
+    let store = fleet_store::FileStore::open(&env.data).unwrap();
+    let growing = HookedBoard::new(
+        &store,
+        Box::new(|inner, board, reads| {
+            if reads <= 12 {
+                let noise = (0..1000)
+                    .map(|_| Publish {
+                        event_type: "noise".into(),
+                        subject: None,
+                        key: None,
+                        correlation: None,
+                        data: json!(null),
+                    })
+                    .collect();
+                let source = Source::Cli(CliSource::new("flood").unwrap());
+                inner.append_events(board, &source, noise, FieldManager::Cli, None)?;
+            }
+            Ok(())
+        }),
+    );
+    let mut cursor = cursor_on("shared", 0, Some("wanted"));
+    let mut pause = |_| {};
+    let mut warn = |e: &StoreError| panic!("{e}");
+    let mut poll = fleet_manager::verbs::Poll {
+        every_ms: 50,
+        pause: &mut pause,
+        warn: &mut warn,
+    };
+    let clock = TickingClock(std::cell::Cell::new(0));
+    let page =
+        fleet_manager::verbs::wait_events(&growing, &clock, &mut cursor, 10, 1, &mut poll).unwrap();
+    assert_eq!(page, None, "the deadline passed with no match");
+    let reads = growing.reads.get();
+    assert!(
+        reads <= fleet_manager::verbs::MAX_EVENT_PAGES as u32,
+        "{reads} pages read past the deadline"
+    );
+    assert!(cursor.after > 0, "the cursor kept what it read");
+}
+
+#[test]
+fn publish_wait_on_a_refused_line_under_a_used_key_exits_1_not_with_the_old_event() {
+    let env = session_env("event-session-wait-refused-key");
+    let vars = session_vars(&env);
+    env.apply(json!({
+        "apiVersion": "fleet/v1alpha1",
+        "kind": "Board",
+        "metadata": {"name": "small"},
+        "spec": {"maxDataBytes": 16}
+    }))
+    .ok();
+    let child = publish_inside_spawned(
+        &env,
+        &borrowed(&vars),
+        &[
+            "--board", "small", "--type", "k", "--key", "K", "--data", "1", "--wait",
+        ],
+    );
+    reconcile_until_done(&env, child)
+        .ok()
+        .stdout_has("small/1 k from task/a");
+    let big = serde_json::to_string(&"x".repeat(64)).unwrap();
+    let child = publish_inside_spawned(
+        &env,
+        &borrowed(&vars),
+        &[
+            "--board", "small", "--type", "k", "--key", "K", "--data", &big, "--wait",
+        ],
+    );
+    let run = reconcile_until_done(&env, child);
+    run.code(1).stderr_has("skipped").stderr_has("16");
+    assert!(!run.stdout.contains("small/1"), "{}", run.stdout);
+}
+
+#[test]
+fn before_append_reads_a_board_made_again_between_its_head_and_uid_as_the_new_board() {
+    let env = session_env("event-before-append-race");
+    let board = json!({
+        "apiVersion": "fleet/v1alpha1",
+        "kind": "Board",
+        "metadata": {"name": "scratch"},
+        "spec": {}
+    });
+    env.apply(board.clone()).ok();
+    for n in 1..=3 {
+        publish(
+            &env,
+            &[
+                "--board",
+                "scratch",
+                "--type",
+                "old",
+                "--data",
+                &n.to_string(),
+            ],
+        );
+    }
+    let store = fleet_store::FileStore::open(&env.data).unwrap();
+    let racing =
+        HookedBoard::new(&store, Box::new(|_, _, _| Ok(()))).after_head(Box::new(|_, _, heads| {
+            if heads == 1 {
+                env.fleet(&["delete", "board", "scratch"]).ok();
+                env.apply(board.clone()).ok();
+            }
+            Ok(())
+        }));
+    let task = env.get("a");
+    let key = fleet_api::session::session_key("a", task["metadata"]["uid"].as_str().unwrap());
+    let before = fleet_manager::verbs::before_append(&racing, &key, "scratch").unwrap();
+    let now = env.fleet(&["get", "board", "scratch"]).ok().json();
+    assert_eq!(before.board_uid.as_deref(), now["metadata"]["uid"].as_str());
+    assert_eq!(before.head, 0, "the head of the board made again");
 }

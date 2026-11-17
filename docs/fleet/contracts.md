@@ -1337,8 +1337,12 @@ on standard error. It waits until the Task's `status.outbox`, compared as a
 (generation, offset) pair, reaches (that generation, the line's end).
 TaskController appends a line's event before it moves the cursor past the
 line, so the event is then on the Board, from that Task by name and uid,
-under that key. `before_append` also keeps the Board's uid. While the
-Board's uid is the same, the event is first looked for above the head read
+under that key. `before_append` also keeps the Board's uid, read before
+and after the head, and reads both again (at most 3 times) when the uid
+changed between them. Once the cursor is past the line, a `lastSkipped`
+that names the line's offset answers first: the store refuses a line, such
+as one above `maxDataBytes`, before it looks at its key. While the Board's
+uid is the same, the event is first looked for above the head read
 before the append, then once from the start up to that head: an event found
 there is a key the Task already used, and prints with `(already published
 under this key)`, as a publish outside a session does. A Board made again
@@ -1365,7 +1369,11 @@ lock. The cursor's `after` moves past each event a read returns, kept or
 not, and stops at the last event answered when `--limit` cuts the answer,
 so the next read repeats no event and passes none over. A read that
 expires or fails after some events were kept answers those, and the next
-read meets the expiry or the error again. A torn last line
+read meets the expiry or the error again. One read takes at most
+`verbs::MAX_EVENT_PAGES` (4) pages of 1000 events, so a reader behind a
+Board that grows faster than it reads hands on its matches and checks its
+deadline between reads; it reads again at once, with no poll, while its
+cursor still moves. A torn last line
 is not read until it is whole, and the log gives `seq`s with no gap, so an
 event the log gains under a read is in the next one. `wait` (the manager's
 `wait_events`) reads every `--poll-ms` (500 by default, 50 to 10000) until
