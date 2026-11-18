@@ -111,6 +111,9 @@ fn serve(verb: &str) -> serde_json::Value {
         }
     }
     let kept = kept(&server);
+    if let Err(answer) = copy_older_pause_marks(&server, &kept, server_turn.is_some()) {
+        return answer;
+    }
     // Each remote place's login `PATH` is cached beside the locks, so a call
     // does not read it again over ssh.
     keep_cache(&socket);
@@ -329,24 +332,39 @@ fn kept(server: &str) -> protocol::Kept {
             .ok_or_else(|| format!("no HOME to keep the {what} keys in")),
         Err(e) => Err(format!("no directory for the tmux sockets: {e}")),
     };
-    let in_sockets_dir = protocol::Marks::new(
-        sockets.as_ref().cloned().map_err(|e| e.to_string()),
-        format!("{prefix}runtime-mux-{server}.paused-"),
-        "pause mark",
-    );
     protocol::Kept {
         paused: protocol::Marks::new(
             beside_start_records("paused"),
             "key.".to_string(),
             "pause mark",
-        )
-        .also_reading(in_sockets_dir),
+        ),
         started: protocol::Marks::new(
             beside_start_records("started"),
             "key.".to_string(),
             "start record",
         ),
+        paused_beside_the_locks: protocol::Marks::new(
+            sockets.map_err(|e| format!("no directory for the tmux sockets: {e}")),
+            format!("{prefix}runtime-mux-{server}.paused-"),
+            "pause mark",
+        ),
     }
+}
+
+fn copy_older_pause_marks(
+    server: &str,
+    kept: &protocol::Kept,
+    holding_the_lock: bool,
+) -> Result<(), serde_json::Value> {
+    let unknown = |why: String| serde_json::json!({ "unknown": { "why": why } });
+    if kept.pause_marks_to_copy().map_err(unknown)?.is_empty() {
+        return Ok(());
+    }
+    let _turn = match holding_the_lock {
+        true => None,
+        false => Some(take(&format!("runtime-mux-{server}.lock"))?),
+    };
+    kept.copy_pause_marks().map_err(unknown)
 }
 
 const SERVER_DIR_COMPONENT: usize = 128;

@@ -1308,10 +1308,12 @@ done
 "#;
 
 /// One call of `program`'s `verb` on the private server, with `request`.
-fn ask(program: &Path, sockets: &Sockets, verb: &str, request: Value) -> Value {
+fn ask(env: &Env, program: &Path, sockets: &Sockets, verb: &str, request: Value) -> Value {
     let out = Command::new(program)
         .arg(verb)
         .env("TMUX_TMPDIR", &sockets.0)
+        .env("HOME", &env.root)
+        .env_remove("XDG_DATA_HOME")
         .stdin(std::process::Stdio::piped())
         .stdout(std::process::Stdio::piped())
         .spawn()
@@ -1389,6 +1391,7 @@ fn an_idle_session_on_runtime_mux_is_stopped_and_a_message_resumes_its_conversat
     );
     assert_eq!(
         ask(
+            &env,
             &program,
             &sockets,
             "inspect",
@@ -1396,7 +1399,7 @@ fn an_idle_session_on_runtime_mux_is_stopped_and_a_message_resumes_its_conversat
         ),
         json!({"known": "paused"})
     );
-    let keys = ask(&program, &sockets, "list", json!({"protocol": 1}));
+    let keys = ask(&env, &program, &sockets, "list", json!({"protocol": 1}));
     assert!(
         keys["known"]["keys"]
             .as_array()

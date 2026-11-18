@@ -557,7 +557,7 @@ fn a_paused_key_reads_paused_after_a_reboot_and_resumes_on_a_start() {
 }
 
 #[test]
-fn a_pause_mark_an_earlier_version_left_by_the_sockets_reads_paused_until_a_start() {
+fn a_pause_mark_an_earlier_version_left_by_the_sockets_survives_a_reboot_until_a_start() {
     use std::os::unix::fs::MetadataExt;
     let Some(rt) = Runtime::new() else { return };
     started(&rt.start("upgraded", &["sleep", "300"]));
@@ -570,15 +570,51 @@ fn a_pause_mark_an_earlier_version_left_by_the_sockets_reads_paused_until_a_star
     std::fs::write(&older, "").expect("the older mark");
 
     assert_eq!(rt.inspect("upgraded")["known"], "paused");
+    assert!(
+        older.exists(),
+        "an earlier version rolled back to still reads it"
+    );
+    reboot(&rt);
+    assert_eq!(rt.inspect("upgraded")["known"], "paused");
     let list = rt.call("list", json!({"protocol": 1}));
     assert_eq!(list["known"]["keys"], json!(["upgraded"]), "{list}");
     started(&rt.start("upgraded", &["sleep", "300"]));
-    assert!(!older.exists(), "a start clears the older mark");
     assert_eq!(
         rt.call("stop", json!({"protocol": 1, "key": "upgraded"}))["known"],
         "stopped"
     );
     assert_eq!(rt.inspect("upgraded")["known"], "none");
+}
+
+#[test]
+fn an_adopting_start_clears_a_pause_mark_left_beside_the_running_window() {
+    let Some(rt) = Runtime::new() else { return };
+    let (id, _) = started(&rt.start("leftover", &["sleep", "300"]));
+    let marks = rt.server.tmpdir().join("data/runtime-mux/paused");
+    let records = rt.server.tmpdir().join("data/runtime-mux/started");
+    let record = walk_files(&records).pop().expect("the start record");
+    let mark = marks.join(record.strip_prefix(&records).expect("under the records"));
+    std::fs::create_dir_all(mark.parent().expect("a parent")).expect("the mark's directory");
+    std::fs::write(&mark, "").expect("the leftover mark");
+
+    let (_, adopted) = started(&rt.start("leftover", &["sleep", "300"]));
+    assert!(adopted);
+    kill_runtime_server(&rt);
+    exited_once_known(&rt, "leftover", &id);
+}
+
+fn walk_files(dir: &std::path::Path) -> Vec<std::path::PathBuf> {
+    std::fs::read_dir(dir)
+        .expect("a directory")
+        .flat_map(|entry| {
+            let path = entry.expect("an entry").path();
+            if path.is_dir() {
+                walk_files(&path)
+            } else {
+                vec![path]
+            }
+        })
+        .collect()
 }
 
 #[test]

@@ -728,26 +728,11 @@ pub struct Marks {
     dir: Result<PathBuf, String>,
     prefix: String,
     what: &'static str,
-    older: Option<Box<Marks>>,
 }
 
 impl Marks {
     pub fn new(dir: Result<PathBuf, String>, prefix: String, what: &'static str) -> Marks {
-        Marks {
-            dir,
-            prefix,
-            what,
-            older: None,
-        }
-    }
-
-    /// These marks, which also answer for the marks of `older` that stay
-    /// where an earlier version wrote them, until a clear removes both.
-    pub fn also_reading(self, older: Marks) -> Marks {
-        Marks {
-            older: Some(Box::new(older)),
-            ..self
-        }
+        Marks { dir, prefix, what }
     }
 
     fn path(&self, key: &str) -> Result<PathBuf, String> {
@@ -762,10 +747,7 @@ impl Marks {
         let path = self.path(key)?;
         match std::fs::read_to_string(&path) {
             Ok(text) => Ok(Some(text)),
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => match &self.older {
-                Some(older) => older.read(key),
-                None => Ok(None),
-            },
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
             Err(e) => Err(format!(
                 "cannot read the {} {}: {e}",
                 self.what,
@@ -785,9 +767,6 @@ impl Marks {
     }
 
     fn clear(&self, key: &str) -> Result<(), String> {
-        if let Some(older) = &self.older {
-            older.clear(key)?;
-        }
         let path = self.path(key)?;
         match std::fs::remove_file(&path) {
             Err(e) if e.kind() != std::io::ErrorKind::NotFound => Err(format!(
@@ -799,16 +778,7 @@ impl Marks {
         }
     }
 
-    fn keys(&self) -> Result<Vec<String>, String> {
-        let mut keys = match &self.older {
-            Some(older) => older.keys()?,
-            None => Vec::new(),
-        };
-        keys.extend(self.own_keys()?);
-        Ok(keys)
-    }
-
-    fn own_keys(&self) -> Result<Vec<String>, String> {
+    pub fn keys(&self) -> Result<Vec<String>, String> {
         let dir = self.dir.clone()?;
         let entries = match std::fs::read_dir(&dir) {
             Ok(entries) => entries,
@@ -839,6 +809,33 @@ impl Marks {
 pub struct Kept {
     pub paused: Marks,
     pub started: Marks,
+    pub paused_beside_the_locks: Marks,
+}
+
+impl Kept {
+    /// The keys an earlier `runtime-mux` marked paused beside the locks,
+    /// where a reboot takes the mark, and not yet here.
+    pub fn pause_marks_to_copy(&self) -> Result<Vec<String>, String> {
+        let mut keys = self.paused_beside_the_locks.keys()?;
+        let copied = self.paused.keys()?;
+        keys.retain(|key| !copied.contains(key));
+        Ok(keys)
+    }
+
+    /// Copies each mark [`Kept::pause_marks_to_copy`] names here, and
+    /// leaves it where it is for an earlier `runtime-mux` to read. The
+    /// caller holds the server's lock, so no `start` or `stop` clears a mark
+    /// while it is copied.
+    pub fn copy_pause_marks(&self) -> Result<(), String> {
+        self.pause_marks_to_copy()?
+            .iter()
+            .try_for_each(|key| self.paused.write(key, ""))
+    }
+
+    fn clear_paused(&self, key: &str) -> Result<(), String> {
+        self.paused_beside_the_locks.clear(key)?;
+        self.paused.clear(key)
+    }
 }
 
 fn start(
@@ -863,7 +860,11 @@ fn start(
         Ok(Located::At(pane)) => match exited(backend, &pane) {
             Err(why) => return unknown(why),
             Ok(None) => {
-                return match kept.started.write(&request.key, &pane) {
+                return match kept
+                    .started
+                    .write(&request.key, &pane)
+                    .and_then(|()| kept.clear_paused(&request.key))
+                {
                     Ok(()) => known(json!({ "started": { "id": pane, "adopted": true } })),
                     Err(why) => unknown(why),
                 }
@@ -916,7 +917,7 @@ fn start(
     if let Err(why) = kept.started.write(&request.key, pane.as_str()) {
         return unknown(why);
     }
-    if let Err(why) = kept.paused.clear(&request.key) {
+    if let Err(why) = kept.clear_paused(&request.key) {
         return unknown(why);
     }
     known(json!({ "started": { "id": pane.as_str(), "adopted": false } }))
@@ -1043,8 +1044,7 @@ fn stop(backend: &dyn SessionBackend, kept: &Kept, key: &str) -> Value {
         return stopped;
     }
     match kept
-        .paused
-        .clear(key)
+        .clear_paused(key)
         .and_then(|()| kept.started.clear(key))
     {
         Ok(()) => stopped,

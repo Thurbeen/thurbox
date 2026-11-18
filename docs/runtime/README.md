@@ -268,21 +268,26 @@ and the processor time of an idle agent
 `runtime-mux` pauses a key in three steps:
 
 1. It closes the key's shell.
-2. It writes a mark for the key, an empty file beside the key's start
-   record, under `runtime-mux/paused/` in the user's data directory.
+2. It writes a mark for the key, an empty file
+   `${XDG_DATA_HOME:-~/.local/share}/runtime-mux/paused/<digest>/<server>/key.<key>`.
+   `<digest>` and `<server>` are the start record's.
 3. It stops the agent's window.
 
 A pause takes the server's lock, as a start and a stop do. While the
 agent's window is there, it answers for the key, so a pause cut short
-before step 3 reads as running. `inspect` answers `paused` for a key with a
-mark, no agent window and no shell. A mark with a shell left answers
-Unknown, and the next pause closes the shell. A `start` removes the mark
-after it makes the window, and a `stop` removes it after it stops the
-process. The mark survives a reboot, as the start record does, so a paused
-key reads as paused after a reboot and never as exited. An earlier
-`runtime-mux` wrote the mark as `runtime-mux-<socket>.paused-<key>` in the
-private directory tmux keeps the socket in. `runtime-mux` still reads a
-mark there, and a `start` or a `stop` removes it.
+before step 3 reads as running. `inspect` answers `paused` for a key with
+a mark, no agent window and no shell. A mark with a shell left answers
+Unknown, and the next pause closes the shell. A `start` removes the mark after it makes or adopts the
+window, and a `stop` removes it after it stops the process. A reboot keeps
+the mark, as it keeps the start record, so a paused key reads as paused
+after a reboot and never as exited.
+
+An earlier `runtime-mux` wrote the mark as
+`runtime-mux-<socket>.paused-<key>` in the private directory tmux keeps the
+socket in, which a reboot empties. Each call copies a mark it finds there to
+the data directory, under the server's lock. The copy leaves the earlier
+mark in place, so an earlier `runtime-mux` that an update rolls back to
+still reads the key as paused. A `start` and a `stop` remove both marks.
 
 ### Places (protocol version 2)
 
