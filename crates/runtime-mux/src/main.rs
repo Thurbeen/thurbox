@@ -30,11 +30,14 @@ fn main() {
     // Each verb is one span, `runtime-mux VERB`, under the caller's
     // TRACEPARENT; off unless the OTEL_* variables ask (docs/observability.md).
     // A view runs as long as a viewer watches, so it records nothing.
-    let telemetry = otel_env::init("runtime-mux", env!("CARGO_PKG_VERSION"), &[], false)
+    let telemetry = otel_env::init("runtime-mux", env!("CARGO_PKG_VERSION"), &[], true)
         .unwrap_or_else(|why| {
             eprintln!("warning: telemetry is off: {why}");
             otel_env::Telemetry::default()
         });
+    if let Some(provider) = telemetry.logs() {
+        export_warnings(provider);
+    }
     let answer = {
         let root = otel_env::root(
             "runtime-mux",
@@ -58,6 +61,19 @@ fn main() {
     println!("{answer}");
     let _ = std::io::Write::flush(&mut std::io::stdout());
     telemetry.shutdown_within(otel_env::CALL_SHUTDOWN_BOUND);
+}
+
+/// Only this program's own targets: the exporter's HTTP stack logs through
+/// `tracing` too, and letting it through would feed each export back into
+/// the next.
+fn export_warnings(provider: &otel_env::SdkLoggerProvider) {
+    use tracing_subscriber::layer::SubscriberExt;
+    use tracing_subscriber::Layer;
+    let filter = tracing_subscriber::filter::Targets::new()
+        .with_target("runtime_mux", tracing::level_filters::LevelFilter::WARN);
+    let bridge = opentelemetry_appender_tracing::layer::OpenTelemetryTracingBridge::new(provider)
+        .with_filter(filter);
+    let _ = tracing::subscriber::set_global_default(tracing_subscriber::registry().with(bridge));
 }
 
 /// Answer one protocol verb with the request on stdin.

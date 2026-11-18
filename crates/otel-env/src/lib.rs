@@ -36,6 +36,7 @@ use std::sync::{mpsc, OnceLock};
 use std::thread;
 use std::time::{Duration, Instant};
 
+use opentelemetry::logs::LoggerProvider as _;
 use opentelemetry::trace::{
     SpanContext, SpanId, Status, TraceContextExt, TraceFlags, TraceId, TraceState, Tracer,
 };
@@ -50,11 +51,15 @@ use opentelemetry_sdk::trace::SdkTracerProvider;
 use opentelemetry_sdk::Resource;
 
 pub use file::{HeadersSource, Source, TelemetryConfig};
+/// The severity a caller of [`log`] names.
+pub use opentelemetry::logs::Severity;
 pub use opentelemetry_sdk::logs::SdkLoggerProvider;
 
 use file::{FileVars, Merged};
 
 static FILE: OnceLock<FileVars> = OnceLock::new();
+
+static LOGGER: OnceLock<opentelemetry_sdk::logs::SdkLogger> = OnceLock::new();
 
 /// Take the program's `[telemetry]` table for the rest of the process,
 /// before [`init`]: read its headers file and stand it for the variables
@@ -310,14 +315,31 @@ pub fn init(
         telemetry.metrics = Some(provider);
     }
     if let Some(exporter) = logs {
-        telemetry.logs = Some(
-            SdkLoggerProvider::builder()
-                .with_batch_exporter(exporter)
-                .with_resource(resource)
-                .build(),
-        );
+        let provider = SdkLoggerProvider::builder()
+            .with_batch_exporter(exporter)
+            .with_resource(resource)
+            .build();
+        let _ = LOGGER.set(provider.logger(service.to_string()));
+        telemetry.logs = Some(provider);
     }
     Ok(telemetry)
+}
+
+/// Record `text` as one log record at `severity` through the logs signal
+/// [`init`] installed; nothing when logs are not exported. For a program
+/// that records its own lines rather than `tracing` events (`fleet`): the
+/// caller passes only text it also prints, never a value it was given.
+pub fn log(severity: Severity, text: &str) {
+    use opentelemetry::logs::{LogRecord, Logger};
+    let Some(logger) = LOGGER.get() else {
+        return;
+    };
+    let mut record = logger.create_log_record();
+    record.set_timestamp(std::time::SystemTime::now());
+    record.set_severity_number(severity);
+    record.set_severity_text(severity.name());
+    record.set_body(text.to_string().into());
+    logger.emit(record);
 }
 
 fn configured<B: WithExportConfig + WithHttpConfig>(

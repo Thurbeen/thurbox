@@ -1,6 +1,7 @@
 //! An in-process OTLP/HTTP collector for the telemetry acceptance: a plain
 //! TCP listener that answers every request `200 OK`, keeps the protobuf
-//! bodies by path, and decodes them into flat spans and data points that a
+//! bodies by path, and decodes them into flat spans, data points and log
+//! records that a
 //! test can search. It speaks only what Fleet's exporter sends.
 
 use std::collections::BTreeMap;
@@ -9,6 +10,7 @@ use std::net::{TcpListener, TcpStream};
 use std::sync::{Arc, Mutex};
 use std::thread;
 
+use opentelemetry_proto::tonic::collector::logs::v1::ExportLogsServiceRequest;
 use opentelemetry_proto::tonic::collector::metrics::v1::ExportMetricsServiceRequest;
 use opentelemetry_proto::tonic::collector::trace::v1::ExportTraceServiceRequest;
 use opentelemetry_proto::tonic::common::v1::{AnyValue, KeyValue, any_value};
@@ -46,6 +48,15 @@ pub struct Point {
     pub attrs: Attrs,
     /// The sum, gauge value or histogram count, as a number.
     pub value: f64,
+    pub resource: Attrs,
+}
+
+/// One exported log record: its severity text, its body as a string, and
+/// its resource's attributes.
+#[derive(Debug, Clone)]
+pub struct Log {
+    pub severity: String,
+    pub body: String,
     pub resource: Attrs,
 }
 
@@ -148,6 +159,32 @@ impl Collector {
                             ),
                             _ => {}
                         }
+                    }
+                }
+            }
+        }
+        out
+    }
+}
+
+impl Collector {
+    pub fn logs(&self) -> Vec<Log> {
+        let received = self.received.lock().unwrap();
+        let mut out = Vec::new();
+        for (path, _, body) in received.iter() {
+            if path != "/v1/logs" {
+                continue;
+            }
+            let req = ExportLogsServiceRequest::decode(body.as_slice()).expect("OTLP logs");
+            for rl in req.resource_logs {
+                let resource = attrs(&rl.resource.map(|r| r.attributes).unwrap_or_default());
+                for sl in rl.scope_logs {
+                    for r in sl.log_records {
+                        out.push(Log {
+                            severity: r.severity_text,
+                            body: value(r.body.as_ref()),
+                            resource: resource.clone(),
+                        });
                     }
                 }
             }

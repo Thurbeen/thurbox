@@ -759,14 +759,14 @@ fn main() -> ExitCode {
     if let Err(why) = adopted {
         eprintln!("warning: telemetry is off: {why}");
     }
-    let telemetry = otel_env::init("fleet", VERSION, &[], false).unwrap_or_else(|why| {
+    let telemetry = otel_env::init("fleet", VERSION, &[], true).unwrap_or_else(|why| {
         eprintln!("warning: telemetry is off: {why}");
         otel_env::Telemetry::default()
     });
     let command = || match run(cli) {
         Ok(()) => 0,
         Err(f) => {
-            eprintln!("error: {}", f.message);
+            error(&f.message);
             if let Some(h) = f.hint {
                 eprintln!("hint: {h}");
             }
@@ -2688,7 +2688,17 @@ fn sleep_ms(ms: u64) {
 }
 
 fn warn_and_retry(e: &StoreError) {
-    eprintln!("warning: could not read the store; reading again: {e}");
+    warn(&format!("could not read the store; reading again: {e}"));
+}
+
+fn warn(text: &str) {
+    eprintln!("warning: {text}");
+    otel_env::log(otel_env::Severity::Warn, text);
+}
+
+fn error(text: &str) {
+    eprintln!("error: {text}");
+    otel_env::log(otel_env::Severity::Error, text);
 }
 
 fn with_poll<T>(every_ms: u64, f: impl FnOnce(&mut fleet_manager::verbs::Poll<'_>) -> T) -> T {
@@ -3097,7 +3107,7 @@ fn cmd_doctor(
     }
     checks.push(doctor::telemetry(otel_env::describe(
         &config.telemetry.clone().unwrap_or_default(),
-        false,
+        true,
     )));
     let failed = doctor::failed(&checks);
     if json {
@@ -3755,7 +3765,7 @@ fn cmd_watch(
             Observation::Known(tasks) => tasks,
             Observation::Unknown { why } if once => return Err(StoreError::Unknown(why).into()),
             Observation::Unknown { why } => {
-                eprintln!("warning: could not read the Tasks; nothing assumed: {why}");
+                warn(&format!("could not read the Tasks; nothing assumed: {why}"));
                 // The next read that works is `synced` again: a view that
                 // showed this warning learns its rows are current once more.
                 watch.synced = false;
@@ -4216,7 +4226,7 @@ fn result_from_flags(
 fn print_json(v: &Value) {
     match serde_json::to_string_pretty(v) {
         Ok(s) => println!("{s}"),
-        Err(e) => eprintln!("error: {e}"),
+        Err(e) => error(&e.to_string()),
     }
 }
 
