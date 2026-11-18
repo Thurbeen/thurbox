@@ -177,7 +177,7 @@ concludes nothing.
 | Releasing | Busy session or Unknown rest, within `RELEASE_GRACE_MS` of `deletionTimestamp` | Releasing | Keep finalizer; wait for safe evidence. |
 | Releasing | Busy session or Unknown rest, `RELEASE_GRACE_MS` or more after `deletionTimestamp` | Releasing | Plan `Release`, as for a session at rest. |
 | Releasing | Unreadable session lookup | Releasing | Keep finalizer; wait for a readable lookup. |
-| Releasing | Failed, missing or Unknown release receipt | Releasing | Wait and retry; after 3 attempts also raise NeedsAttention. |
+| Releasing | Failed, missing or Unknown release receipt | Releasing | Wait and retry. After 3 attempts raise NeedsAttention with the last failure, and double the wait with each further attempt, up to `RETRY_BACKOFF_MAX_MS`. |
 | Releasing | Known Released receipt, or nothing was spawned and nothing remains to release | Record removed | Remove finalizer; removal is not another phase. |
 
 A Spawned phase without a SessionRef is an invalid internal combination; the
@@ -211,7 +211,10 @@ is retried as the [retries table](#retries-and-recovery) says.
 
 `MAX_ATTEMPTS=3` bounds spawn effects and brief sends. `RETRY_DELAY_MS=30000`
 is a fixed wait, persisted as `status.notBefore` across process restarts.
-These are controller constants, not extra configuration resources.
+Releases and workspace cleans have no bound on attempts. After 3 failures
+their wait doubles with each further failure, up to
+`RETRY_BACKOFF_MAX_MS=3600000`. These are controller constants, not extra
+configuration resources.
 
 | Situation | Evidence required before proceeding | Wait and exhaustion behavior |
 | --- | --- | --- |
@@ -220,7 +223,7 @@ These are controller constants, not extra configuration resources.
 | Brief send refused | Known failure before confirmed delivery | Wait before retry; every retry needs fresh readiness; at most 3 sends. |
 | Brief send answer missing/Unknown | The agent's prompt hook report of the brief's digest; for a harness with no prompt hook, the session's journal under the original brief key | Reported or Delivered recovers without sending; only a journal can prove it not delivered, which permits a ready-session send; an unreported or Unknown answer waits and reads again, never resends. |
 | Delivery journal unreadable | A later readable journal answer | After 3 failures raise NeedsAttention, but keep probing after each wait. Recovery clears BriefUnconfirmed attention. |
-| Release answer missing/Unknown or failed | Recorded session at rest, or key proven absent; adapter preserves exact identity | Wait once per failed attempt, then retry. After 3 attempts raise NeedsAttention but continue; success releases the finalizer. |
+| Release answer missing/Unknown or failed | Recorded session at rest, or key proven absent; adapter preserves exact identity | Wait once per failed attempt, then retry. After 3 attempts raise `NeedsAttention/ReleaseFailed` with the last failure, and back off: each further wait doubles, up to `RETRY_BACKOFF_MAX_MS`. Success releases the finalizer. A workspace clean retries the same way, with `NeedsAttention/CleanFailed`. |
 | Session lookup unreadable | A later readable lookup | Unknown is not absence and does not by itself trigger WorkerGone or permit a blind spawn. |
 | Session lost | A Known lost answer; Unknown revives nothing | Revive at once, then wait before each further revive. After three revives have left the session lost, raise NeedsAttention, and continue: a revive leaves a running session alone. |
 | Pause answer missing/Unknown | Whether the session is stopped | Stopped records the pause. Running records a failed pause. Unknown waits; the stop is never repeated blindly. |

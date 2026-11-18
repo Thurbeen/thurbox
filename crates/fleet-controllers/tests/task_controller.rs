@@ -8,7 +8,8 @@ use fleet_api::runtime::{Activity, TrustGap, WorkspaceTrust};
 use fleet_api::task::{Phase, SessionRef, SessionState, TaskStatus};
 use fleet_api::{Object, Observation};
 use fleet_controllers::{
-    MAX_ATTEMPTS, RELEASE_GRACE_MS, RETRY_DELAY_MS, SESSION_RECHECK_MS, TaskController, TaskInput,
+    MAX_ATTEMPTS, RELEASE_GRACE_MS, RETRY_BACKOFF_MAX_MS, RETRY_DELAY_MS, SESSION_RECHECK_MS,
+    TaskController, TaskInput,
 };
 use serde_json::json;
 
@@ -587,6 +588,66 @@ fn a_released_task_drops_its_finalizer_and_failed_releases_are_bounded() {
     assert!(plan.effects.is_empty() && plan.remove_finalizer.is_none());
     assert_eq!(cond(&st, "Released").reason, "ReleaseFailed");
     assert_eq!(cond(&st, "NeedsAttention").reason, "ReleaseFailed");
+}
+
+#[test]
+fn release_retries_past_the_bound_back_off_and_say_why() {
+    let failed_release = |attempts: u32, at: u64| {
+        let mut st = TaskStatus {
+            phase: Phase::Releasing,
+            session: Some(session()),
+            release_attempts: attempts,
+            ..Default::default()
+        };
+        let mut failed = receipt(
+            "release",
+            Observation::Known(EffectOutcome::Failed {
+                why: "cannot remove target: Permission denied".into(),
+            }),
+        );
+        failed.at = at;
+        st.receipts
+            .insert(format!("task/t/u7/release/{attempts}"), failed);
+        deleting(st)
+    };
+    let gone = || Observations {
+        find: Some(Observation::Known(None)),
+        ..Default::default()
+    };
+    let attempts = MAX_ATTEMPTS + 2;
+    let backoff = RETRY_DELAY_MS << 3;
+
+    let (plan, st) = run(&failed_release(attempts, NOW - RETRY_DELAY_MS), gone());
+    assert!(
+        plan.effects.is_empty(),
+        "a fixed delay is not enough past the bound"
+    );
+    assert_eq!(st.not_before, Some(NOW - RETRY_DELAY_MS + backoff));
+    let attention = cond(&st, "NeedsAttention");
+    assert_eq!(attention.reason, "ReleaseFailed");
+    assert!(
+        attention.message.contains("Permission denied"),
+        "the attention says why: {attention:?}"
+    );
+
+    let (plan, _) = run(&failed_release(attempts, NOW - backoff), gone());
+    assert_eq!(plan.effects.len(), 1, "retried once the backoff is over");
+
+    let many = 64;
+    let now = 10 * RETRY_BACKOFF_MAX_MS;
+    let (plan, st) = run_at(&failed_release(many, now - 1), gone(), now);
+    assert!(plan.effects.is_empty());
+    assert_eq!(
+        st.not_before,
+        Some(now - 1 + RETRY_BACKOFF_MAX_MS),
+        "the backoff has a cap"
+    );
+    let (plan, _) = run_at(
+        &failed_release(many, now - RETRY_BACKOFF_MAX_MS),
+        gone(),
+        now,
+    );
+    assert_eq!(plan.effects.len(), 1);
 }
 
 #[test]

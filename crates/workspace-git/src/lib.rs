@@ -276,10 +276,40 @@ pub fn inspect(cfg: &Config, key: &str) -> Result<Option<Workspace>, String> {
 }
 
 fn remove_dir(dir: &Path) -> Result<(), String> {
-    match fs::remove_dir_all(dir) {
+    let mut result = fs::remove_dir_all(dir);
+    if result
+        .as_ref()
+        .is_err_and(|e| e.kind() == std::io::ErrorKind::PermissionDenied)
+    {
+        grant_owner_write_without_following_links(dir);
+        result = fs::remove_dir_all(dir);
+    }
+    match result {
         Ok(()) => Ok(()),
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
         Err(e) => Err(format!("cannot remove {}: {e}", dir.display())),
+    }
+}
+
+fn grant_owner_write_without_following_links(dir: &Path) {
+    let Ok(meta) = fs::symlink_metadata(dir) else {
+        return;
+    };
+    if !meta.is_dir() {
+        return;
+    }
+    let mut permissions = meta.permissions();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        permissions.set_mode(permissions.mode() | 0o200);
+    }
+    #[cfg(not(unix))]
+    #[allow(clippy::permissions_set_readonly_false)]
+    permissions.set_readonly(false);
+    let _ = fs::set_permissions(dir, permissions);
+    for entry in fs::read_dir(dir).into_iter().flatten().flatten() {
+        grant_owner_write_without_following_links(&entry.path());
     }
 }
 
@@ -345,16 +375,28 @@ fn is_worktree(path: &Path) -> Result<bool, String> {
 
 fn remove_worktree(source: &Path, path: &Path) -> Result<(), String> {
     if is_worktree(path)? {
-        let path = path.display().to_string();
-        git(
-            source,
-            &["worktree", "remove", "--force", "--force", &path],
-            &[],
-        )?;
+        let removed = git_remove_worktree(source, path);
+        if removed.is_err() {
+            grant_owner_write_without_following_links(path);
+            if is_worktree(path)? {
+                git_remove_worktree(source, path)?;
+            } else {
+                remove_dir(path)?;
+            }
+        }
     } else {
         remove_dir(path)?;
     }
     git(source, &["worktree", "prune"], &[]).map(|_| ())
+}
+
+fn git_remove_worktree(source: &Path, path: &Path) -> Result<String, String> {
+    let path = path.display().to_string();
+    git(
+        source,
+        &["worktree", "remove", "--force", "--force", &path],
+        &[],
+    )
 }
 
 fn sources(cfg: &Config) -> Vec<PathBuf> {

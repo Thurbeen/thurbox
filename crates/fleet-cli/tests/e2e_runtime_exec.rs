@@ -2205,12 +2205,72 @@ fn a_deleted_task_whose_agent_last_said_working_is_released_after_the_grace() {
     );
 }
 
-/// A release whose `git worktree remove` stopped part way, as one does when
-/// a process still writes the build output, leaves the worktree's directory
-/// with a `.git` that is gone, or one that names the git directory git
-/// removed anyway. Which one depends on the directory's order, so each test
-/// sets the one it covers. The next attempt removes what is left and keeps
-/// the work the first attempt preserved.
+#[test]
+fn a_release_removes_a_worktree_with_a_read_only_directory_and_keeps_the_work() {
+    let (Some(program), Some(_)) = (runtime_mux(), tmux()) else {
+        return;
+    };
+    if uid() == "0" {
+        eprintln!("skipping: root removes a read-only directory's files");
+        return;
+    }
+    let sockets = Sockets::new("read-only");
+    let (env, src) =
+        git_url_task_on_runtime_mux("runtime-mux-read-only", &program, &sockets, CLAUDE);
+    reconcile_until(&env, "briefed in its worktree", |env| {
+        env.get("t1")["status"]["phase"] == "Briefed"
+    });
+    let dir = PathBuf::from(
+        env.get("t1")["status"]["workspace"]["dirs"][0]
+            .as_str()
+            .expect("a workspace")
+            .to_string(),
+    );
+    fs::write(dir.join("notes.txt"), "kept\n").expect("work");
+    let build = dir.join("target").join("debug").join("build");
+    fs::create_dir_all(&build).expect("build output");
+    fs::write(build.join("thurbox"), "binary").expect("build output");
+    let _writable_again = Chmod::hold(&build, 0o555, 0o755);
+
+    env.fleet(&["delete", "task", "t1"]).ok();
+    let deadline = Instant::now() + Duration::from_secs(20);
+    while env.fleet(&["get", "task", "t1"]).code == Some(0) {
+        assert!(Instant::now() < deadline, "{:#}", env.get("t1")["status"]);
+        std::thread::sleep(Duration::from_millis(300));
+        env.reconcile();
+    }
+    assert!(!dir.exists(), "the release removed the worktree");
+    let refs = preserved_refs(&src);
+    assert_eq!(refs.len(), 1, "one preserved ref: {refs:?}");
+    assert_eq!(
+        git(&src, &["show", &format!("{}:notes.txt", refs[0])]),
+        "kept\n"
+    );
+}
+
+struct Chmod {
+    path: PathBuf,
+    restore: u32,
+}
+
+impl Chmod {
+    fn hold(path: &Path, mode: u32, restore: u32) -> Self {
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(path, fs::Permissions::from_mode(mode)).expect("chmod");
+        Self {
+            path: path.to_path_buf(),
+            restore,
+        }
+    }
+}
+
+impl Drop for Chmod {
+    fn drop(&mut self) {
+        use std::os::unix::fs::PermissionsExt;
+        let _ = fs::set_permissions(&self.path, fs::Permissions::from_mode(self.restore));
+    }
+}
+
 fn a_release_finishes_a_half_removed_worktree(name: &str, git_file_spared: bool) {
     let (Some(program), Some(_)) = (runtime_mux(), tmux()) else {
         return;
@@ -2238,8 +2298,7 @@ fn a_release_finishes_a_half_removed_worktree(name: &str, git_file_spared: bool)
     let build = dir.join("target").join("debug");
     fs::create_dir_all(&build).expect("build output");
     fs::write(build.join("thurbox"), "binary").expect("build output");
-    use std::os::unix::fs::PermissionsExt;
-    fs::set_permissions(&build, fs::Permissions::from_mode(0o555)).expect("chmod");
+    let unreadable = Chmod::hold(&build, 0o000, 0o755);
 
     env.fleet(&["delete", "task", "t1"]).ok();
     reconcile_until(&env, "the first release fails part way", |env| {
@@ -2251,7 +2310,7 @@ fn a_release_finishes_a_half_removed_worktree(name: &str, git_file_spared: bool)
     } else if git_file.exists() {
         fs::remove_file(&git_file).expect("the gitfile the order removed");
     }
-    fs::set_permissions(&build, fs::Permissions::from_mode(0o755)).expect("chmod");
+    drop(unreadable);
 
     let deadline = Instant::now() + Duration::from_secs(60);
     while env.fleet(&["get", "task", "t1"]).code == Some(0) {
@@ -2278,8 +2337,6 @@ fn a_release_finishes_a_worktree_an_earlier_attempt_left_a_dangling_gitfile_in()
     a_release_finishes_a_half_removed_worktree("dangling-gitfile", true);
 }
 
-/// A gitfile release cannot read says nothing about whether the worktree is
-/// whole: release waits rather than remove work it could not preserve.
 #[test]
 fn a_release_keeps_a_worktree_whose_gitfile_it_cannot_read() {
     let (Some(program), Some(_)) = (runtime_mux(), tmux()) else {
@@ -2303,8 +2360,7 @@ fn a_release_keeps_a_worktree_whose_gitfile_it_cannot_read() {
     );
     fs::write(dir.join("notes.txt"), "kept\n").expect("work");
     let git_file = dir.join(".git");
-    use std::os::unix::fs::PermissionsExt;
-    fs::set_permissions(&git_file, fs::Permissions::from_mode(0o000)).expect("chmod");
+    let readable_again = Chmod::hold(&git_file, 0o000, 0o644);
 
     env.fleet(&["delete", "task", "t1"]).ok();
     reconcile_until(&env, "a release attempt answered", |env| {
@@ -2316,7 +2372,7 @@ fn a_release_keeps_a_worktree_whose_gitfile_it_cannot_read() {
         Some("kept\n"),
         "the work outlives a gitfile release could not read"
     );
-    fs::set_permissions(&git_file, fs::Permissions::from_mode(0o644)).expect("chmod");
+    drop(readable_again);
 
     let deadline = Instant::now() + Duration::from_secs(60);
     while env.fleet(&["get", "task", "t1"]).code == Some(0) {
