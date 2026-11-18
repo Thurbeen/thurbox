@@ -232,9 +232,6 @@ pub fn uninstall(unit: &Unit, stop_bound: Duration) -> Result<(), Refusal> {
     systemctl(&["daemon-reload"], QUICK_BOUND).map(drop)
 }
 
-/// The `fleet` a unit runs: `<home>/current/bin/fleet` when `exe` is a
-/// release's `<home>/releases/<version>/bin/fleet` and that link exists, so a
-/// restart runs whichever release is current. Otherwise `exe` itself.
 pub fn stable_exe(exe: &Path) -> PathBuf {
     let release_home = || {
         let bin = exe.parent()?;
@@ -257,8 +254,6 @@ pub enum Restart {
     NotRunning,
 }
 
-/// Restart a running unit and wait until a manager started since then
-/// serves `version`. A unit that is not running is left alone.
 pub fn restart_expecting(
     unit: &Unit,
     data_dir: &Path,

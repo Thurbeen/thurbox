@@ -38,16 +38,6 @@
 //! - a rename cannot replace an executable a process is running from, so
 //!   `commit_binary` moves the old one aside first, which Windows allows. Its
 //!   doc comment is where the interrupted-swap guarantee is written down.
-//!
-//! **Releases (Unix).** A release is installed into
-//! `<prefix>/lib/thurbox/releases/<version>/bin/`, and `<prefix>/bin` links
-//! each program to `<prefix>/lib/thurbox/current/bin/`, the layout
-//! `scripts/install.sh` writes. The update flips `current` in one rename,
-//! keeps the old release as `previous`, and on Linux runs the new `fleet
-//! service restart --expect <version>`. When the manager does not come back
-//! it flips `current` back and restarts it again. Releases other than
-//! `current` and `previous` are removed once no process runs from them.
-//! Windows still replaces the programs in place (issue #1867).
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -724,17 +714,11 @@ fn bin_dir_of(exe: &Path) -> Option<PathBuf> {
 
 const RELEASES: &str = "releases";
 
-/// `<prefix>/lib/thurbox` for the programs linked from `<prefix>/bin`: it
-/// holds `releases/<version>/bin/` and the `current` and `previous` links.
 #[cfg(unix)]
 fn release_home(bin: &Path) -> PathBuf {
     bin.parent().unwrap_or(bin).join("lib/thurbox")
 }
 
-/// Install release `to` beside the running one and flip `current` to it.
-/// An install whose programs are still files in `bin` first moves them into
-/// a release `from` of their own. `bin` then links each program to
-/// `current/bin`.
 #[cfg(unix)]
 fn install_release(extract: &Path, bin: &Path, from: &str, to: &str) -> Result<(), String> {
     let home = release_home(bin);
@@ -771,14 +755,13 @@ fn adopt_unreleased(bin: &Path, home: &Path, from: &str) -> Result<(), String> {
     std::fs::create_dir_all(&release_bin)
         .map_err(|e| format!("create {}: {e}", release_bin.display()))?;
     for name in files {
-        let (src, dest) = (bin.join(name), release_bin.join(name));
-        std::fs::copy(&src, &dest)
-            .map_err(|e| format!("copy {} -> {}: {e}", src.display(), dest.display()))?;
+        let dest = release_bin.join(name);
+        let staged = stage_binary(&bin.join(name), &dest)?;
+        std::fs::rename(&staged, &dest).map_err(|e| replace_failed(&dest, e))?;
     }
     relink(&home.join("current"), &Path::new(RELEASES).join(from))
 }
 
-/// Point `link` at `target` in one rename.
 #[cfg(unix)]
 fn relink(link: &Path, target: &Path) -> Result<(), String> {
     let name = link.file_name().unwrap_or_default().to_string_lossy();
@@ -804,10 +787,6 @@ fn link_programs(bin: &Path, home: &Path) -> Result<(), String> {
     Ok(())
 }
 
-/// `fleet service restart --expect <to>` with the new release's `fleet`.
-/// Exit 3 is "no unit runs this store": nothing to restart. Any other
-/// failure flips `current` back, restarts the manager on the old release
-/// and says why.
 #[cfg(target_os = "linux")]
 fn restart_manager(bin: &Path, to: &str) -> Result<(), String> {
     const NO_UNIT: i32 = 3;
@@ -854,8 +833,6 @@ fn fleet_service(bin: &Path, args: &[&str]) -> Result<(), (Option<i32>, String)>
     Err((output.status.code(), why))
 }
 
-/// Remove every release but `current` and `previous` that no running
-/// process's executable lives in.
 #[cfg(unix)]
 fn collect_releases(home: &Path) {
     let keep: Vec<PathBuf> = ["current", "previous"]
@@ -877,8 +854,6 @@ fn collect_releases(home: &Path) {
     }
 }
 
-/// Whether a running process's executable lives under `dir`. Off Linux
-/// there is no `/proc` to tell, and a release is kept.
 #[cfg(unix)]
 fn runs_from(dir: &Path) -> bool {
     if !cfg!(target_os = "linux") {
@@ -1942,9 +1917,6 @@ cccc3333  thurbox-v0.114.0-aarch64-apple-darwin.tar.gz
         }
     }
 
-    /// A first update moves the files an older install left in `bin` into
-    /// a release of their own, installs the new release beside it, and
-    /// leaves `bin` holding links that follow `current`.
     #[cfg(unix)]
     #[test]
     fn an_update_installs_the_release_beside_the_running_one() {
@@ -1965,8 +1937,6 @@ cccc3333  thurbox-v0.114.0-aarch64-apple-darwin.tar.gz
         assert_eq!(feed.installed().as_deref(), Some("3.0.1"));
     }
 
-    /// After the flip the new release's `fleet` restarts the manager through
-    /// its supervisor and waits for it to serve the new version.
     #[cfg(target_os = "linux")]
     #[test]
     fn an_update_restarts_the_manager_on_the_new_release() {
@@ -1975,8 +1945,6 @@ cccc3333  thurbox-v0.114.0-aarch64-apple-darwin.tar.gz
         assert_eq!(feed.calls(), ["3.0.1 service restart --expect 3.0.1"]);
     }
 
-    /// A machine with no supervisor has no manager to restart, so the
-    /// update stands.
     #[cfg(target_os = "linux")]
     #[test]
     fn an_update_without_a_supervisor_keeps_the_new_release() {
@@ -1986,8 +1954,6 @@ cccc3333  thurbox-v0.114.0-aarch64-apple-darwin.tar.gz
         assert_eq!(feed.link("current"), Some(PathBuf::from("releases/3.0.1")));
     }
 
-    /// A manager that does not come back on the new release puts `current`
-    /// back, restarts the manager on the old one, and says why.
     #[cfg(target_os = "linux")]
     #[test]
     fn a_manager_that_does_not_come_back_rolls_the_release_back() {
@@ -2009,8 +1975,6 @@ cccc3333  thurbox-v0.114.0-aarch64-apple-darwin.tar.gz
         );
     }
 
-    /// Each update keeps `current` and `previous` and removes an older
-    /// release.
     #[cfg(target_os = "linux")]
     #[test]
     fn an_update_keeps_two_releases() {
@@ -2040,7 +2004,6 @@ cccc3333  thurbox-v0.114.0-aarch64-apple-darwin.tar.gz
         assert_eq!(bin_dir_of(plain), Some(PathBuf::from("/p/.local/bin")));
     }
 
-    /// A release a process still runs from stays until it exits.
     #[cfg(target_os = "linux")]
     #[test]
     fn collection_spares_a_release_a_process_runs_from() {
