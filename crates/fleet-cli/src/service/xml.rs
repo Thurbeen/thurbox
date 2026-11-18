@@ -12,7 +12,6 @@ pub fn unescaped(text: &str) -> String {
         .replace("&amp;", "&")
 }
 
-/// The text of the first `<open>…</close>` in `text`, unescaped.
 pub fn between(text: &str, open: &str, close: &str) -> Option<String> {
     let start = text.find(open)? + open.len();
     let len = text[start..].find(close)?;

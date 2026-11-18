@@ -33,8 +33,6 @@ pub const DEFAULT_NAME: &str = "fleet";
 const STORE_KEY: &str = "X-Fleet-Store=";
 const QUICK_BOUND: Duration = Duration::from_secs(30);
 
-/// What `fleet version` names the supervisor: `systemd`, `launchd` or
-/// `task-scheduler`.
 pub const KIND: &str = host::KIND;
 
 pub struct Unit {
@@ -280,8 +278,6 @@ pub fn status(unit: &Unit) -> Result<(String, i32), Refusal> {
     host::status(unit)
 }
 
-/// The supervisor's command-line tool: its program and the arguments that
-/// lead every call.
 struct Tool {
     program: &'static str,
     lead: &'static [&'static str],
@@ -335,7 +331,6 @@ impl Tool {
         Refusal::Supervisor(format!("{} {why}", self.name()))
     }
 
-    /// The tool's report and its exit code, for `status`.
     fn report(&self, args: &[&str]) -> Result<(String, i32), Refusal> {
         match self.run(args, QUICK_BOUND) {
             Outcome::Exited {
