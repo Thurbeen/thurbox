@@ -9,12 +9,14 @@ mod support;
 
 use std::collections::BTreeSet;
 use std::net::TcpListener;
+use std::process::Child;
 use std::time::{Duration, Instant};
 
 use fleet_api::forge::{
     ChangeSnapshot, ChangeState, Checks, HeadSeen, Mergeable, ReviewDecision, Threads,
 };
 use fleet_forge::ForgeFault;
+use fleet_runtime::Fault;
 use serde_json::{Value, json};
 use support::otlp::{Collector, Point, Span};
 use support::{Env, FORGE_HOST, base_config, change_request, derived_name, object, task};
@@ -57,6 +59,49 @@ fn names(spans: &[Span]) -> BTreeSet<String> {
 
 fn points<'a>(all: &'a [Point], metric: &str) -> Vec<&'a Point> {
     all.iter().filter(|p| p.metric == metric).collect()
+}
+
+/// The values `fleet.inbox.depth` reported for Task `name` in `state`, in
+/// the order they arrived.
+fn inbox_depth(all: &[Point], name: &str, state: &str) -> Vec<f64> {
+    points(all, "fleet.inbox.depth")
+        .into_iter()
+        .filter(|p| {
+            p.attrs.get("fleet.name").map(String::as_str) == Some(name)
+                && p.attrs.get("fleet.inbox.state").map(String::as_str) == Some(state)
+        })
+        .map(|p| p.value)
+        .collect()
+}
+
+/// The last value `fleet.manager.info` reported for process `pid` with the
+/// lease attribute `lease`.
+fn manager_info(collector: &Collector, pid: u32, lease: bool) -> Option<f64> {
+    points(&collector.points(), "fleet.manager.info")
+        .into_iter()
+        .filter(|p| {
+            p.attrs.get("process.pid") == Some(&pid.to_string())
+                && p.attrs.get("fleet.manager.lease") == Some(&lease.to_string())
+        })
+        .map(|p| p.value)
+        .next_back()
+}
+
+fn wait_for(what: &str, mut ready: impl FnMut() -> bool) {
+    let deadline = Instant::now() + Duration::from_secs(40);
+    while !ready() {
+        assert!(Instant::now() < deadline, "timed out waiting for {what}");
+        std::thread::sleep(Duration::from_millis(50));
+    }
+}
+
+struct Running(Child);
+
+impl Drop for Running {
+    fn drop(&mut self) {
+        let _ = self.0.kill();
+        let _ = self.0.wait();
+    }
 }
 
 /// The full lifecycle: spawn, brief, a message delivered, release. Every
@@ -210,14 +255,125 @@ fn a_task_lifecycle_exports_its_spans_and_metrics_to_the_collector() {
             "{outcome} in {amendments:#?}"
         );
     }
-    let depth = points(&all, "fleet.inbox.depth");
-    assert!(depth.iter().any(|p| p.value >= 1.0), "{all:#?}");
+    let depth = inbox_depth(&all, "t1", "pending");
+    assert!(depth.iter().any(|v| *v >= 1.0), "{all:#?}");
+    assert_eq!(
+        depth.last(),
+        Some(&0.0),
+        "the released Task's backlog drops to 0: {all:#?}"
+    );
+    let info = points(&all, "fleet.manager.info");
+    let held = info
+        .iter()
+        .find(|p| p.attrs["fleet.manager.lease"] == "true")
+        .unwrap_or_else(|| panic!("no lease holder in {info:#?}"));
+    assert_eq!(held.value, 1.0, "{held:#?}");
+    assert_eq!(held.unit, "{manager}", "{held:#?}");
+    assert_eq!(
+        held.attrs["fleet.manager.version"],
+        env!("CARGO_PKG_VERSION"),
+        "{held:#?}"
+    );
+    assert!(
+        held.attrs["process.pid"].parse::<u32>().is_ok(),
+        "{held:#?}"
+    );
+    assert!(!held.attrs["host.name"].is_empty(), "{held:#?}");
 
     // Names and outcomes only: no brief, message or environment value.
     let raw = String::from_utf8_lossy(&collector.raw()).to_string();
     for secret in [BRIEF_SECRET, ENV_SECRET, MESSAGE_SECRET] {
         assert!(!raw.contains(secret), "{secret} was exported");
     }
+}
+
+/// A given-up entry is `failed`, the rest `pending`, each per Task; a
+/// released Task reports 0 in both, so no old backlog stays on a gauge.
+#[test]
+fn inbox_depth_splits_pending_from_given_up_entries_per_task() {
+    let collector = Collector::start();
+    let mut env = Env::new("otel-inbox");
+    exporting(&mut env, &collector.endpoint);
+    env.apply(base_config()).ok();
+    env.apply(task("t1", true)).ok();
+    env.reconcile().ok();
+    env.fault(Fault::new("brief", "fail").times(3));
+    env.fleet(&["send", "t1", "first"]).ok();
+    env.reconcile().ok();
+    env.expire_wait("t1");
+    env.reconcile().ok();
+    env.expire_wait("t1");
+    env.reconcile().ok();
+    let attempts = env.get("t1")["status"]["deliveryAttempts"].clone();
+    assert!(
+        attempts
+            .as_object()
+            .is_some_and(|a| a.values().any(|a| a["failed"] == true)),
+        "the first entry is given up on: {attempts:#}"
+    );
+    env.fleet(&["send", "t1", "second"]).ok();
+    let before = collector.points().len();
+    env.fleet(&["reconcile", "--max-passes", "1"]).ok();
+    let after = collector.points()[before..].to_vec();
+    assert_eq!(inbox_depth(&after, "t1", "pending"), [1.0], "{after:#?}");
+    assert_eq!(inbox_depth(&after, "t1", "failed"), [1.0], "{after:#?}");
+
+    env.host()
+        .set_at_rest(&env.session_key("t1"), true)
+        .unwrap();
+    env.fleet(&["delete", "Task", "t1"]).ok();
+    env.reconcile().ok();
+    env.fleet(&["get", "Task", "t1"]).code(3);
+    let all = collector.points();
+    for state in ["pending", "failed"] {
+        assert_eq!(
+            inbox_depth(&all, "t1", state).last(),
+            Some(&0.0),
+            "{state}: {all:#?}"
+        );
+    }
+}
+
+/// A `fleet up` that waits for another's lock reports itself without the
+/// lease; once it holds the lease it reports the lease, and its waiting
+/// point drops to 0, so one process never shows as both.
+#[test]
+fn manager_info_shows_a_waiting_manager_without_the_lease_until_it_takes_over() {
+    let collector = Collector::start();
+    let mut env = Env::new("otel-manager-info");
+    exporting(&mut env, &collector.endpoint);
+    env.set_var("OTEL_METRIC_EXPORT_INTERVAL", "100");
+    let mut first = Running(env.spawn(&["up", "--poll-ms", "100", "--lease-ttl-ms", "3000"]));
+    let first_pid = first.0.id();
+    wait_for("the first manager holds the lease", || {
+        manager_info(&collector, first_pid, true) == Some(1.0)
+    });
+
+    let second = Running(env.spawn(&["up", "--poll-ms", "100"]));
+    let second_pid = second.0.id();
+    wait_for("the second manager waits without the lease", || {
+        manager_info(&collector, second_pid, false) == Some(1.0)
+    });
+    assert_eq!(manager_info(&collector, second_pid, true), Some(0.0));
+
+    let _ = first.0.kill();
+    let _ = first.0.wait();
+    wait_for("the second manager takes the lease over", || {
+        manager_info(&collector, second_pid, true) == Some(1.0)
+            && manager_info(&collector, second_pid, false) == Some(0.0)
+    });
+    let point = points(&collector.points(), "fleet.manager.info")
+        .into_iter()
+        .rfind(|p| p.attrs.get("process.pid") == Some(&second_pid.to_string()))
+        .cloned()
+        .expect("a point");
+    assert_eq!(point.unit, "{manager}", "{point:#?}");
+    assert_eq!(
+        point.attrs["fleet.manager.version"],
+        env!("CARGO_PKG_VERSION"),
+        "{point:#?}"
+    );
+    assert!(!point.attrs["host.name"].is_empty(), "{point:#?}");
 }
 
 fn open_change() -> ChangeSnapshot {

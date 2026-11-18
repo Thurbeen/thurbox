@@ -1298,6 +1298,7 @@ fn run(cli: Cli) -> Result<(), Failure> {
             }
             let holder = holder.unwrap_or_else(|| fleet_store::holder::local(false));
             record_children(&data_dir, &holder)?;
+            identify_engine();
             let manager = Manager {
                 store,
                 runtime: runtime.as_ref(),
@@ -1677,7 +1678,9 @@ fn cmd_up(
         &[fleet_api::plugin::Registration],
     ),
 ) -> Result<(), Failure> {
+    identify_engine();
     let lock = file_store.wait_for_manager_lock(|| {
+        fleet_manager::manager_lease(false);
         let holder = manager_holder(data_dir);
         eprintln!("waiting for {holder} to exit");
         supervisor::tell(supervisor::Phase::Waiting(&holder));
@@ -1708,6 +1711,13 @@ fn cmd_up(
     record.state = ManagerState::Stopped;
     report_manager(file_store, &lock, &record);
     outcome
+}
+
+fn identify_engine() {
+    fleet_manager::identify(fleet_manager::Engine {
+        version: VERSION.into(),
+        host: gethostname::gethostname().to_string_lossy().into_owned(),
+    });
 }
 
 fn record_children(data_dir: &Path, holder: &str) -> Result<(), Failure> {

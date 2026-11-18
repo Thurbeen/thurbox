@@ -1011,6 +1011,7 @@ dependencies = [
  "fleet-plugin",
  "fleet-runtime",
  "fleet-store",
+ "gethostname",
  "opentelemetry-proto",
  "otel-env",
  "prost",

@@ -61,6 +61,8 @@ mod subscriptions;
 mod telemetry;
 pub mod verbs;
 
+pub use telemetry::{Engine, identify, manager_lease};
+
 use std::collections::{BTreeMap, BTreeSet};
 
 use fleet_api::change_request::{self, ChangeRequestDefaults, ChangeRequestSpec};
@@ -316,6 +318,7 @@ impl Manager<'_> {
                 acquired => break acquired?,
             }
         };
+        telemetry::manager_lease(true);
         let outcome = (|| {
             loop {
                 let report = match self.sweep(&mut lease, opts, pauses > 0) {
@@ -382,6 +385,7 @@ impl Manager<'_> {
     /// that error: no write happens without it.
     pub fn run(&self, opts: RunOptions) -> Result<RunReport, StoreError> {
         let mut lease = self.store.acquire_lease(&self.holder, opts.lease_ttl)?;
+        telemetry::manager_lease(true);
         let mut report = RunReport {
             holder: self.holder.clone(),
             lease_token: lease.token,
