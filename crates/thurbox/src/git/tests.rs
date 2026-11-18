@@ -1535,3 +1535,32 @@ fn a_repository_with_no_origin_defaults_to_its_checked_out_branch() {
     assert_eq!(read.default.as_deref(), Some("main"));
     assert_eq!(read.names, vec!["main".to_string()]);
 }
+
+#[test]
+fn a_logged_git_failure_keeps_only_its_first_reportable_line() {
+    let stderr = b"** WARNING: connection is not using a post-quantum key exchange algorithm.\n\
+warning: Not a git repository. Use --no-index to compare two paths outside a working tree\n\
+usage: git diff --no-index [<options>] <path> <path>\n\
+\n\
+Diff output format options\n";
+    assert_eq!(
+        reportable_stderr_line(stderr),
+        "warning: Not a git repository. Use --no-index to compare two paths outside a working tree"
+    );
+    assert_eq!(reportable_stderr_line(b""), "");
+}
+
+#[test]
+fn a_plain_directory_has_an_empty_working_diff() {
+    let plain = tempfile::tempdir().expect("tempdir");
+    let diff = working_diff(plain.path()).expect("a plain directory still answers");
+    assert_eq!(
+        (
+            diff.body.as_str(),
+            diff.numstat_z.as_str(),
+            diff.name_status_z.as_str()
+        ),
+        ("", "", "")
+    );
+    assert_eq!((diff.untracked_total, diff.untracked_shown), (0, 0));
+}

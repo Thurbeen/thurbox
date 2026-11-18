@@ -7,12 +7,14 @@
 //! deliberately no body-only `git diff HEAD` helper — having one is how that
 //! omission happened in the first place.
 
-use std::path::Path;
+use std::collections::HashSet;
+use std::path::{Path, PathBuf};
 use std::process::Stdio;
+use std::sync::{LazyLock, Mutex};
 
-use tracing::warn;
+use tracing::{debug, warn};
 
-use super::{git_command, reportable_stderr, run_git_capture, run_git_capture_env};
+use super::{git_command, reportable_stderr_line, run_git_capture, run_git_capture_env};
 
 /// Raw unified `git diff <base>..HEAD` output for a worktree, for the native
 /// code-review view.
@@ -74,7 +76,7 @@ pub(super) fn run_diff(worktree: &Path, args: &[&str]) -> Option<String> {
     full.extend_from_slice(args);
     let output = git_command(worktree, &full).output().ok()?;
     if !output.status.success() {
-        let stderr = reportable_stderr(&output.stderr);
+        let stderr = reportable_stderr_line(&output.stderr);
         warn!("git {args:?} failed: {stderr}");
         return None;
     }
@@ -127,7 +129,14 @@ pub struct WorkingDiff {
 /// eventually gives up into `.git/gc.log`, which then suppresses auto-gc
 /// repo-wide — the failure `PROBE_IDENT` records below, at one blob per changed
 /// file per refresh rather than one commit per poll.
+///
+/// A directory outside any git work tree has no changes to show, so it gets an
+/// empty diff, noted once at debug level rather than warned about every refresh.
 pub fn working_diff(worktree: &Path) -> Option<WorkingDiff> {
+    if worktree.is_dir() && !is_inside_work_tree(worktree) {
+        note_outside_work_tree(worktree);
+        return Some(WorkingDiff::empty());
+    }
     let mut body = run_diff(worktree, &["diff", "--no-color", "HEAD"])?;
     let mut numstat_z = diff_numstat(worktree, None)?;
     let mut name_status_z = diff_name_status(worktree, None)?;
@@ -174,6 +183,34 @@ pub fn working_diff(worktree: &Path) -> Option<WorkingDiff> {
     })
 }
 
+impl WorkingDiff {
+    fn empty() -> Self {
+        Self {
+            body: String::new(),
+            numstat_z: String::new(),
+            name_status_z: String::new(),
+            untracked_total: 0,
+            untracked_shown: 0,
+        }
+    }
+}
+
+fn is_inside_work_tree(dir: &Path) -> bool {
+    run_git_capture(&["rev-parse", "--is-inside-work-tree"], dir)
+        .is_some_and(|answer| answer.trim() == "true")
+}
+
+static NOTED_OUTSIDE_WORK_TREE: LazyLock<Mutex<HashSet<PathBuf>>> = LazyLock::new(Mutex::default);
+
+fn note_outside_work_tree(dir: &Path) {
+    let first_time = NOTED_OUTSIDE_WORK_TREE
+        .lock()
+        .is_ok_and(|mut noted| noted.insert(dir.to_path_buf()));
+    if first_time {
+        debug!("{} is not a git work tree; it has no diff", dir.display());
+    }
+}
+
 /// The worktree's untracked, non-ignored files. `--exclude-standard` is what
 /// keeps `.gitignore`d build output out; `-z` is what keeps a path with a space
 /// or a newline in it whole.
@@ -212,7 +249,7 @@ pub(super) fn untracked_diff(worktree: &Path, path: &str, extra: &[&str]) -> Opt
     match output.status.code() {
         Some(0 | 1) => Some(String::from_utf8_lossy(&output.stdout).into_owned()),
         _ => {
-            let stderr = reportable_stderr(&output.stderr);
+            let stderr = reportable_stderr_line(&output.stderr);
             warn!("git diff --no-index for {path} failed: {stderr}");
             None
         }

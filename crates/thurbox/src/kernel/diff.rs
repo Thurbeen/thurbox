@@ -960,4 +960,59 @@ mod tests {
             store.get("s1")
         );
     }
+
+    #[derive(Clone, Default)]
+    struct CapturedLog(std::sync::Arc<std::sync::Mutex<Vec<u8>>>);
+
+    impl std::io::Write for CapturedLog {
+        fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+            self.0.lock().expect("log buffer").extend_from_slice(buf);
+            Ok(buf.len())
+        }
+
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    impl CapturedLog {
+        fn lines_at(&self, level: &str) -> Vec<String> {
+            String::from_utf8_lossy(&self.0.lock().expect("log buffer"))
+                .lines()
+                .filter(|line| line.contains(level))
+                .map(str::to_string)
+                .collect()
+        }
+    }
+
+    fn compute_capturing_logs(worktree: &Path, refreshes: usize) -> (Diff, CapturedLog) {
+        let log = CapturedLog::default();
+        let writer = log.clone();
+        let subscriber = tracing_subscriber::fmt()
+            .with_max_level(tracing::Level::TRACE)
+            .with_ansi(false)
+            .with_writer(move || writer.clone())
+            .finish();
+        let diff = tracing::subscriber::with_default(subscriber, || {
+            (0..refreshes)
+                .map(|_| compute(worktree, None))
+                .last()
+                .expect("at least one refresh")
+        });
+        (diff, log)
+    }
+
+    #[test]
+    fn a_workspace_outside_git_shows_no_diff_and_logs_no_warning() {
+        let plain = tempfile::tempdir().expect("tempdir");
+        let (diff, log) = compute_capturing_logs(plain.path(), 3);
+
+        assert_eq!(log.lines_at("WARN"), Vec::<String>::new());
+        assert_eq!(diff, empty_ready());
+        assert!(
+            log.lines_at("DEBUG").len() <= 1,
+            "refreshing a plain directory logged more than once: {:?}",
+            log.lines_at("DEBUG")
+        );
+    }
 }

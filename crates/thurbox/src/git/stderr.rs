@@ -31,3 +31,11 @@ pub(crate) fn reportable_stderr(stderr: &[u8]) -> String {
         .trim()
         .to_string()
 }
+
+pub(crate) fn reportable_stderr_line(stderr: &[u8]) -> String {
+    reportable_stderr(stderr)
+        .lines()
+        .next()
+        .unwrap_or_default()
+        .to_string()
+}
