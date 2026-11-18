@@ -16,6 +16,9 @@ use thurbox::kernel::command::{Command, CommandBus, Phase};
 use thurbox::kernel::snapshot::fleet::FleetWatch;
 use thurbox::kernel::snapshot::{Deleting, SessionRow, SnapshotSource, SnapshotStore, SourceRead};
 
+#[path = "../../runtime-mux/tests/support/tmux_server.rs"]
+mod tmux_server;
+
 const BOUND: Duration = Duration::from_secs(60);
 
 fn fleet_bin() -> Option<PathBuf> {
@@ -114,7 +117,8 @@ impl Fleet {
         std::fs::write(
             &program,
             format!(
-                "#!/bin/sh\nexec env -i HOME='{r}' TMPDIR='{r}/tmp' PATH='{r}/bin:/usr/bin:/bin' {env} '{bin}' --config '{r}/fleet.toml' \"$@\"\n",
+                "#!/bin/sh\nexec env -i HOME='{r}' TMPDIR='{r}/tmp' PATH='{r}/bin:{p}' {env} '{bin}' --config '{r}/fleet.toml' \"$@\"\n",
+                p = tmux_server::system_path(),
                 r = r.display(),
                 bin = bin.display()
             ),
@@ -747,6 +751,9 @@ fn a_stuck_deletion_deleted_again_stays_listed() {
 /// the pane's grid, which an agent's full-screen interface would paint
 /// over. The stream: the real `fleet term-bridge` over a command that never
 /// reads, whose terminal fills and then stops taking input.
+// A Darwin pty discards what its program does not read instead of blocking the
+// writer, so the bridge never stops reading and no input is ever refused.
+#[cfg(not(target_os = "macos"))]
 #[test]
 fn refused_input_is_a_notice_and_leaves_the_grid_alone() {
     use std::io::Write;
@@ -916,7 +923,7 @@ impl Sockets {
         let base = std::env::var_os("XDG_RUNTIME_DIR")
             .map(PathBuf::from)
             .filter(|d| d.is_dir())
-            .unwrap_or_else(std::env::temp_dir);
+            .unwrap_or_else(tmux_server::short_temp_dir);
         let dir = base.join(format!("tfp-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).expect("socket dir");
@@ -1478,9 +1485,10 @@ fn doctor_reports_each_listed_fleet() {
              dest=$1; shift\n\
              printf '%s %s\\n' \"$dest\" \"$*\" >> '{log}'\n\
              case \"$dest\" in\n\
-             box) exec env -i HOME='{b}' TMPDIR='{b}/tmp' PATH='/usr/bin:/bin' sh -c \"exec $*\" ;;\n\
+             box) exec env -i HOME='{b}' TMPDIR='{b}/tmp' PATH='{p}' sh -c \"exec $*\" ;;\n\
              *) echo \"ssh: connect to host $dest port 22: Connection refused\" >&2; exit 255 ;;\n\
              esac\n",
+            p = tmux_server::system_path(),
             log = log.display(),
             b = box_root.display(),
         ),
@@ -1797,7 +1805,8 @@ fn doctor_reports_whether_a_remote_fleets_manager_runs() {
              while [ $# -gt 0 ]; do case \"$1\" in -o|-p) shift 2 ;; -*) shift ;; *) break ;; esac; done\n\
              shift\n\
              printf '%s\\n' \"$*\" >> '{log}'\n\
-             exec env -i HOME='{r}' TMPDIR='{r}/tmp' PATH='/usr/bin:/bin' sh -c \"exec $*\"\n",
+             exec env -i HOME='{r}' TMPDIR='{r}/tmp' PATH='{p}' sh -c \"exec $*\"\n",
+            p = tmux_server::system_path(),
             log = log.display(),
             r = root.display(),
         ),
@@ -2536,9 +2545,10 @@ mod an_update {
                 .env(
                     "PATH",
                     format!(
-                        "{}:{}:/usr/bin:/bin",
+                        "{}:{}:{}",
                         self.path("fakebin").display(),
-                        self.path("install").display()
+                        self.path("install").display(),
+                        tmux_server::system_path()
                     ),
                 );
         }

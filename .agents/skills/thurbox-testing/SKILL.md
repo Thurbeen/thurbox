@@ -198,6 +198,14 @@ remember:
    harness's tempdir. tmux never unlinks a socket, so even a server killed
    correctly leaves a dead socket file behind; and owning the directory is what
    lets `Drop` kill the server *before* the socket goes, rather than after.
+   The directory sits under `XDG_RUNTIME_DIR`, else under `short_temp_dir()`.
+   On macOS that is `/tmp`: the per-user `TMPDIR` there is about 50 bytes,
+   and a socket below it overflows the 104-byte `sun_path`.
+
+The same file has `system_path()`, the `PATH` for a child whose environment a
+harness clears (`env -i`): `/usr/bin:/bin` and the directory that holds `tmux`.
+Homebrew installs tmux outside both, so a bare `/usr/bin:/bin` gives a Fleet
+child no multiplexer on macOS.
 
 `Drop` is the point: a panic or a failed `.expect()` still runs it. A signal
 runs no destructor, so a nextest `slow-timeout` termination leaves the server
