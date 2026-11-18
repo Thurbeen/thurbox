@@ -260,7 +260,7 @@ pub trait TmuxCompatible: Send + Sync + 'static {
     /// launch between each two, and Claude Code took the pieces before such a
     /// gap as typed text (#1901). The bytes go to the pane as they are, so
     /// `extended-keys` never turns a line break into a key, and `-S` keeps
-    /// tmux 3.8 from passing the paste markers through vis(3).
+    /// tmux 3.7 and later from passing the paste markers through vis(3).
     fn paste_args(target: &str, text: &str) -> Vec<Vec<String>> {
         let buffer = paste_buffer_name();
         let paste = bracketed_paste(text);
@@ -420,8 +420,8 @@ fn bracketed_paste(text: &str) -> String {
     format!("\x1b[200~{text}\x1b[201~")
 }
 
-/// tmux 3.8's `paste-buffer` flag that writes the buffer as it is, where it
-/// otherwise passes it through vis(3). A tmux before 3.8 refuses it as an
+/// tmux 3.7's `paste-buffer` flag that writes the buffer as it is, where it
+/// otherwise passes it through vis(3). A tmux before 3.7 refuses it as an
 /// unknown flag, and writes the buffer as it is anyway.
 const UNSANITISED_PASTE: &str = "-S";
 
@@ -5683,7 +5683,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn a_tmux_before_3_8_refusing_the_unsanitised_paste_is_told_apart() {
+    fn a_tmux_before_3_7_refusing_the_unsanitised_paste_is_told_apart() {
         let refused = anyhow::anyhow!("tmux paste-buffer command paste-buffer: unknown flag -S");
         assert!(refused_unsanitised_paste(&refused));
         let gone = anyhow::anyhow!("tmux paste-buffer can't find pane: %9");
