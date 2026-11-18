@@ -382,14 +382,11 @@ fn workspace_url(
     if !worktree {
         return Ok(dir_url("file", &dir));
     }
-    let mut url = dir_url("git+file", &dir);
-    url.push_str("?branch=");
-    url.push_str(&encode(choice.branch.unwrap_or(session)));
-    if let Some(base) = choice.base {
-        url.push('#');
-        url.push_str(&encode(base));
-    }
-    Ok(url)
+    Ok(worktree_url(
+        &dir,
+        Some(choice.branch.unwrap_or(session)),
+        choice.base,
+    ))
 }
 
 /// `repo` as the workspace URL that clones it, or `None` when it is a path:
@@ -445,7 +442,7 @@ fn url_path(path: &str) -> String {
 
 /// `<scheme>://<dir>`, with the bytes a URL reads apart (`%`, `?`, `#` and
 /// whitespace) percent-encoded, as the runtime decodes them.
-fn dir_url(scheme: &str, dir: &std::path::Path) -> String {
+pub(crate) fn dir_url(scheme: &str, dir: &std::path::Path) -> String {
     let mut url = format!("{scheme}://");
     for c in url_path(&dir.to_string_lossy()).chars() {
         push_char(&mut url, c, |c| {
@@ -457,6 +454,23 @@ fn dir_url(scheme: &str, dir: &std::path::Path) -> String {
 
 /// A branch or base as a query value or fragment: also `&` and `=`, which
 /// would end or split the value, are percent-encoded.
+pub(crate) fn worktree_url(
+    dir: &std::path::Path,
+    branch: Option<&str>,
+    base: Option<&str>,
+) -> String {
+    let mut url = dir_url("git+file", dir);
+    if let Some(branch) = branch {
+        url.push_str("?branch=");
+        url.push_str(&encode(branch));
+    }
+    if let Some(base) = base {
+        url.push('#');
+        url.push_str(&encode(base));
+    }
+    url
+}
+
 fn encode(value: &str) -> String {
     let mut out = String::new();
     for c in value.chars() {

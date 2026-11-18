@@ -856,3 +856,13 @@ fn the_wsl_distro_is_read_trimmed_and_an_empty_one_is_none() {
     // A distro that set the variable empty is no distro at all.
     with_wsl_distro(Some("  "), || assert_eq!(current_wsl_distro(), None));
 }
+
+#[test]
+fn a_2x_database_is_unmigrated_until_the_marker_is_written() {
+    let dir = tempfile::tempdir().expect("dir");
+    assert!(!super::v2_state_unmigrated_in(dir.path()));
+    std::fs::write(dir.path().join("thurbox.db"), b"").expect("db");
+    assert!(super::v2_state_unmigrated_in(dir.path()));
+    std::fs::write(dir.path().join("thurbox.db.migrated"), b"").expect("marker");
+    assert!(!super::v2_state_unmigrated_in(dir.path()));
+}

@@ -30,6 +30,8 @@ use thurbox::kernel::watch::Watcher;
 use super::{enable_mouse_clicks, push_keyboard_enhancement, restore_terminal};
 use crate::App;
 
+const V2_STATE_NOTICE: &str = "thurbox 2.x state found · thurbox-cli migrate --dry-run";
+
 /// Days of `thurbox.log.<date>` kept by the rolling appender.
 const LOG_FILES_KEPT: usize = 30;
 
@@ -173,6 +175,9 @@ pub(crate) async fn run() -> Result<(), Box<dyn Error>> {
     let backends = std::sync::Arc::new(thurbox::backend::wiring::local_only(&startup_settings));
 
     let mut startup_notices: Vec<String> = config_warnings;
+    if thurbox::paths::v2_state_unmigrated() {
+        startup_notices.push(V2_STATE_NOTICE.to_string());
+    }
 
     let (ui_dir, ui_notices) = resolve_ui_dir()?;
     startup_notices.extend(ui_notices);

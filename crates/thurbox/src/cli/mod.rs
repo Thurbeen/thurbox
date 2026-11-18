@@ -35,6 +35,7 @@ mod tests;
 pub mod config;
 pub mod doctor;
 pub mod editor;
+pub mod migrate;
 pub mod notify;
 pub mod output;
 pub mod perf;
@@ -220,6 +221,9 @@ pub enum Command {
     /// Whether this machine has what a session needs: Fleet, with its harnesses
     /// and the hosts it defines, and the multiplexer.
     Doctor,
+    /// Turn thurbox 2.x state into Fleet Tasks and CronTasks, and print the
+    /// places and harness profiles to add to Fleet's config.
+    Migrate(migrate::Args),
 }
 
 /// What a completed invocation asks the process to do next.
@@ -325,6 +329,7 @@ fn dispatch(command: Command, settings: &Settings) -> Result<CommandOutput, Comm
         // Reads the machine: what is installed is not something thurbox
         // recorded.
         Command::Doctor => doctor::run(settings)?,
+        Command::Migrate(args) => migrate::run(args, settings)?,
     })
 }
 

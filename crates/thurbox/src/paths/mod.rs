@@ -562,6 +562,18 @@ pub fn data_directory() -> Option<PathBuf> {
     data_app_dir()
 }
 
+pub fn v2_migrated_marker() -> Option<PathBuf> {
+    data_directory().map(|dir| dir.join("thurbox.db.migrated"))
+}
+
+pub fn v2_state_unmigrated() -> bool {
+    data_directory().is_some_and(|dir| v2_state_unmigrated_in(&dir))
+}
+
+pub fn v2_state_unmigrated_in(dir: &Path) -> bool {
+    dir.join("thurbox.db").is_file() && !dir.join("thurbox.db.migrated").exists()
+}
+
 /// Resolve the multi-repo workspaces directory path.
 ///
 /// Returns: `$XDG_DATA_HOME/thurbox/workspaces/` or
