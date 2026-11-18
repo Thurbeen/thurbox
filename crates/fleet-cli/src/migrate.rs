@@ -59,6 +59,11 @@ pub struct Migration {
     pub to_do: Vec<String>,
 }
 
+struct Branches {
+    prefix: String,
+    key: &'static str,
+}
+
 pub enum Plan {
     Done {
         config_v2: Option<PathBuf>,
@@ -167,13 +172,29 @@ pub fn plan(config_path: &Path) -> Result<Plan, String> {
                     .collect()
             })
             .unwrap_or_default();
-        let key_prefix = table
-            .get("runtime")
-            .and_then(|r| r.get("keyPrefix"))
-            .and_then(toml::Value::as_str)
-            .unwrap_or("fleet")
-            .to_string();
-        migration.objects(&source_store, &repositories, &key_prefix)?;
+        let worktrees = table
+            .get("workspaces")
+            .filter(|w| w.get("kind").and_then(toml::Value::as_str) == Some("worktree"));
+        let branches = match worktrees {
+            Some(w) => Branches {
+                prefix: w
+                    .get("branchPrefix")
+                    .and_then(toml::Value::as_str)
+                    .unwrap_or("fleet")
+                    .to_string(),
+                key: "workspace",
+            },
+            None => Branches {
+                prefix: table
+                    .get("runtime")
+                    .and_then(|r| r.get("keyPrefix"))
+                    .and_then(toml::Value::as_str)
+                    .unwrap_or("fleet")
+                    .to_string(),
+                key: "session",
+            },
+        };
+        migration.objects(&source_store, &repositories, &branches)?;
     }
     Ok(Plan::Migrate(Box::new(migration)))
 }
@@ -260,7 +281,7 @@ impl Migration {
         &mut self,
         store: &Path,
         repositories: &BTreeMap<String, String>,
-        key_prefix: &str,
+        branches: &Branches,
     ) -> Result<(), String> {
         let root = store.join("objects");
         let kinds = match fs::read_dir(&root) {
@@ -283,12 +304,17 @@ impl Migration {
             let text = fs::read_to_string(path).map_err(|e| format!("{}: {e}", path.display()))?;
             let source: Value = serde_json::from_str(&text)
                 .map_err(|e| format!("{}: not JSON: {e}", path.display()))?;
-            self.object(source, repositories, key_prefix);
+            self.object(source, repositories, branches);
         }
         Ok(())
     }
 
-    fn object(&mut self, source: Value, repositories: &BTreeMap<String, String>, prefix: &str) {
+    fn object(
+        &mut self,
+        source: Value,
+        repositories: &BTreeMap<String, String>,
+        branches: &Branches,
+    ) {
         let kind = source["kind"].as_str().unwrap_or_default().to_string();
         let name = source["metadata"]["name"]
             .as_str()
@@ -335,9 +361,9 @@ impl Migration {
                     "{key}: its brief's amendments were not imported; {kept}"
                 ));
             }
-            let branch = source["status"]["session"]["key"]
+            let branch = source["status"][branches.key]["key"]
                 .as_str()
-                .map(|session| format!("{prefix}/{session}"));
+                .map(|key| format!("{}/{key}", branches.prefix));
             match workspace(spec.get("workspace"), repositories, branch.as_deref()) {
                 Some(urls) => {
                     spec.insert("workspace".into(), urls);

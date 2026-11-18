@@ -32,6 +32,7 @@ workspace = "/src/vega"
 
 [workspaces]
 kind = "worktree"
+branchPrefix = "wt"
 
 [forge]
 callTimeoutMs = 30000
@@ -50,7 +51,7 @@ fn object(kind: &str, name: &str, spec: Value, status: Value) -> Value {
             "resourceVersion": 7,
             "generation": 1,
             "creationTimestamp": 1,
-            "labels": {"team": "web"},
+            "labels": {"team": "web", "gateway.fleet.dev/conversation": "c1"},
             "finalizers": ["fleet.dev/release"],
         },
         "spec": spec,
@@ -74,7 +75,11 @@ fn fleet_2_store(store: &Path) {
                 ]},
                 "dispatch": true,
             }),
-            json!({"phase": "Briefed", "session": {"id": "s1", "host": "devbox", "key": "fix-login.u-fix-login"}}),
+            json!({
+                "phase": "Briefed",
+                "session": {"id": "s1", "host": "devbox", "key": "fix-login.u-fix-login"},
+                "workspace": {"key": "fix-login.u-fix-login", "host": "devbox", "dir": "/w"},
+            }),
         ),
         object(
             "Task",
@@ -228,14 +233,20 @@ fn a_fleet_2_config_and_store_become_fleet_3_and_the_2x_files_stay() {
     assert_eq!(
         fix["spec"]["workspace"],
         json!([
-            "git+file:///src/app?branch=fold/fix-login.u-fix-login#main",
-            "git+https://example.invalid/lib.git?branch=fold/fix-login.u-fix-login",
+            "git+file:///src/app?branch=wt/fix-login.u-fix-login#main",
+            "git+https://example.invalid/lib.git?branch=wt/fix-login.u-fix-login",
         ])
     );
     assert_eq!(fix["spec"]["host"], "mux/devbox");
     assert_eq!(fix["spec"]["dispatch"], false);
     assert!(fix["spec"].get("model").is_none());
     assert_eq!(fix["metadata"]["labels"]["team"], "web");
+    assert!(
+        fix["metadata"]["labels"]
+            .get("gateway.fleet.dev/conversation")
+            .is_none(),
+        "{fix:#}"
+    );
 
     let notes = task(&f.env, "notes");
     assert_eq!(notes["spec"]["workspace"], json!(["file:///home/me/notes"]));
