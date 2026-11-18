@@ -61,6 +61,8 @@ mod subscriptions;
 mod telemetry;
 pub mod verbs;
 
+pub use telemetry::{Engine, identify, manager_lease};
+
 use std::collections::{BTreeMap, BTreeSet};
 
 use fleet_api::change_request::{self, ChangeRequestDefaults, ChangeRequestSpec};
@@ -316,6 +318,7 @@ impl Manager<'_> {
                 acquired => break acquired?,
             }
         };
+        telemetry::manager_lease(true);
         let outcome = (|| {
             loop {
                 let report = match self.sweep(&mut lease, opts, pauses > 0) {
@@ -337,6 +340,7 @@ impl Manager<'_> {
                 released => released?,
             }
         }
+        telemetry::manager_lease(false);
         outcome
     }
 

@@ -279,8 +279,9 @@ Only `fleet` exports metrics.
 | `fleet.effects` | counter | `{effect}` | `fleet.effect`, `fleet.outcome` |
 | `fleet.runtime.call.duration` | histogram | `s` | `fleet.runtime`, `fleet.runtime.verb`, `fleet.outcome` |
 | `fleet.forge.calls` | counter | `{call}` | `fleet.forge.host`, `fleet.outcome` |
-| `fleet.inbox.depth` | gauge | `{entry}` | none |
+| `fleet.inbox.depth` | gauge | `{entry}` | `fleet.name`, `fleet.inbox.state` |
 | `fleet.task.amendments` | counter | `{amendment}` | `fleet.outcome` |
+| `fleet.manager.info` | gauge | `{manager}` | `fleet.manager.version`, `process.pid`, `host.name`, `fleet.manager.lease` |
 
 - `fleet.tasks` is the number of Tasks in each phase at the start of each
   pass: `Pending`, `Spawning`, `Spawned`, `Briefed`, `Stalled`,
@@ -295,11 +296,56 @@ Only `fleet` exports metrics.
 - `fleet.forge.calls` counts the change polls that Fleet sent to a forge. A
   poll that the forge throttled has the outcome `throttled`. A poll that
   Fleet deferred after a throttle on the same forge is not a call.
-- `fleet.inbox.depth` is the number of undelivered inbox entries over all
-  Tasks, at the start of each pass.
+- `fleet.inbox.depth` is the number of undelivered inbox entries of each
+  Task, at the start of each pass. `fleet.name` is the Task.
+  `fleet.inbox.state` is `pending` for an entry that Fleet still delivers,
+  and `failed` for an entry that Fleet gave up on. A backlog alert filters
+  on `fleet.inbox.state="pending"`.
+- A Task with an empty inbox reports 0 in both states. When a Task is
+  gone, the process that reported it reports 0 in the next export, and then
+  stops reporting it. A gone Task's series ends there, so the gauge does
+  not keep its old backlog. If that one export fails, the backend keeps the
+  old value until it drops the series.
+- A `fleet reconcile` that ends reports the last pass it ran. A later
+  process does not report a Task that is already gone.
 - `fleet.task.amendments` counts `fleet amend` calls. The outcome is
   `appended`, or the refusal: `precondition`, `conflict`, `notFound`,
   `forbidden`, `invalid` or `error`.
+- `fleet.manager.info` is 1 for each `fleet up` process.
+  `fleet.manager.version` is the binary's version. `host.name` is the
+  machine's host name. `fleet.manager.lease` is `true` while the process
+  holds the manager lease. A `fleet up` reports `false` until it takes the
+  lease, for example while it waits for another manager, and again after it
+  gives the lease back. The point with the other lease value is 0, so one
+  process never shows as both.
+
+### Suggested alerts
+
+The examples are PromQL. A Prometheus backend changes each `.` in a name
+to `_`, for example `fleet_manager_info` and `fleet_manager_lease`. Other
+backends use the same filters and sums. The series of a process that ended
+stays in a backend for a short time. Give each alert a hold time, for example
+`for: 10m` in Prometheus, so a manager that restarted a moment ago does not
+fire it.
+
+Each Fleet has its own lease. When more than one Fleet exports to one
+backend, give each Fleet its own `service.namespace`. Prometheus puts
+`service.namespace` and `service.name` in the `job` label, so the examples
+group by `job`.
+
+More than one lease holder, or more than one manager on one host:
+
+```promql
+sum by (job) (fleet_manager_info{fleet_manager_lease="true"}) > 1
+  or
+sum by (job, host_name) (fleet_manager_info) > 1
+```
+
+More than one version across the managers:
+
+```promql
+count by (job) (count by (job, fleet_manager_version) (fleet_manager_info == 1)) > 1
+```
 
 ## Logs
 

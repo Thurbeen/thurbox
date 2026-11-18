@@ -11,14 +11,15 @@
 //! identity, names of kinds and outcomes: never a brief, a message, an
 //! environment value or an error's text.
 
-use std::sync::OnceLock;
+use std::collections::BTreeMap;
+use std::sync::{Mutex, OnceLock};
 
 use fleet_api::forge::{ChangeObservation, Uncertainty};
 use fleet_api::plan::{Action, Effect, EffectOutcome};
 use fleet_api::session::SessionState;
 use fleet_api::task::Phase;
 use fleet_api::{Millis, Object, Observation, StoreError};
-use opentelemetry::metrics::{Counter, Gauge, Histogram};
+use opentelemetry::metrics::{AsyncInstrument, Counter, Gauge, Histogram, ObservableGauge};
 use opentelemetry::trace::{
     Link, SpanContext, SpanId, Status, TraceContextExt, TraceFlags, TraceId, TraceState, Tracer,
 };
@@ -32,10 +33,11 @@ struct Instruments {
     reconcile: Histogram<f64>,
     effects: Counter<u64>,
     forge_calls: Counter<u64>,
-    inbox: Gauge<u64>,
+    _inbox: ObservableGauge<u64>,
     amendments: Counter<u64>,
     tasks: Gauge<u64>,
     sessions: Gauge<u64>,
+    manager: Gauge<u64>,
 }
 
 /// Built on first use, after the CLI installed the providers.
@@ -59,10 +61,13 @@ fn instruments() -> &'static Instruments {
                 .with_unit("{call}")
                 .with_description("Change polls sent to a forge, by host and outcome.")
                 .build(),
-            inbox: meter
-                .u64_gauge("fleet.inbox.depth")
+            _inbox: meter
+                .u64_observable_gauge("fleet.inbox.depth")
                 .with_unit("{entry}")
-                .with_description("Undelivered inbox entries over every Task, at a pass's start.")
+                .with_description(
+                    "Each Task's undelivered inbox entries, pending or given up, at a pass's start.",
+                )
+                .with_callback(observe_inbox)
                 .build(),
             amendments: meter
                 .u64_counter("fleet.task.amendments")
@@ -78,6 +83,11 @@ fn instruments() -> &'static Instruments {
                 .u64_gauge("fleet.sessions")
                 .with_unit("{session}")
                 .with_description("Tasks' sessions in each state, at a pass's start.")
+                .build(),
+            manager: meter
+                .u64_gauge("fleet.manager.info")
+                .with_unit("{manager}")
+                .with_description("This manager process, and whether it holds the manager lease.")
                 .build(),
         }
     })
@@ -215,17 +225,109 @@ fn count<'a>(
     }
 }
 
+/// What `fleet.manager.info` names this process by, besides its pid.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Engine {
+    pub version: String,
+    pub host: String,
+}
+
+static ENGINE: OnceLock<Engine> = OnceLock::new();
+
+/// Name this process for `fleet.manager.info`. Until it is named, as in a
+/// test that drives a [`crate::Manager`] in process, nothing is recorded.
+pub fn identify(engine: Engine) {
+    let _ = ENGINE.set(engine);
+}
+
+/// Record whether this process holds the manager lease: 1 under the
+/// lease it holds or not, and 0 under the other, so no process shows as both.
+pub fn manager_lease(held: bool) {
+    let Some(engine) = ENGINE.get() else {
+        return;
+    };
+    for lease in [held, !held] {
+        instruments().manager.record(
+            u64::from(lease == held),
+            &[
+                KeyValue::new("fleet.manager.version", engine.version.clone()),
+                KeyValue::new("process.pid", i64::from(std::process::id())),
+                KeyValue::new("host.name", engine.host.clone()),
+                KeyValue::new("fleet.manager.lease", lease),
+            ],
+        );
+    }
+}
+
+fn inbox_states(task: &Object) -> (u64, u64) {
+    let given_up = |key: &serde_json::Value| {
+        key.as_str()
+            .and_then(|k| task.status["deliveryAttempts"].get(k))
+            .is_some_and(|a| a["failed"] == true)
+    };
+    let (failed, pending): (Vec<_>, Vec<_>) = task.status["inbox"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .partition(|entry| given_up(&entry["key"]));
+    (pending.len() as u64, failed.len() as u64)
+}
+
+#[derive(Debug, Clone, Copy, Default)]
+struct Backlog {
+    pending: u64,
+    failed: u64,
+    gone: bool,
+}
+
+static BACKLOGS: Mutex<BTreeMap<String, Backlog>> = Mutex::new(BTreeMap::new());
+
+fn backlogs() -> std::sync::MutexGuard<'static, BTreeMap<String, Backlog>> {
+    BACKLOGS.lock().unwrap_or_else(|e| e.into_inner())
+}
+
+fn inbox_depth(tasks: &[Object]) {
+    let mut backlogs = backlogs();
+    for backlog in backlogs.values_mut() {
+        *backlog = Backlog {
+            gone: true,
+            ..Backlog::default()
+        };
+    }
+    for task in tasks {
+        let (pending, failed) = inbox_states(task);
+        backlogs.insert(
+            task.metadata.name.clone(),
+            Backlog {
+                pending,
+                failed,
+                gone: false,
+            },
+        );
+    }
+}
+
+fn observe_inbox(observer: &dyn AsyncInstrument<u64>) {
+    let mut backlogs = backlogs();
+    for (name, backlog) in backlogs.iter() {
+        for (state, n) in [("pending", backlog.pending), ("failed", backlog.failed)] {
+            observer.observe(
+                n,
+                &[
+                    KeyValue::new("fleet.name", name.clone()),
+                    KeyValue::new("fleet.inbox.state", state),
+                ],
+            );
+        }
+    }
+    backlogs.retain(|_, backlog| !backlog.gone);
+}
+
 /// One pass over every kind; records the Tasks' inbox depth, phases and
 /// session states as it starts.
 pub(crate) fn pass(number: u32, tasks: &[Object]) -> Current {
-    let depth = tasks
-        .iter()
-        .filter_map(|t| t.status.get("inbox").and_then(|i| i.as_array()))
-        .map(|i| i.len() as u64)
-        .sum();
     let i = instruments();
-    i.inbox.record(depth, &[]);
-    // A Task with no status yet is Pending, as the phase's default.
+    inbox_depth(tasks);
     count(&i.tasks, "fleet.phase", phases(), tasks, |t| {
         Some(
             t.status
