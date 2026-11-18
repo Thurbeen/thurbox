@@ -526,9 +526,13 @@ default) holds links. The releases live beside it, under `<prefix>/lib/thurbox`
 ~/.local/lib/thurbox/
   current -> releases/3.4.0
   previous -> releases/3.3.0
+  install-dir -> ~/.local/bin
   releases/3.4.0/bin/   thurbox thurbox-cli fleet runtime-mux workspace-git
   releases/3.3.0/bin/
 ```
+
+`install-dir` names the install directory, so a program running from a
+release finds it whatever its name.
 
 1. The update stages the new release in `releases/<version>/bin/`.
 2. It flips `current` to the new release in one rename. The old release

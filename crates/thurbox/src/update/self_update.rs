@@ -706,13 +706,18 @@ fn bin_dir_of(exe: &Path) -> Option<PathBuf> {
             && releases.file_name()? == RELEASES
             && home.file_name()? == "thurbox"
             && lib.file_name()? == "lib")
-            .then(|| lib.parent().map(|prefix| prefix.join("bin")))
+            .then(|| {
+                std::fs::read_link(home.join(INSTALL_DIR_LINK))
+                    .ok()
+                    .or_else(|| lib.parent().map(|prefix| prefix.join("bin")))
+            })
             .flatten()
     };
     Some(release_bin().unwrap_or_else(|| dir.to_path_buf()))
 }
 
 const RELEASES: &str = "releases";
+const INSTALL_DIR_LINK: &str = "install-dir";
 
 #[cfg(unix)]
 fn release_home(bin: &Path) -> PathBuf {
@@ -736,6 +741,7 @@ fn install_release(extract: &Path, bin: &Path, from: &str, to: &str) -> Result<(
         relink(&home.join("previous"), &current)?;
     }
     relink(&home.join("current"), &link)?;
+    relink(&home.join(INSTALL_DIR_LINK), bin)?;
     link_programs(bin, &home)
 }
 
@@ -2002,6 +2008,17 @@ cccc3333  thurbox-v0.114.0-aarch64-apple-darwin.tar.gz
         assert_eq!(bin_dir_of(release), Some(PathBuf::from("/p/bin")));
         let plain = Path::new("/p/.local/bin/thurbox");
         assert_eq!(bin_dir_of(plain), Some(PathBuf::from("/p/.local/bin")));
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn an_install_dir_not_named_bin_is_where_the_next_update_links() {
+        let feed = Feed::new(&["3.0.2", "3.0.1"], "3.0.1");
+        let tools = feed.prefix.path().join("tools");
+        std::fs::rename(feed.bin(), &tools).unwrap();
+        perform_update_from(&feed.feed(), "3.0.1", &tools, false).unwrap();
+        let running = feed.home().join("releases/3.0.2/bin/thurbox");
+        assert_eq!(bin_dir_of(&running), Some(tools));
     }
 
     #[cfg(target_os = "linux")]

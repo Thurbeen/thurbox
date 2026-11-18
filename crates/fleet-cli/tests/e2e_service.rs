@@ -266,6 +266,20 @@ fn restart_expect_times_out_when_the_version_never_serves() {
 }
 
 #[test]
+fn restart_expect_ignores_a_manager_that_started_before_the_restart() {
+    let s = installed("service-expect-stale");
+    fs::write(
+        s.env.data.join("manager.json"),
+        r#"{"pid":1,"boot":null,"version":"9.9.9","exe":"/f","config":"/c","startedAt":1,"state":"serving"}"#,
+    )
+    .unwrap();
+
+    s.env
+        .fleet(&["service", "restart", "--expect", "9.9.9", "--timeout", "1"])
+        .code(7);
+}
+
+#[test]
 fn restart_expect_leaves_a_stopped_unit_stopped() {
     let s = installed("service-expect-stopped");
     fs::write(s.env.root.join("unit-state"), "ActiveState=inactive\n").unwrap();

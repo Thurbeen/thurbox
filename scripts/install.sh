@@ -201,6 +201,7 @@ do_install() {
   fi
   [ -z "$old" ] || [ "$old" = "$rel" ] || { cp -pn "$home/$old/bin/"* "$home/$rel/bin/" 2>/dev/null || true; ln -sfn "$old" "$home/previous"; }
   ln -sfn "$rel" "$home/current"
+  ln -sfn "$(cd "$dir" && pwd)" "$home/install-dir"
   for bin in $BINARIES; do
     if [ -f "$home/$rel/bin/$bin" ]; then chmod +x "$home/$rel/bin/$bin"; ln -sfn "$home/current/bin/$bin" "$dir/$bin"; fi
   done

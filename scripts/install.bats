@@ -396,6 +396,7 @@ fake_systemctl() {
   [ "$code" -eq 0 ]
   home="$tmpdir/lib/thurbox"
   [ "$(readlink "$home/current")" = releases/9.9.9 ]
+  [ "$(readlink "$home/install-dir")" = "$(cd "$dest" && pwd)" ]
   [ ! -e "$home/previous" ]
   for bin in $("${BATS_TEST_DIRNAME}/ci/release-archive.sh" --binaries); do
     [ -x "$home/releases/9.9.9/bin/$bin" ]
