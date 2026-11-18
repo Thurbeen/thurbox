@@ -94,6 +94,17 @@ impl Runtime {
         self.call("inspect", json!({"protocol": 1, "key": key}))
     }
 
+    fn list_until_known(&self) -> Value {
+        let deadline = Instant::now() + Duration::from_secs(10);
+        loop {
+            let answer = self.call("list", json!({"protocol": 1}));
+            if answer.get("known").is_some() || Instant::now() >= deadline {
+                return answer;
+            }
+            std::thread::sleep(Duration::from_millis(100));
+        }
+    }
+
     /// The first `inspect` answer `done` accepts, within ten seconds.
     fn inspect_until(&self, key: &str, done: impl Fn(&Value) -> bool) -> Value {
         let deadline = Instant::now() + Duration::from_secs(10);
@@ -598,7 +609,7 @@ fn a_pause_mark_an_earlier_version_left_by_the_sockets_survives_a_reboot_until_a
     let older = older_pause_mark(&rt, "upgraded");
     std::fs::write(&older, "").expect("the older mark");
 
-    let list = rt.call("list", json!({"protocol": 1}));
+    let list = rt.list_until_known();
     assert_eq!(list["known"]["keys"], json!(["upgraded"]), "{list}");
     assert!(
         older.exists(),
