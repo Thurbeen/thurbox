@@ -70,7 +70,7 @@ impl Sockets {
         let base = std::env::var_os("XDG_RUNTIME_DIR")
             .map(PathBuf::from)
             .filter(|d| d.is_dir())
-            .unwrap_or_else(std::env::temp_dir);
+            .unwrap_or_else(short_temp_dir);
         let dir = base.join(format!("fx-{name}-{}", std::process::id()));
         let _ = fs::remove_dir_all(&dir);
         fs::create_dir_all(&dir).expect("socket dir");
@@ -85,6 +85,17 @@ impl Sockets {
             .args(args)
             .output()
             .expect("tmux")
+    }
+}
+
+/// The directory a socket directory goes in without `XDG_RUNTIME_DIR`: `/tmp`
+/// on macOS, whose per-user `TMPDIR` leaves too little of the 104-byte
+/// `sun_path` for a tmux socket below it, and the system's own elsewhere.
+fn short_temp_dir() -> PathBuf {
+    if cfg!(target_os = "macos") {
+        PathBuf::from("/tmp")
+    } else {
+        std::env::temp_dir()
     }
 }
 

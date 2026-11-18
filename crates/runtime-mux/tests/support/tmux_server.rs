@@ -80,11 +80,12 @@ impl TmuxServer {
         // An AF_UNIX path is limited to ~104 bytes and tmux spends ten of them
         // on its own `tmux-<uid>/` level, so this sits next to the runtime dir
         // under a short prefix rather than nested under a `TMPDIR` whose length
-        // is not ours to choose.
+        // is not ours to choose. macOS has no runtime dir and a `TMPDIR` of
+        // about fifty bytes, so there it is `/tmp`.
         let base = std::env::var_os("XDG_RUNTIME_DIR")
             .map(PathBuf::from)
             .filter(|dir| dir.is_dir())
-            .unwrap_or_else(std::env::temp_dir);
+            .unwrap_or_else(short_temp_dir);
         // Created exclusively, so two guards in one process — or two runs on
         // one machine — can never be handed the same directory and reap each
         // other's server.
@@ -215,6 +216,35 @@ impl TmuxServer {
                 .output();
         }
     }
+}
+
+/// The temporary directory a socket directory goes in when there is no
+/// runtime dir: `/tmp` on macOS, whose per-user `TMPDIR` leaves too little of
+/// `sun_path` for a socket below it, and the system's own elsewhere.
+pub fn short_temp_dir() -> PathBuf {
+    if cfg!(target_os = "macos") {
+        PathBuf::from("/tmp")
+    } else {
+        std::env::temp_dir()
+    }
+}
+
+/// `/usr/bin:/bin`, and the directory `tmux` resolves in on this process's
+/// `PATH` when that is neither, for a child whose environment is cleared:
+/// Homebrew installs tmux in `/opt/homebrew/bin` or `/usr/local/bin`.
+pub fn system_path() -> String {
+    let mut dirs = vec![PathBuf::from("/usr/bin"), PathBuf::from("/bin")];
+    let tmux_dir = std::env::var_os("PATH")
+        .iter()
+        .flat_map(std::env::split_paths)
+        .find(|dir| dir.join("tmux").is_file());
+    if let Some(dir) = tmux_dir.filter(|dir| !dirs.contains(dir)) {
+        dirs.push(dir);
+    }
+    std::env::join_paths(dirs)
+        .expect("PATH entries")
+        .into_string()
+        .expect("a UTF-8 PATH")
 }
 
 impl Drop for TmuxServer {

@@ -422,7 +422,7 @@ mod unix {
         let uid = unsafe { libc::geteuid() };
         let records = PathBuf::from(format!("/home/u/code/{}/ui-control", "x".repeat(100)));
         let id = "6f1c2c1e-3a1e-4b7a-9d2e-0c5b1f0e9a11";
-        let base = tempfile::tempdir().unwrap();
+        let base = tempfile::tempdir_in("/tmp").unwrap();
         let placed = socket_dir_for(&records, Some(base.path()), uid);
         assert!(placed.starts_with(base.path()));
         fs::DirBuilder::new().mode(0o700).create(&placed).unwrap();

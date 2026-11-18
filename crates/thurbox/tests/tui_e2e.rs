@@ -120,7 +120,7 @@ impl Drop for Profile {
 
 impl Profile {
     fn new() -> Self {
-        let root = tempfile::tempdir().expect("tempdir");
+        let root = tempfile::tempdir_in(tmux_server::short_temp_dir()).expect("tempdir");
         for sub in ["home", "config", "data", "bin"] {
             std::fs::create_dir_all(root.path().join(sub)).expect("mkdir");
         }
@@ -202,7 +202,8 @@ impl Profile {
         write_script(
             &self.bin.join("fleet"),
             &format!(
-                "#!/bin/sh\nexec env -i HOME='{r}/home' TMPDIR='{r}/fleet-tmp' PATH='{b}:/usr/bin:/bin' TERM=xterm-256color TMUX_TMPDIR='{t}' '{f}' --config '{r}/fleet.toml' \"$@\"\n",
+                "#!/bin/sh\nexec env -i HOME='{r}/home' TMPDIR='{r}/fleet-tmp' PATH='{b}:{p}' TERM=xterm-256color TMUX_TMPDIR='{t}' '{f}' --config '{r}/fleet.toml' \"$@\"\n",
+                p = tmux_server::system_path(),
                 r = root.display(),
                 b = self.bin.display(),
                 t = self.server.tmpdir().display(),
@@ -5892,6 +5893,7 @@ fn memory_fallback_reaps_programs_owned_by_panes_it_removed() {
 
 // --- links handed back to the terminal thurbox itself runs in ----------------
 
+#[cfg(not(target_os = "macos"))]
 impl Tui {
     /// A `Ctrl`-modified press and release at a 0-based cell. SGR adds 16 to
     /// the button number for Control, which is what a terminal sends for the
@@ -5941,6 +5943,9 @@ impl Tui {
 /// It has to be asserted out here. `hyperlink_paints` can be handed a link list
 /// in process and answer perfectly while the coordinator passes it none — the
 /// bytes on the pty are the only place the wiring shows.
+// macOS always opens a URL with `open`, so no environment makes it a host with
+// no browser, and a press there opens the link in the user's own browser.
+#[cfg(not(target_os = "macos"))]
 #[test]
 fn both_kinds_of_link_reach_the_outer_terminal_on_a_host_with_no_browser() {
     let Some((_profile, mut tui)) = shell_session_with(|cmd| {
@@ -7554,11 +7559,7 @@ fn a_local_thurbox_whose_fleet_reports_no_unit_names_fleet_service_install() {
     );
 
     let mut tui = Tui::spawn(&profile, 40, 160);
-    tui.wait_for(if cfg!(target_os = "linux") {
-        "Fleet not running · fleet service install --now"
-    } else {
-        "Fleet not running · fleet up"
-    });
+    tui.wait_for("Fleet not running · fleet service install --now");
     assert!(tui.quit().success());
     let calls = std::fs::read_to_string(&calls).unwrap_or_default();
     assert!(
@@ -8031,7 +8032,10 @@ fn an_existing_worktree_is_opened_as_it_is() {
     tui.wait_for("repo-feat");
     assert_eq!(
         workspace_urls(&profile, "repo-feat"),
-        serde_json::json!([format!("file://{}", feat.display())])
+        serde_json::json!([format!(
+            "file://{}",
+            feat.canonicalize().expect("canonical worktree").display()
+        )])
     );
     assert!(tui.quit().success());
 }
@@ -8082,7 +8086,8 @@ fn fleet_on_box_with(profile: &Profile, runtime: &str) -> Option<PathBuf> {
     write_script(
         &program,
         &format!(
-            "#!/bin/sh\nexec env -i HOME='{r}' TMPDIR='{r}/tmp' PATH='/usr/bin:/bin' '{f}' --config '{r}/fleet.toml' \"$@\"\n",
+            "#!/bin/sh\nexec env -i HOME='{r}' TMPDIR='{r}/tmp' PATH='{p}' '{f}' --config '{r}/fleet.toml' \"$@\"\n",
+            p = tmux_server::system_path(),
             r = root.display(),
             f = fleet.display(),
         ),
