@@ -387,3 +387,46 @@ fake_systemctl() {
   [ ! -e "$tmpdir/fleet-calls" ]
   rm -rf "$tmpdir"
 }
+
+@test "an install puts the release under lib/thurbox and links bin to current" {
+  fake_release
+  printf 'old' > "$tmpdir/stale"
+  mkdir -p "$dest" && cp "$tmpdir/stale" "$dest/thurbox"
+  run_installer sh "${BATS_TEST_DIRNAME}/install.sh"
+  [ "$code" -eq 0 ]
+  home="$tmpdir/lib/thurbox"
+  [ "$(readlink "$home/current")" = releases/9.9.9 ]
+  [ "$(readlink "$home/install-dir")" = "$(cd "$dest" && pwd)" ]
+  [ ! -e "$home/previous" ]
+  for bin in $("${BATS_TEST_DIRNAME}/ci/release-archive.sh" --binaries); do
+    [ -x "$home/releases/9.9.9/bin/$bin" ]
+    [ "$(readlink "$dest/$bin")" = "$home/current/bin/$bin" ]
+  done
+  rm -rf "$tmpdir"
+}
+
+@test "a second install keeps the first release as previous" {
+  fake_release
+  run_installer sh "${BATS_TEST_DIRNAME}/install.sh"
+  mv "$assets/v9.9.9" "$assets/v9.9.10"
+  for f in "$assets"/v9.9.10/*; do mv "$f" "$(echo "$f" | sed 's/9\.9\.9/9.9.10/')"; done
+  (cd "$assets/v9.9.10" && sha256sum ./*.tar.gz | sed 's| \./| |' > thurbox-9.9.10-sha256sums.txt)
+  run_installer VERSION=v9.9.10 sh "${BATS_TEST_DIRNAME}/install.sh"
+  [ "$code" -eq 0 ]
+  [ "$(readlink "$tmpdir/lib/thurbox/current")" = releases/9.9.10 ]
+  [ "$(readlink "$tmpdir/lib/thurbox/previous")" = releases/9.9.9 ]
+  rm -rf "$tmpdir"
+}
+
+@test "a Fleet-only install over a full one keeps thurbox" {
+  fake_release
+  run_installer sh "${BATS_TEST_DIRNAME}/install.sh"
+  mv "$assets/v9.9.9" "$assets/v9.9.10"
+  for f in "$assets"/v9.9.10/*; do mv "$f" "$(echo "$f" | sed 's/9\.9\.9/9.9.10/')"; done
+  (cd "$assets/v9.9.10" && sha256sum ./*.tar.gz | sed 's| \./| |' > thurbox-9.9.10-sha256sums.txt)
+  run_installer VERSION=v9.9.10 sh "${BATS_TEST_DIRNAME}/install.sh" --fleet-only
+  [ "$code" -eq 0 ]
+  [ -x "$dest/thurbox" ]
+  [ -x "$tmpdir/lib/thurbox/releases/9.9.10/bin/thurbox" ]
+  rm -rf "$tmpdir"
+}

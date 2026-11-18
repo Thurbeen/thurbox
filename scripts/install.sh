@@ -185,21 +185,25 @@ get_binary() {
   echo "$tmpdir/binary.tar.gz"
 }
 
-# Install binary
 do_install() {
-  local tarball="$1" dir="$2"
+  local tarball="$1" dir="$2" home v="${3:-unversioned}" rel old
 
   info "Installing..."
   mkdir -p "$dir"
+  home="$(cd "$dir/.." && pwd)/lib/thurbox" rel="releases/${v#v}"
+  old="$(readlink "$home/current" 2>/dev/null || true)"
+  mkdir -p "$home/$rel/bin"
   if [ -n "$FLEET_ONLY" ]; then
     # shellcheck disable=SC2086 # one archive member per word
-    tar -xzf "$tarball" -C "$dir" $BINARIES || { error "This release has no Fleet: VERSION=v3.x.y"; return 1; }
+    tar -xzf "$tarball" -C "$home/$rel/bin" $BINARIES || { error "This release has no Fleet: VERSION=v3.x.y"; return 1; }
   else
-    tar -xzf "$tarball" -C "$dir"
+    tar -xzf "$tarball" -C "$home/$rel/bin"
   fi
-  # An older release ships fewer programs: chmod the ones it has.
+  [ -z "$old" ] || [ "$old" = "$rel" ] || { cp -pn "$home/$old/bin/"* "$home/$rel/bin/" 2>/dev/null || true; ln -sfn "$old" "$home/previous"; }
+  ln -sfn "$rel" "$home/current"
+  ln -sfn "$(cd "$dir" && pwd)" "$home/install-dir"
   for bin in $BINARIES; do
-    if [ -f "$dir/$bin" ]; then chmod +x "$dir/$bin"; fi
+    if [ -f "$home/$rel/bin/$bin" ]; then chmod +x "$home/$rel/bin/$bin"; ln -sfn "$home/current/bin/$bin" "$dir/$bin"; fi
   done
 }
 
@@ -274,7 +278,7 @@ main() {
 
   binary=$(get_binary "$version" "$target" "$TEMP_DIR") || return 1
 
-  do_install "$binary" "$INSTALL_DIR"
+  do_install "$binary" "$INSTALL_DIR" "$version"
   start_service "$INSTALL_DIR"
 
   show_success "$INSTALL_DIR"

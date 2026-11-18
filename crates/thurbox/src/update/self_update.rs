@@ -1,4 +1,5 @@
-//! Self-update: download, verify, and replace the installed thurbox binaries.
+//! Self-update: download, verify, and install a thurbox release beside the
+//! running one.
 //!
 //! This is the auto-update feature (gated behind `[features] auto_update`, on
 //! by default for 1.0 — see [`crate::session::settings::FeatureFlags`]). It
@@ -6,9 +7,9 @@
 //!
 //! - **TUI** — a silent check on startup (`main::spawn_auto_update`), run on a
 //!   background thread so a slow download never blocks the first frame. A newer
-//!   release is downloaded + installed in place (atomic renames against the
-//!   install dir — the running process is untouched); the new version applies on
-//!   the next launch, and the result is surfaced as a status toast.
+//!   release is downloaded and installed beside the running one (the running
+//!   process is untouched); the new version applies on the next launch, and the
+//!   result is surfaced as a status toast.
 //! - **CLI** — `thurbox-cli update` does the same on demand (`--force` bypasses
 //!   the up-to-date / dev-build guards).
 //!
@@ -47,7 +48,7 @@ use crate::update::version_check::{current_version, decide_update, fetch_release
 /// `scripts/install.sh`); the per-release directory is `<base>/v{version}/`.
 const RELEASE_BASE: &str = "https://github.com/Thurbeen/thurbox/releases/download";
 
-/// The binaries shipped in a release archive, replaced in place on update:
+/// The binaries shipped in a release archive, installed together on update:
 /// `BINARIES` in `scripts/ci/release-archive.sh`, which packs the archive (a
 /// test holds the two lists equal). All of them, because thurbox runs `fleet`,
 /// Fleet runs `runtime-mux` and runtime-mux runs `workspace-git`: an update
@@ -687,13 +688,193 @@ pub fn perform_update(force: bool) -> Result<UpdateOutcome, String> {
     perform_update_from(&ReleaseFeed::github(), &current, &install_dir()?, force)
 }
 
-/// The directory an update installs into: the running executable's.
+/// The directory an update installs into: the one the programs are run
+/// from, `<prefix>/bin` for a release under `<prefix>/lib/thurbox/releases/`,
+/// otherwise the running executable's.
 fn install_dir() -> Result<PathBuf, String> {
-    Ok(std::env::current_exe()
-        .map_err(|e| format!("resolve current executable: {e}"))?
-        .parent()
-        .ok_or("running executable has no parent directory")?
-        .to_path_buf())
+    let exe = std::env::current_exe().map_err(|e| format!("resolve current executable: {e}"))?;
+    bin_dir_of(&exe).ok_or_else(|| "running executable has no parent directory".to_string())
+}
+
+fn bin_dir_of(exe: &Path) -> Option<PathBuf> {
+    let dir = exe.parent()?;
+    let release_bin = || {
+        let releases = dir.parent()?.parent()?;
+        let home = releases.parent()?;
+        let lib = home.parent()?;
+        (dir.file_name()? == "bin"
+            && releases.file_name()? == RELEASES
+            && home.file_name()? == "thurbox"
+            && lib.file_name()? == "lib")
+            .then(|| {
+                std::fs::read_link(home.join(INSTALL_DIR_LINK))
+                    .ok()
+                    .or_else(|| lib.parent().map(|prefix| prefix.join("bin")))
+            })
+            .flatten()
+    };
+    Some(release_bin().unwrap_or_else(|| dir.to_path_buf()))
+}
+
+const RELEASES: &str = "releases";
+const INSTALL_DIR_LINK: &str = "install-dir";
+
+#[cfg(unix)]
+fn release_home(bin: &Path) -> PathBuf {
+    bin.parent().unwrap_or(bin).join("lib/thurbox")
+}
+
+#[cfg(unix)]
+fn install_release(extract: &Path, bin: &Path, from: &str, to: &str) -> Result<(), String> {
+    let home = release_home(bin);
+    adopt_unreleased(bin, &home, from)?;
+    let release = home.join(RELEASES).join(to);
+    let release_bin = release.join("bin");
+    std::fs::create_dir_all(&release_bin)
+        .map_err(|e| format!("create {}: {e}", release_bin.display()))?;
+    install_binaries(extract, &release_bin, "")?;
+    let link = Path::new(RELEASES).join(to);
+    if let Some(current) = std::fs::read_link(home.join("current"))
+        .ok()
+        .filter(|c| *c != link)
+    {
+        relink(&home.join("previous"), &current)?;
+    }
+    relink(&home.join("current"), &link)?;
+    relink(&home.join(INSTALL_DIR_LINK), bin)?;
+    link_programs(bin, &home)
+}
+
+#[cfg(unix)]
+fn adopt_unreleased(bin: &Path, home: &Path, from: &str) -> Result<(), String> {
+    if std::fs::symlink_metadata(home.join("current")).is_ok() {
+        return Ok(());
+    }
+    let files: Vec<&str> = BINARIES
+        .into_iter()
+        .filter(|name| std::fs::symlink_metadata(bin.join(name)).is_ok_and(|m| m.is_file()))
+        .collect();
+    if files.is_empty() {
+        return Ok(());
+    }
+    let release_bin = home.join(RELEASES).join(from).join("bin");
+    std::fs::create_dir_all(&release_bin)
+        .map_err(|e| format!("create {}: {e}", release_bin.display()))?;
+    for name in files {
+        let dest = release_bin.join(name);
+        let staged = stage_binary(&bin.join(name), &dest)?;
+        std::fs::rename(&staged, &dest).map_err(|e| replace_failed(&dest, e))?;
+    }
+    relink(&home.join("current"), &Path::new(RELEASES).join(from))
+}
+
+#[cfg(unix)]
+fn relink(link: &Path, target: &Path) -> Result<(), String> {
+    let name = link.file_name().unwrap_or_default().to_string_lossy();
+    let staged = link.with_file_name(format!(".{name}.{}.link", std::process::id()));
+    let _ = std::fs::remove_file(&staged);
+    std::os::unix::fs::symlink(target, &staged)
+        .and_then(|()| std::fs::rename(&staged, link))
+        .map_err(|e| {
+            let _ = std::fs::remove_file(&staged);
+            format!("link {} -> {}: {e}", link.display(), target.display())
+        })
+}
+
+#[cfg(unix)]
+fn link_programs(bin: &Path, home: &Path) -> Result<(), String> {
+    for name in BINARIES {
+        let target = home.join("current/bin").join(name);
+        let path = bin.join(name);
+        if std::fs::read_link(&path).ok().as_deref() != Some(target.as_path()) {
+            relink(&path, &target).map_err(|e| replace_failed(&path, e))?;
+        }
+    }
+    Ok(())
+}
+
+#[cfg(target_os = "linux")]
+fn restart_manager(bin: &Path, to: &str) -> Result<(), String> {
+    const NO_UNIT: i32 = 3;
+    let why = match fleet_service(bin, &["restart", "--expect", to]) {
+        Ok(()) => return Ok(()),
+        Err((Some(NO_UNIT), _)) => return Ok(()),
+        Err((_, why)) => why,
+    };
+    let home = release_home(bin);
+    let Some(previous) = std::fs::read_link(home.join("previous")).ok() else {
+        return Err(format!(
+            "the manager did not come back on {to}: {why}; no previous release to roll back to"
+        ));
+    };
+    relink(&home.join("current"), &previous)?;
+    relink(&home.join("previous"), &Path::new(RELEASES).join(to))?;
+    let old = previous.file_name().unwrap_or_default().to_string_lossy();
+    let restarted = match fleet_service(bin, &["restart"]) {
+        Ok(()) => String::new(),
+        Err((_, again)) => format!("; restarting it on {old} failed too: {again}"),
+    };
+    Err(format!(
+        "the manager did not come back on {to}: {why}; rolled back to {old}{restarted}"
+    ))
+}
+
+#[cfg(target_os = "linux")]
+fn fleet_service(bin: &Path, args: &[&str]) -> Result<(), (Option<i32>, String)> {
+    let fleet = bin.join("fleet");
+    let output = Command::new(&fleet)
+        .arg("service")
+        .args(args)
+        .stdin(std::process::Stdio::null())
+        .output()
+        .map_err(|e| (None, format!("run {}: {e}", fleet.display())))?;
+    if output.status.success() {
+        return Ok(());
+    }
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    let why = match stderr.trim() {
+        "" => format!("fleet service {} exited {}", args.join(" "), output.status),
+        text => text.to_string(),
+    };
+    Err((output.status.code(), why))
+}
+
+#[cfg(unix)]
+fn collect_releases(home: &Path) {
+    let keep: Vec<PathBuf> = ["current", "previous"]
+        .iter()
+        .filter_map(|l| std::fs::read_link(home.join(l)).ok())
+        .filter_map(|t| t.file_name().map(PathBuf::from))
+        .collect();
+    let Ok(entries) = std::fs::read_dir(home.join(RELEASES)) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if keep.iter().any(|k| k.as_os_str() == entry.file_name()) || runs_from(&path) {
+            continue;
+        }
+        if let Err(e) = std::fs::remove_dir_all(&path) {
+            tracing::warn!("could not remove release {}: {e}", path.display());
+        }
+    }
+}
+
+#[cfg(unix)]
+fn runs_from(dir: &Path) -> bool {
+    if !cfg!(target_os = "linux") {
+        return true;
+    }
+    let Ok(dir) = std::fs::canonicalize(dir) else {
+        return false;
+    };
+    let Ok(processes) = std::fs::read_dir("/proc") else {
+        return true;
+    };
+    processes
+        .flatten()
+        .filter_map(|p| std::fs::read_link(p.path().join("exe")).ok())
+        .any(|exe| exe.starts_with(&dir))
 }
 
 /// The `fleet` an update installs, beside the running executable.
@@ -774,6 +955,17 @@ fn perform_update_from(
         ));
     }
 
+    #[cfg(unix)]
+    {
+        install_release(&extract_dir, install_dir, &current, &latest)?;
+        #[cfg(target_os = "linux")]
+        let restarted = restart_manager(install_dir, &latest);
+        #[cfg(not(target_os = "linux"))]
+        let restarted: Result<(), String> = Ok(());
+        collect_releases(&release_home(install_dir));
+        restarted?;
+    }
+    #[cfg(not(unix))]
     install_binaries(&extract_dir, install_dir, std::env::consts::EXE_SUFFIX)?;
 
     Ok(UpdateOutcome::Updated {
@@ -1583,7 +1775,7 @@ cccc3333  thurbox-v0.114.0-aarch64-apple-darwin.tar.gz
             "{outcome:?}"
         );
         for name in shipped() {
-            let installed = std::fs::read_to_string(feed.install.path().join(&name)).unwrap();
+            let installed = Feed::version_of(&feed.bin().join(&name));
             assert_eq!(installed, "3.1.0", "{name} stayed on {installed}");
         }
     }
@@ -1591,12 +1783,14 @@ cccc3333  thurbox-v0.114.0-aarch64-apple-darwin.tar.gz
     /// A release feed on disk, served to the real updater over `file://`.
     ///
     /// Each release gets the archive for this platform and a checksums file, the
-    /// same assets `cd.yml` publishes. The binaries inside are text files naming
-    /// their version, so what got installed is read straight off the disk.
+    /// same assets `cd.yml` publishes. The binaries inside are scripts that name
+    /// their version and record each call in `calls`; a file `exit-<version>`
+    /// holding `<code> <message>` makes that release's programs fail with it.
+    /// The install is a prefix whose `bin` holds the programs.
     #[cfg(unix)]
     struct Feed {
         root: tempfile::TempDir,
-        install: tempfile::TempDir,
+        prefix: tempfile::TempDir,
         _paths: crate::paths::TestPathGuard,
     }
 
@@ -1605,7 +1799,7 @@ cccc3333  thurbox-v0.114.0-aarch64-apple-darwin.tar.gz
         /// `releases` newest first, as GitHub lists them.
         fn new(releases: &[&str], installed: &str) -> Self {
             let root = tempfile::TempDir::new().unwrap();
-            let install = tempfile::TempDir::new().unwrap();
+            let prefix = tempfile::TempDir::new().unwrap();
             let paths = crate::paths::TestPathGuard::new(root.path().join("data"));
             let target = current_target().unwrap();
             for version in releases {
@@ -1614,7 +1808,7 @@ cccc3333  thurbox-v0.114.0-aarch64-apple-darwin.tar.gz
                 std::fs::create_dir_all(&dir).unwrap();
                 std::fs::create_dir_all(&stage).unwrap();
                 for name in shipped() {
-                    std::fs::write(stage.join(&name), version).unwrap();
+                    Self::write_program(root.path(), &stage.join(&name), version);
                 }
                 let archive = archive_name(version, target);
                 let ok = Command::new("tar")
@@ -1643,14 +1837,39 @@ cccc3333  thurbox-v0.114.0-aarch64-apple-darwin.tar.gz
                 serde_json::to_string(&list).unwrap(),
             )
             .unwrap();
+            std::fs::create_dir_all(prefix.path().join("bin")).unwrap();
             for name in shipped() {
-                std::fs::write(install.path().join(&name), installed).unwrap();
+                Self::write_program(
+                    root.path(),
+                    &prefix.path().join("bin").join(&name),
+                    installed,
+                );
             }
             Self {
                 root,
-                install,
+                prefix,
                 _paths: paths,
             }
+        }
+
+        fn write_program(root: &Path, path: &Path, version: &str) {
+            use std::os::unix::fs::PermissionsExt;
+            let root = root.display();
+            std::fs::write(
+                path,
+                format!(
+                    "#!/bin/sh\n\
+                     echo '{version}' \"$*\" >> '{root}/calls'\n\
+                     if [ -f '{root}/exit-{version}' ]; then read -r c m < '{root}/exit-{version}'; echo \"$m\" >&2; exit \"$c\"; fi\n"
+                ),
+            )
+            .unwrap();
+            std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o755)).unwrap();
+        }
+
+        fn version_of(path: &Path) -> String {
+            let text = std::fs::read_to_string(path).unwrap();
+            text.split('\'').nth(1).unwrap().to_string()
         }
 
         fn feed(&self) -> ReleaseFeed {
@@ -1661,8 +1880,36 @@ cccc3333  thurbox-v0.114.0-aarch64-apple-darwin.tar.gz
             }
         }
 
+        fn bin(&self) -> PathBuf {
+            self.prefix.path().join("bin")
+        }
+
+        fn home(&self) -> PathBuf {
+            self.prefix.path().join("lib/thurbox")
+        }
+
         fn update(&self, current: &str, force: bool) -> Result<UpdateOutcome, String> {
-            perform_update_from(&self.feed(), current, self.install.path(), force)
+            perform_update_from(&self.feed(), current, &self.bin(), force)
+        }
+
+        fn fail(&self, version: &str, code: u8, message: &str) {
+            std::fs::write(
+                self.root.path().join(format!("exit-{version}")),
+                format!("{code} {message}\n"),
+            )
+            .unwrap();
+        }
+
+        fn calls(&self) -> Vec<String> {
+            std::fs::read_to_string(self.root.path().join("calls"))
+                .unwrap_or_default()
+                .lines()
+                .map(str::to_string)
+                .collect()
+        }
+
+        fn link(&self, name: &str) -> Option<PathBuf> {
+            std::fs::read_link(self.home().join(name)).ok()
         }
 
         /// The version every installed program now names, or `None` when
@@ -1670,10 +1917,134 @@ cccc3333  thurbox-v0.114.0-aarch64-apple-darwin.tar.gz
         fn installed(&self) -> Option<String> {
             let versions: std::collections::BTreeSet<String> = shipped()
                 .iter()
-                .map(|n| std::fs::read_to_string(self.install.path().join(n)).unwrap())
+                .map(|n| Self::version_of(&self.bin().join(n)))
                 .collect();
             (versions.len() == 1).then(|| versions.into_iter().next().unwrap())
         }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn an_update_installs_the_release_beside_the_running_one() {
+        let feed = Feed::new(&["3.0.1", "3.0.0"], "3.0.0");
+        feed.update("3.0.0", false).unwrap();
+
+        assert_eq!(feed.link("current"), Some(PathBuf::from("releases/3.0.1")));
+        assert_eq!(feed.link("previous"), Some(PathBuf::from("releases/3.0.0")));
+        for name in shipped() {
+            let release = |v: &str| feed.home().join("releases").join(v).join("bin").join(&name);
+            assert_eq!(Feed::version_of(&release("3.0.1")), "3.0.1");
+            assert_eq!(Feed::version_of(&release("3.0.0")), "3.0.0");
+            assert_eq!(
+                std::fs::read_link(feed.bin().join(&name)).unwrap(),
+                feed.home().join("current/bin").join(&name),
+            );
+        }
+        assert_eq!(feed.installed().as_deref(), Some("3.0.1"));
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn an_update_restarts_the_manager_on_the_new_release() {
+        let feed = Feed::new(&["3.0.1", "3.0.0"], "3.0.0");
+        feed.update("3.0.0", false).unwrap();
+        assert_eq!(feed.calls(), ["3.0.1 service restart --expect 3.0.1"]);
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn an_update_without_a_supervisor_keeps_the_new_release() {
+        let feed = Feed::new(&["3.0.1", "3.0.0"], "3.0.0");
+        feed.fail("3.0.1", 3, "no unit runs this store");
+        feed.update("3.0.0", false).unwrap();
+        assert_eq!(feed.link("current"), Some(PathBuf::from("releases/3.0.1")));
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn a_manager_that_does_not_come_back_rolls_the_release_back() {
+        let feed = Feed::new(&["3.0.1", "3.0.0"], "3.0.0");
+        feed.fail("3.0.1", 7, "fleet.service did not serve 3.0.1 within 120s");
+
+        let error = feed.update("3.0.0", false).unwrap_err();
+
+        assert!(error.contains("rolled back to 3.0.0"), "{error}");
+        assert!(error.contains("did not serve 3.0.1 within 120s"), "{error}");
+        assert_eq!(feed.link("current"), Some(PathBuf::from("releases/3.0.0")));
+        assert_eq!(feed.installed().as_deref(), Some("3.0.0"));
+        assert_eq!(
+            feed.calls(),
+            [
+                "3.0.1 service restart --expect 3.0.1",
+                "3.0.0 service restart"
+            ]
+        );
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn an_update_keeps_two_releases() {
+        let feed = Feed::new(&["3.0.2", "3.0.1", "3.0.0"], "3.0.0");
+        feed.update("3.0.0", false).unwrap();
+        std::fs::write(
+            feed.root.path().join("list.json"),
+            r#"[{"tag_name": "v3.0.1", "draft": false, "prerelease": false}]"#,
+        )
+        .unwrap();
+        feed.update("3.0.2", true).unwrap();
+
+        let mut releases: Vec<String> = std::fs::read_dir(feed.home().join("releases"))
+            .unwrap()
+            .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+            .collect();
+        releases.sort();
+        assert_eq!(releases, ["3.0.1", "3.0.2"]);
+        assert_eq!(feed.link("previous"), Some(PathBuf::from("releases/3.0.2")));
+    }
+
+    #[test]
+    fn a_release_runs_its_programs_from_the_prefix_bin() {
+        let release = Path::new("/p/lib/thurbox/releases/3.0.0/bin/thurbox");
+        assert_eq!(bin_dir_of(release), Some(PathBuf::from("/p/bin")));
+        let plain = Path::new("/p/.local/bin/thurbox");
+        assert_eq!(bin_dir_of(plain), Some(PathBuf::from("/p/.local/bin")));
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn an_install_dir_not_named_bin_is_where_the_next_update_links() {
+        let feed = Feed::new(&["3.0.2", "3.0.1"], "3.0.1");
+        let tools = feed.prefix.path().join("tools");
+        std::fs::rename(feed.bin(), &tools).unwrap();
+        perform_update_from(&feed.feed(), "3.0.1", &tools, false).unwrap();
+        let running = feed.home().join("releases/3.0.2/bin/thurbox");
+        assert_eq!(bin_dir_of(&running), Some(tools));
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn collection_spares_a_release_a_process_runs_from() {
+        let home = tempfile::TempDir::new().unwrap();
+        let old = home.path().join("releases/1.0.0/bin");
+        std::fs::create_dir_all(&old).unwrap();
+        let sleep = crate::paths::resolve_on_path("sleep").unwrap();
+        std::fs::copy(&sleep, old.join("sleep")).unwrap();
+        for v in ["2.0.0", "3.0.0"] {
+            std::fs::create_dir_all(home.path().join("releases").join(v).join("bin")).unwrap();
+        }
+        std::os::unix::fs::symlink("releases/3.0.0", home.path().join("current")).unwrap();
+        std::os::unix::fs::symlink("releases/2.0.0", home.path().join("previous")).unwrap();
+        let mut running = Command::new(old.join("sleep")).arg("30").spawn().unwrap();
+
+        collect_releases(home.path());
+        assert!(old.exists(), "a running release is kept");
+
+        running.kill().unwrap();
+        running.wait().unwrap();
+        collect_releases(home.path());
+        assert!(!home.path().join("releases/1.0.0").exists());
+        assert!(home.path().join("releases/2.0.0").exists());
+        assert!(home.path().join("releases/3.0.0").exists());
     }
 
     /// A major boundary: 4.0.0 is GitHub's "Latest", and nothing a 3.x

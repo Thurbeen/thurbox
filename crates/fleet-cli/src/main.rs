@@ -334,6 +334,15 @@ enum ServiceCommand {
     Restart {
         #[arg(long)]
         name: Option<String>,
+        /// Restart a running unit only, and wait until a manager started
+        /// since then serves this version. Exits 1 when the unit fails
+        /// first and 7 when the wait runs out.
+        #[arg(long, value_name = "VERSION")]
+        expect: Option<String>,
+        /// How long `--expect` waits, in seconds; by default twice the
+        /// unit's stop timeout, plus one minute.
+        #[arg(long, value_name = "SECONDS", requires = "expect")]
+        timeout: Option<u64>,
     },
     /// What systemd says of the store's unit; exits as `systemctl status`
     /// does (0 active, 3 not running).
@@ -1981,6 +1990,7 @@ fn cmd_service(
                 .filter(|p| p.is_file())
                 .ok_or_else(|| fail("no config file; run fleet init first"))?;
             let exe = std::env::current_exe().map_err(|e| fail(e.to_string()))?;
+            let exe = service::stable_exe(&exe);
             if exe.to_string_lossy().ends_with(" (deleted)") {
                 return Err(fail(format!(
                     "{}: this fleet binary was replaced; run the installed one",
@@ -2011,8 +2021,24 @@ fn cmd_service(
         ServiceCommand::Stop { name } => {
             target(name).and_then(|u| service::drive(&u, service::Verb::Stop, stop_bound))
         }
-        ServiceCommand::Restart { name } => {
-            target(name).and_then(|u| service::drive(&u, service::Verb::Restart, stop_bound))
+        ServiceCommand::Restart {
+            name, expect: None, ..
+        } => target(name).and_then(|u| service::drive(&u, service::Verb::Restart, stop_bound)),
+        ServiceCommand::Restart {
+            name,
+            expect: Some(version),
+            timeout,
+        } => {
+            let bound = timeout.map_or(stop_bound * 2, std::time::Duration::from_secs);
+            target(name).and_then(|u| {
+                service::restart_expecting(&u, data_dir, version, bound).map(|r| match r {
+                    service::Restart::Serving => println!("{} serves {version}", u.name),
+                    service::Restart::NotRunning => println!(
+                        "{} is not running; it serves {version} when it starts",
+                        u.name
+                    ),
+                })
+            })
         }
         ServiceCommand::Status { name } => {
             let unit = target(name).map_err(service_failure)?;
@@ -2085,6 +2111,11 @@ fn service_failure(refusal: service::Refusal) -> Failure {
             Some("fleet service install".to_string()),
         ),
         Refusal::Systemctl(why) => (exit::ERROR, format!("systemctl --user {why}"), None),
+        Refusal::Stopped(why) => (
+            exit::ERROR,
+            why,
+            Some("fleet service status and the unit's journal say why".to_string()),
+        ),
         Refusal::StillRunning(why) => (
             exit::TIMEOUT,
             why,

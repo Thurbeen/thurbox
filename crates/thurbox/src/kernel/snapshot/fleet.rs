@@ -873,18 +873,20 @@ fn stop(held: &Mutex<Option<Child>>) -> Result<(), String> {
     Ok(())
 }
 
-/// What a finished update says of the managers it leaves on the old release:
-/// one line per Fleet on this machine whose manager holds the lease, naming
-/// the command that restarts it, or saying that its `program` is a `fleet`
-/// the update did not replace. Empty when none runs.
-pub fn stale_managers(links: &[FleetLink]) -> String {
+/// What a finished update to `to` says of the managers it leaves on the old
+/// release: one line per Fleet on this machine whose manager holds the lease
+/// and does not run `to`, naming the command that restarts it, or saying
+/// that its `program` is a `fleet` the update did not replace. Empty when
+/// none runs.
+pub fn stale_managers(links: &[FleetLink], to: &str) -> String {
     let installed = crate::update::self_update::installed_fleet().ok();
     links
         .iter()
         .filter(|link| link.is_local())
         .filter_map(|link| {
             let manager = link.version().ok()?["manager"].take();
-            (manager["held"] == Value::Bool(true)).then_some((link, manager))
+            (manager["held"] == Value::Bool(true) && manager["version"].as_str() != Some(to))
+                .then_some((link, manager))
         })
         .map(|(link, manager)| match &installed {
             Some(installed) if !runs(link, installed) => format!(

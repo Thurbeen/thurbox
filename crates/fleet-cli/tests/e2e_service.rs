@@ -27,8 +27,18 @@ impl Service {
         fs::write(
             &systemctl,
             format!(
-                "#!/bin/sh\necho \"$*\" >> '{}'\nif [ \"$2\" = status ]; then echo \"$3 - Fleet manager\"; exit 3; fi\n",
-                calls.display()
+                "#!/bin/sh\n\
+                 echo \"$*\" >> '{calls}'\n\
+                 case \"$2\" in\n\
+                 status) echo \"$3 - Fleet manager\"; exit 3 ;;\n\
+                 show) if [ -f '{root}/unit-state' ]; then while read -r l; do echo \"$l\"; done < '{root}/unit-state'; else echo ActiveState=active; fi ;;\n\
+                 try-restart)\n\
+                   if [ -f '{root}/comes-back' ]; then read -r v < '{root}/comes-back'; printf '{{\"pid\":1,\"boot\":null,\"version\":\"%s\",\"exe\":\"/f\",\"config\":\"/c\",\"startedAt\":99999999999999,\"state\":\"serving\"}}' \"$v\" > '{data}/manager.json'; fi\n\
+                   if [ -f '{root}/refuses' ]; then printf 'ActiveState=failed\\nResult=exit-code\\nExecMainStatus=78\\n' > '{root}/unit-state'; fi ;;\n\
+                 esac\n",
+                calls = calls.display(),
+                root = env.root.display(),
+                data = env.data.display(),
             ),
         )
         .unwrap();
@@ -206,4 +216,82 @@ fn the_verbs_drive_the_store_s_unit_and_uninstall_removes_it() {
         .fleet(&["service", "start"])
         .code(3)
         .stderr_has("fleet service install");
+}
+
+fn installed(name: &str) -> Service {
+    let s = Service::new(name);
+    s.env.fleet(&["service", "install"]).ok();
+    fs::create_dir_all(&s.env.data).unwrap();
+    fs::remove_file(&s.calls).unwrap();
+    s
+}
+
+#[test]
+fn restart_expect_waits_for_the_new_version_to_serve() {
+    let s = installed("service-expect");
+    fs::write(s.env.root.join("comes-back"), "9.9.9\n").unwrap();
+
+    s.env
+        .fleet(&["service", "restart", "--expect", "9.9.9", "--timeout", "10"])
+        .ok()
+        .stdout_has("fleet.service serves 9.9.9");
+
+    let calls = s.calls();
+    assert!(
+        calls.contains(&"--user try-restart --no-block fleet.service".to_string()),
+        "{calls:?}"
+    );
+}
+
+#[test]
+fn restart_expect_reports_a_manager_that_refuses_to_start() {
+    let s = installed("service-expect-refuses");
+    fs::write(s.env.root.join("refuses"), "").unwrap();
+
+    s.env
+        .fleet(&["service", "restart", "--expect", "9.9.9", "--timeout", "10"])
+        .code(1)
+        .stderr_has("exit-code, status 78");
+}
+
+#[test]
+fn restart_expect_times_out_when_the_version_never_serves() {
+    let s = installed("service-expect-timeout");
+    fs::write(s.env.root.join("comes-back"), "9.9.8\n").unwrap();
+
+    s.env
+        .fleet(&["service", "restart", "--expect", "9.9.9", "--timeout", "1"])
+        .code(7)
+        .stderr_has("9.9.8");
+}
+
+#[test]
+fn restart_expect_ignores_a_manager_that_started_before_the_restart() {
+    let s = installed("service-expect-stale");
+    fs::write(
+        s.env.data.join("manager.json"),
+        r#"{"pid":1,"boot":null,"version":"9.9.9","exe":"/f","config":"/c","startedAt":1,"state":"serving"}"#,
+    )
+    .unwrap();
+
+    s.env
+        .fleet(&["service", "restart", "--expect", "9.9.9", "--timeout", "1"])
+        .code(7);
+}
+
+#[test]
+fn restart_expect_leaves_a_stopped_unit_stopped() {
+    let s = installed("service-expect-stopped");
+    fs::write(s.env.root.join("unit-state"), "ActiveState=inactive\n").unwrap();
+
+    s.env
+        .fleet(&["service", "restart", "--expect", "9.9.9"])
+        .ok()
+        .stdout_has("not running");
+
+    assert!(
+        !s.calls().iter().any(|c| c.contains("restart")),
+        "{:?}",
+        s.calls()
+    );
 }

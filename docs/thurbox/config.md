@@ -506,21 +506,51 @@ downloads that
 release's tarball + checksums from GitHub Releases (`curl`/`wget`, no new
 dependency), verifies the SHA256 **in process** (`sha2`, so the check does not
 depend on the local `PATH`), extracts it
-(`tar`, or PowerShell's `Expand-Archive` for Windows' zip), and atomically
-replaces every installed program the release ships (`thurbox`, `thurbox-cli`,
-`fleet`, `runtime-mux`, `workspace-git`) in place — mirroring `scripts/install.sh`.
+(`tar`, or PowerShell's `Expand-Archive` for Windows' zip), and installs every
+program the release ships (`thurbox`, `thurbox-cli`, `fleet`, `runtime-mux`,
+`workspace-git`) as one release, with the layout `scripts/install.sh` writes.
 The download is verified
 **before** any installed file is touched, so a failed/corrupt download leaves
 the current binaries untouched; the whole step runs before the TUI takes the
 terminal and is best-effort (any failure is logged and startup continues on
-the current version). The replaced binary takes effect on the **next launch**
+the current version). The new binary takes effect on the **next launch**
 (the running process keeps its open file), so the TUI shows an "Updated to
 vX.Y.Z — restart thurbox to apply" status line.
 
-A running `fleet up` keeps the program it started from. thurbox never
-restarts it. After an install, the status line names each Fleet on this
-machine whose manager holds the lease, and the command that restarts it on
-the new release: `systemctl --user restart <unit>` for the unit that its
+**Releases (Linux and macOS).** The install directory (`~/.local/bin` by
+default) holds links. The releases live beside it, under `<prefix>/lib/thurbox`
+(`~/.local/lib/thurbox` by default):
+
+```text
+~/.local/bin/fleet -> ~/.local/lib/thurbox/current/bin/fleet
+~/.local/lib/thurbox/
+  current -> releases/3.4.0
+  previous -> releases/3.3.0
+  install-dir -> ~/.local/bin
+  releases/3.4.0/bin/   thurbox thurbox-cli fleet runtime-mux workspace-git
+  releases/3.3.0/bin/
+```
+
+`install-dir` names the install directory, so a program running from a
+release finds it whatever its name.
+
+1. The update stages the new release in `releases/<version>/bin/`.
+2. It flips `current` to the new release in one rename. The old release
+   becomes `previous`. An install whose programs are still files in the
+   install directory first copies them into a release of their own.
+3. On Linux it runs the new `fleet service restart --expect <version>`. That
+   restarts the unit of the store, when it runs, and waits for the manager to
+   serve the new version (`docs/fleet/configuration.md`, the service unit).
+4. When the manager does not come back (it exits, refuses to start, or the
+   wait ends), the update flips `current` back, restarts the unit again, and
+   fails with the reason. No unit (exit 3) is not a failure.
+5. It removes each release other than `current` and `previous` that no
+   running process's executable lives in. macOS keeps them: it has no
+   `/proc` to tell.
+
+After an install, the status line names each Fleet on this machine whose
+manager holds the lease and does not run the new version, and the command
+that restarts it on the new release: `systemctl --user restart <unit>` for the unit that its
 `fleet version --json` names in `manager.supervisor`, otherwise to stop its
 `fleet up` and run it again (`stale_managers` in `src/kernel/snapshot/fleet.rs`). A Fleet whose
 `program` resolves to another file than the `fleet` the update installed is
@@ -538,7 +568,9 @@ A fleet-only install (`install.sh --fleet-only`, `install.ps1 -FleetOnly`, or
 `THURBOX_FLEET_ONLY=1`) has neither, and Fleet has no updater, so nothing adds
 thurbox to it. To update it, run the installer again in the same mode.
 
-**Windows takes the same path, with two differences.** The release artifact
+**Windows takes the same path, with three differences.** It keeps no
+releases: it replaces the programs in place, and it restarts no manager
+(issue #1867). The release artifact
 is the `.zip` `install.ps1` extracts, so the
 unpacker is chosen by the archive's extension. And a rename cannot replace an
 executable a process is running from — Windows keeps its image mapped — so the
