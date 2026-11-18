@@ -74,6 +74,28 @@ pub(super) struct Failure {
     /// once (see `drop_lost_panes`).
     pub(super) at: std::time::Instant,
     pub(super) tried_at: std::time::Instant,
+    pub(super) refused_in: Option<FleetRowState>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub(super) struct FleetRowState {
+    status: crate::session::SessionState,
+    stopped: bool,
+    deleting: bool,
+    state_why: Option<String>,
+    key: Option<String>,
+}
+
+impl FleetRowState {
+    fn of(row: &crate::kernel::snapshot::SessionRow) -> Self {
+        Self {
+            status: row.status,
+            stopped: row.stopped,
+            deleting: row.deleting.is_some(),
+            state_why: row.state_why.clone(),
+            key: row.key.clone(),
+        }
+    }
 }
 
 /// An attach that finished on a worker, on its way back to the loop.
@@ -89,6 +111,7 @@ pub(super) struct Attached {
     pub(super) readied: bool,
     pub(super) session_handle: Result<crate::backend::Session, String>,
     pub(super) started: std::time::Instant,
+    pub(super) refused_in: Option<FleetRowState>,
 }
 
 /// How long the *same* failed attempt is left alone before it is made again.
@@ -99,6 +122,10 @@ pub(super) struct Attached {
 pub(super) const ATTACH_RETRY_INTERVAL: std::time::Duration = std::time::Duration::from_secs(20);
 
 pub(super) const PAUSED: &str = "the session is paused: start it to resume its agent";
+
+pub(super) const DELETING: &str = "the Task is being deleted: Fleet is releasing its session";
+
+pub(super) const ENDED: &str = "the session ended: Fleet has nothing to attach";
 
 impl Terminals {
     /// Start an attach for every row that is neither live nor attaching, unless
@@ -182,17 +209,7 @@ impl Terminals {
         self.attach.attaching.values().any(|name| name == backend)
     }
 
-    /// Attach a Fleet session's pane on a worker, through the stream `fleet
-    /// attach` names ([`super::fleet`]). A row whose Task has no session yet
-    /// (no key) has nothing to attach to. A paused row is not attached, and
-    /// its failure names no pane: a resume keeps the session's key, so the
-    /// first frame that reads the row running again attaches it, whatever
-    /// resumed it. Any other failed attempt is made again
-    /// after `retry_after` ([`ATTACH_RETRY_INTERVAL`]), and a stream that ended is attached
-    /// afresh, since `drop_lost_panes` drops a pane whose output ended.
     fn attach_fleet(&mut self, row: &crate::kernel::snapshot::SessionRow, rows: u16, cols: u16) {
-        // The Fleet the row's id names; a row of no listed Fleet has no
-        // stream to ask for.
         let Some(link) = row.fleet().and_then(|fleet| self.fleet.get(fleet)).cloned() else {
             return;
         };
@@ -201,9 +218,18 @@ impl Terminals {
             self.fail(&row.id, None, "session has no pane yet".to_string());
             return;
         };
-        if row.stopped {
-            if self.failure(&row.id) != Some(PAUSED) {
-                self.fail(&row.id, None, PAUSED.to_string());
+        let unattachable = if row.deleting.is_some() {
+            Some(DELETING)
+        } else if row.state_why.as_deref() == Some(crate::kernel::snapshot::fleet::SESSION_ENDED) {
+            Some(ENDED)
+        } else if row.stopped {
+            Some(PAUSED)
+        } else {
+            None
+        };
+        if let Some(why) = unattachable {
+            if self.failure(&row.id) != Some(why) {
+                self.fail(&row.id, None, why.to_string());
             }
             return;
         }
@@ -211,10 +237,12 @@ impl Terminals {
             Some((Start::Pending, at)) => Some(*at),
             _ => None,
         };
+        let state = FleetRowState::of(row);
         if self.attach.failed.get(&row.id).is_some_and(|failure| {
-            failure.pane.as_deref() == Some(key.as_str())
-                && failure.at.elapsed() < self.attach.retry_after
-                && start_pending_since.is_none_or(|at| failure.tried_at >= at)
+            let held = failure.refused_in.as_ref() == Some(&state)
+                || failure.pane.as_deref() == Some(key.as_str())
+                    && failure.at.elapsed() < self.attach.retry_after;
+            held && start_pending_since.is_none_or(|at| failure.tried_at >= at)
         }) {
             return;
         }
@@ -230,14 +258,19 @@ impl Terminals {
         std::thread::spawn(move || {
             // The pane's reader and writer run on the process's runtime.
             let _guard = runtime.as_ref().map(|handle| handle.enter());
-            let result = super::fleet::open(&link, &task, rows, cols, scrollback, notices);
+            let (session_handle, refused_in) =
+                match super::fleet::open(&link, &task, rows, cols, scrollback, notices) {
+                    Ok(opened) => (Ok(opened), None),
+                    Err(failure) => (Err(failure.message), failure.refused.then_some(state)),
+                };
             let _ = tx.send(Attached {
                 session,
                 pane: key,
                 backend: super::fleet::BACKEND.to_string(),
                 readied: false,
-                session_handle: result,
+                session_handle,
                 started,
+                refused_in,
             });
         });
     }
@@ -335,6 +368,7 @@ impl Terminals {
                 readied,
                 session_handle: result,
                 started,
+                refused_in: None,
             });
         });
     }
@@ -367,7 +401,12 @@ impl Terminals {
                         self.mark_failures_changed();
                     }
                 }
-                Err(e) => self.fail_attempt(&done.session, Some(done.pane), e, done.started),
+                Err(e) => {
+                    self.fail_attempt(&done.session, Some(done.pane), e, done.started);
+                    if let Some(failure) = self.attach.failed.get_mut(&done.session) {
+                        failure.refused_in = done.refused_in;
+                    }
+                }
             }
         }
     }
@@ -401,6 +440,7 @@ impl Terminals {
                 message,
                 at: std::time::Instant::now(),
                 tried_at,
+                refused_in: None,
             },
         );
     }

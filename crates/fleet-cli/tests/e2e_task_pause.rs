@@ -458,3 +458,22 @@ fn a_background_attach_on_a_paused_task_says_so_and_wakes_nothing() {
     assert!(stopped(&env));
     assert!(env.get("t1")["status"]["wakeRequestedAt"].is_null());
 }
+
+#[test]
+fn a_view_on_a_paused_task_being_deleted_says_so_and_offers_no_wake() {
+    let env = setup("pause-view-deleting", vec![task("t1")]);
+    pause(&env, "t1");
+    env.fleet(&["delete", "task", "t1"]).ok();
+    assert!(!env.get("t1")["metadata"]["deletionTimestamp"].is_null());
+
+    for args in [
+        &["attach", "t1", "--json"][..],
+        &["attach", "t1", "--wake", "--json"],
+        &["shell", "t1", "--json"],
+    ] {
+        let run = env.fleet(args);
+        run.code(3).stderr_has("Task/t1 is being deleted");
+        assert!(!run.stderr.contains("--wake"), "{}", run.stderr);
+    }
+    assert!(env.get("t1")["status"]["wakeRequestedAt"].is_null());
+}

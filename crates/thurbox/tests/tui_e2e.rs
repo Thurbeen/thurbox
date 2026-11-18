@@ -6912,6 +6912,59 @@ fn a_deletion_fleet_never_finishes_comes_back_marked_stuck() {
 }
 
 #[test]
+fn fleet_attach_is_not_retried_on_a_deleted_task_or_after_fleet_refused_it() {
+    let profile = Profile::new();
+    let calls = profile.root.path().join("fleet-calls");
+    let marked = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .expect("clock")
+        .as_millis() as u64
+        - 600_000;
+    let mut ending = fake_task(
+        "ending",
+        "Gone",
+        serde_json::json!([
+            {"type": "Paused", "status": "True", "reason": "Idle"},
+            {"type": "Released", "status": "False", "reason": "ReleaseFailed",
+                "message": "Permission denied"},
+        ]),
+    );
+    ending["object"]["metadata"]["deletionTimestamp"] = serde_json::json!(marked);
+    let refusing = fake_task("refusing", "Running", serde_json::json!([]));
+    let synced =
+        serde_json::json!({"type": "synced", "revision": 1, "names": ["ending", "refusing"]});
+    write_script(
+        &profile.bin.join("fleet"),
+        &format!(
+            "#!/bin/sh\necho \"$*\" >> '{calls}'\ncase \"$1\" in\n  watch) echo '{ending}'; echo '{refusing}'; echo '{synced}'; while kill -0 $PPID 2>/dev/null; do sleep 1; done ;;\n  attach) echo \"error: Task/$2 is paused: its agent is stopped\" >&2; exit 3 ;;\n  up) exit 6 ;;\n  version) echo '{{\"apiVersions\":[\"fleet/v1alpha1\"]}}' ;;\n  *) exit 1 ;;\nesac\n",
+            calls = calls.display(),
+        ),
+    );
+    let mut tui = Tui::spawn(&profile, 40, 160);
+    tui.wait_until("both rows", |frame| {
+        frame.contains("ending") && frame.contains("refusing")
+    });
+    std::thread::sleep(Duration::from_secs(25));
+    let calls = std::fs::read_to_string(&calls).unwrap_or_default();
+    let attaches = |task: &str| {
+        calls
+            .lines()
+            .filter(|call| call.starts_with(&format!("attach {task} ")))
+            .count()
+    };
+    assert_eq!(
+        attaches("ending"),
+        0,
+        "a deleted Task is attached:\n{calls}"
+    );
+    assert!(
+        attaches("refusing") <= 1,
+        "an attach Fleet refused is retried while nothing changed:\n{calls}"
+    );
+    assert!(tui.quit().success());
+}
+
+#[test]
 fn a_stopped_lost_or_gone_session_says_so_and_why() {
     let profile = Profile::new();
     let task = |name: &str, state: &str, condition: serde_json::Value| {

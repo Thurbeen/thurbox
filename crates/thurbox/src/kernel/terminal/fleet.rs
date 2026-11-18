@@ -32,7 +32,7 @@ pub(super) fn open(
     cols: u16,
     scrollback: usize,
     notices: Notices,
-) -> Result<crate::backend::Session, String> {
+) -> Result<crate::backend::Session, OpenFailure> {
     let argv = stream_argv(link, "attach", task)?;
     let (adopted, upstream) = adopt_with_upstream(link.launch(&argv)?, rows, cols, Some(notices))
         .map_err(|e| format!("the stream pane: {e}"))?;
@@ -67,7 +67,7 @@ pub(super) fn open_shell(
     ),
     String,
 > {
-    let argv = stream_argv(link, "shell", task)?;
+    let argv = stream_argv(link, "shell", task).map_err(|failure| failure.message)?;
     let (adopted, upstream) = adopt_with_upstream(link.launch(&argv)?, rows, cols, Some(notices))
         .map_err(|e| format!("the shell's stream: {e}"))?;
     let backend: Arc<dyn crate::backend::SessionBackend> = Arc::new(Stream(upstream));
@@ -88,14 +88,14 @@ fn stream_argv(
     link: &crate::fleet_link::FleetLink,
     verb: &str,
     task: &str,
-) -> Result<Vec<String>, String> {
+) -> Result<Vec<String>, OpenFailure> {
     let out = link
         .command(&[verb, task, "--json"])
         .stdin(std::process::Stdio::null())
         .output()
         .map_err(|e| format!("could not start fleet {verb}: {e}"))?;
     if let Some(why) = link.unreachable(&out) {
-        return Err(why);
+        return Err(why.into());
     }
     if !out.status.success() {
         let stderr = String::from_utf8_lossy(&out.stderr);
@@ -103,7 +103,10 @@ fn stream_argv(
             .lines()
             .find_map(|line| line.strip_prefix("error: "))
             .unwrap_or(stderr.trim());
-        return Err(format!("fleet {verb}: {why}"));
+        return Err(OpenFailure {
+            message: format!("fleet {verb}: {why}"),
+            refused: out.status.code() == Some(FLEET_EXIT_REFUSED_BY_TASK_STATE),
+        });
     }
     let answer: serde_json::Value = serde_json::from_slice(&out.stdout)
         .map_err(|e| format!("fleet {verb} answered no JSON: {e}"))?;
@@ -114,9 +117,25 @@ fn stream_argv(
         .filter_map(|arg| arg.as_str().map(str::to_string))
         .collect();
     if argv.is_empty() {
-        return Err(format!("fleet {verb} answered no stream: {answer}"));
+        return Err(format!("fleet {verb} answered no stream: {answer}").into());
     }
     Ok(argv)
+}
+
+const FLEET_EXIT_REFUSED_BY_TASK_STATE: i32 = 3;
+
+pub(super) struct OpenFailure {
+    pub(super) message: String,
+    pub(super) refused: bool,
+}
+
+impl From<String> for OpenFailure {
+    fn from(message: String) -> Self {
+        Self {
+            message,
+            refused: false,
+        }
+    }
 }
 
 fn refused(what: &str) -> crate::backend::BackendError {

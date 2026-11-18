@@ -1074,6 +1074,8 @@ fn true_condition<'a>(status: &'a Value, kind: &str) -> Option<&'a Value> {
         .find(|c| c["type"] == kind && c["status"] == "True")
 }
 
+pub(crate) const SESSION_ENDED: &str = "gone · session ended";
+
 fn state_why(session_state: Option<&str>, status: &Value) -> Option<String> {
     let reason = |kind: &str| true_condition(status, kind).and_then(|c| c["reason"].as_str());
     if let Some(stalled) = reason("Stalled") {
@@ -1090,7 +1092,7 @@ fn state_why(session_state: Option<&str>, status: &Value) -> Option<String> {
             Some("ReviveFailed") => "lost · revive failed".to_string(),
             _ => "lost · window gone".to_string(),
         }),
-        "Gone" => Some("gone · session ended".to_string()),
+        "Gone" => Some(SESSION_ENDED.to_string()),
         _ => None,
     }
 }
