@@ -423,7 +423,11 @@ impl Migration {
             self.stage(seed)?;
         }
         if read(&self.config_v2)?.as_deref() != Some(self.source_text.as_str()) {
-            copy(&self.config_path, &self.config_v2)?;
+            keep_copy(
+                &self.config_path,
+                &self.config_v2,
+                self.source_text.as_bytes(),
+            )?;
         }
         if exists(&self.staged)? {
             if self.store_2x && !exists(&self.store_v2)? {
@@ -525,10 +529,22 @@ fn write_new(path: &Path, bytes: &[u8]) -> Result<(), String> {
     synced(path, written)
 }
 
-fn copy(from: &Path, to: &Path) -> Result<(), String> {
-    let copied =
-        fs::copy(from, to).and_then(|_| fs::OpenOptions::new().write(true).open(to)?.sync_all());
-    synced(to, copied)
+fn keep_copy(original: &Path, copy: &Path, bytes: &[u8]) -> Result<(), String> {
+    use std::io::Write;
+    let written = (|| {
+        if copy.try_exists()? {
+            fs::remove_file(copy)?;
+        }
+        let mut options = fs::OpenOptions::new();
+        options.write(true).create_new(true);
+        #[cfg(unix)]
+        std::os::unix::fs::OpenOptionsExt::mode(&mut options, 0o600);
+        let mut file = options.open(copy)?;
+        file.write_all(bytes)?;
+        file.sync_all()?;
+        fs::set_permissions(copy, fs::metadata(original)?.permissions())
+    })();
+    synced(copy, written)
 }
 
 fn rename(from: &Path, to: &Path) -> Result<(), String> {

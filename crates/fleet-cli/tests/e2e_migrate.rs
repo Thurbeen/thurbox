@@ -364,6 +364,18 @@ fn a_partial_copy_of_the_2x_config_is_written_again() {
     completes(&f, &store_2x);
 }
 
+#[cfg(unix)]
+#[test]
+fn a_read_only_2x_config_is_kept_with_its_mode() {
+    use std::os::unix::fs::PermissionsExt;
+    let f = fleet_2("migrate-read-only");
+    fs::set_permissions(&f.env.config, fs::Permissions::from_mode(0o400)).unwrap();
+    f.env.fleet(&["migrate"]).ok();
+    let mode = fs::metadata(&f.config_v2).unwrap().permissions().mode() & 0o777;
+    assert_eq!(mode, 0o400);
+    assert_eq!(fs::read_to_string(&f.config_v2).unwrap(), FLEET_2_CONFIG);
+}
+
 #[test]
 fn a_journal_left_after_the_config_was_written_is_removed() {
     let f = fleet_2("migrate-stop-journal");
