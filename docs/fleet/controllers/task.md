@@ -691,6 +691,9 @@ comment = "#"                  # what starts a comment line there
   text. `fleet signal` then also reports the text inside that wrapper. The
   runtime types a brief as a bracketed paste. Claude Code 2.1.325 gives its
   prompt hook that paste inside `<pasted_content id="…">` tags.
+- `runtime-mux` writes the whole paste to the pane with one write. Claude
+  Code reads the bytes before a pause in a paste as typed text. Its prompt
+  hook then reports a prompt that matches no digest of the brief.
 - An unknown key is an error. Each command that reads the profiles stops,
   and names the file.
 - A harness that no profile names runs its name as a program, with no

@@ -381,47 +381,58 @@ mod tests {
     }
 
     #[test]
-    fn paste_prompt_args_type_the_wrapped_bytes_as_hex_for_tmux() {
+    fn a_paste_fills_a_buffer_of_its_own_then_one_paste_buffer_writes_it() {
+        let argvs = Tmux::paste_args("thurbox:tb-demo", "a\n\nb");
+        let buffer = argvs[0][2].clone();
+        assert!(buffer.starts_with("thurbox-paste-"), "{argvs:?}");
         assert_eq!(
-            Tmux::paste_args("thurbox:tb-demo", "a\n\nb").concat(),
+            argvs,
             [
-                "send-keys",
-                "-t",
-                "thurbox:tb-demo",
-                "-H",
-                "1b",
-                "5b",
-                "32",
-                "30",
-                "30",
-                "7e",
-                "61",
-                "0a",
-                "0a",
-                "62",
-                "1b",
-                "5b",
-                "32",
-                "30",
-                "31",
-                "7e",
+                vec![
+                    "set-buffer",
+                    "-b",
+                    &buffer,
+                    "--",
+                    "\x1b[200~a\n\nb\x1b[201~"
+                ],
+                vec![
+                    "paste-buffer",
+                    "-d",
+                    "-r",
+                    "-b",
+                    &buffer,
+                    "-t",
+                    "thurbox:tb-demo"
+                ],
             ]
+        );
+        assert_ne!(
+            Tmux::paste_args("%3", "a")[0][2],
+            buffer,
+            "a buffer per paste"
         );
     }
 
     #[test]
-    fn a_long_paste_is_typed_by_several_commands() {
+    fn a_long_paste_is_appended_piece_by_piece_and_written_once() {
         let text = "x".repeat(2000);
         let argvs = Tmux::paste_args("%3", &text);
-        assert!(argvs.len() > 1, "{}", argvs.len());
-        let bytes: Vec<String> = argvs.iter().flat_map(|a| a[4..].to_vec()).collect();
-        assert_eq!(bytes.len(), text.len() + 12);
+        let (writes, fills) = argvs.split_last().expect("argvs");
+        assert_eq!(writes[0], "paste-buffer", "{argvs:?}");
+        assert!(fills.len() > 1, "{}", fills.len());
+        assert!(fills[1..].iter().all(|a| a[1] == "-a"), "{fills:?}");
+        let framed: String = fills.iter().map(|a| a.last().unwrap().as_str()).collect();
+        assert_eq!(framed, format!("\x1b[200~{text}\x1b[201~"));
     }
 
     #[test]
     fn a_deferred_prompt_names_the_servers_own_mux_and_socket() {
         let tmux = Tmux::deferred_paste_script("tmux", "sock", "%3", "it's\nhere").unwrap();
-        assert!(tmux.starts_with("tmux -L sock send-keys -t "), "{tmux}");
+        assert!(tmux.starts_with("tmux -L sock set-buffer -b "), "{tmux}");
+        assert!(
+            tmux.contains("tmux -L sock paste-buffer -d -r -b "),
+            "{tmux}"
+        );
         assert!(
             tmux.ends_with("tmux -L sock send-keys -t '%3' Enter"),
             "{tmux}"
@@ -433,7 +444,7 @@ mod tests {
         // A socket the immediate commands pass as one argument must reach the
         // server's shell as one word too, or the paste runs against no server.
         let tmux = Tmux::deferred_paste_script("tmux", "my sock", "%3", "hi").unwrap();
-        assert_eq!(tmux.matches("-L 'my sock' send-keys").count(), 2, "{tmux}");
+        assert_eq!(tmux.matches("-L 'my sock' ").count(), 3, "{tmux}");
     }
 
     /// tmux's `#{@...}` is a window's own, so a listing's stamps are read — on
