@@ -62,7 +62,7 @@ fn opening_a_pane_is_a_client_span_that_fleet_and_the_stream_join() {
     std::env::set_var("OTEL_EXPORTER_OTLP_ENDPOINT", collector.endpoint());
     std::env::set_var("OTEL_METRICS_EXPORTER", "none");
     std::env::set_var("OTEL_LOGS_EXPORTER", "none");
-    let telemetry = otel_env::init("thurbox", "test", &[], false).expect("telemetry");
+    let telemetry = otel_env::init("thurbox", "test", &[], otel_env::Logs::Off).expect("telemetry");
 
     let refused = FleetLink::local(fleet.to_string_lossy()).stream("attach", "absent");
     assert!(refused.is_err(), "Fleet has no Task `absent`");
