@@ -1679,8 +1679,8 @@ fn cmd_up(
     ),
 ) -> Result<(), Failure> {
     identify_engine();
+    fleet_manager::manager_lease(false);
     let lock = file_store.wait_for_manager_lock(|| {
-        fleet_manager::manager_lease(false);
         let holder = manager_holder(data_dir);
         eprintln!("waiting for {holder} to exit");
         supervisor::tell(supervisor::Phase::Waiting(&holder));

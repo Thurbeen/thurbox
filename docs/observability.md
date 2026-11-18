@@ -310,14 +310,18 @@ Only `fleet` exports metrics.
   `fleet reconcile` while it runs passes. `fleet.manager.version` is the
   binary's version. `host.name` is the machine's host name.
   `fleet.manager.lease` is `true` while the process holds the manager
-  lease. A `fleet up` that waits for another manager reports `false`. When
-  the process takes the lease, its `false` point drops to 0.
+  lease. A `fleet up` reports `false` until it takes the lease, for example
+  while it waits for another manager. When the process takes the lease,
+  its `false` point drops to 0.
 
 ### Suggested alerts
 
 The examples are PromQL. A Prometheus backend changes each `.` in a name
 to `_`, for example `fleet_manager_info` and `fleet_manager_lease`. Other
-backends use the same filters and sums.
+backends use the same filters and sums. The series of a process that ended
+stays in a backend for a short time. Give each alert a hold time, for example
+`for: 10m` in Prometheus, so a `fleet reconcile` that ended a moment ago
+does not fire it.
 
 More than one lease holder, or more than one manager on one host:
 
