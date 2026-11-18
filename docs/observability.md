@@ -252,7 +252,8 @@ runtime-mux: runtime-mux workspace ──TRACEPARENT──▶ workspace-git make
 A `fleet COMMAND` span carries `fleet.kind` and `fleet.name` as follows:
 
 - `get`, `status`, `label` and `delete`: the kind and the name they are
-  given. The kind is spelt as the store serves it, such as `Task`.
+  given. A built-in kind is spelt as the store serves it, such as `Task`.
+  A plugin's kind is spelt as the command gives it.
 - `list`: the kind only.
 - `send`, `amend`, `result`, `declare`, `attach`, `shell`,
   `event subscribe` and `event unsubscribe`: `Task` and the Task's name.

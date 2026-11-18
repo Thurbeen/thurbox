@@ -481,8 +481,9 @@ fn a_stalled_collector_adds_at_most_the_call_bound_to_a_command() {
 
 /// A command's root span names the object it acts on, so a trace view finds
 /// a Task's commands by `fleet.name` (docs/observability.md, *Turn it on*),
-/// with `fleet.kind` as the store serves it, whatever spelling the command
-/// took. A command that names no one object carries neither.
+/// with a built-in `fleet.kind` as the store serves it, whatever spelling the
+/// command took. A command that names no one object carries neither. A
+/// command whose export the call bound dropped is run again.
 #[test]
 fn a_command_span_names_the_kind_and_object_it_acts_on() {
     let collector = Collector::start();
@@ -524,29 +525,37 @@ fn a_command_span_names_the_kind_and_object_it_acts_on() {
             Some("default"),
         ),
     ];
-    for (args, _, _) in &runs {
-        env.fleet(args);
-    }
-
-    let spans = collector.spans();
-    for (args, kind, name) in runs {
-        let command = format!("fleet {}", args[0]);
-        let root = named(&spans, &command)
+    let span_of = |command: &str, kind: &str| {
+        named(&collector.spans(), command)
             .into_iter()
             .find(|s| s.attrs.get("fleet.kind").is_some_and(|k| k == kind))
-            .unwrap_or_else(|| {
-                panic!(
-                    "no `{command}` span with fleet.kind={kind} in {:#?}",
-                    named(&spans, &command)
-                )
-            });
+            .cloned()
+    };
+    for (args, kind, name) in runs {
+        let command = format!("fleet {}", args[0]);
+        let mut root = None;
+        for _ in 0..3 {
+            env.fleet(args);
+            root = span_of(&command, kind);
+            if root.is_some() {
+                break;
+            }
+        }
+        let root = root.unwrap_or_else(|| {
+            panic!(
+                "no `{command}` span with fleet.kind={kind} in {:#?}",
+                named(&collector.spans(), &command)
+            )
+        });
         assert_eq!(
             root.attrs.get("fleet.name").map(String::as_str),
             name,
             "{args:?}: {root:#?}"
         );
     }
+    let spans = collector.spans();
     let apply = named(&spans, "fleet apply");
+    assert!(!apply.is_empty(), "no `fleet apply` span");
     assert!(
         apply
             .iter()
