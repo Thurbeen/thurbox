@@ -569,6 +569,28 @@ fn a_paused_key_reads_paused_after_a_reboot_and_resumes_on_a_start() {
 }
 
 #[test]
+fn a_start_and_a_stop_clear_both_pause_marks() {
+    let Some(rt) = Runtime::new() else { return };
+    started(&rt.start("woken", &["sleep", "300"]));
+    assert_eq!(
+        rt.call("pause", json!({"protocol": 1, "key": "woken"}))["known"],
+        "paused"
+    );
+    started(&rt.start("woken", &["sleep", "300"]));
+    assert!(!older_pause_mark(&rt, "woken").exists());
+    assert_eq!(
+        rt.call("pause", json!({"protocol": 1, "key": "woken"}))["known"],
+        "paused"
+    );
+    assert_eq!(
+        rt.call("stop", json!({"protocol": 1, "key": "woken"}))["known"],
+        "stopped"
+    );
+    assert!(!older_pause_mark(&rt, "woken").exists());
+    assert_eq!(rt.inspect("woken")["known"], "none");
+}
+
+#[test]
 fn a_pause_mark_an_earlier_version_left_by_the_sockets_survives_a_reboot_until_a_start() {
     let Some(rt) = Runtime::new() else { return };
     started(&rt.start("upgraded", &["sleep", "300"]));
