@@ -155,8 +155,10 @@ object through `fleet apply` on the Fleet that thurbox uses:
   `settings.toml`, and keeps the file before as `settings.toml.v2`.
 - It prints a `[runtimes.mux.places.<name>]` table for each `hosts.toml` host,
   and a harness profile for each `agents.toml` agent that Fleet has no
-  profile for. thurbox does not write Fleet's config: paste each one there
-  yourself ([step 8](#8-set-up-remote-places), [Agents](thurbox/agents.md)).
+  profile for. thurbox does not write Fleet's config: paste each table into
+  Fleet's config, and write each profile as the `harnesses/<agent>.toml` file
+  it names, beside Fleet's config
+  ([step 8](#8-set-up-remote-places), [Agents](thurbox/agents.md)).
   A 2.x agent's `setup` has no harness profile key: run it in a wrapper
   script. The report names each other key that it did not carry over.
 

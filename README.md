@@ -167,20 +167,24 @@ Two commands move your 2.x work to v3. Neither deletes a 2.x file.
 
 4. Import the thurbox 2.x sessions and automations as Tasks and CronTasks.
    It reads `thurbox.db`, `hosts.toml` and `agents.toml` and changes none
-   of them:
+   of them. It removes retired keys from `settings.toml` and keeps the old
+   file as `settings.toml.v2`:
 
    ```bash
    thurbox-cli migrate --dry-run
    thurbox-cli migrate
    ```
 
-5. Paste what `thurbox-cli migrate` prints into Fleet's config: a place for
-   each `hosts.toml` host, and a harness profile for each `agents.toml`
-   agent that Fleet has no profile for.
+5. Add what `thurbox-cli migrate` prints: paste a place for each
+   `hosts.toml` host into Fleet's config, and write each harness profile for
+   an `agents.toml` agent as the `harnesses/<agent>.toml` file it names,
+   beside Fleet's config.
 6. Start the work you want. Nothing starts on its own: an imported Task has
    `spec.dispatch = false` and a CronTask `spec.suspend = true`. Set
    `spec.dispatch` to `true` (`spec.suspend` to `false`), then `fleet apply`
-   it again.
+   it again. Before you start a Task from a 2.x worktree, finish that
+   session's work there and remove the worktree
+   ([step 3](docs/migrating-to-v3.md#3-start-your-work-again-as-tasks)).
 
 `--dry-run` prints the plan and changes nothing.
 [Migrating to v3](docs/migrating-to-v3.md) covers each step, services,
