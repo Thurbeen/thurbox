@@ -147,28 +147,31 @@ impl FleetLink {
     }
 
     /// The command that starts this Fleet's manager, from the `manager` of
-    /// its `fleet version --json`: the unit its `supervisor` names, else
-    /// `fleet service install --now` where Fleet has a service backend,
-    /// else its own `fleet up`.
+    /// its `fleet version --json`: `systemctl` for the systemd unit its
+    /// `supervisor` names, `fleet service start` for another supervisor's
+    /// service, else `fleet service install --now`.
     pub fn start_manager(&self, manager: &serde_json::Value) -> String {
-        match supervisor_unit(manager) {
-            Some(unit) => command_line(&["systemctl", "--user", "start", unit]),
-            None if cfg!(target_os = "linux") => {
-                self.fleet_command(&["service", "install", "--now"])
-            }
-            None => self.fleet_command(&["up"]),
-        }
+        self.supervise(manager, "start")
+            .unwrap_or_else(|| self.fleet_command(&["service", "install", "--now"]))
     }
 
     /// The command that restarts it on the release an update installed.
     pub fn restart_manager(&self, manager: &serde_json::Value) -> String {
-        match supervisor_unit(manager) {
-            Some(unit) => command_line(&["systemctl", "--user", "restart", unit]),
-            None => format!(
+        self.supervise(manager, "restart").unwrap_or_else(|| {
+            format!(
                 "stop its `{}` and run it again",
                 self.fleet_command(&["up"])
-            ),
-        }
+            )
+        })
+    }
+
+    fn supervise(&self, manager: &serde_json::Value, verb: &str) -> Option<String> {
+        let unit = supervisor_unit(manager)?;
+        Some(if manager["supervisor"]["kind"] == "systemd" {
+            command_line(&["systemctl", "--user", verb, unit])
+        } else {
+            self.fleet_command(&["service", verb])
+        })
     }
 
     fn fleet_command(&self, verb: &[&str]) -> String {
@@ -877,11 +880,16 @@ mod tests {
         let none = serde_json::json!({"held": false, "supervisor": null});
         assert_eq!(
             FleetLink::local("fleet").start_manager(&none),
-            if cfg!(target_os = "linux") {
-                "fleet service install --now"
-            } else {
-                "fleet up"
-            }
+            "fleet service install --now"
+        );
+        let agent = serde_json::json!({"supervisor": {"kind": "launchd", "unit": "fleet"}});
+        assert_eq!(
+            FleetLink::local("fleet").start_manager(&agent),
+            "fleet service start"
+        );
+        assert_eq!(
+            FleetLink::local("fleet").restart_manager(&agent),
+            "fleet service restart"
         );
         let named =
             serde_json::json!({"supervisor": {"kind": "systemd", "unit": "engine.service"}});

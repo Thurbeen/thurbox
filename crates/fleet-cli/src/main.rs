@@ -293,8 +293,9 @@ enum Command {
         #[command(subcommand)]
         command: IntegrationCommand,
     },
-    /// The systemd user unit that runs `fleet up` for this store: Fleet
-    /// writes it and drives it.
+    /// The user service that runs `fleet up` for this store: a systemd user
+    /// unit on Linux, a launchd agent on macOS, a Task Scheduler task on
+    /// Windows. Fleet writes it and drives it.
     Service {
         #[command(subcommand)]
         command: ServiceCommand,
@@ -313,7 +314,8 @@ enum ServiceCommand {
     /// keeping its drop-ins, and enable it. Refuses a second unit for the
     /// same store (exit 5).
     Install {
-        /// The unit's name, without `.service`.
+        /// The service's name: the unit without `.service`, the agent's
+        /// label, or the task's name.
         #[arg(long, default_value = service::DEFAULT_NAME)]
         name: String,
         /// Start it now too.
@@ -344,14 +346,14 @@ enum ServiceCommand {
         #[arg(long, value_name = "SECONDS", requires = "expect")]
         timeout: Option<u64>,
     },
-    /// What systemd says of the store's unit; exits as `systemctl status`
-    /// does (0 active, 3 not running).
+    /// What the supervisor says of the store's service; exits 0 while it
+    /// runs and 3 while it does not.
     Status {
         #[arg(long)]
         name: Option<String>,
     },
-    /// Stop and disable the store's unit and remove its file; its drop-ins
-    /// stay.
+    /// Stop and unregister the store's service and remove its file; a
+    /// systemd unit's drop-ins stay.
     Uninstall {
         #[arg(long)]
         name: Option<String>,
@@ -2002,7 +2004,9 @@ fn cmd_service(
                 exe: &exe,
                 config: config_path,
                 data_dir,
+                #[cfg(unix)]
                 path_env: std::env::var_os("PATH").unwrap_or_default(),
+                #[cfg(unix)]
                 stop_timeout,
                 now: *now,
             })
@@ -2082,11 +2086,6 @@ fn service_stop_ms(config: &Config) -> Result<u64, Failure> {
 fn service_failure(refusal: service::Refusal) -> Failure {
     use service::Refusal;
     let (code, message, hint) = match refusal {
-        Refusal::Unsupported => (
-            exit::ERROR,
-            "fleet service drives systemd user units, on Linux only".to_string(),
-            Some("run fleet up under this system's own service manager".to_string()),
-        ),
         Refusal::Invalid(why) | Refusal::Io(why) => (exit::ERROR, why, None),
         Refusal::Taken(unit) => (
             exit::CONFLICT,
@@ -2110,11 +2109,11 @@ fn service_failure(refusal: service::Refusal) -> Failure {
             "no unit runs this store".to_string(),
             Some("fleet service install".to_string()),
         ),
-        Refusal::Systemctl(why) => (exit::ERROR, format!("systemctl --user {why}"), None),
+        Refusal::Supervisor(why) => (exit::ERROR, why, None),
         Refusal::Stopped(why) => (
             exit::ERROR,
             why,
-            Some("fleet service status and the unit's journal say why".to_string()),
+            Some("fleet service status and the service's log say why".to_string()),
         ),
         Refusal::StillRunning(why) => (
             exit::TIMEOUT,
@@ -2132,7 +2131,7 @@ fn service_failure(refusal: service::Refusal) -> Failure {
 /// The unit that runs `fleet up` for the store, for `version`, or `null`.
 fn supervisor(data_dir: &Path) -> Value {
     match service::store_unit(data_dir) {
-        Ok(Some(unit)) => json!({"kind": "systemd", "unit": unit.name}),
+        Ok(Some(unit)) => json!({"kind": service::KIND, "unit": unit.name}),
         _ => Value::Null,
     }
 }

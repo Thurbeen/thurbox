@@ -128,6 +128,32 @@ fn hang() -> ! {
     std::process::exit(9)
 }
 
+/// A service manager, `launchctl` or `schtasks`: the answer under
+/// `service[<first argument>]` in its state, `{code, stdout, writes, text}`,
+/// exit 0 with no output when there is none. A list of answers is consumed
+/// in order, and its last answer stays. `writes` names a file the call
+/// writes `text` to, as a supervisor starting a manager writes its record.
+fn service_manager(args: &[String]) -> ExitCode {
+    let answer = {
+        let _lock = Lock::take();
+        let mut state = load();
+        let verb = args.first().cloned().unwrap_or_default();
+        let answers = &mut state["service"][verb.as_str()];
+        let answer = match answers {
+            Value::Array(list) if list.len() > 1 => list.remove(0),
+            Value::Array(list) => list.first().cloned().unwrap_or(Value::Null),
+            other => other.clone(),
+        };
+        save(&state);
+        answer
+    };
+    if let Some(path) = answer["writes"].as_str() {
+        fs::write(path, answer["text"].as_str().unwrap_or_default()).expect("service write");
+    }
+    print!("{}", answer["stdout"].as_str().unwrap_or_default());
+    ExitCode::from(u8::try_from(answer["code"].as_u64().unwrap_or(0)).unwrap_or(1))
+}
+
 fn opt(args: &[String], name: &str) -> Option<String> {
     args.iter()
         .position(|a| a == name)
@@ -166,6 +192,7 @@ fn main() -> ExitCode {
         ("glab", Some("api")) => forge::glab(&args),
         ("az", Some("devops" | "repos")) => forge::az(&args),
         ("curl", Some("--include")) => forge::curl(&args),
+        ("launchctl" | "schtasks", _) => service_manager(&args),
         _ => fail("stub: unknown role"),
     }
 }

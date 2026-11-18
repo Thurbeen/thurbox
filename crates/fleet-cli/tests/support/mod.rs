@@ -193,6 +193,27 @@ impl Env {
         env
     }
 
+    /// An environment whose PATH holds only the stub, copied under the name
+    /// of a service manager (`launchctl`, `schtasks`): it records each call
+    /// and answers what `service[<verb>]` in its state says.
+    pub fn service_stub(name: &str, program: &str) -> Env {
+        let mut env = Env::new(name);
+        fs::create_dir_all(env.stub_dir()).expect("stub dir");
+        let bin = env.root.join("service-bin");
+        fs::create_dir_all(&bin).expect("service bin");
+        fs::copy(
+            stub_exe(),
+            bin.join(format!("{program}{}", std::env::consts::EXE_SUFFIX)),
+        )
+        .expect("service stub");
+        env.vars.push((
+            "FLEET_STUB_DIR".into(),
+            env.stub_dir().to_string_lossy().into_owned(),
+        ));
+        env.only_on_path(&bin);
+        env
+    }
+
     /// An environment with a `[gateway]` section beside the fake runtime:
     /// one fake account, two people and one route, each path inside the
     /// test's own directory. `gateway_section` is the text it appends.

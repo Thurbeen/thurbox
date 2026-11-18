@@ -82,9 +82,17 @@ that crashed leaves its last state behind.
 
 ### The service unit: `fleet service`
 
-`fleet service` writes and drives the one supervisor of `fleet up`: a
-systemd user unit. It runs on Linux only. On another system, run `fleet up`
-under that system's own service manager.
+`fleet service` writes and drives the one supervisor of `fleet up`, under
+the system's own service manager:
+
+- Linux: a systemd user unit, driven through `systemctl --user`.
+- macOS: a launchd agent, driven through `launchctl` in the user's
+  `gui/<uid>` domain.
+- Windows: a Task Scheduler task that starts at the user's logon, driven
+  through `schtasks`.
+
+The commands below name the systemd verbs. The other two supervisors are
+described after the systemd unit.
 
 | Command | What it does |
 | --- | --- |
@@ -148,9 +156,72 @@ WantedBy=default.target
 - `KillMode=process` keeps the multiplexer's server, and every session on
   it, when the unit stops or restarts.
 
-`fleet version --json` names the unit in `manager.supervisor`:
-`{"kind": "systemd", "unit": "fleet.service"}`, or `null` when no unit runs
-the store. An interface reads the unit there and does not guess it.
+#### The launchd agent (macOS)
+
+`install` writes `~/Library/LaunchAgents/NAME.plist`. The agent's label is
+`NAME`. The property list holds the same command and environment as the
+systemd unit, and these keys:
+
+- `XFleetStore` names the store. launchd ignores the key.
+- `RunAtLoad`, and `KeepAlive` with `SuccessfulExit` false: launchd starts
+  the agent when it loads it, and starts it again after a failure, 10
+  seconds apart at most (`ThrottleInterval`).
+- `ExitTimeOut` is the lease that `fleet up` takes, as `TimeoutStopSec`.
+- `AbandonProcessGroup` keeps the multiplexer's server when the agent
+  stops, as `KillMode=process`.
+- The manager's output goes to `~/Library/Logs/NAME.log`.
+
+| Command | `launchctl` |
+| --- | --- |
+| `install` | `enable gui/<uid>/NAME`. `--now` also loads the agent with `bootstrap` when launchd has not loaded it. Otherwise launchd loads it at the next login. |
+| `start` | `kickstart`, or `bootstrap` when the agent is not loaded |
+| `restart` | `kickstart -k`, or `bootstrap` when the agent is not loaded |
+| `stop` | `bootout`: it stops and unloads the agent |
+| `status` | `print`. Exit 0 while the agent runs, 3 while it does not |
+| `uninstall` | `bootout` when the agent is loaded, and removes the property list |
+| `restart --expect` | `kickstart -k`. The agent fails first when it stops with exit code 78 |
+
+launchd has no `RestartPreventExitStatus`: it starts a manager that exits
+78 again after `ThrottleInterval`. A loaded agent keeps the property list
+it was loaded with. Run `fleet service stop` and then `start` to load a
+rewritten one.
+
+#### The Task Scheduler task (Windows)
+
+`install` writes the task's XML to
+`%LOCALAPPDATA%\fleet\service\NAME.xml` and registers it as the task
+`NAME` with `schtasks /Create /XML`. Fleet keeps that file to find the task
+of a store. The task:
+
+- names its store in `Documentation` (`X-Fleet-Store=<data dir>`);
+- starts at the user's logon, as that user, with no extra privilege;
+- runs `"<fleet>" --config "<config>" up` with no time limit;
+- starts again after a failure, one minute apart, at most 999 times;
+- ignores a second start while it runs.
+
+| Command | `schtasks` |
+| --- | --- |
+| `install` | `/Create /TN NAME /XML <file> /F`. `--now` also runs `/Run` |
+| `start` | `/Run` |
+| `restart` | `/End` when the task runs, then `/Run` |
+| `stop` | `/End` when the task runs |
+| `status` | `/Query /V /FO LIST`. Exit 0 while the task runs, 3 while it does not |
+| `uninstall` | `/End`, then `/Delete`, and removes the XML file |
+| `restart --expect` | `/End`, then `/Run`. The task fails first when its last result is 78 |
+
+- `/End` ends the manager at once. It does not wait for the current sweep.
+  The next manager takes over the lease of a manager that is dead.
+- Fleet reads `Status` and `Last Result` from the report of `schtasks`,
+  which names them in English.
+- The task runs in a console window of its own.
+
+#### The supervisor in `fleet version`
+
+`fleet version --json` names the service in `manager.supervisor`:
+`{"kind": "systemd", "unit": "fleet.service"}`, `{"kind": "launchd",
+"unit": "fleet"}` or `{"kind": "task-scheduler", "unit": "fleet"}`, or
+`null` when no service runs the store. An interface reads the service there
+and does not guess it.
 
 The install script (`scripts/install.sh`) runs `fleet init` and
 `fleet service install --now` on Linux when a systemd user manager answers.

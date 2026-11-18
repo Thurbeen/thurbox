@@ -38,6 +38,9 @@ toml.workspace = true
 sha2.workspace = true
 ctrlc.workspace = true
 
+[target.'cfg(target_os = "macos")'.dependencies]
+rustix = { version = "1.1.6", features = ["process"] }
+
 [lints]
 workspace = true
 
