@@ -13,8 +13,9 @@ setups that 3.x allows.
 - You run thurbox 2.x or Fleet 2, and you want 3.x.
 - You want to stay on 2.x. A 2.x install never updates itself to 3.x.
   Install with `VERSION=v2.x.y` (`THURBOX_VERSION` on Windows) to keep 2.x.
-- A new user has nothing to migrate. For now, we recommend v2: v3 is not yet
-  fully stable. Start at [Use v2 for now](../README.md#use-v2-for-now).
+  See [Staying on v2](../README.md#staying-on-v2).
+- A new user has nothing to migrate. Start at
+  [Install](../README.md#install).
 
 ## What changed
 
@@ -154,8 +155,10 @@ object through `fleet apply` on the Fleet that thurbox uses:
   `settings.toml`, and keeps the file before as `settings.toml.v2`.
 - It prints a `[runtimes.mux.places.<name>]` table for each `hosts.toml` host,
   and a harness profile for each `agents.toml` agent that Fleet has no
-  profile for. thurbox does not write Fleet's config: paste each one there
-  yourself ([step 8](#8-set-up-remote-places), [Agents](thurbox/agents.md)).
+  profile for. thurbox does not write Fleet's config: paste each table into
+  Fleet's config, and write each profile as the `harnesses/<agent>.toml` file
+  it names, beside Fleet's config
+  ([step 8](#8-set-up-remote-places), [Agents](thurbox/agents.md)).
   A 2.x agent's `setup` has no harness profile key: run it in a wrapper
   script. The report names each other key that it did not carry over.
 
