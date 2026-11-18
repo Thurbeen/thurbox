@@ -1535,3 +1535,73 @@ fn a_repository_with_no_origin_defaults_to_its_checked_out_branch() {
     assert_eq!(read.default.as_deref(), Some("main"));
     assert_eq!(read.names, vec!["main".to_string()]);
 }
+
+#[test]
+fn a_logged_git_failure_keeps_only_its_first_reportable_line() {
+    let stderr = b"** WARNING: connection is not using a post-quantum key exchange algorithm.\n\
+warning: Not a git repository. Use --no-index to compare two paths outside a working tree\n\
+usage: git diff --no-index [<options>] <path> <path>\n\
+\n\
+Diff output format options\n";
+    assert_eq!(
+        reportable_stderr_line(stderr),
+        "warning: Not a git repository. Use --no-index to compare two paths outside a working tree"
+    );
+    assert_eq!(reportable_stderr_line(b""), "");
+}
+
+#[test]
+fn a_plain_directory_has_an_empty_working_diff() {
+    let plain = tempfile::tempdir().expect("tempdir");
+    let diff = working_diff(plain.path()).expect("a plain directory still answers");
+    assert_eq!(
+        (
+            diff.body.as_str(),
+            diff.numstat_z.as_str(),
+            diff.name_status_z.as_str()
+        ),
+        ("", "", "")
+    );
+    assert_eq!((diff.untracked_total, diff.untracked_shown), (0, 0));
+}
+
+#[test]
+fn only_git_saying_not_a_repository_reads_as_outside_a_work_tree() {
+    let scratch = tempfile::tempdir().expect("tempdir");
+    let plain = scratch.path().join("plain");
+    let repo = scratch.path().join("repo");
+    std::fs::create_dir_all(&plain).expect("mkdir");
+    seed_repo(&repo, "a.txt", "one");
+    let probe = |dir: &Path, env: &[(&str, &str)]| {
+        let mut cmd = git_command(dir, &["rev-parse", "--is-inside-work-tree"]);
+        cmd.envs(env.iter().copied());
+        work_tree_answer(&cmd.output().expect("git runs"))
+    };
+
+    assert_eq!(probe(&plain, &[]), WorkTree::Outside);
+    assert_eq!(probe(&repo.join(".git"), &[]), WorkTree::Outside);
+    assert_eq!(probe(&repo, &[]), WorkTree::Inside);
+    assert_eq!(
+        probe(
+            &repo,
+            &[
+                ("GIT_TEST_ASSUME_DIFFERENT_OWNER", "1"),
+                ("GIT_CONFIG_GLOBAL", "/dev/null"),
+                ("GIT_CONFIG_NOSYSTEM", "1"),
+            ]
+        ),
+        WorkTree::Unknown,
+        "a repository git refuses to read is not a directory without changes"
+    );
+}
+
+#[test]
+fn a_translated_git_still_reads_a_plain_directory_as_outside_a_work_tree() {
+    let plain = tempfile::tempdir().expect("tempdir");
+    let mut probe = work_tree_probe(plain.path());
+    probe.env("LANGUAGE", "de");
+    assert_eq!(
+        work_tree_answer(&probe.output().expect("git runs")),
+        WorkTree::Outside
+    );
+}
