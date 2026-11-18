@@ -10,9 +10,15 @@ const AGENTS_TOML: &str = r#"config_version = 1
 default = "claude"
 
 [[agents]]
+name = "claude"
+command = "claude"
+resume_args = ["--resume", "{id}"]
+
+[[agents]]
 name = "aider-x"
 command = "aider"
 args = ["--no-auto-commits"]
+additional_dir_args = ["--add-dir", "{dir}"]
 resume_args = ["--restore", "{id}"]
 setup = ["pip install aider-chat"]
 "#;
@@ -40,13 +46,23 @@ CREATE TABLE automations (id INTEGER PRIMARY KEY, name TEXT NOT NULL, enabled IN
 INSERT INTO sessions VALUES ('s1', 'Fix Login', 'claude', 'tmux', 'abc-123', '/src/app-wt', 1, NULL);
 INSERT INTO sessions VALUES ('s2', 'notes', 'aider-x', 'ssh:devbox', NULL, '/home/me/notes', 2, NULL);
 INSERT INTO sessions VALUES ('s3', 'gone', 'claude', 'tmux', NULL, '/tmp/gone', 3, 99);
+INSERT INTO sessions VALUES ('s4', 'multi', 'claude', 'tmux', NULL, '/src/zeta-wt', 4, NULL);
+INSERT INTO sessions VALUES ('s5', 'fix-login', 'claude', 'tmux', NULL, '/src/other', 5, NULL);
+INSERT INTO sessions VALUES ('s6', 'win', 'claude', 'wsl:Ubuntu-22.04', NULL, '/home/me/win', 6, NULL);
 INSERT INTO worktrees VALUES ('s1', '/src/app', '/src/app-wt', 'thurbox/fix-login', 1, NULL);
-INSERT INTO automations VALUES (1, 'Nightly review', 1, 'cron', '0 3 * * *', NULL, 'spawn', NULL,
+INSERT INTO worktrees VALUES ('s4', '/src/alpha', '/src/alpha-wt', 'b1', 4, NULL);
+INSERT INTO worktrees VALUES ('s4', '/src/zeta', '/src/zeta-wt', 'b2', 4, NULL);
+INSERT INTO automations VALUES (1, 'Nightly review', 1, 'cron', '0 3 * * *', 'Etc/UTC', 'spawn', NULL,
   '/src/app', NULL, 'main', 'claude', 'Review yesterday''s commits.', NULL);
 INSERT INTO automations VALUES (2, 'poke', 1, 'cron', '*/5 * * * *', 'UTC', 'send', 's1', NULL, NULL,
   NULL, NULL, 'continue', NULL);
 INSERT INTO automations VALUES (3, 'paris', 1, 'cron', '0 9 * * *', 'Europe/Paris', 'spawn', NULL,
   '/src/app', NULL, NULL, 'claude', 'Morning triage.', NULL);
+INSERT INTO automations VALUES (4, 'local', 1, 'cron', '0 8 * * *', NULL, 'spawn', NULL,
+  '/src/app', NULL, NULL, 'claude', 'Local morning.', NULL);
+INSERT INTO automations VALUES (5, 'off', 0, 'cron', '0 1 * * *', 'UTC', 'spawn', NULL,
+  '/src/app', NULL, NULL, 'claude', 'Paused.', NULL);
+ALTER TABLE automations ADD COLUMN action_extra_repos TEXT;
 ";
 
 fn fleet_bin() -> Option<PathBuf> {
@@ -197,9 +213,23 @@ impl V2 {
         self.migrate_with_path(args, &format!("{}:/usr/bin:/bin", self.bin.display()))
     }
 
+    fn migrate_json(&self) -> Value {
+        let run = self.migrate_as(
+            "--json",
+            &[],
+            &format!("{}:/usr/bin:/bin", self.bin.display()),
+        );
+        run.ok();
+        serde_json::from_str(&run.stdout).expect("JSON report")
+    }
+
     fn migrate_with_path(&self, args: &[&str], path: &str) -> Run {
+        self.migrate_as("--text", args, path)
+    }
+
+    fn migrate_as(&self, format: &str, args: &[&str], path: &str) -> Run {
         let out = Command::new(env!("CARGO_BIN_EXE_thurbox-cli"))
-            .arg("--text")
+            .arg(format)
             .arg("migrate")
             .args(args)
             .env_clear()
@@ -271,7 +301,10 @@ fn the_2x_state_becomes_fleet_objects_and_ready_to_paste_tables() {
         .has("Task/fix-login")
         .has("Task/notes")
         .lacks("Task/gone")
-        .has("claude --resume abc-123")
+        .has("cd /src/app-wt && claude --resume abc-123")
+        .has("local time zone")
+        .has("CronTask/off: it was disabled")
+        .lacks("harnesses/claude.toml")
         .has("CronTask/nightly-review")
         .has("poke")
         .has("paris")
@@ -280,8 +313,8 @@ fn the_2x_state_becomes_fleet_objects_and_ready_to_paste_tables() {
         .has("worktrees_dir")
         .has("harnesses/aider-x.toml")
         .has("program = \"aider\"")
-        .has("\"--restore\"")
-        .has("{conversation}")
+        .has(r#"args = ["{program}", "{launch_args}", "--restore", "{conversation}"]"#)
+        .has("add_dir = \"--add-dir\"")
         .has("setup")
         .has("multiplexer");
 
@@ -323,6 +356,30 @@ fn the_2x_state_becomes_fleet_objects_and_ready_to_paste_tables() {
         serde_json::json!(["git+file:///src/app#main"])
     );
     assert!(v2.fleet_json(&["get", "crontask", "paris"]).is_none());
+    assert!(v2.fleet_json(&["get", "crontask", "local"]).is_none());
+    assert_eq!(
+        v2.fleet_json(&["get", "crontask", "off"])
+            .expect("CronTask off")["spec"]["suspend"],
+        true
+    );
+
+    let multi = v2
+        .fleet_json(&["get", "task", "multi"])
+        .expect("Task multi");
+    assert_eq!(
+        multi["spec"]["workspace"],
+        serde_json::json!([
+            "git+file:///src/zeta?branch=b2",
+            "git+file:///src/alpha?branch=b1"
+        ])
+    );
+    let twin = v2
+        .fleet_json(&["get", "task", "fix-login-s5"])
+        .expect("Task fix-login-s5");
+    assert_eq!(twin["metadata"]["labels"]["thurbox.dev/name"], "fix-login");
+    let win = v2.fleet_json(&["get", "task", "win"]).expect("Task win");
+    assert_eq!(win["spec"]["host"], "mux/ubuntu-22.04");
+    assert!(v2.path("data/thurbox.db.migrated").exists());
     assert!(v2.fleet_json(&["get", "crontask", "poke"]).is_none());
 
     assert_eq!(std::fs::read(v2.path("data/thurbox.db")).expect("db"), db);
@@ -352,7 +409,60 @@ fn a_second_run_imports_nothing_again() {
     run.ok().has("Already imported");
     assert_eq!(files, v2.files());
     let tasks = v2.fleet_json(&["list", "task", "--json"]).expect("tasks");
-    assert_eq!(tasks.as_array().map(Vec::len), Some(2), "{tasks:#}");
+    assert_eq!(tasks.as_array().map(Vec::len), Some(5), "{tasks:#}");
+}
+
+#[test]
+fn each_printed_harness_profile_loads_in_fleet() {
+    let Some(v2) = setup() else { return };
+    let report = v2.migrate_json();
+    let harnesses = report["harnesses"].as_array().expect("harnesses");
+    assert_eq!(harnesses.len(), 1, "{report:#}");
+    let dir = v2.path("harnesses");
+    std::fs::create_dir_all(&dir).expect("harnesses dir");
+    std::fs::write(
+        dir.join("aider-x.toml"),
+        harnesses[0]["toml"].as_str().expect("profile"),
+    )
+    .expect("profile");
+    let version = v2
+        .fleet_json(&["version", "--json"])
+        .expect("fleet version");
+    assert!(
+        version["harnesses"]
+            .as_array()
+            .is_some_and(|names| names.iter().any(|n| n == "aider-x")),
+        "{version:#}"
+    );
+}
+
+#[test]
+fn a_session_fleet_refuses_keeps_the_startup_notice() {
+    let Some(v2) = setup() else { return };
+    let taken = serde_json::json!({
+        "apiVersion": "fleet/v1alpha1",
+        "kind": "Task",
+        "metadata": {"name": "notes"},
+        "spec": {"harness": "codex", "brief": "", "workspace": ["file:///elsewhere"], "dispatch": false},
+    });
+    let mut apply = Command::new(&v2.fleet)
+        .args(["apply", "-f", "-"])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::null())
+        .spawn()
+        .expect("fleet apply");
+    {
+        use std::io::Write;
+        apply
+            .stdin
+            .take()
+            .unwrap()
+            .write_all(taken.to_string().as_bytes())
+            .expect("manifest");
+    }
+    assert!(apply.wait().expect("fleet apply").success());
+    v2.migrate(&[]).ok().has("Not imported").has("Task/notes");
+    assert!(!v2.path("data/thurbox.db.migrated").exists());
 }
 
 #[test]

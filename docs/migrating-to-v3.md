@@ -132,20 +132,26 @@ object through `fleet apply` on the Fleet that thurbox uses:
   `git+file://<repository>?branch=<its branch>`, a session with no worktree
   `file://<directory>`. A session on an ssh or WSL host runs on the place
   `mux/<host>`.
-- A Task cannot carry a 2.x conversation. The report prints the command that
-  resumes each one, for example `claude --resume <id>`, to run in the Task's
-  session.
-- Each `cron` automation that starts a session in UTC becomes a CronTask with
-  `spec.suspend = true`. The report names each other automation: one that
-  sends to a session, runs a command, runs once or runs in another time zone.
-  Write a CronTask for it by hand.
+- A Task cannot carry a 2.x conversation. The agent keeps a conversation
+  with the directory it ran in. The report prints the command that resumes
+  each one there, for example `cd /src/app-wt && claude --resume <id>`.
+- The 2.x worktree keeps its branch checked out. While it exists, the Task's
+  worktree gets the branch `<branch>-2`, and uncommitted work stays in the
+  2.x worktree. Commit or move that work, and remove the 2.x worktree before
+  you dispatch the Task ([step 9](#9-remove-what-2x-left)).
+- Each `cron` automation that starts a session, with its time zone set to
+  UTC, becomes a CronTask with `spec.suspend = true`. The report names each
+  other automation: one that sends to a session, runs a command, runs once,
+  or runs in another time zone. 2.x ran an automation with no time zone in
+  the machine's local time. Write a CronTask for each one by hand.
 - It removes the [retired keys](thurbox/config.md#retired-keys) from
   `settings.toml`, and keeps the file before as `settings.toml.v2`.
-- It prints a `[runtimes.mux.places.<name>]` table for each `hosts.toml` host
-  and a harness profile for each `agents.toml` agent. thurbox does not write
-  Fleet's config: paste each one there yourself
-  ([step 8](#8-set-up-remote-places), [Agents](thurbox/agents.md)). A 2.x
-  agent's `setup` has no harness profile key: run it in a wrapper script.
+- It prints a `[runtimes.mux.places.<name>]` table for each `hosts.toml` host,
+  and a harness profile for each `agents.toml` agent that Fleet has no
+  profile for. thurbox does not write Fleet's config: paste each one there
+  yourself ([step 8](#8-set-up-remote-places), [Agents](thurbox/agents.md)).
+  A 2.x agent's `setup` has no harness profile key: run it in a wrapper
+  script. The report names each other key that it did not carry over.
 
 A second run imports nothing twice: each object carries the 2.x session's or
 automation's id as a label. Without `sqlite3`, it says so and does the rest.
@@ -302,7 +308,8 @@ settings panel removes the retired keys.
 its reason. `thurbox-cli migrate` removes them
 ([step 3](#3-start-your-work-again-as-tasks)). Or remove them yourself, or
 save once from the settings panel. `thurbox-cli doctor` warns about a
-`hosts.toml` that 2.x left, and names what replaces it.
+`hosts.toml` that 2.x left, and an `automations.json` that an early 3.x
+build left. It names what replaces each one.
 
 ## 8. Set up remote places
 
@@ -373,8 +380,9 @@ thurbox-cli doctor
 ```
 
 `thurbox-cli doctor` reports each Fleet, its runtime and its agents. It
-also reports a 2.x `hosts.toml`, the automation heartbeat window and the
-automation timer. It does not check the other 2.x files.
+also reports a 2.x `hosts.toml`, an early 3.x `automations.json`, the
+automation heartbeat window and the automation timer. It does not check the
+other 2.x files.
 
 ## Open points
 

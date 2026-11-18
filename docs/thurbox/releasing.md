@@ -147,7 +147,8 @@ The header badge only offers the line. 3.x carries the same rule with
    call whichever `thurbox-cli` is on `PATH`. What 3.x does with what 2.x left:
    - `settings.toml` loads. A key 3.x no longer reads is reported, not refused.
    - `hosts.toml` and `agents.toml` are not read. `thurbox-cli doctor`
-     warns about `hosts.toml` and names what replaces it.
+     warns about `hosts.toml`, and about an `automations.json` that an early
+     3.x build left, and names what replaces each one.
    - `thurbox.db` is not written: 3.x has no database, and Fleet holds its
      sessions. `thurbox-cli migrate` reads it once with `sqlite3 -readonly`
      and applies its sessions and automations as Fleet Tasks and CronTasks,

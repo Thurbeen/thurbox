@@ -293,18 +293,6 @@ fn set_table_bool(table: &mut toml_edit::Table, key: &str, v: bool) {
     table[key] = toml_edit::value(v);
 }
 
-/// Write `settings` back to `settings.toml`, **preserving comments and
-/// layout**.
-///
-/// The existing file (or, when absent, the documented [`SEED_SETTINGS_TOML`])
-/// is parsed into a `toml_edit::DocumentMut` and each value is set in place, so
-/// the surrounding documentation survives a round-trip. A malformed file falls
-/// back to the seed text rather than blocking the save.
-///
-/// Note: the seed ships every knob as a *commented* `# key = …` line, which
-/// `toml_edit` cannot see. The first save therefore **adds real, uncommented
-/// keys** (below the documentation comments, which remain as reference); from
-/// then on those keys are edited in place.
 pub fn drop_retired_keys(doc: &mut toml_edit::DocumentMut) -> Vec<&'static str> {
     let mut dropped = Vec::new();
     for (key, _) in RETIRED_KEYS {
@@ -323,6 +311,18 @@ pub fn drop_retired_keys(doc: &mut toml_edit::DocumentMut) -> Vec<&'static str> 
     dropped
 }
 
+/// Write `settings` back to `settings.toml`, **preserving comments and
+/// layout**.
+///
+/// The existing file (or, when absent, the documented [`SEED_SETTINGS_TOML`])
+/// is parsed into a `toml_edit::DocumentMut` and each value is set in place, so
+/// the surrounding documentation survives a round-trip. A malformed file falls
+/// back to the seed text rather than blocking the save.
+///
+/// Note: the seed ships every knob as a *commented* `# key = …` line, which
+/// `toml_edit` cannot see. The first save therefore **adds real, uncommented
+/// keys** (below the documentation comments, which remain as reference); from
+/// then on those keys are edited in place.
 pub fn save_settings(settings: &Settings) -> std::io::Result<()> {
     use toml_edit::{value, DocumentMut};
 

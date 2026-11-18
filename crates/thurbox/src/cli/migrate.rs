@@ -13,12 +13,13 @@ const AUTOMATION_LABEL: &str = "thurbox.dev/v2-automation";
 const FLEET_TIMEOUT: Duration = Duration::from_secs(30);
 
 const SESSIONS_QUERY: &str = "SELECT s.id, s.name, s.agent, s.backend_type, s.agent_session_id, \
-     s.cwd, w.repo_path, w.branch FROM sessions s LEFT JOIN worktrees w \
+     s.cwd, w.repo_path, w.worktree_path, w.branch FROM sessions s LEFT JOIN worktrees w \
      ON w.session_id = s.id AND w.deleted_at IS NULL WHERE s.deleted_at IS NULL \
      ORDER BY s.created_at, s.id, w.repo_path";
 
 const AUTOMATIONS_QUERY: &str = "SELECT id, name, enabled, schedule_kind, schedule_spec, \
-     timezone, action_kind, repo_path, base_branch, agent, prompt FROM automations ORDER BY id";
+     timezone, action_kind, repo_path, base_branch, agent, prompt, action_extra_repos \
+     FROM automations ORDER BY id";
 
 const PLACE_KEYS: [&str; 7] = [
     "kind",
@@ -30,9 +31,20 @@ const PLACE_KEYS: [&str; 7] = [
     "path_prepend",
 ];
 
-const KNOWN_RESUME: [(&str, &str); 2] = [
-    ("claude", "claude --resume {id}"),
-    ("codex", "codex resume {id}"),
+const UTC_ZONES: [&str; 4] = ["UTC", "Etc/UTC", "GMT", "Etc/GMT"];
+
+const KNOWN_RESUME: [(&str, &[&str]); 2] = [
+    ("claude", &["claude", "--resume"]),
+    ("codex", &["codex", "resume"]),
+];
+
+const AGENT_KEYS: [&str; 6] = [
+    "name",
+    "command",
+    "args",
+    "resume_args",
+    "env",
+    "additional_dir_args",
 ];
 
 #[derive(Debug, clap::Args)]
@@ -69,22 +81,21 @@ pub fn run(
         .and_then(|p| p.parent().map(Path::to_path_buf))
         .ok_or("no thurbox config directory")?;
     let data_dir = crate::paths::data_directory().ok_or("no thurbox data directory")?;
+    let link = FleetLink::in_force(settings);
 
-    let agents = read_toml(&config_dir.join("agents.toml"))?
-        .map(|doc| harness_profiles(&doc, &mut report))
-        .unwrap_or_default();
+    let agents = match read_toml(&config_dir.join("agents.toml"))? {
+        Some(doc) => harness_profiles(&doc, &fleet_harnesses(&link), &mut report),
+        None => BTreeMap::new(),
+    };
     if let Some(doc) = read_toml(&config_dir.join("hosts.toml"))? {
         places(&doc, &mut report);
     }
 
     let db = data_dir.join("thurbox.db");
-    let marker = crate::paths::v2_migrated_marker();
-    let mut read_db = false;
+    let mut complete = false;
     if db.is_file() {
         match (query(&db, SESSIONS_QUERY), query(&db, AUTOMATIONS_QUERY)) {
             (Ok(sessions), Ok(automations)) => {
-                read_db = true;
-                let link = FleetLink::in_force(settings);
                 let mut fleet = Fleet::read(link, dry_run, &mut report);
                 for task in tasks(&sessions, &agents, &mut report) {
                     fleet.import(task, SESSION_LABEL, &mut report);
@@ -92,6 +103,7 @@ pub fn run(
                 for cron in cron_tasks(&automations, &mut report) {
                     fleet.import(cron, AUTOMATION_LABEL, &mut report);
                 }
+                complete = fleet.reachable && !fleet.failed;
             }
             (Err(why), _) | (_, Err(why)) => report.to_do.push(why),
         }
@@ -99,9 +111,9 @@ pub fn run(
 
     clean_settings(dry_run, &mut report)?;
 
-    if read_db && !dry_run && report.to_do.iter().all(|t| !t.starts_with("fleet:")) {
-        if let Some(marker) = &marker {
-            crate::paths::write_atomically(marker, b"thurbox-cli migrate\n")
+    if complete && !dry_run {
+        if let Some(marker) = crate::paths::v2_migrated_marker() {
+            crate::paths::write_atomically(&marker, b"thurbox-cli migrate\n")
                 .map_err(|e| format!("{}: {e}", marker.display()))?;
         }
     }
@@ -135,10 +147,18 @@ fn query(db: &Path, sql: &str) -> Result<Vec<Value>, String> {
             _ => format!("sqlite3: {e}"),
         })?;
     if !out.status.success() {
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        if stderr.contains("-json") {
+            return Err(format!(
+                "sqlite3 is older than 3.33, which reads JSON, so {} was not read: install a \
+                 newer sqlite3 and run thurbox-cli migrate again",
+                db.display()
+            ));
+        }
         return Err(format!(
             "sqlite3 could not read {}: {}",
             db.display(),
-            String::from_utf8_lossy(&out.stderr).trim()
+            stderr.trim()
         ));
     }
     let text = String::from_utf8_lossy(&out.stdout);
@@ -152,14 +172,23 @@ fn text<'a>(row: &'a Value, key: &str) -> Option<&'a str> {
     row[key].as_str().filter(|s| !s.is_empty())
 }
 
+fn place_name(host: &str) -> String {
+    crate::kernel::command::fleet::task_name(host)
+}
+
 fn host_of(backend_type: &str) -> Option<String> {
     let mut parts = backend_type.splitn(3, ':');
     match (parts.next(), parts.next()) {
         (Some("ssh" | "wsl"), Some(host)) if !host.is_empty() => {
-            Some(format!("mux/{}", host.to_lowercase()))
+            Some(format!("mux/{}", place_name(host)))
         }
         _ => None,
     }
+}
+
+fn short_id(id: &str) -> String {
+    let id = crate::kernel::command::fleet::task_name(id);
+    id.chars().take(8).collect()
 }
 
 fn tasks(rows: &[Value], agents: &BTreeMap<String, Agent>, report: &mut Report) -> Vec<Value> {
@@ -171,11 +200,22 @@ fn tasks(rows: &[Value], agents: &BTreeMap<String, Agent>, report: &mut Report) 
             None => sessions.push((id, vec![row])),
         }
     }
+    let mut names = BTreeSet::new();
     let mut out = Vec::new();
-    for (id, group) in sessions {
+    for (id, mut group) in sessions {
         let first = group[0];
         let name = text(first, "name").unwrap_or(id);
-        let task = crate::kernel::command::fleet::task_name(name);
+        let cwd = text(first, "cwd");
+        group.sort_by_key(|row| text(row, "worktree_path") != cwd);
+        let mut task = crate::kernel::command::fleet::task_name(name);
+        if task.is_empty() || !names.insert(task.clone()) {
+            task = format!(
+                "{}-{}",
+                if task.is_empty() { "session" } else { &task },
+                short_id(id)
+            );
+            names.insert(task.clone());
+        }
         let key = format!("Task/{task}");
         let mut workspace: Vec<String> = group
             .iter()
@@ -190,7 +230,7 @@ fn tasks(rows: &[Value], agents: &BTreeMap<String, Agent>, report: &mut Report) 
             })
             .collect();
         if workspace.is_empty() {
-            match text(first, "cwd") {
+            match cwd {
                 Some(cwd) => workspace.push(crate::kernel::command::fleet::dir_url(
                     "file",
                     Path::new(cwd),
@@ -225,7 +265,7 @@ fn tasks(rows: &[Value], agents: &BTreeMap<String, Agent>, report: &mut Report) 
         if let (Some(agent), Some(conversation)) = (agent, text(first, "agent_session_id")) {
             report.resume.push(format!(
                 "{key}: {}",
-                resume_command(agent, conversation, agents)
+                resume_command(agent, conversation, cwd, agents)
             ));
         }
         let mut labels = serde_json::Map::new();
@@ -244,24 +284,36 @@ fn tasks(rows: &[Value], agents: &BTreeMap<String, Agent>, report: &mut Report) 
     out
 }
 
-fn resume_command(agent: &str, conversation: &str, agents: &BTreeMap<String, Agent>) -> String {
-    if let Some(defined) = agents.get(agent).filter(|a| !a.resume_args.is_empty()) {
-        let args = defined
-            .resume_args
-            .iter()
-            .map(|a| crate::shell::posix_quote(&a.replace("{id}", conversation)))
-            .collect::<Vec<_>>()
-            .join(" ");
-        return format!("{} {args}", crate::shell::posix_quote(&defined.command));
+fn resume_command(
+    agent: &str,
+    conversation: &str,
+    cwd: Option<&str>,
+    agents: &BTreeMap<String, Agent>,
+) -> String {
+    let quote = crate::shell::posix_quote;
+    let argv: Vec<String> = match agents.get(agent).filter(|a| !a.resume_args.is_empty()) {
+        Some(defined) => std::iter::once(defined.command.clone())
+            .chain(
+                defined
+                    .resume_args
+                    .iter()
+                    .map(|a| a.replace("{id}", conversation)),
+            )
+            .collect(),
+        None => match KNOWN_RESUME.iter().find(|(name, _)| *name == agent) {
+            Some((_, words)) => words
+                .iter()
+                .map(|w| w.to_string())
+                .chain([conversation.to_string()])
+                .collect(),
+            None => return format!("{agent} conversation {}", quote(conversation)),
+        },
+    };
+    let command = argv.iter().map(|w| quote(w)).collect::<Vec<_>>().join(" ");
+    match cwd {
+        Some(cwd) => format!("cd {} && {command}", quote(cwd)),
+        None => command,
     }
-    match KNOWN_RESUME.iter().find(|(name, _)| *name == agent) {
-        Some((_, command)) => command.replace("{id}", conversation),
-        None => format!("{agent} conversation {conversation}"),
-    }
-}
-
-fn utc(timezone: Option<&str>) -> bool {
-    matches!(timezone, None | Some("UTC" | "Etc/UTC" | "GMT" | "Etc/GMT"))
 }
 
 fn cron_tasks(rows: &[Value], report: &mut Report) -> Vec<Value> {
@@ -271,16 +323,17 @@ fn cron_tasks(rows: &[Value], report: &mut Report) -> Vec<Value> {
         let id = row["id"].to_string();
         let action = text(row, "action_kind").unwrap_or_default();
         let schedule = text(row, "schedule_spec").unwrap_or_default();
+        let timezone = text(row, "timezone");
         let why = if text(row, "schedule_kind") != Some("cron") {
             Some("it runs once; a CronTask repeats".to_string())
         } else if action != "spawn" {
             Some(format!(
                 "its action is {action}; a CronTask only starts a Task"
             ))
-        } else if !utc(text(row, "timezone")) {
+        } else if !timezone.is_some_and(|zone| UTC_ZONES.contains(&zone)) {
             Some(format!(
                 "it runs in {}; a CronTask schedule is UTC",
-                text(row, "timezone").unwrap_or_default()
+                timezone.unwrap_or("the machine's local time zone")
             ))
         } else if schedule.split_whitespace().count() != 5 && !schedule.starts_with('@') {
             Some(format!(
@@ -296,6 +349,19 @@ fn cron_tasks(rows: &[Value], report: &mut Report) -> Vec<Value> {
                 "automation {name:?}: {why}; write a CronTask by hand"
             ));
             continue;
+        }
+        let cron = crate::kernel::command::fleet::task_name(name);
+        let key = format!("CronTask/{cron}");
+        if row["enabled"].as_i64() == Some(0) {
+            report
+                .to_do
+                .push(format!("{key}: it was disabled in 2.x; keep it suspended"));
+        }
+        if text(row, "action_extra_repos").is_some_and(|extra| extra != "[]") {
+            report.to_do.push(format!(
+                "{key}: its other repositories were not carried over; add them to \
+                 spec.template.spec.workspace"
+            ));
         }
         let mut url = crate::kernel::command::fleet::dir_url(
             "git+file",
@@ -318,7 +384,7 @@ fn cron_tasks(rows: &[Value], report: &mut Report) -> Vec<Value> {
             "apiVersion": "fleet/v1alpha1",
             "kind": "CronTask",
             "metadata": {
-                "name": crate::kernel::command::fleet::task_name(name),
+                "name": cron,
                 "labels": serde_json::Map::from_iter([(AUTOMATION_LABEL.to_string(), json!(id))]),
             },
             "spec": {
@@ -336,6 +402,7 @@ struct Fleet {
     dry_run: bool,
     imported: BTreeSet<(String, String)>,
     reachable: bool,
+    failed: bool,
 }
 
 impl Fleet {
@@ -345,6 +412,7 @@ impl Fleet {
             dry_run,
             imported: BTreeSet::new(),
             reachable: true,
+            failed: false,
         };
         for (kind, label) in [("task", SESSION_LABEL), ("crontask", AUTOMATION_LABEL)] {
             match fleet.list(kind) {
@@ -410,12 +478,34 @@ impl Fleet {
             Some(&obj.to_string()),
         ) {
             Ok(()) => report.imported.push(summary),
-            Err(why) => report.not_imported.push(format!("{key}: {why}")),
+            Err(why) => {
+                self.failed = true;
+                report.not_imported.push(format!("{key}: {why}"));
+            }
         }
     }
 }
 
-fn harness_profiles(doc: &toml::Table, report: &mut Report) -> BTreeMap<String, Agent> {
+fn fleet_harnesses(link: &FleetLink) -> BTreeSet<String> {
+    link.bounded_output(&["version", "--json"], FLEET_TIMEOUT)
+        .ok()
+        .filter(|out| out.status.success())
+        .and_then(|out| serde_json::from_slice::<Value>(&out.stdout).ok())
+        .and_then(|v| v["harnesses"].as_array().cloned())
+        .map(|names| {
+            names
+                .iter()
+                .filter_map(|n| n.as_str().map(str::to_string))
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+fn harness_profiles(
+    doc: &toml::Table,
+    shipped: &BTreeSet<String>,
+    report: &mut Report,
+) -> BTreeMap<String, Agent> {
     let mut agents = BTreeMap::new();
     let strings = |value: Option<&toml::Value>| -> Vec<String> {
         value
@@ -437,63 +527,83 @@ fn harness_profiles(doc: &toml::Table, report: &mut Report) -> BTreeMap<String, 
         let Some(name) = entry.get("name").and_then(toml::Value::as_str) else {
             continue;
         };
-        let Some(command) = entry.get("command").and_then(toml::Value::as_str) else {
+        let command = entry.get("command").and_then(toml::Value::as_str);
+        let resume_args = strings(entry.get("resume_args"));
+        if let Some(command) = command {
+            agents.insert(
+                name.to_string(),
+                Agent {
+                    command: command.to_string(),
+                    resume_args: resume_args.clone(),
+                },
+            );
+        }
+        if name == "shell" || shipped.contains(name) {
+            continue;
+        }
+        let Some(command) = command else {
             report.to_do.push(format!(
                 "agents.toml {name:?}: it names no command (extends another?); write its \
                  harness profile by hand"
             ));
             continue;
         };
-        let resume_args = strings(entry.get("resume_args"));
+        let mut left: Vec<String> = entry
+            .keys()
+            .filter(|k| !AGENT_KEYS.contains(&k.as_str()))
+            .cloned()
+            .collect();
         let mut profile = toml::Table::new();
         profile.insert("name".into(), name.into());
         profile.insert("program".into(), command.into());
         profile.insert("authority".into(), "none".into());
         let mut launch = toml::Table::new();
         let args = strings(entry.get("args"));
+        if args.iter().any(|a| a.contains('{')) {
+            left.push("a {placeholder} in args".into());
+        }
         if !args.is_empty() {
             launch.insert("args".into(), args.into());
         }
         if let Some(env) = entry.get("env").and_then(toml::Value::as_table) {
             launch.insert("env".into(), toml::Value::Table(env.clone()));
         }
+        match strings(entry.get("additional_dir_args")).as_slice() {
+            [] => {}
+            [flag, dir] if dir == "{dir}" => {
+                launch.insert("add_dir".into(), flag.as_str().into());
+            }
+            _ => left.push("additional_dir_args".into()),
+        }
         if !launch.is_empty() {
             profile.insert("launch".into(), toml::Value::Table(launch));
         }
         if !resume_args.is_empty() {
-            let args: Vec<String> = resume_args
-                .iter()
-                .map(|a| a.replace("{id}", "{conversation}"))
+            let args: Vec<String> = ["{program}", "{launch_args}"]
+                .into_iter()
+                .map(str::to_string)
+                .chain(
+                    resume_args
+                        .iter()
+                        .map(|a| a.replace("{id}", "{conversation}")),
+                )
                 .collect();
             profile.insert(
                 "resume".into(),
                 toml::Value::Table(toml::Table::from_iter([("args".to_string(), args.into())])),
             );
         }
-        for key in entry
-            .keys()
-            .filter(|k| !["name", "command", "args", "resume_args", "env"].contains(&k.as_str()))
-        {
-            let why = match key.as_str() {
-                "setup" => "a harness profile has no setup steps; run them in a wrapper script",
-                "hook_schema" => "pick [screen] rules for it by hand",
-                _ => "a harness profile has no such key",
-            };
+        if !left.is_empty() {
             report.to_do.push(format!(
-                "agents.toml {name:?}: {key} was not carried over: {why}"
+                "agents.toml {name:?}: not carried over: {}; a setup step belongs in a wrapper \
+                 script, the rest in its harness profile by hand",
+                left.join(", ")
             ));
         }
         report.harnesses.push((
             format!("harnesses/{name}.toml"),
             toml::to_string(&profile).unwrap_or_default(),
         ));
-        agents.insert(
-            name.to_string(),
-            Agent {
-                command: command.to_string(),
-                resume_args,
-            },
-        );
     }
     agents
 }
@@ -510,22 +620,31 @@ fn places(doc: &toml::Table, report: &mut Report) {
         let Some(name) = entry.get("name").and_then(toml::Value::as_str) else {
             continue;
         };
-        let mut place = toml::Table::new();
-        place.insert("kind".into(), "ssh".into());
+        let place = place_name(name);
+        let mut table = toml::Table::new();
+        table.insert("kind".into(), "ssh".into());
+        if entry.get("kind").and_then(toml::Value::as_str) == Some("wsl")
+            && !entry.contains_key("distro")
+        {
+            table.insert("distro".into(), name.into());
+        }
         for (key, value) in entry {
-            if key == "name" {
+            if key == "name" || key == "config_version" {
                 continue;
             }
             if PLACE_KEYS.contains(&key.as_str()) {
-                place.insert(key.clone(), value.clone());
-            } else {
-                report.to_do.push(format!(
-                    "hosts.toml {name:?}: {key} was not carried over: a runtime-mux place has no \
-                     such key"
-                ));
+                table.insert(key.clone(), value.clone());
+                continue;
             }
+            let why = match key.as_str() {
+                "socket" | "session" => "it named the 2.x tmux server; runtime-mux uses its own",
+                _ => "a runtime-mux place has no such key",
+            };
+            report.to_do.push(format!(
+                "hosts.toml {name:?}: {key} was not carried over: {why}"
+            ));
         }
-        runtimes.insert(name.to_lowercase(), toml::Value::Table(place));
+        runtimes.insert(place, toml::Value::Table(table));
     }
     if runtimes.is_empty() {
         return;
@@ -603,7 +722,10 @@ fn output(report: &Report, dry_run: bool) -> CommandOutput {
         },
         &report.settings,
     );
-    section("Resume a 2.x conversation by hand", &report.resume);
+    section(
+        "Resume a 2.x conversation in its 2.x directory",
+        &report.resume,
+    );
     let mut to_do = report.to_do.clone();
     if !report.imported.is_empty() {
         to_do.push(
@@ -634,7 +756,11 @@ fn output(report: &Report, dry_run: bool) -> CommandOutput {
         "resume": report.resume,
         "to_do": to_do,
         "places": report.places,
-        "harnesses": report.harnesses.iter().map(|(file, text)| json!({"file": file, "toml": text})).collect::<Vec<_>>(),
+        "harnesses": report
+            .harnesses
+            .iter()
+            .map(|(file, text)| json!({"file": file, "toml": text}))
+            .collect::<Vec<_>>(),
     });
     CommandOutput::new(json, human)
 }
