@@ -8,7 +8,7 @@
 //! manager performs the plan.
 
 use fleet_api::condition::{
-    ConditionStatus, condition, is_true, set_condition, settle_transitions,
+    Condition, ConditionStatus, condition, is_true, set_condition, settle_transitions,
 };
 use fleet_api::inbox::{self, DeliveryAttempt, DeliveryReceipt, InboxEntry, MAX_INBOX};
 use fleet_api::meta::{Millis, Object};
@@ -112,6 +112,17 @@ const CANNOT_RESUME: &str = "CannotResume";
 const REVIVE_FAILED: &str = "ReviveFailed";
 /// The NeedsAttention reason once resumes keep leaving the session stopped.
 const RESUME_FAILED: &str = "ResumeFailed";
+
+/// The condition that goes with a phase: the one its reason comes from.
+fn phase_condition(phase: Phase) -> &'static str {
+    match phase {
+        Phase::Pending | Phase::Spawning | Phase::Spawned => SPAWNED,
+        Phase::Briefed => BRIEFED,
+        Phase::Stalled => STALLED,
+        Phase::Concluded => CONCLUDED,
+        Phase::Releasing => RELEASED,
+    }
+}
 
 /// Whether a send under a key is proven by the agent's prompt hook.
 enum Proof {
@@ -273,6 +284,7 @@ impl TaskController {
         r.observe_session();
         settle_transitions(&mut r.st.conditions, &before.conditions);
         r.start_outbox_unread(&before);
+        r.queue_phase_event(&before);
         // A delivery is a status write even when nothing else moved: the
         // store takes the status along with the receipt.
         let status = if r.st == before && r.delivery.is_none() {
@@ -1876,6 +1888,34 @@ impl Pass<'_, '_> {
 
     /// A first `OutboxUnread` is a transition even from another Unknown
     /// `Released`, such as `Releasing`: its grace starts now.
+    /// Queue the `fleet.task.phase` event of a phase change in the write
+    /// that makes it. Its reason is that of a condition this pass changed:
+    /// the one that goes with the new phase, else the first.
+    fn queue_phase_event(&mut self, before: &TaskStatus) {
+        let (from, to) = (before.phase, self.st.phase);
+        if from == to {
+            return;
+        }
+        let changed: Vec<&Condition> = self
+            .st
+            .conditions
+            .iter()
+            .filter(|c| {
+                condition(&before.conditions, &c.type_)
+                    .is_none_or(|b| b.status != c.status || b.reason != c.reason)
+            })
+            .collect();
+        let reason = changed
+            .iter()
+            .find(|c| c.type_ == phase_condition(to))
+            .or(changed.first())
+            .map(|c| c.reason.clone());
+        let meta = &self.input.task.metadata;
+        self.st
+            .fleet_events
+            .queue_phase(&meta.name, &meta.uid, from, to, reason.as_deref());
+    }
+
     fn start_outbox_unread(&mut self, before: &TaskStatus) {
         let was_unread =
             condition(&before.conditions, RELEASED).is_some_and(|c| c.reason == OUTBOX_UNREAD);

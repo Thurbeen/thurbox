@@ -3679,6 +3679,67 @@ fn task_controller_appends_as_a_task_only_under_the_lease() {
 }
 
 #[test]
+fn only_task_controller_publishes_the_fleet_prefix_and_only_as_itself() {
+    use fleet_api::event::{ControllerSource, Source};
+    let dir = Dir::new("board-controller-source");
+    let store = FileStore::open(&dir.0).unwrap();
+    store
+        .create(board("fleet", json!({})), FieldManager::Apply)
+        .unwrap();
+    let lease = store.acquire_lease("m", 10_000).unwrap();
+    let mut phase = note(Some("task/ua/phase/1"));
+    phase.event_type = "fleet.task.phase".into();
+    let as_task_controller =
+        Source::Controller(ControllerSource::of(&FieldManager::TaskController));
+    let as_forge = Source::Controller(ControllerSource::of(&FieldManager::ForgeController));
+
+    for (source, by) in [
+        (cli("alice"), FieldManager::Cli),
+        (task_source(&[]), FieldManager::TaskController),
+    ] {
+        let refused = store.append_events("fleet", &source, vec![phase.clone()], by, Some(&lease));
+        assert!(
+            matches!(refused, Err(StoreError::Invalid(_))),
+            "{refused:?}"
+        );
+    }
+    for (source, by) in [
+        (as_forge, FieldManager::TaskController),
+        (as_task_controller.clone(), FieldManager::ForgeController),
+        (as_task_controller.clone(), FieldManager::Cli),
+    ] {
+        let refused = store.append_events("fleet", &source, vec![phase.clone()], by, Some(&lease));
+        assert!(
+            matches!(refused, Err(StoreError::Forbidden(_))),
+            "{refused:?}"
+        );
+    }
+    let unleased = store.append_events(
+        "fleet",
+        &as_task_controller,
+        vec![phase.clone()],
+        FieldManager::TaskController,
+        None,
+    );
+    assert!(
+        matches!(unleased, Err(StoreError::LeaseLost(_))),
+        "{unleased:?}"
+    );
+    let first = store
+        .append_events(
+            "fleet",
+            &as_task_controller,
+            vec![phase.clone(), phase.clone()],
+            FieldManager::TaskController,
+            Some(&lease),
+        )
+        .unwrap();
+    assert_eq!(first[0].event.source.name(), "controller/task-controller");
+    assert!(first[1].duplicate, "{first:?}");
+    assert_eq!(page_seqs(&store, "fleet", 0), vec![1]);
+}
+
+#[test]
 fn a_torn_last_line_is_skipped_by_a_reader_and_cut_by_the_next_append() {
     let dir = Dir::new("board-torn");
     let store = FileStore::open(&dir.0).unwrap();

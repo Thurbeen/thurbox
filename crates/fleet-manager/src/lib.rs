@@ -54,6 +54,7 @@
 
 mod cron_tasks;
 mod execution;
+mod fleet_events;
 mod outbox;
 pub mod plugins;
 mod subscriptions;
@@ -492,6 +493,22 @@ impl Manager<'_> {
                 if new_starts.started_here.contains(&obj.metadata.uid) {
                     continue;
                 }
+                let published = match self.publish_fleet_events(obj, lease, opts.lease_ttl, report)
+                {
+                    Ok(written) => written,
+                    Err(e @ StoreError::LeaseLost(_)) => return Err(e),
+                    Err(e) => {
+                        report
+                            .errors
+                            .push(format!("{} fleet events: {e}", obj.key()));
+                        None
+                    }
+                };
+                if published.is_some() {
+                    report.status_writes += 1;
+                    busy = true;
+                }
+                let obj = published.as_ref().unwrap_or(obj);
                 let concluded =
                     obj.status.get("phase").and_then(Value::as_str) == Some("Concluded");
                 let read_outbox = !concluded || obj.is_deleting() || self.due(obj);
@@ -2364,6 +2381,17 @@ impl Manager<'_> {
                     return Ok(step);
                 }
                 Err(e) => return Err(e),
+            }
+            match self.publish_fleet_events(&current, lease, ttl, report) {
+                Ok(Some(o)) => {
+                    current = o;
+                    step.wrote += 1;
+                }
+                Ok(None) => {}
+                Err(e @ StoreError::LeaseLost(_)) => return Err(e),
+                Err(e) => report
+                    .errors
+                    .push(format!("{} fleet events: {e}", obj.key())),
             }
         }
         for effect in &plan.effects {

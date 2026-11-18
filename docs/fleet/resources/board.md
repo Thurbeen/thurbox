@@ -14,7 +14,9 @@ and only the store's typed append writes the log.
 ## When you write one
 
 `fleet init` makes the Board `shared`, and `fleet event` uses it when you
-give no `--board`. Write a Board of your own when a group of events needs
+give no `--board`. `fleet init` also makes the Board `fleet`, where
+TaskController publishes Fleet's own events. See
+[Board `fleet`](#board-fleet). Write a Board of your own when a group of events needs
 other limits, or when its readers must not see other events.
 
 ## Example
@@ -56,7 +58,8 @@ Retention runs only when someone publishes to the Board, and it drops whole
 segments. Until the next publish, a read can still show events that are
 older than `maxAgeSeconds`.
 
-The `shared` Board that `fleet init` makes has the default values.
+The `shared` and `fleet` Boards that `fleet init` makes have the default
+values.
 
 ## Status
 
@@ -80,7 +83,7 @@ Each event has these fields. Their names follow CloudEvents.
 | `board` | Fleet | The Board's name. |
 | `seq` | Fleet | The event's place in the Board's order, from 1. Each event gets the next number. |
 | `time` | Fleet | When the store appended the event, in Unix milliseconds. |
-| `source` | Fleet | Who published the event: `cli/<user>` for `fleet event publish` outside a session, or the session's Task, `{task, uid, lineage}`. See [Publishing from a session](#publishing-from-a-session). |
+| `source` | Fleet | Who published the event: `cli/<user>` for `fleet event publish` outside a session, the session's Task, `{task, uid, lineage}`, or `controller/task-controller` for Fleet's own events. See [Publishing from a session](#publishing-from-a-session) and [Board `fleet`](#board-fleet). |
 | `type` | The publisher | Segments of `a-z`, `0-9`, `_` and `-`, joined by dots, at most 128 characters. `fleet.` is reserved for Fleet's controllers. |
 | `subject` | The publisher | Optional. What the event is about, at most 256 characters. |
 | `key` | The publisher | Optional. At most 256 characters. See [Lifecycle](#lifecycle). |
@@ -309,6 +312,72 @@ These rules apply:
 - `count` is what the pass found. A later `list` also prints the events
   published after the notice.
 
+## Board `fleet`
+
+TaskController publishes events about each Task to the Board `fleet`. Use
+them to follow the work of all Tasks from one place.
+
+```sh
+fleet event list --board fleet --type 'fleet.task.*'
+fleet event subscribe lead --board fleet --type fleet.task.result
+```
+
+Each event has these values:
+
+| Field | Value |
+| --- | --- |
+| `source` | `controller/task-controller` |
+| `subject` | The Task's name |
+| `key` | `task/<uid>/<series>/<n>`. See the table below. The key names the Task by its uid only, so that it stays within 256 characters for the longest name. |
+
+| Type | When | `data` | Key series and `n` |
+| --- | --- | --- | --- |
+| `fleet.task.phase` | The phase of the Task changes. | `from` and `to`, the phases before and after. `reason`, the reason of a condition that the same write changed: the condition of the new phase, else the first. A change with no changed condition has no `reason`. | `phase`, the number of the change in the Task's life, from 1 |
+| `fleet.task.declared` | The worker declared a fact with `fleet declare`, and TaskController saw it. | `index`, the place of the fact in `status.declared`, from 0. `declaration`, the fact. A fact larger than 4096 bytes as JSON has only its `kind`, cut to 256 characters, and `truncated` is `true`. | `declared`, the `index` |
+| `fleet.task.result` | The worker recorded a result with `fleet result`, and TaskController saw it. | `generation`, `outcome` and `summary`. A summary longer than 1024 characters is cut to 1024, and `summaryTruncated` is `true`. The outputs and the artifacts are not in the event. | `result`, the `generation` |
+
+TaskController does these steps:
+
+1. A reconcile that changes the phase adds the phase event to
+   `status.fleetEvents.pending`. It does this in the same write that changes
+   the phase. The intent to publish is then in the store with its cause.
+2. After that write, the manager appends the events that the Task is owed
+   to the Board `fleet`, under the lease. These are the pending phase
+   events, one event for each declaration after `status.fleetEvents.declared`,
+   and one event for a result whose generation is not
+   `status.fleetEvents.result`.
+3. Then the manager writes `status.fleetEvents`: `pending` is empty, and
+   `declared` and `result` move to what it appended.
+4. At the start of each Task's turn in each pass, the manager does steps 2
+   and 3 again. This publishes the declarations and the results, and the
+   events that a stopped pass did not publish.
+
+These rules apply:
+
+- Only a controller publishes a type that starts with `fleet.`. The store
+  refuses it from `cli/<user>` and from a session's Task.
+- Delivery is at least once. When Fleet stops after the append and before
+  the write of `status.fleetEvents`, the next pass appends the same events
+  again. Their keys append nothing.
+- When the Board cannot be written (`Unknown`), `status.fleetEvents` stays.
+  The next pass tries again. The pass reports why.
+- When the Board refuses an event, such as when the Board `fleet` does not
+  exist or its `maxDataBytes` is too small, TaskController skips that event.
+  It counts it in `status.fleetEvents.skipped` and writes its key and why in
+  `lastSkipped`. A skipped event is not published again. Run `fleet init`
+  to make a missing Board `fleet`.
+- `pending` holds at most 64 phase events. A new one past 64 drops the
+  oldest. A gap in the numbers of the phase keys shows a dropped event.
+- A Task that a release removes in one pass still publishes its change to
+  `Releasing`: the manager appends it before it removes the finalizer.
+- A result replaces the result of an older generation. When two results
+  come between two passes, only the newer one gets an event.
+- A Task from before this release has no `status.fleetEvents`. Its past
+  declarations and its result get no event. On its first pass,
+  TaskController writes `status.fleetEvents` from what the status holds,
+  with `started` set, also when the Task has no declaration and no result.
+  Then it publishes only what comes after.
+
 ## Lifecycle
 
 ```text
@@ -345,7 +414,9 @@ publish ──▶ check ──▶ drop aged segments ──▶ key held? ──y
 
 - A [Task](task.md)'s session publishes through its outbox, and
   TaskController appends the events as the Task. People and scripts
-  outside a session publish as `cli/<user>`.
+  outside a session publish as `cli/<user>`. TaskController publishes
+  each Task's phase changes, declarations and results to the Board `fleet`
+  as `controller/task-controller`.
 - The [Task inbox](task.md) is different: it delivers each entry to one
   session. A Board reaches the inbox only through a subscription, as one
   notice.
@@ -373,6 +444,6 @@ in `*` matches a prefix. `watch` takes no `--limit`.
 | `--after SEQ` | Events with a `seq` above `SEQ`. The default is 0 for `list`. `wait` and `watch` need it. |
 | `--type T` | Events of type `T`. |
 | `--subject S` | Events about `S`. |
-| `--source S` | Events from `S`, such as `cli/alex` or `task/build`. |
+| `--source S` | Events from `S`, such as `cli/alex`, `task/build` or `controller/task-controller`. |
 | `--correlation C` | Events with the correlation id `C`. |
 | `--limit N` | The first `N` events that match, 1 to 10000. The default is 100. |

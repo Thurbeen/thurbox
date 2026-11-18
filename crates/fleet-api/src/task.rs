@@ -581,6 +581,15 @@ pub struct TaskStatus {
         skip_serializing_if = "crate::subscription::SubscriptionsStatus::is_empty"
     )]
     pub subscriptions: crate::subscription::SubscriptionsStatus,
+    /// TaskController's `fleet.task.*` events on Board `fleet`: the phase
+    /// events written with their change and not appended yet, and how far
+    /// the declarations and the result are published (see
+    /// [`crate::task_event`]).
+    #[serde(
+        default,
+        skip_serializing_if = "crate::task_event::FleetEvents::is_empty"
+    )]
+    pub fleet_events: crate::task_event::FleetEvents,
 }
 
 fn is_zero(n: &u32) -> bool {

@@ -51,7 +51,7 @@ impl Run {
 
 /// A store answer that refuses the events themselves, not one that leaves
 /// them unknown: the line is skipped.
-fn refused(e: &StoreError) -> bool {
+pub(crate) fn refused(e: &StoreError) -> bool {
     matches!(
         e,
         StoreError::Invalid(_) | StoreError::NotFound(_) | StoreError::Forbidden(_)

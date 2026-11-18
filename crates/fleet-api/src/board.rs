@@ -20,6 +20,10 @@ pub const KIND: &str = "Board";
 /// The board `fleet init` ensures, and the one `fleet event` uses by default.
 pub const SHARED: &str = "shared";
 
+/// The board `fleet init` ensures for Fleet's own events: TaskController
+/// publishes `fleet.task.*` to it.
+pub const FLEET: &str = "fleet";
+
 pub const DEFAULT_MAX_AGE_SECONDS: u64 = 7 * 24 * 60 * 60;
 pub const DEFAULT_MAX_COUNT: u64 = 10_000;
 pub const DEFAULT_MAX_DATA_BYTES: u64 = 16 * 1024;

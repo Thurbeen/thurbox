@@ -394,8 +394,8 @@ pub trait Store {
     /// Append events to a Board's log as `source`, under the store lock,
     /// as a caller `kinds::may_append_events` admits: a controller only
     /// under the lease, `cli` with none. Each publish is checked as
-    /// `event::validate_publish` checks it against the Board's
-    /// `maxDataBytes`, and the batch is refused whole if one fails. A
+    /// `event::validate_publish_from` checks it for `source` against the
+    /// Board's `maxDataBytes`, and the batch is refused whole if one fails. A
     /// publish whose key the same publisher (`Source::same_publisher`) used
     /// for an event the log still holds appends nothing and answers that
     /// event. The others get the next `seq`s and the store's time. In the
