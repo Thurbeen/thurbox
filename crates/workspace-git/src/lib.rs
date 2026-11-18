@@ -377,10 +377,10 @@ fn remove_worktree(source: &Path, path: &Path) -> Result<(), String> {
     if is_worktree(path)? {
         if let Err(first) = git_remove_worktree(source, path) {
             grant_owner_write_without_following_links(path);
-            let again = if is_worktree(path)? {
-                git_remove_worktree(source, path).map(|_| ())
-            } else {
-                remove_dir(path)
+            let again = match is_worktree(path) {
+                Ok(true) => git_remove_worktree(source, path).map(|_| ()),
+                Ok(false) => remove_dir(path),
+                Err(e) => Err(e),
             };
             again.map_err(|second| format!("{first}; after granting write: {second}"))?;
         }

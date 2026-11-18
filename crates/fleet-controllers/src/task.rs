@@ -1806,7 +1806,7 @@ impl Pass<'_, '_> {
                         self.needs_attention(
                             "ReleaseFailed",
                             format!(
-                                "{} release attempts failed, the next in {}s: {why}",
+                                "{} release attempts failed, retrying every {}s: {why}",
                                 self.st.release_attempts,
                                 delay / 1000
                             ),
@@ -2154,7 +2154,7 @@ impl Pass<'_, '_> {
                 self.needs_attention(
                     CLEAN_FAILED,
                     format!(
-                        "{attempt} workspace cleans failed, the next in {}s: {why}",
+                        "{attempt} workspace cleans failed, retrying every {}s: {why}",
                         delay / 1000
                     ),
                 );
