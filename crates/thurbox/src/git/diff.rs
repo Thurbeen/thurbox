@@ -214,8 +214,14 @@ pub(super) fn work_tree_answer(output: &std::process::Output) -> WorkTree {
     }
 }
 
+pub(super) fn work_tree_probe(dir: &Path) -> std::process::Command {
+    let mut probe = git_command(dir, &["rev-parse", "--is-inside-work-tree"]);
+    probe.env("LC_ALL", "C");
+    probe
+}
+
 fn work_tree(dir: &Path) -> WorkTree {
-    git_command(dir, &["rev-parse", "--is-inside-work-tree"])
+    work_tree_probe(dir)
         .output()
         .map_or(WorkTree::Unknown, |output| work_tree_answer(&output))
 }

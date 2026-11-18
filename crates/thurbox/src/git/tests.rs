@@ -1587,3 +1587,14 @@ fn only_git_saying_not_a_repository_reads_as_outside_a_work_tree() {
         "a repository git refuses to read is not a directory without changes"
     );
 }
+
+#[test]
+fn a_translated_git_still_reads_a_plain_directory_as_outside_a_work_tree() {
+    let plain = tempfile::tempdir().expect("tempdir");
+    let mut probe = work_tree_probe(plain.path());
+    probe.env("LANGUAGE", "de");
+    assert_eq!(
+        work_tree_answer(&probe.output().expect("git runs")),
+        WorkTree::Outside
+    );
+}
