@@ -4136,14 +4136,13 @@ fn every_runtime_mux_and_workspace_git_span_has_its_parent_in_its_trace() {
     let work = env.root.join("work").join("t1");
     fs::create_dir_all(&work).expect("workspace");
 
-    let mut up = env.spawn(&["up", "--poll-ms", "100"]);
+    let mut up = Up(env.spawn(&["up", "--poll-ms", "100"]));
     let mut task = support::task("t1", true);
     task["spec"]["workspace"] = json!([format!("file://{}", work.display())]);
     env.apply(json!([task])).ok();
     let deadline = Instant::now() + Duration::from_secs(30);
     while !env.get("t1")["status"]["session"]["id"].is_string() {
         if Instant::now() > deadline {
-            let _ = up.kill();
             panic!("the Task never started: {:#}", env.get("t1"));
         }
         std::thread::sleep(Duration::from_millis(100));
@@ -4167,16 +4166,15 @@ fn every_runtime_mux_and_workspace_git_span_has_its_parent_in_its_trace() {
     let deadline = Instant::now() + Duration::from_secs(30);
     while env.fleet(&["get", "task", "t1"]).code == Some(0) {
         if Instant::now() > deadline {
-            let _ = up.kill();
             panic!("the Task was never released: {:#}", env.get("t1"));
         }
         std::thread::sleep(Duration::from_millis(200));
     }
     Command::new("kill")
-        .args(["-INT", &up.id().to_string()])
+        .args(["-INT", &up.0.id().to_string()])
         .status()
         .expect("kill");
-    up.wait().expect("fleet up stops");
+    up.0.wait().expect("fleet up stops");
 
     let spans = collector.spans();
     let named = |service: &str, name: &str| {
