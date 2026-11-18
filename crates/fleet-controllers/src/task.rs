@@ -443,13 +443,19 @@ impl Pass<'_, '_> {
     }
 
     fn intend(&mut self, key: String, action: Action) {
+        self.st.loose_prompts.remove(&key);
+        let profile = fleet_api::harness::profile(&self.spec.harness);
         match &action {
-            Action::Brief { text, .. }
-                if fleet_api::harness::profile(&self.spec.harness).prompt_hook() =>
-            {
+            Action::Brief { text, .. } if profile.prompt_hook() => {
                 self.st
                     .prompts
                     .insert(key.clone(), fleet_api::signal::prompt_digest(text));
+                if let Some(tag) = profile.payload.paste.as_deref() {
+                    self.st.loose_prompts.insert(
+                        key.clone(),
+                        fleet_api::signal::loose_prompt_digest(text, tag),
+                    );
+                }
             }
             _ => {
                 self.st.prompts.remove(&key);
@@ -473,9 +479,14 @@ impl Pass<'_, '_> {
         // A report older than this send's intent proves an earlier send of
         // the same text, not this one.
         let since = self.st.intents.get(key).map_or(0, |i| i.at);
+        let loose = self.st.loose_prompts.get(key);
         match &self.input.observations.signals {
-            Some(Observation::Known(r)) if r.prompted_since(digest, since) => {
+            Some(Observation::Known(r))
+                if r.prompted_since(digest, since)
+                    || loose.is_some_and(|l| r.prompted_since(l, since)) =>
+            {
                 self.st.prompts.remove(key);
+                self.st.loose_prompts.remove(key);
                 Proof::Proven
             }
             Some(Observation::Known(_)) => {
@@ -766,12 +777,15 @@ impl Pass<'_, '_> {
         )
     }
 
-    /// Whether the brief was sent and its receipt is not Known yet.
+    /// Whether the brief was sent and is not settled yet: its receipt is not
+    /// Known, or the agent's prompt hook has not reported it. An entry typed
+    /// before the agent took the brief joins the brief's prompt, and the hook
+    /// then proves neither (#1901).
     fn brief_pending(&self) -> bool {
         let key = brief_key(self.input.task);
         self.st.phase == Phase::Spawned
             && self.st.intents.contains_key(&key)
-            && !known_receipt(&self.st, &key)
+            && (!known_receipt(&self.st, &key) || self.st.prompts.contains_key(&key))
     }
 
     fn brief_step(&mut self, session: SessionRef) {

@@ -356,7 +356,8 @@ Guarantees, each with its test:
   it can never make room. Nothing bounds the entries given up on. Each one given
   up on raises `NeedsAttention`, which names the latest;
   `status.deliveryAttempts` marks every one as failed. Delivery runs in Spawned
-  (after the brief), Briefed and Concluded, which stays terminal and is due
+  (after the brief, and after its proof where the agent has a prompt hook),
+  Briefed and Concluded, which stays terminal and is due
   while its inbox is nonempty.
   At rest, a Concluded Task is due once every `SESSION_RECHECK_MS` (5
   minutes), recorded as `status.sessionCheckedAt`, to look its session up
