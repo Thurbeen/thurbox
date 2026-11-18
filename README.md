@@ -155,8 +155,8 @@ session opened there you can just ask your agent:
 
 Two commands move your 2.x work to v3. Neither deletes a 2.x file.
 
-1. Stop the Fleet 2 manager, back up thurbox's and Fleet's config and data
-   directories, and install `sqlite3`.
+1. Stop and disable the Fleet 2 manager and its service, back up thurbox's
+   and Fleet's config and data directories, and install `sqlite3`.
 2. Install v3 with the [install script](#install). No updater moves 2.x to
    3.x.
 3. Migrate the Fleet 2 config and store. Fleet keeps the 2.x ones as
