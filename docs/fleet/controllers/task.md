@@ -754,6 +754,9 @@ No session ever spawned means nothing needs releasing. If a spawn was
 interrupted before its receipt, the controller first looks up its key so it
 cannot orphan an unknown session.
 
+`fleet attach` and `fleet shell` on a Task being deleted exit 3 and say so,
+with or without `--wake`. They suggest no wake.
+
 For a recorded session, the controller requires Known at-rest or readable
 absence before planning Release. The finalizer remains while release is failed or ambiguous. It is removed
 only after Known Released, or when there is no session to release.

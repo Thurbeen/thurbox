@@ -143,6 +143,12 @@ first frame that reads the row running again attaches the pane, whatever
 resumed it: Start, a message, or `fleet attach --wake` from a shell. Fleet has
 no verb that stops a session on request, so thurbox offers no stop.
 
+The interface does not attach a row whose Task is being deleted, or whose
+session is `Gone`. When `fleet attach` refuses a row with exit code 3, for
+example because the Task is paused, the interface does not ask again until
+the row's state changes or the user starts the session. Other attach failures
+are tried again after 20 s.
+
 The agent pane of a session that does not run says what state it is in and
 how to bring it back:
 

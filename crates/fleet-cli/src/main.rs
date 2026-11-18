@@ -3647,6 +3647,15 @@ fn cmd_open(
 ) -> Result<(), Failure> {
     use fleet_api::runtime::Attach;
     let obj = get(store, fleet_api::task::KIND, task)?;
+    if obj.is_deleting() {
+        return Err(Failure {
+            code: exit::NOT_FOUND,
+            message: format!("Task/{task} is being deleted: Fleet is releasing its session"),
+            hint: Some(format!(
+                "nothing opens on it again; see how the release stands with `fleet get task {task}`"
+            )),
+        });
+    }
     let session: Option<fleet_api::task::SessionRef> = obj
         .status
         .get("session")

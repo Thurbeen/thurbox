@@ -6912,6 +6912,80 @@ fn a_deletion_fleet_never_finishes_comes_back_marked_stuck() {
 }
 
 #[test]
+fn fleet_attach_is_not_retried_on_a_deleted_task_or_after_fleet_refused_it() {
+    let profile = Profile::new();
+    let calls = profile.root.path().join("fleet-calls");
+    let moved = profile.root.path().join("refusing-moved");
+    let marked = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .expect("clock")
+        .as_millis() as u64
+        - 600_000;
+    let mut ending = fake_task(
+        "ending",
+        "Gone",
+        serde_json::json!([
+            {"type": "Paused", "status": "True", "reason": "Idle"},
+            {"type": "Released", "status": "False", "reason": "ReleaseFailed",
+                "message": "Permission denied"},
+        ]),
+    );
+    ending["object"]["metadata"]["deletionTimestamp"] = serde_json::json!(marked);
+    let mut leaving = fake_task("leaving", "Running", serde_json::json!([]));
+    leaving["object"]["metadata"]["deletionTimestamp"] = serde_json::json!(marked);
+    let ended = fake_task("ended", "Gone", serde_json::json!([]));
+    let refusing = fake_task("refusing", "Running", serde_json::json!([]));
+    let mut working = fake_task("refusing", "Running", serde_json::json!([]));
+    working["revision"] = serde_json::json!(2);
+    working["object"]["status"]["agentState"] = serde_json::json!("working");
+    let synced = serde_json::json!({"type": "synced", "revision": 1,
+        "names": ["ending", "leaving", "ended", "refusing"]});
+    write_script(
+        &profile.bin.join("fleet"),
+        &format!(
+            "#!/bin/sh\necho \"$*\" >> '{calls}'\ncase \"$1\" in\n  watch) echo '{ending}'; echo '{leaving}'; echo '{ended}'; echo '{refusing}'; echo '{synced}'; until [ -e '{moved}' ]; do kill -0 $PPID 2>/dev/null || exit 0; sleep 1; done; echo '{working}'; while kill -0 $PPID 2>/dev/null; do sleep 1; done ;;\n  attach) echo \"error: Task/$2 is paused: its agent is stopped\" >&2; exit 3 ;;\n  up) exit 6 ;;\n  version) echo '{{\"apiVersions\":[\"fleet/v1alpha1\"]}}' ;;\n  *) exit 1 ;;\nesac\n",
+            calls = calls.display(),
+            moved = moved.display(),
+        ),
+    );
+    let log = || std::fs::read_to_string(&calls).unwrap_or_default();
+    let attaches = |task: &str| {
+        log()
+            .lines()
+            .filter(|call| call.starts_with(&format!("attach {task} ")))
+            .count()
+    };
+    let mut tui = Tui::spawn(&profile, 40, 160);
+    tui.wait_until("every row", |frame| {
+        ["ending", "leaving", "ended", "refusing"]
+            .iter()
+            .all(|name| frame.contains(name))
+    });
+    std::thread::sleep(Duration::from_secs(25));
+    for task in ["ending", "leaving", "ended"] {
+        assert_eq!(attaches(task), 0, "{task} is attached:\n{}", log());
+    }
+    assert_eq!(
+        attaches("refusing"),
+        1,
+        "an attach Fleet refused is retried while nothing changed:\n{}",
+        log()
+    );
+    std::fs::write(&moved, "").expect("mark the change");
+    let deadline = std::time::Instant::now() + Duration::from_secs(15);
+    while attaches("refusing") < 2 && std::time::Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(200));
+    }
+    assert_eq!(
+        attaches("refusing"),
+        2,
+        "a refused row is not attached again once its state changed:\n{}",
+        log()
+    );
+    assert!(tui.quit().success());
+}
+
+#[test]
 fn a_stopped_lost_or_gone_session_says_so_and_why() {
     let profile = Profile::new();
     let task = |name: &str, state: &str, condition: serde_json::Value| {

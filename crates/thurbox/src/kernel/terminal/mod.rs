@@ -1342,6 +1342,7 @@ mod tests {
                     readied: false,
                     session_handle: Err(message.into()),
                     started: std::time::Instant::now(),
+                    refused_in: None,
                 })
                 .unwrap();
             terminals.sync(&snapshot, 24, 80);
@@ -1972,6 +1973,7 @@ mod tests {
                 readied: false,
                 session_handle: Err("the window is gone".into()),
                 started: begun,
+                refused_in: None,
             })
             .unwrap();
         terminals.sync(&snapshot(vec![fleet_row]), 24, 80);
