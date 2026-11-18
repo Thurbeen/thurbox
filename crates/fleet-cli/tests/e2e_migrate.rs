@@ -140,7 +140,7 @@ fn tree(root: &Path) -> BTreeMap<PathBuf, Vec<u8>> {
             let path = entry.unwrap().path();
             if path.is_dir() {
                 dirs.push(path);
-            } else {
+            } else if path.file_name().is_some_and(|n| n != "bootstrap.lock") {
                 let bytes = fs::read(&path).unwrap();
                 out.insert(path.strip_prefix(root).unwrap().to_path_buf(), bytes);
             }
@@ -260,14 +260,107 @@ fn a_second_run_finds_nothing_to_migrate_and_changes_nothing() {
     assert_eq!(after, tree(&f.env.root));
 }
 
-#[test]
-fn a_migration_stopped_after_moving_the_2x_files_aside_completes() {
-    let f = fleet_2("migrate-resume");
-    fs::rename(&f.env.config, &f.config_v2).unwrap();
-    fs::rename(&f.store, &f.store_v2).unwrap();
+fn copy_tree(from: &Path, to: &Path) {
+    fs::create_dir_all(to).unwrap();
+    for entry in fs::read_dir(from).unwrap() {
+        let path = entry.unwrap().path();
+        let target = to.join(path.file_name().unwrap());
+        if path.is_dir() {
+            copy_tree(&path, &target);
+        } else {
+            fs::copy(&path, &target).unwrap();
+        }
+    }
+}
+
+fn migrated_store(name: &str, to: &Path) {
+    let twin = fleet_2(name);
+    twin.env.fleet(&["migrate"]).ok();
+    copy_tree(&twin.store, to);
+}
+
+fn journal(f: &Fleet2) {
+    fs::write(
+        f.env.root.join("fleet.toml.migrating"),
+        r#"{"store2x":true}"#,
+    )
+    .unwrap();
+}
+
+fn completes(f: &Fleet2, store_2x: &BTreeMap<PathBuf, Vec<u8>>) {
     f.env.fleet(&["migrate"]).ok().stdout_has("Task/fix-login");
     assert_eq!(fs::read_to_string(&f.config_v2).unwrap(), FLEET_2_CONFIG);
+    assert_eq!(&tree(&f.store_v2), store_2x);
+    assert!(!f.env.root.join("fleet.toml.migrating").exists());
+    assert!(!f.env.root.join("store-v1.v3").exists());
     assert_eq!(task(&f.env, "notes")["spec"]["dispatch"], false);
+    f.env
+        .fleet(&["migrate"])
+        .ok()
+        .stdout_has("nothing to migrate");
+}
+
+#[test]
+fn a_migration_stopped_after_staging_completes() {
+    let f = fleet_2("migrate-stop-staged");
+    let store_2x = tree(&f.store);
+    journal(&f);
+    migrated_store("migrate-stop-staged-twin", &f.env.root.join("store-v1.v3"));
+    completes(&f, &store_2x);
+}
+
+#[test]
+fn a_migration_stopped_after_moving_the_2x_store_aside_completes() {
+    let f = fleet_2("migrate-stop-moved");
+    let store_2x = tree(&f.store);
+    journal(&f);
+    fs::rename(&f.store, &f.store_v2).unwrap();
+    migrated_store("migrate-stop-moved-twin", &f.env.root.join("store-v1.v3"));
+    completes(&f, &store_2x);
+}
+
+#[test]
+fn a_migration_stopped_before_writing_the_config_completes() {
+    let f = fleet_2("migrate-stop-config");
+    let store_2x = tree(&f.store);
+    journal(&f);
+    fs::rename(&f.store, &f.store_v2).unwrap();
+    migrated_store("migrate-stop-config-twin", &f.store);
+    fs::copy(&f.env.config, &f.config_v2).unwrap();
+    completes(&f, &store_2x);
+}
+
+#[test]
+fn a_staged_store_left_without_a_journal_is_never_installed() {
+    let f = fleet_2("migrate-stale-v3");
+    fs::create_dir_all(f.env.root.join("store-v1.v3")).unwrap();
+    let before = tree(&f.env.root);
+    f.env.fleet(&["migrate"]).code(1).stderr_has("store-v1.v3");
+    assert_eq!(before, tree(&f.env.root));
+}
+
+#[test]
+fn a_config_without_a_data_dir_migrates_the_default_store() {
+    let env = Env::without_tools("migrate-default-store");
+    let config = FLEET_2_CONFIG.replace("[data]\ndir = \"store-v1\"\n", "");
+    fs::write(&env.config, &config).unwrap();
+    let store = env.root.join(".local/share/fleet");
+    fleet_2_store(&store);
+    let store_2x = tree(&store);
+    env.fleet(&["migrate"]).ok().stdout_has("Task/notes");
+    assert_eq!(tree(&env.root.join(".local/share/fleet.v2")), store_2x);
+    assert_eq!(task(&env, "notes")["spec"]["dispatch"], false);
+}
+
+#[test]
+fn an_expired_fleet_2_lease_does_not_stop_the_migration() {
+    let f = fleet_2("migrate-expired-lease");
+    fs::write(
+        f.store.join("lease.json"),
+        json!({"holder": "fleet-up-1@boot", "token": 1, "expiresAt": 1}).to_string(),
+    )
+    .unwrap();
+    f.env.fleet(&["migrate"]).ok();
 }
 
 #[test]

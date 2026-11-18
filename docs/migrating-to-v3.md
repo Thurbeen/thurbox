@@ -83,19 +83,15 @@ fleet doctor
 ```
 
 `fleet migrate` keeps the 2.x config as `config.toml.v2` and the 2.x store
-as `store-v1.v2`. It deletes nothing. A second run changes nothing
-([`fleet migrate`](fleet/configuration.md#migrating-a-fleet-2-config-fleet-migrate)).
+as `store-v1.v2`. It imports each Fleet 2 Task with `spec.dispatch = false`:
+no session starts until you set `spec.dispatch` to `true` and apply the
+Task again. Its report lists what it imported, what it did not, and why.
+[`fleet migrate`](fleet/configuration.md#migrating-a-fleet-2-config-fleet-migrate)
+owns the rules.
 
-- It copies `[forge]`, `[plugins]` and `[gateway]`. It does not copy
-  `[runtime]`, `[starter]`, `[workspaces]` or `[hosts]`, and its report says
-  why for each.
-- It imports each Task, TaskConfig and EnvProvider. A Task's workspace
-  becomes a list of URLs, on the branch that 2.x made for it. Its host
-  becomes a place, `mux/<host>`.
-- It imports each Task with `spec.dispatch = false`. No session starts
-  until you set `spec.dispatch` to `true` and apply the Task again.
-- It does not import a concluded Task, `spec.model`, or objects of other
-  kinds. The report names each one.
+If you moved the 2.x files aside by hand and ran `fleet init` already, move
+the Fleet 3 config and store aside, move the `.v2` files back, and run
+`fleet migrate`.
 
 Then do what the report lists under *For you to do*:
 

@@ -2494,10 +2494,24 @@ fn agent_collector() -> Option<fleet_api::harness::Collector> {
     })
 }
 
-/// `fleet migrate`: plan, then run unless `dry_run`, then print the report.
 fn cmd_migrate(path: &Path, dry_run: bool) -> Result<(), Failure> {
+    let _lock = if dry_run {
+        None
+    } else {
+        let parent = path
+            .parent()
+            .ok_or_else(|| fail("config must have a parent"))?;
+        Some(
+            fleet_store::durable::LockGuard::acquire(&parent.join("bootstrap.lock"))
+                .map_err(|e| fail(e.to_string()))?,
+        )
+    };
     let mut migration = match migrate::plan(path).map_err(fail)? {
-        migrate::Plan::Done { config_v2 } => {
+        migrate::Plan::Done { config_v2, journal } => {
+            if let Some(journal) = journal.filter(|_| !dry_run) {
+                std::fs::remove_file(&journal)
+                    .map_err(|e| fail(format!("{}: {e}", journal.display())))?;
+            }
             match config_v2 {
                 Some(v2) => println!(
                     "{} is a Fleet 3 config: nothing to migrate. The 2.x config is kept as {}",

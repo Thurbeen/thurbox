@@ -462,14 +462,6 @@ impl Config {
     }
 }
 
-/// What marks `text`, read from `path`, as a Fleet 2.x config, which sits at
-/// the same per-user path, and the store it names. The mark is its
-/// `[runtime]`: `kind = "thurbox"` with `cli`, `callTimeoutMs`, `keyPrefix`
-/// and `repositories`, where this Fleet's `[runtime]` is only the fake. The
-/// store matters as much: it uses this Fleet's store format version, so
-/// `fleet init` would point this Fleet at it, and this Fleet cannot read the
-/// objects 2.x wrote there. `None` for any other text, including one that is
-/// not TOML: the typed parse reports that.
 pub(crate) fn fleet_2_config(text: &str, path: &Path) -> Option<(String, PathBuf)> {
     const FLEET_2_KEYS: [&str; 4] = ["cli", "callTimeoutMs", "keyPrefix", "repositories"];
     let table: toml::Table = toml::from_str(text).ok()?;
@@ -487,9 +479,7 @@ pub(crate) fn fleet_2_config(text: &str, path: &Path) -> Option<(String, PathBuf
         .and_then(toml::Value::as_str)
     {
         Some(dir) => base.join(dir),
-        None => default_data_dir()
-            .unwrap_or_else(|| PathBuf::from("fleet"))
-            .join("store-v1"),
+        None => default_data_dir().unwrap_or_else(|| PathBuf::from("fleet")),
     };
     Some((why, store))
 }

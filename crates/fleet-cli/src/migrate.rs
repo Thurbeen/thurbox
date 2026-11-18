@@ -1,14 +1,10 @@
-//! `fleet migrate`: a Fleet 2 config and store become a Fleet 3 config and
-//! store. The 2.x files are renamed to `<path>.v2` once the new store is
-//! staged beside them, and nothing is deleted. Every step checks the state
-//! the last one left, so a run that stopped part way completes on the next.
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::path::{Path, PathBuf};
 
 use fleet_api::{Object, Store, StoreError};
 use fleet_store::FileStore;
-use fleet_store::durable::create_exclusive;
+use fleet_store::durable::{create_exclusive, replace};
 use serde_json::Value;
 
 use crate::config::{Config, fleet_2_config};
@@ -52,6 +48,9 @@ pub struct Migration {
     pub store: PathBuf,
     pub store_v2: PathBuf,
     staged: PathBuf,
+    journal: PathBuf,
+    resumed: bool,
+    store_2x: bool,
     config_text: String,
     objects: Vec<Object>,
     pub imported: Vec<String>,
@@ -60,7 +59,10 @@ pub struct Migration {
 }
 
 pub enum Plan {
-    Done { config_v2: Option<PathBuf> },
+    Done {
+        config_v2: Option<PathBuf>,
+        journal: Option<PathBuf>,
+    },
     Migrate(Box<Migration>),
 }
 
@@ -89,34 +91,50 @@ fn now_ms() -> u64 {
         .map_or(0, |d| d.as_millis() as u64)
 }
 
-/// What a run would do for the config at `config_path`.
+fn sibling(path: &Path, suffix: &str) -> PathBuf {
+    let mut name = path.as_os_str().to_owned();
+    name.push(suffix);
+    PathBuf::from(name)
+}
+
 pub fn plan(config_path: &Path) -> Result<Plan, String> {
     let config_v2 = v2(config_path);
+    let journal = sibling(config_path, ".migrating");
+    let resumed = read(&journal)?;
     let source = match read(config_path)? {
-        Some(text) if fleet_2_config(&text, config_path).is_some() => {
-            left_over(&config_v2)?;
-            text
-        }
+        Some(text) if fleet_2_config(&text, config_path).is_some() => text,
         Some(_) => {
             return Ok(Plan::Done {
                 config_v2: exists(&config_v2)?.then_some(config_v2),
+                journal: resumed.is_some().then_some(journal),
             });
         }
-        None => match read(&config_v2)? {
-            Some(text) if fleet_2_config(&text, config_path).is_some() => text,
-            _ => return Err(format!("no Fleet 2 config at {}", config_path.display())),
-        },
+        None => return Err(format!("no Fleet 2 config at {}", config_path.display())),
     };
     let (_, store) = fleet_2_config(&source, config_path).expect("checked above");
     let store = crate::bootstrap::absolute(&store)?;
     let store_v2 = v2(&store);
-    let mut staged = store.as_os_str().to_owned();
-    staged.push(".v3");
+    let staged = sibling(&store, ".v3");
+    let store_2x = match &resumed {
+        Some(text) => serde_json::from_str::<Value>(text)
+            .ok()
+            .and_then(|j| j["store2x"].as_bool())
+            .ok_or_else(|| format!("{} is not a migration journal", journal.display()))?,
+        None => {
+            for path in [&config_v2, &store_v2, &staged] {
+                left_over(path)?;
+            }
+            exists(&store)?
+        }
+    };
     let mut migration = Migration {
         config_path: config_path.to_path_buf(),
         config_v2,
         store_v2,
-        staged: PathBuf::from(staged),
+        staged,
+        journal,
+        resumed: resumed.is_some(),
+        store_2x,
         config_text: String::new(),
         objects: Vec::new(),
         imported: Vec::new(),
@@ -126,37 +144,34 @@ pub fn plan(config_path: &Path) -> Result<Plan, String> {
     };
     let table: toml::Table = toml::from_str(&source).map_err(|e| e.to_string())?;
     migration.config_text = migration.config(&table)?;
-    if exists(config_path)? {
-        left_over(&migration.store_v2)?;
+    if store_2x {
+        let source_store = if exists(&migration.store_v2)? {
+            migration.store_v2.clone()
+        } else {
+            migration.store.clone()
+        };
+        no_manager(&source_store)?;
+        let repositories = table
+            .get("runtime")
+            .and_then(|r| r.get("repositories"))
+            .and_then(toml::Value::as_table)
+            .map(|t| {
+                t.iter()
+                    .filter_map(|(url, dir)| Some((url.clone(), dir.as_str()?.to_string())))
+                    .collect()
+            })
+            .unwrap_or_default();
+        let key_prefix = table
+            .get("runtime")
+            .and_then(|r| r.get("keyPrefix"))
+            .and_then(toml::Value::as_str)
+            .unwrap_or("fleet")
+            .to_string();
+        migration.objects(&source_store, &repositories, &key_prefix)?;
     }
-    let source_store = if exists(&migration.store_v2)? {
-        migration.store_v2.clone()
-    } else {
-        migration.store.clone()
-    };
-    no_manager(&source_store)?;
-    let repositories = table
-        .get("runtime")
-        .and_then(|r| r.get("repositories"))
-        .and_then(toml::Value::as_table)
-        .map(|t| {
-            t.iter()
-                .filter_map(|(url, dir)| Some((url.clone(), dir.as_str()?.to_string())))
-                .collect()
-        })
-        .unwrap_or_default();
-    let key_prefix = table
-        .get("runtime")
-        .and_then(|r| r.get("keyPrefix"))
-        .and_then(toml::Value::as_str)
-        .unwrap_or("fleet")
-        .to_string();
-    migration.objects(&source_store, &repositories, &key_prefix)?;
     Ok(Plan::Migrate(Box::new(migration)))
 }
 
-/// A `.v2` copy left by something other than this migration: never
-/// overwritten, and never read as this config's 2.x files.
 fn left_over(path: &Path) -> Result<(), String> {
     if exists(path)? {
         return Err(format!(
@@ -167,8 +182,6 @@ fn left_over(path: &Path) -> Result<(), String> {
     Ok(())
 }
 
-/// A Fleet 2 manager that still holds the store's lease would keep writing
-/// to the store the migration reads.
 fn no_manager(store: &Path) -> Result<(), String> {
     let Some(text) = read(&store.join("lease.json"))? else {
         return Ok(());
@@ -354,33 +367,44 @@ impl Migration {
         }
     }
 
-    /// Write the new store and config and move the 2.x files aside, each
-    /// step only when the state left by an earlier run still needs it.
     pub fn run(&mut self, seed: &dyn Fn(&dyn Store) -> Result<(), String>) -> Result<(), String> {
-        let moved_store = exists(&self.store_v2)?;
-        let new_store_in_place = moved_store && exists(&self.store)?;
-        let config_is_2x = read(&self.config_path)?.is_some();
-        if !new_store_in_place && !exists(&self.staged)? {
+        let parent = self
+            .config_path
+            .parent()
+            .ok_or("config must have a parent")?
+            .to_path_buf();
+        if !self.resumed {
+            let journal = serde_json::json!({"store2x": self.store_2x}).to_string();
+            create_exclusive(&parent, &self.journal, journal.as_bytes())
+                .map_err(|e| format!("{}: {e}", self.journal.display()))?;
+        }
+        let installed = !exists(&self.staged)?
+            && exists(if self.store_2x {
+                &self.store_v2
+            } else {
+                &self.store
+            })?;
+        if !installed && !exists(&self.staged)? {
             self.stage(seed)?;
         }
-        if config_is_2x {
-            rename(&self.config_path, &self.config_v2)?;
-        }
-        if exists(&self.store)? && !exists(&self.store_v2)? {
-            rename(&self.store, &self.store_v2)?;
-        }
-        if !exists(&self.store)? {
+        if exists(&self.staged)? {
+            if self.store_2x && !exists(&self.store_v2)? {
+                rename(&self.store, &self.store_v2)?;
+            }
             rename(&self.staged, &self.store)?;
         }
-        if !exists(&self.config_path)? {
-            let parent = self
-                .config_path
-                .parent()
-                .ok_or("config must have a parent")?;
-            create_exclusive(parent, &self.config_path, self.config_text.as_bytes())
-                .map_err(|e| format!("{}: {e}", self.config_path.display()))?;
+        if !exists(&self.config_v2)? {
+            fs::hard_link(&self.config_path, &self.config_v2).map_err(|e| {
+                format!(
+                    "cannot keep {} as {}: {e}",
+                    self.config_path.display(),
+                    self.config_v2.display()
+                )
+            })?;
         }
-        Ok(())
+        replace(&parent, &self.config_path, self.config_text.as_bytes())
+            .map_err(|e| format!("{}: {e}", self.config_path.display()))?;
+        fs::remove_file(&self.journal).map_err(|e| format!("{}: {e}", self.journal.display()))
     }
 
     fn stage(&mut self, seed: &dyn Fn(&dyn Store) -> Result<(), String>) -> Result<(), String> {
@@ -401,7 +425,9 @@ impl Migration {
             match fleet_manager::verbs::apply(&store, obj, &policies, true) {
                 Ok(_) => {}
                 Err(StoreError::Invalid(why)) => {
-                    self.imported.retain(|line| !line.starts_with(&key));
+                    let named = format!("{key}:");
+                    self.imported
+                        .retain(|line| *line != key && !line.starts_with(&named));
                     self.dropped.push(format!(
                         "{key}: {why}; its record stays in {}",
                         self.store_v2.display()
@@ -455,9 +481,6 @@ fn rename(from: &Path, to: &Path) -> Result<(), String> {
     fs::rename(from, to)
         .map_err(|e| format!("cannot move {} to {}: {e}", from.display(), to.display()))
 }
-
-/// The report a run prints: what moved, what was dropped and why, and what
-/// is left for the operator.
 pub fn report(m: &Migration, dry_run: bool) -> String {
     let mut out = String::new();
     if dry_run {

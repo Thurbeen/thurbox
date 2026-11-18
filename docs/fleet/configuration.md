@@ -350,16 +350,33 @@ Fleet 3 refuses a Fleet 2 config by name. `fleet migrate` turns the Fleet 2
 config and store into Fleet 3's. `fleet migrate --dry-run` prints the same
 report and changes nothing.
 
-1. It writes a new store beside the 2.x store, as `store-v1.v3`.
-2. It renames the 2.x config to `config.toml.v2` and the 2.x store to
-   `store-v1.v2`.
-3. It moves the new store into place and writes the new config.
+1. It writes a journal, `config.toml.migrating`, beside the config.
+2. It writes the new store beside the 2.x store, as `store-v1.v3`.
+3. It renames the 2.x store to `store-v1.v2`, and moves the new store into
+   place.
+4. It keeps the 2.x config as `config.toml.v2`, a hard link, and replaces
+   the config with the new one in one step.
+5. It removes the journal.
 
-It deletes nothing, and it never reads or changes a `.v2` file again. It
-refuses to run while a Fleet 2 manager holds the store's lease, and when a
-`.v2` copy of the config or the store already exists. A run that stopped
-part way completes on the next run. A second run finds a Fleet 3 config and
-changes nothing.
+The config path always holds the 2.x config or the new one. It deletes no
+2.x file. It removes only its own journal and an unfinished
+`store-v1.v3.partial`. It holds the lock that `fleet init` takes.
+
+It refuses to run in these cases:
+
+- A Fleet 2 manager holds the store's lease.
+- With no journal, `config.toml.v2`, `store-v1.v2` or `store-v1.v3`
+  already exists.
+
+A run that stopped part way leaves the journal, and the next run completes
+from there. A run that finds a Fleet 3 config changes nothing.
+
+A Fleet 2 config with no `[data] dir` names the data directory itself as its
+store, for example `~/.local/share/fleet`.
+
+`fleet migrate` reads a Fleet 2 config only at the config path. If you moved
+the 2.x files aside by hand and ran `fleet init`, it finds a Fleet 3 config
+and changes nothing.
 
 The new config is what `fleet init` writes, with these sections of the 2.x
 config:
