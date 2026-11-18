@@ -51,8 +51,6 @@ pub struct Point {
     pub resource: Attrs,
 }
 
-/// One exported log record: its severity text, its body as a string, and
-/// its resource's attributes.
 #[derive(Debug, Clone)]
 pub struct Log {
     pub severity: String,

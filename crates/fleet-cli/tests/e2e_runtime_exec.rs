@@ -99,9 +99,6 @@ impl Drop for Sockets {
     }
 }
 
-/// [`mux_env`] whose Task t1 is on an ssh place at a closed port, so the
-/// `runtime-mux` Fleet starts for it warns that it cannot read the place's
-/// login `PATH`. `telemetry` is appended to the config as is.
 fn warning_env(name: &str, program: &Path, sockets: &Sockets, telemetry: &str) -> Env {
     let env = mux_env(name, program, sockets);
     let closed = std::net::TcpListener::bind("127.0.0.1:0")
@@ -123,9 +120,6 @@ fn warning_env(name: &str, program: &Path, sockets: &Sockets, telemetry: &str) -
     env
 }
 
-/// `logs = true` in Fleet's `[telemetry]` table reaches the `runtime-mux`
-/// Fleet runs as `OTEL_LOGS_EXPORTER=otlp`, and its WARN events arrive as
-/// log records under its own `service.name`.
 #[test]
 fn a_runtime_mux_warning_is_exported_when_fleets_config_turns_logs_on() {
     let (Some(program), Some(_)) = (runtime_mux(), tmux()) else {
@@ -151,9 +145,6 @@ fn a_runtime_mux_warning_is_exported_when_fleets_config_turns_logs_on() {
     });
 }
 
-/// An `OTEL_LOGS_EXPORTER=otlp` that Fleet inherits, as an agent's own
-/// telemetry sets in its session, turns on the logs of neither `fleet` nor
-/// the `runtime-mux` it starts: only Fleet's `logs = true` does.
 #[test]
 fn an_inherited_otel_logs_exporter_turns_on_no_runtime_mux_logs() {
     let (Some(program), Some(_)) = (runtime_mux(), tmux()) else {
@@ -164,11 +155,12 @@ fn an_inherited_otel_logs_exporter_turns_on_no_runtime_mux_logs() {
     let mut env = warning_env("runtime-mux-otel-nologs", &program, &sockets, "");
     env.set_var("OTEL_EXPORTER_OTLP_ENDPOINT", &collector.endpoint);
     env.set_var("OTEL_LOGS_EXPORTER", "otlp");
-    reconcile_until(&env, "a runtime-mux span", |_| {
-        collector
-            .spans()
-            .iter()
-            .any(|s| s.resource["service.name"] == "runtime-mux")
+    reconcile_until(&env, "a start on devbox and its span", |env| {
+        env.get("t1")["status"].to_string().contains("devbox")
+            && collector
+                .spans()
+                .iter()
+                .any(|s| s.name == "runtime-mux start")
     });
     assert!(
         !collector.paths().iter().any(|p| p == "/v1/logs"),

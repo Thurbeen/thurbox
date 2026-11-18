@@ -41,7 +41,8 @@ pub struct TelemetryConfig {
     /// Export metrics; on unless `false`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub metrics: Option<bool>,
-    /// Export log records; off unless `true`. Only thurbox records any.
+    /// Export log records; off unless `true`. A program initialised with
+    /// [`crate::Logs::Config`] reads only this, never `OTEL_LOGS_EXPORTER`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub logs: Option<bool>,
     /// More resource attributes, as `OTEL_RESOURCE_ATTRIBUTES`.

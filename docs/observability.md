@@ -127,7 +127,13 @@ ok    telemetry    export       endpoint http://localhost:4318 (config file); tr
 ### Precedence
 
 - An `OTEL_*` variable that is set and not empty wins over the file's value
-  for that variable. The other values of the file stay in force.
+  for that variable. The other values of the file stay in force. The
+  exception is `OTEL_LOGS_EXPORTER`: `fleet` and its `runtime-mux` ignore it
+  and read only the `logs` key.
+- `logs = true` decides whether `fleet` exports logs, not where. An
+  endpoint variable in the environment of a `fleet` command, such as one an
+  agent's settings set for its hooks, wins over the file's `endpoint` for
+  log records too.
 - The file's headers go only to the file's endpoint. When a variable sets
   `OTEL_EXPORTER_OTLP_ENDPOINT` or the endpoint of one signal, the program
   does not use the file's headers.

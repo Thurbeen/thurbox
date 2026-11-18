@@ -7,7 +7,9 @@
 //!
 //! A program with a config file gives its `[telemetry]` table to [`adopt`]
 //! first: the table stands for the variables it names, and a variable set in
-//! the environment wins over it ([`TelemetryConfig`]). The process
+//! the environment wins over it ([`TelemetryConfig`]), except
+//! `OTEL_LOGS_EXPORTER` for a program whose logs follow the table alone
+//! ([`Logs::Config`]). The process
 //! environment itself is never changed; [`child_env`] is what a child
 //! process must be given on top of the environment it inherits.
 //!
@@ -16,7 +18,8 @@
 //! when its endpoint (`OTEL_EXPORTER_OTLP_ENDPOINT`, or the signal's own
 //! `OTEL_EXPORTER_OTLP_{TRACES,METRICS,LOGS}_ENDPOINT`) is set, its
 //! `OTEL_{TRACES,METRICS}_EXPORTER` is unset or `otlp` (logs need
-//! `OTEL_LOGS_EXPORTER=otlp` set explicitly), and `OTEL_SDK_DISABLED` is not
+//! `OTEL_LOGS_EXPORTER=otlp` set explicitly, or the table's `logs = true`
+//! alone under [`Logs::Config`]), and `OTEL_SDK_DISABLED` is not
 //! `true`. The transport is OTLP over HTTP with
 //! protobuf; the exporter itself reads the headers, timeout and compression
 //! variables, and the resource reads `OTEL_SERVICE_NAME` and

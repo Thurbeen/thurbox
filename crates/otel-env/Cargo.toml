@@ -11,9 +11,6 @@ repository = "https://github.com/Thurbeen/thurbox"
 publish = false
 
 [dependencies]
-# The logs signal is compiled in for every program and asked for at run time
-# by those that record logs (thurbox, fleet, runtime-mux), so feature
-# unification never changes what another program reads.
 opentelemetry = { workspace = true, features = ["logs"] }
 opentelemetry_sdk = { workspace = true, features = ["logs"] }
 opentelemetry-otlp = { workspace = true, features = ["logs"] }

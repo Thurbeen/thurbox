@@ -1,11 +1,3 @@
-//! Acceptance: with logs on, each `warning: …` and `error: …` line `fleet`
-//! prints is also one OTLP log record, with the same text and a WARN or
-//! ERROR severity, under `service.name=fleet`. Logs are opt-in through
-//! Fleet's own `[telemetry] logs = true` alone: an endpoint sends none, and
-//! neither does an `OTEL_LOGS_EXPORTER` in the environment, which an agent's
-//! own telemetry sets in its session. No record, and no line, carries a
-//! brief, a message or an environment value.
-
 mod support;
 
 use std::fs;
@@ -136,18 +128,26 @@ fn no_log_record_carries_a_brief_a_message_or_an_environment_value() {
     let mistyped_env = env.apply(mistyped);
     assert_ne!(mistyped_env.code, Some(0), "{mistyped_env:?}");
     let mut mistyped = task("t3", true);
-    mistyped["spec"]["brief"] = json!([BRIEF_SECRET]);
+    mistyped["spec"]["workspace"] = json!(BRIEF_SECRET);
     let mistyped_brief = env.apply(mistyped);
     assert_ne!(mistyped_brief.code, Some(0), "{mistyped_brief:?}");
+    let result = env.root.join("result.json");
+    fs::write(
+        &result,
+        json!({"generation": MESSAGE_SECRET, "outcome": "shipped"}).to_string(),
+    )
+    .expect("result");
+    let mistyped_result = env.fleet(&["result", "t1", "--file", result.to_str().unwrap()]);
+    assert_ne!(mistyped_result.code, Some(0), "{mistyped_result:?}");
 
-    wait_for("five ERROR log records", || errors(&collector).len() >= 5);
+    wait_for("six ERROR log records", || errors(&collector).len() >= 6);
     for log in collector.logs() {
         for secret in [BRIEF_SECRET, ENV_SECRET, MESSAGE_SECRET] {
             assert!(!log.body.contains(secret), "{secret} in {log:#?}");
         }
     }
-    for run in [&mistyped_env, &mistyped_brief] {
-        for secret in [BRIEF_SECRET, ENV_SECRET] {
+    for run in [&mistyped_env, &mistyped_brief, &mistyped_result] {
+        for secret in [BRIEF_SECRET, ENV_SECRET, MESSAGE_SECRET] {
             assert!(!run.stderr.contains(secret), "{secret} in {}", run.stderr);
         }
     }
