@@ -891,11 +891,16 @@ fn start(
         },
         Ok(Located::Absent) => {}
     }
-    // On a remote place the agent is looked for on the place's `PATH` before
-    // its window is made: a window whose program is missing dies at once,
-    // and its pane says less than this does.
-    if let Some(why) = place.and_then(|host| crate::place::missing_program(host, &request.argv[0]))
-    {
+    // On a remote place the agent is looked for on the `PATH` its window
+    // gets before the window is made: a window whose program is missing dies
+    // at once, and its pane says less than this does.
+    if let Some(why) = place.and_then(|host| {
+        crate::place::missing_program(
+            host,
+            &request.argv[0],
+            request.env.get("PATH").map(String::as_str),
+        )
+    }) {
         return known(json!({ "failed": { "why": why } }));
     }
     let platform = place.map_or(crate::Platform::local(), HostDef::platform);

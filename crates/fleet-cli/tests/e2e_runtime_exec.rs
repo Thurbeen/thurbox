@@ -1669,6 +1669,95 @@ fn a_harness_that_is_only_a_user_profile_runs_and_reports_on_runtime_mux() {
     );
 }
 
+const PATH_AGENT: &str = r#"#!/bin/sh
+printf '%s' "$0" > "$PWD/agent"
+printf '%s' "$PATH" > "$PWD/path"
+fake-tool > "$PWD/tool"
+exec sleep 300
+"#;
+
+/// A Task's `PATH` reaches its pane: the agent and the tool it puts first on
+/// `PATH` are the ones that run, and runtime-mux's own CLI directory stays
+/// reachable.
+#[test]
+fn a_task_path_reaches_its_pane_on_runtime_mux() {
+    let (Some(built), Some(_)) = (runtime_mux(), tmux()) else {
+        return;
+    };
+    use std::os::unix::fs::PermissionsExt;
+    let executable = |path: &Path, script: &str| {
+        fs::write(path, script).expect("script");
+        fs::set_permissions(path, fs::Permissions::from_mode(0o755)).expect("chmod");
+    };
+    let sockets = Sockets::new("taskpath");
+    let mut env = mux_env("runtime-mux-task-path", &built, &sockets);
+    let mux_dir = env.root.join("mux");
+    fs::create_dir_all(&mux_dir).expect("mux dir");
+    let program = mux_dir.join("runtime-mux");
+    fs::hard_link(&built, &program)
+        .or_else(|_| fs::copy(&built, &program).map(drop))
+        .expect("runtime-mux");
+    executable(&mux_dir.join("thurbox-cli"), "#!/bin/sh\n");
+    let cfg = fs::read_to_string(&env.config).expect("config");
+    fs::write(
+        &env.config,
+        cfg.replace(&*built.to_string_lossy(), &program.to_string_lossy()),
+    )
+    .expect("config");
+    let harnesses = env.config.parent().unwrap().join("harnesses");
+    fs::create_dir_all(&harnesses).expect("harnesses dir");
+    fs::write(harnesses.join("stub.toml"), STUB_PROFILE).expect("profile");
+    let bin = env.root.join("bin");
+    let task_bin = env.root.join("task-bin");
+    fs::create_dir_all(&bin).expect("bin");
+    fs::create_dir_all(&task_bin).expect("task bin");
+    executable(&bin.join("stub-agent"), PATH_AGENT);
+    executable(&bin.join("fake-tool"), "#!/bin/sh\necho runtime\n");
+    executable(&task_bin.join("fake-tool"), "#!/bin/sh\necho task\n");
+    executable(&task_bin.join("stub-agent"), PATH_AGENT);
+    let fleet_dir = Path::new(env!("CARGO_BIN_EXE_fleet")).parent().unwrap();
+    let inherited = format!(
+        "{}:{}:{}",
+        bin.display(),
+        fleet_dir.display(),
+        std::env::var("PATH").unwrap_or_default()
+    );
+    env.only_on_path(Path::new(&inherited));
+    let work = env.root.join("work").join("t1");
+    fs::create_dir_all(&work).expect("workspace");
+    let mut task = support::task("t1", true);
+    task["spec"]["harness"] = json!("stub");
+    task["spec"].as_object_mut().unwrap().remove("brief");
+    task["spec"].as_object_mut().unwrap().remove("outputs");
+    task["spec"]["workspace"] = json!([format!("file://{}", work.display())]);
+    task["spec"]["env"] = json!({"PATH": format!("{}:{inherited}", task_bin.display())});
+    env.apply(json!([task])).ok();
+
+    reconcile_until(&env, "the agent ran its tool", |_| {
+        fs::read_to_string(work.join("tool")).is_ok_and(|t| !t.is_empty())
+    });
+    assert_eq!(
+        fs::read_to_string(work.join("tool")).unwrap().trim(),
+        "task",
+        "the pane ran the Task's tool"
+    );
+    assert_eq!(
+        Path::new(&fs::read_to_string(work.join("agent")).unwrap_or_default()),
+        task_bin.join("stub-agent"),
+        "the pane ran the Task's agent"
+    );
+    let path = fs::read_to_string(work.join("path")).unwrap_or_default();
+    let dirs: Vec<PathBuf> = std::env::split_paths(&path).collect();
+    assert!(
+        dirs.contains(&mux_dir),
+        "runtime-mux's CLI directory is on the pane's PATH: {path}"
+    );
+    assert!(
+        dirs.iter().position(|d| *d == task_bin) < dirs.iter().position(|d| *d == bin),
+        "the Task's PATH keeps its order: {path}"
+    );
+}
+
 /// An agent whose hooks are full but have not reported yet. Its first start
 /// draws Codex's approval and sets Codex's title, then reports idle once the
 /// test lets it. A second start draws nothing and reports nothing.

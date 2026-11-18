@@ -260,13 +260,40 @@ fn run_script(
     args: &[&str],
     deadline: Instant,
 ) -> Result<Ran, String> {
+    run_script_with(
+        host,
+        &assignment(host, left(deadline)),
+        script,
+        args,
+        deadline,
+    )
+}
+
+/// The `PATH` assignment a window on `host` gets: the Task's `task_path`
+/// when it names one ([`crate::host_path::task_assignment_for`]), else the
+/// place's.
+fn window_path(host: &HostDef, task_path: Option<&str>, budget: Duration) -> String {
+    match task_path {
+        Some(path) => crate::host_path::task_assignment_for(host, path).unwrap_or_default(),
+        None => assignment(host, budget),
+    }
+}
+
+/// [`run_script`] with `path`, a `PATH` assignment, in place of the place's.
+fn run_script_with(
+    host: &HostDef,
+    path: &str,
+    script: &str,
+    args: &[&str],
+    deadline: Instant,
+) -> Result<Ran, String> {
     if host.platform() != Platform::Posix {
         return Err(format!(
             "place {:?} is native Windows, which has no `sh` to run this in",
             host.name
         ));
     }
-    let cmd = script_command(host, &assignment(host, left(deadline)), script, args);
+    let cmd = script_command(host, path, script, args);
     run_bounded(cmd, left(deadline)).map(|(code, stdout, stderr)| Ran {
         ok: code == Some(0),
         unreached: matches!(host.kind, HostKind::Ssh) && code == Some(255),
@@ -392,8 +419,9 @@ pub fn readiness(
     })
 }
 
-/// Why `program` cannot start on the place, if it is not on its `PATH`.
-pub fn missing_program(host: &HostDef, program: &str) -> Option<String> {
+/// Why `program` cannot start on the place, if it is not on the `PATH` its
+/// window gets: the Task's `task_path` when it names one, else the place's.
+pub fn missing_program(host: &HostDef, program: &str, task_path: Option<&str>) -> Option<String> {
     let name = &host.name;
     if host.platform() != Platform::Posix {
         return match run_powershell(host, &windows_lookup(&[program]), Instant::now() + PROBE_TIMEOUT) {
@@ -408,11 +436,13 @@ pub fn missing_program(host: &HostDef, program: &str) -> Option<String> {
             Ok(_) => None,
         };
     }
-    match run_script(
+    let deadline = Instant::now() + PROBE_TIMEOUT;
+    match run_script_with(
         host,
+        &window_path(host, task_path, left(deadline)),
         "command -v \"$1\" >/dev/null 2>&1 || echo @missing",
         &[program],
-        Instant::now() + PROBE_TIMEOUT,
+        deadline,
     ) {
         Err(why) => Some(format!("place {name:?} did not answer: {why}")),
         Ok(ran) if !ran.ok => Some(format!(
@@ -962,6 +992,30 @@ fn wait_bounded(
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn a_tasks_path_is_what_the_missing_program_check_reads() {
+        let host = HostDef {
+            name: "check-task-path".into(),
+            destination: "me@devbox".into(),
+            path_prepend: vec!["/opt/x/bin".into()],
+            ..Default::default()
+        };
+        crate::host_path::seed(
+            &host,
+            Some(crate::host_path::HostEnv {
+                home: Some("/home/me".into()),
+                base: vec!["/usr/bin".into()],
+                shell_login: Some(vec!["/home/me/.local/bin".into()]),
+                sh_login: None,
+                multiplexers: Vec::new(),
+            }),
+        );
+        assert_eq!(
+            window_path(&host, Some("/opt/wrap/bin:/usr/bin"), Duration::ZERO),
+            "PATH=/opt/x/bin:/opt/wrap/bin:/usr/bin; export PATH; "
+        );
+    }
 
     fn place(name: &str, config: Value) -> Place {
         serde_json::from_value(json!({ "name": name, "config": config })).unwrap()
