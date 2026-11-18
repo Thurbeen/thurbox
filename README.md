@@ -75,8 +75,8 @@ Then run `fleet init`, `fleet doctor` and `fleet up`
 `cargo build --release` in a clone builds every program from source. Homebrew,
 the AUR, Nix, winget, Chocolatey and uninstalling are on the
 [Installation page](https://thurbox.thurbeen.eu/docs/installation.html).
-Homebrew, the AUR, winget and Chocolatey still carry 2.x: v3 ships through the
-install script and Nix.
+Homebrew, the AUR, winget and Chocolatey still carry 2.x, and Nix gives
+`thurbox` and `thurbox-cli` only: install v3 with the script.
 
 ## First steps
 
