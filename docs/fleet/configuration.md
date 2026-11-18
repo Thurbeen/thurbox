@@ -352,11 +352,11 @@ report and changes nothing.
 
 1. It writes a journal, `config.toml.migrating`, beside the config.
 2. It writes the new store beside the 2.x store, as `store-v1.v3`.
-3. It renames the 2.x store to `store-v1.v2`, and moves the new store into
+3. It writes a copy of the 2.x config, `config.toml.v2`.
+4. It renames the 2.x store to `store-v1.v2`, and moves the new store into
    place.
-4. It keeps the 2.x config as `config.toml.v2`, a hard link, and replaces
-   the config with the new one in one step.
-5. It removes the journal.
+5. It replaces the config with the new one in one step.
+6. It removes the journal.
 
 The config path always holds the 2.x config or the new one. It deletes no
 2.x file. It removes only its own journal and an unfinished
@@ -387,7 +387,7 @@ config:
   by hand.
 
 The report names each key and table it does not copy, with the reason:
-`[runtime]`, `[starter]`, `[workspaces]` and `[hosts]`.
+`[runtime]`, `[starter]` and `[workspaces]`.
 
 The new store holds each Task, TaskConfig and EnvProvider of the 2.x store,
 with their names and labels, and without their status:

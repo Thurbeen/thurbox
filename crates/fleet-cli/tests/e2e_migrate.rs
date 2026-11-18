@@ -331,6 +331,28 @@ fn a_migration_stopped_before_writing_the_config_completes() {
 }
 
 #[test]
+fn a_partial_copy_of_the_2x_config_is_written_again() {
+    let f = fleet_2("migrate-stop-copy");
+    let store_2x = tree(&f.store);
+    journal(&f);
+    migrated_store("migrate-stop-copy-twin", &f.env.root.join("store-v1.v3"));
+    fs::write(&f.config_v2, "version = 1\n[da").unwrap();
+    completes(&f, &store_2x);
+}
+
+#[test]
+fn a_journal_left_after_the_config_was_written_is_removed() {
+    let f = fleet_2("migrate-stop-journal");
+    f.env.fleet(&["migrate"]).ok();
+    journal(&f);
+    f.env
+        .fleet(&["migrate"])
+        .ok()
+        .stdout_has("nothing to migrate");
+    assert!(!f.env.root.join("fleet.toml.migrating").exists());
+}
+
+#[test]
 fn a_staged_store_left_without_a_journal_is_never_installed() {
     let f = fleet_2("migrate-stale-v3");
     fs::create_dir_all(f.env.root.join("store-v1.v3")).unwrap();

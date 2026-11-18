@@ -4,7 +4,7 @@ use std::path::{Path, PathBuf};
 
 use fleet_api::{Object, Store, StoreError};
 use fleet_store::FileStore;
-use fleet_store::durable::{create_exclusive, replace};
+use fleet_store::durable::replace;
 use serde_json::Value;
 
 use crate::config::{Config, fleet_2_config};
@@ -51,6 +51,7 @@ pub struct Migration {
     journal: PathBuf,
     resumed: bool,
     store_2x: bool,
+    source_text: String,
     config_text: String,
     objects: Vec<Object>,
     pub imported: Vec<String>,
@@ -103,7 +104,11 @@ pub fn plan(config_path: &Path) -> Result<Plan, String> {
     let resumed = read(&journal)?;
     let source = match read(config_path)? {
         Some(text) if fleet_2_config(&text, config_path).is_some() => text,
-        Some(_) => {
+        Some(text) => {
+            if resumed.is_some() {
+                Config::parse_settings(&text, config_path)
+                    .map_err(|why| format!("{why}; {} stays", journal.display()))?;
+            }
             return Ok(Plan::Done {
                 config_v2: exists(&config_v2)?.then_some(config_v2),
                 journal: resumed.is_some().then_some(journal),
@@ -135,6 +140,7 @@ pub fn plan(config_path: &Path) -> Result<Plan, String> {
         journal,
         resumed: resumed.is_some(),
         store_2x,
+        source_text: source.clone(),
         config_text: String::new(),
         objects: Vec::new(),
         imported: Vec::new(),
@@ -375,8 +381,7 @@ impl Migration {
             .to_path_buf();
         if !self.resumed {
             let journal = serde_json::json!({"store2x": self.store_2x}).to_string();
-            create_exclusive(&parent, &self.journal, journal.as_bytes())
-                .map_err(|e| format!("{}: {e}", self.journal.display()))?;
+            write_new(&self.journal, journal.as_bytes())?;
         }
         let installed = !exists(&self.staged)?
             && exists(if self.store_2x {
@@ -387,20 +392,14 @@ impl Migration {
         if !installed && !exists(&self.staged)? {
             self.stage(seed)?;
         }
+        if read(&self.config_v2)?.as_deref() != Some(self.source_text.as_str()) {
+            write_all(&self.config_v2, self.source_text.as_bytes())?;
+        }
         if exists(&self.staged)? {
             if self.store_2x && !exists(&self.store_v2)? {
                 rename(&self.store, &self.store_v2)?;
             }
             rename(&self.staged, &self.store)?;
-        }
-        if !exists(&self.config_v2)? {
-            fs::hard_link(&self.config_path, &self.config_v2).map_err(|e| {
-                format!(
-                    "cannot keep {} as {}: {e}",
-                    self.config_path.display(),
-                    self.config_v2.display()
-                )
-            })?;
         }
         replace(&parent, &self.config_path, self.config_text.as_bytes())
             .map_err(|e| format!("{}: {e}", self.config_path.display()))?;
@@ -477,6 +476,29 @@ fn workspace(
     (!urls.is_empty()).then_some(Value::Array(urls))
 }
 
+fn write_new(path: &Path, bytes: &[u8]) -> Result<(), String> {
+    use std::io::Write;
+    fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(path)
+        .and_then(|mut file| {
+            file.write_all(bytes)?;
+            file.sync_all()
+        })
+        .map_err(|e| format!("{}: {e}", path.display()))
+}
+
+fn write_all(path: &Path, bytes: &[u8]) -> Result<(), String> {
+    use std::io::Write;
+    fs::File::create(path)
+        .and_then(|mut file| {
+            file.write_all(bytes)?;
+            file.sync_all()
+        })
+        .map_err(|e| format!("{}: {e}", path.display()))
+}
+
 fn rename(from: &Path, to: &Path) -> Result<(), String> {
     fs::rename(from, to)
         .map_err(|e| format!("cannot move {} to {}: {e}", from.display(), to.display()))
@@ -493,16 +515,24 @@ pub fn report(m: &Migration, dry_run: bool) -> String {
             done.to_string()
         }
     };
-    for (what, path, kept) in [
-        ("config", &m.config_path, &m.config_v2),
-        ("store", &m.store, &m.store_v2),
-    ] {
+    out.push_str(&format!(
+        "The config {} {} Fleet 3's; the 2.x config is kept as {}\n",
+        m.config_path.display(),
+        verb("is", "becomes"),
+        m.config_v2.display()
+    ));
+    out.push_str(&format!(
+        "The store {} {} Fleet 3's",
+        m.store.display(),
+        verb("is", "becomes")
+    ));
+    if m.store_2x {
         out.push_str(&format!(
-            "The {what} {} {} Fleet 3's; the 2.x {what} is kept as {}\n",
-            path.display(),
-            verb("is", "becomes"),
-            kept.display()
+            "; the 2.x store is kept as {}\n",
+            m.store_v2.display()
         ));
+    } else {
+        out.push_str("; the 2.x config named no store that exists\n");
     }
     let section = |out: &mut String, title: &str, lines: &[String]| {
         if lines.is_empty() {
