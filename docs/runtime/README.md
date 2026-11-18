@@ -284,10 +284,16 @@ after a reboot and never as exited.
 
 An earlier `runtime-mux` wrote the mark as
 `runtime-mux-<socket>.paused-<key>` in the private directory tmux keeps the
-socket in, which a reboot empties. Each call copies a mark it finds there to
-the data directory, under the server's lock. The copy leaves the earlier
-mark in place, so an earlier `runtime-mux` that an update rolls back to
-still reads the key as paused. A `start` and a `stop` remove both marks.
+socket in, which a reboot empties. For a rollback to that version:
+
+- A pause writes the mark in both places.
+- A `start`, `stop`, `pause` or `inspect` of a key copies its earlier mark
+  to the data directory, under the server's lock. A `list` copies every
+  earlier mark. The copy leaves the earlier mark in place.
+- A `start` and a `stop` remove both marks.
+- An earlier `runtime-mux` removes only its own mark. A key that it starts
+  or stops after a rollback keeps its mark in the data directory, and reads
+  as paused again after the next update.
 
 ### Places (protocol version 2)
 

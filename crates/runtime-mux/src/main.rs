@@ -111,8 +111,18 @@ fn serve(verb: &str) -> serde_json::Value {
         }
     }
     let kept = kept(&server);
-    if let Err(answer) = copy_older_pause_marks(&server, &kept, server_turn.is_some()) {
-        return answer;
+    let marked = match verb {
+        "list" => Some(None),
+        "start" | "stop" | "pause" | "inspect" => request_key(&request).map(Some),
+        _ => None,
+    };
+    if let Some(key) = marked {
+        let holding_the_lock = server_turn.is_some();
+        if let Err(answer) =
+            copy_older_pause_marks(&server, &kept, key.as_deref(), holding_the_lock)
+        {
+            return answer;
+        }
     }
     // Each remote place's login `PATH` is cached beside the locks, so a call
     // does not read it again over ssh.
@@ -354,17 +364,18 @@ fn kept(server: &str) -> protocol::Kept {
 fn copy_older_pause_marks(
     server: &str,
     kept: &protocol::Kept,
+    key: Option<&str>,
     holding_the_lock: bool,
 ) -> Result<(), serde_json::Value> {
     let unknown = |why: String| serde_json::json!({ "unknown": { "why": why } });
-    if kept.pause_marks_to_copy().map_err(unknown)?.is_empty() {
+    if kept.pause_marks_to_copy(key).map_err(unknown)?.is_empty() {
         return Ok(());
     }
     let _turn = match holding_the_lock {
         true => None,
         false => Some(take(&format!("runtime-mux-{server}.lock"))?),
     };
-    kept.copy_pause_marks().map_err(unknown)
+    kept.copy_pause_marks(key).map_err(unknown)
 }
 
 const SERVER_DIR_COMPONENT: usize = 128;

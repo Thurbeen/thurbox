@@ -530,6 +530,14 @@ fn a_dot_key_reads_exited_once_its_server_is_gone() {
     }
 }
 
+fn older_pause_mark(rt: &Runtime, key: &str) -> std::path::PathBuf {
+    use std::os::unix::fs::MetadataExt;
+    let uid = std::fs::metadata(rt.server.tmpdir()).expect("tmpdir").uid();
+    rt.server
+        .tmpdir()
+        .join(format!("tmux-{uid}/runtime-mux-{SOCKET}.paused-{key}"))
+}
+
 fn reboot(rt: &Runtime) {
     use std::os::unix::fs::MetadataExt;
     kill_runtime_server(rt);
@@ -546,6 +554,10 @@ fn a_paused_key_reads_paused_after_a_reboot_and_resumes_on_a_start() {
         rt.call("pause", json!({"protocol": 1, "key": "napping"}))["known"],
         "paused"
     );
+    assert!(
+        older_pause_mark(&rt, "napping").exists(),
+        "an earlier version rolled back to reads the pause"
+    );
     reboot(&rt);
 
     assert_eq!(rt.inspect("napping")["known"], "paused");
@@ -558,15 +570,10 @@ fn a_paused_key_reads_paused_after_a_reboot_and_resumes_on_a_start() {
 
 #[test]
 fn a_pause_mark_an_earlier_version_left_by_the_sockets_survives_a_reboot_until_a_start() {
-    use std::os::unix::fs::MetadataExt;
     let Some(rt) = Runtime::new() else { return };
     started(&rt.start("upgraded", &["sleep", "300"]));
     kill_runtime_server(&rt);
-    let uid = std::fs::metadata(rt.server.tmpdir()).expect("tmpdir").uid();
-    let older = rt
-        .server
-        .tmpdir()
-        .join(format!("tmux-{uid}/runtime-mux-{SOCKET}.paused-upgraded"));
+    let older = older_pause_mark(&rt, "upgraded");
     std::fs::write(&older, "").expect("the older mark");
 
     assert_eq!(rt.inspect("upgraded")["known"], "paused");

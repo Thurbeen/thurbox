@@ -803,9 +803,11 @@ impl Marks {
 }
 
 /// What this program keeps of a key outside the server, where a reboot
-/// leaves it. `paused` marks a paused key (the `pause` verb). `started` holds the pane of each key a `start`
-/// made until a `stop`, where a reboot leaves it: a key with no window reads
-/// as exited, never as stopped, so Fleet revives its session.
+/// leaves it. `paused` marks a paused key (the `pause` verb). `started`
+/// holds the pane of each key a `start` made until a `stop`: a key with no
+/// window reads as exited, never as stopped, so Fleet revives its session.
+/// `paused_beside_the_locks` is where an earlier `runtime-mux` keeps its
+/// marks, which a reboot takes and a rollback to it reads.
 pub struct Kept {
     pub paused: Marks,
     pub started: Marks,
@@ -813,23 +815,35 @@ pub struct Kept {
 }
 
 impl Kept {
-    /// The keys an earlier `runtime-mux` marked paused beside the locks,
-    /// where a reboot takes the mark, and not yet here.
-    pub fn pause_marks_to_copy(&self) -> Result<Vec<String>, String> {
-        let mut keys = self.paused_beside_the_locks.keys()?;
-        let copied = self.paused.keys()?;
+    /// The keys among `key`, or every key when `None`, that an earlier
+    /// `runtime-mux` marked paused and that are not marked here yet.
+    pub fn pause_marks_to_copy(&self, key: Option<&str>) -> Result<Vec<String>, String> {
+        let mut keys = match key {
+            Some(key) if self.paused_beside_the_locks.holds(key)? => vec![key.to_string()],
+            Some(_) => return Ok(Vec::new()),
+            None => self.paused_beside_the_locks.keys()?,
+        };
+        let copied = match key {
+            Some(key) if self.paused.holds(key)? => vec![key.to_string()],
+            Some(_) => Vec::new(),
+            None => self.paused.keys()?,
+        };
         keys.retain(|key| !copied.contains(key));
         Ok(keys)
     }
 
-    /// Copies each mark [`Kept::pause_marks_to_copy`] names here, and
-    /// leaves it where it is for an earlier `runtime-mux` to read. The
+    /// Copies each mark [`Kept::pause_marks_to_copy`] names here. The
     /// caller holds the server's lock, so no `start` or `stop` clears a mark
     /// while it is copied.
-    pub fn copy_pause_marks(&self) -> Result<(), String> {
-        self.pause_marks_to_copy()?
+    pub fn copy_pause_marks(&self, key: Option<&str>) -> Result<(), String> {
+        self.pause_marks_to_copy(key)?
             .iter()
             .try_for_each(|key| self.paused.write(key, ""))
+    }
+
+    fn mark_paused(&self, key: &str) -> Result<(), String> {
+        self.paused.write(key, "")?;
+        self.paused_beside_the_locks.write(key, "")
     }
 
     fn clear_paused(&self, key: &str) -> Result<(), String> {
@@ -1081,7 +1095,7 @@ fn pause(backend: &dyn SessionBackend, kept: &Kept, key: &str) -> Value {
         return unknown(e);
     }
     if let Some(pane) = agent {
-        if let Err(why) = kept.paused.write(key, "") {
+        if let Err(why) = kept.mark_paused(key) {
             return unknown(why);
         }
         if let Err(e) = backend.kill(&pane) {
