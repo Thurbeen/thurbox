@@ -962,10 +962,20 @@ fn sizer_name() -> String {
     format!("{:x}-{nth:x}-{nanos:x}", std::process::id())
 }
 
-fn user_manager_reachable() -> bool {
-    cfg!(target_os = "linux")
-        && std::env::var_os("XDG_RUNTIME_DIR")
-            .is_some_and(|dir| Path::new(&dir).join("systemd/private").exists())
+fn scopes_available() -> bool {
+    static AVAILABLE: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *AVAILABLE.get_or_init(|| {
+        let user_manager_reachable = std::env::var_os("XDG_RUNTIME_DIR")
+            .is_some_and(|dir| Path::new(&dir).join("systemd/private").exists());
+        cfg!(target_os = "linux")
+            && user_manager_reachable
+            && in_own_scope(&Command::new("true"))
+                .stdin(Stdio::null())
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .status()
+                .is_ok_and(|status| status.success())
+    })
 }
 
 fn in_own_scope(command: &Command) -> Command {
@@ -1951,17 +1961,10 @@ impl<M: TmuxCompatible> Server<M> {
     }
 
     fn start_server_in_own_scope(&self, args: &[&str]) -> Result<std::process::Output> {
-        if self.transport.is_remote() || !user_manager_reachable() {
+        if self.transport.is_remote() || !scopes_available() {
             return self.run_tmux(args);
         }
-        let scoped = in_own_scope(&self.mux_command(args)?);
-        match self.run_mux_command(scoped, args) {
-            Ok(output) => Ok(output),
-            Err(e) => {
-                debug!("{} server start in a scope failed: {e:#}", self.name);
-                self.run_tmux(args)
-            }
-        }
+        self.run_mux_command(in_own_scope(&self.mux_command(args)?), args)
     }
 
     fn run_tmux(&self, args: &[&str]) -> Result<std::process::Output> {
