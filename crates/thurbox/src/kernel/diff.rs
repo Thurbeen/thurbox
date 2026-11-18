@@ -994,10 +994,11 @@ mod tests {
             .with_writer(move || writer.clone())
             .finish();
         let diff = tracing::subscriber::with_default(subscriber, || {
-            (0..refreshes)
-                .map(|_| compute(worktree, None))
-                .last()
-                .expect("at least one refresh")
+            let mut diff = compute(worktree, None);
+            for _ in 1..refreshes {
+                diff = compute(worktree, None);
+            }
+            diff
         });
         (diff, log)
     }
