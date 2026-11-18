@@ -773,7 +773,8 @@ fn main() -> ExitCode {
             f.code
         }
     };
-    // `up` runs until Ctrl-C: each of its sweeps is a trace of its own.
+    // `up` runs until Ctrl-C: its startup check and each of its sweeps is a
+    // trace of its own.
     // Any other command is the root span `fleet NAME`, under the span its
     // caller named in TRACEPARENT.
     let code = if name == "up" {
@@ -1842,6 +1843,11 @@ fn serve_up(
         config.places().into_iter().map(|p| p.id).collect()
     };
     let mut down = Vec::new();
+    let startup = otel_env::own_trace(
+        "fleet",
+        "fleet up".into(),
+        vec![KeyValue::new("fleet.command", "up")],
+    );
     for host in &hosts {
         match runtime.host(host) {
             Observation::Known(true) => {}
@@ -1854,8 +1860,10 @@ fn serve_up(
         }
     }
     if down.len() == hosts.len() {
+        startup.fail("no host".into());
         return Err(fail(format!("{}; then retry fleet up", down.join("; "))));
     }
+    drop(startup);
     for line in &down {
         eprintln!("{line}");
     }

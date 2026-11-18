@@ -241,6 +241,45 @@ impl FleetLink {
         Ok(self.build(program, &args))
     }
 
+    /// The stream `fleet <verb> <task> --json` names (`attach` or `shell`),
+    /// not yet started, on the Fleet's machine: the argv names paths there,
+    /// so it runs through the same launcher. The asking `fleet` and a local
+    /// stream both run under the span `fleet <verb>`.
+    pub fn stream(&self, verb: &str, task: &str) -> Result<Command, StreamFailure> {
+        let _span = command_span(verb, Some(task));
+        let out = self
+            .command(&[verb, task, "--json"])
+            .stdin(Stdio::null())
+            .output()
+            .map_err(|e| format!("could not start fleet {verb}: {e}"))?;
+        if let Some(why) = self.unreachable(&out) {
+            return Err(why.into());
+        }
+        if !out.status.success() {
+            let stderr = String::from_utf8_lossy(&out.stderr);
+            let why = stderr
+                .lines()
+                .find_map(|line| line.strip_prefix("error: "))
+                .unwrap_or(stderr.trim());
+            return Err(StreamFailure {
+                message: format!("fleet {verb}: {why}"),
+                exit: out.status.code(),
+            });
+        }
+        let answer: serde_json::Value = serde_json::from_slice(&out.stdout)
+            .map_err(|e| format!("fleet {verb} answered no JSON: {e}"))?;
+        let argv: Vec<String> = answer["stream"]["argv"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(|arg| arg.as_str().map(str::to_string))
+            .collect();
+        if argv.is_empty() {
+            return Err(format!("fleet {verb} answered no stream: {answer}").into());
+        }
+        Ok(self.launch(&argv)?)
+    }
+
     /// `program` with `args` on the Fleet's machine: the one place a call
     /// becomes a process.
     fn build(&self, program: &str, args: &[&str]) -> Command {
@@ -307,7 +346,7 @@ impl FleetLink {
         args: &[&str],
         timeout: std::time::Duration,
     ) -> Result<std::process::Output, String> {
-        let _span = command_span(args.first().copied().unwrap_or_default());
+        let _span = command_span(args.first().copied().unwrap_or_default(), None);
         let mut command = self.command(args);
         command
             .stdin(Stdio::null())
@@ -395,7 +434,7 @@ impl FleetLink {
     /// it wrote, else all of its stderr.
     pub fn run(&self, args: &[&str], input: Option<&str>) -> Result<(), String> {
         let verb = args.first().copied().unwrap_or_default();
-        let _span = command_span(verb);
+        let _span = command_span(verb, None);
         let mut child = self
             .command(args)
             .stdin(if input.is_some() {
@@ -428,19 +467,20 @@ impl FleetLink {
 }
 
 /// The span `fleet VERB` around one command the interface runs and waits
-/// for ([`FleetLink::run`], [`FleetLink::bounded_output`]), current until
-/// dropped: the `fleet` it starts joins its trace through
+/// for ([`FleetLink::run`], [`FleetLink::bounded_output`],
+/// [`FleetLink::stream`]), about the Task `task` when it names one, current
+/// until dropped: the `fleet` it starts joins its trace through
 /// `TRACEPARENT`. A no-op unless the OTEL_* variables turned tracing on.
-fn command_span(verb: &str) -> opentelemetry::ContextGuard {
+fn command_span(verb: &str, task: Option<&str>) -> opentelemetry::ContextGuard {
     use opentelemetry::trace::{SpanKind, TraceContextExt, Tracer};
+    use opentelemetry::KeyValue;
     let tracer = opentelemetry::global::tracer("thurbox");
+    let mut attributes = vec![KeyValue::new("fleet.command", verb.to_string())];
+    attributes.extend(task.map(|task| KeyValue::new("fleet.name", task.to_string())));
     let span = tracer
         .span_builder(format!("fleet {verb}"))
         .with_kind(SpanKind::Client)
-        .with_attributes([opentelemetry::KeyValue::new(
-            "fleet.command",
-            verb.to_string(),
-        )])
+        .with_attributes(attributes)
         .start(&tracer);
     opentelemetry::Context::current_with_span(span).attach()
 }
@@ -453,6 +493,23 @@ fn carry_trace(cmd: &mut Command) {
         .env_remove(otel_env::TRACEPARENT);
     if let Some(parent) = otel_env::traceparent() {
         cmd.env(otel_env::TRACEPARENT, parent);
+    }
+}
+
+/// Why [`FleetLink::stream`] has no stream: its message, and the exit code
+/// of a `fleet` that answered with a failure.
+#[derive(Debug)]
+pub struct StreamFailure {
+    pub message: String,
+    pub exit: Option<i32>,
+}
+
+impl From<String> for StreamFailure {
+    fn from(message: String) -> Self {
+        Self {
+            message,
+            exit: None,
+        }
     }
 }
 

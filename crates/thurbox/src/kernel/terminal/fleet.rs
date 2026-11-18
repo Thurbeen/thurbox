@@ -33,8 +33,8 @@ pub(super) fn open(
     scrollback: usize,
     notices: Notices,
 ) -> Result<crate::backend::Session, OpenFailure> {
-    let argv = stream_argv(link, "attach", task)?;
-    let (adopted, upstream) = adopt_with_upstream(link.launch(&argv)?, rows, cols, Some(notices))
+    let stream = link.stream("attach", task)?;
+    let (adopted, upstream) = adopt_with_upstream(stream, rows, cols, Some(notices))
         .map_err(|e| format!("the stream pane: {e}"))?;
     let backend: Arc<dyn crate::backend::SessionBackend> = Arc::new(Stream(upstream));
     Ok(crate::backend::Session::adopt_io(
@@ -67,8 +67,10 @@ pub(super) fn open_shell(
     ),
     String,
 > {
-    let argv = stream_argv(link, "shell", task).map_err(|failure| failure.message)?;
-    let (adopted, upstream) = adopt_with_upstream(link.launch(&argv)?, rows, cols, Some(notices))
+    let stream = link
+        .stream("shell", task)
+        .map_err(|failure| failure.message)?;
+    let (adopted, upstream) = adopt_with_upstream(stream, rows, cols, Some(notices))
         .map_err(|e| format!("the shell's stream: {e}"))?;
     let backend: Arc<dyn crate::backend::SessionBackend> = Arc::new(Stream(upstream));
     let shell = crate::backend::Session::shell_over(
@@ -80,46 +82,6 @@ pub(super) fn open_shell(
         scrollback,
     );
     Ok((shell, backend))
-}
-
-/// The argv `fleet <verb> <task> --json` answers, `attach` or `shell`:
-/// `{"stream": {"argv": […]}}`.
-fn stream_argv(
-    link: &crate::fleet_link::FleetLink,
-    verb: &str,
-    task: &str,
-) -> Result<Vec<String>, OpenFailure> {
-    let out = link
-        .command(&[verb, task, "--json"])
-        .stdin(std::process::Stdio::null())
-        .output()
-        .map_err(|e| format!("could not start fleet {verb}: {e}"))?;
-    if let Some(why) = link.unreachable(&out) {
-        return Err(why.into());
-    }
-    if !out.status.success() {
-        let stderr = String::from_utf8_lossy(&out.stderr);
-        let why = stderr
-            .lines()
-            .find_map(|line| line.strip_prefix("error: "))
-            .unwrap_or(stderr.trim());
-        return Err(OpenFailure {
-            message: format!("fleet {verb}: {why}"),
-            refused: out.status.code() == Some(FLEET_EXIT_REFUSED_BY_TASK_STATE),
-        });
-    }
-    let answer: serde_json::Value = serde_json::from_slice(&out.stdout)
-        .map_err(|e| format!("fleet {verb} answered no JSON: {e}"))?;
-    let argv: Vec<String> = answer["stream"]["argv"]
-        .as_array()
-        .into_iter()
-        .flatten()
-        .filter_map(|arg| arg.as_str().map(str::to_string))
-        .collect();
-    if argv.is_empty() {
-        return Err(format!("fleet {verb} answered no stream: {answer}").into());
-    }
-    Ok(argv)
 }
 
 const FLEET_EXIT_REFUSED_BY_TASK_STATE: i32 = 3;
@@ -135,6 +97,15 @@ impl From<String> for OpenFailure {
         Self {
             message,
             refused: false,
+        }
+    }
+}
+
+impl From<crate::fleet_link::StreamFailure> for OpenFailure {
+    fn from(failure: crate::fleet_link::StreamFailure) -> Self {
+        Self {
+            refused: failure.exit == Some(FLEET_EXIT_REFUSED_BY_TASK_STATE),
+            message: failure.message,
         }
     }
 }
@@ -334,11 +305,11 @@ mod tests {
             "[ \"$1 $2 $3\" = 'attach review --json' ] || exit 1\n\
              echo '{\"stream\":{\"argv\":[\"runtime-mux\",\"view\",\"w 1\"]}}'",
         );
-        let argv = crate::paths::with_path(remote.path(), || {
-            stream_argv(&remote.link, "attach", "review")
-        })
-        .expect("the stream's argv");
-        assert_eq!(argv, ["runtime-mux", "view", "w 1"]);
+        let stream =
+            crate::paths::with_path(remote.path(), || remote.link.stream("attach", "review"))
+                .expect("the stream");
+        let launched = remote_words(&stream);
+        assert!(launched.ends_with("runtime-mux view 'w 1'"), "{launched}");
         assert!(
             remote.called("attach review --json"),
             "{:?}",
@@ -353,10 +324,21 @@ mod tests {
             "[ \"$1 $2 $3\" = 'shell review --json' ] || exit 1\n\
              echo '{\"stream\":{\"argv\":[\"runtime-mux\",\"view\",\"--pane\",\"%7\"]}}'",
         );
-        let argv = crate::paths::with_path(remote.path(), || {
-            stream_argv(&remote.link, "shell", "review")
-        })
-        .expect("the shell stream's argv");
-        assert_eq!(argv, ["runtime-mux", "view", "--pane", "%7"]);
+        let stream =
+            crate::paths::with_path(remote.path(), || remote.link.stream("shell", "review"))
+                .expect("the shell's stream");
+        let launched = remote_words(&stream);
+        assert!(
+            launched.ends_with("runtime-mux view --pane '%7'"),
+            "{launched}"
+        );
+    }
+
+    fn remote_words(command: &std::process::Command) -> String {
+        command
+            .get_args()
+            .map(|a| a.to_string_lossy().into_owned())
+            .collect::<Vec<_>>()
+            .join(" ")
     }
 }
