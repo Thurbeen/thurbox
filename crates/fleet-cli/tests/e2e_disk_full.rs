@@ -392,3 +392,78 @@ fn a_manager_stopped_while_paused_stops_cleanly() {
     });
     assert_eq!(sweeps, 2);
 }
+
+#[cfg(target_os = "linux")]
+mod real_disk {
+    use std::fs;
+    use std::process::Command;
+
+    use super::support::Env;
+
+    const SCRIPT: &str = r#"
+set -u
+FLEET=$1; ROOT=$2
+mount -t tmpfs -o size=2m tmpfs "$ROOT/disk" || exit 90
+state() { sed -n 's/.*"state": "\([a-z]*\)".*/\1/p' "$ROOT/disk/data/manager.json" 2>/dev/null; }
+until_state() { i=0; while [ "$(state)" != "$1" ]; do i=$((i+1)); [ $i -gt 400 ] && { echo "never $1"; return 1; }; sleep 0.1; done; echo "state $1"; }
+"$FLEET" --config "$ROOT/fleet.toml" up --poll-ms 100 > "$ROOT/up.out" 2> "$ROOT/up.err" &
+UP=$!
+until_state serving
+dd if=/dev/zero of="$ROOT/disk/filler" bs=64k 2>/dev/null
+until_state paused
+kill -0 $UP && echo "still running"
+rm "$ROOT/disk/filler"
+until_state serving
+kill -INT $UP; wait $UP; echo "exit $?"
+"#;
+
+    fn user_namespaces_mount() -> bool {
+        Command::new("unshare")
+            .args(["-rm", "sh", "-c", "mount -t tmpfs tmpfs /mnt"])
+            .output()
+            .is_ok_and(|o| o.status.success())
+    }
+
+    #[test]
+    fn fleet_up_on_a_disk_that_fills_records_paused_then_serving_and_stops_cleanly() {
+        if !user_namespaces_mount() {
+            eprintln!("skipped: no unprivileged user namespace to mount a small tmpfs in");
+            return;
+        }
+        let env = Env::new("disk-full-up");
+        fs::create_dir_all(env.root.join("disk")).expect("mount point");
+        fs::write(
+            env.root.join("fleet.toml"),
+            format!(
+                "version = 1\n\n[data]\ndir = '{}'\n\n[runtime]\nkind = \"fake\"\ndir = '{}'\n",
+                env.root.join("disk/data").display(),
+                env.fake.display()
+            ),
+        )
+        .expect("config");
+        let run = Command::new("unshare")
+            .args(["-rm", "sh", "-c", SCRIPT, "sh"])
+            .arg(env!("CARGO_BIN_EXE_fleet"))
+            .arg(&env.root)
+            .output()
+            .expect("unshare");
+        let transcript = String::from_utf8_lossy(&run.stdout);
+        let up_err = fs::read_to_string(env.root.join("up.err")).unwrap_or_default();
+        assert_eq!(
+            transcript.lines().collect::<Vec<_>>(),
+            [
+                "state serving",
+                "state paused",
+                "still running",
+                "state serving",
+                "exit 0"
+            ],
+            "fleet up stderr:\n{up_err}"
+        );
+        assert!(up_err.contains("paused: disk full at "), "{up_err}");
+        assert!(
+            up_err.contains("resumed: the store has room again"),
+            "{up_err}"
+        );
+    }
+}

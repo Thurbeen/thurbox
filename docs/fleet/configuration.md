@@ -49,7 +49,8 @@ when `NOTIFY_SOCKET` is set:
 - `READY=1` after it takes the lease and finishes its first pass. A unit
   with `Type=notify` counts as started only then.
 - `STATUS=paused: disk full at <path>` while the disk of the data
-  directory has no room.
+  directory has no room. A pause sends no `READY=1`: a manager that
+  pauses before its first pass stays not ready until it resumes.
 - `STOPPING=1` when it stops.
 
 A full disk pauses `fleet up`. It does not stop it:

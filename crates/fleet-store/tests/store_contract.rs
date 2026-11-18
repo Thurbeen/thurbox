@@ -461,6 +461,17 @@ fn a_holder_reclaims_its_own_expired_lease_but_never_one_taken_since() {
     store.renew_lease(&reclaimed, 1_000).unwrap();
 
     clock.advance(5_000);
+    let again = store.acquire_lease("a", 1_000).unwrap();
+    assert!(
+        matches!(
+            store.reclaim_lease(&reclaimed, 1_000),
+            Err(StoreError::LeaseLost(_))
+        ),
+        "the same holder under a newer token took it"
+    );
+    store.renew_lease(&again, 1_000).unwrap();
+
+    clock.advance(5_000);
     let b = store.acquire_lease("b", 1_000).unwrap();
     assert!(matches!(
         store.reclaim_lease(&a, 1_000),

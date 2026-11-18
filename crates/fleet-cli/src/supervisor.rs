@@ -13,7 +13,7 @@ pub fn tell(phase: Phase) {
     let message = match phase {
         Phase::Waiting(holder) => format!("STATUS=waiting for {holder}"),
         Phase::Ready => "READY=1\nSTATUS=ready: reconciling all Tasks".to_string(),
-        Phase::Paused(why) => format!("READY=1\nSTATUS=paused: {why}"),
+        Phase::Paused(why) => format!("STATUS=paused: {why}"),
         Phase::Stopping => "STOPPING=1\nSTATUS=stopping".to_string(),
     };
     if let Err(e) = send(&message) {
