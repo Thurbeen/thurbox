@@ -1063,6 +1063,79 @@ fn a_multi_line_brief_reaches_claude_code_whole_and_its_wrapped_paste_proves_it(
     });
 }
 
+/// Claude Code at its composer, as it reads a bracketed paste that stalls
+/// before its end: the bytes read before the stall are typed text, and only
+/// the rest is the wrapped paste its prompt hook reports.
+const STALLED_PASTE_CLAUDE: &str = r#"#!/bin/sh
+fleet signal idle
+stty raw -echo
+printf '\033[?2004h'
+perl -e '
+use IO::Select;
+my $in = IO::Select->new(\*STDIN);
+my ($buf, $burst) = ("", undef);
+while (1) {
+  if (index($buf, "\e[200~") >= 0 && index($buf, "\e[201~") < 0 && !defined $burst
+      && !$in->can_read(0.2)) {
+    $burst = length($buf);
+  }
+  sysread(STDIN, my $chunk, 65536) or last;
+  $buf .= $chunk;
+  next unless $buf =~ /\e\[201~[^\r]*\r/;
+  my $typed = defined $burst ? substr($buf, 0, $burst) : "";
+  my $pasted = defined $burst ? substr($buf, $burst) : $buf;
+  s/\e\[20[01]~|\r//g for $typed, $pasted;
+  open(my $log, ">", "burst.log") or die; print $log $typed; close $log;
+  my $json = ($typed eq "" ? "" : "$typed\n\n")
+    . "<pasted_content id=\"ab12\">\n$pasted\n</pasted_content id=\"ab12\">\n";
+  $json =~ s/(["\\])/\\$1/g;
+  $json =~ s/\n/\\n/g;
+  system("fleet", "signal", "prompt", "{\"prompt\":\"$json\",\"session_id\":\"conv-1\"}");
+  system("fleet", "signal", "idle");
+  ($buf, $burst) = ("", undef);
+}'
+"#;
+
+/// A `tmux` that takes its time to start, as one does on a loaded host.
+fn slow_tmux(env: &Env, real: &Path) {
+    let shim = env.root.join("bin").join("tmux");
+    fs::write(
+        &shim,
+        format!("#!/bin/sh\nsleep 0.5\nexec '{}' \"$@\"\n", real.display()),
+    )
+    .expect("tmux shim");
+    use std::os::unix::fs::PermissionsExt;
+    fs::set_permissions(&shim, fs::Permissions::from_mode(0o755)).expect("chmod");
+}
+
+#[test]
+fn a_brief_longer_than_one_send_reaches_claude_code_as_one_paste() {
+    let (Some(program), Some(real_tmux)) = (runtime_mux(), tmux()) else {
+        return;
+    };
+    let sockets = Sockets::new("long-paste");
+    let mut env = mux_env("runtime-mux-long-paste", &program, &sockets);
+    stand_in(&mut env, "claude", "claude", STALLED_PASTE_CLAUDE);
+    slow_tmux(&env, &real_tmux);
+    let work = env.root.join("work").join("t1");
+    fs::create_dir_all(&work).expect("workspace");
+    let brief = (1..=40)
+        .map(|n| format!("{n}. Review the change, then report what you found."))
+        .collect::<Vec<_>>()
+        .join("\n");
+    let mut task = support::task("t1", true);
+    task["spec"]["brief"] = json!(brief);
+    task["spec"]["workspace"] = json!([format!("file://{}", work.display())]);
+    env.apply(json!([task])).ok();
+
+    reconcile_until(&env, "a prompt", |_| work.join("burst.log").is_file());
+    let typed = fs::read_to_string(work.join("burst.log")).unwrap_or_default();
+    assert_eq!(typed, "", "the agent read part of the brief as typed text");
+    reconcile_until(&env, "briefed on the paste's proof", |env| {
+        env.get("t1")["status"]["phase"] == "Briefed"
+    });
+}
+
 #[test]
 fn a_task_on_runtime_mux_is_revived_on_its_conversation_after_a_reboot() {
     let (Some(program), Some(_)) = (runtime_mux(), tmux()) else {

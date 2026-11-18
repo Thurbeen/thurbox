@@ -253,42 +253,56 @@ pub trait TmuxCompatible: Send + Sync + 'static {
 
     /// The one-shot argvs that deliver `text` into `target`, in order — more
     /// than one where a single line would be too long for the server's host.
-    /// By default the `bracketed_paste`-wrapped bytes as hex (`send-keys
-    /// -H`), so `extended-keys` never turns a line break into a key.
+    /// By default the `bracketed_paste`-wrapped text goes into a buffer of
+    /// its own, a piece per `set-buffer`, and one `paste-buffer -r` writes it
+    /// to the pane whole: an agent reads a paste that stalls between writes
+    /// as typed text. `-r` keeps line feeds and `-d` deletes the buffer.
     fn paste_args(target: &str, text: &str) -> Vec<Vec<String>> {
-        hex_paste(text)
-            .into_iter()
-            .map(|bytes| {
-                let mut argv: Vec<String> =
-                    vec!["send-keys".into(), "-t".into(), target.into(), "-H".into()];
-                argv.extend(bytes);
-                argv
-            })
-            .collect()
+        let buffer = control_mode::paste_buffer();
+        let framed = bracketed_paste(text);
+        let mut argvs: Vec<Vec<String>> =
+            control_mode::chunks_on_char_boundaries(&framed, control_mode::SET_BUFFER_CHUNK_BYTES)
+                .into_iter()
+                .enumerate()
+                .map(|(i, chunk)| {
+                    let append: &[&str] = if i == 0 { &[] } else { &["-a"] };
+                    ["set-buffer"]
+                        .iter()
+                        .chain(append)
+                        .chain(&["-b", &buffer, "--", chunk])
+                        .map(|a| a.to_string())
+                        .collect()
+                })
+                .collect();
+        argvs.push(
+            ["paste-buffer", "-d", "-r", "-b", &buffer, "-t", target]
+                .map(String::from)
+                .to_vec(),
+        );
+        argvs
     }
 
     /// The `run-shell` script that pastes `text` into `target` on `mux -L
     /// socket`, waits a beat so the paste is consumed, then presses Enter —
     /// run through the server's own shell — or why that shell cannot run it.
-    /// By default a plain `sh` one-liner, quoted as the immediate commands
-    /// pass each argument, since a host may name a socket with a space in it.
-    fn deferred_paste_script(mux: &str, socket: &str, target: &str, text: &str) -> Result<String> {
-        let (mux, socket, target) = (
-            shell_escape(mux),
-            shell_escape(socket),
-            shell_escape(target),
-        );
-        let paste: String = hex_paste(text)
-            .into_iter()
-            .map(|bytes| {
-                format!(
-                    "{mux} -L {socket} send-keys -t {target} -H {}; ",
-                    bytes.join(" ")
-                )
+    /// By default a plain `sh` one-liner of [`Self::paste_args`], quoted as
+    /// the immediate commands pass each argument, since a host may name a
+    /// socket with a space in it.
+    fn deferred_paste_script(mux: &str, socket: &str, target: &str, text: &str) -> Result<String>
+    where
+        Self: Sized,
+    {
+        let (mux, socket) = (shell_escape(mux), shell_escape(socket));
+        let paste: String = Self::paste_args(target, text)
+            .iter()
+            .map(|argv| {
+                let args: Vec<String> = argv.iter().map(|a| shell_escape(a)).collect();
+                format!("{mux} -L {socket} {}; ", args.join(" "))
             })
             .collect();
         Ok(format!(
-            "{paste}sleep 0.2; {mux} -L {socket} send-keys -t {target} Enter"
+            "{paste}sleep 0.2; {mux} -L {socket} send-keys -t {} Enter",
+            shell_escape(target)
         ))
     }
 
@@ -395,16 +409,6 @@ pub(crate) fn parse_version(word: &str) -> Option<(u32, u32, u32)> {
 /// than framing the paste themselves. The trailing `Enter` is sent separately.
 fn bracketed_paste(text: &str) -> String {
     format!("\x1b[200~{text}\x1b[201~")
-}
-
-/// [`bracketed_paste`]'s bytes as `send-keys -H` arguments, one list per
-/// command: tmux refuses a command line past its message size.
-fn hex_paste(text: &str) -> Vec<Vec<String>> {
-    bracketed_paste(text)
-        .as_bytes()
-        .chunks(control_mode::SEND_KEYS_CHUNK_BYTES)
-        .map(|chunk| chunk.iter().map(|b| format!("{b:02x}")).collect())
-        .collect()
 }
 
 /// The default pane input ([`TmuxCompatible::pane_input`]).

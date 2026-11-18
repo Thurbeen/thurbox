@@ -845,10 +845,10 @@ pub trait PaneInput: Send + Sync {
 /// Max text bytes per `set-buffer` line of `tmux_paste_commands`. Every
 /// escape `tmux_quote` writes is at most four characters for one byte, so the
 /// line stays within the budget [`SEND_KEYS_CHUNK_BYTES`] keeps `send-keys` to.
-const SET_BUFFER_CHUNK_BYTES: usize = 384;
+pub(crate) const SET_BUFFER_CHUNK_BYTES: usize = 384;
 
 /// Split `text` into pieces of at most `max` bytes, never inside a character.
-fn chunks_on_char_boundaries(text: &str, max: usize) -> Vec<&str> {
+pub(crate) fn chunks_on_char_boundaries(text: &str, max: usize) -> Vec<&str> {
     let mut chunks = Vec::new();
     let mut start = 0;
     while start < text.len() {
@@ -888,6 +888,17 @@ fn tmux_quote(s: &str) -> String {
     out
 }
 
+/// A buffer name no other paste uses: this process's id and a sequence
+/// number.
+pub(crate) fn paste_buffer() -> String {
+    static PASTES: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    format!(
+        "thurbox-paste-{}-{}",
+        std::process::id(),
+        PASTES.fetch_add(1, Ordering::Relaxed)
+    )
+}
+
 /// The control-mode lines that paste `text` into `pane_id` on a server that
 /// takes no paste out of band.
 ///
@@ -903,12 +914,7 @@ fn tmux_quote(s: &str) -> String {
 /// two interfaces pasting into one pane over two connections would otherwise
 /// interleave their `set-buffer -a` and `paste-buffer -d` on one buffer.
 fn tmux_paste_commands(pane_id: &str, text: &str) -> Vec<String> {
-    static PASTES: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-    let buffer = format!(
-        "thurbox-paste-{}-{}",
-        std::process::id(),
-        PASTES.fetch_add(1, Ordering::Relaxed)
-    );
+    let buffer = paste_buffer();
     let mut cmds: Vec<String> = chunks_on_char_boundaries(text, SET_BUFFER_CHUNK_BYTES)
         .into_iter()
         .enumerate()
