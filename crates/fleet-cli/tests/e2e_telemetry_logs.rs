@@ -140,13 +140,36 @@ fn no_log_record_carries_a_brief_a_message_or_an_environment_value() {
     let mistyped_result = env.fleet(&["result", "t1", "--file", result.to_str().unwrap()]);
     assert_ne!(mistyped_result.code, Some(0), "{mistyped_result:?}");
 
-    wait_for("six ERROR log records", || errors(&collector).len() >= 6);
+    let flag_output = env.fleet(&[
+        "result",
+        "t1",
+        "--generation",
+        "1",
+        "--outcome",
+        "shipped",
+        "--output",
+        MESSAGE_SECRET,
+    ]);
+    assert_ne!(flag_output.code, Some(0), "{flag_output:?}");
+    let flag_outcome = env.fleet(&["result", "t1", "--generation", "1", "--outcome", ENV_SECRET]);
+    assert_ne!(flag_outcome.code, Some(0), "{flag_outcome:?}");
+    let declared_output = env.fleet(&["amend", "t1", "--text", "more", "--output", BRIEF_SECRET]);
+    assert_ne!(declared_output.code, Some(0), "{declared_output:?}");
+
+    wait_for("nine ERROR log records", || errors(&collector).len() >= 9);
     for log in collector.logs() {
         for secret in [BRIEF_SECRET, ENV_SECRET, MESSAGE_SECRET] {
             assert!(!log.body.contains(secret), "{secret} in {log:#?}");
         }
     }
-    for run in [&mistyped_env, &mistyped_brief, &mistyped_result] {
+    for run in [
+        &mistyped_env,
+        &mistyped_brief,
+        &mistyped_result,
+        &flag_output,
+        &flag_outcome,
+        &declared_output,
+    ] {
         for secret in [BRIEF_SECRET, ENV_SECRET, MESSAGE_SECRET] {
             assert!(!run.stderr.contains(secret), "{secret} in {}", run.stderr);
         }

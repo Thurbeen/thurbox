@@ -701,10 +701,13 @@ fn parse_label(text: &str) -> Result<(String, String), String> {
 }
 
 /// `NAME=TYPE`, with a trailing `!` for a required output.
-fn parse_output_decl(text: &str) -> Result<(String, fleet_api::result::OutputDecl), Failure> {
+fn parse_output_decl(
+    position: usize,
+    text: &str,
+) -> Result<(String, fleet_api::result::OutputDecl), Failure> {
     let usage = || {
         fail(format!(
-            "--output {text:?}: use NAME=TYPE[!], TYPE one of string, integer, number, boolean, object, array"
+            "--output #{position}: use NAME=TYPE[!], TYPE one of string, integer, number, boolean, object, array"
         ))
     };
     let (name, ty) = text.split_once('=').ok_or_else(usage)?;
@@ -1283,7 +1286,8 @@ fn run(cli: Cli) -> Result<(), Failure> {
                 reason,
                 outputs: outputs
                     .iter()
-                    .map(|o| parse_output_decl(o))
+                    .enumerate()
+                    .map(|(i, o)| parse_output_decl(i + 1, o))
                     .collect::<Result<_, _>>()?,
                 if_generation,
             };
@@ -4201,17 +4205,13 @@ fn result_from_flags(
         fail("--generation is required: name the generation you were briefed for")
     })?;
     let outcome = outcome.ok_or_else(|| fail("--outcome is required"))?;
-    let outcome: Outcome =
-        serde_json::from_value(Value::String(outcome.clone())).map_err(|_| {
-            fail(format!(
-                "--outcome {outcome:?}: use shipped, stuck, failed or not-applicable"
-            ))
-        })?;
+    let outcome: Outcome = serde_json::from_value(Value::String(outcome))
+        .map_err(|_| fail("--outcome: use shipped, stuck, failed or not-applicable"))?;
     let mut map = std::collections::BTreeMap::new();
-    for o in outputs {
+    for (i, o) in outputs.iter().enumerate() {
         let (name, raw) = o
             .split_once('=')
-            .ok_or_else(|| fail(format!("--output {o:?}: use NAME=JSON")))?;
+            .ok_or_else(|| fail(format!("--output #{}: use NAME=JSON", i + 1)))?;
         let value: Value = serde_json::from_str(raw)
             .map_err(|e| fail(format!("--output {name}: not JSON: {e}")))?;
         map.insert(name.to_string(), value);
