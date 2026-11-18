@@ -90,7 +90,7 @@ under that system's own service manager.
 | --- | --- |
 | `fleet service install [--name NAME] [--now]` | Writes `~/.config/systemd/user/NAME.service` (`fleet` by default) for the config, runs `daemon-reload` and enables the unit. `--now` also starts it. |
 | `fleet service start`, `stop`, `restart` | Runs `systemctl --user` with that verb on the store's unit. `stop` keeps the sessions. |
-| `fleet service restart --expect VERSION [--timeout SECONDS]` | Restarts the store's unit with `try-restart` when it runs, and waits until a manager that started since then serves `VERSION`. Exits 0 when it serves, and 0 when the unit was not running. Exits 1 when the unit fails first, for example on exit code 78, and 7 when the wait ends. The wait is twice `TimeoutStopSec` by default. |
+| `fleet service restart --expect VERSION [--timeout SECONDS]` | Restarts the store's unit with `try-restart` when it runs, and waits until a manager that started since then serves `VERSION`. Exits 0 when it serves, and 0 when the unit was not running. Exits 1 when the unit fails first, for example on exit code 78, and 7 when the wait ends. The wait is twice `TimeoutStopSec`, plus one minute, by default. |
 | `fleet service status` | Prints `systemctl --user status` of the store's unit, and exits with its code: 0 when the unit is active, 3 when it is not. |
 | `fleet service uninstall` | Stops and disables the store's unit, removes its file and runs `daemon-reload`. Its drop-ins stay. |
 

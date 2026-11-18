@@ -340,7 +340,7 @@ enum ServiceCommand {
         #[arg(long, value_name = "VERSION")]
         expect: Option<String>,
         /// How long `--expect` waits, in seconds; by default twice the
-        /// unit's stop timeout.
+        /// unit's stop timeout, plus one minute.
         #[arg(long, value_name = "SECONDS", requires = "expect")]
         timeout: Option<u64>,
     },
