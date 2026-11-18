@@ -5,6 +5,7 @@
 
 mod bootstrap;
 mod config;
+mod migrate;
 mod service;
 mod supervisor;
 
@@ -62,6 +63,12 @@ enum Command {
     /// Also ensures the TaskConfig default and the Boards shared and fleet
     /// in the store.
     Init,
+    /// Turn a Fleet 2 config and store into Fleet 3's; the 2.x ones are kept as `.v2`.
+    Migrate {
+        /// Print the plan and change nothing.
+        #[arg(long)]
+        dry_run: bool,
+    },
     /// Keep every due Task reconciling until Ctrl-C.
     Up {
         /// Interval between bounded sweeps (100..=10000 ms).
@@ -875,6 +882,11 @@ fn run(cli: Cli) -> Result<(), Failure> {
         .map(|p| bootstrap::absolute(&p))
         .transpose()
         .map_err(fail)?;
+    if let Command::Migrate { dry_run } = cli.command {
+        let path = config_path
+            .ok_or_else(|| fail("no config location: pass --config or set HOME/APPDATA"))?;
+        return cmd_migrate(&path, dry_run);
+    }
     if let Command::Init = cli.command {
         let path = config_path
             .ok_or_else(|| fail("no config location: pass --config or set HOME/APPDATA"))?;
@@ -1130,7 +1142,7 @@ fn run(cli: Cli) -> Result<(), Failure> {
                 (&plugins, &registrations),
             )
         }
-        Command::Init => unreachable_version(),
+        Command::Init | Command::Migrate { .. } => unreachable_version(),
         Command::Apply {
             file,
             json,
@@ -2480,6 +2492,49 @@ fn agent_collector() -> Option<fleet_api::harness::Collector> {
         protocol: c.protocol.to_string(),
         headers: c.headers,
     })
+}
+
+fn cmd_migrate(path: &Path, dry_run: bool) -> Result<(), Failure> {
+    let _lock = if dry_run {
+        None
+    } else {
+        let parent = path
+            .parent()
+            .ok_or_else(|| fail("config must have a parent"))?;
+        Some(
+            fleet_store::durable::LockGuard::acquire(&parent.join("bootstrap.lock"))
+                .map_err(|e| fail(e.to_string()))?,
+        )
+    };
+    let mut migration = match migrate::plan(path).map_err(fail)? {
+        migrate::Plan::Done { config_v2, journal } => {
+            if let Some(journal) = journal.filter(|_| !dry_run) {
+                std::fs::remove_file(&journal)
+                    .map_err(|e| fail(format!("{}: {e}", journal.display())))?;
+            }
+            match config_v2 {
+                Some(v2) => println!(
+                    "{} is a Fleet 3 config: nothing to migrate. The 2.x config is kept as {}",
+                    path.display(),
+                    v2.display()
+                ),
+                None => println!("{} is a Fleet 3 config: nothing to migrate", path.display()),
+            }
+            return Ok(());
+        }
+        migrate::Plan::Migrate(migration) => migration,
+    };
+    if !dry_run {
+        let seed = |store: &dyn Store| {
+            default_task_config(store)
+                .and_then(|()| ensure_board(store, fleet_api::board::SHARED))
+                .and_then(|()| ensure_board(store, fleet_api::board::FLEET))
+                .map_err(|f| f.message)
+        };
+        migration.run(&seed).map_err(fail)?;
+    }
+    print!("{}", migrate::report(&migration, dry_run));
+    Ok(())
 }
 
 fn ensure_board(store: &dyn Store, name: &str) -> Result<(), Failure> {

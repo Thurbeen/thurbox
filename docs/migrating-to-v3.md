@@ -18,15 +18,16 @@ setups that 3.x allows.
 
 ## What changed
 
-3.x carries over no 2.x session and no Fleet 2 object. You write your Fleet
-config again and you start your work again as Fleet 3 Tasks.
+`fleet migrate` turns the Fleet 2 config and store into Fleet 3's. It keeps
+the 2.x files as `.v2`. 3.x carries over no thurbox 2.x session: you start
+that work again as Fleet 3 Tasks.
 
 | 2.x | 3.x |
 | --- | --- |
 | thurbox keeps sessions in `thurbox.db`. | Every session is a Fleet Task. thurbox keeps no database. |
 | Fleet 2's `[runtime]`: `kind = "thurbox"`, `cli`, `keyPrefix`, `repositories`. | `[runtimes.<name>]` tables that name a runtime program, such as `runtime-mux`, and its places ([runtimes and their places](fleet/configuration.md#runtimes-and-their-places)). |
 | `[runtime.repositories]` maps a remote URL to a checkout. | No mapping. A Task names `git+` URLs in `spec.workspace`, and the runtime makes a worktree per Task ([Workspace](fleet/resources/workspace.md)). |
-| A Task's `spec.workspace` is an object: `dir` or `repositories`. | `spec.workspace` is a list of absolute URLs. `fleet apply` refuses the old shapes. |
+| A Task's `spec.workspace` is an object: `dir` or `repositories`. | `spec.workspace` is a list of absolute URLs. `fleet apply` refuses the old shapes, and `fleet migrate` converts them. |
 | Sessions run on the `thurbox` tmux socket. | `runtime-mux` runs Task sessions on its own socket, `runtime-mux`. |
 | `hosts.toml` lists remote machines. | thurbox lists Fleets under `[fleets.<name>]` in `settings.toml`. A Fleet's runtime lists its places. |
 | `agents.toml` defines agents. | Agents are Fleet's harness profiles ([Agents](thurbox/agents.md)). |
@@ -43,17 +44,10 @@ directories on macOS and Windows). Both install the same program names.
 
 1. Finish or stop the 2.x work you need. Push every branch that holds work
    you keep.
-2. With Fleet 2 still installed, save a record of each Task:
-
-   ```sh
-   fleet list task --json > fleet2-tasks.json
-   fleet get task NAME > fleet2-task-NAME.json   # each Task you keep whole
-   ```
-
-   Fleet 3 cannot read a Fleet 2 store. After the install, `fleet` is
-   Fleet 3, so save the record first.
+2. Stop the Fleet 2 manager: its service, or the `fleet up` that you started
+   by hand. `fleet migrate` refuses a store that a manager holds.
 3. Back up the four directories above.
-4. Write down what each 2.x session ran: its repository, its branch, its
+4. Write down what each thurbox 2.x session ran: its repository, its branch, its
    agent and its machine. You start each one again as a Task.
 
 ## 1. Install 3.x on every machine
@@ -77,39 +71,50 @@ command -v fleet thurbox thurbox-cli runtime-mux workspace-git
 fleet --version
 ```
 
-## 2. Write a Fleet 3 config
+## 2. Migrate the Fleet config and store
 
-Fleet 3 refuses a Fleet 2 config by name. The refusal prints two commands:
-one moves the config aside to `config.toml.v2`, the other moves the store
-aside to `store-v1.v2`. Move both, then write a new config:
+Fleet 3 refuses a Fleet 2 config by name, and names `fleet migrate`. Read
+the plan first, then migrate:
 
 ```sh
-fleet init
+fleet migrate --dry-run
+fleet migrate
 fleet doctor
 ```
 
-Then copy these sections from `config.toml.v2` by hand, and check each
-key against [the configuration reference](fleet/configuration.md):
+`fleet migrate` keeps the 2.x config as `config.toml.v2` and the 2.x store
+as `store-v1.v2`. It imports each Fleet 2 Task with `spec.dispatch = false`:
+no session starts until you set `spec.dispatch` to `true` and apply the
+Task again. Its report lists what it imported, what it did not, and why.
+[`fleet migrate`](fleet/configuration.md#migrating-a-fleet-2-config-fleet-migrate)
+owns the rules.
 
-- `[forge]` and `[forge.hosts]`: the forge CLIs that follow change requests.
-- `[plugins.<name>]`: see [step 6](#6-reinstall-plugins).
-- Each remote machine: add it as a place under `[runtimes.mux.places]`
+If you moved the 2.x files aside by hand and ran `fleet init` already, move
+the Fleet 3 config and store aside, move the `.v2` files back, and run
+`fleet migrate`.
+
+Then do what the report lists under *For you to do*:
+
+- Each remote machine that a Task names: add it as a place under
+  `[runtimes.mux.places]`
   ([remote places](fleet/configuration.md#remote-places-on-runtime-mux)).
-
-Do not copy these. Fleet 3 refuses a config that has one:
-
-- Fleet 2's `[runtime]` table, with its `kind = "thurbox"`, `cli`,
-  `keyPrefix` and `[runtime.repositories]`.
-- `[hosts]`. A Task names a place instead.
-- `[starter]`. `fleet up` starts no starter Task.
-- `[workspaces]`. Each runtime makes its own workspaces.
+  See [step 8](#8-set-up-remote-places).
+- Each `spec.model` that it removed: set the model in the harness's own
+  configuration.
+- `[gateway]`, if the report says that Fleet 3 refused it: copy it from
+  `config.toml.v2` by hand, and check each key against
+  [the configuration reference](fleet/configuration.md).
+- `[plugins.<name>]`: see [step 6](#6-reinstall-plugins).
 
 Keep `config.toml.v2` and `store-v1.v2` as the record of your 2.x work.
 Fleet 3 never reads or changes them.
 
 ## 3. Start your work again as Tasks
 
-Write each Task with the Fleet 3 shape
+`fleet migrate` imported your Fleet 2 Tasks. Check each one with
+`fleet get task NAME`, then set `spec.dispatch` to `true` and apply it.
+
+For each thurbox 2.x session, write a Task with the Fleet 3 shape
 ([Task](fleet/resources/task.md)):
 
 ```json

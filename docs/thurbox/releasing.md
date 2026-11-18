@@ -151,10 +151,11 @@ The header badge only offers the line. 3.x carries the same rule with
    - `thurbox.db` is not read or written: 3.x has no database, and Fleet holds
      its sessions. 2.x sessions do not carry over.
    - A Fleet 2.x `config.toml` is not a Fleet 3 config. Every `fleet` command,
-     `fleet up` included, refuses it by name and says what to do.
+     `fleet up` included, refuses it by name and names `fleet migrate`.
      Fleet 3 cannot read the objects Fleet 2.x wrote to its store either, and
-     `fleet init` points Fleet 3 at the same store directory, so both move
-     aside together.
+     `fleet init` points Fleet 3 at the same store directory. `fleet migrate`
+     writes a Fleet 3 config and store and keeps both 2.x ones as `.v2`
+     ([`fleet migrate`](../fleet/configuration.md#migrating-a-fleet-2-config-fleet-migrate)).
 
    What a user does is in [Migrating to v3](../migrating-to-v3.md). To
    stay on 2.x instead, install with `VERSION=v2.x.y`: its updater then stays

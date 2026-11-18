@@ -344,6 +344,67 @@ it as it is; a malformed config is an error, never replaced. A symlink at the
 config's path is refused; a symlinked directory above it is not. Initializers serialize with an OS lock,
 so two concurrent `init` runs write one config.
 
+### Migrating a Fleet 2 config: `fleet migrate`
+
+Fleet 3 refuses a Fleet 2 config by name. `fleet migrate` turns the Fleet 2
+config and store into Fleet 3's. `fleet migrate --dry-run` prints the same
+report and changes nothing.
+
+1. It writes a journal, `config.toml.migrating`, beside the config.
+2. It writes the new store beside the 2.x store, as `store-v1.v3`.
+3. It writes a copy of the 2.x config, `config.toml.v2`.
+4. It renames the 2.x store to `store-v1.v2`, and moves the new store into
+   place.
+5. It replaces the config with the new one in one step.
+6. It removes the journal.
+
+The config path always holds the 2.x config or the new one. It deletes no
+2.x file. It removes only its own journal and an unfinished
+`store-v1.v3.partial`. It holds the lock that `fleet init` takes.
+
+It refuses to run in these cases:
+
+- A Fleet 2 manager holds the store's lease.
+- With no journal, `config.toml.v2`, `store-v1.v2` or `store-v1.v3`
+  already exists.
+
+A run that stopped part way leaves the journal, and the next run completes
+from there. A run that finds a Fleet 3 config changes nothing.
+
+A Fleet 2 config with no `[data] dir` names the data directory itself as its
+store, for example `~/.local/share/fleet`.
+
+`fleet migrate` reads a Fleet 2 config only at the config path. If you moved
+the 2.x files aside by hand and ran `fleet init`, it finds a Fleet 3 config
+and changes nothing.
+
+The new config is what `fleet init` writes, with these sections of the 2.x
+config:
+
+- `[forge]` and `[plugins]`, as they are. `[forge.readyPolicies]` gets the
+  three shipped policies when the 2.x config has none.
+- `[gateway]`, when Fleet 3 accepts it. Otherwise the report says to copy it
+  by hand.
+
+The report names each key and table it does not copy, with the reason:
+`[runtime]`, `[starter]` and `[workspaces]`.
+
+The new store holds each Task, TaskConfig and EnvProvider of the 2.x store,
+with their names and labels, and without their status:
+
+- A Task's `spec.workspace` becomes a list of URLs. `{dir}` becomes a
+  `file://` URL. Each repository becomes a `git+` URL: `git+file://` on the
+  checkout that `[runtime.repositories]` maps it to, else `git+` on its URL.
+  A Task that had a session continues the branch that 2.x made, with
+  `?branch=`.
+- A host other than `local` becomes the place `mux/<host>`. The report says
+  to add `[runtimes.mux.places.<host>]`.
+- `spec.model` is removed, and the report says so.
+- `spec.dispatch` is `false`: no session starts until you set it to `true`.
+- A concluded Task, a Task that was being deleted, and the objects of other
+  kinds are not imported. The report names each one. Its record stays in
+  the 2.x store.
+
 ### Resource commands
 
 `apply -f -` reads JSON from stdin. A file can hold one object, an array of
