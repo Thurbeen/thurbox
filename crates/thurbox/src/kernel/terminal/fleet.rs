@@ -124,6 +124,7 @@ fn stream_argv(
 
 const FLEET_EXIT_REFUSED_BY_TASK_STATE: i32 = 3;
 
+#[derive(Debug)]
 pub(super) struct OpenFailure {
     pub(super) message: String,
     pub(super) refused: bool,

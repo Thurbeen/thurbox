@@ -256,7 +256,6 @@ impl Terminals {
             .insert(session.clone(), super::fleet::BACKEND.to_string());
         let started = std::time::Instant::now();
         std::thread::spawn(move || {
-            // The pane's reader and writer run on the process's runtime.
             let _guard = runtime.as_ref().map(|handle| handle.enter());
             let (session_handle, refused_in) =
                 match super::fleet::open(&link, &task, rows, cols, scrollback, notices) {
@@ -386,9 +385,6 @@ impl Terminals {
                         done.session.clone(),
                         Live {
                             session,
-                            // The size it was adopted at; the shell has none
-                            // until there is one, and gets its own on the first
-                            // frame that paints it.
                             agent: Painted {
                                 size: Cell::new((rows, cols)),
                                 rect: Cell::new(Rect::default()),
@@ -423,7 +419,6 @@ impl Terminals {
         message: String,
         tried_at: std::time::Instant,
     ) {
-        // Lua reads only the error map; retry bookkeeping is private.
         if self
             .attach
             .failed

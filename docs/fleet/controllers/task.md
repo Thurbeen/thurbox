@@ -380,8 +380,6 @@ These rules apply to a paused session:
 - A paused session found running again sets `Paused=False/Resumed`.
 - A pause never raises WorkerGone or SessionLost, and never revives.
 - Stalled, held and deleting Tasks are never resumed.
-- `fleet attach` and `fleet shell` on a Task being deleted exit 3 and say
-  so, with or without `--wake`. They suggest no wake.
 - Deleting a paused Task releases it: a stopped session is at rest.
 - A revived Concluded Task owed a catch-up note is not paused again until
   the note is delivered. The manager reconciles it until then, and the note
@@ -752,6 +750,9 @@ Task creation. `fleet delete` marks the Task, then reconciliation takes over.
 No session ever spawned means nothing needs releasing. If a spawn was
 interrupted before its receipt, the controller first looks up its key so it
 cannot orphan an unknown session.
+
+`fleet attach` and `fleet shell` on a Task being deleted exit 3 and say so,
+with or without `--wake`. They suggest no wake.
 
 For a recorded session, the controller requires Known at-rest or readable
 absence before planning Release. The finalizer remains while release is failed or ambiguous. It is removed

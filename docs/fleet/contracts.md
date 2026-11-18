@@ -1535,8 +1535,9 @@ With `--json`, it prints `{"checks": [...], "failed": N}`. Each check has
 
 `fleet attach TASK [--wake] --json` prints `{"stream": {"argv": [...]}}`: the command
 that opens the Task's [terminal stream](../runtime/README.md#the-terminal-stream),
-run where the view runs. Fleet asks the runtime serving the session's host
-for its `attach` answer. A `stream` answer is passed through; a `tty` answer
+run where the view runs. A Task being deleted exits 3 and says so, with or
+without `--wake`, and the message suggests no wake. Fleet asks the runtime
+serving the session's host for its `attach` answer. A `stream` answer is passed through; a `tty` answer
 is wrapped as `fleet term-bridge -- <argv>`, so a view only ever gets a
 stream. A Task with `Paused=True` exits 3 and says it is paused, unless
 `--wake` is given: then Fleet first sets `status.wakeRequestedAt`, which
