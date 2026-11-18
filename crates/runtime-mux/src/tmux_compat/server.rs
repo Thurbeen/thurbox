@@ -4757,6 +4757,16 @@ const WINDOW_OPTS: &[(&str, &str)] = &[
 /// or a binary installed *after* this resolves therefore behaves exactly as it
 /// did before: resolution is an improvement where it succeeds, never a new way
 /// to fail.
+pub(crate) fn resolve_local_program(command: &str) -> String {
+    if crate::shell::local_platform() == Platform::Windows {
+        return command.to_string();
+    }
+    match crate::path_lookup::resolve_on_path(command) {
+        Some(path) => path.to_string_lossy().into_owned(),
+        None => command.to_string(),
+    }
+}
+
 /// [`resolve_local_program`], looked up on the Task's `task_path` first when
 /// it names one, so the program a Task's `PATH` puts first is the one it runs.
 pub(crate) fn resolve_local_program_on(command: &str, task_path: Option<&str>) -> String {
@@ -4767,16 +4777,6 @@ pub(crate) fn resolve_local_program_on(command: &str, task_path: Option<&str>) -
         .and_then(|path| crate::path_lookup::resolve_on(command, std::ffi::OsStr::new(path)))
         .map(|path| path.to_string_lossy().into_owned())
         .unwrap_or_else(|| resolve_local_program(command))
-}
-
-pub(crate) fn resolve_local_program(command: &str) -> String {
-    if crate::shell::local_platform() == Platform::Windows {
-        return command.to_string();
-    }
-    match crate::path_lookup::resolve_on_path(command) {
-        Some(path) => path.to_string_lossy().into_owned(),
-        None => command.to_string(),
-    }
 }
 
 impl<M: TmuxCompatible> Server<M> {
