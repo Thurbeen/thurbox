@@ -4109,6 +4109,110 @@ fn one_otel_setup_traces_a_task_through_fleet_runtime_mux_and_workspace_git() {
     assert!(seen.contains("CLAUDE_CODE_ENABLE_TELEMETRY=1\n"), "{seen}");
 }
 
+/// No span about a Task is an orphan: under `fleet up`, from its startup
+/// check of each place to its last pass, and through `fleet attach` and
+/// `fleet shell`, every `runtime VERB` call Fleet makes, and every
+/// `runtime-mux` and `workspace-git` span, has its parent in the same trace
+/// (docs/observability.md, *Trace propagation*).
+#[test]
+fn every_runtime_mux_and_workspace_git_span_has_its_parent_in_its_trace() {
+    use support::otlp::{Collector, Span};
+    let (Some(program), Some(_)) = (runtime_mux(), tmux()) else {
+        return;
+    };
+    let collector = Collector::start();
+    let sockets = Sockets::new("otel-orphans");
+    let mut env = mux_env("runtime-mux-otel-orphans", &program, &sockets);
+    env.set_var("RUNTIME_MUX_CONFIG", &mux_config(&env).to_string_lossy());
+    env.set_var("OTEL_EXPORTER_OTLP_ENDPOINT", &collector.endpoint);
+    let bin = env.root.join("bin");
+    fs::create_dir_all(&bin).expect("bin");
+    let harness = bin.join("claude");
+    fs::write(&harness, "#!/bin/sh\nexec sleep 300\n").expect("harness");
+    use std::os::unix::fs::PermissionsExt;
+    fs::set_permissions(&harness, fs::Permissions::from_mode(0o755)).expect("chmod");
+    let path = std::env::var("PATH").unwrap_or_default();
+    env.only_on_path(Path::new(&format!("{}:{path}", bin.display())));
+    let work = env.root.join("work").join("t1");
+    fs::create_dir_all(&work).expect("workspace");
+
+    let mut up = Up(env.spawn(&["up", "--poll-ms", "100"]));
+    let mut task = support::task("t1", true);
+    task["spec"]["workspace"] = json!([format!("file://{}", work.display())]);
+    env.apply(json!([task])).ok();
+    let deadline = Instant::now() + Duration::from_secs(30);
+    while !env.get("t1")["status"]["session"]["id"].is_string() {
+        if Instant::now() > deadline {
+            panic!("the Task never started: {:#}", env.get("t1"));
+        }
+        std::thread::sleep(Duration::from_millis(100));
+    }
+    env.fleet(&["attach", "t1", "--json"]).ok();
+    env.fleet(&["shell", "t1", "--json"]).ok();
+    let listed = String::from_utf8_lossy(
+        &sockets
+            .tmux(&["list-panes", "-a", "-F", "#{pane_id} #{pane_current_path}"])
+            .stdout,
+    )
+    .into_owned();
+    let pane = listed
+        .lines()
+        .find(|l| l.ends_with(&*work.to_string_lossy()))
+        .and_then(|l| l.split(' ').next())
+        .unwrap_or_else(|| panic!("no pane in {}: {listed}", work.display()))
+        .to_string();
+    env.fleet(&["delete", "task", "t1"]).ok();
+    sockets.tmux(&["send-keys", "-t", &pane, "C-c"]);
+    let deadline = Instant::now() + Duration::from_secs(30);
+    while env.fleet(&["get", "task", "t1"]).code == Some(0) {
+        if Instant::now() > deadline {
+            panic!("the Task was never released: {:#}", env.get("t1"));
+        }
+        std::thread::sleep(Duration::from_millis(200));
+    }
+    Command::new("kill")
+        .args(["-INT", &up.0.id().to_string()])
+        .status()
+        .expect("kill");
+    up.0.wait().expect("fleet up stops");
+
+    let spans = collector.spans();
+    let named = |service: &str, name: &str| {
+        spans
+            .iter()
+            .any(|s| s.resource["service.name"] == service && s.name == name)
+    };
+    for (service, name) in [
+        ("fleet", "fleet attach"),
+        ("fleet", "fleet shell"),
+        ("fleet", "runtime start"),
+        ("runtime-mux", "runtime-mux start"),
+        ("workspace-git", "workspace-git make"),
+    ] {
+        assert!(named(service, name), "no `{name}` from {service}");
+    }
+    let parent_of = |span: &Span| {
+        spans
+            .iter()
+            .find(|p| p.trace_id == span.trace_id && p.span_id == span.parent)
+    };
+    let orphans: Vec<String> = spans
+        .iter()
+        .filter(|s| {
+            let service = &s.resource["service.name"];
+            service == "runtime-mux"
+                || service == "workspace-git"
+                || (service == "fleet" && s.name.starts_with("runtime "))
+        })
+        .filter(|s| parent_of(s).is_none())
+        .map(|s| format!("{} {}", s.resource["service.name"], s.name))
+        .collect();
+    assert!(
+        orphans.is_empty(),
+        "spans without their parent: {orphans:#?}"
+    );
+}
+
 /// A collector that accepts and never answers changes no runtime answer:
 /// `runtime-mux` and the `workspace-git` it runs answer first and flush
 /// their telemetry within a bound far inside Fleet's call deadline, so a

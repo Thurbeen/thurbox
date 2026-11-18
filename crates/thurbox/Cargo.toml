@@ -169,7 +169,8 @@ tempfile = "3"
 proptest = "1"
 
 # The OTLP wire types, to decode what the interface exports in
-# tests/tui_e2e.rs. Both already in the tree through opentelemetry-otlp.
+# tests/tui_e2e.rs and tests/fleet_stream_trace.rs. Both already in the tree
+# through opentelemetry-otlp.
 opentelemetry-proto = { version = "0.33.1", default-features = false, features = ["gen-tonic-messages", "trace", "metrics", "logs"] }
 prost = "0.14"
 

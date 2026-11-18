@@ -221,8 +221,10 @@ Without telemetry, no reconcile carries an object's trace context.
 ### Trace propagation
 
 ```text
-thurbox ──TRACEPARENT──▶ fleet COMMAND
+thurbox: fleet COMMAND ──TRACEPARENT──▶ fleet COMMAND
+thurbox: fleet attach ──TRACEPARENT──▶ fleet attach, then the stream it names
 fleet: effect KIND ─▶ runtime VERB ──TRACEPARENT──▶ runtime-mux VERB
+fleet: startup check ─▶ runtime manifest ──TRACEPARENT──▶ runtime-mux manifest
 runtime-mux: runtime-mux workspace ──TRACEPARENT──▶ workspace-git make
 ```
 
@@ -231,7 +233,10 @@ runtime-mux: runtime-mux workspace ──TRACEPARENT──▶ workspace-git make
   `00-<trace id>-<span id>-<flags>`.
 - A program starts its root span under the span `TRACEPARENT` names. An
   invalid value is ignored, and the span is a root.
-- `fleet up` ignores `TRACEPARENT`. Each pass is a trace of its own.
+- `fleet up` ignores `TRACEPARENT`. Its startup check of all places is
+  one trace of its own, and each pass is a trace of its own.
+- thurbox gives the stream that `fleet attach` or `fleet shell` names
+  the span of that attach or shell as its `TRACEPARENT`.
 - `TRACEPARENT` does not cross ssh or WSL. A Fleet on another machine
   starts its own traces.
 
@@ -239,13 +244,14 @@ runtime-mux: runtime-mux workspace ──TRACEPARENT──▶ workspace-git make
 
 | Program | Span | Parent | Attributes |
 | --- | --- | --- | --- |
-| `thurbox` | `fleet COMMAND` (client) | none | `fleet.command` |
+| `thurbox` | `fleet COMMAND` (client) | none | `fleet.command`, and `fleet.name` for `attach` and `shell` |
 | `fleet` | `fleet COMMAND` | `TRACEPARENT`, or none | `fleet.command`, `process.exit.code`, and `fleet.kind` and `fleet.name` when the command names them |
+| `fleet` | `startup check` | none: `fleet up` starts it | `fleet.command` |
 | `fleet` | `reconcile pass` | `fleet reconcile`, or none under `fleet up` | `fleet.pass` |
 | `fleet` | `reconcile KIND` | the object (not exported); links to `reconcile pass` | identity, `fleet.controller`, `fleet.outcome` |
 | `fleet` | `effect KIND` | `reconcile KIND` | identity, `fleet.effect`, `fleet.outcome` |
 | `fleet` | `forge poll` | `reconcile ChangeRequest` | identity, `fleet.forge.host`, `fleet.outcome` |
-| `fleet` | `runtime VERB` (client) | `effect KIND`, or `reconcile KIND` for a probe | `fleet.runtime`, `fleet.runtime.verb`, `fleet.outcome` |
+| `fleet` | `runtime VERB` (client) | `effect KIND`, `reconcile KIND` for a probe, `fleet COMMAND`, or `startup check` | `fleet.runtime`, `fleet.runtime.verb`, `fleet.outcome` |
 | `runtime-mux` | `runtime-mux VERB` | `TRACEPARENT` | `runtime.verb`, `runtime.outcome` |
 | `workspace-git` | `workspace-git VERB` | `TRACEPARENT` | `workspace.verb` |
 
@@ -260,6 +266,12 @@ A `fleet COMMAND` span carries `fleet.kind` and `fleet.name` as follows:
 - `event publish`, `event list`, `event wait` and `event watch`: `Board`
   and the Board's name.
 - Every other command names no one object and carries neither.
+
+These spans are roots by design: thurbox's `fleet COMMAND`, the
+`startup check` of `fleet up`, each `reconcile pass`, and a
+`fleet COMMAND` that no program traced, such as an agent's hook. The
+parent of `reconcile KIND` stands for the object and is never exported.
+Every other span has its parent in its own trace.
 
 The identity attributes are the object's `fleet.kind`, `fleet.name`,
 `fleet.uid` and `fleet.generation`. `KIND` in `effect KIND` is one of
@@ -281,8 +293,9 @@ The `fleet.controller` values are `TaskController`, `ForgeController`,
 `CronTaskController` and `GatewayController`.
 
 These spans have the error status: a command with a non-zero exit, a
-reconcile that fails, a runtime call that answers Unknown, and a
-`runtime-mux` or `workspace-git` call that answers Unknown.
+`startup check` that finds no host, a reconcile that fails, a
+runtime call that answers Unknown, and a `runtime-mux` or `workspace-git`
+call that answers Unknown.
 
 The Conversation and Gateway controllers' effects, gateway calls and Task
 creation by `fleet apply` have no span. A CronTask's Task creation is the

@@ -168,3 +168,55 @@ fn strings(resource: Option<opentelemetry_proto::tonic::resource::v1::Resource>)
         })
         .collect()
 }
+
+/// One exported span: its ids as hex, its string attributes and its
+/// resource's `service.name`.
+#[derive(Debug, Clone)]
+pub struct Span {
+    pub service: String,
+    pub name: String,
+    pub trace_id: String,
+    pub span_id: String,
+    pub parent: String,
+    pub attrs: std::collections::BTreeMap<String, String>,
+}
+
+/// Every span in the `/v1/traces` requests among `requests`.
+pub fn spans(requests: &[Request]) -> Vec<Span> {
+    use opentelemetry_proto::tonic::collector::trace::v1::ExportTraceServiceRequest;
+    use opentelemetry_proto::tonic::common::v1::{any_value::Value, KeyValue};
+    let strings = |kvs: Vec<KeyValue>| -> std::collections::BTreeMap<String, String> {
+        kvs.into_iter()
+            .filter_map(|kv| match kv.value.and_then(|v| v.value) {
+                Some(Value::StringValue(s)) => Some((kv.key, s)),
+                _ => None,
+            })
+            .collect()
+    };
+    let hex = |bytes: &[u8]| bytes.iter().map(|b| format!("{b:02x}")).collect::<String>();
+    let mut out = Vec::new();
+    for (_, body) in requests.iter().filter(|(path, _)| path == "/v1/traces") {
+        let request =
+            ExportTraceServiceRequest::decode(body.as_slice()).expect("a protobuf traces request");
+        for resource_spans in request.resource_spans {
+            let resource = strings(
+                resource_spans
+                    .resource
+                    .map(|r| r.attributes)
+                    .unwrap_or_default(),
+            );
+            let service = resource.get("service.name").cloned().unwrap_or_default();
+            for span in resource_spans.scope_spans.into_iter().flat_map(|s| s.spans) {
+                out.push(Span {
+                    service: service.clone(),
+                    name: span.name,
+                    trace_id: hex(&span.trace_id),
+                    span_id: hex(&span.span_id),
+                    parent: hex(&span.parent_span_id),
+                    attrs: strings(span.attributes),
+                });
+            }
+        }
+    }
+    out
+}

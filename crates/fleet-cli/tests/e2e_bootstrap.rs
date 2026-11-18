@@ -476,6 +476,27 @@ fn up_flushes_its_sweeps_to_a_collector_when_interrupted() {
     );
 }
 
+#[test]
+fn up_with_no_host_up_exports_a_failed_startup_check_of_its_own() {
+    let collector = support::otlp::Collector::start();
+    let mut env = fake_bootstrap("up-no-host");
+    env.set_var("OTEL_EXPORTER_OTLP_ENDPOINT", &collector.endpoint);
+    env.set_var(
+        "TRACEPARENT",
+        "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01",
+    );
+    env.host().set_host("local", "down").unwrap();
+    env.fleet(&["up", "--poll-ms", "100"])
+        .code(1)
+        .stderr_has("host local is unavailable");
+    let spans = collector.spans();
+    let checks: Vec<_> = spans.iter().filter(|s| s.name == "startup check").collect();
+    assert_eq!(checks.len(), 1, "{spans:#?}");
+    assert!(checks[0].error, "{:#?}", checks[0]);
+    assert!(checks[0].parent.is_empty(), "a trace of its own");
+    assert_eq!(checks[0].attrs["fleet.command"], "up");
+}
+
 #[cfg(target_os = "linux")]
 #[test]
 fn native_config_and_data_can_live_on_different_filesystems() {

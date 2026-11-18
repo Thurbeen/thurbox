@@ -489,8 +489,17 @@ pub struct Root {
 /// Start the root span `name` with `attributes`, recorded under `scope`,
 /// the instrumentation scope of the program's own spans.
 pub fn root(scope: &'static str, name: String, attributes: Vec<KeyValue>) -> Root {
+    start(scope, name, attributes, inherited())
+}
+
+/// Start the root span `name` as [`root`] does, but as a trace of its own:
+/// whatever `TRACEPARENT` names is not its parent.
+pub fn own_trace(scope: &'static str, name: String, attributes: Vec<KeyValue>) -> Root {
+    start(scope, name, attributes, Context::new())
+}
+
+fn start(scope: &'static str, name: String, attributes: Vec<KeyValue>, parent: Context) -> Root {
     let tracer = global::tracer(scope);
-    let parent = inherited();
     let span = tracer
         .span_builder(name)
         .with_attributes(attributes)
