@@ -763,6 +763,62 @@ fn a_task_starts_and_is_released_through_runtime_mux() {
     assert_eq!(answer, json!({"known": "none"}), "the release stopped it");
 }
 
+#[test]
+fn an_env_provider_command_source_reaches_a_task_on_runtime_mux() {
+    let (Some(program), Some(_)) = (runtime_mux(), tmux()) else {
+        return;
+    };
+    let sockets = Sockets::new("env-from");
+    let mut env = mux_env("runtime-mux-env-from", &program, &sockets);
+    let bin = env.root.join("bin");
+    fs::create_dir_all(&bin).expect("bin");
+    let harness = bin.join("claude");
+    fs::write(
+        &harness,
+        "#!/bin/sh\nenv > \"$PWD/env.log.tmp\"\nmv \"$PWD/env.log.tmp\" \"$PWD/env.log\"\nexec sleep 300\n",
+    )
+    .expect("harness");
+    use std::os::unix::fs::PermissionsExt;
+    fs::set_permissions(&harness, fs::Permissions::from_mode(0o755)).expect("chmod");
+    let path = std::env::var("PATH").unwrap_or_default();
+    env.only_on_path(Path::new(&format!("{}:{path}", bin.display())));
+    let work = env.root.join("work").join("t1");
+    fs::create_dir_all(&work).expect("workspace");
+
+    env.apply(json!([
+        {"apiVersion": "fleet/v1alpha1", "kind": "EnvProvider", "metadata": {"name": "x"},
+         "spec": {"sources": [{"type": "command", "program": "/bin/sh",
+                               "args": ["-c", r#"printf '{"FLEET_ENV_FROM_PROBE":"from-command"}'"#],
+                               "cwd": env.root, "timeoutMs": 5000}]}},
+        {"apiVersion": "fleet/v1alpha1", "kind": "TaskConfig", "metadata": {"name": "shared"},
+         "spec": {"envFrom": [{"name": "x"}]}},
+    ]))
+    .ok();
+    let mut task = support::task("t1", true);
+    task["spec"]["workspace"] = json!([format!("file://{}", work.display())]);
+    task["spec"]["configRef"] = json!({"name": "shared"});
+    env.apply(json!([task])).ok();
+
+    let logged = work.join("env.log");
+    let deadline = Instant::now() + Duration::from_secs(60);
+    while !logged.is_file() {
+        let pass = env.reconcile();
+        assert!(
+            Instant::now() < deadline,
+            "the agent never started: {}{}",
+            pass.stdout,
+            pass.stderr
+        );
+        std::thread::sleep(Duration::from_millis(300));
+    }
+    let seen = fs::read_to_string(&logged).expect("env.log");
+    assert!(
+        seen.lines()
+            .any(|l| l == "FLEET_ENV_FROM_PROBE=from-command"),
+        "{seen}"
+    );
+}
+
 /// Claude Code as Fleet starts it: it records its argv, reports its start as
 /// its SessionStart hook would, and each line typed to it as its prompt hook
 /// would, through the `fleet` on its PATH and the file Fleet passed it.
