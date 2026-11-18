@@ -2592,7 +2592,7 @@ mod tests {
             ..Default::default()
         };
         let backend = PsmuxBackend::for_host(&host, &crate::settings::for_tests());
-        assert_eq!(backend.login_wrap_for_remote("claude"), "claude");
+        assert_eq!(backend.login_wrap_for_remote("claude", None), "claude");
         let cmd = Psmux::window_command(&backend, "tbs-x", "claude", &[], &HashMap::new()).unwrap();
         let script = decoded_script(cmd.trim_matches('"'));
         assert!(

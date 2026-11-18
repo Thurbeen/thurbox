@@ -230,12 +230,12 @@ pub trait TmuxCompatible: Send + Sync + 'static {
         window_name: &str,
         command: &str,
         args: &[String],
-        _env: &HashMap<String, String>,
+        env: &HashMap<String, String>,
     ) -> Result<String>
     where
         Self: Sized,
     {
-        Ok(server.posix_window_command(window_name, command, args))
+        Ok(server.posix_window_command(window_name, command, args, task_path(env)))
     }
 
     /// The environment and program that close a one-shot `new-window`'s argv
@@ -2346,12 +2346,15 @@ impl<M: TmuxCompatible> Server<M> {
     /// Done here — not via tmux `default-command` — because that value round-trips
     /// through the remote transport's per-arg shell-quoting, where a `-l` flag's
     /// space would be re-split into a stray `set-option` argument.
-    pub(crate) fn login_wrap_for_remote(&self, shell_cmd: &str) -> String {
+    pub(crate) fn login_wrap_for_remote(&self, shell_cmd: &str, task_path: Option<&str>) -> String {
         if self.transport.is_remote() && self.platform == crate::Platform::Posix {
             let path = self
                 .host
                 .as_ref()
-                .and_then(crate::host_path::assignment_for)
+                .and_then(|host| match task_path {
+                    Some(path) => crate::host_path::task_assignment_for(host, path),
+                    None => crate::host_path::assignment_for(host),
+                })
                 .unwrap_or_default();
             let inner = control_mode::shell_escape(&format!("{path}exec {shell_cmd}"));
             format!("/bin/sh -lc {inner}")
@@ -2408,6 +2411,7 @@ impl<M: TmuxCompatible> Server<M> {
         window_name: &str,
         command: &str,
         args: &[String],
+        task_path: Option<&str>,
     ) -> String {
         // A remote/WSL companion shell pane (`tbs-` window) opens the user's own
         // interactive login shell — the SSH-login environment — instead of the
@@ -2431,7 +2435,7 @@ impl<M: TmuxCompatible> Server<M> {
             // A shell reads this whole string, so the prefix has to be
             // UTF-8 here; a `PATH` that is not gets no prefix rather than a
             // mangled one (see `path_prefix_args`).
-            false => shell_prefix_tokens()
+            false => shell_prefix_tokens(task_path.map(std::ffi::OsStr::new))
                 .map(|tokens| {
                     tokens
                         .into_iter()
@@ -2441,7 +2445,7 @@ impl<M: TmuxCompatible> Server<M> {
                 })
                 .unwrap_or(shell_cmd),
         };
-        self.login_wrap_for_remote(&shell_cmd)
+        self.login_wrap_for_remote(&shell_cmd, task_path)
     }
 
     /// The live connection, or an error when none has been started.
@@ -5325,7 +5329,7 @@ pub(crate) fn push_posix_window_program(
         // The program itself is **not** escaped: it is what the shell was
         // already splitting, and escaping it now would break the very commands
         // this branch exists to keep working.
-        match shell_prefix_tokens() {
+        match shell_prefix_tokens(task_path(env).map(std::ffi::OsStr::new)) {
             Some(mut token) => {
                 token.push(program);
                 tmux.arg(token.join(" "));
@@ -5337,7 +5341,7 @@ pub(crate) fn push_posix_window_program(
     } else {
         // Several tokens already go to `execvp`, so the prefix rides as argv
         // and the `PATH` keeps its bytes.
-        for arg in path_prefix_args() {
+        for arg in path_prefix_args(task_path(env).map(std::ffi::OsStr::new)) {
             tmux.arg(arg);
         }
         tmux.arg(program);
@@ -5369,11 +5373,15 @@ pub(crate) fn push_posix_window_program(
 /// is handed is already absolute ([`resolve_local_program`]) — the `PATH` is
 /// for what the pane runs *later*, not for reaching the agent.
 ///
-/// Empty (no prefix at all) when there is no CLI directory to add or no `env`
-/// to add it with: an improvement where it succeeds, never a new way to fail.
+/// A Task whose spawn environment names a `PATH` keeps it ([`pane_path`]):
+/// the CLI's directory goes in front only where that `PATH` lacks it.
+///
+/// Empty (no prefix at all) when there is neither a Task `PATH` nor a CLI
+/// directory to add, or no `env` to add it with: an improvement where it
+/// succeeds, never a new way to fail.
 #[cfg(not(windows))]
-fn path_prefix_args() -> Vec<std::ffi::OsString> {
-    let (Some(path), Some(env_bin)) = (path_with_cli_directory(), posix_env_binary()) else {
+fn path_prefix_args(task_path: Option<&std::ffi::OsStr>) -> Vec<std::ffi::OsString> {
+    let (Some(path), Some(env_bin)) = (pane_path(task_path), posix_env_binary()) else {
         return Vec::new();
     };
     // Carried as `OsString` the whole way, never through `to_string_lossy`: a
@@ -5392,8 +5400,8 @@ fn path_prefix_args() -> Vec<std::ffi::OsString> {
 /// UTF-8 — which the callers take as "no prefix", never as a mangled one. Also
 /// `None` when there was no prefix to begin with, since an empty one and an
 /// unspellable one lead to the same command.
-fn shell_prefix_tokens() -> Option<Vec<String>> {
-    let args = path_prefix_args();
+fn shell_prefix_tokens(task_path: Option<&std::ffi::OsStr>) -> Option<Vec<String>> {
+    let args = path_prefix_args(task_path);
     if args.is_empty() {
         return None;
     }
@@ -5411,6 +5419,39 @@ fn path_with_cli_directory() -> Option<std::ffi::OsString> {
     let cli = crate::instance::resolve_cli_binary();
     let dir = cli.parent().filter(|d| !d.as_os_str().is_empty())?;
     path_led_by(dir, &std::env::var_os("PATH").unwrap_or_default())
+}
+
+/// The `PATH` a local pane gets: the Task's own when its spawn environment
+/// names one, else this process's led by the CLI directory
+/// ([`path_with_cli_directory`]).
+///
+/// tmux hands a pane the `PATH` of the unattached client that spawned it and
+/// ignores a `-e PATH=…`, so the Task's `PATH` has to ride in the prefix too,
+/// or the pane runs with this process's.
+#[cfg(not(windows))]
+fn pane_path(task_path: Option<&std::ffi::OsStr>) -> Option<std::ffi::OsString> {
+    let Some(task_path) = task_path else {
+        return path_with_cli_directory();
+    };
+    let cli = crate::instance::resolve_cli_binary();
+    let dir = cli.parent().filter(|d| !d.as_os_str().is_empty());
+    path_reaching(dir, task_path)
+}
+
+/// `task_path` with `dir` in front when it is absent, its own order kept and
+/// its empty components dropped (see [`path_led_by`]).
+#[cfg(not(windows))]
+fn path_reaching(dir: Option<&Path>, task_path: &std::ffi::OsStr) -> Option<std::ffi::OsString> {
+    let dirs: Vec<std::path::PathBuf> = std::env::split_paths(task_path)
+        .filter(|d| !d.as_os_str().is_empty())
+        .collect();
+    let lead = dir.filter(|dir| !dirs.iter().any(|d| d == dir));
+    std::env::join_paths(lead.map(Path::to_path_buf).into_iter().chain(dirs)).ok()
+}
+
+/// The `PATH` a Task's spawn environment names, if any.
+fn task_path(env: &HashMap<String, String>) -> Option<&str> {
+    env.get("PATH").map(String::as_str)
 }
 
 /// `inherited` with `dir` moved to the front: prepended if it was absent,
@@ -5446,7 +5487,7 @@ fn posix_env_binary() -> Option<std::path::PathBuf> {
 /// program — and whose own multiplexer runs a command its own way (psmux folds
 /// the environment into a PowerShell token).
 #[cfg(windows)]
-fn path_prefix_args() -> Vec<std::ffi::OsString> {
+fn path_prefix_args(_task_path: Option<&std::ffi::OsStr>) -> Vec<std::ffi::OsString> {
     Vec::new()
 }
 
@@ -5707,9 +5748,9 @@ mod tests {
             window_name: &str,
             command: &str,
             args: &[String],
-            _: &HashMap<String, String>,
+            env: &HashMap<String, String>,
         ) -> Result<String> {
-            Ok(server.posix_window_command(window_name, command, args))
+            Ok(server.posix_window_command(window_name, command, args, task_path(env)))
         }
         fn push_window_program(
             cmd: &mut Command,
@@ -6899,7 +6940,7 @@ done
                 assert_eq!(backend.transport.mux(), "tmux");
                 assert_eq!(backend.default_shell(), "powershell", "from {local:?}");
                 assert_eq!(pinned_default_command(&backend), None, "from {local:?}");
-                assert_eq!(backend.login_wrap_for_remote("agent"), "agent");
+                assert_eq!(backend.login_wrap_for_remote("agent", None), "agent");
             });
         }
     }
@@ -7036,7 +7077,7 @@ done
             &crate::HostDef::wsl("Ubuntu"),
             &crate::settings::for_tests(),
         );
-        let wrapped = backend.login_wrap_for_remote("claude --resume x");
+        let wrapped = backend.login_wrap_for_remote("claude --resume x", None);
         assert_eq!(wrapped, "/bin/sh -lc 'exec claude --resume x'");
     }
 
@@ -7059,8 +7100,33 @@ done
         );
         let backend = TestBackend::for_host(&host, &crate::settings::for_tests());
         assert_eq!(
-            backend.login_wrap_for_remote("claude"),
+            backend.login_wrap_for_remote("claude", None),
             "/bin/sh -lc 'PATH=/home/me/.local/bin:/usr/bin; export PATH; exec claude'"
+        );
+    }
+
+    #[test]
+    fn login_wrap_assigns_the_tasks_path_behind_the_missing_path_prepend() {
+        let host = crate::HostDef {
+            name: "login-wrap-task-path".into(),
+            destination: "me@devbox".into(),
+            path_prepend: vec!["/opt/x/bin".into(), "/usr/bin".into()],
+            ..Default::default()
+        };
+        crate::host_path::seed(
+            &host,
+            Some(crate::host_path::HostEnv {
+                home: Some("/home/me".into()),
+                base: vec!["/usr/bin".into()],
+                shell_login: Some(vec!["/home/me/.local/bin".into()]),
+                sh_login: None,
+                multiplexers: Vec::new(),
+            }),
+        );
+        let backend = TestBackend::for_host(&host, &crate::settings::for_tests());
+        assert_eq!(
+            backend.login_wrap_for_remote("claude", Some("/opt/wrap/bin:/usr/bin")),
+            "/bin/sh -lc 'PATH=/opt/x/bin:/opt/wrap/bin:/usr/bin; export PATH; exec claude'"
         );
     }
 
@@ -7108,7 +7174,7 @@ done
     fn login_wrap_is_noop_for_local() {
         // Local backends inherit the user's interactive PATH — no wrap needed.
         let backend = TestBackend::local(&crate::settings::for_tests());
-        assert_eq!(backend.login_wrap_for_remote("claude"), "claude");
+        assert_eq!(backend.login_wrap_for_remote("claude", None), "claude");
     }
 
     #[test]
@@ -7304,6 +7370,35 @@ done
         let led =
             path_led_by(Path::new("/opt/thurbox/bin"), std::ffi::OsStr::new("")).expect("joinable");
         assert_eq!(led, std::ffi::OsString::from("/opt/thurbox/bin"));
+    }
+
+    // --- path_reaching (a Task's own PATH) ---
+
+    #[cfg(not(windows))]
+    #[test]
+    fn a_task_path_keeps_its_order_behind_the_missing_cli_directory() {
+        let task = std::ffi::OsStr::new("/opt/wrap/bin:/usr/bin:/bin");
+        let path = path_reaching(Some(Path::new("/opt/thurbox/bin")), task).expect("joinable");
+        assert_eq!(
+            path,
+            std::ffi::OsString::from("/opt/thurbox/bin:/opt/wrap/bin:/usr/bin:/bin")
+        );
+    }
+
+    #[cfg(not(windows))]
+    #[test]
+    fn a_task_path_that_names_the_cli_directory_is_kept_as_it_is() {
+        let task = std::ffi::OsStr::new("/opt/wrap/bin:/opt/thurbox/bin:/usr/bin");
+        let path = path_reaching(Some(Path::new("/opt/thurbox/bin")), task).expect("joinable");
+        assert_eq!(path, task);
+    }
+
+    #[cfg(not(windows))]
+    #[test]
+    fn a_task_path_is_kept_without_a_cli_directory() {
+        let task = std::ffi::OsStr::new("/opt/wrap/bin::/usr/bin");
+        let path = path_reaching(None, task).expect("joinable");
+        assert_eq!(path, std::ffi::OsString::from("/opt/wrap/bin:/usr/bin"));
     }
 
     // --- path_from_prefix (reading a pane's PATH back) ---

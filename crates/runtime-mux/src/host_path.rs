@@ -244,6 +244,29 @@ pub fn assignment_for(host: &HostDef) -> Option<String> {
     plan(&host.path_prepend, env.as_ref()).map(|p| shell_assignment(&p))
 }
 
+/// The assignment for a window on `host` whose Task names its own `PATH`:
+/// that `PATH`, with each of the host entry's `path_prepend` directories it
+/// lacks in front. `None` on a host with no `sh`.
+pub fn task_assignment_for(host: &HostDef, task_path: &str) -> Option<String> {
+    if HostShell::for_host(host) != HostShell::Posix {
+        return None;
+    }
+    let task: Vec<Component> = split_path(task_path)
+        .into_iter()
+        .map(Component::Literal)
+        .collect();
+    let home = cached_env(host).and_then(|env| env.home);
+    let mut components: Vec<Component> = host
+        .path_prepend
+        .iter()
+        .filter_map(|entry| expand(entry, home.as_deref()))
+        .filter(|c| !task.contains(c))
+        .collect();
+    components.extend(task);
+    dedup(&mut components);
+    Some(shell_assignment(&PathPlan::Full(components)))
+}
+
 fn cache() -> &'static Mutex<HashMap<String, Option<HostEnv>>> {
     static CACHE: OnceLock<Mutex<HashMap<String, Option<HostEnv>>>> = OnceLock::new();
     CACHE.get_or_init(|| Mutex::new(HashMap::new()))

@@ -388,6 +388,13 @@ request.place ──▶ local ─────────▶ this machine's mult
   the control connection that ssh or `wsl.exe` launches, never in its
   argv. So nothing depends on which of this machine's variables `wsl.exe`
   passes (`WSLENV`).
+- A session's `env` can name a `PATH`. Then that `PATH` is the window's
+  `PATH`, in its own order. On `local`, `runtime-mux` puts the directory of
+  its `thurbox-cli` in front when the `PATH` does not name it. On a remote
+  place, the login wrap puts each `path_prepend` directory that the `PATH`
+  does not name in front. tmux ignores `-e PATH`, so the `PATH` goes in the
+  window command: an `env PATH=…` prefix on `local`, and the login wrap's
+  assignment on a remote place.
 - On the `local` place, tmux and RMUX make the window with a one-shot
   `new-window`, and every user of the machine can read a client's argv.
   So the client's argv holds at most `has-session` and the session's options,
