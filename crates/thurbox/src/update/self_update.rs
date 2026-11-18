@@ -854,7 +854,7 @@ fn keep_previous(bin: &Path, from: &str) -> Result<(), String> {
             copy_program(&bin.join(&name), &previous.join(&name))?;
         }
     }
-    std::fs::write(previous.join(PREVIOUS_VERSION), from)
+    crate::paths::write_atomically(&previous.join(PREVIOUS_VERSION), from)
         .map_err(|e| format!("write {}: {e}", previous.display()))
 }
 
