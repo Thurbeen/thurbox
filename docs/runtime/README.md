@@ -269,17 +269,31 @@ and the processor time of an idle agent
 
 1. It closes the key's shell.
 2. It writes a mark for the key, an empty file
-   `runtime-mux-<socket>.paused-<key>` beside the server's lock.
+   `${XDG_DATA_HOME:-~/.local/share}/runtime-mux/paused/<digest>/<server>/key.<key>`.
+   `<digest>` and `<server>` are the start record's.
 3. It stops the agent's window.
 
 A pause takes the server's lock, as a start and a stop do. While the
 agent's window is there, it answers for the key, so a pause cut short
-before step 3 reads as running. `inspect` answers `paused` for a key with a
-mark, no agent window and no shell. A mark with a shell left answers
-Unknown, and the next pause closes the shell. A `start` removes the mark
-after it makes the window, and a `stop` removes it after it stops the
-process. The mark is in the private directory tmux keeps the socket in, so
-it goes when that directory goes, as the server's windows do.
+before step 3 reads as running. `inspect` answers `paused` for a key with
+a mark, no agent window and no shell. A mark with a shell left answers
+Unknown, and the next pause closes the shell. A `start` removes the mark after it makes or adopts the
+window, and a `stop` removes it after it stops the process. A reboot keeps
+the mark, as it keeps the start record, so a paused key reads as paused
+after a reboot and never as exited.
+
+An earlier `runtime-mux` wrote the mark as
+`runtime-mux-<socket>.paused-<key>` in the private directory tmux keeps the
+socket in, which a reboot empties. For a rollback to that version:
+
+- A pause writes the mark in both places.
+- A `start`, `stop`, `pause` or `inspect` of a key copies its earlier mark
+  to the data directory, under the server's lock. A `list` copies every
+  earlier mark. The copy leaves the earlier mark in place.
+- A `start` and a `stop` remove both marks.
+- An earlier `runtime-mux` removes only its own mark. A key that it starts
+  or stops after a rollback keeps its mark in the data directory, and reads
+  as paused again after the next update.
 
 ### Places (protocol version 2)
 

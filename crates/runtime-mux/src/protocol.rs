@@ -778,7 +778,7 @@ impl Marks {
         }
     }
 
-    fn keys(&self) -> Result<Vec<String>, String> {
+    pub fn keys(&self) -> Result<Vec<String>, String> {
         let dir = self.dir.clone()?;
         let entries = match std::fs::read_dir(&dir) {
             Ok(entries) => entries,
@@ -802,13 +802,54 @@ impl Marks {
     }
 }
 
-/// What this program keeps of a key outside the server. `paused` marks a
-/// paused key (the `pause` verb). `started` holds the pane of each key a `start`
-/// made until a `stop`, where a reboot leaves it: a key with no window reads
-/// as exited, never as stopped, so Fleet revives its session.
+/// What this program keeps of a key outside the server, where a reboot
+/// leaves it. `paused` marks a paused key (the `pause` verb). `started`
+/// holds the pane of each key a `start` made until a `stop`: a key with no
+/// window reads as exited, never as stopped, so Fleet revives its session.
+/// `paused_beside_the_locks` is where an earlier `runtime-mux` keeps its
+/// marks, which a reboot takes and a rollback to it reads.
 pub struct Kept {
     pub paused: Marks,
     pub started: Marks,
+    pub paused_beside_the_locks: Marks,
+}
+
+impl Kept {
+    /// The keys among `key`, or every key when `None`, that an earlier
+    /// `runtime-mux` marked paused and that are not marked here yet.
+    pub fn pause_marks_to_copy(&self, key: Option<&str>) -> Result<Vec<String>, String> {
+        let mut keys = match key {
+            Some(key) if self.paused_beside_the_locks.holds(key)? => vec![key.to_string()],
+            Some(_) => return Ok(Vec::new()),
+            None => self.paused_beside_the_locks.keys()?,
+        };
+        let copied = match key {
+            Some(key) if self.paused.holds(key)? => vec![key.to_string()],
+            Some(_) => Vec::new(),
+            None => self.paused.keys()?,
+        };
+        keys.retain(|key| !copied.contains(key));
+        Ok(keys)
+    }
+
+    /// Copies each mark [`Kept::pause_marks_to_copy`] names here. The
+    /// caller holds the server's lock, so no `start` or `stop` clears a mark
+    /// while it is copied.
+    pub fn copy_pause_marks(&self, key: Option<&str>) -> Result<(), String> {
+        self.pause_marks_to_copy(key)?
+            .iter()
+            .try_for_each(|key| self.paused.write(key, ""))
+    }
+
+    fn mark_paused(&self, key: &str) -> Result<(), String> {
+        self.paused.write(key, "")?;
+        self.paused_beside_the_locks.write(key, "")
+    }
+
+    fn clear_paused(&self, key: &str) -> Result<(), String> {
+        self.paused_beside_the_locks.clear(key)?;
+        self.paused.clear(key)
+    }
 }
 
 fn start(
@@ -833,7 +874,11 @@ fn start(
         Ok(Located::At(pane)) => match exited(backend, &pane) {
             Err(why) => return unknown(why),
             Ok(None) => {
-                return match kept.started.write(&request.key, &pane) {
+                return match kept
+                    .started
+                    .write(&request.key, &pane)
+                    .and_then(|()| kept.clear_paused(&request.key))
+                {
                     Ok(()) => known(json!({ "started": { "id": pane, "adopted": true } })),
                     Err(why) => unknown(why),
                 }
@@ -886,7 +931,7 @@ fn start(
     if let Err(why) = kept.started.write(&request.key, pane.as_str()) {
         return unknown(why);
     }
-    if let Err(why) = kept.paused.clear(&request.key) {
+    if let Err(why) = kept.clear_paused(&request.key) {
         return unknown(why);
     }
     known(json!({ "started": { "id": pane.as_str(), "adopted": false } }))
@@ -1013,8 +1058,7 @@ fn stop(backend: &dyn SessionBackend, kept: &Kept, key: &str) -> Value {
         return stopped;
     }
     match kept
-        .paused
-        .clear(key)
+        .clear_paused(key)
         .and_then(|()| kept.started.clear(key))
     {
         Ok(()) => stopped,
@@ -1051,7 +1095,7 @@ fn pause(backend: &dyn SessionBackend, kept: &Kept, key: &str) -> Value {
         return unknown(e);
     }
     if let Some(pane) = agent {
-        if let Err(why) = kept.paused.write(key, "") {
+        if let Err(why) = kept.mark_paused(key) {
             return unknown(why);
         }
         if let Err(e) = backend.kill(&pane) {

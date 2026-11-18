@@ -111,6 +111,19 @@ fn serve(verb: &str) -> serde_json::Value {
         }
     }
     let kept = kept(&server);
+    let marked = match verb {
+        "list" => Some(None),
+        "start" | "stop" | "pause" | "inspect" => request_key(&request).map(Some),
+        _ => None,
+    };
+    if let Some(key) = marked {
+        let holding_the_lock = server_turn.is_some();
+        if let Err(answer) =
+            copy_older_pause_marks(&server, &kept, key.as_deref(), holding_the_lock)
+        {
+            return answer;
+        }
+    }
     // Each remote place's login `PATH` is cached beside the locks, so a call
     // does not read it again over ssh.
     keep_cache(&socket);
@@ -319,24 +332,50 @@ fn view_pane(
 
 fn kept(server: &str) -> protocol::Kept {
     let (sockets, prefix) = private_dir();
-    let started = match &sockets {
+    let beside_start_records = |what: &str| match &sockets {
         Ok(sockets) => runtime_mux::workspace::data_dir()
             .map(|data| {
-                data.join("started")
+                data.join(what)
                     .join(sockets_digest(sockets))
                     .join(server_dir(server))
             })
-            .ok_or_else(|| "no HOME to keep the started keys in".to_string()),
+            .ok_or_else(|| format!("no HOME to keep the {what} keys in")),
         Err(e) => Err(format!("no directory for the tmux sockets: {e}")),
     };
     protocol::Kept {
         paused: protocol::Marks::new(
-            sockets.map_err(|e| format!("no directory for the pause marks: {e}")),
+            beside_start_records("paused"),
+            "key.".to_string(),
+            "pause mark",
+        ),
+        started: protocol::Marks::new(
+            beside_start_records("started"),
+            "key.".to_string(),
+            "start record",
+        ),
+        paused_beside_the_locks: protocol::Marks::new(
+            sockets.map_err(|e| format!("no directory for the tmux sockets: {e}")),
             format!("{prefix}runtime-mux-{server}.paused-"),
             "pause mark",
         ),
-        started: protocol::Marks::new(started, "key.".to_string(), "start record"),
     }
+}
+
+fn copy_older_pause_marks(
+    server: &str,
+    kept: &protocol::Kept,
+    key: Option<&str>,
+    holding_the_lock: bool,
+) -> Result<(), serde_json::Value> {
+    let unknown = |why: String| serde_json::json!({ "unknown": { "why": why } });
+    if kept.pause_marks_to_copy(key).map_err(unknown)?.is_empty() {
+        return Ok(());
+    }
+    let _turn = match holding_the_lock {
+        true => None,
+        false => Some(take(&format!("runtime-mux-{server}.lock"))?),
+    };
+    kept.copy_pause_marks(key).map_err(unknown)
 }
 
 const SERVER_DIR_COMPONENT: usize = 128;
@@ -373,8 +412,8 @@ fn lock(name: &str) -> std::io::Result<std::fs::File> {
     Ok(file)
 }
 
-/// The directory the locks and the pause marks sit in, and the prefix of
-/// their names. It is the private directory tmux keeps its sockets in,
+/// The directory the locks sit in, and the prefix of their names. It is
+/// the private directory tmux keeps its sockets in,
 /// `<TMUX_TMPDIR or /tmp>/tmux-<uid>` and never under `TMPDIR`, so every
 /// caller reaching one server takes one lock, a server in another directory
 /// has its own, and no other user can plant a link at a name. The directory

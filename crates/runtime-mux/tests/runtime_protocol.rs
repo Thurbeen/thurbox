@@ -94,6 +94,17 @@ impl Runtime {
         self.call("inspect", json!({"protocol": 1, "key": key}))
     }
 
+    fn list_until_known(&self) -> Value {
+        let deadline = Instant::now() + Duration::from_secs(10);
+        loop {
+            let answer = self.call("list", json!({"protocol": 1}));
+            if answer.get("known").is_some() || Instant::now() >= deadline {
+                return answer;
+            }
+            std::thread::sleep(Duration::from_millis(100));
+        }
+    }
+
     /// The first `inspect` answer `done` accepts, within ten seconds.
     fn inspect_until(&self, key: &str, done: impl Fn(&Value) -> bool) -> Value {
         let deadline = Instant::now() + Duration::from_secs(10);
@@ -528,6 +539,123 @@ fn a_dot_key_reads_exited_once_its_server_is_gone() {
     for (key, id) in &ids {
         exited_once_known(&rt, key, id);
     }
+}
+
+fn older_pause_mark(rt: &Runtime, key: &str) -> std::path::PathBuf {
+    use std::os::unix::fs::MetadataExt;
+    let uid = std::fs::metadata(rt.server.tmpdir()).expect("tmpdir").uid();
+    rt.server
+        .tmpdir()
+        .join(format!("tmux-{uid}/runtime-mux-{SOCKET}.paused-{key}"))
+}
+
+fn reboot(rt: &Runtime) {
+    use std::os::unix::fs::MetadataExt;
+    kill_runtime_server(rt);
+    let uid = std::fs::metadata(rt.server.tmpdir()).expect("tmpdir").uid();
+    let sockets = rt.server.tmpdir().join(format!("tmux-{uid}"));
+    std::fs::remove_dir_all(&sockets).expect("the socket directory");
+}
+
+#[test]
+fn a_paused_key_reads_paused_after_a_reboot_and_resumes_on_a_start() {
+    let Some(rt) = Runtime::new() else { return };
+    started(&rt.start("napping", &["sleep", "300"]));
+    assert_eq!(
+        rt.call("pause", json!({"protocol": 1, "key": "napping"}))["known"],
+        "paused"
+    );
+    assert!(
+        older_pause_mark(&rt, "napping").exists(),
+        "an earlier version rolled back to reads the pause"
+    );
+    reboot(&rt);
+
+    assert_eq!(rt.inspect("napping")["known"], "paused");
+    let list = rt.call("list", json!({"protocol": 1}));
+    assert_eq!(list["known"]["keys"], json!(["napping"]), "{list}");
+    let (_, adopted) = started(&rt.start("napping", &["sleep", "300"]));
+    assert!(!adopted, "the paused process is started again");
+    assert!(rt.inspect("napping")["known"]["running"].is_object());
+}
+
+#[test]
+fn a_start_and_a_stop_clear_both_pause_marks() {
+    let Some(rt) = Runtime::new() else { return };
+    started(&rt.start("woken", &["sleep", "300"]));
+    assert_eq!(
+        rt.call("pause", json!({"protocol": 1, "key": "woken"}))["known"],
+        "paused"
+    );
+    started(&rt.start("woken", &["sleep", "300"]));
+    assert!(!older_pause_mark(&rt, "woken").exists());
+    assert_eq!(
+        rt.call("pause", json!({"protocol": 1, "key": "woken"}))["known"],
+        "paused"
+    );
+    assert_eq!(
+        rt.call("stop", json!({"protocol": 1, "key": "woken"}))["known"],
+        "stopped"
+    );
+    assert!(!older_pause_mark(&rt, "woken").exists());
+    assert_eq!(rt.inspect("woken")["known"], "none");
+}
+
+#[test]
+fn a_pause_mark_an_earlier_version_left_by_the_sockets_survives_a_reboot_until_a_start() {
+    let Some(rt) = Runtime::new() else { return };
+    started(&rt.start("upgraded", &["sleep", "300"]));
+    kill_runtime_server(&rt);
+    let older = older_pause_mark(&rt, "upgraded");
+    std::fs::write(&older, "").expect("the older mark");
+
+    let list = rt.list_until_known();
+    assert_eq!(list["known"]["keys"], json!(["upgraded"]), "{list}");
+    assert!(
+        older.exists(),
+        "an earlier version rolled back to still reads it"
+    );
+    reboot(&rt);
+    assert_eq!(rt.inspect("upgraded")["known"], "paused");
+    let list = rt.call("list", json!({"protocol": 1}));
+    assert_eq!(list["known"]["keys"], json!(["upgraded"]), "{list}");
+    started(&rt.start("upgraded", &["sleep", "300"]));
+    assert_eq!(
+        rt.call("stop", json!({"protocol": 1, "key": "upgraded"}))["known"],
+        "stopped"
+    );
+    assert_eq!(rt.inspect("upgraded")["known"], "none");
+}
+
+#[test]
+fn an_adopting_start_clears_a_pause_mark_left_beside_the_running_window() {
+    let Some(rt) = Runtime::new() else { return };
+    let (id, _) = started(&rt.start("leftover", &["sleep", "300"]));
+    let marks = rt.server.tmpdir().join("data/runtime-mux/paused");
+    let records = rt.server.tmpdir().join("data/runtime-mux/started");
+    let record = walk_files(&records).pop().expect("the start record");
+    let mark = marks.join(record.strip_prefix(&records).expect("under the records"));
+    std::fs::create_dir_all(mark.parent().expect("a parent")).expect("the mark's directory");
+    std::fs::write(&mark, "").expect("the leftover mark");
+
+    let (_, adopted) = started(&rt.start("leftover", &["sleep", "300"]));
+    assert!(adopted);
+    kill_runtime_server(&rt);
+    exited_once_known(&rt, "leftover", &id);
+}
+
+fn walk_files(dir: &std::path::Path) -> Vec<std::path::PathBuf> {
+    std::fs::read_dir(dir)
+        .expect("a directory")
+        .flat_map(|entry| {
+            let path = entry.expect("an entry").path();
+            if path.is_dir() {
+                walk_files(&path)
+            } else {
+                vec![path]
+            }
+        })
+        .collect()
 }
 
 #[test]
