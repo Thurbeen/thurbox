@@ -1582,7 +1582,14 @@ fn only_git_saying_not_a_repository_reads_as_outside_a_work_tree() {
     assert_eq!(probe(&repo.join(".git"), &[]), WorkTree::Outside);
     assert_eq!(probe(&repo, &[]), WorkTree::Inside);
     assert_eq!(
-        probe(&repo, &[("GIT_TEST_ASSUME_DIFFERENT_OWNER", "1")]),
+        probe(
+            &repo,
+            &[
+                ("GIT_TEST_ASSUME_DIFFERENT_OWNER", "1"),
+                ("GIT_CONFIG_GLOBAL", "/dev/null"),
+                ("GIT_CONFIG_NOSYSTEM", "1"),
+            ]
+        ),
         WorkTree::Unknown,
         "a repository git refuses to read is not a directory without changes"
     );
