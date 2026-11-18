@@ -145,6 +145,7 @@ fn a_runtime_mux_warning_is_exported_when_fleets_config_turns_logs_on() {
             collector.logs()
         );
         std::thread::sleep(Duration::from_millis(100));
+        env.reconcile();
     }
 }
 

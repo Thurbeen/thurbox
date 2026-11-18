@@ -121,7 +121,7 @@ from: `config file`, a variable's name, or `default`. `thurbox-cli doctor`
 shows the interface's export the same way. Neither shows a header's value.
 
 ```text
-ok    telemetry    export       endpoint http://localhost:4318 (config file); traces on (default); metrics on (default); headers (config file); resource service.namespace (config file)
+ok    telemetry    export       endpoint http://localhost:4318 (config file); traces on (default); metrics on (default); logs off (default); headers (config file); resource service.namespace (config file)
 ```
 
 ### Precedence

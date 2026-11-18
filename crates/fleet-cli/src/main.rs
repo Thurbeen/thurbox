@@ -3766,8 +3766,6 @@ fn cmd_watch(
             Observation::Unknown { why } if once => return Err(StoreError::Unknown(why).into()),
             Observation::Unknown { why } => {
                 warn(&format!("could not read the Tasks; nothing assumed: {why}"));
-                // The next read that works is `synced` again: a view that
-                // showed this warning learns its rows are current once more.
                 watch.synced = false;
                 std::thread::sleep(std::time::Duration::from_millis(poll_ms));
                 continue;

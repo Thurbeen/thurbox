@@ -27,9 +27,6 @@ fn main() {
         }
         return;
     }
-    // Each verb is one span, `runtime-mux VERB`, under the caller's
-    // TRACEPARENT; off unless the OTEL_* variables ask (docs/observability.md).
-    // A view runs as long as a viewer watches, so it records nothing.
     let telemetry = otel_env::init("runtime-mux", env!("CARGO_PKG_VERSION"), &[], true)
         .unwrap_or_else(|why| {
             eprintln!("warning: telemetry is off: {why}");

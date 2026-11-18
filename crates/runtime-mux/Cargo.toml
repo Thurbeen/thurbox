@@ -29,8 +29,6 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 term-stream = { path = "../term-stream" }
 otel-env = { path = "../otel-env" }
-# Its WARN-and-above `tracing` events as OTLP logs when the logs signal is
-# exported, as thurbox's (docs/observability.md).
 opentelemetry-appender-tracing = { version = "0.33.1", default-features = false }
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time", "process", "io-util"] }
 toml = "1.0"
