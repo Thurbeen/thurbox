@@ -183,7 +183,16 @@ a local OpenTelemetry Collector that forwards to a remote backend.
 | `thurbox` (the interface) | `thurbox` | `service.version`, `thurbox.instance` (the multiplexer socket, which tells a sandbox apart from the real instance) |
 | `thurbox-cli` | exports nothing | — |
 
-`OTEL_RESOURCE_ATTRIBUTES` overrides each attribute in this table.
+The `resource` table of the `[telemetry]` table adds attributes, such as
+`service.namespace` and `deployment.environment.name`, to every program
+that reads the table. The attributes are on every signal of the program:
+spans, metrics and logs. Fleet's table reaches each `fleet` command,
+`fleet up`, and the `runtime-mux` and `workspace-git` that Fleet starts.
+thurbox's table reaches the interface's spans and log records. Set
+`service.namespace` in both tables to group thurbox and Fleet.
+
+`OTEL_RESOURCE_ATTRIBUTES` overrides each attribute in this table, and
+replaces the `resource` table ([Precedence](#precedence)).
 `OTEL_SERVICE_NAME` overrides `service.name` of the program you start
 only: a program removes it from the environment of each program it starts.
 
@@ -231,7 +240,7 @@ runtime-mux: runtime-mux workspace ──TRACEPARENT──▶ workspace-git make
 | Program | Span | Parent | Attributes |
 | --- | --- | --- | --- |
 | `thurbox` | `fleet COMMAND` (client) | none | `fleet.command` |
-| `fleet` | `fleet COMMAND` | `TRACEPARENT`, or none | `fleet.command`, `process.exit.code` |
+| `fleet` | `fleet COMMAND` | `TRACEPARENT`, or none | `fleet.command`, `process.exit.code`, and `fleet.kind` and `fleet.name` when the command names them |
 | `fleet` | `reconcile pass` | `fleet reconcile`, or none under `fleet up` | `fleet.pass` |
 | `fleet` | `reconcile KIND` | the object (not exported); links to `reconcile pass` | identity, `fleet.controller`, `fleet.outcome` |
 | `fleet` | `effect KIND` | `reconcile KIND` | identity, `fleet.effect`, `fleet.outcome` |
@@ -239,6 +248,18 @@ runtime-mux: runtime-mux workspace ──TRACEPARENT──▶ workspace-git make
 | `fleet` | `runtime VERB` (client) | `effect KIND`, or `reconcile KIND` for a probe | `fleet.runtime`, `fleet.runtime.verb`, `fleet.outcome` |
 | `runtime-mux` | `runtime-mux VERB` | `TRACEPARENT` | `runtime.verb`, `runtime.outcome` |
 | `workspace-git` | `workspace-git VERB` | `TRACEPARENT` | `workspace.verb` |
+
+A `fleet COMMAND` span carries `fleet.kind` and `fleet.name` as follows:
+
+- `get`, `status`, `label` and `delete`: the kind and the name they are
+  given. A built-in kind is spelt as the store serves it, such as `Task`.
+  A plugin's kind is spelt as the command gives it.
+- `list`: the kind only.
+- `send`, `amend`, `result`, `declare`, `attach`, `shell`,
+  `event subscribe` and `event unsubscribe`: `Task` and the Task's name.
+- `event publish`, `event list`, `event wait` and `event watch`: `Board`
+  and the Board's name.
+- Every other command names no one object and carries neither.
 
 The identity attributes are the object's `fleet.kind`, `fleet.name`,
 `fleet.uid` and `fleet.generation`. `KIND` in `effect KIND` is one of

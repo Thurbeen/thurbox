@@ -5506,35 +5506,59 @@ fn a_task_dispatched_beside_running_tasks_is_briefed_and_attachable_about_as_soo
 }
 
 /// The `[telemetry]` table of Fleet's config, with no `OTEL_*` variable set,
-/// reaches `runtime-mux`: its span arrives at the file's collector, under
-/// its own name, with the file's resource attributes.
+/// reaches `runtime-mux` and the `workspace-git` it runs: their spans arrive
+/// at the file's collector, each under its own name, with the file's
+/// resource attributes.
 #[test]
-fn runtime_mux_exports_to_the_collector_fleets_config_file_names() {
+fn runtime_mux_and_workspace_git_export_to_the_collector_fleets_config_file_names() {
     let (Some(program), Some(_)) = (runtime_mux(), tmux()) else {
         return;
     };
     let sockets = Sockets::new("otel-file");
     let collector = support::otlp::Collector::start();
-    let env = mux_env("runtime-mux-otel-file", &program, &sockets);
+    let mut env = mux_env("runtime-mux-otel-file", &program, &sockets);
+    env.set_var("RUNTIME_MUX_CONFIG", &mux_config(&env).to_string_lossy());
     let mut text = fs::read_to_string(&env.config).expect("config");
     text.push_str(&format!(
-        "\n[telemetry]\nendpoint = \"{}\"\nresource = {{ \"deployment.environment.name\" = \"from-file\" }}\n",
+        "\n[telemetry]\nendpoint = \"{}\"\nresource = {{ \"service.namespace\" = \"fleet-e2e\", \"deployment.environment.name\" = \"e2e\" }}\n",
         collector.endpoint
     ));
     fs::write(&env.config, text).expect("config");
+    let bin = env.root.join("bin");
+    fs::create_dir_all(&bin).expect("bin");
+    let harness = bin.join("claude");
+    fs::write(&harness, "#!/bin/sh\nexec sleep 300\n").expect("harness");
+    use std::os::unix::fs::PermissionsExt;
+    fs::set_permissions(&harness, fs::Permissions::from_mode(0o755)).expect("chmod");
+    let path = std::env::var("PATH").unwrap_or_default();
+    env.only_on_path(Path::new(&format!("{}:{path}", bin.display())));
+    let work = env.root.join("work").join("t1");
+    fs::create_dir_all(&work).expect("workspace");
+    let mut task = support::task("t1", true);
+    task["spec"]["workspace"] = json!([format!("file://{}", work.display())]);
 
-    env.fleet(&["doctor"]);
+    env.apply(json!([task])).ok();
+    env.reconcile().ok();
 
     let spans = collector.spans();
-    let manifest = spans
-        .iter()
-        .find(|s| s.name == "runtime-mux manifest")
-        .unwrap_or_else(|| panic!("no runtime-mux span in {spans:#?}"));
-    assert_eq!(manifest.resource["service.name"], "runtime-mux");
-    assert_eq!(
-        manifest.resource["deployment.environment.name"],
-        "from-file"
-    );
+    for (service, name) in [
+        ("runtime-mux", "runtime-mux start"),
+        ("runtime-mux", "runtime-mux workspace"),
+        ("workspace-git", "workspace-git make"),
+    ] {
+        let span = spans
+            .iter()
+            .find(|s| s.resource["service.name"] == service && s.name == name)
+            .unwrap_or_else(|| panic!("no `{name}` span from {service} in {spans:#?}"));
+        assert_eq!(span.resource["service.namespace"], "fleet-e2e", "{span:#?}");
+        assert_eq!(
+            span.resource["deployment.environment.name"], "e2e",
+            "{span:#?}"
+        );
+    }
+    for span in &spans {
+        assert_eq!(span.resource["service.namespace"], "fleet-e2e", "{span:#?}");
+    }
 }
 
 #[cfg(target_os = "linux")]

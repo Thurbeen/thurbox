@@ -106,6 +106,63 @@ fn the_config_file_alone_makes_commands_the_manager_and_sessions_export() {
     drop(up);
 }
 
+/// The file's `resource` table, with no `OTEL_RESOURCE_ATTRIBUTES` set, is
+/// on every span and every metric point a one-shot command and `fleet up`
+/// export.
+#[test]
+fn the_files_resource_is_on_every_span_and_point_of_commands_and_the_manager() {
+    let collector = Collector::start();
+    let mut env = Env::new("otel-file-resource");
+    env.set_var("OTEL_METRIC_EXPORT_INTERVAL", "200");
+    with_telemetry(
+        &env,
+        &format!(
+            "endpoint = \"{}\"\nresource = {{ \"service.namespace\" = \"fleet-e2e\", \"deployment.environment.name\" = \"e2e\" }}\n",
+            collector.endpoint
+        ),
+    );
+
+    env.apply(task("t1", true)).ok();
+    env.fleet(&["get", "task", "t1"]).ok();
+    env.reconcile().ok();
+    wait_for("the commands' metrics", || !collector.points().is_empty());
+    let before = collector.points().len();
+    let up = Stopped(env.spawn(&["up", "--poll-ms", "100"]));
+    wait_for("a `reconcile pass` span and points from fleet up", || {
+        !named(&collector.spans(), "reconcile pass").is_empty() && collector.points().len() > before
+    });
+    drop(up);
+
+    let spans = collector.spans();
+    for name in [
+        "fleet apply",
+        "fleet get",
+        "fleet reconcile",
+        "reconcile pass",
+    ] {
+        assert!(!named(&spans, name).is_empty(), "no `{name}` in {spans:#?}");
+    }
+    for span in &spans {
+        assert_eq!(span.resource["service.name"], "fleet", "{span:#?}");
+        assert_eq!(span.resource["service.namespace"], "fleet-e2e", "{span:#?}");
+        assert_eq!(
+            span.resource["deployment.environment.name"], "e2e",
+            "{span:#?}"
+        );
+    }
+    for point in collector.points() {
+        assert_eq!(point.resource["service.name"], "fleet", "{point:#?}");
+        assert_eq!(
+            point.resource["service.namespace"], "fleet-e2e",
+            "{point:#?}"
+        );
+        assert_eq!(
+            point.resource["deployment.environment.name"], "e2e",
+            "{point:#?}"
+        );
+    }
+}
+
 #[test]
 fn an_otel_variable_wins_over_the_file_and_the_files_headers_stay_with_its_endpoint() {
     let file_collector = Collector::start();

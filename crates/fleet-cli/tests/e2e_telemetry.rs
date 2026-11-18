@@ -667,3 +667,118 @@ fn a_stalled_collector_adds_at_most_the_call_bound_to_a_command() {
     );
     drop(silent);
 }
+
+/// A command's root span names the object it acts on, so a trace view finds
+/// a Task's commands by `fleet.name` (docs/observability.md, *Turn it on*),
+/// with a built-in `fleet.kind` as the store serves it, whatever spelling the
+/// command took. A command that names no one object carries neither. A
+/// command whose export the call bound dropped is run again.
+#[test]
+fn a_command_span_names_the_kind_and_object_it_acts_on() {
+    let collector = Collector::start();
+    let mut env = Env::new("otel-command-names");
+    exporting(&mut env, &collector.endpoint);
+    env.apply(task("t1", true)).ok();
+    let runs: [(&[&str], &str, Option<&str>); 17] = [
+        (&["get", "task", "t1"], "Task", Some("t1")),
+        (&["status", "tasks", "t1"], "Task", Some("t1")),
+        (&["list", "task"], "Task", None),
+        (&["send", "t1", "hello"], "Task", Some("t1")),
+        (&["amend", "t1", "--text", "more"], "Task", Some("t1")),
+        (&["label", "task", "t1", "team=e2e"], "Task", Some("t1")),
+        (
+            &["declare", "t1", "--json", r#"{"kind":"note"}"#],
+            "Task",
+            Some("t1"),
+        ),
+        (
+            &["result", "t1", "--outcome", "shipped"],
+            "Task",
+            Some("t1"),
+        ),
+        (&["attach", "t1", "--json"], "Task", Some("t1")),
+        (&["shell", "t1", "--json"], "Task", Some("t1")),
+        (
+            &["event", "subscribe", "t1", "--board", "shared"],
+            "Task",
+            Some("t1"),
+        ),
+        (
+            &["event", "list", "--board", "shared"],
+            "Board",
+            Some("shared"),
+        ),
+        (
+            &["event", "unsubscribe", "t1", "--board", "shared"],
+            "Task",
+            Some("t1"),
+        ),
+        (
+            &[
+                "event", "publish", "--board", "shared", "--type", "e2e.note", "--data", "{}",
+            ],
+            "Board",
+            Some("shared"),
+        ),
+        (
+            &[
+                "event",
+                "wait",
+                "--board",
+                "shared",
+                "--after",
+                "0",
+                "--timeout-ms",
+                "1",
+            ],
+            "Board",
+            Some("shared"),
+        ),
+        (&["get", "widgets", "w1"], "widgets", Some("w1")),
+        (
+            &["delete", "taskconfig", "default"],
+            "TaskConfig",
+            Some("default"),
+        ),
+    ];
+    let span_of = |command: &str, kind: &str, seen: &BTreeSet<Vec<u8>>| {
+        named(&collector.spans(), command)
+            .into_iter()
+            .find(|s| {
+                !seen.contains(&s.span_id) && s.attrs.get("fleet.kind").is_some_and(|k| k == kind)
+            })
+            .cloned()
+    };
+    for (args, kind, name) in runs {
+        let command = format!("fleet {}", args[0]);
+        let seen: BTreeSet<Vec<u8>> = collector.spans().into_iter().map(|s| s.span_id).collect();
+        let mut root = None;
+        for _ in 0..3 {
+            env.fleet(args);
+            root = span_of(&command, kind, &seen);
+            if root.is_some() {
+                break;
+            }
+        }
+        let root = root.unwrap_or_else(|| {
+            panic!(
+                "no `{command}` span with fleet.kind={kind} in {:#?}",
+                named(&collector.spans(), &command)
+            )
+        });
+        assert_eq!(
+            root.attrs.get("fleet.name").map(String::as_str),
+            name,
+            "{args:?}: {root:#?}"
+        );
+    }
+    let spans = collector.spans();
+    let apply = named(&spans, "fleet apply");
+    assert!(!apply.is_empty(), "no `fleet apply` span");
+    assert!(
+        apply
+            .iter()
+            .all(|s| !s.attrs.contains_key("fleet.name") && !s.attrs.contains_key("fleet.kind")),
+        "apply names no one object: {apply:#?}"
+    );
+}

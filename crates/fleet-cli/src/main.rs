@@ -747,6 +747,7 @@ fn main() -> ExitCode {
     let matches = Cli::command().get_matches();
     let cli = Cli::from_arg_matches(&matches).unwrap_or_else(|e| e.exit());
     let name = matches.subcommand_name().unwrap_or_default().to_string();
+    let named = subject(&cli.command);
     let adopted = match config::discover(cli.config.clone()).map(|p| config::telemetry(&p)) {
         Some(Ok(Some(table))) => otel_env::adopt(&table),
         Some(Err(why)) => {
@@ -778,11 +779,9 @@ fn main() -> ExitCode {
     let code = if name == "up" {
         command()
     } else {
-        let root = otel_env::root(
-            "fleet",
-            format!("fleet {name}"),
-            vec![KeyValue::new("fleet.command", name.clone())],
-        );
+        let mut attributes = vec![KeyValue::new("fleet.command", name.clone())];
+        attributes.extend(named);
+        let root = otel_env::root("fleet", format!("fleet {name}"), attributes);
         let code = command();
         root.set(KeyValue::new("process.exit.code", i64::from(code)));
         if code != 0 {
@@ -800,6 +799,51 @@ fn main() -> ExitCode {
         telemetry.shutdown_within(otel_env::CALL_SHUTDOWN_BOUND);
     }
     ExitCode::from(code)
+}
+
+fn subject(command: &Command) -> Vec<KeyValue> {
+    let task = |name: &String| (Some(fleet_api::task::KIND.to_string()), Some(name.clone()));
+    let board = |name: &String| (Some(fleet_api::board::KIND.to_string()), Some(name.clone()));
+    let (kind, name) = match command {
+        Command::Get { kind, name }
+        | Command::Status { kind, name, .. }
+        | Command::Label { kind, name, .. }
+        | Command::Delete { kind, name } => (Some(canonical_kind(kind)), Some(name.clone())),
+        Command::List { kind, .. } => (Some(canonical_kind(kind)), None),
+        Command::Result { task: name, .. }
+        | Command::Declare { task: name, .. }
+        | Command::Send { task: name, .. }
+        | Command::Amend { task: name, .. }
+        | Command::Attach { task: name, .. }
+        | Command::Shell { task: name, .. } => task(name),
+        Command::Event { command } => match command {
+            EventCommand::Subscribe { task: name, .. }
+            | EventCommand::Unsubscribe { task: name, .. } => task(name),
+            EventCommand::Publish { board: name, .. } => board(name),
+            EventCommand::List { filter, .. }
+            | EventCommand::Wait { filter, .. }
+            | EventCommand::Watch { filter, .. } => board(&filter.board),
+        },
+        Command::Init
+        | Command::Migrate { .. }
+        | Command::Up { .. }
+        | Command::Apply { .. }
+        | Command::Watch { .. }
+        | Command::Reconcile { .. }
+        | Command::Gateway { .. }
+        | Command::Version { .. }
+        | Command::Signal { .. }
+        | Command::SignalRead { .. }
+        | Command::TermBridge { .. }
+        | Command::Runtime { .. }
+        | Command::Integration { .. }
+        | Command::Service { .. }
+        | Command::Doctor { .. } => (None, None),
+    };
+    kind.map(|k| KeyValue::new("fleet.kind", k))
+        .into_iter()
+        .chain(name.map(|n| KeyValue::new("fleet.name", n)))
+        .collect()
 }
 
 fn run(cli: Cli) -> Result<(), Failure> {
@@ -3245,12 +3289,10 @@ const DEFAULT_LEASE_MS: u64 = 30_000;
 /// Runtime program and forge CLI calls are bounded at half the default lease.
 const DEFAULT_CALL_TIMEOUT_MS: u64 = 15_000;
 
-/// `task`, `tasks` and `Task` all name Task. Unsupported kinds are refused
-/// here, as on write, never reported as unreadable.
-fn served_kind(store: &dyn Store, kind: &str) -> Result<String, Failure> {
+fn canonical_kind(kind: &str) -> String {
     let lower = kind.to_ascii_lowercase();
     let singular = lower.strip_suffix('s').unwrap_or(&lower);
-    let kind = match singular {
+    match singular {
         "task" => fleet_api::task::KIND.to_string(),
         "taskconfig" => fleet_api::config::TASK_CONFIG.to_string(),
         "envprovider" => fleet_api::config::ENV_PROVIDER.to_string(),
@@ -3260,7 +3302,15 @@ fn served_kind(store: &dyn Store, kind: &str) -> Result<String, Failure> {
         "crontask" => fleet_api::cron_task::KIND.to_string(),
         "board" => fleet_api::board::KIND.to_string(),
         _ => kind.to_string(),
-    };
+    }
+}
+
+/// `task`, `tasks` and `Task` all name Task. Unsupported kinds are refused
+/// here, as on write, never reported as unreadable.
+fn served_kind(store: &dyn Store, kind: &str) -> Result<String, Failure> {
+    let lower = kind.to_ascii_lowercase();
+    let singular = lower.strip_suffix('s').unwrap_or(&lower);
+    let kind = canonical_kind(kind);
     if let Some(served) = store
         .served_kinds()
         .into_iter()
