@@ -75,6 +75,8 @@ Then run `fleet init`, `fleet doctor` and `fleet up`
 `cargo build --release` in a clone builds every program from source. Homebrew,
 the AUR, Nix, winget, Chocolatey and uninstalling are on the
 [Installation page](https://thurbox.thurbeen.eu/docs/installation.html).
+Homebrew, the AUR, winget and Chocolatey still carry 2.x: v3 ships through the
+install script and Nix.
 
 ## First steps
 
@@ -163,9 +165,12 @@ Two commands move your 2.x work to v3. Neither deletes a 2.x file.
    ```bash
    fleet migrate --dry-run
    fleet migrate
+   fleet service install --now   # Fleet 3's manager
+   fleet doctor
    ```
 
-4. Import the thurbox 2.x sessions and automations as Tasks and CronTasks.
+4. Import the thurbox 2.x sessions and cron automations as Tasks and
+   CronTasks; the report names what it could not import.
    It reads `thurbox.db`, `hosts.toml` and `agents.toml` and changes none
    of them. It removes retired keys from `settings.toml` and keeps the old
    file as `settings.toml.v2`:
@@ -184,7 +189,7 @@ Two commands move your 2.x work to v3. Neither deletes a 2.x file.
    `spec.dispatch` to `true` (`spec.suspend` to `false`), then `fleet apply`
    it again. Before you start a Task from a 2.x worktree, finish that
    session's work there and remove the worktree
-   ([step 3](docs/migrating-to-v3.md#3-start-your-work-again-as-tasks)).
+   ([Start your work again as Tasks](docs/migrating-to-v3.md#3-start-your-work-again-as-tasks)).
 
 `--dry-run` prints the plan and changes nothing.
 [Migrating to v3](docs/migrating-to-v3.md) covers each step, services,
@@ -193,11 +198,15 @@ remote places and cleaning up what 2.x left.
 ## Staying on v2
 
 To keep thurbox v2, pin [v2.89.0](https://github.com/Thurbeen/thurbox/releases/tag/v2.89.0),
-the latest v2 release:
+the latest v2 release.
+
+**Linux / macOS:**
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/Thurbeen/thurbox/main/scripts/install.sh | VERSION=v2.89.0 sh
 ```
+
+**Windows (PowerShell):**
 
 ```powershell
 & ([scriptblock]::Create((irm https://raw.githubusercontent.com/Thurbeen/thurbox/main/scripts/install.ps1))) -Version v2.89.0
