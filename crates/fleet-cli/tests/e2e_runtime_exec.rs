@@ -5477,3 +5477,238 @@ fn runtime_mux_exports_to_the_collector_fleets_config_file_names() {
         "from-file"
     );
 }
+
+#[cfg(target_os = "linux")]
+struct PrivateUserManager {
+    child: std::process::Child,
+    dir: PathBuf,
+    cgroup: Option<PathBuf>,
+}
+
+#[cfg(target_os = "linux")]
+impl PrivateUserManager {
+    const TARGET: &str = "fleet-e2e.target";
+
+    fn start(home: &Path, vars: &[(&str, &Path)]) -> Option<PrivateUserManager> {
+        let session_manager = std::env::var_os("XDG_RUNTIME_DIR")
+            .map(|d| PathBuf::from(d).join("systemd/private"))
+            .filter(|p| p.exists());
+        let systemd = ["/usr/lib/systemd/systemd", "/lib/systemd/systemd"]
+            .into_iter()
+            .map(PathBuf::from)
+            .find(|p| p.is_file());
+        let (Some(_), Some(systemd)) = (session_manager, systemd) else {
+            eprintln!("skipping: no systemd user manager to delegate a scope from");
+            return None;
+        };
+        let units = home.join(".config/systemd/user");
+        fs::create_dir_all(&units).expect("unit dir");
+        fs::write(
+            units.join(Self::TARGET),
+            "[Unit]\nDescription=fleet e2e\nDefaultDependencies=no\n",
+        )
+        .expect("target");
+        let dir = PathBuf::from(format!("/tmp/fleet-um-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        let runtime = dir.join("rt");
+        fs::create_dir_all(&runtime).expect("runtime dir");
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(&runtime, fs::Permissions::from_mode(0o700)).expect("chmod");
+        let mut assignments = vec![
+            format!("HOME={}", home.display()),
+            format!("XDG_CONFIG_HOME={}", home.join(".config").display()),
+            format!("XDG_DATA_HOME={}", home.join(".local/share").display()),
+            format!("XDG_STATE_HOME={}", home.join(".local/state").display()),
+            format!("XDG_RUNTIME_DIR={}", runtime.display()),
+            format!("PATH={}", std::env::var("PATH").unwrap_or_default()),
+        ];
+        assignments.extend(vars.iter().map(|(k, v)| format!("{k}={}", v.display())));
+        let child = Command::new("systemd-run")
+            .args([
+                "--user",
+                "--scope",
+                "--quiet",
+                "--collect",
+                "-p",
+                "Delegate=yes",
+                "--",
+            ])
+            .arg("env")
+            .arg("-i")
+            .args(&assignments)
+            .arg(&systemd)
+            .arg("--user")
+            .arg(format!("--unit={}", Self::TARGET))
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .spawn();
+        let Ok(child) = child else {
+            eprintln!("skipping: systemd-run is not installed");
+            let _ = fs::remove_dir_all(&dir);
+            return None;
+        };
+        let mut manager = PrivateUserManager {
+            child,
+            dir,
+            cgroup: None,
+        };
+        let deadline = Instant::now() + Duration::from_secs(20);
+        while Instant::now() < deadline {
+            let state = manager.systemctl(&["is-system-running"]);
+            if matches!(state.trim(), "running" | "degraded") {
+                manager.cgroup = fs::read_to_string(format!("/proc/{}/cgroup", manager.child.id()))
+                    .ok()
+                    .and_then(|line| {
+                        line.trim()
+                            .strip_prefix("0::/")
+                            .map(|path| Path::new("/sys/fs/cgroup").join(path))
+                    })
+                    .filter(|init| init.ends_with("init.scope"))
+                    .and_then(|init| init.parent().map(Path::to_path_buf));
+                return Some(manager);
+            }
+            std::thread::sleep(Duration::from_millis(100));
+        }
+        eprintln!("skipping: a private systemd --user did not come up");
+        None
+    }
+
+    fn runtime_dir(&self) -> PathBuf {
+        self.dir.join("rt")
+    }
+
+    fn systemctl(&self, args: &[&str]) -> String {
+        Command::new("systemctl")
+            .env("XDG_RUNTIME_DIR", self.runtime_dir())
+            .env_remove("DBUS_SESSION_BUS_ADDRESS")
+            .arg("--user")
+            .args(args)
+            .output()
+            .map(|o| String::from_utf8_lossy(&o.stdout).into_owned())
+            .unwrap_or_default()
+    }
+
+    fn cgroup_empty(cgroup: &Path) -> bool {
+        fs::read_to_string(cgroup.join("cgroup.events"))
+            .map(|events| events.lines().any(|l| l == "populated 0"))
+            .unwrap_or(true)
+    }
+}
+
+#[cfg(target_os = "linux")]
+impl Drop for PrivateUserManager {
+    fn drop(&mut self) {
+        let _ = self.systemctl(&["exit"]);
+        let deadline = Instant::now() + Duration::from_secs(20);
+        while Instant::now() < deadline && matches!(self.child.try_wait(), Ok(None)) {
+            std::thread::sleep(Duration::from_millis(100));
+        }
+        if let Some(cgroup) = &self.cgroup {
+            let _ = fs::write(cgroup.join("cgroup.kill"), "1");
+        }
+        let _ = self.child.kill();
+        let _ = self.child.wait();
+        let _ = Command::new("chmod")
+            .args(["-R", "u+rwx"])
+            .arg(&self.dir)
+            .output();
+        let _ = fs::remove_dir_all(&self.dir);
+    }
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn a_stopped_service_leaves_no_manager_process_but_keeps_the_tmux_server_and_sessions() {
+    let (Some(program), Some(_)) = (runtime_mux(), tmux()) else {
+        return;
+    };
+    let sockets = Sockets::new("svc-scope");
+    let mut env = mux_env("runtime-service-scope", &program, &sockets);
+    let lingering = env.root.join("lingering-runtime.sh");
+    fs::write(
+        &lingering,
+        format!(
+            "#!/bin/sh\n(sleep 600 </dev/null >/dev/null 2>&1 &)\nexec '{}' \"$@\"\n",
+            program.display()
+        ),
+    )
+    .expect("runtime wrapper");
+    {
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(&lingering, fs::Permissions::from_mode(0o755)).expect("chmod");
+    }
+    let config = fs::read_to_string(&env.config).expect("config");
+    fs::write(
+        &env.config,
+        config.replace(&*program.to_string_lossy(), &lingering.to_string_lossy()),
+    )
+    .expect("config");
+    let Some(manager) = PrivateUserManager::start(&env.root, &[("TMUX_TMPDIR", &sockets.0)]) else {
+        return;
+    };
+    env.set_var("XDG_RUNTIME_DIR", &manager.runtime_dir().to_string_lossy());
+    let bin = env.root.join("bin");
+    fs::create_dir_all(&bin).expect("bin");
+    let harness = bin.join("claude");
+    fs::write(&harness, "#!/bin/sh\nexec sleep 300\n").expect("harness");
+    use std::os::unix::fs::PermissionsExt;
+    fs::set_permissions(&harness, fs::Permissions::from_mode(0o755)).expect("chmod");
+    let path = std::env::var("PATH").unwrap_or_default();
+    env.only_on_path(Path::new(&format!("{}:{path}", bin.display())));
+    let work = env.root.join("work").join("t1");
+    fs::create_dir_all(&work).expect("workspace");
+
+    env.fleet(&["service", "install", "--now"]).ok();
+    let mut task = support::task("t1", true);
+    task["spec"]["workspace"] = json!([format!("file://{}", work.display())]);
+    env.apply(json!([task])).ok();
+
+    let pane_in_work = || {
+        String::from_utf8_lossy(
+            &sockets
+                .tmux(&["list-panes", "-a", "-F", "#{pane_current_path}"])
+                .stdout,
+        )
+        .lines()
+        .any(|l| l == work.to_string_lossy())
+    };
+    let deadline = Instant::now() + Duration::from_secs(60);
+    while !pane_in_work() {
+        assert!(
+            Instant::now() < deadline,
+            "no session started: {}\n{:#}",
+            manager.systemctl(&["status", "fleet.service", "--no-pager"]),
+            env.get("t1")["status"]
+        );
+        std::thread::sleep(Duration::from_millis(300));
+    }
+    let server = String::from_utf8_lossy(&sockets.tmux(&["display", "-p", "#{pid}"]).stdout)
+        .trim()
+        .to_string();
+    let unit_cgroup = manager
+        .systemctl(&["show", "-p", "ControlGroup", "--value", "fleet.service"])
+        .trim()
+        .to_string();
+    assert!(!unit_cgroup.is_empty(), "the unit runs");
+    let server_cgroup = fs::read_to_string(format!("/proc/{server}/cgroup")).expect("cgroup");
+    assert!(
+        !server_cgroup.contains(&format!("{unit_cgroup}/"))
+            && !server_cgroup.trim_end().ends_with(&unit_cgroup),
+        "the tmux server runs in the unit's cgroup {unit_cgroup}: {server_cgroup}"
+    );
+
+    env.fleet(&["service", "stop"]).ok();
+
+    assert!(
+        Path::new(&format!("/proc/{server}")).exists(),
+        "the stop took the tmux server"
+    );
+    assert!(pane_in_work(), "the stop took the session");
+    let cgroup = Path::new("/sys/fs/cgroup").join(unit_cgroup.trim_start_matches('/'));
+    assert!(
+        PrivateUserManager::cgroup_empty(&cgroup),
+        "a manager process outlived the stop: {:?}",
+        fs::read_to_string(cgroup.join("cgroup.procs"))
+    );
+}

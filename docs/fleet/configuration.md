@@ -134,7 +134,7 @@ RestartMaxDelaySec=2min
 RestartPreventExitStatus=78
 TimeoutStartSec=infinity
 TimeoutStopSec=<the manager lease>
-KillMode=process
+KillMode=mixed
 
 [Install]
 WantedBy=default.target
@@ -153,8 +153,15 @@ WantedBy=default.target
 - `TimeoutStopSec` is the lease that `fleet up` takes: twice the longest
   runtime, forge, gateway or plugin operation, and 30 seconds at least. A
   stop lets the current sweep finish.
-- `KillMode=process` keeps the multiplexer's server, and every session on
-  it, when the unit stops or restarts.
+- `KillMode=mixed` signals `fleet up`, and then stops every process that
+  is left in the unit's cgroup. `runtime-mux` starts the multiplexer's
+  server in a scope of its own ([runtime-mux](../runtime/README.md)), so
+  the server, and every session on it, stays when the unit stops or
+  restarts.
+- A tmux server that started before `runtime-mux` used a scope is in the
+  unit's cgroup. The first stop or restart of the unit stops that server.
+  Fleet then starts each Task's session again, as
+  [after a host reboot](controllers/task.md#after-a-host-reboot).
 
 #### The launchd agent (macOS)
 
@@ -168,7 +175,7 @@ systemd unit, and these keys:
   seconds apart at most (`ThrottleInterval`).
 - `ExitTimeOut` is the lease that `fleet up` takes, as `TimeoutStopSec`.
 - `AbandonProcessGroup` keeps the multiplexer's server when the agent
-  stops, as `KillMode=process`.
+  stops. Every other process that the manager started also stays.
 - The manager's output goes to `~/Library/Logs/NAME.log`.
 
 | Command | `launchctl` |
@@ -295,10 +302,12 @@ login:
 loginctl enable-linger "$USER"
 ```
 
-The first session start runs the multiplexer's server from `fleet up`, so
-the server is in the unit's cgroup. systemd's default
-`KillMode=control-group` stops it, and every session on it, when the unit
-stops or restarts. A unit that you write yourself needs `KillMode=process`.
+`runtime-mux` starts the multiplexer's server in a scope of its own, so the
+server is not in the unit's cgroup. A unit that you write yourself can use
+`KillMode=mixed`, as the unit that `fleet service install` writes does.
+Without a systemd user manager, `runtime-mux` starts the server in the
+cgroup of `fleet up`. Then a unit needs `KillMode=process` to keep the
+sessions.
 
 ### Configuration and customization
 

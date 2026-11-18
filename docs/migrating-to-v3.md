@@ -195,11 +195,12 @@ drop-ins:
   read your login `PATH`.
 - `Environment=FLEET_CONFIG` or `--config`: the Fleet 3 config, if it is not
   the per-user one.
-- `KillMode=process`. The first start of a session starts the tmux server
-  from `fleet up`, so the server is in the unit's cgroup. With systemd's
-  default `KillMode=control-group`, or with `mixed`, a stop or a restart of
-  the unit kills the server and every session on it. `process` signals
-  `fleet up` only.
+- `KillMode=mixed`. `runtime-mux` starts the tmux server in a scope of its
+  own, so the server is not in the unit's cgroup. A stop or a restart of
+  the unit stops `fleet up` and every process it left, and keeps the
+  server and every session on it. A tmux server that started before
+  `runtime-mux` used a scope is in the unit's cgroup: the first stop stops
+  it, and Fleet starts each session again, as after a host reboot.
 - `Description` and other text that names Fleet 2.
 - OpenTelemetry variables: Fleet 3 reads the standard `OTEL_*` variables
   ([observability](observability.md)). Fleet sets no `service.namespace`.

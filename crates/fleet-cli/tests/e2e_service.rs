@@ -95,7 +95,7 @@ fn install_writes_the_one_unit_and_version_names_it() {
         "RestartPreventExitStatus=78".into(),
         "TimeoutStartSec=infinity".into(),
         "TimeoutStopSec=30s".into(),
-        "KillMode=process".into(),
+        "KillMode=mixed".into(),
         "WantedBy=default.target".into(),
     ] {
         assert!(
