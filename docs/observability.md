@@ -301,18 +301,22 @@ Only `fleet` exports metrics.
   `fleet.inbox.state` is `pending` for an entry that Fleet still delivers,
   and `failed` for an entry that Fleet gave up on. A backlog alert filters
   on `fleet.inbox.state="pending"`.
-- A Task with an empty inbox reports 0 in both states. A Task that is gone
-  reports 0 once, so the gauge does not keep its old backlog.
+- A Task with an empty inbox reports 0 in both states. When a Task is
+  gone, the process that reported it reports 0 in the next export, and then
+  stops reporting it. A gone Task's series ends there, so the gauge does
+  not keep its old backlog.
+- A `fleet reconcile` that ends reports the last pass it ran. A later
+  process does not report a Task that is already gone.
 - `fleet.task.amendments` counts `fleet amend` calls. The outcome is
   `appended`, or the refusal: `precondition`, `conflict`, `notFound`,
   `forbidden`, `invalid` or `error`.
-- `fleet.manager.info` is 1 for each manager process: `fleet up`, and
-  `fleet reconcile` while it runs passes. `fleet.manager.version` is the
-  binary's version. `host.name` is the machine's host name.
-  `fleet.manager.lease` is `true` while the process holds the manager
-  lease. A `fleet up` reports `false` until it takes the lease, for example
-  while it waits for another manager. When the process takes the lease,
-  its `false` point drops to 0.
+- `fleet.manager.info` is 1 for each `fleet up` process.
+  `fleet.manager.version` is the binary's version. `host.name` is the
+  machine's host name. `fleet.manager.lease` is `true` while the process
+  holds the manager lease. A `fleet up` reports `false` until it takes the
+  lease, for example while it waits for another manager, and again after it
+  gives the lease back. The point with the other lease value is 0, so one
+  process never shows as both.
 
 ### Suggested alerts
 
@@ -320,8 +324,12 @@ The examples are PromQL. A Prometheus backend changes each `.` in a name
 to `_`, for example `fleet_manager_info` and `fleet_manager_lease`. Other
 backends use the same filters and sums. The series of a process that ended
 stays in a backend for a short time. Give each alert a hold time, for example
-`for: 10m` in Prometheus, so a `fleet reconcile` that ended a moment ago
-does not fire it.
+`for: 10m` in Prometheus, so a manager that restarted a moment ago does not
+fire it.
+
+Each Fleet has its own lease. When more than one Fleet exports to one
+backend, give each Fleet a resource attribute of its own, for example
+`service.namespace`, and add that attribute to each `by (...)` below.
 
 More than one lease holder, or more than one manager on one host:
 

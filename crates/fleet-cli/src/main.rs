@@ -1298,7 +1298,6 @@ fn run(cli: Cli) -> Result<(), Failure> {
             }
             let holder = holder.unwrap_or_else(|| fleet_store::holder::local(false));
             record_children(&data_dir, &holder)?;
-            identify_engine();
             let manager = Manager {
                 store,
                 runtime: runtime.as_ref(),

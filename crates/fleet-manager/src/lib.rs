@@ -340,6 +340,7 @@ impl Manager<'_> {
                 released => released?,
             }
         }
+        telemetry::manager_lease(false);
         outcome
     }
 
@@ -385,7 +386,6 @@ impl Manager<'_> {
     /// that error: no write happens without it.
     pub fn run(&self, opts: RunOptions) -> Result<RunReport, StoreError> {
         let mut lease = self.store.acquire_lease(&self.holder, opts.lease_ttl)?;
-        telemetry::manager_lease(true);
         let mut report = RunReport {
             holder: self.holder.clone(),
             lease_token: lease.token,
