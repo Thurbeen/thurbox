@@ -269,6 +269,16 @@ fn run_script(
     )
 }
 
+/// The `PATH` assignment a window on `host` gets: the Task's `task_path`
+/// when it names one ([`crate::host_path::task_assignment_for`]), else the
+/// place's.
+fn window_path(host: &HostDef, task_path: Option<&str>, budget: Duration) -> String {
+    match task_path {
+        Some(path) => crate::host_path::task_assignment_for(host, path).unwrap_or_default(),
+        None => assignment(host, budget),
+    }
+}
+
 /// [`run_script`] with `path`, a `PATH` assignment, in place of the place's.
 fn run_script_with(
     host: &HostDef,
@@ -427,13 +437,9 @@ pub fn missing_program(host: &HostDef, program: &str, task_path: Option<&str>) -
         };
     }
     let deadline = Instant::now() + PROBE_TIMEOUT;
-    let path = match task_path {
-        Some(path) => crate::host_path::task_assignment_for(host, path).unwrap_or_default(),
-        None => assignment(host, left(deadline)),
-    };
     match run_script_with(
         host,
-        &path,
+        &window_path(host, task_path, left(deadline)),
         "command -v \"$1\" >/dev/null 2>&1 || echo @missing",
         &[program],
         deadline,
@@ -986,6 +992,30 @@ fn wait_bounded(
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn a_tasks_path_is_what_the_missing_program_check_reads() {
+        let host = HostDef {
+            name: "check-task-path".into(),
+            destination: "me@devbox".into(),
+            path_prepend: vec!["/opt/x/bin".into()],
+            ..Default::default()
+        };
+        crate::host_path::seed(
+            &host,
+            Some(crate::host_path::HostEnv {
+                home: Some("/home/me".into()),
+                base: vec!["/usr/bin".into()],
+                shell_login: Some(vec!["/home/me/.local/bin".into()]),
+                sh_login: None,
+                multiplexers: Vec::new(),
+            }),
+        );
+        assert_eq!(
+            window_path(&host, Some("/opt/wrap/bin:/usr/bin"), Duration::ZERO),
+            "PATH=/opt/x/bin:/opt/wrap/bin:/usr/bin; export PATH; "
+        );
+    }
 
     fn place(name: &str, config: Value) -> Place {
         serde_json::from_value(json!({ "name": name, "config": config })).unwrap()

@@ -7406,6 +7406,17 @@ done
         assert_eq!(led, std::ffi::OsString::from("/opt/thurbox/bin"));
     }
 
+    #[cfg(not(windows))]
+    #[test]
+    fn a_local_control_mode_window_carries_the_tasks_path() {
+        let backend = TestBackend::local(&crate::settings::for_tests());
+        let command =
+            backend.posix_window_command("tb-x", "/bin/agent", &[], Some("/opt/wrap/bin:/usr/bin"));
+        let path = path_from_prefix(&command).expect("an env PATH prefix");
+        assert!(path.ends_with("/opt/wrap/bin:/usr/bin"), "{command}");
+        assert!(command.ends_with(" /bin/agent"), "{command}");
+    }
+
     // --- path_reaching (a Task's own PATH) ---
 
     #[cfg(not(windows))]
