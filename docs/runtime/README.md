@@ -795,9 +795,11 @@ are. Its layout:
 - On release, a dirty worktree is committed, untracked files included,
   through a temporary index onto `refs/fleet/preserved/<key>/<name>` in its
   repository; then the worktree goes. The temporary index lives in the key's
-  directory, never in a checkout's working tree. Branches are never deleted
-  on release. The release of a
-  key that holds no workspace succeeds.
+  directory, never in a checkout's working tree. A read-only directory in
+  the worktree does not stop its removal: once the work is preserved, each
+  directory removed gets its owner's write permission, and the removal is
+  tried again. Branches are never deleted on release. The release of a key
+  that holds no workspace succeeds.
 - On each make it prunes its own retention: preserved refs older than
   `preserve.days` (default 30), in sources and in checkouts, and a source's
   branches not checked out whose head the remote already has. A checkout's

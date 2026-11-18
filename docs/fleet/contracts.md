@@ -206,9 +206,10 @@ Guarantees, each with its test:
   spawned, `CleanWorkspace`, the runtime's `stop` with `release`, runs under
   `cleanWorkspace/<n>`. The finalizer goes only after a `Deleted` receipt.
   A failed or unknown release is repeated after each wait, and three raise
-  `NeedsAttention/CleanFailed`. A Task deleted while its `workspace` call is
-  unanswered releases the key without making anything. `task_workspace` and
-  `e2e_workspace` cover each case.
+  `NeedsAttention/CleanFailed` with the last failure. Past three, each wait
+  doubles, up to `RETRY_BACKOFF_MAX_MS` (1 hour). A Task deleted while its
+  `workspace` call is unanswered releases the key without making anything.
+  `task_workspace` and `e2e_workspace` cover each case.
 - **Spawn once.** The session key is `<name>.<uid>`. After an unknown spawn
   outcome the controller looks the key up: found is adopted, absent is retried,
   unreadable waits.
@@ -231,7 +232,8 @@ Guarantees, each with its test:
   `RETRY_DELAY_MS` (30 seconds), persisted as `status.notBefore` across manager
   runs. Unreadable delivery probes and failed releases raise `NeedsAttention`
   after three attempts but continue after each wait: recovery can confirm
-  delivery or remove the finalizer.
+  delivery or remove the finalizer. A failed release backs off past three
+  attempts: each wait doubles, up to `RETRY_BACKOFF_MAX_MS` (1 hour).
 - **Unsupported URL.** A `workspace` call answered `Known(Unsupported { url
   })` spends no attempt. The Task stays Pending with `WorkspaceReady=False`
   and `NeedsAttention`, both with reason `WorkspaceUnsupported`. The call is

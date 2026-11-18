@@ -328,6 +328,89 @@ fn a_dirty_release_is_preserved_and_a_git_file_url_restores_it() {
     assert_eq!(text("new.txt"), "untracked\n");
 }
 
+#[cfg(unix)]
+#[test]
+fn a_release_removes_read_only_directories_after_preserving_the_work() {
+    use std::os::unix::fs::PermissionsExt;
+    let s = Sandbox::new();
+    let origin = s.bare("app");
+    let (dirs, _) = s.made("t.read-only", &[url("git+file", &origin)]);
+    let tree = PathBuf::from(&dirs[0]);
+    fs::write(tree.join("new.txt"), "kept\n").unwrap();
+    let build = tree.join("target").join("debug");
+    fs::create_dir_all(&build).unwrap();
+    fs::write(build.join("out"), "binary").unwrap();
+    let read_only = fs::Permissions::from_mode(0o555);
+    fs::set_permissions(&build, read_only.clone()).unwrap();
+    fs::set_permissions(tree.join("target"), read_only).unwrap();
+    if fs::remove_file(build.join("out")).is_ok() {
+        return;
+    }
+    let released = release(&s.cfg, "t.read-only");
+    if build.exists() {
+        let writable = fs::Permissions::from_mode(0o755);
+        let _ = fs::set_permissions(tree.join("target"), writable.clone());
+        let _ = fs::set_permissions(&build, writable);
+    }
+    released.expect("release");
+    assert!(!tree.exists(), "the worktree goes");
+    let source = s.source();
+    let preserved = "refs/fleet/preserved/t.read-only/app";
+    assert_eq!(
+        git(&source, &["show", &format!("{preserved}:new.txt")]),
+        "kept"
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn a_release_removes_what_git_left_of_a_read_only_worktree_root() {
+    use std::os::unix::fs::PermissionsExt;
+    let s = Sandbox::new();
+    let origin = s.bare("app");
+    let (dirs, _) = s.made("t.root", &[url("git+file", &origin)]);
+    let tree = PathBuf::from(&dirs[0]);
+    fs::write(tree.join("new.txt"), "kept\n").unwrap();
+    fs::set_permissions(&tree, fs::Permissions::from_mode(0o555)).unwrap();
+    if fs::remove_file(tree.join("new.txt")).is_ok() {
+        return;
+    }
+    let released = release(&s.cfg, "t.root");
+    if tree.exists() {
+        let _ = fs::set_permissions(&tree, fs::Permissions::from_mode(0o755));
+    }
+    released.expect("release");
+    assert!(!tree.exists(), "the worktree goes");
+    let preserved = "refs/fleet/preserved/t.root/app";
+    assert_eq!(
+        git(&s.source(), &["show", &format!("{preserved}:new.txt")]),
+        "kept"
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn a_release_removes_a_read_only_directory_beside_the_worktrees() {
+    use std::os::unix::fs::PermissionsExt;
+    let s = Sandbox::new();
+    let origin = s.bare("app");
+    let (dirs, _) = s.made("t.beside", &[url("git+file", &origin)]);
+    let key_dir = PathBuf::from(&dirs[0]).parent().unwrap().to_path_buf();
+    let stray = key_dir.join("stray");
+    fs::create_dir_all(&stray).unwrap();
+    fs::write(stray.join("out"), "left").unwrap();
+    fs::set_permissions(&stray, fs::Permissions::from_mode(0o555)).unwrap();
+    if fs::remove_file(stray.join("out")).is_ok() {
+        return;
+    }
+    let released = release(&s.cfg, "t.beside");
+    if stray.exists() {
+        let _ = fs::set_permissions(&stray, fs::Permissions::from_mode(0o755));
+    }
+    released.expect("release");
+    assert!(!key_dir.exists(), "the key's directory goes");
+}
+
 #[test]
 fn a_clean_release_preserves_nothing_and_keeps_the_branch() {
     let s = Sandbox::new();

@@ -7,7 +7,9 @@ use fleet_api::plan::{Action, EffectOutcome, Observations, Plan, Probe, Receipt}
 use fleet_api::task::{Phase, SessionRef, TaskStatus};
 use fleet_api::workspace::WorkspaceRef;
 use fleet_api::{Object, Observation};
-use fleet_controllers::{MAX_ATTEMPTS, RETRY_DELAY_MS, TaskController, TaskInput};
+use fleet_controllers::{
+    MAX_ATTEMPTS, RETRY_BACKOFF_MAX_MS, RETRY_DELAY_MS, TaskController, TaskInput,
+};
 use serde_json::json;
 
 const NOW: u64 = 1_000_000;
@@ -344,6 +346,62 @@ fn the_workspace_is_cleaned_after_the_release_and_only_then_let_go() {
         NOW + RETRY_DELAY_MS,
     );
     assert_eq!(plan.effects[0].key, "task/t/u7/cleanWorkspace/2");
+}
+
+#[test]
+fn clean_retries_past_the_bound_back_off_and_say_why() {
+    let failed_clean = |attempts: u32, at: u64| {
+        let mut st = released();
+        st.clean_attempts = attempts;
+        st.receipts.insert(
+            format!("task/t/u7/cleanWorkspace/{attempts}"),
+            Receipt {
+                action: "cleanWorkspace".into(),
+                at,
+                outcome: Observation::Known(EffectOutcome::Failed {
+                    why: "Permission denied".into(),
+                }),
+            },
+        );
+        deleting(task(Some(st)))
+    };
+    let attempts = MAX_ATTEMPTS + 2;
+    let backoff = RETRY_DELAY_MS << 2;
+    let (plan, st) = run(
+        &failed_clean(attempts, NOW - RETRY_DELAY_MS),
+        Observations::default(),
+    );
+    assert!(
+        plan.effects.is_empty(),
+        "a fixed delay is not enough past the bound"
+    );
+    assert_eq!(st.not_before, Some(NOW - RETRY_DELAY_MS + backoff));
+    let attention = st
+        .conditions
+        .iter()
+        .find(|c| c.type_ == "NeedsAttention")
+        .expect("NeedsAttention");
+    assert_eq!(attention.reason, "CleanFailed");
+    assert!(
+        attention.message.contains("Permission denied"),
+        "{attention:?}"
+    );
+    let (plan, _) = run(
+        &failed_clean(attempts, NOW - backoff),
+        Observations::default(),
+    );
+    assert_eq!(plan.effects.len(), 1, "retried once the backoff is over");
+    let (plan, st) = run_at(
+        &failed_clean(64, 0),
+        Observations::default(),
+        RETRY_BACKOFF_MAX_MS - 1,
+    );
+    assert!(plan.effects.is_empty());
+    assert_eq!(
+        st.not_before,
+        Some(RETRY_BACKOFF_MAX_MS),
+        "the backoff has a cap"
+    );
 }
 
 #[test]

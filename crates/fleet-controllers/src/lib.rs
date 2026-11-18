@@ -89,5 +89,6 @@ pub use forge::{ForgeController, ForgeInput, ForgeObservations};
 pub use gateway::{GatewayController, GatewayInput, GatewayObservations};
 pub use listener::{ListenerController, ListenerInput, ListenerObservations};
 pub use task::{
-    MAX_ATTEMPTS, RELEASE_GRACE_MS, RETRY_DELAY_MS, SESSION_RECHECK_MS, TaskController, TaskInput,
+    MAX_ATTEMPTS, RELEASE_GRACE_MS, RETRY_BACKOFF_MAX_MS, RETRY_DELAY_MS, SESSION_RECHECK_MS,
+    TaskController, TaskInput,
 };

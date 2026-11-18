@@ -40,6 +40,11 @@ pub const MAX_ATTEMPTS: u32 = 3;
 /// as `status.notBefore` so a new manager run honours it too.
 pub const RETRY_DELAY_MS: Millis = 30_000;
 
+/// The longest wait between two release or workspace clean attempts. Past
+/// [`MAX_ATTEMPTS`] failures the wait doubles from [`RETRY_DELAY_MS`] with
+/// each further one, up to this.
+pub const RETRY_BACKOFF_MAX_MS: Millis = 3_600_000;
+
 /// How often a Concluded Task at rest has its session looked up again, so
 /// a session deleted out of band or lost is reported. Recorded as
 /// `status.sessionCheckedAt`. A view's wake request newer than the last
@@ -52,6 +57,17 @@ const OUTBOX_UNREAD: &str = "OutboxUnread";
 /// session to be proven at rest. Past it the session is released even if
 /// the agent's last report said it was busy or nothing tells.
 pub const RELEASE_GRACE_MS: Millis = 300_000;
+
+fn retry_delay_after_failures(attempts: u32) -> Millis {
+    let Some(past) = attempts.checked_sub(MAX_ATTEMPTS) else {
+        return RETRY_DELAY_MS;
+    };
+    1u64.checked_shl(past)
+        .map_or(RETRY_BACKOFF_MAX_MS, |factor| {
+            RETRY_DELAY_MS.saturating_mul(factor)
+        })
+        .min(RETRY_BACKOFF_MAX_MS)
+}
 
 #[derive(Debug, Clone, Copy, Default)]
 pub struct TaskController;
@@ -411,9 +427,12 @@ impl Pass<'_, '_> {
         }
     }
 
-    /// Wait [`RETRY_DELAY_MS`] from `from` before the next attempt.
     fn wait_from(&mut self, from: Millis) -> bool {
-        let until = from.saturating_add(RETRY_DELAY_MS);
+        self.wait_for(from, RETRY_DELAY_MS)
+    }
+
+    fn wait_for(&mut self, from: Millis, delay: Millis) -> bool {
+        let until = from.saturating_add(delay);
         if until > self.now() {
             self.st.not_before = Some(until);
             true
@@ -1782,12 +1801,17 @@ impl Pass<'_, '_> {
                         Some(_) => "unexpected outcome".to_string(),
                         None => "no receipt (interrupted)".to_string(),
                     };
+                    let delay = retry_delay_after_failures(self.st.release_attempts);
                     if self.st.release_attempts >= MAX_ATTEMPTS {
-                        self.cond(RELEASED, ConditionStatus::False, "ReleaseFailed", why);
                         self.needs_attention(
                             "ReleaseFailed",
-                            format!("{} release attempts failed", self.st.release_attempts),
+                            format!(
+                                "{} release attempts failed, retrying every {}s: {why}",
+                                self.st.release_attempts,
+                                delay / 1000
+                            ),
                         );
+                        self.cond(RELEASED, ConditionStatus::False, "ReleaseFailed", why);
                     } else {
                         self.cond(RELEASED, ConditionStatus::False, "ReleaseRetry", why);
                     }
@@ -1799,7 +1823,7 @@ impl Pass<'_, '_> {
                                 .map(|r| r.at)
                                 .or_else(|| self.st.intents.get(&last).map(|i| i.at))
                                 .unwrap_or(0);
-                            if self.wait_from(at) {
+                            if self.wait_for(at, delay) {
                                 return;
                             }
                         }
@@ -2125,10 +2149,15 @@ impl Pass<'_, '_> {
                 Some(_) => "unexpected outcome".to_string(),
                 None => "no receipt (interrupted)".to_string(),
             };
-            // A clean is harmless to repeat: it is tried again after each
-            // wait, and three failures ask a person to look.
+            let delay = retry_delay_after_failures(attempt);
             if attempt >= MAX_ATTEMPTS {
-                self.needs_attention(CLEAN_FAILED, format!("{attempt} workspace cleans failed"));
+                self.needs_attention(
+                    CLEAN_FAILED,
+                    format!(
+                        "{attempt} workspace cleans failed, retrying every {}s: {why}",
+                        delay / 1000
+                    ),
+                );
             }
             self.cond(WORKSPACE_READY, ConditionStatus::Unknown, "CleanRetry", why);
             match self.st.not_before {
@@ -2139,7 +2168,7 @@ impl Pass<'_, '_> {
                         .map(|r| r.at)
                         .or_else(|| self.st.intents.get(&key).map(|i| i.at))
                         .unwrap_or(0);
-                    if self.wait_from(at) {
+                    if self.wait_for(at, delay) {
                         return;
                     }
                 }
