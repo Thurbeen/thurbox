@@ -83,8 +83,9 @@ pub fn run(
     let data_dir = crate::paths::data_directory().ok_or("no thurbox data directory")?;
     let link = FleetLink::in_force(settings);
 
+    let shipped = fleet_harnesses(&link);
     let agents = match read_toml(&config_dir.join("agents.toml"))? {
-        Some(doc) => harness_profiles(&doc, fleet_harnesses(&link).as_ref(), &mut report),
+        Some(doc) => harness_profiles(&doc, shipped.as_ref(), &mut report),
         None => BTreeMap::new(),
     };
     if let Some(doc) = read_toml(&config_dir.join("hosts.toml"))? {
@@ -97,7 +98,13 @@ pub fn run(
         match (query(&db, SESSIONS_QUERY), query(&db, AUTOMATIONS_QUERY)) {
             (Ok(sessions), Ok(automations)) => {
                 let mut fleet = Fleet::read(link, dry_run, &mut report);
-                for task in tasks(&sessions, &agents, fleet.names("task"), &mut report) {
+                for task in tasks(
+                    &sessions,
+                    &agents,
+                    shipped.as_ref(),
+                    fleet.names("task"),
+                    &mut report,
+                ) {
                     fleet.import(task, SESSION_LABEL, &mut report);
                 }
                 for cron in cron_tasks(&automations, fleet.names("crontask"), &mut report) {
@@ -216,9 +223,19 @@ fn unique_name(name: &str, fallback: &str, id: &str, taken: &mut BTreeSet<String
 fn tasks(
     rows: &[Value],
     agents: &BTreeMap<String, Agent>,
+    shipped: Option<&BTreeSet<String>>,
     mut taken: BTreeSet<String>,
     report: &mut Report,
 ) -> Vec<Value> {
+    let printed: BTreeSet<String> = report
+        .harnesses
+        .iter()
+        .filter_map(|(file, _)| {
+            file.strip_prefix("harnesses/")?
+                .strip_suffix(".toml")
+                .map(str::to_string)
+        })
+        .collect();
     let mut sessions: Vec<(&str, Vec<&Value>)> = Vec::new();
     for row in rows {
         let id = text(row, "id").unwrap_or_default();
@@ -233,18 +250,26 @@ fn tasks(
         let name = text(first, "name").unwrap_or(id);
         let cwd = text(first, "cwd");
         group.sort_by_key(|row| text(row, "worktree_path") != cwd);
+        let agent = text(first, "agent");
+        if let (Some(agent), Some(shipped)) = (agent, shipped) {
+            if !shipped.contains(agent) && !printed.contains(agent) {
+                report.not_imported.push(format!(
+                    "session {name:?}: its agent {agent} has no Fleet harness profile"
+                ));
+                continue;
+            }
+        }
         let task = unique_name(name, "session", id, &mut taken);
         let key = format!("Task/{task}");
         let mut workspace: Vec<String> = group
             .iter()
             .filter_map(|row| {
                 let repo = text(row, "repo_path")?;
-                let mut url = crate::kernel::command::fleet::dir_url("git+file", Path::new(repo));
-                if let Some(branch) = text(row, "branch") {
-                    url.push_str("?branch=");
-                    url.push_str(&crate::kernel::command::fleet::encode(branch));
-                }
-                Some(url)
+                Some(crate::kernel::command::fleet::worktree_url(
+                    Path::new(repo),
+                    text(row, "branch"),
+                    None,
+                ))
             })
             .collect();
         if workspace.is_empty() {
@@ -276,9 +301,13 @@ fn tasks(
             "workspace": workspace,
             "dispatch": false,
         });
-        let agent = text(first, "agent");
         if let Some(agent) = agent {
             spec["harness"] = json!(agent);
+            if printed.contains(agent) {
+                report.to_do.push(format!(
+                    "{key}: write harnesses/{agent}.toml (below) before you dispatch it"
+                ));
+            }
         }
         if let (Some(agent), Some(conversation)) = (agent, text(first, "agent_session_id")) {
             report.resume.push(format!(
@@ -381,14 +410,11 @@ fn cron_tasks(rows: &[Value], mut taken: BTreeSet<String>, report: &mut Report) 
                  spec.template.spec.workspace"
             ));
         }
-        let mut url = crate::kernel::command::fleet::dir_url(
-            "git+file",
+        let url = crate::kernel::command::fleet::worktree_url(
             Path::new(text(row, "repo_path").unwrap_or_default()),
+            None,
+            text(row, "base_branch"),
         );
-        if let Some(base) = text(row, "base_branch") {
-            url.push('#');
-            url.push_str(&crate::kernel::command::fleet::encode(base));
-        }
         let mut template = json!({
             "host": "local",
             "brief": text(row, "prompt").unwrap_or_default(),

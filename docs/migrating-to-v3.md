@@ -132,6 +132,9 @@ object through `fleet apply` on the Fleet that thurbox uses:
   `git+file://<repository>?branch=<its branch>`, a session with no worktree
   `file://<directory>`. A session on an ssh or WSL host runs on the place
   `mux/<host>`.
+- A session whose agent has no Fleet harness profile, such as a 2.x shell
+  session, is not imported. A session whose agent gets a printed profile is
+  imported. Write that profile before you dispatch the Task.
 - A Task cannot carry a 2.x conversation. The agent keeps a conversation
   with the directory it ran in. The report prints the command that resumes
   each one there, for example `cd /src/app-wt && claude --resume <id>`.

@@ -49,6 +49,7 @@ INSERT INTO sessions VALUES ('s3', 'gone', 'claude', 'tmux', NULL, '/tmp/gone', 
 INSERT INTO sessions VALUES ('s4', 'multi', 'claude', 'tmux', NULL, '/src/zeta-wt', 4, NULL);
 INSERT INTO sessions VALUES ('s5', 'fix-login', 'claude', 'tmux', NULL, '/src/other', 5, NULL);
 INSERT INTO sessions VALUES ('s6', 'win', 'claude', 'wsl:Ubuntu-22.04', NULL, '/home/me/win', 6, NULL);
+INSERT INTO sessions VALUES ('s7', 'term', 'shell', 'tmux', NULL, '/home/me', 7, NULL);
 INSERT INTO worktrees VALUES ('s1', '/src/app', '/src/app-wt', 'thurbox/fix-login', 1, NULL);
 INSERT INTO worktrees VALUES ('s4', '/src/alpha', '/src/alpha-wt', 'b1', 4, NULL);
 INSERT INTO worktrees VALUES ('s4', '/src/zeta', '/src/zeta-wt', 'b2', 4, NULL);
@@ -307,6 +308,8 @@ fn the_2x_state_becomes_fleet_objects_and_ready_to_paste_tables() {
         .has("local time zone")
         .has("CronTask/off: it was disabled")
         .lacks("harnesses/claude.toml")
+        .has("session \"term\": its agent shell has no Fleet harness profile")
+        .has("Task/notes: write harnesses/aider-x.toml (below) before you dispatch it")
         .has("CronTask/nightly-review")
         .has("poke")
         .has("paris")
@@ -357,6 +360,7 @@ fn the_2x_state_becomes_fleet_objects_and_ready_to_paste_tables() {
         cron["spec"]["template"]["spec"]["workspace"],
         serde_json::json!(["git+file:///src/app#main"])
     );
+    assert!(v2.fleet_json(&["get", "task", "term"]).is_none());
     assert!(v2.fleet_json(&["get", "crontask", "paris"]).is_none());
     assert!(v2.fleet_json(&["get", "crontask", "local"]).is_none());
     assert_eq!(
@@ -480,6 +484,37 @@ fn a_name_fleet_already_holds_gets_the_2x_id() {
         .ok()
         .has("Already imported")
         .has("Task/notes-s2");
+}
+
+#[test]
+fn a_refused_apply_keeps_the_startup_notice() {
+    let Some(v2) = setup() else { return };
+    let picky = v2.path("fleet-picky.sh");
+    std::fs::write(
+        &picky,
+        format!(
+            "#!/bin/sh\nif [ \"$1\" = apply ]; then\n  input=$(/bin/cat)\n  case \"$input\" in\n    *'\"name\":\"notes\"'*) echo 'error: refused' >&2; exit 1 ;;\n  esac\n  printf '%s' \"$input\" | exec '{fleet}' \"$@\"\nfi\nexec '{fleet}' \"$@\"\n",
+            fleet = v2.fleet.display()
+        ),
+    )
+    .expect("picky fleet");
+    make_executable(&picky);
+    let settings = v2.path("config/settings.toml");
+    let text = std::fs::read_to_string(&settings).expect("settings");
+    let fleet = v2.fleet.display().to_string();
+    std::fs::write(
+        &settings,
+        text.replace(&fleet, &picky.display().to_string()),
+    )
+    .expect("settings");
+    v2.migrate(&[])
+        .ok()
+        .has("Not imported:")
+        .has("Task/notes: fleet apply: refused")
+        .has("Task/fix-login");
+    assert!(v2.fleet_json(&["get", "task", "fix-login"]).is_some());
+    assert!(v2.fleet_json(&["get", "task", "notes"]).is_none());
+    assert!(!v2.path("data/thurbox.db.migrated").exists());
 }
 
 #[test]
