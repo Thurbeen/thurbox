@@ -111,10 +111,11 @@ a scope of its own (`systemd-run --user --scope --collect`). The server is
 then outside the cgroup of the process that called `runtime-mux`, so a
 stop of the Fleet unit does not stop it. `runtime-mux` asks once per
 process whether it can have a scope (`systemd-run --user --scope -- true`).
-When that probe fails, it starts the server without one. A process is a window named after its key, and
-a pane kept after its program exits is how `inspect` reports the code; a
-`start` replaces it. A host reboot takes the server and its windows, so
-`runtime-mux` also keeps a start record for each key it starts:
+When that probe fails, it starts the server without one. A process is a
+window named after its key, and a pane kept after its program exits is
+how `inspect` reports the code; a `start` replaces it. A host reboot
+takes the server and its windows, so `runtime-mux` also keeps a start
+record for each key it starts:
 
 - A `start` writes the record, a file that holds the key's pane id, under
   `${XDG_DATA_HOME:-~/.local/share}/runtime-mux/started/`, which a reboot
