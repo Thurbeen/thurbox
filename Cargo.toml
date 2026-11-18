@@ -51,6 +51,7 @@ prost = "0.14.4"
 # CronTask schedules: five-field cron, evaluated in UTC by fleet-api.
 croner = "4.0.3"
 chrono = { version = "0.4.45", default-features = false, features = ["std"] }
+serde_path_to_error = "0.1.20"
 
 
 [workspace.lints.rust]

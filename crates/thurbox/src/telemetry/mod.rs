@@ -50,7 +50,7 @@ where
         "thurbox",
         version,
         &[KeyValue::new("thurbox.instance", instance.to_string())],
-        true,
+        otel_env::Logs::Environment,
     )?;
     let logs_off = telemetry
         .logs_off()

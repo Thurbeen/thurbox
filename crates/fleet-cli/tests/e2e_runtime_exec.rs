@@ -99,6 +99,76 @@ impl Drop for Sockets {
     }
 }
 
+fn warning_env(name: &str, program: &Path, sockets: &Sockets, telemetry: &str) -> Env {
+    let env = mux_env(name, program, sockets);
+    let closed = std::net::TcpListener::bind("127.0.0.1:0")
+        .and_then(|l| l.local_addr())
+        .expect("a free port")
+        .port()
+        .to_string();
+    let cfg = fs::read_to_string(&env.config).expect("config");
+    fs::write(
+        &env.config,
+        format!(
+            "{cfg}\n[runtimes.mux.places.local]\n\n[runtimes.mux.places.devbox]\nkind = \"ssh\"\ndestination = \"me@127.0.0.1\"\nssh_opts = [\"-F\", \"/dev/null\", \"-p\", \"{closed}\"]\n{telemetry}"
+        ),
+    )
+    .expect("config");
+    let mut task = support::task("t1", true);
+    task["spec"]["host"] = json!("mux/devbox");
+    env.apply(json!([task])).ok();
+    env
+}
+
+#[test]
+fn a_runtime_mux_warning_is_exported_when_fleets_config_turns_logs_on() {
+    let (Some(program), Some(_)) = (runtime_mux(), tmux()) else {
+        return;
+    };
+    let collector = support::otlp::Collector::start();
+    let sockets = Sockets::new("otel-logs");
+    let env = warning_env(
+        "runtime-mux-otel-logs",
+        &program,
+        &sockets,
+        &format!(
+            "\n[telemetry]\nendpoint = \"{}\"\nlogs = true\n",
+            collector.endpoint
+        ),
+    );
+    reconcile_until(&env, "a WARN record from runtime-mux", |_| {
+        collector.logs().into_iter().any(|l| {
+            l.resource["service.name"] == "runtime-mux"
+                && l.severity == "WARN"
+                && l.body.contains("devbox")
+        })
+    });
+}
+
+#[test]
+fn an_inherited_otel_logs_exporter_turns_on_no_runtime_mux_logs() {
+    let (Some(program), Some(_)) = (runtime_mux(), tmux()) else {
+        return;
+    };
+    let collector = support::otlp::Collector::start();
+    let sockets = Sockets::new("otel-nologs");
+    let mut env = warning_env("runtime-mux-otel-nologs", &program, &sockets, "");
+    env.set_var("OTEL_EXPORTER_OTLP_ENDPOINT", &collector.endpoint);
+    env.set_var("OTEL_LOGS_EXPORTER", "otlp");
+    reconcile_until(&env, "a start on devbox and its span", |env| {
+        env.get("t1")["status"].to_string().contains("devbox")
+            && collector
+                .spans()
+                .iter()
+                .any(|s| s.name == "runtime-mux start")
+    });
+    assert!(
+        !collector.paths().iter().any(|p| p == "/v1/logs"),
+        "{:#?}",
+        collector.logs()
+    );
+}
+
 #[test]
 fn the_reference_script_passes_the_conformance_suite() {
     if tmux().is_none() {

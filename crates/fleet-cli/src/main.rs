@@ -701,10 +701,13 @@ fn parse_label(text: &str) -> Result<(String, String), String> {
 }
 
 /// `NAME=TYPE`, with a trailing `!` for a required output.
-fn parse_output_decl(text: &str) -> Result<(String, fleet_api::result::OutputDecl), Failure> {
+fn parse_output_decl(
+    position: usize,
+    text: &str,
+) -> Result<(String, fleet_api::result::OutputDecl), Failure> {
     let usage = || {
         fail(format!(
-            "--output {text:?}: use NAME=TYPE[!], TYPE one of string, integer, number, boolean, object, array"
+            "--output #{position}: use NAME=TYPE[!], TYPE one of string, integer, number, boolean, object, array"
         ))
     };
     let (name, ty) = text.split_once('=').ok_or_else(usage)?;
@@ -759,14 +762,15 @@ fn main() -> ExitCode {
     if let Err(why) = adopted {
         eprintln!("warning: telemetry is off: {why}");
     }
-    let telemetry = otel_env::init("fleet", VERSION, &[], false).unwrap_or_else(|why| {
-        eprintln!("warning: telemetry is off: {why}");
-        otel_env::Telemetry::default()
-    });
+    let telemetry =
+        otel_env::init("fleet", VERSION, &[], otel_env::Logs::Config).unwrap_or_else(|why| {
+            eprintln!("warning: telemetry is off: {why}");
+            otel_env::Telemetry::default()
+        });
     let command = || match run(cli) {
         Ok(()) => 0,
         Err(f) => {
-            eprintln!("error: {}", f.message);
+            error(&f.message);
             if let Some(h) = f.hint {
                 eprintln!("hint: {h}");
             }
@@ -1215,8 +1219,12 @@ fn run(cli: Cli) -> Result<(), Failure> {
             file,
         } => {
             let result = match file {
-                Some(f) => serde_json::from_slice(&read_input(&f)?)
-                    .map_err(|e| fail(format!("{}: {e}", f.display())))?,
+                Some(f) => {
+                    let what = f.display().to_string();
+                    let value: Value = serde_json::from_slice(&read_input(&f)?)
+                        .map_err(|e| fail(format!("{what}: {e}")))?;
+                    fleet_api::validate::parse(&what, &value).map_err(fail)?
+                }
                 None => result_from_flags(generation, outcome, summary, artifacts, outputs)?,
             };
             let outcome = record_result(store, &task, result)?;
@@ -1275,7 +1283,8 @@ fn run(cli: Cli) -> Result<(), Failure> {
                 reason,
                 outputs: outputs
                     .iter()
-                    .map(|o| parse_output_decl(o))
+                    .enumerate()
+                    .map(|(i, o)| parse_output_decl(i + 1, o))
                     .collect::<Result<_, _>>()?,
                 if_generation,
             };
@@ -2692,7 +2701,17 @@ fn sleep_ms(ms: u64) {
 }
 
 fn warn_and_retry(e: &StoreError) {
-    eprintln!("warning: could not read the store; reading again: {e}");
+    warn(&format!("could not read the store; reading again: {e}"));
+}
+
+fn warn(text: &str) {
+    eprintln!("warning: {text}");
+    otel_env::log(otel_env::Severity::Warn, text);
+}
+
+fn error(text: &str) {
+    eprintln!("error: {text}");
+    otel_env::log(otel_env::Severity::Error, text);
 }
 
 fn with_poll<T>(every_ms: u64, f: impl FnOnce(&mut fleet_manager::verbs::Poll<'_>) -> T) -> T {
@@ -3101,7 +3120,7 @@ fn cmd_doctor(
     }
     checks.push(doctor::telemetry(otel_env::describe(
         &config.telemetry.clone().unwrap_or_default(),
-        false,
+        otel_env::Logs::Config,
     )));
     let failed = doctor::failed(&checks);
     if json {
@@ -3366,8 +3385,7 @@ fn cmd_apply(
     };
     let mut objs = Vec::new();
     for (i, item) in items.into_iter().enumerate() {
-        let obj: Object =
-            serde_json::from_value(item).map_err(|e| fail(format!("item {i}: {e}")))?;
+        let obj: Object = fleet_api::validate::parse(&format!("item {i}"), &item).map_err(fail)?;
         objs.push(obj);
     }
     // The TaskConfig a Task takes its defaults from, as the manager
@@ -3759,9 +3777,7 @@ fn cmd_watch(
             Observation::Known(tasks) => tasks,
             Observation::Unknown { why } if once => return Err(StoreError::Unknown(why).into()),
             Observation::Unknown { why } => {
-                eprintln!("warning: could not read the Tasks; nothing assumed: {why}");
-                // The next read that works is `synced` again: a view that
-                // showed this warning learns its rows are current once more.
+                warn(&format!("could not read the Tasks; nothing assumed: {why}"));
                 watch.synced = false;
                 std::thread::sleep(std::time::Duration::from_millis(poll_ms));
                 continue;
@@ -4193,17 +4209,13 @@ fn result_from_flags(
         fail("--generation is required: name the generation you were briefed for")
     })?;
     let outcome = outcome.ok_or_else(|| fail("--outcome is required"))?;
-    let outcome: Outcome =
-        serde_json::from_value(Value::String(outcome.clone())).map_err(|_| {
-            fail(format!(
-                "--outcome {outcome:?}: use shipped, stuck, failed or not-applicable"
-            ))
-        })?;
+    let outcome: Outcome = serde_json::from_value(Value::String(outcome))
+        .map_err(|_| fail("--outcome: use shipped, stuck, failed or not-applicable"))?;
     let mut map = std::collections::BTreeMap::new();
-    for o in outputs {
+    for (i, o) in outputs.iter().enumerate() {
         let (name, raw) = o
             .split_once('=')
-            .ok_or_else(|| fail(format!("--output {o:?}: use NAME=JSON")))?;
+            .ok_or_else(|| fail(format!("--output #{}: use NAME=JSON", i + 1)))?;
         let value: Value = serde_json::from_str(raw)
             .map_err(|e| fail(format!("--output {name}: not JSON: {e}")))?;
         map.insert(name.to_string(), value);
@@ -4220,7 +4232,7 @@ fn result_from_flags(
 fn print_json(v: &Value) {
     match serde_json::to_string_pretty(v) {
         Ok(s) => println!("{s}"),
-        Err(e) => eprintln!("error: {e}"),
+        Err(e) => error(&e.to_string()),
     }
 }
 

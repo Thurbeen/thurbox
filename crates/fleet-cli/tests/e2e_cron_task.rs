@@ -551,7 +551,7 @@ fn the_cli_takes_shows_and_deletes_a_cron_task_and_refuses_a_bad_one() {
 #[test]
 #[ignore = "run by a_cron_tasks_create_and_retire_are_spans with OTEL_* set"]
 fn cron_task_effects_under_otel() {
-    let telemetry = otel_env::init("fleet", "test", &[], false).expect("telemetry");
+    let telemetry = otel_env::init("fleet", "test", &[], otel_env::Logs::Off).expect("telemetry");
     {
         let w = World::new("cron-otel", MONDAY_3AM - MINUTE);
         w.apply(nightly(json!({"concurrencyPolicy": "Replace"})));

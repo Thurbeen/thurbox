@@ -297,8 +297,38 @@ pub fn validate_spec_update(kind: &str, old: &Value, new: &Value) -> Result<(), 
 }
 
 pub fn typed<T: DeserializeOwned>(kind: &str, spec: &Value) -> Result<T, StoreError> {
-    serde_json::from_value(spec.clone())
-        .map_err(|e| StoreError::Invalid(format!("{kind} spec: {e}")))
+    parse(&format!("{kind} spec"), spec).map_err(StoreError::Invalid)
+}
+
+/// `value` as a `T`. An error names `what`, the path in `value` that does
+/// not fit and what was expected there, never the value found: the value
+/// can be a brief, an environment value or a worker's result.
+pub fn parse<T: DeserializeOwned>(what: &str, value: &Value) -> Result<T, String> {
+    serde_path_to_error::deserialize(value.clone()).map_err(|e| {
+        let path = e.path().to_string();
+        let at = if path == "." {
+            String::new()
+        } else {
+            format!(" at {path}")
+        };
+        format!("{what}{at}: {}", without_value(e.inner()))
+    })
+}
+
+fn without_value(e: &serde_json::Error) -> String {
+    let text = e.to_string();
+    let names_a_key = [
+        "unknown field",
+        "missing field",
+        "duplicate field",
+        "invalid length",
+    ]
+    .iter()
+    .any(|kept| text.starts_with(kept));
+    match text.rfind(", expected ") {
+        Some(at) if !names_a_key => text[at + 2..].to_string(),
+        _ => text,
+    }
 }
 
 /// Status must parse as the kind's typed status: a writer cannot store a
@@ -310,30 +340,29 @@ pub fn validate_status(kind: &str, status: &Value) -> Result<(), StoreError> {
     validate_kind(kind)?;
     match kind {
         task::KIND => {
-            let st: task::TaskStatus = serde_json::from_value(status.clone())
-                .map_err(|e| StoreError::Invalid(format!("Task status: {e}")))?;
+            let st: task::TaskStatus = parse("Task status", status).map_err(StoreError::Invalid)?;
             crate::follow::validate_declared(&st.declared)
                 .map_err(|why| StoreError::Invalid(format!("Task status: {why}")))
         }
         change_request::KIND => {
-            serde_json::from_value::<change_request::ChangeRequestStatus>(status.clone())
+            parse::<change_request::ChangeRequestStatus>("ChangeRequest status", status)
                 .map(|_| ())
-                .map_err(|e| StoreError::Invalid(format!("ChangeRequest status: {e}")))
+                .map_err(StoreError::Invalid)
         }
         conversation::KIND => {
-            serde_json::from_value::<conversation::ConversationStatus>(status.clone())
+            parse::<conversation::ConversationStatus>("Conversation status", status)
                 .map(|_| ())
-                .map_err(|e| StoreError::Invalid(format!("Conversation status: {e}")))
+                .map_err(StoreError::Invalid)
         }
-        listener::KIND => serde_json::from_value::<listener::ListenerStatus>(status.clone())
+        listener::KIND => parse::<listener::ListenerStatus>("Listener status", status)
             .map(|_| ())
-            .map_err(|e| StoreError::Invalid(format!("Listener status: {e}"))),
-        cron_task::KIND => serde_json::from_value::<cron_task::CronTaskStatus>(status.clone())
+            .map_err(StoreError::Invalid),
+        cron_task::KIND => parse::<cron_task::CronTaskStatus>("CronTask status", status)
             .map(|_| ())
-            .map_err(|e| StoreError::Invalid(format!("CronTask status: {e}"))),
-        board::KIND => serde_json::from_value::<board::BoardStatus>(status.clone())
+            .map_err(StoreError::Invalid),
+        board::KIND => parse::<board::BoardStatus>("Board status", status)
             .map(|_| ())
-            .map_err(|e| StoreError::Invalid(format!("Board status: {e}"))),
+            .map_err(StoreError::Invalid),
         _ => Err(StoreError::Invalid(
             "passive configuration has no status".into(),
         )),
@@ -473,6 +502,26 @@ pub fn is_absolute_path(path: &str) -> bool {
 mod tests {
     use super::*;
     use crate::task::Workspace;
+
+    #[test]
+    fn a_spec_that_does_not_parse_names_the_path_and_never_the_value() {
+        let spec = serde_json::json!({
+            "brief": "b",
+            "harness": "claude",
+            "workspace": [],
+            "env": "TOKEN=env-secret-1",
+        });
+        let why = typed::<crate::task::TaskSpec>("Task", &spec)
+            .unwrap_err()
+            .to_string();
+        assert!(why.contains("Task spec at env: expected a map"), "{why}");
+        assert!(!why.contains("env-secret-1"), "{why}");
+        let spec = serde_json::json!({"brief": "b", "colour": "red"});
+        let why = typed::<crate::task::TaskSpec>("Task", &spec)
+            .unwrap_err()
+            .to_string();
+        assert!(why.contains("unknown field `colour`"), "{why}");
+    }
 
     #[test]
     fn a_workspace_names_something_usable() {

@@ -7,7 +7,9 @@
 //!
 //! A program with a config file gives its `[telemetry]` table to [`adopt`]
 //! first: the table stands for the variables it names, and a variable set in
-//! the environment wins over it ([`TelemetryConfig`]). The process
+//! the environment wins over it ([`TelemetryConfig`]), except
+//! `OTEL_LOGS_EXPORTER` for a program whose logs follow the table alone
+//! ([`Logs::Config`]). The process
 //! environment itself is never changed; [`child_env`] is what a child
 //! process must be given on top of the environment it inherits.
 //!
@@ -16,7 +18,8 @@
 //! when its endpoint (`OTEL_EXPORTER_OTLP_ENDPOINT`, or the signal's own
 //! `OTEL_EXPORTER_OTLP_{TRACES,METRICS,LOGS}_ENDPOINT`) is set, its
 //! `OTEL_{TRACES,METRICS}_EXPORTER` is unset or `otlp` (logs need
-//! `OTEL_LOGS_EXPORTER=otlp` set explicitly), and `OTEL_SDK_DISABLED` is not
+//! `OTEL_LOGS_EXPORTER=otlp` set explicitly, or the table's `logs = true`
+//! alone under [`Logs::Config`]), and `OTEL_SDK_DISABLED` is not
 //! `true`. The transport is OTLP over HTTP with
 //! protobuf; the exporter itself reads the headers, timeout and compression
 //! variables, and the resource reads `OTEL_SERVICE_NAME` and
@@ -36,6 +39,7 @@ use std::sync::{mpsc, OnceLock};
 use std::thread;
 use std::time::{Duration, Instant};
 
+use opentelemetry::logs::LoggerProvider as _;
 use opentelemetry::trace::{
     SpanContext, SpanId, Status, TraceContextExt, TraceFlags, TraceId, TraceState, Tracer,
 };
@@ -50,11 +54,52 @@ use opentelemetry_sdk::trace::SdkTracerProvider;
 use opentelemetry_sdk::Resource;
 
 pub use file::{HeadersSource, Source, TelemetryConfig};
+/// The severity a caller of [`log`] names.
+pub use opentelemetry::logs::Severity;
 pub use opentelemetry_sdk::logs::SdkLoggerProvider;
 
 use file::{FileVars, Merged};
 
 static FILE: OnceLock<FileVars> = OnceLock::new();
+
+static LOGGER: OnceLock<opentelemetry_sdk::logs::SdkLogger> = OnceLock::new();
+
+static LOGS_FROM_CONFIG: OnceLock<()> = OnceLock::new();
+
+const LOGS_EXPORTER: &str = "OTEL_LOGS_EXPORTER";
+
+/// Whether a program records logs, and what turns their export on.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Logs {
+    /// The program records no logs and reads no logs variable.
+    Off,
+    /// `OTEL_LOGS_EXPORTER=otlp`, or the adopted table's `logs = true` when
+    /// the variable is unset.
+    Environment,
+    /// The adopted table's `logs = true` alone: `OTEL_LOGS_EXPORTER` in the
+    /// environment is ignored, and [`child_env`] gives a child the table's
+    /// choice in its place.
+    Config,
+}
+
+impl Logs {
+    fn recorded(self) -> bool {
+        self != Logs::Off
+    }
+}
+
+fn without_logs_exporter(
+    logs: Logs,
+    env: impl Fn(&str) -> Option<String>,
+) -> impl Fn(&str) -> Option<String> {
+    move |name: &str| {
+        if logs == Logs::Config && name == LOGS_EXPORTER {
+            None
+        } else {
+            env(name)
+        }
+    }
+}
 
 /// Take the program's `[telemetry]` table for the rest of the process,
 /// before [`init`]: read its headers file and stand it for the variables
@@ -83,8 +128,13 @@ pub fn disable() {
 
 fn merged() -> Merged<'static, impl Fn(&str) -> Option<String>> {
     static NONE: OnceLock<FileVars> = OnceLock::new();
+    let logs = if LOGS_FROM_CONFIG.get().is_some() {
+        Logs::Config
+    } else {
+        Logs::Environment
+    };
     Merged {
-        env: |name: &str| std::env::var(name).ok(),
+        env: without_logs_exporter(logs, |name: &str| std::env::var(name).ok()),
         file: FILE
             .get()
             .unwrap_or_else(|| NONE.get_or_init(FileVars::default)),
@@ -93,9 +143,15 @@ fn merged() -> Merged<'static, impl Fn(&str) -> Option<String>> {
 
 /// The adopted table's variables a child process must be given: those in
 /// force that the environment it inherits lacks. A program another one
-/// starts reads no config file of its own.
+/// starts reads no config file of its own. After [`init`] with
+/// [`Logs::Config`], it always names `OTEL_LOGS_EXPORTER`, so a child never
+/// turns logs on from a variable this program ignored.
 pub fn child_env() -> Vec<(String, String)> {
-    merged().child_env()
+    let mut vars = merged().child_env();
+    if LOGS_FROM_CONFIG.get().is_some() && !vars.iter().any(|(name, _)| name == LOGS_EXPORTER) {
+        vars.push((LOGS_EXPORTER.to_string(), "none".to_string()));
+    }
+    vars
 }
 
 /// The longest a program waits at exit for its last batches to leave.
@@ -236,16 +292,19 @@ fn collector_from(var: impl Fn(&str) -> Option<String>) -> Option<Collector> {
 /// Install the providers the environment asks for, under the resource
 /// `service` (unless `OTEL_SERVICE_NAME` names another) at `version`, with
 /// the `attributes` the environment does not set itself; the logs signal
-/// only when `logs` (the program records logs). On an error nothing is
-/// installed, and the caller reports it and runs on without telemetry.
+/// as `logs` says. On an error nothing is installed, and the caller reports
+/// it and runs on without telemetry.
 pub fn init(
     service: &str,
     version: &str,
     attributes: &[KeyValue],
-    logs: bool,
+    logs: Logs,
 ) -> Result<Telemetry, String> {
+    if logs == Logs::Config {
+        let _ = LOGS_FROM_CONFIG.set(());
+    }
     let merged = merged();
-    let wanted = signals(|name| merged.var(name), logs)?;
+    let wanted = signals(|name| merged.var(name), logs.recorded())?;
     if !(wanted.traces || wanted.metrics || wanted.logs) {
         return Ok(Telemetry {
             logs_off: wanted.logs_off,
@@ -310,14 +369,31 @@ pub fn init(
         telemetry.metrics = Some(provider);
     }
     if let Some(exporter) = logs {
-        telemetry.logs = Some(
-            SdkLoggerProvider::builder()
-                .with_batch_exporter(exporter)
-                .with_resource(resource)
-                .build(),
-        );
+        let provider = SdkLoggerProvider::builder()
+            .with_batch_exporter(exporter)
+            .with_resource(resource)
+            .build();
+        let _ = LOGGER.set(provider.logger(service.to_string()));
+        telemetry.logs = Some(provider);
     }
     Ok(telemetry)
+}
+
+/// Record `text` as one log record at `severity` through the logs signal
+/// [`init`] installed; nothing when logs are not exported. For a program
+/// that records its own lines rather than `tracing` events (`fleet`): the
+/// caller passes only text it also prints, never a value it was given.
+pub fn log(severity: Severity, text: &str) {
+    use opentelemetry::logs::{LogRecord, Logger};
+    let Some(logger) = LOGGER.get() else {
+        return;
+    };
+    let mut record = logger.create_log_record();
+    record.set_timestamp(std::time::SystemTime::now());
+    record.set_severity_number(severity);
+    record.set_severity_text(severity.name());
+    record.set_body(text.to_string().into());
+    logger.emit(record);
 }
 
 fn configured<B: WithExportConfig + WithHttpConfig>(
@@ -347,17 +423,21 @@ fn configured<B: WithExportConfig + WithHttpConfig>(
 /// process's environment, and where each value in force comes from, for a
 /// doctor: never a header's value. An error is why nothing is exported.
 /// `logs` as for [`init`].
-pub fn describe(config: &TelemetryConfig, logs: bool) -> Result<String, String> {
+pub fn describe(config: &TelemetryConfig, logs: Logs) -> Result<String, String> {
     describe_in(config, logs, |name| std::env::var(name).ok())
 }
 
 fn describe_in(
     config: &TelemetryConfig,
-    logs: bool,
+    logs: Logs,
     env: impl Fn(&str) -> Option<String>,
 ) -> Result<String, String> {
     let file = config.vars()?;
-    let merged = Merged { env, file: &file };
+    let merged = Merged {
+        env: without_logs_exporter(logs, env),
+        file: &file,
+    };
+    let logs = logs.recorded();
     let wanted = signals(|name| merged.var(name), logs)?;
     let from = |name: &str| {
         merged
@@ -808,7 +888,7 @@ mod tests {
             ("OTEL_EXPORTER_OTLP_LOGS_ENDPOINT", "http://l:4318/v1/logs"),
             ("OTEL_EXPORTER_OTLP_LOGS_PROTOCOL", "grpc"),
         ];
-        let described = describe_in(&config, true, |name| {
+        let described = describe_in(&config, Logs::Environment, |name| {
             env.iter()
                 .find(|(k, _)| *k == name)
                 .map(|(_, v)| v.to_string())
@@ -825,6 +905,26 @@ mod tests {
             described.contains("logs off: OTEL_EXPORTER_OTLP_LOGS_PROTOCOL=grpc"),
             "{described}"
         );
+    }
+
+    #[test]
+    fn a_program_whose_logs_follow_its_config_ignores_otel_logs_exporter() {
+        let env = |name: &str| match name {
+            "OTEL_EXPORTER_OTLP_ENDPOINT" => Some("http://c:4318".to_string()),
+            "OTEL_LOGS_EXPORTER" => Some("otlp".to_string()),
+            _ => None,
+        };
+        let unset = TelemetryConfig::default();
+        let described = describe_in(&unset, Logs::Config, env).unwrap();
+        assert!(described.contains("logs off (default)"), "{described}");
+        let described = describe_in(&unset, Logs::Environment, env).unwrap();
+        assert!(
+            described.contains("logs on (OTEL_LOGS_EXPORTER)"),
+            "{described}"
+        );
+        let on: TelemetryConfig = toml::from_str("logs = true").unwrap();
+        let described = describe_in(&on, Logs::Config, env).unwrap();
+        assert!(described.contains("logs on (config file)"), "{described}");
     }
 
     #[test]
