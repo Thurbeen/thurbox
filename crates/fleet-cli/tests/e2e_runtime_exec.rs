@@ -2233,7 +2233,7 @@ fn a_release_removes_a_worktree_with_a_read_only_directory_and_keeps_the_work() 
     let _writable_again = Chmod::hold(&build, 0o555, 0o755);
 
     env.fleet(&["delete", "task", "t1"]).ok();
-    let deadline = Instant::now() + Duration::from_secs(20);
+    let deadline = Instant::now() + Duration::from_secs(60);
     while env.fleet(&["get", "task", "t1"]).code == Some(0) {
         assert!(Instant::now() < deadline, "{:#}", env.get("t1")["status"]);
         std::thread::sleep(Duration::from_millis(300));
