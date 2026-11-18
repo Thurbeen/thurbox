@@ -30,6 +30,7 @@ use schtasks as host;
 use systemd as host;
 
 pub const DEFAULT_NAME: &str = "fleet";
+#[cfg(any(target_os = "linux", windows))]
 const STORE_KEY: &str = "X-Fleet-Store=";
 const QUICK_BOUND: Duration = Duration::from_secs(30);
 
