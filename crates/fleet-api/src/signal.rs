@@ -282,12 +282,10 @@ fn fnv(basis: u64, bytes: impl Iterator<Item = u8>) -> String {
     format!("{hash:016x}")
 }
 
-/// Whether `text` holds a `<tag …>` or `</tag …>` wrapper.
 fn has_tag(text: &str, tag: &str) -> bool {
     next_tag(text, tag).is_some()
 }
 
-/// Where the first `<tag …>` or `</tag …>` in `text` starts, and its length.
 fn next_tag(text: &str, tag: &str) -> Option<(usize, usize)> {
     let mut from = 0;
     while let Some(lt) = text[from..].find('<').map(|i| from + i) {
@@ -461,10 +459,6 @@ mod tests {
         assert!(s.prompts.contains(&prompt_digest(brief)), "{:?}", s.prompts);
     }
 
-    /// Claude Code 2.1.327 typed the start of a long brief and wrapped only
-    /// the rest, and the line it split gained a blank line (#1901). The
-    /// prompt is also reported loosely, which the brief's own loose digest
-    /// matches.
     #[test]
     fn a_brief_split_around_a_paste_is_reported_loosely() {
         let fields = Payload {

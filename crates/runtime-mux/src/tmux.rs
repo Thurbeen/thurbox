@@ -406,6 +406,7 @@ mod tests {
                 "paste-buffer",
                 "-d",
                 "-r",
+                "-S",
                 "-b",
                 &buffer,
                 "-t",
@@ -419,9 +420,6 @@ mod tests {
         );
     }
 
-    /// The text of a long paste is set in pieces, and only the last command
-    /// names the pane: an app that times its input sees one paste, not one
-    /// per piece with a tmux launch between them (#1901).
     #[test]
     fn a_long_paste_is_set_in_pieces_and_pasted_once() {
         let text = "x".repeat(2000);
@@ -441,8 +439,6 @@ mod tests {
         assert_eq!(set, format!("\x1b[200~{text}\x1b[201~"));
     }
 
-    /// tmux ends a command at an argument's trailing `;` and drops it, so no
-    /// piece but the last ends in one.
     #[test]
     fn no_piece_of_a_paste_ends_in_a_semicolon() {
         for text in [

@@ -259,7 +259,8 @@ pub trait TmuxCompatible: Send + Sync + 'static {
     /// a paste sees it whole: one `send-keys` per piece reached it with a
     /// launch between each two, and Claude Code took the pieces before such a
     /// gap as typed text (#1901). The bytes go to the pane as they are, so
-    /// `extended-keys` never turns a line break into a key.
+    /// `extended-keys` never turns a line break into a key, and `-S` keeps
+    /// tmux 3.8 from passing the paste markers through vis(3).
     fn paste_args(target: &str, text: &str) -> Vec<Vec<String>> {
         let buffer = paste_buffer_name();
         let paste = bracketed_paste(text);
@@ -280,6 +281,7 @@ pub trait TmuxCompatible: Send + Sync + 'static {
             "paste-buffer".into(),
             "-d".into(),
             "-r".into(),
+            UNSANITISED_PASTE.into(),
             "-b".into(),
             buffer,
             "-t".into(),
@@ -418,8 +420,11 @@ fn bracketed_paste(text: &str) -> String {
     format!("\x1b[200~{text}\x1b[201~")
 }
 
-/// A tmux buffer name no other paste uses: two pastes into one server, from
-/// two processes or two hosts' runtimes, never share a buffer.
+/// tmux 3.8's `paste-buffer` flag that writes the buffer as it is, where it
+/// otherwise passes it through vis(3). A tmux before 3.8 refuses it as an
+/// unknown flag, and writes the buffer as it is anyway.
+const UNSANITISED_PASTE: &str = "-S";
+
 fn paste_buffer_name() -> String {
     static PASTES: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
     let nanos = std::time::SystemTime::now()
@@ -3921,6 +3926,26 @@ impl<M: TmuxCompatible> WindowLifecycle for Server<M> {
     }
 }
 
+impl<M: TmuxCompatible> Server<M> {
+    fn paste_step(&self, argv: &[String]) -> Result<()> {
+        let args: Vec<&str> = argv.iter().map(String::as_str).collect();
+        match self.one_shot(&argv[0], &args) {
+            Err(e) if argv[0] == "paste-buffer" && refused_unsanitised_paste(&e) => {
+                let older: Vec<&str> = args
+                    .into_iter()
+                    .filter(|a| *a != UNSANITISED_PASTE)
+                    .collect();
+                self.one_shot(&argv[0], &older).map(drop)
+            }
+            done => done.map(drop),
+        }
+    }
+}
+
+fn refused_unsanitised_paste(e: &anyhow::Error) -> bool {
+    format!("{e:#}").contains(&format!("unknown flag {UNSANITISED_PASTE}"))
+}
+
 impl<M: TmuxCompatible> PaneIo for Server<M> {
     fn send_text(
         &self,
@@ -3932,8 +3957,7 @@ impl<M: TmuxCompatible> PaneIo for Server<M> {
         let target = self.target(pane)?;
         self.refuse_exited(pane, &target)?;
         for paste in M::paste_args(&target, text) {
-            let argv: Vec<&str> = paste.iter().map(String::as_str).collect();
-            self.one_shot(&paste[0], &argv)?;
+            self.paste_step(&paste)?;
         }
         if !submit {
             return Ok(());
@@ -5657,6 +5681,14 @@ pub(crate) fn assert_absence_replies<M: TmuxCompatible>(replies: &[(&str, bool)]
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_tmux_before_3_8_refusing_the_unsanitised_paste_is_told_apart() {
+        let refused = anyhow::anyhow!("tmux paste-buffer command paste-buffer: unknown flag -S");
+        assert!(refused_unsanitised_paste(&refused));
+        let gone = anyhow::anyhow!("tmux paste-buffer can't find pane: %9");
+        assert!(!refused_unsanitised_paste(&gone));
+    }
 
     /// A one-shot `new-window`'s words as `source-file` reads them: each
     /// single-quoted, a `;` left bare, nothing a shell or tmux would expand.

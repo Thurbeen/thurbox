@@ -1120,7 +1120,6 @@ while (1) {
 }'
 "#;
 
-/// A brief of 75 lines, as a factory or a gateway writes one.
 fn long_brief() -> String {
     (1..=75)
         .map(|n| format!("- **Step {n}**: check `#{{pane}}` and $HOME; then write it down."))

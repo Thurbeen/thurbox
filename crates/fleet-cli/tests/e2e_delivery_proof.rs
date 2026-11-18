@@ -66,9 +66,6 @@ fn a_brief_is_delivered_only_once_the_agents_prompt_hook_reports_it() {
     assert_eq!(env.calls("brief"), 1);
 }
 
-/// An entry typed while the agent has not taken the brief joins the brief's
-/// prompt, and the hook then proves neither (#1901): the inbox waits for the
-/// brief's proof, not only for the runtime's receipt.
 #[test]
 fn an_inbox_entry_waits_until_the_agent_reports_the_brief() {
     let env = setup("proof-brief-first");
@@ -89,9 +86,6 @@ fn an_inbox_entry_waits_until_the_agent_reports_the_brief() {
     assert_eq!(delivered_keys(&env).len(), 1, "{:#}", full_status(&env));
 }
 
-/// Claude Code 2.1.327 took the start of a long brief as typed text and
-/// wrapped only the rest, and the line it split gained a blank line (#1901).
-/// The prompt's loose digest proves the brief.
 #[test]
 fn a_brief_the_agent_split_around_a_paste_is_proven() {
     let env = setup("proof-brief-split");
@@ -349,9 +343,6 @@ fn a_report_after_the_hosts_clock_stepped_back_still_releases_a_mangled_entry() 
     assert_eq!(delivered_keys(&env).len(), 1, "{full:#}");
 }
 
-/// A session that has reported nothing has not proven its brief, so no entry
-/// is typed into it: the first report, when it is not the brief's, releases
-/// nothing and gives nothing up.
 #[test]
 fn no_entry_is_typed_before_the_first_report_proves_the_brief() {
     let env = setup("proof-inbox-first-report");
