@@ -1137,8 +1137,9 @@ to its `tracing` subscriber, beside the file appender. The layer has a
 filter of its own: WARN and above, from thurbox's own targets only. The
 file log keeps its `thurbox=debug` level. When the traces signal is on,
 each Fleet command the interface runs is a `fleet VERB` span, and the
-`fleet` it starts receives that span as `TRACEPARENT`. `thurbox-cli` never
-installs telemetry.
+`fleet` it starts receives that span as `TRACEPARENT`. The span of an attach
+or a shell also covers the stream that Fleet names, so a local stream joins
+the same trace. `thurbox-cli` never installs telemetry.
 
 **Why**: one configuration story for the whole system
 ([Observability](../observability.md)). The 2.x `[telemetry]` table

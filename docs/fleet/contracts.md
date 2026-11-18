@@ -1677,7 +1677,9 @@ command; a caller's `TRACEPARENT` parents a command's root span.
 `e2e_runtime_exec` runs a Task through `runtime-mux` and `workspace-git`
 with one `OTEL_EXPORTER_OTLP_ENDPOINT`: the spans of all three programs
 arrive in the Task's one trace, the key metrics arrive, and the agent's
-window inherits no `OTEL_*` variable or `TRACEPARENT`.
+window inherits no `OTEL_*` variable or `TRACEPARENT`. Under `fleet up`,
+and through `fleet attach` and `fleet shell`, every `runtime VERB`,
+`runtime-mux` and `workspace-git` span has its parent in its own trace.
 `e2e_runtime_exec` runs `fleet attach` against the reference script, whose
 `tty` answer comes back bridged, and against `runtime-mux`, whose stream a
 test view drives: snapshot, input, output, and a detach that leaves the

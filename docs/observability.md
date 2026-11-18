@@ -293,7 +293,7 @@ The `fleet.controller` values are `TaskController`, `ForgeController`,
 `CronTaskController` and `GatewayController`.
 
 These spans have the error status: a command with a non-zero exit, a
-reconcile that fails, a runtime call that answers Unknown, and a
+`fleet up` startup check that finds no host, a reconcile that fails, a runtime call that answers Unknown, and a
 `runtime-mux` or `workspace-git` call that answers Unknown.
 
 The Conversation and Gateway controllers' effects, gateway calls and Task
