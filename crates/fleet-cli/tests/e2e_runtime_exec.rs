@@ -5482,6 +5482,7 @@ fn runtime_mux_exports_to_the_collector_fleets_config_file_names() {
 struct PrivateUserManager {
     child: std::process::Child,
     dir: PathBuf,
+    cgroup: Option<PathBuf>,
 }
 
 #[cfg(target_os = "linux")]
@@ -5547,11 +5548,24 @@ impl PrivateUserManager {
             let _ = fs::remove_dir_all(&dir);
             return None;
         };
-        let manager = PrivateUserManager { child, dir };
+        let mut manager = PrivateUserManager {
+            child,
+            dir,
+            cgroup: None,
+        };
         let deadline = Instant::now() + Duration::from_secs(20);
         while Instant::now() < deadline {
             let state = manager.systemctl(&["is-system-running"]);
             if matches!(state.trim(), "running" | "degraded") {
+                manager.cgroup = fs::read_to_string(format!("/proc/{}/cgroup", manager.child.id()))
+                    .ok()
+                    .and_then(|line| {
+                        line.trim()
+                            .strip_prefix("0::/")
+                            .map(|path| Path::new("/sys/fs/cgroup").join(path))
+                    })
+                    .filter(|init| init.ends_with("init.scope"))
+                    .and_then(|init| init.parent().map(Path::to_path_buf));
                 return Some(manager);
             }
             std::thread::sleep(Duration::from_millis(100));
@@ -5590,6 +5604,9 @@ impl Drop for PrivateUserManager {
         while Instant::now() < deadline && matches!(self.child.try_wait(), Ok(None)) {
             std::thread::sleep(Duration::from_millis(100));
         }
+        if let Some(cgroup) = &self.cgroup {
+            let _ = fs::write(cgroup.join("cgroup.kill"), "1");
+        }
         let _ = self.child.kill();
         let _ = self.child.wait();
         let _ = Command::new("chmod")
@@ -5608,6 +5625,25 @@ fn a_stopped_service_leaves_no_manager_process_but_keeps_the_tmux_server_and_ses
     };
     let sockets = Sockets::new("svc-scope");
     let mut env = mux_env("runtime-service-scope", &program, &sockets);
+    let lingering = env.root.join("lingering-runtime.sh");
+    fs::write(
+        &lingering,
+        format!(
+            "#!/bin/sh\n(sleep 600 </dev/null >/dev/null 2>&1 &)\nexec '{}' \"$@\"\n",
+            program.display()
+        ),
+    )
+    .expect("runtime wrapper");
+    {
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(&lingering, fs::Permissions::from_mode(0o755)).expect("chmod");
+    }
+    let config = fs::read_to_string(&env.config).expect("config");
+    fs::write(
+        &env.config,
+        config.replace(&*program.to_string_lossy(), &lingering.to_string_lossy()),
+    )
+    .expect("config");
     let Some(manager) = PrivateUserManager::start(&env.root, &[("TMUX_TMPDIR", &sockets.0)]) else {
         return;
     };

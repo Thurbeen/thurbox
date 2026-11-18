@@ -109,8 +109,9 @@ another), never on thurbox's interface socket: an inherited
 at `$XDG_RUNTIME_DIR/systemd/private`, `runtime-mux` starts that server in
 a scope of its own (`systemd-run --user --scope --collect`). The server is
 then outside the cgroup of the process that called `runtime-mux`, so a
-stop of the Fleet unit does not stop it. When the scope fails,
-`runtime-mux` starts the server without one. A process is a window named after its key, and
+stop of the Fleet unit does not stop it. `runtime-mux` asks once per
+process whether it can have a scope (`systemd-run --user --scope -- true`).
+When that probe fails, it starts the server without one. A process is a window named after its key, and
 a pane kept after its program exits is how `inspect` reports the code; a
 `start` replaces it. A host reboot takes the server and its windows, so
 `runtime-mux` also keeps a start record for each key it starts:
