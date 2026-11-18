@@ -500,7 +500,8 @@ fn write_new(path: &Path, bytes: &[u8]) -> Result<(), String> {
 }
 
 fn copy(from: &Path, to: &Path) -> Result<(), String> {
-    let copied = fs::copy(from, to).and_then(|_| fs::File::open(to)?.sync_all());
+    let copied =
+        fs::copy(from, to).and_then(|_| fs::OpenOptions::new().write(true).open(to)?.sync_all());
     synced(to, copied)
 }
 

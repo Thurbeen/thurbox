@@ -376,14 +376,17 @@ fn a_staged_store_left_without_a_journal_is_never_installed() {
 
 #[test]
 fn a_config_without_a_data_dir_migrates_the_default_store() {
-    let env = Env::without_tools("migrate-default-store");
+    let mut env = Env::without_tools("migrate-default-store");
+    let data_home = env.root.join("data-home");
+    env.set_var("XDG_DATA_HOME", data_home.to_str().unwrap());
+    env.set_var("LOCALAPPDATA", data_home.to_str().unwrap());
     let config = FLEET_2_CONFIG.replace("[data]\ndir = \"store-v1\"\n", "");
     fs::write(&env.config, &config).unwrap();
-    let store = env.root.join(".local/share/fleet");
+    let store = data_home.join("fleet");
     fleet_2_store(&store);
     let store_2x = tree(&store);
     env.fleet(&["migrate"]).ok().stdout_has("Task/notes");
-    assert_eq!(tree(&env.root.join(".local/share/fleet.v2")), store_2x);
+    assert_eq!(tree(&data_home.join("fleet.v2")), store_2x);
     assert_eq!(task(&env, "notes")["spec"]["dispatch"], false);
 }
 
