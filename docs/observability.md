@@ -293,8 +293,9 @@ The `fleet.controller` values are `TaskController`, `ForgeController`,
 `CronTaskController` and `GatewayController`.
 
 These spans have the error status: a command with a non-zero exit, a
-`fleet up` startup check that finds no host, a reconcile that fails, a runtime call that answers Unknown, and a
-`runtime-mux` or `workspace-git` call that answers Unknown.
+`fleet up` startup check that finds no host, a reconcile that fails, a
+runtime call that answers Unknown, and a `runtime-mux` or `workspace-git`
+call that answers Unknown.
 
 The Conversation and Gateway controllers' effects, gateway calls and Task
 creation by `fleet apply` have no span. A CronTask's Task creation is the
