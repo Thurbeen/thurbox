@@ -801,9 +801,6 @@ fn main() -> ExitCode {
     ExitCode::from(code)
 }
 
-/// The kind and the object a command names, as its root span's `fleet.kind`
-/// and `fleet.name` (docs/observability.md, *Spans*): what a trace view
-/// searches to find one Task's commands.
 fn subject(command: &Command) -> Vec<KeyValue> {
     let task = |name: &String| (Some(fleet_api::task::KIND.to_string()), Some(name.clone()));
     let board = |name: &String| (Some(fleet_api::board::KIND.to_string()), Some(name.clone()));
@@ -3283,8 +3280,6 @@ const DEFAULT_LEASE_MS: u64 = 30_000;
 /// Runtime program and forge CLI calls are bounded at half the default lease.
 const DEFAULT_CALL_TIMEOUT_MS: u64 = 15_000;
 
-/// The kind a command's `kind` argument spells: `task`, `tasks` and `Task`
-/// all name Task. A kind Fleet does not know is answered as given.
 fn canonical_kind(kind: &str) -> String {
     let lower = kind.to_ascii_lowercase();
     let singular = lower.strip_suffix('s').unwrap_or(&lower);
@@ -3301,8 +3296,8 @@ fn canonical_kind(kind: &str) -> String {
     }
 }
 
-/// The served kind a command's `kind` argument names. Unsupported kinds are
-/// refused here, as on write, never reported as unreadable.
+/// `task`, `tasks` and `Task` all name Task. Unsupported kinds are refused
+/// here, as on write, never reported as unreadable.
 fn served_kind(store: &dyn Store, kind: &str) -> Result<String, Failure> {
     let lower = kind.to_ascii_lowercase();
     let singular = lower.strip_suffix('s').unwrap_or(&lower);

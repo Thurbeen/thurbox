@@ -490,7 +490,7 @@ fn a_command_span_names_the_kind_and_object_it_acts_on() {
     let mut env = Env::new("otel-command-names");
     exporting(&mut env, &collector.endpoint);
     env.apply(task("t1", true)).ok();
-    let runs: [(&[&str], &str, Option<&str>); 13] = [
+    let runs: [(&[&str], &str, Option<&str>); 17] = [
         (&["get", "task", "t1"], "Task", Some("t1")),
         (&["status", "tasks", "t1"], "Task", Some("t1")),
         (&["list", "task"], "Task", None),
@@ -520,23 +520,53 @@ fn a_command_span_names_the_kind_and_object_it_acts_on() {
             Some("shared"),
         ),
         (
+            &["event", "unsubscribe", "t1", "--board", "shared"],
+            "Task",
+            Some("t1"),
+        ),
+        (
+            &[
+                "event", "publish", "--board", "shared", "--type", "e2e.note", "--data", "{}",
+            ],
+            "Board",
+            Some("shared"),
+        ),
+        (
+            &[
+                "event",
+                "wait",
+                "--board",
+                "shared",
+                "--after",
+                "0",
+                "--timeout-ms",
+                "1",
+            ],
+            "Board",
+            Some("shared"),
+        ),
+        (&["get", "widgets", "w1"], "widgets", Some("w1")),
+        (
             &["delete", "taskconfig", "default"],
             "TaskConfig",
             Some("default"),
         ),
     ];
-    let span_of = |command: &str, kind: &str| {
+    let span_of = |command: &str, kind: &str, seen: &BTreeSet<Vec<u8>>| {
         named(&collector.spans(), command)
             .into_iter()
-            .find(|s| s.attrs.get("fleet.kind").is_some_and(|k| k == kind))
+            .find(|s| {
+                !seen.contains(&s.span_id) && s.attrs.get("fleet.kind").is_some_and(|k| k == kind)
+            })
             .cloned()
     };
     for (args, kind, name) in runs {
         let command = format!("fleet {}", args[0]);
+        let seen: BTreeSet<Vec<u8>> = collector.spans().into_iter().map(|s| s.span_id).collect();
         let mut root = None;
         for _ in 0..3 {
             env.fleet(args);
-            root = span_of(&command, kind);
+            root = span_of(&command, kind, &seen);
             if root.is_some() {
                 break;
             }
