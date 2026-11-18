@@ -576,7 +576,8 @@ fn a_pause_mark_an_earlier_version_left_by_the_sockets_survives_a_reboot_until_a
     let older = older_pause_mark(&rt, "upgraded");
     std::fs::write(&older, "").expect("the older mark");
 
-    assert_eq!(rt.inspect("upgraded")["known"], "paused");
+    let list = rt.call("list", json!({"protocol": 1}));
+    assert_eq!(list["known"]["keys"], json!(["upgraded"]), "{list}");
     assert!(
         older.exists(),
         "an earlier version rolled back to still reads it"
