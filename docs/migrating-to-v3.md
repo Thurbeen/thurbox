@@ -13,8 +13,9 @@ setups that 3.x allows.
 - You run thurbox 2.x or Fleet 2, and you want 3.x.
 - You want to stay on 2.x. A 2.x install never updates itself to 3.x.
   Install with `VERSION=v2.x.y` (`THURBOX_VERSION` on Windows) to keep 2.x.
-- A new user has nothing to migrate. For now, we recommend v2: v3 is not yet
-  fully stable. Start at [Use v2 for now](../README.md#use-v2-for-now).
+  See [Staying on v2](../README.md#staying-on-v2).
+- A new user has nothing to migrate. Start at
+  [Install](../README.md#install).
 
 ## What changed
 
