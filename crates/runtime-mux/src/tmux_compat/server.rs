@@ -2298,11 +2298,11 @@ impl<M: TmuxCompatible> Server<M> {
     /// A remote/WSL backend passes through: its `PATH` is the *host's*, and its
     /// window command is login-wrapped instead
     /// ([`login_wrap_for_remote`](Self::login_wrap_for_remote)).
-    pub(crate) fn program_for_window(&self, command: &str) -> String {
+    pub(crate) fn program_for_window(&self, command: &str, task_path: Option<&str>) -> String {
         if self.transport.is_remote() {
             return command.to_string();
         }
-        resolve_local_program(command)
+        resolve_local_program_on(command, task_path)
     }
 
     /// Build the shell command string to pass to tmux new-window.
@@ -2425,7 +2425,7 @@ impl<M: TmuxCompatible> Server<M> {
         if is_remote_shell_pane {
             return self.remote_shell_pane_command();
         }
-        let program = self.program_for_window(command);
+        let program = self.program_for_window(command, task_path);
         let shell_cmd = Self::build_shell_command(&program, args);
         // A remote pane's `PATH` is the host's, restored by the login
         // wrap; a local one is inherited from this process, which need not
@@ -4757,6 +4757,18 @@ const WINDOW_OPTS: &[(&str, &str)] = &[
 /// or a binary installed *after* this resolves therefore behaves exactly as it
 /// did before: resolution is an improvement where it succeeds, never a new way
 /// to fail.
+/// [`resolve_local_program`], looked up on the Task's `task_path` first when
+/// it names one, so the program a Task's `PATH` puts first is the one it runs.
+pub(crate) fn resolve_local_program_on(command: &str, task_path: Option<&str>) -> String {
+    if crate::shell::local_platform() == Platform::Windows {
+        return command.to_string();
+    }
+    task_path
+        .and_then(|path| crate::path_lookup::resolve_on(command, std::ffi::OsStr::new(path)))
+        .map(|path| path.to_string_lossy().into_owned())
+        .unwrap_or_else(|| resolve_local_program(command))
+}
+
 pub(crate) fn resolve_local_program(command: &str) -> String {
     if crate::shell::local_platform() == Platform::Windows {
         return command.to_string();
@@ -5306,7 +5318,7 @@ pub(crate) fn push_posix_window_program(
     // of the two created it — a session created here and later restarted
     // through control mode would otherwise resolve against two different
     // environments.
-    let program = resolve_local_program(command);
+    let program = resolve_local_program_on(command, task_path(env));
     // `PATH` is the one variable `-e` cannot carry, so the CLI's directory
     // rides in the command instead (see `path_prefix_args`) — but **how many
     // arguments** that leaves is itself load-bearing, so the prefix is spelled
@@ -5401,7 +5413,29 @@ fn path_prefix_args(task_path: Option<&std::ffi::OsStr>) -> Vec<std::ffi::OsStri
 /// `None` when there was no prefix to begin with, since an empty one and an
 /// unspellable one lead to the same command.
 fn shell_prefix_tokens(task_path: Option<&std::ffi::OsStr>) -> Option<Vec<String>> {
-    let args = path_prefix_args(task_path);
+    spelled(&path_prefix_args(task_path))
+        .or_else(|| task_path.and_then(|path| spelled(&task_prefix_args(path))))
+}
+
+/// `env PATH=<task_path>` alone, for a prefix the CLI's directory made
+/// unspellable: the Task's `PATH` still reaches the pane.
+#[cfg(not(windows))]
+fn task_prefix_args(task_path: &std::ffi::OsStr) -> Vec<std::ffi::OsString> {
+    let (Some(path), Some(env_bin)) = (path_reaching(None, task_path), posix_env_binary()) else {
+        return Vec::new();
+    };
+    let mut assignment = std::ffi::OsString::from("PATH=");
+    assignment.push(&path);
+    vec![env_bin.into_os_string(), assignment]
+}
+
+#[cfg(windows)]
+fn task_prefix_args(_task_path: &std::ffi::OsStr) -> Vec<std::ffi::OsString> {
+    Vec::new()
+}
+
+/// `args` shell-escaped, or `None` when they are empty or not UTF-8.
+fn spelled(args: &[std::ffi::OsString]) -> Option<Vec<String>> {
     if args.is_empty() {
         return None;
     }
@@ -6558,7 +6592,7 @@ done
         let (local, free, remote) = crate::path_lookup::with_path(dir.path(), || {
             (
                 TestBackend::local(&crate::settings::for_tests())
-                    .program_for_window("tbx-spawn-probe"),
+                    .program_for_window("tbx-spawn-probe", None),
                 resolve_local_program("tbx-spawn-probe"),
                 // A remote host's PATH is the host's, so its command is the
                 // host's to resolve — and it is login-wrapped instead.
@@ -6570,7 +6604,7 @@ done
                     },
                     &crate::settings::for_tests(),
                 )
-                .program_for_window("tbx-spawn-probe"),
+                .program_for_window("tbx-spawn-probe", None),
             )
         });
 
@@ -7453,6 +7487,31 @@ done
         std::fs::write(&p, b"#!/bin/sh\n").unwrap();
         std::fs::set_permissions(&p, std::fs::Permissions::from_mode(0o700)).unwrap();
         p
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_task_path_resolves_the_program_before_this_process_path() {
+        let own = tempfile::tempdir().expect("tempdir");
+        let task = tempfile::tempdir().expect("tempdir");
+        agent_only_thurbox_can_see(own.path(), "tbx-task-path-probe");
+        let wanted = agent_only_thurbox_can_see(task.path(), "tbx-task-path-probe");
+        let task_path = format!("{}:/usr/bin", task.path().display());
+        let resolved = crate::path_lookup::with_path(own.path(), || {
+            resolve_local_program_on("tbx-task-path-probe", Some(&task_path))
+        });
+        assert_eq!(resolved, wanted.to_string_lossy());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_program_missing_from_the_task_path_resolves_on_this_process_path() {
+        let own = tempfile::tempdir().expect("tempdir");
+        let wanted = agent_only_thurbox_can_see(own.path(), "tbx-task-path-probe");
+        let resolved = crate::path_lookup::with_path(own.path(), || {
+            resolve_local_program_on("tbx-task-path-probe", Some("/nonexistent/bin"))
+        });
+        assert_eq!(resolved, wanted.to_string_lossy());
     }
 
     /// Best-effort: a name nothing on `PATH` matches is passed through, so a

@@ -1670,13 +1670,15 @@ fn a_harness_that_is_only_a_user_profile_runs_and_reports_on_runtime_mux() {
 }
 
 const PATH_AGENT: &str = r#"#!/bin/sh
+printf '%s' "$0" > "$PWD/agent"
 printf '%s' "$PATH" > "$PWD/path"
 fake-tool > "$PWD/tool"
 exec sleep 300
 "#;
 
-/// A Task's `PATH` reaches its pane: the tool it puts first on `PATH` is the
-/// one the agent runs, and runtime-mux's own CLI directory stays reachable.
+/// A Task's `PATH` reaches its pane: the agent and the tool it puts first on
+/// `PATH` are the ones that run, and runtime-mux's own CLI directory stays
+/// reachable.
 #[test]
 fn a_task_path_reaches_its_pane_on_runtime_mux() {
     let (Some(built), Some(_)) = (runtime_mux(), tmux()) else {
@@ -1712,6 +1714,7 @@ fn a_task_path_reaches_its_pane_on_runtime_mux() {
     executable(&bin.join("stub-agent"), PATH_AGENT);
     executable(&bin.join("fake-tool"), "#!/bin/sh\necho runtime\n");
     executable(&task_bin.join("fake-tool"), "#!/bin/sh\necho task\n");
+    executable(&task_bin.join("stub-agent"), PATH_AGENT);
     let fleet_dir = Path::new(env!("CARGO_BIN_EXE_fleet")).parent().unwrap();
     let inherited = format!(
         "{}:{}:{}",
@@ -1737,6 +1740,11 @@ fn a_task_path_reaches_its_pane_on_runtime_mux() {
         fs::read_to_string(work.join("tool")).unwrap().trim(),
         "task",
         "the pane ran the Task's tool"
+    );
+    assert_eq!(
+        Path::new(&fs::read_to_string(work.join("agent")).unwrap_or_default()),
+        task_bin.join("stub-agent"),
+        "the pane ran the Task's agent"
     );
     let path = fs::read_to_string(work.join("path")).unwrap_or_default();
     let dirs: Vec<PathBuf> = std::env::split_paths(&path).collect();

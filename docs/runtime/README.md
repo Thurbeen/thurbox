@@ -395,6 +395,9 @@ request.place ──▶ local ─────────▶ this machine's mult
   does not name in front. tmux ignores `-e PATH`, so the `PATH` goes in the
   window command: an `env PATH=…` prefix on `local`, and the login wrap's
   assignment on a remote place.
+- On `local`, `start` looks for the agent on the session's `PATH` first,
+  then on its own. On a remote place, `start` looks for the agent on the
+  `PATH` that the window gets.
 - On the `local` place, tmux and RMUX make the window with a one-shot
   `new-window`, and every user of the machine can read a client's argv.
   So the client's argv holds at most `has-session` and the session's options,

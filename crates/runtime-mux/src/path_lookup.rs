@@ -37,11 +37,16 @@ pub fn which_on_path(exe: &str) -> bool {
 /// with the command it already had, where honouring it would silently launch a
 /// different binary.
 pub fn resolve_on_path(exe: &str) -> Option<PathBuf> {
+    resolve_on(exe, &std::env::var_os("PATH")?)
+}
+
+/// [`resolve_on_path`] against `path` instead of this process's `PATH`.
+pub fn resolve_on(exe: &str, path: &std::ffi::OsStr) -> Option<PathBuf> {
     if exe.is_empty() || exe.contains(std::path::MAIN_SEPARATOR) || exe.contains('/') {
         return None;
     }
-    path_dirs()
-        .into_iter()
+    std::env::split_paths(path)
+        .filter(|dir| dir.is_absolute())
         .map(|dir| dir.join(exe))
         .find(|candidate| is_executable_file(candidate))
 }
