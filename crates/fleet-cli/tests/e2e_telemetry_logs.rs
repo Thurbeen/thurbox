@@ -1,8 +1,10 @@
 //! Acceptance: with logs on, each `warning: …` and `error: …` line `fleet`
 //! prints is also one OTLP log record, with the same text and a WARN or
-//! ERROR severity, under `service.name=fleet`. Logs are opt-in: an endpoint
-//! alone sends none. No record carries a brief, a message or an
-//! environment value.
+//! ERROR severity, under `service.name=fleet`. Logs are opt-in through
+//! Fleet's own `[telemetry] logs = true` alone: an endpoint sends none, and
+//! neither does an `OTEL_LOGS_EXPORTER` in the environment, which an agent's
+//! own telemetry sets in its session. No record, and no line, carries a
+//! brief, a message or an environment value.
 
 mod support;
 
@@ -68,27 +70,7 @@ fn a_failing_command_exports_its_error_line_when_the_config_turns_logs_on() {
     assert_eq!(logs[0].resource["service.name"], "fleet", "{logs:#?}");
 }
 
-#[test]
-fn otel_logs_exporter_turns_logs_on_without_the_config() {
-    let collector = Collector::start();
-    let mut env = Env::new("otel-logs-env");
-    env.set_var("OTEL_EXPORTER_OTLP_ENDPOINT", &collector.endpoint);
-    env.set_var("OTEL_LOGS_EXPORTER", "otlp");
-
-    let run = env.fleet(&["get", "Task", "absent"]);
-    run.code(3);
-    let text = error_line(&run.stderr);
-
-    wait_for("an ERROR log record", || !errors(&collector).is_empty());
-    assert_eq!(errors(&collector)[0].body, text);
-}
-
-#[test]
-fn an_endpoint_alone_exports_no_log_record() {
-    let collector = Collector::start();
-    let mut env = Env::new("otel-logs-off");
-    env.set_var("OTEL_EXPORTER_OTLP_ENDPOINT", &collector.endpoint);
-
+fn exports_no_log_record(env: &Env, collector: &Collector) {
     env.fleet(&["get", "Task", "absent"]).code(3);
 
     wait_for("the command's span", || {
@@ -102,11 +84,30 @@ fn an_endpoint_alone_exports_no_log_record() {
 }
 
 #[test]
-fn no_log_record_carries_a_brief_a_message_or_an_environment_value() {
+fn an_endpoint_alone_exports_no_log_record() {
     let collector = Collector::start();
-    let mut env = Env::new("otel-logs-secrets");
+    let mut env = Env::new("otel-logs-off");
+    env.set_var("OTEL_EXPORTER_OTLP_ENDPOINT", &collector.endpoint);
+    exports_no_log_record(&env, &collector);
+}
+
+#[test]
+fn an_agents_otel_logs_exporter_does_not_turn_fleets_logs_on() {
+    let collector = Collector::start();
+    let mut env = Env::new("otel-logs-agent-env");
     env.set_var("OTEL_EXPORTER_OTLP_ENDPOINT", &collector.endpoint);
     env.set_var("OTEL_LOGS_EXPORTER", "otlp");
+    exports_no_log_record(&env, &collector);
+}
+
+#[test]
+fn no_log_record_carries_a_brief_a_message_or_an_environment_value() {
+    let collector = Collector::start();
+    let env = Env::new("otel-logs-secrets");
+    with_telemetry(
+        &env,
+        &format!("endpoint = \"{}\"\nlogs = true\n", collector.endpoint),
+    );
     env.apply(base_config()).ok();
     let mut t = task("t1", true);
     t["spec"]["brief"] = json!(format!("Do the work. {BRIEF_SECRET}"));
@@ -130,11 +131,24 @@ fn no_log_record_carries_a_brief_a_message_or_an_environment_value() {
     bad["spec"]["unknownField"] = json!(BRIEF_SECRET);
     let refused = env.apply(bad);
     assert_ne!(refused.code, Some(0), "{refused:?}");
+    let mut mistyped = task("t2", true);
+    mistyped["spec"]["env"] = json!(format!("TOKEN={ENV_SECRET}"));
+    let mistyped_env = env.apply(mistyped);
+    assert_ne!(mistyped_env.code, Some(0), "{mistyped_env:?}");
+    let mut mistyped = task("t3", true);
+    mistyped["spec"]["brief"] = json!([BRIEF_SECRET]);
+    let mistyped_brief = env.apply(mistyped);
+    assert_ne!(mistyped_brief.code, Some(0), "{mistyped_brief:?}");
 
-    wait_for("three ERROR log records", || errors(&collector).len() >= 3);
+    wait_for("five ERROR log records", || errors(&collector).len() >= 5);
     for log in collector.logs() {
         for secret in [BRIEF_SECRET, ENV_SECRET, MESSAGE_SECRET] {
             assert!(!log.body.contains(secret), "{secret} in {log:#?}");
+        }
+    }
+    for run in [&mistyped_env, &mistyped_brief] {
+        for secret in [BRIEF_SECRET, ENV_SECRET] {
+            assert!(!run.stderr.contains(secret), "{secret} in {}", run.stderr);
         }
     }
 }

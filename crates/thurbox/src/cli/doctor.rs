@@ -125,7 +125,7 @@ pub fn run(settings: &crate::session::settings::Settings) -> Result<CommandOutpu
     }
     findings.push(telemetry_finding(otel_env::describe(
         &settings.telemetry,
-        true,
+        otel_env::Logs::Environment,
     )));
 
     let verdict = findings.iter().map(|f| f.level).max().unwrap_or(Level::Ok);
@@ -1130,11 +1130,13 @@ mod tests {
     fn doctor_reports_the_interfaces_telemetry_table() {
         let table: otel_env::TelemetryConfig =
             toml::from_str("endpoint = \"http://127.0.0.1:9\"\nlogs = true\n").unwrap();
-        let ok = telemetry_finding(Ok(otel_env::describe(&table, true).unwrap()));
+        let ok = telemetry_finding(Ok(
+            otel_env::describe(&table, otel_env::Logs::Environment).unwrap()
+        ));
         assert_eq!(ok.level, Level::Ok, "{}", ok.detail);
         assert!(ok.detail.contains("(config file)"), "{}", ok.detail);
         let grpc: otel_env::TelemetryConfig = toml::from_str("protocol = \"grpc\"\n").unwrap();
-        let warn = telemetry_finding(otel_env::describe(&grpc, true));
+        let warn = telemetry_finding(otel_env::describe(&grpc, otel_env::Logs::Environment));
         assert_eq!(warn.level, Level::Warn);
         assert!(
             warn.detail.contains("telemetry.protocol"),

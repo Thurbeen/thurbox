@@ -99,18 +99,11 @@ impl Drop for Sockets {
     }
 }
 
-/// `logs = true` in Fleet's `[telemetry]` table reaches the `runtime-mux`
-/// Fleet runs as `OTEL_LOGS_EXPORTER=otlp`, and its WARN events arrive as
-/// log records under its own `service.name`: here, the one it logs when a
-/// place's login `PATH` cannot be read over ssh.
-#[test]
-fn a_runtime_mux_warning_is_exported_when_fleets_config_turns_logs_on() {
-    let (Some(program), Some(_)) = (runtime_mux(), tmux()) else {
-        return;
-    };
-    let collector = support::otlp::Collector::start();
-    let sockets = Sockets::new("otel-logs");
-    let env = mux_env("runtime-mux-otel-logs", &program, &sockets);
+/// [`mux_env`] whose Task t1 is on an ssh place at a closed port, so the
+/// `runtime-mux` Fleet starts for it warns that it cannot read the place's
+/// login `PATH`. `telemetry` is appended to the config as is.
+fn warning_env(name: &str, program: &Path, sockets: &Sockets, telemetry: &str) -> Env {
+    let env = mux_env(name, program, sockets);
     let closed = std::net::TcpListener::bind("127.0.0.1:0")
         .and_then(|l| l.local_addr())
         .expect("a free port")
@@ -120,33 +113,68 @@ fn a_runtime_mux_warning_is_exported_when_fleets_config_turns_logs_on() {
     fs::write(
         &env.config,
         format!(
-            "{cfg}\n[runtimes.mux.places.local]\n\n[runtimes.mux.places.devbox]\nkind = \"ssh\"\ndestination = \"me@127.0.0.1\"\nssh_opts = [\"-F\", \"/dev/null\", \"-p\", \"{closed}\"]\n\n[telemetry]\nendpoint = \"{}\"\nlogs = true\n",
-            collector.endpoint
+            "{cfg}\n[runtimes.mux.places.local]\n\n[runtimes.mux.places.devbox]\nkind = \"ssh\"\ndestination = \"me@127.0.0.1\"\nssh_opts = [\"-F\", \"/dev/null\", \"-p\", \"{closed}\"]\n{telemetry}"
         ),
     )
     .expect("config");
     let mut task = support::task("t1", true);
     task["spec"]["host"] = json!("mux/devbox");
     env.apply(json!([task])).ok();
-    env.reconcile();
+    env
+}
 
-    let warned = || {
+/// `logs = true` in Fleet's `[telemetry]` table reaches the `runtime-mux`
+/// Fleet runs as `OTEL_LOGS_EXPORTER=otlp`, and its WARN events arrive as
+/// log records under its own `service.name`.
+#[test]
+fn a_runtime_mux_warning_is_exported_when_fleets_config_turns_logs_on() {
+    let (Some(program), Some(_)) = (runtime_mux(), tmux()) else {
+        return;
+    };
+    let collector = support::otlp::Collector::start();
+    let sockets = Sockets::new("otel-logs");
+    let env = warning_env(
+        "runtime-mux-otel-logs",
+        &program,
+        &sockets,
+        &format!(
+            "\n[telemetry]\nendpoint = \"{}\"\nlogs = true\n",
+            collector.endpoint
+        ),
+    );
+    reconcile_until(&env, "a WARN record from runtime-mux", |_| {
         collector.logs().into_iter().any(|l| {
             l.resource["service.name"] == "runtime-mux"
                 && l.severity == "WARN"
                 && l.body.contains("devbox")
         })
+    });
+}
+
+/// An `OTEL_LOGS_EXPORTER=otlp` that Fleet inherits, as an agent's own
+/// telemetry sets in its session, turns on the logs of neither `fleet` nor
+/// the `runtime-mux` it starts: only Fleet's `logs = true` does.
+#[test]
+fn an_inherited_otel_logs_exporter_turns_on_no_runtime_mux_logs() {
+    let (Some(program), Some(_)) = (runtime_mux(), tmux()) else {
+        return;
     };
-    let deadline = Instant::now() + Duration::from_secs(30);
-    while !warned() {
-        assert!(
-            Instant::now() < deadline,
-            "no WARN record from runtime-mux in {:#?}",
-            collector.logs()
-        );
-        std::thread::sleep(Duration::from_millis(100));
-        env.reconcile();
-    }
+    let collector = support::otlp::Collector::start();
+    let sockets = Sockets::new("otel-nologs");
+    let mut env = warning_env("runtime-mux-otel-nologs", &program, &sockets, "");
+    env.set_var("OTEL_EXPORTER_OTLP_ENDPOINT", &collector.endpoint);
+    env.set_var("OTEL_LOGS_EXPORTER", "otlp");
+    reconcile_until(&env, "a runtime-mux span", |_| {
+        collector
+            .spans()
+            .iter()
+            .any(|s| s.resource["service.name"] == "runtime-mux")
+    });
+    assert!(
+        !collector.paths().iter().any(|p| p == "/v1/logs"),
+        "{:#?}",
+        collector.logs()
+    );
 }
 
 #[test]

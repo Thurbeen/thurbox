@@ -87,7 +87,7 @@ resource = { "service.namespace" = "fleet", "deployment.environment.name" = "loc
 | `headers` | Absent | `OTEL_EXPORTER_OTLP_HEADERS` | `{ file = "<absolute path>" }`: a file that holds the headers, as `key=value` pairs separated by commas. The program reads the file at each start. |
 | `traces` | `true` | `OTEL_TRACES_EXPORTER` | `false` turns traces off. |
 | `metrics` | `true` | `OTEL_METRICS_EXPORTER` | `false` turns metrics off. |
-| `logs` | `false` | `OTEL_LOGS_EXPORTER` | `true` turns on the log export of thurbox, `fleet` and the `runtime-mux` that Fleet starts ([Logs](#logs)). |
+| `logs` | `false` | `OTEL_LOGS_EXPORTER` (thurbox only) | `true` turns on the log export of thurbox, `fleet` and the `runtime-mux` that Fleet starts ([Logs](#logs)). In Fleet's table it is the only switch: `fleet` and its `runtime-mux` ignore `OTEL_LOGS_EXPORTER`. |
 | `resource` | Absent | `OTEL_RESOURCE_ATTRIBUTES` | More resource attributes, as a table of strings. |
 
 Rules:
@@ -149,7 +149,7 @@ force, as variables. These are `runtime-mux` and the `workspace-git` that
 | `OTEL_EXPORTER_OTLP_HEADERS` | Headers for each export request, such as an authorization header. |
 | `OTEL_EXPORTER_OTLP_TIMEOUT` | The bound of one export request, in milliseconds. The default is 10000. |
 | `OTEL_TRACES_EXPORTER`, `OTEL_METRICS_EXPORTER` | `otlp` (the default) or `none`. `none` turns that signal off. |
-| `OTEL_LOGS_EXPORTER` | `otlp` turns on the log export of thurbox, `fleet` and `runtime-mux`. Unset or `none`, no log is exported. |
+| `OTEL_LOGS_EXPORTER` | `otlp` turns on thurbox's log export. Unset or `none`, thurbox exports no log. `fleet` and the `runtime-mux` it starts ignore it, and read only Fleet's `logs` key. |
 | `OTEL_SDK_DISABLED` | `true` turns all export off. |
 | `OTEL_SERVICE_NAME` | The `service.name` of the program you start. The programs it starts keep their own names. |
 | `OTEL_RESOURCE_ATTRIBUTES` | More resource attributes, as `key=value` pairs separated by commas. Every program in the chain adds them. |
@@ -161,8 +161,12 @@ or `otlp`, and `OTEL_SDK_DISABLED` is not `true`.
 
 Logs are the exception: an endpoint alone never exports them, because a
 log record holds text. Set `OTEL_LOGS_EXPORTER=otlp` to export them.
-thurbox, `fleet` and `runtime-mux` read the logs variables. `workspace-git`
-records no logs and ignores them. An unsupported logs exporter or protocol
+thurbox reads `OTEL_LOGS_EXPORTER`. `fleet` reads only the `logs` key of
+its `[telemetry]` table, and ignores the variable: an agent's own telemetry
+sets it in the agent's session, where hooks and agents run `fleet`. Fleet
+gives each runtime program `OTEL_LOGS_EXPORTER` from its `logs` key, `otlp`
+or `none`, in place of the one it inherited. `workspace-git` records no logs
+and ignores them. An unsupported logs exporter or protocol
 turns off the logs of that program only: it never turns off traces or
 metrics. `fleet` and `runtime-mux` write no line for it; `fleet doctor` reports
 it.
@@ -393,13 +397,15 @@ line for a record: the record and the line have the same text. The
 with logs off, it installs no log handler.
 
 `runtime-mux` reads no config file. The `logs` key in Fleet's `[telemetry]`
-table reaches it as `OTEL_LOGS_EXPORTER=otlp`, with the rest of the table
+table reaches it as `OTEL_LOGS_EXPORTER`, with the rest of the table
 ([Config files](#config-files)).
 
 The log lines can name paths, sessions and machines, so log export is
-opt-in: a program exports them only when `OTEL_LOGS_EXPORTER=otlp` is set,
-or `logs = true` is in its `[telemetry]` table. An endpoint alone, which an
-agent's own telemetry can set, exports traces and metrics only.
+opt-in. `fleet` and its `runtime-mux` export them only when Fleet's
+`[telemetry]` table has `logs = true`. thurbox exports them when
+`OTEL_LOGS_EXPORTER=otlp` is set, or its table has `logs = true`. An
+endpoint alone, which an agent's own telemetry can set, exports traces and
+metrics only.
 
 `thurbox-cli` exports nothing. Each agent hook runs it, and a network
 round trip on each hook costs too much
@@ -527,7 +533,9 @@ never leave a process as telemetry:
 Log records are the exception: they hold the text of thurbox's and
 `runtime-mux`'s log lines, and of `fleet`'s `warning:` and `error:` lines,
 which can include the text of an error ([Logs](#logs)). `fleet` puts no
-brief, inbox message or environment value in a record. An agent's own telemetry is the agent's, not
+brief, inbox message or environment value in a record: an object, status or
+result that does not parse is reported by the path that does not fit and
+the type expected there, never by the value found. An agent's own telemetry is the agent's, not
 Fleet's ([Privacy](#privacy)).
 
 ## Guarantees
@@ -554,9 +562,9 @@ Remove `endpoint` from the `[telemetry]` table. Unset
 `OTEL_EXPORTER_OTLP_ENDPOINT` and the signal endpoints, or set
 `OTEL_SDK_DISABLED=true`. Set `OTEL_TRACES_EXPORTER=none` or
 `OTEL_METRICS_EXPORTER=none` to turn off one signal. Logs are off unless
-`OTEL_LOGS_EXPORTER=otlp` is set or the `[telemetry]` table has
-`logs = true`: remove both to turn the logs of thurbox, `fleet` and
-`runtime-mux` off.
+`logs = true` is in the `[telemetry]` table, or, for thurbox,
+`OTEL_LOGS_EXPORTER=otlp` is set. Remove `logs = true` from Fleet's table to
+turn off the logs of `fleet` and `runtime-mux`.
 
 When export is off, a program reads the variables once at start. It opens
 no connection, starts no telemetry thread, and records into no-op

@@ -759,10 +759,11 @@ fn main() -> ExitCode {
     if let Err(why) = adopted {
         eprintln!("warning: telemetry is off: {why}");
     }
-    let telemetry = otel_env::init("fleet", VERSION, &[], true).unwrap_or_else(|why| {
-        eprintln!("warning: telemetry is off: {why}");
-        otel_env::Telemetry::default()
-    });
+    let telemetry =
+        otel_env::init("fleet", VERSION, &[], otel_env::Logs::Config).unwrap_or_else(|why| {
+            eprintln!("warning: telemetry is off: {why}");
+            otel_env::Telemetry::default()
+        });
     let command = || match run(cli) {
         Ok(()) => 0,
         Err(f) => {
@@ -1218,8 +1219,12 @@ fn run(cli: Cli) -> Result<(), Failure> {
             file,
         } => {
             let result = match file {
-                Some(f) => serde_json::from_slice(&read_input(&f)?)
-                    .map_err(|e| fail(format!("{}: {e}", f.display())))?,
+                Some(f) => {
+                    let what = f.display().to_string();
+                    let value: Value = serde_json::from_slice(&read_input(&f)?)
+                        .map_err(|e| fail(format!("{what}: {e}")))?;
+                    fleet_api::validate::parse(&what, &value).map_err(fail)?
+                }
                 None => result_from_flags(generation, outcome, summary, artifacts, outputs)?,
             };
             let outcome = record_result(store, &task, result)?;
@@ -3107,7 +3112,7 @@ fn cmd_doctor(
     }
     checks.push(doctor::telemetry(otel_env::describe(
         &config.telemetry.clone().unwrap_or_default(),
-        true,
+        otel_env::Logs::Config,
     )));
     let failed = doctor::failed(&checks);
     if json {
@@ -3372,8 +3377,7 @@ fn cmd_apply(
     };
     let mut objs = Vec::new();
     for (i, item) in items.into_iter().enumerate() {
-        let obj: Object =
-            serde_json::from_value(item).map_err(|e| fail(format!("item {i}: {e}")))?;
+        let obj: Object = fleet_api::validate::parse(&format!("item {i}"), &item).map_err(fail)?;
         objs.push(obj);
     }
     // The TaskConfig a Task takes its defaults from, as the manager

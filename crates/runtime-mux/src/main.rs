@@ -27,11 +27,16 @@ fn main() {
         }
         return;
     }
-    let telemetry = otel_env::init("runtime-mux", env!("CARGO_PKG_VERSION"), &[], true)
-        .unwrap_or_else(|why| {
-            eprintln!("warning: telemetry is off: {why}");
-            otel_env::Telemetry::default()
-        });
+    let telemetry = otel_env::init(
+        "runtime-mux",
+        env!("CARGO_PKG_VERSION"),
+        &[],
+        otel_env::Logs::Environment,
+    )
+    .unwrap_or_else(|why| {
+        eprintln!("warning: telemetry is off: {why}");
+        otel_env::Telemetry::default()
+    });
     if let Some(provider) = telemetry.logs() {
         export_warnings(provider);
     }

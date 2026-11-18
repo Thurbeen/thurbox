@@ -93,11 +93,16 @@ fn main() {
     let verb = std::env::args().nth(1).unwrap_or_default();
     // Each call is one span, `workspace-git VERB`, under the caller's
     // TRACEPARENT; off unless the OTEL_* variables ask (docs/observability.md).
-    let telemetry = otel_env::init("workspace-git", env!("CARGO_PKG_VERSION"), &[], false)
-        .unwrap_or_else(|why| {
-            eprintln!("warning: telemetry is off: {why}");
-            otel_env::Telemetry::default()
-        });
+    let telemetry = otel_env::init(
+        "workspace-git",
+        env!("CARGO_PKG_VERSION"),
+        &[],
+        otel_env::Logs::Off,
+    )
+    .unwrap_or_else(|why| {
+        eprintln!("warning: telemetry is off: {why}");
+        otel_env::Telemetry::default()
+    });
     let out = {
         let root = otel_env::root(
             "workspace-git",
