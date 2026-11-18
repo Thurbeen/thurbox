@@ -116,7 +116,7 @@ impl FileStore {
         match fs::read(&marker) {
             Ok(bytes) => store.check_marker(&bytes)?,
             Err(e) if e.kind() == io::ErrorKind::NotFound => store.init()?,
-            Err(e) => return Err(io_unknown(&marker, e)),
+            Err(e) => return Err(io_failure(&marker, e)),
         }
         store.clean_temp()?;
         Ok(store)
@@ -170,18 +170,18 @@ impl FileStore {
                 }
             }
             Err(e) if e.kind() == io::ErrorKind::NotFound => {
-                fs::create_dir_all(&self.root).map_err(|e| io_unknown(&self.root, e))?;
+                fs::create_dir_all(&self.root).map_err(|e| io_failure(&self.root, e))?;
             }
-            Err(e) => return Err(io_unknown(&self.root, e)),
+            Err(e) => return Err(io_failure(&self.root, e)),
         }
         let _guard = self.lock()?;
         let path = self.root.join("store.json");
         if path.exists() {
-            let bytes = fs::read(&path).map_err(|e| io_unknown(&path, e))?;
+            let bytes = fs::read(&path).map_err(|e| io_failure(&path, e))?;
             return self.check_marker(&bytes);
         }
         for dir in [self.tmp_dir(), self.root.join("objects")] {
-            fs::create_dir_all(&dir).map_err(|e| io_unknown(&dir, e))?;
+            fs::create_dir_all(&dir).map_err(|e| io_failure(&dir, e))?;
         }
         let marker = serde_json::to_vec_pretty(&Marker {
             format: FORMAT.into(),
@@ -189,7 +189,7 @@ impl FileStore {
         })
         .map_err(|e| StoreError::Invalid(e.to_string()))?;
         durable::create_exclusive(&self.tmp_dir(), &path, &marker)
-            .map_err(|e| io_unknown(&path, e))?;
+            .map_err(|e| io_failure(&path, e))?;
         Ok(())
     }
 
@@ -198,10 +198,10 @@ impl FileStore {
     fn clean_temp(&self) -> Result<(), StoreError> {
         let _guard = self.lock()?;
         let dir = self.tmp_dir();
-        let entries = fs::read_dir(&dir).map_err(|e| io_unknown(&dir, e))?;
+        let entries = fs::read_dir(&dir).map_err(|e| io_failure(&dir, e))?;
         for entry in entries {
-            let entry = entry.map_err(|e| io_unknown(&dir, e))?;
-            durable::remove(&entry.path()).map_err(|e| io_unknown(&entry.path(), e))?;
+            let entry = entry.map_err(|e| io_failure(&dir, e))?;
+            durable::remove(&entry.path()).map_err(|e| io_failure(&entry.path(), e))?;
         }
         let private = self.root.join("launches");
         if let Ok(meta) = fs::symlink_metadata(&private) {
@@ -239,7 +239,7 @@ impl FileStore {
 
     fn lock(&self) -> Result<LockGuard, StoreError> {
         let path = self.root.join("lock");
-        LockGuard::acquire(&path).map_err(|e| io_unknown(&path, e))
+        LockGuard::acquire(&path).map_err(|e| io_failure(&path, e))
     }
 
     fn now(&self) -> Millis {
@@ -258,14 +258,14 @@ impl FileStore {
                 .parse::<u64>()
                 .map_err(|e| StoreError::Unknown(format!("{}: corrupt: {e}", path.display())))?,
             Err(e) if e.kind() == io::ErrorKind::NotFound => 0,
-            Err(e) => return Err(io_unknown(&path, e)),
+            Err(e) => return Err(io_failure(&path, e)),
         };
         let next = current
             .max(floor)
             .checked_add(1)
             .ok_or_else(|| StoreError::Invalid("resourceVersion exhausted".into()))?;
         durable::replace(&self.tmp_dir(), &path, next.to_string().as_bytes())
-            .map_err(|e| io_unknown(&path, e))?;
+            .map_err(|e| io_failure(&path, e))?;
         Ok(next)
     }
 
@@ -288,7 +288,7 @@ impl FileStore {
     fn write(&self, obj: &Object) -> Result<(), StoreError> {
         let path = self.object_path(&obj.kind, &obj.metadata.name);
         let bytes = encode(obj)?;
-        durable::replace(&self.tmp_dir(), &path, &bytes).map_err(|e| io_unknown(&path, e))
+        durable::replace(&self.tmp_dir(), &path, &bytes).map_err(|e| io_failure(&path, e))
     }
 
     fn check_lease(&self, lease: &LeaseToken) -> Result<(), StoreError> {
@@ -326,7 +326,7 @@ impl FileStore {
                 StoreError::Unknown(format!("{}: corrupt lease: {e}", path.display()))
             }),
             Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(None),
-            Err(e) => Err(io_unknown(&path, e)),
+            Err(e) => Err(io_failure(&path, e)),
         }
     }
 
@@ -334,7 +334,7 @@ impl FileStore {
         let path = self.root.join("lease.json");
         let bytes =
             serde_json::to_vec_pretty(lease).map_err(|e| StoreError::Invalid(e.to_string()))?;
-        durable::replace(&self.tmp_dir(), &path, &bytes).map_err(|e| io_unknown(&path, e))
+        durable::replace(&self.tmp_dir(), &path, &bytes).map_err(|e| io_failure(&path, e))
     }
 
     /// Mark `obj` deleted; it stays while a finalizer holds it.
@@ -364,7 +364,7 @@ impl FileStore {
             durable::remove(&launch)
                 .map_err(|_| StoreError::Unknown("private launch removal failed".into()))?;
         }
-        durable::remove(&path).map_err(|e| io_unknown(&path, e))?;
+        durable::remove(&path).map_err(|e| io_failure(&path, e))?;
         Ok(DeleteOutcome::Removed)
     }
 }
@@ -416,8 +416,34 @@ fn encode(obj: &Object) -> Result<Vec<u8>, StoreError> {
     Ok(bytes)
 }
 
-fn io_unknown(path: &Path, e: io::Error) -> StoreError {
+fn io_failure(path: &Path, e: io::Error) -> StoreError {
+    if disk_full(&e) {
+        return StoreError::Full(path.display().to_string());
+    }
     StoreError::Unknown(format!("{}: {e}", path.display()))
+}
+
+/// The bytes this user may still write on the disk holding `dir`, or its
+/// nearest existing ancestor. `None` where the platform does not say.
+pub fn free_space(dir: &Path) -> io::Result<Option<u64>> {
+    let existing = dir.ancestors().find(|d| d.exists()).unwrap_or(dir);
+    #[cfg(unix)]
+    {
+        let stat = rustix::fs::statvfs(existing)?;
+        Ok(Some(stat.f_bavail.saturating_mul(stat.f_frsize)))
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = existing;
+        Ok(None)
+    }
+}
+
+fn disk_full(e: &io::Error) -> bool {
+    matches!(
+        e.kind(),
+        io::ErrorKind::StorageFull | io::ErrorKind::QuotaExceeded
+    )
 }
 
 /// `by` may change only the status fields it owns; a field nobody owns
@@ -777,8 +803,13 @@ impl Store for FileStore {
         if bytes.len() > LAUNCH_CAP {
             return Err(StoreError::Invalid("private launch exceeds 1 MiB".into()));
         }
-        durable::create_exclusive(&dir, &path, &bytes)
-            .map_err(|_| StoreError::Unknown("private launch write failed".into()))?;
+        durable::create_exclusive(&dir, &path, &bytes).map_err(|e| {
+            if disk_full(&e) {
+                StoreError::Full(dir.display().to_string())
+            } else {
+                StoreError::Unknown("private launch write failed".into())
+            }
+        })?;
         Ok(execution.clone())
     }
 
@@ -1608,6 +1639,25 @@ impl Store for FileStore {
         Ok(renewed)
     }
 
+    fn reclaim_lease(&self, lease: &LeaseToken, ttl: Millis) -> Result<LeaseToken, StoreError> {
+        let _guard = self.lock()?;
+        let untouched = self
+            .read_lease()?
+            .is_some_and(|l| l.holder == lease.holder && l.token == lease.token);
+        if !untouched {
+            return Err(StoreError::LeaseLost(format!(
+                "{} token {} was taken over",
+                lease.holder, lease.token
+            )));
+        }
+        let reclaimed = LeaseToken {
+            expires_at: self.now().saturating_add(ttl),
+            ..lease.clone()
+        };
+        self.write_lease(&reclaimed)?;
+        Ok(reclaimed)
+    }
+
     fn release_lease(&self, lease: &LeaseToken) -> Result<(), StoreError> {
         let _guard = self.lock()?;
         if let Some(l) = self.read_lease()?
@@ -1745,10 +1795,10 @@ impl FileStore {
             self.remove_board_log(&obj.metadata.name)?;
         }
         let dir = self.kind_dir(&obj.kind);
-        fs::create_dir_all(&dir).map_err(|e| io_unknown(&dir, e))?;
+        fs::create_dir_all(&dir).map_err(|e| io_failure(&dir, e))?;
         let path = self.object_path(&obj.kind, &obj.metadata.name);
         let created = durable::create_exclusive(&self.tmp_dir(), &path, &encode(&obj)?)
-            .map_err(|e| io_unknown(&path, e))?;
+            .map_err(|e| io_failure(&path, e))?;
         if !created {
             return Err(StoreError::AlreadyExists(key));
         }
@@ -1935,5 +1985,33 @@ mod initialization_tests {
         assert!(matches!(store.init(), Err(StoreError::Unsupported(_))));
         assert_eq!(fs::read(&marker).unwrap(), legacy);
         fs::remove_dir_all(root).unwrap();
+    }
+}
+
+#[cfg(test)]
+mod disk_full_tests {
+    use super::*;
+
+    #[test]
+    fn no_room_and_an_exhausted_quota_are_a_full_disk_and_other_failures_are_unknown() {
+        let path = Path::new("/store/lease.json");
+        for kind in [io::ErrorKind::StorageFull, io::ErrorKind::QuotaExceeded] {
+            assert_eq!(
+                io_failure(path, io::Error::from(kind)),
+                StoreError::Full("/store/lease.json".into())
+            );
+        }
+        assert!(matches!(
+            io_failure(path, io::Error::from(io::ErrorKind::PermissionDenied)),
+            StoreError::Unknown(_)
+        ));
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn enospc_and_edquot_are_a_full_disk() {
+        for errno in [28, 122] {
+            assert!(disk_full(&io::Error::from_raw_os_error(errno)), "{errno}");
+        }
     }
 }

@@ -93,6 +93,20 @@ fn an_unreachable_runtime_fails_and_the_rest_are_reported_with_their_fix() {
     let claude = check(&report, "harness", "claude");
     assert_eq!(claude["level"], "info", "{report:#}");
 
+    if cfg!(unix) {
+        let space = check(&report, "store", "free space");
+        assert!(
+            space["level"] == "ok" || space["level"] == "warn",
+            "{report:#}"
+        );
+        assert!(
+            space["detail"]
+                .as_str()
+                .is_some_and(|d| d.contains(" MiB free for ")),
+            "{report:#}"
+        );
+    }
+
     assert_eq!(report["failed"], 1, "{report:#}");
 }
 

@@ -815,6 +815,9 @@ refused.
   rename (replace), then the directory is synced.
 - Every write holds the store lock, an OS file lock that a writer waits for,
   and checks `resourceVersion`.
+- A write that finds no room on the disk (`ENOSPC` or `EDQUOT`) is
+  `Full`, with the path. Nothing was written. The manager pauses on it
+  (see [running `fleet up`](configuration.md#running-fleet-up)).
 - A missing record is `Known(None)`; an unreadable, corrupt or misfiled one is
   Unknown and blocks writes to that name. A list with one bad record is
   Unknown as a whole.
@@ -1493,6 +1496,7 @@ that needs a step names it as a hint.
 | --- | --- | --- |
 | `integration` | each harness with an `[install]` table, as `fleet integration status` reports it ([installed integrations](integration.md)); each ledger entry that no harness profile with an `[install]` table names | `warn` for `outdated` and `modified`; `warn` for an entry left behind, with `fleet integration uninstall <agent>` as its hint; `info` for `not-installed`, `agent-missing` and `unsupported-platform`; `fail` when the ledger cannot be read |
 | `harness` | each harness's `program`, found on PATH | `info` when it is not there: a user installs only the agents they run |
+| `store` | the free space on the disk of the data directory | `warn` below 256 MiB, or when the free space is unknown; not checked on Windows |
 | `runtime` | each place of each runtime, by its id `<runtime>/<place>`: its runtime program answers `manifest` with protocol 1 or 2 and the required verbs, and reports the place ready; a version 1 runtime serves only `local` | `fail` when a place is not ready, with the runtime's why; `fail` when it does not answer; `fail` when no runtime is configured, or when `[runtime]` is not the fake with its `dir` |
 
 The exit status is 1 only when a check fails. Warnings alone exit 0.

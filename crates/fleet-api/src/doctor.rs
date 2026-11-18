@@ -118,6 +118,43 @@ pub fn integration_unknown(agent: &str, why: &str) -> Check {
     }
 }
 
+/// Below this many bytes free on the disk of the data directory, `fleet
+/// doctor` warns: the manager pauses when the store cannot write.
+pub const FREE_SPACE_FLOOR: u64 = 256 * 1024 * 1024;
+
+/// The room left on the disk of the data directory `dir`.
+pub fn free_space(dir: &str, free: Result<u64, String>) -> Check {
+    let check = |level, detail, hint| Check {
+        area: "store",
+        name: "free space".to_string(),
+        level,
+        detail,
+        hint,
+    };
+    let mib = |bytes: u64| bytes / (1024 * 1024);
+    match free {
+        Ok(bytes) if bytes >= FREE_SPACE_FLOOR => check(
+            Level::Ok,
+            format!("{} MiB free for {dir}", mib(bytes)),
+            None,
+        ),
+        Ok(bytes) => check(
+            Level::Warn,
+            format!(
+                "{} MiB free for {dir}, below {} MiB",
+                mib(bytes),
+                mib(FREE_SPACE_FLOOR)
+            ),
+            Some("free space on that disk: the manager pauses when the store cannot write".into()),
+        ),
+        Err(why) => check(
+            Level::Warn,
+            format!("the free space for {dir} is unknown: {why}"),
+            None,
+        ),
+    }
+}
+
 /// A harness's program, where it was found on PATH. A missing one is
 /// information only: a user installs the agents they run.
 pub fn harness(name: &str, program: &str, found: Option<&str>) -> Check {
@@ -308,5 +345,16 @@ mod tests {
             runtime("local", "mux", Err("not found".into())),
         ];
         assert_eq!(failed(&checks), 1);
+    }
+
+    #[test]
+    fn a_disk_below_the_floor_warns_and_one_above_it_is_ok() {
+        let above = free_space("/data", Ok(FREE_SPACE_FLOOR));
+        assert_eq!(above.level, Level::Ok, "{above:?}");
+        let below = free_space("/data", Ok(FREE_SPACE_FLOOR - 1));
+        assert_eq!(below.level, Level::Warn, "{below:?}");
+        assert!(below.detail.contains("below 256 MiB"), "{below:?}");
+        assert_eq!(free_space("/data", Err("gone".into())).level, Level::Warn);
+        assert_eq!(failed(&[below]), 0, "a warning never fails doctor");
     }
 }

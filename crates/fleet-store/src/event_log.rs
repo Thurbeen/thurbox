@@ -61,7 +61,7 @@ impl FileStore {
         match fs::remove_dir_all(&dir) {
             Ok(()) => Ok(()),
             Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(()),
-            Err(e) => Err(io_unknown(&dir, e)),
+            Err(e) => Err(io_failure(&dir, e)),
         }
     }
 
@@ -70,11 +70,11 @@ impl FileStore {
         let entries = match fs::read_dir(&dir) {
             Ok(entries) => entries,
             Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(Vec::new()),
-            Err(e) => return Err(io_unknown(&dir, e)),
+            Err(e) => return Err(io_failure(&dir, e)),
         };
         let mut segments = Vec::new();
         for entry in entries {
-            let path = entry.map_err(|e| io_unknown(&dir, e))?.path();
+            let path = entry.map_err(|e| io_failure(&dir, e))?.path();
             if let Some(first) = path
                 .file_name()
                 .and_then(|n| n.to_str())
@@ -189,7 +189,7 @@ impl FileStore {
         }
         for s in dropped {
             for path in [s.keys_path(), s.path] {
-                durable::remove(&path).map_err(|e| io_unknown(&path, e))?;
+                durable::remove(&path).map_err(|e| io_failure(&path, e))?;
             }
         }
         Ok(answers)
@@ -239,7 +239,7 @@ impl FileStore {
         }
         let dir = self.board_dir(name);
         for created in [self.root.join("boards"), dir.clone()] {
-            create_private_dir(&created).map_err(|e| io_unknown(&created, e))?;
+            create_private_dir(&created).map_err(|e| io_failure(&created, e))?;
         }
         let mut pending: Vec<(PathBuf, Vec<u8>, Vec<u8>)> = Vec::new();
         for e in fresh {
@@ -259,9 +259,9 @@ impl FileStore {
             open_count += 1;
         }
         for (path, lines, keys) in pending {
-            append(&path, &lines).map_err(|e| io_unknown(&path, e))?;
+            append(&path, &lines).map_err(|e| io_failure(&path, e))?;
             let keys_path = path.with_extension(&KEYS_SUFFIX[1..]);
-            append(&keys_path, &keys).map_err(|e| io_unknown(&keys_path, e))?;
+            append(&keys_path, &keys).map_err(|e| io_failure(&keys_path, e))?;
         }
         Ok(())
     }
@@ -426,7 +426,7 @@ fn read_segment(path: &Path) -> Result<Option<Vec<Event>>, StoreError> {
     let bytes = match fs::read(path) {
         Ok(b) => b,
         Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(None),
-        Err(e) => return Err(io_unknown(path, e)),
+        Err(e) => return Err(io_failure(path, e)),
     };
     complete_lines(&bytes)
         .map(|line| {
@@ -441,12 +441,12 @@ fn first_event_time(path: &Path) -> Result<Option<Millis>, StoreError> {
     let file = match fs::File::open(path) {
         Ok(f) => f,
         Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(None),
-        Err(e) => return Err(io_unknown(path, e)),
+        Err(e) => return Err(io_failure(path, e)),
     };
     let mut line = Vec::new();
     BufReader::new(file)
         .read_until(b'\n', &mut line)
-        .map_err(|e| io_unknown(path, e))?;
+        .map_err(|e| io_failure(path, e))?;
     if line.last() != Some(&b'\n') {
         return Ok(None);
     }
@@ -457,7 +457,7 @@ fn first_event_time(path: &Path) -> Result<Option<Millis>, StoreError> {
 
 fn repair_newest(tmp_dir: &Path, segment: Segment) -> Result<NewestSegment, StoreError> {
     let path = &segment.path;
-    let bytes = fs::read(path).map_err(|e| io_unknown(path, e))?;
+    let bytes = fs::read(path).map_err(|e| io_failure(path, e))?;
     let keep = bytes
         .iter()
         .rposition(|b| *b == b'\n')
@@ -466,10 +466,10 @@ fn repair_newest(tmp_dir: &Path, segment: Segment) -> Result<NewestSegment, Stor
         let f = fs::OpenOptions::new()
             .write(true)
             .open(path)
-            .map_err(|e| io_unknown(path, e))?;
+            .map_err(|e| io_failure(path, e))?;
         f.set_len(keep as u64)
             .and_then(|()| f.sync_all())
-            .map_err(|e| io_unknown(path, e))?;
+            .map_err(|e| io_failure(path, e))?;
     }
     let events = complete_lines(&bytes[..keep])
         .map(|line| {
@@ -488,7 +488,7 @@ fn read_keys(path: &Path) -> Result<Option<Vec<KeyEntry>>, StoreError> {
     let bytes = match fs::read(path) {
         Ok(b) => b,
         Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(None),
-        Err(e) => return Err(io_unknown(path, e)),
+        Err(e) => return Err(io_failure(path, e)),
     };
     if bytes.last().is_some_and(|b| *b != b'\n') {
         return Ok(None);
@@ -504,7 +504,7 @@ fn write_keys(tmp_dir: &Path, path: &Path, keys: &[KeyEntry]) -> Result<(), Stor
     for k in keys {
         push_line(&mut bytes, k)?;
     }
-    durable::replace(tmp_dir, path, &bytes).map_err(|e| io_unknown(path, e))
+    durable::replace(tmp_dir, path, &bytes).map_err(|e| io_failure(path, e))
 }
 
 fn sealed_keys(tmp_dir: &Path, segment: &Segment) -> Result<Vec<KeyEntry>, StoreError> {
