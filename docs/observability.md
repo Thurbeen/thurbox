@@ -231,7 +231,7 @@ runtime-mux: runtime-mux workspace ──TRACEPARENT──▶ workspace-git make
 | Program | Span | Parent | Attributes |
 | --- | --- | --- | --- |
 | `thurbox` | `fleet COMMAND` (client) | none | `fleet.command` |
-| `fleet` | `fleet COMMAND` | `TRACEPARENT`, or none | `fleet.command`, `process.exit.code` |
+| `fleet` | `fleet COMMAND` | `TRACEPARENT`, or none | `fleet.command`, `process.exit.code`, and `fleet.kind` and `fleet.name` when the command names them |
 | `fleet` | `reconcile pass` | `fleet reconcile`, or none under `fleet up` | `fleet.pass` |
 | `fleet` | `reconcile KIND` | the object (not exported); links to `reconcile pass` | identity, `fleet.controller`, `fleet.outcome` |
 | `fleet` | `effect KIND` | `reconcile KIND` | identity, `fleet.effect`, `fleet.outcome` |
@@ -239,6 +239,17 @@ runtime-mux: runtime-mux workspace ──TRACEPARENT──▶ workspace-git make
 | `fleet` | `runtime VERB` (client) | `effect KIND`, or `reconcile KIND` for a probe | `fleet.runtime`, `fleet.runtime.verb`, `fleet.outcome` |
 | `runtime-mux` | `runtime-mux VERB` | `TRACEPARENT` | `runtime.verb`, `runtime.outcome` |
 | `workspace-git` | `workspace-git VERB` | `TRACEPARENT` | `workspace.verb` |
+
+A `fleet COMMAND` span carries `fleet.kind` and `fleet.name` as follows:
+
+- `get`, `status`, `label` and `delete`: the kind and the name they are
+  given. The kind is spelt as the store serves it, such as `Task`.
+- `list`: the kind only.
+- `send`, `amend`, `result`, `declare`, `attach`, `shell`,
+  `event subscribe` and `event unsubscribe`: `Task` and the Task's name.
+- `event publish`, `event list`, `event wait` and `event watch`: `Board`
+  and the Board's name.
+- Every other command names no one object and carries neither.
 
 The identity attributes are the object's `fleet.kind`, `fleet.name`,
 `fleet.uid` and `fleet.generation`. `KIND` in `effect KIND` is one of

@@ -478,3 +478,79 @@ fn a_stalled_collector_adds_at_most_the_call_bound_to_a_command() {
     );
     drop(silent);
 }
+
+/// A command's root span names the object it acts on, so a trace view finds
+/// a Task's commands by `fleet.name` (docs/observability.md, *Turn it on*),
+/// with `fleet.kind` as the store serves it, whatever spelling the command
+/// took. A command that names no one object carries neither.
+#[test]
+fn a_command_span_names_the_kind_and_object_it_acts_on() {
+    let collector = Collector::start();
+    let mut env = Env::new("otel-command-names");
+    exporting(&mut env, &collector.endpoint);
+    env.apply(task("t1", true)).ok();
+    let runs: [(&[&str], &str, Option<&str>); 13] = [
+        (&["get", "task", "t1"], "Task", Some("t1")),
+        (&["status", "tasks", "t1"], "Task", Some("t1")),
+        (&["list", "task"], "Task", None),
+        (&["send", "t1", "hello"], "Task", Some("t1")),
+        (&["amend", "t1", "--text", "more"], "Task", Some("t1")),
+        (&["label", "task", "t1", "team=e2e"], "Task", Some("t1")),
+        (
+            &["declare", "t1", "--json", r#"{"kind":"note"}"#],
+            "Task",
+            Some("t1"),
+        ),
+        (
+            &["result", "t1", "--outcome", "shipped"],
+            "Task",
+            Some("t1"),
+        ),
+        (&["attach", "t1", "--json"], "Task", Some("t1")),
+        (&["shell", "t1", "--json"], "Task", Some("t1")),
+        (
+            &["event", "subscribe", "t1", "--board", "shared"],
+            "Task",
+            Some("t1"),
+        ),
+        (
+            &["event", "list", "--board", "shared"],
+            "Board",
+            Some("shared"),
+        ),
+        (
+            &["delete", "taskconfig", "default"],
+            "TaskConfig",
+            Some("default"),
+        ),
+    ];
+    for (args, _, _) in &runs {
+        env.fleet(args);
+    }
+
+    let spans = collector.spans();
+    for (args, kind, name) in runs {
+        let command = format!("fleet {}", args[0]);
+        let root = named(&spans, &command)
+            .into_iter()
+            .find(|s| s.attrs.get("fleet.kind").is_some_and(|k| k == kind))
+            .unwrap_or_else(|| {
+                panic!(
+                    "no `{command}` span with fleet.kind={kind} in {:#?}",
+                    named(&spans, &command)
+                )
+            });
+        assert_eq!(
+            root.attrs.get("fleet.name").map(String::as_str),
+            name,
+            "{args:?}: {root:#?}"
+        );
+    }
+    let apply = named(&spans, "fleet apply");
+    assert!(
+        apply
+            .iter()
+            .all(|s| !s.attrs.contains_key("fleet.name") && !s.attrs.contains_key("fleet.kind")),
+        "apply names no one object: {apply:#?}"
+    );
+}
