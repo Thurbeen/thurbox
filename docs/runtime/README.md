@@ -268,8 +268,8 @@ and the processor time of an idle agent
 `runtime-mux` pauses a key in three steps:
 
 1. It closes the key's shell.
-2. It writes a mark for the key, an empty file
-   `runtime-mux-<socket>.paused-<key>` beside the server's lock.
+2. It writes a mark for the key, an empty file beside the key's start
+   record, under `runtime-mux/paused/` in the user's data directory.
 3. It stops the agent's window.
 
 A pause takes the server's lock, as a start and a stop do. While the
@@ -278,8 +278,11 @@ before step 3 reads as running. `inspect` answers `paused` for a key with a
 mark, no agent window and no shell. A mark with a shell left answers
 Unknown, and the next pause closes the shell. A `start` removes the mark
 after it makes the window, and a `stop` removes it after it stops the
-process. The mark is in the private directory tmux keeps the socket in, so
-it goes when that directory goes, as the server's windows do.
+process. The mark survives a reboot, as the start record does, so a paused
+key reads as paused after a reboot and never as exited. An earlier
+`runtime-mux` wrote the mark as `runtime-mux-<socket>.paused-<key>` in the
+private directory tmux keeps the socket in. `runtime-mux` still reads a
+mark there, and a `start` or a `stop` removes it.
 
 ### Places (protocol version 2)
 

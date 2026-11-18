@@ -530,6 +530,57 @@ fn a_dot_key_reads_exited_once_its_server_is_gone() {
     }
 }
 
+fn reboot(rt: &Runtime) {
+    use std::os::unix::fs::MetadataExt;
+    kill_runtime_server(rt);
+    let uid = std::fs::metadata(rt.server.tmpdir()).expect("tmpdir").uid();
+    let sockets = rt.server.tmpdir().join(format!("tmux-{uid}"));
+    std::fs::remove_dir_all(&sockets).expect("the socket directory");
+}
+
+#[test]
+fn a_paused_key_reads_paused_after_a_reboot_and_resumes_on_a_start() {
+    let Some(rt) = Runtime::new() else { return };
+    started(&rt.start("napping", &["sleep", "300"]));
+    assert_eq!(
+        rt.call("pause", json!({"protocol": 1, "key": "napping"}))["known"],
+        "paused"
+    );
+    reboot(&rt);
+
+    assert_eq!(rt.inspect("napping")["known"], "paused");
+    let list = rt.call("list", json!({"protocol": 1}));
+    assert_eq!(list["known"]["keys"], json!(["napping"]), "{list}");
+    let (_, adopted) = started(&rt.start("napping", &["sleep", "300"]));
+    assert!(!adopted, "the paused process is started again");
+    assert!(rt.inspect("napping")["known"]["running"].is_object());
+}
+
+#[test]
+fn a_pause_mark_an_earlier_version_left_by_the_sockets_reads_paused_until_a_start() {
+    use std::os::unix::fs::MetadataExt;
+    let Some(rt) = Runtime::new() else { return };
+    started(&rt.start("upgraded", &["sleep", "300"]));
+    kill_runtime_server(&rt);
+    let uid = std::fs::metadata(rt.server.tmpdir()).expect("tmpdir").uid();
+    let older = rt
+        .server
+        .tmpdir()
+        .join(format!("tmux-{uid}/runtime-mux-{SOCKET}.paused-upgraded"));
+    std::fs::write(&older, "").expect("the older mark");
+
+    assert_eq!(rt.inspect("upgraded")["known"], "paused");
+    let list = rt.call("list", json!({"protocol": 1}));
+    assert_eq!(list["known"]["keys"], json!(["upgraded"]), "{list}");
+    started(&rt.start("upgraded", &["sleep", "300"]));
+    assert!(!older.exists(), "a start clears the older mark");
+    assert_eq!(
+        rt.call("stop", json!({"protocol": 1, "key": "upgraded"}))["known"],
+        "stopped"
+    );
+    assert_eq!(rt.inspect("upgraded")["known"], "none");
+}
+
 #[test]
 fn an_adopting_start_writes_the_record_back() {
     let Some(rt) = Runtime::new() else { return };

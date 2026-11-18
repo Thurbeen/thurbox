@@ -728,11 +728,26 @@ pub struct Marks {
     dir: Result<PathBuf, String>,
     prefix: String,
     what: &'static str,
+    older: Option<Box<Marks>>,
 }
 
 impl Marks {
     pub fn new(dir: Result<PathBuf, String>, prefix: String, what: &'static str) -> Marks {
-        Marks { dir, prefix, what }
+        Marks {
+            dir,
+            prefix,
+            what,
+            older: None,
+        }
+    }
+
+    /// These marks, which also answer for the marks of `older` that stay
+    /// where an earlier version wrote them, until a clear removes both.
+    pub fn also_reading(self, older: Marks) -> Marks {
+        Marks {
+            older: Some(Box::new(older)),
+            ..self
+        }
     }
 
     fn path(&self, key: &str) -> Result<PathBuf, String> {
@@ -747,7 +762,10 @@ impl Marks {
         let path = self.path(key)?;
         match std::fs::read_to_string(&path) {
             Ok(text) => Ok(Some(text)),
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => match &self.older {
+                Some(older) => older.read(key),
+                None => Ok(None),
+            },
             Err(e) => Err(format!(
                 "cannot read the {} {}: {e}",
                 self.what,
@@ -767,6 +785,9 @@ impl Marks {
     }
 
     fn clear(&self, key: &str) -> Result<(), String> {
+        if let Some(older) = &self.older {
+            older.clear(key)?;
+        }
         let path = self.path(key)?;
         match std::fs::remove_file(&path) {
             Err(e) if e.kind() != std::io::ErrorKind::NotFound => Err(format!(
@@ -779,6 +800,15 @@ impl Marks {
     }
 
     fn keys(&self) -> Result<Vec<String>, String> {
+        let mut keys = match &self.older {
+            Some(older) => older.keys()?,
+            None => Vec::new(),
+        };
+        keys.extend(self.own_keys()?);
+        Ok(keys)
+    }
+
+    fn own_keys(&self) -> Result<Vec<String>, String> {
         let dir = self.dir.clone()?;
         let entries = match std::fs::read_dir(&dir) {
             Ok(entries) => entries,
@@ -802,8 +832,8 @@ impl Marks {
     }
 }
 
-/// What this program keeps of a key outside the server. `paused` marks a
-/// paused key (the `pause` verb). `started` holds the pane of each key a `start`
+/// What this program keeps of a key outside the server, where a reboot
+/// leaves it. `paused` marks a paused key (the `pause` verb). `started` holds the pane of each key a `start`
 /// made until a `stop`, where a reboot leaves it: a key with no window reads
 /// as exited, never as stopped, so Fleet revives its session.
 pub struct Kept {

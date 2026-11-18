@@ -319,23 +319,33 @@ fn view_pane(
 
 fn kept(server: &str) -> protocol::Kept {
     let (sockets, prefix) = private_dir();
-    let started = match &sockets {
+    let beside_start_records = |what: &str| match &sockets {
         Ok(sockets) => runtime_mux::workspace::data_dir()
             .map(|data| {
-                data.join("started")
+                data.join(what)
                     .join(sockets_digest(sockets))
                     .join(server_dir(server))
             })
-            .ok_or_else(|| "no HOME to keep the started keys in".to_string()),
+            .ok_or_else(|| format!("no HOME to keep the {what} keys in")),
         Err(e) => Err(format!("no directory for the tmux sockets: {e}")),
     };
+    let in_sockets_dir = protocol::Marks::new(
+        sockets.as_ref().cloned().map_err(|e| e.to_string()),
+        format!("{prefix}runtime-mux-{server}.paused-"),
+        "pause mark",
+    );
     protocol::Kept {
         paused: protocol::Marks::new(
-            sockets.map_err(|e| format!("no directory for the pause marks: {e}")),
-            format!("{prefix}runtime-mux-{server}.paused-"),
+            beside_start_records("paused"),
+            "key.".to_string(),
             "pause mark",
+        )
+        .also_reading(in_sockets_dir),
+        started: protocol::Marks::new(
+            beside_start_records("started"),
+            "key.".to_string(),
+            "start record",
         ),
-        started: protocol::Marks::new(started, "key.".to_string(), "start record"),
     }
 }
 
@@ -373,8 +383,8 @@ fn lock(name: &str) -> std::io::Result<std::fs::File> {
     Ok(file)
 }
 
-/// The directory the locks and the pause marks sit in, and the prefix of
-/// their names. It is the private directory tmux keeps its sockets in,
+/// The directory the locks sit in, and the prefix of their names. It is
+/// the private directory tmux keeps its sockets in,
 /// `<TMUX_TMPDIR or /tmp>/tmux-<uid>` and never under `TMPDIR`, so every
 /// caller reaching one server takes one lock, a server in another directory
 /// has its own, and no other user can plant a link at a name. The directory
