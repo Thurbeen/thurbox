@@ -90,6 +90,7 @@ failing check.
 | `~/.local/share/thurbox/bookmarks.json` | JSON | the creation flow | each read of the repository list | the repositories and folders the creation flow remembers, per host. Rewritten whole under a lock every process takes (`bookmarks.json.lock`) |
 | `~/.local/share/thurbox/notify-dedupe.json` | JSON | `thurbox-cli notify send --key` | each keyed send | each dedupe key and when its hold ends; expired holds are dropped on the next keyed send. Rewritten whole under a lock (`notify-dedupe.json.lock`) |
 | `~/.local/share/thurbox/perf.json` | JSON | thurbox, while perf timing is on | each perf window | the perf snapshot `thurbox-cli perf` prints |
+| `~/.local/share/thurbox/thurbox.db.migrated` | text | `thurbox-cli migrate` | startup | marks that a run read the 2.x `thurbox.db`; while `thurbox.db` exists without it, thurbox names `thurbox-cli migrate` at startup ([Migrating to v3](../migrating-to-v3.md#3-start-your-work-again-as-tasks)) |
 | `~/.local/share/thurbox/thurbox.log` | text | thurbox | — | logs (incl. config warnings). Rotated daily into `thurbox.log.<date>`; the 30 most recent are kept and older ones deleted at startup |
 
 `settings.toml` reloads **live**: the TUI checks its mtime about once per

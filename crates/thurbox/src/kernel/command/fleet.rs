@@ -445,7 +445,7 @@ fn url_path(path: &str) -> String {
 
 /// `<scheme>://<dir>`, with the bytes a URL reads apart (`%`, `?`, `#` and
 /// whitespace) percent-encoded, as the runtime decodes them.
-fn dir_url(scheme: &str, dir: &std::path::Path) -> String {
+pub(crate) fn dir_url(scheme: &str, dir: &std::path::Path) -> String {
     let mut url = format!("{scheme}://");
     for c in url_path(&dir.to_string_lossy()).chars() {
         push_char(&mut url, c, |c| {
@@ -457,7 +457,7 @@ fn dir_url(scheme: &str, dir: &std::path::Path) -> String {
 
 /// A branch or base as a query value or fragment: also `&` and `=`, which
 /// would end or split the value, are percent-encoded.
-fn encode(value: &str) -> String {
+pub(crate) fn encode(value: &str) -> String {
     let mut out = String::new();
     for c in value.chars() {
         push_char(&mut out, c, |c| {

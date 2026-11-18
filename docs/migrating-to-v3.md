@@ -18,20 +18,24 @@ setups that 3.x allows.
 
 ## What changed
 
-`fleet migrate` turns the Fleet 2 config and store into Fleet 3's. It keeps
-the 2.x files as `.v2`. 3.x carries over no thurbox 2.x session: you start
-that work again as Fleet 3 Tasks.
+Two commands do the move, and neither deletes a 2.x file:
+
+- `fleet migrate` turns the Fleet 2 config and store into Fleet 3's
+  ([step 2](#2-migrate-the-fleet-config-and-store)).
+- `thurbox-cli migrate` turns the thurbox 2.x sessions and automations into
+  Fleet Tasks and CronTasks. It prints the places and harness profiles to add
+  to Fleet's config ([step 3](#3-start-your-work-again-as-tasks)).
 
 | 2.x | 3.x |
 | --- | --- |
-| thurbox keeps sessions in `thurbox.db`. | Every session is a Fleet Task. thurbox keeps no database. |
+| thurbox keeps sessions and automations in `thurbox.db`. | Every session is a Fleet Task. thurbox keeps no database. `thurbox-cli migrate` reads `thurbox.db` once. |
 | Fleet 2's `[runtime]`: `kind = "thurbox"`, `cli`, `keyPrefix`, `repositories`. | `[runtimes.<name>]` tables that name a runtime program, such as `runtime-mux`, and its places ([runtimes and their places](fleet/configuration.md#runtimes-and-their-places)). |
 | `[runtime.repositories]` maps a remote URL to a checkout. | No mapping. A Task names `git+` URLs in `spec.workspace`, and the runtime makes a worktree per Task ([Workspace](fleet/resources/workspace.md)). |
 | A Task's `spec.workspace` is an object: `dir` or `repositories`. | `spec.workspace` is a list of absolute URLs. `fleet apply` refuses the old shapes, and `fleet migrate` converts them. |
 | Sessions run on the `thurbox` tmux socket. | `runtime-mux` runs Task sessions on its own socket, `runtime-mux`. |
 | `hosts.toml` lists remote machines. | thurbox lists Fleets under `[fleets.<name>]` in `settings.toml`. A Fleet's runtime lists its places. |
 | `agents.toml` defines agents. | Agents are Fleet's harness profiles ([Agents](thurbox/agents.md)). |
-| `automations.json` and `thurbox-cli automation tick`. | Nothing in thurbox. Use a [CronTask](fleet/resources/cron-task.md). |
+| Automations in `thurbox.db`, and `thurbox-cli automation tick`. | Nothing in thurbox. Use a [CronTask](fleet/resources/cron-task.md). |
 | `spec.model` and `runtime.modelEnv`. | No runtime passes a model. `runtime-mux` refuses a Task that sets `spec.model`. Set the model in the harness's own configuration. |
 | VEGA ships inside Fleet 2, and `fleet init` writes its workspace. | VEGA installs from [its own repository](https://github.com/Thurbeen/vega). |
 
@@ -47,8 +51,8 @@ directories on macOS and Windows). Both install the same program names.
 2. Stop the Fleet 2 manager: its service, or the `fleet up` that you started
    by hand. `fleet migrate` refuses a store that a manager holds.
 3. Back up the four directories above.
-4. Write down what each thurbox 2.x session ran: its repository, its branch, its
-   agent and its machine. You start each one again as a Task.
+4. Install `sqlite3` on each machine that ran thurbox 2.x.
+   `thurbox-cli migrate` runs it to read `thurbox.db`, and only reads.
 
 ## 1. Install 3.x on every machine
 
@@ -111,10 +115,47 @@ Fleet 3 never reads or changes them.
 
 ## 3. Start your work again as Tasks
 
-`fleet migrate` imported your Fleet 2 Tasks. Check each one with
-`fleet get task NAME`, then set `spec.dispatch` to `true` and apply it.
+`fleet migrate` imported your Fleet 2 Tasks. Now import the thurbox 2.x
+sessions and automations. Read the plan first:
 
-For each thurbox 2.x session, write a Task with the Fleet 3 shape
+```sh
+thurbox-cli migrate --dry-run
+thurbox-cli migrate
+```
+
+`thurbox-cli migrate` reads `thurbox.db` with `sqlite3 -readonly`, and
+`agents.toml` and `hosts.toml`. It changes none of them. It applies each
+object through `fleet apply` on the Fleet that thurbox uses:
+
+- Each live 2.x session becomes an interactive Task (an empty brief) with
+  `spec.dispatch = false`. A worktree becomes
+  `git+file://<repository>?branch=<its branch>`, a session with no worktree
+  `file://<directory>`. A session on an ssh or WSL host runs on the place
+  `mux/<host>`.
+- A Task cannot carry a 2.x conversation. The report prints the command that
+  resumes each one, for example `claude --resume <id>`, to run in the Task's
+  session.
+- Each `cron` automation that starts a session in UTC becomes a CronTask with
+  `spec.suspend = true`. The report names each other automation: one that
+  sends to a session, runs a command, runs once or runs in another time zone.
+  Write a CronTask for it by hand.
+- It removes the [retired keys](thurbox/config.md#retired-keys) from
+  `settings.toml`, and keeps the file before as `settings.toml.v2`.
+- It prints a `[runtimes.mux.places.<name>]` table for each `hosts.toml` host
+  and a harness profile for each `agents.toml` agent. thurbox does not write
+  Fleet's config: paste each one there yourself
+  ([step 8](#8-set-up-remote-places), [Agents](thurbox/agents.md)). A 2.x
+  agent's `setup` has no harness profile key: run it in a wrapper script.
+
+A second run imports nothing twice: each object carries the 2.x session's or
+automation's id as a label. Without `sqlite3`, it says so and does the rest.
+Until a run reads `thurbox.db`, thurbox names `thurbox-cli migrate` at
+startup.
+
+Check each Task with `fleet get task NAME`, then set `spec.dispatch` to
+`true` and apply it. For a CronTask, set `spec.suspend` to `false`.
+
+For work that neither command imported, write a Task with the Fleet 3 shape
 ([Task](fleet/resources/task.md)):
 
 ```json
@@ -258,9 +299,10 @@ passes a retired key and fails any other unknown key. A save from the
 settings panel removes the retired keys.
 
 [The retired keys](thurbox/config.md#retired-keys) lists each one with
-its reason. Remove them, or save once from the settings panel.
-`thurbox-cli doctor` warns about a `hosts.toml` or an `automations.json`
-that 2.x left, and names what replaces it.
+its reason. `thurbox-cli migrate` removes them
+([step 3](#3-start-your-work-again-as-tasks)). Or remove them yourself, or
+save once from the settings panel. `thurbox-cli doctor` warns about a
+`hosts.toml` that 2.x left, and names what replaces it.
 
 ## 8. Set up remote places
 
@@ -307,9 +349,10 @@ Remove each item only after you have checked that it holds no work you keep.
   `~/.local/share/thurbox/worktrees` by default, on each machine. In each
   repository, `git worktree list` shows them. Push or save their work, then
   run `git worktree remove PATH` and `git worktree prune`.
-- **Files 3.x does not read.** `hosts.toml`, `agents.toml`,
-  `automations.json` and `hooks.toml` in `~/.config/thurbox`, and
-  `thurbox.db` and `automation-tick.*` in `~/.local/share/thurbox`.
+- **Files 3.x does not read.** `hosts.toml`, `agents.toml`, `hooks.toml`
+  and `settings.toml.v2` in `~/.config/thurbox`, and `thurbox.db`,
+  `thurbox.db.migrated` and `automation-tick.*` in `~/.local/share/thurbox`.
+  Delete `thurbox.db` only after `thurbox-cli migrate` has read it.
 - **Hooks in agents' own configs.** 2.x installed status hooks into the
   config directory of some agents. A hook that runs a `thurbox-cli` command
   that 3.x does not have only fails. Remove it. Fleet 3 sets each harness's
@@ -330,9 +373,8 @@ thurbox-cli doctor
 ```
 
 `thurbox-cli doctor` reports each Fleet, its runtime and its agents. It
-also reports a 2.x `hosts.toml` or `automations.json`, the automation
-heartbeat window and the automation timer. It does not check the other 2.x
-files.
+also reports a 2.x `hosts.toml`, the automation heartbeat window and the
+automation timer. It does not check the other 2.x files.
 
 ## Open points
 

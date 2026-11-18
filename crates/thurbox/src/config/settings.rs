@@ -305,6 +305,24 @@ fn set_table_bool(table: &mut toml_edit::Table, key: &str, v: bool) {
 /// `toml_edit` cannot see. The first save therefore **adds real, uncommented
 /// keys** (below the documentation comments, which remain as reference); from
 /// then on those keys are edited in place.
+pub fn drop_retired_keys(doc: &mut toml_edit::DocumentMut) -> Vec<&'static str> {
+    let mut dropped = Vec::new();
+    for (key, _) in RETIRED_KEYS {
+        let removed = match key.split_once('.') {
+            Some((table, leaf)) => doc
+                .get_mut(table)
+                .and_then(|t| t.as_table_like_mut())
+                .and_then(|table| table.remove(leaf))
+                .is_some(),
+            None => doc.remove(key).is_some(),
+        };
+        if removed {
+            dropped.push(*key);
+        }
+    }
+    dropped
+}
+
 pub fn save_settings(settings: &Settings) -> std::io::Result<()> {
     use toml_edit::{value, DocumentMut};
 
@@ -330,18 +348,7 @@ pub fn save_settings(settings: &Settings) -> std::io::Result<()> {
     // An earlier save wrote every key it knew, so a key since retired is in most
     // files; dropping it here is what stops each launch naming it again.
     drop_older_telemetry(&mut doc);
-    for (key, _) in RETIRED_KEYS {
-        match key.split_once('.') {
-            Some((table, leaf)) => {
-                if let Some(table) = doc.get_mut(table).and_then(|t| t.as_table_like_mut()) {
-                    table.remove(leaf);
-                }
-            }
-            None => {
-                doc.remove(key);
-            }
-        }
-    }
+    drop_retired_keys(&mut doc);
 
     // Top-level scalars (cast to i64 — TOML's only integer type).
     doc["config_version"] = value(i64::from(settings.config_version.unwrap_or(1)));

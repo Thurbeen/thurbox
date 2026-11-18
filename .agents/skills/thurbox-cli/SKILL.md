@@ -1,6 +1,6 @@
 ---
 name: thurbox-cli
-description: The thurbox-cli binary: its subcommands (editor, config, version, update, notify and notify send, perf, plugin, ui, schema, doctor), its output formats and exit codes. Use when changing or driving thurbox-cli. Sessions are Fleet Tasks, driven with `fleet`.
+description: The thurbox-cli binary: its subcommands (editor, config, version, update, notify and notify send, perf, plugin, ui, schema, doctor, migrate), its output formats and exit codes. Use when changing or driving thurbox-cli. Sessions are Fleet Tasks, driven with `fleet`.
 ---
 
 # thurbox-cli
@@ -22,6 +22,7 @@ thurbox-cli. thurbox-cli covers the interface's own files and a running interfac
 | `plugin …` | interface plugins: where they live, install, sync, check |
 | `ui …`, `schema` | bounded requests to a running interface (`src/ui_control.rs`) |
 | `doctor` | each Fleet `settings.toml` lists (`[fleets.<name>]`, or `fleet` on this machine): reachable, version, harnesses and places; the multiplexer when a Fleet runs here; the interface's telemetry export from `[telemetry]` and the OTEL_* variables, with where each value comes from; and a warning for a left-over `hosts.toml`, which nothing reads. Every check that is not ok carries a `fix` (JSON) and a `fix:` line |
+| `migrate` | thurbox 2.x state into Fleet: reads `thurbox.db` with the system `sqlite3 -readonly -json` (no SQLite in thurbox's tree), applies each live session as a `dispatch: false` Task and each UTC `cron` spawn automation as a suspended CronTask through `fleet apply --create-only`, each labelled with its 2.x id so a second run skips it; removes retired `settings.toml` keys (keeping `settings.toml.v2`); prints `hosts.toml` as `[runtimes.mux.places]` tables and `agents.toml` as harness profiles, never writing Fleet's config; writes `thurbox.db.migrated`, which silences the startup notice. `--dry-run` changes nothing |
 
 ## Output and exit codes
 
