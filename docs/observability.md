@@ -304,7 +304,8 @@ Only `fleet` exports metrics.
 - A Task with an empty inbox reports 0 in both states. When a Task is
   gone, the process that reported it reports 0 in the next export, and then
   stops reporting it. A gone Task's series ends there, so the gauge does
-  not keep its old backlog.
+  not keep its old backlog. If that one export fails, the backend keeps the
+  old value until it drops the series.
 - A `fleet reconcile` that ends reports the last pass it ran. A later
   process does not report a Task that is already gone.
 - `fleet.task.amendments` counts `fleet amend` calls. The outcome is
@@ -328,21 +329,22 @@ stays in a backend for a short time. Give each alert a hold time, for example
 fire it.
 
 Each Fleet has its own lease. When more than one Fleet exports to one
-backend, give each Fleet a resource attribute of its own, for example
-`service.namespace`, and add that attribute to each `by (...)` below.
+backend, give each Fleet its own `service.namespace`. Prometheus puts
+`service.namespace` and `service.name` in the `job` label, so the examples
+group by `job`.
 
 More than one lease holder, or more than one manager on one host:
 
 ```promql
-sum(fleet_manager_info{fleet_manager_lease="true"}) > 1
+sum by (job) (fleet_manager_info{fleet_manager_lease="true"}) > 1
   or
-sum by (host_name) (fleet_manager_info) > 1
+sum by (job, host_name) (fleet_manager_info) > 1
 ```
 
 More than one version across the managers:
 
 ```promql
-count(count by (fleet_manager_version) (fleet_manager_info == 1)) > 1
+count by (job) (count by (job, fleet_manager_version) (fleet_manager_info == 1)) > 1
 ```
 
 ## Logs
