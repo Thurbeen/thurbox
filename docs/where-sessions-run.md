@@ -124,8 +124,9 @@ when the laptop sleeps.
    read your login `PATH`, so the unit takes the `PATH` of the shell that
    installs it. Put more directories in a drop-in:
    `systemctl --user edit fleet.service`. The unit has
-   `KillMode=process`: `fleet up` starts the tmux server that holds the
-   sessions, and a stop or a restart of the unit keeps that server.
+   `KillMode=mixed`: a stop or a restart of the unit stops `fleet up` and
+   every process it left. `runtime-mux` starts the tmux server that holds
+   the sessions in a scope of its own, so the unit keeps that server.
 
    ```sh
    fleet service install --now

@@ -73,7 +73,7 @@ pub fn render(install: &Install, name: &str) -> Result<Vec<u8>, Refusal> {
          RestartPreventExitStatus=78\n\
          TimeoutStartSec=infinity\n\
          TimeoutStopSec={stop}s\n\
-         KillMode=process\n\
+         KillMode=mixed\n\
          \n\
          [Install]\n\
          WantedBy=default.target\n",

@@ -962,6 +962,30 @@ fn sizer_name() -> String {
     format!("{:x}-{nth:x}-{nanos:x}", std::process::id())
 }
 
+fn user_manager_reachable() -> bool {
+    cfg!(target_os = "linux")
+        && std::env::var_os("XDG_RUNTIME_DIR")
+            .is_some_and(|dir| Path::new(&dir).join("systemd/private").exists())
+}
+
+fn in_own_scope(command: &Command) -> Command {
+    let mut scoped = Command::new("systemd-run");
+    scoped
+        .args(["--user", "--scope", "--collect", "--quiet", "--"])
+        .arg(command.get_program())
+        .args(command.get_args());
+    for (key, value) in command.get_envs() {
+        match value {
+            Some(value) => scoped.env(key, value),
+            None => scoped.env_remove(key),
+        };
+    }
+    if let Some(dir) = command.get_current_dir() {
+        scoped.current_dir(dir);
+    }
+    scoped
+}
+
 impl<M: TmuxCompatible> Server<M> {
     /// `M` on this machine, named by the route it serves (`local:tmux`,
     /// `local:psmux`) whatever OS this is, capturing as much history as a
@@ -1926,10 +1950,26 @@ impl<M: TmuxCompatible> Server<M> {
         }
     }
 
-    /// Execute a tmux command on the thurbox socket and check for errors.
+    fn start_server_in_own_scope(&self, args: &[&str]) -> Result<std::process::Output> {
+        if self.transport.is_remote() || !user_manager_reachable() {
+            return self.run_tmux(args);
+        }
+        let scoped = in_own_scope(&self.mux_command(args)?);
+        match self.run_mux_command(scoped, args) {
+            Ok(output) => Ok(output),
+            Err(e) => {
+                debug!("{} server start in a scope failed: {e:#}", self.name);
+                self.run_tmux(args)
+            }
+        }
+    }
+
     fn run_tmux(&self, args: &[&str]) -> Result<std::process::Output> {
-        let output = self
-            .mux_command(args)?
+        self.run_mux_command(self.mux_command(args)?, args)
+    }
+
+    fn run_mux_command(&self, mut command: Command, args: &[&str]) -> Result<std::process::Output> {
+        let output = command
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .output()
@@ -2181,7 +2221,7 @@ impl<M: TmuxCompatible> Server<M> {
             );
             let mut args = vec!["new-session", "-d", "-s", &self.session];
             args.extend_from_slice(M::BOOTSTRAP_SIZE_ARGS);
-            if let Err(e) = self.run_tmux(&args) {
+            if let Err(e) = self.start_server_in_own_scope(&args) {
                 // The check above is not a lock, and after a reboot every
                 // session's relaunch runs it at once: one wins and the rest are
                 // told `duplicate session`. Failing them is how a machine came

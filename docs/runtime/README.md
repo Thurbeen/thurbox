@@ -105,7 +105,12 @@ Unknown.
 `runtime-mux` answers every verb above. It runs its windows on a tmux
 server of its own, socket `runtime-mux` (`RUNTIME_MUX_SOCKET` names
 another), never on thurbox's interface socket: an inherited
-`THURBOX_SOCKET` is ignored. A process is a window named after its key, and
+`THURBOX_SOCKET` is ignored. On Linux, when a systemd user manager answers
+at `$XDG_RUNTIME_DIR/systemd/private`, `runtime-mux` starts that server in
+a scope of its own (`systemd-run --user --scope --collect`). The server is
+then outside the cgroup of the process that called `runtime-mux`, so a
+stop of the Fleet unit does not stop it. When the scope fails,
+`runtime-mux` starts the server without one. A process is a window named after its key, and
 a pane kept after its program exits is how `inspect` reports the code; a
 `start` replaces it. A host reboot takes the server and its windows, so
 `runtime-mux` also keeps a start record for each key it starts:
