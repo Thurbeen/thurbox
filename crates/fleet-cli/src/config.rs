@@ -222,16 +222,14 @@ impl Config {
     }
 
     pub fn parse_settings(text: &str, path: &Path) -> Result<Config, String> {
-        if let Some((why, store)) = fleet_2_config(text, path) {
+        if let Some((why, _)) = fleet_2_config(text, path) {
             return Err(format!(
                 "config {path} is a Fleet 2.x config ({why}); this Fleet does not read it, nor \
-                 the store it names. Move both aside (`{config}` and `{store}`) and run \
-                 `fleet init` to write a Fleet 3 config, then copy [forge] and [plugins] over by \
-                 hand; or keep Fleet and thurbox 2.x (install with \
-                 VERSION=v2.x.y). See docs/migrating-to-v3.md",
+                 the store it names. Run `fleet migrate --dry-run` to see the plan, then \
+                 `fleet migrate`: it writes a Fleet 3 config and store and keeps the 2.x ones \
+                 as .v2; or keep Fleet and thurbox 2.x (install with VERSION=v2.x.y). See \
+                 docs/migrating-to-v3.md",
                 path = path.display(),
-                config = move_aside(&path.display().to_string(), cfg!(windows)),
-                store = move_aside(&store.display().to_string(), cfg!(windows)),
             ));
         }
         let mut config: Config =
@@ -472,7 +470,7 @@ impl Config {
 /// `fleet init` would point this Fleet at it, and this Fleet cannot read the
 /// objects 2.x wrote there. `None` for any other text, including one that is
 /// not TOML: the typed parse reports that.
-fn fleet_2_config(text: &str, path: &Path) -> Option<(String, PathBuf)> {
+pub(crate) fn fleet_2_config(text: &str, path: &Path) -> Option<(String, PathBuf)> {
     const FLEET_2_KEYS: [&str; 4] = ["cli", "callTimeoutMs", "keyPrefix", "repositories"];
     let table: toml::Table = toml::from_str(text).ok()?;
     let runtime = table.get("runtime")?.as_table()?;
@@ -494,25 +492,6 @@ fn fleet_2_config(text: &str, path: &Path) -> Option<(String, PathBuf)> {
             .join("store-v1"),
     };
     Some((why, store))
-}
-
-/// The command that renames `path` to `<path>.v2`, for the user to paste:
-/// PowerShell's on Windows, a POSIX shell's elsewhere. Each path is quoted,
-/// as a home directory may hold a space (`/home/Jane Doe`,
-/// `C:\Users\Jane Doe`).
-fn move_aside(path: &str, windows: bool) -> String {
-    let moved = format!("{path}.v2");
-    if windows {
-        let quote = |w: &str| format!("'{}'", w.replace('\'', "''"));
-        format!(
-            "Move-Item -LiteralPath {} -Destination {}",
-            quote(path),
-            quote(&moved)
-        )
-    } else {
-        let quote = |w: &str| format!("'{}'", w.replace('\'', r"'\''"));
-        format!("mv {} {}", quote(path), quote(&moved))
-    }
 }
 
 /// Explicit CLI path, then FLEET_CONFIG, then one native per-user location.
@@ -545,35 +524,4 @@ pub fn default_data_dir() -> Option<PathBuf> {
         return Some(PathBuf::from(d).join("fleet"));
     }
     std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".local").join("share").join("fleet"))
-}
-
-#[cfg(test)]
-mod tests {
-    use super::move_aside;
-
-    #[test]
-    fn move_aside_is_one_posix_word_per_path() {
-        assert_eq!(
-            move_aside("/home/Jane Doe/.config/fleet/config.toml", false),
-            "mv '/home/Jane Doe/.config/fleet/config.toml' '/home/Jane Doe/.config/fleet/config.toml.v2'"
-        );
-        assert_eq!(
-            move_aside("/a/it's", false),
-            r"mv '/a/it'\''s' '/a/it'\''s.v2'"
-        );
-    }
-
-    /// `%APPDATA%` sits under the user's name, which may hold a space; the
-    /// command is PowerShell's, which has no `mv` quoting of its own.
-    #[test]
-    fn move_aside_on_windows_is_powershell() {
-        assert_eq!(
-            move_aside(r"C:\Users\Jane Doe\AppData\Roaming\fleet\config.toml", true),
-            r"Move-Item -LiteralPath 'C:\Users\Jane Doe\AppData\Roaming\fleet\config.toml' -Destination 'C:\Users\Jane Doe\AppData\Roaming\fleet\config.toml.v2'"
-        );
-        assert_eq!(
-            move_aside(r"C:\Users\O'Neil\fleet", true),
-            r"Move-Item -LiteralPath 'C:\Users\O''Neil\fleet' -Destination 'C:\Users\O''Neil\fleet.v2'"
-        );
-    }
 }
