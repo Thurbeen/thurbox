@@ -246,6 +246,7 @@ fn a_fleet_2_config_and_store_become_fleet_3_and_the_2x_files_stay() {
     assert_eq!(default["spec"]["pauseAfterMs"], 60000);
     assert!(default["spec"].get("model").is_none());
     f.env.fleet(&["get", "board", "shared"]).ok();
+    f.env.fleet(&["get", "board", "fleet"]).ok();
 }
 
 #[test]
