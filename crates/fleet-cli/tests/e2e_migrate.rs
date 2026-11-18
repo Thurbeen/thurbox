@@ -301,12 +301,24 @@ fn completes(f: &Fleet2, store_2x: &BTreeMap<PathBuf, Vec<u8>>) {
 }
 
 #[test]
-fn a_migration_stopped_after_staging_completes() {
+fn a_migration_stopped_after_staging_completes_from_the_2x_store_as_it_is_now() {
     let f = fleet_2("migrate-stop-staged");
-    let store_2x = tree(&f.store);
     journal(&f);
     migrated_store("migrate-stop-staged-twin", &f.env.root.join("store-v1.v3"));
+    let later = object(
+        "Task",
+        "later",
+        json!({"harness": "codex", "brief": "", "workspace": {"dir": "/home/me/later"}, "dispatch": true}),
+        json!({"phase": "Pending"}),
+    );
+    fs::write(
+        f.store.join("objects/Task/later.json"),
+        serde_json::to_vec_pretty(&later).unwrap(),
+    )
+    .unwrap();
+    let store_2x = tree(&f.store);
     completes(&f, &store_2x);
+    assert_eq!(task(&f.env, "later")["spec"]["dispatch"], false);
 }
 
 #[test]

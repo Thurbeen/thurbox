@@ -4,7 +4,7 @@ use std::path::{Path, PathBuf};
 
 use fleet_api::{Object, Store, StoreError};
 use fleet_store::FileStore;
-use fleet_store::durable::replace;
+use fleet_store::durable::{replace, sync_parent};
 use serde_json::Value;
 
 use crate::config::{Config, fleet_2_config};
@@ -383,6 +383,10 @@ impl Migration {
             let journal = serde_json::json!({"store2x": self.store_2x}).to_string();
             write_new(&self.journal, journal.as_bytes())?;
         }
+        if exists(&self.staged)? && !(self.store_2x && exists(&self.store_v2)?) {
+            fs::remove_dir_all(&self.staged)
+                .map_err(|e| format!("{}: {e}", self.staged.display()))?;
+        }
         let installed = !exists(&self.staged)?
             && exists(if self.store_2x {
                 &self.store_v2
@@ -393,7 +397,7 @@ impl Migration {
             self.stage(seed)?;
         }
         if read(&self.config_v2)?.as_deref() != Some(self.source_text.as_str()) {
-            write_all(&self.config_v2, self.source_text.as_bytes())?;
+            copy(&self.config_path, &self.config_v2)?;
         }
         if exists(&self.staged)? {
             if self.store_2x && !exists(&self.store_v2)? {
@@ -476,31 +480,33 @@ fn workspace(
     (!urls.is_empty()).then_some(Value::Array(urls))
 }
 
+fn synced(path: &Path, result: std::io::Result<()>) -> Result<(), String> {
+    result
+        .and_then(|()| sync_parent(path))
+        .map_err(|e| format!("{}: {e}", path.display()))
+}
+
 fn write_new(path: &Path, bytes: &[u8]) -> Result<(), String> {
     use std::io::Write;
-    fs::OpenOptions::new()
+    let written = fs::OpenOptions::new()
         .write(true)
         .create_new(true)
         .open(path)
         .and_then(|mut file| {
             file.write_all(bytes)?;
             file.sync_all()
-        })
-        .map_err(|e| format!("{}: {e}", path.display()))
+        });
+    synced(path, written)
 }
 
-fn write_all(path: &Path, bytes: &[u8]) -> Result<(), String> {
-    use std::io::Write;
-    fs::File::create(path)
-        .and_then(|mut file| {
-            file.write_all(bytes)?;
-            file.sync_all()
-        })
-        .map_err(|e| format!("{}: {e}", path.display()))
+fn copy(from: &Path, to: &Path) -> Result<(), String> {
+    let copied = fs::copy(from, to).and_then(|_| fs::File::open(to)?.sync_all());
+    synced(to, copied)
 }
 
 fn rename(from: &Path, to: &Path) -> Result<(), String> {
     fs::rename(from, to)
+        .and_then(|()| sync_parent(to))
         .map_err(|e| format!("cannot move {} to {}: {e}", from.display(), to.display()))
 }
 pub fn report(m: &Migration, dry_run: bool) -> String {
