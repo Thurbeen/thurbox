@@ -1564,3 +1564,26 @@ fn a_plain_directory_has_an_empty_working_diff() {
     );
     assert_eq!((diff.untracked_total, diff.untracked_shown), (0, 0));
 }
+
+#[test]
+fn only_git_saying_not_a_repository_reads_as_outside_a_work_tree() {
+    let scratch = tempfile::tempdir().expect("tempdir");
+    let plain = scratch.path().join("plain");
+    let repo = scratch.path().join("repo");
+    std::fs::create_dir_all(&plain).expect("mkdir");
+    seed_repo(&repo, "a.txt", "one");
+    let probe = |dir: &Path, env: &[(&str, &str)]| {
+        let mut cmd = git_command(dir, &["rev-parse", "--is-inside-work-tree"]);
+        cmd.envs(env.iter().copied());
+        work_tree_answer(&cmd.output().expect("git runs"))
+    };
+
+    assert_eq!(probe(&plain, &[]), WorkTree::Outside);
+    assert_eq!(probe(&repo.join(".git"), &[]), WorkTree::Outside);
+    assert_eq!(probe(&repo, &[]), WorkTree::Inside);
+    assert_eq!(
+        probe(&repo, &[("GIT_TEST_ASSUME_DIFFERENT_OWNER", "1")]),
+        WorkTree::Unknown,
+        "a repository git refuses to read is not a directory without changes"
+    );
+}

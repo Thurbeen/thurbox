@@ -133,7 +133,7 @@ pub struct WorkingDiff {
 /// A directory outside any git work tree has no changes to show, so it gets an
 /// empty diff, noted once at debug level rather than warned about every refresh.
 pub fn working_diff(worktree: &Path) -> Option<WorkingDiff> {
-    if worktree.is_dir() && !is_inside_work_tree(worktree) {
+    if worktree.is_dir() && work_tree(worktree) == WorkTree::Outside {
         note_outside_work_tree(worktree);
         return Some(WorkingDiff::empty());
     }
@@ -195,9 +195,29 @@ impl WorkingDiff {
     }
 }
 
-fn is_inside_work_tree(dir: &Path) -> bool {
-    run_git_capture(&["rev-parse", "--is-inside-work-tree"], dir)
-        .is_some_and(|answer| answer.trim() == "true")
+#[derive(Debug, PartialEq, Eq)]
+pub(super) enum WorkTree {
+    Inside,
+    Outside,
+    Unknown,
+}
+
+pub(super) fn work_tree_answer(output: &std::process::Output) -> WorkTree {
+    const NOT_A_REPOSITORY: &str = "fatal: not a git repository";
+    match output.status.code() {
+        Some(0) if output.stdout.trim_ascii() == b"true" => WorkTree::Inside,
+        Some(0) if output.stdout.trim_ascii() == b"false" => WorkTree::Outside,
+        Some(128) if reportable_stderr_line(&output.stderr).starts_with(NOT_A_REPOSITORY) => {
+            WorkTree::Outside
+        }
+        _ => WorkTree::Unknown,
+    }
+}
+
+fn work_tree(dir: &Path) -> WorkTree {
+    git_command(dir, &["rev-parse", "--is-inside-work-tree"])
+        .output()
+        .map_or(WorkTree::Unknown, |output| work_tree_answer(&output))
 }
 
 static NOTED_OUTSIDE_WORK_TREE: LazyLock<Mutex<HashSet<PathBuf>>> = LazyLock::new(Mutex::default);
