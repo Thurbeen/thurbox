@@ -295,8 +295,6 @@ impl crate::backend::SessionBackend for Stream {
 
 #[cfg(all(test, unix))]
 mod tests {
-    use super::*;
-
     /// The attach is asked of the Fleet through its link, and its stream's
     /// argv read from the answer.
     #[test]
