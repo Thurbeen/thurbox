@@ -253,18 +253,39 @@ pub trait TmuxCompatible: Send + Sync + 'static {
 
     /// The one-shot argvs that deliver `text` into `target`, in order — more
     /// than one where a single line would be too long for the server's host.
-    /// By default the `bracketed_paste`-wrapped bytes as hex (`send-keys
-    /// -H`), so `extended-keys` never turns a line break into a key.
+    /// By default the `bracketed_paste`-wrapped bytes go into a buffer of
+    /// this paste's own, a `set-buffer` per piece, and one
+    /// `paste-buffer -r` writes them to the pane at once. An app that times
+    /// a paste sees it whole: one `send-keys` per piece reached it with a
+    /// launch between each two, and Claude Code took the pieces before such a
+    /// gap as typed text (#1901). The bytes go to the pane as they are, so
+    /// `extended-keys` never turns a line break into a key.
     fn paste_args(target: &str, text: &str) -> Vec<Vec<String>> {
-        hex_paste(text)
-            .into_iter()
-            .map(|bytes| {
-                let mut argv: Vec<String> =
-                    vec!["send-keys".into(), "-t".into(), target.into(), "-H".into()];
-                argv.extend(bytes);
-                argv
-            })
-            .collect()
+        let buffer = paste_buffer_name();
+        let paste = bracketed_paste(text);
+        let mut argvs: Vec<Vec<String>> =
+            buffer_chunks(&paste, control_mode::SEND_KEYS_CHUNK_BYTES)
+                .into_iter()
+                .enumerate()
+                .map(|(i, chunk)| {
+                    let mut argv: Vec<String> = vec!["set-buffer".into()];
+                    if i > 0 {
+                        argv.push("-a".into());
+                    }
+                    argv.extend(["-b".into(), buffer.clone(), "--".into(), chunk.into()]);
+                    argv
+                })
+                .collect();
+        argvs.push(vec![
+            "paste-buffer".into(),
+            "-d".into(),
+            "-r".into(),
+            "-b".into(),
+            buffer,
+            "-t".into(),
+            target.into(),
+        ]);
+        argvs
     }
 
     /// The `run-shell` script that pastes `text` into `target` on `mux -L
@@ -395,6 +416,46 @@ pub(crate) fn parse_version(word: &str) -> Option<(u32, u32, u32)> {
 /// than framing the paste themselves. The trailing `Enter` is sent separately.
 fn bracketed_paste(text: &str) -> String {
     format!("\x1b[200~{text}\x1b[201~")
+}
+
+/// A tmux buffer name no other paste uses: two pastes into one server, from
+/// two processes or two hosts' runtimes, never share a buffer.
+fn paste_buffer_name() -> String {
+    static PASTES: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.subsec_nanos());
+    format!(
+        "runtime-mux-paste-{}-{}-{nanos}",
+        std::process::id(),
+        PASTES.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+    )
+}
+
+/// `text` in pieces of about `max` bytes, never split inside a character.
+/// Only the last piece can end in `;`: tmux reads an argument's trailing `;`
+/// as the end of the command, and drops it from the text.
+fn buffer_chunks(text: &str, max: usize) -> Vec<&str> {
+    let mut chunks = Vec::new();
+    let mut start = 0;
+    while start < text.len() {
+        let mut end = (start + max).min(text.len());
+        while !text.is_char_boundary(end) {
+            end -= 1;
+        }
+        while end < text.len() && text[start..end].ends_with(';') {
+            end = text[..end].trim_end_matches(';').len();
+            if end == start {
+                end = text[start..]
+                    .find(|c| c != ';')
+                    .map_or(text.len(), |i| start + i);
+                end += text[end..].chars().next().map_or(0, char::len_utf8);
+            }
+        }
+        chunks.push(&text[start..end]);
+        start = end;
+    }
+    chunks
 }
 
 /// [`bracketed_paste`]'s bytes as `send-keys -H` arguments, one list per

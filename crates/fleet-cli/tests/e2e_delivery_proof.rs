@@ -66,6 +66,51 @@ fn a_brief_is_delivered_only_once_the_agents_prompt_hook_reports_it() {
     assert_eq!(env.calls("brief"), 1);
 }
 
+/// An entry typed while the agent has not taken the brief joins the brief's
+/// prompt, and the hook then proves neither (#1901): the inbox waits for the
+/// brief's proof, not only for the runtime's receipt.
+#[test]
+fn an_inbox_entry_waits_until_the_agent_reports_the_brief() {
+    let env = setup("proof-brief-first");
+    env.host().set_prompt_hook_silent(true).unwrap();
+    env.reconcile().ok();
+    assert_condition(&env.status("t1"), "Briefed", "Unknown", "AwaitingPrompt");
+    env.fleet(&["send", "t1", "a thread"]).ok();
+    env.reconcile().ok();
+    env.reconcile().ok();
+    assert_eq!(env.calls("brief"), 1, "only the brief is typed");
+
+    prompt_hook(&env, BRIEF);
+    env.host().set_prompt_hook_silent(false).unwrap();
+    env.reconcile().ok();
+    env.reconcile().ok();
+    assert_eq!(env.status("t1")["phase"], "Briefed");
+    assert_eq!(env.calls("brief"), 2, "then the entry");
+    assert_eq!(delivered_keys(&env).len(), 1, "{:#}", full_status(&env));
+}
+
+/// Claude Code 2.1.327 took the start of a long brief as typed text and
+/// wrapped only the rest, and the line it split gained a blank line (#1901).
+/// The prompt's loose digest proves the brief.
+#[test]
+fn a_brief_the_agent_split_around_a_paste_is_proven() {
+    let env = setup("proof-brief-split");
+    env.host().set_prompt_hook_silent(true).unwrap();
+    env.reconcile().ok();
+    assert_condition(&env.status("t1"), "Briefed", "Unknown", "AwaitingPrompt");
+
+    let split =
+        "Do the\n\n<pasted_content id=\"df13\">\nwork for t1.\n</pasted_content id=\"df13\">\n";
+    let payload = json!({"prompt": split, "session_id": "conv-1"}).to_string();
+    let mut cmd = env.command(&["signal", "--harness", "claude", "prompt", &payload]);
+    cmd.env("FLEET_SIGNAL_FILE", signal_file(&env));
+    wait(cmd.spawn().expect("fleet signal")).ok();
+    env.reconcile().ok();
+    let full = full_status(&env);
+    assert_eq!(full["phase"], "Briefed", "{full:#}");
+    assert_eq!(env.calls("brief"), 1);
+}
+
 #[test]
 fn a_brief_whose_answer_was_lost_is_settled_by_the_prompt_hook_and_sent_once() {
     let env = setup("proof-lost");
@@ -304,8 +349,11 @@ fn a_report_after_the_hosts_clock_stepped_back_still_releases_a_mangled_entry() 
     assert_eq!(delivered_keys(&env).len(), 1, "{full:#}");
 }
 
+/// A session that has reported nothing has not proven its brief, so no entry
+/// is typed into it: the first report, when it is not the brief's, releases
+/// nothing and gives nothing up.
 #[test]
-fn the_first_report_a_session_ever_makes_can_release_a_mangled_entry() {
+fn no_entry_is_typed_before_the_first_report_proves_the_brief() {
     let env = setup("proof-inbox-first-report");
     env.host().set_prompt_hook_silent(true).unwrap();
     env.reconcile().ok();
@@ -319,13 +367,21 @@ fn the_first_report_a_session_ever_makes_can_release_a_mangled_entry() {
         "nothing reported before the entry"
     );
     prompt_hook(&env, "firstline");
-    env.host().set_prompt_hook_silent(false).unwrap();
     env.fleet(&["send", "t1", "second"]).ok();
     env.reconcile().ok();
     env.reconcile().ok();
     env.reconcile().ok();
-    let st = env.status("t1");
-    assert_condition(&st, "NeedsAttention", "True", "DeliveryUnconfirmed");
+    assert_eq!(env.calls("brief"), 1, "only the brief is typed");
     let full = full_status(&env);
-    assert_eq!(queued_texts(&full), vec!["first\nline"], "{full:#}");
+    assert_eq!(
+        queued_texts(&full),
+        vec!["first\nline", "second"],
+        "{full:#}"
+    );
+    assert!(
+        full["conditions"]
+            .as_array()
+            .is_some_and(|cs| !cs.iter().any(|c| c["reason"] == "DeliveryUnconfirmed")),
+        "{full:#}"
+    );
 }

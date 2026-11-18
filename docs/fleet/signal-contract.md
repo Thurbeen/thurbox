@@ -75,6 +75,9 @@ it. Each harness profile names the fields in its `[payload]` table
   all one `<tag …>…</tag …>` wrapper then gives two digests: one of the
   prompt, and one of the text inside the wrapper. A tag inside the text
   stays part of the text.
+- A prompt that holds the paste tag anywhere also gives a loose digest:
+  the digest of the prompt without those tags and without whitespace. It
+  proves a text that the agent split around a paste.
 - Fleet reads the first conversation field that is a string. An empty
   string is no conversation.
 - Nonempty `background_tasks` or `session_crons` lists turn `idle` into

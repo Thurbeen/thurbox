@@ -380,42 +380,87 @@ mod tests {
         );
     }
 
-    #[test]
-    fn paste_prompt_args_type_the_wrapped_bytes_as_hex_for_tmux() {
-        assert_eq!(
-            Tmux::paste_args("thurbox:tb-demo", "a\n\nb").concat(),
-            [
-                "send-keys",
-                "-t",
-                "thurbox:tb-demo",
-                "-H",
-                "1b",
-                "5b",
-                "32",
-                "30",
-                "30",
-                "7e",
-                "61",
-                "0a",
-                "0a",
-                "62",
-                "1b",
-                "5b",
-                "32",
-                "30",
-                "31",
-                "7e",
-            ]
-        );
+    fn buffer_of(argv: &[String]) -> &str {
+        let at = argv.iter().position(|a| a == "-b").expect("a named buffer");
+        &argv[at + 1]
     }
 
     #[test]
-    fn a_long_paste_is_typed_by_several_commands() {
+    fn a_paste_goes_into_a_buffer_and_reaches_the_pane_in_one_write() {
+        let argvs = Tmux::paste_args("thurbox:tb-demo", "a\n\nb");
+        assert_eq!(argvs.len(), 2, "{argvs:?}");
+        let buffer = buffer_of(&argvs[0]).to_string();
+        assert_eq!(
+            argvs[0],
+            [
+                "set-buffer",
+                "-b",
+                &buffer,
+                "--",
+                "\x1b[200~a\n\nb\x1b[201~"
+            ]
+        );
+        assert_eq!(
+            argvs[1],
+            [
+                "paste-buffer",
+                "-d",
+                "-r",
+                "-b",
+                &buffer,
+                "-t",
+                "thurbox:tb-demo"
+            ]
+        );
+        assert_ne!(
+            buffer,
+            buffer_of(&Tmux::paste_args("%3", "a")[0]),
+            "each paste has a buffer of its own"
+        );
+    }
+
+    /// The text of a long paste is set in pieces, and only the last command
+    /// names the pane: an app that times its input sees one paste, not one
+    /// per piece with a tmux launch between them (#1901).
+    #[test]
+    fn a_long_paste_is_set_in_pieces_and_pasted_once() {
         let text = "x".repeat(2000);
         let argvs = Tmux::paste_args("%3", &text);
-        assert!(argvs.len() > 1, "{}", argvs.len());
-        let bytes: Vec<String> = argvs.iter().flat_map(|a| a[4..].to_vec()).collect();
-        assert_eq!(bytes.len(), text.len() + 12);
+        let (paste, sets) = argvs.split_last().expect("commands");
+        assert!(sets.len() > 1, "{}", sets.len());
+        assert_eq!(paste[0], "paste-buffer");
+        let buffer = buffer_of(paste);
+        let mut set = String::new();
+        for (i, argv) in sets.iter().enumerate() {
+            assert_eq!(argv[0], "set-buffer");
+            assert_eq!(argv.contains(&"-a".to_string()), i > 0, "{argv:?}");
+            assert_eq!(buffer_of(argv), buffer);
+            assert!(!argv.contains(&"-t".to_string()), "{argv:?}");
+            set.push_str(argv.last().expect("the piece"));
+        }
+        assert_eq!(set, format!("\x1b[200~{text}\x1b[201~"));
+    }
+
+    /// tmux ends a command at an argument's trailing `;` and drops it, so no
+    /// piece but the last ends in one.
+    #[test]
+    fn no_piece_of_a_paste_ends_in_a_semicolon() {
+        for text in [
+            format!("{};b", "a".repeat(505)),
+            format!("{}{}b", "a".repeat(500), ";".repeat(20)),
+            ";".repeat(1500),
+            format!("{}é;;é", "a".repeat(504)),
+        ] {
+            let argvs = Tmux::paste_args("%3", &text);
+            let (_, sets) = argvs.split_last().expect("commands");
+            let pieces: Vec<&String> = sets.iter().map(|a| a.last().expect("piece")).collect();
+            assert!(
+                pieces.iter().all(|p| !p.ends_with(';') && !p.is_empty()),
+                "{pieces:?}"
+            );
+            let joined: String = pieces.iter().map(|p| p.as_str()).collect();
+            assert_eq!(joined, format!("\x1b[200~{text}\x1b[201~"));
+        }
     }
 
     #[test]

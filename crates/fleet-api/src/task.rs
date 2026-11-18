@@ -475,6 +475,11 @@ pub struct TaskStatus {
     /// hook reports it. Absent for a harness with no prompt hook.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub prompts: BTreeMap<String, String>,
+    /// Per send key in `prompts`, the loose digest of the same text
+    /// ([`crate::signal::loose_prompt_digest`]), for a harness profile that
+    /// names a paste tag: a report of either proves the send.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub loose_prompts: BTreeMap<String, String>,
     #[serde(default)]
     pub spawn_attempts: u32,
     #[serde(default)]

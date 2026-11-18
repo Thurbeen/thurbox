@@ -85,6 +85,7 @@ repositories.
 | `workspace` | TaskController | The workspace the runtime made: `key`, `host` and `dirs`, one per URL. See [Workspace](workspace.md). |
 | `intents`, `receipts` | TaskController | Each effect's intent, written before it runs, and its outcome, written after. |
 | `prompts` | TaskController | Per send key, the digest of the text sent, until the agent's prompt hook proves delivery. |
+| `loosePrompts` | TaskController | Per send key in `prompts`, the loose digest of the same text, for a harness profile that names a paste tag. A report of either digest proves delivery. |
 | `brief` | TaskController | `{key, generation, recovered}`: the newest brief or amendment the worker received. A result names this generation. |
 | `spawnAttempts`, `briefSends`, `materializeAttempts`, `cleanAttempts`, `releaseAttempts`, `briefProbeFailures`, `revivals`, `reviveAttempts`, `pauses`, `resumes`, `resumeAttempts`, `catchUps`, `catchUp` | TaskController | Counters and keys of bounded retries. Three failures raise `NeedsAttention`. |
 | `idleSince`, `notBefore`, `sessionCheckedAt` | TaskController | When the agent became idle, the earliest next reconcile after a failure (30 s later), and the last session lookup of a Concluded Task (repeated every 5 minutes). |

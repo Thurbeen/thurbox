@@ -1063,6 +1063,102 @@ fn a_multi_line_brief_reaches_claude_code_whole_and_its_wrapped_paste_proves_it(
     });
 }
 
+/// [`PASTING_CLAUDE`], except that it times a paste, as Claude Code 2.1.327
+/// did with a long brief (#1901): when a paste pauses for 5 ms before its
+/// end, what came so far is typed text, and only the rest is a paste. Its
+/// prompt hook then gets that text, unwrapped, before a wrapper holding the
+/// rest, and `split.log` records the split.
+const TIMING_CLAUDE: &str = r#"#!/bin/sh
+fleet signal idle
+stty raw -echo
+printf '\033[>4;2m\033[?2004h'
+perl -e '
+my ($typed, $paste, $buf, $in, $split) = ("", "", "", 0, 0);
+my ($open, $close) = ("\e[200~", "\e[201~");
+sub submit {
+  open(my $log, ">", "typed.log") or die; print $log $typed . $paste; close $log;
+  if ($split) { open(my $s, ">", "split.log") or die; print $s $typed; close $s; }
+  my $prompt = $typed;
+  $prompt .= "\n\n<pasted_content id=\"ab12\">\n$paste\n</pasted_content id=\"ab12\">\n" if length $paste;
+  $prompt =~ s/(["\\])/\\$1/g;
+  $prompt =~ s/\n/\\n/g;
+  system("fleet", "signal", "prompt", "{\"prompt\":\"$prompt\",\"session_id\":\"conv-1\"}");
+  system("fleet", "signal", "idle");
+  ($typed, $paste, $split) = ("", "", 0);
+}
+while (1) {
+  my $rin = ""; vec($rin, 0, 1) = 1;
+  if (!select(my $rout = $rin, undef, undef, $in ? 0.005 : undef)) {
+    $typed .= $paste; $paste = ""; $split = 1;
+    next;
+  }
+  sysread(STDIN, my $chunk, 65536) or last;
+  $buf .= $chunk;
+  while (length $buf) {
+    if ($in) {
+      my $at = index($buf, $close);
+      if ($at < 0) {
+        my $keep = length($buf) < 5 ? length($buf) : 5;
+        $paste .= substr($buf, 0, length($buf) - $keep, "");
+        last;
+      }
+      $paste .= substr($buf, 0, $at);
+      $buf = substr($buf, $at + length $close);
+      $in = 0;
+    } elsif (index($buf, $open) == 0) {
+      $buf = substr($buf, length $open);
+      $in = 1;
+    } elsif (index($open, $buf) == 0) {
+      last;
+    } elsif (substr($buf, 0, 1) eq "\r") {
+      $buf = substr($buf, 1);
+      submit();
+    } else {
+      $typed .= substr($buf, 0, 1, "");
+    }
+  }
+}'
+"#;
+
+/// A brief of 75 lines, as a factory or a gateway writes one.
+fn long_brief() -> String {
+    (1..=75)
+        .map(|n| format!("- **Step {n}**: check `#{{pane}}` and $HOME; then write it down."))
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+#[test]
+fn a_long_brief_reaches_claude_code_as_one_paste() {
+    let (Some(program), Some(_)) = (runtime_mux(), tmux()) else {
+        return;
+    };
+    let sockets = Sockets::new("long-paste");
+    let mut env = mux_env("runtime-mux-long-paste", &program, &sockets);
+    stand_in(&mut env, "claude", "claude", TIMING_CLAUDE);
+    let work = env.root.join("work").join("t1");
+    fs::create_dir_all(&work).expect("workspace");
+    let brief = long_brief();
+    assert!(brief.len() > 4000, "{}", brief.len());
+    let mut task = support::task("t1", true);
+    task["spec"]["brief"] = json!(brief);
+    task["spec"]["workspace"] = json!([format!("file://{}", work.display())]);
+    env.apply(json!([task])).ok();
+
+    reconcile_until(&env, "typed", |_| work.join("typed.log").is_file());
+    let split = fs::read_to_string(work.join("split.log"));
+    assert!(
+        split.is_err(),
+        "the paste paused after {} bytes, so the agent took them as typed text",
+        split.map_or(0, |s| s.len())
+    );
+    let typed = fs::read_to_string(work.join("typed.log")).unwrap_or_default();
+    assert_eq!(typed, brief, "the agent reads the brief whole");
+    reconcile_until(&env, "briefed", |env| {
+        env.get("t1")["status"]["phase"] == "Briefed"
+    });
+}
+
 #[test]
 fn a_task_on_runtime_mux_is_revived_on_its_conversation_after_a_reboot() {
     let (Some(program), Some(_)) = (runtime_mux(), tmux()) else {

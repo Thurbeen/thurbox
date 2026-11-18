@@ -158,7 +158,7 @@ concludes nothing.
 | Briefed or Concluded | Known Resumed receipt, a missing/Unknown receipt with the session observed running, or a paused session observed running | unchanged | Set `Paused=False/Resumed`. Send nothing of Fleet's own: the agent continues its conversation, and only the inbox is delivered. |
 | Briefed or Concluded | Failed resume receipt, or a missing/Unknown receipt with the session observed stopped | unchanged | Wait 30 seconds from the last resume, then resume again. After three resumes have left the session stopped, each further resume also raises `NeedsAttention/ResumeFailed`. |
 | Active phase | Accepted worker result for `status.brief.generation` is stored | Concluded | Set `Concluded=True/ResultRecorded`; keep the session. |
-| Spawned, Briefed or Concluded | Oldest inbox entry has no receipt; session ready; nothing else sent this pass | unchanged | Persist the entry's intent and plan `Brief` under its key; one entry per pass. In Spawned the brief goes first: nothing is delivered before the brief was sent, or while a brief send is unconfirmed. |
+| Spawned, Briefed or Concluded | Oldest inbox entry has no receipt; session ready; nothing else sent this pass | unchanged | Persist the entry's intent and plan `Brief` under its key; one entry per pass. In Spawned the brief goes first: nothing is delivered before the brief was sent, while a brief send is unconfirmed, or while the agent's prompt hook has not reported the brief. |
 | Spawned, Briefed or Concluded | Oldest inbox entry; session not ready or Unknown | unchanged | Do not send. Receipt recovery through `BriefDelivered` may still proceed. |
 | Spawned, Briefed or Concluded | Known Delivered receipt and the agent's prompt hook reported the entry (or its harness has none); or, with the answer lost, the hook reported it, or for a harness with no prompt hook the journal proves it | unchanged | Record the receipt in `status.deliveries` with the runtime's route, and remove the entry, in one write; its intent, receipt and attempt records go with it. Until the hook reports it, the entry waits and is never sent again. Later entries wait behind it. |
 | Spawned, Briefed or Concluded | Known Delivered receipt for an entry or a catch-up note; the agent's prompt hook has reported a new prompt since the send was planned, and not this one | unchanged | Raise `NeedsAttention/DeliveryUnconfirmed` naming it. It stays, marked failed, and is never sent again. Later entries are still delivered. |
@@ -452,10 +452,15 @@ the harness profile's resume argv.
 A brief, an inbox entry or a catch-up note counts as delivered only once
 the agent's prompt hook reports it, not when the runtime typed it. When the
 controller plans the send it records the text's digest in
-`status.prompts` under the send key, in the same write as the intent. Then:
+`status.prompts` under the send key, in the same write as the intent. For
+a profile that names a paste tag, it also records the text's loose digest
+in `status.loosePrompts`. A report of either digest proves the send. Then:
 
 - A Known Delivered receipt waits for the hook: `Briefed=Unknown/AwaitingPrompt`
   for the brief; an entry stays first in line.
+- No inbox entry goes out while the brief waits for the hook. An entry
+  typed before the agent took the brief joins the brief's prompt, and the
+  hook then proves neither.
 - An entry or a catch-up note whose hook has reported a new prompt since
   its send was planned, and not this one, is given up on with
   `NeedsAttention/DeliveryUnconfirmed`. It is never sent again. Each line
@@ -691,6 +696,10 @@ comment = "#"                  # what starts a comment line there
   text. `fleet signal` then also reports the text inside that wrapper. The
   runtime types a brief as a bracketed paste. Claude Code 2.1.325 gives its
   prompt hook that paste inside `<pasted_content id="…">` tags.
+- With a paste tag, `fleet signal` also reports the loose digest of a prompt
+  that holds the tag anywhere: the digest of the prompt without those tags
+  and without whitespace. Claude Code 2.1.327 can take the start of a long
+  paste as typed text and wrap only the rest.
 - An unknown key is an error. Each command that reads the profiles stops,
   and names the file.
 - A harness that no profile names runs its name as a program, with no
