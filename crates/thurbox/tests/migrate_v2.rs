@@ -62,6 +62,8 @@ INSERT INTO automations VALUES (4, 'local', 1, 'cron', '0 8 * * *', NULL, 'spawn
   '/src/app', NULL, NULL, 'claude', 'Local morning.', NULL);
 INSERT INTO automations VALUES (5, 'off', 0, 'cron', '0 1 * * *', 'UTC', 'spawn', NULL,
   '/src/app', NULL, NULL, 'claude', 'Paused.', NULL);
+INSERT INTO automations VALUES (6, 'Nightly-Review', 1, 'cron', '0 4 * * *', 'UTC', 'spawn', NULL,
+  '/src/app', NULL, NULL, 'claude', 'Second pass.', NULL);
 ALTER TABLE automations ADD COLUMN action_extra_repos TEXT;
 ";
 
@@ -380,6 +382,10 @@ fn the_2x_state_becomes_fleet_objects_and_ready_to_paste_tables() {
     let win = v2.fleet_json(&["get", "task", "win"]).expect("Task win");
     assert_eq!(win["spec"]["host"], "mux/ubuntu-22.04");
     assert!(v2.path("data/thurbox.db.migrated").exists());
+    let second = v2
+        .fleet_json(&["get", "crontask", "nightly-review-6"])
+        .expect("CronTask nightly-review-6");
+    assert_eq!(second["spec"]["template"]["spec"]["brief"], "Second pass.");
     assert!(v2.fleet_json(&["get", "crontask", "poke"]).is_none());
 
     assert_eq!(std::fs::read(v2.path("data/thurbox.db")).expect("db"), db);
@@ -437,7 +443,7 @@ fn each_printed_harness_profile_loads_in_fleet() {
 }
 
 #[test]
-fn a_session_fleet_refuses_keeps_the_startup_notice() {
+fn a_name_fleet_already_holds_gets_the_2x_id() {
     let Some(v2) = setup() else { return };
     let taken = serde_json::json!({
         "apiVersion": "fleet/v1alpha1",
@@ -461,7 +467,33 @@ fn a_session_fleet_refuses_keeps_the_startup_notice() {
             .expect("manifest");
     }
     assert!(apply.wait().expect("fleet apply").success());
-    v2.migrate(&[]).ok().has("Not imported").has("Task/notes");
+    v2.migrate(&[])
+        .ok()
+        .has("Task/notes-s2")
+        .lacks("Not imported:\n  Task");
+    let notes = v2
+        .fleet_json(&["get", "task", "notes-s2"])
+        .expect("Task notes-s2");
+    assert_eq!(notes["metadata"]["labels"]["thurbox.dev/name"], "notes");
+    assert!(v2.path("data/thurbox.db.migrated").exists());
+    v2.migrate(&[])
+        .ok()
+        .has("Already imported")
+        .has("Task/notes-s2");
+}
+
+#[test]
+fn a_fleet_that_does_not_answer_gets_no_profiles_and_keeps_the_notice() {
+    let Some(v2) = setup() else { return };
+    let settings = v2.path("config/settings.toml");
+    let text = std::fs::read_to_string(&settings).expect("settings");
+    let fleet = v2.fleet.display().to_string();
+    std::fs::write(&settings, text.replace(&fleet, "/nonexistent/fleet")).expect("settings");
+    v2.migrate(&[])
+        .ok()
+        .has("fleet did not say which harness profiles it has")
+        .lacks("harnesses/aider-x.toml")
+        .has("[runtimes.mux.places.devbox]");
     assert!(!v2.path("data/thurbox.db.migrated").exists());
 }
 

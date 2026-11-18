@@ -84,7 +84,7 @@ pub fn run(
     let link = FleetLink::in_force(settings);
 
     let agents = match read_toml(&config_dir.join("agents.toml"))? {
-        Some(doc) => harness_profiles(&doc, &fleet_harnesses(&link), &mut report),
+        Some(doc) => harness_profiles(&doc, fleet_harnesses(&link).as_ref(), &mut report),
         None => BTreeMap::new(),
     };
     if let Some(doc) = read_toml(&config_dir.join("hosts.toml"))? {
@@ -97,10 +97,10 @@ pub fn run(
         match (query(&db, SESSIONS_QUERY), query(&db, AUTOMATIONS_QUERY)) {
             (Ok(sessions), Ok(automations)) => {
                 let mut fleet = Fleet::read(link, dry_run, &mut report);
-                for task in tasks(&sessions, &agents, &mut report) {
+                for task in tasks(&sessions, &agents, fleet.names("task"), &mut report) {
                     fleet.import(task, SESSION_LABEL, &mut report);
                 }
-                for cron in cron_tasks(&automations, &mut report) {
+                for cron in cron_tasks(&automations, fleet.names("crontask"), &mut report) {
                     fleet.import(cron, AUTOMATION_LABEL, &mut report);
                 }
                 complete = fleet.reachable && !fleet.failed;
@@ -191,7 +191,34 @@ fn short_id(id: &str) -> String {
     id.chars().take(8).collect()
 }
 
-fn tasks(rows: &[Value], agents: &BTreeMap<String, Agent>, report: &mut Report) -> Vec<Value> {
+fn unique_name(name: &str, fallback: &str, id: &str, taken: &mut BTreeSet<String>) -> String {
+    let base = crate::kernel::command::fleet::task_name(name);
+    let stem = if base.is_empty() {
+        fallback
+    } else {
+        base.as_str()
+    };
+    let mut out = if base.is_empty() || taken.contains(&base) {
+        format!("{stem}-{}", short_id(id))
+    } else {
+        base.clone()
+    };
+    let first = out.clone();
+    let mut n = 2;
+    while taken.contains(&out) {
+        out = format!("{first}-{n}");
+        n += 1;
+    }
+    taken.insert(out.clone());
+    out
+}
+
+fn tasks(
+    rows: &[Value],
+    agents: &BTreeMap<String, Agent>,
+    mut taken: BTreeSet<String>,
+    report: &mut Report,
+) -> Vec<Value> {
     let mut sessions: Vec<(&str, Vec<&Value>)> = Vec::new();
     for row in rows {
         let id = text(row, "id").unwrap_or_default();
@@ -200,22 +227,13 @@ fn tasks(rows: &[Value], agents: &BTreeMap<String, Agent>, report: &mut Report) 
             None => sessions.push((id, vec![row])),
         }
     }
-    let mut names = BTreeSet::new();
     let mut out = Vec::new();
     for (id, mut group) in sessions {
         let first = group[0];
         let name = text(first, "name").unwrap_or(id);
         let cwd = text(first, "cwd");
         group.sort_by_key(|row| text(row, "worktree_path") != cwd);
-        let mut task = crate::kernel::command::fleet::task_name(name);
-        if task.is_empty() || !names.insert(task.clone()) {
-            task = format!(
-                "{}-{}",
-                if task.is_empty() { "session" } else { &task },
-                short_id(id)
-            );
-            names.insert(task.clone());
-        }
+        let task = unique_name(name, "session", id, &mut taken);
         let key = format!("Task/{task}");
         let mut workspace: Vec<String> = group
             .iter()
@@ -316,7 +334,7 @@ fn resume_command(
     }
 }
 
-fn cron_tasks(rows: &[Value], report: &mut Report) -> Vec<Value> {
+fn cron_tasks(rows: &[Value], mut taken: BTreeSet<String>, report: &mut Report) -> Vec<Value> {
     let mut out = Vec::new();
     for row in rows {
         let name = text(row, "name").unwrap_or("automation");
@@ -350,7 +368,7 @@ fn cron_tasks(rows: &[Value], report: &mut Report) -> Vec<Value> {
             ));
             continue;
         }
-        let cron = crate::kernel::command::fleet::task_name(name);
+        let cron = unique_name(name, "automation", &id, &mut taken);
         let key = format!("CronTask/{cron}");
         if row["enabled"].as_i64() == Some(0) {
             report
@@ -400,7 +418,8 @@ fn cron_tasks(rows: &[Value], report: &mut Report) -> Vec<Value> {
 struct Fleet {
     link: FleetLink,
     dry_run: bool,
-    imported: BTreeSet<(String, String)>,
+    imported: BTreeMap<(String, String), String>,
+    names: BTreeMap<String, BTreeSet<String>>,
     reachable: bool,
     failed: bool,
 }
@@ -410,7 +429,8 @@ impl Fleet {
         let mut fleet = Fleet {
             link,
             dry_run,
-            imported: BTreeSet::new(),
+            imported: BTreeMap::new(),
+            names: BTreeMap::new(),
             reachable: true,
             failed: false,
         };
@@ -418,9 +438,18 @@ impl Fleet {
             match fleet.list(kind) {
                 Ok(objects) => {
                     for obj in objects {
+                        let name = obj["metadata"]["name"].as_str().unwrap_or_default();
                         if let Some(id) = obj["metadata"]["labels"][label].as_str() {
-                            fleet.imported.insert((label.to_string(), id.to_string()));
+                            fleet.imported.insert(
+                                (label.to_string(), id.to_string()),
+                                format!("{}/{name}", obj["kind"].as_str().unwrap_or(kind)),
+                            );
                         }
+                        fleet
+                            .names
+                            .entry(kind.to_string())
+                            .or_default()
+                            .insert(name.to_string());
                     }
                 }
                 Err(why) => {
@@ -434,6 +463,10 @@ impl Fleet {
             }
         }
         fleet
+    }
+
+    fn names(&self, kind: &str) -> BTreeSet<String> {
+        self.names.get(kind).cloned().unwrap_or_default()
     }
 
     fn list(&self, kind: &str) -> Result<Vec<Value>, String> {
@@ -461,8 +494,8 @@ impl Fleet {
         if !self.reachable {
             return;
         }
-        if self.imported.contains(&(label.to_string(), id)) {
-            report.already.push(key);
+        if let Some(existing) = self.imported.get(&(label.to_string(), id)) {
+            report.already.push(existing.clone());
             return;
         }
         let summary = match obj["kind"].as_str() {
@@ -486,7 +519,7 @@ impl Fleet {
     }
 }
 
-fn fleet_harnesses(link: &FleetLink) -> BTreeSet<String> {
+fn fleet_harnesses(link: &FleetLink) -> Option<BTreeSet<String>> {
     link.bounded_output(&["version", "--json"], FLEET_TIMEOUT)
         .ok()
         .filter(|out| out.status.success())
@@ -498,14 +531,20 @@ fn fleet_harnesses(link: &FleetLink) -> BTreeSet<String> {
                 .filter_map(|n| n.as_str().map(str::to_string))
                 .collect()
         })
-        .unwrap_or_default()
 }
 
 fn harness_profiles(
     doc: &toml::Table,
-    shipped: &BTreeSet<String>,
+    shipped: Option<&BTreeSet<String>>,
     report: &mut Report,
 ) -> BTreeMap<String, Agent> {
+    if shipped.is_none() {
+        report.to_do.push(
+            "agents.toml: fleet did not say which harness profiles it has, so none was \
+             printed; run thurbox-cli migrate again once fleet answers"
+                .into(),
+        );
+    }
     let mut agents = BTreeMap::new();
     let strings = |value: Option<&toml::Value>| -> Vec<String> {
         value
@@ -538,6 +577,9 @@ fn harness_profiles(
                 },
             );
         }
+        let Some(shipped) = shipped else {
+            continue;
+        };
         if name == "shell" || shipped.contains(name) {
             continue;
         }
@@ -561,6 +603,12 @@ fn harness_profiles(
         let args = strings(entry.get("args"));
         if args.iter().any(|a| a.contains('{')) {
             left.push("a {placeholder} in args".into());
+        }
+        if resume_args
+            .iter()
+            .any(|a| a.replace("{id}", "").contains('{'))
+        {
+            left.push("a {placeholder} other than {id} in resume_args".into());
         }
         if !args.is_empty() {
             launch.insert("args".into(), args.into());

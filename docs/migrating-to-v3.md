@@ -137,8 +137,11 @@ object through `fleet apply` on the Fleet that thurbox uses:
   each one there, for example `cd /src/app-wt && claude --resume <id>`.
 - The 2.x worktree keeps its branch checked out. While it exists, the Task's
   worktree gets the branch `<branch>-2`, and uncommitted work stays in the
-  2.x worktree. Commit or move that work, and remove the 2.x worktree before
-  you dispatch the Task ([step 9](#9-remove-what-2x-left)).
+  2.x worktree. Do these steps in this order:
+  1. Resume or finish the 2.x conversation in its 2.x directory.
+  2. Commit or push its work.
+  3. Remove the 2.x worktree ([step 9](#9-remove-what-2x-left)).
+  4. Dispatch the Task.
 - Each `cron` automation that starts a session, with its time zone set to
   UTC, becomes a CronTask with `spec.suspend = true`. The report names each
   other automation: one that sends to a session, runs a command, runs once,
@@ -155,8 +158,8 @@ object through `fleet apply` on the Fleet that thurbox uses:
 
 A second run imports nothing twice: each object carries the 2.x session's or
 automation's id as a label. Without `sqlite3`, it says so and does the rest.
-Until a run reads `thurbox.db`, thurbox names `thurbox-cli migrate` at
-startup.
+Until a run imports each session and automation that it can import, thurbox
+names `thurbox-cli migrate` at startup.
 
 Check each Task with `fleet get task NAME`, then set `spec.dispatch` to
 `true` and apply it. For a CronTask, set `spec.suspend` to `false`.
