@@ -210,9 +210,9 @@ is retried as the [retries table](#retries-and-recovery) says.
 ### Retries and recovery
 
 `MAX_ATTEMPTS=3` bounds spawn effects and brief sends. `RETRY_DELAY_MS=30000`
-is a fixed wait, persisted as `status.notBefore` across process restarts.
-Releases and workspace cleans have no bound on attempts. After 3 failures
-their wait doubles with each further failure, up to
+is the wait between attempts, persisted as `status.notBefore` across process
+restarts. Releases and workspace cleans have no bound on attempts. After 3
+failures their wait doubles with each further failure, up to
 `RETRY_BACKOFF_MAX_MS=3600000`. These are controller constants, not extra
 configuration resources.
 

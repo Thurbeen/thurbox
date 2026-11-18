@@ -615,7 +615,7 @@ fn release_retries_past_the_bound_back_off_and_say_why() {
         ..Default::default()
     };
     let attempts = MAX_ATTEMPTS + 2;
-    let backoff = RETRY_DELAY_MS << 3;
+    let backoff = RETRY_DELAY_MS << 2;
 
     let (plan, st) = run(&failed_release(attempts, NOW - RETRY_DELAY_MS), gone());
     assert!(

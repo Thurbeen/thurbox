@@ -207,9 +207,9 @@ Guarantees, each with its test:
   `cleanWorkspace/<n>`. The finalizer goes only after a `Deleted` receipt.
   A failed or unknown release is repeated after each wait, and three raise
   `NeedsAttention/CleanFailed` with the last failure. Past three, each wait
-  doubles, up to `RETRY_BACKOFF_MAX_MS` (1 hour). A Task deleted while its `workspace` call is
-  unanswered releases the key without making anything. `task_workspace` and
-  `e2e_workspace` cover each case.
+  doubles, up to `RETRY_BACKOFF_MAX_MS` (1 hour). A Task deleted while its
+  `workspace` call is unanswered releases the key without making anything.
+  `task_workspace` and `e2e_workspace` cover each case.
 - **Spawn once.** The session key is `<name>.<uid>`. After an unknown spawn
   outcome the controller looks the key up: found is adopted, absent is retried,
   unreadable waits.

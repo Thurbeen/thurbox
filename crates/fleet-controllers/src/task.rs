@@ -62,7 +62,7 @@ fn retry_delay_after_failures(attempts: u32) -> Millis {
     let Some(past) = attempts.checked_sub(MAX_ATTEMPTS) else {
         return RETRY_DELAY_MS;
     };
-    1u64.checked_shl(past + 1)
+    1u64.checked_shl(past)
         .map_or(RETRY_BACKOFF_MAX_MS, |factor| {
             RETRY_DELAY_MS.saturating_mul(factor)
         })
