@@ -117,8 +117,7 @@ pub fn logs(requests: &[Request]) -> Vec<LogRecord> {
 
 /// The string attributes of each resource in the `/v1/logs` requests among
 /// `requests`.
-pub fn log_resources(requests: &[Request]) -> Vec<std::collections::BTreeMap<String, String>> {
-    use opentelemetry_proto::tonic::common::v1::any_value::Value;
+pub fn log_resources(requests: &[Request]) -> Vec<Attributes> {
     requests
         .iter()
         .filter(|(path, _)| path == "/v1/logs")
@@ -127,16 +126,45 @@ pub fn log_resources(requests: &[Request]) -> Vec<std::collections::BTreeMap<Str
                 .expect("a protobuf logs request")
                 .resource_logs
         })
+        .map(|r| strings(r.resource))
+        .collect()
+}
+
+/// The string attributes of each resource in the `/v1/traces` requests among
+/// `requests`, with the names of the spans under it.
+pub fn trace_resources(requests: &[Request]) -> Vec<(Attributes, Vec<String>)> {
+    use opentelemetry_proto::tonic::collector::trace::v1::ExportTraceServiceRequest;
+    requests
+        .iter()
+        .filter(|(path, _)| path == "/v1/traces")
+        .flat_map(|(_, body)| {
+            ExportTraceServiceRequest::decode(body.as_slice())
+                .expect("a protobuf traces request")
+                .resource_spans
+        })
         .map(|r| {
-            r.resource
-                .map(|r| r.attributes)
-                .unwrap_or_default()
+            let names = r
+                .scope_spans
                 .into_iter()
-                .filter_map(|kv| match kv.value.and_then(|v| v.value) {
-                    Some(Value::StringValue(s)) => Some((kv.key, s)),
-                    _ => None,
-                })
-                .collect()
+                .flat_map(|s| s.spans)
+                .map(|s| s.name)
+                .collect();
+            (strings(r.resource), names)
+        })
+        .collect()
+}
+
+pub type Attributes = std::collections::BTreeMap<String, String>;
+
+fn strings(resource: Option<opentelemetry_proto::tonic::resource::v1::Resource>) -> Attributes {
+    use opentelemetry_proto::tonic::common::v1::any_value::Value;
+    resource
+        .map(|r| r.attributes)
+        .unwrap_or_default()
+        .into_iter()
+        .filter_map(|kv| match kv.value.and_then(|v| v.value) {
+            Some(Value::StringValue(s)) => Some((kv.key, s)),
+            _ => None,
         })
         .collect()
 }

@@ -937,13 +937,14 @@ fn diagnostic_logs_reach_the_collector_at_warn_and_above_only() {
 }
 
 /// The `[telemetry]` table of `settings.toml` turns the interface's export
-/// on with no `OTEL_*` variable set, with its resource attributes; an
-/// `OTEL_*` variable set where thurbox starts wins over the file's value.
+/// on with no `OTEL_*` variable set, with its resource attributes on its
+/// spans and its log records alike; an `OTEL_*` variable set where thurbox
+/// starts wins over the file's value.
 #[test]
 fn the_settings_telemetry_table_alone_exports_and_an_otel_variable_wins_over_it() {
     let collector = otlp_collector::Collector::start();
     let table = format!(
-        "stray_key = 1\n[telemetry]\nendpoint = \"{}\"\ntraces = false\nmetrics = false\nlogs = true\nresource = {{ \"deployment.environment.name\" = \"from-file\" }}\n",
+        "stray_key = 1\n[telemetry]\nendpoint = \"{}\"\nmetrics = false\nlogs = true\nresource = {{ \"service.namespace\" = \"fleet-e2e\", \"deployment.environment.name\" = \"from-file\" }}\n",
         collector.endpoint()
     );
     let start = |profile: &Profile, logs_exporter: Option<&str>| {
@@ -979,16 +980,21 @@ fn the_settings_telemetry_table_alone_exports_and_an_otel_variable_wins_over_it(
         requests.extend(collector.take());
     }
     assert!(tui.quit().success());
+    requests.extend(collector.take());
+    let from_file = |r: &otlp_collector::Attributes| {
+        r.get("service.name").map(String::as_str) == Some("thurbox")
+            && r.get("service.namespace").map(String::as_str) == Some("fleet-e2e")
+            && r.get("deployment.environment.name").map(String::as_str) == Some("from-file")
+    };
     let resources = otlp_collector::log_resources(&requests);
+    assert!(resources.iter().all(from_file), "{resources:?}");
+    let traces = otlp_collector::trace_resources(&requests);
     assert!(
-        resources
-            .iter()
-            .all(
-                |r| r.get("deployment.environment.name").map(String::as_str) == Some("from-file")
-                    && r.get("service.name").map(String::as_str) == Some("thurbox")
-            ),
-        "{resources:?}"
+        !traces.is_empty(),
+        "no span reached the collector\n--- thurbox.log ---\n{}",
+        tui.log_tail()
     );
+    assert!(traces.iter().all(|(r, _)| from_file(r)), "{traces:?}");
 
     let profile = Profile::new();
     let mut tui = start(&profile, Some("none"));

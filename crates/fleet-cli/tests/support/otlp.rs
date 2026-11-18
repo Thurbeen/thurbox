@@ -46,6 +46,7 @@ pub struct Point {
     pub attrs: Attrs,
     /// The sum, gauge value or histogram count, as a number.
     pub value: f64,
+    pub resource: Attrs,
 }
 
 impl Collector {
@@ -119,6 +120,7 @@ impl Collector {
             }
             let req = ExportMetricsServiceRequest::decode(body.as_slice()).expect("OTLP metrics");
             for rm in req.resource_metrics {
+                let resource = attrs(&rm.resource.map(|r| r.attributes).unwrap_or_default());
                 for sm in rm.scope_metrics {
                     for m in sm.metrics {
                         let point = |a: &[KeyValue], value: f64| Point {
@@ -126,6 +128,7 @@ impl Collector {
                             unit: m.unit.clone(),
                             attrs: attrs(a),
                             value,
+                            resource: resource.clone(),
                         };
                         match &m.data {
                             Some(metric::Data::Sum(s)) => out.extend(
