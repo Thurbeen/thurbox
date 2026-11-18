@@ -761,11 +761,15 @@ fn adopt_unreleased(bin: &Path, home: &Path, from: &str) -> Result<(), String> {
     std::fs::create_dir_all(&release_bin)
         .map_err(|e| format!("create {}: {e}", release_bin.display()))?;
     for name in files {
-        let dest = release_bin.join(name);
-        let staged = stage_binary(&bin.join(name), &dest)?;
-        std::fs::rename(&staged, &dest).map_err(|e| replace_failed(&dest, e))?;
+        copy_program(&bin.join(name), &release_bin.join(name))?;
     }
     relink(&home.join("current"), &Path::new(RELEASES).join(from))
+}
+
+#[cfg(any(unix, windows))]
+fn copy_program(src: &Path, dest: &Path) -> Result<(), String> {
+    let staged = stage_binary(src, dest)?;
+    std::fs::rename(&staged, dest).map_err(|e| replace_failed(dest, e))
 }
 
 #[cfg(unix)]
@@ -793,7 +797,7 @@ fn link_programs(bin: &Path, home: &Path) -> Result<(), String> {
     Ok(())
 }
 
-#[cfg(target_os = "linux")]
+#[cfg(any(unix, windows))]
 fn restart_manager(bin: &Path, to: &str) -> Result<(), String> {
     const NO_UNIT: i32 = 3;
     let why = match fleet_service(bin, &["restart", "--expect", to]) {
@@ -801,15 +805,8 @@ fn restart_manager(bin: &Path, to: &str) -> Result<(), String> {
         Err((Some(NO_UNIT), _)) => return Ok(()),
         Err((_, why)) => why,
     };
-    let home = release_home(bin);
-    let Some(previous) = std::fs::read_link(home.join("previous")).ok() else {
-        return Err(format!(
-            "the manager did not come back on {to}: {why}; no previous release to roll back to"
-        ));
-    };
-    relink(&home.join("current"), &previous)?;
-    relink(&home.join("previous"), &Path::new(RELEASES).join(to))?;
-    let old = previous.file_name().unwrap_or_default().to_string_lossy();
+    let old = roll_back(bin, to)
+        .map_err(|e| format!("the manager did not come back on {to}: {why}; {e}"))?;
     let restarted = match fleet_service(bin, &["restart"]) {
         Ok(()) => String::new(),
         Err((_, again)) => format!("; restarting it on {old} failed too: {again}"),
@@ -819,9 +816,60 @@ fn restart_manager(bin: &Path, to: &str) -> Result<(), String> {
     ))
 }
 
-#[cfg(target_os = "linux")]
+#[cfg(unix)]
+fn roll_back(bin: &Path, to: &str) -> Result<String, String> {
+    let home = release_home(bin);
+    let previous = std::fs::read_link(home.join("previous"))
+        .map_err(|_| "no previous release to roll back to".to_string())?;
+    relink(&home.join("current"), &previous)?;
+    relink(&home.join("previous"), &Path::new(RELEASES).join(to))?;
+    Ok(previous
+        .file_name()
+        .unwrap_or_default()
+        .to_string_lossy()
+        .into_owned())
+}
+
+#[cfg(windows)]
+const PREVIOUS: &str = "previous";
+#[cfg(windows)]
+const PREVIOUS_VERSION: &str = "version";
+
+/// Copy the installed programs into `previous\` beside them, with the
+/// version they run, before an update replaces them: Windows has no
+/// symbolic link an ordinary user may make, so the release a rollback
+/// returns to is a copy.
+#[cfg(windows)]
+fn keep_previous(bin: &Path, from: &str) -> Result<(), String> {
+    let previous = bin.join(PREVIOUS);
+    if previous.exists() {
+        std::fs::remove_dir_all(&previous)
+            .map_err(|e| format!("remove {}: {e}", previous.display()))?;
+    }
+    std::fs::create_dir_all(&previous)
+        .map_err(|e| format!("create {}: {e}", previous.display()))?;
+    for stem in BINARIES {
+        let name = format!("{stem}.exe");
+        if bin.join(&name).is_file() {
+            copy_program(&bin.join(&name), &previous.join(&name))?;
+        }
+    }
+    crate::paths::write_atomically(&previous.join(PREVIOUS_VERSION), from)
+        .map_err(|e| format!("write {}: {e}", previous.display()))
+}
+
+#[cfg(windows)]
+fn roll_back(bin: &Path, _to: &str) -> Result<String, String> {
+    let previous = bin.join(PREVIOUS);
+    let old = std::fs::read_to_string(previous.join(PREVIOUS_VERSION))
+        .map_err(|_| "no previous release to roll back to".to_string())?;
+    install_binaries(&previous, bin, ".exe")?;
+    Ok(old.trim().to_string())
+}
+
+#[cfg(any(unix, windows))]
 fn fleet_service(bin: &Path, args: &[&str]) -> Result<(), (Option<i32>, String)> {
-    let fleet = bin.join("fleet");
+    let fleet = bin.join(format!("fleet{}", std::env::consts::EXE_SUFFIX));
     let output = Command::new(&fleet)
         .arg("service")
         .args(args)
@@ -958,14 +1006,17 @@ fn perform_update_from(
     #[cfg(unix)]
     {
         install_release(&extract_dir, install_dir, &current, &latest)?;
-        #[cfg(target_os = "linux")]
         let restarted = restart_manager(install_dir, &latest);
-        #[cfg(not(target_os = "linux"))]
-        let restarted: Result<(), String> = Ok(());
         collect_releases(&release_home(install_dir));
         restarted?;
     }
-    #[cfg(not(unix))]
+    #[cfg(windows)]
+    {
+        keep_previous(install_dir, &current)?;
+        install_binaries(&extract_dir, install_dir, ".exe")?;
+        restart_manager(install_dir, &latest)?;
+    }
+    #[cfg(not(any(unix, windows)))]
     install_binaries(&extract_dir, install_dir, std::env::consts::EXE_SUFFIX)?;
 
     Ok(UpdateOutcome::Updated {
@@ -1604,6 +1655,41 @@ cccc3333  thurbox-v0.114.0-aarch64-apple-darwin.tar.gz
         }
     }
 
+    /// Windows keeps the programs an update replaces in `previous\\`, with
+    /// their version, and a rollback puts them back in place.
+    #[cfg(windows)]
+    #[test]
+    fn a_windows_update_keeps_the_previous_programs_to_roll_back_to() {
+        let install = tempfile::TempDir::new().unwrap();
+        let extract = tempfile::TempDir::new().unwrap();
+        let program = |dir: &Path, stem: &str| dir.join(format!("{stem}.exe"));
+        for stem in BINARIES {
+            std::fs::write(program(install.path(), stem), "V1").unwrap();
+            std::fs::write(program(extract.path(), stem), "V2").unwrap();
+        }
+
+        keep_previous(install.path(), "1.0.0").unwrap();
+        install_binaries(extract.path(), install.path(), ".exe").unwrap();
+        for stem in BINARIES {
+            let installed = std::fs::read_to_string(program(install.path(), stem)).unwrap();
+            assert_eq!(installed, "V2", "{stem}");
+        }
+
+        assert_eq!(roll_back(install.path(), "2.0.0").unwrap(), "1.0.0");
+        for stem in BINARIES {
+            let installed = std::fs::read_to_string(program(install.path(), stem)).unwrap();
+            assert_eq!(installed, "V1", "{stem}");
+        }
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn a_windows_rollback_without_a_previous_copy_says_so() {
+        let install = tempfile::TempDir::new().unwrap();
+        let why = roll_back(install.path(), "2.0.0").unwrap_err();
+        assert!(why.contains("no previous release"), "{why}");
+    }
+
     /// When one binary cannot be committed the other is put back, so a failed
     /// update leaves the install on one version rather than split across two,
     /// and leaves no staged `.new` for the next update to trip over.
@@ -1943,7 +2029,7 @@ cccc3333  thurbox-v0.114.0-aarch64-apple-darwin.tar.gz
         assert_eq!(feed.installed().as_deref(), Some("3.0.1"));
     }
 
-    #[cfg(target_os = "linux")]
+    #[cfg(unix)]
     #[test]
     fn an_update_restarts_the_manager_on_the_new_release() {
         let feed = Feed::new(&["3.0.1", "3.0.0"], "3.0.0");
@@ -1951,7 +2037,7 @@ cccc3333  thurbox-v0.114.0-aarch64-apple-darwin.tar.gz
         assert_eq!(feed.calls(), ["3.0.1 service restart --expect 3.0.1"]);
     }
 
-    #[cfg(target_os = "linux")]
+    #[cfg(unix)]
     #[test]
     fn an_update_without_a_supervisor_keeps_the_new_release() {
         let feed = Feed::new(&["3.0.1", "3.0.0"], "3.0.0");
@@ -1960,7 +2046,7 @@ cccc3333  thurbox-v0.114.0-aarch64-apple-darwin.tar.gz
         assert_eq!(feed.link("current"), Some(PathBuf::from("releases/3.0.1")));
     }
 
-    #[cfg(target_os = "linux")]
+    #[cfg(unix)]
     #[test]
     fn a_manager_that_does_not_come_back_rolls_the_release_back() {
         let feed = Feed::new(&["3.0.1", "3.0.0"], "3.0.0");

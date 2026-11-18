@@ -89,8 +89,9 @@ Status: implemented.
    multiplexer and a coding agent.
 2. Run `fleet init`. It writes the multiplexer runtime and its `local`
    place.
-3. Run `fleet service install --now`. It writes the user systemd unit that
-   runs `fleet up`, and starts it
+3. Run `fleet service install --now`. It writes the user service that
+   runs `fleet up`, and starts it: a systemd user unit on Linux, a launchd
+   agent on macOS, a Task Scheduler task on Windows
    ([the service unit](fleet/configuration.md#the-service-unit-fleet-service)).
    On Linux, the installer does steps 2 and 3 when a systemd user manager
    runs.

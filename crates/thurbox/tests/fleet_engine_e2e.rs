@@ -1549,7 +1549,7 @@ fn doctor_reports_each_listed_fleet() {
     assert!(
         check("fleet-manager", "box")["fix"]
             .as_str()
-            .is_some_and(|d| d == "fleet service install --now on that machine (Linux), or fleet up under its own service manager"),
+            .is_some_and(|d| d == "fleet service install --now on that machine"),
         "{report:#}"
     );
     let calls = std::fs::read_to_string(&log).expect("ssh log");
@@ -1842,7 +1842,7 @@ fn doctor_reports_whether_a_remote_fleets_manager_runs() {
     let detail = down["detail"].as_str().unwrap();
     assert!(detail.contains("manager not running"), "{detail}");
     let fix = down["fix"].as_str().unwrap_or_default();
-    assert_eq!(fix, "fleet service install --now on that machine (Linux), or fleet up under its own service manager", "{fix}");
+    assert_eq!(fix, "fleet service install --now on that machine", "{fix}");
     assert!(!detail.contains("cannot tell"), "{detail}");
     assert_eq!(remote.manager(), None, "doctor started no manager");
 

@@ -538,9 +538,10 @@ release finds it whatever its name.
 2. It flips `current` to the new release in one rename. The old release
    becomes `previous`. An install whose programs are still files in the
    install directory first copies them into a release of their own.
-3. On Linux it runs the new `fleet service restart --expect <version>`. That
-   restarts the unit of the store, when it runs, and waits for the manager to
-   serve the new version (`docs/fleet/configuration.md`, the service unit).
+3. It runs the new `fleet service restart --expect <version>`. That
+   restarts the service of the store, when it runs, and waits for the manager
+   to serve the new version (`docs/fleet/configuration.md`, the service
+   unit).
 4. When the manager does not come back (it exits, refuses to start, or the
    wait ends), the update flips `current` back, restarts the unit again, and
    fails with the reason. No unit (exit 3) is not a failure.
@@ -550,8 +551,9 @@ release finds it whatever its name.
 
 After an install, the status line names each Fleet on this machine whose
 manager holds the lease and does not run the new version, and the command
-that restarts it on the new release: `systemctl --user restart <unit>` for the unit that its
-`fleet version --json` names in `manager.supervisor`, otherwise to stop its
+that restarts it on the new release: `systemctl --user restart <unit>` for the systemd unit that its
+`fleet version --json` names in `manager.supervisor`, `fleet service restart`
+for a launchd agent or a Task Scheduler task, otherwise to stop its
 `fleet up` and run it again (`stale_managers` in `src/kernel/snapshot/fleet.rs`). A Fleet whose
 `program` resolves to another file than the `fleet` the update installed is
 named as not replaced instead: a restart would run the same binary. A Fleet
@@ -569,8 +571,13 @@ A fleet-only install (`install.sh --fleet-only`, `install.ps1 -FleetOnly`, or
 thurbox to it. To update it, run the installer again in the same mode.
 
 **Windows takes the same path, with three differences.** It keeps no
-releases: it replaces the programs in place, and it restarts no manager
-(issue #1867). The release artifact
+releases, because a symbolic link needs developer mode there. The update
+first copies the installed programs, with their version, into
+`previous\` in the install directory. It then replaces the programs in place
+and runs `fleet service restart --expect <version>`, as on Linux and macOS.
+When the manager does not come back, it puts the programs in `previous\`
+back in the same way, restarts the service again, and fails with the reason.
+The release artifact
 is the `.zip` `install.ps1` extracts, so the
 unpacker is chosen by the archive's extension. And a rename cannot replace an
 executable a process is running from — Windows keeps its image mapped — so the
@@ -709,8 +716,9 @@ a place.
   command starts one. thurbox reads the unit from the `manager.supervisor`
   of the Fleet's `fleet version --json`, and never guesses it:
   `Fleet not running · systemctl --user start <unit>` when Fleet names a
-  unit, otherwise `Fleet not running · fleet service install --now` on Linux
-  and `Fleet not running · fleet up` elsewhere, with the `program` and
+  systemd unit, `Fleet not running · fleet service start` when it names a
+  launchd agent or a Task Scheduler task, otherwise
+  `Fleet not running · fleet service install --now`, with the `program` and
   `--config` its `[fleets]` entry names. Before
   its config exists it says `no Fleet config · fleet init`
   (`fleet --config <path> init` when `settings.toml` names the file).
@@ -738,9 +746,9 @@ a place.
   the Fleet's `fleet version --json`: the manager runs, it does not run, or
   the answer is unknown. When it does not run, the fix is the command the
   status line names on this machine. On another machine it is
-  `systemctl --user start <unit>` for the unit that Fleet names, otherwise
-  `fleet service install --now` on a Linux machine, or `fleet up` under the
-  machine's own service manager. When it runs another release than the
+  `systemctl --user start <unit>` for the systemd unit that Fleet names,
+  `fleet service start` for another supervisor's service, otherwise
+  `fleet service install --now`. When it runs another release than the
   installed `fleet` (`manager.version` differs from `cli.version`), the row
   warns "manager runs X, installed Y". The fix restarts the manager through
   its supervisor. A
