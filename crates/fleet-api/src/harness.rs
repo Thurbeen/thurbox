@@ -696,30 +696,39 @@ pub fn claude_trust_dialog(output: &str, cursor_row: usize) -> bool {
         && choice("Yes, I trust this folder")
 }
 
-/// Whether the cursor of a plain visible screen `output` is in a composer
-/// that holds a person's draft: a box between two full-width rules whose
-/// first line starts with `❯`, as Claude Code and GitHub Copilot CLI draw
-/// it. An empty composer keeps the cursor just after `❯ `, under a dim
-/// suggestion; a draft moves it past that, or onto a later line of the box.
-/// A one-line draft whose cursor was moved back to its start is not seen.
-pub fn composer_draft(output: &str, cursor_row: usize, cursor_col: usize) -> bool {
+/// Whether the composer on a plain visible screen `output` holds a
+/// person's draft: the last box between two full-width rules whose first
+/// line starts with `❯`, as Claude Code and GitHub Copilot CLI draw it.
+/// The capture may join a wrapped row into one line, so no screen row is
+/// read: a box of several lines, or a first line wider than its rule, is a
+/// draft. A one-line box with text after `❯` is a dim suggestion while the
+/// cursor stays two columns after `❯`, and a draft once it is past them.
+/// `None` when that takes a cursor column the capture did not give. A
+/// one-line draft whose cursor was moved back to its start is not seen.
+pub fn composer_draft(output: &str, cursor_col: Option<usize>) -> Option<bool> {
     let lines: Vec<&str> = output.lines().collect();
-    let rule = |at: usize| {
-        lines
-            .get(at)
-            .map(|l| l.trim())
-            .is_some_and(|l| !l.is_empty() && l.chars().all(|c| c == '─'))
+    let rule = |l: &str| {
+        let l = l.trim();
+        !l.is_empty() && l.chars().all(|c| c == '─')
     };
-    let Some(top) = (0..cursor_row).rev().find(|&at| rule(at)) else {
-        return false;
+    let Some(first) = (1..lines.len())
+        .rev()
+        .find(|&at| lines[at].starts_with('❯') && rule(lines[at - 1]))
+    else {
+        return Some(false);
     };
-    let Some(bottom) = (cursor_row..lines.len()).find(|&at| rule(at)) else {
-        return false;
+    let Some(bottom) = (first + 1..lines.len()).find(|&at| rule(lines[at])) else {
+        return Some(false);
     };
-    let first = top + 1;
-    cursor_row < bottom
-        && lines.get(first).is_some_and(|l| l.starts_with('❯'))
-        && (cursor_row > first || cursor_col > 2 || bottom - first > 1)
+    let width = lines[first - 1].trim().chars().count();
+    let line = lines[first].trim_end();
+    if bottom - first > 1 || line.chars().count() > width {
+        return Some(true);
+    }
+    if line.trim_start_matches('❯').trim().is_empty() {
+        return Some(false);
+    }
+    cursor_col.map(|col| col > 2)
 }
 
 /// Whether a plain visible screen `output` is Codex's initial empty
@@ -1167,25 +1176,32 @@ mod tests {
 
     #[test]
     fn a_composer_holds_a_draft_once_the_cursor_moves_past_its_start() {
-        assert!(!composer_draft(CLAUDE_2_1_328_EMPTY_COMPOSER, 2, 2));
-        let typed = CLAUDE_2_1_328_EMPTY_COMPOSER
-            .replace("Try \"write a test for <filepath>\"", "Also consider usi");
-        assert!(composer_draft(&typed, 2, 19));
-        assert!(composer_draft(&typed, 2, 5));
+        let empty = CLAUDE_2_1_328_EMPTY_COMPOSER;
+        assert_eq!(composer_draft(empty, Some(2)), Some(false));
+        let typed = empty.replace("Try \"write a test for <filepath>\"", "Also consider usi");
+        assert_eq!(composer_draft(&typed, Some(19)), Some(true));
+        assert_eq!(composer_draft(&typed, Some(5)), Some(true));
+        assert_eq!(composer_draft(&typed, Some(2)), Some(false));
+        assert_eq!(composer_draft(&typed, None), None);
+        assert_eq!(composer_draft(empty, None), None);
         let two_lines = typed.replace("usi\n", "usi\n  second line\n");
-        assert!(composer_draft(&two_lines, 3, 13));
-        assert!(composer_draft(&two_lines, 2, 2));
-        assert!(!composer_draft(&typed, 3, 0));
-        assert!(!composer_draft(&typed, 4, 10));
-        assert!(!composer_draft(&typed.replace('❯', ">"), 2, 19));
-        assert!(!composer_draft(COPILOT_READY, 21, 2));
-        assert!(composer_draft(
-            &COPILOT_READY.replace("\n❯\n", "\n❯ Run it\n"),
-            21,
-            8
-        ));
-        assert!(!composer_draft(COPILOT_TRUST, 14, 20));
-        assert!(!composer_draft("", 0, 5));
+        assert_eq!(composer_draft(&two_lines, Some(2)), Some(true));
+        assert_eq!(composer_draft(&two_lines, None), Some(true));
+        let wrapped = typed.replace("usi\n", &format!("usi{}\n", " more".repeat(12)));
+        assert_eq!(composer_draft(&wrapped, Some(2)), Some(true));
+        let bare = empty.replace("Try \"write a test for <filepath>\"", "");
+        assert_eq!(composer_draft(&bare, None), Some(false));
+        assert_eq!(
+            composer_draft(&typed.replace('❯', ">"), Some(19)),
+            Some(false)
+        );
+        assert_eq!(composer_draft(COPILOT_READY, Some(2)), Some(false));
+        assert_eq!(
+            composer_draft(&COPILOT_READY.replace("\n❯\n", "\n❯ Run it\n"), Some(8)),
+            Some(true)
+        );
+        assert_eq!(composer_draft(COPILOT_TRUST, Some(20)), Some(false));
+        assert_eq!(composer_draft("", Some(5)), Some(false));
     }
 
     /// GitHub Copilot CLI 1.0.105's screen in an 80x24 pane once its folder

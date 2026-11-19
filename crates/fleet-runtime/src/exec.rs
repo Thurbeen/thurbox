@@ -847,19 +847,21 @@ impl ExecRuntime {
             if !manifest.verbs.iter().any(|v| v == "capture") {
                 return Observation::Known(false);
             }
-            self.capture(session).map(|captured| match captured {
+            bind(self.capture(session), |captured| match captured {
                 Captured::Screen {
-                    text,
-                    cursor_row,
-                    cursor_col,
-                    ..
+                    text, cursor_col, ..
                 } => {
-                    let at = |n: Option<u64>| n.and_then(|n| usize::try_from(n).ok());
-                    at(cursor_row)
-                        .zip(at(cursor_col))
-                        .is_some_and(|(r, c)| composer_draft(&text, r, c))
+                    let col = cursor_col.and_then(|n| usize::try_from(n).ok());
+                    composer_draft(&text, col).map_or_else(
+                        || {
+                            Observation::unknown(
+                                "the capture gave no cursor to tell a draft from a suggestion",
+                            )
+                        },
+                        Observation::Known,
+                    )
                 }
-                Captured::None => false,
+                Captured::None => Observation::Known(false),
             })
         })
     }
@@ -2254,9 +2256,10 @@ mod tests {
         )
         .expect("answer");
         std::fs::write(dir.join("input"), r#"{"known":"sent"}"#).expect("answer");
-        let screen = |text: &str, col: u64| {
+        let screen = |text: &str, col: Option<u64>| {
+            let rule = "─".repeat(40);
             json!({"known": {"screen": {
-                "text": format!("────\n❯ {text}\n────\n"),
+                "text": format!("{rule}\n❯ {text}\n{rule}\n"),
                 "cursorRow": 1, "cursorCol": col, "foreground": "claude"
             }}})
             .to_string()
@@ -2264,16 +2267,25 @@ mod tests {
         let runtime = ExecRuntime::new(BTreeMap::from([("local".to_string(), rt)]));
         let session = runtime.session("local", "k");
 
-        std::fs::write(dir.join("capture"), screen("Try \"fix it\"", 2)).expect("answer");
+        std::fs::write(dir.join("capture"), screen("Try \"fix it\"", Some(2))).expect("answer");
         assert!(matches!(
             runtime.brief(&session, "VEGA", "send/1"),
             Observation::Known(EffectOutcome::Delivered { .. })
         ));
-        std::fs::write(dir.join("capture"), screen("Also consider usi", 19)).expect("answer");
-        let refused = runtime.brief(&session, "VEGA", "send/1");
+        let wrapped = format!("Also consider usi{}", " more".repeat(8));
+        for (draft, col) in [("Also consider usi", Some(19)), (wrapped.as_str(), Some(2))] {
+            std::fs::write(dir.join("capture"), screen(draft, col)).expect("answer");
+            let refused = runtime.brief(&session, "VEGA", "send/1");
+            assert!(
+                matches!(&refused, Observation::Known(EffectOutcome::Failed { why }) if why.contains("typing")),
+                "{draft}: {refused:?}"
+            );
+        }
+        std::fs::write(dir.join("capture"), screen("Also consider usi", None)).expect("answer");
+        let unread = runtime.brief(&session, "VEGA", "send/1");
         assert!(
-            matches!(&refused, Observation::Known(EffectOutcome::Failed { why }) if why.contains("typing")),
-            "{refused:?}"
+            matches!(&unread, Observation::Known(EffectOutcome::Failed { why }) if why.contains("cannot be read")),
+            "{unread:?}"
         );
         std::fs::remove_file(dir.join("capture")).expect("remove");
         assert!(matches!(

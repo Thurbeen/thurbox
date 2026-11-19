@@ -1183,10 +1183,9 @@ my $text = "";
 sub draw {
   my $shown = $text; $shown =~ s/\n/ /g;
   my $rule = "\x{2500}" x 40;
-  print "\e[2J\e[1;1H$rule\e[2;1H\x{276f} ";
-  print length($text) ? $shown : "\e[2mTry \"fix the lint errors\"\e[22m";
-  print "\e[3;1H$rule\e[4;1H  ? for shortcuts";
-  printf "\e[2;%dH", length($text) ? 3 + length($shown) : 3;
+  print "\e[2J\e[1;1H$rule\r\n\x{276f} ";
+  print length($text) ? "$shown\e7" : "\e7\e[2mTry \"fix the lint errors\"\e[22m";
+  print "\r\n$rule\r\n  ? for shortcuts\e8";
 }
 binmode STDOUT, ":utf8";
 draw();
@@ -1221,11 +1220,21 @@ fn submitted(work: &Path) -> Vec<String> {
 
 #[test]
 fn an_inbox_entry_waits_while_a_person_drafts_in_the_composer() {
+    an_entry_waits_behind_the_draft("draft", "Also consider usi");
+}
+
+#[test]
+fn an_inbox_entry_waits_behind_a_draft_wider_than_the_pane() {
+    let draft = format!("Also consider {}usi", "the slow path ".repeat(24));
+    an_entry_waits_behind_the_draft("wide-draft", &draft);
+}
+
+fn an_entry_waits_behind_the_draft(name: &str, draft: &str) {
     let (Some(program), Some(_)) = (runtime_mux(), tmux()) else {
         return;
     };
-    let sockets = Sockets::new("draft");
-    let mut env = mux_env("runtime-mux-draft", &program, &sockets);
+    let sockets = Sockets::new(name);
+    let mut env = mux_env(&format!("runtime-mux-{name}"), &program, &sockets);
     stand_in(&mut env, "claude", "claude", COMPOSING_CLAUDE);
     let work = env.root.join("work").join("t1");
     fs::create_dir_all(&work).expect("workspace");
@@ -1244,7 +1253,7 @@ fn an_inbox_entry_waits_while_a_person_drafts_in_the_composer() {
         .and_then(|l| l.split(' ').next())
         .unwrap_or_else(|| panic!("no pane in {}: {listed}", work.display()))
         .to_string();
-    sockets.tmux(&["send-keys", "-t", &pane, "-l", "Also consider usi"]);
+    sockets.tmux(&["send-keys", "-t", &pane, "-l", draft]);
     let entry = "VEGA re-hydrate: read the board";
     env.fleet(&["send", "t1", entry]).ok();
     for _ in 0..8 {
@@ -1253,7 +1262,7 @@ fn an_inbox_entry_waits_while_a_person_drafts_in_the_composer() {
     }
     let merged: Vec<String> = submitted(&work)
         .into_iter()
-        .filter(|p| p.contains("consider usi") || p.contains("VEGA"))
+        .filter(|p| p.contains("Also consider") || p.contains("VEGA"))
         .collect();
     assert!(
         merged.is_empty(),
@@ -1268,7 +1277,7 @@ fn an_inbox_entry_waits_while_a_person_drafts_in_the_composer() {
     let prompts = submitted(&work);
     assert_eq!(
         prompts[prompts.len() - 2..],
-        ["Also consider using".to_string(), entry.to_string()],
+        [format!("{draft}ng"), entry.to_string()],
         "{prompts:?}"
     );
 }

@@ -491,12 +491,17 @@ never types into a draft:
 - The `exec` kind reads the screen again just before it types. A draft
   there fails the send, and nothing is typed. The send is tried again
   after a wait, as any refused send.
-- A draft is a box between two full-width rules whose first line starts
-  with `❯`, with the cursor further right than two columns after `❯`, or on
-  a later line of the box
+- A draft is in the last box between two full-width rules whose first
+  line starts with `❯`
   ([`composer_draft`](../../../crates/fleet-api/src/harness.rs)). Claude
-  Code and GitHub Copilot CLI draw their composer so. An empty composer
-  keeps the cursor two columns after `❯`, under a dim suggestion.
+  Code and GitHub Copilot CLI draw their composer so.
+- A box of several lines is a draft. So is a first line wider than the rule
+  above it: the capture joins a wrapped row into one line, so Fleet reads
+  no screen row.
+- A one-line box with text after `❯` is a dim suggestion while the cursor
+  stays two columns after `❯`, and a draft once the cursor is past them. A
+  capture with no cursor column then makes the composer unreadable, and
+  Fleet does not send.
 - Fleet does not see a one-line draft whose cursor the person moved back to
   its start, or a draft in another agent's composer.
 
