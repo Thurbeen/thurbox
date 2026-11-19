@@ -36,7 +36,7 @@ mod programs;
 mod shells;
 pub mod stream_pane;
 
-pub use shells::ShellResult;
+pub use shells::{ShellOpening, ShellResult};
 
 pub use paint::CursorOn;
 
@@ -320,6 +320,7 @@ pub struct Terminals {
     shelling: HashMap<String, shells::Shelling>,
     shelled: (Sender<shells::Shelled>, Receiver<shells::Shelled>),
     shell_results: Vec<ShellResult>,
+    shells_after_start: HashMap<String, (u16, u16)>,
     /// The runtime the interface runs on, so a worker can enter it.
     ///
     /// Adopting a pane wires its reader and writer as tokio tasks, which need a
@@ -430,6 +431,7 @@ impl Terminals {
             shelling: HashMap::new(),
             shelled: std::sync::mpsc::channel(),
             shell_results: Vec::new(),
+            shells_after_start: HashMap::new(),
             attach: attach::Attach::new(),
             runtime: tokio::runtime::Handle::try_current().ok(),
             programs: HashMap::new(),
@@ -477,6 +479,7 @@ impl Terminals {
             .collect();
         self.live.retain(|id, _| present.contains(id.as_str()));
         self.collect_shells(snapshot);
+        self.open_shells_after_start(snapshot);
         let failures = self.attach.failed.len();
         self.attach
             .failed
