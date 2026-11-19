@@ -59,8 +59,15 @@ impl Terminals {
     ) -> Result<ShellOpening, String> {
         let Some(live) = self.live.get(&row.id) else {
             if row.stopped {
-                self.shells_after_start.insert(row.id.clone(), (rows, cols));
-                return Ok(ShellOpening::AfterStart);
+                let waiting = self
+                    .shells_after_start
+                    .insert(row.id.clone(), (rows, cols))
+                    .is_some();
+                return Ok(if waiting {
+                    ShellOpening::Opening
+                } else {
+                    ShellOpening::AfterStart
+                });
             }
             return Err("this session has no live pane to attach a shell to".into());
         };
@@ -93,27 +100,24 @@ impl Terminals {
         Ok(ShellOpening::Opening)
     }
 
-    /// Open the shells asked for on paused rows whose panes are back. One
-    /// whose row went, or whose Start failed, is given up.
     pub(super) fn open_shells_after_start(&mut self, snapshot: &Snapshot) {
         let wanted: Vec<(String, (u16, u16))> = self.shells_after_start.drain().collect();
         for (session, (rows, cols)) in wanted {
             let Some(row) = snapshot.session(&session) else {
                 continue;
             };
+            if self.live.contains_key(&session) {
+                if let Err(error) = self.open_shell(row, rows, cols) {
+                    self.shell_results
+                        .push(ShellResult::Failed { session, error });
+                }
+                continue;
+            }
             if matches!(
                 self.attach.starts.get(&session),
-                Some((super::Start::Failed(_), _))
+                Some((super::Start::Pending, _))
             ) {
-                continue;
-            }
-            if !self.live.contains_key(&session) {
                 self.shells_after_start.insert(session, (rows, cols));
-                continue;
-            }
-            if let Err(error) = self.open_shell(row, rows, cols) {
-                self.shell_results
-                    .push(ShellResult::Failed { session, error });
             }
         }
     }
@@ -249,8 +253,6 @@ mod tests {
         assert!(terminals.drain_shell_results().is_empty());
     }
 
-    /// A shell asked for on a paused row waits for its Start, and is given up
-    /// when that Start fails rather than opening whenever the pane next comes.
     #[test]
     fn a_shell_waiting_on_a_start_that_failed_is_given_up() {
         let (mut terminals, _) = terminals_with_probe();
@@ -260,6 +262,10 @@ mod tests {
         assert_eq!(
             terminals.open_shell(&row, 24, 80),
             Ok(super::ShellOpening::AfterStart)
+        );
+        assert_eq!(
+            terminals.open_shell(&row, 24, 80),
+            Ok(super::ShellOpening::Opening)
         );
         let snapshot = Snapshot {
             sessions: vec![row],
