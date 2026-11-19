@@ -920,23 +920,38 @@ fn runs(link: &FleetLink, installed: &std::path::Path) -> bool {
         .is_some_and(|path| canonical(&path).is_some() && canonical(&path) == canonical(installed))
 }
 
-fn url_repo(url: &str) -> Option<String> {
-    let (_, rest) = url.split_once("://")?;
+fn workspace_git_dir_name(url: &str) -> Option<String> {
+    let rest = url
+        .strip_prefix("git+https://")
+        .or_else(|| url.strip_prefix("git+ssh://"))?;
     let path = rest.split(['?', '#']).next()?.trim_end_matches('/');
-    let (_, last) = path.rsplit_once('/')?;
-    let name = last.strip_suffix(".git").unwrap_or(last);
-    (!name.is_empty()).then(|| name.to_string())
+    let last = path.rsplit(['/', ':']).next().unwrap_or_default();
+    let last = String::from_utf8_lossy(&percent_decoded(last)).into_owned();
+    let last = last.strip_suffix(".git").unwrap_or(&last);
+    let name: String = last
+        .chars()
+        .map(|c| match c {
+            c if c.is_ascii_alphanumeric() || matches!(c, '.' | '-' | '_') => c,
+            _ => '_',
+        })
+        .collect();
+    match name.trim_start_matches('.') {
+        "" => Some("repo".into()),
+        name => Some(name.into()),
+    }
 }
 
-/// One Task as a session row.
-///
-/// The directory a `file` or `git+file` URL names, without a query or a
-/// fragment, `%XX` decoded; `None` for any other URL.
 fn local_dir(url: &str) -> Option<String> {
     let path = url
         .strip_prefix("file://")
         .or_else(|| url.strip_prefix("git+file://"))?;
     let path = path.split(['?', '#']).next().unwrap_or(path);
+    String::from_utf8(percent_decoded(path))
+        .ok()
+        .filter(|p| !p.is_empty())
+}
+
+fn percent_decoded(path: &str) -> Vec<u8> {
     let mut bytes = Vec::with_capacity(path.len());
     let mut rest = path.as_bytes();
     while let Some((&b, tail)) = rest.split_first() {
@@ -955,7 +970,7 @@ fn local_dir(url: &str) -> Option<String> {
             }
         }
     }
-    String::from_utf8(bytes).ok().filter(|p| !p.is_empty())
+    bytes
 }
 
 /// The row of a Task of the Fleet `link` reaches. Its id is
@@ -1002,7 +1017,11 @@ pub fn row_of(link: &FleetLink, task: &Value) -> SessionRow {
         state => state,
     };
     let agent_state = status["agentState"].as_str();
-    let repo = repo_name(&cwd, None).or_else(|| spec["workspace"][0].as_str().and_then(url_repo));
+    let repo = repo_name(&cwd, None).or_else(|| {
+        spec["workspace"][0]
+            .as_str()
+            .and_then(workspace_git_dir_name)
+    });
     let status_source = match (session_state, &status["activity"]["source"]) {
         (Some("Paused" | "Lost" | "Gone"), _) | (_, Value::Null) => None,
         (_, source) => Some(StatusSource {
@@ -1567,6 +1586,37 @@ mod tests {
         let error = read.error.unwrap_or_default();
         assert!(error.contains("could not start fleet version"), "{error}");
         assert_eq!(read.fleets[0].state, FleetState::Unreachable, "{error}");
+    }
+
+    #[test]
+    fn a_held_row_names_its_repository_as_workspace_git_names_the_directory() {
+        let held = |url: &str| {
+            let task = serde_json::json!({
+                "metadata": {"name": "held"},
+                "spec": {"harness": "claude", "host": "local", "dispatch": false,
+                         "workspace": [url]},
+                "status": {},
+            });
+            row_of(&FleetLink::local("fleet"), &task).repo
+        };
+        for (url, name) in [
+            (
+                "git+https://github.com/LeTuR/websites.git",
+                Some("websites"),
+            ),
+            (
+                "git+https://github.com/LeTuR/websites.git?branch=b#main",
+                Some("websites"),
+            ),
+            ("git+https://host/team/%77ebsites.git", Some("websites")),
+            ("git+https://host/team/my%20repo.git", Some("my_repo")),
+            ("git+https://host/org/.github.git", Some("github")),
+            ("git+ssh://git@host/org/repo/", Some("repo")),
+            ("git+https://host/org/.git", Some("repo")),
+            ("s3://bucket/data", None),
+        ] {
+            assert_eq!(held(url).as_deref(), name, "{url}");
+        }
     }
 
     /// A session over several repositories spans every directory the runtime
