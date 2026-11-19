@@ -921,8 +921,11 @@ fn runs(link: &FleetLink, installed: &std::path::Path) -> bool {
 }
 
 fn url_repo(url: &str) -> Option<String> {
-    let url = url.split(['?', '#']).next().unwrap_or(url);
-    crate::git::parse_repo_name_from_url(url)
+    let (_, rest) = url.split_once("://")?;
+    let path = rest.split(['?', '#']).next()?.trim_end_matches('/');
+    let (_, last) = path.rsplit_once('/')?;
+    let name = last.strip_suffix(".git").unwrap_or(last);
+    (!name.is_empty()).then(|| name.to_string())
 }
 
 /// One Task as a session row.
@@ -980,13 +983,9 @@ pub fn row_of(link: &FleetLink, task: &Value) -> SessionRow {
         (false, None) => Some(link.name().to_string()),
         (false, Some(place)) => Some(format!("{} · {place}", link.name())),
     };
-    // Where the session runs once the runtime made its workspace; before,
-    // the directory its first URL names on this machine.
     let cwd = text(&status["workspace"]["dirs"][0])
         .or_else(|| spec["workspace"][0].as_str().and_then(local_dir))
         .map(PathBuf::from);
-    // Every directory the session spans, in order: the runtime's answer, or
-    // before it, the session's own directory.
     let member_dirs: Vec<PathBuf> = status["workspace"]["dirs"]
         .as_array()
         .map(|dirs| {
