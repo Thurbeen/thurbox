@@ -492,10 +492,11 @@ never types into a draft:
   there fails the send, and nothing is typed. The send is tried again
   after a wait, as any refused send.
 - A draft is a box between two full-width rules whose first line starts
-  with `❯`, with the cursor in the box past `❯ ` or on a later line
+  with `❯`, with the cursor further right than two columns after `❯`, or on
+  a later line of the box
   ([`composer_draft`](../../../crates/fleet-api/src/harness.rs)). Claude
   Code and GitHub Copilot CLI draw their composer so. An empty composer
-  keeps the cursor just after `❯ `, under a dim suggestion.
+  keeps the cursor two columns after `❯`, under a dim suggestion.
 - Fleet does not see a one-line draft whose cursor the person moved back to
   its start, or a draft in another agent's composer.
 
