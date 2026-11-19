@@ -7393,6 +7393,8 @@ fn pausing_a_running_session_asks_fleet_and_its_pane_says_paused_then_starting()
     tui.send(b"G");
     tui.wait_until_quiet();
     tui.send(b"p");
+    tui.wait_for("Pause napping?");
+    tui.send(b"y");
     tui.wait_until("the pane to say the session is paused", |frame| {
         frame.contains("❚❚ napping is paused")
             && frame.contains("[Paused]")
@@ -7409,6 +7411,35 @@ fn pausing_a_running_session_asks_fleet_and_its_pane_says_paused_then_starting()
             && theme_spinner().iter().any(|glyph| frame.contains(glyph))
     });
     assert!(woken.exists());
+    assert!(tui.quit().success());
+}
+
+#[test]
+fn pausing_a_session_that_has_not_started_asks_nothing_of_fleet() {
+    let profile = Profile::new();
+    let calls = profile.root.path().join("fleet-calls");
+    let mut fresh = fake_task("fresh", "Running", serde_json::json!([]));
+    let status = &mut fresh["object"]["status"];
+    status.as_object_mut().unwrap().remove("sessionState");
+    status.as_object_mut().unwrap().remove("agentState");
+    status.as_object_mut().unwrap().remove("session");
+    let synced = serde_json::json!({"type": "synced", "revision": 1, "names": ["fresh"]});
+    write_script(
+        &profile.bin.join("fleet"),
+        &format!(
+            "#!/bin/sh\necho \"$*\" >> '{calls}'\ncase \"$1\" in\n  watch) echo '{fresh}'; echo '{synced}'; while kill -0 $PPID 2>/dev/null; do sleep 1; done ;;\n  up) exit 6 ;;\n  version) echo '{{\"apiVersions\":[\"fleet/v1alpha1\"]}}' ;;\n  *) exit 1 ;;\nesac\n",
+            calls = calls.display(),
+        ),
+    );
+    let mut tui = Tui::spawn(&profile, 40, 160);
+    tui.wait_until("the fresh row", |frame| frame.contains("fresh"));
+    focus_the_list(&mut tui);
+    tui.send(b"G");
+    tui.wait_until_quiet();
+    tui.send(b"p");
+    tui.wait_for("fresh is not running");
+    let log = std::fs::read_to_string(&calls).unwrap_or_default();
+    assert!(!log.lines().any(|call| call.starts_with("pause")), "{log}");
     assert!(tui.quit().success());
 }
 

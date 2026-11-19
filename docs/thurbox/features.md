@@ -131,7 +131,7 @@ conditions (`kernel::snapshot::fleet::state_why`, published as `state_why`):
 | `Stalled=True`, any state | `stalled · <reason>`, such as `stalled · SpawnAttemptsExhausted` |
 | `Paused`, `Paused=True/Idle` | `paused · idle`: Fleet paused it after `pauseAfterMs` at rest |
 | `Paused`, `Paused=True/Requested` | `paused · on request`: `fleet pause` (thurbox's `p`) paused it |
-| `Paused=True` and a resume due: `wakeRequestedAt` at or after the pause, an inbox entry to deliver, or `resumeAttempts` above 0 | `paused · resuming`: Fleet is resuming its agent |
+| `Paused=True`, `spec.dispatch` not `false`, and a resume due: `wakeRequestedAt` at or after the pause, an inbox entry to deliver, or `resumeAttempts` above 0 | `paused · resuming`: Fleet is resuming its agent |
 | `Paused`, `Paused=True/External` | `stopped · outside Fleet` |
 | `Lost` | `lost · window gone`; `lost · cannot resume` after `NeedsAttention/CannotResume`; `lost · revive failed` after `NeedsAttention/ReviveFailed` |
 | `Gone` | `gone · session ended` |
@@ -144,8 +144,8 @@ window is gone. The interface does not attach a stopped row's pane. The
 first frame that reads the row running again attaches the pane, whatever
 resumed it: Start, a message, or `fleet attach --wake` from a shell.
 
-`p` on the session list, or Pause in its menu, pauses a running session:
-thurbox runs `fleet pause <task>`, which asks the Task's controller to pause
+`p` on the session list, or Pause in its menu, asks to pause a session whose
+agent runs; on `y` thurbox runs `fleet pause <task>`, which asks the Task's controller to pause
 the agent and keep its conversation. The row then reads `paused · on
 request`, and `s` resumes it like any paused session.
 

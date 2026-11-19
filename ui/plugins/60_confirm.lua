@@ -31,7 +31,7 @@ local widgets = require("lib.widgets")
 --- ships with thurbox — so anything it would forward, any pane could issue
 --- through it. A `send` or a `create` behind a question its author wrote is the
 --- capability laundered, so only the change the shipped panes ask about passes.
-local FORWARDS = { delete = true }
+local FORWARDS = { delete = true, pause = true }
 
 --- A session's name, for the line that says what will happen to it.
 local function session_name(id)
@@ -44,7 +44,10 @@ local function session_name(id)
 end
 
 --- What `y` will do, in words made here from the command it issues.
-local function consequence(_, options)
+local function consequence(command, options)
+  if command == "pause" then
+    return "Pause " .. session_name(options.session)
+  end
   return "Delete " .. session_name(options.session) .. " for good"
 end
 

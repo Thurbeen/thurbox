@@ -936,6 +936,8 @@ end
 --- entry and its chord cannot come to mean different things, and delete still
 --- asks first when there is work to lose. Sort and the panel toggle are not
 --- here: neither is about the session that was pressed.
+local RUNNING = { working = true, blocked = true, idle = true, running = true }
+
 local SESSION_MENU = {
   { label = "Open", action = "sessions.open" },
   { label = "Rename", action = "sessions.rename" },
@@ -1790,10 +1792,15 @@ pane = {
         command("message", { text = name .. " is starting" })
       elseif session.status == "stopped" then
         command("message", { text = name .. " is already paused" })
-      elseif session_model.revival(session) then
-        command("message", { text = name .. " is not running" })
+      elseif RUNNING[session.status] and not session_model.revival(session) then
+        store.confirm = {
+          question = "Pause " .. name .. "?",
+          lines = { "Its agent stops. s resumes it on its conversation." },
+          command = "pause",
+          options = { session = id },
+        }
       else
-        command("pause", { session = id })
+        command("message", { text = name .. " is not running" })
       end
     elseif action == "sessions.editor" and id then
       command("editor", { session = id })

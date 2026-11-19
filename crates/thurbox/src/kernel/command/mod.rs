@@ -451,6 +451,7 @@ impl Command {
             Command::OpenLink { .. } => Some(Capability::Run),
             Command::Program { .. } => Some(Capability::Program),
             Command::Send { .. }
+            | Command::Pause { .. }
             | Command::Create { .. }
             | Command::Plugin { .. }
             // Fleet has no undo window, so every delete is for good.
@@ -460,7 +461,6 @@ impl Command {
             Command::Order { .. }
             | Command::Rename { .. }
             | Command::Start { .. }
-            | Command::Pause { .. }
             | Command::Bookmark { .. } => None,
             // The interface's own state, or something the user then drives
             // themselves: a pane focused, a shell or editor opened beside a
@@ -1465,6 +1465,8 @@ mod tests {
                 Some(Sessions),
             ),
             ("delete", with(Args::default()), Some(Sessions)),
+            ("pause", with(Args::default()), Some(Sessions)),
+            ("start", with(Args::default()), None),
             (
                 "plugin",
                 with(Args {

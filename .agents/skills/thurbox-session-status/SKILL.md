@@ -64,8 +64,11 @@ the `start` command, which runs `fleet attach --wake --json <task>`: Fleet's
 controller resumes the paused agent. `session_model.revival` (in
 `ui/lib/session_model.lua`) says which rows `s` starts: a stopped row and a
 lost one whose window is gone; `lost · cannot resume` and `gone` rows cannot
-come back. `p` (or Pause in the menu) sends the `pause` command, which runs
-`fleet pause <task>`; `sessions.pause` refuses a row that is not running.
+come back. `p` (or Pause in the menu) asks `60_confirm` to issue the `pause`
+command, which runs `fleet pause <task>` and needs the `sessions` capability;
+`sessions.pause` refuses a row whose agent does not run (stopped, lost, or no
+session yet). A held Task (`spec.dispatch = false`) never reads `paused ·
+resuming`: Fleet does not resume it.
 
 The agent pane (`ui/plugins/20_agent.lua`) draws such a row as its state, its
 reason and the way back, with the chords read from the registry. A start the
