@@ -56,7 +56,7 @@ Fleet releases its session. `FleetWatch::poll` lists it again once
 
 A row that does not run carries `state_why`, which `state_why` in
 `src/kernel/snapshot/fleet.rs` reads off the Task's conditions: `stalled ·
-<reason>` (any state), `paused · idle`, `stopped · outside Fleet`, `lost ·
+<reason>` (any state), `paused · idle`, `paused · on request`, `paused · resuming`, `stopped · outside Fleet`, `lost ·
 window gone`, `lost · cannot resume`, `lost · revive failed` or `gone ·
 session ended`. The sessions
 pane prints it after the name. `s` on the list (or Start in its menu) sends
@@ -64,13 +64,19 @@ the `start` command, which runs `fleet attach --wake --json <task>`: Fleet's
 controller resumes the paused agent. `session_model.revival` (in
 `ui/lib/session_model.lua`) says which rows `s` starts: a stopped row and a
 lost one whose window is gone; `lost · cannot resume` and `gone` rows cannot
-come back. Fleet has no stop verb, so thurbox has none.
+come back. `p` (or Pause in the menu) asks `60_confirm` to issue the `pause`
+command, which runs `fleet pause <task>` and needs the `sessions` capability;
+`sessions.pause` refuses a row whose agent does not run (stopped, lost, or no
+session yet). A held Task (`spec.dispatch = false`) never reads `paused ·
+resuming`: Fleet does not resume it.
 
 The agent pane (`ui/plugins/20_agent.lua`) draws such a row as its state, its
 reason and the way back, with the chords read from the registry. A start the
 interface sent is tracked in `Terminals` (`start_requested`, `start_failed`,
 `settle_starts` in `src/kernel/terminal/attach.rs`) and published per row as
-`starting` and `start_error`. It is pending until the pane attaches, an attach
+`starting` and `start_error`. A resume the interface did not send is tracked the
+same way: `attach_fleet` records a start for a row that reads `paused · resuming`,
+and for a row that leaves `stopped` while its pane still says it is paused. It is pending until the pane attaches, an attach
 made after it fails, or `START_WAIT` (90 s) passes; a refused `start` command
 fails it with Fleet's error. While one is pending, the animation clock runs and
 the pane draws `theme.spinner_frame` and `Starting <name>…`.

@@ -1085,7 +1085,15 @@ pub fn row_of(link: &FleetLink, task: &Value) -> SessionRow {
                             .or_else(|| text(&c["reason"]))
                     }),
             }),
-        state_why: state_why(session_state, status),
+        state_why: state_why(
+            session_state,
+            status,
+            if spec["dispatch"] == false {
+                Dispatch::Held
+            } else {
+                Dispatch::On
+            },
+        ),
     }
 }
 
@@ -1099,14 +1107,40 @@ fn true_condition<'a>(status: &'a Value, kind: &str) -> Option<&'a Value> {
 
 pub(crate) const SESSION_ENDED: &str = "gone · session ended";
 
-fn state_why(session_state: Option<&str>, status: &Value) -> Option<String> {
+pub(crate) const RESUMING: &str = "paused · resuming";
+
+#[derive(Clone, Copy, PartialEq)]
+enum Dispatch {
+    On,
+    Held,
+}
+
+fn resume_due(status: &Value) -> bool {
+    let paused_at = true_condition(status, "Paused").and_then(|c| c["lastTransitionTime"].as_i64());
+    let woken = status["wakeRequestedAt"]
+        .as_i64()
+        .zip(paused_at)
+        .is_some_and(|(asked, paused)| asked >= paused);
+    let entry_waiting = status["inbox"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .any(|entry| {
+            status["deliveryAttempts"][entry["key"].as_str().unwrap_or_default()]["failed"] != true
+        });
+    woken || entry_waiting || status["resumeAttempts"].as_u64().is_some_and(|n| n > 0)
+}
+
+fn state_why(session_state: Option<&str>, status: &Value, dispatch: Dispatch) -> Option<String> {
     let reason = |kind: &str| true_condition(status, kind).and_then(|c| c["reason"].as_str());
     if let Some(stalled) = reason("Stalled") {
         return Some(format!("stalled · {stalled}"));
     }
     match session_state? {
         "Paused" => Some(match reason("Paused") {
+            _ if dispatch == Dispatch::On && resume_due(status) => RESUMING.to_string(),
             Some("Idle") => "paused · idle".to_string(),
+            Some("Requested") => "paused · on request".to_string(),
             Some("External") => "stopped · outside Fleet".to_string(),
             _ => "stopped".to_string(),
         }),
@@ -1141,6 +1175,7 @@ mod tests {
                 &serde_json::json!({"conditions": [
                     {"type": kind, "status": "True", "reason": reason},
                 ]}),
+                Dispatch::On,
             )
         };
         assert_eq!(
@@ -1159,6 +1194,45 @@ mod tests {
         assert_eq!(
             why("Paused", "Paused", "Unknown").as_deref(),
             Some("stopped")
+        );
+    }
+
+    #[test]
+    fn a_paused_task_fleet_is_about_to_resume_reads_as_resuming() {
+        let why = |extra: serde_json::Value| {
+            let mut status = serde_json::json!({"conditions": [
+                {"type": "Paused", "status": "True", "reason": "Idle", "lastTransitionTime": 10},
+            ]});
+            status
+                .as_object_mut()
+                .unwrap()
+                .extend(extra.as_object().unwrap().clone());
+            state_why(Some("Paused"), &status, Dispatch::On)
+        };
+        assert_eq!(why(serde_json::json!({})).as_deref(), Some("paused · idle"));
+        assert_eq!(
+            why(serde_json::json!({"wakeRequestedAt": 9})).as_deref(),
+            Some("paused · idle")
+        );
+        for due in [
+            serde_json::json!({"wakeRequestedAt": 10}),
+            serde_json::json!({"inbox": [{"key": "inbox/1"}]}),
+            serde_json::json!({"resumeAttempts": 1}),
+        ] {
+            assert_eq!(why(due.clone()).as_deref(), Some(RESUMING), "{due}");
+        }
+        assert_eq!(
+            why(serde_json::json!({"inbox": [{"key": "inbox/1"}],
+                "deliveryAttempts": {"inbox/1": {"failed": true}}}))
+            .as_deref(),
+            Some("paused · idle")
+        );
+        let held = serde_json::json!({"inbox": [{"key": "inbox/1"}], "wakeRequestedAt": 10,
+            "conditions": [{"type": "Paused", "status": "True", "reason": "Idle",
+                "lastTransitionTime": 10}]});
+        assert_eq!(
+            state_why(Some("Paused"), &held, Dispatch::Held).as_deref(),
+            Some("paused · idle")
         );
     }
 

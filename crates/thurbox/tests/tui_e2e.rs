@@ -7127,6 +7127,22 @@ fn the_real_fleet_takes_the_argv_start_runs() {
     assert!(stderr.contains("ghost"), "{stderr}");
 }
 
+#[test]
+fn the_real_fleet_takes_the_argv_pause_runs() {
+    let profile = Profile::new();
+    if profile.real_fleet().is_none() {
+        return;
+    }
+    let output = Command::new(profile.bin.join("fleet"))
+        .args(["pause", "ghost"])
+        .stdin(Stdio::null())
+        .output()
+        .expect("run fleet");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert_ne!(output.status.code(), Some(2), "a usage error: {stderr}");
+    assert!(stderr.contains("ghost"), "{stderr}");
+}
+
 fn fleet_pausing_one_task(
     profile: &Profile,
     paused: &serde_json::Value,
@@ -7294,6 +7310,165 @@ fn starting_a_paused_session_shows_why_fleet_refused() {
         frame.contains("Start failed") && frame.contains("the lease is held elsewhere")
     });
     assert!(!tui.frame().contains("Starting napping"), "{}", tui.frame());
+    assert!(tui.quit().success());
+}
+
+#[test]
+fn a_session_fleet_resumes_on_its_own_reads_as_starting_until_its_pane_attaches() {
+    let profile = Profile::new();
+    let woken = profile.root.path().join("woken");
+    let running = profile.root.path().join("running");
+    let paused_at = 1_000;
+    let mut paused = paused_idle("napping");
+    paused["object"]["status"]["conditions"][0]["lastTransitionTime"] =
+        serde_json::json!(paused_at);
+    let mut waking = paused.clone();
+    waking["revision"] = serde_json::json!(2);
+    waking["object"]["status"]["wakeRequestedAt"] = serde_json::json!(paused_at + 1);
+    let mut back = resumed("napping");
+    back["revision"] = serde_json::json!(3);
+    let synced = serde_json::json!({"type": "synced", "revision": 1, "names": ["napping"]});
+    write_script(
+        &profile.bin.join("fleet"),
+        &format!(
+            "#!/bin/sh\ncase \"$1\" in\n  watch) echo '{paused}'; echo '{synced}'; until [ -e '{woken}' ]; do kill -0 $PPID 2>/dev/null || exit 0; sleep 0.2; done; echo '{waking}'; until [ -e '{running}' ]; do kill -0 $PPID 2>/dev/null || exit 0; sleep 0.2; done; echo '{back}'; while kill -0 $PPID 2>/dev/null; do sleep 1; done ;;\n  attach) [ -e '{running}' ] || {{ echo 'error: Task/napping is paused: its agent is stopped' >&2; exit 3; }}; sleep 3; echo 'error: the runtime offers no live view' >&2; exit 3 ;;\n  up) exit 6 ;;\n  version) echo '{{\"apiVersions\":[\"fleet/v1alpha1\"]}}' ;;\n  *) exit 1 ;;\nesac\n",
+            woken = woken.display(),
+            running = running.display(),
+        ),
+    );
+    let mut tui = Tui::spawn(&profile, 40, 160);
+    tui.wait_for("napping is paused");
+    std::fs::write(&woken, "").expect("wake it from outside thurbox");
+    tui.wait_until("the pane to spin while Fleet resumes it", |frame| {
+        frame.contains("Starting napping")
+            && theme_spinner().iter().any(|glyph| frame.contains(glyph))
+    });
+    assert!(
+        !tui.frame().contains("napping is paused"),
+        "{}",
+        tui.frame()
+    );
+    std::fs::write(&running, "").expect("let Fleet resume it");
+    let attaching_until = std::time::Instant::now() + Duration::from_secs(2);
+    while std::time::Instant::now() < attaching_until {
+        let frame = tui.frame();
+        assert!(
+            frame.contains("Starting napping")
+                && !frame.contains("is paused")
+                && !frame.contains("no live terminal"),
+            "the pane stopped saying it is starting before it attached:\n{frame}"
+        );
+        std::thread::sleep(Duration::from_millis(100));
+    }
+    tui.wait_until("the pane to say why it did not attach", |frame| {
+        frame.contains("no live terminal") && frame.contains("the runtime offers no live view")
+    });
+    assert!(tui.quit().success());
+}
+
+#[test]
+fn pausing_a_running_session_asks_fleet_and_its_pane_says_paused_then_starting() {
+    let profile = Profile::new();
+    let calls = profile.root.path().join("fleet-calls");
+    let asked = profile.root.path().join("asked");
+    let woken = profile.root.path().join("woken");
+    let mut running = resumed("napping");
+    running["object"]["status"]["conditions"] = serde_json::json!([]);
+    let mut paused = paused_idle("napping");
+    paused["revision"] = serde_json::json!(2);
+    paused["object"]["status"]["conditions"][0]["reason"] = serde_json::json!("Requested");
+    let synced = serde_json::json!({"type": "synced", "revision": 1, "names": ["napping"]});
+    write_script(
+        &profile.bin.join("fleet"),
+        &format!(
+            "#!/bin/sh\necho \"$*\" >> '{calls}'\ncase \"$1\" in\n  watch) echo '{running}'; echo '{synced}'; until [ -e '{asked}' ]; do kill -0 $PPID 2>/dev/null || exit 0; sleep 0.2; done; echo '{paused}'; while kill -0 $PPID 2>/dev/null; do sleep 1; done ;;\n  pause) touch '{asked}' ;;\n  attach) [ \"$2\" = --wake ] && {{ touch '{woken}'; sleep 5; exit 0; }}; [ -e '{asked}' ] && {{ echo 'error: Task/napping is paused: its agent is stopped' >&2; exit 3; }}; sleep 60 ;;\n  up) exit 6 ;;\n  version) echo '{{\"apiVersions\":[\"fleet/v1alpha1\"]}}' ;;\n  *) exit 1 ;;\nesac\n",
+            calls = calls.display(),
+            asked = asked.display(),
+            woken = woken.display(),
+        ),
+    );
+    let mut tui = Tui::spawn(&profile, 40, 160);
+    tui.wait_until("the napping row", |frame| frame.contains("napping"));
+    focus_the_list(&mut tui);
+    tui.send(b"G");
+    tui.wait_until_quiet();
+    tui.send(b"p");
+    tui.wait_for("Pause napping?");
+    tui.send(b"y");
+    tui.wait_until("the pane to say the session is paused", |frame| {
+        frame.contains("❚❚ napping is paused")
+            && frame.contains("[Paused]")
+            && frame.contains("Press s in the session list,")
+    });
+    let log = std::fs::read_to_string(&calls).unwrap_or_default();
+    assert!(log.lines().any(|call| call == "pause napping"), "{log}");
+    tui.send(b"p");
+    tui.wait_for("napping is already paused");
+    tui.send(b"s");
+    tui.wait_until("the pane to spin while Fleet resumes it", |frame| {
+        frame.contains("Starting napping")
+            && frame.contains("[Starting]")
+            && theme_spinner().iter().any(|glyph| frame.contains(glyph))
+    });
+    assert!(woken.exists());
+    assert!(tui.quit().success());
+}
+
+#[test]
+fn pausing_a_session_that_has_not_started_asks_nothing_of_fleet() {
+    let profile = Profile::new();
+    let calls = profile.root.path().join("fleet-calls");
+    let mut fresh = fake_task("fresh", "Running", serde_json::json!([]));
+    let status = &mut fresh["object"]["status"];
+    status.as_object_mut().unwrap().remove("sessionState");
+    status.as_object_mut().unwrap().remove("agentState");
+    status.as_object_mut().unwrap().remove("session");
+    let synced = serde_json::json!({"type": "synced", "revision": 1, "names": ["fresh"]});
+    write_script(
+        &profile.bin.join("fleet"),
+        &format!(
+            "#!/bin/sh\necho \"$*\" >> '{calls}'\ncase \"$1\" in\n  watch) echo '{fresh}'; echo '{synced}'; while kill -0 $PPID 2>/dev/null; do sleep 1; done ;;\n  up) exit 6 ;;\n  version) echo '{{\"apiVersions\":[\"fleet/v1alpha1\"]}}' ;;\n  *) exit 1 ;;\nesac\n",
+            calls = calls.display(),
+        ),
+    );
+    let mut tui = Tui::spawn(&profile, 40, 160);
+    tui.wait_until("the fresh row", |frame| frame.contains("fresh"));
+    focus_the_list(&mut tui);
+    tui.send(b"G");
+    tui.wait_until_quiet();
+    tui.send(b"p");
+    tui.wait_for("fresh is not running");
+    let log = std::fs::read_to_string(&calls).unwrap_or_default();
+    assert!(!log.lines().any(|call| call.starts_with("pause")), "{log}");
+    assert!(tui.quit().success());
+}
+
+#[test]
+fn the_pause_confirmation_names_the_key_that_resumes() {
+    let profile = Profile::new();
+    std::fs::write(
+        profile.path("config/ui.json"),
+        r#"{"bindings":{"sessions.start":"ctrl+r"}}"#,
+    )
+    .expect("rebound start");
+    let mut running = resumed("napping");
+    running["object"]["status"]["conditions"] = serde_json::json!([]);
+    let synced = serde_json::json!({"type": "synced", "revision": 1, "names": ["napping"]});
+    write_script(
+        &profile.bin.join("fleet"),
+        &format!(
+            "#!/bin/sh\ncase \"$1\" in\n  watch) echo '{running}'; echo '{synced}'; while kill -0 $PPID 2>/dev/null; do sleep 1; done ;;\n  attach) sleep 60 ;;\n  up) exit 6 ;;\n  version) echo '{{\"apiVersions\":[\"fleet/v1alpha1\"]}}' ;;\n  *) exit 1 ;;\nesac\n"
+        ),
+    );
+    let mut tui = Tui::spawn(&profile, 40, 160);
+    tui.wait_until("the napping row", |frame| frame.contains("napping"));
+    focus_the_list(&mut tui);
+    tui.send(b"G");
+    tui.wait_until_quiet();
+    tui.send(b"p");
+    tui.wait_for("Pause napping?");
+    tui.wait_for("ctrl+r resumes it");
+    assert!(!tui.frame().contains(" s resumes it"), "{}", tui.frame());
     assert!(tui.quit().success());
 }
 

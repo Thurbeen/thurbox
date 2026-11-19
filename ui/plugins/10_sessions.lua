@@ -936,11 +936,22 @@ end
 --- entry and its chord cannot come to mean different things, and delete still
 --- asks first when there is work to lose. Sort and the panel toggle are not
 --- here: neither is about the session that was pressed.
+local RUNNING = { working = true, blocked = true, idle = true, running = true }
+
+local function resume_hint()
+  local chord = ui.chord("sessions.start")
+  if not chord then
+    return "Start in its menu resumes it on its conversation."
+  end
+  return chord .. " resumes it on its conversation."
+end
+
 local SESSION_MENU = {
   { label = "Open", action = "sessions.open" },
   { label = "Rename", action = "sessions.rename" },
   { label = "Open in editor", action = "sessions.editor" },
   { label = "Start", action = "sessions.start" },
+  { label = "Pause", action = "sessions.pause" },
   "sep",
   { label = "Move up", action = "sessions.move_up" },
   { label = "Move down", action = "sessions.move_down" },
@@ -1247,6 +1258,7 @@ pane = {
     { key = "K", action = "sessions.move_up", desc = "move session up", group = "Sessions" },
     { key = "S", action = "sessions.sort", desc = "sort sessions by name", group = "Sessions" },
     { key = "s", action = "sessions.start", desc = "start a stopped session", group = "Sessions" },
+    { key = "p", action = "sessions.pause", desc = "pause a running session", group = "Sessions" },
 
     -- v1's global session chords, which fire from any pane. Every one of them
     -- is in v1's `Action::terminal_passthrough` set — they are readline's
@@ -1780,6 +1792,23 @@ pane = {
         command("message", { text = (session.name or "this session") .. " cannot resume" })
       else
         command("message", { text = (session.name or "this session") .. " is not stopped" })
+      end
+    elseif action == "sessions.pause" and id then
+      local session = items[at].session
+      local name = session.name or "this session"
+      if session.starting then
+        command("message", { text = name .. " is starting" })
+      elseif session.status == "stopped" then
+        command("message", { text = name .. " is already paused" })
+      elseif RUNNING[session.status] and not session_model.revival(session) then
+        store.confirm = {
+          question = "Pause " .. name .. "?",
+          lines = { "Its agent stops. " .. resume_hint() },
+          command = "pause",
+          options = { session = id },
+        }
+      else
+        command("message", { text = name .. " is not running" })
       end
     elseif action == "sessions.editor" and id then
       command("editor", { session = id })

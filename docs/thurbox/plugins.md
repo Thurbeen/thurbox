@@ -1535,12 +1535,13 @@ host never waits for a blocked read. `files.list` retains its
 synchronous listing contract.
 
 **The panes thurbox ships hold `sessions` without asking** while they are exactly
-what it ships: the confirmation (a force delete) and the creation flow (a
-create). Edit one and it is your file, decided like any other — the
+what it ships: the confirmation (a force delete or a pause) and the creation
+flow (a create). Edit one and it is your file, decided like any other — the
 Interface tab marks it untrusted until you press `t`.
 
 The confirmation is the one place a pane without the grant reaches these, by
-leaving a question in `store.confirm`, so it forwards only `delete`. Every pane
+leaving a question in `store.confirm`, so it forwards only `delete` and
+`pause`. Every pane
 writes `store`, so the question is only its author's words. The confirmation
 therefore words what `y` does itself, from the command and the session's name,
 and names the pane that asked. It learns which

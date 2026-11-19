@@ -130,6 +130,8 @@ conditions (`kernel::snapshot::fleet::state_why`, published as `state_why`):
 |-------------|-------------------------|
 | `Stalled=True`, any state | `stalled · <reason>`, such as `stalled · SpawnAttemptsExhausted` |
 | `Paused`, `Paused=True/Idle` | `paused · idle`: Fleet paused it after `pauseAfterMs` at rest |
+| `Paused`, `Paused=True/Requested` | `paused · on request`: `fleet pause` (thurbox's `p`) paused it |
+| `Paused=True`, `spec.dispatch` not `false`, and a resume due: `wakeRequestedAt` at or after the pause, an inbox entry to deliver, or `resumeAttempts` above 0 | `paused · resuming`: Fleet is resuming its agent |
 | `Paused`, `Paused=True/External` | `stopped · outside Fleet` |
 | `Lost` | `lost · window gone`; `lost · cannot resume` after `NeedsAttention/CannotResume`; `lost · revive failed` after `NeedsAttention/ReviveFailed` |
 | `Gone` | `gone · session ended` |
@@ -140,8 +142,12 @@ through Fleet's own contract: thurbox runs `fleet attach --wake --json
 conversation and waits for it to run. `s` also revives a lost session whose
 window is gone. The interface does not attach a stopped row's pane. The
 first frame that reads the row running again attaches the pane, whatever
-resumed it: Start, a message, or `fleet attach --wake` from a shell. Fleet has
-no verb that stops a session on request, so thurbox offers no stop.
+resumed it: Start, a message, or `fleet attach --wake` from a shell.
+
+`p` on the session list, or Pause in its menu, asks to pause a session whose
+agent runs; on `y` thurbox runs `fleet pause <task>`, which asks the Task's controller to pause
+the agent and keep its conversation. The row then reads `paused · on
+request`, and `s` resumes it like any paused session.
 
 The interface does not attach a row whose Task is being deleted, or whose
 session is `Gone`. When `fleet attach` refuses a row with exit code 3, for
@@ -154,9 +160,10 @@ how to bring it back:
 
 | Row | Agent pane |
 |-----|------------|
-| paused, stopped, or lost with its window gone | `<name> is paused` (or `is stopped`, `is lost`), the row's reason, and `Press s in the session list, or choose Start in its menu, to resume it.` |
+| paused | `❚❚ <name> is paused` in the accent role, the row's reason, and `Press s in the session list, or choose Start in its menu, to resume it.`; the pane title says `[Paused]` |
+| stopped, or lost with its window gone | `<name> is stopped` (or `is lost`), the row's reason, and `Press s in the session list, or choose Start in its menu, to resume it.` |
 | `lost · cannot resume`, `gone · session ended` | `<name> cannot resume`, the reason, and `Delete it with ctrl+d, then create a new session with ctrl+n.` |
-| a Start in progress | a spinner and `Starting <name>…` until the pane attaches |
+| a start or a resume in progress | a spinner and `Starting <name>…` until the pane attaches; the pane title says `[Starting]`. A resume Fleet runs on its own (a message, a wake from another client) counts: the row reads `paused · resuming`, or leaves `stopped` before its pane attaches |
 
 The keys in a hint are read from the key registry, so a rebinding changes
 them. Each hint is split into lines that fit an 80-column terminal. `s` on a

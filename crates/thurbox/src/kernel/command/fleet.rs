@@ -142,6 +142,10 @@ impl super::Executor for Fleet {
                 let (link, task) = self.fleets.route(session)?;
                 link.run(&["attach", "--wake", "--json", task], None)?;
             }
+            Command::Pause { session } => {
+                let (link, task) = self.fleets.route(session)?;
+                link.run(&["pause", task], None)?;
+            }
             Command::Rename { session, name } => {
                 let (link, task) = self.fleets.route(session)?;
                 rename(link, task, name)?
