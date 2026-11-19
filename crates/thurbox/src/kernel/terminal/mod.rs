@@ -1916,6 +1916,30 @@ mod tests {
     }
 
     #[test]
+    fn a_resume_after_a_refused_start_reads_as_starting_again_once_the_row_runs() {
+        let mut terminals = Terminals::with_registry(
+            std::sync::Arc::new(crate::backend::registry::inert()),
+            &crate::session::settings::Settings::default(),
+        );
+        terminals.attach_fleet_through(crate::fleet_link::FleetLink::local("/nonexistent/fleet"));
+        let id = format!("{}:t1", crate::session::settings::IMPLIED_FLEET);
+        let mut fleet_row = row(&id, super::fleet::BACKEND, None);
+        fleet_row.key = Some("k1".to_string());
+        fleet_row.stopped = true;
+        fleet_row.status = crate::session::SessionState::Stopped;
+        terminals.start_requested(&id);
+        terminals.start_failed(&id, "the lease is held elsewhere");
+        terminals.sync(&snapshot(vec![fleet_row.clone()]), 24, 80);
+        assert_eq!(terminals.failure(&id), Some(attach::PAUSED));
+
+        fleet_row.stopped = false;
+        fleet_row.status = crate::session::SessionState::Working;
+        terminals.sync(&snapshot(vec![fleet_row]), 24, 80);
+        assert_eq!(terminals.starts().get(&id), Some(&Start::Pending));
+        assert_eq!(terminals.failure(&id), None);
+    }
+
+    #[test]
     fn a_start_with_no_pane_after_the_wait_fails_and_stops_the_clock() {
         let mut terminals = Terminals::with_registry(
             std::sync::Arc::new(crate::backend::registry::inert()),
