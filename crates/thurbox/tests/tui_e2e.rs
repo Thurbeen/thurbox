@@ -7443,6 +7443,35 @@ fn pausing_a_session_that_has_not_started_asks_nothing_of_fleet() {
     assert!(tui.quit().success());
 }
 
+#[test]
+fn the_pause_confirmation_names_the_key_that_resumes() {
+    let profile = Profile::new();
+    std::fs::write(
+        profile.path("config/ui.json"),
+        r#"{"bindings":{"sessions.start":"ctrl+r"}}"#,
+    )
+    .expect("rebound start");
+    let mut running = resumed("napping");
+    running["object"]["status"]["conditions"] = serde_json::json!([]);
+    let synced = serde_json::json!({"type": "synced", "revision": 1, "names": ["napping"]});
+    write_script(
+        &profile.bin.join("fleet"),
+        &format!(
+            "#!/bin/sh\ncase \"$1\" in\n  watch) echo '{running}'; echo '{synced}'; while kill -0 $PPID 2>/dev/null; do sleep 1; done ;;\n  attach) sleep 60 ;;\n  up) exit 6 ;;\n  version) echo '{{\"apiVersions\":[\"fleet/v1alpha1\"]}}' ;;\n  *) exit 1 ;;\nesac\n"
+        ),
+    );
+    let mut tui = Tui::spawn(&profile, 40, 160);
+    tui.wait_until("the napping row", |frame| frame.contains("napping"));
+    focus_the_list(&mut tui);
+    tui.send(b"G");
+    tui.wait_until_quiet();
+    tui.send(b"p");
+    tui.wait_for("Pause napping?");
+    tui.wait_for("ctrl+r resumes it");
+    assert!(!tui.frame().contains(" s resumes it"), "{}", tui.frame());
+    assert!(tui.quit().success());
+}
+
 fn select_in_the_list(profile: &Profile, tui: &mut Tui, session: &str) {
     let mut command = Command::new(env!("CARGO_BIN_EXE_thurbox-cli"));
     profile.apply(&mut command);

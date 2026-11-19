@@ -938,6 +938,14 @@ end
 --- here: neither is about the session that was pressed.
 local RUNNING = { working = true, blocked = true, idle = true, running = true }
 
+local function resume_hint()
+  local chord = ui.chord("sessions.start")
+  if not chord then
+    return "Start in its menu resumes it on its conversation."
+  end
+  return chord .. " resumes it on its conversation."
+end
+
 local SESSION_MENU = {
   { label = "Open", action = "sessions.open" },
   { label = "Rename", action = "sessions.rename" },
@@ -1795,7 +1803,7 @@ pane = {
       elseif RUNNING[session.status] and not session_model.revival(session) then
         store.confirm = {
           question = "Pause " .. name .. "?",
-          lines = { "Its agent stops. s resumes it on its conversation." },
+          lines = { "Its agent stops. " .. resume_hint() },
           command = "pause",
           options = { session = id },
         }

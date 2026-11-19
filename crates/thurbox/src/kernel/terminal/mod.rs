@@ -1940,6 +1940,38 @@ mod tests {
     }
 
     #[test]
+    fn a_paused_row_that_ends_or_is_lost_does_not_read_as_starting() {
+        for (state_why, status) in [
+            (
+                super::super::snapshot::fleet::SESSION_ENDED,
+                crate::session::SessionState::Failed,
+            ),
+            ("lost · cannot resume", crate::session::SessionState::Failed),
+        ] {
+            let mut terminals = Terminals::with_registry(
+                std::sync::Arc::new(crate::backend::registry::inert()),
+                &crate::session::settings::Settings::default(),
+            );
+            terminals
+                .attach_fleet_through(crate::fleet_link::FleetLink::local("/nonexistent/fleet"));
+            let id = format!("{}:t1", crate::session::settings::IMPLIED_FLEET);
+            let mut fleet_row = row(&id, super::fleet::BACKEND, None);
+            fleet_row.key = Some("k1".to_string());
+            fleet_row.stopped = true;
+            fleet_row.status = crate::session::SessionState::Stopped;
+            terminals.sync(&snapshot(vec![fleet_row.clone()]), 24, 80);
+            assert_eq!(terminals.failure(&id), Some(attach::PAUSED));
+
+            fleet_row.stopped = false;
+            fleet_row.status = status;
+            fleet_row.state_why = Some(state_why.to_string());
+            terminals.sync(&snapshot(vec![fleet_row]), 24, 80);
+            assert!(!terminals.starting(), "{state_why}");
+            assert!(terminals.starts().is_empty(), "{state_why}");
+        }
+    }
+
+    #[test]
     fn a_start_with_no_pane_after_the_wait_fails_and_stops_the_clock() {
         let mut terminals = Terminals::with_registry(
             std::sync::Arc::new(crate::backend::registry::inert()),

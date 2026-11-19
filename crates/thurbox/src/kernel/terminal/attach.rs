@@ -218,8 +218,10 @@ impl Terminals {
             self.fail(&row.id, None, "session has no pane yet".to_string());
             return;
         };
-        let left_pause =
-            row.deleting.is_none() && !row.stopped && self.failure(&row.id) == Some(PAUSED);
+        let left_pause = row.deleting.is_none()
+            && !row.stopped
+            && row.status != crate::session::SessionState::Failed
+            && self.failure(&row.id) == Some(PAUSED);
         let resuming = row.deleting.is_none()
             && row.state_why.as_deref() == Some(crate::kernel::snapshot::fleet::RESUMING);
         if left_pause || resuming && !self.attach.starts.contains_key(&row.id) {
