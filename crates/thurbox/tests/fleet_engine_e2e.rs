@@ -366,6 +366,36 @@ fn the_snapshot_shows_each_fleet_task_as_a_session_and_follows_a_deletion() {
     assert_eq!(store.current().error, None);
 }
 
+#[test]
+fn a_held_task_on_a_remote_repository_groups_under_that_repository() {
+    let Some(bin) = fleet_bin() else { return };
+    let fleet = Fleet::new(bin);
+    let held = |name: &str, url: &str| {
+        let mut held = task(name);
+        held["spec"]["dispatch"] = json!(false);
+        held["spec"]["workspace"] = json!([url]);
+        held
+    };
+    fleet.apply(json!([
+        held("pages", "git+https://github.com/LeTuR/websites.git"),
+        held(
+            "old-repos",
+            "git+https://github.com/LeTuR/websites.git?branch=old-repos"
+        ),
+    ]));
+
+    let mut store = store_over(&fleet);
+    until("both Tasks are rows", || {
+        names(&mut store) == ["old-repos", "pages"]
+    });
+    for id in ["local:pages", "local:old-repos"] {
+        let row = store.current().session(id).expect("by name").clone();
+        assert_eq!(row.cwd, None, "{id}");
+        assert_eq!(row.repo.as_deref(), Some("websites"), "{id}");
+        assert_eq!(row.repos, ["websites"], "{id}");
+    }
+}
+
 /// A store `fleet watch` cannot read is the snapshot's error while the
 /// watch runs, beside the last rows, and it clears once a read works again.
 #[test]
