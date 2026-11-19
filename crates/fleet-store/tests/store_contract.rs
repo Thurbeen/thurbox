@@ -3963,3 +3963,48 @@ fn only_a_view_asks_for_a_wake_and_no_status_write_changes_it() {
         .unwrap_err();
     assert!(matches!(err, StoreError::Forbidden(_)), "{err}");
 }
+
+#[test]
+fn only_the_cli_asks_for_a_pause_and_no_status_write_changes_it() {
+    let dir = Dir::new("pause-request");
+    let store = FileStore::open(&dir.0).unwrap();
+    let lease = store.acquire_lease("m", 10_000).unwrap();
+    let t = store.create(task("t"), FieldManager::Apply).unwrap();
+    let rv = t.metadata.resource_version;
+
+    let err = store
+        .request_pause("t", 7, rv, FieldManager::TaskController)
+        .unwrap_err();
+    assert!(matches!(err, StoreError::Forbidden(_)), "{err}");
+    let err = store
+        .request_pause("missing", 7, rv, FieldManager::Cli)
+        .unwrap_err();
+    assert!(matches!(err, StoreError::NotFound(_)), "{err}");
+
+    let t = store.request_pause("t", 7, rv, FieldManager::Cli).unwrap();
+    assert_eq!(t.metadata.resource_version, rv + 1, "one write");
+    let st = inbox_status(&t);
+    assert_eq!(st.pause_requested_at, Some(7));
+    assert_eq!(
+        TaskStatus {
+            pause_requested_at: None,
+            ..st
+        },
+        TaskStatus::default(),
+        "no other field changes"
+    );
+
+    let mut status = t.status.clone();
+    status["pauseRequestedAt"] = json!(8);
+    let err = store
+        .update_status(
+            "Task",
+            "t",
+            status,
+            t.metadata.resource_version,
+            FieldManager::TaskController,
+            Some(&lease),
+        )
+        .unwrap_err();
+    assert!(matches!(err, StoreError::Forbidden(_)), "{err}");
+}

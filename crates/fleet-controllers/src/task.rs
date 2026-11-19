@@ -1651,12 +1651,15 @@ impl Pass<'_, '_> {
         self.st.intents.remove(key);
         self.st.receipts.remove(key);
         self.st.idle_since = None;
-        self.cond(
-            PAUSED,
-            ConditionStatus::True,
-            "Idle",
-            "Fleet paused the session while its agent was idle",
-        );
+        let (reason, message) = if paused_on_request(&self.st) {
+            (
+                "Requested",
+                "Fleet paused the session because fleet pause asked for it",
+            )
+        } else {
+            ("Idle", "Fleet paused the session while its agent was idle")
+        };
+        self.cond(PAUSED, ConditionStatus::True, reason, message);
     }
 
     /// The pause did not happen. The idle time starts again from the next
@@ -1731,32 +1734,43 @@ impl Pass<'_, '_> {
         self.settle_attention(RESUME_FAILED);
     }
 
-    /// Pause the session once its agent was seen Idle, without a break,
-    /// for `pauseAfterMs`. The pass that plans the pause read the activity
-    /// fresh, and proved the session running and not lost. Any
-    /// other answer, or a pass that sent something, starts the idle time
-    /// again.
+    /// Pause the session for a pending `fleet pause`, or once its agent was
+    /// seen Idle, without a break, for `pauseAfterMs`. The pass that plans
+    /// the pause proved the session running and not lost; an idle pause also
+    /// read the activity fresh. Any other answer, or a pass that sent
+    /// something, starts the idle time again.
     fn pause_step(&mut self, session: SessionRef) {
         let o = &self.input.observations;
-        let idle = pause_candidate(self.spec, &self.st)
+        let safe = pausable(self.spec, &self.st)
             && self.effects.is_empty()
             && self.delivery.is_none()
             && !self.st.not_before.is_some_and(|t| t > self.now())
-            && o.activity == Some(Observation::Known(Activity::Idle))
             && o.lost != Some(Observation::Known(true))
             && o.paused == Some(Observation::Known(false));
+        let requested = safe && pause_requested(&self.st);
+        let idle = safe
+            && self.spec.pause_after_ms.is_some()
+            && o.activity == Some(Observation::Known(Activity::Idle));
         if !idle {
             self.st.idle_since = None;
-            return;
         }
-        let since = *self.st.idle_since.get_or_insert(self.input.now);
-        let after = self.spec.pause_after_ms.unwrap_or(Millis::MAX);
-        if since.saturating_add(after) > self.now() {
+        if requested {
+            self.st.pause_request_answered = self.st.pause_requested_at;
+        } else if !self.idle_long_enough(idle) {
             return;
         }
         self.st.pauses += 1;
         let key = self.key(PAUSE, Some(self.st.pauses));
         self.intend(key, Action::Pause { session });
+    }
+
+    fn idle_long_enough(&mut self, idle: bool) -> bool {
+        if !idle {
+            return false;
+        }
+        let since = *self.st.idle_since.get_or_insert(self.input.now);
+        let after = self.spec.pause_after_ms.unwrap_or(Millis::MAX);
+        since.saturating_add(after) <= self.now()
     }
 
     fn release(&mut self) {
@@ -2249,13 +2263,17 @@ fn decode(obj: &Object) -> Result<(TaskSpec, TaskStatus), StoreError> {
     Ok((spec, st))
 }
 
-/// Whether the session may be paused, apart from its activity: a pause
-/// setting, a conversation a resume can name on a harness Fleet can resume,
-/// dispatch on, Briefed or Concluded, and nothing in flight that a pause
-/// would cut short.
+/// Whether an idle session may be paused, apart from its activity: a pause
+/// setting, and what [`pausable`] asks.
 fn pause_candidate(spec: &TaskSpec, st: &TaskStatus) -> bool {
-    spec.pause_after_ms.is_some()
-        && st.conversation.is_some()
+    spec.pause_after_ms.is_some() && pausable(spec, st)
+}
+
+/// Whether the session may be paused at all: a conversation a resume can
+/// name on a harness Fleet can resume, dispatch on, Briefed or Concluded,
+/// and nothing in flight that a pause would cut short.
+fn pausable(spec: &TaskSpec, st: &TaskStatus) -> bool {
+    st.conversation.is_some()
         && fleet_api::harness::profile(&spec.harness).resumes()
         && spec.dispatch
         && (st.phase == Phase::Concluded || (st.phase == Phase::Briefed && !result_current(st)))
@@ -2286,6 +2304,7 @@ fn effect_in_flight(st: &TaskStatus, key: &str, action: &str) -> bool {
 fn watched(obj: &Object, spec: &TaskSpec, st: &TaskStatus) -> bool {
     !obj.is_deleting()
         && (pause_candidate(spec, st)
+            || (pause_requested(st) && pausable(spec, st))
             || in_flight(obj, st)
             || (spec.dispatch && wake_requested(st)))
 }
@@ -2421,6 +2440,29 @@ fn wake_requested(st: &TaskStatus) -> bool {
     st.wake_requested_at
         .zip(paused_at)
         .is_some_and(|(asked, paused)| asked >= paused)
+}
+
+/// Whether `fleet pause` asked for a pause that nothing has answered yet: a
+/// request newer than the last one a pause was planned for, the last
+/// `Paused` transition and the last wake. It waits for the session to be
+/// pausable, and is acted on once.
+fn pause_requested(st: &TaskStatus) -> bool {
+    st.pause_requested_at
+        .is_some_and(|asked| st.pause_request_answered.is_none_or(|a| asked > a))
+        && pause_request_since_last_transition(st, st.pause_requested_at)
+}
+
+/// Whether the pause in flight was planned for a request: one made after
+/// the `Paused` transition it ends.
+fn paused_on_request(st: &TaskStatus) -> bool {
+    pause_request_since_last_transition(st, st.pause_request_answered)
+}
+
+fn pause_request_since_last_transition(st: &TaskStatus, asked: Option<Millis>) -> bool {
+    let transition = condition(&st.conditions, PAUSED).map(|c| c.last_transition_time);
+    asked.is_some_and(|asked| {
+        transition.is_none_or(|t| asked > t) && st.wake_requested_at.is_none_or(|w| asked > w)
+    })
 }
 
 /// The oldest inbox entry still to deliver: an entry given up on after its

@@ -34,8 +34,10 @@ that decision through the store and runtime ports.
    Task, retaining the session until deletion; messages sent afterwards are
    still delivered.
 6. With `pauseAfterMs` set, the controller pauses an idle session through
-   the runtime. The next inbox entry, or `fleet attach --wake`, resumes it. See
-   [pausing an idle session](#pausing-an-idle-session).
+   the runtime. `fleet pause` pauses it at once, with or without
+   `pauseAfterMs`. The next inbox entry, or `fleet attach --wake`, resumes it. See
+   [pausing an idle session](#pausing-an-idle-session) and
+   [pausing on request](#pausing-on-request).
 7. Deletion enters Releasing. The finalizer holds the record until the
    recorded session is released, once proven at rest or gone. The wait for
    rest has a bound: see [releasing a session](#releasing-a-session).
@@ -102,6 +104,9 @@ reconciles a Concluded Task only in these cases:
 - Its session may be paused: see
   [pausing an idle session](#pausing-an-idle-session). The manager then
   reconciles it on every sweep, so that its activity is watched.
+- `fleet pause` asked for a pause that is not answered yet, and its
+  session may be paused: see [pausing on request](#pausing-on-request).
+  The manager then reconciles it on every sweep until the pause.
 - It is paused and dispatched, and a `--wake` of `fleet attach` or
   `fleet shell` asked for it at or after the pause
   (`status.wakeRequestedAt`). The manager then reconciles it on every sweep
@@ -151,8 +156,9 @@ concludes nothing.
 | Spawned, Briefed, or Concluded with a delivery due | Not lost while `SessionLost` is True | unchanged | Set `SessionLost=False/Revived`. When the brief has a receipt and the Task has not concluded, owe a catch-up note under `catchup/<n>`; a Concluded Task is resumed plainly. In Spawned, the brief protocol continues. |
 | Briefed or Concluded | A catch-up note is owed | unchanged | Send the note as an inbox entry is sent, before any inbox entry. In Briefed, the note repeats the brief, the amendments the worker has, and their generation. |
 | Briefed, or Concluded and watched | A pause setting; a harness with a resume argv and a reported conversation; the agent's hooks report Idle without a break for `pauseAfterMs`; the session observed running and not known lost; nothing to deliver or in flight | unchanged | Persist a pause intent and plan `Pause` under `pause/<n>`. See [pausing an idle session](#pausing-an-idle-session). |
-| Briefed or Concluded | Known Paused receipt, or a missing/Unknown receipt with the session observed stopped | unchanged | Set `Paused=True/Idle`. Raise no WorkerGone, SessionLost or revive. |
-| Briefed or Concluded | Failed pause receipt, or a missing/Unknown receipt with the session observed running | unchanged | Set `Paused=False/PauseFailed`. The idle time starts again. |
+| Briefed, or Concluded and watched | A pending `pauseRequestedAt`; a harness with a resume argv and a reported conversation; the session observed running and not known lost; nothing to deliver or in flight | unchanged | Record the request in `pauseRequestAnswered`, persist a pause intent and plan `Pause` under `pause/<n>`. See [pausing on request](#pausing-on-request). |
+| Briefed or Concluded | Known Paused receipt, or a missing/Unknown receipt with the session observed stopped | unchanged | Set `Paused=True/Requested` for a pending `pauseRequestedAt`, else `Paused=True/Idle`. Raise no WorkerGone, SessionLost or revive. |
+| Briefed or Concluded | Failed pause receipt, or a missing/Unknown receipt with the session observed running | unchanged | Set `Paused=False/PauseFailed`. The idle time starts again. A request is not tried again. |
 | Briefed, or Concluded with a delivery due or watched | Session observed stopped and Fleet did not stop it | unchanged | Set `Paused=True/External`. |
 | Briefed or Concluded | Paused; an inbox entry to deliver, or `wakeRequestedAt` at or after the `Paused=True` transition; `dispatch: true` | unchanged | Persist a resume intent and plan `Resume` under `resume/<n>`. Send nothing. |
 | Briefed or Concluded | Known Resumed receipt, a missing/Unknown receipt with the session observed running, or a paused session observed running | unchanged | Set `Paused=False/Resumed`. Send nothing of Fleet's own: the agent continues its conversation, and only the inbox is delivered. |
@@ -265,7 +271,7 @@ are last recorded observations; absence of a condition is not a True value.
 | Released | A known release completed, or there was nothing to release. |
 | WorkspaceTrusted | The session's agent trusts its workspace (`Trusted`). False reasons are `Unsupported` and `Mismatch`; Unknown is `TrustUnknown`. |
 | SessionLost | The runtime holds the session, but its agent's window is gone (`WindowGone`). False after a lost session is back (`Revived`). |
-| Paused | The runtime holds the session with its agent stopped. `Idle` when Fleet paused it; `External` when Fleet found it stopped. False with `Resumed` once the agent runs again, and with `PauseFailed` after a pause that did not happen. The phase does not change. |
+| Paused | The runtime holds the session with its agent stopped. `Idle` when Fleet paused it while its agent was idle; `Requested` when Fleet paused it for `fleet pause`; `External` when Fleet found it stopped. False with `Resumed` once the agent runs again, and with `PauseFailed` after a pause that did not happen. The phase does not change. |
 | NeedsAttention | Reason is Stalled, WorkerGone, BriefUnconfirmed, ReleaseFailed, DeliveryFailed, DeliveryUnconfirmed, DeliveryQueued, BriefUndelivered, InboxFull, WorkspaceUnsupported, TrustUnmapped, WorkspaceUntrusted, ReviveFailed, CannotResume, ResumeFailed or CleanFailed. |
 
 WorkerGone clears when the exact recorded session is seen again.
@@ -396,6 +402,39 @@ which a Task with no `configRef` takes
 Activity comes from the agent's hooks, never from the runtime: see
 [signals](#signals). A session whose hooks reported nothing, or whose
 report cannot be read, has Unknown activity, so Fleet never pauses it.
+
+### Pausing on request
+
+`fleet pause TASK` asks for a pause now. The verb sets
+`status.pauseRequestedAt` to the current time through a typed store
+mutation, and prints `Task/TASK pause requested`. It exits 3 for a Task
+that does not exist, and exits 1 for a deleting Task. The pause is
+TaskController's, on its next pass.
+
+A request is pending while it was made after all of these:
+
+- the last request the controller planned a pause for
+  (`status.pauseRequestAnswered`);
+- the last `Paused` transition: a pause or a resume;
+- the last wake (`status.wakeRequestedAt`).
+
+The controller pauses for a pending request under the rules of
+[pausing an idle session](#pausing-an-idle-session), with these
+differences:
+
+- `pauseAfterMs` is not necessary.
+- The agent's activity does not decide. A working agent is paused too,
+  and loses its background work, as a person asked.
+
+The paused session is `Paused=True/Requested`. An inbox entry,
+`fleet attach --wake` or `fleet shell --wake` resumes it as any paused
+session.
+
+A pending request that the controller cannot honour yet stays pending. It
+raises nothing. The controller honours it when the session becomes
+pausable, for example after the inbox is delivered. A later wake or resume
+supersedes it. The controller acts on a request once: after a refused
+pause (`Paused=False/PauseFailed`) it does not try again.
 
 ### Signals
 

@@ -288,6 +288,19 @@ pub trait Store {
     ) -> Result<Object, StoreError> {
         Err(StoreError::Unsupported("request_wake".into()))
     }
+    /// `fleet pause`'s write, compare-and-swap on resourceVersion, as a
+    /// caller `kinds::may_request_pause` admits: set
+    /// `status.pauseRequestedAt` to `at`, which asks TaskController to pause
+    /// the session. Refused on a deleting Task. No other field changes.
+    fn request_pause(
+        &self,
+        _name: &str,
+        _at: crate::meta::Millis,
+        _expected: u64,
+        _by: FieldManager,
+    ) -> Result<Object, StoreError> {
+        Err(StoreError::Unsupported("request_pause".into()))
+    }
     /// `fleet amend`'s write, compare-and-swap on resourceVersion, as
     /// `FieldManager::Cli` only: append `amendment` to `spec.amendments`,
     /// bump `metadata.generation` to the amendment's generation, and queue

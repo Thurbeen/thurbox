@@ -776,6 +776,35 @@ pub fn wake(store: &dyn Store, clock: &dyn Clock, name: &str) -> Result<Object, 
     )))
 }
 
+/// Ask TaskController to pause a Task's session now, as an idle pause
+/// would: `status.pauseRequestedAt` set to now. The pause is the
+/// controller's, on its next pass. Returns the Task as written.
+pub fn pause(store: &dyn Store, clock: &dyn Clock, name: &str) -> Result<Object, StoreError> {
+    for _ in 0..CAS_TRIES {
+        let obj = match store.get(task::KIND, name) {
+            Observation::Known(Some(o)) => o,
+            Observation::Known(None) => {
+                return Err(StoreError::NotFound(format!("{}/{name}", task::KIND)));
+            }
+            Observation::Unknown { why } => return Err(StoreError::Unknown(why)),
+        };
+        match store.request_pause(
+            name,
+            clock.now(),
+            obj.metadata.resource_version,
+            FieldManager::Cli,
+        ) {
+            Ok(written) => return Ok(written),
+            Err(StoreError::Conflict { .. }) => continue,
+            Err(e) => return Err(e),
+        }
+    }
+    Err(StoreError::Busy(format!(
+        "{}/{name}: kept conflicting with other writers",
+        task::KIND
+    )))
+}
+
 fn check_event_limit(limit: usize) -> Result<(), StoreError> {
     if (1..=MAX_EVENT_LIST).contains(&limit) {
         Ok(())

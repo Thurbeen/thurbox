@@ -477,3 +477,92 @@ fn a_view_on_a_paused_task_being_deleted_says_so_and_offers_no_wake() {
     }
     assert!(env.get("t1")["status"]["wakeRequestedAt"].is_null());
 }
+
+fn wake_by_view(env: &Env) {
+    let mut attach = env.spawn(&["attach", "t1", "--wake", "--json"]);
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+    while attach.try_wait().expect("attach").is_none() {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "attach never returned"
+        );
+        env.reconcile().ok();
+        std::thread::sleep(std::time::Duration::from_millis(100));
+    }
+    let run = wait(attach);
+    assert!(!run.stderr.contains("is paused"), "{}", run.stderr);
+}
+
+#[test]
+fn fleet_pause_pauses_a_working_task_without_a_pause_setting_and_a_wake_resumes_it() {
+    let env = setup("pause-requested", vec![plain_task("t1")]);
+    env.reconcile().ok();
+    assert_eq!(env.status("t1")["phase"], "Briefed");
+    set_activity(&env, Some("active"));
+
+    env.fleet(&["pause", "t1"])
+        .ok()
+        .stdout_has("Task/t1 pause requested");
+    assert_eq!(env.calls("pause"), 0, "the verb only asks");
+    env.reconcile().ok();
+
+    assert_eq!(env.calls("pause"), 1);
+    assert!(stopped(&env));
+    let st = env.status("t1");
+    assert_eq!(st["phase"], "Briefed", "{st:#}");
+    assert_condition(&st, "Paused", "True", "Requested");
+    env.reconcile().ok();
+    assert_eq!(env.calls("pause"), 1, "a request is honoured once");
+
+    wake_by_view(&env);
+    assert_eq!(env.calls("resume"), 1);
+    assert!(!stopped(&env));
+    assert_condition(&env.status("t1"), "Paused", "False", "Resumed");
+    for _ in 0..3 {
+        env.reconcile().ok();
+    }
+    assert_eq!(
+        env.calls("pause"),
+        1,
+        "an honoured request pauses nothing again"
+    );
+    assert_eq!(sent(&env), ["Do the work for t1."], "a pause types nothing");
+}
+
+#[test]
+fn fleet_pause_pauses_a_concluded_task_at_rest() {
+    let env = setup("pause-requested-concluded", vec![plain_task("t1")]);
+    env.reconcile().ok();
+    env.fleet(&[
+        "result",
+        "t1",
+        "--generation",
+        "1",
+        "--outcome",
+        "shipped",
+        "--output",
+        "prUrl=\"https://example.invalid/pr/1\"",
+    ])
+    .ok();
+    env.reconcile().ok();
+    env.reconcile().ok();
+    assert_eq!(env.status("t1")["phase"], "Concluded");
+
+    env.fleet(&["pause", "t1"]).ok();
+    env.reconcile().ok();
+    assert_eq!(env.calls("pause"), 1);
+    assert_condition(&env.status("t1"), "Paused", "True", "Requested");
+
+    env.fleet(&["send", "t1", "Review: rename the flag."]).ok();
+    env.reconcile().ok();
+    assert_eq!(env.calls("resume"), 1);
+    assert_eq!(sent(&env)[1], "Review: rename the flag.");
+}
+
+#[test]
+fn fleet_pause_names_a_missing_task() {
+    let env = setup("pause-requested-missing", vec![plain_task("t1")]);
+    env.fleet(&["pause", "nope"])
+        .code(3)
+        .stderr_has("Task/nope");
+}

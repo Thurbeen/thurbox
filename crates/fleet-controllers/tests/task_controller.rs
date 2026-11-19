@@ -1803,6 +1803,214 @@ fn only_a_known_idle_lasting_pause_after_ms_pauses() {
     assert!(plan.effects.is_empty(), "{plan:#?}");
 }
 
+fn pause_requested(inbox: &[&str], extra: impl FnOnce(&mut TaskStatus)) -> Object {
+    let mut obj = pausable(inbox, |st| {
+        st.pause_requested_at = Some(NOW - 5);
+        extra(st);
+    });
+    obj.spec.as_object_mut().unwrap().remove("pauseAfterMs");
+    obj
+}
+
+fn working() -> Observation<Activity> {
+    Observation::Known(Activity::Active)
+}
+
+#[test]
+fn a_pause_request_pauses_a_working_session_with_no_pause_setting() {
+    let obj = pause_requested(&[], |_| {});
+    assert!(probes(&obj).contains(&Probe::Paused { session: session() }));
+    let (plan, st) = run(&obj, pause_obs(working(), Observation::Known(false)));
+    assert_eq!(plan.effects.len(), 1, "{plan:#?}");
+    assert_eq!(plan.effects[0].key, "task/t/u7/pause/1");
+    assert_eq!(plan.effects[0].action, Action::Pause { session: session() });
+
+    let mut st = st;
+    st.receipts.insert(
+        "task/t/u7/pause/1".into(),
+        Receipt {
+            action: "pause".into(),
+            at: NOW,
+            outcome: Observation::Known(EffectOutcome::Paused),
+        },
+    );
+    let (plan, st) = run(
+        &with_status(&obj, &st),
+        pause_obs(not_asked(), Observation::Known(true)),
+    );
+    assert!(plan.effects.is_empty(), "{plan:#?}");
+    assert_eq!(cond(&st, "Paused").status, ConditionStatus::True);
+    assert_eq!(cond(&st, "Paused").reason, "Requested");
+    let (plan, _) = run_at(
+        &with_status(&obj, &st),
+        pause_obs(not_asked(), Observation::Known(true)),
+        NOW + 1,
+    );
+    assert!(plan.effects.is_empty(), "honoured once: {plan:#?}");
+}
+
+#[test]
+fn a_concluded_task_at_rest_is_watched_for_its_pause_request() {
+    let obj = pause_requested(&[], |st| {
+        st.phase = Phase::Concluded;
+        st.session_checked_at = Some(NOW);
+        st.result =
+            Some(serde_json::from_value(json!({"outcome": "shipped", "generation": 1})).unwrap());
+    });
+    assert!(fleet_controllers::task::due_at_rest(&obj, NOW));
+    assert!(probes(&obj).contains(&Probe::Paused { session: session() }));
+    let (plan, _) = run(&obj, pause_obs(working(), Observation::Known(false)));
+    assert_eq!(plan.effects.len(), 1, "{plan:#?}");
+    assert_eq!(plan.effects[0].key, "task/t/u7/pause/1");
+}
+
+#[test]
+fn a_pause_request_waits_while_a_pause_would_cut_something_short() {
+    let cases: Vec<(&str, Object, Observations)> = vec![
+        (
+            "an entry to deliver",
+            pause_requested(&["task/t/u7/send/1"], |_| {}),
+            pause_obs(working(), Observation::Known(false)),
+        ),
+        (
+            "a session not proven running",
+            pause_requested(&[], |_| {}),
+            pause_obs(working(), Observation::unknown("cannot tell")),
+        ),
+        (
+            "a conversation never reported",
+            pause_requested(&[], |st| st.conversation = None),
+            pause_obs(working(), Observation::Known(false)),
+        ),
+        (
+            "a session already paused",
+            pause_requested(&[], |st| set_paused(st, "Idle")),
+            pause_obs(working(), Observation::Known(true)),
+        ),
+        (
+            "a held Task",
+            {
+                let mut held = pause_requested(&[], |_| {});
+                held.spec["dispatch"] = json!(false);
+                held
+            },
+            pause_obs(working(), Observation::Known(false)),
+        ),
+        (
+            "a harness Fleet cannot resume",
+            {
+                let mut aider = pause_requested(&[], |_| {});
+                aider.spec["harness"] = json!("aider");
+                aider
+            },
+            pause_obs(working(), Observation::Known(false)),
+        ),
+    ];
+    for (why, obj, obs) in cases {
+        let (plan, st) = run(&obj, obs);
+        assert!(
+            plan.effects
+                .iter()
+                .all(|e| !matches!(e.action, Action::Pause { .. })),
+            "{why}: {plan:#?}"
+        );
+        assert!(
+            st.conditions
+                .iter()
+                .all(|c| c.type_ != "NeedsAttention" || c.status != ConditionStatus::True),
+            "{why}: {st:#?}"
+        );
+        assert_eq!(st.pause_requested_at, Some(NOW - 5), "{why}: still pending");
+    }
+}
+
+#[test]
+fn a_pause_request_older_than_the_last_resume_or_a_later_wake_asks_nothing() {
+    let resumed_since = pause_requested(&[], |st| {
+        st.pause_requested_at = Some(NOW - 200);
+        fleet_api::condition::set_condition(
+            &mut st.conditions,
+            "Paused",
+            ConditionStatus::False,
+            "Resumed",
+            "",
+            1,
+            NOW - 100,
+        );
+    });
+    let (plan, _) = run(
+        &resumed_since,
+        pause_obs(working(), Observation::Known(false)),
+    );
+    assert!(plan.effects.is_empty(), "{plan:#?}");
+
+    let woken_since = pause_requested(&[], |st| st.wake_requested_at = Some(NOW - 1));
+    let (plan, _) = run(
+        &woken_since,
+        pause_obs(working(), Observation::Known(false)),
+    );
+    assert!(plan.effects.is_empty(), "{plan:#?}");
+}
+
+#[test]
+fn a_refused_pause_request_is_answered_and_not_tried_again() {
+    let obj = pause_requested(&[], |st| {
+        st.pauses = 1;
+        st.intents
+            .insert("task/t/u7/pause/1".into(), effect_intent("pause"));
+        st.receipts.insert(
+            "task/t/u7/pause/1".into(),
+            Receipt {
+                action: "pause".into(),
+                at: NOW - 10,
+                outcome: Observation::Known(EffectOutcome::Failed { why: "no".into() }),
+            },
+        );
+    });
+    let (plan, st) = run(&obj, pause_obs(working(), Observation::Known(false)));
+    assert!(plan.effects.is_empty(), "{plan:#?}");
+    assert_eq!(cond(&st, "Paused").reason, "PauseFailed");
+    assert_eq!(cond(&st, "Paused").message, "no");
+    let (plan, st) = run_at(
+        &with_status(&obj, &st),
+        pause_obs(working(), Observation::Known(false)),
+        NOW + RETRY_DELAY_MS,
+    );
+    assert!(plan.effects.is_empty(), "{plan:#?}");
+    assert!(
+        st.conditions
+            .iter()
+            .all(|c| c.type_ != "NeedsAttention" || c.status != ConditionStatus::True),
+        "{st:#?}"
+    );
+
+    let after_a_resume = pause_requested(&[], |st| {
+        fleet_api::condition::set_condition(
+            &mut st.conditions,
+            "Paused",
+            ConditionStatus::False,
+            "Resumed",
+            "",
+            1,
+            NOW - 100,
+        );
+        st.pauses = 1;
+        st.intents
+            .insert("task/t/u7/pause/1".into(), effect_intent("pause"));
+    });
+    let (_, st) = run(
+        &after_a_resume,
+        pause_obs(working(), Observation::Known(false)),
+    );
+    assert_eq!(cond(&st, "Paused").reason, "PauseFailed");
+    let (plan, _) = run_at(
+        &with_status(&after_a_resume, &st),
+        pause_obs(working(), Observation::Known(false)),
+        NOW + RETRY_DELAY_MS,
+    );
+    assert!(plan.effects.is_empty(), "{plan:#?}");
+}
+
 #[test]
 fn a_session_fleet_cannot_resume_on_its_conversation_is_never_paused() {
     // A harness with no resume argv, such as aider.
