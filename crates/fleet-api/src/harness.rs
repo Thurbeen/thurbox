@@ -696,6 +696,32 @@ pub fn claude_trust_dialog(output: &str, cursor_row: usize) -> bool {
         && choice("Yes, I trust this folder")
 }
 
+/// Whether the cursor of a plain visible screen `output` is in a composer
+/// that holds a person's draft: a box between two full-width rules whose
+/// first line starts with `❯`, as Claude Code and GitHub Copilot CLI draw
+/// it. An empty composer keeps the cursor just after `❯ `, under a dim
+/// suggestion; a draft moves it past that, or onto a later line of the box.
+/// A one-line draft whose cursor was moved back to its start is not seen.
+pub fn composer_draft(output: &str, cursor_row: usize, cursor_col: usize) -> bool {
+    let lines: Vec<&str> = output.lines().collect();
+    let rule = |at: usize| {
+        lines
+            .get(at)
+            .map(|l| l.trim())
+            .is_some_and(|l| !l.is_empty() && l.chars().all(|c| c == '─'))
+    };
+    let Some(top) = (0..cursor_row).rev().find(|&at| rule(at)) else {
+        return false;
+    };
+    let Some(bottom) = (cursor_row..lines.len()).find(|&at| rule(at)) else {
+        return false;
+    };
+    let first = top + 1;
+    cursor_row < bottom
+        && lines.get(first).is_some_and(|l| l.starts_with('❯'))
+        && (cursor_row > first || cursor_col > 2 || bottom - first > 1)
+}
+
 /// Whether a plain visible screen `output` is Codex's initial empty
 /// composer under its welcome screen, the cursor at its start: Codex takes
 /// input, and reports nothing until its first turn ends. A trust dialog can
@@ -1129,6 +1155,37 @@ mod tests {
         assert!(kimi_process("kimi-code"));
         assert!(kimi_process("/usr/bin/kimi"));
         assert!(!kimi_process("codex"));
+    }
+
+    const CLAUDE_2_1_328_EMPTY_COMPOSER: &str =
+        "                                        ◐ medium · /effort
+────────────────────────────────────────────────────────────
+❯ Try \"write a test for <filepath>\"
+────────────────────────────────────────────────────────────
+  ⏵⏵ auto mode on (shift+tab to cycle) · ← for agents
+";
+
+    #[test]
+    fn a_composer_holds_a_draft_once_the_cursor_moves_past_its_start() {
+        assert!(!composer_draft(CLAUDE_2_1_328_EMPTY_COMPOSER, 2, 2));
+        let typed = CLAUDE_2_1_328_EMPTY_COMPOSER
+            .replace("Try \"write a test for <filepath>\"", "Also consider usi");
+        assert!(composer_draft(&typed, 2, 19));
+        assert!(composer_draft(&typed, 2, 5));
+        let two_lines = typed.replace("usi\n", "usi\n  second line\n");
+        assert!(composer_draft(&two_lines, 3, 13));
+        assert!(composer_draft(&two_lines, 2, 2));
+        assert!(!composer_draft(&typed, 3, 0));
+        assert!(!composer_draft(&typed, 4, 10));
+        assert!(!composer_draft(&typed.replace('❯', ">"), 2, 19));
+        assert!(!composer_draft(COPILOT_READY, 21, 2));
+        assert!(composer_draft(
+            &COPILOT_READY.replace("\n❯\n", "\n❯ Run it\n"),
+            21,
+            8
+        ));
+        assert!(!composer_draft(COPILOT_TRUST, 14, 20));
+        assert!(!composer_draft("", 0, 5));
     }
 
     /// GitHub Copilot CLI 1.0.105's screen in an 80x24 pane once its folder

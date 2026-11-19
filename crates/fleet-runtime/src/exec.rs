@@ -20,7 +20,7 @@ use std::time::{Duration, Instant};
 use fleet_api::Observation;
 use fleet_api::event::{OutboxRead, outbox_file};
 use fleet_api::harness::{
-    claude_trust_dialog, codex_initial_composer, codex_process, codex_trust_dialog,
+    claude_trust_dialog, codex_initial_composer, codex_process, codex_trust_dialog, composer_draft,
     copilot_initial_composer, copilot_process, copilot_trust_dialog, kimi_initial_composer,
     kimi_process, profile,
 };
@@ -820,6 +820,50 @@ impl ExecRuntime {
         })
     }
 
+    fn reported_ready(&self, session: &SessionRef) -> Observation<bool> {
+        bind(self.reported(session), |r| match r.state {
+            Some(State::Blocked) => Observation::Known(false),
+            Some(State::Started) | None => match self.first_screen(session) {
+                Observation::Known(
+                    FirstScreen::CodexComposer
+                    | FirstScreen::KimiComposer
+                    | FirstScreen::CopilotComposer,
+                ) => Observation::Known(true),
+                Observation::Known(_) => {
+                    Observation::unknown("the agent reported no state since it started")
+                }
+                Observation::Unknown { why } => Observation::Unknown { why },
+            },
+            Some(_) => Observation::Known(true),
+        })
+    }
+
+    fn drafting(&self, session: &SessionRef) -> Observation<bool> {
+        let rt = match self.program(&session.host) {
+            Ok(rt) => rt,
+            Err(why) => return Observation::unknown(why),
+        };
+        bind(rt.manifest(), |manifest| {
+            if !manifest.verbs.iter().any(|v| v == "capture") {
+                return Observation::Known(false);
+            }
+            self.capture(session).map(|captured| match captured {
+                Captured::Screen {
+                    text,
+                    cursor_row,
+                    cursor_col,
+                    ..
+                } => {
+                    let at = |n: Option<u64>| n.and_then(|n| usize::try_from(n).ok());
+                    at(cursor_row)
+                        .zip(at(cursor_col))
+                        .is_some_and(|(r, c)| composer_draft(&text, r, c))
+                }
+                Captured::None => false,
+            })
+        })
+    }
+
     /// What the agent's hooks reported through `fleet signal`: the file on
     /// this machine, or on the session's host through the runtime's `exec`.
     fn reported(&self, session: &SessionRef) -> Observation<Reported> {
@@ -1150,25 +1194,59 @@ impl Runtime for ExecRuntime {
     /// Ready once the agent reported anything but a wait for a person: its
     /// start hook reports it before any prompt. Codex, Kimi Code and
     /// GitHub Copilot CLI report nothing before their first message, so
-    /// before that their empty composer makes them ready.
+    /// before that their empty composer makes them ready. A person's draft
+    /// in the composer makes it not ready, so that nothing joins the draft.
     fn ready(&self, session: &SessionRef) -> Observation<bool> {
-        bind(self.reported(session), |r| match r.state {
-            Some(State::Blocked) => Observation::Known(false),
-            Some(State::Started) | None => match self.first_screen(session) {
-                Observation::Known(
-                    FirstScreen::CodexComposer
-                    | FirstScreen::KimiComposer
-                    | FirstScreen::CopilotComposer,
-                ) => Observation::Known(true),
-                Observation::Known(_) => {
-                    Observation::unknown("the agent reported no state since it started")
-                }
-                Observation::Unknown { why } => Observation::Unknown { why },
-            },
-            Some(_) => Observation::Known(true),
+        bind(self.reported_ready(session), |ready| {
+            if ready {
+                self.drafting(session).map(|drafting| !drafting)
+            } else {
+                Observation::Known(false)
+            }
         })
     }
 
+    fn brief(
+        &self,
+        session: &SessionRef,
+        text: &str,
+        _intent_key: &str,
+    ) -> Observation<EffectOutcome> {
+        let rt = match self.program(&session.host) {
+            Ok(rt) => rt,
+            Err(why) => return Observation::unknown(why),
+        };
+        match self.drafting(session) {
+            Observation::Known(false) => {}
+            Observation::Known(true) => {
+                return Observation::Known(EffectOutcome::Failed {
+                    why: "a person is typing in the agent's composer: nothing was typed".into(),
+                });
+            }
+            Observation::Unknown { why } => {
+                return Observation::Known(EffectOutcome::Failed {
+                    why: format!(
+                        "the agent's composer cannot be read, so nothing was typed: {why}"
+                    ),
+                });
+            }
+        }
+        let request = json!({
+            "key": rt.key(&session.key),
+            "text": text,
+            "submit": true,
+        });
+        rt.send::<Sent>("input", request).map(|sent| match sent {
+            Sent::Sent => EffectOutcome::Delivered {
+                already: false,
+                via: Some("input".into()),
+                may_hold: true,
+            },
+            Sent::None => EffectOutcome::Failed {
+                why: "no process holds the session's key".into(),
+            },
+        })
+    }
     /// An agent that reported anything runs past any workspace-trust
     /// dialog: hooks run only in a trusted workspace. Before that, a trust
     /// dialog on its screen is Untrusted, and Fleet never answers it.
@@ -1221,33 +1299,6 @@ impl Runtime for ExecRuntime {
             ),
             Observation::Unknown { why } => Observation::Unknown { why },
         }
-    }
-
-    fn brief(
-        &self,
-        session: &SessionRef,
-        text: &str,
-        _intent_key: &str,
-    ) -> Observation<EffectOutcome> {
-        let rt = match self.program(&session.host) {
-            Ok(rt) => rt,
-            Err(why) => return Observation::unknown(why),
-        };
-        let request = json!({
-            "key": rt.key(&session.key),
-            "text": text,
-            "submit": true,
-        });
-        rt.send::<Sent>("input", request).map(|sent| match sent {
-            Sent::Sent => EffectOutcome::Delivered {
-                already: false,
-                via: Some("input".into()),
-                may_hold: true,
-            },
-            Sent::None => EffectOutcome::Failed {
-                why: "no process holds the session's key".into(),
-            },
-        })
     }
 
     /// A runtime cannot read a typed text back; the agent's prompt hook
