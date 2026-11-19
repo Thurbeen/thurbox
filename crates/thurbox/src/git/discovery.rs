@@ -305,7 +305,7 @@ pub(super) fn repo_name_from_remote(path: &Path) -> Option<String> {
 /// - `git@github.com:user/repo.git` → `"repo"`
 /// - `https://github.com/user/repo.git` → `"repo"`
 /// - `https://github.com/user/repo` → `"repo"`
-pub(super) fn parse_repo_name_from_url(url: &str) -> Option<String> {
+pub fn parse_repo_name_from_url(url: &str) -> Option<String> {
     // Split on the last '/' (HTTPS/SSH with path) or ':' (SSH shorthand).
     let after_sep = if url.contains('/') {
         url.rsplit('/').next()?

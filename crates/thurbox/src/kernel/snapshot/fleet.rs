@@ -920,6 +920,11 @@ fn runs(link: &FleetLink, installed: &std::path::Path) -> bool {
         .is_some_and(|path| canonical(&path).is_some() && canonical(&path) == canonical(installed))
 }
 
+fn url_repo(url: &str) -> Option<String> {
+    let url = url.split(['?', '#']).next().unwrap_or(url);
+    crate::git::parse_repo_name_from_url(url)
+}
+
 /// One Task as a session row.
 ///
 /// The directory a `file` or `git+file` URL names, without a query or a
@@ -998,7 +1003,7 @@ pub fn row_of(link: &FleetLink, task: &Value) -> SessionRow {
         state => state,
     };
     let agent_state = status["agentState"].as_str();
-    let repo = repo_name(&cwd, None);
+    let repo = repo_name(&cwd, None).or_else(|| spec["workspace"][0].as_str().and_then(url_repo));
     let status_source = match (session_state, &status["activity"]["source"]) {
         (Some("Paused" | "Lost" | "Gone"), _) | (_, Value::Null) => None,
         (_, source) => Some(StatusSource {
