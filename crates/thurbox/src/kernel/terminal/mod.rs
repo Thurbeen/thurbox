@@ -1972,6 +1972,37 @@ mod tests {
     }
 
     #[test]
+    fn a_resume_fleet_runs_neither_attaches_nor_restarts_its_wait() {
+        let mut terminals = Terminals::with_registry(
+            std::sync::Arc::new(crate::backend::registry::inert()),
+            &crate::session::settings::Settings::default(),
+        );
+        terminals.attach_fleet_through(crate::fleet_link::FleetLink::local("/nonexistent/fleet"));
+        terminals.attach.start_wait = std::time::Duration::ZERO;
+        let id = format!("{}:t1", crate::session::settings::IMPLIED_FLEET);
+        let mut fleet_row = row(&id, super::fleet::BACKEND, None);
+        fleet_row.key = Some("k1".to_string());
+        fleet_row.stopped = true;
+        fleet_row.status = crate::session::SessionState::Stopped;
+        fleet_row.state_why = Some(super::super::snapshot::fleet::RESUMING.to_string());
+
+        for _ in 0..3 {
+            terminals.sync(&snapshot(vec![fleet_row.clone()]), 24, 80);
+            assert_eq!(terminals.failure(&id), None);
+            assert!(!terminals.attach.attaching.contains_key(&id));
+        }
+        assert_eq!(
+            terminals.starts().get(&id),
+            Some(&Start::Failed(
+                "Fleet did not resume it within 0 s".to_string()
+            ))
+        );
+        let settled = terminals.failed_version();
+        terminals.sync(&snapshot(vec![fleet_row]), 24, 80);
+        assert_eq!(terminals.failed_version(), settled);
+    }
+
+    #[test]
     fn a_start_with_no_pane_after_the_wait_fails_and_stops_the_clock() {
         let mut terminals = Terminals::with_registry(
             std::sync::Arc::new(crate::backend::registry::inert()),
