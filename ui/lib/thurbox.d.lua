@@ -453,7 +453,7 @@
 ---@field status_since_ms? integer When Fleet first saw this status from this source, in ms since the epoch.
 ---@field deleting_since_ms? integer When Fleet marked this session for deletion, in ms since the epoch. Present only on a deletion that has run past the time a teardown takes: one that has not is not listed.
 ---@field deleting_why? string Why Fleet has not finished that deletion: its `Released` condition.
----@field state_why? string Why a Fleet session is stopped, lost or gone, or stalled: `paused · idle`, `stopped · outside Fleet`, `lost · window gone`, `lost · revive failed`, `lost · cannot resume`, `gone · session ended`, `stalled · <reason>`.
+---@field state_why? string Why a Fleet session is stopped, lost or gone, or stalled: `paused · idle`, `paused · on request`, `paused · resuming`, `stopped · outside Fleet`, `lost · window gone`, `lost · revive failed`, `lost · cannot resume`, `gone · session ended`, `stalled · <reason>`.
 ---@field backend string
 ---@field repo? string
 ---@field branch? string
@@ -469,7 +469,7 @@
 ---@field display_order integer
 ---@field git? thurbox.GitStats
 ---@field attach_error? string Why this session's terminal is not live.
----@field starting boolean Whether a start this interface sent is still waiting for the session's terminal to attach.
+---@field starting boolean Whether the session is starting: a start this interface sent, or a resume Fleet runs, still waiting for the session's terminal to attach.
 ---@field start_error? string Why the last start this interface sent did not bring the session's terminal back.
 
 ---@class (exact) thurbox.Repo
@@ -1034,7 +1034,7 @@ function require(name) end
 ---@alias thurbox.Verb
 ---| "emit" | "plugin" | "set" | "task" | "dispatch"
 ---| "create" | "bookmark" | "focus" | "open" | "theme" | "order" | "program"
----| "delete" | "restore" | "restart" | "start" | "send" | "reorder" | "fork"
+---| "delete" | "restore" | "restart" | "start" | "pause" | "send" | "reorder" | "fork"
 ---| "sync" | "rename" | "copy" | "diff" | "shell" | "editor" | "action" | "message"
 
 --- The only way a plugin changes anything. Enqueues and returns; it never runs
@@ -1058,6 +1058,7 @@ function require(name) end
 ---@overload fun(verb: "restore", opts: thurbox.cmd.Restore)
 ---@overload fun(verb: "restart", opts: thurbox.cmd.Restart)
 ---@overload fun(verb: "start", opts: thurbox.cmd.Session)
+---@overload fun(verb: "pause", opts: thurbox.cmd.Session)
 ---@overload fun(verb: "send", opts: thurbox.cmd.Send)
 ---@overload fun(verb: "reorder", opts: thurbox.cmd.Reorder)
 ---@overload fun(verb: "fork", opts: thurbox.cmd.Fork)

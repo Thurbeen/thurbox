@@ -55,6 +55,8 @@ pub enum Command {
     Send { session: String, text: String },
     /// Ask Fleet to resume a stopped session's agent on its conversation.
     Start { session: String },
+    /// Ask Fleet to pause a running session's agent, keeping its conversation.
+    Pause { session: String },
     /// Persist an explicit manual order, densely renumbered.
     ///
     /// The permutation is computed by the pane that *renders* the list, because
@@ -341,6 +343,7 @@ impl Command {
             Command::Delete { .. } => "delete",
             Command::Send { .. } => "send",
             Command::Start { .. } => "start",
+            Command::Pause { .. } => "pause",
             Command::Create { .. } => "create",
             Command::Rename { .. } => "rename",
             Command::Copy { .. } => "copy",
@@ -369,6 +372,7 @@ impl Command {
             Command::Delete { session, .. }
             | Command::Send { session, .. }
             | Command::Start { session }
+            | Command::Pause { session }
             | Command::Rename { session, .. }
             | Command::Copy { session }
             | Command::Diff { session }
@@ -456,6 +460,7 @@ impl Command {
             Command::Order { .. }
             | Command::Rename { .. }
             | Command::Start { .. }
+            | Command::Pause { .. }
             | Command::Bookmark { .. } => None,
             // The interface's own state, or something the user then drives
             // themselves: a pane focused, a shell or editor opened beside a
@@ -839,6 +844,7 @@ impl Command {
         match kind {
             "delete" => Ok(Command::Delete { session, force }),
             "start" => Ok(Command::Start { session }),
+            "pause" => Ok(Command::Pause { session }),
             "send" => match text {
                 Some(text) => Ok(Command::Send { session, text }),
                 None => Err("command \"send\" needs text".to_string()),

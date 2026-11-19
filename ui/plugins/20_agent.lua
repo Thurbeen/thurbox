@@ -263,8 +263,14 @@ end
 
 --- The status the way v1's session title writes it: capitalised, spelled out,
 --- never a glyph. The snapshot hands Lua the lowercase state name.
-local function status_word(status)
-  local word = status or "idle"
+local function status_word(session)
+  if session.starting then
+    return "Starting"
+  end
+  if session.status == "stopped" and (session.state_why or ""):find("^paused") then
+    return "Paused"
+  end
+  local word = session.status or "idle"
   return (word:gsub("^%l", string.upper))
 end
 
@@ -307,16 +313,10 @@ local function terminal_title(session, opts)
       .. ") ["
       .. session.branch
       .. "] ["
-      .. status_word(session.status)
+      .. status_word(session)
       .. "] "
   else
-    base = " "
-      .. name
-      .. " ("
-      .. agent_word(session)
-      .. ") ["
-      .. status_word(session.status)
-      .. "] "
+    base = " " .. name .. " (" .. agent_word(session) .. ") [" .. status_word(session) .. "] "
   end
 
   local scroll = opts.scroll or 0
@@ -920,8 +920,14 @@ local function not_running_lines(session, revival, elapsed)
   if session.starting then
     return starting_lines(name, elapsed)
   end
+  local paused = revival == "start" and (session.state_why or ""):find("^paused")
+  local style = { fg = paused and theme.accent or theme.secondary, bold = true }
+  local title = { { text = headline(name, session, revival), style = style } }
+  if paused then
+    table.insert(title, 1, { text = "❚❚ ", style = style })
+  end
   local lines = {
-    { { text = headline(name, session, revival), style = { fg = theme.secondary, bold = true } } },
+    title,
     { muted(session.state_why or "") },
     {},
   }

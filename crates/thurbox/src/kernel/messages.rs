@@ -24,6 +24,7 @@ pub fn done(kind: &str, label: Option<&str>) -> Option<String> {
         "delete" => "deleted",
         "send" => "sent to",
         "start" => "started",
+        "pause" => "pausing",
         "bookmark" => "remembered",
         // Visible where it happened, or housekeeping nobody asked for.
         _ => return None,

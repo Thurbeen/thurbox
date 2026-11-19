@@ -218,10 +218,18 @@ impl Terminals {
             self.fail(&row.id, None, "session has no pane yet".to_string());
             return;
         };
+        let resuming = row.deleting.is_none()
+            && (row.state_why.as_deref() == Some(crate::kernel::snapshot::fleet::RESUMING)
+                || !row.stopped && self.failure(&row.id) == Some(PAUSED));
+        if resuming && !self.attach.starts.contains_key(&row.id) {
+            self.start_requested(&row.id);
+        }
         let unattachable = if row.deleting.is_some() {
             Some(DELETING)
         } else if row.state_why.as_deref() == Some(crate::kernel::snapshot::fleet::SESSION_ENDED) {
             Some(ENDED)
+        } else if row.stopped && resuming {
+            return;
         } else if row.stopped {
             Some(PAUSED)
         } else {
