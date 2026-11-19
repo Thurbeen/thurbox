@@ -224,8 +224,14 @@ impl App {
             );
             return;
         };
-        if let Err(e) = self.terminals.open_shell(&row, rows, cols) {
-            self.report(format!("could not open a shell: {e}"), Level::Error);
+        match self.terminals.open_shell(&row, rows, cols) {
+            Ok(thurbox::kernel::terminal::ShellOpening::Opening) => {}
+            Ok(thurbox::kernel::terminal::ShellOpening::AfterStart) => {
+                self.dispatch_tracked(thurbox::kernel::command::Command::Start {
+                    session: session.to_string(),
+                });
+            }
+            Err(e) => self.report(format!("could not open a shell: {e}"), Level::Error),
         }
     }
 
