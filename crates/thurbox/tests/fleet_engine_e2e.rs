@@ -1073,9 +1073,6 @@ done
 
 const START_TO_PANE: Duration = Duration::from_secs(10);
 
-/// A Fleet on `runtime-mux` whose one Task, `t1`, its manager pauses as soon
-/// as the agent idles, and a terminal set attached to it that has seen the
-/// row paused. `None` where the binaries or tmux are missing outside CI.
 fn paused_session() -> Option<PausedSession> {
     let bin = fleet_bin()?;
     let runtime_mux = bin.with_file_name("runtime-mux");
@@ -1170,7 +1167,6 @@ struct PausedSession {
 }
 
 impl PausedSession {
-    /// One frame of the interface: the row `t1` is now, and its pane's text.
     fn frame(&mut self) -> (Option<thurbox::kernel::snapshot::SessionRow>, String) {
         let _entered = self.runtime.enter();
         self.store.refresh_if_due();
@@ -1182,7 +1178,6 @@ impl PausedSession {
         )
     }
 
-    /// `Start` on `t1`, as the interface dispatches it, on a thread of its own.
     fn start(&self) -> std::thread::JoinHandle<Result<(), String>> {
         let program = self.fleet.program.clone();
         std::thread::spawn(move || {
@@ -1236,10 +1231,6 @@ fn starting_a_paused_session_shows_its_resumed_agent_in_the_running_interface() 
     );
 }
 
-/// The companion shell asked for on a session Fleet paused for idling opens
-/// once the session runs again: a paused Task has no agent window for a
-/// shell to stand beside, so asking for one waits for the Start that
-/// resumes it, instead of failing because the row has no live pane.
 #[test]
 fn a_shell_asked_for_on_a_paused_session_opens_once_start_resumes_it() {
     let Some(mut session) = paused_session() else {
@@ -1255,6 +1246,7 @@ fn a_shell_asked_for_on_a_paused_session_opens_once_start_resumes_it() {
         thurbox::kernel::terminal::ShellOpening::AfterStart,
         "the shell waits for the Start the interface dispatches"
     );
+    session.terminals.start_requested("local:t1");
     let start = session.start();
 
     let shell = thurbox::kernel::terminal::shell_surface("local:t1");

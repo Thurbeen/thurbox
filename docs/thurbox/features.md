@@ -1857,8 +1857,8 @@ other panel toggles' F-keys.
 - **A paused session is started first.** Fleet pauses a session that idles
   (`paused · idle`), and a paused session has no agent window for a shell to
   stand beside. Raising the tab on one sends the same Start as `start`, and
-  the shell opens when the pane is back. A Start that fails says why on the
-  agent's pane, and no shell opens.
+  the shell opens when the pane is back. While it waits, the pane says the
+  session is starting; a Start that fails says why there, and no shell opens.
 - **The program** is the place's own shell, as the runtime picks it
   (`runtime-mux`: `$SHELL`, else `/bin/sh`; `%COMSPEC%` on Windows).
 
