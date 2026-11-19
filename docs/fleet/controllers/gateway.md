@@ -310,8 +310,10 @@ Rules:
 ## Flow: a child speaks through its parent
 
 A Task can carry parent labels that name another Task. Its Questions,
-Comments, Drafts, changes and result then go to the parent's inbox, not to
-a thread. The parent answers with `fleet send CHILD --answers ID TEXT`.
+Comments, Drafts and result then go to the parent's inbox, not to
+a thread. Its declared changes do not go to the parent's inbox. The parent
+reads them in the child's `status.declared`. The parent answers with
+`fleet send CHILD --answers ID TEXT`.
 Only the parent speaks in the thread. When the parent is gone, the child
 acts as an untied Task.
 
@@ -706,8 +708,10 @@ Rules:
 
 ### Children
 
-A child's Questions, Comments, Drafts, changes and result each become one
-entry in its parent's inbox, from `gateway/child/<child>`. A child logs its
+A child's Questions, Comments, Drafts and result each become one
+entry in its parent's inbox, from `gateway/child/<child>`. A child's declared
+ChangeRequest becomes no entry: it wakes the parent with nothing to do, and
+the child's `status.declared` already holds it. A child logs its
 Drafts, result and change news as every Task does. The parent
 answers with `fleet send CHILD --answers ID TEXT`, which records the child's
 `status.answered`. A summary or declaration text over 4 000 bytes is not
@@ -1287,7 +1291,7 @@ A Task talks by declaring items in `status.declared` with
 | `Question` | `id`, `text` | Posted once. | Opens a thread, then is tied to it. | Sent to the parent's inbox. |
 | `Comment` | `id`, `text` | Posted once. | Skipped. | Sent to the parent's inbox. |
 | `Draft` | `id`, `title`, `text` or `url` | Logged once, as awaiting review. Never posted in the thread. | Logged the same way. | Sent to the parent's inbox, and logged. |
-| `ChangeRequest` | `url`, `name` | Logged when followed, and each time its state moves. The thread gets one ready notice with the URL, the first time `everReady` is true, then one answered notice with the URL each time the forge entry's `answeredAt` moves, and no other news. | Logged the same way. | Sent to the parent's inbox, and logged. |
+| `ChangeRequest` | `url`, `name` | Logged when followed, and each time its state moves. The thread gets one ready notice with the URL, the first time `everReady` is true, then one answered notice with the URL each time the forge entry's `answeredAt` moves, and no other news. | Logged the same way. | Logged. Not sent to the parent's inbox: the parent reads it in the child's `status.declared`. |
 | `status.result` | The worker's result | Logged once per generation. Never posted in the thread. | Logged the same way. | Sent to the parent's inbox, and logged. |
 
 "Logged" means a top-level post in the `gateway.logs` channel. Without

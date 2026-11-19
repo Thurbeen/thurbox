@@ -875,7 +875,7 @@ impl Pass<'_, '_> {
                 .enumerate()
                 .skip(entry.declared as usize)
             {
-                if gateway_reads(item) {
+                if relayed_to_parent(item) {
                     if self.inbox_full() {
                         done = false;
                         break;
@@ -2526,6 +2526,12 @@ fn child_result(
     }
 }
 
+fn relayed_to_parent(item: &Value) -> bool {
+    gateway_reads(item)
+        && item.get("kind").and_then(Value::as_str)
+            != Some(fleet_api::follow::DECLARED_CHANGE_REQUEST)
+}
+
 /// One child's declaration, quoted as data, with how the parent answers
 /// a Question.
 fn render_child_item(name: &str, uid: &str, item: &serde_json::Value) -> String {
@@ -2537,14 +2543,9 @@ fn render_child_item(name: &str, uid: &str, item: &serde_json::Value) -> String 
             "Child Task {name} (uid {uid}) asked a Question ({id}). Answer it with: fleet send {name} --answers {id} TEXT\n"
         ),
         DECLARED_COMMENT => format!("Child Task {name} (uid {uid}) declared a Comment ({id}):\n"),
-        DECLARED_DRAFT => format!(
+        _ => format!(
             "Child Task {name} (uid {uid}) declared a Draft ({id}), awaiting review: {}\n",
             field("title")
-        ),
-        _ => format!(
-            "Child Task {name} (uid {uid}) declared a ChangeRequest {}: {}\n",
-            field("name"),
-            field("url")
         ),
     };
     let body = field("text");

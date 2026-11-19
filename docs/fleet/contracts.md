@@ -759,8 +759,8 @@ Guarantees, each with its test in `gateway_controller`,
 - **Children.** The parent's controller lists the Tasks whose
   `gateway.fleet.dev/parent` and `parent-uid` labels name it, from the
   sweep's one Task listing, and relays each of a child's Questions,
-  Comments, Drafts and ChangeRequest declarations and each result
-  generation as one entry from `gateway/child/<child>` under
+  Comments and Drafts and each result generation as one entry from
+  `gateway/child/<child>` under
   `task/<name>/<uid>/gateway/child/<child uid>/<index or result/generation>`,
   recording `{uid, seen, declared, result}` per child. A child tied to its
   own verified thread is left alone; more than 200 children raise
