@@ -521,6 +521,10 @@ pub struct TaskStatus {
     /// Idle observations. Active or Unknown clears it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub idle_since: Option<Millis>,
+    /// The `pauseRequestedAt` TaskController last planned a pause for.
+    /// A request is acted on once, whatever the pause's outcome.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pause_request_answered: Option<Millis>,
     /// Catch-up notes queued over the Task's life; the next one's key.
     #[serde(default, skip_serializing_if = "is_zero")]
     pub catch_ups: u32,
@@ -575,6 +579,12 @@ pub struct TaskStatus {
     /// its pause.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub wake_requested_at: Option<Millis>,
+    /// When `fleet pause` last asked for the session to be paused, Unix
+    /// milliseconds. No owner: written only by `fleet pause` through a typed
+    /// mutation. TaskController pauses the session for a request made after
+    /// the last `Paused` transition and after the last wake.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pause_requested_at: Option<Millis>,
     /// TaskController's place in the session's outbox: what it ingested
     /// into the boards so far. Absent until a session published.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -642,7 +652,7 @@ pub const GATEWAY_FIELDS: &[&str] = &["gateway"];
 
 /// The status fields nobody owns: reached only through typed mutations.
 /// Every field in none of these lists is TaskController's.
-pub const UNOWNED_FIELDS: &[&str] = &["inbox", "answered", "wakeRequestedAt"];
+pub const UNOWNED_FIELDS: &[&str] = &["inbox", "answered", "wakeRequestedAt", "pauseRequestedAt"];
 
 #[cfg(test)]
 mod tests {

@@ -1107,6 +1107,36 @@ impl Store for FileStore {
         Ok(obj)
     }
 
+    fn request_pause(
+        &self,
+        name: &str,
+        at: fleet_api::meta::Millis,
+        expected: u64,
+        by: FieldManager,
+    ) -> Result<Object, StoreError> {
+        if !kinds::may_request_pause(&by) {
+            return Err(StoreError::Forbidden(format!(
+                "{} does not write status.pauseRequestedAt",
+                by.name()
+            )));
+        }
+        let _guard = self.lock()?;
+        let mut obj = self.read_existing(task::KIND, name)?;
+        expect_rv(&obj, expected)?;
+        if obj.is_deleting() {
+            return Err(StoreError::Forbidden(format!(
+                "{} is being deleted; its session is released, not paused",
+                obj.key()
+            )));
+        }
+        let mut st = task_status(&obj)?;
+        st.pause_requested_at = Some(at);
+        obj.status = encode_status(&st)?;
+        obj.metadata.resource_version = self.next_rv()?;
+        self.write(&obj)?;
+        Ok(obj)
+    }
+
     fn amend_task(
         &self,
         name: &str,

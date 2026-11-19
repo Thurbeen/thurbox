@@ -139,6 +139,12 @@ pub fn may_request_wake(by: &FieldManager) -> bool {
     *by == FieldManager::Cli
 }
 
+/// Who may ask for a Task's session to be paused (`Store::request_pause`):
+/// `fleet pause`, as `cli`.
+pub fn may_request_pause(by: &FieldManager) -> bool {
+    *by == FieldManager::Cli
+}
+
 /// Who may replace its own status field and append the relay's entries in
 /// one write (`Store::record_relay`): the Forge controller, for
 /// `Task.status.forge`, the Gateway controller, for `Task.status.gateway`,

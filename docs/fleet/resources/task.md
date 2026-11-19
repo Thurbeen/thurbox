@@ -89,6 +89,7 @@ repositories.
 | `brief` | TaskController | `{key, generation, recovered}`: the newest brief or amendment the worker received. A result names this generation. |
 | `spawnAttempts`, `briefSends`, `materializeAttempts`, `cleanAttempts`, `releaseAttempts`, `briefProbeFailures`, `revivals`, `reviveAttempts`, `pauses`, `resumes`, `resumeAttempts`, `catchUps`, `catchUp` | TaskController | Counters and keys of bounded retries. Three failures raise `NeedsAttention`. |
 | `idleSince`, `notBefore`, `sessionCheckedAt` | TaskController | When the agent became idle, the earliest next reconcile after a failure (30 s later), and the last session lookup of a Concluded Task (repeated every 5 minutes). |
+| `pauseRequestAnswered` | TaskController | The `pauseRequestedAt` it last planned a pause for. A request is acted on once. |
 | `deliveries`, `deliveryAttempts` | TaskController | Receipts of delivered inbox entries, and sends and probes per entry in delivery. `otherPromptSeq` is the latest place in the agent's signal file of a report of another prompt when the entry's send was planned. |
 | `outbox` | TaskController | `{offset, generation, skipped, lastSkipped, closed, discarding}`: how far the session's event outbox is ingested into the Boards. See [Board](board.md#publishing-from-a-session). |
 | `subscriptions` | TaskController | `{notices, cursors}`: the count of notices queued, and per subscription its Board, filter, `boardUid`, cursor (`after`) and the key of its last notice. See [Subscriptions](#subscriptions). |
@@ -100,6 +101,7 @@ repositories.
 | `inbox` | nobody; typed appends | Messages queued for the session. See [Inbox](#inbox). |
 | `answered` | nobody; inbox appends | Per Question id, the entry that answered it. First answer wins. |
 | `wakeRequestedAt` | nobody; `fleet attach --wake` and `fleet shell --wake` | When a wake last asked for the session. TaskController resumes a paused session for a request made at or after its pause. See [Pausing an idle session](../controllers/task.md#pausing-an-idle-session). |
+| `pauseRequestedAt` | nobody; `fleet pause` | When `fleet pause` last asked for a pause. TaskController pauses the session for a request made after the last `Paused` transition and after the last wake. See [Pausing on request](../controllers/task.md#pausing-on-request). |
 
 ## Lifecycle
 
@@ -373,6 +375,7 @@ them.
 fleet apply -f task.json             # create, or change dispatch
 fleet status task design-305 --json  # phase and conditions
 fleet send design-305 "Also update the docs."  # queue a message for the session
+fleet pause design-305               # pause the session now; a message or attach --wake resumes it
 fleet event subscribe design-305 --type 'ci.*'  # hear of new ci events on Board shared
 fleet amend design-305 --text "Also cover the docs." --reason "asked by the requester"  # add to the brief
 fleet declare design-305 --change-request https://github.com/OWNER/app/pull/88  # follow the change the worker opened

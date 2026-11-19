@@ -314,7 +314,15 @@ Guarantees, each with its test:
   own hooks report through `fleet signal`, never the runtime's; Unknown
   never pauses, and a runtime that cannot pause never answers `paused`
   Known false. `Paused=True/Idle` changes no
-  phase and raises no `WorkerGone`, `SessionLost` or revive.
+  phase and raises no `WorkerGone`, `SessionLost` or revive. `fleet pause`
+  sets `status.pauseRequestedAt`. A request made after the last `Paused`
+  transition and after the last `status.wakeRequestedAt` plans `Pause` under the
+  same `pause/<n>` and the same conditions, without `pauseAfterMs` and
+  without reading the activity, and ends in `Paused=True/Requested`. A
+  request that cannot be honoured yet waits and raises nothing. A request
+  is acted on once: TaskController records it in
+  `status.pauseRequestAnswered` when it plans the pause, so a refused pause
+  (`Paused=False/PauseFailed`) is not tried again.
 - **Resume.** An inbox entry for a paused Task plans one `Resume` under
   `resume/<n>`, and so does a `status.wakeRequestedAt` at or after the
   `Paused=True` transition; entries that arrive meanwhile wait in the inbox. Resumes
@@ -825,11 +833,12 @@ refused.
   Unknown and blocks writes to that name. A list with one bad record is
   Unknown as a whole.
 - Each status field has one owner, checked on every write, except
-  `Task.status.inbox`, `status.answered` and `status.wakeRequestedAt`,
-  which have none and which no status write may change. A controller writes only under the current
-  manager lease: an expired or superseded token is refused, and the token
-  only grows. A new lease takes its token from `seq`, so the token grows
-  even when `lease.json` is lost. A serving manager holds the OS lock on
+  `Task.status.inbox`, `status.answered`, `status.wakeRequestedAt` and
+  `status.pauseRequestedAt`, which have none and which no status write
+  may change. A controller writes only under the current manager lease:
+  an expired or superseded token is refused, and the token only grows.
+  A new lease takes its token from `seq`, so the token grows even when
+  `lease.json` is lost. A serving manager holds the OS lock on
   `manager.lock` for its life, and a second `fleet up` waits while it
   is held. A new manager takes over an unexpired lease only when its
   holder names another boot, or when its holder is gone on this boot and
@@ -860,6 +869,10 @@ refused.
 - `status.wakeRequestedAt` is reached through one typed mutation,
   compare-and-swap under the lock: `request_wake` (`cli`, through the
   manager's `wake` verb, no lease) sets it to the time of the request and
+  refuses a deleting Task. It changes no other field.
+- `status.pauseRequestedAt` is reached through one typed mutation,
+  compare-and-swap under the lock: `request_pause` (`cli`, through the
+  manager's `pause` verb, no lease) sets it to the time of the request and
   refuses a deleting Task. It changes no other field.
 - A Conversation's `status.received`, a Listener's `beats`, `refused`
   and `beatRevision`, and a Board's `status.head` and `status.oldest` have no

@@ -27,7 +27,7 @@ use fleet_gateway::{GatewayAccounts, Platform, account_digest, listener_account}
 use fleet_manager::{
     AmendRequest, DeclareOutcome, GatewaySide, Manager, RunOptions, amend, apply,
     apply_change_request, apply_conversation, beat, declare, declare_change_request, delete, label,
-    list_events, publish_event, receive, record_result, send, wake,
+    list_events, pause, publish_event, receive, record_result, send, wake,
 };
 use fleet_runtime::{ExecProgram, ExecRuntime, FakeHost, FakeRuntime, FileSignals};
 use fleet_store::manager::{ManagerLock, ManagerRecord, ManagerState};
@@ -148,6 +148,8 @@ enum Command {
         #[arg(long)]
         json: bool,
     },
+    /// Ask the Task's controller to pause its session now; a message or `attach --wake` resumes it.
+    Pause { task: String },
     /// Add to a Task's brief: the amendment is kept in its spec, delivered to the same session, and re-opens a Concluded Task.
     Amend {
         task: String,
@@ -814,6 +816,7 @@ fn subject(command: &Command) -> Vec<KeyValue> {
         Command::Result { task: name, .. }
         | Command::Declare { task: name, .. }
         | Command::Send { task: name, .. }
+        | Command::Pause { task: name }
         | Command::Amend { task: name, .. }
         | Command::Attach { task: name, .. }
         | Command::Shell { task: name, .. } => task(name),
@@ -1255,6 +1258,11 @@ fn run(cli: Cli) -> Result<(), Failure> {
             } else {
                 println!("Task/{task} inbox {} queued from {}", entry.key, entry.from);
             }
+            Ok(())
+        }
+        Command::Pause { task } => {
+            pause(store, &SystemClock, &task)?;
+            println!("Task/{task} pause requested");
             Ok(())
         }
         Command::Amend {
