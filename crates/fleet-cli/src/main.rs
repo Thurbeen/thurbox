@@ -479,13 +479,14 @@ enum GatewayCommand {
     /// Download a file shared in the thread a Task is tied to, and print the path it was saved at.
     ///
     /// The file must be shared on a message of the Task's Conversation. It
-    /// lands at DIR/FILE_ID/NAME. Exit 1 says the platform will not give
-    /// the file, and why; exit 4 says its answer could not be read.
+    /// lands at DIR/fleet-file-FILE_ID-UNIQUE/NAME, in a directory made for
+    /// this call that only you can enter. Exit 1 says the platform will not
+    /// give the file, and why; exit 4 says its answer could not be read.
     File {
         task: String,
         /// The file's id, as the relayed message names it.
         file: String,
-        /// Where to save it; else TMPDIR/fleet-files/TASK.
+        /// Where to save it; else the system's temporary directory.
         #[arg(long, value_name = "DIR")]
         out: Option<PathBuf>,
         #[arg(long)]
@@ -1633,7 +1634,7 @@ fn cmd_gateway(store: &dyn Store, config: &Config, command: GatewayCommand) -> R
             json,
         } => {
             let gateway = open_gateway(config)?.ok_or_else(|| fail("no [gateway] section"))?;
-            let dir = out.unwrap_or_else(|| std::env::temp_dir().join("fleet-files").join(&task));
+            let dir = out.unwrap_or_else(std::env::temp_dir);
             let fetched = match fleet_manager::fetch_file(store, &gateway, &task, &file, &dir) {
                 Ok(f) => f,
                 Err(StoreError::Unknown(why)) => {

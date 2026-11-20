@@ -25,7 +25,7 @@ pub mod slack;
 pub mod text;
 
 use std::collections::BTreeMap;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 pub use discord::DiscordGateway;
@@ -321,6 +321,46 @@ impl Gateway for GatewayAccounts {
     }
 }
 
+/// A new directory under `parent` that only this user can enter: mode
+/// 0700 on Unix, made by one `mkdir` that fails when the path exists, so no
+/// other user can have put a link or a file there first. Its name is
+/// `<stem>-<pid>-<nanos>-<n>`, unique to the call.
+pub fn fresh_private_dir(parent: &Path, stem: &str) -> std::io::Result<PathBuf> {
+    std::fs::create_dir_all(parent)?;
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_nanos())
+        .unwrap_or(0);
+    for n in 0..100 {
+        let path = parent.join(format!("{stem}-{}-{nanos}-{n}", std::process::id()));
+        let mut builder = std::fs::DirBuilder::new();
+        #[cfg(unix)]
+        std::os::unix::fs::DirBuilderExt::mode(&mut builder, 0o700);
+        match builder.create(&path) {
+            Ok(()) => return Ok(path),
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(e) => return Err(e),
+        }
+    }
+    Err(std::io::Error::new(
+        std::io::ErrorKind::AlreadyExists,
+        format!(
+            "no fresh directory {stem}-… could be made under {}",
+            parent.display()
+        ),
+    ))
+}
+
+/// A new file at `path` that only this user can read, made only when
+/// nothing is there: mode 0600 on Unix.
+pub fn fresh_private_file(path: &Path) -> std::io::Result<std::fs::File> {
+    let mut options = std::fs::OpenOptions::new();
+    options.write(true).create_new(true);
+    #[cfg(unix)]
+    std::os::unix::fs::OpenOptionsExt::mode(&mut options, 0o600);
+    options.open(path)
+}
+
 /// The name a fetched file is saved under: the platform's name with every
 /// character but ASCII letters, digits, `.`, `-` and `_` made `_`, no
 /// leading dot, at most 100 bytes; the file's id when nothing is left.
@@ -533,6 +573,45 @@ mod tests {
         );
         let thread = ConversationRef::split("slack:C0123ABCD:1730000000.000100").unwrap();
         assert_eq!(accounts.link("slack-main", &thread), None);
+    }
+
+    #[test]
+    fn a_fresh_private_dir_is_new_each_call_and_only_its_owner_enters_it() {
+        let parent = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../target/tmp/fresh-private-dir")
+            .join(std::process::id().to_string());
+        let a = fresh_private_dir(&parent, "fleet-file-F1").unwrap();
+        let b = fresh_private_dir(&parent, "fleet-file-F1").unwrap();
+        assert_ne!(a, b);
+        assert!(
+            a.file_name()
+                .unwrap()
+                .to_string_lossy()
+                .starts_with("fleet-file-F1-")
+        );
+        let part = a.join(".part");
+        fresh_private_file(&part).unwrap();
+        assert_eq!(
+            fresh_private_file(&part).unwrap_err().kind(),
+            std::io::ErrorKind::AlreadyExists,
+            "a file already there is never reused"
+        );
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mode = |p: &Path| std::fs::metadata(p).unwrap().permissions().mode() & 0o777;
+            assert_eq!(mode(&a), 0o700);
+            assert_eq!(mode(&part), 0o600);
+            let target = parent.join("elsewhere");
+            std::os::unix::fs::symlink(&target, a.join(".link")).unwrap();
+            assert_eq!(
+                fresh_private_file(&a.join(".link")).unwrap_err().kind(),
+                std::io::ErrorKind::AlreadyExists,
+                "a planted link is not followed"
+            );
+            assert!(!target.exists());
+        }
+        std::fs::remove_dir_all(&parent).unwrap();
     }
 
     #[test]

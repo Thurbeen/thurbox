@@ -594,7 +594,8 @@ pub trait Gateway {
         None
     }
     /// Download the file `file`, shared in `conversation`, into a directory
-    /// of its own under `dir`: `Saved` with the path written, `Refused`
+    /// made fresh for the call under `dir`, which only this user can enter:
+    /// `Saved` with the path written, `Refused`
     /// when the platform certainly will not give it, Unknown when the
     /// answer cannot be read. An adapter that fetches no file refuses.
     fn fetch(

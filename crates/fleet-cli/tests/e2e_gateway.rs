@@ -1245,16 +1245,38 @@ fn the_slack_adapter_fetches_a_shared_file_with_files_info_and_the_operators_cur
     let out = env.root.join("files");
     let fetch = |id: &str| g.fetch(GATEWAY_ACCOUNT, &t, id, &out);
 
-    let saved = out.join("F0SHOT0001").join("error__1_.png");
-    assert_eq!(
-        fetch("F0SHOT0001"),
-        Observation::Known(Fetched::Saved {
-            path: saved.clone(),
-            bytes: 9,
-            mimetype: Some("image/png".into()),
-        })
+    let Observation::Known(Fetched::Saved {
+        path: saved,
+        bytes,
+        mimetype,
+    }) = fetch("F0SHOT0001")
+    else {
+        panic!("not saved");
+    };
+    assert_eq!((bytes, mimetype.as_deref()), (9, Some("image/png")));
+    assert_eq!(saved.file_name().unwrap(), "error__1_.png");
+    assert!(
+        saved
+            .parent()
+            .unwrap()
+            .file_name()
+            .unwrap()
+            .to_string_lossy()
+            .starts_with("fleet-file-F0SHOT0001-")
     );
     assert_eq!(fs::read_to_string(&saved).unwrap(), "PNG bytes");
+    assert_eq!(
+        fs::read_dir(saved.parent().unwrap()).unwrap().count(),
+        1,
+        "the partial download became the file"
+    );
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mode = |p: &Path| fs::metadata(p).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode(saved.parent().unwrap()), 0o700);
+        assert_eq!(mode(&saved), 0o600, "curl wrote into the private file");
+    }
     let calls = slack_calls(&env);
     let info = calls.last().unwrap();
     assert_eq!(info["method"], "files.info");
@@ -1294,13 +1316,12 @@ fn the_slack_adapter_fetches_a_shared_file_with_files_info_and_the_operators_cur
     assert!(refused(fetch("F0GONE0001")).contains("deleted"));
     assert!(refused(fetch("F0PAGE0001")).contains("files:read"));
     assert!(
-        !out.join("F0PAGE0001").join("b.png").exists(),
-        "a sign-in page is never left as the file"
-    );
-    assert_eq!(
-        fs::read_dir(out.join("F0PAGE0001")).unwrap().count(),
-        0,
-        "nor its partial download"
+        fs::read_dir(&out).unwrap().all(|e| !e
+            .unwrap()
+            .file_name()
+            .to_string_lossy()
+            .contains("F0PAGE0001")),
+        "a sign-in page is never left as the file, nor its directory"
     );
     assert_eq!(
         env.stub()["slack"]["downloads"].as_array().unwrap().len(),

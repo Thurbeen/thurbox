@@ -798,9 +798,27 @@ fn a_shared_file_is_named_in_the_relay_and_fetched_for_the_tied_task_only() {
     let out_arg = out.to_string_lossy().into_owned();
     let run = env.fleet(&["gateway", "file", &task, "F0SHOT001", "--out", &out_arg]);
     run.ok();
-    let saved = out.join("F0SHOT001").join("F0SHOT001");
-    run.stdout_has(&saved.display().to_string());
+    let saved = std::path::PathBuf::from(run.stdout.trim());
+    assert_eq!(saved.file_name().unwrap(), "F0SHOT001");
+    let folder = saved.parent().unwrap();
+    assert_eq!(folder.parent().unwrap(), out);
+    assert!(
+        folder
+            .file_name()
+            .unwrap()
+            .to_string_lossy()
+            .starts_with("fleet-file-F0SHOT001-"),
+        "{}",
+        saved.display()
+    );
     assert_eq!(fs::read(&saved).unwrap(), b"\x89PNG!");
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mode = |p: &std::path::Path| fs::metadata(p).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode(folder), 0o700, "only the worker's user enters it");
+        assert_eq!(mode(&saved), 0o600, "only the worker's user reads it");
+    }
     let got = env
         .fleet(&[
             "gateway",
@@ -815,6 +833,11 @@ fn a_shared_file_is_named_in_the_relay_and_fetched_for_the_tied_task_only() {
         .json();
     assert_eq!(got["outcome"], "saved", "{got:#}");
     assert_eq!(got["bytes"], 5);
+    assert_ne!(
+        got["path"].as_str().unwrap(),
+        saved.to_str().unwrap(),
+        "each fetch writes into its own directory"
+    );
 
     env.fleet(&["gateway", "file", &task, "F0GONE001", "--out", &out_arg])
         .code(1)
@@ -823,7 +846,11 @@ fn a_shared_file_is_named_in_the_relay_and_fetched_for_the_tied_task_only() {
         .code(3)
         .stderr_has("F0ELSE001");
     assert!(
-        !out.join("F0ELSE001").exists(),
+        fs::read_dir(&out).unwrap().all(|e| !e
+            .unwrap()
+            .file_name()
+            .to_string_lossy()
+            .contains("F0ELSE001")),
         "a file shared elsewhere is never fetched"
     );
     env.fleet(&[

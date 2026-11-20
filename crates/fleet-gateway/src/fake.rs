@@ -903,15 +903,19 @@ impl Gateway for FakeGateway {
         if name != file || !source.is_file() {
             return refused(format!("the fake platform has no file {file:?}"));
         }
-        let path = into.join(&name).join(&name);
-        let copied = fs::create_dir_all(into.join(&name)).and_then(|()| fs::copy(&source, &path));
+        let copied =
+            crate::fresh_private_dir(into, &format!("fleet-file-{name}")).and_then(|folder| {
+                let path = folder.join(&name);
+                let mut file = crate::fresh_private_file(&path)?;
+                io::copy(&mut File::open(&source)?, &mut file).map(|bytes| (path, bytes))
+            });
         match copied {
-            Ok(bytes) => Observation::Known(Fetched::Saved {
+            Ok((path, bytes)) => Observation::Known(Fetched::Saved {
                 path,
                 bytes,
                 mimetype: None,
             }),
-            Err(e) => Observation::unknown(format!("{}: {e}", path.display())),
+            Err(e) => Observation::unknown(format!("{}: {e}", into.display())),
         }
     }
 }

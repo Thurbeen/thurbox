@@ -479,7 +479,8 @@ impl SlackGateway {
     /// Connect stub (`file_access: check_file_info`) leaves out, then one
     /// GET of its `url_private_download` with the operator's curl config,
     /// which carries the bot token. The file lands at
-    /// `<dir>/<file id>/<name>`.
+    /// `<dir>/fleet-file-<file id>-<unique>/<name>`, in a directory made
+    /// fresh for this call that only this user can enter.
     fn fetch_file(&self, file: &str, dir: &Path) -> Observation<Fetched> {
         if !is_file_id(file) {
             return refused(format!("{file:?} is not a Slack file id"));
@@ -507,14 +508,16 @@ impl SlackGateway {
             .as_str()
             .filter(|t| !t.is_empty())
             .map(str::to_string);
-        let folder = dir.join(file);
+        let folder = match crate::fresh_private_dir(dir, &format!("fleet-file-{file}")) {
+            Ok(folder) => folder,
+            Err(e) => return refused(format!("{}: {e}", dir.display())),
+        };
         let name = crate::saved_name(file, file_name(f));
         let path = folder.join(&name);
-        let part = folder.join(format!(".{name}.part"));
-        if let Err(e) = std::fs::create_dir_all(&folder) {
-            return refused(format!("{}: {e}", folder.display()));
-        }
-        let got = self.download(url, &part);
+        let part = folder.join(".part");
+        let got = crate::fresh_private_file(&part)
+            .map_err(|e| CallError::Unreadable(format!("{}: {e}", part.display())))
+            .and_then(|_| self.download(url, &part));
         let kept = got.and_then(|(status, content_type)| {
             check_download(status, &content_type, mimetype.as_deref())
         });
@@ -531,7 +534,7 @@ impl SlackGateway {
                 mimetype,
             }),
             Err(e) => {
-                let _ = std::fs::remove_file(&part);
+                let _ = std::fs::remove_dir_all(&folder);
                 match e {
                     CallError::Refused(why) => refused(why),
                     e => Observation::unknown(e.why()),

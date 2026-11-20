@@ -273,7 +273,7 @@ Rules:
    - why Fleet cannot fetch the file.
 4. The worker runs the command. The verb downloads the file through the
    thread's account. It saves the file at
-   `<dir>/<file id>/<name>` and prints that path.
+   `<dir>/fleet-file-<file id>-<unique>/<name>` and prints that path.
 5. The worker reads the file at that path.
 
 Rules:
@@ -282,8 +282,19 @@ Rules:
   Conversation shares. A file shared in another thread is not found
   (exit 3).
 - The verb writes nothing to the store, and takes no lease.
-- `--out DIR` names the directory. The default is
-  `<temp dir>/fleet-files/<task>`.
+- `--out DIR` names the directory. The default is the system's temporary
+  directory.
+- Each fetch makes a new directory under `DIR`, with one `mkdir` that fails
+  when the path exists. On Unix, the directory is mode 0700 and the file is
+  mode 0600. So no other local user can plant a link there first, or read
+  the file. Two fetches of one file never share a path.
+- The verb runs where the worker runs. It needs what `fleet declare` needs,
+  the Fleet config and its store, and also the account's client
+  configuration, such as a Slack account's `curlConfig`. A worker on a host
+  without them gets an error, and the relay still names the file.
+- A history read that finds new files on a message already in the mirror
+  copies them, and numbers the message again. The relay then sends the
+  message again, marked as an edit, with its files.
 - The worker holds no platform credential. The verb uses the account's own
   client configuration.
 - When the platform will not give the file, the verb exits 1 with the
@@ -838,7 +849,7 @@ Unknown. A refused write is `Known(EffectOutcome::Failed { why })`.
 | `post` | A conversation, text and an intent key | `Posted { message, at }`: a post carrying the key as its marker. To a thread address, a reply in the thread. To a channel address, a top-level post in the channel. |
 | `react` | A conversation, a message id, a reaction name and `on` | `Reacted { already }`: Fleet's own reaction is added (`on`) or removed. `already` is true when it was already there, or already absent. |
 | `link` | An account and a thread address | A URL that opens the thread, or none where the adapter cannot make one without a platform call. Pure: it calls no platform. |
-| `fetch` | An account, a conversation, a file id and a directory | `Saved { path, bytes, mimetype }`: the file, written at `<dir>/<file id>/<name>`. `Refused { why }` when the platform certainly will not give it. Unknown when the answer cannot be read. The default refuses every file. |
+| `fetch` | An account, a conversation, a file id and a directory | `Saved { path, bytes, mimetype }`: the file, written at `<dir>/fleet-file-<file id>-<unique>/<name>`, in a directory made for the call that only this user can enter. `Refused { why }` when the platform certainly will not give it. Unknown when the answer cannot be read. The default refuses every file. |
 
 What an adapter must guarantee:
 

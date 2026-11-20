@@ -2193,6 +2193,11 @@ fn refresh(stored: &mut StoredMessage, seen: &Message, next: u64) -> bool {
         stored.seq = next;
         changed = true;
     }
+    if stored.files != seen.files {
+        stored.files = seen.files.clone();
+        stored.seq = next;
+        changed = true;
+    }
     if seen.mentions_fleet && !stored.mentions_fleet {
         stored.mentions_fleet = true;
         changed = true;
