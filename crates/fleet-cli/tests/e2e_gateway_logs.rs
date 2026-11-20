@@ -72,6 +72,7 @@ fn person(id: &str, at: u64, text: &str) -> Message {
         text: text.into(),
         key: None,
         starts_thread: false,
+        files: Vec::new(),
     }
 }
 

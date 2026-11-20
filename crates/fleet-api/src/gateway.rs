@@ -136,6 +136,48 @@ pub struct Message {
     /// starter, a Telegram topic's first message.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub starts_thread: bool,
+    /// The files shared on the message, in the platform's order.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub files: Vec<Attachment>,
+}
+
+/// One file shared on a message, as the platform described it in the
+/// message. `id` is what [`Gateway::fetch`] takes. `unavailable` says why
+/// Fleet cannot fetch the file, when the message alone tells: a deleted
+/// file, a file hosted outside the platform, a file past the size limit.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct Attachment {
+    pub id: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub name: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mimetype: Option<String>,
+    /// Bytes, where the platform says.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub size: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub unavailable: Option<String>,
+}
+
+/// What a [`Gateway::fetch`] did: the file saved at `path`, or why the
+/// platform certainly will not give it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(
+    rename_all = "camelCase",
+    rename_all_fields = "camelCase",
+    tag = "outcome"
+)]
+pub enum Fetched {
+    Saved {
+        path: PathBuf,
+        bytes: u64,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        mimetype: Option<String>,
+    },
+    Refused {
+        why: String,
+    },
 }
 
 /// What one delivery carries. A mention is a `Message` with
@@ -550,6 +592,22 @@ pub trait Gateway {
     fn link(&self, account: &str, thread: &ConversationRef) -> Option<String> {
         let _ = (account, thread);
         None
+    }
+    /// Download the file `file`, shared in `conversation`, into a directory
+    /// of its own under `dir`: `Saved` with the path written, `Refused`
+    /// when the platform certainly will not give it, Unknown when the
+    /// answer cannot be read. An adapter that fetches no file refuses.
+    fn fetch(
+        &self,
+        account: &str,
+        conversation: &ConversationRef,
+        file: &str,
+        dir: &Path,
+    ) -> Observation<Fetched> {
+        let _ = (account, conversation, file, dir);
+        Observation::Known(Fetched::Refused {
+            why: "this platform's adapter fetches no files".into(),
+        })
     }
 }
 
@@ -1408,6 +1466,7 @@ mod tests {
             text: "hi".into(),
             key: None,
             starts_thread: false,
+            files: Vec::new(),
         }
     }
 

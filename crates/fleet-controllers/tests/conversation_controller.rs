@@ -74,6 +74,7 @@ fn person(id: &str, at: u64, text: &str) -> Message {
         text: text.into(),
         key: None,
         starts_thread: false,
+        files: Vec::new(),
     }
 }
 
@@ -133,6 +134,7 @@ fn stored(m: Message, seq: u64) -> StoredMessage {
         mentions_fleet: m.mentions_fleet,
         text: m.text,
         key: m.key,
+        files: Vec::new(),
         via: Via {
             verified: Verified::Connection,
             received_at: m.at + 100,

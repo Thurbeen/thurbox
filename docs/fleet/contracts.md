@@ -1409,7 +1409,10 @@ through the account's adapter, under its derived name; a Listener manifest
 is refused, since the config is its only source. `fleet gateway receive
 --account NAME [--beat]` is what a listener runs per envelope and per
 heartbeat; `fleet gateway account NAME --json` is what it starts from, and
-`fleet gateway status` shows each account's listener.
+`fleet gateway status` shows each account's listener. `fleet gateway file
+TASK FILE_ID [--out DIR]` downloads a file shared in the Task's tied thread
+and prints its path: 0 saved, 1 refused by the platform, 3 not shared in
+that thread, 4 Unknown.
 
 `fleet watch --json` is how a view follows the Tasks: one NDJSON line per
 event, until Ctrl-C, or until the first `synced` with `--once`. It reads the

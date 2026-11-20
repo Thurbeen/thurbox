@@ -501,6 +501,7 @@ fn as_message(m: &StoredMessage, starter: Option<&Starter>) -> Message {
         text: m.text.clone(),
         key: m.key.clone(),
         starts_thread: starter.is_some_and(|s| s.id.as_deref() == Some(&m.id)),
+        files: m.files.clone(),
     }
 }
 
@@ -865,6 +866,7 @@ impl Pass<'_, '_> {
                     mentions_fleet: m.mentions_fleet,
                     text: m.text,
                     key: m.key,
+                    files: m.files,
                     via: f.via,
                 });
             }

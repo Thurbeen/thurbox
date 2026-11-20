@@ -274,7 +274,8 @@ The Slack adapter maps one Slack workspace onto the
 [common rules](#common-rules) of every adapter.
 
 Every Slack claim cites Slack's own documentation, read on 2026-10-26. The
-DM claims were read on 2026-11-04. A claim
+DM claims were read on 2026-11-04. The file claims were read on
+2026-11-20. A claim
 that those pages do not state is marked **unverified**.
 
 ### Setup
@@ -291,6 +292,9 @@ On the Slack side, the operator does these steps:
    Add `reactions:write`, so Fleet can mark a person's message queued,
    working and replied ([slack-react-add], [slack-react-remove]). Without it, every
    reaction fails, and relays and posts go on.
+   Add `files:read`, so a worker can fetch a file that a person shares in
+   its thread ([slack-files-read]). Without it, each fetch is refused with
+   `missing_scope`, and the relay still names each file.
 3. Subscribe the app to the `message.channels` and `message.groups`
    events ([slack-message]).
 4. Choose the listener's transport, and set `inbound` to match:
@@ -457,6 +461,8 @@ first, so that a failing account answers Unknown.
 | `post` to a channel address | `chat.postMessage` without `thread_ts`, for every chunk: a log post starts no thread. A `since` read of the channel uses `conversations.history`. |
 | `react` | `reactions.add` to add, `reactions.remove` to remove, with `channel`, `timestamp` (the message's `ts`) and `name` ([slack-react-add], [slack-react-remove]). `name` is Slack's emoji name, such as `eyes` or `white_check_mark`; surrounding colons are stripped. Both methods list JSON and form bodies as accepted. The adapter sends form arguments, as it does for every method other than `chat.*`. `already_reacted` and `no_reaction` mean the reaction already stands as asked: a Known success. |
 | `link` | None. A Slack permalink needs the workspace's domain, which only a `chat.getPermalink` call gives, so a log post names a Slack thread by its address. |
+| `files` | The message's `files` array, on a message of any subtype ([slack-file-share]). Each file gives `id`, `name` (or `title`), `mimetype` and `size` ([slack-file]). A file is `unavailable` when it is deleted (`mode` `tombstone`, `is_tombstoned` or `is_deleted`), hidden by the plan's limits (`mode` `hidden_by_limit` or `is_hidden_by_limit`), hosted outside Slack (`mode` `external` or `is_external`), or larger than 50 MiB. A Slack Connect stub (`file_access: check_file_info`) carries only its id ([slack-connect-files]). |
+| `fetch` | `files.info` with the form argument `file` ([slack-files-info]), for the whole file object. Then one GET of its `url_private_download`, or `url_private`, through `curl --config` with the operator's file, which holds the bot token as an `Authorization: Bearer` header ([slack-files]). The URL must be `https` on `files.slack.com`. The GET follows no redirect (`--max-redirs 0`) and stops past 50 MiB (`--max-filesize`). An answer other than 200, or a web page for a file that is not one, is refused. |
 | Marker | `{"event_type": "fleet_post", "event_payload": {"key": "<intent key>"}}` ([slack-post]). History reads it back ([slack-metadata]). |
 | Idempotency | None on `chat.postMessage`: `client_msg_id` is not an argument ([slack-post]). Recovery uses the marker in a later `since` read. |
 | Identity | User ids, unique in their workspace ([slack-user]). In an Enterprise org, every user has one global id that starts with `U` or `W` ([slack-ent]). |
@@ -488,6 +494,18 @@ A Slack answer maps onto the port as follows:
 | `ok: false` with any other error | Refused: a Known failure for a write. |
 | An unreadable body, or no `ok` field | Unknown. |
 
+Fleet sends the bot token for a file to one host only. Slack's file guide
+gives three checks before a download ([slack-files]):
+
+1. Do not send Slack credentials to a file that is `external`.
+2. Send them only to a Slack file host, over `https`. Compare the parsed
+   host, not a prefix.
+3. Do not let a redirect carry the token to another host.
+
+The adapter refuses an external file before any call. It compares the URL's
+host with `files.slack.com` exactly, so `files.slack.com.example.com` and
+a URL with a user or a port fail. It follows no redirect.
+
 ### Limits
 
 - The adapter splits a text at 4,000 characters, Slack's recommended length.
@@ -498,6 +516,9 @@ A Slack answer maps onto the port as follows:
 - Slack allows about one message a second per channel ([slack-post]).
 - `conversations.replies` and `conversations.history` are Tier 3: 50 or more
   calls a minute ([slack-replies]).
+- `files.info` is Tier 4: 100 or more calls a minute ([slack-files-info]).
+- Fleet fetches a file of at most 50 MiB. A download may take six times
+  `callTimeoutMs`.
 - Message metadata is visible to every member of the
   workspace ([slack-post]). So a key names a Task and its `uid`, never a
   secret.
@@ -513,6 +534,17 @@ A Slack answer maps onto the port as follows:
 
 These points are **unverified**:
 
+- What Slack answers a download whose token lacks `files:read`. The file
+  pages do not say. The adapter refuses a redirect, and a web page in place
+  of a file that is not one.
+- The `mode` values `tombstone` and `hidden_by_limit`. The file object
+  reference lists `hosted`, `external`, `snippet` and `post`, and the flags
+  `is_tombstoned` and `is_hidden_by_limit` ([slack-file]). The adapter
+  reads both forms.
+- Whether a message without the `file_share` subtype can carry `files`. The
+  adapter reads `files` on every message.
+- Whether a Slack file host other than `files.slack.com` exists, for
+  example in GovSlack. A file there is refused, with the host named.
 - The Socket Mode page gives no acknowledgement limit. The three seconds come
   from the Java SDK guide ([slack-java]).
 - The retry counts for Socket Mode ([slack-socket]).
@@ -543,11 +575,20 @@ These points are **unverified**:
 | `InboundReady` is True, but no message arrives | The bot is not in the channel, or the app has no message subscriptions. | Invite the bot. Subscribe to `message.channels` and `message.groups`. |
 | A post fails with `chat.postMessage: not_in_channel` | The bot is not a member of the channel. | Invite the bot to the channel. |
 | A message gets no ⏳, 👀 or ✅, and the manager's report names `reactions.add: missing_scope` | The app lacks `reactions:write`. | Add the scope, and reinstall the app. |
+| `fleet gateway file` exits 1: `files.info: missing_scope; the Slack app needs the files:read scope` | The app lacks `files:read`. | Add the scope, and reinstall the app. |
+| `fleet gateway file` exits 1: `Slack answered the download with a web page` or `with a redirect` | The token in the curl config cannot read the file. | Check that the token is the bot token, with `files:read`, and that the bot is in the channel. |
+| `fleet gateway file` exits 1: `files.info: access_denied` or `not_visible` | The file is in a Slack Connect channel, or in a channel without the bot. | Invite the bot to the channel. A Slack Connect file can stay out of reach ([slack-files-info]). |
 | `NeedsAttention/PostUnconfirmed` | A post stayed Unknown, and no recovery read found its key. | Check the thread, then act as the [Conversation](../resources/conversation.md) describes. |
 
 [slack-limits2025]: <https://docs.slack.dev/changelog/2025/05/29/rate-limit-changes-for-non-marketplace-apps>
 [slack-react-add]: <https://docs.slack.dev/reference/methods/reactions.add>
 [slack-react-remove]: <https://docs.slack.dev/reference/methods/reactions.remove>
+[slack-files-info]: <https://docs.slack.dev/reference/methods/files.info>
+[slack-files-read]: <https://docs.slack.dev/reference/scopes/files.read>
+[slack-files]: <https://docs.slack.dev/messaging/working-with-files>
+[slack-file]: <https://docs.slack.dev/reference/objects/file-object>
+[slack-file-share]: <https://docs.slack.dev/reference/events/message/file_share>
+[slack-connect-files]: <https://docs.slack.dev/apis/slack-connect>
 [slack-java]: <https://docs.slack.dev/tools/java-slack-sdk/guides/socket-mode/>
 [slack-message-im]: <https://docs.slack.dev/reference/events/message.im>
 [slack-message-mpim]: <https://docs.slack.dev/reference/events/message.mpim>

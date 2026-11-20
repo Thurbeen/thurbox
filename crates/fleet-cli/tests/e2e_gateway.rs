@@ -18,8 +18,8 @@ use std::time::Duration;
 
 use fleet_api::Observation;
 use fleet_api::gateway::{
-    AccountConfig, Author, AuthorKind, Capabilities, ConversationRef, Gateway, HistoryObservation,
-    HistoryQuery, Identity, Inbound, Marker, Message, Starter, Uncertainty,
+    AccountConfig, Author, AuthorKind, Capabilities, ConversationRef, Fetched, Gateway,
+    HistoryObservation, HistoryQuery, Identity, Inbound, Marker, Message, Starter, Uncertainty,
 };
 use fleet_api::plan::EffectOutcome;
 use fleet_gateway::SlackGateway;
@@ -49,6 +49,7 @@ fn person(id: &str, at: u64, text: &str) -> Message {
         text: text.into(),
         key: None,
         starts_thread: false,
+        files: Vec::new(),
     }
 }
 
@@ -1217,6 +1218,107 @@ fn slack_calls(env: &Env) -> Vec<Value> {
         .as_array()
         .cloned()
         .unwrap_or_default()
+}
+
+const SHOT_URL: &str = "https://files.slack.com/files-pri/T0123ABCD-F0SHOT0001/download/error.png";
+
+#[test]
+fn the_slack_adapter_fetches_a_shared_file_with_files_info_and_the_operators_curl_config() {
+    let (env, curl, curl_config) = slack_env("slack-fetch");
+    seed_slack(&env);
+    env.edit_stub(|s| {
+        s["slack"]["files"] = json!({
+            "F0SHOT0001": {"id": "F0SHOT0001", "name": "error (1).png", "mimetype": "image/png",
+                           "size": 9, "mode": "hosted", "url_private_download": SHOT_URL,
+                           "content": "PNG bytes"},
+            "F0EXTR0001": {"id": "F0EXTR0001", "name": "a.png", "mode": "hosted",
+                           "url_private_download": "https://example.com/a.png", "content": "x"},
+            "F0PAGE0001": {"id": "F0PAGE0001", "name": "b.png", "mimetype": "image/png",
+                           "mode": "hosted",
+                           "url_private_download": "https://files.slack.com/files-pri/T0123ABCD-F0PAGE0001/download/b.png",
+                           "contentType": "text/html; charset=utf-8", "content": "<html>sign in</html>"},
+            "F0GONE0001": {"id": "F0GONE0001", "mode": "tombstone"},
+        });
+    });
+    let g = slack_adapter(&curl, &curl_config, Duration::from_secs(30));
+    let t = thread(PARENT_TS);
+    let out = env.root.join("files");
+    let fetch = |id: &str| g.fetch(GATEWAY_ACCOUNT, &t, id, &out);
+
+    let saved = out.join("F0SHOT0001").join("error__1_.png");
+    assert_eq!(
+        fetch("F0SHOT0001"),
+        Observation::Known(Fetched::Saved {
+            path: saved.clone(),
+            bytes: 9,
+            mimetype: Some("image/png".into()),
+        })
+    );
+    assert_eq!(fs::read_to_string(&saved).unwrap(), "PNG bytes");
+    let calls = slack_calls(&env);
+    let info = calls.last().unwrap();
+    assert_eq!(info["method"], "files.info");
+    assert_eq!(
+        info["body"],
+        json!({"file": "F0SHOT0001"}),
+        "a form argument"
+    );
+    let downloads = env.stub()["slack"]["downloads"]
+        .as_array()
+        .cloned()
+        .unwrap();
+    assert_eq!(downloads.len(), 1);
+    assert_eq!(downloads[0]["url"], SHOT_URL);
+    let argv: Vec<String> = serde_json::from_value(downloads[0]["args"].clone()).unwrap();
+    let pair = |flag: &str| {
+        let i = argv
+            .iter()
+            .position(|a| a == flag)
+            .unwrap_or_else(|| panic!("{flag}: {argv:?}"));
+        argv[i + 1].clone()
+    };
+    assert_eq!(pair("--config"), curl_config.to_string_lossy());
+    assert_eq!(pair("--max-redirs"), "0", "the token follows no redirect");
+    assert_eq!(pair("--proto"), "=https");
+    assert_eq!(pair("--request"), "GET");
+    assert!(
+        argv.iter().all(|a| !a.contains("Bearer")),
+        "Fleet builds no Authorization header"
+    );
+
+    let refused = |r: Observation<Fetched>| match r {
+        Observation::Known(Fetched::Refused { why }) => why,
+        other => panic!("{other:?}"),
+    };
+    assert!(refused(fetch("F0EXTR0001")).contains("not on a Slack file host"));
+    assert!(refused(fetch("F0GONE0001")).contains("deleted"));
+    assert!(refused(fetch("F0PAGE0001")).contains("files:read"));
+    assert!(
+        !out.join("F0PAGE0001").join("b.png").exists(),
+        "a sign-in page is never left as the file"
+    );
+    assert_eq!(
+        fs::read_dir(out.join("F0PAGE0001")).unwrap().count(),
+        0,
+        "nor its partial download"
+    );
+    assert_eq!(
+        env.stub()["slack"]["downloads"].as_array().unwrap().len(),
+        2,
+        "only the sign-in page was downloaded besides the file; the others were refused first"
+    );
+    assert!(refused(fetch("F0NONE0001")).contains("file_not_found"));
+    assert!(refused(fetch("../F0SHOT0001")).contains("not a Slack file id"));
+    env.edit_stub(|s| s["slack"]["filesError"] = json!("missing_scope"));
+    assert_eq!(
+        refused(fetch("F0SHOT0001")),
+        "files.info: missing_scope; the Slack app needs the files:read scope"
+    );
+    env.edit_stub(|s| {
+        s["slack"]["filesError"] = Value::Null;
+        s["faults"] = json!([{"call": "curl", "mode": "rate-limit"}]);
+    });
+    assert!(matches!(fetch("F0SHOT0001"), Observation::Unknown { .. }));
 }
 
 #[test]

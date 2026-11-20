@@ -95,8 +95,8 @@ use serde_json::Value;
 pub use verbs::{
     AmendRequest, Amended, ApplyOutcome, DeclareOutcome, Declared, Received, Refusal,
     ResultOutcome, amend, apply, apply_change_request, apply_conversation, beat, conversation_name,
-    declare, declare_change_request, delete, derived_name, ensure_listeners, label, list_events,
-    pause, publish_event, receive, record_result, send, wake,
+    declare, declare_change_request, delete, derived_name, ensure_listeners, fetch_file, label,
+    list_events, pause, publish_event, receive, record_result, send, wake,
 };
 
 /// How a bounded reconcile run ends.

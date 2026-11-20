@@ -31,13 +31,13 @@
 
 use std::collections::BTreeSet;
 use std::ffi::OsString;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use fleet_api::gateway::{
-    AccountConfig, Author, AuthorKind, Capabilities, ConversationRef, Delivery, Envelope, Event,
-    Gateway, History, HistoryObservation, HistoryQuery, Identity, Inbound, Marker, Message,
-    Starter, Uncertainty, part_key,
+    AccountConfig, Attachment, Author, AuthorKind, Capabilities, ConversationRef, Delivery,
+    Envelope, Event, Fetched, Gateway, History, HistoryObservation, HistoryQuery, Identity,
+    Inbound, Marker, Message, Starter, Uncertainty, part_key,
 };
 use fleet_api::plan::EffectOutcome;
 use fleet_api::{Millis, Observation};
@@ -68,6 +68,12 @@ pub const METADATA_EVENT_TYPE: &str = "fleet_post";
 pub const MAX_CALLS_PER_OPERATION: u32 = 10;
 /// Messages per history page, the count Slack recommends.
 const PAGE: u32 = 200;
+/// The largest file Fleet downloads, in bytes.
+pub const MAX_FILE_BYTES: u64 = 50 * 1024 * 1024;
+/// The hosts Fleet sends the bot token to for a file. Slack's file guide
+/// asks that the token go only to a Slack file host, over https.
+pub const FILE_HOSTS: &[&str] = &["files.slack.com"];
+const DOWNLOAD_CALLS: u32 = 6;
 
 /// What Slack offers on every account: a thread's history can be read, a
 /// post's metadata is read back, every message in a channel the bot is in
@@ -468,6 +474,122 @@ impl SlackGateway {
     fn thread_link(&self, _thread: &ConversationRef) -> Option<String> {
         None
     }
+
+    /// `files.info` for the whole file object, which an event's Slack
+    /// Connect stub (`file_access: check_file_info`) leaves out, then one
+    /// GET of its `url_private_download` with the operator's curl config,
+    /// which carries the bot token. The file lands at
+    /// `<dir>/<file id>/<name>`.
+    fn fetch_file(&self, file: &str, dir: &Path) -> Observation<Fetched> {
+        if !is_file_id(file) {
+            return refused(format!("{file:?} is not a Slack file id"));
+        }
+        let v = match self.call("files.info", &json!({"file": file}), self.call_timeout) {
+            Ok(v) => v,
+            Err(CallError::Refused(why)) => return refused(scope_hint(why)),
+            Err(e) => return Observation::unknown(e.why()),
+        };
+        let f = &v["file"];
+        if let Some(why) = unavailable(f) {
+            return refused(why);
+        }
+        let Some(url) = f["url_private_download"]
+            .as_str()
+            .or_else(|| f["url_private"].as_str())
+            .filter(|u| !u.is_empty())
+        else {
+            return refused("files.info named no url_private for the file".into());
+        };
+        if let Err(why) = check_file_url(url) {
+            return refused(why);
+        }
+        let mimetype = f["mimetype"]
+            .as_str()
+            .filter(|t| !t.is_empty())
+            .map(str::to_string);
+        let folder = dir.join(file);
+        let name = crate::saved_name(file, file_name(f));
+        let path = folder.join(&name);
+        let part = folder.join(format!(".{name}.part"));
+        if let Err(e) = std::fs::create_dir_all(&folder) {
+            return refused(format!("{}: {e}", folder.display()));
+        }
+        let got = self.download(url, &part);
+        let kept = got.and_then(|(status, content_type)| {
+            check_download(status, &content_type, mimetype.as_deref())
+        });
+        let bytes = kept.and_then(|()| {
+            std::fs::rename(&part, &path)
+                .and_then(|()| std::fs::metadata(&path))
+                .map(|m| m.len())
+                .map_err(|e| CallError::Unreadable(format!("{}: {e}", path.display())))
+        });
+        match bytes {
+            Ok(bytes) => Observation::Known(Fetched::Saved {
+                path,
+                bytes,
+                mimetype,
+            }),
+            Err(e) => {
+                let _ = std::fs::remove_file(&part);
+                match e {
+                    CallError::Refused(why) => refused(why),
+                    e => Observation::unknown(e.why()),
+                }
+            }
+        }
+    }
+
+    /// One bounded GET of `url` into `out`: the HTTP status and the
+    /// `Content-Type`. Redirects are refused, so the token never follows
+    /// one to another host, and a file past [`MAX_FILE_BYTES`] is cut off.
+    fn download(&self, url: &str, out: &Path) -> Result<(u16, String), CallError> {
+        let timeout = self.call_timeout * DOWNLOAD_CALLS;
+        let args: Vec<OsString> = [
+            "--silent",
+            "--show-error",
+            "--proto",
+            "=https",
+            "--max-redirs",
+            "0",
+            "--max-filesize",
+            &MAX_FILE_BYTES.to_string(),
+            "--config",
+        ]
+        .into_iter()
+        .map(OsString::from)
+        .chain([self.curl_config.clone().into_os_string()])
+        .chain(
+            [
+                "--request",
+                "GET",
+                "--write-out",
+                "%{http_code} %{content_type}",
+                "--output",
+            ]
+            .into_iter()
+            .map(OsString::from),
+        )
+        .chain([out.as_os_str().to_os_string(), OsString::from("--url")])
+        .chain([OsString::from(url)])
+        .collect();
+        let spec = Spec::new(&self.cli, timeout).args(args);
+        match run(&spec) {
+            Outcome::Exited {
+                code,
+                stdout,
+                stderr,
+            } => download_answer(code, &String::from_utf8_lossy(&stdout), &stderr),
+            Outcome::TimedOut { .. } => Err(CallError::Timeout(format!(
+                "the download timed out after {}ms; its process tree was killed",
+                timeout.as_millis()
+            ))),
+            Outcome::NotStarted(why) => Err(CallError::Unavailable(format!(
+                "the download: {} could not start: {why}",
+                self.cli.to_string_lossy()
+            ))),
+        }
+    }
 }
 
 crate::curl::curl_gateway!(SlackGateway, "Slack");
@@ -567,6 +689,13 @@ fn check_ref(r: &ConversationRef) -> Result<(), String> {
         return Err(format!("{t:?} is not a Slack message timestamp"));
     }
     Ok(())
+}
+
+fn is_file_id(s: &str) -> bool {
+    s.len() >= 3
+        && s.starts_with('F')
+        && s.chars()
+            .all(|c| c.is_ascii_digit() || c.is_ascii_uppercase())
 }
 
 fn is_channel_id(s: &str) -> bool {
@@ -670,9 +799,178 @@ pub fn message_of(bot: &str, item: &Value) -> Result<Message, String> {
         at,
         key: key_of(item),
         starts_thread: thread_ts.is_none_or(|t| t == ts),
+        files: files_of(item),
         text,
         author,
     })
+}
+
+/// The files a message shares, each with why Fleet cannot fetch it when
+/// the message alone tells. A Slack Connect stub carries only an id and
+/// `file_access: check_file_info`: `files.info` reads the rest at fetch.
+pub fn files_of(item: &Value) -> Vec<Attachment> {
+    let Some(files) = item["files"].as_array() else {
+        return Vec::new();
+    };
+    files
+        .iter()
+        .map(|f| {
+            let id = f["id"].as_str().unwrap_or("").to_string();
+            let unavailable = if id.is_empty() {
+                Some("Slack gave the file no id".to_string())
+            } else {
+                unavailable(f)
+            };
+            Attachment {
+                id,
+                name: file_name(f).to_string(),
+                mimetype: f["mimetype"]
+                    .as_str()
+                    .filter(|t| !t.is_empty())
+                    .map(str::to_string),
+                size: f["size"].as_u64(),
+                unavailable,
+            }
+        })
+        .collect()
+}
+
+fn file_name(f: &Value) -> &str {
+    f["name"]
+        .as_str()
+        .filter(|n| !n.is_empty())
+        .or_else(|| f["title"].as_str())
+        .unwrap_or("")
+}
+
+/// Why a Slack file object cannot be fetched, or `None` when nothing in
+/// it says so: deleted, hidden by the workspace's plan limits, hosted
+/// outside Slack, or past [`MAX_FILE_BYTES`].
+pub fn unavailable(f: &Value) -> Option<String> {
+    let mode = f["mode"].as_str();
+    let flag = |k: &str| f[k] == true || f[k].as_u64().is_some_and(|n| n != 0);
+    if mode == Some("tombstone") || flag("is_tombstoned") || flag("is_deleted") {
+        return Some("the file was deleted".into());
+    }
+    if mode == Some("hidden_by_limit") || flag("is_hidden_by_limit") {
+        return Some("Slack hides the file under the workspace's plan limits".into());
+    }
+    if mode == Some("external") || flag("is_external") {
+        return Some(
+            "the file is hosted outside Slack, and Fleet sends no Slack credential there".into(),
+        );
+    }
+    if let Some(size) = f["size"].as_u64()
+        && size > MAX_FILE_BYTES
+    {
+        return Some(format!(
+            "the file is {size} bytes, past the {MAX_FILE_BYTES} bytes Fleet fetches"
+        ));
+    }
+    None
+}
+
+fn refused(why: String) -> Observation<Fetched> {
+    Observation::Known(Fetched::Refused { why })
+}
+
+fn scope_hint(why: String) -> String {
+    if why.ends_with(": missing_scope") {
+        format!("{why}; the Slack app needs the files:read scope")
+    } else {
+        why
+    }
+}
+
+/// `url` is `https` on one of [`FILE_HOSTS`], with no user, password or
+/// port: the only URL the bot token is sent to.
+pub fn check_file_url(url: &str) -> Result<(), String> {
+    let Some(rest) = url.strip_prefix("https://") else {
+        return Err(format!("{url:?} is not an https URL"));
+    };
+    let host = rest.split(['/', '?', '#']).next().unwrap_or("");
+    if !FILE_HOSTS.contains(&host) {
+        return Err(format!(
+            "{url:?} is not on a Slack file host ({}); Fleet sends the token nowhere else",
+            FILE_HOSTS.join(", ")
+        ));
+    }
+    Ok(())
+}
+
+fn download_answer(
+    code: Option<i32>,
+    out: &str,
+    stderr: &[u8],
+) -> Result<(u16, String), CallError> {
+    let why = || String::from_utf8_lossy(stderr).trim().to_string();
+    match code {
+        Some(0) => {}
+        Some(47) => {
+            return Err(CallError::Refused(
+                "Slack redirected the download; Fleet follows no redirect with the token".into(),
+            ));
+        }
+        Some(63) => {
+            return Err(CallError::Refused(format!(
+                "the file is past the {MAX_FILE_BYTES} bytes Fleet fetches"
+            )));
+        }
+        Some(c) => {
+            return Err(CallError::Unreadable(format!(
+                "the download: curl exited {c}: {}",
+                why()
+            )));
+        }
+        None => {
+            return Err(CallError::Unreadable(format!(
+                "the download: curl was killed: {}",
+                why()
+            )));
+        }
+    }
+    let (status, content_type) = out.trim().split_once(' ').unwrap_or((out.trim(), ""));
+    let status = status.parse().map_err(|_| {
+        CallError::Unreadable(format!("the download: curl wrote {out:?}, not a status"))
+    })?;
+    Ok((status, content_type.trim().to_string()))
+}
+
+/// Whether a download's answer is the file: a 200 whose type is not a web
+/// page, unless the file is one. Slack answers a token it will not honour
+/// with its sign-in page or a redirect to it, never with an API error.
+pub fn check_download(
+    status: u16,
+    content_type: &str,
+    mimetype: Option<&str>,
+) -> Result<(), CallError> {
+    match status {
+        200 => {}
+        300..=399 => {
+            return Err(CallError::Refused(format!(
+                "Slack answered the download with a redirect (HTTP {status}); the token may lack the files:read scope"
+            )));
+        }
+        429 => return Err(CallError::Throttled { retry_after: None }),
+        400..=499 => {
+            return Err(CallError::Refused(format!(
+                "Slack refused the download with HTTP {status}"
+            )));
+        }
+        _ => {
+            return Err(CallError::Unreadable(format!(
+                "the download answered HTTP {status}"
+            )));
+        }
+    }
+    let page = content_type.to_ascii_lowercase().starts_with("text/html");
+    let wanted = mimetype.is_some_and(|t| t.eq_ignore_ascii_case("text/html"));
+    if page && !wanted {
+        return Err(CallError::Refused(
+            "Slack answered the download with a web page, not the file; the token may lack the files:read scope".into(),
+        ));
+    }
+    Ok(())
 }
 
 /// `<@U…>` or `<@U…|name>` with Fleet's bot user id.
@@ -1330,6 +1628,149 @@ mod tests {
     const GROUP_DM: &str = include_str!("../fixtures/slack/socket-mode-group-dm.json");
     const URL_VERIFICATION: &str =
         include_str!("../fixtures/slack/events-api-url-verification.json");
+    const FILE_SHARE: &str = include_str!("../fixtures/slack/socket-mode-file-share.json");
+
+    #[test]
+    fn a_shared_file_is_carried_with_why_it_cannot_be_fetched_when_the_message_tells() {
+        let d = delivery(FILE_SHARE);
+        let (conversation, m) = message(&d);
+        assert_eq!(conversation.thread.as_deref(), Some("1730000300.000200"));
+        assert_eq!(m.text, "the error, and the logs");
+        let got: Vec<(&str, &str, Option<&str>)> = m
+            .files
+            .iter()
+            .map(|f| (f.id.as_str(), f.name.as_str(), f.unavailable.as_deref()))
+            .collect();
+        assert_eq!(
+            got,
+            [
+                ("F0SHOT0001", "error.png", None),
+                ("F0CONN0001", "", None),
+                (
+                    "F0EXTR0001",
+                    "design.fig",
+                    Some(
+                        "the file is hosted outside Slack, and Fleet sends no Slack credential there"
+                    )
+                ),
+                ("F0GONE0001", "old.log", Some("the file was deleted")),
+                (
+                    "F0HIDE0001",
+                    "older.log",
+                    Some("Slack hides the file under the workspace's plan limits")
+                ),
+                (
+                    "F0HUGE0001",
+                    "core.dump",
+                    Some("the file is 999999999 bytes, past the 52428800 bytes Fleet fetches")
+                ),
+            ]
+        );
+        assert_eq!(m.files[0].mimetype.as_deref(), Some("image/png"));
+        assert_eq!(m.files[0].size, Some(48_213));
+        assert_eq!(
+            (m.files[1].mimetype.as_deref(), m.files[1].size),
+            (None, None),
+            "a Slack Connect stub says nothing until files.info"
+        );
+        let plain = FILE_SHARE.replace("\"subtype\": \"file_share\",", "");
+        assert_eq!(
+            message(&delivery(&plain)).1.files.len(),
+            6,
+            "files are read on a message of any subtype"
+        );
+        assert!(message(&delivery(REPLY)).1.files.is_empty());
+        let no_id = files_of(&json!({"files": [{"name": "x.png"}]}));
+        assert_eq!(
+            no_id[0].unavailable.as_deref(),
+            Some("Slack gave the file no id")
+        );
+        assert!(unavailable(&json!({"is_deleted": true})).is_some());
+        assert!(unavailable(&json!({"is_tombstoned": true})).is_some());
+        assert!(unavailable(&json!({"is_hidden_by_limit": 0, "mode": "hosted"})).is_none());
+        assert!(unavailable(&json!({"size": MAX_FILE_BYTES})).is_none());
+    }
+
+    #[test]
+    fn the_token_goes_only_to_a_slack_file_host_over_https() {
+        assert_eq!(
+            check_file_url("https://files.slack.com/files-pri/T1-F1/download/a.png"),
+            Ok(())
+        );
+        for url in [
+            "http://files.slack.com/files-pri/T1-F1/a.png",
+            "https://files.slack.com.example.com/a.png",
+            "https://example.com/files.slack.com/a.png",
+            "https://user@files.slack.com/a.png",
+            "https://files.slack.com:8443/a.png",
+            "https://slack.com/files/a.png",
+            "files.slack.com/a.png",
+        ] {
+            assert!(check_file_url(url).is_err(), "{url}");
+        }
+    }
+
+    #[test]
+    fn a_download_is_the_file_only_on_a_200_that_is_not_a_sign_in_page() {
+        assert_eq!(check_download(200, "image/png", Some("image/png")), Ok(()));
+        assert_eq!(check_download(200, "", None), Ok(()));
+        assert_eq!(
+            check_download(200, "text/html; charset=utf-8", Some("text/html")),
+            Ok(()),
+            "an HTML file is an HTML file"
+        );
+        let refused = |r: Result<(), CallError>| match r {
+            Err(CallError::Refused(why)) => why,
+            other => panic!("{other:?}"),
+        };
+        assert!(
+            refused(check_download(
+                200,
+                "text/html; charset=utf-8",
+                Some("image/png")
+            ))
+            .contains("files:read")
+        );
+        assert!(refused(check_download(302, "text/html", None)).contains("redirect"));
+        assert!(refused(check_download(403, "", None)).contains("HTTP 403"));
+        assert_eq!(
+            check_download(429, "", None),
+            Err(CallError::Throttled { retry_after: None })
+        );
+        assert!(matches!(
+            check_download(503, "", None),
+            Err(CallError::Unreadable(_))
+        ));
+        assert_eq!(
+            download_answer(Some(0), "200 image/png", b""),
+            Ok((200, "image/png".into()))
+        );
+        assert_eq!(
+            download_answer(Some(0), "404 ", b""),
+            Ok((404, String::new()))
+        );
+        assert!(matches!(
+            download_answer(Some(47), "", b""),
+            Err(CallError::Refused(_))
+        ));
+        assert!(matches!(
+            download_answer(Some(63), "", b""),
+            Err(CallError::Refused(_))
+        ));
+        assert!(matches!(
+            download_answer(Some(6), "", b"curl: (6) Could not resolve host"),
+            Err(CallError::Unreadable(_))
+        ));
+        assert!(matches!(
+            download_answer(Some(0), "oops", b""),
+            Err(CallError::Unreadable(_))
+        ));
+        assert_eq!(
+            scope_hint("files.info: missing_scope".into()),
+            "files.info: missing_scope; the Slack app needs the files:read scope"
+        );
+        assert!(is_file_id("F0SHOT0001") && !is_file_id("../F0") && !is_file_id("C0123ABCD"));
+    }
 
     #[test]
     fn a_socket_mode_mention_in_a_new_thread_is_a_message_that_starts_it() {

@@ -25,13 +25,14 @@ pub mod slack;
 pub mod text;
 
 use std::collections::BTreeMap;
+use std::path::Path;
 use std::time::Duration;
 
 pub use discord::DiscordGateway;
 pub use fake::{FakeConversation, FakeGateway, FakeGatewayState, GatewayFault, PostRecord};
 use fleet_api::gateway::{
-    AccountConfig, Capabilities, ConversationRef, Delivery, Envelope, Gateway, HistoryObservation,
-    HistoryQuery, Identity, Inbound, Uncertainty,
+    AccountConfig, Capabilities, ConversationRef, Delivery, Envelope, Fetched, Gateway,
+    HistoryObservation, HistoryQuery, Identity, Inbound, Uncertainty,
 };
 use fleet_api::plan::EffectOutcome;
 use fleet_api::{Millis, Observation};
@@ -303,6 +304,49 @@ impl Gateway for GatewayAccounts {
     fn link(&self, account: &str, thread: &ConversationRef) -> Option<String> {
         self.adapter(account).and_then(|g| g.link(account, thread))
     }
+
+    fn fetch(
+        &self,
+        account: &str,
+        conversation: &ConversationRef,
+        file: &str,
+        dir: &Path,
+    ) -> Observation<Fetched> {
+        match self.adapter(account) {
+            Some(g) => g.fetch(account, conversation, file, dir),
+            None => Observation::Known(Fetched::Refused {
+                why: Self::not_configured(account),
+            }),
+        }
+    }
+}
+
+/// The name a fetched file is saved under: the platform's name with every
+/// character but ASCII letters, digits, `.`, `-` and `_` made `_`, no
+/// leading dot, at most 100 bytes; the file's id when nothing is left.
+pub fn saved_name(id: &str, name: &str) -> String {
+    let clean: String = name
+        .chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || matches!(c, '.' | '-' | '_') {
+                c
+            } else {
+                '_'
+            }
+        })
+        .collect();
+    let clean = clean.trim_start_matches('.');
+    let clean: String = clean.chars().take(100).collect();
+    if clean.is_empty() || clean.chars().all(|c| c == '_') {
+        let id: String = id
+            .chars()
+            .filter(|c| c.is_ascii_alphanumeric())
+            .take(100)
+            .collect();
+        if id.is_empty() { "file".into() } else { id }
+    } else {
+        clean
+    }
 }
 
 /// What a listener starts from, as `fleet gateway account NAME --json` will
@@ -489,6 +533,21 @@ mod tests {
         );
         let thread = ConversationRef::split("slack:C0123ABCD:1730000000.000100").unwrap();
         assert_eq!(accounts.link("slack-main", &thread), None);
+    }
+
+    #[test]
+    fn a_saved_name_is_one_plain_path_segment() {
+        assert_eq!(saved_name("F1", "error.png"), "error.png");
+        assert_eq!(
+            saved_name("F1", "screen shot (1).png"),
+            "screen_shot__1_.png"
+        );
+        assert_eq!(saved_name("F1", "../../etc/passwd"), "_.._etc_passwd");
+        assert_eq!(saved_name("F1", ".bashrc"), "bashrc");
+        assert_eq!(saved_name("F1", ""), "F1");
+        assert_eq!(saved_name("F1", "日本"), "F1");
+        assert_eq!(saved_name("", ""), "file");
+        assert_eq!(saved_name("F1", &"a".repeat(300)).len(), 100);
     }
 
     #[test]

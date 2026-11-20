@@ -15,7 +15,7 @@ use std::collections::BTreeMap;
 use serde::{Deserialize, Serialize};
 
 use crate::condition::Condition;
-use crate::gateway::{Author, ConversationRef, Delivery, Starter, Verified};
+use crate::gateway::{Attachment, Author, ConversationRef, Delivery, Starter, Verified};
 use crate::meta::Millis;
 use crate::plan::{Intent, Receipt};
 use crate::talk::{Mark, react_parse, react_suffix};
@@ -257,6 +257,9 @@ pub struct StoredMessage {
     /// The marker on Fleet's own posts.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub key: Option<String>,
+    /// The files shared on the message.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub files: Vec<Attachment>,
     pub via: Via,
 }
 
@@ -421,6 +424,7 @@ mod tests {
                     text: "hi".into(),
                     key: None,
                     starts_thread: false,
+                    files: Vec::new(),
                 },
             },
         }
@@ -469,6 +473,7 @@ mod tests {
             mentions_fleet: true,
             text: "t".into(),
             key: None,
+            files: Vec::new(),
             via: Via {
                 verified: Verified::History,
                 received_at: 12,
