@@ -29,6 +29,9 @@
 //! `react` call is recorded in order, so a test reads what Fleet did, and
 //! `reacted` gives a message's reactions as they stand.
 //!
+//! **files**: a file a test puts at `<dir>/files/<id>` is what `fetch`
+//! saves for that id. Any other id is refused, as a deleted file would be.
+//!
 //! The platform's clock is the state's `clock`, which a test sets: every
 //! post takes the clock as its `at` and advances it one second, so `at`
 //! orders posts the way a platform's own timestamps would.
@@ -40,8 +43,8 @@ use std::path::{Path, PathBuf};
 
 use fleet_api::gateway::{
     AccountConfig, Author, AuthorKind, Capabilities, ConversationRef, Delivery, Envelope, Event,
-    Gateway, History, HistoryObservation, HistoryQuery, Identity, Marker, Message, Starter,
-    Uncertainty, part_key,
+    Fetched, Gateway, History, HistoryObservation, HistoryQuery, Identity, Marker, Message,
+    Starter, Uncertainty, part_key,
 };
 use fleet_api::plan::EffectOutcome;
 use fleet_api::{Millis, Observation};
@@ -469,6 +472,7 @@ impl FakeGateway {
                 // Only a metadata marker is readable back from history.
                 key: (s.capabilities.marker == Marker::Metadata).then(|| key.clone()),
                 starts_thread: starts_thread && i == 0,
+                files: Vec::new(),
             };
             s.conversations
                 .entry(conversation.address())
@@ -879,6 +883,41 @@ impl Gateway for FakeGateway {
         let id = thread.thread.as_deref()?;
         Some(format!("https://fake.invalid/{}/{id}", thread.chat))
     }
+
+    fn fetch(
+        &self,
+        account: &str,
+        conversation: &ConversationRef,
+        file: &str,
+        into: &Path,
+    ) -> Observation<Fetched> {
+        let refused = |why: String| Observation::Known(Fetched::Refused { why });
+        if let Some(why) = self.other_account(account) {
+            return refused(why);
+        }
+        if let Err(why) = parse_address(&conversation.address()) {
+            return refused(why);
+        }
+        let name = crate::saved_name(file, "");
+        let source = self.dir.join("files").join(&name);
+        if name != file || !source.is_file() {
+            return refused(format!("the fake platform has no file {file:?}"));
+        }
+        let copied =
+            crate::fresh_private_dir(into, &format!("fleet-file-{name}")).and_then(|folder| {
+                let path = folder.join(&name);
+                let mut file = crate::fresh_private_file(&path)?;
+                io::copy(&mut File::open(&source)?, &mut file).map(|bytes| (path, bytes))
+            });
+        match copied {
+            Ok((path, bytes)) => Observation::Known(Fetched::Saved {
+                path,
+                bytes,
+                mimetype: None,
+            }),
+            Err(e) => Observation::unknown(format!("{}: {e}", into.display())),
+        }
+    }
 }
 
 #[cfg(test)]
@@ -927,6 +966,7 @@ mod tests {
             text: text.into(),
             key: None,
             starts_thread: false,
+            files: Vec::new(),
         }
     }
 

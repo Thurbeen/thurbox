@@ -153,8 +153,8 @@ pub fn landed(
 /// fields `account` and `call_timeout`, the constant
 /// `MAX_CALLS_PER_OPERATION`, the functions `check_ref`, `parse_address` and
 /// `read_event`, and the methods `identity`, `offers`, `thread_history`,
-/// `channel_history`, `post_chunks`, `post_channel`, `react_on` and
-/// `thread_link`. A macro, since the port is another
+/// `channel_history`, `post_chunks`, `post_channel`, `react_on`,
+/// `thread_link` and `fetch_file`. A macro, since the port is another
 /// crate's trait.
 ///
 /// [`Gateway`]: fleet_api::gateway::Gateway
@@ -292,6 +292,22 @@ macro_rules! curl_gateway {
                     return None;
                 }
                 self.thread_link(thread)
+            }
+
+            fn fetch(
+                &self,
+                account: &str,
+                conversation: &ConversationRef,
+                file: &str,
+                dir: &std::path::Path,
+            ) -> Observation<fleet_api::gateway::Fetched> {
+                if let Some(why) = self.other_account(account) {
+                    return Observation::Known(fleet_api::gateway::Fetched::Refused { why });
+                }
+                if let Err(why) = check_ref(conversation) {
+                    return Observation::Known(fleet_api::gateway::Fetched::Refused { why });
+                }
+                self.fetch_file(file, dir)
             }
         }
     };

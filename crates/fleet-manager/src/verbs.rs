@@ -10,14 +10,14 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use fleet_api::change_request::{self, ChangeRequestSpec};
 use fleet_api::conversation::{
-    self, CONVERSATION_LABEL, CONVERSATION_UID_LABEL, ConversationSpec, Spooled,
+    self, CONVERSATION_LABEL, CONVERSATION_UID_LABEL, ConversationSpec, ConversationStatus, Spooled,
 };
 use fleet_api::event::{Appended, CliSource, Event as BoardEvent, Filter, Page, Publish, Source};
 use fleet_api::follow::{DECLARED_CHANGE_REQUEST, ForgeSpec, validate_declaration};
 use fleet_api::forge::{ChangeRef, Forge};
 use fleet_api::gateway::{
-    AuthorKind, ConversationRef, Envelope, Event, Gateway, GatewayConfig, admit, earns_refusal,
-    starts_task,
+    AuthorKind, ConversationRef, Envelope, Event, Fetched, Gateway, GatewayConfig, admit,
+    earns_refusal, starts_task,
 };
 use fleet_api::inbox::{CLI_SOURCE_PREFIX, InboxEntry, amend_key, send_key};
 use fleet_api::listener::{self, Beat, Heartbeat, listener_name};
@@ -1615,6 +1615,82 @@ fn not_configured(account: &str) -> StoreError {
     StoreError::Invalid(format!(
         "account {account:?} is not configured under [gateway.accounts]"
     ))
+}
+
+/// Fetch a file shared in the thread a Task is tied to, into `dir`, for
+/// the Task's worker to read. Only a file that a message in the tied
+/// Conversation's mirror shares can be fetched, and only through that
+/// Conversation's account. A file the message already says cannot be
+/// fetched is refused without a platform call. The verb writes nothing to
+/// the store and takes no lease.
+pub fn fetch_file(
+    store: &dyn Store,
+    gateway: &dyn Gateway,
+    task_name: &str,
+    file: &str,
+    dir: &std::path::Path,
+) -> Result<Fetched, StoreError> {
+    let read = |kind: &str, name: &str| match store.get(kind, name) {
+        Observation::Known(Some(o)) => Ok(o),
+        Observation::Known(None) => Err(StoreError::NotFound(format!("{kind}/{name}"))),
+        Observation::Unknown { why } => Err(StoreError::Unknown(why)),
+    };
+    let obj = read(task::KIND, task_name)?;
+    let st: TaskStatus = if obj.status.is_null() {
+        TaskStatus::default()
+    } else {
+        typed(task::KIND, &obj.status)?
+    };
+    let Some(tie) = st.gateway.and_then(|g| g.conversation) else {
+        return Err(StoreError::Forbidden(format!(
+            "{}: the Task is tied to no conversation, so it has no shared files",
+            obj.key()
+        )));
+    };
+    let conv = read(conversation::KIND, &tie.name)?;
+    if conv.metadata.uid != tie.uid {
+        return Err(StoreError::Forbidden(format!(
+            "{}: the Conversation the Task is tied to was replaced",
+            conv.key()
+        )));
+    }
+    let spec: ConversationSpec = typed(conversation::KIND, &conv.spec)?;
+    let cs: ConversationStatus = if conv.status.is_null() {
+        ConversationStatus::default()
+    } else {
+        typed(conversation::KIND, &conv.status)?
+    };
+    let Some(shared) = cs
+        .messages
+        .iter()
+        .flat_map(|m| m.files.iter())
+        .find(|f| f.id == file)
+    else {
+        return Err(StoreError::NotFound(format!(
+            "file {file:?} is shared on no message {} holds",
+            conv.key()
+        )));
+    };
+    if let Some(why) = &shared.unavailable {
+        return Ok(Fetched::Refused { why: why.clone() });
+    }
+    let reference = match cs.reference {
+        Some(r) => r,
+        None => match ConversationRef::split(&spec.address) {
+            Some(r) => r,
+            None => {
+                return Err(StoreError::Invalid(format!(
+                    "{}: address {:?} cannot be read",
+                    conv.key(),
+                    spec.address
+                )));
+            }
+        },
+    };
+    match gateway.fetch(&spec.account, &reference, file, dir) {
+        Observation::Known(f) => Ok(f),
+        Observation::Unknown { why } => Err(StoreError::Unknown(why)),
+    }
 }
 
 /// `fleet gateway receive --account NAME`: read one envelope and add its

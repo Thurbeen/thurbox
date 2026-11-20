@@ -192,6 +192,9 @@ fn main() -> ExitCode {
         ("glab", Some("api")) => forge::glab(&args),
         ("az", Some("devops" | "repos")) => forge::az(&args),
         ("curl", Some("--include")) => forge::curl(&args),
+        ("curl", Some("--silent")) if args.iter().any(|a| a == "--output") => {
+            slack::download(&args)
+        }
         ("launchctl" | "schtasks", _) => service_manager(&args),
         _ => fail("stub: unknown role"),
     }
@@ -1146,7 +1149,12 @@ fn plugin(args: &[String]) -> ExitCode {
 /// armed under the call `curl` as for the forges, rendered in Slack's
 /// shapes: `auth` is `invalid_auth`, `rate-limit` a 429 with `Retry-After`
 /// and `ratelimited`, `malformed` a non-JSON body, `fail` a failed curl,
-/// `hang` a hung process.
+/// `hang` a hung process. `files.info` answers the file object under
+/// `files["<id>"]`, or `file_not_found`, or `filesError` when set. A curl
+/// run with `--output` is a download: the file whose `url_private_download`
+/// is the URL gets its `content` written, answered with its `status`
+/// (default 200) and `contentType` (default its `mimetype`); any other URL
+/// is a 404. Each download is recorded under `downloads` with its argv.
 mod slack {
     use std::io::Read;
     use std::process::ExitCode;
@@ -1290,8 +1298,65 @@ mod slack {
             "chat.postMessage" => post(&mut state, &body, &bot_user, &bot_id),
             "reactions.add" => react(&mut state, &body, true),
             "reactions.remove" => react(&mut state, &body, false),
+            "files.info" => file_info(&state, &body),
             _ => ok_false("unknown_method"),
         }
+    }
+
+    fn file_info(state: &Value, body: &Value) -> ExitCode {
+        if let Some(error) = state["slack"]["filesError"].as_str() {
+            return ok_false(error);
+        }
+        let id = string(&body["file"]);
+        match state["slack"]["files"].get(&id) {
+            Some(f) => {
+                let mut f = f.clone();
+                if let Some(o) = f.as_object_mut() {
+                    o.retain(|k, _| !matches!(k.as_str(), "content" | "status" | "contentType"));
+                }
+                answer(HEAD, &json!({"ok": true, "file": f, "comments": []}))
+            }
+            None => ok_false("file_not_found"),
+        }
+    }
+
+    pub fn download(args: &[String]) -> ExitCode {
+        let after = |flag: &str| {
+            args.iter()
+                .position(|a| a == flag)
+                .and_then(|i| args.get(i + 1))
+                .cloned()
+                .unwrap_or_default()
+        };
+        let (url, out) = (after("--url"), after("--output"));
+        let _lock = Lock::take();
+        let mut state = load();
+        if !state["slack"]["downloads"].is_array() {
+            state["slack"]["downloads"] = json!([]);
+        }
+        state["slack"]["downloads"]
+            .as_array_mut()
+            .expect("downloads")
+            .push(json!({"url": url, "args": args}));
+        save(&state);
+        let file = state["slack"]["files"]
+            .as_object()
+            .and_then(|fs| {
+                fs.values()
+                    .find(|f| f["url_private_download"] == url.as_str())
+            })
+            .cloned();
+        let Some(f) = file else {
+            print!("404 text/plain");
+            return ExitCode::SUCCESS;
+        };
+        std::fs::write(&out, string(&f["content"])).expect("write download");
+        let content_type = f["contentType"]
+            .as_str()
+            .or_else(|| f["mimetype"].as_str())
+            .unwrap_or("");
+        print!("{} {content_type}", f["status"].as_u64().unwrap_or(200));
+        ExitCode::SUCCESS
     }
 
     /// `reactions.add` and `reactions.remove` on a message of the model:

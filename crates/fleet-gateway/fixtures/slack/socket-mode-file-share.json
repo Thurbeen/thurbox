@@ -1,0 +1,58 @@
+{
+  "envelope_id": "e0123abcd-0001-4000-8000-000000000020",
+  "type": "events_api",
+  "accepts_response_payload": false,
+  "payload": {
+    "token": "verification-token-not-a-secret",
+    "team_id": "T0123ABCD",
+    "api_app_id": "A0123ABCD",
+    "event": {
+      "type": "message",
+      "subtype": "file_share",
+      "channel": "C0123ABCD",
+      "user": "U0456EFGH",
+      "text": "the error, and the logs",
+      "ts": "1730000420.000400",
+      "thread_ts": "1730000300.000200",
+      "upload": true,
+      "event_ts": "1730000420.000400",
+      "channel_type": "channel",
+      "files": [
+        {
+          "id": "F0SHOT0001",
+          "name": "error.png",
+          "title": "error.png",
+          "mimetype": "image/png",
+          "filetype": "png",
+          "size": 48213,
+          "mode": "hosted",
+          "is_external": false,
+          "url_private": "https://files.slack.com/files-pri/T0123ABCD-F0SHOT0001/error.png",
+          "url_private_download": "https://files.slack.com/files-pri/T0123ABCD-F0SHOT0001/download/error.png"
+        },
+        {
+          "id": "F0CONN0001",
+          "mode": "file_access",
+          "file_access": "check_file_info",
+          "created": 0,
+          "timestamp": 0,
+          "user": ""
+        },
+        {
+          "id": "F0EXTR0001",
+          "name": "design.fig",
+          "mode": "external",
+          "is_external": true,
+          "filetype": "remote",
+          "url_private": "https://example.com/design.fig"
+        },
+        {"id": "F0GONE0001", "name": "old.log", "mode": "tombstone"},
+        {"id": "F0HIDE0001", "name": "older.log", "mode": "hosted", "is_hidden_by_limit": 1},
+        {"id": "F0HUGE0001", "name": "core.dump", "mimetype": "application/octet-stream", "size": 999999999, "mode": "hosted"}
+      ]
+    },
+    "type": "event_callback",
+    "event_id": "Ev0123ABCD20",
+    "event_time": 1730000420
+  }
+}

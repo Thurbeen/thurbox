@@ -37,6 +37,7 @@ fn person(id: &str, at: u64, text: &str) -> Message {
         text: text.into(),
         key: None,
         starts_thread: false,
+        files: Vec::new(),
     }
 }
 
@@ -755,5 +756,111 @@ fn a_parent_relays_more_unread_child_items_than_its_inbox_holds_in_bounded_batch
     let gw = gateway(&env, "p");
     assert_eq!(gw["children"]["c"]["declared"], BURST, "{gw:#}");
     assert_eq!(gw["children"]["c"]["result"], 1, "{gw:#}");
+    env.assert_no_temp();
+}
+
+#[test]
+fn a_shared_file_is_named_in_the_relay_and_fetched_for_the_tied_task_only() {
+    let (env, conv, task) = tied("files");
+    env.reconcile().ok();
+    let mut event = message_event(
+        THREAD,
+        "1730000400000",
+        ALEX_ID,
+        T0 + 400_000,
+        "Here is the screenshot.",
+    );
+    event["files"] = json!([
+        {"id": "F0SHOT001", "name": "screen shot.png", "mimetype": "image/png", "size": 5},
+        {"id": "F0GONE001", "name": "old.log", "unavailable": "the file was deleted"},
+    ]);
+    env.receive("Ev02", event).ok();
+    env.reconcile().ok();
+    let relay = &texts(&env, &task)[2];
+    assert!(
+        relay.contains(&format!(
+            "file \"F0SHOT001\" \"screen shot.png\" (\"image/png\", 5 bytes): fetch it with `fleet gateway file {task} F0SHOT001`"
+        )),
+        "{relay}"
+    );
+    assert!(
+        relay.contains("file \"F0GONE001\" \"old.log\": not fetched: the file was deleted"),
+        "{relay}"
+    );
+    let stored = &env.conversation_status(&conv)["messages"];
+    assert_eq!(stored[2]["files"][0]["id"], "F0SHOT001", "{stored:#}");
+
+    let shared = env.root.join("gateway").join("files");
+    fs::create_dir_all(&shared).unwrap();
+    fs::write(shared.join("F0SHOT001"), b"\x89PNG!").unwrap();
+    fs::write(shared.join("F0ELSE001"), b"not shared here").unwrap();
+    let out = env.root.join("fetched");
+    let out_arg = out.to_string_lossy().into_owned();
+    let run = env.fleet(&["gateway", "file", &task, "F0SHOT001", "--out", &out_arg]);
+    run.ok();
+    let saved = std::path::PathBuf::from(run.stdout.trim());
+    assert_eq!(saved.file_name().unwrap(), "F0SHOT001");
+    let folder = saved.parent().unwrap();
+    assert_eq!(folder.parent().unwrap(), out);
+    assert!(
+        folder
+            .file_name()
+            .unwrap()
+            .to_string_lossy()
+            .starts_with("fleet-file-F0SHOT001-"),
+        "{}",
+        saved.display()
+    );
+    assert_eq!(fs::read(&saved).unwrap(), b"\x89PNG!");
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mode = |p: &std::path::Path| fs::metadata(p).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode(folder), 0o700, "only the worker's user enters it");
+        assert_eq!(mode(&saved), 0o600, "only the worker's user reads it");
+    }
+    let got = env
+        .fleet(&[
+            "gateway",
+            "file",
+            &task,
+            "F0SHOT001",
+            "--out",
+            &out_arg,
+            "--json",
+        ])
+        .ok()
+        .json();
+    assert_eq!(got["outcome"], "saved", "{got:#}");
+    assert_eq!(got["bytes"], 5);
+    assert_ne!(
+        got["path"].as_str().unwrap(),
+        saved.to_str().unwrap(),
+        "each fetch writes into its own directory"
+    );
+
+    env.fleet(&["gateway", "file", &task, "F0GONE001", "--out", &out_arg])
+        .code(1)
+        .stderr_has("the file was deleted");
+    env.fleet(&["gateway", "file", &task, "F0ELSE001", "--out", &out_arg])
+        .code(3)
+        .stderr_has("F0ELSE001");
+    assert!(
+        fs::read_dir(&out).unwrap().all(|e| !e
+            .unwrap()
+            .file_name()
+            .to_string_lossy()
+            .contains("F0ELSE001")),
+        "a file shared elsewhere is never fetched"
+    );
+    env.fleet(&[
+        "gateway",
+        "file",
+        "no-such-task",
+        "F0SHOT001",
+        "--out",
+        &out_arg,
+    ])
+    .code(3);
     env.assert_no_temp();
 }

@@ -25,13 +25,14 @@ pub mod slack;
 pub mod text;
 
 use std::collections::BTreeMap;
+use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 pub use discord::DiscordGateway;
 pub use fake::{FakeConversation, FakeGateway, FakeGatewayState, GatewayFault, PostRecord};
 use fleet_api::gateway::{
-    AccountConfig, Capabilities, ConversationRef, Delivery, Envelope, Gateway, HistoryObservation,
-    HistoryQuery, Identity, Inbound, Uncertainty,
+    AccountConfig, Capabilities, ConversationRef, Delivery, Envelope, Fetched, Gateway,
+    HistoryObservation, HistoryQuery, Identity, Inbound, Uncertainty,
 };
 use fleet_api::plan::EffectOutcome;
 use fleet_api::{Millis, Observation};
@@ -303,6 +304,98 @@ impl Gateway for GatewayAccounts {
     fn link(&self, account: &str, thread: &ConversationRef) -> Option<String> {
         self.adapter(account).and_then(|g| g.link(account, thread))
     }
+
+    fn fetch(
+        &self,
+        account: &str,
+        conversation: &ConversationRef,
+        file: &str,
+        dir: &Path,
+    ) -> Observation<Fetched> {
+        match self.adapter(account) {
+            Some(g) => g.fetch(account, conversation, file, dir),
+            None => Observation::Known(Fetched::Refused {
+                why: Self::not_configured(account),
+            }),
+        }
+    }
+}
+
+/// A new directory under `parent` that only this user can enter: mode
+/// 0700 on Unix, made by one `mkdir` that fails when the path exists, so no
+/// other user can have put a link or a file there first. Its name is
+/// `<stem>-<pid>-<nanos>-<n>`, unique to the call.
+pub fn fresh_private_dir(parent: &Path, stem: &str) -> std::io::Result<PathBuf> {
+    std::fs::create_dir_all(parent)?;
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_nanos())
+        .unwrap_or(0);
+    for n in 0..100 {
+        let path = parent.join(format!("{stem}-{}-{nanos}-{n}", std::process::id()));
+        match private_dir_builder().create(&path) {
+            Ok(()) => return Ok(path),
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(e) => return Err(e),
+        }
+    }
+    Err(std::io::Error::new(
+        std::io::ErrorKind::AlreadyExists,
+        format!(
+            "no fresh directory {stem}-… could be made under {}",
+            parent.display()
+        ),
+    ))
+}
+
+#[cfg(unix)]
+fn private_dir_builder() -> std::fs::DirBuilder {
+    let mut builder = std::fs::DirBuilder::new();
+    std::os::unix::fs::DirBuilderExt::mode(&mut builder, 0o700);
+    builder
+}
+
+#[cfg(not(unix))]
+fn private_dir_builder() -> std::fs::DirBuilder {
+    std::fs::DirBuilder::new()
+}
+
+/// A new file at `path` that only this user can read, made only when
+/// nothing is there: mode 0600 on Unix.
+pub fn fresh_private_file(path: &Path) -> std::io::Result<std::fs::File> {
+    let mut options = std::fs::OpenOptions::new();
+    options.write(true).create_new(true);
+    #[cfg(unix)]
+    std::os::unix::fs::OpenOptionsExt::mode(&mut options, 0o600);
+    options.open(path)
+}
+
+/// The name a fetched file is saved under: the platform's name with every
+/// character but ASCII letters, digits, `.`, `-` and `_` made `_`, no
+/// leading dot, at most 100 bytes; the file's id when nothing is left.
+pub fn saved_name(id: &str, name: &str) -> String {
+    let clean: String = name
+        .chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || matches!(c, '.' | '-' | '_') {
+                c
+            } else {
+                '_'
+            }
+        })
+        .collect();
+    let clean = clean.trim_start_matches('.');
+    let clean: String = clean.chars().take(100).collect();
+    if clean.is_empty() || clean.chars().all(|c| c == '_') {
+        let id: String = id
+            .chars()
+            .filter(|c| c.is_ascii_alphanumeric())
+            .take(100)
+            .collect();
+        if id.is_empty() { "file".into() } else { id }
+    } else {
+        clean
+    }
 }
 
 /// What a listener starts from, as `fleet gateway account NAME --json` will
@@ -489,6 +582,60 @@ mod tests {
         );
         let thread = ConversationRef::split("slack:C0123ABCD:1730000000.000100").unwrap();
         assert_eq!(accounts.link("slack-main", &thread), None);
+    }
+
+    #[test]
+    fn a_fresh_private_dir_is_new_each_call_and_only_its_owner_enters_it() {
+        let parent = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../target/tmp/fresh-private-dir")
+            .join(std::process::id().to_string());
+        let a = fresh_private_dir(&parent, "fleet-file-F1").unwrap();
+        let b = fresh_private_dir(&parent, "fleet-file-F1").unwrap();
+        assert_ne!(a, b);
+        assert!(
+            a.file_name()
+                .unwrap()
+                .to_string_lossy()
+                .starts_with("fleet-file-F1-")
+        );
+        let part = a.join(".part");
+        fresh_private_file(&part).unwrap();
+        assert_eq!(
+            fresh_private_file(&part).unwrap_err().kind(),
+            std::io::ErrorKind::AlreadyExists,
+            "a file already there is never reused"
+        );
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mode = |p: &Path| std::fs::metadata(p).unwrap().permissions().mode() & 0o777;
+            assert_eq!(mode(&a), 0o700);
+            assert_eq!(mode(&part), 0o600);
+            let target = parent.join("elsewhere");
+            std::os::unix::fs::symlink(&target, a.join(".link")).unwrap();
+            assert_eq!(
+                fresh_private_file(&a.join(".link")).unwrap_err().kind(),
+                std::io::ErrorKind::AlreadyExists,
+                "a planted link is not followed"
+            );
+            assert!(!target.exists());
+        }
+        std::fs::remove_dir_all(&parent).unwrap();
+    }
+
+    #[test]
+    fn a_saved_name_is_one_plain_path_segment() {
+        assert_eq!(saved_name("F1", "error.png"), "error.png");
+        assert_eq!(
+            saved_name("F1", "screen shot (1).png"),
+            "screen_shot__1_.png"
+        );
+        assert_eq!(saved_name("F1", "../../etc/passwd"), "_.._etc_passwd");
+        assert_eq!(saved_name("F1", ".bashrc"), "bashrc");
+        assert_eq!(saved_name("F1", ""), "F1");
+        assert_eq!(saved_name("F1", "日本"), "F1");
+        assert_eq!(saved_name("", ""), "file");
+        assert_eq!(saved_name("F1", &"a".repeat(300)).len(), 100);
     }
 
     #[test]

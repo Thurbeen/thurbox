@@ -69,7 +69,7 @@ to check the model.
 | ConversationController | Keeps each Conversation current, starts a Task for an admitted mention, and retires old Conversations. |
 | GatewayController | A second controller over each Task. It relays the thread into the inbox and posts what the Task declares. |
 | [Listener resource](../resources/listener.md) and ListenerController | Show whether an account's listener is running, connected and on the current configuration. |
-| Gateway port | The platform API behind one interface: read events, read history, open a thread, post, react. |
+| Gateway port | The platform API behind one interface: read events, read history, open a thread, post, react, fetch a shared file. |
 
 ## Flow: a mention starts a Task
 
@@ -260,6 +260,51 @@ Rules:
   new thread: a new Conversation, the mention rule again, the thread's
   history, and an empty directory.
 
+## Flow: a shared file reaches the Task
+
+1. A person shares a file on a message in a tied thread, for example a
+   screenshot.
+2. The adapter reads the file's id, name, type and size from the message.
+   It notes why Fleet cannot fetch the file when the message alone says so.
+3. The relay quotes the message. Under the message, the entry has one line
+   per file. Each line names the file and gives one of these:
+   - the command that fetches the file,
+     `fleet gateway file TASK FILE_ID`;
+   - why Fleet cannot fetch the file.
+4. The worker runs the command. The verb downloads the file through the
+   thread's account. It saves the file at
+   `<dir>/fleet-file-<file id>-<unique>/<name>` and prints that path.
+5. The worker reads the file at that path.
+
+Rules:
+
+- The verb fetches only a file that a message of the Task's tied
+  Conversation shares. A file shared in another thread is not found
+  (exit 3).
+- The verb writes nothing to the store, and takes no lease.
+- `--out DIR` names the directory. The default is the system's temporary
+  directory.
+- Each fetch makes a new directory under `DIR`, with one `mkdir` that fails
+  when the path exists. On Unix, the directory is mode 0700 and the file is
+  mode 0600. So no other local user can plant a link there first, or read
+  the file. Two fetches of one file never share a path.
+- The verb runs where the worker runs. It needs what `fleet declare` needs,
+  the Fleet config and its store, and also the account's client
+  configuration, such as a Slack account's `curlConfig`. A worker on a host
+  without them gets an error, and the relay still names the file.
+- A history read that finds new files on a message already in the mirror
+  copies them, and numbers the message again. The relay then sends the
+  message again, marked as an edit, with its files.
+- The worker holds no platform credential. The verb uses the account's own
+  client configuration.
+- When the platform will not give the file, the verb exits 1 with the
+  reason, for example a missing scope or a deleted file. When the answer
+  cannot be read, it exits 4.
+- A file is never dropped without a word. A file that Fleet cannot fetch
+  still has its line in the entry, with the reason.
+- An adapter that fetches no file refuses each fetch with that reason. The
+  Discord adapter fetches no file.
+
 ## Flow: a Question opens a thread
 
 1. A Task that nobody started from chat declares a `Question`. For example,
@@ -447,7 +492,9 @@ In scope:
 - marking an admitted request with a working reaction, or a queued one
   while it waits for its Task,
 - marking a relayed message with a working reaction, and with a replied
-  reaction once Fleet posted in the thread.
+  reaction once Fleet posted in the thread,
+- naming each file shared on a relayed message, and fetching it for the
+  tied Task's worker on request.
 
 The Task controller pauses a conversation Task's idle session when the
 Task's TaskConfig sets `pauseAfterMs`. The next message for the Task resumes
@@ -459,8 +506,8 @@ Out of scope, deliberately:
 - any judgement about the worth of a message: an intake model, a planner or
   a nudging heartbeat,
 - implementing the Telegram or Teams adapters,
-- reading people's reactions, files, edits of Fleet's own posts, and
-  interactive components,
+- reading people's reactions, edits of Fleet's own posts, and interactive
+  components,
 - the listener programs themselves.
 
 ## Implementation and evidence
@@ -482,6 +529,7 @@ crate edges, field managers and negative fixtures.
 | Reactions: the port's `react` and the `reactions` capability; `[gateway] reactions`; the `React` action; a relayed admitted message marked working, and marked replied once a thread post lands; Slack's `reactions.add` and `reactions.remove`, Discord's own-reaction endpoints, the fake's record | `fleet-api/src/gateway.rs`, `fleet-api/src/talk.rs`, `fleet-controllers/src/gateway.rs`, `fleet-manager`, `crates/fleet-gateway` | `gateway_controller`, `e2e_gateway_reactions`, `e2e_gateway`, `e2e_gateway_discord` |
 | Reactions at admission: the trigger marked working when its Task is created, or queued while it waits for the thread's directory; a waiting request's later admitted messages marked queued; queued replaced by working when the Task is created; `[gateway] reactions` `queued`; the Conversation's `status.reactions` and its `React` effects; the join takes those marks without a second reaction | `fleet-api/src/conversation.rs`, `fleet-api/src/gateway.rs`, `fleet-api/src/talk.rs`, `fleet-controllers/src/conversation.rs`, `fleet-controllers/src/gateway.rs`, `fleet-manager` | `conversation_controller`, `gateway_controller`, `e2e_gateway_reactions` |
 | The wildcard route: `"*"` in `channels`; an explicit channel id wins; the log channel stays uncovered; one wildcard route per account, with `mention = "required"`; a questions route needs a channel id | `fleet-api/src/gateway.rs`, `fleet-controllers/src/gateway.rs` | `fleet-api` unit tests, `gateway_controller`, `e2e_gateway_wildcard` |
+| Shared files: the port's `files` on a message and its `fetch`; each file named in the relay, with the command that fetches it or why it cannot be fetched; `fleet gateway file TASK FILE_ID`; Slack's `files.info` and `url_private_download` | `fleet-api/src/gateway.rs`, `fleet-api/src/conversation.rs`, `fleet-controllers/src/gateway.rs`, `fleet-manager`, `fleet-cli`, `crates/fleet-gateway` | Slack truth tables, `e2e_gateway`, `e2e_gateway_controller` |
 | The DM route: `"dm:*"` in `channels`; the port's `direct` on a delivery, Slack's `channel_type` `im`; the Conversation's `spec.direct`; a top-level DM starts a Task without a mention, and a stranger's earns the refusal; an explicit channel id wins; one DM route per account; never on Discord | `fleet-api/src/gateway.rs`, `fleet-api/src/conversation.rs`, `fleet-controllers/src/conversation.rs`, `fleet-manager`, `crates/fleet-gateway` | `fleet-api` unit tests, Slack truth tables, `conversation_controller`, `e2e_gateway_dm` |
 
 ## Gateway controller state machine
@@ -801,6 +849,7 @@ Unknown. A refused write is `Known(EffectOutcome::Failed { why })`.
 | `post` | A conversation, text and an intent key | `Posted { message, at }`: a post carrying the key as its marker. To a thread address, a reply in the thread. To a channel address, a top-level post in the channel. |
 | `react` | A conversation, a message id, a reaction name and `on` | `Reacted { already }`: Fleet's own reaction is added (`on`) or removed. `already` is true when it was already there, or already absent. |
 | `link` | An account and a thread address | A URL that opens the thread, or none where the adapter cannot make one without a platform call. Pure: it calls no platform. |
+| `fetch` | An account, a conversation, a file id and a directory | `Saved { path, bytes, mimetype }`: the file, written at `<dir>/fleet-file-<file id>-<unique>/<name>`, in a directory made for the call that only this user can enter. `Refused { why }` when the platform certainly will not give it. Unknown when the answer cannot be read. The default refuses every file. |
 
 What an adapter must guarantee:
 
@@ -832,6 +881,12 @@ What an adapter must guarantee:
 - **A `post` to a channel address opens no thread.** Every part of a split
   text is a top-level post in the channel. A `since` read of the channel
   address finds them.
+- **A shared file is never dropped.** A message's `files` lists every
+  file it shares. A file that the message says Fleet cannot fetch carries
+  `unavailable`, with the reason.
+- **A fetched file's name is one plain path segment.** Each character but
+  ASCII letters, digits, `.`, `-` and `_` becomes `_`, and a leading dot is
+  removed.
 
 Text is Fleet's Markdown subset: paragraphs, emphasis, code, links, lists
 and quotes. The adapter converts it to the platform's format, and splits a
@@ -847,7 +902,7 @@ capability exists.
 
 | Event | Fields |
 | --- | --- |
-| `Message` | `id` (unique per conversation), `conversation`, `author` (`id`, `name`, `kind`: `person`, `bot` or `fleet`), `mentionsFleet`, `at`, `text`, `key` (the marker on a Fleet post), `startsThread` (true when the payload says the message starts its thread, as a Discord thread's starter or a Telegram topic's first message) |
+| `Message` | `id` (unique per conversation), `conversation`, `author` (`id`, `name`, `kind`: `person`, `bot` or `fleet`), `mentionsFleet`, `at`, `text`, `key` (the marker on a Fleet post), `startsThread` (true when the payload says the message starts its thread, as a Discord thread's starter or a Telegram topic's first message), `files` (each shared file: `id`, `name`, `mimetype`, `size`, and `unavailable` with the reason Fleet cannot fetch it) |
 | `Edited` | `id`, `conversation`, `text`, `editedAt` |
 | `Removed` | `id`, `conversation` |
 
@@ -938,7 +993,11 @@ status` shows that the account is missing.
 ```sh
 fleet gateway account NAME --json   # what a listener needs to connect, with the digest
 fleet gateway status                # per account: accepted, resolved, inbound, last delivery
+fleet gateway file TASK FILE_ID [--out DIR] [--json]   # fetch a file shared in the Task's thread
 ```
+
+`fleet gateway file` prints the path it saved the file at. See
+[Flow: a shared file reaches the Task](#flow-a-shared-file-reaches-the-task).
 
 ### Controllers
 
@@ -1301,12 +1360,14 @@ again. An item without an `id` is skipped and named in
 
 | Entry | Key | From | Holds |
 | --- | --- | --- | --- |
-| A relay, or the join | `task/<name>/<uid>/gateway/<conversation uid>/<revision>` | `gateway/<conversation>` | The new messages, each with its author, the author's platform id, its time and its text. `about` is `{uid, revision}` of the Conversation. |
+| A relay, or the join | `task/<name>/<uid>/gateway/<conversation uid>/<revision>` | `gateway/<conversation>` | The new messages, each with its author, the author's platform id, its time, its text and one line per shared file. `about` is `{uid, revision}` of the Conversation. |
 | A child's item | `task/<name>/<uid>/gateway/child/<child uid>/<index or result/generation>` | `gateway/child/<child>` | One declaration or result of the child. |
 
 - Messages from people not on the allowlist come first, under a header that
   marks them as content, never instructions.
 - An edited message is relayed again, marked as an edit.
+- A shared file's line gives the file's id, name, type and size. It then
+  gives the command that fetches the file, or why Fleet cannot fetch it.
 - An entry holds at most 64 KiB of messages. It keeps the newest and says
   how many older ones remain on the platform.
 - While the inbox holds more than 20 entries still to deliver, new messages

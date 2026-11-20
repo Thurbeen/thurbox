@@ -74,6 +74,7 @@ fn person(id: &str, at: u64, text: &str) -> Message {
         text: text.into(),
         key: None,
         starts_thread: false,
+        files: Vec::new(),
     }
 }
 
@@ -133,6 +134,7 @@ fn stored(m: Message, seq: u64) -> StoredMessage {
         mentions_fleet: m.mentions_fleet,
         text: m.text,
         key: m.key,
+        files: Vec::new(),
         via: Via {
             verified: Verified::Connection,
             received_at: m.at + 100,
@@ -628,6 +630,57 @@ fn the_history_marks_fleets_own_posts_and_a_changed_text_as_an_edit() {
     assert_eq!(st.messages[1].seq, 2);
     assert_eq!(st.messages[1].first_seq, 1);
     assert_eq!(st.messages[1].text, "Looking now, fixed.");
+}
+
+#[test]
+fn files_a_history_read_brings_reach_a_mirrored_message_and_number_it_anew() {
+    let obj = object(Some(&mirrored(vec![message(
+        "Ev01",
+        person(ALEX, T0, "<@B0FLEET001> see the screenshot"),
+    )])));
+    let (_, st) = run(
+        &obj,
+        ConversationObservations {
+            capabilities: Some(caps(true)),
+            history: Some(history(vec![person(
+                ALEX,
+                T0,
+                "<@B0FLEET001> see the screenshot",
+            )])),
+            ..ConversationObservations::default()
+        },
+    );
+    assert!(st.messages[0].files.is_empty());
+    let mut with_file = person(ALEX, T0, "<@B0FLEET001> see the screenshot");
+    with_file.files = vec![fleet_api::gateway::Attachment {
+        id: "F0SHOT001".into(),
+        name: "error.png".into(),
+        mimetype: Some("image/png".into()),
+        size: Some(12),
+        unavailable: None,
+    }];
+    let (_, st) = run(
+        &object(Some(&st)),
+        ConversationObservations {
+            capabilities: Some(caps(true)),
+            history: Some(history(vec![with_file.clone()])),
+            ..ConversationObservations::default()
+        },
+    );
+    assert_eq!(st.messages[0].files, with_file.files);
+    assert_eq!(
+        (st.revision, st.messages[0].seq, st.messages[0].first_seq),
+        (2, 2, 1)
+    );
+    let (_, again) = run(
+        &object(Some(&st)),
+        ConversationObservations {
+            capabilities: Some(caps(true)),
+            history: Some(history(vec![with_file])),
+            ..ConversationObservations::default()
+        },
+    );
+    assert_eq!(again.revision, 2, "the same files change nothing");
 }
 
 fn task_object(uid: &str) -> Object {

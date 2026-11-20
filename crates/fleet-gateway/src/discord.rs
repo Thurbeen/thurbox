@@ -36,8 +36,8 @@ use std::time::Duration;
 
 use fleet_api::gateway::{
     AccountConfig, Author, AuthorKind, Capabilities, ConversationRef, Delivery, Envelope, Event,
-    Gateway, History, HistoryObservation, HistoryQuery, Identity, Inbound, Marker, Message,
-    Starter, Uncertainty, part_key,
+    Fetched, Gateway, History, HistoryObservation, HistoryQuery, Identity, Inbound, Marker,
+    Message, Starter, Uncertainty, part_key,
 };
 use fleet_api::plan::EffectOutcome;
 use fleet_api::{Millis, Observation};
@@ -599,6 +599,12 @@ impl DiscordGateway {
         let id = thread.thread.as_deref()?;
         Some(format!("https://discord.com/channels/{}/{id}", self.guild))
     }
+
+    fn fetch_file(&self, _file: &str, _dir: &std::path::Path) -> Observation<Fetched> {
+        Observation::Known(Fetched::Refused {
+            why: "the Discord adapter fetches no files".into(),
+        })
+    }
 }
 
 crate::curl::curl_gateway!(DiscordGateway, "Discord");
@@ -852,6 +858,7 @@ pub fn message_of(bot: &str, item: &Value, starts_thread: bool) -> Result<Messag
         text: item["content"].as_str().unwrap_or("").to_string(),
         key: None,
         starts_thread,
+        files: Vec::new(),
         author: Author {
             id: author_id.into(),
             name,

@@ -476,6 +476,22 @@ enum GatewayCommand {
         #[arg(long)]
         json: bool,
     },
+    /// Download a file shared in the thread a Task is tied to, and print the path it was saved at.
+    ///
+    /// The file must be shared on a message of the Task's Conversation. It
+    /// lands at DIR/fleet-file-FILE_ID-UNIQUE/NAME, in a directory made for
+    /// this call that only you can enter. Exit 1 says the platform will not
+    /// give the file, and why; exit 4 says its answer could not be read.
+    File {
+        task: String,
+        /// The file's id, as the relayed message names it.
+        file: String,
+        /// Where to save it; else the system's temporary directory.
+        #[arg(long, value_name = "DIR")]
+        out: Option<PathBuf>,
+        #[arg(long)]
+        json: bool,
+    },
 }
 
 #[derive(Debug, Subcommand)]
@@ -1610,6 +1626,44 @@ fn cmd_gateway(store: &dyn Store, config: &Config, command: GatewayCommand) -> R
                 );
             }
             Ok(())
+        }
+        GatewayCommand::File {
+            task,
+            file,
+            out,
+            json,
+        } => {
+            let gateway = open_gateway(config)?.ok_or_else(|| fail("no [gateway] section"))?;
+            let dir = out.unwrap_or_else(std::env::temp_dir);
+            let fetched = match fleet_manager::fetch_file(store, &gateway, &task, &file, &dir) {
+                Ok(f) => f,
+                Err(StoreError::Unknown(why)) => {
+                    return Err(Failure {
+                        code: exit::UNKNOWN,
+                        message: why,
+                        hint: Some(
+                            "the platform's answer could not be read; run the command again".into(),
+                        ),
+                    });
+                }
+                Err(e) => return Err(e.into()),
+            };
+            if json {
+                print_json(&serde_json::to_value(&fetched).map_err(|e| fail(e.to_string()))?);
+            }
+            match fetched {
+                fleet_api::gateway::Fetched::Saved { path, .. } => {
+                    if !json {
+                        println!("{}", path.display());
+                    }
+                    Ok(())
+                }
+                fleet_api::gateway::Fetched::Refused { why } => Err(Failure {
+                    code: exit::ERROR,
+                    message: format!("file {file} was not fetched: {why}"),
+                    hint: None,
+                }),
+            }
         }
         GatewayCommand::Account { name, json } => {
             let Some(account) = section.accounts.get(&name) else {

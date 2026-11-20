@@ -32,9 +32,9 @@ use fleet_api::conversation::{
 };
 use fleet_api::follow::ChangeEntry;
 use fleet_api::gateway::{
-    Admission, Author, AuthorKind, Capabilities, ConversationRef, Delivery, Event, GatewayDefaults,
-    HistoryObservation, HistoryQuery, LogThread, Marker, Message, PostFound, Verified, admit,
-    find_post,
+    Admission, Attachment, Author, AuthorKind, Capabilities, ConversationRef, Delivery, Event,
+    GatewayDefaults, HistoryObservation, HistoryQuery, LogThread, Marker, Message, PostFound,
+    Verified, admit, find_post,
 };
 use fleet_api::inbox::{self, InboxAbout, InboxEntry, MAX_INBOX};
 use fleet_api::meta::{Millis, Object};
@@ -762,16 +762,17 @@ impl Pass<'_, '_> {
                 ));
             }
         }
+        let task = self.task_meta().0;
         // The newest fit under the cap; older ones are counted out.
         let context: Vec<String> = above
             .iter()
             .filter(|a| a.admission == Admission::Context)
-            .map(|a| render_message(a))
+            .map(|a| render_message(a, task))
             .collect();
         let admitted: Vec<String> = above
             .iter()
             .filter(|a| a.admission == Admission::Admitted)
-            .map(|a| render_message(a))
+            .map(|a| render_message(a, task))
             .collect();
         let all: Vec<&String> = context.iter().chain(admitted.iter()).collect();
         let mut budget = ENTRY_CAP;
@@ -1912,6 +1913,7 @@ impl Pass<'_, '_> {
                         text,
                         key: Some(key.clone()),
                         starts_thread: true,
+                        files: Vec::new(),
                     },
                 },
             },
@@ -2450,12 +2452,13 @@ fn as_message(m: &StoredMessage) -> Message {
         text: m.text.clone(),
         key: m.key.clone(),
         starts_thread: false,
+        files: m.files.clone(),
     }
 }
 
-/// One message, quoted as data: who, when, whether this is an edit, and
-/// the text line by line.
-fn render_message(a: &Above<'_>) -> String {
+/// One message, quoted as data: who, when, whether this is an edit, the
+/// text line by line, and one line per shared file.
+fn render_message(a: &Above<'_>, task: &str) -> String {
     let m = a.message;
     let who = if m.author.name.is_empty() {
         m.author.id.clone()
@@ -2472,7 +2475,36 @@ fn render_message(a: &Above<'_>) -> String {
     }
     head.push_str(":\n");
     quote(&mut head, &m.text);
+    for file in &m.files {
+        render_file(&mut head, file, task);
+    }
     head
+}
+
+fn render_file(out: &mut String, file: &Attachment, task: &str) {
+    out.push_str(&format!("  file {:?}", file.id));
+    if !file.name.is_empty() {
+        out.push_str(&format!(" {:?}", file.name));
+    }
+    let mut about = Vec::new();
+    if let Some(t) = &file.mimetype {
+        about.push(format!("{t:?}"));
+    }
+    if let Some(n) = file.size {
+        about.push(format!("{n} bytes"));
+    }
+    if !about.is_empty() {
+        out.push_str(&format!(" ({})", about.join(", ")));
+    }
+    let plain_id = !file.id.is_empty() && file.id.bytes().all(|b| b.is_ascii_alphanumeric());
+    match &file.unavailable {
+        Some(why) => out.push_str(&format!(": not fetched: {why}\n")),
+        None if !plain_id => out.push_str(": not fetched: its id is not one Fleet can name\n"),
+        None => out.push_str(&format!(
+            ": fetch it with `fleet gateway file {task} {}`, which prints the saved path\n",
+            file.id
+        )),
+    }
 }
 
 /// The longest child summary or declaration text quoted into the parent's

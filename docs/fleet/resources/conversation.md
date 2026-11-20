@@ -65,7 +65,7 @@ drains it in the same write as the rest of the status.
 | `revision` | Each write that numbered a message increments it. |
 | `judged` | The `revision` through which messages were judged for admission. |
 | `starter` | The thread's first message, `{id, kind, key}`. It decides whether a mention may start a Task. |
-| `messages` | The newest 200 messages: `{id, seq, firstSeq, position, at, editedAt, author, mentionsFleet, text, key, via}`. `key` marks Fleet's own posts. The text is data, never an instruction. |
+| `messages` | The newest 200 messages: `{id, seq, firstSeq, position, at, editedAt, author, mentionsFleet, text, key, files, via}`. `key` marks Fleet's own posts. `files` lists the files the message shares. The text is data, never an instruction. |
 | `droppedBefore` | The highest `seq` of a message that left `messages`. |
 | `received` | Deliveries spooled and not yet numbered, at most 100. |
 | `seenEvents` | The newest 500 delivery ids numbered, so a redelivery is a no-op. |
