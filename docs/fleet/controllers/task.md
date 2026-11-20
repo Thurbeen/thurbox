@@ -520,6 +520,30 @@ in `status.loosePrompts`. A report of either digest proves the send. Then:
   delivery. It is never sent again, whatever the runtime's journal says.
 - A proven key's digest is dropped; its receipt stands.
 
+A person can type in the agent's composer while Fleet delivers. Text typed
+into that draft joins it, and the agent takes both as one prompt. So Fleet
+never types into a draft:
+
+- The `exec` kind reads the session's `capture` screen for readiness. A
+  composer that holds a draft makes the session not ready. The brief and
+  each entry wait, and no send is spent.
+- The `exec` kind reads the screen again just before it types. A draft
+  there fails the send, and nothing is typed. The send is tried again
+  after a wait, as any refused send.
+- A draft is in the last box between two full-width rules whose first
+  line starts with `❯`
+  ([`composer_draft`](../../../crates/fleet-api/src/harness.rs)). Claude
+  Code and GitHub Copilot CLI draw their composer so.
+- A box of several lines is a draft. So is a first line wider than the rule
+  above it: the capture joins a wrapped row into one line, so Fleet reads
+  no screen row.
+- A one-line box with text after `❯` is a dim suggestion while the cursor
+  stays two columns after `❯`, and a draft once the cursor is past them. A
+  capture with no cursor column then makes the composer unreadable, and
+  Fleet does not send.
+- Fleet does not see a one-line draft whose cursor the person moved back to
+  its start, or a draft in another agent's composer.
+
 A harness with no prompt hook keeps the runtime's answer, and its journal
 for a lost one. A profile has a prompt hook when its `authority` is `full`
 or `partial` and its `[payload]` names a prompt field: every bundled
