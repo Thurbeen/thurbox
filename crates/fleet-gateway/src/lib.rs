@@ -333,10 +333,7 @@ pub fn fresh_private_dir(parent: &Path, stem: &str) -> std::io::Result<PathBuf> 
         .unwrap_or(0);
     for n in 0..100 {
         let path = parent.join(format!("{stem}-{}-{nanos}-{n}", std::process::id()));
-        let mut builder = std::fs::DirBuilder::new();
-        #[cfg(unix)]
-        std::os::unix::fs::DirBuilderExt::mode(&mut builder, 0o700);
-        match builder.create(&path) {
+        match private_dir_builder().create(&path) {
             Ok(()) => return Ok(path),
             Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => continue,
             Err(e) => return Err(e),
@@ -349,6 +346,18 @@ pub fn fresh_private_dir(parent: &Path, stem: &str) -> std::io::Result<PathBuf> 
             parent.display()
         ),
     ))
+}
+
+#[cfg(unix)]
+fn private_dir_builder() -> std::fs::DirBuilder {
+    let mut builder = std::fs::DirBuilder::new();
+    std::os::unix::fs::DirBuilderExt::mode(&mut builder, 0o700);
+    builder
+}
+
+#[cfg(not(unix))]
+fn private_dir_builder() -> std::fs::DirBuilder {
+    std::fs::DirBuilder::new()
 }
 
 /// A new file at `path` that only this user can read, made only when
