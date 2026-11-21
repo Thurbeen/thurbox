@@ -1073,10 +1073,8 @@ done
 
 const START_TO_PANE: Duration = Duration::from_secs(10);
 
-#[test]
-fn starting_a_paused_session_shows_its_resumed_agent_in_the_running_interface() {
-    use thurbox::session::SessionState;
-    let Some(bin) = fleet_bin() else { return };
+fn paused_session() -> Option<PausedSession> {
+    let bin = fleet_bin()?;
     let runtime_mux = bin.with_file_name("runtime-mux");
     if !runtime_mux.is_file() || !bin.with_file_name("workspace-git").is_file() {
         assert!(
@@ -1086,11 +1084,11 @@ fn starting_a_paused_session_shows_its_resumed_agent_in_the_running_interface() 
         eprintln!(
             "skipping: build runtime-mux and workspace-git (`cargo build -p runtime-mux -p workspace-git`)"
         );
-        return;
+        return None;
     }
     if thurbox::paths::resolve_on_path("tmux").is_none() {
         eprintln!("skipping: tmux is not installed");
-        return;
+        return None;
     }
     let sockets = Sockets::new();
     let fleet = Fleet::with(
@@ -1120,53 +1118,92 @@ fn starting_a_paused_session_shows_its_resumed_agent_in_the_running_interface() 
     ]));
 
     fleet.up();
-    let mut store = store_of(FleetWatch::spawn(link(&fleet.program)));
+    let store = store_of(FleetWatch::spawn(link(&fleet.program)));
     let runtime = tokio::runtime::Runtime::new().expect("runtime");
-    let _entered = runtime.enter();
-    let mut terminals = thurbox::kernel::terminal::Terminals::with_registry(
-        std::sync::Arc::new(thurbox::backend::wiring::local_only(&Default::default())),
-        &Default::default(),
-    );
+    let mut terminals = {
+        let _entered = runtime.enter();
+        thurbox::kernel::terminal::Terminals::with_registry(
+            std::sync::Arc::new(thurbox::backend::wiring::local_only(&Default::default())),
+            &Default::default(),
+        )
+    };
     terminals.attach_fleet_through(link(&fleet.program));
-    let mut frame = |terminals: &mut thurbox::kernel::terminal::Terminals| {
-        store.refresh_if_due();
-        terminals.sync(store.current(), 24, 80);
-        let row = store.current().session("local:t1").cloned();
-        (row, terminals.visible_text("local:t1").unwrap_or_default())
+    let mut session = PausedSession {
+        _sockets: sockets,
+        fleet,
+        store,
+        terminals,
+        runtime,
     };
     let deadline = Instant::now() + BOUND;
-    while !frame(&mut terminals)
+    while !session
+        .frame()
         .0
-        .is_some_and(|row| row.status == SessionState::Stopped)
-        || terminals.failure("local:t1")
+        .is_some_and(|row| row.status == thurbox::session::SessionState::Stopped)
+        || session.terminals.failure("local:t1")
             != Some("the session is paused: start it to resume its agent")
     {
         assert!(
             Instant::now() < deadline,
             "never paused with its pane saying why: {:?}; Task status: {:#}",
-            terminals.failure("local:t1"),
-            fleet
+            session.terminals.failure("local:t1"),
+            session
+                .fleet
                 .get("t1")
                 .map(|t| t["status"].clone())
                 .unwrap_or_default()
         );
         std::thread::sleep(Duration::from_millis(50));
     }
+    Some(session)
+}
+
+struct PausedSession {
+    _sockets: Sockets,
+    fleet: Fleet,
+    store: SnapshotStore,
+    terminals: thurbox::kernel::terminal::Terminals,
+    runtime: tokio::runtime::Runtime,
+}
+
+impl PausedSession {
+    fn frame(&mut self) -> (Option<thurbox::kernel::snapshot::SessionRow>, String) {
+        let _entered = self.runtime.enter();
+        self.store.refresh_if_due();
+        self.terminals.sync(self.store.current(), 24, 80);
+        let row = self.store.current().session("local:t1").cloned();
+        (
+            row,
+            self.terminals.visible_text("local:t1").unwrap_or_default(),
+        )
+    }
+
+    fn start(&self) -> std::thread::JoinHandle<Result<(), String>> {
+        let program = self.fleet.program.clone();
+        std::thread::spawn(move || {
+            run_command(
+                &mut fleet_bus(&program),
+                Command::Start {
+                    session: "t1".into(),
+                },
+            )
+        })
+    }
+}
+
+#[test]
+fn starting_a_paused_session_shows_its_resumed_agent_in_the_running_interface() {
+    use thurbox::session::SessionState;
+    let Some(mut session) = paused_session() else {
+        return;
+    };
 
     let started = Instant::now();
-    let program = fleet.program.clone();
-    let start = std::thread::spawn(move || {
-        run_command(
-            &mut fleet_bus(&program),
-            Command::Start {
-                session: "t1".into(),
-            },
-        )
-    });
+    let start = session.start();
     let mut running = None;
     let mut start_returned = None;
     let shown = loop {
-        let (row, text) = frame(&mut terminals);
+        let (row, text) = session.frame();
         if running.is_none() && row.is_some_and(|row| row.status != SessionState::Stopped) {
             running = Some(started.elapsed());
         }
@@ -1179,8 +1216,8 @@ fn starting_a_paused_session_shows_its_resumed_agent_in_the_running_interface() 
         assert!(
             started.elapsed() < BOUND,
             "the resumed agent never reached the pane: {:?}; Task status: {:#}",
-            terminals.failure("local:t1"),
-            fleet.get("t1").expect("the Task")["status"]
+            session.terminals.failure("local:t1"),
+            session.fleet.get("t1").expect("the Task")["status"]
         );
         std::thread::sleep(Duration::from_millis(50));
     };
@@ -1192,6 +1229,52 @@ fn starting_a_paused_session_shows_its_resumed_agent_in_the_running_interface() 
         shown < START_TO_PANE,
         "the pane showed the resumed agent {shown:?} after Start, past {START_TO_PANE:?}: start returned after {start_returned:?}, the row ran after {running:?}"
     );
+}
+
+#[test]
+fn a_shell_asked_for_on_a_paused_session_opens_once_start_resumes_it() {
+    let Some(mut session) = paused_session() else {
+        return;
+    };
+    let row = session.frame().0.expect("the paused row");
+
+    assert_eq!(
+        session
+            .terminals
+            .open_shell(&row, 24, 80)
+            .expect("a shell is asked for on a paused session"),
+        thurbox::kernel::terminal::ShellOpening::AfterStart,
+        "the shell waits for the Start the interface dispatches"
+    );
+    session.terminals.start_requested("local:t1");
+    let start = session.start();
+
+    let shell = thurbox::kernel::terminal::shell_surface("local:t1");
+    let deadline = Instant::now() + BOUND;
+    while !session.terminals.has_shell("local:t1") {
+        session.frame();
+        assert!(
+            Instant::now() < deadline,
+            "the shell never opened: {:?}; Task status: {:#}",
+            session.terminals.failure("local:t1"),
+            session.fleet.get("t1").expect("the Task")["status"]
+        );
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    start.join().unwrap().expect("start");
+    assert!(
+        session
+            .terminals
+            .send(&shell, b"echo shell-$((6*7))\r".to_vec()),
+        "the shell takes input"
+    );
+    until("the shell answers", || {
+        session.frame();
+        session
+            .terminals
+            .visible_text(&shell)
+            .is_some_and(|text| text.contains("shell-42"))
+    });
 }
 
 /// An interactive session's row follows what its agent's hooks report:
