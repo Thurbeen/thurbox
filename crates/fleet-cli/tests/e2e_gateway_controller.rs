@@ -662,6 +662,47 @@ fn a_child_relays_its_declarations_and_result_into_its_parents_inbox() {
 }
 
 #[test]
+fn a_childs_declared_change_request_stays_out_of_its_parents_inbox() {
+    let mut env = Env::forge("child-change-request");
+    env.set_var("USER", "tester");
+    env.apply(support::task("p", true)).ok();
+    env.reconcile().ok();
+    let p_uid = uid_of(&env, "task", "p");
+    env.apply(child_of("c", "p", &p_uid, true)).ok();
+    env.reconcile().ok();
+    let c_uid = uid_of(&env, "task", "c");
+    env.fleet(&[
+        "declare",
+        "c",
+        "--change-request",
+        "https://forge.test/acme/widgets/pull/7",
+    ])
+    .ok();
+    env.fleet(&[
+        "declare",
+        "c",
+        "--json",
+        r#"{"kind":"Question","id":"q1","text":"May I merge it?"}"#,
+    ])
+    .ok();
+    let report = env.reconcile().ok().json();
+    assert_eq!(report["errors"], json!([]), "{report:#}");
+    let got = texts(&env, "p");
+    assert!(got.iter().all(|t| !t.contains("ChangeRequest")), "{got:#?}");
+    let keys: Vec<Value> = receipts(&env, "p")
+        .iter()
+        .map(|r| r["key"].clone())
+        .collect();
+    assert_eq!(
+        keys,
+        vec![json!(format!("task/p/{p_uid}/gateway/child/{c_uid}/1"))],
+        "{got:#?}"
+    );
+    assert_eq!(gateway(&env, "p")["children"]["c"]["declared"], 2);
+    assert_eq!(env.reconcile().ok().json()["idle"], true);
+}
+
+#[test]
 fn a_long_child_result_reaches_its_parent_as_a_short_pointer() {
     // A 16 KiB summary, as a review child reported to Mission Control: the
     // parent is told where to read it, not given it to type.
