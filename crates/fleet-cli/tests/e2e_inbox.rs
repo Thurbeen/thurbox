@@ -449,3 +449,100 @@ fn a_message_whose_send_never_answered_is_never_resent_and_later_entries_go_past
     );
     assert_eq!(delivered_keys(&full), vec![second["key"].as_str().unwrap()]);
 }
+
+fn given_up_unconfirmed(env: &Env, text: &str) -> String {
+    env.fault(Fault::new("brief", "unknown"));
+    let key = send(env, text)["key"].as_str().unwrap().to_string();
+    for _ in 0..6 {
+        env.expire_wait("t1");
+        env.reconcile().ok();
+    }
+    assert_condition(
+        &env.status("t1"),
+        "NeedsAttention",
+        "True",
+        "DeliveryUnconfirmed",
+    );
+    assert_eq!(inbox_keys(&full_status(env)), vec![key.clone()]);
+    key
+}
+
+fn attention_cleared(env: &Env) {
+    let full = full_status(env);
+    let attention = full["conditions"]
+        .as_array()
+        .and_then(|cs| cs.iter().find(|c| c["type"] == "NeedsAttention"))
+        .cloned()
+        .unwrap_or_default();
+    assert_ne!(attention["status"], "True", "{full:#}");
+    assert!(
+        full["deliveryAttempts"]
+            .as_object()
+            .is_none_or(|a| a.values().all(|a| a["failed"] != true)),
+        "{full:#}"
+    );
+}
+
+#[test]
+fn a_person_drops_an_entry_given_up_on_and_the_concluded_tasks_attention_clears() {
+    let env = concluded("inbox-drop-given-up");
+    let key = given_up_unconfirmed(&env, "lost relay");
+    env.fleet(&["send", "t1", "--drop", &key]).ok();
+    env.reconcile().ok();
+    let full = full_status(&env);
+    assert!(inbox_keys(&full).is_empty(), "{full:#}");
+    assert_eq!(full["phase"], "Concluded");
+    attention_cleared(&env);
+}
+
+#[test]
+fn a_person_retries_an_entry_given_up_on_and_it_is_delivered_under_a_new_key() {
+    let env = concluded("inbox-retry-given-up");
+    let key = given_up_unconfirmed(&env, "lost relay");
+    let sends = env.calls("brief");
+    let copy = env
+        .fleet(&["send", "t1", "--retry", &key, "--json"])
+        .ok()
+        .json();
+    assert_ne!(copy["key"], key.as_str());
+    assert_eq!(copy["text"], "lost relay");
+    for _ in 0..3 {
+        env.reconcile().ok();
+    }
+    let full = full_status(&env);
+    assert!(inbox_keys(&full).is_empty(), "{full:#}");
+    assert_eq!(env.calls("brief"), sends + 1, "the copy is sent once");
+    assert!(
+        full["deliveries"]["receipts"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|r| r["key"] == copy["key"]),
+        "{full:#}"
+    );
+    attention_cleared(&env);
+}
+
+#[test]
+fn retry_and_drop_refuse_an_entry_that_is_not_given_up_on() {
+    let env = briefed("inbox-resolve-refused");
+    env.host().set_prompt_hook_silent(true).unwrap();
+    let key = send(&env, "in flight")["key"].as_str().unwrap().to_string();
+    env.reconcile().ok();
+    for verb in ["--retry", "--drop"] {
+        let run = env.fleet(&["send", "t1", verb, &key]);
+        assert_ne!(run.code, Some(0), "{verb}: {}", run.stdout);
+        assert!(
+            run.stderr.contains("not given up on") && run.stderr.contains("being delivered"),
+            "{verb}: {}",
+            run.stderr
+        );
+    }
+    let missing = env.fleet(&["send", "t1", "--drop", "task/t1/nope/send/1"]);
+    assert!(
+        missing.stderr.contains("no inbox entry"),
+        "{}",
+        missing.stderr
+    );
+    assert_eq!(inbox_keys(&full_status(&env)), vec![key]);
+}

@@ -249,9 +249,11 @@ relay write, which also replaces `status.forge`, and TaskController's notice
 write, which also replaces `status.subscriptions`), which refuses a key
 already in `inbox` or `deliveries`, an `about.revision` not above the
 mirror's highest delivered one, an append while more than 20 entries are
-still to deliver, and a deleting Task; and record-and-remove, TaskController's
+still to deliver, and a deleting Task; record-and-remove, TaskController's
 status write that also moves one entry's receipt into `deliveries` and the
-entry out of `inbox`. No manager may replace the list.
+entry out of `inbox`; and resolve (`fleet send --retry` and `--drop`), which
+removes one entry given up on and, for a retry, appends its copy as append
+does. No manager may replace the list.
 
 TaskController delivers inbox entries as it delivers the brief, oldest first,
 one per pass: only to a session observed ready on that pass, under the entry's
@@ -269,7 +271,21 @@ runtime only queued, where the agent does not read it, raises
 `NeedsAttention/DeliveryQueued` naming it, with the same outcome. More than
 20 entries still to deliver raise
 `NeedsAttention/InboxFull`. An entry given up on does not count. Such an entry
-can never be delivered, so it can never make room. A Concluded Task with a
+can never be delivered, so it can never make room.
+
+A person resolves an entry given up on by its key:
+
+- `fleet send TASK --retry KEY` removes the entry and queues a copy of it
+  (the same `from`, `text`, `about` and `answers`) under a new
+  `task/<name>/<uid>/send/<n>` key. The copy gets 3 sends of its own.
+- `fleet send TASK --drop KEY` removes the entry. Fleet records no receipt
+  and never delivers it.
+
+Both refuse a key that is not an entry given up on, and name where it
+stands: delivered, still being delivered, or not in the inbox. On its next
+pass, TaskController forgets the entry's attempt. When no entry given up on
+is left, it clears `NeedsAttention` raised as `DeliveryUnconfirmed`,
+`DeliveryFailed` or `DeliveryQueued`. A Concluded Task is due for that pass. A Concluded Task with a
 nonempty inbox is due again for delivery, and at rest for a session recheck
 every 5 minutes, as the [Task state
 machine](../controllers/task.md#transition-rules) describes;
@@ -362,6 +378,7 @@ declares, and Fleet relays.
 | `gateway.fleet.dev/parent`, `gateway.fleet.dev/parent-uid` labels | whoever creates a child and may already append to the parent's inbox (a person, or a plugin whose Task scope covers the parent), at creation only | The parent Task's name and `uid`. A child never talks in a thread; its parent relays its Questions, Comments, Drafts and results into its own inbox, so naming a parent is writing to it. A verified tie wins over them. |
 | `gateway.fleet.dev/route` label | whoever creates the Task | The route whose channel a Question from this untied Task opens a thread in, instead of `gateway.questions`. |
 | `fleet send TASK --answers ID TEXT` | `cli` | Answer a declared Question from the command line, or as a parent answering a child, recording `status.answered`. |
+| `fleet send TASK --retry KEY`, `fleet send TASK --drop KEY` | `cli` | Send an inbox entry given up on again under a new key, or remove it. See [delivery](#inbox). |
 
 Inbox entries from the Gateway come from `gateway/<conversation>` or
 `gateway/child/<child>`, under keys the

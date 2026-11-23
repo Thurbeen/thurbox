@@ -175,6 +175,7 @@ concludes nothing.
 | Spawned, Briefed or Concluded | Entry send refused (Known failure) | unchanged | Wait, then send again under the same key to a session observed ready; at most 3 sends. |
 | Spawned, Briefed or Concluded | Entry delivery unreadable after an ambiguous send | unchanged | Wait, then read the journal again. After 3 unreadable reads, raise `NeedsAttention/DeliveryUnconfirmed` naming the entry. The entry stays, marked failed, and is never sent again. Later entries are still delivered. |
 | Spawned, Briefed or Concluded | A fourth send of one entry would be needed | unchanged | `NeedsAttention/DeliveryFailed` naming the entry; the entry stays, marked failed, and later entries are still delivered. |
+| Any phase | An attempt marked failed whose entry is no longer in `status.inbox`: a person ran `fleet send --retry` or `--drop` | unchanged | Forget the attempt, its intent, receipt and prompt digests. When no failed attempt is left, clear `NeedsAttention` whose reason is DeliveryUnconfirmed, DeliveryFailed or DeliveryQueued. A Concluded Task is due for this pass. |
 | Spawned, Briefed or Concluded | More than 20 entries still to deliver, not counting entries given up on | unchanged | `NeedsAttention/InboxFull`; cleared once the count is back within the bound. |
 | Concluded | Empty inbox; session recheck due; lookup answered | Concluded | Record `sessionCheckedAt`; the next recheck is due 5 minutes later. |
 | Concluded | Readable lookup lacks the recorded session | Concluded | `WorkerGone` and `NeedsAttention`; never a respawn. |
@@ -281,10 +282,12 @@ delivery recovery clears attention whose reason is BriefUnconfirmed. A
 delivery clears attention whose reason is DeliveryUnconfirmed while no
 entry is marked failed. An inbox drained back within its bound clears InboxFull.
 A Trusted answer clears WorkspaceUntrusted.
-BriefUndelivered and DeliveryQueued stay until a person acts on the Task.
+BriefUndelivered stays until a person acts on the Task.
 ReviveFailed and CannotResume clear when the session is seen not lost.
 ResumeFailed clears when the session is seen running.
-DeliveryFailed and DeliveryUnconfirmed stay while a failed entry does. A
+DeliveryFailed, DeliveryUnconfirmed and DeliveryQueued stay while a failed
+entry does. `fleet send --retry` and `--drop` remove a failed entry, and
+the pass that forgets the last one clears them. A
 successful release removes the Task; a worker result alone is not a general
 reset of previous conditions. NeedsAttention does not universally stop the
 controller: its reason and phase determine what continues. Delivering an

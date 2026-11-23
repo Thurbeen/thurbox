@@ -1094,6 +1094,44 @@ impl Store for FileStore {
         Ok(obj)
     }
 
+    fn resolve_inbox(
+        &self,
+        name: &str,
+        key: &str,
+        retry: Option<fleet_api::inbox::Retry>,
+        expected: u64,
+        by: FieldManager,
+    ) -> Result<Object, StoreError> {
+        if by != FieldManager::Cli {
+            return Err(StoreError::Forbidden(format!(
+                "{} does not retry or drop an inbox entry",
+                by.name()
+            )));
+        }
+        let _guard = self.lock()?;
+        let mut obj = self.read_existing(task::KIND, name)?;
+        expect_rv(&obj, expected)?;
+        if obj.is_deleting() {
+            return Err(StoreError::Forbidden(format!(
+                "{} is being deleted; nothing would deliver the entry",
+                obj.key()
+            )));
+        }
+        let mut st = task_status(&obj)?;
+        let entry =
+            fleet_api::inbox::given_up(&st.inbox, &st.delivery_attempts, &st.deliveries, key)
+                .map_err(|why| StoreError::Forbidden(format!("{}: {why}", obj.key())))?
+                .clone();
+        st.inbox.retain(|e| e.key != key);
+        if let Some(retry) = retry {
+            push_checked(&obj, &mut st, retry.copy(entry))?;
+        }
+        obj.status = encode_status(&st)?;
+        obj.metadata.resource_version = self.next_rv()?;
+        self.write(&obj)?;
+        Ok(obj)
+    }
+
     fn request_wake(
         &self,
         name: &str,

@@ -515,6 +515,27 @@ impl Pass<'_, '_> {
     }
 
     /// Clear NeedsAttention when the cause `reason` named has gone.
+    /// A person retried or dropped an entry given up on: its attempt goes,
+    /// and with the last one the attention it raised.
+    fn forget_resolved_entries(&mut self) {
+        let forgotten = inbox::forgotten(&self.st.inbox, &self.st.delivery_attempts);
+        if forgotten.is_empty() {
+            return;
+        }
+        for key in &forgotten {
+            self.st.delivery_attempts.remove(key);
+            self.st.intents.remove(key);
+            self.st.receipts.remove(key);
+            self.st.prompts.remove(key);
+            self.st.loose_prompts.remove(key);
+        }
+        if !self.st.delivery_attempts.values().any(|a| a.failed) {
+            for reason in ["DeliveryUnconfirmed", "DeliveryFailed", "DeliveryQueued"] {
+                self.settle_attention(reason);
+            }
+        }
+    }
+
     fn settle_attention(&mut self, reason: &str) {
         if condition(&self.st.conditions, NEEDS_ATTENTION)
             .is_some_and(|c| c.status == ConditionStatus::True && c.reason == reason)
@@ -524,6 +545,7 @@ impl Pass<'_, '_> {
     }
 
     fn advance(&mut self) {
+        self.forget_resolved_entries();
         match self.st.phase {
             // Stalled has no session to deliver to; nothing moves.
             Phase::Stalled => return,
@@ -2508,13 +2530,17 @@ fn cannot_resume(st: &TaskStatus) -> bool {
 }
 
 /// Whether the manager owes a Concluded Task with nothing to deliver a
-/// pass: its session is due a lookup, a revive is under way, or its
+/// pass: its session is due a lookup, a revive is under way, its
 /// activity is watched (it may be paused, a pause or resume waits for its
-/// outcome, or a view asked for it while paused). An undecodable Task is
-/// owed one, to report it.
+/// outcome, or a view asked for it while paused), or a person retried or
+/// dropped an entry given up on. An undecodable Task is owed one, to
+/// report it.
 pub fn due_at_rest(obj: &Object, now: Millis) -> bool {
     decode(obj).map_or(true, |(spec, st)| {
-        session_recheck_due(&st, now) || reviving(&st) || watched(obj, &spec, &st)
+        session_recheck_due(&st, now)
+            || reviving(&st)
+            || watched(obj, &spec, &st)
+            || !inbox::forgotten(&st.inbox, &st.delivery_attempts).is_empty()
     })
 }
 

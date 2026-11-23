@@ -360,6 +360,11 @@ Guarantees, each with its test:
   prompt hook reported another prompt since the send and not this one, raise
   `DeliveryUnconfirmed` naming the entry, which is never resent and stays while
   later entries go out; more than 20 entries still to deliver raise `InboxFull`.
+  A person resolves an entry given up on: `fleet send TASK --retry KEY`
+  replaces it with a copy under a new `send/<n>` key, which gets 3 sends of
+  its own; `fleet send TASK --drop KEY` removes it with no receipt. Both
+  refuse an entry not given up on. The pass after the last one goes clears
+  the attention it raised.
   An entry given up on does not count. Such an entry can never be delivered, so
   it can never make room. Nothing bounds the entries given up on. Each one given
   up on raises `NeedsAttention`, which names the latest;
