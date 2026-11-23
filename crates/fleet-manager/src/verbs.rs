@@ -19,7 +19,7 @@ use fleet_api::gateway::{
     AuthorKind, ConversationRef, Envelope, Event, Fetched, Gateway, GatewayConfig, admit,
     earns_refusal, starts_task,
 };
-use fleet_api::inbox::{CLI_SOURCE_PREFIX, InboxEntry, amend_key, send_key};
+use fleet_api::inbox::{CLI_SOURCE_PREFIX, InboxEntry, Retry, amend_key, send_key};
 use fleet_api::listener::{self, Beat, Heartbeat, listener_name};
 use fleet_api::meta::API_VERSION;
 use fleet_api::plan::EffectOutcome;
@@ -576,6 +576,53 @@ pub fn send(
             None,
         ) {
             Ok(_) => return Ok(entry),
+            Err(StoreError::Conflict { .. }) => continue,
+            Err(e) => return Err(e),
+        }
+    }
+    Err(StoreError::Busy(format!(
+        "{}/{name}: kept conflicting with other writers",
+        task::KIND
+    )))
+}
+
+/// What a person does with an inbox entry TaskController gave up on.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Resolution {
+    /// Queue the same message again under a fresh `send` key.
+    Retry,
+    /// Remove it; it is never delivered.
+    Drop,
+}
+
+/// `fleet send --retry` and `--drop`: resolve the given-up entry under
+/// `key`. Returns the queued copy for a retry.
+pub fn resolve_inbox(
+    store: &dyn Store,
+    clock: &dyn Clock,
+    name: &str,
+    key: &str,
+    resolution: Resolution,
+) -> Result<Option<InboxEntry>, StoreError> {
+    for _ in 0..CAS_TRIES {
+        let obj = match store.get(task::KIND, name) {
+            Observation::Known(Some(o)) => o,
+            Observation::Known(None) => {
+                return Err(StoreError::NotFound(format!("{}/{name}", task::KIND)));
+            }
+            Observation::Unknown { why } => return Err(StoreError::Unknown(why)),
+        };
+        let m = &obj.metadata;
+        let retry = (resolution == Resolution::Retry).then(|| Retry {
+            key: send_key(&m.name, &m.uid, m.resource_version),
+            queued_at: clock.now(),
+        });
+        let copy_key = retry.as_ref().map(|r| r.key.clone());
+        match store.resolve_inbox(name, key, retry, m.resource_version, FieldManager::Cli) {
+            Ok(written) => {
+                let st: TaskStatus = typed(task::KIND, &written.status)?;
+                return Ok(copy_key.and_then(|k| st.inbox.into_iter().find(|e| e.key == k)));
+            }
             Err(StoreError::Conflict { .. }) => continue,
             Err(e) => return Err(e),
         }

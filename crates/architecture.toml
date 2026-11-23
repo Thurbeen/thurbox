@@ -86,7 +86,7 @@ deps = ["fleet-api", "fleet-manager", "fleet-runtime", "fleet-store", "fleet-for
 dev_deps = ["term-stream"]
 # Every write is the manager's: the CLI parses, calls a verb, and prints.
 forbidden_methods = [
-  "create", "create_fenced", "update_spec", "update_status", "append_inbox", "record_delivery",
+  "create", "create_fenced", "update_spec", "update_status", "append_inbox", "resolve_inbox", "record_delivery",
   "record_relay", "remove_finalizer", "delete", "delete_fenced", "acquire_lease",
   "renew_lease", "reclaim_lease", "release_lease", "reconcile", "probes", "create_dir", "remove_dir", "spawn", "release",
   "change", "mark_ready", "whoami", "call", "admit", "plugin_mutate",

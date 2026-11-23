@@ -514,6 +514,56 @@ impl Pass<'_, '_> {
         self.cond(NEEDS_ATTENTION, ConditionStatus::True, reason, message);
     }
 
+    fn forget_resolved_entries(&mut self) {
+        let forgotten = inbox::forgotten(&self.st.inbox, &self.st.delivery_attempts);
+        if forgotten.is_empty() {
+            return;
+        }
+        for key in &forgotten {
+            self.st.delivery_attempts.remove(key);
+            self.st.intents.remove(key);
+            self.st.receipts.remove(key);
+            self.st.prompts.remove(key);
+            self.st.loose_prompts.remove(key);
+        }
+        let still_given_up = self
+            .st
+            .inbox
+            .iter()
+            .find(|e| {
+                self.st
+                    .delivery_attempts
+                    .get(&e.key)
+                    .is_some_and(|a| a.failed)
+            })
+            .map(|e| format!("inbox entry {} from {}", e.key, e.from));
+        let delivery_reasons = ["DeliveryUnconfirmed", "DeliveryFailed", "DeliveryQueued"];
+        match still_given_up {
+            None => {
+                for reason in delivery_reasons {
+                    self.settle_attention(reason);
+                }
+            }
+            Some(what) => {
+                let raised = condition(&self.st.conditions, NEEDS_ATTENTION)
+                    .filter(|c| {
+                        c.status == ConditionStatus::True
+                            && delivery_reasons.contains(&c.reason.as_str())
+                    })
+                    .map(|c| c.reason.clone());
+                if let Some(reason) = raised {
+                    self.needs_attention(
+                        &reason,
+                        format!(
+                            "{what} is given up on and stays in status.inbox; \
+                             fleet send --retry or --drop resolves it"
+                        ),
+                    );
+                }
+            }
+        }
+    }
+
     /// Clear NeedsAttention when the cause `reason` named has gone.
     fn settle_attention(&mut self, reason: &str) {
         if condition(&self.st.conditions, NEEDS_ATTENTION)
@@ -524,6 +574,7 @@ impl Pass<'_, '_> {
     }
 
     fn advance(&mut self) {
+        self.forget_resolved_entries();
         match self.st.phase {
             // Stalled has no session to deliver to; nothing moves.
             Phase::Stalled => return,
@@ -2508,13 +2559,17 @@ fn cannot_resume(st: &TaskStatus) -> bool {
 }
 
 /// Whether the manager owes a Concluded Task with nothing to deliver a
-/// pass: its session is due a lookup, a revive is under way, or its
+/// pass: its session is due a lookup, a revive is under way, its
 /// activity is watched (it may be paused, a pause or resume waits for its
-/// outcome, or a view asked for it while paused). An undecodable Task is
-/// owed one, to report it.
+/// outcome, or a view asked for it while paused), or a person retried or
+/// dropped an entry given up on. An undecodable Task is owed one, to
+/// report it.
 pub fn due_at_rest(obj: &Object, now: Millis) -> bool {
     decode(obj).map_or(true, |(spec, st)| {
-        session_recheck_due(&st, now) || reviving(&st) || watched(obj, &spec, &st)
+        session_recheck_due(&st, now)
+            || reviving(&st)
+            || watched(obj, &spec, &st)
+            || !inbox::forgotten(&st.inbox, &st.delivery_attempts).is_empty()
     })
 }
 

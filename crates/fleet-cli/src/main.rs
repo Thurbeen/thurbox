@@ -25,9 +25,9 @@ use fleet_api::{API_VERSION, Object, Observation, Store, StoreError};
 use fleet_forge::{ForgeHosts, HostConfig, HostKind};
 use fleet_gateway::{GatewayAccounts, Platform, account_digest, listener_account};
 use fleet_manager::{
-    AmendRequest, DeclareOutcome, GatewaySide, Manager, RunOptions, amend, apply,
+    AmendRequest, DeclareOutcome, GatewaySide, Manager, Resolution, RunOptions, amend, apply,
     apply_change_request, apply_conversation, beat, declare, declare_change_request, delete, label,
-    list_events, pause, publish_event, receive, record_result, send, wake,
+    list_events, pause, publish_event, receive, record_result, resolve_inbox, send, wake,
 };
 use fleet_runtime::{ExecProgram, ExecRuntime, FakeHost, FakeRuntime, FileSignals};
 use fleet_store::manager::{ManagerLock, ManagerRecord, ManagerState};
@@ -138,8 +138,14 @@ enum Command {
     Send {
         task: String,
         /// The message, delivered as typed; it may start with a dash.
-        #[arg(allow_hyphen_values = true)]
-        text: String,
+        #[arg(allow_hyphen_values = true, required_unless_present_any = ["retry", "drop"])]
+        text: Option<String>,
+        /// Queue an entry given up on again, under a new key, by its key.
+        #[arg(long, value_name = "KEY", conflicts_with_all = ["text", "answers", "drop"])]
+        retry: Option<String>,
+        /// Remove an entry given up on, by its key; it is never delivered.
+        #[arg(long, value_name = "KEY", conflicts_with_all = ["text", "answers", "json"])]
+        drop: Option<String>,
         /// A declared Question this message answers, by id; repeatable.
         /// Recorded in the Task's status.answered, first answer wins.
         #[arg(long = "answers", value_name = "ID")]
@@ -1265,10 +1271,31 @@ fn run(cli: Cli) -> Result<(), Failure> {
         Command::Send {
             task,
             text,
+            retry,
+            drop,
             answers,
             json,
         } => {
-            let entry = send(store, &SystemClock, &task, &current_user(), &text, &answers)?;
+            let entry = match (text, retry, drop) {
+                (_, Some(key), _) => {
+                    resolve_inbox(store, &SystemClock, &task, &key, Resolution::Retry)?.ok_or_else(
+                        || {
+                            fail(format!(
+                                "Task/{task}: the retried copy of {key} is not in the inbox"
+                            ))
+                        },
+                    )?
+                }
+                (_, _, Some(key)) => {
+                    resolve_inbox(store, &SystemClock, &task, &key, Resolution::Drop)?;
+                    println!("Task/{task} inbox {key} dropped");
+                    return Ok(());
+                }
+                (Some(text), None, None) => {
+                    send(store, &SystemClock, &task, &current_user(), &text, &answers)?
+                }
+                (None, None, None) => return Err(fail("give a message, --retry or --drop")),
+            };
             if json {
                 print_json(&serde_json::to_value(&entry).map_err(|e| fail(e.to_string()))?);
             } else {

@@ -180,10 +180,101 @@ pub fn due(inbox: &[InboxEntry], attempts: &BTreeMap<String, DeliveryAttempt>) -
         .count()
 }
 
+/// The entry under `key` that a person may retry or drop: one in the inbox
+/// that TaskController gave up on. Any other key is refused, naming where
+/// it stands.
+pub fn given_up<'a>(
+    inbox: &'a [InboxEntry],
+    attempts: &BTreeMap<String, DeliveryAttempt>,
+    deliveries: &Deliveries,
+    key: &str,
+) -> Result<&'a InboxEntry, String> {
+    let Some(entry) = inbox.iter().find(|e| e.key == key) else {
+        if deliveries.delivered(key) {
+            return Err(format!("inbox entry {key} was delivered"));
+        }
+        return Err(format!("no inbox entry {key}"));
+    };
+    match attempts.get(key) {
+        Some(a) if a.failed => Ok(entry),
+        Some(a) if a.sends > 0 => Err(format!(
+            "inbox entry {key} is not given up on: it is being delivered, sends so far: {}",
+            a.sends
+        )),
+        _ => Err(format!(
+            "inbox entry {key} is not given up on: it is being delivered, not sent yet"
+        )),
+    }
+}
+
+/// A person's retry of an entry given up on: the same message, queued
+/// again under a fresh key, so it gets a fresh bound of sends.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Retry {
+    pub key: String,
+    pub queued_at: Millis,
+}
+
+impl Retry {
+    pub fn copy(self, entry: InboxEntry) -> InboxEntry {
+        InboxEntry {
+            key: self.key,
+            queued_at: self.queued_at,
+            ..entry
+        }
+    }
+}
+
+/// The given-up attempts whose entry has left the inbox: a person retried
+/// or dropped it.
+pub fn forgotten(
+    inbox: &[InboxEntry],
+    attempts: &BTreeMap<String, DeliveryAttempt>,
+) -> Vec<String> {
+    attempts
+        .iter()
+        .filter(|(key, a)| a.failed && !inbox.iter().any(|e| &e.key == *key))
+        .map(|(key, _)| key.clone())
+        .collect()
+}
+
 /// Why an append is refused, as the store reports it.
 pub fn check_append(
     inbox: &[InboxEntry],
     attempts: &BTreeMap<String, DeliveryAttempt>,
+    deliveries: &Deliveries,
+    entry: &InboxEntry,
+) -> Result<(), String> {
+    check_entry(inbox, deliveries, entry)?;
+    if let Some(about) = &entry.about
+        && deliveries
+            .revisions
+            .get(&about.uid)
+            .is_some_and(|seen| *seen >= about.revision)
+    {
+        return Err(format!(
+            "inbox entry {}: revision {} of {} (mirror {}) was already delivered",
+            entry.key, about.revision, entry.from, about.uid
+        ));
+    }
+    check_room(inbox, attempts)
+}
+
+/// Why a person's retry of an entry given up on is refused: as an append,
+/// except that a relay's revision may be at or below one delivered since.
+/// The retried relay is the only carrier of what it said.
+pub fn check_retry(
+    inbox: &[InboxEntry],
+    attempts: &BTreeMap<String, DeliveryAttempt>,
+    deliveries: &Deliveries,
+    entry: &InboxEntry,
+) -> Result<(), String> {
+    check_entry(inbox, deliveries, entry)?;
+    check_room(inbox, attempts)
+}
+
+fn check_entry(
+    inbox: &[InboxEntry],
     deliveries: &Deliveries,
     entry: &InboxEntry,
 ) -> Result<(), String> {
@@ -196,17 +287,13 @@ pub fn check_append(
     if inbox.iter().any(|e| e.key == entry.key) || deliveries.delivered(&entry.key) {
         return Err(format!("inbox entry {} already exists", entry.key));
     }
-    if let Some(about) = &entry.about
-        && deliveries
-            .revisions
-            .get(&about.uid)
-            .is_some_and(|seen| *seen >= about.revision)
-    {
-        return Err(format!(
-            "inbox entry {}: revision {} of {} (mirror {}) was already delivered",
-            entry.key, about.revision, entry.from, about.uid
-        ));
-    }
+    Ok(())
+}
+
+fn check_room(
+    inbox: &[InboxEntry],
+    attempts: &BTreeMap<String, DeliveryAttempt>,
+) -> Result<(), String> {
     let due = due(inbox, attempts);
     if due > MAX_INBOX {
         return Err(format!(
@@ -363,6 +450,46 @@ mod tests {
         let mut rebound = entry("r1b", "forge/cr-1", Some(1));
         rebound.about.as_mut().unwrap().uid = "c1-again".into();
         assert!(check_append(&[], &BTreeMap::new(), &d, &rebound).is_ok());
+    }
+
+    #[test]
+    fn only_an_entry_given_up_on_is_resolved_and_its_attempt_is_then_forgotten() {
+        let queued = vec![entry("k1", "cli/a", None), entry("k2", "cli/a", None)];
+        let mut attempts = BTreeMap::new();
+        let mut d = Deliveries::default();
+        assert!(
+            given_up(&queued, &attempts, &d, "k1")
+                .unwrap_err()
+                .contains("not sent yet")
+        );
+        attempts.insert(
+            "k1".to_string(),
+            DeliveryAttempt {
+                sends: 1,
+                ..DeliveryAttempt::default()
+            },
+        );
+        assert!(
+            given_up(&queued, &attempts, &d, "k1")
+                .unwrap_err()
+                .contains("sends so far: 1")
+        );
+        attempts.get_mut("k1").unwrap().failed = true;
+        assert_eq!(given_up(&queued, &attempts, &d, "k1").unwrap().key, "k1");
+        assert!(
+            given_up(&queued, &attempts, &d, "k9")
+                .unwrap_err()
+                .contains("no inbox entry")
+        );
+        d.record(&entry("k0", "cli/a", None), receipt("k0", 1));
+        assert!(
+            given_up(&queued, &attempts, &d, "k0")
+                .unwrap_err()
+                .contains("was delivered")
+        );
+
+        assert!(forgotten(&queued, &attempts).is_empty());
+        assert_eq!(forgotten(&queued[1..], &attempts), vec!["k1".to_string()]);
     }
 
     #[test]
