@@ -1539,15 +1539,16 @@ prints `{"names", "default"}`, read through the runtime's `browse` and
 their own; any other harness name is run as a program. A view checks a
 Task against both before it applies it.
 
-`fleet doctor [--json]` checks this machine. It reads and writes nothing in
-the store. Each check has one level: `ok`, `info`, `warn` or `fail`. A check
-that needs a step names it as a hint.
+`fleet doctor [--json]` checks this machine. It writes nothing in the
+store. Each check has one level: `ok`, `info`, `warn` or `fail`. A check that needs a step
+names it as a hint.
 
 | Area | What it checks | Levels |
 | --- | --- | --- |
 | `integration` | each harness with an `[install]` table, as `fleet integration status` reports it ([installed integrations](integration.md)); each ledger entry that no harness profile with an `[install]` table names | `warn` for `outdated` and `modified`; `warn` for an entry left behind, with `fleet integration uninstall <agent>` as its hint; `info` for `not-installed`, `agent-missing` and `unsupported-platform`; `fail` when the ledger cannot be read |
 | `harness` | each harness's `program`, found on PATH | `info` when it is not there: a user installs only the agents they run |
 | `store` | the free space on the disk of the data directory | `warn` below 256 MiB, or when the free space is unknown; not checked on Windows |
+| `version` | the CLI's version, the version of the manager that holds the lease, and the `version` that each runtime whose program is `runtime-mux` reports in `manifest` | `warn` when one differs from the CLI's, since an update moves them together; `warn` when one is unknown, such as a lease that cannot be read or a `runtime-mux` that reports no version. When the manager differs, the hint is `fleet service restart --expect <cli version>` if a service runs it, else to run its `fleet up` again |
 | `runtime` | each place of each runtime, by its id `<runtime>/<place>`: its runtime program answers `manifest` with protocol 1 or 2 and the required verbs, and reports the place ready; a version 1 runtime serves only `local` | `fail` when a place is not ready, with the runtime's why; `fail` when it does not answer; `fail` when no runtime is configured, or when `[runtime]` is not the fake with its `dir` |
 
 The exit status is 1 only when a check fails. Warnings alone exit 0.

@@ -120,6 +120,7 @@ pub fn serve_with(
         // process: a stop without release keeps them.
         return known(json!({
             "protocol": PROTOCOL,
+            "version": env!("RUNTIME_MUX_VERSION"),
             "verbs": VERBS,
             "workspace": { "schemes": SCHEMES, "survivesStop": true },
             "places": places(backends, request),

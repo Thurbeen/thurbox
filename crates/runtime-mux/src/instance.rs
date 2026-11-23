@@ -28,10 +28,11 @@ pub fn app_dir_name() -> &'static str {
 }
 
 /// Resolve the path to the `thurbox-cli` binary that sits next to the currently
-/// running executable (TUI or CLI), falling back to a bare `thurbox-cli` on
+/// running executable (TUI or CLI), through the install's `current` link when
+/// it runs from a release directory, falling back to a bare `thurbox-cli` on
 /// `PATH` when resolution fails. A local pane's `PATH` is led by its directory
 /// (`tmux_compat::server`'s `path_prefix_args`), so the hooks it runs reach
-/// the CLI of the build that spawned it.
+/// the CLI the install's current release ships.
 ///
 /// The platform executable suffix (`.exe` on Windows, empty elsewhere) is
 /// applied via [`std::env::consts::EXE_SUFFIX`], so the self/sibling match works
@@ -39,17 +40,43 @@ pub fn app_dir_name() -> &'static str {
 pub fn resolve_cli_binary() -> PathBuf {
     let cli_name = format!("thurbox-cli{}", std::env::consts::EXE_SUFFIX);
     if let Ok(exe) = std::env::current_exe() {
+        let dir = exe.parent().map(through_current_release);
         if exe.file_name().and_then(std::ffi::OsStr::to_str) == Some(cli_name.as_str()) {
-            return exe;
+            return dir
+                .map(|dir| dir.join(&cli_name))
+                .filter(|cli| cli.exists())
+                .unwrap_or(exe);
         }
-        if let Some(dir) = exe.parent() {
-            let sibling = dir.join(&cli_name);
+        if let Some(sibling) = dir.map(|dir| dir.join(&cli_name)) {
             if sibling.exists() {
                 return sibling;
             }
         }
     }
     PathBuf::from(cli_name)
+}
+
+fn through_current_release(dir: &Path) -> PathBuf {
+    let current = || {
+        let releases = dir.parent()?.parent()?;
+        (dir.file_name()? == "bin" && releases.file_name()? == "releases")
+            .then(|| releases.parent())
+            .flatten()
+            .map(|home| home.join("current/bin"))
+    };
+    current()
+        .filter(|current| current.is_dir())
+        .unwrap_or_else(|| dir.to_path_buf())
+}
+
+/// The directory the running executable is in, through the install's
+/// `current` link when it runs from a release directory: the one a local
+/// pane's `PATH` is led by, so it reaches this release's programs.
+pub fn program_dir() -> Option<PathBuf> {
+    let exe = std::env::current_exe().ok()?;
+    exe.parent()
+        .filter(|d| !d.as_os_str().is_empty())
+        .map(through_current_release)
 }
 
 /// Dedicated tmux socket name for an instance running out of the **default**

@@ -295,3 +295,162 @@ fn restart_expect_leaves_a_stopped_unit_stopped() {
         s.calls()
     );
 }
+
+fn hand_written(name: &str, unit: &str, service: &str) -> Service {
+    let s = Service::new(name);
+    fs::create_dir_all(s.units()).unwrap();
+    fs::create_dir_all(&s.env.data).unwrap();
+    let config = s.env.config.display().to_string();
+    fs::write(s.units().join(unit), service.replace("{config}", &config)).unwrap();
+    s
+}
+
+#[test]
+fn restart_expect_restarts_a_hand_written_unit_that_serves_the_store() {
+    let s = hand_written(
+        "service-hand-written",
+        "fleet-up.service",
+        "[Service]\nEnvironment=\"FLEET_CONFIG={config}\"\nExecStart=/opt/fleet/bin/fleet up\n",
+    );
+    fs::write(s.env.root.join("comes-back"), "9.9.9\n").unwrap();
+
+    assert_eq!(
+        s.supervisor(),
+        json!({"kind": "systemd", "unit": "fleet-up.service"})
+    );
+    s.env
+        .fleet(&["service", "restart", "--expect", "9.9.9", "--timeout", "10"])
+        .ok()
+        .stdout_has("fleet-up.service serves 9.9.9");
+    assert!(
+        s.calls()
+            .contains(&"--user try-restart --no-block fleet-up.service".to_string()),
+        "{:?}",
+        s.calls()
+    );
+}
+
+#[test]
+fn a_hand_written_unit_names_its_config_on_the_command_line_or_in_a_drop_in() {
+    let s = hand_written(
+        "service-hand-written-flag",
+        "manager.service",
+        "[Service]\nExecStart=\"/opt/fleet/bin/fleet\" --config {config} up\n",
+    );
+    assert_eq!(
+        s.supervisor(),
+        json!({"kind": "systemd", "unit": "manager.service"})
+    );
+
+    let s = hand_written(
+        "service-hand-written-drop-in",
+        "manager.service",
+        "[Service]\nExecStart=/opt/fleet/bin/fleet --config ${FLEET_CONFIG} up\n",
+    );
+    fs::create_dir_all(s.units().join("manager.service.d")).unwrap();
+    fs::write(
+        s.units().join("manager.service.d/config.conf"),
+        format!(
+            "[Service]\nEnvironment=FLEET_CONFIG={}\n",
+            s.env.config.display()
+        ),
+    )
+    .unwrap();
+    assert_eq!(
+        s.supervisor(),
+        json!({"kind": "systemd", "unit": "manager.service"})
+    );
+}
+
+#[test]
+fn a_hand_written_unit_of_another_store_is_left_alone() {
+    let s = hand_written(
+        "service-hand-written-other",
+        "fleet-up.service",
+        "[Service]\nEnvironment=\"FLEET_CONFIG=/elsewhere/config.toml\"\nExecStart=/opt/fleet/bin/fleet up\n",
+    );
+    assert_eq!(s.supervisor(), json!(null));
+    s.env
+        .fleet(&["service", "restart"])
+        .code(3)
+        .stderr_has("no unit runs this store");
+    assert!(s.calls().is_empty(), "{:?}", s.calls());
+}
+
+#[test]
+fn uninstall_never_removes_a_hand_written_unit() {
+    let s = hand_written(
+        "service-hand-written-kept",
+        "fleet-up.service",
+        "[Service]\nEnvironment=\"FLEET_CONFIG={config}\"\nExecStart=/opt/fleet/bin/fleet up\n",
+    );
+    s.env
+        .fleet(&["service", "uninstall"])
+        .code(3)
+        .stderr_has("no unit runs this store");
+    assert!(s.units().join("fleet-up.service").exists());
+}
+
+#[test]
+fn a_unit_whose_config_cannot_be_resolved_is_never_taken_for_the_default_store() {
+    let mut s = Service::new("service-unresolved");
+    let default_config = s.env.root.join(".config/fleet/config.toml");
+    fs::create_dir_all(default_config.parent().unwrap()).unwrap();
+    fs::write(&default_config, "version = 1\n").unwrap();
+    s.env.config = default_config;
+    fs::create_dir_all(s.units()).unwrap();
+    for (unit, text) in [
+        (
+            "missing.service",
+            "[Service]\nEnvironment=FLEET_CONFIG=/nowhere/config.toml\nExecStart=/opt/fleet up\n",
+        ),
+        (
+            "specifier.service",
+            "[Service]\nEnvironment=FLEET_CONFIG=%h/.config/fleet/work.toml\nExecStart=/opt/fleet up\n",
+        ),
+        (
+            "from-file.service",
+            "[Service]\nEnvironmentFile=/etc/fleet.env\nExecStart=/opt/fleet up\n",
+        ),
+        ("fleet@.service", "[Service]\nExecStart=/opt/fleet up\n"),
+        (
+            "own-home.service",
+            "[Service]\nEnvironment=XDG_CONFIG_HOME=/elsewhere\nExecStart=/opt/fleet up\n",
+        ),
+        (
+            "env-file-wins.service",
+            "[Service]\nEnvironment=FLEET_CONFIG={config}\nEnvironmentFile=/etc/fleet.env\nExecStart=/opt/fleet up\n",
+        ),
+        (
+            "relative.service",
+            "[Service]\nWorkingDirectory=/elsewhere\nExecStart=/opt/fleet --config {relative} up\n",
+        ),
+    ] {
+        let text = text
+            .replace("{config}", &s.env.config.display().to_string())
+            .replace("{relative}", &relative_to_cwd(&s.env.config));
+        fs::write(s.units().join(unit), text).unwrap();
+    }
+    assert_eq!(s.supervisor(), json!(null));
+    s.env.fleet(&["service", "restart"]).code(3);
+    assert!(s.calls().is_empty(), "{:?}", s.calls());
+}
+
+#[test]
+fn a_hand_written_unit_may_quote_with_single_quotes_and_continue_lines() {
+    let s = hand_written(
+        "service-hand-written-syntax",
+        "manager.service",
+        "[Service]\nEnvironment=FLEET_CONFIG=/elsewhere.toml\nEnvironment=\nExecStart=/opt/fleet/bin/fleet \\\n  --config '{config}' \\\n  up\n",
+    );
+    assert_eq!(
+        s.supervisor(),
+        json!({"kind": "systemd", "unit": "manager.service"})
+    );
+}
+
+fn relative_to_cwd(path: &std::path::Path) -> String {
+    let cwd = std::env::current_dir().unwrap();
+    let up = "../".repeat(cwd.components().count() - 1);
+    format!("{up}{}", path.strip_prefix("/").unwrap().display())
+}

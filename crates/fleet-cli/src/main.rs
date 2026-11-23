@@ -2120,6 +2120,7 @@ fn version(json: bool, config: Option<PathBuf>, data_dir: Option<PathBuf>) -> Re
             "runtimeProtocol": fleet_runtime::exec::PROTOCOL,
             "forges": ["azure-devops", "bitbucket-cloud", "github", "gitlab", "fake"],
             "gateways": Platform::ALL,
+            "skew": version_skew(&manager),
             "manager": manager,
         }));
     } else {
@@ -2136,7 +2137,8 @@ fn cmd_service(
 ) -> Result<(), Failure> {
     let stop_timeout = std::time::Duration::from_millis(service_stop_ms(config)?);
     let stop_bound = stop_timeout + std::time::Duration::from_secs(30);
-    let target = |name: &Option<String>| service::target(name.as_deref(), data_dir);
+    let target =
+        |name: &Option<String>| service::serving_target(name.as_deref(), data_dir, &store_of);
     let outcome = match command {
         ServiceCommand::Install { name, now } => {
             let config_path = config_path
@@ -2208,10 +2210,12 @@ fn cmd_service(
                 }),
             };
         }
-        ServiceCommand::Uninstall { name } => target(name).and_then(|u| {
-            service::uninstall(&u, stop_bound)
-                .map(|()| println!("{} removed ({})", u.name, u.path.display()))
-        }),
+        ServiceCommand::Uninstall { name } => {
+            service::target(name.as_deref(), data_dir).and_then(|u| {
+                service::uninstall(&u, stop_bound)
+                    .map(|()| println!("{} removed ({})", u.name, u.path.display()))
+            })
+        }
     };
     outcome.map_err(service_failure)
 }
@@ -2279,9 +2283,24 @@ fn service_failure(refusal: service::Refusal) -> Failure {
     }
 }
 
+fn store_of(invocation: &service::Invocation) -> Option<PathBuf> {
+    if let Some(dir) = &invocation.data_dir {
+        return Some(dir.clone());
+    }
+    let named = match &invocation.config {
+        Some(config) => Config::load(config).ok()?,
+        None => match config::default_config_path()?.try_exists() {
+            Ok(true) => Config::load(&config::default_config_path()?).ok()?,
+            Ok(false) => return default_data_dir(),
+            Err(_) => return None,
+        },
+    };
+    named.data.dir.or_else(default_data_dir)
+}
+
 /// The unit that runs `fleet up` for the store, for `version`, or `null`.
 fn supervisor(data_dir: &Path) -> Value {
-    match service::store_unit(data_dir) {
+    match service::serving_unit(data_dir, &store_of) {
         Ok(Some(unit)) => json!({"kind": service::KIND, "unit": unit.name}),
         _ => Value::Null,
     }
@@ -3122,6 +3141,40 @@ fn init_summary(
     out
 }
 
+fn serving_version(manager: &Value) -> Result<Option<&str>, String> {
+    let why = || {
+        manager["why"]
+            .as_str()
+            .unwrap_or("no manager record")
+            .to_string()
+    };
+    match &manager["held"] {
+        Value::Bool(false) => Ok(None),
+        Value::Bool(true) => manager["version"].as_str().map(Some).ok_or_else(why),
+        _ => Err(why()),
+    }
+}
+
+fn version_skew(manager: &Value) -> Vec<String> {
+    fleet_api::doctor::skew(VERSION, serving_version(manager).ok().flatten(), &[])
+}
+
+fn runtime_mux_versions(config: &Config) -> Vec<(String, Option<String>)> {
+    config
+        .runtimes
+        .iter()
+        .filter(|(_, r)| {
+            Path::new(&r.program)
+                .file_stem()
+                .is_some_and(|s| s == "runtime-mux")
+        })
+        .map(|(name, _)| match exec_program(config, name).manifest() {
+            Observation::Known(m) => (name.clone(), m.version),
+            Observation::Unknown { .. } => (name.clone(), None),
+        })
+        .collect()
+}
+
 /// `fleet doctor`: each check's finding, classified by
 /// `fleet_api::doctor`, and a failure when any check failed.
 fn cmd_doctor(
@@ -3185,6 +3238,13 @@ fn cmd_doctor(
             Err(e.to_string()),
         )),
     }
+    let manager = manager_lease(None, false, Some(data_dir.to_path_buf()));
+    checks.push(doctor::versions(
+        VERSION,
+        serving_version(&manager),
+        !manager["supervisor"].is_null(),
+        &runtime_mux_versions(config),
+    ));
     checks.push(doctor::telemetry(otel_env::describe(
         &config.telemetry.clone().unwrap_or_default(),
         otel_env::Logs::Config,

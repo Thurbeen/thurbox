@@ -89,13 +89,13 @@ fn same_store(a: &Path, b: &Path) -> bool {
     resolve(a) == resolve(b)
 }
 
-pub fn store_unit(data_dir: &Path) -> Result<Option<Unit>, String> {
+fn units() -> Result<Vec<Unit>, String> {
     let Some(dir) = host::unit_dir() else {
-        return Ok(None);
+        return Ok(Vec::new());
     };
     let entries = match std::fs::read_dir(&dir) {
         Ok(entries) => entries,
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
         Err(e) => return Err(format!("{}: {e}", dir.display())),
     };
     let mut found: Vec<Unit> = Vec::new();
@@ -108,14 +108,60 @@ pub fn store_unit(data_dir: &Path) -> Result<Option<Unit>, String> {
         else {
             continue;
         };
-        if path.is_file()
-            && host::unit_store(&path).is_some_and(|s| same_store(Path::new(&s), data_dir))
-        {
+        if path.is_file() {
             found.push(Unit { name, path });
         }
     }
     found.sort_by(|a, b| a.name.cmp(&b.name));
-    Ok(found.into_iter().next())
+    Ok(found)
+}
+
+pub fn store_unit(data_dir: &Path) -> Result<Option<Unit>, String> {
+    Ok(units()?.into_iter().find(|unit| {
+        host::unit_store(&unit.path).is_some_and(|s| same_store(Path::new(&s), data_dir))
+    }))
+}
+
+/// How a unit Fleet did not write runs `fleet up`: the config and data
+/// directory it names, each `None` when it leaves that to discovery.
+pub struct Invocation {
+    pub config: Option<PathBuf>,
+    pub data_dir: Option<PathBuf>,
+}
+
+/// The store a hand-written unit's `fleet up` serves, by its invocation.
+pub type StoreOf<'a> = &'a dyn Fn(&Invocation) -> Option<PathBuf>;
+
+fn hand_written_unit(data_dir: &Path, store_of: StoreOf) -> Result<Option<Unit>, String> {
+    Ok(units()?.into_iter().find(|unit| {
+        host::invocation(&unit.path)
+            .and_then(|invocation| store_of(&invocation))
+            .is_some_and(|store| same_store(&store, data_dir))
+    }))
+}
+
+/// The unit that runs `fleet up` for the store: the one Fleet wrote, else
+/// one written by hand whose `fleet up` serves the store.
+pub fn serving_unit(data_dir: &Path, store_of: StoreOf) -> Result<Option<Unit>, String> {
+    match store_unit(data_dir)? {
+        Some(unit) => Ok(Some(unit)),
+        None => hand_written_unit(data_dir, store_of),
+    }
+}
+
+/// [`target`], or with no name the hand-written unit that serves the store:
+/// what the verbs that start, stop and report a manager drive.
+pub fn serving_target(
+    name: Option<&str>,
+    data_dir: &Path,
+    store_of: StoreOf,
+) -> Result<Unit, Refusal> {
+    match target(name, data_dir) {
+        Err(Refusal::NotInstalled) if name.is_none() => hand_written_unit(data_dir, store_of)
+            .map_err(Refusal::Io)?
+            .ok_or(Refusal::NotInstalled),
+        found => found,
+    }
 }
 
 pub fn target(name: Option<&str>, data_dir: &Path) -> Result<Unit, Refusal> {

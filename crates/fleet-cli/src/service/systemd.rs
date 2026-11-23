@@ -4,7 +4,7 @@
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
-use super::{Install, QUICK_BOUND, Refusal, STORE_KEY, State, Tool, Unit, Verb};
+use super::{Install, Invocation, QUICK_BOUND, Refusal, STORE_KEY, State, Tool, Unit, Verb};
 
 pub const KIND: &str = "systemd";
 const SYSTEMCTL: Tool = Tool {
@@ -37,6 +37,122 @@ pub fn unit_store(path: &Path) -> Option<String> {
     text.lines()
         .find_map(|l| l.strip_prefix(STORE_KEY))
         .map(str::to_string)
+}
+
+/// How a unit Fleet did not write runs `fleet up`, read from its
+/// `ExecStart=` and `Environment=` lines and those of its drop-ins. `None`
+/// for a unit Fleet wrote, or one that does not run `fleet up`.
+pub fn invocation(path: &Path) -> Option<Invocation> {
+    if path
+        .file_name()
+        .and_then(|n| n.to_str())
+        .is_some_and(|n| n.contains("@."))
+    {
+        return None;
+    }
+    let mut text = std::fs::read_to_string(path).ok()?;
+    if text.lines().any(|l| l.starts_with(STORE_KEY)) {
+        return None;
+    }
+    let mut drop_ins: Vec<PathBuf> = std::fs::read_dir(path.with_extension("service.d"))
+        .into_iter()
+        .flatten()
+        .flatten()
+        .map(|entry| entry.path())
+        .filter(|p| p.extension().is_some_and(|e| e == "conf"))
+        .collect();
+    drop_ins.sort();
+    for drop_in in drop_ins {
+        text.push('\n');
+        text.push_str(&std::fs::read_to_string(drop_in).unwrap_or_default());
+    }
+    let text = text.replace("\\\n", " ");
+    let mut env: Vec<String> = Vec::new();
+    let mut argv = Vec::new();
+    let mut env_file = false;
+    for line in text.lines().map(str::trim) {
+        if let Some(value) = line.strip_prefix("Environment=") {
+            if value.trim().is_empty() {
+                env.clear();
+            }
+            env.extend(words(value));
+        } else if let Some(value) = line.strip_prefix("EnvironmentFile=") {
+            env_file |= !value.trim().is_empty();
+        } else if let Some(value) = line.strip_prefix("ExecStart=") {
+            argv = words(value);
+        }
+    }
+    let program = argv.first()?.trim_start_matches(['-', '@', ':', '+', '!']);
+    if Path::new(program).file_name()? != "fleet" || !argv.iter().any(|a| a == "up") {
+        return None;
+    }
+    let var = |name: &str| {
+        env.iter()
+            .rev()
+            .find_map(|a| a.strip_prefix(name)?.strip_prefix('='))
+            .map(str::to_string)
+    };
+    let flag = |name: &str| {
+        argv.windows(2)
+            .find(|w| w[0] == name)
+            .map(|w| w[1].clone())
+            .or_else(|| {
+                argv.iter()
+                    .find_map(|a| a.strip_prefix(name)?.strip_prefix('=').map(str::to_string))
+            })
+    };
+    let config = match flag("--config").as_deref() {
+        None | Some("${FLEET_CONFIG}" | "$FLEET_CONFIG") => var("FLEET_CONFIG"),
+        Some(path) => Some(path.to_string()),
+    };
+    let data_dir = flag("--data-dir");
+    let resolved = |value: &Option<String>| {
+        value
+            .as_ref()
+            .is_none_or(|v| Path::new(v).is_absolute() && !v.contains(['%', '$']))
+    };
+    let own_home = ["HOME", "XDG_CONFIG_HOME", "XDG_DATA_HOME"]
+        .into_iter()
+        .any(|name| var(name).is_some());
+    if env_file || own_home || !resolved(&config) || !resolved(&data_dir) {
+        return None;
+    }
+    Some(Invocation {
+        config: config.map(PathBuf::from),
+        data_dir: data_dir.map(PathBuf::from),
+    })
+}
+
+fn words(line: &str) -> Vec<String> {
+    let mut words = Vec::new();
+    let mut word = String::new();
+    let mut started = false;
+    let mut quote: Option<char> = None;
+    let mut chars = line.chars();
+    while let Some(c) = chars.next() {
+        match (c, quote) {
+            ('"' | '\'', None) => {
+                quote = Some(c);
+                started = true;
+            }
+            (c, Some(q)) if c == q => quote = None,
+            ('\\', _) => word.extend(chars.next()),
+            (c, None) if c.is_whitespace() => {
+                if started {
+                    words.push(std::mem::take(&mut word));
+                    started = false;
+                }
+            }
+            (c, _) => {
+                word.push(c);
+                started = true;
+            }
+        }
+    }
+    if started {
+        words.push(word);
+    }
+    words
 }
 
 fn quoted(value: &str) -> String {
