@@ -555,6 +555,26 @@ fn a_sole_incompatible_fleet_is_refused_on_the_place_step() {
     assert!(host.drain_commands().is_empty());
 }
 
+/// A refused Fleet whose first ready place is not its first one still shows
+/// its refusal under the cursor: the list is the refusal alone.
+#[test]
+fn a_refusal_keeps_the_cursor_when_a_later_place_is_ready() {
+    let host = host();
+    let mut world = World::default();
+    let mut places = places_of_two_lengths();
+    places.reverse();
+    let mut only = fleet("box", "ssh box", FleetState::Incompatible, places, &[]);
+    only.why = Some("incompatible: fleet 9.0.0 speaks fleet/v2".into());
+    only.agents = None;
+    world.snapshot.fleets = vec![only];
+    press(&host, &world, "ctrl+n");
+    let screen = drawn(&host, &world);
+    assert!(
+        screen.contains("▸ box is incompatible: fleet 9.0.0 speaks fleet/v2"),
+        "{screen}"
+    );
+}
+
 /// A Fleet refused after the flow left the place step says so on the step
 /// the flow is on: the agent step shows the refusal, not a wait for agents
 /// that will never come.

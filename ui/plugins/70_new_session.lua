@@ -219,7 +219,6 @@ local function fresh()
     -- The place a created Task names: empty for the Fleet's own `local`.
     -- `host` above is where its repositories are remembered.
     place = "",
-    host_index = nil,
     cursor = 1,
     -- The repo step opens on its search, not on the list: the first thing a
     -- hand does there is type part of a repository's name. The other focus is
@@ -831,7 +830,7 @@ local function render_host(flow)
     flow.host_index = math.max(#rows, 1)
     save(flow)
   end
-  local index = host_cursor(flow)
+  local index = math.min(host_cursor(flow), math.max(#rows, 1))
   local _, natural = measure(rows)
   local cols, row_cols = picker_cols(natural, flow)
   local labels = table_labels(rows, row_cols, { 2, 1 })
