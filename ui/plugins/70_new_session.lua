@@ -107,6 +107,19 @@ local function hosts()
   return thurbox and thurbox.hosts
 end
 
+local function first_ready_place()
+  for position, place in ipairs(hosts() or {}) do
+    if place.ready ~= false then
+      return position
+    end
+  end
+  return 1
+end
+
+local function host_cursor(flow)
+  return flow.host_index or first_ready_place()
+end
+
 --- The chosen Fleet's agents, or nil until it has said.
 local function known_agents()
   local fleet = chosen_fleet()
@@ -206,7 +219,6 @@ local function fresh()
     -- The place a created Task names: empty for the Fleet's own `local`.
     -- `host` above is where its repositories are remembered.
     place = "",
-    host_index = 1,
     cursor = 1,
     -- The repo step opens on its search, not on the list: the first thing a
     -- hand does there is type part of a repository's name. The other focus is
@@ -590,13 +602,14 @@ local function row_hover(id, is_cursor)
   return nil
 end
 
---- v1's selector: `▸ ` on the current row, accent+bold, plain otherwise.
-local function selector_rows(labels, index, height)
+local function selector_rows(labels, index, height, dimmed)
   local children = {}
   local first, last = widgets.window(#labels, height, index)
   for position = first, last do
     local selected = position == index
     local id = tostring(position)
+    local colour = (dimmed and dimmed[position]) and theme.muted
+      or (selected and theme.accent or theme.text)
     children[#children + 1] = {
       type = "text",
       len = 1,
@@ -604,7 +617,7 @@ local function selector_rows(labels, index, height)
         {
           {
             text = (selected and "▸ " or "  ") .. labels[position],
-            style = selected and { fg = theme.accent, bold = true } or { fg = theme.text },
+            style = { fg = colour, bold = selected },
           },
         },
       },
@@ -726,7 +739,9 @@ end
 --- list: wrapped to the modal, on `height` lines; a longer one ends in `…`.
 local function reason_rows(reasons, index, width, height)
   local lines = wrap(reasons[index] or "", width)
-  if #lines > height and height > 0 then
+  if #lines > 1 and height == 1 then
+    lines = { widgets.truncate(table.concat(lines, " "), width) }
+  elseif #lines > height and height > 0 then
     lines[height] = widgets.truncate(lines[height] .. " …", width)
   end
   local text = {}
@@ -799,33 +814,35 @@ end
 --- `<runtime>/<place>`.
 local function render_host(flow)
   local places = hosts() or {}
-  local rows, reasons = {}, {}
-  for _, place in ipairs(places) do
+  local rows, reasons, dimmed = {}, {}, {}
+  for position, place in ipairs(places) do
     rows[#rows + 1] = { place.name, place.detail or "", readiness(place) }
     reasons[#reasons + 1] = place.ready == false and (place.why or "") or ""
+    dimmed[position] = place.ready == false
   end
   local refused = refusal()
   if refused then
-    rows, reasons = { { refused } }, {}
+    rows, reasons, dimmed = { { refused } }, {}, {}
   elseif hosts() == nil then
     rows = { { "Asking " .. (flow.fleet or "Fleet") .. " for its places…" } }
   end
-  -- Fleet's answer replaces the list under an open step, and can shorten it.
-  if flow.host_index > #rows then
+  if flow.host_index and flow.host_index > #rows then
     flow.host_index = math.max(#rows, 1)
     save(flow)
   end
+  local index = math.min(host_cursor(flow), math.max(#rows, 1))
   local _, natural = measure(rows)
   local cols, row_cols = picker_cols(natural, flow)
   local labels = table_labels(rows, row_cols, { 2, 1 })
-  local height, reason_lines = picker_rows(#labels, reason_height(reasons, cols - 3), flow)
-  local reason = reason_rows(reasons, flow.host_index, cols - 3, reason_lines)
+  local height, reason_lines =
+    picker_rows(#labels, math.min(reason_height(reasons, cols - 3), 1), flow)
+  local reason = reason_rows(reasons, index, cols - 3, reason_lines)
   local title = several_fleets() and flow.fleet and ("Place on " .. flow.fleet) or "Place"
   return frame(title, height + reason_lines + 4, {
-    { type = "box", len = height, children = selector_rows(labels, flow.host_index, height) },
+    { type = "box", len = height, children = selector_rows(labels, index, height, dimmed) },
     reason,
     message_row(flow),
-    modal.footer({ { "j/k", "navigate" } }, "Select"),
+    modal.footer({ { "j/k", "navigate" } }, "Select", { disabled = dimmed[index] }),
   }, flow, cols)
 end
 
@@ -1569,7 +1586,7 @@ local function move_selection(flow, step)
   if flow.step == "fleet" then
     flow.fleet_index = widgets.clamp(flow.fleet_index + step, #fleets())
   elseif flow.step == "host" then
-    flow.host_index = widgets.clamp(flow.host_index + step, #(hosts() or {}))
+    flow.host_index = widgets.clamp(host_cursor(flow) + step, #(hosts() or {}))
   elseif flow.step == "repo" then
     flow.cursor = widgets.clamp((flow.cursor or 1) + step, #rows_for(flow))
   elseif flow.step == "agent" then
@@ -1596,7 +1613,7 @@ return {
     if flow.step == "fleet" then
       selection = flow.fleet_index
     elseif flow.step == "host" then
-      selection = flow.host_index
+      selection = host_cursor(flow)
     elseif flow.step == "agent" then
       selection = flow.agent_index
     elseif flow.step == "new_folder" then
@@ -1991,7 +2008,7 @@ return {
         flow.fleet = chosen.name
         flow.remote = chosen.remote == true
         flow.step = "host"
-        flow.host_index = 1
+        flow.host_index = nil
         save(flow)
         return true
       end
@@ -2006,9 +2023,13 @@ return {
           save(flow)
           return true
         end
-        local chosen = (hosts() or {})[flow.host_index]
+        local chosen = (hosts() or {})[host_cursor(flow)]
         if not chosen then
-          -- Fleet has not answered yet, or defines no place: nothing to run on.
+          return true
+        end
+        if chosen.ready == false then
+          flow.message = chosen.name .. " is not ready"
+          save(flow)
           return true
         end
         flow.place = chosen.backend or ""

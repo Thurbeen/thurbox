@@ -52,7 +52,8 @@ end
 --- confirm pill, or nil to offer no confirm at all (a list with nothing to act
 --- on still needs its Close). opts: `key` is the keystroke the primary pill
 --- replays (default "enter"), `style` its colour (default accent), `cancel`
---- the dismiss pill's label (default "Cancel" — its key is always esc), and
+--- the dismiss pill's label (default "Cancel" — its key is always esc),
+--- `disabled` mutes the confirm pill and keeps it unlit under the pointer, and
 --- `stack` puts the hints on a row of their own above the pills, for a step
 --- with more keys than fit beside them. A stacked footer is two rows tall.
 ---
@@ -82,8 +83,8 @@ function modal.footer(hints, primary, opts)
   -- A pill lights under the pointer — matched on the very role a click
   -- replays, so the lit pill is the one a press runs. The leading space is
   -- the pill's own run and stays unlit, so the fill covers the brackets only.
-  local function pill(label, role, style)
-    local lit = hover.role(role)
+  local function pill(label, role, style, inert)
+    local lit = not inert and hover.role(role)
     return {
       type = "text",
       len = widgets.len(label) + 1,
@@ -95,7 +96,8 @@ function modal.footer(hints, primary, opts)
     children[#children + 1] = pill(
       "[ " .. primary .. " ]",
       "key:" .. (opts.key or "enter"),
-      opts.style or { fg = theme.accent, bold = true }
+      opts.disabled and { fg = theme.muted } or opts.style or { fg = theme.accent, bold = true },
+      opts.disabled
     )
   end
   children[#children + 1] =
