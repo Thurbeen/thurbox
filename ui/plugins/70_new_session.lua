@@ -838,12 +838,11 @@ local function render_host(flow)
     picker_rows(#labels, math.min(reason_height(reasons, cols - 3), 1), flow)
   local reason = reason_rows(reasons, index, cols - 3, reason_lines)
   local title = several_fleets() and flow.fleet and ("Place on " .. flow.fleet) or "Place"
-  local select_style = dimmed[index] and { fg = theme.muted } or nil
   return frame(title, height + reason_lines + 4, {
     { type = "box", len = height, children = selector_rows(labels, index, height, dimmed) },
     reason,
     message_row(flow),
-    modal.footer({ { "j/k", "navigate" } }, "Select", { style = select_style }),
+    modal.footer({ { "j/k", "navigate" } }, "Select", { disabled = dimmed[index] }),
   }, flow, cols)
 end
 

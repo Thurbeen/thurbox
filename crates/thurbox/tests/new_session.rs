@@ -1095,6 +1095,22 @@ fn a_not_ready_place_cannot_be_selected() {
     assert!(screen.contains("mux/gpu-box is not ready"), "{screen}");
 }
 
+/// A disabled `Select` stays disabled under the pointer: hovering it does
+/// not light it as a button that would act.
+#[test]
+fn a_disabled_select_does_not_light_under_the_pointer() {
+    let host = host();
+    let mut world = World::default();
+    world.snapshot.hosts = Some(places_of_two_lengths());
+    press(&host, &world, "ctrl+n");
+    press(&host, &world, "down");
+    let pill = identity_of(&host, &world, "Select", 0);
+    let resting = colours(&host, &world, None);
+    let lit = colours(&host, &world, Some(&pill));
+    let (x, y) = locate(&resting, "Select");
+    assert_eq!(resting[(x, y)], lit[(x, y)], "{}", screen_of(&lit));
+}
+
 /// The picker opens with the cursor on the first place that is ready.
 #[test]
 fn the_place_picker_opens_on_the_first_ready_place() {
