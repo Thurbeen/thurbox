@@ -225,7 +225,9 @@ Guarantees, each with its test:
   reports that the session's agent trusts its workspace. A known gap sets
   `WorkspaceTrusted=False`, raises `NeedsAttention/WorkspaceUntrusted` and
   is probed again after each wait. Unknown holds the brief, raises nothing
-  and is probed again on the next pass. A held brief spends no send, and no
+  and is probed again on the next pass. After one minute of Unknown, the
+  message names the cause to check: no hook report yet for the harness,
+  and `fleet doctor` for its integration. A held brief spends no send, and no
   inbox entry goes out before the brief.
 - **Retries.** Spawns and brief sends are tried at most `MAX_ATTEMPTS` (3)
   times before `Stalled` and `NeedsAttention`. Failed attempts wait
@@ -1201,7 +1203,11 @@ screen, in this order:
    Kimi asks its folder trust before it shows the composer.
 6. GitHub Copilot CLI's empty composer, with Copilot in the foreground, is
    `Trusted`: Copilot asks its folder trust before it shows the composer.
-7. Any other screen, or a screen that cannot be read, is Unknown.
+7. Claude Code's empty composer, with Claude in the foreground, is
+   `Trusted`: Claude asks its workspace trust before it shows the composer.
+   The composer is its placeholder between two rules, the cursor after its
+   `❯`, and the `? for shortcuts` footer under it.
+8. Any other screen, or a screen that cannot be read, is Unknown.
 
 The fake runtime answers from each session's `trusted` flag and its
 `workspaceTrust` fault. The port also defines the gap `Mismatch`, for a

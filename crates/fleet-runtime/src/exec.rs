@@ -20,9 +20,9 @@ use std::time::{Duration, Instant};
 use fleet_api::Observation;
 use fleet_api::event::{OutboxRead, outbox_file};
 use fleet_api::harness::{
-    claude_trust_dialog, codex_initial_composer, codex_process, codex_trust_dialog,
-    copilot_initial_composer, copilot_process, copilot_trust_dialog, kimi_initial_composer,
-    kimi_process, profile,
+    claude_initial_composer, claude_process, claude_trust_dialog, codex_initial_composer,
+    codex_process, codex_trust_dialog, copilot_initial_composer, copilot_process,
+    copilot_trust_dialog, kimi_initial_composer, kimi_process, profile,
 };
 use fleet_api::plan::{EffectOutcome, SpawnSpec};
 use fleet_api::runtime::{Attach, Place, PlaceReport, Runtime, TrustGap, WorkspaceTrust};
@@ -535,6 +535,7 @@ enum FirstScreen {
     /// GitHub Copilot CLI's empty composer: it takes input, and reports
     /// nothing until its first message starts its session.
     CopilotComposer,
+    ClaudeComposer,
     Other,
 }
 
@@ -818,6 +819,12 @@ impl ExecRuntime {
                     .is_some_and(|(r, c)| copilot_initial_composer(&text, r, c))
             {
                 FirstScreen::CopilotComposer
+            } else if foreground.as_deref().is_some_and(claude_process)
+                && row
+                    .zip(col)
+                    .is_some_and(|(r, c)| claude_initial_composer(&text, r, c))
+            {
+                FirstScreen::ClaudeComposer
             } else {
                 FirstScreen::Other
             }
@@ -1218,6 +1225,11 @@ impl Runtime for ExecRuntime {
             Observation::Known(FirstScreen::CopilotComposer) => {
                 Observation::Known(WorkspaceTrust::Trusted {
                     how: "GitHub Copilot CLI shows its composer only in a folder it trusts".into(),
+                })
+            }
+            Observation::Known(FirstScreen::ClaudeComposer) => {
+                Observation::Known(WorkspaceTrust::Trusted {
+                    how: "Claude Code shows its composer only in a workspace it trusts".into(),
                 })
             }
             Observation::Known(FirstScreen::Other) => Observation::unknown(

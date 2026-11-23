@@ -84,3 +84,42 @@ fn trust_that_cannot_be_read_is_unknown_never_a_brief_and_recovers() {
     assert_eq!(env.status("u1")["phase"], "Briefed");
     assert_eq!(env.calls("brief"), 1);
 }
+
+fn backdate_condition(env: &Env, task: &str, type_: &str, by_ms: u64) {
+    let path = env.object_path("Task", task);
+    let mut obj: Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+    let c = obj["status"]["conditions"]
+        .as_array_mut()
+        .and_then(|cs| cs.iter_mut().find(|c| c["type"] == type_))
+        .unwrap();
+    let at = c["lastTransitionTime"].as_u64().unwrap();
+    c["lastTransitionTime"] = at.saturating_sub(by_ms).into();
+    std::fs::write(&path, obj.to_string()).unwrap();
+}
+
+#[test]
+fn trust_unknown_past_a_minute_names_the_missing_hook_report_and_fleet_doctor() {
+    let env = untrusting("trust-unknown-long");
+    env.fault(Fault::new("workspaceTrust", "unknown").times(100));
+    env.apply(task("u2", true)).ok();
+    env.reconcile().ok();
+    let fresh = condition(&env.status("u2"), "WorkspaceTrusted")["message"].clone();
+    assert!(
+        !fresh.as_str().unwrap_or_default().contains("fleet doctor"),
+        "a starting agent gets no hint yet: {fresh}"
+    );
+
+    backdate_condition(&env, "u2", "WorkspaceTrusted", 61_000);
+    env.reconcile().ok();
+    let st = env.status("u2");
+    assert_condition(&st, "WorkspaceTrusted", "Unknown", "TrustUnknown");
+    let message = condition(&st, "WorkspaceTrusted")["message"]
+        .as_str()
+        .unwrap_or_default()
+        .to_string();
+    assert!(
+        message.contains("no hook report yet for harness claude-code")
+            && message.contains("check `fleet doctor` for its integration"),
+        "{message}"
+    );
+}

@@ -841,6 +841,38 @@ pub fn copilot_trust_dialog(output: &str) -> bool {
             .any(|l| l.contains("Yes, and remember this folder"))
 }
 
+/// Whether a plain visible screen `output` is Claude Code's empty composer,
+/// the cursor just after its `❯`: its placeholder between two full-width
+/// rules, with the `? for shortcuts` footer under it. Claude asks its
+/// workspace trust before its composer, in the dialog
+/// [`claude_trust_dialog`] matches.
+pub fn claude_initial_composer(output: &str, cursor_row: usize, cursor_col: usize) -> bool {
+    let lines: Vec<&str> = output.lines().collect();
+    let rule = |at: Option<usize>| {
+        at.and_then(|at| lines.get(at))
+            .map(|l| l.trim())
+            .is_some_and(|l| !l.is_empty() && l.chars().all(|c| c == '─'))
+    };
+    cursor_col == 2
+        && lines
+            .get(cursor_row)
+            .is_some_and(|l| l.starts_with("❯ ") || l.trim_end() == "❯")
+        && rule(cursor_row.checked_sub(1))
+        && rule(cursor_row.checked_add(1))
+        && lines[cursor_row..]
+            .iter()
+            .any(|l| l.contains("? for shortcuts"))
+}
+
+/// Whether the screen's foreground process is Claude Code: its native
+/// binary, or `node` running its npm package.
+pub fn claude_process(foreground: &str) -> bool {
+    matches!(
+        foreground.rsplit(['/', '\\']).next(),
+        Some("claude" | "claude.exe" | "node" | "node.exe")
+    )
+}
+
 /// Whether Codex's trust dialog is on a plain visible screen `output`: its
 /// question and its trusting default. It can follow the composer, so it is
 /// looked for on the whole screen, not only at the cursor. Kimi Code's trust
@@ -854,6 +886,24 @@ pub fn codex_trust_dialog(output: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn claude_composer_is_its_placeholder_between_rules_with_the_cursor_after_its_prompt() {
+        let rule = "─".repeat(80);
+        let screen = format!(
+            " Claude Code v2.1.322\n{rule}\n❯ Try \"create a util logging.py that...\"\n{rule}\n  ⏸ manual mode on · ? for shortcuts\n"
+        );
+        assert!(claude_initial_composer(&screen, 2, 2));
+        assert!(
+            !claude_initial_composer(&screen, 2, 9),
+            "a draft moved the cursor"
+        );
+        assert!(!claude_initial_composer(&screen, 1, 2));
+        let trust = " Accessing workspace:\n\n ❯ No, exit\n   Yes, I trust this folder\n\n Enter to confirm · Esc to cancel\n";
+        assert!(!claude_initial_composer(trust, 2, 2));
+        assert!(claude_process("/home/u/.local/bin/claude") && claude_process("node"));
+        assert!(!claude_process("codex"));
+    }
 
     #[test]
     fn each_profile_launches_with_its_hooks_trust_and_directories() {

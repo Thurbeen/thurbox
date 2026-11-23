@@ -110,6 +110,7 @@ const UNSUPPORTED: &str = "WorkspaceUnsupported";
 const TRUST_UNMAPPED: &str = "TrustUnmapped";
 /// The NeedsAttention reason while a known trust gap holds the brief.
 const WORKSPACE_UNTRUSTED: &str = "WorkspaceUntrusted";
+const TRUST_UNKNOWN_HINT_MS: Millis = 60_000;
 const BRIEF: &str = "brief";
 /// The Briefed reason of a Task with no brief.
 const INTERACTIVE: &str = "Interactive";
@@ -988,6 +989,14 @@ impl Pass<'_, '_> {
                 false
             }
             Some(Observation::Unknown { why }) => {
+                let why = if self.trust_unknown_since() + TRUST_UNKNOWN_HINT_MS <= self.now() {
+                    format!(
+                        "{why}; no hook report yet for harness {}: check `fleet doctor` for its integration",
+                        self.spec.harness
+                    )
+                } else {
+                    why
+                };
                 self.cond(
                     WORKSPACE_TRUSTED,
                     ConditionStatus::Unknown,
@@ -998,6 +1007,12 @@ impl Pass<'_, '_> {
             }
             None => false,
         }
+    }
+
+    fn trust_unknown_since(&self) -> Millis {
+        condition(&self.st.conditions, WORKSPACE_TRUSTED)
+            .filter(|c| c.status == ConditionStatus::Unknown)
+            .map_or_else(|| self.now(), |c| c.last_transition_time)
     }
 
     fn briefed_now(&mut self, key: String, recovered: bool) {
