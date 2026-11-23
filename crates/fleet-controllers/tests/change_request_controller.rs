@@ -104,6 +104,7 @@ fn run_at(obj: &Object, obs: ChangeRequestObservations, now: u64) -> (Plan, Chan
         observations: obs,
         now,
         defaults: ChangeRequestDefaults::default(),
+        followed: true,
     };
     let plan = ChangeRequestController.reconcile(&input).unwrap();
     let st = match &plan.status {
@@ -129,6 +130,7 @@ fn probes_at(obj: &Object, obs: ChangeRequestObservations, now: u64) -> Vec<Prob
         observations: obs,
         now,
         defaults: ChangeRequestDefaults::default(),
+        followed: true,
     };
     ChangeRequestController.probes(&input).unwrap()
 }
@@ -596,6 +598,7 @@ fn malformed_spec_or_status_is_invalid_not_a_guess() {
         observations: ChangeRequestObservations::default(),
         now: NOW,
         defaults: ChangeRequestDefaults::default(),
+        followed: true,
     };
     assert!(matches!(
         ChangeRequestController.reconcile(&input),
@@ -608,6 +611,7 @@ fn malformed_spec_or_status_is_invalid_not_a_guess() {
         observations: ChangeRequestObservations::default(),
         now: NOW,
         defaults: ChangeRequestDefaults::default(),
+        followed: true,
     };
     assert!(matches!(
         ChangeRequestController.probes(&input),
@@ -628,6 +632,7 @@ fn the_configured_defaults_apply_when_the_spec_names_none() {
         observations: seen(snapshot(ChangeState::Merged)),
         now: NOW,
         defaults,
+        followed: true,
     };
     let plan = ChangeRequestController.reconcile(&input).unwrap();
     let st: ChangeRequestStatus = serde_json::from_value(plan.status.unwrap()).unwrap();

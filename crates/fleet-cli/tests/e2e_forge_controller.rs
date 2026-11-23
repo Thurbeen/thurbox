@@ -7,6 +7,7 @@ mod support;
 
 use std::fs;
 
+use fleet_api::change_request::{CLOSED_POLL_FACTOR, DEFAULT_POLL_MS};
 use fleet_api::follow::worker_mark;
 use fleet_api::forge::{
     ChangeSnapshot, ChangeState, Checks, FailingCheck, HeadSeen, Mergeable, Note, NoteKind,
@@ -920,4 +921,38 @@ fn fleet_up_asks_again_after_an_unknown_login_and_then_keeps_it() {
         2,
         "the Unknown answer is asked again on the next pass, the Known one kept"
     );
+}
+
+fn poll_gap(env: &Env, cr: &str) -> u64 {
+    let st = &env.change_request(cr)["status"];
+    st["notBefore"].as_u64().unwrap() - st["observedAt"].as_u64().unwrap()
+}
+
+fn rewind_observed_at(env: &Env, cr: &str, ms: u64) {
+    let path = env.object_path("ChangeRequest", cr);
+    let mut obj: Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+    obj["status"]["observedAt"] = json!(obj["status"]["observedAt"].as_u64().unwrap() - ms);
+    fs::write(&path, obj.to_string()).unwrap();
+}
+
+#[test]
+fn a_change_no_task_follows_is_polled_at_the_closed_rate_until_one_declares_it() {
+    let (env, _forge, cr) = setup("unfollowed-rate");
+    env.apply(support::change_request(URL, json!({}))).ok();
+    env.reconcile().ok();
+    assert_eq!(poll_gap(&env, &cr), CLOSED_POLL_FACTOR * DEFAULT_POLL_MS);
+
+    declare(&env, "t1", URL).ok();
+    rewind_observed_at(&env, &cr, DEFAULT_POLL_MS);
+    env.reconcile().ok();
+    assert_eq!(poll_gap(&env, &cr), DEFAULT_POLL_MS, "polled at once");
+
+    env.host()
+        .set_at_rest(&env.session_key("t1"), true)
+        .unwrap();
+    env.fleet(&["delete", "task", "t1"]).ok();
+    env.reconcile().ok();
+    env.fleet(&["get", "task", "t1"]).code(3);
+    poll(&env, &cr);
+    assert_eq!(poll_gap(&env, &cr), CLOSED_POLL_FACTOR * DEFAULT_POLL_MS);
 }

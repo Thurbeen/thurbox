@@ -69,7 +69,7 @@ use fleet_api::change_request::{self, ChangeRequestDefaults, ChangeRequestSpec};
 use fleet_api::conversation::{
     self, CONVERSATION_UID_LABEL, ConversationSpec, ConversationStatus, ThreadDir,
 };
-use fleet_api::follow::{ForgeDefaults, ForgeStatus};
+use fleet_api::follow::{ForgeDefaults, ForgeStatus, declared_changes};
 use fleet_api::forge::{ChangeObservation, Forge, Uncertainty};
 use fleet_api::gateway::{
     Capabilities, Gateway, GatewayConfig, HistoryObservation, Identity, ListenerAccount,
@@ -272,6 +272,18 @@ impl Deferral {
 
 /// The forge host a ChangeRequest is on, once its controller recorded the
 /// ref; empty before that, which sorts such objects first.
+/// The ChangeRequests some Task not being deleted names in its
+/// `status.declared`.
+fn change_request_followers(tasks: &[Object]) -> BTreeSet<String> {
+    tasks
+        .iter()
+        .filter(|t| !t.is_deleting())
+        .filter_map(|t| t.status.get("declared")?.as_array())
+        .flat_map(|declared| declared_changes(declared))
+        .map(|d| d.name)
+        .collect()
+}
+
 fn host_of(obj: &Object) -> String {
     obj.status["ref"]["host"]
         .as_str()
@@ -667,7 +679,7 @@ impl Manager<'_> {
             }
             busy |= self.reconcile_reported_starts(&mut waiting, lease, opts.lease_ttl, report)?;
             report.waiting = waiting.into_iter().map(|w| (w.session, w.mark)).collect();
-            busy |= self.sweep_change_requests(lease, opts.lease_ttl, report)?;
+            busy |= self.sweep_change_requests(&tasks, lease, opts.lease_ttl, report)?;
             busy |= self.sweep_cron_tasks(lease, opts.lease_ttl, report)?;
             let mut cache = GatewayCache::default();
             busy |= self.sweep_conversations(lease, opts.lease_ttl, report, &mut cache)?;
@@ -692,6 +704,7 @@ impl Manager<'_> {
     /// whether anything changed or is left due.
     fn sweep_change_requests(
         &self,
+        tasks: &[Object],
         lease: &mut LeaseToken,
         ttl: Millis,
         report: &mut RunReport,
@@ -703,7 +716,15 @@ impl Manager<'_> {
                 return Ok(false);
             }
         };
-        let mut due: Vec<&Object> = changes.iter().filter(|c| self.due(c)).collect();
+        let followers = change_request_followers(tasks);
+        let followed = |c: &Object| followers.contains(&c.metadata.name);
+        let now = self.clock.now();
+        let mut due = Vec::new();
+        for c in &changes {
+            if ChangeRequestController.due(c, followed(c), now)? {
+                due.push(c);
+            }
+        }
         due.sort_by_cached_key(|o| {
             (
                 o.status["notBefore"].as_u64().unwrap_or(0),
@@ -724,7 +745,16 @@ impl Manager<'_> {
                 "ChangeRequestController",
                 obj,
                 || self.clock.now(),
-                || self.reconcile_change_request(obj, lease, ttl, report, &mut deferred),
+                || {
+                    self.reconcile_change_request(
+                        obj,
+                        followed(obj),
+                        lease,
+                        ttl,
+                        report,
+                        &mut deferred,
+                    )
+                },
             );
             busy |= self.tally(step, &obj.key(), report)?;
         }
@@ -738,6 +768,7 @@ impl Manager<'_> {
     fn reconcile_change_request(
         &self,
         obj: &Object,
+        followed: bool,
         lease: &mut LeaseToken,
         ttl: Millis,
         report: &mut RunReport,
@@ -754,6 +785,7 @@ impl Manager<'_> {
             observations: ChangeRequestObservations::default(),
             now: self.clock.now(),
             defaults: self.change_request_defaults,
+            followed,
         };
         if obj.status.get("ref").is_none_or(Value::is_null) {
             // The probe names the ref, so the first poll needs it parsed first.

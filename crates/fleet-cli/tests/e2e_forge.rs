@@ -10,7 +10,7 @@ use std::fs;
 use std::sync::Arc;
 use std::time::Duration;
 
-use fleet_api::change_request::{ChangeRequestDefaults, NOTE_CAP};
+use fleet_api::change_request::{CLOSED_POLL_FACTOR, ChangeRequestDefaults, NOTE_CAP};
 use fleet_api::forge::{
     ChangeSnapshot, ChangeState, Checks, FailingCheck, HeadSeen, Mergeable, Note, NoteKind, Review,
     ReviewDecision, ReviewState, Threads,
@@ -444,8 +444,9 @@ fn an_unknown_answer_leaves_the_snapshot_untouched_and_retry_after_is_honoured()
         );
         assert_eq!(st["observedAt"], before["observedAt"]);
         let nb = st["notBefore"].as_u64().unwrap();
+        let unfollowed_interval = CLOSED_POLL_FACTOR * 7000;
         assert!(
-            nb >= t + 7000 && nb < t + 7000 + 60_000,
+            nb >= t + unfollowed_interval && nb < t + unfollowed_interval + 60_000,
             "{mode}: waits one interval"
         );
     }
