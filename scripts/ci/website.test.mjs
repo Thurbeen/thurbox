@@ -196,6 +196,23 @@ test('homepage presents Fleet and thurbox apart, links each official plugin, and
   assert.doesNotMatch(text(fit), / \./, 'no space before a period');
 });
 
+test('the story scenes draw in the site theme: squared panels, theme tokens, numbered steps', () => {
+  const fit = built('index.html').querySelector('#how-they-fit');
+  const rounded = fit.querySelectorAll('[data-story] svg rect').filter((rect) => rect.hasAttribute('rx'));
+  assert.equal(rounded.length, 0, 'scene panels are squared like every other panel');
+  for (const step of fit.querySelectorAll('[data-step]')) {
+    const badge = step.querySelector('h3 .step-number');
+    assert.equal(badge?.textContent, step.getAttribute('data-step'), 'each step heading carries its number in a step badge');
+    assert.equal(badge.getAttribute('aria-hidden'), 'true', 'the list already numbers the step for a screen reader');
+  }
+  const css = readFileSync('website/css/landing.css', 'utf8');
+  const story = css.slice(css.indexOf('#how-they-fit {'), css.indexOf('/* ---- Back to top'));
+  assert.ok(story.length > 0, 'the story rules are found');
+  assert.doesNotMatch(story, /#[0-9a-f]{3,8}\b|rgba?\(|hsla?\(/i, 'story colours come from theme variables');
+  assert.doesNotMatch(story, /font-family:(?!\s*var\()/, 'story fonts come from theme variables');
+  assert.doesNotMatch(story, /\.story__step[^{]*\{[^}]*opacity/, 'a step is never dimmed below readable contrast');
+});
+
 test('the docs sidebar gives Fleet and thurbox a group each', () => {
   const groups = built('docs/index.html').querySelectorAll('.docs-sidebar h4').map((h) => h.textContent.trim());
   assert.deepEqual(groups.slice(0, 2), ['Fleet', 'Thurbox']);
