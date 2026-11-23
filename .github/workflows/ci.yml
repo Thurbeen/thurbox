@@ -753,7 +753,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - uses: j178/prek-action@44924fe9ef4a6f88253c4b6b1bf11c689d3ce53d # v3.1.0
         with:
-          prek-version: 0.5.10
+          prek-version: v0.5.11
           extra-args: check-added-large-files --all-files
 
   lua:
