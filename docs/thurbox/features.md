@@ -396,6 +396,9 @@ not applicable.
    step is skipped when one is listed. Then choose where the session runs:
    that Fleet's `local` at once, and the places it defines (`fleet runtime
    places --json`), each with whether it is ready, when it names them. The
+   cursor opens on the first ready place; a place that is not ready is
+   dimmed, its reason reads on one line under the list, and `enter`
+   refuses it, as the Fleet step refuses an unreachable Fleet. The
    session's Task runs on the place of that name. A place on another
    machine (an ssh or wsl place, of this machine's Fleet or of a remote
    one) is read there, through its Fleet: the repo picker browses its

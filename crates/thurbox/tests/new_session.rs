@@ -890,10 +890,10 @@ fn column_of(buffer: &Buffer, needle: &str) -> u16 {
 
 /// The place picker is a table: each column starts at one cell on every row,
 /// whatever the names' lengths; a row's status is short and whole, and the
-/// selected place's full reason reads under the list, wrapped to the modal,
-/// which fits the screen it opens on.
+/// selected place's reason reads on one line under the list, ellipsized,
+/// in a modal that fits the screen it opens on.
 #[test]
-fn the_place_picker_aligns_its_columns_and_shows_the_full_reason() {
+fn the_place_picker_aligns_its_columns_and_gives_the_reason_one_line() {
     let frames: [(u16, &[&str]); 2] = [
         (
             80,
@@ -901,8 +901,7 @@ fn the_place_picker_aligns_its_columns_and_shows_the_full_reason() {
                 "╭ Place ───────────────────────────────────────────────────╮",
                 "│  local        this machine (mux)  ● ready                │",
                 "│▸ mux/gpu-box  a mux place         ○ not ready            │",
-                "│ place \"gpu-box\" cannot be reached: ssh: connect to host  │",
-                "│ gpu-box port 22: Connection timed out                    │",
+                "│ place \"gpu-box\" cannot be reached: ssh: connect to host …│",
                 "│                                                          │",
                 "│j/k navigate                         [ Select ] [ Cancel ]│",
                 "╰──────────────────────────────────────────────────────────╯",
@@ -914,9 +913,7 @@ fn the_place_picker_aligns_its_columns_and_shows_the_full_reason() {
                 "╭ Place ───────────────────────────────────────╮",
                 "│  local        this machine (mux)  ● ready    │",
                 "│▸ mux/gpu-box  a mux place         ○ not ready│",
-                "│ place \"gpu-box\" cannot be reached: ssh:      │",
-                "│ connect to host gpu-box port 22: Connection  │",
-                "│ timed out                                    │",
+                "│ place \"gpu-box\" cannot be reached: ssh: conn…│",
                 "│                                              │",
                 "│j/k navigate             [ Select ] [ Cancel ]│",
                 "╰──────────────────────────────────────────────╯",
@@ -945,7 +942,6 @@ fn the_place_picker_aligns_its_columns_and_shows_the_full_reason() {
             .iter()
             .position(|l| l.contains("mux/gpu-box"))
             .expect(&screen);
-        // The detail column starts where the longest name ends, on both rows.
         let detail = |row: usize, text: &str| {
             let at = lines[row].find(text).unwrap_or_else(|| {
                 panic!("{screen_cols} cols: {text:?} not on row {row}:\n{screen}")
@@ -961,7 +957,6 @@ fn the_place_picker_aligns_its_columns_and_shows_the_full_reason() {
             detail(place, "a mux") > detail(place, "mux/gpu-box") + "mux/gpu-box".len(),
             "{screen_cols} cols: a name runs into its detail:\n{screen}"
         );
-        // The status column too, and the status is whole.
         assert_eq!(
             column_of(&buffer, "● ready"),
             column_of(&buffer, "○ not ready"),
@@ -971,24 +966,134 @@ fn the_place_picker_aligns_its_columns_and_shows_the_full_reason() {
             !lines[place].contains("not ready:"),
             "{screen_cols} cols: the row carries the reason, cut:\n{screen}"
         );
-        // The selected place's whole reason, wrapped under the list.
-        let below: String = lines[place + 1..]
-            .iter()
-            .map(|l| l.trim_matches(|c: char| c == '│' || c.is_whitespace()))
-            .filter(|l| !l.is_empty())
-            .collect::<Vec<_>>()
-            .join(" ");
+        let reason = lines[place + 1].trim_matches(|c: char| c == '│' || c.is_whitespace());
         assert!(
-            below.contains(
-                &NOT_READY_WHY
-                    .split_whitespace()
-                    .collect::<Vec<_>>()
-                    .join(" ")
-            ),
-            "{screen_cols} cols: the full reason is not under the list:\n{screen}"
+            reason.starts_with("place \"gpu-box\" cannot be reached") && reason.ends_with('…'),
+            "{screen_cols} cols: the reason is not one ellipsized line:\n{screen}"
         );
         assert_eq!(screen, frame.join("\n"), "{screen_cols} cols:\n{screen}");
     }
+}
+
+/// The place under the cursor is ready: no line is held under the list for
+/// a reason it does not have, beyond the one line every place gets.
+#[test]
+fn a_ready_place_under_the_cursor_leaves_one_blank_reason_line() {
+    let host = host();
+    let mut world = World::default();
+    world.snapshot.hosts = Some(places_of_two_lengths());
+    press(&host, &world, "ctrl+n");
+    let screen = drawn(&host, &world);
+    let lines: Vec<&str> = screen.lines().collect();
+    let place = lines
+        .iter()
+        .position(|l| l.contains("mux/gpu-box"))
+        .expect(&screen);
+    let blank = |l: &str| {
+        l.trim_matches(|c: char| c == '│' || c.is_whitespace())
+            .is_empty()
+    };
+    assert!(
+        blank(lines[place + 1]) && blank(lines[place + 2]),
+        "{screen}"
+    );
+    assert!(lines[place + 3].contains("[ Select ]"), "{screen}");
+}
+
+/// The foreground colour of the first cell of `needle` on screen.
+fn fg_at(buffer: &Buffer, needle: &str) -> ratatui::style::Color {
+    let (x, y) = locate(buffer, needle);
+    buffer[(x, y)].fg
+}
+
+/// A place that is not ready reads as muted on its whole row, not only in
+/// its status cell, while a ready place keeps the text colour.
+#[test]
+fn a_not_ready_place_is_dimmed() {
+    let host = host();
+    let mut world = World::default();
+    let mut places = places_of_two_lengths();
+    places.insert(
+        1,
+        HostRow {
+            name: "mux/other".into(),
+            detail: "another place".into(),
+            backend: "mux/other".into(),
+            ready: Some(true),
+            why: None,
+        },
+    );
+    world.snapshot.hosts = Some(places);
+    press(&host, &world, "ctrl+n");
+    let buffer = colours(&host, &world, None);
+    let muted = fg_at(&buffer, "navigate");
+    assert_eq!(
+        fg_at(&buffer, "mux/gpu-box"),
+        muted,
+        "{}",
+        screen_of(&buffer)
+    );
+    assert_eq!(
+        fg_at(&buffer, "a mux place"),
+        muted,
+        "{}",
+        screen_of(&buffer)
+    );
+    assert_ne!(fg_at(&buffer, "mux/other"), muted, "{}", screen_of(&buffer));
+}
+
+/// `enter` on a place that is not ready stays on the place step and says
+/// why, as the Fleet step does for an unreachable Fleet; `Select` reads
+/// disabled while the cursor is on that place.
+#[test]
+fn a_not_ready_place_cannot_be_selected() {
+    let host = host();
+    let mut world = World::default();
+    world.snapshot.hosts = Some(places_of_two_lengths());
+    press(&host, &world, "ctrl+n");
+    let ready = colours(&host, &world, None);
+    assert_ne!(
+        fg_at(&ready, "Select"),
+        fg_at(&ready, "navigate"),
+        "Select is enabled on a ready place:\n{}",
+        screen_of(&ready)
+    );
+    press(&host, &world, "down");
+    let not_ready = colours(&host, &world, None);
+    assert_eq!(
+        fg_at(&not_ready, "Select"),
+        fg_at(&not_ready, "navigate"),
+        "Select is disabled on a place that is not ready:\n{}",
+        screen_of(&not_ready)
+    );
+    press(&host, &world, "enter");
+    let screen = drawn(&host, &world);
+    assert!(
+        screen.contains("╭ Place"),
+        "the flow left the place step:\n{screen}"
+    );
+    assert!(screen.contains("mux/gpu-box is not ready"), "{screen}");
+}
+
+/// The picker opens with the cursor on the first place that is ready.
+#[test]
+fn the_place_picker_opens_on_the_first_ready_place() {
+    let host = host();
+    let mut world = World::default();
+    let mut places = places_of_two_lengths();
+    places.reverse();
+    world.snapshot.hosts = Some(places);
+    press(&host, &world, "ctrl+n");
+    let screen = drawn(&host, &world);
+    assert!(
+        screen.lines().any(|l| l.contains("▸ local")),
+        "the cursor is not on the ready place:\n{screen}"
+    );
+    press(&host, &world, "enter");
+    assert!(
+        !drawn(&host, &world).contains("╭ Place"),
+        "the ready place is picked"
+    );
 }
 
 /// A name too long for its row never costs a row its status: the status
@@ -1098,42 +1203,6 @@ fn a_long_place_list_scrolls_inside_a_short_screen() {
         lines[cursor + 2].trim_matches(|c: char| c == '│' || c.is_whitespace()),
         "",
         "the reason takes one line:\n{screen}"
-    );
-}
-
-/// A reason longer than the reason area keeps the area at its four lines,
-/// and its last line says that more was cut.
-#[test]
-fn a_reason_past_four_lines_ends_in_an_ellipsis() {
-    let host = host();
-    let mut world = World::default();
-    let mut places = places_of_two_lengths();
-    places[1].why = Some([NOT_READY_WHY; 3].join(" "));
-    world.snapshot.hosts = Some(places);
-    press(&host, &world, "ctrl+n");
-    press(&host, &world, "down");
-    let (buffer, _) = painted_on(&host, &world, None, 48).expect("open");
-    let screen = screen_of(&buffer);
-    let lines: Vec<&str> = screen.lines().collect();
-    let place = lines
-        .iter()
-        .position(|l| l.contains("▸ mux/gpu-box"))
-        .expect(&screen);
-    let reason = &lines[place + 1..place + 5];
-    assert!(
-        reason.iter().all(|l| !l
-            .trim_matches(|c: char| c == '│' || c.is_whitespace())
-            .is_empty()),
-        "four reason lines:\n{screen}"
-    );
-    assert!(
-        reason[3].trim_end_matches('│').trim_end().ends_with('…'),
-        "the last reason line ends in …:\n{screen}"
-    );
-    assert_eq!(
-        lines[place + 5].trim_matches(|c: char| c == '│' || c.is_whitespace()),
-        "",
-        "the reason stops at four lines:\n{screen}"
     );
 }
 

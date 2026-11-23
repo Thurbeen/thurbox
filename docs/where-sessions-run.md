@@ -215,8 +215,10 @@ Rows:  ● fix-auth      box
   the manager that its `fleet version --json` reports. The modal does not take
   an unreachable Fleet.
 - **Place**: pick a place of that Fleet's runtimes, from its `fleet runtime
-  places --json`. A place that is not ready shows why. The agents that the
-  modal offers next are that Fleet's too.
+  places --json`. The cursor opens on the first ready place. A place that
+  is not ready is dimmed, shows why on one line under the list, and the
+  modal does not take it. The agents that the modal offers next are that
+  Fleet's too.
 - **Repository**: browse folders on the place, pick a remembered
   repository, or paste a clone URL: the runtime clones it there. On a remote
   Fleet, browsing starts at that machine's home, `~` is that home, and the
