@@ -573,6 +573,10 @@ fn a_refusal_keeps_the_cursor_when_a_later_place_is_ready() {
         screen.contains("▸ box is incompatible: fleet 9.0.0 speaks fleet/v2"),
         "{screen}"
     );
+    let buffer = colours(&host, &world, None);
+    let muted = fg_at(&buffer, "navigate");
+    assert_ne!(fg_at(&buffer, "▸ box is incompatible"), muted, "{screen}");
+    assert_ne!(fg_at(&buffer, "Select"), muted, "{screen}");
 }
 
 /// A Fleet refused after the flow left the place step says so on the step

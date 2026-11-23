@@ -822,7 +822,7 @@ local function render_host(flow)
   end
   local refused = refusal()
   if refused then
-    rows, reasons = { { refused } }, {}
+    rows, reasons, dimmed = { { refused } }, {}, {}
   elseif hosts() == nil then
     rows = { { "Asking " .. (flow.fleet or "Fleet") .. " for its places…" } }
   end
