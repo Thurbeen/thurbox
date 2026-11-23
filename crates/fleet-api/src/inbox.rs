@@ -245,6 +245,7 @@ pub fn check_append(
     deliveries: &Deliveries,
     entry: &InboxEntry,
 ) -> Result<(), String> {
+    check_entry(inbox, deliveries, entry)?;
     if let Some(about) = &entry.about
         && deliveries
             .revisions
@@ -256,7 +257,7 @@ pub fn check_append(
             entry.key, about.revision, entry.from, about.uid
         ));
     }
-    check_retry(inbox, attempts, deliveries, entry)
+    check_room(inbox, attempts)
 }
 
 /// Why a person's retry of an entry given up on is refused: as an append,
@@ -265,6 +266,15 @@ pub fn check_append(
 pub fn check_retry(
     inbox: &[InboxEntry],
     attempts: &BTreeMap<String, DeliveryAttempt>,
+    deliveries: &Deliveries,
+    entry: &InboxEntry,
+) -> Result<(), String> {
+    check_entry(inbox, deliveries, entry)?;
+    check_room(inbox, attempts)
+}
+
+fn check_entry(
+    inbox: &[InboxEntry],
     deliveries: &Deliveries,
     entry: &InboxEntry,
 ) -> Result<(), String> {
@@ -277,6 +287,13 @@ pub fn check_retry(
     if inbox.iter().any(|e| e.key == entry.key) || deliveries.delivered(&entry.key) {
         return Err(format!("inbox entry {} already exists", entry.key));
     }
+    Ok(())
+}
+
+fn check_room(
+    inbox: &[InboxEntry],
+    attempts: &BTreeMap<String, DeliveryAttempt>,
+) -> Result<(), String> {
     let due = due(inbox, attempts);
     if due > MAX_INBOX {
         return Err(format!(
