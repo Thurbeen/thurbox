@@ -32,7 +32,7 @@ const QUERY: &str = "query($owner: String!, $name: String!, $number: Int!, $with
       mergeable @include(if: $withCore)
       mergeStateStatus @include(if: $withCore)
       headRefOid @include(if: $withCore)
-      commits(last: 1) @include(if: $withCore) { nodes { commit { oid statusCheckRollup { contexts(first: 100) { pageInfo { hasNextPage } nodes { __typename ... on CheckRun { name status conclusion detailsUrl databaseId } ... on StatusContext { context state targetUrl } } } } } } }
+      commits(last: 1) @include(if: $withCore) { nodes { commit { oid statusCheckRollup { contexts(first: 100) { pageInfo { hasNextPage } nodes { __typename ... on CheckRun { name status conclusion detailsUrl databaseId checkSuite { app { databaseId } workflowRun { workflow { databaseId } } } } ... on StatusContext { context state targetUrl } } } } } } }
       reviews(first: 100, after: $reviewsAfter) @include(if: $withReviews) { pageInfo { hasNextPage endCursor } nodes { id state body url createdAt lastEditedAt author { login __typename } commit { oid } } }
       comments(first: 100, after: $commentsAfter) @include(if: $withComments) { pageInfo { hasNextPage endCursor } nodes { id body url createdAt lastEditedAt author { login __typename } } }
       reviewThreads(first: 100, after: $threadsAfter) @include(if: $withThreads) { pageInfo { hasNextPage endCursor } nodes { id isResolved comments(first: 100) { pageInfo { hasNextPage } nodes { id body url path line originalLine createdAt lastEditedAt author { login __typename } } } } }
@@ -482,6 +482,16 @@ fn edited(v: &Value) -> Result<Option<Millis>, String> {
     }
 }
 
+fn same_check(a: &Value, b: &Value) -> bool {
+    let suite = |c: &Value| {
+        (
+            c["checkSuite"]["app"]["databaseId"].clone(),
+            c["checkSuite"]["workflowRun"]["workflow"]["databaseId"].clone(),
+        )
+    };
+    a["name"] == b["name"] && suite(a) == suite(b)
+}
+
 fn superseded(runs: &[Value], i: usize) -> Result<bool, String> {
     let run = &runs[i];
     if run["__typename"] != "CheckRun" {
@@ -495,7 +505,7 @@ fn superseded(runs: &[Value], i: usize) -> Result<bool, String> {
     for (j, other) in runs.iter().enumerate() {
         if j != i
             && other["__typename"] == "CheckRun"
-            && other["name"] == run["name"]
+            && same_check(other, run)
             && id(other)? > id(run)?
         {
             return Ok(true);
@@ -829,6 +839,15 @@ mod tests {
             head.checks,
             Checks::Passed,
             "a run cancelled while queued never started"
+        );
+        let head = checks(json!([
+            {"__typename": "CheckRun", "databaseId": 1, "name": "test", "status": "COMPLETED", "conclusion": "FAILURE", "checkSuite": {"app": {"databaseId": 15368}, "workflowRun": {"workflow": {"databaseId": 7}}}},
+            {"__typename": "CheckRun", "databaseId": 2, "name": "test", "status": "COMPLETED", "conclusion": "SUCCESS", "checkSuite": {"app": {"databaseId": 15368}, "workflowRun": {"workflow": {"databaseId": 8}}}}
+        ]));
+        assert_eq!(
+            head.checks,
+            Checks::Failed,
+            "another workflow's job of the same name is another check"
         );
     }
 
