@@ -454,6 +454,50 @@
     });
   }
 
+  var STORY_STEP_LINE = 0.6;
+  var stories = document.querySelectorAll('[data-story]');
+  if (
+    stories.length > 0 &&
+    'IntersectionObserver' in window &&
+    window.matchMedia &&
+    window.matchMedia('(prefers-reduced-motion: no-preference)').matches &&
+    !/[?&]nomotion\b/.test(window.location.search)
+  ) {
+    stories.forEach(playStory);
+  }
+
+  function playStory(story) {
+    var steps = story.querySelectorAll('[data-step]');
+    function showStep(at) {
+      story.dataset.at = String(at);
+      for (var k = 1; k <= steps.length; k++) story.classList.toggle('at-' + k, k <= at);
+      steps.forEach(function (step) {
+        step.classList.toggle('is-current', Number(step.dataset.step) === at);
+      });
+    }
+    function followScroll() {
+      var line = window.innerHeight * STORY_STEP_LINE;
+      var passed = Array.prototype.filter.call(steps, function (step) {
+        return step.getBoundingClientRect().top < line;
+      });
+      showStep(passed.length);
+    }
+    showStep(0);
+    story.classList.add('story--live');
+    new IntersectionObserver(function (entries) {
+      entries.forEach(function (entry) {
+        story.classList.toggle('is-visible', entry.isIntersecting);
+      });
+      followScroll();
+    }).observe(story);
+    var stepObserver = new IntersectionObserver(followScroll, {
+      rootMargin: '0px 0px -40% 0px',
+    });
+    steps.forEach(function (step) {
+      stepObserver.observe(step);
+    });
+  }
+
   // ---- Mobile sidebar toggle (docs pages) ----
   var sidebarToggle = document.getElementById('sidebar-toggle');
   var sidebar = document.querySelector('.docs-sidebar');

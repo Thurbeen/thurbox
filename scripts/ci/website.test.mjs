@@ -170,9 +170,28 @@ test('homepage presents Fleet and thurbox apart, links each official plugin, and
   assert.ok(home.querySelector('a[href="docs/installation.html"]'), 'other install routes are linked');
   assert.ok(home.querySelector('a[href="docs/fleet-install.html"]'), 'installing Fleet alone is linked');
   const fit = home.querySelector('#how-they-fit');
-  const flow = text(fit.querySelector('figure.flow'));
-  for (const word of ['thurbox', 'Fleet laptop', 'Fleet box', 'ssh', 'WSL', 'runtime-mux', 'workspace-git', 'workspace provider', 'local']) {
-    assert.match(flow, new RegExp(word), `the overview reads "${word}" as text`);
+  const scenes = fit.querySelectorAll('[data-story] svg');
+  assert.equal(scenes.length, 2, 'one scene for the interface, one for the reconcile loop');
+  for (const svg of scenes) {
+    const labels = svg.getAttribute('aria-labelledby').split(' ');
+    assert.deepEqual(labels.map((id) => svg.querySelector(`#${id}`)?.tagName), ['TITLE', 'DESC'], 'each scene has a title and a description');
+  }
+  const [fleets, loop] = scenes.map((svg) => text(svg));
+  for (const word of ['thurbox', 'Fleet laptop', 'Fleet box', 'Fleet ubuntu', 'ssh', 'wsl', 'laptop:fix-login']) {
+    assert.match(fleets, new RegExp(word), `the fleets scene reads "${word}" as text`);
+  }
+  for (const word of ['Task', 'spec', 'status', 'controllers', 'fleet up', 'observe', 'compare', 'act', 'runtime-mux', 'workspace', 'session', 'TaskConfig', 'CronTask', 'ChangeRequest']) {
+    assert.match(loop, new RegExp(word), `the reconcile scene reads "${word}" as text`);
+  }
+  const kinds = readFileSync('docs/fleet/README.md', 'utf8');
+  for (const kind of ['Task', 'TaskConfig', 'EnvProvider', 'ChangeRequest', 'CronTask', 'Board', 'Conversation']) {
+    assert.match(kinds, new RegExp(`^\\| \\[${kind}\\]\\(resources/`, 'm'), `${kind} is a kind Fleet documents`);
+  }
+  const phases = readFileSync('docs/fleet/resources/task.md', 'utf8');
+  for (const phase of ['Pending', 'Spawning', 'Briefed']) assert.match(phases, new RegExp(`\`${phase}\``), `${phase} is a Task phase`);
+  for (const step of fit.querySelectorAll('[data-story]')) {
+    const numbers = step.querySelectorAll('[data-step]').map((s) => Number(s.getAttribute('data-step')));
+    assert.deepEqual(numbers, numbers.map((_, i) => i + 1), 'each story numbers its steps from 1');
   }
   assert.doesNotMatch(text(fit), / \./, 'no space before a period');
 });
