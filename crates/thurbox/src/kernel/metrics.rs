@@ -84,7 +84,8 @@ pub struct Metrics {
     resources: HashMap<String, SessionResources>,
     agents: HashMap<String, AgentMetrics>,
     /// Parked between samples so CPU deltas survive. `None` while a worker has
-    /// it, which is also what keeps a second sample from starting.
+    /// it, which is also what keeps a second sample from starting, and for good
+    /// on a system sysinfo does not support.
     collector: Option<Box<sysinfo::System>>,
     last_sample: Option<Instant>,
     tx: Sender<Sample>,
@@ -99,7 +100,7 @@ impl Metrics {
             system: SystemMetrics::default(),
             resources: HashMap::new(),
             agents: HashMap::new(),
-            collector: Some(Box::new(sysinfo::System::new())),
+            collector: sysinfo::System::new().ok().map(Box::new),
             last_sample: None,
             tx,
             rx,
@@ -594,7 +595,8 @@ mod tests {
             ("four".into(), None, None),
         ];
 
-        let sample = collect(Box::new(sysinfo::System::new()), subjects);
+        let system = sysinfo::System::new().expect("sysinfo supports this host");
+        let sample = collect(Box::new(system), subjects);
 
         let mut resourced: Vec<&str> = sample.resources.keys().map(String::as_str).collect();
         resourced.sort_unstable();

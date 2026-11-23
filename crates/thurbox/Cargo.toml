@@ -88,7 +88,7 @@ opentelemetry-appender-tracing = { version = "0.33.1", default-features = false 
 otel-env = { path = "../otel-env" }
 
 # System metrics
-sysinfo = "0.39"
+sysinfo = "0.40"
 
 # Error handling
 anyhow = "1.0"
