@@ -76,7 +76,8 @@ unit stops restarting it with `RestartPreventExitStatus=78`.
 
 The manager writes its status to `<data dir>/manager.json`: `pid`, `boot`,
 `version`, `exe`, `config`, `startedAt` and `state` (`starting`,
-`serving`, `paused` or `stopped`). On a full disk the manager overwrites
+`serving`, `paused` or `stopped`). The manager records `serving` after
+the first pass under its lease, not after its first sweep. On a full disk the manager overwrites
 the record in place, so `paused` reaches it. The record is status, never authority: a manager
 that crashed leaves its last state behind.
 
