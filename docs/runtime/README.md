@@ -184,6 +184,9 @@ What Fleet's `exec` kind does with the answers:
   ([harness profiles](../fleet/controllers/task.md#harness-profiles)).
   Before its first report, a trust dialog on its `capture` is Untrusted, and
   anything else Unknown, so a brief waits;
+- a session whose `capture` shows a person's draft in the agent's composer
+  is not ready, and the screen is read again just before each `input`
+  ([proven delivery](../fleet/controllers/task.md#proven-delivery));
 - delivery is proven by the agent's prompt hook, not by `input`;
 - the agent state of a session whose hooks do not say it now is read off its
   `capture` text and title with the harness's screen rules

@@ -1195,6 +1195,119 @@ fn a_long_brief_reaches_claude_code_as_one_paste() {
     });
 }
 
+/// Claude Code 2.1.328 at its composer, as a person sees it: the text
+/// typed so far between two rules after `❯`, the cursor at its end, and a
+/// dim suggestion with the cursor at its start while it is empty. Enter
+/// submits whatever the composer holds, and `prompts.log` records it.
+const COMPOSING_CLAUDE: &str = r#"#!/bin/sh
+fleet signal idle
+stty raw -echo
+printf '\033[?2004h'
+perl -e '
+$| = 1;
+my $text = "";
+sub draw {
+  my $shown = $text; $shown =~ s/\n/ /g;
+  my $rule = "\x{2500}" x 40;
+  print "\e[2J\e[1;1H$rule\r\n\x{276f} ";
+  print length($text) ? "$shown\e7" : "\e7\e[2mTry \"fix the lint errors\"\e[22m";
+  print "\r\n$rule\r\n  ? for shortcuts\e8";
+}
+binmode STDOUT, ":utf8";
+draw();
+my $buf = "";
+while (sysread(STDIN, my $chunk, 65536)) {
+  $buf .= $chunk;
+  $buf =~ s/\e\[20[01]~//g;
+  while ($buf =~ s/^([^\r]*)\r//) {
+    $text .= $1;
+    if (length $text) {
+      open(my $log, ">>", "prompts.log") or die;
+      my $line = $text; $line =~ s/\n/\\n/g; print $log "$line\n"; close $log;
+      my $json = $text; $json =~ s/(["\\])/\\$1/g; $json =~ s/\n/\\n/g;
+      system("fleet", "signal", "prompt", "{\"prompt\":\"$json\",\"session_id\":\"conv-1\"}");
+      system("fleet", "signal", "idle");
+    }
+    $text = "";
+  }
+  my $keep = $buf =~ /(\e(?:\[(?:2(?:0[01]?)?)?)?)$/ ? length $1 : 0;
+  $text .= substr($buf, 0, length($buf) - $keep, "");
+  draw();
+}'
+"#;
+
+fn submitted(work: &Path) -> Vec<String> {
+    fs::read_to_string(work.join("prompts.log"))
+        .unwrap_or_default()
+        .lines()
+        .map(str::to_string)
+        .collect()
+}
+
+#[test]
+fn an_inbox_entry_waits_while_a_person_drafts_in_the_composer() {
+    an_entry_waits_behind_the_draft("draft", "Also consider usi");
+}
+
+#[test]
+fn an_inbox_entry_waits_behind_a_draft_wider_than_the_pane() {
+    let draft = format!("Also consider {}usi", "the slow path ".repeat(24));
+    an_entry_waits_behind_the_draft("wide-draft", &draft);
+}
+
+fn an_entry_waits_behind_the_draft(name: &str, draft: &str) {
+    let (Some(program), Some(_)) = (runtime_mux(), tmux()) else {
+        return;
+    };
+    let sockets = Sockets::new(name);
+    let mut env = mux_env(&format!("runtime-mux-{name}"), &program, &sockets);
+    stand_in(&mut env, "claude", "claude", COMPOSING_CLAUDE);
+    let work = env.root.join("work").join("t1");
+    fs::create_dir_all(&work).expect("workspace");
+    let mut task = support::task("t1", true);
+    task["spec"]["workspace"] = json!([format!("file://{}", work.display())]);
+    env.apply(json!([task])).ok();
+    reconcile_until(&env, "briefed", |env| {
+        env.get("t1")["status"]["phase"] == "Briefed"
+    });
+
+    let panes = sockets.tmux(&["list-panes", "-a", "-F", "#{pane_id} #{pane_current_path}"]);
+    let listed = String::from_utf8_lossy(&panes.stdout).into_owned();
+    let pane = listed
+        .lines()
+        .find(|l| l.ends_with(&*work.to_string_lossy()))
+        .and_then(|l| l.split(' ').next())
+        .unwrap_or_else(|| panic!("no pane in {}: {listed}", work.display()))
+        .to_string();
+    sockets.tmux(&["send-keys", "-t", &pane, "-l", draft]);
+    let entry = "VEGA re-hydrate: read the board";
+    env.fleet(&["send", "t1", entry]).ok();
+    for _ in 0..8 {
+        std::thread::sleep(Duration::from_millis(300));
+        env.reconcile();
+    }
+    let merged: Vec<String> = submitted(&work)
+        .into_iter()
+        .filter(|p| p.contains("Also consider") || p.contains("VEGA"))
+        .collect();
+    assert!(
+        merged.is_empty(),
+        "a delivery was submitted with the person's draft: {merged:?}"
+    );
+
+    sockets.tmux(&["send-keys", "-t", &pane, "-l", "ng"]);
+    sockets.tmux(&["send-keys", "-t", &pane, "Enter"]);
+    reconcile_until(&env, "the entry delivered after the draft", |_| {
+        submitted(&work).iter().any(|p| p == entry)
+    });
+    let prompts = submitted(&work);
+    assert_eq!(
+        prompts[prompts.len() - 2..],
+        [format!("{draft}ng"), entry.to_string()],
+        "{prompts:?}"
+    );
+}
+
 #[test]
 fn a_task_on_runtime_mux_is_revived_on_its_conversation_after_a_reboot() {
     let (Some(program), Some(_)) = (runtime_mux(), tmux()) else {

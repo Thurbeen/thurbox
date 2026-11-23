@@ -696,6 +696,41 @@ pub fn claude_trust_dialog(output: &str, cursor_row: usize) -> bool {
         && choice("Yes, I trust this folder")
 }
 
+/// Whether the composer on a plain visible screen `output` holds a
+/// person's draft: the last box between two full-width rules whose first
+/// line starts with `❯`, as Claude Code and GitHub Copilot CLI draw it.
+/// The capture may join a wrapped row into one line, so no screen row is
+/// read: a box of several lines, or a first line wider than its rule, is a
+/// draft. A one-line box with text after `❯` is a dim suggestion while the
+/// cursor stays two columns after `❯`, and a draft once it is past them.
+/// `None` when that takes a cursor column the capture did not give. A
+/// one-line draft whose cursor was moved back to its start is not seen.
+pub fn composer_draft(output: &str, cursor_col: Option<usize>) -> Option<bool> {
+    let lines: Vec<&str> = output.lines().collect();
+    let rule = |l: &str| {
+        let l = l.trim();
+        !l.is_empty() && l.chars().all(|c| c == '─')
+    };
+    let Some(first) = (1..lines.len())
+        .rev()
+        .find(|&at| lines[at].starts_with('❯') && rule(lines[at - 1]))
+    else {
+        return Some(false);
+    };
+    let Some(bottom) = (first + 1..lines.len()).find(|&at| rule(lines[at])) else {
+        return Some(false);
+    };
+    let width = lines[first - 1].trim().chars().count();
+    let line = lines[first].trim_end();
+    if bottom - first > 1 || line.chars().count() > width {
+        return Some(true);
+    }
+    if line.trim_start_matches('❯').trim().is_empty() {
+        return Some(false);
+    }
+    cursor_col.map(|col| col > 2)
+}
+
 /// Whether a plain visible screen `output` is Codex's initial empty
 /// composer under its welcome screen, the cursor at its start: Codex takes
 /// input, and reports nothing until its first turn ends. A trust dialog can
@@ -1129,6 +1164,44 @@ mod tests {
         assert!(kimi_process("kimi-code"));
         assert!(kimi_process("/usr/bin/kimi"));
         assert!(!kimi_process("codex"));
+    }
+
+    const CLAUDE_2_1_328_EMPTY_COMPOSER: &str =
+        "                                        ◐ medium · /effort
+────────────────────────────────────────────────────────────
+❯ Try \"write a test for <filepath>\"
+────────────────────────────────────────────────────────────
+  ⏵⏵ auto mode on (shift+tab to cycle) · ← for agents
+";
+
+    #[test]
+    fn a_composer_holds_a_draft_once_the_cursor_moves_past_its_start() {
+        let empty = CLAUDE_2_1_328_EMPTY_COMPOSER;
+        assert_eq!(composer_draft(empty, Some(2)), Some(false));
+        let typed = empty.replace("Try \"write a test for <filepath>\"", "Also consider usi");
+        assert_eq!(composer_draft(&typed, Some(19)), Some(true));
+        assert_eq!(composer_draft(&typed, Some(5)), Some(true));
+        assert_eq!(composer_draft(&typed, Some(2)), Some(false));
+        assert_eq!(composer_draft(&typed, None), None);
+        assert_eq!(composer_draft(empty, None), None);
+        let two_lines = typed.replace("usi\n", "usi\n  second line\n");
+        assert_eq!(composer_draft(&two_lines, Some(2)), Some(true));
+        assert_eq!(composer_draft(&two_lines, None), Some(true));
+        let wrapped = typed.replace("usi\n", &format!("usi{}\n", " more".repeat(12)));
+        assert_eq!(composer_draft(&wrapped, Some(2)), Some(true));
+        let bare = empty.replace("Try \"write a test for <filepath>\"", "");
+        assert_eq!(composer_draft(&bare, None), Some(false));
+        assert_eq!(
+            composer_draft(&typed.replace('❯', ">"), Some(19)),
+            Some(false)
+        );
+        assert_eq!(composer_draft(COPILOT_READY, Some(2)), Some(false));
+        assert_eq!(
+            composer_draft(&COPILOT_READY.replace("\n❯\n", "\n❯ Run it\n"), Some(8)),
+            Some(true)
+        );
+        assert_eq!(composer_draft(COPILOT_TRUST, Some(20)), Some(false));
+        assert_eq!(composer_draft("", Some(5)), Some(false));
     }
 
     /// GitHub Copilot CLI 1.0.105's screen in an 80x24 pane once its folder

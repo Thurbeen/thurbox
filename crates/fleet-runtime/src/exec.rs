@@ -20,7 +20,7 @@ use std::time::{Duration, Instant};
 use fleet_api::Observation;
 use fleet_api::event::{OutboxRead, outbox_file};
 use fleet_api::harness::{
-    claude_trust_dialog, codex_initial_composer, codex_process, codex_trust_dialog,
+    claude_trust_dialog, codex_initial_composer, codex_process, codex_trust_dialog, composer_draft,
     copilot_initial_composer, copilot_process, copilot_trust_dialog, kimi_initial_composer,
     kimi_process, profile,
 };
@@ -823,6 +823,52 @@ impl ExecRuntime {
         })
     }
 
+    fn reported_ready(&self, session: &SessionRef) -> Observation<bool> {
+        bind(self.reported(session), |r| match r.state {
+            Some(State::Blocked) => Observation::Known(false),
+            Some(State::Started) | None => match self.first_screen(session) {
+                Observation::Known(
+                    FirstScreen::CodexComposer
+                    | FirstScreen::KimiComposer
+                    | FirstScreen::CopilotComposer,
+                ) => Observation::Known(true),
+                Observation::Known(_) => {
+                    Observation::unknown("the agent reported no state since it started")
+                }
+                Observation::Unknown { why } => Observation::Unknown { why },
+            },
+            Some(_) => Observation::Known(true),
+        })
+    }
+
+    fn drafting(&self, session: &SessionRef) -> Observation<bool> {
+        let rt = match self.program(&session.host) {
+            Ok(rt) => rt,
+            Err(why) => return Observation::unknown(why),
+        };
+        bind(rt.manifest(), |manifest| {
+            if !manifest.verbs.iter().any(|v| v == "capture") {
+                return Observation::Known(false);
+            }
+            bind(self.capture(session), |captured| match captured {
+                Captured::Screen {
+                    text, cursor_col, ..
+                } => {
+                    let col = cursor_col.and_then(|n| usize::try_from(n).ok());
+                    composer_draft(&text, col).map_or_else(
+                        || {
+                            Observation::unknown(
+                                "the capture gave no cursor to tell a draft from a suggestion",
+                            )
+                        },
+                        Observation::Known,
+                    )
+                }
+                Captured::None => Observation::Known(false),
+            })
+        })
+    }
+
     /// What the agent's hooks reported through `fleet signal`: the file on
     /// this machine, or on the session's host through the runtime's `exec`.
     fn reported(&self, session: &SessionRef) -> Observation<Reported> {
@@ -1153,22 +1199,15 @@ impl Runtime for ExecRuntime {
     /// Ready once the agent reported anything but a wait for a person: its
     /// start hook reports it before any prompt. Codex, Kimi Code and
     /// GitHub Copilot CLI report nothing before their first message, so
-    /// before that their empty composer makes them ready.
+    /// before that their empty composer makes them ready. A person's draft
+    /// in the composer makes it not ready, so that nothing joins the draft.
     fn ready(&self, session: &SessionRef) -> Observation<bool> {
-        bind(self.reported(session), |r| match r.state {
-            Some(State::Blocked) => Observation::Known(false),
-            Some(State::Started) | None => match self.first_screen(session) {
-                Observation::Known(
-                    FirstScreen::CodexComposer
-                    | FirstScreen::KimiComposer
-                    | FirstScreen::CopilotComposer,
-                ) => Observation::Known(true),
-                Observation::Known(_) => {
-                    Observation::unknown("the agent reported no state since it started")
-                }
-                Observation::Unknown { why } => Observation::Unknown { why },
-            },
-            Some(_) => Observation::Known(true),
+        bind(self.reported_ready(session), |ready| {
+            if ready {
+                self.drafting(session).map(|drafting| !drafting)
+            } else {
+                Observation::Known(false)
+            }
         })
     }
 
@@ -1236,6 +1275,21 @@ impl Runtime for ExecRuntime {
             Ok(rt) => rt,
             Err(why) => return Observation::unknown(why),
         };
+        match self.drafting(session) {
+            Observation::Known(false) => {}
+            Observation::Known(true) => {
+                return Observation::Known(EffectOutcome::Failed {
+                    why: "a person is typing in the agent's composer: nothing was typed".into(),
+                });
+            }
+            Observation::Unknown { why } => {
+                return Observation::Known(EffectOutcome::Failed {
+                    why: format!(
+                        "the agent's composer cannot be read, so nothing was typed: {why}"
+                    ),
+                });
+            }
+        }
         let request = json!({
             "key": rt.key(&session.key),
             "text": text,
@@ -2191,6 +2245,56 @@ mod tests {
             None,
             "the next request asks the manifest again"
         );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_send_types_nothing_into_a_draft_the_person_began_after_the_ready_probe() {
+        let dir = std::env::temp_dir().join(format!("fleet-exec-draft-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("dir");
+        let rt = runtime(&dir);
+        std::fs::write(
+            dir.join("manifest"),
+            r#"{"known":{"protocol":1,"verbs":["manifest","start","inspect","stop","input","capture"]}}"#,
+        )
+        .expect("answer");
+        std::fs::write(dir.join("input"), r#"{"known":"sent"}"#).expect("answer");
+        let screen = |text: &str, col: Option<u64>| {
+            let rule = "─".repeat(40);
+            json!({"known": {"screen": {
+                "text": format!("{rule}\n❯ {text}\n{rule}\n"),
+                "cursorRow": 1, "cursorCol": col, "foreground": "claude"
+            }}})
+            .to_string()
+        };
+        let runtime = ExecRuntime::new(BTreeMap::from([("local".to_string(), rt)]));
+        let session = runtime.session("local", "k");
+
+        std::fs::write(dir.join("capture"), screen("Try \"fix it\"", Some(2))).expect("answer");
+        assert!(matches!(
+            runtime.brief(&session, "VEGA", "send/1"),
+            Observation::Known(EffectOutcome::Delivered { .. })
+        ));
+        let wrapped = format!("Also consider usi{}", " more".repeat(8));
+        for (draft, col) in [("Also consider usi", Some(19)), (wrapped.as_str(), Some(2))] {
+            std::fs::write(dir.join("capture"), screen(draft, col)).expect("answer");
+            let refused = runtime.brief(&session, "VEGA", "send/1");
+            assert!(
+                matches!(&refused, Observation::Known(EffectOutcome::Failed { why }) if why.contains("typing")),
+                "{draft}: {refused:?}"
+            );
+        }
+        std::fs::write(dir.join("capture"), screen("Also consider usi", None)).expect("answer");
+        let unread = runtime.brief(&session, "VEGA", "send/1");
+        assert!(
+            matches!(&unread, Observation::Known(EffectOutcome::Failed { why }) if why.contains("cannot be read")),
+            "{unread:?}"
+        );
+        std::fs::remove_file(dir.join("capture")).expect("remove");
+        assert!(matches!(
+            runtime.brief(&session, "VEGA", "send/1"),
+            Observation::Known(EffectOutcome::Failed { .. })
+        ));
         let _ = std::fs::remove_dir_all(&dir);
     }
 
