@@ -468,6 +468,33 @@
   stroke-width: 2;
 }
 
+.st-sigil-ring {
+  fill: none;
+  stroke: color-mix(in srgb, var(--accent) 45%, transparent);
+  stroke-width: 1;
+}
+
+.st-sigil-line {
+  fill: none;
+  stroke: color-mix(in srgb, var(--accent) 35%, transparent);
+  stroke-width: 1;
+}
+
+.st-ember-glow {
+  fill: color-mix(in srgb, var(--ember) 22%, transparent);
+  transform-box: fill-box;
+  transform-origin: center;
+}
+
+.st-ember {
+  fill: var(--ember);
+}
+
+.st-node {
+  fill: var(--accent);
+  stroke: var(--bg-code);
+}
+
 .st-loophead,
 .st-led,
 .st-comet {
@@ -791,7 +818,7 @@
 
 .st-orbit {
   transform-box: view-box;
-  transform-origin: 348px 224px;
+  transform-origin: 348px 232px;
 }
 
 .story--live.is-visible.at-2 .st-led {
@@ -805,6 +832,10 @@
 .story--live.at-2 .st-orbit {
   opacity: 1;
   transition: opacity 0.6s ease 0.8s;
+}
+
+.story--live.is-visible.at-2 .st-ember-glow {
+  animation: story-beat 2.4s ease-in-out infinite;
 }
 
 .story--live.is-visible.at-2 .st-orbit {

@@ -452,17 +452,21 @@ fleet up</code></pre>
                 <text x="348" y="422" class="st-dim" text-anchor="middle">per sweep</text>
               </g>
               <g class="st-loop s2" style="--d: 0.5s">
-                <circle cx="348" cy="224" r="58" class="st-track" />
-                <path d="M375.2 172.8A58 58 0 0 1 405.9 220" class="st-arc" marker-end="url(#st-loop-head)" />
-                <path d="M375.2 275.2A58 58 0 0 1 320.8 275.2" class="st-arc" marker-end="url(#st-loop-head)" />
-                <path d="M290.1 220A58 58 0 0 1 320.8 172.8" class="st-arc" marker-end="url(#st-loop-head)" />
-                <g class="st-orbit"><circle cx="348" cy="166" r="5" class="st-comet" /></g>
-                <rect x="314" y="157" width="68" height="20" class="st-pill" />
-                <text x="348" y="171" class="st-small" text-anchor="middle">observe</text>
-                <rect x="352" y="243" width="68" height="20" class="st-pill" />
-                <text x="386" y="257" class="st-small" text-anchor="middle">compare</text>
-                <rect x="278" y="243" width="40" height="20" class="st-pill" />
-                <text x="298" y="257" class="st-small" text-anchor="middle">act</text>
+                <circle cx="348" cy="232" r="62" class="st-sigil-ring" />
+                <circle cx="348" cy="232" r="56" class="st-track" />
+                <path d="M348 176L396.5 260L299.5 260Z" class="st-sigil-line" />
+                <circle cx="348" cy="232" r="13" class="st-ember-glow" />
+                <circle cx="348" cy="232" r="5" class="st-ember" />
+                <path d="M361.55 177.66A56 56 0 0 1 401.83 247.44" class="st-arc" marker-end="url(#st-loop-head)" />
+                <path d="M388.28 270.9A56 56 0 0 1 307.72 270.9" class="st-arc" marker-end="url(#st-loop-head)" />
+                <path d="M294.17 247.44A56 56 0 0 1 334.45 177.66" class="st-arc" marker-end="url(#st-loop-head)" />
+                <rect x="343.5" y="171.5" width="9" height="9" class="st-node" />
+                <rect x="392" y="255.5" width="9" height="9" class="st-node" />
+                <rect x="295" y="255.5" width="9" height="9" class="st-node" />
+                <g class="st-orbit"><circle cx="348" cy="176" r="4" class="st-comet" /></g>
+                <text x="348" y="160" class="st-small" text-anchor="middle">observe</text>
+                <text x="397" y="294" class="st-small" text-anchor="middle">compare</text>
+                <text x="300" y="294" class="st-small" text-anchor="middle">act</text>
               </g>
 
               <path d="M426 136H476" pathLength="1" class="st-wire s3" marker-end="url(#st-head)" />
@@ -555,7 +559,8 @@ fleet up</code></pre>
               <desc id="gateway-desc">
                 A person mentions Fleet's bot in a Slack or Discord thread. The gateway, run by fleet
                 up, admits the person and starts a Task tied to the thread. Later messages in the
-                thread are relayed into the Task's inbox. What the Task declares, such as a Question,
+                thread are relayed into the Task's inbox; on Discord, a reply without a mention needs the
+                message content intent. What the Task declares, such as a Question,
                 is posted back in the thread. Drafts, results and change news go to a log channel.
                 The gateway never runs a model.
               </desc>
@@ -680,10 +685,11 @@ fleet up</code></pre>
             <li class="story__step" data-step="2">
               <h3><span class="step-number" aria-hidden="true">2</span>Keep talking</h3>
               <p>
-                Every later message in the thread reaches the Task's inbox. The gateway only moves
-                messages: it never runs a model.
+                Every later message in the thread reaches the Task's inbox. On Discord, a reply
+                without a mention needs <code>messageContent = true</code> and Discord's message
+                content intent. The gateway only moves messages: it never runs a model.
               </p>
-              <p class="story__gain">Steer an agent mid-task with a reply.</p>
+              <p class="story__gain">Steer an agent mid-task from the thread.</p>
             </li>
             <li class="story__step" data-step="3">
               <h3><span class="step-number" aria-hidden="true">3</span>Answers come back</h3>
