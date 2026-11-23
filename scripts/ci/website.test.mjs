@@ -171,12 +171,24 @@ test('homepage presents Fleet and thurbox apart, links each official plugin, and
   assert.ok(home.querySelector('a[href="docs/fleet-install.html"]'), 'installing Fleet alone is linked');
   const fit = home.querySelector('#how-they-fit');
   const scenes = fit.querySelectorAll('[data-story] svg');
-  assert.equal(scenes.length, 2, 'one scene for the interface, one for the reconcile loop');
+  assert.equal(scenes.length, 3, 'one scene each for the interface, the reconcile loop and the gateway');
   for (const svg of scenes) {
     const labels = svg.getAttribute('aria-labelledby').split(' ');
     assert.deepEqual(labels.map((id) => svg.querySelector(`#${id}`)?.tagName), ['TITLE', 'DESC'], 'each scene has a title and a description');
   }
-  const [fleets, loop] = scenes.map((svg) => text(svg));
+  const [fleets, loop, gateway] = scenes.map((svg) => text(svg));
+  for (const word of ['Slack', 'Discord', 'gateway', 'Task', 'inbox', 'log channel']) {
+    assert.match(gateway, new RegExp(word), `the gateway scene reads "${word}" as text`);
+  }
+  assert.doesNotMatch(text(fit), /Telegram|Teams|Matrix|Mattermost/, 'only the chat platforms Fleet has adapters for are shown');
+  const adapters = readdirSync('crates/fleet-gateway/src').map((file) => file.replace(/\.rs$/, ''));
+  for (const platform of ['slack', 'discord']) assert.ok(adapters.includes(platform), `${platform} has a gateway adapter`);
+  const benefits = fit.querySelectorAll('.story__benefits .card');
+  assert.equal(benefits.length, 4, 'four benefits sit above the scenes');
+  for (const card of benefits) {
+    const target = card.querySelector('a')?.getAttribute('href') ?? '';
+    assert.ok(target.startsWith('#') && fit.querySelector(target), `"${text(card.querySelector('h3'))}" links to the scene that shows it`);
+  }
   for (const word of ['thurbox', 'Fleet laptop', 'Fleet box', 'Fleet ubuntu', 'ssh', 'wsl', 'laptop:fix-login']) {
     assert.match(fleets, new RegExp(word), `the fleets scene reads "${word}" as text`);
   }

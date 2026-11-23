@@ -489,6 +489,168 @@
   opacity: 0;
 }
 
+.st-tui {
+  fill: var(--bg-code);
+  stroke: var(--accent);
+  stroke-width: 1.5;
+}
+
+.st-tui-pane {
+  fill: none;
+  stroke: var(--st-line);
+}
+
+.st-tui-focus {
+  fill: none;
+  stroke: var(--accent);
+}
+
+.st-tui-mask {
+  fill: var(--bg-code);
+}
+
+.st-tui-sel {
+  fill: var(--st-hot-soft);
+}
+
+.st-tui-badge {
+  fill: var(--accent);
+}
+
+.st-ghost {
+  fill: color-mix(in srgb, var(--text-muted) 35%, transparent);
+}
+
+.st-cursor {
+  fill: var(--text-primary);
+}
+
+.st-ring {
+  fill: none;
+  stroke-width: 1.5;
+}
+
+.st-ring--ok {
+  stroke: var(--green);
+}
+
+.st-ring--idle {
+  stroke: var(--yellow);
+}
+
+.story__svg .st-tui-brand {
+  font-family: var(--font-mono);
+  font-size: 13px;
+  font-weight: 700;
+  fill: var(--accent);
+}
+
+.story__svg .st-tui-row,
+.story__svg .st-tui-meta,
+.story__svg .st-tui-key,
+.story__svg .st-tui-badge-text {
+  font-family: var(--font-mono);
+}
+
+.story__svg .st-tui-row {
+  font-size: 11px;
+}
+
+.story__svg .st-tui-row--sel,
+.story__svg .st-tui-tab,
+.story__svg .st-tui-key {
+  fill: var(--green);
+}
+
+.story__svg .st-tui-meta,
+.story__svg .st-tui-key,
+.story__svg .st-tui-badge-text {
+  font-size: 10px;
+}
+
+.story__svg .st-tui-meta {
+  fill: var(--text-muted);
+}
+
+.story__svg .st-tui-badge-text {
+  font-weight: 700;
+  fill: var(--bg-code);
+}
+
+.st-avatar {
+  fill: var(--st-card);
+  stroke: var(--st-line);
+}
+
+.st-avatar--bot {
+  fill: var(--accent);
+  stroke: var(--accent);
+}
+
+.story__svg .st-chat-name {
+  font-size: 13px;
+}
+
+.story__svg .st-caption {
+  font-size: 11px;
+}
+
+.story__benefits {
+  list-style: none;
+  margin: var(--space-xl) 0 0;
+  padding: 0;
+}
+
+.story__benefits .card {
+  display: flex;
+  flex-direction: column;
+}
+
+.story__benefits h3 {
+  font-size: var(--text-lg);
+}
+
+.story__benefits p {
+  margin-bottom: var(--space-md);
+  color: var(--text-secondary);
+}
+
+.story__benefits a {
+  margin-top: auto;
+  font-family: var(--font-mono);
+  font-size: var(--text-sm);
+}
+
+.story__intro {
+  margin-top: var(--space-3xl);
+}
+
+.story__intro h3 {
+  margin-bottom: var(--space-sm);
+  font-size: 1.25rem;
+}
+
+.story__intro p:last-child {
+  max-width: var(--measure);
+  margin: 0;
+  color: var(--text-secondary);
+}
+
+.story__intro + .story__chapter {
+  margin-top: var(--space-xl);
+}
+
+.story__step .story__gain {
+  margin-top: var(--space-sm);
+  font-family: var(--font-mono);
+  font-size: var(--text-sm);
+  color: var(--accent);
+}
+
+.story__gain::before {
+  content: '→ ';
+}
+
 .story__steps {
   list-style: none;
   margin: 0;
