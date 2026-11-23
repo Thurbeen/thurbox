@@ -929,7 +929,7 @@ fn a_throttle_past_the_budget_defers_the_host_behind_another_hosts_change() {
     std::fs::write(&env.config, cfg).unwrap();
     let slow = env.fake_forge();
     let other = fleet_forge::FakeForge::open("other.test", &env.root.join("forge2")).unwrap();
-    let mut add = |forge: &fleet_forge::FakeForge, host: &str, id: &str| {
+    let add = |forge: &fleet_forge::FakeForge, host: &str, id: &str| {
         forge.set_change("acme/widgets", id, open_change()).unwrap();
         env.apply(change_request(
             &format!("https://{host}/acme/widgets/pull/{id}"),
