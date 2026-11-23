@@ -816,7 +816,7 @@ first, and the controller deletes one whose account left the config.
 ## Store
 
 A data directory holds `store.json` (format and version), `lock`, `seq`,
-`lease.json`, `manager.lock`, `manager.json`, `children/<pid>@<boot id>/`, `objects/<Kind>/<name>.json`,
+`lease.json`, `manager.lock`, `manager.json`, `wake`, `children/<pid>@<boot id>/`, `objects/<Kind>/<name>.json`,
 `boards/<name>/` and `tmp/`. The default is the
 platform data directory (`$XDG_DATA_HOME/fleet`, `~/.local/share/fleet`,
 `%LOCALAPPDATA%\fleet`); a non-empty directory that is not a store is
@@ -869,7 +869,9 @@ refused.
 - `status.wakeRequestedAt` is reached through one typed mutation,
   compare-and-swap under the lock: `request_wake` (`cli`, through the
   manager's `wake` verb, no lease) sets it to the time of the request and
-  refuses a deleting Task. It changes no other field.
+  refuses a deleting Task. It changes no other field. After the write, it
+  replaces `wake` with the Task's new `resourceVersion`. `fleet up` watches
+  `wake`: a change ends its wait between sweeps at once.
 - `status.pauseRequestedAt` is reached through one typed mutation,
   compare-and-swap under the lock: `request_pause` (`cli`, through the
   manager's `pause` verb, no lease) sets it to the time of the request and

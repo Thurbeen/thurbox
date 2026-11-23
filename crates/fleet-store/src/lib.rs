@@ -59,6 +59,7 @@ use crate::durable::LockGuard;
 const FORMAT: &str = "fleet-store";
 const FORMAT_VERSION: u32 = 1;
 const LAUNCH_CAP: usize = 1024 * 1024;
+const WAKE: &str = "wake";
 
 /// Wall-clock milliseconds: the store stamps records and expires leases.
 #[derive(Debug, Clone, Copy, Default)]
@@ -328,6 +329,22 @@ impl FileStore {
             Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(None),
             Err(e) => Err(io_failure(&path, e)),
         }
+    }
+
+    /// The `resourceVersion` of the last wake request written to this
+    /// store, which `fleet up` watches so that it sweeps at once instead of
+    /// at its next poll. `None`: no request is recorded.
+    pub fn last_wake(&self) -> Option<u64> {
+        fs::read_to_string(self.root.join(WAKE))
+            .ok()?
+            .trim()
+            .parse()
+            .ok()
+    }
+
+    fn note_wake_for_the_manager(&self, revision: u64) {
+        let path = self.root.join(WAKE);
+        let _ = durable::replace(&self.tmp_dir(), &path, revision.to_string().as_bytes());
     }
 
     fn write_lease(&self, lease: &LeaseToken) -> Result<(), StoreError> {
@@ -1104,6 +1121,7 @@ impl Store for FileStore {
         obj.status = encode_status(&st)?;
         obj.metadata.resource_version = self.next_rv()?;
         self.write(&obj)?;
+        self.note_wake_for_the_manager(obj.metadata.resource_version);
         Ok(obj)
     }
 

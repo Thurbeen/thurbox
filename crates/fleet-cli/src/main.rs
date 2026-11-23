@@ -1967,6 +1967,7 @@ fn serve_up(
         config_path.display()
     );
     let mut last = Vec::new();
+    let mut wake_before_sweep = file_store.last_wake();
     manager.serve(
         RunOptions {
             max_passes: 50,
@@ -2020,7 +2021,11 @@ fn serve_up(
                 }
                 last = diagnostics;
             }
-            wait_unless_stopped(&stopped, poll_ms, || manager.reported(report))
+            let serving = wait_unless_stopped(&stopped, poll_ms, || {
+                manager.reported(report) || file_store.last_wake() != wake_before_sweep
+            });
+            wake_before_sweep = file_store.last_wake();
+            serving
         },
     )?;
     println!("Fleet stopped; Tasks and sessions retained");
