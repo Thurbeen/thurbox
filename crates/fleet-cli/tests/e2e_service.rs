@@ -390,3 +390,46 @@ fn uninstall_never_removes_a_hand_written_unit() {
         .stderr_has("no unit runs this store");
     assert!(s.units().join("fleet-up.service").exists());
 }
+
+#[test]
+fn a_unit_whose_config_cannot_be_resolved_is_never_taken_for_the_default_store() {
+    let mut s = Service::new("service-unresolved");
+    let default_config = s.env.root.join(".config/fleet/config.toml");
+    fs::create_dir_all(default_config.parent().unwrap()).unwrap();
+    fs::write(&default_config, "version = 1\n").unwrap();
+    s.env.config = default_config;
+    fs::create_dir_all(s.units()).unwrap();
+    for (unit, text) in [
+        (
+            "missing.service",
+            "[Service]\nEnvironment=FLEET_CONFIG=/nowhere/config.toml\nExecStart=/opt/fleet up\n",
+        ),
+        (
+            "specifier.service",
+            "[Service]\nEnvironment=FLEET_CONFIG=%h/.config/fleet/work.toml\nExecStart=/opt/fleet up\n",
+        ),
+        (
+            "from-file.service",
+            "[Service]\nEnvironmentFile=/etc/fleet.env\nExecStart=/opt/fleet up\n",
+        ),
+        ("fleet@.service", "[Service]\nExecStart=/opt/fleet up\n"),
+    ] {
+        fs::write(s.units().join(unit), text).unwrap();
+    }
+    assert_eq!(s.supervisor(), json!(null));
+    s.env.fleet(&["service", "restart"]).code(3);
+    assert!(s.calls().is_empty(), "{:?}", s.calls());
+}
+
+#[test]
+fn a_hand_written_unit_may_quote_with_single_quotes_and_continue_lines() {
+    let s = hand_written(
+        "service-hand-written-syntax",
+        "manager.service",
+        "[Service]\nEnvironment=FLEET_CONFIG=/elsewhere.toml\nEnvironment=\nExecStart=/opt/fleet/bin/fleet \\\n  --config '{config}' \\\n  up\n",
+    );
+    assert_eq!(
+        s.supervisor(),
+        json!({"kind": "systemd", "unit": "manager.service"})
+    );
+}

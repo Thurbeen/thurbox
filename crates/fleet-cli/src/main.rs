@@ -2287,16 +2287,15 @@ fn store_of(invocation: &service::Invocation) -> Option<PathBuf> {
     if let Some(dir) = &invocation.data_dir {
         return Some(dir.clone());
     }
-    let config = invocation
-        .config
-        .clone()
-        .or_else(config::default_config_path)?;
-    let named = match config.try_exists() {
-        Ok(true) => Config::load(&config).ok()?.data.dir,
-        Ok(false) => None,
-        Err(_) => return None,
+    let named = match &invocation.config {
+        Some(config) => Config::load(config).ok()?,
+        None => match config::default_config_path()?.try_exists() {
+            Ok(true) => Config::load(&config::default_config_path()?).ok()?,
+            Ok(false) => return default_data_dir(),
+            Err(_) => return None,
+        },
     };
-    named.or_else(default_data_dir)
+    named.data.dir.or_else(default_data_dir)
 }
 
 /// The unit that runs `fleet up` for the store, for `version`, or `null`.
@@ -3142,17 +3141,25 @@ fn init_summary(
     out
 }
 
-fn serving_version(manager: &Value) -> Option<&str> {
-    (manager["held"] == Value::Bool(true))
-        .then(|| manager["version"].as_str())
-        .flatten()
+fn serving_version(manager: &Value) -> Result<Option<&str>, String> {
+    let why = || {
+        manager["why"]
+            .as_str()
+            .unwrap_or("no manager record")
+            .to_string()
+    };
+    match &manager["held"] {
+        Value::Bool(false) => Ok(None),
+        Value::Bool(true) => manager["version"].as_str().map(Some).ok_or_else(why),
+        _ => Err(why()),
+    }
 }
 
 fn version_skew(manager: &Value) -> Vec<String> {
-    fleet_api::doctor::skew(VERSION, serving_version(manager), &[])
+    fleet_api::doctor::skew(VERSION, serving_version(manager).ok().flatten(), &[])
 }
 
-fn runtime_mux_versions(config: &Config) -> Vec<(String, String)> {
+fn runtime_mux_versions(config: &Config) -> Vec<(String, Option<String>)> {
     config
         .runtimes
         .iter()
@@ -3161,9 +3168,9 @@ fn runtime_mux_versions(config: &Config) -> Vec<(String, String)> {
                 .file_stem()
                 .is_some_and(|s| s == "runtime-mux")
         })
-        .filter_map(|(name, _)| match exec_program(config, name).manifest() {
-            Observation::Known(m) => Some((name.clone(), m.version?)),
-            Observation::Unknown { .. } => None,
+        .map(|(name, _)| match exec_program(config, name).manifest() {
+            Observation::Known(m) => (name.clone(), m.version),
+            Observation::Unknown { .. } => (name.clone(), None),
         })
         .collect()
 }
@@ -3235,6 +3242,7 @@ fn cmd_doctor(
     checks.push(doctor::versions(
         VERSION,
         serving_version(&manager),
+        !manager["supervisor"].is_null(),
         &runtime_mux_versions(config),
     ));
     checks.push(doctor::telemetry(otel_env::describe(

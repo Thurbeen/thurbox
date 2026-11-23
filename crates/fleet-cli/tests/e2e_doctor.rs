@@ -399,8 +399,7 @@ fn a_manager_on_another_release_than_the_cli_is_a_version_skew() {
     assert!(detail.contains(&format!("cli {cli}")), "{report:#}");
     assert!(detail.contains("manager 0.0.1"), "{report:#}");
     assert_eq!(
-        versions["hint"],
-        format!("fleet service restart --expect {cli}"),
+        versions["hint"], "stop its fleet up and run it again",
         "{report:#}"
     );
 
@@ -447,4 +446,45 @@ fn one_release_everywhere_is_no_skew() {
     );
     let version = env.fleet(&["version", "--json"]).ok().json();
     assert_eq!(version["skew"], serde_json::json!([]), "{version:#}");
+}
+
+#[cfg(unix)]
+#[test]
+fn a_runtime_mux_that_reports_no_version_is_a_warning() {
+    use std::os::unix::fs::PermissionsExt;
+    let env = setup("doctor-mux-no-version");
+    let cli = cli_version(&env);
+    runtime_mux_of(&env, &cli);
+    let runtime = env.root.join("mux-bin/runtime-mux");
+    fs::write(
+        &runtime,
+        "#!/bin/sh\ncat >/dev/null\necho '{\"known\":{\"protocol\":2,\"verbs\":[\"manifest\",\"start\",\"inspect\",\"stop\"],\"places\":[{\"name\":\"local\",\"platform\":\"posix\",\"ready\":true}]}}'\n",
+    )
+    .expect("runtime");
+    fs::set_permissions(&runtime, fs::Permissions::from_mode(0o755)).expect("chmod");
+
+    let report = env.fleet(&["doctor", "--json"]).ok().json();
+    let versions = check(&report, "version", "fleet");
+    assert_eq!(versions["level"], "warn", "{report:#}");
+    assert!(
+        versions["detail"]
+            .as_str()
+            .is_some_and(|d| d.contains("runtime mux unknown")),
+        "{report:#}"
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn a_manager_no_service_runs_is_restarted_by_hand() {
+    let env = setup("doctor-skew-unsupervised");
+    let cli = cli_version(&env);
+    runtime_mux_of(&env, &cli);
+    serving_manager(&env, "0.0.1");
+    let report = env.fleet(&["doctor", "--json"]).ok().json();
+    assert_eq!(
+        check(&report, "version", "fleet")["hint"],
+        "stop its fleet up and run it again",
+        "{report:#}"
+    );
 }

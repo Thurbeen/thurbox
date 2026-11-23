@@ -43,6 +43,13 @@ pub fn unit_store(path: &Path) -> Option<String> {
 /// `ExecStart=` and `Environment=` lines and those of its drop-ins. `None`
 /// for a unit Fleet wrote, or one that does not run `fleet up`.
 pub fn invocation(path: &Path) -> Option<Invocation> {
+    if path
+        .file_name()
+        .and_then(|n| n.to_str())
+        .is_some_and(|n| n.contains("@."))
+    {
+        return None;
+    }
     let mut text = std::fs::read_to_string(path).ok()?;
     if text.lines().any(|l| l.starts_with(STORE_KEY)) {
         return None;
@@ -59,11 +66,18 @@ pub fn invocation(path: &Path) -> Option<Invocation> {
         text.push('\n');
         text.push_str(&std::fs::read_to_string(drop_in).unwrap_or_default());
     }
-    let mut env = Vec::new();
+    let text = text.replace("\\\n", " ");
+    let mut env: Vec<String> = Vec::new();
     let mut argv = Vec::new();
+    let mut env_file = false;
     for line in text.lines().map(str::trim) {
         if let Some(value) = line.strip_prefix("Environment=") {
+            if value.trim().is_empty() {
+                env.clear();
+            }
             env.extend(words(value));
+        } else if let Some(value) = line.strip_prefix("EnvironmentFile=") {
+            env_file = !value.trim().is_empty();
         } else if let Some(value) = line.strip_prefix("ExecStart=") {
             argv = words(value);
         }
@@ -76,7 +90,7 @@ pub fn invocation(path: &Path) -> Option<Invocation> {
         env.iter()
             .rev()
             .find_map(|a| a.strip_prefix(name)?.strip_prefix('='))
-            .map(PathBuf::from)
+            .map(str::to_string)
     };
     let flag = |name: &str| {
         argv.windows(2)
@@ -89,11 +103,16 @@ pub fn invocation(path: &Path) -> Option<Invocation> {
     };
     let config = match flag("--config").as_deref() {
         None | Some("${FLEET_CONFIG}" | "$FLEET_CONFIG") => var("FLEET_CONFIG"),
-        Some(path) => Some(PathBuf::from(path)),
+        Some(path) => Some(path.to_string()),
     };
+    let data_dir = flag("--data-dir");
+    let resolved = |value: &Option<String>| value.as_ref().is_none_or(|v| !v.contains(['%', '$']));
+    if !resolved(&config) || !resolved(&data_dir) || (env_file && config.is_none()) {
+        return None;
+    }
     Some(Invocation {
-        config,
-        data_dir: flag("--data-dir").map(PathBuf::from),
+        config: config.map(PathBuf::from),
+        data_dir: data_dir.map(PathBuf::from),
     })
 }
 
@@ -101,22 +120,23 @@ fn words(line: &str) -> Vec<String> {
     let mut words = Vec::new();
     let mut word = String::new();
     let mut started = false;
-    let mut quoted = false;
+    let mut quote: Option<char> = None;
     let mut chars = line.chars();
     while let Some(c) = chars.next() {
-        match c {
-            '"' => {
-                quoted = !quoted;
+        match (c, quote) {
+            ('"' | '\'', None) => {
+                quote = Some(c);
                 started = true;
             }
-            '\\' if quoted => word.extend(chars.next()),
-            c if c.is_whitespace() && !quoted => {
+            (c, Some(q)) if c == q => quote = None,
+            ('\\', _) => word.extend(chars.next()),
+            (c, None) if c.is_whitespace() => {
                 if started {
                     words.push(std::mem::take(&mut word));
                     started = false;
                 }
             }
-            c => {
+            (c, _) => {
                 word.push(c);
                 started = true;
             }

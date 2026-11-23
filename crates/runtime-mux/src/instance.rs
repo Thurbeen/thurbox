@@ -32,7 +32,7 @@ pub fn app_dir_name() -> &'static str {
 /// it runs from a release directory, falling back to a bare `thurbox-cli` on
 /// `PATH` when resolution fails. A local pane's `PATH` is led by its directory
 /// (`tmux_compat::server`'s `path_prefix_args`), so the hooks it runs reach
-/// the CLI of the build that spawned it.
+/// the CLI the install's current release ships.
 ///
 /// The platform executable suffix (`.exe` on Windows, empty elsewhere) is
 /// applied via [`std::env::consts::EXE_SUFFIX`], so the self/sibling match works
@@ -42,7 +42,10 @@ pub fn resolve_cli_binary() -> PathBuf {
     if let Ok(exe) = std::env::current_exe() {
         let dir = exe.parent().map(through_current_release);
         if exe.file_name().and_then(std::ffi::OsStr::to_str) == Some(cli_name.as_str()) {
-            return dir.map_or(exe, |dir| dir.join(&cli_name));
+            return dir
+                .map(|dir| dir.join(&cli_name))
+                .filter(|cli| cli.exists())
+                .unwrap_or(exe);
         }
         if let Some(sibling) = dir.map(|dir| dir.join(&cli_name)) {
             if sibling.exists() {

@@ -288,25 +288,39 @@ pub fn skew(cli: &str, manager: Option<&str>, runtimes: &[(String, String)]) -> 
 }
 
 /// The versions the CLI, the serving manager and each runtime-mux run: a
-/// warning when one differs, since an update moves them together.
-pub fn versions(cli: &str, manager: Option<&str>, runtimes: &[(String, String)]) -> Check {
+/// warning when one differs, since an update moves them together, and when
+/// one is unknown. `manager` is `Ok(None)` when no manager runs; a runtime's
+/// `None` is a version it did not report.
+pub fn versions(
+    cli: &str,
+    manager: Result<Option<&str>, String>,
+    supervised: bool,
+    runtimes: &[(String, Option<String>)],
+) -> Check {
+    let known = |v: Option<&str>| v.unwrap_or("unknown").to_string();
     let detail = std::iter::once(format!("cli {cli}"))
-        .chain(manager.map(|v| format!("manager {v}")))
+        .chain(match &manager {
+            Ok(None) => None,
+            Ok(Some(v)) => Some(format!("manager {v}")),
+            Err(why) => Some(format!("manager unknown ({why})")),
+        })
         .chain(
             runtimes
                 .iter()
-                .map(|(name, v)| format!("runtime {name} {v}")),
+                .map(|(name, v)| format!("runtime {name} {}", known(v.as_deref()))),
         )
         .collect::<Vec<_>>()
         .join(", ");
-    let hint = if manager.is_some_and(|v| v != cli) {
-        Some(format!("fleet service restart --expect {cli}"))
-    } else if skew(cli, None, runtimes).is_empty() {
-        None
-    } else {
-        Some(format!(
+    let hint = match manager {
+        Ok(Some(v)) if v != cli && supervised => {
+            Some(format!("fleet service restart --expect {cli}"))
+        }
+        Ok(Some(v)) if v != cli => Some("stop its fleet up and run it again".to_string()),
+        Err(_) => Some("fleet version --json says why the manager is unknown".to_string()),
+        _ if runtimes.iter().any(|(_, v)| v.as_deref() != Some(cli)) => Some(format!(
             "run the runtime-mux released with fleet {cli}: the one beside fleet, or name it in [runtimes.<name>] program"
-        ))
+        )),
+        _ => None,
     };
     Check {
         area: "version",
