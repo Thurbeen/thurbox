@@ -163,7 +163,8 @@ flowchart LR
 - **Crash-safe.** The manager records an effect's intent before it runs it. An
   observation it cannot read never counts as the session being gone.
 
-thurbox is one client of this model: every session in its list is a Task.
+thurbox is one client of this model. It keeps no database: every session in
+its list is a Task, and the agents it offers are the Fleet's harness profiles.
 Scripts drive the same Tasks with `fleet apply`, `fleet send` and
 `fleet delete`. [Fleet's documentation](docs/fleet/README.md) covers every
 kind, every controller and one reconcile step by step.
