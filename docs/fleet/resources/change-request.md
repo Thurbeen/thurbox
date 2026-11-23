@@ -42,7 +42,7 @@ derives one: `cr-` and 12 hex digits of the SHA-256 of
 | Field | Type | Required | Meaning |
 | --- | --- | --- | --- |
 | `url` | string | yes | The change's URL. The adapter for its host parses it into `status.ref`. A URL that it cannot read is refused. |
-| `pollMs` | integer, at least 1 | no | The poll interval while Watching. Default 60000. |
+| `pollMs` | integer, at least 1 | no | The poll interval while Watching and followed by a Task. Default 60000. A ChangeRequest no Task follows is polled every `10 × pollMs`. |
 | `closedGraceMs` | integer | no | How long a closed change stays watched before it settles. Default `forge.closedGraceMs`, one week. |
 | `settledTtlMs` | integer | no | How long a settled ChangeRequest stays before its controller deletes it. Default `forge.settledTtlMs`, thirty days. |
 
@@ -92,7 +92,8 @@ Watching ─────────▶ Closed ───────────
    └───────── merged, or proven gone ──────────┘
 ```
 
-- Watching polls every `pollMs`. Closed polls ten times more slowly.
+- Watching polls every `pollMs` while a Task follows the change, and ten
+  times more slowly while none does. Closed polls ten times more slowly.
 - Merged, or a change that the forge proves absent, settles at once.
 - An Unknown answer changes no phase: `Reachable` becomes `Unknown`.
 - A Settled ChangeRequest is deleted by its controller after

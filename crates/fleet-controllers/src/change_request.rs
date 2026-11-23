@@ -10,13 +10,16 @@ use fleet_api::change_request::{
     self, CLOSED_POLL_FACTOR, ChangeRequestDefaults, ChangeRequestSpec, ChangeRequestStatus, Head,
     NOTE_CAP, Phase, Sequenced, StoredNote,
 };
-use fleet_api::condition::{ConditionStatus, set_condition, settle_transitions};
+use fleet_api::condition::{
+    Condition, ConditionStatus, is_true, set_condition, settle_transitions,
+};
 use fleet_api::forge::{ChangeObservation, ChangeRef, ChangeSnapshot, ChangeState, Note};
 use fleet_api::meta::{Millis, Object};
 use fleet_api::plan::{Plan, Probe};
 use fleet_api::store::FieldManager;
 use fleet_api::validate::typed;
 use fleet_api::{Observation, StoreError};
+use serde_json::Value;
 
 /// What one reconcile of one ChangeRequest reads. Every outside fact arrives
 /// here as a value; nothing is read from the world inside the controller.
@@ -27,6 +30,10 @@ pub struct ChangeRequestInput<'a> {
     pub now: Millis,
     /// The `[forge]` defaults the spec may override.
     pub defaults: ChangeRequestDefaults,
+    /// Whether a Task that is not being deleted names this ChangeRequest in
+    /// its `status.declared`. An unfollowed change is polled at the closed
+    /// rate.
+    pub followed: bool,
 }
 
 /// The answers to the probes; `None` means "not asked".
@@ -64,7 +71,7 @@ impl ChangeRequestController {
         let (_, st) = decode(input.object)?;
         if input.object.is_deleting()
             || st.phase == Phase::Settled
-            || st.not_before.is_some_and(|t| t > input.now)
+            || !self.due(input.object, input.followed, input.now)?
         {
             return Ok(Vec::new());
         }
@@ -78,6 +85,35 @@ impl ChangeRequestController {
         Ok(reference
             .map(|change| vec![Probe::Change { change }])
             .unwrap_or_default())
+    }
+
+    /// Whether the ChangeRequest is to be reconciled now: its `notBefore`
+    /// has passed, or a Task follows it, its last poll was answered while
+    /// Watching, and `pollMs` has passed since. The second wakes a change
+    /// that was waiting out the unfollowed rate as soon as a Task declares it.
+    pub fn due(&self, object: &Object, followed: bool, now: Millis) -> Result<bool, StoreError> {
+        let status = &object.status;
+        let millis = |field: &str| status.get(field).and_then(Value::as_u64);
+        if millis("notBefore").is_none_or(|t| t <= now) {
+            return Ok(true);
+        }
+        if !followed {
+            return Ok(false);
+        }
+        let spec: ChangeRequestSpec = typed(change_request::KIND, &object.spec)?;
+        let invalid =
+            |e: serde_json::Error| StoreError::Invalid(format!("ChangeRequest status: {e}"));
+        let phase: Phase = match status.get("phase") {
+            Some(v) => serde_json::from_value(v.clone()).map_err(invalid)?,
+            None => Phase::default(),
+        };
+        let conditions: Vec<Condition> = match status.get("conditions") {
+            Some(v) => serde_json::from_value(v.clone()).map_err(invalid)?,
+            None => Vec::new(),
+        };
+        Ok(phase == Phase::Watching
+            && is_true(&conditions, REACHABLE)
+            && millis("observedAt").is_some_and(|at| at.saturating_add(spec.poll_ms()) <= now))
     }
 
     pub fn reconcile(&self, input: &ChangeRequestInput<'_>) -> Result<Plan, StoreError> {
@@ -138,13 +174,13 @@ impl Pass<'_, '_> {
         );
     }
 
-    /// The phase's poll interval: `pollMs` while Watching, ten times that
-    /// while Closed.
+    /// The poll interval: `pollMs` while Watching and followed, ten times
+    /// that while Closed or while no Task follows the change.
     fn interval(&self) -> Millis {
         let poll = self.spec.poll_ms();
         match self.st.phase {
-            Phase::Closed => poll.saturating_mul(CLOSED_POLL_FACTOR),
-            Phase::Watching | Phase::Settled => poll,
+            Phase::Watching if self.input.followed => poll,
+            _ => poll.saturating_mul(CLOSED_POLL_FACTOR),
         }
     }
 

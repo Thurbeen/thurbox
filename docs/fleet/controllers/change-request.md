@@ -93,6 +93,13 @@ due. Deletion by a person removes the record from any phase. Every poll
 writes the bookkeeping fields, `observedAt` and `notBefore`; only a changed
 snapshot moves `revision`.
 
+A ChangeRequest is followed when a Task that is not being deleted names it in
+`status.declared`. In the table, `pollMs` while Watching applies to a followed
+ChangeRequest. An unfollowed one waits `10 × pollMs` instead, the closed
+rate. A Task that declares it makes it due again once `pollMs` has passed
+since `observedAt`, if its last poll was answered. The manager reads the
+followers from the Task list it takes at the start of each pass.
+
 | Current phase | Observation | Next phase | Decision |
 | --- | --- | --- | --- |
 | Watching | Known, nothing differs from the snapshot | Watching | Bookkeeping only; `notBefore = now + pollMs`. |
@@ -148,10 +155,12 @@ object's `uid` and `resourceVersion` and runs under the lease, so a stale
 plan cannot remove a recreated mirror. A follower that still names a deleted
 ChangeRequest sees readable absence and raises `ChangeGone`.
 
-An open ChangeRequest nobody follows, such as one left by a crash between
-the two steps of `fleet declare`, is polled until it settles like any other,
-then retained and removed. Nothing collects open orphans; they cost one
-bounded call per interval and are visible in `fleet list changerequest`.
+An open ChangeRequest nobody follows, such as one applied by hand, one left
+by a crash between the two steps of `fleet declare`, or one whose Tasks were
+deleted, is polled at the closed rate, `10 × pollMs`, until it settles. It is
+then retained and removed like any other. Nothing deletes open orphans; they
+cost one bounded call per ten intervals and are visible in
+`fleet list changerequest`.
 
 ### Deletion
 

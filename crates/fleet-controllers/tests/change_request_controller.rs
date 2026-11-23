@@ -104,6 +104,7 @@ fn run_at(obj: &Object, obs: ChangeRequestObservations, now: u64) -> (Plan, Chan
         observations: obs,
         now,
         defaults: ChangeRequestDefaults::default(),
+        followed: true,
     };
     let plan = ChangeRequestController.reconcile(&input).unwrap();
     let st = match &plan.status {
@@ -129,6 +130,7 @@ fn probes_at(obj: &Object, obs: ChangeRequestObservations, now: u64) -> Vec<Prob
         observations: obs,
         now,
         defaults: ChangeRequestDefaults::default(),
+        followed: true,
     };
     ChangeRequestController.probes(&input).unwrap()
 }
@@ -420,6 +422,15 @@ fn a_throttled_answer_waits_as_long_as_the_forge_said() {
     let (_, st) = run_at(&object(Some(&before)), obs, NOW + POLL);
     assert_eq!(cond(&st, "Reachable").reason, "Throttled");
     assert_eq!(st.not_before, Some(NOW + POLL + 90_000));
+    let throttled = object(Some(&st));
+    assert!(
+        probes_at(&throttled, Default::default(), NOW + 2 * POLL).is_empty(),
+        "a followed change still waits out retryAfter"
+    );
+    assert_eq!(
+        probes_at(&throttled, Default::default(), NOW + POLL + 90_000).len(),
+        1
+    );
 }
 
 #[test]
@@ -596,6 +607,7 @@ fn malformed_spec_or_status_is_invalid_not_a_guess() {
         observations: ChangeRequestObservations::default(),
         now: NOW,
         defaults: ChangeRequestDefaults::default(),
+        followed: true,
     };
     assert!(matches!(
         ChangeRequestController.reconcile(&input),
@@ -608,6 +620,7 @@ fn malformed_spec_or_status_is_invalid_not_a_guess() {
         observations: ChangeRequestObservations::default(),
         now: NOW,
         defaults: ChangeRequestDefaults::default(),
+        followed: true,
     };
     assert!(matches!(
         ChangeRequestController.probes(&input),
@@ -628,6 +641,7 @@ fn the_configured_defaults_apply_when_the_spec_names_none() {
         observations: seen(snapshot(ChangeState::Merged)),
         now: NOW,
         defaults,
+        followed: true,
     };
     let plan = ChangeRequestController.reconcile(&input).unwrap();
     let st: ChangeRequestStatus = serde_json::from_value(plan.status.unwrap()).unwrap();
