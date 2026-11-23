@@ -1260,12 +1260,12 @@ fn a_github_check_reads_its_latest_run_so_a_superseded_cancellation_is_not_a_fai
     let env = Env::forge_stubs("github");
     let runs = |title_rerun: bool| {
         let mut checks = vec![
-            json!({"name": "CI", "state": "cancelled", "at": 1_000, "url": "https://github.test/acme/widgets/runs/1"}),
-            json!({"name": "CI", "state": "success", "at": 2_000}),
-            json!({"name": "PR Title", "state": "cancelled", "at": 1_000, "url": "https://github.test/acme/widgets/runs/2"}),
+            json!({"name": "CI", "state": "cancelled", "url": "https://github.test/acme/widgets/runs/1"}),
+            json!({"name": "CI", "state": "success"}),
+            json!({"name": "PR Title", "state": "cancelled", "url": "https://github.test/acme/widgets/runs/2"}),
         ];
         if title_rerun {
-            checks.push(json!({"name": "PR Title", "state": "success", "at": 3_000}));
+            checks.push(json!({"name": "PR Title", "state": "success"}));
         }
         json!({"acme/widgets#7": {"state": "open", "head": "h1", "checks": checks, "reviewDecision": null, "mergeable": "mergeable"}})
     };

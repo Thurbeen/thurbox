@@ -32,7 +32,7 @@ const QUERY: &str = "query($owner: String!, $name: String!, $number: Int!, $with
       mergeable @include(if: $withCore)
       mergeStateStatus @include(if: $withCore)
       headRefOid @include(if: $withCore)
-      commits(last: 1) @include(if: $withCore) { nodes { commit { oid statusCheckRollup { contexts(first: 100) { pageInfo { hasNextPage } nodes { __typename ... on CheckRun { name status conclusion detailsUrl startedAt } ... on StatusContext { context state targetUrl } } } } } } }
+      commits(last: 1) @include(if: $withCore) { nodes { commit { oid statusCheckRollup { contexts(first: 100) { pageInfo { hasNextPage } nodes { __typename ... on CheckRun { name status conclusion detailsUrl databaseId } ... on StatusContext { context state targetUrl } } } } } } }
       reviews(first: 100, after: $reviewsAfter) @include(if: $withReviews) { pageInfo { hasNextPage endCursor } nodes { id state body url createdAt lastEditedAt author { login __typename } commit { oid } } }
       comments(first: 100, after: $commentsAfter) @include(if: $withComments) { pageInfo { hasNextPage endCursor } nodes { id body url createdAt lastEditedAt author { login __typename } } }
       reviewThreads(first: 100, after: $threadsAfter) @include(if: $withThreads) { pageInfo { hasNextPage endCursor } nodes { id isResolved comments(first: 100) { pageInfo { hasNextPage } nodes { id body url path line originalLine createdAt lastEditedAt author { login __typename } } } } }
@@ -482,20 +482,26 @@ fn edited(v: &Value) -> Result<Option<Millis>, String> {
     }
 }
 
-fn superseded(runs: &[Value], i: usize) -> bool {
-    let started = |c: &Value| {
-        c["startedAt"]
-            .as_str()
-            .and_then(cli::iso_millis)
-            .unwrap_or(Millis::MAX)
-    };
+fn superseded(runs: &[Value], i: usize) -> Result<bool, String> {
     let run = &runs[i];
-    run["__typename"] == "CheckRun"
-        && runs.iter().enumerate().any(|(j, other)| {
-            other["__typename"] == "CheckRun"
-                && other["name"] == run["name"]
-                && (started(other), j) > (started(run), i)
-        })
+    if run["__typename"] != "CheckRun" {
+        return Ok(false);
+    }
+    let id = |c: &Value| {
+        c["databaseId"]
+            .as_u64()
+            .ok_or_else(|| format!("check run {} has no databaseId", c["name"]))
+    };
+    for (j, other) in runs.iter().enumerate() {
+        if j != i
+            && other["__typename"] == "CheckRun"
+            && other["name"] == run["name"]
+            && id(other)? > id(run)?
+        {
+            return Ok(true);
+        }
+    }
+    Ok(false)
 }
 
 /// The truth table: GitHub's answer in Fleet's words, or why it cannot be
@@ -517,11 +523,10 @@ pub fn snapshot(
     }
     let nodes = rollup["nodes"].as_array().map_or(&[][..], Vec::as_slice);
     let (mut failed, mut pending, mut passed) = (Vec::new(), false, false);
-    for (_, c) in nodes
-        .iter()
-        .enumerate()
-        .filter(|&(i, _)| !superseded(nodes, i))
-    {
+    for (i, c) in nodes.iter().enumerate() {
+        if superseded(nodes, i)? {
+            continue;
+        }
         let (name, url, verdict) = if c["__typename"] == "CheckRun" {
             let verdict = match (c["status"].as_str(), c["conclusion"].as_str()) {
                 (Some("COMPLETED"), Some("SUCCESS")) => "passed",
@@ -783,7 +788,7 @@ mod tests {
     }
 
     #[test]
-    fn a_check_reads_its_latest_run_and_a_queued_rerun_is_the_latest() {
+    fn a_check_reads_its_newest_run_by_database_id() {
         let checks = |nodes: Value| {
             let pr = core(
                 json!({"commits": {"nodes": [{"commit": {"oid": "h1", "statusCheckRollup": {"contexts": {"pageInfo": {"hasNextPage": false}, "nodes": nodes}}}}]}}),
@@ -791,20 +796,40 @@ mod tests {
             snapshot(&pr, &[], &[], &[]).unwrap().head
         };
         let head = checks(json!([
-            {"__typename": "CheckRun", "name": "CI", "status": "COMPLETED", "conclusion": "SUCCESS", "startedAt": "2026-01-01T00:00:02Z"},
-            {"__typename": "CheckRun", "name": "CI", "status": "COMPLETED", "conclusion": "CANCELLED", "startedAt": "2026-01-01T00:00:01Z"}
+            {"__typename": "CheckRun", "databaseId": 2, "name": "CI", "status": "COMPLETED", "conclusion": "SUCCESS"},
+            {"__typename": "CheckRun", "databaseId": 1, "name": "CI", "status": "COMPLETED", "conclusion": "CANCELLED"}
         ]));
         assert_eq!(head.checks, Checks::Passed);
         assert!(head.failing.is_empty());
+        let unordered = json!([
+            {"__typename": "CheckRun", "name": "CI", "status": "COMPLETED", "conclusion": "SUCCESS"},
+            {"__typename": "CheckRun", "databaseId": 1, "name": "CI", "status": "COMPLETED", "conclusion": "CANCELLED"}
+        ]);
+        let pr = core(
+            json!({"commits": {"nodes": [{"commit": {"oid": "h1", "statusCheckRollup": {"contexts": {"pageInfo": {"hasNextPage": false}, "nodes": unordered}}}}]}}),
+        );
+        assert!(
+            snapshot(&pr, &[], &[], &[]).is_err(),
+            "runs of one check that cannot be ordered"
+        );
         let head = checks(json!([
-            {"__typename": "CheckRun", "name": "CI", "status": "COMPLETED", "conclusion": "CANCELLED", "startedAt": "2026-01-01T00:00:01Z"},
-            {"__typename": "CheckRun", "name": "CI", "status": "QUEUED", "conclusion": null, "startedAt": null}
+            {"__typename": "CheckRun", "databaseId": 1, "name": "CI", "status": "COMPLETED", "conclusion": "CANCELLED"},
+            {"__typename": "CheckRun", "databaseId": 2, "name": "CI", "status": "QUEUED", "conclusion": null}
         ]));
         assert_eq!(head.checks, Checks::Pending);
         let head = checks(json!([
-            {"__typename": "CheckRun", "name": "CI", "status": "COMPLETED", "conclusion": "CANCELLED", "startedAt": "2026-01-01T00:00:01Z"}
+            {"__typename": "CheckRun", "name": "CI", "status": "COMPLETED", "conclusion": "CANCELLED"}
         ]));
         assert_eq!(head.checks, Checks::Failed, "an unsuperseded cancellation");
+        let head = checks(json!([
+            {"__typename": "CheckRun", "databaseId": 1, "name": "CI", "status": "COMPLETED", "conclusion": "CANCELLED", "startedAt": null},
+            {"__typename": "CheckRun", "databaseId": 2, "name": "CI", "status": "COMPLETED", "conclusion": "SUCCESS", "startedAt": "2026-01-01T00:00:02Z"}
+        ]));
+        assert_eq!(
+            head.checks,
+            Checks::Passed,
+            "a run cancelled while queued never started"
+        );
     }
 
     #[test]
