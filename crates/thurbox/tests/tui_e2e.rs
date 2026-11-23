@@ -53,6 +53,7 @@ const WAIT: Duration = Duration::from_secs(20);
 /// The bytes a terminal sends for the chords the scenarios press.
 const CTRL_P: &[u8] = b"\x10";
 const CTRL_Q: &[u8] = b"\x11";
+const CTRL_T: &[u8] = b"\x14";
 const CTRL_Y: &[u8] = b"\x19";
 /// What a legacy terminal sends for `ctrl+/` (the search plugin folds
 /// `ctrl+/`, `ctrl+7` and `ctrl+_` into one chord).
@@ -7100,6 +7101,45 @@ fn start_wakes_a_paused_task(phase: &str, paused_session_state: &str) {
     );
     tui.wait_for("started napping");
     tui.send(b"s");
+    tui.wait_until_quiet();
+    std::thread::sleep(Duration::from_secs(1));
+    let calls = std::fs::read_to_string(&calls).expect("fleet's calls");
+    let wakes: Vec<&str> = calls
+        .lines()
+        .filter(|call| call.contains("--wake"))
+        .collect();
+    assert_eq!(wakes, ["attach --wake --json napping"], "{calls}");
+    assert!(tui.quit().success());
+}
+
+#[test]
+fn ctrl_t_on_a_paused_session_asks_fleet_to_wake_it_for_its_shell() {
+    let profile = Profile::new();
+    let calls = profile.root.path().join("fleet-calls");
+    let woken = profile.root.path().join("woken");
+    let paused = paused_idle("napping");
+    let resumed = resumed("napping");
+    let synced = serde_json::json!({"type": "synced", "revision": 1, "names": ["napping"]});
+    write_script(
+        &profile.bin.join("fleet"),
+        &format!(
+            "#!/bin/sh\necho \"$*\" >> '{calls}'\ncase \"$1\" in\n  watch) echo '{paused}'; echo '{synced}'; until [ -e '{woken}' ]; do kill -0 $PPID 2>/dev/null || exit 0; sleep 0.2; done; echo '{resumed}'; while kill -0 $PPID 2>/dev/null; do sleep 1; done ;;\n  attach) [ \"$2\" = --wake ] && {{ touch '{woken}'; exit 0; }}; echo \"error: Task/napping is paused: its agent is stopped\" >&2; exit 3 ;;\n  up) exit 6 ;;\n  version) echo '{{\"apiVersions\":[\"fleet/v1alpha1\"]}}' ;;\n  *) exit 1 ;;\nesac\n",
+            calls = calls.display(),
+            woken = woken.display(),
+        ),
+    );
+    let mut tui = Tui::spawn(&profile, 40, 160);
+    tui.wait_until("the paused pane", |frame| {
+        frame.contains("napping is paused")
+    });
+    tui.send(CTRL_T);
+    tui.wait_until("Fleet to be asked to wake it", |frame| {
+        assert!(
+            !frame.contains("could not open a shell"),
+            "the shell was refused:\n{frame}"
+        );
+        woken.exists()
+    });
     tui.wait_until_quiet();
     std::thread::sleep(Duration::from_secs(1));
     let calls = std::fs::read_to_string(&calls).expect("fleet's calls");
