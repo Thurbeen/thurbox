@@ -36,19 +36,6 @@ breadcrumb: 'Installation'
           </p>
           <pre data-wrap><code class="language-bash">curl -fsSL https://raw.githubusercontent.com/Thurbeen/thurbox/main/scripts/install.sh | sh</code></pre>
 
-          <div class="info-box">
-            <p>
-              <strong>Upgrading from 2.x.</strong>
-              A 2.x install updates only within 2.x: neither the in-app update nor
-              <code>thurbox-cli update</code> (<code>--force</code> included) moves it to 3.x. Run the
-              install script again, then follow
-              <a href="https://github.com/Thurbeen/thurbox#migrating-from-v2">Migrating from v2</a>:
-              <code>fleet migrate</code> and <code>thurbox-cli migrate</code> carry over the Fleet 2
-              config and store and the 2.x sessions and cron automations they can, and name the
-              rest.
-            </p>
-          </div>
-
           <p>The script handles:</p>
           <ul>
             <li>Platform detection (Linux/macOS, x86_64/aarch64)</li>
@@ -330,8 +317,8 @@ nix profile install github:Thurbeen/thurbox          # install into your profile
           <p>
             The install scripts (<code>install.sh</code> and <code>install.ps1</code>) ship
             <code>fleet</code>, <code>runtime-mux</code> and <code>workspace-git</code> beside
-            Thurbox. Homebrew, the AUR, winget and Chocolatey still carry thurbox 2.x. Nix ships
-            the 3.x <code>thurbox</code> and <code>thurbox-cli</code> only: run the install script
+            Thurbox. Homebrew, the AUR, winget and Chocolatey ship thurbox 2.x, without Fleet. Nix ships
+            <code>thurbox</code> and <code>thurbox-cli</code> only: run the install script
             as well, or
             <a href="#from-source">build from source</a>. To install Fleet alone, with no thurbox, see
             <a href="fleet-install.html">Install Fleet</a>. Every Fleet resource and controller is in
@@ -658,7 +645,7 @@ Remove-Item -Recurse -Force "$env:APPDATA\thurbox", "$env:LOCALAPPDATA\thurbox",
   "$env:APPDATA\fleet", "$env:LOCALAPPDATA\fleet"</code></pre>
           <p>
             <strong>Remote hosts.</strong>
-            Sessions Thurbox v2 ran on an
+            Sessions an older Thurbox ran on an
             <code>ssh:</code>
             or
             <code>wsl:</code>
@@ -673,7 +660,7 @@ Remove-Item -Recurse -Force "$env:APPDATA\thurbox", "$env:LOCALAPPDATA\thurbox",
             <code>thurbox-cli</code>
             and its database under
             <code>~/.local/share/thurbox</code>
-            , and, from Thurbox v2, the same agent hook entries as step 2. Run this on the host,
+            , and the same agent hook entries as step 2. Run this on the host,
             through
             <code>ssh &lt;host&gt;</code>
             or

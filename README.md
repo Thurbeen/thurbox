@@ -31,6 +31,38 @@ file you can change.
   <img src="website/assets/overview-light.svg" alt="thurbox lists the sessions of every Fleet; each Fleet's runtime runs a session at a place">
 </picture>
 
+## How Fleet works
+
+Fleet is the engine under thurbox, and it orchestrates like Kubernetes. You
+declare what you want as resources; controllers make it so and write back what
+is.
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="website/assets/fleet-loop-dark.svg">
+  <img src="website/assets/fleet-loop-light.svg" alt="You declare resources; the store keeps them; controllers run by fleet up observe the runtime and the forge, compare with the spec, act, and write the status back">
+</picture>
+
+- **Resources.** Each one has a `spec`, what you want, and a `status`, what is.
+  A **Task** is one agent session doing one brief at one place.
+  **TaskConfig** and **EnvProvider** hold the launch defaults and environment
+  Tasks share. A **ChangeRequest** mirrors a pull or merge request a worker
+  declares. A **CronTask** creates Tasks on a schedule, like a CronJob.
+  Conversation, Listener, Board and plugin kinds complete the set.
+- **The store** keeps each resource as a file. Every write is compare-and-swap.
+- **Controllers reconcile.** `fleet up`, the manager, runs them in sweeps. Each
+  compares a resource's spec with what it observes and plans effects: make the
+  workspace, start the session, type the brief, deliver review feedback,
+  pause, revive or release the session. It writes the phase and conditions
+  back to the status.
+- **Crash-safe.** The manager records an effect's intent before it runs it. An
+  observation it cannot read never counts as the session being gone.
+
+thurbox is one client of this model. It keeps no database: every session in
+its list is a Task, and the agents it offers are the Fleet's harness profiles.
+Scripts drive the same Tasks with `fleet apply`, `fleet send` and
+`fleet delete`. [Fleet's documentation](docs/fleet/README.md) covers every
+kind, every controller and one reconcile step by step.
+
 <a id="install"></a>
 
 ## Install
@@ -70,13 +102,12 @@ On Windows:
 Then run `fleet init`, `fleet doctor` and `fleet up`
 ([Fleet's install](https://thurbox.thurbeen.eu/docs/fleet-install.html)).
 
-**Upgrading from 2.x:** see [Migrating from v2](#migrating-from-v2).
-
 `cargo build --release` in a clone builds every program from source. Homebrew,
 the AUR, Nix, winget, Chocolatey and uninstalling are on the
 [Installation page](https://thurbox.thurbeen.eu/docs/installation.html).
-Homebrew, the AUR, winget and Chocolatey still carry 2.x, and Nix gives
-`thurbox` and `thurbox-cli` only: install v3 with the script.
+Homebrew, the AUR, winget and Chocolatey ship thurbox 2.x, without Fleet, and
+Nix gives `thurbox` and `thurbox-cli` only: install with the script. Coming
+from 2.x? Follow the [migration guide](docs/migrating-to-v3.md).
 
 ## First steps
 
@@ -133,97 +164,6 @@ session opened there you can just ask your agent:
 [The interface](https://thurbox.thurbeen.eu/docs/interface.html) ·
 [Writing a pane](docs/thurbox/plugins.md) ·
 [Plugins](https://thurbox.thurbeen.eu/plugins.html)
-
-## What's new in v3
-
-- **Fleet is the engine.** Every session is a Fleet Task. thurbox keeps no
-  database of its own: it reads Fleet and draws what it reads.
-- **Several Fleets.** List them in `settings.toml` under `[fleets.<name>]`: one on
-  this machine, others over ssh or WSL. A Fleet that cannot be reached keeps its
-  sessions in the list, marked unreachable.
-- **Places.** A Fleet's runtime runs each session at a place, named
-  `<runtime>/<place>`. The shipped runtime, `runtime-mux`, keeps sessions alive
-  in tmux, or psmux on Windows; `workspace-git` makes each session's worktree.
-- **A new-session flow in that order**: `Ctrl+N` picks a Fleet, then a place,
-  then a repository, then an agent.
-- **Agents come from Fleet.** The agents on offer are the chosen Fleet's harness
-  profiles, so adding an agent is a change to Fleet, not to thurbox.
-- **Scripts talk to Fleet.** `fleet apply`, `fleet send` and `fleet delete` drive
-  sessions while the interface shows them. `thurbox-cli doctor` checks each Fleet.
-
-## Migrating from v2
-
-Two commands move your 2.x work to v3. Neither deletes a 2.x file.
-
-1. Stop and disable the Fleet 2 manager and its service, back up thurbox's
-   and Fleet's config and data directories, and install `sqlite3`.
-2. Install v3 with the [install script](#install). No updater moves 2.x to
-   3.x.
-3. Migrate the Fleet 2 config and store. Fleet keeps the 2.x ones as
-   `config.toml.v2` and `store-v1.v2`:
-
-   ```bash
-   fleet migrate --dry-run
-   fleet migrate
-   fleet service install --now   # Fleet 3's manager
-   fleet doctor
-   ```
-
-4. Import the thurbox 2.x sessions and cron automations as Tasks and
-   CronTasks; the report names what it could not import.
-   It reads `thurbox.db`, `hosts.toml` and `agents.toml` and changes none
-   of them. It removes retired keys from `settings.toml` and keeps the old
-   file as `settings.toml.v2`:
-
-   ```bash
-   thurbox-cli migrate --dry-run
-   thurbox-cli migrate
-   ```
-
-5. Add what `thurbox-cli migrate` prints: paste a place for each
-   `hosts.toml` host into Fleet's config, and write each harness profile for
-   an `agents.toml` agent as the `harnesses/<agent>.toml` file it names,
-   beside Fleet's config.
-6. Start the work you want. Nothing starts on its own: an imported Task has
-   `spec.dispatch = false` and a CronTask `spec.suspend = true`. Set
-   `spec.dispatch` to `true` (`spec.suspend` to `false`), then `fleet apply`
-   it again. Before you start a Task from a 2.x worktree, finish that
-   session's work there and remove the worktree
-   ([Start your work again as Tasks](docs/migrating-to-v3.md#3-start-your-work-again-as-tasks)).
-
-`--dry-run` prints the plan and changes nothing.
-[Migrating to v3](docs/migrating-to-v3.md) covers each step, services,
-remote places and cleaning up what 2.x left.
-
-## Staying on v2
-
-To keep thurbox v2, pin [v2.89.0](https://github.com/Thurbeen/thurbox/releases/tag/v2.89.0),
-the latest v2 release.
-
-**Linux / macOS:**
-
-```bash
-curl -fsSL https://raw.githubusercontent.com/Thurbeen/thurbox/main/scripts/install.sh | VERSION=v2.89.0 sh
-```
-
-**Windows (PowerShell):**
-
-```powershell
-& ([scriptblock]::Create((irm https://raw.githubusercontent.com/Thurbeen/thurbox/main/scripts/install.ps1))) -Version v2.89.0
-```
-
-thurbox v2 needs no Fleet: ignore the installer's warning that the release
-has no Fleet. `thurbox-cli update` keeps v2 on 2.x. If you also use Fleet v2,
-install [v2.24.0](https://github.com/Thurbeen/fleet/releases/tag/v2.24.0)
-after thurbox v2 (Linux, and experimentally Apple Silicon macOS):
-
-```bash
-curl -fsSL https://github.com/Thurbeen/fleet/releases/download/v2.24.0/install-release.sh | sh
-```
-
-The [v2.89.0 README](https://github.com/Thurbeen/thurbox/tree/v2.89.0#installation)
-and the [Fleet v2.24.0 README](https://github.com/Thurbeen/fleet/tree/v2.24.0#setup)
-cover the rest.
 
 ## Documentation
 

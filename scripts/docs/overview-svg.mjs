@@ -4,7 +4,7 @@ import { fileURLToPath } from 'node:url';
 const SANS = "-apple-system,BlinkMacSystemFont,'Segoe UI','Noto Sans',Helvetica,Arial,sans-serif";
 const MONO = "ui-monospace,SFMono-Regular,'SF Mono',Menlo,Consolas,'Liberation Mono',monospace";
 
-const PALETTES = {
+export const PALETTES = {
   light: {
     fg: '#1f2328',
     dim: '#59636e',
@@ -72,19 +72,19 @@ const LANES = [
   },
 ];
 
-const escape = (s) => s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+export const escape = (s) => s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
 
-const text = (x, y, content, cls, anchor) =>
+export const text = (x, y, content, cls, anchor) =>
   `<text x="${x}" y="${y}" class="${cls}"${anchor ? ` text-anchor="${anchor}"` : ''}>${content}</text>`;
 
-const rect = (x, y, width, height, cls, radius) =>
+export const rect = (x, y, width, height, cls, radius) =>
   `<rect x="${x}" y="${y}" width="${width}" height="${height}" rx="${radius}" class="${cls}"/>`;
 
 const circle = (x, y, radius, cls) => `<circle cx="${x}" cy="${y}" r="${radius}" class="${cls}"/>`;
 
 const orYours = (name) => `${name}<tspan class="or"> · or yours</tspan>`;
 
-const pill = (centre, y, label) => {
+export const pill = (centre, y, label) => {
   const width = label.length * 6 + 16;
   return [
     rect(centre - width / 2, y - 9, width, 18, 'pill', 9),
@@ -92,7 +92,7 @@ const pill = (centre, y, label) => {
   ];
 };
 
-const style = (c) =>
+export const style = (c) =>
   [
     `text{font-family:${SANS};fill:${c.fg};font-size:12.5px}`,
     '.h{font-size:20px;font-weight:600}',

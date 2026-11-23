@@ -1,0 +1,79 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 900 438" width="900" height="438" role="img" aria-labelledby="t d">
+  <title id="t">Fleet: resources in a store, controllers that reconcile them</title>
+  <desc id="d">You declare resources with fleet apply, thurbox or a script: a Task with its spec, and TaskConfig, EnvProvider, ChangeRequest, CronTask, Board, Conversation and Listener. The store keeps them. Controllers, run by fleet up, watch the spec, observe the runtime and the forge, compare, and act: the runtime makes the workspace and starts, briefs, pauses, revives or releases the session at a place; the forge is mirrored into ChangeRequests. The controllers write the phase and conditions back to the status. Each effect is recorded as an intent before it runs, and an unknown observation never means gone.</desc>
+  <style>text{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI','Noto Sans',Helvetica,Arial,sans-serif;fill:#1f2328;font-size:12.5px}.h{font-size:20px;font-weight:600}.col{font-size:11.5px;fill:#59636e}.n{font-size:14px;font-weight:600}.na{font-size:15px;font-weight:700;fill:#c62f28}.d{fill:#59636e;font-size:12px}.m{font-family:ui-monospace,SFMono-Regular,'SF Mono',Menlo,Consolas,'Liberation Mono',monospace;font-size:12.5px}.s{font-family:ui-monospace,SFMono-Regular,'SF Mono',Menlo,Consolas,'Liberation Mono',monospace;font-size:11px}.or{fill:#59636e;font-size:11px;font-weight:400}.r{font-size:11px;fill:#59636e}.el{font-size:10.5px;fill:#59636e}.b{fill:#ffffff;stroke:#c8d1da;stroke-width:1}.ba{fill:#fff3f2;stroke:#c62f28;stroke-width:1.5}.bs{fill:#f6f8fa;stroke:#c8d1da;stroke-width:1}.pill{fill:#ffffff;stroke:#c8d1da;stroke-width:1}.w{fill:none;stroke:#c8d1da;stroke-width:1.5}.dot{fill:#c62f28}.ok{fill:#1a7f37}.ft{fill:#f6f8fa}.fb{fill:#c62f28}.fs{font-weight:600}.ah{fill:#c8d1da}.lp{fill:none;stroke:#c62f28;stroke-width:1.5}.lh{fill:#c62f28}</style>
+  <defs><marker id="ah" viewBox="0 0 8 8" refX="7" refY="4" markerWidth="8" markerHeight="8" orient="auto-start-reverse"><path d="M0 0L8 4L0 8z" class="ah"/></marker><marker id="lh" viewBox="0 0 8 8" refX="7" refY="4" markerWidth="7" markerHeight="7" orient="auto"><path d="M0 0L8 4L0 8z" class="lh"/></marker></defs>
+  <text x="20" y="36" class="h">Fleet reconciles, like Kubernetes</text>
+  <text x="22" y="62" class="col">you</text>
+  <text x="194" y="62" class="col">store</text>
+  <text x="490" y="62" class="col">engine</text>
+  <text x="718" y="62" class="col">the world</text>
+  <path d="M136 141H192" class="w" marker-end="url(#ah)"/>
+  <text x="164" y="134" class="el" text-anchor="middle">apply</text>
+  <path d="M432 128H488" class="w" marker-end="url(#ah)"/>
+  <text x="460" y="121" class="el" text-anchor="middle">spec</text>
+  <path d="M488 300H432" class="w" marker-end="url(#ah)"/>
+  <text x="460" y="293" class="el" text-anchor="middle">status</text>
+  <path d="M660 126H716" class="w" marker-end="url(#ah)"/>
+  <text x="688" y="119" class="el" text-anchor="middle">effects</text>
+  <path d="M716 170H660" class="w" marker-end="url(#ah)"/>
+  <text x="688" y="163" class="el" text-anchor="middle">observe</text>
+  <path d="M660 290H716" class="w" marker-end="url(#ah)" marker-start="url(#ah)"/>
+  <text x="688" y="283" class="el" text-anchor="middle">mirror</text>
+  <rect x="20" y="76" width="116" height="264" rx="12" class="b"/>
+  <text x="34" y="106" class="n">declare</text>
+  <text x="34" y="130" class="d">what you want</text>
+  <rect x="34" y="216" width="88" height="24" rx="6" class="bs"/>
+  <text x="44" y="232" class="s">fleet apply</text>
+  <rect x="34" y="250" width="88" height="24" rx="6" class="bs"/>
+  <text x="44" y="266" class="s">thurbox</text>
+  <rect x="34" y="284" width="88" height="24" rx="6" class="bs"/>
+  <text x="44" y="300" class="s">a script</text>
+  <rect x="192" y="76" width="240" height="264" rx="12" class="b"/>
+  <text x="206" y="106" class="n">resources</text>
+  <rect x="206" y="132" width="212" height="84" rx="8" class="bs"/>
+  <text x="218" y="152" class="n m">Task</text>
+  <text x="218" y="174" class="r">spec</text>
+  <text x="258" y="174" class="d">harness · place · brief</text>
+  <text x="218" y="196" class="r">status</text>
+  <text x="258" y="196" class="d">phase · conditions</text>
+  <rect x="206" y="228" width="102" height="24" rx="6" class="bs"/>
+  <text x="214" y="244" class="s">TaskConfig</text>
+  <rect x="316" y="228" width="102" height="24" rx="6" class="bs"/>
+  <text x="324" y="244" class="s">EnvProvider</text>
+  <rect x="206" y="260" width="102" height="24" rx="6" class="bs"/>
+  <text x="214" y="276" class="s">ChangeRequest</text>
+  <rect x="316" y="260" width="102" height="24" rx="6" class="bs"/>
+  <text x="324" y="276" class="s">CronTask</text>
+  <text x="206" y="314" class="d">Board · Conversation · …</text>
+  <rect x="488" y="76" width="172" height="264" rx="12" class="ba"/>
+  <text x="502" y="106" class="na">controllers</text>
+  <text x="502" y="128" class="d">run by</text>
+  <text x="544" y="128" class="d m">fleet up</text>
+  <path d="M602 169.5A56 56 0 0 1 630 218" class="lp" marker-end="url(#lh)"/>
+  <rect x="545" y="153" width="58" height="18" rx="9" class="pill"/>
+  <text x="574" y="165.5" class="el" text-anchor="middle">observe</text>
+  <path d="M602 266.5A56 56 0 0 1 546 266.5" class="lp" marker-end="url(#lh)"/>
+  <rect x="593.5" y="237" width="58" height="18" rx="9" class="pill"/>
+  <text x="622.5" y="249.5" class="el" text-anchor="middle">compare</text>
+  <path d="M518 218A56 56 0 0 1 546 169.5" class="lp" marker-end="url(#lh)"/>
+  <rect x="508.5" y="237" width="34" height="18" rx="9" class="pill"/>
+  <text x="525.5" y="249.5" class="el" text-anchor="middle">act</text>
+  <text x="574" y="322" class="d" text-anchor="middle">one reconcile per sweep</text>
+  <rect x="716" y="76" width="164" height="144" rx="12" class="b"/>
+  <text x="730" y="98" class="r">runtime</text>
+  <text x="730" y="118" class="n m">runtime-mux</text>
+  <rect x="726" y="134" width="144" height="74" rx="8" class="bs"/>
+  <text x="730" y="156" class="n">session</text>
+  <text x="730" y="176" class="d">the agent, at a place</text>
+  <text x="730" y="196" class="n">workspace</text>
+  <rect x="716" y="240" width="164" height="100" rx="12" class="b"/>
+  <text x="730" y="262" class="r">forge</text>
+  <text x="730" y="282" class="n">pull requests</text>
+  <text x="730" y="306" class="d">GitHub, GitLab, …</text>
+  <text x="730" y="324" class="d">checks and reviews</text>
+  <rect x="20" y="362" width="860" height="52" rx="10" class="ft"/>
+  <rect x="20" y="362" width="4" height="52" rx="2" class="fb"/>
+  <text x="38" y="383" class="fs">The plan lives in the store.<tspan class="d" font-weight="400" dx="5">Sessions come and go; the spec says what they should be.</tspan></text>
+  <text x="38" y="402" class="d">Each effect is recorded as an intent before it runs, and an unknown answer never means gone.</text>
+</svg>

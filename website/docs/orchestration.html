@@ -37,7 +37,8 @@ breadcrumb: 'Orchestration'
   <li>
     <strong>A reconcile loop.</strong>
     <code>fleet up</code>
-    keeps every Task moving until you stop it. It creates no Task of its own.
+    keeps every Task moving until you stop it. It creates a Task only for a CronTask's schedule,
+    a chat thread that starts one, or a plugin's plan.
   </li>
   <li>
     <strong>Forge follow-through.</strong>
@@ -47,15 +48,16 @@ breadcrumb: 'Orchestration'
 
 <h3 id="fleet-install">Install</h3>
 <p>
-  Thurbox's install script installs <code>fleet</code> and <code>runtime-mux</code> with Thurbox.
+  Thurbox's install script installs <code>fleet</code>, <code>runtime-mux</code> and <code>workspace-git</code> with
+  Thurbox.
   A <a href="installation.html#from-source">source build</a> also builds them.
 </p>
 <pre data-wrap><code class="language-bash">curl -fsSL https://raw.githubusercontent.com/Thurbeen/thurbox/main/scripts/install.sh | sh
 fleet init     # writes Fleet's config
-systemctl --user start fleet.service
+fleet service install --now   # runs fleet up as a user service
 thurbox</code></pre>
 <p>
-  Thurbox never starts <code>fleet up</code>. Each Fleet needs a user systemd unit that runs
+  Thurbox never starts <code>fleet up</code>. Each Fleet needs a user service that runs
   <code>fleet up</code>; see
   <a href="fleet-install.html#service">Keep fleet up running</a>. To run Fleet alone, see
   <a href="fleet-install.html#fleet-alone">Fleet alone</a>.

@@ -38,10 +38,23 @@ breadcrumb: 'What is Fleet'
   <a href="#resources-and-controllers" class="heading-anchor">#</a>
 </h2>
 <p>
-  Fleet stores <strong>resources</strong>, and a <strong>controller</strong> for each kind moves
-  them toward what their spec asks for. The plan lives in the store, not in a chat, so it
-  outlives every session.
+  Fleet orchestrates like Kubernetes. It stores <strong>resources</strong>: each has a
+  <code>spec</code>, what you want, and a <code>status</code>, what is.
+  <strong>Controllers</strong>, run by <code>fleet up</code>, compare the spec with what they
+  observe, act through the runtime to make the workspace, start, brief, pause or release the
+  session, and write the phase and conditions back to the status. The plan lives in the store,
+  not in a chat, so it outlives every session.
 </p>
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="../assets/fleet-loop-dark.svg" />
+  <img
+    src="../assets/fleet-loop-light.svg"
+    alt="You declare resources; the store keeps them; controllers run by fleet up observe the runtime and the forge, compare with the spec, act, and write the status back"
+    width="900"
+    height="438"
+    loading="lazy"
+  />
+</picture>
 <table>
   <thead>
     <tr>
@@ -54,7 +67,9 @@ breadcrumb: 'What is Fleet'
     <tr><td>TaskConfig</td><td>Reusable defaults for Tasks: harness, place, environment</td></tr>
     <tr><td>EnvProvider</td><td>A source of environment values for Tasks</td></tr>
     <tr><td>ChangeRequest</td><td>One pull or merge request a Task's agent opened, mirrored from its forge</td></tr>
+    <tr><td>CronTask</td><td>A Task created from a template on a cron schedule</td></tr>
     <tr><td>Conversation, Listener</td><td>A chat thread tied to a Task, and the chat account behind it</td></tr>
+    <tr><td>Board</td><td>A log of events every Task can read</td></tr>
   </tbody>
 </table>
 <p>
