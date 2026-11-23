@@ -3,8 +3,8 @@
 //! chunks the control-mode pane gives — the screen as a snapshot, then its
 //! output — while what is typed goes up the stream.
 //!
-//! thurbox does not link the view: the program is found beside this test in
-//! cargo's target directory (a workspace build makes it). Without it or
+//! thurbox does not link the view: the program is found beside thurbox's own
+//! binaries in cargo's target directory (a workspace build makes it). Without it or
 //! without tmux the test says so and skips.
 
 #![cfg(unix)]
@@ -20,9 +20,9 @@ use thurbox::backend::PaneChunk;
 mod tmux_server;
 
 fn runtime_mux() -> Option<PathBuf> {
-    let found = std::env::current_exe()
-        .ok()
-        .and_then(|exe| Some(exe.parent()?.parent()?.join("runtime-mux")))
+    let found = std::path::Path::new(env!("CARGO_BIN_EXE_thurbox-cli"))
+        .parent()
+        .map(|dir| dir.join("runtime-mux"))
         .filter(|p| p.is_file());
     if found.is_none() {
         assert!(
