@@ -171,12 +171,24 @@ test('homepage presents Fleet and thurbox apart, links each official plugin, and
   assert.ok(home.querySelector('a[href="docs/fleet-install.html"]'), 'installing Fleet alone is linked');
   const fit = home.querySelector('#how-they-fit');
   const scenes = fit.querySelectorAll('[data-story] svg');
-  assert.equal(scenes.length, 2, 'one scene for the interface, one for the reconcile loop');
+  assert.equal(scenes.length, 3, 'one scene each for the interface, the reconcile loop and the gateway');
   for (const svg of scenes) {
     const labels = svg.getAttribute('aria-labelledby').split(' ');
     assert.deepEqual(labels.map((id) => svg.querySelector(`#${id}`)?.tagName), ['TITLE', 'DESC'], 'each scene has a title and a description');
   }
-  const [fleets, loop] = scenes.map((svg) => text(svg));
+  const [fleets, loop, gateway] = scenes.map((svg) => text(svg));
+  for (const word of ['Slack', 'Discord', 'gateway', 'Task', 'inbox', 'log channel']) {
+    assert.match(gateway, new RegExp(word), `the gateway scene reads "${word}" as text`);
+  }
+  assert.doesNotMatch(text(fit), /Telegram|Teams|Matrix|Mattermost/, 'only the chat platforms Fleet has adapters for are shown');
+  const adapters = readdirSync('crates/fleet-gateway/src').map((file) => file.replace(/\.rs$/, ''));
+  for (const platform of ['slack', 'discord']) assert.ok(adapters.includes(platform), `${platform} has a gateway adapter`);
+  const benefits = fit.querySelectorAll('.story__benefits .card');
+  assert.equal(benefits.length, 4, 'four benefits sit above the scenes');
+  for (const card of benefits) {
+    const target = card.querySelector('a')?.getAttribute('href') ?? '';
+    assert.ok(target.startsWith('#') && fit.querySelector(target), `"${text(card.querySelector('h3'))}" links to the scene that shows it`);
+  }
   for (const word of ['thurbox', 'Fleet laptop', 'Fleet box', 'Fleet ubuntu', 'ssh', 'wsl', 'laptop:fix-login']) {
     assert.match(fleets, new RegExp(word), `the fleets scene reads "${word}" as text`);
   }
@@ -194,6 +206,23 @@ test('homepage presents Fleet and thurbox apart, links each official plugin, and
     assert.deepEqual(numbers, numbers.map((_, i) => i + 1), 'each story numbers its steps from 1');
   }
   assert.doesNotMatch(text(fit), / \./, 'no space before a period');
+});
+
+test('the story scenes draw in the site theme: squared panels, theme tokens, numbered steps', () => {
+  const fit = built('index.html').querySelector('#how-they-fit');
+  const rounded = fit.querySelectorAll('[data-story] svg rect').filter((rect) => rect.hasAttribute('rx'));
+  assert.equal(rounded.length, 0, 'scene panels are squared like every other panel');
+  for (const step of fit.querySelectorAll('[data-step]')) {
+    const badge = step.querySelector('h3 .step-number');
+    assert.equal(badge?.textContent, step.getAttribute('data-step'), 'each step heading carries its number in a step badge');
+    assert.equal(badge.getAttribute('aria-hidden'), 'true', 'the list already numbers the step for a screen reader');
+  }
+  const css = readFileSync('website/css/landing.css', 'utf8');
+  const story = css.slice(css.indexOf('#how-they-fit {'), css.indexOf('/* ---- Back to top'));
+  assert.ok(story.length > 0, 'the story rules are found');
+  assert.doesNotMatch(story, /#[0-9a-f]{3,8}\b|rgba?\(|hsla?\(/i, 'story colours come from theme variables');
+  assert.doesNotMatch(story, /font-family:(?!\s*var\()/, 'story fonts come from theme variables');
+  assert.doesNotMatch(story, /\.story__step[^{]*\{[^}]*opacity/, 'a step is never dimmed below readable contrast');
 });
 
 test('the docs sidebar gives Fleet and thurbox a group each', () => {
