@@ -38,6 +38,7 @@ pub struct Span {
     pub error: bool,
     pub attrs: Attrs,
     pub resource: Attrs,
+    pub duration_ms: u64,
 }
 
 /// One exported data point of a metric, with its point attributes.
@@ -112,6 +113,10 @@ impl Collector {
                             error: s.status.is_some_and(|st| st.code == 2),
                             attrs: attrs(&s.attributes),
                             resource: resource.clone(),
+                            duration_ms: s
+                                .end_time_unix_nano
+                                .saturating_sub(s.start_time_unix_nano)
+                                / 1_000_000,
                         });
                     }
                 }

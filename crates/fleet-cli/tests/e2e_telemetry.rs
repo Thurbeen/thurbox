@@ -782,3 +782,181 @@ fn a_command_span_names_the_kind_and_object_it_acts_on() {
         "apply names no one object: {apply:#?}"
     );
 }
+
+/// A slow forge cannot hold a pass: once a pass has spent its budget on
+/// change polls, the ChangeRequests still due wait for the next pass, and
+/// the run still polls every one.
+#[test]
+fn change_polls_on_a_slow_forge_spread_over_passes() {
+    let collector = Collector::start();
+    let mut env = Env::forge("otel-slow-forge");
+    exporting(&mut env, &collector.endpoint);
+    let forge = env.fake_forge();
+    let ids = ["7", "8", "9", "10"];
+    for id in ids {
+        forge.set_change("acme/widgets", id, open_change()).unwrap();
+        env.apply(change_request(
+            &format!("https://forge.test/acme/widgets/pull/{id}"),
+            json!({}),
+        ))
+        .ok();
+    }
+    forge.update(|s| s.change_delay_ms = Some(600)).unwrap();
+    env.reconcile().ok();
+
+    assert_eq!(
+        forge.state().unwrap().calls["change"],
+        ids.len() as u64,
+        "every due change is polled within the run"
+    );
+    let spans = collector.spans();
+    let passes = named(&spans, "reconcile pass");
+    assert!(!passes.is_empty(), "no reconcile pass was exported");
+    let longest = passes.iter().map(|p| p.duration_ms).max().unwrap_or(0);
+    assert!(
+        longest < 2_000,
+        "a pass lasted {longest} ms; four 600 ms polls in one pass take 2400 ms"
+    );
+}
+
+/// A change due again before its poll ends cannot keep the budget: the
+/// change that has waited longest is polled first, so every due change is
+/// reached.
+#[test]
+fn a_change_due_again_at_once_does_not_starve_the_others() {
+    let collector = Collector::start();
+    let mut env = Env::forge("otel-starved-change");
+    exporting(&mut env, &collector.endpoint);
+    let forge = env.fake_forge();
+    let names: Vec<String> = ["7", "8"]
+        .into_iter()
+        .map(|id| {
+            forge.set_change("acme/widgets", id, open_change()).unwrap();
+            env.apply(change_request(
+                &format!("https://forge.test/acme/widgets/pull/{id}"),
+                json!({"pollMs": 100}),
+            ))
+            .ok();
+            derived_name("fake", FORGE_HOST, "acme/widgets", id)
+        })
+        .collect();
+    env.reconcile().ok();
+    let observed = |cr: &str| env.change_request_status(cr)["observedAt"].as_u64();
+    let first: Vec<_> = names.iter().map(|cr| observed(cr)).collect();
+    assert!(first.iter().all(Option::is_some), "{first:?}");
+
+    forge.update(|s| s.change_delay_ms = Some(1_100)).unwrap();
+    for cr in &names {
+        env.expire_wait_of("ChangeRequest", cr);
+    }
+    env.fleet(&["reconcile", "--json", "--max-passes", "4"])
+        .ok();
+
+    for (cr, before) in names.iter().zip(first) {
+        assert!(
+            observed(cr) > before,
+            "{cr} was not polled again while the other kept the budget"
+        );
+    }
+}
+
+/// A host that asked to slow down is not asked again in the next pass: its
+/// other due changes take the deferral past the poll budget, at no call.
+#[test]
+fn a_throttle_past_the_budget_still_defers_the_rest_of_the_host() {
+    let collector = Collector::start();
+    let mut env = Env::forge("otel-throttle-budget");
+    exporting(&mut env, &collector.endpoint);
+    let forge = env.fake_forge();
+    let names: Vec<String> = ["7", "8", "9"]
+        .into_iter()
+        .map(|id| {
+            forge.set_change("acme/widgets", id, open_change()).unwrap();
+            env.apply(change_request(
+                &format!("https://forge.test/acme/widgets/pull/{id}"),
+                json!({}),
+            ))
+            .ok();
+            derived_name("fake", FORGE_HOST, "acme/widgets", id)
+        })
+        .collect();
+    env.reconcile().ok();
+    let polled = || forge.state().unwrap().calls["change"];
+    let before = polled();
+
+    forge
+        .update(|s| {
+            s.change_delay_ms = Some(1_100);
+            s.faults
+                .push(ForgeFault::new("change", "throttle").retry_after(120_000));
+        })
+        .unwrap();
+    for cr in &names {
+        env.expire_wait_of("ChangeRequest", cr);
+    }
+    env.reconcile().ok();
+
+    assert_eq!(
+        polled() - before,
+        1,
+        "only the throttled poll reaches the host; the rest take its deferral"
+    );
+}
+
+fn due_in_order(env: &Env, names: &[&str]) {
+    for (i, name) in names.iter().enumerate() {
+        let path = env
+            .data
+            .join("objects")
+            .join("ChangeRequest")
+            .join(format!("{name}.json"));
+        let mut obj: Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+        obj["status"]["notBefore"] = json!(i + 1);
+        std::fs::write(&path, obj.to_string()).unwrap();
+    }
+}
+
+/// A host's deferral reaches its changes after another host's in the due
+/// order, past the budget: the throttled host is not asked again in its
+/// wait.
+#[test]
+fn a_throttle_past_the_budget_defers_the_host_behind_another_hosts_change() {
+    let collector = Collector::start();
+    let mut env = Env::forge("otel-throttle-two-hosts");
+    exporting(&mut env, &collector.endpoint);
+    let mut cfg = std::fs::read_to_string(&env.config).unwrap();
+    cfg.push_str("\"other.test\" = { kind = \"fake\", dir = \"forge2\" }\n");
+    std::fs::write(&env.config, cfg).unwrap();
+    let slow = env.fake_forge();
+    let other = fleet_forge::FakeForge::open("other.test", &env.root.join("forge2")).unwrap();
+    let add = |forge: &fleet_forge::FakeForge, host: &str, id: &str| {
+        forge.set_change("acme/widgets", id, open_change()).unwrap();
+        env.apply(change_request(
+            &format!("https://{host}/acme/widgets/pull/{id}"),
+            json!({}),
+        ))
+        .ok();
+        derived_name("fake", host, "acme/widgets", id)
+    };
+    let first = add(&slow, FORGE_HOST, "7");
+    let between = add(&other, "other.test", "8");
+    let last = add(&slow, FORGE_HOST, "9");
+    env.reconcile().ok();
+    let polled = || slow.state().unwrap().calls["change"];
+    let before = polled();
+
+    slow.update(|s| {
+        s.change_delay_ms = Some(1_100);
+        s.faults
+            .push(ForgeFault::new("change", "throttle").retry_after(120_000));
+    })
+    .unwrap();
+    due_in_order(&env, &[&first, &between, &last]);
+    env.reconcile().ok();
+
+    assert_eq!(
+        polled() - before,
+        1,
+        "the throttled host is asked once; its later change takes the deferral"
+    );
+}

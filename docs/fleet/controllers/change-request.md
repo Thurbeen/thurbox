@@ -373,13 +373,19 @@ Source: [Manager](../../../crates/fleet-manager/src/lib.rs).
 
 There are no effects and no receipts. `fleet up` sweeps ChangeRequests in the
 same loop as Tasks, after them; a ChangeRequest is due when `notBefore` is
-absent or past, like a Task. ChangeRequests of one host are swept in a stable
-order, by host then name, so that a `retryAfter` from the forge defers all of
-them together: the ones after it in the order are not asked and take the same
-Unknown answer with the same wait. A sweep spends no more than its bounded
-run on them, so forge polling cannot starve Task delivery, deletion or lease
-renewal. A store without a `[forge]` section reports each ChangeRequest as
-an error and polls nothing.
+absent or past, like a Task. The ChangeRequest due longest is polled first,
+then by host and name, so a ChangeRequest due again at once waits behind the
+ones due longer. A `retryAfter` from the forge defers the rest of that host's
+ChangeRequests in the same pass: they are not asked and take the same Unknown
+answer with the same wait. A pass starts no new poll after its ChangeRequest
+polls have taken 1 second. The ChangeRequests still due wait for the next
+pass, which follows at once. A slow forge therefore holds a Task's next
+reconcile for about 1 second plus one poll. The ChangeRequests of a host that
+deferred them still take the deferral after the second, because they cost no
+call. A sweep spends no more than its
+bounded run on them, so forge polling cannot starve Task delivery, deletion or
+lease renewal. A store without a `[forge]` section reports each ChangeRequest
+as an error and polls nothing.
 
 ### Store port and write ownership
 

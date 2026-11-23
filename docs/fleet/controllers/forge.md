@@ -486,8 +486,9 @@ from:
 `Probe::Object` is generic: the manager answers it from the store as
 `Known(Some)`, `Known(None)` for proven absence, or Unknown when the record
 is unreadable. It needs no lease renewal and runs before any runtime or forge
-probe. `Probe::Whoami` is answered by `Forge::whoami` and cached by the
-manager for the sweep. `AtRest` is the Task controller's existing probe,
+probe. `Probe::Whoami` is answered by `Forge::whoami`. The manager keeps a
+Known login for 10 minutes across passes and sweeps, and an Unknown one
+for the pass only. `AtRest` is the Task controller's existing probe,
 reused and answered by the runtime. `probes` returns only what the
 observations lack, so the manager asks in rounds: the objects first, then
 the login on each host those objects' `status.ref` names, then the session,
@@ -617,7 +618,8 @@ applies, with these additions:
    plan does not conflict with the first on every sweep.
 2. `Object` probes are answered from the store before the lease is renewed
    for runtime or forge probes; `Whoami` is asked through the Forge port
-   once per host per sweep and the answer shared by every Task on it.
+   at most once per host in 10 minutes, and the answer is shared by every
+   Task on that host. An Unknown answer is asked again on the next pass.
 3. The plan's status write uses the store's typed mutation for this
    controller, `record_relay`: replace `status.forge` and append the listed
    inbox entries, in one CAS write; a duplicate key refuses the whole write

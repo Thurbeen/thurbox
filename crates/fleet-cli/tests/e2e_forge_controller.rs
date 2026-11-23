@@ -837,3 +837,87 @@ fn the_shipped_example_follows_a_declared_change_offline() {
     assert!(got[1].contains("> a note"), "{}", got[1]);
     env.assert_no_temp();
 }
+
+fn sweeps_seen(env: &Env, poll_ms: u64, wanted: usize) {
+    let lease = env.data.join("lease.json");
+    let mut sweeps: Vec<u64> = Vec::new();
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+    while sweeps.len() < wanted {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the manager swept only {} times",
+            sweeps.len()
+        );
+        let expires = fs::read_to_string(&lease)
+            .ok()
+            .and_then(|text| serde_json::from_str::<Value>(&text).ok())
+            .and_then(|l| l["expiresAt"].as_u64());
+        if let Some(at) = expires
+            && sweeps.last().is_none_or(|last| at >= last + poll_ms)
+        {
+            sweeps.push(at);
+        }
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+}
+
+#[test]
+fn fleet_up_asks_the_forge_for_its_login_once_across_sweeps() {
+    let (env, forge, cr) = setup("login-once");
+    declare(&env, "t1", URL).ok();
+    env.reconcile().ok();
+    assert_eq!(entry(&full_status(&env, "t1"), &cr)["state"], "following");
+    let asked = || {
+        forge
+            .state()
+            .unwrap()
+            .calls
+            .get("whoami")
+            .copied()
+            .unwrap_or(0)
+    };
+    let before = asked();
+
+    let mut up = env.spawn(&["up", "--poll-ms", "100", "--lease-ttl-ms", "3600000"]);
+    sweeps_seen(&env, 100, 10);
+    up.kill().unwrap();
+    up.wait().unwrap();
+
+    assert_eq!(
+        asked() - before,
+        1,
+        "Fleet's login is asked once, not on every sweep"
+    );
+}
+
+#[test]
+fn fleet_up_asks_again_after_an_unknown_login_and_then_keeps_it() {
+    let (env, forge, cr) = setup("login-unknown");
+    declare(&env, "t1", URL).ok();
+    env.reconcile().ok();
+    assert_eq!(entry(&full_status(&env, "t1"), &cr)["state"], "following");
+    let asked = || {
+        forge
+            .state()
+            .unwrap()
+            .calls
+            .get("whoami")
+            .copied()
+            .unwrap_or(0)
+    };
+    let before = asked();
+    forge
+        .add_fault(fleet_forge::ForgeFault::new("whoami", "lost"))
+        .unwrap();
+
+    let mut up = env.spawn(&["up", "--poll-ms", "100", "--lease-ttl-ms", "3600000"]);
+    sweeps_seen(&env, 100, 10);
+    up.kill().unwrap();
+    up.wait().unwrap();
+
+    assert_eq!(
+        asked() - before,
+        2,
+        "the Unknown answer is asked again on the next pass, the Known one kept"
+    );
+}
