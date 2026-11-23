@@ -376,10 +376,14 @@ same loop as Tasks, after them; a ChangeRequest is due when `notBefore` is
 absent or past, like a Task. ChangeRequests of one host are swept in a stable
 order, by host then name, so that a `retryAfter` from the forge defers all of
 them together: the ones after it in the order are not asked and take the same
-Unknown answer with the same wait. A sweep spends no more than its bounded
-run on them, so forge polling cannot starve Task delivery, deletion or lease
-renewal. A store without a `[forge]` section reports each ChangeRequest as
-an error and polls nothing.
+Unknown answer with the same wait. A pass starts no new poll after its
+ChangeRequest polls have taken 1 second. The ChangeRequests still due wait
+for the next pass, which follows at once. A slow forge therefore holds a
+Task's next reconcile for about 1 second plus one poll. A host's `retryAfter`
+defers the rest of that host's ChangeRequests in the same pass only. A sweep
+spends no more than its bounded run on them, so forge polling cannot starve
+Task delivery, deletion or lease renewal. A store without a `[forge]`
+section reports each ChangeRequest as an error and polls nothing.
 
 ### Store port and write ownership
 

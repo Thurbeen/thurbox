@@ -221,6 +221,28 @@ impl std::fmt::Debug for Manager<'_> {
     }
 }
 
+const FORGE_LOGIN_KEPT_MS: Millis = 10 * 60_000;
+const CHANGE_POLLS_PER_PASS_MS: Millis = 1_000;
+
+#[derive(Debug, Default)]
+struct ForgeLogins(BTreeMap<String, (Millis, Observation<String>)>);
+
+impl ForgeLogins {
+    fn forget_unknown_and_old(&mut self, now: Millis) {
+        self.0.retain(|_, (asked_at, login)| {
+            login.known().is_some() && now.saturating_sub(*asked_at) < FORGE_LOGIN_KEPT_MS
+        });
+    }
+
+    fn get(&self, host: &str) -> Option<Observation<String>> {
+        self.0.get(host).map(|(_, login)| login.clone())
+    }
+
+    fn insert(&mut self, host: String, asked_at: Millis, login: Observation<String>) {
+        self.0.insert(host, (asked_at, login));
+    }
+}
+
 /// The outcome of one object's reconcile.
 #[derive(Debug, Default)]
 struct Step {
@@ -319,9 +341,10 @@ impl Manager<'_> {
             }
         };
         telemetry::manager_lease(true);
+        let mut logins = ForgeLogins::default();
         let outcome = (|| {
             loop {
-                let report = match self.sweep(&mut lease, opts, pauses > 0) {
+                let report = match self.sweep(&mut lease, opts, pauses > 0, &mut logins) {
                     Ok(report) => {
                         pauses = 0;
                         report
@@ -349,6 +372,7 @@ impl Manager<'_> {
         lease: &mut LeaseToken,
         opts: RunOptions,
         resuming: bool,
+        logins: &mut ForgeLogins,
     ) -> Result<RunReport, StoreError> {
         *lease = if resuming {
             self.store.reclaim_lease(lease, opts.lease_ttl)?
@@ -360,7 +384,7 @@ impl Manager<'_> {
             lease_token: lease.token,
             ..RunReport::default()
         };
-        self.passes(lease, opts, &mut report)?;
+        self.passes(lease, opts, &mut report, logins)?;
         *lease = self.store.renew_lease(lease, opts.lease_ttl)?;
         Ok(report)
     }
@@ -391,7 +415,7 @@ impl Manager<'_> {
             lease_token: lease.token,
             ..RunReport::default()
         };
-        let outcome = self.passes(&mut lease, opts, &mut report);
+        let outcome = self.passes(&mut lease, opts, &mut report, &mut ForgeLogins::default());
         // A lost lease is not ours to release; anything else is.
         if !matches!(outcome, Err(StoreError::LeaseLost(_))) {
             self.store.release_lease(&lease)?;
@@ -404,6 +428,7 @@ impl Manager<'_> {
         lease: &mut LeaseToken,
         opts: RunOptions,
         report: &mut RunReport,
+        logins: &mut ForgeLogins,
     ) -> Result<(), StoreError> {
         let mut passes = 0;
         if let Some(gateway) = &self.gateway {
@@ -427,8 +452,7 @@ impl Manager<'_> {
             };
             let _pass = telemetry::pass(passes, &tasks);
             let mut busy = false;
-            // Fleet's login per forge host, asked once per sweep.
-            let mut whoami: BTreeMap<String, Observation<String>> = BTreeMap::new();
+            logins.forget_unknown_and_old(self.clock.now());
             let workers: BTreeMap<String, String> = tasks
                 .iter()
                 .map(|t| (t.metadata.uid.clone(), t.metadata.name.clone()))
@@ -609,7 +633,7 @@ impl Manager<'_> {
                                 lease,
                                 opts.lease_ttl,
                                 report,
-                                &mut whoami,
+                                logins,
                                 &workers,
                             )
                         },
@@ -650,7 +674,10 @@ impl Manager<'_> {
     /// Every due ChangeRequest, one host at a time in a stable order, so that
     /// a `retryAfter` from a forge defers all of that host's together: the
     /// ones after it in the order are not asked, they take the same answer.
-    /// Returns whether anything changed.
+    /// A pass starts no poll once its polls have taken
+    /// [`CHANGE_POLLS_PER_PASS_MS`]: the rest stay due for the next pass, so
+    /// a slow forge does not hold every Task's next reconcile. Returns
+    /// whether anything changed or is left due.
     fn sweep_change_requests(
         &self,
         lease: &mut LeaseToken,
@@ -668,7 +695,11 @@ impl Manager<'_> {
         due.sort_by_cached_key(|o| (host_of(o), o.metadata.name.clone()));
         let mut deferred: BTreeMap<String, Deferral> = BTreeMap::new();
         let mut busy = false;
+        let started = self.clock.now();
         for obj in due {
+            if self.clock.now().saturating_sub(started) >= CHANGE_POLLS_PER_PASS_MS {
+                return Ok(true);
+            }
             *lease = self.store.renew_lease(lease, ttl)?;
             let step = telemetry::reconcile(
                 "ChangeRequestController",
@@ -1477,7 +1508,7 @@ impl Manager<'_> {
         lease: &mut LeaseToken,
         ttl: Millis,
         report: &mut RunReport,
-        whoami: &mut BTreeMap<String, Observation<String>>,
+        logins: &mut ForgeLogins,
         workers: &BTreeMap<String, String>,
     ) -> Result<Step, StoreError> {
         let ctl = ForgeController;
@@ -1509,8 +1540,8 @@ impl Manager<'_> {
                         input.observations.changes.insert(name, o);
                     }
                     Probe::Whoami { host } => {
-                        let answer = match whoami.get(&host) {
-                            Some(a) => a.clone(),
+                        let answer = match logins.get(&host) {
+                            Some(a) => a,
                             None => {
                                 let Some(forge) = self.forge else {
                                     return Err(StoreError::Invalid(
@@ -1520,7 +1551,7 @@ impl Manager<'_> {
                                 };
                                 *lease = self.store.renew_lease(lease, ttl)?;
                                 let a = forge.whoami(&host);
-                                whoami.insert(host.clone(), a.clone());
+                                logins.insert(host.clone(), self.clock.now(), a.clone());
                                 a
                             }
                         };

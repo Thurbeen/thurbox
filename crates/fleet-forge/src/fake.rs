@@ -76,6 +76,9 @@ pub struct FakeForgeState {
     pub login: Option<String>,
     /// The intent key of every mark-ready that mutated a change, in order.
     pub marked_ready: Vec<String>,
+    /// How long each `change` call takes to answer, as a slow forge would.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub change_delay_ms: Option<Millis>,
 }
 
 /// The fake forge's directory, shared by every process that opens it.
@@ -291,11 +294,14 @@ impl Forge for FakeForge {
             };
         }
         match self.state() {
-            Ok(s) => ChangeObservation::Known(
+            Ok(s) => ChangeObservation::Known({
+                if let Some(ms) = s.change_delay_ms {
+                    std::thread::sleep(std::time::Duration::from_millis(ms));
+                }
                 s.changes
                     .get(&change_key(&change.project, &change.id))
-                    .cloned(),
-            ),
+                    .cloned()
+            }),
             Err(e) => ChangeObservation::unknown(
                 Uncertainty::Unreadable,
                 format!("fake forge unreadable: {e}"),

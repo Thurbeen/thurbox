@@ -782,3 +782,38 @@ fn a_command_span_names_the_kind_and_object_it_acts_on() {
         "apply names no one object: {apply:#?}"
     );
 }
+
+/// A slow forge cannot hold a pass: once a pass has spent its budget on
+/// change polls, the ChangeRequests still due wait for the next pass, and
+/// the run still polls every one.
+#[test]
+fn change_polls_on_a_slow_forge_spread_over_passes() {
+    let collector = Collector::start();
+    let mut env = Env::forge("otel-slow-forge");
+    exporting(&mut env, &collector.endpoint);
+    let forge = env.fake_forge();
+    let ids = ["7", "8", "9", "10"];
+    for id in ids {
+        forge.set_change("acme/widgets", id, open_change()).unwrap();
+        env.apply(change_request(
+            &format!("https://forge.test/acme/widgets/pull/{id}"),
+            json!({}),
+        ))
+        .ok();
+    }
+    forge.update(|s| s.change_delay_ms = Some(600)).unwrap();
+    env.reconcile().ok();
+
+    assert_eq!(
+        forge.state().unwrap().calls["change"],
+        ids.len() as u64,
+        "every due change is polled within the run"
+    );
+    let spans = collector.spans();
+    let passes = named(&spans, "reconcile pass");
+    let longest = passes.iter().map(|p| p.duration_ms).max().unwrap_or(0);
+    assert!(
+        longest < 2_000,
+        "a pass lasted {longest} ms; four 600 ms polls in one pass take 2400 ms"
+    );
+}
