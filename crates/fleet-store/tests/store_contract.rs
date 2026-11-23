@@ -4008,3 +4008,77 @@ fn only_the_cli_asks_for_a_pause_and_no_status_write_changes_it() {
         .unwrap_err();
     assert!(matches!(err, StoreError::Forbidden(_)), "{err}");
 }
+
+#[test]
+fn a_given_up_relay_is_retried_after_a_newer_revision_was_delivered() {
+    let dir = Dir::new("inbox-retry-older-relay");
+    let store = FileStore::open(&dir.0).unwrap();
+    let t = store.create(task("t"), FieldManager::Apply).unwrap();
+    let lease = store.acquire_lease("m", 10_000).unwrap();
+    let relay = |key: &str, revision: u64| InboxEntry {
+        about: Some(InboxAbout {
+            uid: "c1".into(),
+            revision,
+            head: None,
+        }),
+        ..entry(key)
+    };
+    let mut t = t;
+    for (key, revision) in [("r7", 7), ("r8", 8)] {
+        t = store
+            .append_inbox(
+                "t",
+                relay(key, revision),
+                t.metadata.resource_version,
+                FieldManager::Cli,
+                None,
+            )
+            .unwrap();
+    }
+    let mut st = inbox_status(&t);
+    st.delivery_attempts.insert(
+        "r7".into(),
+        fleet_api::inbox::DeliveryAttempt {
+            sends: 1,
+            failed: true,
+            ..Default::default()
+        },
+    );
+    let t = store
+        .update_status(
+            fleet_api::task::KIND,
+            "t",
+            serde_json::to_value(&st).unwrap(),
+            t.metadata.resource_version,
+            FieldManager::TaskController,
+            Some(&lease),
+        )
+        .unwrap();
+    let t = store
+        .record_delivery(
+            "t",
+            t.status.clone(),
+            receipt("r8"),
+            t.metadata.resource_version,
+            FieldManager::TaskController,
+            &lease,
+        )
+        .unwrap();
+    let retry = fleet_api::inbox::Retry {
+        key: "copy".into(),
+        queued_at: 2,
+    };
+    let t = store
+        .resolve_inbox(
+            "t",
+            "r7",
+            Some(retry),
+            t.metadata.resource_version,
+            FieldManager::Cli,
+        )
+        .expect("a person's retry is not a second relay of revision 7");
+    let st = inbox_status(&t);
+    let keys: Vec<&str> = st.inbox.iter().map(|e| e.key.as_str()).collect();
+    assert_eq!(keys, vec!["copy"]);
+    assert_eq!(st.inbox[0].about.as_ref().unwrap().revision, 7);
+}

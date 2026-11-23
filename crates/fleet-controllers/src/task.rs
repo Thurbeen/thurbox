@@ -526,9 +526,40 @@ impl Pass<'_, '_> {
             self.st.prompts.remove(key);
             self.st.loose_prompts.remove(key);
         }
-        if !self.st.delivery_attempts.values().any(|a| a.failed) {
-            for reason in ["DeliveryUnconfirmed", "DeliveryFailed", "DeliveryQueued"] {
-                self.settle_attention(reason);
+        let still_given_up = self
+            .st
+            .inbox
+            .iter()
+            .find(|e| {
+                self.st
+                    .delivery_attempts
+                    .get(&e.key)
+                    .is_some_and(|a| a.failed)
+            })
+            .map(|e| format!("inbox entry {} from {}", e.key, e.from));
+        let delivery_reasons = ["DeliveryUnconfirmed", "DeliveryFailed", "DeliveryQueued"];
+        match still_given_up {
+            None => {
+                for reason in delivery_reasons {
+                    self.settle_attention(reason);
+                }
+            }
+            Some(what) => {
+                let raised = condition(&self.st.conditions, NEEDS_ATTENTION)
+                    .filter(|c| {
+                        c.status == ConditionStatus::True
+                            && delivery_reasons.contains(&c.reason.as_str())
+                    })
+                    .map(|c| c.reason.clone());
+                if let Some(reason) = raised {
+                    self.needs_attention(
+                        &reason,
+                        format!(
+                            "{what} is given up on and stays in status.inbox; \
+                             fleet send --retry or --drop resolves it"
+                        ),
+                    );
+                }
             }
         }
     }

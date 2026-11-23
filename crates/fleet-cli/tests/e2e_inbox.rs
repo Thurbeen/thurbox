@@ -546,3 +546,37 @@ fn retry_and_drop_refuse_an_entry_that_is_not_given_up_on() {
     );
     assert_eq!(inbox_keys(&full_status(&env)), vec![key]);
 }
+
+#[test]
+fn after_a_drop_the_attention_names_an_entry_still_given_up_on() {
+    let env = concluded("inbox-drop-one-of-two");
+    env.fault(Fault::new("brief", "unknown"));
+    env.fault(Fault::new("brief", "unknown"));
+    let first = send(&env, "first")["key"].as_str().unwrap().to_string();
+    let second = send(&env, "second")["key"].as_str().unwrap().to_string();
+    for _ in 0..12 {
+        env.expire_wait("t1");
+        env.reconcile().ok();
+    }
+    assert_eq!(
+        inbox_keys(&full_status(&env)),
+        vec![first.clone(), second.clone()]
+    );
+    let named = |env: &Env| {
+        let st = env.status("t1");
+        st["conditions"]
+            .as_array()
+            .and_then(|cs| cs.iter().find(|c| c["type"] == "NeedsAttention"))
+            .cloned()
+            .unwrap_or_default()
+    };
+    assert!(named(&env)["message"].as_str().unwrap().contains(&second));
+
+    env.fleet(&["send", "t1", "--drop", &second]).ok();
+    env.reconcile().ok();
+    let attention = named(&env);
+    assert_eq!(attention["status"], "True", "{attention:#}");
+    let message = attention["message"].as_str().unwrap();
+    assert!(message.contains(&first), "{attention:#}");
+    assert!(!message.contains(&second), "{attention:#}");
+}

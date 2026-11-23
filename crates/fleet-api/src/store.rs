@@ -278,8 +278,8 @@ pub trait Store {
     /// `fleet send --retry` and `--drop`, compare-and-swap on
     /// resourceVersion, as `FieldManager::Cli` only: remove the entry under
     /// `key`, which TaskController gave up on (`inbox::given_up`), and, for
-    /// a `retry`, queue its copy under the retry's key as `append_inbox`
-    /// checks an entry, in one write. Refused on a deleting Task. No other field
+    /// a `retry`, queue its copy under the retry's key as
+    /// `inbox::check_retry` checks it, in one write. Refused on a deleting Task. No other field
     /// changes: TaskController forgets the entry's attempt on its next pass.
     fn resolve_inbox(
         &self,

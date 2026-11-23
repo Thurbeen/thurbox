@@ -1124,7 +1124,10 @@ impl Store for FileStore {
                 .clone();
         st.inbox.retain(|e| e.key != key);
         if let Some(retry) = retry {
-            push_checked(&obj, &mut st, retry.copy(entry))?;
+            let copy = retry.copy(entry);
+            fleet_api::inbox::check_retry(&st.inbox, &st.delivery_attempts, &st.deliveries, &copy)
+                .map_err(|why| inbox_refusal(&obj, why))?;
+            st.inbox.push(copy);
         }
         obj.status = encode_status(&st)?;
         obj.metadata.resource_version = self.next_rv()?;

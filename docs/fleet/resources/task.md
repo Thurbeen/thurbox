@@ -253,7 +253,7 @@ still to deliver, and a deleting Task; record-and-remove, TaskController's
 status write that also moves one entry's receipt into `deliveries` and the
 entry out of `inbox`; and resolve (`fleet send --retry` and `--drop`), which
 removes one entry given up on and, for a retry, appends its copy as append
-does. No manager may replace the list.
+does, except for the delivered-revision check. No manager may replace the list.
 
 TaskController delivers inbox entries as it delivers the brief, oldest first,
 one per pass: only to a session observed ready on that pass, under the entry's
@@ -277,7 +277,9 @@ A person resolves an entry given up on by its key:
 
 - `fleet send TASK --retry KEY` removes the entry and queues a copy of it
   (the same `from`, `text`, `about` and `answers`) under a new
-  `task/<name>/<uid>/send/<n>` key. The copy gets 3 sends of its own.
+  `task/<name>/<uid>/send/<n>` key. The copy gets 3 sends of its own. A
+  relay's copy is queued even when a newer revision of its change was
+  delivered since: the later relay does not repeat what the lost one said.
 - `fleet send TASK --drop KEY` removes the entry. Fleet records no receipt
   and never delivers it.
 
@@ -285,7 +287,8 @@ Both refuse a key that is not an entry given up on, and name where it
 stands: delivered, still being delivered, or not in the inbox. On its next
 pass, TaskController forgets the entry's attempt. When no entry given up on
 is left, it clears `NeedsAttention` raised as `DeliveryUnconfirmed`,
-`DeliveryFailed` or `DeliveryQueued`. A Concluded Task is due for that pass. A Concluded Task with a
+`DeliveryFailed` or `DeliveryQueued`. While one is left, that attention names
+it. A Concluded Task is due for that pass. A Concluded Task with a
 nonempty inbox is due again for delivery, and at rest for a session recheck
 every 5 minutes, as the [Task state
 machine](../controllers/task.md#transition-rules) describes;

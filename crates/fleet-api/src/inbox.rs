@@ -245,15 +245,6 @@ pub fn check_append(
     deliveries: &Deliveries,
     entry: &InboxEntry,
 ) -> Result<(), String> {
-    if entry.key.is_empty() || entry.from.is_empty() {
-        return Err("an inbox entry needs a key and a source".into());
-    }
-    if entry.text.is_empty() {
-        return Err(format!("inbox entry {}: nothing to deliver", entry.key));
-    }
-    if inbox.iter().any(|e| e.key == entry.key) || deliveries.delivered(&entry.key) {
-        return Err(format!("inbox entry {} already exists", entry.key));
-    }
     if let Some(about) = &entry.about
         && deliveries
             .revisions
@@ -264,6 +255,27 @@ pub fn check_append(
             "inbox entry {}: revision {} of {} (mirror {}) was already delivered",
             entry.key, about.revision, entry.from, about.uid
         ));
+    }
+    check_retry(inbox, attempts, deliveries, entry)
+}
+
+/// Why a person's retry of an entry given up on is refused: as an append,
+/// except that a relay's revision may be at or below one delivered since.
+/// The retried relay is the only carrier of what it said.
+pub fn check_retry(
+    inbox: &[InboxEntry],
+    attempts: &BTreeMap<String, DeliveryAttempt>,
+    deliveries: &Deliveries,
+    entry: &InboxEntry,
+) -> Result<(), String> {
+    if entry.key.is_empty() || entry.from.is_empty() {
+        return Err("an inbox entry needs a key and a source".into());
+    }
+    if entry.text.is_empty() {
+        return Err(format!("inbox entry {}: nothing to deliver", entry.key));
+    }
+    if inbox.iter().any(|e| e.key == entry.key) || deliveries.delivered(&entry.key) {
+        return Err(format!("inbox entry {} already exists", entry.key));
     }
     let due = due(inbox, attempts);
     if due > MAX_INBOX {
