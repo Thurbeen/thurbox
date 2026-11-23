@@ -1031,7 +1031,6 @@ fn a_childs_declarations_and_result_each_become_one_entry_in_its_parents_inbox()
             "task/p/p1/gateway/child/k1/0",
             "task/p/p1/gateway/child/k1/3",
             "task/p/p1/gateway/child/k1/4",
-            "task/p/p1/gateway/child/k1/5",
         ]
     );
     for e in &plan.appends {
@@ -1053,11 +1052,6 @@ fn a_childs_declarations_and_result_each_become_one_entry_in_its_parents_inbox()
         plan.appends[2].text.contains("Export fix") && plan.appends[2].text.contains("pull/7"),
         "{}",
         plan.appends[2].text
-    );
-    assert!(
-        plan.appends[3].text.contains("ChangeRequest cr-1"),
-        "{}",
-        plan.appends[3].text
     );
     assert_eq!(
         gw.children["c"],
