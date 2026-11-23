@@ -331,3 +331,120 @@ fn a_config_without_a_local_place_is_a_warning() {
         "{report:#}"
     );
 }
+
+#[cfg(unix)]
+fn serving_manager(env: &Env, version: &str) {
+    fs::create_dir_all(&env.data).expect("data");
+    fs::write(
+        env.data.join("lease.json"),
+        serde_json::json!({"holder": "another-host", "token": 1, "expiresAt": u64::MAX / 2})
+            .to_string(),
+    )
+    .expect("lease");
+    fs::write(
+        env.data.join("manager.json"),
+        serde_json::json!({"pid": 1, "boot": null, "version": version, "exe": "/f",
+            "config": "/c", "startedAt": 1, "state": "serving"})
+        .to_string(),
+    )
+    .expect("manager record");
+}
+
+#[cfg(unix)]
+fn runtime_mux_of(env: &Env, version: &str) {
+    use std::os::unix::fs::PermissionsExt;
+    let dir = env.root.join("mux-bin");
+    fs::create_dir_all(&dir).expect("mux bin");
+    let runtime = dir.join("runtime-mux");
+    fs::write(
+        &runtime,
+        format!(
+            "#!/bin/sh\ncat >/dev/null\necho '{{\"known\":{{\"protocol\":2,\"version\":\"{version}\",\"verbs\":[\"manifest\",\"start\",\"inspect\",\"stop\"],\"places\":[{{\"name\":\"local\",\"platform\":\"posix\",\"ready\":true}}]}}}}'\n"
+        ),
+    )
+    .expect("runtime");
+    fs::set_permissions(&runtime, fs::Permissions::from_mode(0o755)).expect("chmod");
+    fs::write(
+        &env.config,
+        format!(
+            "version = 1\n\n[data]\ndir = \"data\"\n\n[runtimes.mux]\nprogram = '{}'\n",
+            runtime.display()
+        ),
+    )
+    .expect("config");
+}
+
+#[cfg(unix)]
+fn cli_version(env: &Env) -> String {
+    env.fleet(&["version", "--json"]).ok().json()["cli"]["version"]
+        .as_str()
+        .expect("cli version")
+        .to_string()
+}
+
+/// The update evidence of #1909: the manager kept the old release while the
+/// CLI moved on. Doctor warns and names the restart; `version` flags it.
+#[cfg(unix)]
+#[test]
+fn a_manager_on_another_release_than_the_cli_is_a_version_skew() {
+    let env = setup("doctor-skew-manager");
+    let cli = cli_version(&env);
+    runtime_mux_of(&env, &cli);
+    serving_manager(&env, "0.0.1");
+
+    let report = env.fleet(&["doctor", "--json"]).ok().json();
+    let versions = check(&report, "version", "fleet");
+    assert_eq!(versions["level"], "warn", "{report:#}");
+    let detail = versions["detail"].as_str().expect("detail");
+    assert!(detail.contains(&format!("cli {cli}")), "{report:#}");
+    assert!(detail.contains("manager 0.0.1"), "{report:#}");
+    assert_eq!(
+        versions["hint"],
+        format!("fleet service restart --expect {cli}"),
+        "{report:#}"
+    );
+
+    let version = env.fleet(&["version", "--json"]).ok().json();
+    assert_eq!(
+        version["skew"],
+        serde_json::json!([format!("manager 0.0.1 is not cli {cli}")]),
+        "{version:#}"
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn a_runtime_mux_on_another_release_than_the_cli_is_a_version_skew() {
+    let env = setup("doctor-skew-mux");
+    let cli = cli_version(&env);
+    runtime_mux_of(&env, "0.0.2");
+    serving_manager(&env, &cli);
+
+    let report = env.fleet(&["doctor", "--json"]).ok().json();
+    let versions = check(&report, "version", "fleet");
+    assert_eq!(versions["level"], "warn", "{report:#}");
+    assert!(
+        versions["detail"]
+            .as_str()
+            .is_some_and(|d| d.contains("runtime mux 0.0.2")),
+        "{report:#}"
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn one_release_everywhere_is_no_skew() {
+    let env = setup("doctor-no-skew");
+    let cli = cli_version(&env);
+    runtime_mux_of(&env, &cli);
+    serving_manager(&env, &cli);
+
+    let report = env.fleet(&["doctor", "--json"]).ok().json();
+    assert_eq!(
+        check(&report, "version", "fleet")["level"],
+        "ok",
+        "{report:#}"
+    );
+    let version = env.fleet(&["version", "--json"]).ok().json();
+    assert_eq!(version["skew"], serde_json::json!([]), "{version:#}");
+}

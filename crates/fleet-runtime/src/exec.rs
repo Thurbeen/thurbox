@@ -362,6 +362,9 @@ enum Wire {
 #[derive(Debug, Clone, Deserialize)]
 pub struct Manifest {
     pub protocol: u64,
+    /// The runtime's own release, when it reports one.
+    #[serde(default)]
+    pub version: Option<String>,
     pub verbs: Vec<String>,
     /// What a runtime that declares the `workspace` verb makes.
     #[serde(default)]

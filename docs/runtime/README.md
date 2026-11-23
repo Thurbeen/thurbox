@@ -43,7 +43,7 @@ process per call: `<program> <verb>`, a JSON request on stdin, and on stdout
 
 | Verb | Required | Answer |
 | --- | --- | --- |
-| `manifest` | yes | protocol version, the verbs supported and, from version 2, each place's readiness |
+| `manifest` | yes | protocol version, the verbs supported, from version 2 each place's readiness, and optionally `version`, the runtime's own release |
 | `start` | yes | adopts the one live process holding the key, else starts `argv` with `env` in the workspace made under that key |
 | `inspect` | yes | `None`, `Running{id}`, `Exited{id, code}`, and `Paused` with the `pause` verb |
 | `stop` | yes | a process already gone counts as stopped; `release: true` also removes the key's workspace |

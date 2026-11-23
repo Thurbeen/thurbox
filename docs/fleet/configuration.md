@@ -145,6 +145,14 @@ WantedBy=default.target
   then runs the current release.
 - `X-Fleet-Store` names the store. systemd ignores the key. Fleet reads it
   to find the unit of a store.
+- A unit written by hand has no `X-Fleet-Store`. `start`, `stop`,
+  `restart` and `status` without `--name` drive it when no unit names the
+  store, its `ExecStart` runs `fleet ... up`, and that manager serves the
+  store. Fleet reads the store from `--data-dir`, else from the data
+  directory of the config that `--config` or `FLEET_CONFIG` names, else
+  from the default config. It reads the unit and its drop-ins
+  (`NAME.service.d/*.conf`). `install` and `uninstall` never take such a
+  unit, and `fleet version` names it as the supervisor.
 - `install` refuses a second unit for the same store, with exit code 5.
   Uninstall the first unit, or install it again under its own name.
 - `install` with the name of an existing unit replaces the unit file. The
@@ -273,9 +281,13 @@ under `manager`, and only reads them:
 - `cli.version` is the version of the `fleet` that answers. When it
   differs from `manager.version`, the manager runs another release than the
   one installed. Restart the manager through its supervisor.
+- `skew` lists each program that runs another release than the CLI, as
+  `manager <version> is not cli <version>`. It is `[]` when the manager
+  that holds the lease runs the CLI's version, or when no manager runs.
+  `fleet doctor` also compares each `runtime-mux` (`version` area).
 - `supervisor` names the unit that runs `fleet up` for the store
-  ([the service unit](#the-service-unit-fleet-service)). It is `null` when
-  no unit names the store, and on a system other than Linux.
+  ([the service unit](#the-service-unit-fleet-service)), or the unit written
+  by hand that serves it. It is `null` when no unit runs the store.
 - The report takes no lease and renews none, takes no lock, and it creates
   no store.
 Unknown session observations never trigger a blind replacement. Each sweep

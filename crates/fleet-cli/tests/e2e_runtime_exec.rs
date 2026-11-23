@@ -222,6 +222,32 @@ fn mux_env(name: &str, program: &Path, sockets: &Sockets) -> Env {
     env
 }
 
+/// One build of `fleet` and `runtime-mux` is one release: doctor finds no
+/// skew between them, from the version the real `manifest` reports.
+#[test]
+fn doctor_reads_runtime_mux_s_version_from_its_manifest() {
+    let (Some(program), Some(_)) = (runtime_mux(), tmux()) else {
+        return;
+    };
+    let sockets = Sockets::new("version");
+    let env = mux_env("runtime-version", &program, &sockets);
+    let cli = env.fleet(&["version", "--json"]).ok().json()["cli"]["version"].clone();
+    let report = env.fleet(&["doctor", "--json"]).json();
+    let versions = report["checks"]
+        .as_array()
+        .expect("checks")
+        .iter()
+        .find(|c| c["area"] == "version")
+        .unwrap_or_else(|| panic!("no version check: {report:#}"))
+        .clone();
+    assert_eq!(versions["level"], "ok", "{report:#}");
+    assert_eq!(
+        versions["detail"],
+        format!("cli {0}, runtime mux {0}", cli.as_str().expect("cli")),
+        "{report:#}"
+    );
+}
+
 #[test]
 fn runtime_mux_passes_the_conformance_suite() {
     let (Some(program), Some(_)) = (runtime_mux(), tmux()) else {

@@ -58,6 +58,10 @@ fn from_utf16(bytes: &[u8]) -> Option<String> {
     String::from_utf16(&units).ok()
 }
 
+pub fn invocation(_path: &Path) -> Option<super::Invocation> {
+    None
+}
+
 pub fn unit_store(path: &Path) -> Option<String> {
     let text = from_utf16(&std::fs::read(path).ok()?)?;
     xml::between(

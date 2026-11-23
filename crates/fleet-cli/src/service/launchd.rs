@@ -41,6 +41,10 @@ fn log_path(label: &str) -> Option<PathBuf> {
     home().map(|h| h.join("Library/Logs").join(format!("{label}.log")))
 }
 
+pub fn invocation(_path: &Path) -> Option<super::Invocation> {
+    None
+}
+
 pub fn unit_store(path: &Path) -> Option<String> {
     xml::between(&std::fs::read_to_string(path).ok()?, STORE, "</string>")
 }

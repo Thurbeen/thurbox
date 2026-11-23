@@ -5,6 +5,7 @@
 #![cfg(unix)]
 
 use std::io::Write;
+use std::path::Path;
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 
@@ -43,7 +44,16 @@ impl Runtime {
     }
 
     fn call_on(&self, socket: Option<&str>, verb: &str, request: Value) -> Value {
-        let mut command = Command::new(env!("CARGO_BIN_EXE_runtime-mux"));
+        self.call_as(
+            Path::new(env!("CARGO_BIN_EXE_runtime-mux")),
+            socket,
+            verb,
+            request,
+        )
+    }
+
+    fn call_as(&self, program: &Path, socket: Option<&str>, verb: &str, request: Value) -> Value {
+        let mut command = Command::new(program);
         // The guard pins the interface's socket name, as a runtime started
         // from a thurbox pane inherits it; the runtime must not use it.
         self.server.scope(&mut command);
@@ -2022,4 +2032,50 @@ fn a_sessions_environment_reaches_its_window_and_no_argv() {
     for (key, _) in &cases {
         rt.call("stop", json!({"protocol": 1, "key": key}));
     }
+}
+
+/// #1909: a pane started by the runtime-mux of one release reaches the
+/// programs through the install's `current` link, so a later update moves
+/// the `fleet` its agent runs without the Task being recreated.
+#[cfg(unix)]
+#[test]
+fn a_pane_reaches_the_programs_through_the_current_release_link() {
+    let Some(rt) = Runtime::new() else { return };
+    let home = tempfile::tempdir().expect("install");
+    let release = home.path().join("lib/thurbox/releases/1.0.0/bin");
+    std::fs::create_dir_all(&release).expect("release");
+    let program = release.join("runtime-mux");
+    std::fs::copy(env!("CARGO_BIN_EXE_runtime-mux"), &program).expect("runtime-mux");
+    std::fs::copy(
+        env!("CARGO_BIN_EXE_runtime-mux"),
+        release.join("thurbox-cli"),
+    )
+    .expect("cli");
+    std::os::unix::fs::symlink("releases/1.0.0", home.path().join("lib/thurbox/current"))
+        .expect("current");
+    let out = home.path().join("pane.env");
+    let script = format!("env > '{}'; exec sleep 300", out.display());
+    started(&rt.call_as(
+        &program,
+        None,
+        "start",
+        json!({"protocol": 1, "key": "pane-path", "argv": ["sh", "-c", script]}),
+    ));
+    let seen = read_when_written(&out);
+    rt.call_as(
+        &program,
+        None,
+        "stop",
+        json!({"protocol": 1, "key": "pane-path"}),
+    );
+    let path = seen
+        .lines()
+        .find_map(|l| l.strip_prefix("PATH="))
+        .expect("PATH");
+    let first = path.split(':').next().unwrap_or_default();
+    assert_eq!(
+        Path::new(first),
+        home.path().join("lib/thurbox/current/bin"),
+        "{path}"
+    );
 }

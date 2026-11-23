@@ -271,6 +271,56 @@ pub fn no_local_place(why: &str) -> Check {
     }
 }
 
+/// Each program of the release that runs another version than the CLI:
+/// the serving manager, then each runtime-mux by its runtime's name.
+pub fn skew(cli: &str, manager: Option<&str>, runtimes: &[(String, String)]) -> Vec<String> {
+    manager
+        .filter(|v| *v != cli)
+        .map(|v| format!("manager {v} is not cli {cli}"))
+        .into_iter()
+        .chain(
+            runtimes
+                .iter()
+                .filter(|(_, v)| v != cli)
+                .map(|(name, v)| format!("runtime {name} {v} is not cli {cli}")),
+        )
+        .collect()
+}
+
+/// The versions the CLI, the serving manager and each runtime-mux run: a
+/// warning when one differs, since an update moves them together.
+pub fn versions(cli: &str, manager: Option<&str>, runtimes: &[(String, String)]) -> Check {
+    let detail = std::iter::once(format!("cli {cli}"))
+        .chain(manager.map(|v| format!("manager {v}")))
+        .chain(
+            runtimes
+                .iter()
+                .map(|(name, v)| format!("runtime {name} {v}")),
+        )
+        .collect::<Vec<_>>()
+        .join(", ");
+    let hint = if manager.is_some_and(|v| v != cli) {
+        Some(format!("fleet service restart --expect {cli}"))
+    } else if skew(cli, None, runtimes).is_empty() {
+        None
+    } else {
+        Some(format!(
+            "run the runtime-mux released with fleet {cli}: the one beside fleet, or name it in [runtimes.<name>] program"
+        ))
+    };
+    Check {
+        area: "version",
+        name: "fleet".to_string(),
+        level: if hint.is_some() {
+            Level::Warn
+        } else {
+            Level::Ok
+        },
+        detail,
+        hint,
+    }
+}
+
 /// How many checks failed.
 pub fn failed(checks: &[Check]) -> usize {
     checks.iter().filter(|c| c.level == Level::Fail).count()
