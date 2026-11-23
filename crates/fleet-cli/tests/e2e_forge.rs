@@ -1859,3 +1859,44 @@ fn a_closed_draft_is_closed_on_every_forge() {
         assert_eq!(st["phase"], "Closed", "{kind}: {st:#}");
     }
 }
+
+/// A first sweep that never goes idle still reports the manager serving
+/// after its first pass: two changes due every 100 ms on a forge that takes
+/// longer than a pass's poll budget keep every pass busy.
+#[test]
+fn fleet_up_reports_serving_after_its_first_pass_while_the_sweep_stays_busy() {
+    let env = Env::forge("serving-busy-sweep");
+    let forge = env.fake_forge();
+    for id in ["7", "8"] {
+        forge
+            .set_change(PROJECT, id, open_change(Vec::new()))
+            .unwrap();
+        env.apply(change_request(
+            &format!("https://forge.test/{PROJECT}/pull/{id}"),
+            json!({"pollMs": 100}),
+        ))
+        .ok();
+    }
+    forge.update(|s| s.change_delay_ms = Some(1_100)).unwrap();
+    let state = || {
+        fs::read(env.data.join("manager.json"))
+            .ok()
+            .and_then(|b| serde_json::from_slice::<Value>(&b).ok())
+            .map(|m| m["state"].clone())
+    };
+
+    let mut up = env.spawn(&["up", "--poll-ms", "100"]);
+    let deadline = std::time::Instant::now() + Duration::from_secs(10);
+    while state() != Some(json!("serving")) && std::time::Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    let seen = state();
+    up.kill().unwrap();
+    up.wait().unwrap();
+
+    assert_eq!(
+        seen,
+        Some(json!("serving")),
+        "the manager was still not serving after several busy passes"
+    );
+}
