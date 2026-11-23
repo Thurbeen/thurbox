@@ -312,318 +312,334 @@
   }
 }
 
-/* ---- How they fit ---- */
 #how-they-fit {
   border-top: 1px solid var(--border-light);
 }
 
-.flow {
-  --flow-bg: #0e0606;
-  --flow-panel: linear-gradient(#2a1517, #140a0b);
-  --flow-edge: #5e5457;
-  --flow-hot: #d0301c;
-  --flow-red: #ff5a40;
-  --flow-ink: #efe2e0;
-  --flow-dim: #c4adab;
-  --flow-cyan: #00d9ff;
+.story__chapter {
+  --st-card: var(--bg-card);
+  --st-sunk: var(--bg-secondary);
+  --st-line: var(--border);
+  --st-wire: color-mix(in srgb, var(--text-muted) 55%, var(--border));
+  --st-hot-soft: color-mix(in srgb, var(--accent) 9%, var(--bg-card));
+  --st-ease: cubic-bezier(0.2, 0.7, 0.2, 1);
 
-  margin: var(--space-xl) 0 0;
-  padding: var(--space-lg);
-  border: 10px solid #2b2527;
-  outline: 1px solid #9a9093;
-  background:
-    linear-gradient(90deg, #2c0c0a 1px, transparent 1px) 0 0 / 24px 24px,
-    linear-gradient(#2c0c0a 1px, transparent 1px) 0 0 / 24px 24px,
-    var(--flow-bg);
-  color: var(--flow-ink);
+  display: grid;
+  gap: var(--space-xl);
+  margin-top: var(--space-2xl);
+}
+
+@media (min-width: 960px) {
+  .story__chapter {
+    grid-template-columns: minmax(0, 3fr) minmax(0, 2fr);
+    align-items: start;
+  }
+}
+
+.story__figure {
+  margin: 0;
+}
+
+.story__svg {
+  display: block;
+  width: 100%;
+  height: auto;
+  overflow: visible;
+}
+
+.story__svg text {
+  font-family: var(--font-body);
+  font-size: 14px;
+  fill: var(--text-primary);
+}
+
+.story__svg .st-brand {
+  font-size: 20px;
+  font-weight: 700;
+  fill: var(--accent);
+}
+
+.story__svg .st-name {
+  font-size: 17px;
+  font-weight: 600;
+}
+
+.story__svg .st-mono,
+.story__svg .st-kind {
   font-family: var(--font-mono);
-  font-size: var(--text-sm);
 }
 
-.flow__title {
-  font-family: var(--font-display);
-  font-size: clamp(0.9rem, 2.4vw, 1.4rem);
-  letter-spacing: 0.08em;
-  text-transform: uppercase;
-  color: var(--flow-red);
-  margin-bottom: var(--space-lg);
+.story__svg .st-kind {
+  font-size: 13px;
 }
 
-.flow__grid {
-  display: grid;
-  grid-template-columns: 11rem 1fr;
-  gap: var(--space-md);
+.story__svg .st-strong {
+  font-weight: 700;
 }
 
-.flow__lanes {
-  display: grid;
-  gap: var(--space-md);
+.story__svg .st-dim,
+.story__svg .st-small,
+.story__svg .st-label {
+  fill: var(--text-secondary);
+}
+
+.story__svg .st-small,
+.story__svg .st-label {
+  font-size: 12px;
+}
+
+.story__svg .st-label {
+  letter-spacing: 0.04em;
+}
+
+.story__svg .st-edge {
+  font-size: 11px;
+}
+
+.story__svg .st-hot-text {
+  fill: var(--accent);
+  font-weight: 700;
+}
+
+.st-card,
+.st-pill {
+  fill: var(--st-card);
+  stroke: var(--st-line);
+}
+
+.st-sunk {
+  fill: var(--st-sunk);
+  stroke: var(--st-line);
+}
+
+.st-hot {
+  fill: var(--st-hot-soft);
+  stroke: var(--accent);
+  stroke-width: 1.5;
+}
+
+.st-key {
+  fill: var(--bg-card);
+  stroke: var(--text-primary);
+  stroke-width: 1.5;
+}
+
+.st-wire,
+.st-rule {
+  fill: none;
+  stroke: var(--st-wire);
+  stroke-width: 2;
+}
+
+.st-rule {
+  stroke: var(--st-line);
+  stroke-width: 1;
+}
+
+.st-arrowhead {
+  fill: var(--st-wire);
+}
+
+.st-track {
+  fill: none;
+  stroke: var(--st-line);
+  stroke-width: 1;
+  stroke-dasharray: 2 5;
+}
+
+.st-arc {
+  fill: none;
+  stroke: var(--accent);
+  stroke-width: 2;
+}
+
+.st-loophead,
+.st-led,
+.st-comet {
+  fill: var(--accent);
+}
+
+.st-ok {
+  fill: var(--green);
+}
+
+.st-idle {
+  fill: var(--yellow);
+}
+
+.st-quit,
+.st-orbit,
+.st-phase--a,
+.st-phase--b {
+  opacity: 0;
+}
+
+.story__steps {
   list-style: none;
   margin: 0;
   padding: 0;
 }
 
-.flow__lane {
-  display: grid;
-  grid-template-columns: 4.5rem 1fr 3.25rem 1fr 3.25rem 1fr 3.25rem 1fr;
-  align-items: center;
+.story__step {
+  padding: var(--space-md) 0 var(--space-md) var(--space-lg);
+  border-left: 2px solid var(--border);
 }
 
-.flow__node {
-  background: var(--flow-panel);
-  border: 2px solid var(--flow-edge);
-  box-shadow:
-    inset 2px 2px 0 rgb(255, 255, 255, 0.16),
-    inset -2px -2px 0 rgb(0, 0, 0, 0.6);
-  padding: var(--space-md) 0.75rem;
-  min-width: 0;
-  transition:
-    transform var(--transition),
-    border-color var(--transition),
-    box-shadow var(--transition);
-}
-
-.flow__node--ui,
-.flow__lane:first-child .flow__node--place {
-  border-color: var(--flow-hot);
-}
-
-.flow__node p {
-  margin: 0;
-  color: var(--flow-ink);
-}
-
-.flow__node p + p {
-  margin-top: var(--space-xs);
-}
-
-.flow__node code,
-.flow__node kbd {
-  color: var(--flow-red);
-  background: none;
-  font-size: inherit;
-  padding: 0;
-}
-
-.flow .flow__dim {
-  color: var(--flow-dim);
-  font-size: var(--text-xs);
-}
-
-.flow__name > * {
-  min-width: 0;
-}
-
-/* The narrowest phones: a name like WORKSPACE-GIT fits its card rather than
-   breaking mid-word, and the cards lose some padding. */
-@media (max-width: 399px) {
-  .flow .flow__name {
-    font-size: var(--text-sm);
-    letter-spacing: 0.02em;
-  }
-
-  .flow .flow__node {
-    padding: var(--space-sm);
-  }
-}
-
-.flow__name {
-  overflow-wrap: anywhere;
-  display: flex;
-  align-items: center;
-  gap: var(--space-sm);
-  margin: 0 0 var(--space-sm);
-  font-family: var(--font-mono);
-  font-size: var(--text-base);
-  font-weight: 800;
-  letter-spacing: 0.06em;
-  text-transform: uppercase;
-  color: var(--flow-red);
-}
-
-/* A configurable slot: a role, not a program. The dashed edge says it can be
-   swapped; the name shows the shipped program "or yours". Under .js-motion the
-   name instead cross-fades between the two (see Scroll reveal), and the
-   "or yours" stays in the accessibility tree as a visually hidden span, so a
-   screen reader hears one sentence either way. */
-.flow__node--slot {
-  border-style: dashed;
-}
-
-.flow .flow__role {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: var(--space-xs) var(--space-sm);
+.story__step h3 {
   margin-bottom: var(--space-sm);
-  color: var(--flow-dim);
-  font-size: 0.6875rem;
-  font-weight: 800;
-  letter-spacing: 0.08em;
-  text-transform: uppercase;
+  font-size: var(--text-lg);
 }
 
-.flow__tag {
-  padding: 0 0.35em;
-  border: 1px solid var(--flow-cyan);
-  color: var(--flow-cyan);
-  font-weight: 700;
-  letter-spacing: 0.04em;
-  text-transform: lowercase;
+.story__step p {
+  max-width: var(--measure);
+  margin: 0;
+  color: var(--text-secondary);
 }
 
-.flow__node--slot .flow__name {
-  flex-wrap: wrap;
-  gap: 0 var(--space-sm);
+.story--live .story__figure {
+  position: sticky;
+  top: var(--nav-height);
+  z-index: 1;
+  padding: var(--space-md) 0;
+  background: var(--bg-primary);
 }
 
-.flow__swap {
-  display: grid;
+.story--live .story__steps {
+  padding-bottom: 30vh;
 }
 
-.flow__swap > * {
-  grid-area: 1 / 1;
+.story--live .story__step {
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  min-height: 55vh;
+  opacity: 0.35;
+  transition:
+    opacity 0.4s ease,
+    border-color 0.4s ease;
 }
 
-.flow__swap-b {
-  display: none;
+.story--live .story__step.is-current {
+  opacity: 1;
+  border-left-color: var(--accent);
 }
 
-.flow__or {
-  color: var(--flow-dim);
-  font-size: var(--text-xs);
-  font-weight: 400;
-  letter-spacing: 0;
-  text-transform: none;
-}
-
-.flow__sigil {
-  width: 1.2em;
-  height: 1.2em;
-  flex: none;
-  border: 2px solid #7a1a12;
-  border-radius: var(--radius-round);
-  background: radial-gradient(circle, #ff3b24 0 18%, transparent 22%);
-}
-
-/* A wire: a dark track with a dashed glowing line on it, its label above. */
-.flow__wire {
-  position: relative;
-  height: 4px;
-  background: repeating-linear-gradient(90deg, #ff3b24 0 8px, transparent 8px 18px), #6a1a14;
-}
-
-.flow__lane--remote .flow__wire:first-child {
-  background:
-    repeating-linear-gradient(90deg, var(--flow-cyan) 0 6px, transparent 6px 12px), #003a45;
-}
-
-.flow__label {
-  position: absolute;
-  bottom: 8px;
-  left: 0;
-  right: 0;
-  text-align: center;
-  color: #ff6a50;
-  font-size: 0.6875rem;
-  font-weight: 800;
-  letter-spacing: 0.08em;
-  text-transform: uppercase;
-  white-space: nowrap;
-}
-
-.flow__lane--remote .flow__wire:first-child .flow__label {
-  color: var(--flow-cyan);
-}
-
-.flow__note {
-  margin: var(--space-lg) 0 0;
-  padding: var(--space-md);
-  border: 2px solid var(--flow-edge);
-  background: linear-gradient(#3a3335, #1c1819);
-  color: var(--flow-ink);
-}
-
-.flow__note strong {
-  display: block;
-  color: #ff3b24;
-  letter-spacing: 0.08em;
-  text-transform: uppercase;
-}
-
-@media (prefers-reduced-motion: no-preference) {
-  .flow__wire {
-    animation: flow-march 1.6s linear infinite;
+@media (min-width: 960px) {
+  .story--live .story__figure {
+    display: flex;
+    align-items: center;
+    height: calc(100vh - var(--nav-height));
+    padding: 0;
   }
 
-  .flow__sigil {
-    animation: flow-pulse 4s ease-in-out infinite;
+  .story--live .story__step {
+    min-height: 70vh;
   }
 }
 
-@keyframes flow-march {
-  to {
-    background-position: 36px 0;
-  }
+.story--live .s1,
+.story--live .s2,
+.story--live .s3,
+.story--live .s4,
+.story--live .st-phase {
+  transition:
+    opacity 0.6s var(--st-ease) var(--d, 0s),
+    stroke-dashoffset 0.9s var(--st-ease) var(--d, 0s);
 }
 
-@keyframes flow-pulse {
+.story--live:not(.at-1) .s1,
+.story--live:not(.at-2) .s2,
+.story--live:not(.at-3) .s3,
+.story--live:not(.at-4) .s4 {
+  opacity: 0.1;
+  transition-delay: 0s;
+}
+
+.story--live .st-wire {
+  stroke-dasharray: 1;
+}
+
+.story--live:not(.at-2) .st-wire.s2,
+.story--live:not(.at-3) .st-wire.s3,
+.story--live:not(.at-4) .st-wire.s4 {
+  stroke-dashoffset: 1;
+}
+
+.story--live:not(.at-3) .st-phase--a,
+.story--live.at-3:not(.at-4) .st-phase--b {
+  opacity: 1;
+}
+
+.story--live:not(.at-4) .st-phase--c {
+  opacity: 0;
+}
+
+.story--live .st-tbx,
+.story--live .st-quit {
+  transition: opacity 0.5s ease;
+}
+
+.story--live[data-at='3'] .st-tbx {
+  opacity: 0.2;
+}
+
+.story--live[data-at='3'] .st-quit {
+  opacity: 1;
+}
+
+.st-led,
+.st-beat {
+  transform-box: fill-box;
+  transform-origin: center;
+}
+
+.st-orbit {
+  transform-box: view-box;
+  transform-origin: 348px 224px;
+}
+
+.story--live.is-visible.at-2 .st-led {
+  animation: story-led 2.4s ease-in-out infinite;
+}
+
+.story--live.is-visible.at-2 .st-beat {
+  animation: story-beat 1.6s ease-in-out infinite;
+}
+
+.story--live.at-2 .st-orbit {
+  opacity: 1;
+  transition: opacity 0.6s ease 0.8s;
+}
+
+.story--live.is-visible.at-2 .st-orbit {
+  animation: story-orbit 3.6s linear infinite;
+}
+
+@keyframes story-led {
+  0%,
+  100% {
+    opacity: 1;
+  }
+
   50% {
-    box-shadow: 0 0 8px #ff2a1a;
+    opacity: 0.35;
   }
 }
 
-/* A row of four boxes and four wires needs a figure about 1130px wide: each box
-   needs about 160px for WORKSPACE-GIT, and thurbox takes 11rem. The figure
-   reaches its full 1152px at a 1280px viewport, so below that the flow stacks:
-   each wire turns vertical between its boxes, and the two lanes sit side by
-   side while there is room. */
-@media (max-width: 1279px) {
-  .flow {
-    padding: var(--space-md);
-    border-width: 6px;
+@keyframes story-beat {
+  0%,
+  100% {
+    transform: scale(1);
   }
 
-  .flow__grid {
-    grid-template-columns: 1fr;
+  50% {
+    transform: scale(1.5);
   }
+}
 
-  .flow__lanes {
-    grid-template-columns: repeat(auto-fit, minmax(min(16rem, 100%), 1fr));
-    align-items: start;
-    gap: var(--space-lg);
-  }
-
-  .flow__lane {
-    grid-template-columns: 1fr;
-  }
-
-  .flow__node {
-    padding: var(--space-md);
-  }
-
-  .flow__wire {
-    justify-self: center;
-    width: 4px;
-    height: 2.5rem;
-    background: repeating-linear-gradient(180deg, #ff3b24 0 8px, transparent 8px 18px), #6a1a14;
-  }
-
-  .flow__lane--remote .flow__wire:first-child {
-    background:
-      repeating-linear-gradient(180deg, var(--flow-cyan) 0 6px, transparent 6px 12px), #003a45;
-  }
-
-  .flow__label {
-    inset: 50% auto auto 12px;
-    transform: translateY(-50%);
-    text-align: left;
-  }
-
-  @keyframes flow-march {
-    to {
-      background-position: 0 36px;
-    }
+@keyframes story-orbit {
+  to {
+    transform: rotate(1turn);
   }
 }
 
@@ -776,22 +792,9 @@
   box-shadow: var(--bevel-glow-red);
 }
 
-.flow__node:hover {
-  border-color: var(--flow-red);
-  transform: translateY(-2px);
-  box-shadow:
-    inset 2px 2px 0 rgb(255, 255, 255, 0.16),
-    inset -2px -2px 0 rgb(0, 0, 0, 0.6),
-    0 0 14px rgb(255, 42, 26, 0.45);
-}
-
 @media (prefers-reduced-motion: reduce) {
   .plugin-strip__list li:hover {
     translate: none;
-  }
-
-  .flow__node:hover {
-    transform: none;
   }
 }
 
@@ -818,114 +821,4 @@
 .js-motion [data-reveal].is-revealed > * {
   opacity: 1;
   transform: none;
-}
-
-/* The overview's wires draw from their source end once the figure is in,
-   left to right, the remote lane a beat behind; the labels follow. The
-   marching dashes keep running throughout. */
-.js-motion .flow__wire {
-  transform: scaleX(0);
-  transform-origin: left center;
-  transition: transform 0.5s cubic-bezier(0.5, 0, 0.2, 1);
-}
-
-.js-motion .flow__label {
-  opacity: 0;
-  transition: opacity 0.3s ease;
-}
-
-.js-motion .flow.is-revealed .flow__wire {
-  transform: none;
-  transition-delay: calc(var(--wire-d, 0s) + var(--lane-d, 0s));
-}
-
-.js-motion .flow.is-revealed .flow__label {
-  opacity: 1;
-  transition-delay: calc(var(--wire-d, 0s) + var(--lane-d, 0s) + 0.4s);
-}
-
-.js-motion .flow__wire:nth-child(1) {
-  --wire-d: 0.35s;
-}
-
-.js-motion .flow__wire:nth-child(3) {
-  --wire-d: 0.75s;
-}
-
-.js-motion .flow__wire:nth-child(5) {
-  --wire-d: 1.15s;
-}
-
-.js-motion .flow__wire:nth-child(7) {
-  --wire-d: 1.55s;
-}
-
-/* Once the wires are in, each configurable slot cross-fades between the
-   shipped program and "yours", the provider a beat behind the runtime. Opacity
-   only; the static "or yours" leaves the screen but not the accessibility
-   tree. */
-.js-motion .flow__swap-b {
-  display: block;
-  opacity: 0;
-}
-
-.js-motion .flow__or {
-  position: absolute;
-  width: 1px;
-  height: 1px;
-  overflow: hidden;
-  clip-path: inset(50%);
-  white-space: nowrap;
-}
-
-.js-motion .flow.is-revealed .flow__swap-a {
-  animation: flow-swap-a 6s ease-in-out calc(2s + var(--slot-d, 0s)) infinite both;
-}
-
-.js-motion .flow.is-revealed .flow__swap-b {
-  animation: flow-swap-b 6s ease-in-out calc(2s + var(--slot-d, 0s)) infinite both;
-}
-
-.js-motion .flow__wire:nth-child(5) + .flow__node--slot {
-  --slot-d: 0.6s;
-}
-
-@keyframes flow-swap-a {
-  0%,
-  25%,
-  83%,
-  100% {
-    opacity: 1;
-  }
-
-  33%,
-  75% {
-    opacity: 0;
-  }
-}
-
-@keyframes flow-swap-b {
-  0%,
-  25%,
-  83%,
-  100% {
-    opacity: 0;
-  }
-
-  33%,
-  75% {
-    opacity: 1;
-  }
-}
-
-.js-motion .flow__lane--remote {
-  --lane-d: 0.15s;
-}
-
-/* Stacked, each wire runs top to bottom. */
-@media (max-width: 1279px) {
-  .js-motion .flow__wire {
-    transform: scaleY(0);
-    transform-origin: center top;
-  }
 }
