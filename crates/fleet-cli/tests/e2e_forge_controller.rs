@@ -889,3 +889,35 @@ fn fleet_up_asks_the_forge_for_its_login_once_across_sweeps() {
         "Fleet's login is asked once, not on every sweep"
     );
 }
+
+#[test]
+fn fleet_up_asks_again_after_an_unknown_login_and_then_keeps_it() {
+    let (env, forge, cr) = setup("login-unknown");
+    declare(&env, "t1", URL).ok();
+    env.reconcile().ok();
+    assert_eq!(entry(&full_status(&env, "t1"), &cr)["state"], "following");
+    let asked = || {
+        forge
+            .state()
+            .unwrap()
+            .calls
+            .get("whoami")
+            .copied()
+            .unwrap_or(0)
+    };
+    let before = asked();
+    forge
+        .add_fault(fleet_forge::ForgeFault::new("whoami", "lost"))
+        .unwrap();
+
+    let mut up = env.spawn(&["up", "--poll-ms", "100", "--lease-ttl-ms", "3600000"]);
+    sweeps_seen(&env, 100, 10);
+    up.kill().unwrap();
+    up.wait().unwrap();
+
+    assert_eq!(
+        asked() - before,
+        2,
+        "the Unknown answer is asked again on the next pass, the Known one kept"
+    );
+}

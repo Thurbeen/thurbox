@@ -222,7 +222,7 @@ impl std::fmt::Debug for Manager<'_> {
 }
 
 const FORGE_LOGIN_KEPT_MS: Millis = 10 * 60_000;
-const CHANGE_POLLS_PER_PASS_MS: Millis = 1_000;
+const CHANGE_POLLS_PER_PASS: std::time::Duration = std::time::Duration::from_secs(1);
 
 #[derive(Debug, Default)]
 struct ForgeLogins(BTreeMap<String, (Millis, Observation<String>)>);
@@ -671,12 +671,13 @@ impl Manager<'_> {
         Ok(())
     }
 
-    /// Every due ChangeRequest, one host at a time in a stable order, so that
-    /// a `retryAfter` from a forge defers all of that host's together: the
-    /// ones after it in the order are not asked, they take the same answer.
-    /// A pass starts no poll once its polls have taken
-    /// [`CHANGE_POLLS_PER_PASS_MS`]: the rest stay due for the next pass, so
-    /// a slow forge does not hold every Task's next reconcile. Returns
+    /// Every due ChangeRequest, the one due longest first. A `retryAfter`
+    /// from a forge defers the rest of that host's in the pass: they are not
+    /// asked, they take the same answer. A pass starts no poll once its polls
+    /// have taken [`CHANGE_POLLS_PER_PASS`]: the rest stay due for the next
+    /// pass, so a slow forge does not hold every Task's next reconcile, and a
+    /// change due again at once does not keep the others waiting. A deferred
+    /// host's changes cost no call and still take the deferral. Returns
     /// whether anything changed or is left due.
     fn sweep_change_requests(
         &self,
@@ -692,12 +693,18 @@ impl Manager<'_> {
             }
         };
         let mut due: Vec<&Object> = changes.iter().filter(|c| self.due(c)).collect();
-        due.sort_by_cached_key(|o| (host_of(o), o.metadata.name.clone()));
+        due.sort_by_cached_key(|o| {
+            (
+                o.status["notBefore"].as_u64().unwrap_or(0),
+                host_of(o),
+                o.metadata.name.clone(),
+            )
+        });
         let mut deferred: BTreeMap<String, Deferral> = BTreeMap::new();
         let mut busy = false;
-        let started = self.clock.now();
+        let started = std::time::Instant::now();
         for obj in due {
-            if self.clock.now().saturating_sub(started) >= CHANGE_POLLS_PER_PASS_MS {
+            if started.elapsed() >= CHANGE_POLLS_PER_PASS && !deferred.contains_key(&host_of(obj)) {
                 return Ok(true);
             }
             *lease = self.store.renew_lease(lease, ttl)?;
@@ -2658,5 +2665,31 @@ impl Manager<'_> {
             obj.key(),
             effect.key
         )))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_known_login_is_kept_for_ten_minutes_and_an_unknown_one_for_the_pass() {
+        let mut logins = ForgeLogins::default();
+        logins.insert(
+            "known.test".into(),
+            0,
+            Observation::Known("fleet-bot".into()),
+        );
+        logins.insert("unknown.test".into(), 0, Observation::unknown("timed out"));
+
+        logins.forget_unknown_and_old(FORGE_LOGIN_KEPT_MS - 1);
+        assert_eq!(
+            logins.get("known.test"),
+            Some(Observation::Known("fleet-bot".into()))
+        );
+        assert_eq!(logins.get("unknown.test"), None);
+
+        logins.forget_unknown_and_old(FORGE_LOGIN_KEPT_MS);
+        assert_eq!(logins.get("known.test"), None);
     }
 }

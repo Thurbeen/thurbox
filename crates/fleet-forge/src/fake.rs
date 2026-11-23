@@ -267,6 +267,9 @@ impl Forge for FakeForge {
             Ok(f) => f,
             Err(why) => return ChangeObservation::unknown(Uncertainty::Unreadable, why),
         };
+        if let Some(ms) = self.state().ok().and_then(|s| s.change_delay_ms) {
+            std::thread::sleep(std::time::Duration::from_millis(ms));
+        }
         if let Some(f) = fault {
             return match f.mode.as_str() {
                 "lost" => ChangeObservation::unknown(Uncertainty::Refused, "injected: answer lost"),
@@ -294,14 +297,11 @@ impl Forge for FakeForge {
             };
         }
         match self.state() {
-            Ok(s) => ChangeObservation::Known({
-                if let Some(ms) = s.change_delay_ms {
-                    std::thread::sleep(std::time::Duration::from_millis(ms));
-                }
+            Ok(s) => ChangeObservation::Known(
                 s.changes
                     .get(&change_key(&change.project, &change.id))
-                    .cloned()
-            }),
+                    .cloned(),
+            ),
             Err(e) => ChangeObservation::unknown(
                 Uncertainty::Unreadable,
                 format!("fake forge unreadable: {e}"),
