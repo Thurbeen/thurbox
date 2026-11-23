@@ -422,6 +422,15 @@ fn a_throttled_answer_waits_as_long_as_the_forge_said() {
     let (_, st) = run_at(&object(Some(&before)), obs, NOW + POLL);
     assert_eq!(cond(&st, "Reachable").reason, "Throttled");
     assert_eq!(st.not_before, Some(NOW + POLL + 90_000));
+    let throttled = object(Some(&st));
+    assert!(
+        probes_at(&throttled, Default::default(), NOW + 2 * POLL).is_empty(),
+        "a followed change still waits out retryAfter"
+    );
+    assert_eq!(
+        probes_at(&throttled, Default::default(), NOW + POLL + 90_000).len(),
+        1
+    );
 }
 
 #[test]

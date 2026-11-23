@@ -10,13 +10,16 @@ use fleet_api::change_request::{
     self, CLOSED_POLL_FACTOR, ChangeRequestDefaults, ChangeRequestSpec, ChangeRequestStatus, Head,
     NOTE_CAP, Phase, Sequenced, StoredNote,
 };
-use fleet_api::condition::{ConditionStatus, is_true, set_condition, settle_transitions};
+use fleet_api::condition::{
+    Condition, ConditionStatus, is_true, set_condition, settle_transitions,
+};
 use fleet_api::forge::{ChangeObservation, ChangeRef, ChangeSnapshot, ChangeState, Note};
 use fleet_api::meta::{Millis, Object};
 use fleet_api::plan::{Plan, Probe};
 use fleet_api::store::FieldManager;
 use fleet_api::validate::typed;
 use fleet_api::{Observation, StoreError};
+use serde_json::Value;
 
 /// What one reconcile of one ChangeRequest reads. Every outside fact arrives
 /// here as a value; nothing is read from the world inside the controller.
@@ -89,15 +92,28 @@ impl ChangeRequestController {
     /// Watching, and `pollMs` has passed since. The second wakes a change
     /// that was waiting out the unfollowed rate as soon as a Task declares it.
     pub fn due(&self, object: &Object, followed: bool, now: Millis) -> Result<bool, StoreError> {
-        let (spec, st) = decode(object)?;
-        let waited = st.not_before.is_none_or(|t| t <= now);
-        let followed_poll_passed = followed
-            && st.phase == Phase::Watching
-            && is_true(&st.conditions, REACHABLE)
-            && st
-                .observed_at
-                .is_some_and(|at| at.saturating_add(spec.poll_ms()) <= now);
-        Ok(waited || followed_poll_passed)
+        let status = &object.status;
+        let millis = |field: &str| status.get(field).and_then(Value::as_u64);
+        if millis("notBefore").is_none_or(|t| t <= now) {
+            return Ok(true);
+        }
+        if !followed {
+            return Ok(false);
+        }
+        let spec: ChangeRequestSpec = typed(change_request::KIND, &object.spec)?;
+        let invalid =
+            |e: serde_json::Error| StoreError::Invalid(format!("ChangeRequest status: {e}"));
+        let phase: Phase = match status.get("phase") {
+            Some(v) => serde_json::from_value(v.clone()).map_err(invalid)?,
+            None => Phase::default(),
+        };
+        let conditions: Vec<Condition> = match status.get("conditions") {
+            Some(v) => serde_json::from_value(v.clone()).map_err(invalid)?,
+            None => Vec::new(),
+        };
+        Ok(phase == Phase::Watching
+            && is_true(&conditions, REACHABLE)
+            && millis("observedAt").is_some_and(|at| at.saturating_add(spec.poll_ms()) <= now))
     }
 
     pub fn reconcile(&self, input: &ChangeRequestInput<'_>) -> Result<Plan, StoreError> {
