@@ -4,6 +4,7 @@ import { posix } from 'node:path';
 import { test } from 'node:test';
 import { parse } from 'node-html-parser';
 import { THEMES, overviewPath, overviewSvg } from '../docs/overview-svg.mjs';
+import { fleetLoopPath, fleetLoopSvg } from '../docs/fleet-loop-svg.mjs';
 import { RENDERED_DOCS } from '../../eleventy.config.js';
 
 // Reads the built site, so run it after `npm run build:website`.
@@ -323,6 +324,16 @@ test('the overview diagrams are what their generator draws', () => {
       readFileSync(overviewPath(theme), 'utf8'),
       overviewSvg(theme),
       `${overviewPath(theme)} is stale: run node scripts/docs/overview-svg.mjs`,
+    );
+  }
+});
+
+test('the Fleet loop diagrams are what their generator draws', () => {
+  for (const theme of THEMES) {
+    assert.equal(
+      readFileSync(fleetLoopPath(theme), 'utf8'),
+      fleetLoopSvg(theme),
+      `${fleetLoopPath(theme)} is stale: run node scripts/docs/fleet-loop-svg.mjs`,
     );
   }
 });

@@ -31,6 +31,38 @@ file you can change.
   <img src="website/assets/overview-light.svg" alt="thurbox lists the sessions of every Fleet; each Fleet's runtime runs a session at a place">
 </picture>
 
+## How Fleet works
+
+Fleet is the engine under thurbox, and it orchestrates like Kubernetes. You
+declare what you want as resources; controllers make it so and write back what
+is.
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="website/assets/fleet-loop-dark.svg">
+  <img src="website/assets/fleet-loop-light.svg" alt="You declare resources; the store keeps them; controllers run by fleet up observe the runtime and the forge, compare with the spec, act, and write the status back">
+</picture>
+
+- **Resources.** Each one has a `spec`, what you want, and a `status`, what is.
+  A **Task** is one agent session doing one brief at one place.
+  **TaskConfig** and **EnvProvider** hold the launch defaults and environment
+  Tasks share. A **ChangeRequest** mirrors a pull or merge request a worker
+  declares. A **CronTask** creates Tasks on a schedule, like a CronJob.
+  Conversation, Listener, Board and plugin kinds complete the set.
+- **The store** keeps each resource as a file. Every write is compare-and-swap.
+- **Controllers reconcile.** `fleet up`, the manager, runs them in sweeps. Each
+  compares a resource's spec with what it observes and plans effects: make the
+  workspace, start the session, type the brief, deliver review feedback,
+  pause, revive or release the session. It writes the phase and conditions
+  back to the status.
+- **Crash-safe.** The manager records an effect's intent before it runs it. An
+  observation it cannot read never counts as the session being gone.
+
+thurbox is one client of this model. It keeps no database: every session in
+its list is a Task, and the agents it offers are the Fleet's harness profiles.
+Scripts drive the same Tasks with `fleet apply`, `fleet send` and
+`fleet delete`. [Fleet's documentation](docs/fleet/README.md) covers every
+kind, every controller and one reconcile step by step.
+
 <a id="install"></a>
 
 ## Install
@@ -133,43 +165,6 @@ session opened there you can just ask your agent:
 [The interface](https://thurbox.thurbeen.eu/docs/interface.html) ·
 [Writing a pane](docs/thurbox/plugins.md) ·
 [Plugins](https://thurbox.thurbeen.eu/plugins.html)
-
-## How Fleet works
-
-Fleet is the engine under thurbox, and it orchestrates like Kubernetes. You
-declare what you want as resources; controllers make it so and write back what
-is.
-
-```mermaid
-flowchart LR
-  you["fleet apply<br/>thurbox"] -->|spec| store[("store<br/>Task · TaskConfig · EnvProvider<br/>ChangeRequest · CronTask · …")]
-  store --> ctrl["controllers<br/>run by fleet up"]
-  ctrl -->|"effects: workspace, start, input, stop"| rt["runtime<br/>runtime-mux"]
-  rt --> sess["session and workspace<br/>at a place"]
-  sess -->|observations, agent signals| ctrl
-  ctrl -->|"status: phase, conditions"| store
-```
-
-- **Resources.** Each one has a `spec`, what you want, and a `status`, what is.
-  A **Task** is one agent session doing one brief at one place.
-  **TaskConfig** and **EnvProvider** hold the launch defaults and environment
-  Tasks share. A **ChangeRequest** mirrors a pull or merge request a worker
-  declares. A **CronTask** creates Tasks on a schedule, like a CronJob.
-  Conversation, Listener, Board and plugin kinds complete the set.
-- **The store** keeps each resource as a file. Every write is compare-and-swap.
-- **Controllers reconcile.** `fleet up`, the manager, runs them in sweeps. Each
-  compares a resource's spec with what it observes and plans effects: make the
-  workspace, start the session, type the brief, deliver review feedback,
-  pause, revive or release the session. It writes the phase and conditions
-  back to the status.
-- **Crash-safe.** The manager records an effect's intent before it runs it. An
-  observation it cannot read never counts as the session being gone.
-
-thurbox is one client of this model. It keeps no database: every session in
-its list is a Task, and the agents it offers are the Fleet's harness profiles.
-Scripts drive the same Tasks with `fleet apply`, `fleet send` and
-`fleet delete`. [Fleet's documentation](docs/fleet/README.md) covers every
-kind, every controller and one reconcile step by step.
 
 ## Documentation
 
