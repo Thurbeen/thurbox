@@ -467,3 +467,30 @@ kill -INT $UP; wait $UP; echo "exit $?"
         );
     }
 }
+
+#[test]
+fn the_sweep_after_a_pause_is_one_pass_so_the_manager_reports_serving_again_at_once() {
+    let w = World::new("disk-full-one-pass");
+    w.add_task("first");
+    let filling = w.filling(Disk::FullAfterLease);
+    let seen: RefCell<Vec<(bool, u32, u64)>> = RefCell::new(Vec::new());
+    w.serve(&filling, |report| {
+        seen.borrow_mut()
+            .push((report.paused.is_some(), report.passes, w.spawns()));
+        match seen.borrow().len() {
+            1 => filling.disk.set(Disk::Free),
+            2 => {
+                w.add_task("second");
+                filling.disk.set(Disk::FullAfterLease);
+            }
+            3 => filling.disk.set(Disk::Free),
+            _ => return false,
+        }
+        true
+    });
+    assert_eq!(
+        seen.into_inner(),
+        [(true, 0, 0), (false, 1, 1), (true, 0, 1), (false, 1, 2)],
+        "each sweep after a pause runs one pass, spawning, then reports"
+    );
+}

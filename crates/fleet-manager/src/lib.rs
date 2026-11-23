@@ -316,8 +316,8 @@ fn starting(obj: &Object) -> bool {
 impl Manager<'_> {
     /// Keep the single manager lease for the entire foreground service.
     /// Every sweep visits all due Tasks, independently of agent activity.
-    /// The first sweep is one pass, so `wait` first runs within a pass of
-    /// taking the lease. `wait` supplies the clock wait and shutdown policy
+    /// The first sweep, and the first after a pause, is one pass, so `wait`
+    /// runs within a pass of taking the lease or of the disk having room. `wait` supplies the clock wait and shutdown policy
     /// at the CLI edge.
     ///
     /// A full disk pauses the service instead of ending it: the sweep stops
@@ -344,20 +344,23 @@ impl Manager<'_> {
         };
         telemetry::manager_lease(true);
         let mut logins = ForgeLogins::default();
-        let mut sweep_opts = RunOptions {
+        let one_pass = RunOptions {
             max_passes: 1,
             ..opts
         };
+        let mut sweep_opts = one_pass;
         let outcome = (|| {
             loop {
-                let swept = self.sweep(&mut lease, sweep_opts, pauses > 0, &mut logins);
-                sweep_opts = opts;
-                let report = match swept {
+                let report = match self.sweep(&mut lease, sweep_opts, pauses > 0, &mut logins) {
                     Ok(report) => {
                         pauses = 0;
+                        sweep_opts = opts;
                         report
                     }
-                    Err(StoreError::Full(at)) => self.paused(lease.token, &mut pauses, at),
+                    Err(StoreError::Full(at)) => {
+                        sweep_opts = one_pass;
+                        self.paused(lease.token, &mut pauses, at)
+                    }
                     Err(e) => return Err(e),
                 };
                 if !wait(&report) {
