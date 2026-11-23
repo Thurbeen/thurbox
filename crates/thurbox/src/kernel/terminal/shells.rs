@@ -17,6 +17,16 @@ pub enum ShellResult {
     Failed { session: String, error: String },
 }
 
+/// What asking for a shell set going.
+#[derive(Debug, PartialEq, Eq)]
+pub enum ShellOpening {
+    /// The shell is open, or being opened.
+    Opening,
+    /// The session is paused: it has no agent for a shell to stand beside.
+    /// The shell opens once a Start resumes it and its pane is back.
+    AfterStart,
+}
+
 /// What a shell worker opened: the shell, and the stream's way up that its
 /// input and resize take.
 type Opened = (
@@ -40,16 +50,27 @@ impl Terminals {
     /// Open `row`'s companion shell, through `fleet shell` on the row's
     /// Fleet. A shell already open, or one being opened for the same
     /// attachment, is left as it is; one whose stream ended is opened again.
+    /// A paused row's shell waits for its pane ([`ShellOpening::AfterStart`]).
     pub fn open_shell(
         &mut self,
         row: &crate::kernel::snapshot::SessionRow,
         rows: u16,
         cols: u16,
-    ) -> Result<(), String> {
-        let live = self
-            .live
-            .get(&row.id)
-            .ok_or("this session has no live pane to attach a shell to")?;
+    ) -> Result<ShellOpening, String> {
+        let Some(live) = self.live.get(&row.id) else {
+            if row.stopped {
+                let waiting = self
+                    .shells_after_start
+                    .insert(row.id.clone(), (rows, cols))
+                    .is_some();
+                return Ok(if waiting {
+                    ShellOpening::Opening
+                } else {
+                    ShellOpening::AfterStart
+                });
+            }
+            return Err("this session has no live pane to attach a shell to".into());
+        };
         if live
             .session
             .shell_pane
@@ -60,7 +81,7 @@ impl Terminals {
                 .get(&row.id)
                 .is_some_and(|pending| Arc::ptr_eq(&pending.owner, &live.session.parser))
         {
-            return Ok(());
+            return Ok(ShellOpening::Opening);
         }
         let link = row
             .fleet()
@@ -76,7 +97,29 @@ impl Terminals {
         self.start_shell(&row.id, move || {
             super::fleet::open_shell(&link, &task, rows, cols, scrollback, notices)
         });
-        Ok(())
+        Ok(ShellOpening::Opening)
+    }
+
+    pub(super) fn open_shells_after_start(&mut self, snapshot: &Snapshot) {
+        let wanted: Vec<(String, (u16, u16))> = self.shells_after_start.drain().collect();
+        for (session, (rows, cols)) in wanted {
+            let Some(row) = snapshot.session(&session) else {
+                continue;
+            };
+            if self.live.contains_key(&session) {
+                if let Err(error) = self.open_shell(row, rows, cols) {
+                    self.shell_results
+                        .push(ShellResult::Failed { session, error });
+                }
+                continue;
+            }
+            if matches!(
+                self.attach.starts.get(&session),
+                Some((super::Start::Pending, _))
+            ) {
+                self.shells_after_start.insert(session, (rows, cols));
+            }
+        }
     }
 
     /// Run `work`, which opens `session`'s shell, on a worker. Its answer is
@@ -208,6 +251,33 @@ mod tests {
         }
         assert!(!terminals.shelling.contains_key("probe"));
         assert!(terminals.drain_shell_results().is_empty());
+    }
+
+    #[test]
+    fn a_shell_waiting_on_a_start_that_failed_is_given_up() {
+        let (mut terminals, _) = terminals_with_probe();
+        terminals.live.remove("probe");
+        let mut row = super::super::tests::row("probe", "fleet", Some("%1"));
+        row.stopped = true;
+        assert_eq!(
+            terminals.open_shell(&row, 24, 80),
+            Ok(super::ShellOpening::AfterStart)
+        );
+        assert_eq!(
+            terminals.open_shell(&row, 24, 80),
+            Ok(super::ShellOpening::Opening)
+        );
+        let snapshot = Snapshot {
+            sessions: vec![row],
+            ..Default::default()
+        };
+        terminals.start_requested("probe");
+        terminals.open_shells_after_start(&snapshot);
+        assert!(terminals.shells_after_start.contains_key("probe"));
+
+        terminals.start_failed("probe", "the lease is held elsewhere");
+        terminals.open_shells_after_start(&snapshot);
+        assert!(terminals.shells_after_start.is_empty());
     }
 
     /// A shell over `output`, through `backend`, as a stream pane opens one:
