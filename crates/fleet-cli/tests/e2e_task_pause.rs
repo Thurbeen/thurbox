@@ -566,3 +566,42 @@ fn fleet_pause_names_a_missing_task() {
         .code(3)
         .stderr_has("Task/nope");
 }
+
+#[test]
+fn a_view_on_a_paused_task_resumes_it_without_waiting_for_the_next_sweep() {
+    let env = setup("pause-view-prompt", vec![task("t1")]);
+    pause(&env, "t1");
+    assert!(stopped(&env));
+
+    let mut up = env.spawn(&["up", "--poll-ms", "10000"]);
+    let manager_state = || {
+        std::fs::read(env.data.join("manager.json"))
+            .ok()
+            .and_then(|bytes| serde_json::from_slice::<Value>(&bytes).ok())
+            .map(|record| record["state"].clone())
+    };
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+    while manager_state() != Some(json!("serving")) {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "fleet up never served"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
+
+    let asked = std::time::Instant::now();
+    let run = support::wait_within(
+        env.spawn(&["attach", "t1", "--wake", "--json"]),
+        std::time::Duration::from_secs(30),
+    );
+    let waited = asked.elapsed();
+    let _ = up.kill();
+    let _ = up.wait();
+
+    assert!(!run.stderr.contains("is paused"), "{}", run.stderr);
+    assert_eq!(env.calls("resume"), 1);
+    assert!(
+        waited < std::time::Duration::from_secs(3),
+        "the resume waited {waited:?} for the manager's next sweep"
+    );
+}

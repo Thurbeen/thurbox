@@ -283,7 +283,9 @@ reports a Task that is blocked at startup or that needs attention, so no
 separate status query is needed to see why.
 
 Polling defaults to one bounded sweep per second; `up --poll-ms` accepts 100
-through 10000 ms. Each unfinished Briefed Task costs one bounded `inspect`
+through 10000 ms. A wake request (`fleet attach --wake`, `fleet shell --wake`,
+or a view of a lost session) ends the wait between sweeps at once, so a resume
+waits for no poll. Each unfinished Briefed Task costs one bounded `inspect`
 of its session per sweep. The lookup by key, the check for a gone window and
 the check for a pause share that answer for 500 ms, until a verb changes the
 session's process.
