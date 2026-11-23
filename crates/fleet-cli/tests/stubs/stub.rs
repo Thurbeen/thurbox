@@ -420,10 +420,11 @@ mod forge {
                     let (status, conclusion) = match st {
                         "success" => ("COMPLETED", json!("SUCCESS")),
                         "failure" => ("COMPLETED", json!("FAILURE")),
+                        "cancelled" => ("COMPLETED", json!("CANCELLED")),
                         "skipped" => ("COMPLETED", json!("SKIPPED")),
                         _ => ("IN_PROGRESS", Value::Null),
                     };
-                    json!({"__typename": "CheckRun", "name": k["name"], "status": status, "conclusion": conclusion, "detailsUrl": k["url"]})
+                    json!({"__typename": "CheckRun", "name": k["name"], "status": status, "conclusion": conclusion, "detailsUrl": k["url"], "startedAt": iso(&k["at"])})
                 }
             }).collect();
             pr = json!({
