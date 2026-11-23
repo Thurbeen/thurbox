@@ -514,9 +514,6 @@ impl Pass<'_, '_> {
         self.cond(NEEDS_ATTENTION, ConditionStatus::True, reason, message);
     }
 
-    /// Clear NeedsAttention when the cause `reason` named has gone.
-    /// A person retried or dropped an entry given up on: its attempt goes,
-    /// and with the last one the attention it raised.
     fn forget_resolved_entries(&mut self) {
         let forgotten = inbox::forgotten(&self.st.inbox, &self.st.delivery_attempts);
         if forgotten.is_empty() {
@@ -536,6 +533,7 @@ impl Pass<'_, '_> {
         }
     }
 
+    /// Clear NeedsAttention when the cause `reason` named has gone.
     fn settle_attention(&mut self, reason: &str) {
         if condition(&self.st.conditions, NEEDS_ATTENTION)
             .is_some_and(|c| c.status == ConditionStatus::True && c.reason == reason)

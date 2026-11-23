@@ -144,7 +144,7 @@ enum Command {
         #[arg(long, value_name = "KEY", conflicts_with_all = ["text", "answers", "drop"])]
         retry: Option<String>,
         /// Remove an entry given up on, by its key; it is never delivered.
-        #[arg(long, value_name = "KEY", conflicts_with_all = ["text", "answers"])]
+        #[arg(long, value_name = "KEY", conflicts_with_all = ["text", "answers", "json"])]
         drop: Option<String>,
         /// A declared Question this message answers, by id; repeatable.
         /// Recorded in the Task's status.answered, first answer wins.

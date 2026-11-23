@@ -198,7 +198,7 @@ pub fn given_up<'a>(
     match attempts.get(key) {
         Some(a) if a.failed => Ok(entry),
         Some(a) if a.sends > 0 => Err(format!(
-            "inbox entry {key} is not given up on: it is being delivered ({} sends so far)",
+            "inbox entry {key} is not given up on: it is being delivered, sends so far: {}",
             a.sends
         )),
         _ => Err(format!(
@@ -443,7 +443,7 @@ mod tests {
         assert!(
             given_up(&queued, &attempts, &d, "k1")
                 .unwrap_err()
-                .contains("1 sends")
+                .contains("sends so far: 1")
         );
         attempts.get_mut("k1").unwrap().failed = true;
         assert_eq!(given_up(&queued, &attempts, &d, "k1").unwrap().key, "k1");
