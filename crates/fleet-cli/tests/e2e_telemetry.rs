@@ -902,3 +902,61 @@ fn a_throttle_past_the_budget_still_defers_the_rest_of_the_host() {
         "only the throttled poll reaches the host; the rest take its deferral"
     );
 }
+
+fn due_in_order(env: &Env, names: &[&str]) {
+    for (i, name) in names.iter().enumerate() {
+        let path = env
+            .data
+            .join("objects")
+            .join("ChangeRequest")
+            .join(format!("{name}.json"));
+        let mut obj: Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+        obj["status"]["notBefore"] = json!(i + 1);
+        std::fs::write(&path, obj.to_string()).unwrap();
+    }
+}
+
+/// A host's deferral reaches its changes after another host's in the due
+/// order, past the budget: the throttled host is not asked again in its
+/// wait.
+#[test]
+fn a_throttle_past_the_budget_defers_the_host_behind_another_hosts_change() {
+    let collector = Collector::start();
+    let mut env = Env::forge("otel-throttle-two-hosts");
+    exporting(&mut env, &collector.endpoint);
+    let mut cfg = std::fs::read_to_string(&env.config).unwrap();
+    cfg.push_str("\"other.test\" = { kind = \"fake\", dir = \"forge2\" }\n");
+    std::fs::write(&env.config, cfg).unwrap();
+    let slow = env.fake_forge();
+    let other = fleet_forge::FakeForge::open("other.test", &env.root.join("forge2")).unwrap();
+    let mut add = |forge: &fleet_forge::FakeForge, host: &str, id: &str| {
+        forge.set_change("acme/widgets", id, open_change()).unwrap();
+        env.apply(change_request(
+            &format!("https://{host}/acme/widgets/pull/{id}"),
+            json!({}),
+        ))
+        .ok();
+        derived_name("fake", host, "acme/widgets", id)
+    };
+    let first = add(&slow, FORGE_HOST, "7");
+    let between = add(&other, "other.test", "8");
+    let last = add(&slow, FORGE_HOST, "9");
+    env.reconcile().ok();
+    let polled = || slow.state().unwrap().calls["change"];
+    let before = polled();
+
+    slow.update(|s| {
+        s.change_delay_ms = Some(1_100);
+        s.faults
+            .push(ForgeFault::new("change", "throttle").retry_after(120_000));
+    })
+    .unwrap();
+    due_in_order(&env, &[&first, &between, &last]);
+    env.reconcile().ok();
+
+    assert_eq!(
+        polled() - before,
+        1,
+        "the throttled host is asked once; its later change takes the deferral"
+    );
+}

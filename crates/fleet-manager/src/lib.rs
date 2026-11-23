@@ -705,7 +705,8 @@ impl Manager<'_> {
         let started = std::time::Instant::now();
         for obj in due {
             if started.elapsed() >= CHANGE_POLLS_PER_PASS && !deferred.contains_key(&host_of(obj)) {
-                return Ok(true);
+                busy = true;
+                continue;
             }
             *lease = self.store.renew_lease(lease, ttl)?;
             let step = telemetry::reconcile(
