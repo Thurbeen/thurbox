@@ -317,10 +317,8 @@ creation by `fleet apply` have no span. A CronTask's Task creation is the
 
 Only `fleet` exports metrics.
 
-thurbox 3 exports no metrics of its own, by design. thurbox 2 exported
-session metrics: state transitions, lifecycle events and turn durations. In
-thurbox 3, Fleet owns the sessions, so `fleet.tasks` and `fleet.sessions`
-cover them.
+thurbox exports no metrics of its own, by design. Fleet owns the sessions,
+so `fleet.tasks` and `fleet.sessions` cover them.
 
 | Metric | Instrument | Unit | Attributes |
 | --- | --- | --- | --- |

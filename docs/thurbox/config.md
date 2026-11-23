@@ -723,7 +723,7 @@ a place.
   `--config` its `[fleets]` entry names. Before
   its config exists it says `no Fleet config · fleet init`
   (`fleet --config <path> init` when `settings.toml` names the file).
-- v3 reads no `[fleet] program`: it is reported as replaced by `[fleets]`.
+- thurbox reads no `[fleet] program`: it is reported as replaced by `[fleets]`.
 
 | The interface | Fleet's command |
 | --- | --- |

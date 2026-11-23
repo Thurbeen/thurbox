@@ -1142,12 +1142,12 @@ attach or a shell opens receives the same span as `TRACEPARENT`.
 `thurbox-cli` never installs telemetry.
 
 **Why**: one configuration story for the whole system
-([Observability](../observability.md)). The 2.x `[telemetry]` table
+([Observability](../observability.md)). An earlier `[telemetry]` table
 duplicated `OTEL_EXPORTER_OTLP_{ENDPOINT,PROTOCOL,HEADERS}` and ignored the
 rest of the standard, so the interface and Fleet were turned on in two
 different ways. The variables alone were not enough either: a variable
 reaches only the processes started below the shell or unit that sets it,
-so a thurbox started from a launcher exported nothing. The 3.x table is the
+so a thurbox started from a launcher exported nothing. The table is the
 standard's variables written in a file, under the same rule for the
 interface and for Fleet, and a variable still wins. It is the interface's
 own table: Fleet's export is Fleet's config file's, and thurbox does not
