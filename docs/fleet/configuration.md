@@ -153,9 +153,10 @@ WantedBy=default.target
   else from the default config. It reads the unit and its drop-ins
   (`NAME.service.d/*.conf`).
 - Fleet skips a hand-written unit when it cannot tell the store: a
-  template unit, a value with a `%` specifier or a `$` variable, an
-  `EnvironmentFile=` that can set `FLEET_CONFIG`, or a named config that
-  does not load. `install` and `uninstall` never take a hand-written unit.
+  template unit, an `EnvironmentFile=`, a unit that sets its own `HOME`,
+  `XDG_CONFIG_HOME` or `XDG_DATA_HOME`, a config or data directory that is
+  not an absolute path or holds a `%` specifier or a `$` variable, or a
+  named config that does not load. `install` and `uninstall` never take a hand-written unit.
   `fleet version` names it as the supervisor.
 - `install` refuses a second unit for the same store, with exit code 5.
   Uninstall the first unit, or install it again under its own name.

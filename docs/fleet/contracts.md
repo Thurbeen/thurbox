@@ -1540,8 +1540,7 @@ their own; any other harness name is run as a program. A view checks a
 Task against both before it applies it.
 
 `fleet doctor [--json]` checks this machine. It writes nothing in the
-store. It reads only the manager lease and the manager record. Each check
-has one level: `ok`, `info`, `warn` or `fail`. A check that needs a step
+store. Each check has one level: `ok`, `info`, `warn` or `fail`. A check that needs a step
 names it as a hint.
 
 | Area | What it checks | Levels |

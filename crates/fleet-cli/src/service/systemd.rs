@@ -77,7 +77,7 @@ pub fn invocation(path: &Path) -> Option<Invocation> {
             }
             env.extend(words(value));
         } else if let Some(value) = line.strip_prefix("EnvironmentFile=") {
-            env_file = !value.trim().is_empty();
+            env_file |= !value.trim().is_empty();
         } else if let Some(value) = line.strip_prefix("ExecStart=") {
             argv = words(value);
         }
@@ -106,8 +106,15 @@ pub fn invocation(path: &Path) -> Option<Invocation> {
         Some(path) => Some(path.to_string()),
     };
     let data_dir = flag("--data-dir");
-    let resolved = |value: &Option<String>| value.as_ref().is_none_or(|v| !v.contains(['%', '$']));
-    if !resolved(&config) || !resolved(&data_dir) || (env_file && config.is_none()) {
+    let resolved = |value: &Option<String>| {
+        value
+            .as_ref()
+            .is_none_or(|v| Path::new(v).is_absolute() && !v.contains(['%', '$']))
+    };
+    let own_home = ["HOME", "XDG_CONFIG_HOME", "XDG_DATA_HOME"]
+        .into_iter()
+        .any(|name| var(name).is_some());
+    if env_file || own_home || !resolved(&config) || !resolved(&data_dir) {
         return None;
     }
     Some(Invocation {

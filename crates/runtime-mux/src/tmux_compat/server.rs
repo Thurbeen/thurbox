@@ -5458,8 +5458,8 @@ pub(crate) fn push_posix_window_program(
 /// (`/usr/local/bin:/usr/bin:/bin:/usr/games`), which has no `~/.local/bin` on
 /// it, so a hook that names a sibling binary bare resolves nothing.
 ///
-/// So the CLI's own directory goes in front ([`crate::instance::resolve_cli_binary`] — the
-/// process running knows where its sibling is even when `PATH` does not).
+/// So the program's own directory goes in front ([`crate::instance::program_dir`] — the
+/// process running knows where its siblings are even when `PATH` does not).
 /// Prepended, never replaced.
 ///
 /// **Why it rides in the command rather than in `-e`.** `PATH` is the one
@@ -5529,20 +5529,17 @@ fn spelled(args: &[std::ffi::OsString]) -> Option<Vec<String>> {
         .collect()
 }
 
-/// This process's `PATH` with the directory holding this build's `thurbox-cli`
-/// in front. `None` when [`crate::instance::resolve_cli_binary`] fell back to a bare name —
-/// there is no directory to add, and pinning a `PATH` with nothing to add to it
-/// would only restate what the pane was going to inherit anyway.
+/// This process's `PATH` with [`crate::instance::program_dir`] in front.
+/// `None` when this process has no directory to add.
 #[cfg(not(windows))]
-fn path_with_cli_directory() -> Option<std::ffi::OsString> {
-    let cli = crate::instance::resolve_cli_binary();
-    let dir = cli.parent().filter(|d| !d.as_os_str().is_empty())?;
-    path_led_by(dir, &std::env::var_os("PATH").unwrap_or_default())
+fn path_with_program_directory() -> Option<std::ffi::OsString> {
+    let dir = crate::instance::program_dir()?;
+    path_led_by(&dir, &std::env::var_os("PATH").unwrap_or_default())
 }
 
 /// The `PATH` a local pane gets: the Task's own when its spawn environment
-/// names one, else this process's led by the CLI directory
-/// ([`path_with_cli_directory`]).
+/// names one, else this process's led by the program directory
+/// ([`path_with_program_directory`]).
 ///
 /// tmux hands a pane the `PATH` of the unattached client that spawned it and
 /// ignores a `-e PATH=…`, so the Task's `PATH` has to ride in the prefix too,
@@ -5550,11 +5547,9 @@ fn path_with_cli_directory() -> Option<std::ffi::OsString> {
 #[cfg(not(windows))]
 fn pane_path(task_path: Option<&std::ffi::OsStr>) -> Option<std::ffi::OsString> {
     let Some(task_path) = task_path else {
-        return path_with_cli_directory();
+        return path_with_program_directory();
     };
-    let cli = crate::instance::resolve_cli_binary();
-    let dir = cli.parent().filter(|d| !d.as_os_str().is_empty());
-    path_reaching(dir, task_path)
+    path_reaching(crate::instance::program_dir().as_deref(), task_path)
 }
 
 /// `task_path` with `dir` in front when it is absent, its own order kept and

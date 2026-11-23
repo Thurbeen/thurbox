@@ -2036,7 +2036,8 @@ fn a_sessions_environment_reaches_its_window_and_no_argv() {
 
 /// #1909: a pane started by the runtime-mux of one release reaches the
 /// programs through the install's `current` link, so a later update moves
-/// the `fleet` its agent runs without the Task being recreated.
+/// the `fleet` its agent runs without the Task being recreated. The release
+/// is Fleet's alone: it ships no `thurbox-cli`.
 #[cfg(unix)]
 #[test]
 fn a_pane_reaches_the_programs_through_the_current_release_link() {
@@ -2046,11 +2047,6 @@ fn a_pane_reaches_the_programs_through_the_current_release_link() {
     std::fs::create_dir_all(&release).expect("release");
     let program = release.join("runtime-mux");
     std::fs::copy(env!("CARGO_BIN_EXE_runtime-mux"), &program).expect("runtime-mux");
-    std::fs::copy(
-        env!("CARGO_BIN_EXE_runtime-mux"),
-        release.join("thurbox-cli"),
-    )
-    .expect("cli");
     std::os::unix::fs::symlink("releases/1.0.0", home.path().join("lib/thurbox/current"))
         .expect("current");
     let out = home.path().join("pane.env");

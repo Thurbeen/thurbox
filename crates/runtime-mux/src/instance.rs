@@ -69,6 +69,16 @@ fn through_current_release(dir: &Path) -> PathBuf {
         .unwrap_or_else(|| dir.to_path_buf())
 }
 
+/// The directory the running executable is in, through the install's
+/// `current` link when it runs from a release directory: the one a local
+/// pane's `PATH` is led by, so it reaches this release's programs.
+pub fn program_dir() -> Option<PathBuf> {
+    let exe = std::env::current_exe().ok()?;
+    exe.parent()
+        .filter(|d| !d.as_os_str().is_empty())
+        .map(through_current_release)
+}
+
 /// Dedicated tmux socket name for an instance running out of the **default**
 /// data dir — isolates thurbox sessions from the user's tmux. Dev builds use
 /// "thurbox-dev" to avoid interfering with an installed release binary. An

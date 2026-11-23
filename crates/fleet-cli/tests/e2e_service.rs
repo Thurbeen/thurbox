@@ -413,7 +413,22 @@ fn a_unit_whose_config_cannot_be_resolved_is_never_taken_for_the_default_store()
             "[Service]\nEnvironmentFile=/etc/fleet.env\nExecStart=/opt/fleet up\n",
         ),
         ("fleet@.service", "[Service]\nExecStart=/opt/fleet up\n"),
+        (
+            "own-home.service",
+            "[Service]\nEnvironment=XDG_CONFIG_HOME=/elsewhere\nExecStart=/opt/fleet up\n",
+        ),
+        (
+            "env-file-wins.service",
+            "[Service]\nEnvironment=FLEET_CONFIG={config}\nEnvironmentFile=/etc/fleet.env\nExecStart=/opt/fleet up\n",
+        ),
+        (
+            "relative.service",
+            "[Service]\nWorkingDirectory=/elsewhere\nExecStart=/opt/fleet --config {relative} up\n",
+        ),
     ] {
+        let text = text
+            .replace("{config}", &s.env.config.display().to_string())
+            .replace("{relative}", &relative_to_cwd(&s.env.config));
         fs::write(s.units().join(unit), text).unwrap();
     }
     assert_eq!(s.supervisor(), json!(null));
@@ -432,4 +447,10 @@ fn a_hand_written_unit_may_quote_with_single_quotes_and_continue_lines() {
         s.supervisor(),
         json!({"kind": "systemd", "unit": "manager.service"})
     );
+}
+
+fn relative_to_cwd(path: &std::path::Path) -> String {
+    let cwd = std::env::current_dir().unwrap();
+    let up = "../".repeat(cwd.components().count() - 1);
+    format!("{up}{}", path.strip_prefix("/").unwrap().display())
 }
