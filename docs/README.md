@@ -63,8 +63,7 @@ A host is a place of a runtime
 its id is `<runtime>/<place>`, and its config is a table of the runtime's in
 Fleet's config, passed to the runtime with each request.
 [Where sessions run](where-sessions-run.md) explains Fleets and places, and the
-setups they allow. [Migrating to v3](migrating-to-v3.md) moves a 2.x
-install to 3.x.
+setups they allow.
 
 ### Enforcement
 
@@ -104,7 +103,6 @@ docs/
 ├── README.md                  the system: this page
 ├── constitution.md            the rules for every component, and each one's own
 ├── where-sessions-run.md      Fleets and places: where a session runs
-├── migrating-to-v3.md         moving a 2.x install to 3.x
 ├── observability.md           OpenTelemetry: one setup for every program
 ├── components.svg
 ├── thurbox/                   the interface

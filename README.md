@@ -70,6 +70,8 @@ On Windows:
 Then run `fleet init`, `fleet doctor` and `fleet up`
 ([Fleet's install](https://thurbox.thurbeen.eu/docs/fleet-install.html)).
 
+Coming from thurbox 2.x? Follow the [migration guide](docs/migrating-to-v3.md).
+
 `cargo build --release` in a clone builds every program from source. Homebrew,
 the AUR, Nix, winget, Chocolatey and uninstalling are on the
 [Installation page](https://thurbox.thurbeen.eu/docs/installation.html).
