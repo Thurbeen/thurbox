@@ -270,8 +270,6 @@ impl Deferral {
     }
 }
 
-/// The forge host a ChangeRequest is on, once its controller recorded the
-/// ref; empty before that, which sorts such objects first.
 /// The ChangeRequests some Task not being deleted names in its
 /// `status.declared`.
 fn change_request_followers(tasks: &[Object]) -> BTreeSet<String> {
@@ -284,6 +282,8 @@ fn change_request_followers(tasks: &[Object]) -> BTreeSet<String> {
         .collect()
 }
 
+/// The forge host a ChangeRequest is on, once its controller recorded the
+/// ref; empty before that, which sorts such objects first.
 fn host_of(obj: &Object) -> String {
     obj.status["ref"]["host"]
         .as_str()
@@ -719,12 +719,14 @@ impl Manager<'_> {
         let followers = change_request_followers(tasks);
         let followed = |c: &Object| followers.contains(&c.metadata.name);
         let now = self.clock.now();
-        let mut due = Vec::new();
-        for c in &changes {
-            if ChangeRequestController.due(c, followed(c), now)? {
-                due.push(c);
-            }
-        }
+        let mut due: Vec<&Object> = changes
+            .iter()
+            .filter(|c| {
+                ChangeRequestController
+                    .due(c, followed(c), now)
+                    .unwrap_or_else(|_| self.due(c))
+            })
+            .collect();
         due.sort_by_cached_key(|o| {
             (
                 o.status["notBefore"].as_u64().unwrap_or(0),
