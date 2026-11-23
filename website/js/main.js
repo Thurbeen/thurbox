@@ -454,6 +454,7 @@
     });
   }
 
+  var STORY_STEP_LINE = 0.6;
   var stories = document.querySelectorAll('[data-story]');
   if (
     stories.length > 0 &&
@@ -474,21 +475,24 @@
         step.classList.toggle('is-current', Number(step.dataset.step) === at);
       });
     }
+    function followScroll() {
+      var line = window.innerHeight * STORY_STEP_LINE;
+      var passed = Array.prototype.filter.call(steps, function (step) {
+        return step.getBoundingClientRect().top < line;
+      });
+      showStep(passed.length);
+    }
     showStep(0);
     story.classList.add('story--live');
     new IntersectionObserver(function (entries) {
       entries.forEach(function (entry) {
         story.classList.toggle('is-visible', entry.isIntersecting);
       });
+      followScroll();
     }).observe(story);
-    var stepObserver = new IntersectionObserver(
-      function (entries) {
-        entries.forEach(function (entry) {
-          if (entry.isIntersecting) showStep(Number(entry.target.dataset.step));
-        });
-      },
-      { rootMargin: '-55% 0px -35% 0px' },
-    );
+    var stepObserver = new IntersectionObserver(followScroll, {
+      rootMargin: '0px 0px -40% 0px',
+    });
     steps.forEach(function (step) {
       stepObserver.observe(step);
     });
