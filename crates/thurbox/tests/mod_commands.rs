@@ -1,21 +1,21 @@
-//! Running a program on a plugin's behalf: who may, where it runs, and what
+//! Running a program on a mod's behalf: who may, where it runs, and what
 //! comes back.
 //!
 //! The parts that fail invisibly are the gate and the attribution. A capability
 //! that is *present and refusing* looks identical to one that is absent until
-//! you read the error; a run attributed to the wrong plugin looks like nothing
-//! at all until two plugins pick the same key. Both are asserted here rather
+//! you read the error; a run attributed to the wrong mod looks like nothing
+//! at all until two mods pick the same key. Both are asserted here rather
 //! than trusted to review.
 
 use thurbox::kernel::host::{Capability, LuaHost, RenderContext};
 use thurbox::kernel::runs::{Ask, Run, Target};
 
-/// Build an interface out of `plugins`, each `(file name, source)`.
-fn interface(plugins: &[(&str, &str)]) -> (tempfile::TempDir, std::path::PathBuf) {
+/// Build an interface out of `mods`, each `(file name, source)`.
+fn interface(mods: &[(&str, &str)]) -> (tempfile::TempDir, std::path::PathBuf) {
     let home = tempfile::tempdir().expect("tempdir");
     let ui = home.path().join("ui");
     thurbox::kernel::bundled::materialize(&ui);
-    for (name, source) in plugins {
+    for (name, source) in mods {
         std::fs::write(ui.join("mods").join(name), source).expect("write");
     }
     (home, ui)
@@ -112,7 +112,7 @@ fn asker(name: &str, key: &str, declares: bool) -> String {
 }
 
 #[test]
-fn an_undeclared_plugin_has_no_run_at_all() {
+fn an_undeclared_mod_has_no_run_at_all() {
     // Absent, not refusing: `run` is nil, so the pane's own `if run then` is the
     // check — there is no error to catch because there is no function to call.
     let (_home, ui) = interface(&[("91_quiet.lua", &asker("quiet", "k", false))]);
@@ -126,12 +126,12 @@ fn an_undeclared_plugin_has_no_run_at_all() {
 }
 
 #[test]
-fn a_declared_but_untrusted_plugin_has_no_run_either() {
+fn a_declared_but_untrusted_mod_has_no_run_either() {
     // Declaring is asking, not being granted.
     let (_home, ui) = interface(&[("91_asks.lua", &asker("asks", "k", true))]);
     let host = LuaHost::new(&ui);
     assert_eq!(
-        host.plugins[host.index_of("asks").expect("loaded")].capabilities,
+        host.mods[host.index_of("asks").expect("loaded")].capabilities,
         vec![Capability::Run]
     );
     render(&host, "asks");
@@ -141,14 +141,14 @@ fn a_declared_but_untrusted_plugin_has_no_run_either() {
     );
 }
 
-/// A plugin chunk's `_ENV` *is* the globals table, so a capability parked there
+/// A mod chunk's `_ENV` *is* the globals table, so a capability parked there
 /// under an internal name is granted to everyone. `run` used to be: the
 /// implementation sat in globals as `__run_impl`, and binding the name `run` per
-/// call only decided what the *published* name pointed at. An untrusted plugin
+/// call only decided what the *published* name pointed at. An untrusted mod
 /// declaring nothing could call the other name and get a program run with the
 /// user's authority.
 #[test]
-fn an_untrusted_plugin_cannot_reach_run_under_another_name() {
+fn an_untrusted_mod_cannot_reach_run_under_another_name() {
     let sneak = r#"return {
   name = "sneak",
   slot = "sessions",
@@ -179,7 +179,7 @@ fn an_untrusted_plugin_cannot_reach_run_under_another_name() {
 }
 
 #[test]
-fn a_trusted_plugin_may_run_and_the_ask_is_attributed_to_it() {
+fn a_trusted_mod_may_run_and_the_ask_is_attributed_to_it() {
     let (_home, ui) = interface(&[("91_asks.lua", &asker("asks", "k", true))]);
     let host = LuaHost::new(&ui);
     host.set_trusted(vec!["mods/91_asks.lua".to_string()]);
@@ -193,8 +193,8 @@ fn a_trusted_plugin_may_run_and_the_ask_is_attributed_to_it() {
 }
 
 #[test]
-fn trusting_one_plugin_does_not_trust_another() {
-    // The whole reason trust is per plugin rather than a switch.
+fn trusting_one_mod_does_not_trust_another() {
+    // The whole reason trust is per mod rather than a switch.
     let (_home, ui) = interface(&[
         ("91_yes.lua", &asker("yes", "k", true)),
         ("92_no.lua", &asker("no", "k", true)),
@@ -267,7 +267,7 @@ fn a_capability_that_does_not_exist_fails_the_load_naming_the_file() {
 }
 
 #[test]
-fn a_plugin_reads_its_own_answers_and_no_one_elses() {
+fn a_mod_reads_its_own_answers_and_no_one_elses() {
     let (_home, ui) = interface(&[("91_a.lua", &reader("a")), ("92_b.lua", &reader("b"))]);
     let host = LuaHost::new(&ui);
     let mut answers = std::collections::HashMap::new();
@@ -323,7 +323,7 @@ fn a_plugin_reads_its_own_answers_and_no_one_elses() {
 
 /// A pane that prints whatever its `mine` run returned.
 ///
-/// Declares the capability because only a plugin that can ASK can have answers —
+/// Declares the capability because only a mod that can ASK can have answers —
 /// the kernel skips the whole per-call publish for one that declared nothing,
 /// since it could never have any.
 fn reader(name: &str) -> String {
@@ -342,7 +342,7 @@ fn reader(name: &str) -> String {
 }
 
 #[test]
-fn a_plugin_may_be_written_as_several_modules() {
+fn a_mod_may_be_written_as_several_modules() {
     // A substantial pane is not a file anyone wants to keep in one piece, so
     // this is a guarantee rather than an accident of how `require` resolves.
     let home = tempfile::tempdir().expect("tempdir");
@@ -635,7 +635,7 @@ fn program_is_a_capability_of_its_own_and_is_enumerable_from_the_declaration() {
     let host = LuaHost::new(&ui);
     assert!(host.error.is_none(), "{:?}", host.error);
     assert_eq!(
-        host.plugins[host.index_of("watch").expect("loaded")].capabilities,
+        host.mods[host.index_of("watch").expect("loaded")].capabilities,
         vec![Capability::Program],
         "readable as data, without executing the plugin"
     );
@@ -673,8 +673,8 @@ fn trusting_a_file_for_one_capability_does_not_grant_the_other() {
         "mods/92_watcher.lua".to_string(),
     ]);
 
-    let runner = &host.plugins[host.index_of("runner").expect("loaded")];
-    let watcher = &host.plugins[host.index_of("watcher").expect("loaded")];
+    let runner = &host.mods[host.index_of("runner").expect("loaded")];
+    let watcher = &host.mods[host.index_of("watcher").expect("loaded")];
 
     assert!(host.may(runner, Capability::Run));
     assert!(
@@ -692,7 +692,7 @@ fn trusting_a_file_for_one_capability_does_not_grant_the_other() {
 fn declaring_a_capability_is_not_being_granted_it() {
     let (_home, ui) = interface(&[("91_watch.lua", &declares("watch", &["program"]))]);
     let host = LuaHost::new(&ui);
-    let watch = &host.plugins[host.index_of("watch").expect("loaded")];
+    let watch = &host.mods[host.index_of("watch").expect("loaded")];
     assert!(
         !host.may(watch, Capability::Program),
         "declaring is asking, not being granted"
@@ -731,12 +731,12 @@ fn each_capability_says_what_it_would_let_a_file_do() {
     );
 }
 
-/// Deliver `contents` as version `version` of a package, the way `plugin update`
+/// Deliver `contents` as version `version` of a package, the way `mod update`
 /// does, and return the lock entry's `src@version`.
 fn deliver_package(ui: &std::path::Path, file: &str, version: &str, contents: &str) -> String {
     use thurbox::kernel::packages;
-    use thurbox::session::plugin_spec::PluginEntry;
-    let entry = PluginEntry {
+    use thurbox::session::mod_spec::ModEntry;
+    let entry = ModEntry {
         src: "atlas".into(),
         file: file.into(),
         pin: Some(version.into()),
@@ -763,7 +763,7 @@ fn enforce(host: &LuaHost, ui: &std::path::Path) {
     let registry = thurbox::kernel::registry::Registry::load();
     host.set_trusted(thurbox::kernel::packages::granted(
         ui,
-        host.plugins.iter().map(|plugin| plugin.path.as_str()),
+        host.mods.iter().map(|r#mod| r#mod.path.as_str()),
         &registry,
     ));
 }
@@ -1047,7 +1047,7 @@ fn file_reader(declares: &str) -> String {
 
 fn files_seen(host: &LuaHost) -> String {
     match host.drain_commands().as_slice() {
-        [thurbox::kernel::command::Command::Focus { plugin, .. }] => plugin.clone(),
+        [thurbox::kernel::command::Command::Focus { r#mod, .. }] => r#mod.clone(),
         other => panic!("{other:?}"),
     }
 }
@@ -1142,7 +1142,7 @@ end }"#;
     assert!(
         matches!(
             host.drain_commands().as_slice(),
-            [thurbox::kernel::command::Command::Focus { plugin, .. }] if plugin == "nil/QUIET"
+            [thurbox::kernel::command::Command::Focus { r#mod, .. }] if r#mod == "nil/QUIET"
         ),
         "another pane's global is not visible, and the shared library still works"
     );
@@ -1217,7 +1217,7 @@ end }"#;
     assert!(
         matches!(
             host.drain_commands().as_slice(),
-            [thurbox::kernel::command::Command::Focus { plugin, .. }] if plugin == "true/0"
+            [thurbox::kernel::command::Command::Focus { r#mod, .. }] if r#mod == "true/0"
         ),
         "pairs over a sealed table still walks the library"
     );
@@ -1247,7 +1247,7 @@ end }"#;
     assert!(
         matches!(
             host.drain_commands().as_slice(),
-            [thurbox::kernel::command::Command::Focus { plugin, .. }] if plugin == "hi/nil/nil/nil"
+            [thurbox::kernel::command::Command::Focus { r#mod, .. }] if r#mod == "hi/nil/nil/nil"
         ),
         "the reader gets the data and nothing that runs"
     );
@@ -1385,7 +1385,7 @@ end }"#;
 fn a_finalizer_reads_only_its_own_panes_answers() {
     // A finalizer runs whenever the collector gets to it — inside another
     // pane's call. It must still see its own pane's world, never the one being
-    // drawn: answers live in each plugin's own environment.
+    // drawn: answers live in each mod's own environment.
     let plain = r#"local function litter()
   for _ = 1, 200 do
     setmetatable({}, { __gc = function()
@@ -1467,7 +1467,7 @@ fn published_data_is_read_only_to_every_pane() {
     assert!(
         matches!(
             issued.as_slice(),
-            [thurbox::kernel::command::Command::Focus { plugin, .. }] if plugin == "wrote:"
+            [thurbox::kernel::command::Command::Focus { r#mod, .. }] if r#mod == "wrote:"
         ),
         "the probes that wrote, by number: {issued:?}"
     );
@@ -1494,7 +1494,7 @@ end }"#;
     assert!(
         matches!(
             issued.as_slice(),
-            [thurbox::kernel::command::Command::Focus { plugin, .. }] if plugin == "true/true"
+            [thurbox::kernel::command::Command::Focus { r#mod, .. }] if r#mod == "true/true"
         ),
         "{issued:?}"
     );
@@ -1539,7 +1539,7 @@ fn saving_a_panes_whole_thurbox_keeps_what_it_reads() {
     assert!(
         matches!(
             issued.as_slice(),
-            [thurbox::kernel::command::Command::Focus { plugin, .. }] if plugin == "own/true"
+            [thurbox::kernel::command::Command::Focus { r#mod, .. }] if r#mod == "own/true"
         ),
         "{issued:?}"
     );
@@ -1582,7 +1582,7 @@ end }"#;
 #[test]
 fn an_untrusted_pane_may_not_reach_an_agent_through_another_verb() {
     // The gate used to name four verbs and pass every other, and these destroy
-    // something or reach out too: `plugin` rewrites or deletes a file of the
+    // something or reach out too: `mod` rewrites or deletes a file of the
     // interface, and `open` sends whatever the URL carries to the network.
     let source = r#"return { name = "driver", slot = "sessions", render = function()
   command("plugin", { file = "mods/10_sessions.lua", action = "remove" })
@@ -1846,7 +1846,7 @@ fn a_chained_action_still_runs_for_the_pane_that_first_asked() {
 #[test]
 fn a_trusted_pane_cannot_lend_its_grant_to_a_handler_it_asks() {
     // The other direction of the same deputy: a request is allowed only with
-    // what every plugin in its chain holds, so a trusted pane asking an
+    // what every mod in its chain holds, so a trusted pane asking an
     // untrusted handler does not give that handler its `sessions`.
     let untrusted = GRANTEE
         .replace(r#"name = "grantee""#, r#"name = "untrusted""#)
@@ -1924,7 +1924,7 @@ fn the_confirmation_names_the_pane_a_request_was_made_for() {
 
 #[cfg(unix)]
 #[test]
-fn a_blocked_file_read_does_not_stop_other_plugins_painting() {
+fn a_blocked_file_read_does_not_stop_other_mods_painting() {
     use std::io::Write;
     use std::time::{Duration, Instant};
 
@@ -2104,7 +2104,7 @@ fn file_read_answers_refresh_report_errors_and_follow_the_session_root() {
 }
 
 #[test]
-fn revoking_files_stops_refreshing_the_plugins_old_reads() {
+fn revoking_files_stops_refreshing_the_mods_old_reads() {
     use std::time::{Duration, Instant};
     let source = r#"return { name = "reader", slot = "sessions", capabilities = { "files" },
       render = function()
@@ -2136,7 +2136,7 @@ fn revoking_files_stops_refreshing_the_plugins_old_reads() {
 }
 
 #[test]
-fn file_read_demand_metadata_has_a_per_plugin_bound() {
+fn file_read_demand_metadata_has_a_per_mod_bound() {
     let source = r#"return { name = "reader", slot = "sessions", capabilities = { "files" },
       render = function()
         for i = 1, 17 do

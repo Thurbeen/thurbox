@@ -1,4 +1,4 @@
-//! Rebuilding the `thurbox.*` tables plugins read.
+//! Rebuilding the `thurbox.*` tables mods read.
 //!
 //! `republish` runs once per painted frame and once per input *batch*, not once
 //! per event — a held-down key otherwise paid for it per repeat. Within it every
@@ -14,7 +14,7 @@ use super::browser_available;
 use crate::{App, LINK_SCAN_INTERVAL};
 
 impl App {
-    /// Rebuild everything a plugin can read.
+    /// Rebuild everything a mod can read.
     ///
     /// Called just before a paint and before dispatching input — the only two
     /// moments Lua runs — rather than once per loop iteration.
@@ -51,13 +51,13 @@ impl App {
             .host
             .focusable()
             .get(self.focus)
-            .and_then(|index| self.host.plugins.get(*index))
-            .map(|plugin| plugin.name.to_string());
+            .and_then(|index| self.host.mods.get(*index))
+            .map(|r#mod| r#mod.name.to_string());
         // What is on screen is known from the frame just painted, which is what
         // makes "its slot is not in the arrangement" an observation rather than
         // a guess: placement depends on the terminal's current size.
-        let visible: std::collections::HashSet<usize> = (0..self.host.plugins.len())
-            .filter(|index| self.is_visible_plugin(*index))
+        let visible: std::collections::HashSet<usize> = (0..self.host.mods.len())
+            .filter(|index| self.is_visible_mod(*index))
             .collect();
         // Before the borrows below: it re-reads the directory when something says
         // the answer moved, which needs `self` mutably.
@@ -66,7 +66,7 @@ impl App {
         let registry = &self.registry;
         let trust = &self.trust;
         self.inventory = thurbox::kernel::inventory::rows(
-            &self.host.plugins,
+            &self.host.mods,
             &self.sources,
             &visible,
             &self.visible_slots,
@@ -158,7 +158,7 @@ impl App {
         self.link_scans.insert(id.to_string(), now);
         let found = self.terminals.links(id);
         // Absent rather than empty when there are none, which is the shape a
-        // plugin reads: `thurbox.links[surface]` is nil for a screen with no
+        // mod reads: `thurbox.links[surface]` is nil for a screen with no
         // links, not a table with nothing in it.
         //
         // Compared before storing: a printing agent moves its stamp every frame
@@ -182,7 +182,7 @@ impl App {
     /// moving.
     ///
     /// Part of publishing rather than a standing cost of the loop, because the
-    /// answer is only ever read by a plugin — and gated on the session's
+    /// answer is only ever read by a mod — and gated on the session's
     /// `output_stamp`, because finding them walks every cell of its grid building
     /// a `String` per row. Ungated, a held-down key rescanned every terminal on
     /// screen per repeat for answers that could not have changed.
@@ -305,22 +305,22 @@ impl App {
         self.trust_stale = false;
     }
 
-    /// Tell the host which plugins the user trusted, by the path it knows them by.
+    /// Tell the host which mods the user trusted, by the path it knows them by.
     ///
-    /// Relative, because that is `Plugin::path`; trust is stored absolute so two
+    /// Relative, because that is `Mod::path`; trust is stored absolute so two
     /// interface directories cannot share it, so this is where the two meet.
     pub(crate) fn publish_trust(&self) {
         self.host.set_trusted(thurbox::kernel::packages::granted(
             &self.ui_dir,
-            self.host.plugins.iter().map(|plugin| plugin.path.as_str()),
+            self.host.mods.iter().map(|r#mod| r#mod.path.as_str()),
             &self.registry,
         ));
     }
 
-    /// Tell the host which plugins the user turned off.
+    /// Tell the host which mods the user turned off.
     ///
     /// Derived from the *stored* absolute paths rather than from the loaded
-    /// plugins, because a disabled one is not loaded — it would not be in the
+    /// mods, because a disabled one is not loaded — it would not be in the
     /// list to filter. Relative, because that is what `build` compares against.
     pub(crate) fn publish_disabled(&self) {
         let disabled: Vec<String> = self
@@ -358,18 +358,18 @@ impl App {
             .collect()
     }
 
-    /// Hand the registry what every loaded plugin declared, plus the kernel's
+    /// Hand the registry what every loaded mod declared, plus the kernel's
     /// own chords.
     ///
     /// The system modals and the clipboard pair go through the same registry as
     /// everything else, which is what makes them listable in help, conflict-checked
-    /// against a plugin's keys, and rebindable — they simply have no Lua plugin
+    /// against a mod's keys, and rebindable — they simply have no Lua mod
     /// behind them. The composition itself is
     /// [`kernel::declare_interface`](thurbox::kernel::declare_interface), shared
     /// with `thurbox-cli mod check`.
     pub(crate) fn collect_declarations(&mut self) {
         thurbox::kernel::declare_interface(&mut self.registry, &self.host);
-        // Trust is read against the plugin set that just loaded, so a reload —
+        // Trust is read against the mod set that just loaded, so a reload —
         // including the one a trust change triggers — lands both together.
         self.publish_trust();
     }

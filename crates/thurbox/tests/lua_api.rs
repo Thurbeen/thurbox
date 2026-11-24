@@ -1,4 +1,4 @@
-//! The plugin API against its one declaration, `kernel::lua_api` (issue #1476).
+//! The mod API against its one declaration, `kernel::lua_api` (issue #1476).
 //!
 //! Two directions. The declaration files are what `lua_api` renders — the
 //! generated region of `ui/lib/thurbox.d.lua`, the `thurbox.*` entries of
@@ -248,9 +248,9 @@ fn full() -> Snapshot {
 
 fn host_with(source: &str) -> (tempfile::TempDir, LuaHost) {
     let dir = tempfile::tempdir().expect("tempdir");
-    let plugins = dir.path().join("mods");
-    std::fs::create_dir_all(&plugins).expect("mkdir");
-    std::fs::write(plugins.join("10_probe.lua"), source).expect("write");
+    let mods = dir.path().join("mods");
+    std::fs::create_dir_all(&mods).expect("mkdir");
+    std::fs::write(mods.join("10_probe.lua"), source).expect("write");
     let host = LuaHost::new(dir.path());
     assert!(host.error.is_none(), "{:?}", host.error);
     (dir, host)
@@ -463,16 +463,16 @@ fn thurbox_api_is_the_contract_number() {
 }
 
 #[test]
-fn a_plugin_needing_a_newer_api_is_refused_and_says_why() {
+fn a_mod_needing_a_newer_api_is_refused_and_says_why() {
     // A load is all-or-nothing, as for any pane that does not load: the
     // refusal is the load error, and it starts with the file stem, which is
     // what `inventory::rows` pins a failure on.
     let future = API + 1;
     let dir = tempfile::tempdir().expect("tempdir");
-    let plugins = dir.path().join("mods");
-    std::fs::create_dir_all(&plugins).expect("mkdir");
+    let mods = dir.path().join("mods");
+    std::fs::create_dir_all(&mods).expect("mkdir");
     std::fs::write(
-        plugins.join("10_future.lua"),
+        mods.join("10_future.lua"),
         format!(
             r#"return {{
               name = "future", slot = "a", requires_api = {future},

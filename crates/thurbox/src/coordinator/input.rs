@@ -3,9 +3,9 @@
 //! Every chord resolves through one registry (`kernel::registry`), and the order
 //! here is the whole of the policy: a modal first (it captures), then the
 //! kernel's reserved chords, then copy and paste, then an exclusive grab, then a
-//! plugin's declared binding, then the focused plugin's raw `on_key` hook, and
+//! mod's declared binding, then the focused mod's raw `on_key` hook, and
 //! only then the key goes to whatever surface the focused pane shows. A
-//! plugin-scoped claim never outranks a global one — which is why search cannot
+//! mod-scoped claim never outranks a global one — which is why search cannot
 //! take `Ctrl+N` from new-session.
 //!
 //! Copy and paste sit that high because they must work from any pane, and low
@@ -47,7 +47,7 @@ impl App {
     /// change what it would say — the snapshot is refreshed at the top of the
     /// iteration, and a command a handler queues is drained on the next one. Per
     /// event, a held-down key paid for the whole publish (every session's links,
-    /// the interface inventory, the plugin lock) on every repeat.
+    /// the interface inventory, the mod lock) on every repeat.
     ///
     /// The one exception is the mouse text selection: a drag mutates it mid-batch,
     /// and a chord queued behind the drag must read the finished selection, not
@@ -215,9 +215,9 @@ impl App {
         // nothing: no publish, and no activity that would repaint.
         if let Input::Key(key) = &input {
             if key.kind == KeyEventKind::Release {
-                if let Some((plugin, action)) = self.holds.release_target(key) {
+                if let Some((r#mod, action)) = self.holds.release_target(key) {
                     self.publish_for_batch(published);
-                    self.deliver_release(&plugin, &action);
+                    self.deliver_release(&r#mod, &action);
                     self.note_input();
                 }
                 return;
@@ -319,7 +319,7 @@ impl App {
     }
 
     /// The reserved minimum: focus, reload and quit always work, even if a
-    /// plugin consumes every key it is offered.
+    /// mod consumes every key it is offered.
     ///
     /// Quit is Ctrl+Q, not Ctrl+C: with a live terminal attached, Ctrl+C has to
     /// reach the agent so a turn can be interrupted. v1 reserves the same chord
@@ -360,19 +360,19 @@ impl App {
     }
 
     /// The action this chord fires **if the kernel itself owns it** — a system
-    /// modal, or copy and paste. `None` for a plugin's chord or an unbound one.
+    /// modal, or copy and paste. `None` for a mod's chord or an unbound one.
     ///
-    /// The owner check is the point: nothing stops a plugin declaring the action
+    /// The owner check is the point: nothing stops a mod declaring the action
     /// id `kernel.copy`, and running the kernel's copy for it would be a pane
     /// taking a capability by naming it. Resolved with nothing focused, because
-    /// the kernel's chords are all global — a plugin-scoped claim does not
+    /// the kernel's chords are all global — a mod-scoped claim does not
     /// outrank a global one.
     pub(crate) fn kernel_action(&self, press: &KeyPress) -> Option<String> {
         let binding = self.registry.resolve(press, None)?;
-        (binding.plugin == thurbox::kernel::modals::OWNER).then(|| binding.action.clone())
+        (binding.r#mod == thurbox::kernel::modals::OWNER).then(|| binding.action.clone())
     }
 
-    /// Copy and paste, run ahead of a float's exclusive grab and of every plugin
+    /// Copy and paste, run ahead of a float's exclusive grab and of every mod
     /// binding — which is where the literal `Ctrl+C`/`Ctrl+V` arms used to sit.
     ///
     /// They "must work from any pane", and a pane that grabs every key would
@@ -447,17 +447,17 @@ impl App {
     ///
     /// The reserved chords still work, so a modal can never trap you.
     pub(crate) fn dispatch_grabbed(&mut self, press: &KeyPress) -> bool {
-        let Some(plugin) = self
+        let Some(r#mod) = self
             .grabbed
-            .and_then(|index| self.host.plugins.get(index))
-            .map(|plugin| plugin.name.clone())
+            .and_then(|index| self.host.mods.get(index))
+            .map(|r#mod| r#mod.name.clone())
         else {
             return false;
         };
         let index = self.grabbed.expect("just resolved through it");
         if let Some(action) = self
             .registry
-            .resolve(press, Some(&plugin))
+            .resolve(press, Some(&r#mod))
             .map(|b| b.action.clone())
         {
             match self.host.on_action(index, &action) {
@@ -473,7 +473,7 @@ impl App {
     }
 
     /// A declared key: the registry resolves the chord to an action and the
-    /// plugin that owns it.
+    /// mod that owns it.
     ///
     /// This is the path that can be rebound, conflict-checked and listed in
     /// help. Falls through (`false`) when nothing claimed the chord — including
@@ -488,14 +488,14 @@ impl App {
             .host
             .focusable()
             .get(self.focus)
-            .and_then(|index| self.host.plugins.get(*index))
-            .map(|plugin| plugin.name.clone());
-        let Some((plugin, action, passthrough, release)) = self
+            .and_then(|index| self.host.mods.get(*index))
+            .map(|r#mod| r#mod.name.clone());
+        let Some((r#mod, action, passthrough, release)) = self
             .registry
             .resolve(press, focused_name.as_deref())
             .map(|binding| {
                 (
-                    binding.plugin.clone(),
+                    binding.r#mod.clone(),
                     binding.action.clone(),
                     binding.passthrough,
                     binding.release,
@@ -524,20 +524,20 @@ impl App {
             return false;
         }
         // A chord the kernel declared for itself opens a system modal; there is
-        // no plugin to hand it to. (The kernel's other declarations — copy and
+        // no mod to hand it to. (The kernel's other declarations — copy and
         // paste — are resolved before a float can grab them, above.)
-        if plugin == thurbox::kernel::modals::OWNER {
+        if r#mod == thurbox::kernel::modals::OWNER {
             if let Some(kind) = ModalKind::from_action(&action) {
                 self.toggle_modal(kind);
                 return true;
             }
         }
-        let Some(index) = self.host.index_of(&plugin) else {
+        let Some(index) = self.host.index_of(&r#mod) else {
             return false;
         };
         // A binding that asked for its release is told which half this is, and
-        // the key is remembered only once the plugin took the press — so a
-        // release can never reach a plugin that did not act on the press.
+        // the key is remembered only once the mod took the press — so a
+        // release can never reach a mod that did not act on the press.
         let handled = if release {
             self.host
                 .on_action_with_args(index, &action, &[("event", "press")])
@@ -547,7 +547,7 @@ impl App {
         match handled {
             Ok(true) => {
                 if release {
-                    self.holds.hold(code, modifiers, plugin, action);
+                    self.holds.hold(code, modifiers, r#mod, action);
                 }
                 true
             }
@@ -559,11 +559,11 @@ impl App {
         }
     }
 
-    /// The second half of a hold: the plugin that took the press is told the
+    /// The second half of a hold: the mod that took the press is told the
     /// key went up, wherever focus moved meanwhile and whatever is open.
-    fn deliver_release(&mut self, plugin: &str, action: &str) {
+    fn deliver_release(&mut self, r#mod: &str, action: &str) {
         self.dirty = true;
-        let Some(index) = self.host.index_of(plugin) else {
+        let Some(index) = self.host.index_of(r#mod) else {
             return;
         };
         if let Err(e) = self
@@ -574,13 +574,11 @@ impl App {
         }
     }
 
-    /// Raw keys: the focused plugin, then the non-focusable listeners.
+    /// Raw keys: the focused mod, then the non-focusable listeners.
     pub(crate) fn dispatch_raw(&mut self, press: &KeyPress) -> bool {
         let focusable = self.host.focusable();
         let mut order: Vec<usize> = focusable.get(self.focus).copied().into_iter().collect();
-        order.extend(
-            (0..self.host.plugins.len()).filter(|index| !self.host.plugins[*index].focusable),
-        );
+        order.extend((0..self.host.mods.len()).filter(|index| !self.host.mods[*index].focusable));
         for index in order {
             match self.host.on_key(index, press) {
                 Ok(true) => return true,
@@ -592,12 +590,12 @@ impl App {
         false
     }
 
-    /// Nothing claimed it. If the focused plugin asked for raw session input and
+    /// Nothing claimed it. If the focused mod asked for raw session input and
     /// its surface names a live session, the key belongs to the agent.
     ///
-    /// The kernel does not know which plugin is "the terminal": it knows one
+    /// The kernel does not know which mod is "the terminal": it knows one
     /// declared `input = "session"` and which session the tree it returned
-    /// pointed at. Replace that plugin and this still works.
+    /// pointed at. Replace that mod and this still works.
     pub(crate) fn dispatch_session_input(&mut self, key: &KeyEvent) -> bool {
         if !self.focused_wants_session_input() {
             return false;
@@ -669,7 +667,7 @@ impl App {
     }
 
     /// `F10`, and the palette's reload entry: rebuild from disk and re-collect
-    /// what the rebuilt plugins declare.
+    /// what the rebuilt mods declare.
     pub(crate) fn reload_by_key(&mut self) {
         self.reload_interface(super::events::ReloadReason::Key);
         self.collect_declarations();
@@ -678,25 +676,25 @@ impl App {
 
     /// Run an action the palette chose, exactly as its chord would have.
     ///
-    /// A kernel action goes to the kernel's own handler; a plugin's goes through
-    /// `host.on_action` whether or not that plugin is focused, which is what a
+    /// A kernel action goes to the kernel's own handler; a mod's goes through
+    /// `host.on_action` whether or not that mod is focused, which is what a
     /// global chord already does. The modal has closed by the time this runs, so
     /// the action sees the focus state a key press would have seen.
-    pub(crate) fn run_action(&mut self, plugin: &str, action: &str) {
+    pub(crate) fn run_action(&mut self, r#mod: &str, action: &str) {
         self.dirty = true;
         if !self
             .registry
             .action_catalog()
             .iter()
-            .any(|descriptor| descriptor.name == action && descriptor.owner == plugin)
+            .any(|descriptor| descriptor.name == action && descriptor.owner == r#mod)
         {
             self.report(
-                format!("no catalog action named {action:?} for {plugin:?}"),
+                format!("no catalog action named {action:?} for {mod:?}"),
                 Level::Error,
             );
             return;
         }
-        if plugin == thurbox::kernel::modals::OWNER {
+        if r#mod == thurbox::kernel::modals::OWNER {
             if let Some(kind) = ModalKind::from_action(action) {
                 self.toggle_modal(kind);
                 return;
@@ -724,8 +722,8 @@ impl App {
             }
             return;
         }
-        let Some(index) = self.host.index_of(plugin) else {
-            self.report(format!("no mod named {plugin:?}"), Level::Error);
+        let Some(index) = self.host.index_of(r#mod) else {
+            self.report(format!("no mod named {mod:?}"), Level::Error);
             return;
         };
         if let Err(e) = self.host.on_action(index, action) {
@@ -733,19 +731,19 @@ impl App {
         }
     }
 
-    /// Offer a keystroke to one specific plugin: its declared action first, then
+    /// Offer a keystroke to one specific mod: its declared action first, then
     /// its raw handler.
     ///
     /// Unlike `on_key` this never walks the focus order — the caller has already
     /// decided who should get it (the pane under the pointer, or a float).
     pub(crate) fn dispatch_key_to(&mut self, index: usize, key: &KeyEvent) {
         let press = to_press(key);
-        let Some(plugin) = self.host.plugins.get(index).map(|p| p.name.clone()) else {
+        let Some(r#mod) = self.host.mods.get(index).map(|p| p.name.clone()) else {
             return;
         };
         if let Some(action) = self
             .registry
-            .resolve(&press, Some(&plugin))
+            .resolve(&press, Some(&r#mod))
             .map(|binding| binding.action.clone())
         {
             match self.host.on_action(index, &action) {
@@ -884,7 +882,7 @@ impl App {
     ///
     /// A *surface*, not a session, so a paste lands where a keystroke would:
     /// `dispatch_session_input` routes by what the pane is showing, and a pane
-    /// showing a plugin's program used to take typing and refuse pastes.
+    /// showing a mod's program used to take typing and refuse pastes.
     fn paste_text_into(&mut self, surface: &str, text: &str) {
         let text = paste_safe(text);
         if text.is_empty() {
@@ -950,7 +948,7 @@ impl App {
 
     /// Send `bytes` to a surface, routed by what the pane is **showing**.
     ///
-    /// A pane showing a plugin's program talks to that program and nothing
+    /// A pane showing a mod's program talks to that program and nothing
     /// else; everything else goes to the session's terminal. The one rule, so a
     /// paste cannot land somewhere a keystroke would not — and a pane with
     /// nothing behind it delivers nothing, since neither send finds a target.
@@ -1232,7 +1230,7 @@ fn resolve_altgr(key: KeyEvent, windows: bool) -> KeyEvent {
 /// The whole of the release contract is here, so it can be read in one place:
 ///
 /// * a **release** is delivered only for a key some binding is holding, to the
-///   plugin that took the press — matched by the key alone, because the
+///   mod that took the press — matched by the key alone, because the
 ///   modifier is often let go first (`ctrl` up, then `space`). Every other
 ///   release is dropped: none reaches a modal, a raw handler, a field or a
 ///   session's terminal;
@@ -1289,8 +1287,8 @@ pub(crate) fn sort_key(
 pub(crate) enum Route {
     /// Dispatch it as a press, through the coalescer and `on_key`.
     Press(KeyEvent),
-    /// Tell `plugin` that `action`'s key was let go.
-    Release { plugin: String, action: String },
+    /// Tell `mod` that `action`'s key was let go.
+    Release { r#mod: String, action: String },
     /// Nothing receives it.
     Drop,
 }
@@ -1317,8 +1315,8 @@ impl Holds {
                 self.releases = KeyReleases::Reported;
                 match held {
                     Some(at) => {
-                        let (_, _, plugin, action) = self.held.remove(at);
-                        Route::Release { plugin, action }
+                        let (_, _, r#mod, action) = self.held.remove(at);
+                        Route::Release { r#mod, action }
                     }
                     None => Route::Drop,
                 }
@@ -1332,22 +1330,22 @@ impl Holds {
         }
     }
 
-    /// The plugin and action a release ends a hold for, closing that hold —
+    /// The mod and action a release ends a hold for, closing that hold —
     /// `None` for a release nobody holds, which then goes nowhere.
     pub(crate) fn release_target(&mut self, key: &KeyEvent) -> Option<(String, String)> {
         match self.route(key, false) {
-            Route::Release { plugin, action } => Some((plugin, action)),
+            Route::Release { r#mod, action } => Some((r#mod, action)),
             Route::Press(_) | Route::Drop => None,
         }
     }
 
-    /// Remember that `plugin` took the press of `code` with `modifiers` for
+    /// Remember that `mod` took the press of `code` with `modifiers` for
     /// `action`. Only where a release can come: elsewhere a hold would never end.
     pub(crate) fn hold(
         &mut self,
         code: KeyCode,
         modifiers: KeyModifiers,
-        plugin: String,
+        r#mod: String,
         action: String,
     ) {
         if self.releases == KeyReleases::Unsupported {
@@ -1355,10 +1353,10 @@ impl Holds {
         }
         let code = hold_key(code);
         self.held.retain(|(held, ..)| *held != code);
-        self.held.push((code, modifiers, plugin, action));
+        self.held.push((code, modifiers, r#mod, action));
     }
 
-    /// Forget every hold: the plugins that took the presses were rebuilt.
+    /// Forget every hold: the mods that took the presses were rebuilt.
     pub(crate) fn clear(&mut self) {
         self.held.clear();
     }
@@ -1597,7 +1595,7 @@ mod tests {
                 false
             ),
             Route::Release {
-                plugin: "voice".into(),
+                r#mod: "voice".into(),
                 action: "voice.toggle".into()
             }
         );

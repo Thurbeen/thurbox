@@ -10,7 +10,7 @@
 //!
 //! `kinds()` is the tripwire — `tests/kernel_node_catalog.rs` pins it at four.
 //!
-//! Lua never holds a ratatui object. A plugin returns a plain table, this
+//! Lua never holds a ratatui object. A mod returns a plain table, this
 //! module translates it, and that indirection is exactly why throwing the VM
 //! away on reload is safe.
 
@@ -26,7 +26,7 @@ pub const KINDS: [&str; 4] = ["text", "box", "input", "surface"];
 ///
 /// Resolution order is exact → percentage → share, each clamped by `min`/`max`.
 /// A child that asks for nothing gets an equal share of what is left, which is
-/// what makes a plugin's root node work without declaring anything.
+/// what makes a mod's root node work without declaring anything.
 #[derive(Debug, Clone, Copy, PartialEq, Default)]
 pub struct Size {
     pub len: Option<u16>,
@@ -106,12 +106,12 @@ pub const DRAG_ROLE: &str = "drag";
 /// This is v1's `ClickAction` (`src/app/mod.rs`) reduced to the part the kernel
 /// can honour without knowing what any pane is: each variant names an entry
 /// point the *keyboard* already uses, so a click and a keypress cannot drift
-/// apart. Anything outside this vocabulary is handed to the owning plugin as an
+/// apart. Anything outside this vocabulary is handed to the owning mod as an
 /// ordinary click event instead.
 ///
 /// It is spelled as a prefix on [`Identity::role`] rather than as a field of
 /// its own because identity already travels through `convert` and `paint`
-/// untouched — so a plugin declares a click target by writing one string, and
+/// untouched — so a mod declares a click target by writing one string, and
 /// the node catalogue stays at four.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ClickVerb {
@@ -122,7 +122,7 @@ pub enum ClickVerb {
     /// `ClickAction::ModalButton`, which is why clicking a modal button and
     /// pressing its letter cannot diverge.
     Key(String),
-    /// `focus:<plugin>` — make that plugin the focused one. v1's
+    /// `focus:<mod>` — make that mod the focused one. v1's
     /// `ClickAction::FocusPane` and `CentralTab`, which in v2 are the same act:
     /// a `switch` slot shows whichever occupant holds focus.
     Focus(String),
@@ -143,7 +143,7 @@ pub enum ClickVerb {
 
 impl ClickVerb {
     /// Read a verb off a role string. A role the kernel does not recognise
-    /// (`row`, `overflow`, …) is not a verb — the click goes to the plugin.
+    /// (`row`, `overflow`, …) is not a verb — the click goes to the mod.
     pub fn parse(role: Option<&str>) -> Option<Self> {
         let (verb, rest) = role?.split_once(':')?;
         let rest = rest.trim();
@@ -256,7 +256,7 @@ pub struct Run {
     /// which is what makes the two halves of that button one target.
     ///
     /// Boxed because it is absent from nearly every run, and a run is the
-    /// hottest allocation in the renderer — one per span per plugin per frame.
+    /// hottest allocation in the renderer — one per span per mod per frame.
     ///
     /// [`Hit`]: super::paint::Hit
     pub identity: Option<Box<Identity>>,
@@ -349,7 +349,7 @@ pub enum Node {
         identity: Identity,
     },
     /// Pre-rendered cells the kernel paints. Fed by a live session's terminal
-    /// or by a plugin that produces cells itself. `source` names which.
+    /// or by a mod that produces cells itself. `source` names which.
     Surface {
         source: SurfaceSource,
         scroll: u16,
@@ -370,13 +370,13 @@ pub enum SurfaceSource {
     /// A live session, named by its id. The kernel resolves it to that
     /// session's terminal grid.
     Session(String),
-    /// A program the declaring plugin asked to run, named by the plugin.
+    /// A program the declaring mod asked to run, named by the mod.
     ///
     /// Still a `surface` — four node kinds, forever. The kernel resolves the name
-    /// against the plugin being rendered, so a plugin can only ever name its own
+    /// against the mod being rendered, so a mod can only ever name its own
     /// (`kernel::terminal::ProgramKey`).
     Program(String),
-    /// Cells the plugin produced itself, one entry per line.
+    /// Cells the mod produced itself, one entry per line.
     Cells(Vec<Vec<Run>>),
 }
 
@@ -416,7 +416,7 @@ impl Node {
         }
     }
 
-    /// The kind name, as a plugin would have written it.
+    /// The kind name, as a mod would have written it.
     pub fn kind(&self) -> &'static str {
         match self {
             Node::Text { .. } => "text",
@@ -429,7 +429,7 @@ impl Node {
     /// The first session-backed surface in this tree, if any.
     ///
     /// Used to answer "which session is the focused pane showing?" without the
-    /// kernel knowing anything about which plugin is the terminal.
+    /// kernel knowing anything about which mod is the terminal.
     pub fn first_session_surface(&self) -> Option<&str> {
         match self {
             Node::Surface {
@@ -447,9 +447,9 @@ impl Node {
     /// This is what raw input is routed to. Keys already followed the returned
     /// tree — `input = "session"` never meant "the selected session", it meant
     /// "whatever this pane is showing" — and what was narrow was only the set of
-    /// things a surface could name. A plugin's own program is now one of them.
+    /// things a surface could name. A mod's own program is now one of them.
     ///
-    /// `Cells` is excluded: a plugin drew those itself, so there is nothing behind
+    /// `Cells` is excluded: a mod drew those itself, so there is nothing behind
     /// them to type at.
     pub fn first_live_surface(&self) -> Option<&str> {
         match self {
@@ -489,7 +489,7 @@ impl Node {
         }
     }
 
-    /// An empty placeholder, used where a plugin produced nothing.
+    /// An empty placeholder, used where a mod produced nothing.
     pub fn empty() -> Self {
         Node::Text {
             lines: Vec::new(),
@@ -524,14 +524,14 @@ impl Node {
 
 /// Divide `total` among `children` along one axis.
 ///
-/// This is the arithmetic behind the promise that a plugin is told
+/// This is the arithmetic behind the promise that a mod is told
 /// its *own* rect: the parent resolves every child's length here, before any
 /// child is asked to render into it.
 ///
 /// Exact and percentage requests are honoured first, then flexible children
 /// split the remainder by share. Over-subscription is handled by scaling the
 /// fixed requests down proportionally rather than by letting a child go
-/// negative — a spec requirement, since a plugin can ask for more than exists.
+/// negative — a spec requirement, since a mod can ask for more than exists.
 pub fn divide(total: u16, children: &[Size], gap: u16) -> Vec<u16> {
     if children.is_empty() {
         return Vec::new();
@@ -919,7 +919,7 @@ mod tests {
     #[test]
     fn a_plain_role_is_not_a_verb() {
         // `row` and `overflow` are what widgets.lua already writes; they must
-        // keep meaning "ask the plugin", not "the kernel handles this".
+        // keep meaning "ask the mod", not "the kernel handles this".
         assert_eq!(ClickVerb::parse(Some("row")), None);
         assert_eq!(ClickVerb::parse(Some("overflow")), None);
         assert_eq!(ClickVerb::parse(Some("action:")), None);
@@ -929,9 +929,9 @@ mod tests {
 
     /// Raw input follows the tree, and now the tree can name either kind of live
     /// surface. The session behaviour must be identical — `20_agent.lua` depends
-    /// on it — and a plugin-drawn `cells` surface has nothing behind it to type at.
+    /// on it — and a mod-drawn `cells` surface has nothing behind it to type at.
     #[test]
-    fn the_first_live_surface_is_either_kind_but_never_plugin_drawn_cells() {
+    fn the_first_live_surface_is_either_kind_but_never_mod_drawn_cells() {
         let session = Node::Surface {
             source: SurfaceSource::Session("s1".into()),
             scroll: 0,

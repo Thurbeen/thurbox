@@ -6,7 +6,7 @@
 //! as the command bus: **anything that touches the world runs on a worker, and
 //! the UI reads the result.** Third instance of the pattern.
 //!
-//! The consequence a plugin must render is that "not computed yet" is a real
+//! The consequence a mod must render is that "not computed yet" is a real
 //! state, distinct from "no changes" — a diff that is merely slow must not look
 //! like a clean worktree.
 

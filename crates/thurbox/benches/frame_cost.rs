@@ -147,10 +147,10 @@ struct World {
 impl World {
     fn new(host: &LuaHost) -> Self {
         let sources = thurbox::kernel::bundled::sources(&ui_dir());
-        let visible: HashSet<usize> = (0..host.plugins.len()).collect();
-        let placed: HashSet<String> = host.plugins.iter().map(|p| p.slot.clone()).collect();
+        let visible: HashSet<usize> = (0..host.mods.len()).collect();
+        let placed: HashSet<String> = host.mods.iter().map(|p| p.slot.clone()).collect();
         let inventory = thurbox::kernel::inventory::rows(
-            &host.plugins,
+            &host.mods,
             &sources,
             &visible,
             &placed,
@@ -253,7 +253,7 @@ impl Table {
 ///
 /// This is the difference between a measurement and a fiction: a closed search
 /// strip occupies no slot, so `draw_slots` never reaches it and it costs a real
-/// frame nothing. Rendering every plugin regardless reported it as the second
+/// frame nothing. Rendering every mod regardless reported it as the second
 /// most expensive pane in the interface.
 fn placed_panes(host: &LuaHost) -> Vec<(usize, String, ratatui::layout::Rect)> {
     let area = ratatui::layout::Rect::new(0, 0, WIDTH(), HEIGHT());
@@ -261,10 +261,10 @@ fn placed_panes(host: &LuaHost) -> Vec<(usize, String, ratatui::layout::Rect)> {
     let mut out = Vec::new();
     for slot in thurbox::kernel::layout::resolve(&region, area) {
         for &index in host.in_slot(&slot.slot) {
-            let Some(plugin) = host.plugins.get(index) else {
+            let Some(r#mod) = host.mods.get(index) else {
                 continue;
             };
-            out.push((index, plugin.name.clone(), slot.rect));
+            out.push((index, r#mod.name.clone(), slot.rect));
             // A switch slot shows one occupant; a stack shows them all. The
             // bundled interface has one occupant per slot either way, so the
             // distinction costs nothing to ignore here — but say so, because an
@@ -277,7 +277,7 @@ fn placed_panes(host: &LuaHost) -> Vec<(usize, String, ratatui::layout::Rect)> {
     out
 }
 
-/// The float probe every frame pays: `draw_floats` renders each floating plugin
+/// The float probe every frame pays: `draw_floats` renders each floating mod
 /// to discover whether it is floating *this* frame. Three of the bundled panes
 /// are floats, and all three declare `pure`, so this is a cache hit — which is
 /// exactly the claim worth measuring.
@@ -323,7 +323,7 @@ fn main() {
             .collect::<Vec<_>>()
             .join(", "),
         host.floating().len(),
-        host.plugins.len()
+        host.mods.len()
     );
 
     let columns: Vec<String> = counts.iter().map(|n| format!("{n} sessions")).collect();
@@ -546,8 +546,8 @@ fn main() {
     ));
 
     let sources = thurbox::kernel::bundled::sources(&ui_dir());
-    let visible: HashSet<usize> = (0..host.plugins.len()).collect();
-    let placed: HashSet<String> = host.plugins.iter().map(|p| p.slot.clone()).collect();
+    let visible: HashSet<usize> = (0..host.mods.len()).collect();
+    let placed: HashSet<String> = host.mods.iter().map(|p| p.slot.clone()).collect();
     rows.push((
         "  inventory rows".into(),
         counts
@@ -555,7 +555,7 @@ fn main() {
             .map(|_| {
                 measure(9, 200, || {
                     let _ = thurbox::kernel::inventory::rows(
-                        &host.plugins,
+                        &host.mods,
                         &sources,
                         &visible,
                         &placed,

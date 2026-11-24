@@ -9,13 +9,13 @@
 //! screen looks right while the file on disk is not what is on it), and a
 //! bundled file you deleted looks exactly like one that was never shipped.
 //!
-//! **Why this is not a plugin.** It used to be one, deliberately: a pane that
-//! lists panes is an honest test of whether the plugin API is enough to build a
+//! **Why this is not a mod.** It used to be one, deliberately: a pane that
+//! lists panes is an honest test of whether the mod API is enough to build a
 //! pane with. But it is a *recovery* tool, and a recovery tool that is itself a
-//! plugin can be the thing that is broken — a bad edit to it takes away the view
+//! mod can be the thing that is broken — a bad edit to it takes away the view
 //! you would use to undo the edit. That is the same argument that made help,
 //! settings and the theme picker kernel-owned, and it outranks the API test:
-//! the API is exercised by every other pane, and `examples/lua/plugin.lua` is
+//! the API is exercised by every other pane, and `examples/lua/mod.lua` is
 //! the thing an author copies.
 //!
 //! Being chrome also removes the reachability problem that made it useless in
@@ -55,7 +55,7 @@ pub struct Files<'a> {
 pub enum Edit {
     File {
         file: String,
-        kind: crate::kernel::command::PluginEdit,
+        kind: crate::kernel::command::ModEdit,
     },
     /// Grant or withdraw this file's declared capabilities.
     ///
@@ -70,7 +70,7 @@ pub enum Edit {
 
 /// What a file is listed under.
 ///
-/// By where a plugin came from, because that is what decides what can be done
+/// By where a mod came from, because that is what decides what can be done
 /// with it: yours are edited by hand, a package's are put back and advanced by
 /// `thurbox-cli mod`, the shipped ones are restored from the binary. Yours
 /// and the packages first — they are what an operator manages; the shipped
@@ -188,7 +188,7 @@ fn state_of(row: &Row, culprit: Option<&Row>) -> Reading {
 }
 
 /// The package an installed file came from, by name: the last segment of its
-/// source, the way `plugin install` names it. The whole source is a path or a
+/// source, the way `mod install` names it. The whole source is a path or a
 /// URL, which is what used to push the state off the row.
 fn package(src: &str) -> &str {
     let src = src.trim_end_matches('/');
@@ -197,7 +197,7 @@ fn package(src: &str) -> &str {
 }
 
 /// What a row calls its file. The group header already says where it came
-/// from, so a plugin is listed by the part of its path that tells it from its
+/// from, so a mod is listed by the part of its path that tells it from its
 /// neighbours; a support file keeps its whole path, which is what tells
 /// `lib/ui.lua` from `ui.lua`. The full path is in the details.
 fn label(row: &Row) -> &str {
@@ -232,7 +232,7 @@ fn provenance(source: &Source) -> String {
 /// What a file asks for and whether it holds it, as the row says it.
 ///
 /// Read from [`FileTrust::grants`], the rule the enforced grant goes through, so
-/// the row cannot say "not granted" while the plugin holds `run` (#1467). Silent
+/// the row cannot say "not granted" while the mod holds `run` (#1467). Silent
 /// for a shipped file, which holds what it asks for without being asked.
 fn grant_word(row: &Row) -> Option<(String, bool)> {
     if row.capabilities.is_empty() || matches!(row.trust, FileTrust::NotAsked | FileTrust::Shipped)
@@ -361,7 +361,7 @@ fn what(row: &Row) -> String {
 
 /// Whether `r` would change anything: an edited or deleted shipped file. A
 /// restore of an untouched one writes the same bytes back, and an installed one
-/// is put back by `plugin sync`, not from the binary.
+/// is put back by `mod sync`, not from the binary.
 fn restorable(row: &Row) -> bool {
     matches!(row.source, Source::Edited | Source::Removed)
 }
@@ -434,7 +434,7 @@ enum Armed {
     /// `r` on an edited file: the shipped copy replaces the edit.
     Restore { layout: bool },
     /// `t` on a file that does not hold what it asks for: granting hands a
-    /// plugin programs or sessions, which is the one act here that gives
+    /// mod programs or sessions, which is the one act here that gives
     /// something away rather than costing a file.
     Grant,
 }
@@ -452,7 +452,7 @@ pub struct InterfaceTab {
     /// turned off sorts above the healthy ones — so an index alone would leave
     /// the cursor on whichever file slid into its place.
     following: Option<String>,
-    /// `a`: list every file, not just the plugins and the files needing
+    /// `a`: list every file, not just the mods and the files needing
     /// attention.
     all: bool,
 }
@@ -628,7 +628,7 @@ impl InterfaceTab {
             None,
             Some(Edit::File {
                 file: path,
-                kind: crate::kernel::command::PluginEdit::Restore,
+                kind: crate::kernel::command::ModEdit::Restore,
             }),
         )
     }
@@ -721,7 +721,7 @@ impl InterfaceTab {
             None,
             Some(Edit::File {
                 file: path,
-                kind: crate::kernel::command::PluginEdit::Remove,
+                kind: crate::kernel::command::ModEdit::Remove,
             }),
         )
     }
@@ -1196,7 +1196,7 @@ mod tests {
         }
     }
 
-    /// The `top` example as `plugin install` leaves it: from a package directory
+    /// The `top` example as `mod install` leaves it: from a package directory
     /// with a long absolute path, asking to run programs, not yet trusted, and in
     /// a slot the shipped layout does not place.
     fn installed_top() -> Row {
@@ -1401,7 +1401,7 @@ mod tests {
     }
 
     #[test]
-    fn the_plugins_are_grouped_by_where_they_came_from_and_support_files_last() {
+    fn the_mods_are_grouped_by_where_they_came_from_and_support_files_last() {
         let mut top = installed_top();
         top.state = FileState::Visible;
         let rows = [
@@ -1458,7 +1458,7 @@ mod tests {
 
     #[test]
     fn a_toggles_the_support_files_even_when_nothing_else_is_listed() {
-        // No plugins and nothing needing attention lists nothing at all, and
+        // No mods and nothing needing attention lists nothing at all, and
         // the footer still offers `a`; it has to answer.
         let rows = [file("lib/chrome.lua", Kind::Module)];
         let mut tab = InterfaceTab::default();
@@ -1830,7 +1830,7 @@ mod tests {
             edit,
             Some(Edit::File {
                 file: "mods/10_sessions.lua".into(),
-                kind: crate::kernel::command::PluginEdit::Restore,
+                kind: crate::kernel::command::ModEdit::Restore,
             })
         );
     }
@@ -1891,7 +1891,7 @@ mod tests {
     }
 
     #[test]
-    fn space_turns_a_plugin_off_and_on_again() {
+    fn space_turns_a_mod_off_and_on_again() {
         let mut tab = InterfaceTab::default();
         let on = [row("mods/90_mine.lua", Source::User, FileState::Visible)];
         let (_, edit) = tab.on_key(&press(KeyCode::Char(' ')), &on, &Hits::default());
@@ -1916,7 +1916,7 @@ mod tests {
     }
 
     #[test]
-    fn turning_a_plugin_off_asks_nothing() {
+    fn turning_a_mod_off_asks_nothing() {
         // Nothing is at risk, and a confirmation on a reversible action is what
         // teaches people to confirm without reading.
         let mut tab = InterfaceTab::default();

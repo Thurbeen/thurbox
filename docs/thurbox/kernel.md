@@ -123,7 +123,7 @@ first capability a mod can be *granted* breaks that symmetry — it has to be
 present for the mod that may use it and absent for every other, in one Lua
 state they all share.
 
-**Each mod runs in an environment of its own** (`host::api::plugin_env`).
+**Each mod runs in an environment of its own** (`host::api::mod_env`).
 Every mod shares one Lua state, so "the mod running now" cannot say who
 issued a call: a pane that replaced a global another pane calls — `type`, say —
 would run its own code inside that pane's call, holding its grant and stamped
@@ -185,7 +185,7 @@ is a naming convention rather than a boundary: an untrusted mod could call
 the other name and get a program run with the user's authority. Nothing a
 mod may not have is parked anywhere it can name. `tests/kernel_mvp.rs`
 enumerates every global a mod can reach and has no blanket exemption for a
-leading underscore, and `tests/plugin_commands.rs` holds the hijack: a pane
+leading underscore, and `tests/mod_commands.rs` holds the hijack: a pane
 that wraps `type` gets neither another pane's `run` nor its path on a command.
 
 A capability asked for through `command` cannot be absent, since every mod

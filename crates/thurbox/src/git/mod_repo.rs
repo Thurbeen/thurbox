@@ -1,6 +1,6 @@
-//! Cloning and updating a plugin's working copy.
+//! Cloning and updating a mod's working copy.
 //!
-//! A plugin that carries more than Lua is a repository, and it arrives *only*
+//! A mod that carries more than Lua is a repository, and it arrives *only*
 //! by clone: the plain fetch path returns a `String` and decodes remote output
 //! lossily, so a binary through it would be corrupted rather than refused. The
 //! working copy keeps its `.git`, which is what makes `update` a fetch and lets
@@ -72,7 +72,7 @@ pub(super) fn abbreviated_object_id(git_ref: &str) -> bool {
 /// directly, so it is fetched and checked out afterwards. A failure at either step
 /// takes the clone back, so a caller that has written nothing yet leaves nothing
 /// behind.
-pub fn clone_plugin(url: &str, dest: &Path, git_ref: Option<&str>) -> Result<()> {
+pub fn clone_mod(url: &str, dest: &Path, git_ref: Option<&str>) -> Result<()> {
     if dest.exists() {
         anyhow::bail!("{} already exists", dest.display());
     }
@@ -102,7 +102,7 @@ pub fn clone_plugin(url: &str, dest: &Path, git_ref: Option<&str>) -> Result<()>
         // ref, so a *name* the remote did serve still resolves to nothing here —
         // and the object it handed over is `FETCH_HEAD` whichever the ref was.
         // `converge_repository` checks the same thing out, for the same reason.
-        let obtained = fetched.and_then(|()| checkout_plugin(dest, "FETCH_HEAD"));
+        let obtained = fetched.and_then(|()| checkout_mod(dest, "FETCH_HEAD"));
         if let Err(e) = obtained {
             // Clone succeeded, the pin did not: this working copy is at the wrong
             // revision and nobody asked for that one.
@@ -156,7 +156,7 @@ pub fn fetch_tip(repo: &Path) -> Result<()> {
 }
 
 /// Check out a revision in a working copy.
-pub fn checkout_plugin(repo: &Path, rev: &str) -> Result<()> {
+pub fn checkout_mod(repo: &Path, rev: &str) -> Result<()> {
     let cmd = git_command(repo, &["checkout", "--detach", rev]);
     run_git(cmd, "git checkout")
 }

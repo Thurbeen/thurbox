@@ -1,6 +1,6 @@
 //! The default interface, compiled into the binary.
 //!
-//! With no pane in the kernel, a broken plugin directory means
+//! With no pane in the kernel, a broken mod directory means
 //! no interface *at all* — a failure mode v1 could not have. The embedded
 //! copies make a blank screen unreachable while keeping the shipped interface
 //! readable and editable as ordinary files, which matters when extensibility is
@@ -17,7 +17,7 @@
 //! the manifest is for. (4) is the one that is not obvious: it is exactly the
 //! case of a file we know we wrote and can no longer find, and without it the
 //! interface would re-deliver itself on every start and no bundled pane could
-//! ever be removed (v2-plugin-lifecycle design D1).
+//! ever be removed (v2-mod-lifecycle design D1).
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Component, Path, PathBuf};
@@ -35,7 +35,7 @@ pub const BUNDLED: &[(&str, &str)] = &[
     ("README.md", include_str!("../../../../ui/README.md")),
     // The same reasoning, under the name an agent actually reads on its own.
     // README.md is what a person opens; `AGENTS.md` is what a coding CLI loads as
-    // context without being told to — which is what stops "install this plugin"
+    // context without being told to — which is what stops "install this mod"
     // being read as a package-manager request. `CLAUDE.md` and `GEMINI.md` are
     // pointers rather than copies: two files saying the same thing drift, and the
     // stale one is the one somebody reads. An extension surfaces its own spec the
@@ -277,7 +277,7 @@ impl Report {
 /// Trust drift (`kernel::registry`) reads it for the same question and takes
 /// the same limit: it reports that a trusted file **changed**, not that it was
 /// tampered with. Nothing in the security story rests on it — someone who can
-/// write to the interface directory can also add a plugin of their own, so a
+/// write to the interface directory can also add a mod of their own, so a
 /// stronger hash here would buy a guarantee the rest of the design already
 /// declines to make.
 pub fn digest(text: &str) -> String {
@@ -367,7 +367,7 @@ const WITHDRAWN: &[&str] = &["mods/80_restore.lua"];
 
 /// Take back what we shipped and no longer ship.
 ///
-/// Without this, renaming a bundled plugin between releases leaves the old copy
+/// Without this, renaming a bundled mod between releases leaves the old copy
 /// on disk and loading, so an upgrade the user did nothing to hands them two of
 /// it. Same rule as everywhere else, read from the other side: we clean up only
 /// what we wrote and the user has not claimed (design D2).
@@ -441,7 +441,7 @@ const LIB_DEPTH: usize = 3;
 /// separators. This is the conversion between the two, and it exists in one place
 /// because getting it wrong is invisible on Linux: `Path::join` writes a `\` on
 /// Windows, so a hand-rolled strip yields `mods\90_notes.lua`, which matches
-/// nothing and fails silently. That is exactly how "turn a plugin off" came to be
+/// nothing and fails silently. That is exactly how "turn a mod off" came to be
 /// a no-op on Windows.
 ///
 /// `None` when `absolute` is not inside `dir`, or is `dir` itself.
@@ -499,7 +499,7 @@ fn source_of(
     relative: &str,
     current: &str,
     bundled: &BTreeMap<&str, &str>,
-    lock: &crate::session::plugin_spec::PluginLock,
+    lock: &crate::session::mod_spec::ModLock,
 ) -> Source {
     match bundled.get(relative) {
         Some(shipped) if *shipped == current => Source::Bundled,
@@ -526,10 +526,7 @@ fn source_of(
 
 /// Every file of the interface in `dir` that [`sources`] classifies from its
 /// contents, as `(relative, path)`, in the order it classifies them.
-fn interface_files(
-    dir: &Path,
-    spec: &crate::session::plugin_spec::PluginSpec,
-) -> Vec<(String, PathBuf)> {
+fn interface_files(dir: &Path, spec: &crate::session::mod_spec::ModSpec) -> Vec<(String, PathBuf)> {
     let mut files = Vec::new();
     // Every top-level file we ship, not `layout.lua` by name: a shipped file the
     // inventory cannot see is one the Interface tab cannot restore, and the tab's
@@ -556,16 +553,16 @@ fn interface_files(
         files.push((format!("lib/{name}"), dir.join("lib").join(&name)));
     }
 
-    // Panes the spec names outside `mods/` — a plugin obtained as a repository
+    // Panes the spec names outside `mods/` — a mod obtained as a repository
     // keeps its author's layout. Without this such a pane is LOADED but absent from
     // the inventory, which is exactly the "a file the tab cannot account for"
     // problem the tab exists to prevent.
     //
     // The rest of a working copy is deliberately NOT walked: a repository can hold
     // hundreds of files, none of them interface code, and listing them would bury
-    // the panes among one plugin's assets.
-    for entry in &spec.plugins {
-        if !crate::session::plugin_spec::is_nested_pane(&entry.file) {
+    // the panes among one mod's assets.
+    for entry in &spec.mods {
+        if !crate::session::mod_spec::is_nested_pane(&entry.file) {
             continue;
         }
         let path = dir.join(&entry.file);
@@ -602,7 +599,7 @@ pub fn sources(dir: &Path) -> BTreeMap<String, Source> {
     // here a person maintains by hand. The LOCK is deliberately absent, along with
     // `.bundled.json` and `ui.json`: bookkeeping nobody edits is not something the
     // tab has to account for, and listing it would only offer actions that refuse.
-    let spec = crate::session::plugin_spec::SPEC_FILE;
+    let spec = crate::session::mod_spec::SPEC_FILE;
     if dir.join(spec).is_file() {
         out.insert(spec.to_string(), Source::User);
     }
@@ -621,7 +618,7 @@ pub fn sources(dir: &Path) -> BTreeMap<String, Source> {
 /// — because both are "put back what we ship and forget what happened to it".
 ///
 /// An edited `layout.lua` is moved aside first, and the result says where. A
-/// restore is the user's act, but a pane's `command("plugin", …)` can ask for
+/// restore is the user's act, but a pane's `command("mod", …)` can ask for
 /// one as well as the Interface tab, so it must never be the step that loses an
 /// arrangement: every other pane depends on that one file.
 pub fn restore(dir: &Path, relative: &str) -> Result<Option<PathBuf>, String> {
@@ -674,7 +671,7 @@ const LAYOUT: &str = "layout.lua";
 /// The first `layout.lua.bak[.N]` that does not exist yet.
 ///
 /// Not a `.lua` name on purpose: nothing loads it, so a backup can never become
-/// a second arrangement or a stray plugin.
+/// a second arrangement or a stray mod.
 fn free_backup_path(dir: &Path) -> PathBuf {
     let first = dir.join(format!("{LAYOUT}.bak"));
     if !first.exists() {
@@ -703,7 +700,7 @@ pub fn remove(dir: &Path, relative: &str) -> Result<(), String> {
     write_manifest(dir, &manifest)
 }
 
-/// Resolve a path that came from a plugin, or refuse it.
+/// Resolve a path that came from a mod, or refuse it.
 ///
 /// Lua has no filesystem and this command is the one door into one, so the door
 /// opens only onto Lua files inside the interface directory: no absolute paths,
@@ -764,7 +761,7 @@ pub(crate) enum Delivered<'a> {
 /// * **An edit is the user's to keep.** A file whose contents do not match what
 ///   we recorded is `Preserve`, whatever we would rather write.
 /// * **A deletion is remembered.** A file we wrote and that is now gone is
-///   tombstoned once and left alone forever after, so removing a plugin is a way
+///   tombstoned once and left alone forever after, so removing a mod is a way
 ///   to remove it rather than a thing delivery undoes on next launch.
 ///
 /// `Settle` is tested before `Update` so a byte-identical file is adopted without
@@ -1033,7 +1030,7 @@ mod tests {
         #[test]
         fn nothing_there_but_we_wrote_it_once_is_tombstoned() {
             // The user deleted it. Recorded so the next run leaves it alone —
-            // this is the arm that makes deleting a plugin a way to remove it.
+            // this is the arm that makes deleting a mod a way to remove it.
             let recorded = digest(OLD);
             assert_eq!(
                 decide(None, Delivered::Digest(&recorded), NEW),
@@ -1109,7 +1106,7 @@ mod tests {
     /// Written with literal `\` rather than by joining paths, so it runs the
     /// Windows case on Linux too: `Path::join` writes `/` here, which is exactly
     /// why a hand-rolled strip looked correct on every developer machine while
-    /// "turn a plugin off" was a silent no-op on Windows. Caught by a Windows CI
+    /// "turn a mod off" was a silent no-op on Windows. Caught by a Windows CI
     /// run, and this is what stops it coming back.
     #[test]
     fn a_stored_path_becomes_the_identity_the_loader_compares() {
@@ -1142,7 +1139,7 @@ mod tests {
     /// The directory tells whoever edits it how to, under the name their tool reads.
     ///
     /// `README.md` is what a person opens; `AGENTS.md` is what a coding CLI loads as
-    /// context on its own. Without the second, "install this plugin" reads as a
+    /// context on its own. Without the second, "install this mod" reads as a
     /// package-manager request — which is the specific confusion it exists to
     /// prevent, so the instruction that prevents it is pinned here.
     #[test]
@@ -1296,7 +1293,7 @@ mod tests {
 
     #[test]
     fn a_deleted_file_stays_deleted() {
-        // The whole point of the manifest's third state: deleting a plugin is
+        // The whole point of the manifest's third state: deleting a mod is
         // how you remove it, so delivery must not undo that on the next start.
         let dir = tempfile::tempdir().expect("tempdir");
         materialize(dir.path());
@@ -1533,12 +1530,12 @@ mod tests {
         let dir = tempfile::tempdir().expect("tempdir");
         materialize(dir.path());
 
-        let entry = crate::session::PluginEntry {
+        let entry = crate::session::ModEntry {
             src: "atlas".into(),
             file: "mods/75_atlas.lua".into(),
             pin: Some("v0.3.1".into()),
         };
-        let mut lock = crate::session::PluginLock::default();
+        let mut lock = crate::session::ModLock::default();
         super::super::packages::deliver(
             dir.path(),
             &entry,
@@ -1597,7 +1594,7 @@ mod tests {
         materialize(dir.path());
         super::super::packages::add_to_spec(
             dir.path(),
-            &crate::session::PluginEntry {
+            &crate::session::ModEntry {
                 src: "atlas".into(),
                 file: "mods/75_atlas.lua".into(),
                 pin: None,
@@ -1607,8 +1604,8 @@ mod tests {
         std::fs::write(super::super::packages::lock_path(dir.path()), "").expect("lock");
 
         let sources = sources(dir.path());
-        assert!(sources.contains_key(crate::session::plugin_spec::SPEC_FILE));
-        assert!(!sources.contains_key(crate::session::plugin_spec::LOCK_FILE));
+        assert!(sources.contains_key(crate::session::mod_spec::SPEC_FILE));
+        assert!(!sources.contains_key(crate::session::mod_spec::LOCK_FILE));
         assert!(!sources.contains_key(MANIFEST));
     }
 
@@ -1681,7 +1678,7 @@ mod tests {
     /// Every key the interface stores — trust, disabled, rebindings — is
     /// `ui_dir.join(file)` compared verbatim, so the directory has to be an
     /// absolute identity. A relative `ui` is shared by every checkout on the
-    /// machine, which made trusting a plugin in one worktree grant `run` to a
+    /// machine, which made trusting a mod in one worktree grant `run` to a
     /// same-named file in another.
     #[test]
     fn the_resolved_directory_is_absolute_and_still_the_one_that_was_asked_for() {

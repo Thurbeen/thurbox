@@ -1,4 +1,4 @@
-//! Fetching from a source, and the release this binary is: what the plugin
+//! Fetching from a source, and the release this binary is: what the mod
 //! installer and the updater share.
 //!
 //! A source is a base URL, a local directory or a git repository. The official

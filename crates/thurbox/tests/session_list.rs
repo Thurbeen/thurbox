@@ -6,7 +6,7 @@
 //! than being overwritten on the next frame; and the selection is a **session**
 //! rather than a row, so a snapshot that opens or closes a session above the
 //! cursor leaves the highlight where it was. v1 has one `App::select_session` for
-//! the first two; here it is a value two plugins share, so the rule has to be
+//! the first two; here it is a value two mods share, so the rule has to be
 //! asserted. The third is issue #1211, and the assertion that catches it has to
 //! be the painted frame: the list published the right value to `store.selected`
 //! after a steer and after a create all along, and still moved the bar on an
@@ -28,7 +28,7 @@ use thurbox::kernel::terminal::AgentMeta;
 use thurbox::kernel::theme::Themes;
 use thurbox::session::SessionState;
 
-const PLUGIN: &str = "sessions";
+const MOD: &str = "sessions";
 
 fn host() -> LuaHost {
     let dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../ui");
@@ -94,7 +94,7 @@ fn hosted() -> Snapshot {
 
 fn list_text(host: &LuaHost, snapshot: &Snapshot, registry: &Registry) -> String {
     publish_with(host, snapshot, registry);
-    let buffer = paint(host, PLUGIN, 80, 16);
+    let buffer = paint(host, MOD, 80, 16);
     (0..buffer.area.height)
         .map(|y| {
             (0..buffer.area.width)
@@ -114,7 +114,7 @@ fn reordering_visible_sessions_preserves_a_folded_hosts_sessions() {
         .insert(1, row("local-second", "local-second"));
     let registry = registry_for(&host);
     list_text(&host, &snapshot, &registry);
-    let index = host.index_of(PLUGIN).unwrap();
+    let index = host.index_of(MOD).unwrap();
     host.on_click(
         index,
         &Click {
@@ -168,7 +168,7 @@ fn addressed_fold_can_target_a_remote_host_named_local() {
     let registry = registry_for(&host);
     list_text(&host, &snapshot, &registry);
     host.on_action_with_args(
-        host.index_of(PLUGIN).unwrap(),
+        host.index_of(MOD).unwrap(),
         "sessions.collapse_host",
         &[("host", "local")],
     )
@@ -184,7 +184,7 @@ fn right_arrow_steps_through_a_folded_repo_one_level_at_a_time() {
     let snapshot = hosted();
     let registry = registry_for(&host);
     list_text(&host, &snapshot, &registry);
-    let index = host.index_of(PLUGIN).unwrap();
+    let index = host.index_of(MOD).unwrap();
     host.on_click(
         index,
         &Click {
@@ -225,7 +225,7 @@ fn arrows_on_a_flat_session_list_leave_selection_and_folds_alone() {
     let snapshot = hosted();
     let mut registry = registry_for(&host);
     registry
-        .set_setting(PLUGIN, "group_by_host", Some(Value::Bool(false)))
+        .set_setting(MOD, "group_by_host", Some(Value::Bool(false)))
         .unwrap();
     list_text(&host, &snapshot, &registry);
     host.drain_commands();
@@ -235,9 +235,9 @@ fn arrows_on_a_flat_session_list_leave_selection_and_folds_alone() {
             name: chord.into(),
             ..KeyPress::default()
         };
-        let binding = registry.resolve(&key, Some(PLUGIN));
+        let binding = registry.resolve(&key, Some(MOD));
         if let Some(binding) = binding {
-            host.on_action(host.index_of(PLUGIN).unwrap(), &binding.action)
+            host.on_action(host.index_of(MOD).unwrap(), &binding.action)
                 .unwrap();
         }
     }
@@ -251,7 +251,7 @@ fn next_attention_reveals_a_folded_host_and_repo() {
     let snapshot = hosted();
     let registry = registry_for(&host);
     list_text(&host, &snapshot, &registry);
-    let index = host.index_of(PLUGIN).unwrap();
+    let index = host.index_of(MOD).unwrap();
     host.on_click(
         index,
         &Click {
@@ -281,7 +281,7 @@ fn following_a_created_session_reveals_its_folded_host_and_repo() {
     let snapshot = hosted();
     let registry = following_new_sessions(&host);
     list_text(&host, &snapshot, &registry);
-    let index = host.index_of(PLUGIN).unwrap();
+    let index = host.index_of(MOD).unwrap();
     host.on_click(
         index,
         &Click {
@@ -367,7 +367,7 @@ fn repo_fold_is_scoped_to_host_and_focus_reveals_its_child() {
     list_text(&host, &snapshot, &registry);
     assert!(host
         .on_click(
-            host.index_of(PLUGIN).unwrap(),
+            host.index_of(MOD).unwrap(),
             &Click {
                 id: Some(":repo:example-ssh\x01thurbox".into()),
                 clicks: 1,
@@ -562,23 +562,19 @@ fn resetting_saved_folds_after_a_write_unfolds_the_host() {
     press_in(&host, &snapshot, "j");
     press_in(&host, &snapshot, "h");
     registry
-        .set_setting(
-            PLUGIN,
-            "folded_hosts",
-            Some(Value::Text("example-ssh".into())),
-        )
+        .set_setting(MOD, "folded_hosts", Some(Value::Text("example-ssh".into())))
         .expect("saved fold");
     let folded = list_text(&host, &snapshot, &registry);
     assert!(!folded.contains("remote-alpha"), "{folded}");
     registry
-        .set_setting(PLUGIN, "folded_hosts", Some(Value::Text(String::new())))
+        .set_setting(MOD, "folded_hosts", Some(Value::Text(String::new())))
         .expect("reset fold");
     let reset = list_text(&host, &snapshot, &registry);
     assert!(reset.contains("remote-alpha"), "{reset}");
 }
 
 #[test]
-fn host_fold_state_is_saved_as_a_plugin_setting() {
+fn host_fold_state_is_saved_as_a_mod_setting() {
     let host = host();
     let snapshot = hosted();
     list_text(&host, &snapshot, &registry_for(&host));
@@ -610,7 +606,7 @@ fn clicking_one_host_folds_only_its_own_children() {
         ..Click::default()
     };
     assert!(host
-        .on_click(host.index_of(PLUGIN).unwrap(), &click)
+        .on_click(host.index_of(MOD).unwrap(), &click)
         .expect("click host"));
     let frame = list_text(&host, &snapshot, &registry);
     assert!(!frame.contains("remote-alpha"), "{frame}");
@@ -623,7 +619,7 @@ fn clicking_one_host_folds_only_its_own_children() {
         ..Click::default()
     };
     assert!(host
-        .on_click(host.index_of(PLUGIN).unwrap(), &second)
+        .on_click(host.index_of(MOD).unwrap(), &second)
         .expect("click second host"));
     let frame = list_text(&host, &snapshot, &registry);
     assert!(!frame.contains("remote-alpha"), "{frame}");
@@ -669,7 +665,7 @@ fn a_hosts_kind_follows_its_transport() {
     let mut registry = registry_for(&host);
     for folded in ["", "build-box;win-desk;dev-distro"] {
         registry
-            .set_setting(PLUGIN, "folded_hosts", Some(Value::Text(folded.into())))
+            .set_setting(MOD, "folded_hosts", Some(Value::Text(folded.into())))
             .unwrap();
         let frame = list_text(&host, &snapshot, &registry);
         println!("{frame}");
@@ -677,7 +673,7 @@ fn a_hosts_kind_follows_its_transport() {
         for label in ["@ build-box", "@ win-desk", "@ WSL dev-distro"] {
             assert!(frame.contains(label), "{frame}");
         }
-        let buffer = paint(&host, PLUGIN, 24, 16);
+        let buffer = paint(&host, MOD, 24, 16);
         let narrow = (0..buffer.area.height)
             .map(|y| {
                 (0..buffer.area.width)
@@ -737,7 +733,7 @@ fn creating(repo: &str) -> InFlight {
     }
 }
 
-/// The registry the kernel would build from what the bundled plugins declare —
+/// The registry the kernel would build from what the bundled mods declare —
 /// separate so a test can override a setting before publishing it.
 fn registry_for(host: &LuaHost) -> Registry {
     let mut registry = Registry::default();
@@ -815,7 +811,7 @@ fn render_in(host: &LuaHost, snapshot: &Snapshot) {
 
 fn render_with(host: &LuaHost, snapshot: &Snapshot, registry: &Registry) {
     publish_with(host, snapshot, registry);
-    let index = host.index_of(PLUGIN).expect("no sessions plugin");
+    let index = host.index_of(MOD).expect("no sessions plugin");
     host.render(
         index,
         RenderContext {
@@ -839,7 +835,7 @@ fn press_in(host: &LuaHost, snapshot: &Snapshot, chord: &str) {
 
 fn press_inflight(host: &LuaHost, snapshot: &Snapshot, inflight: &[InFlight], chord: &str) {
     publish_inflight(host, snapshot, &registry_for(host), inflight);
-    let index = host.index_of(PLUGIN).expect("no sessions plugin");
+    let index = host.index_of(MOD).expect("no sessions plugin");
     let mut key = KeyPress {
         name: chord.to_string(),
         ..KeyPress::default()
@@ -850,7 +846,7 @@ fn press_inflight(host: &LuaHost, snapshot: &Snapshot, inflight: &[InFlight], ch
     let mut registry = Registry::default();
     let (bindings, settings) = host.declarations();
     registry.declare(bindings, settings);
-    if let Some(binding) = registry.resolve(&key, Some(PLUGIN)) {
+    if let Some(binding) = registry.resolve(&key, Some(MOD)) {
         let action = binding.action.clone();
         if host.on_action(index, &action).expect("on_action") {
             return;
@@ -869,7 +865,7 @@ fn enter_opens_the_selected_session() {
     assert_eq!(
         host.drain_commands(),
         vec![Command::Focus {
-            plugin: "agent".into(),
+            r#mod: "agent".into(),
             toggle: false,
         }]
     );
@@ -878,9 +874,9 @@ fn enter_opens_the_selected_session() {
 #[test]
 fn enter_is_declared_so_help_lists_it_and_it_can_be_rebound() {
     let host = host();
-    let index = host.index_of(PLUGIN).expect("no sessions plugin");
+    let index = host.index_of(MOD).expect("no sessions plugin");
     assert!(
-        host.plugins[index]
+        host.mods[index]
             .bindings
             .iter()
             .any(|binding| binding.chord == "enter"),
@@ -982,11 +978,11 @@ fn without(world: &Snapshot, id: &str) -> Snapshot {
 /// bug: the list published the right `store.selected` after a steer and after a
 /// create all along, so a test reading that value alone stays green whether or
 /// not a plain rebuild keeps the cursor where it was.
-fn paint(host: &LuaHost, plugin: &str, width: u16, height: u16) -> Buffer {
+fn paint(host: &LuaHost, r#mod: &str, width: u16, height: u16) -> Buffer {
     let node = host
         .render(
-            host.index_of(plugin)
-                .unwrap_or_else(|| panic!("no plugin named {plugin}")),
+            host.index_of(r#mod)
+                .unwrap_or_else(|| panic!("no mod named {mod}")),
             RenderContext {
                 width,
                 height,
@@ -995,7 +991,7 @@ fn paint(host: &LuaHost, plugin: &str, width: u16, height: u16) -> Buffer {
                 frame: 0,
             },
         )
-        .unwrap_or_else(|e| panic!("{plugin} should render: {e}"))
+        .unwrap_or_else(|e| panic!("{mod} should render: {e}"))
         .node;
     let mut terminal = Terminal::new(TestBackend::new(width, height)).expect("terminal");
     terminal
@@ -1044,7 +1040,7 @@ fn title(buffer: &Buffer) -> String {
 /// publishes.
 #[track_caller]
 fn assert_every_reading_names(host: &LuaHost, id: &str, name: &str) {
-    let highlighted = selection_bar(&paint(host, PLUGIN, 40, 12));
+    let highlighted = selection_bar(&paint(host, MOD, 40, 12));
     let title = title(&paint(host, "agent", 60, 6));
     assert_eq!(
         host.shared_string("selected").as_deref(),
@@ -1175,11 +1171,11 @@ fn post_create(id: &str, name: &str) -> Event {
         .with("agent", Some("claude"))
 }
 
-/// The setting on, in the registry the plugin reads its value back from.
+/// The setting on, in the registry the mod reads its value back from.
 fn following_new_sessions(host: &LuaHost) -> Registry {
     let mut registry = registry_for(host);
     registry
-        .set_setting(PLUGIN, "focus_new_session", Some(Value::Bool(true)))
+        .set_setting(MOD, "focus_new_session", Some(Value::Bool(true)))
         .expect("set focus_new_session");
     registry
 }
@@ -1220,7 +1216,7 @@ fn with_the_setting_on_a_created_session_is_selected_and_opened() {
     assert_eq!(
         host.drain_commands(),
         vec![Command::Focus {
-            plugin: "agent".into(),
+            r#mod: "agent".into(),
             toggle: false,
         }],
         "the agent pane is what shows a session, so opening one focuses it"
@@ -1258,8 +1254,8 @@ fn only_a_create_this_interface_made_is_subscribed_to() {
     // subscribing to it would let a `thurbox-cli session create` or a second
     // instance take the keyboard out from under the user.
     let host = host();
-    let index = host.index_of(PLUGIN).expect("no sessions plugin");
-    let events = &host.plugins[index].events;
+    let index = host.index_of(MOD).expect("no sessions plugin");
+    let events = &host.mods[index].events;
     assert!(
         events.iter().any(|name| name == "session.post_create"),
         "the list must hear about the creates this interface performed: {events:?}"
@@ -1526,8 +1522,8 @@ fn sorting_with_a_creation_in_flight_does_not_take_the_pane_down() {
 /// list either way.
 fn sorted_by_order_lua(items: &str) -> String {
     let dir = tempfile::tempdir().expect("tempdir");
-    let plugins = dir.path().join("mods");
-    std::fs::create_dir_all(&plugins).expect("mkdir");
+    let mods = dir.path().join("mods");
+    std::fs::create_dir_all(&mods).expect("mkdir");
 
     // `require` reads the interface directory, so the module under test is the
     // repository's own file, copied in beside the probe rather than restated.
@@ -1537,7 +1533,7 @@ fn sorted_by_order_lua(items: &str) -> String {
     std::fs::copy(checkout.join("lib/order.lua"), lib.join("order.lua")).expect("copy lib.order");
 
     std::fs::write(
-        plugins.join("10_probe.lua"),
+        mods.join("10_probe.lua"),
         format!(
             r#"
 local order = require("lib.order")
@@ -1602,7 +1598,7 @@ fn the_sort_puts_a_nameless_block_at_its_groups_end() {
 /// double-width glyph owns the cell after it, so that cell is skipped.
 fn frame_at(host: &LuaHost, width: u16, height: u16) -> Vec<String> {
     use unicode_width::UnicodeWidthStr;
-    let buffer = paint(host, PLUGIN, width, height);
+    let buffer = paint(host, MOD, width, height);
     (0..buffer.area.height)
         .map(|y| {
             let mut line = String::new();
@@ -1622,7 +1618,7 @@ fn frame_at(host: &LuaHost, width: u16, height: u16) -> Vec<String> {
 }
 
 fn act(host: &LuaHost, action: &str) {
-    let index = host.index_of(PLUGIN).expect("no sessions plugin");
+    let index = host.index_of(MOD).expect("no sessions plugin");
     assert!(
         host.on_action(index, action).expect("on_action"),
         "{action} was not handled"
@@ -1633,7 +1629,7 @@ fn with_settings(host: &LuaHost, settings: &[(&str, bool)]) -> Registry {
     let mut registry = registry_for(host);
     for (id, on) in settings {
         registry
-            .set_setting(PLUGIN, id, Some(Value::Bool(*on)))
+            .set_setting(MOD, id, Some(Value::Bool(*on)))
             .unwrap();
     }
     registry
@@ -1716,7 +1712,7 @@ fn folding_a_parent_hides_its_children_but_not_one_waiting_for_you() {
     act(&host, "sessions.first_child");
     publish_with(&host, &world, &registry);
     assert!(frame_at(&host, 40, 9)[4].contains("worker-a"));
-    let index = host.index_of(PLUGIN).unwrap();
+    let index = host.index_of(MOD).unwrap();
     host.on_click(
         index,
         &Click {
@@ -1750,7 +1746,7 @@ fn clicking_a_parent_fold_keeps_a_visible_selection_or_selects_the_parent() {
                 );
                 publish_with(&host, &world, &registry);
                 frame_at(&host, 40, 9);
-                let index = host.index_of(PLUGIN).unwrap();
+                let index = host.index_of(MOD).unwrap();
                 host.on_click(
                     index,
                     &Click {
@@ -1833,7 +1829,7 @@ fn left_on_a_visible_blocked_descendant_selects_its_nearest_visible_ancestor() {
         act(&host, "sessions.next");
         act(&host, "sessions.parent_host");
         publish_with(&host, &world, &registry);
-        assert!(selection_bar(&paint(&host, PLUGIN, 40, 9))
+        assert!(selection_bar(&paint(&host, MOD, 40, 9))
             .unwrap()
             .contains("lead"));
     }
@@ -1845,7 +1841,7 @@ fn a_focus_request_unfolds_the_parent_of_the_session_it_names() {
     let world = family();
     let mut registry = registry_for(&host);
     registry
-        .set_setting(PLUGIN, "folded_parents", Some(Value::Text("lead".into())))
+        .set_setting(MOD, "folded_parents", Some(Value::Text("lead".into())))
         .unwrap();
     publish_with(&host, &world, &registry);
     host.set_shared_string("focus_session", "worker-a");
@@ -1868,7 +1864,7 @@ fn a_focus_request_reveals_a_descendant_beyond_sixty_four_parents() {
     }
     let mut registry = registry_for(&host);
     registry
-        .set_setting(PLUGIN, "folded_parents", Some(Value::Text("n0".into())))
+        .set_setting(MOD, "folded_parents", Some(Value::Text("n0".into())))
         .unwrap();
     publish_with(&host, &world, &registry);
     frame_at(&host, 40, 12);
@@ -1898,7 +1894,7 @@ fn focus_requests_stop_at_repeated_ancestors() {
         }
         let mut registry = registry_for(&host);
         registry
-            .set_setting(PLUGIN, "folded_parents", Some(Value::Text("a;b".into())))
+            .set_setting(MOD, "folded_parents", Some(Value::Text("a;b".into())))
             .unwrap();
         publish_with(&host, &world, &registry);
         frame_at(&host, 40, 12);
@@ -1915,7 +1911,7 @@ fn a_folded_repo_row_says_how_many_sessions_it_holds() {
     let mut registry = registry_for(&host);
     registry
         .set_setting(
-            PLUGIN,
+            MOD,
             "folded_repos",
             Some(Value::Text(":repo:%00local%01thurbox".into())),
         )
@@ -2152,7 +2148,7 @@ fn assert_readable(
 fn a_waiting_row_has_a_background_in_the_default_terminal_palette() {
     let host = host();
     publish_with(&host, &family(), &registry_for(&host));
-    let buffer = paint(&host, PLUGIN, 40, 9);
+    let buffer = paint(&host, MOD, 40, 9);
     assert_ne!(buffer[(30, 5)].bg, ratatui::style::Color::Reset);
     assert!(buffer[(10, 5)]
         .modifier
@@ -2182,7 +2178,7 @@ fn the_host_band_and_a_waiting_row_are_tinted_readably_in_every_preset() {
         themes.preview(&name).expect("a preset");
         let roles = themes.roles();
         publish_full(&host, &world, &registry, &[], &themes, &Default::default());
-        let buffer = paint(&host, PLUGIN, 40, 9);
+        let buffer = paint(&host, MOD, 40, 9);
         let band = buffer[(20, 1)].bg;
         assert_ne!(band, ratatui::style::Color::Reset, "{name}: no host band");
         let Some(app_bg) = rgb(&roles["app_bg"]) else {
@@ -2218,12 +2214,12 @@ fn answering_a_folded_blocked_child_keeps_it_selected() {
                 ],
             );
             registry
-                .set_setting(PLUGIN, "folded_parents", Some(Value::Text("lead".into())))
+                .set_setting(MOD, "folded_parents", Some(Value::Text("lead".into())))
                 .unwrap();
             publish_with(&host, &world, &registry);
             frame_at(&host, 40, 9);
             host.on_click(
-                host.index_of(PLUGIN).unwrap(),
+                host.index_of(MOD).unwrap(),
                 &Click {
                     id: Some("worker-b".into()),
                     ..Click::default()
@@ -2355,7 +2351,7 @@ fn a_shell_row_keeps_its_glyph_and_only_an_agent_is_unknown() {
             &themes,
             &Default::default(),
         );
-        let buffer = paint(&host, PLUGIN, 90, 8);
+        let buffer = paint(&host, MOD, 90, 8);
         let lines: Vec<String> = (0..buffer.area.height)
             .map(|y| {
                 (0..buffer.area.width)
@@ -2430,7 +2426,7 @@ fn a_fleet_status_draws_its_source_in_every_theme() {
             &themes,
             &Default::default(),
         );
-        let buffer = paint(&host, PLUGIN, 90, 8);
+        let buffer = paint(&host, MOD, 90, 8);
         let row_of = |session: &str| {
             (0..buffer.area.height)
                 .find(|&y| {
@@ -2503,7 +2499,7 @@ fn a_fleet_status_draws_its_source_in_every_theme() {
     // A fresh interface: the selection follows a session, not a row.
     let host = self::host();
     publish_full(&host, &first, &registry, &[], &themes, &Default::default());
-    let buffer = paint(&host, PLUGIN, 90, 8);
+    let buffer = paint(&host, MOD, 90, 8);
     let hollow = (0..buffer.area.height)
         .flat_map(|y| (0..buffer.area.width).map(move |x| (x, y)))
         .map(|(x, y)| &buffer[(x, y)])

@@ -1,8 +1,8 @@
-//! Turning a plugin off without losing it.
+//! Turning a mod off without losing it.
 //!
-//! The state that was missing is the one people want most: a plugin present,
+//! The state that was missing is the one people want most: a mod present,
 //! intact, and not loaded. Without it, the only key that read like "not right
-//! now" deleted the file — and for a plugin the user wrote there is no embedded
+//! now" deleted the file — and for a mod the user wrote there is no embedded
 //! copy to restore, so the work was simply gone.
 //!
 //! What is asserted here is that disabling is *absence*, not a half-loaded
@@ -53,14 +53,14 @@ fn loaded(ui: &std::path::Path, disabled: &[&str]) -> LuaHost {
 }
 
 #[test]
-fn a_disabled_plugin_is_not_loaded_and_its_file_is_untouched() {
+fn a_disabled_mod_is_not_loaded_and_its_file_is_untouched() {
     let (_home, ui) = interface(&[("90_mine.lua", pane("mine"))]);
     let path = ui.join("mods").join("90_mine.lua");
     let before = std::fs::read_to_string(&path).expect("read");
 
     let host = loaded(&ui, &["mods/90_mine.lua"]);
     assert!(
-        !host.plugins.iter().any(|p| p.name == "mine"),
+        !host.mods.iter().any(|p| p.name == "mine"),
         "a disabled plugin must not be loaded"
     );
     assert_eq!(
@@ -74,17 +74,17 @@ fn a_disabled_plugin_is_not_loaded_and_its_file_is_untouched() {
 fn turning_it_back_on_needs_nothing_restored() {
     let (_home, ui) = interface(&[("90_mine.lua", pane("mine"))]);
     assert!(!loaded(&ui, &["mods/90_mine.lua"])
-        .plugins
+        .mods
         .iter()
         .any(|p| p.name == "mine"));
     assert!(
-        loaded(&ui, &[]).plugins.iter().any(|p| p.name == "mine"),
+        loaded(&ui, &[]).mods.iter().any(|p| p.name == "mine"),
         "nothing was lost, so nothing has to be recovered"
     );
 }
 
 #[test]
-fn a_disabled_plugin_declares_nothing() {
+fn a_disabled_mod_declares_nothing() {
     // Its key is free, its setting is not offered, its slot is released. All one
     // consequence of not being read.
     let (_home, ui) = interface(&[("90_mine.lua", pane("mine"))]);
@@ -92,7 +92,7 @@ fn a_disabled_plugin_declares_nothing() {
     let on = loaded(&ui, &[]);
     let (bindings, settings) = on.declarations();
     assert!(bindings.iter().any(|b| b.chord == "ctrl+alt+z"));
-    assert!(settings.iter().any(|s| s.plugin == "mine"));
+    assert!(settings.iter().any(|s| s.r#mod == "mine"));
     assert_eq!(on.in_slot("sessions").len(), 2, "it shares the column");
 
     let off = loaded(&ui, &["mods/90_mine.lua"]);
@@ -102,7 +102,7 @@ fn a_disabled_plugin_declares_nothing() {
         "its key must be free while it is off"
     );
     assert!(
-        !settings.iter().any(|s| s.plugin == "mine"),
+        !settings.iter().any(|s| s.r#mod == "mine"),
         "its setting must not be offered"
     );
     assert_eq!(off.in_slot("sessions").len(), 1, "its slot is released");
@@ -111,7 +111,7 @@ fn a_disabled_plugin_declares_nothing() {
 #[test]
 fn a_freed_key_can_be_claimed_without_a_conflict() {
     // The consequence worth stating: while it is off, the chord is genuinely
-    // unowned rather than reserved for a plugin that is not running.
+    // unowned rather than reserved for a mod that is not running.
     let (_home, ui) = interface(&[
         ("90_mine.lua", pane("mine")),
         ("91_other.lua", pane("other")),
@@ -138,7 +138,7 @@ fn a_freed_key_can_be_claimed_without_a_conflict() {
 }
 
 #[test]
-fn a_plugin_that_would_fail_to_load_does_not_while_it_is_off() {
+fn a_mod_that_would_fail_to_load_does_not_while_it_is_off() {
     // The recovery case: a bad file you can switch off, rather than one you must
     // delete to get the interface back.
     let (_home, ui) = interface(&[("90_broken.lua", "this is not lua".to_string())]);
@@ -162,7 +162,7 @@ fn a_disabled_file_reads_as_disabled_rather_than_failed() {
     let host = loaded(&ui, &["mods/90_mine.lua"]);
 
     let rows = inventory::rows(
-        &host.plugins,
+        &host.mods,
         &bundled::sources(&ui),
         &HashSet::new(),
         &HashSet::new(),

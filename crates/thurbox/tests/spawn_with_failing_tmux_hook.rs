@@ -42,7 +42,7 @@ use tmux_server::TmuxServer;
 const SOCKET: &str = "thurbox-failing-hook-e2e";
 const SESSION_ID: &str = "11111111-1111-4111-8111-111111111111";
 
-/// The hook an uninstalled plugin leaves behind: a script that is no longer on
+/// The hook an uninstalled mod leaves behind: a script that is no longer on
 /// the disk, which the server keeps calling for the rest of its life.
 const DEAD_HOOK: &str = "run-shell 'thurbox-uninstalled-plugin-script'";
 
@@ -116,7 +116,7 @@ fn server_with_a_dead_hook(dir: &std::path::Path) -> TmuxServer {
 }
 
 #[test]
-fn a_dead_plugin_hook_does_not_fail_a_window_that_was_created() {
+fn a_dead_mod_hook_does_not_fail_a_window_that_was_created() {
     if !have_tmux() {
         eprintln!("skipping: tmux is not installed");
         return;

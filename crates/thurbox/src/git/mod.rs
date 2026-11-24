@@ -1,7 +1,7 @@
 //! Every `git` invocation thurbox makes, all of them on this machine.
 //!
 //! Split by concern — `command` builds the process (and scrubs the inherited
-//! `GIT_*` that would silently retarget it), `plugin` clones a plugin's working
+//! `GIT_*` that would silently retarget it), `mod_repo` clones a mod's working
 //! copy, `stderr` keeps what a failure printed readable, `discovery` answers
 //! "what is here", `newrepo` makes a directory for a repository that does not
 //! exist yet, and `diff` produces diffs and a worktree's stats. Fleet creates
@@ -11,8 +11,8 @@
 mod command;
 mod diff;
 mod discovery;
+mod mod_repo;
 mod newrepo;
-mod plugin;
 mod stderr;
 
 #[cfg(test)]
@@ -31,6 +31,6 @@ mod tests;
 pub(crate) use command::*;
 pub use diff::*;
 pub use discovery::*;
+pub use mod_repo::*;
 pub use newrepo::*;
-pub use plugin::*;
 pub(crate) use stderr::*;

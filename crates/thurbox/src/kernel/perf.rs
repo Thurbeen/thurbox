@@ -13,9 +13,9 @@
 //! They are populated only while timing is active (`THURBOX_PERF_LOG` or an
 //! open perf HUD), so a default run pays one cached bool per iteration.
 //!
-//! The **per-plugin** half (ADR-P23) answers which pane spent the time:
-//! [`PluginTable`] is recorded by the Lua host under the same gate, and
-//! [`plugin_report`] turns it into the one ranked, hinted [`PluginReport`] the
+//! The **per-mod** half (ADR-P23) answers which pane spent the time:
+//! [`ModTable`] is recorded by the Lua host under the same gate, and
+//! [`mod_report`] turns it into the one ranked, hinted [`ModReport`] the
 //! HUD, the snapshot and `thurbox-cli perf --mods` all read.
 
 use std::collections::HashMap;
@@ -36,9 +36,9 @@ pub struct Counters {
     pub frames: AtomicU64,
     /// Frames skipped because nothing had changed.
     pub skipped: AtomicU64,
-    /// Plugin render calls.
+    /// Mod render calls.
     pub renders: AtomicU64,
-    /// Plugin failures, of any phase.
+    /// Mod failures, of any phase.
     pub failures: AtomicU64,
     /// Whole-VM reloads.
     pub reloads: AtomicU64,
@@ -134,7 +134,7 @@ pub struct DurationHistogram {
     total: u64,
     max_us: u64,
     /// Exact, unlike the percentiles: what a pane's "share of frame time" and
-    /// the per-plugin ranking are computed from.
+    /// the per-mod ranking are computed from.
     sum_us: u64,
 }
 
@@ -196,10 +196,10 @@ impl DurationHistogram {
 pub struct SlowOp {
     pub name: &'static str,
     pub ms: u64,
-    /// The plugin whose single call was the longest inside the op, when the op
+    /// The mod whose single call was the longest inside the op, when the op
     /// called any. Without it `input_dispatch 120ms` names the symptom and not
     /// the pane.
-    pub plugin: Option<String>,
+    pub r#mod: Option<String>,
 }
 
 /// A sample lands in the ring at this threshold.
@@ -272,11 +272,11 @@ impl Timings {
         &mut self,
         name: &'static str,
         elapsed: Duration,
-        plugin: Option<String>,
+        r#mod: Option<String>,
     ) -> bool {
         let ms = u64::try_from(elapsed.as_millis()).unwrap_or(u64::MAX);
         if ms >= SLOW_OP_RING_MS {
-            self.slow_ops.push(SlowOp { name, ms, plugin });
+            self.slow_ops.push(SlowOp { name, ms, r#mod });
         }
         ms >= SLOW_OP_WARN_MS
     }
@@ -319,7 +319,7 @@ impl Startup {
     }
 }
 
-/// Time spent in one kind of plugin handler.
+/// Time spent in one kind of mod handler.
 #[derive(Default, Clone, Copy, Debug, PartialEq, Eq)]
 pub struct HookStat {
     pub calls: u64,
@@ -402,7 +402,7 @@ impl Hooks {
     }
 }
 
-/// The programs one plugin had `run` start, timed on the worker that ran them.
+/// The programs one mod had `run` start, timed on the worker that ran them.
 ///
 /// Kept apart from UI-thread time: a slow program costs a stale answer, never a
 /// frame, so it is reported beside a pane's cost and not added to it.
@@ -423,9 +423,9 @@ impl RunTiming {
     }
 }
 
-/// What one plugin cost while timing was on.
+/// What one mod cost while timing was on.
 #[derive(Default, Clone, Debug)]
-pub struct PluginStats {
+pub struct ModStats {
     /// Lua render calls, failed ones included.
     pub renders: u64,
     /// Renders served from a pure pane's cached tree, which run no Lua.
@@ -437,7 +437,7 @@ pub struct PluginStats {
     /// `run` asks issued — one per call, whether or not a fresh answer made it
     /// free.
     pub asked: u64,
-    /// `store`/`state` assignments made while this plugin was rendering.
+    /// `store`/`state` assignments made while this mod was rendering.
     pub store_writes: u64,
     /// Of those, the ones assigning a table, which is converted in full on
     /// every write even when it compares equal to what was there.
@@ -449,12 +449,12 @@ pub struct PluginStats {
     pub idle_renders: u64,
     /// Renders of a float that returned no float: nothing drawn, Lua paid.
     pub closed_renders: u64,
-    /// Programs this plugin had `run` start in the window, and those of them
+    /// Programs this mod had `run` start in the window, and those of them
     /// that finished.
     pub runs: RunTiming,
 }
 
-impl PluginStats {
+impl ModStats {
     pub fn note_tree(&mut self, node: &Node) {
         let (nodes, spans) = tree_size(node);
         self.last_nodes = nodes;
@@ -503,25 +503,25 @@ pub fn text_columns(s: &str) -> usize {
     super::host::columns(s)
 }
 
-/// The per-plugin stats of one measuring window, keyed by plugin path.
+/// The per-mod stats of one measuring window, keyed by mod path.
 #[derive(Default, Debug)]
-pub struct PluginTable {
+pub struct ModTable {
     /// Frames painted in the window, and their summed `terminal.draw` time —
     /// the denominator of every "renders every frame" and "share" below.
     pub frames: u64,
     pub frame_total_us: u64,
-    stats: HashMap<String, PluginStats>,
+    stats: HashMap<String, ModStats>,
     /// When the window opened; `None` for one that was never cleared, which
     /// counts everything. What decides which window a run belongs to.
     opened_at: Option<Instant>,
 }
 
-impl PluginTable {
-    pub fn stats_mut(&mut self, path: &str) -> &mut PluginStats {
+impl ModTable {
+    pub fn stats_mut(&mut self, path: &str) -> &mut ModStats {
         self.stats.entry(path.to_string()).or_default()
     }
 
-    pub fn get(&self, path: &str) -> Option<&PluginStats> {
+    pub fn get(&self, path: &str) -> Option<&ModStats> {
         self.stats.get(path)
     }
 
@@ -539,15 +539,15 @@ impl PluginTable {
         let opened = self.opened_at;
         let inside = |at: Instant| opened.is_none_or(|opened| at >= opened);
         match event {
-            RunEvent::Started { plugin, at } if inside(*at) => {
-                self.stats_mut(plugin).runs.started += 1;
+            RunEvent::Started { r#mod, at } if inside(*at) => {
+                self.stats_mut(r#mod).runs.started += 1;
             }
             RunEvent::Finished {
-                plugin,
+                r#mod,
                 started,
                 took,
             } if inside(*started) => {
-                self.stats_mut(plugin).runs.record(*took);
+                self.stats_mut(r#mod).runs.record(*took);
             }
             _ => {}
         }
@@ -603,31 +603,31 @@ impl Hint {
     }
 }
 
-/// What the report needs to know about a loaded plugin besides its stats.
-pub struct PluginMeta<'a> {
+/// What the report needs to know about a loaded mod besides its stats.
+pub struct ModMeta<'a> {
     pub name: &'a str,
     pub path: &'a str,
     pub pure: bool,
     pub floats: bool,
 }
 
-/// One plugin's line in the report.
+/// One mod's line in the report.
 #[derive(Clone, Debug)]
-pub struct PluginRow {
+pub struct ModRow {
     pub name: String,
-    /// Relative to the interface directory, like every other plugin identity.
+    /// Relative to the interface directory, like every other mod identity.
     pub file: String,
     pub pure: bool,
     pub floats: bool,
-    pub stats: PluginStats,
+    pub stats: ModStats,
     pub total_us: u64,
     /// Render time over painted-frame time, clamped to 1.
     pub frame_share: f64,
     pub hints: Vec<Hint>,
 }
 
-impl PluginRow {
-    fn hints(meta: &PluginMeta, stats: &PluginStats, frames: u64) -> Vec<Hint> {
+impl ModRow {
+    fn hints(meta: &ModMeta, stats: &ModStats, frames: u64) -> Vec<Hint> {
         let every_frame = |n: u64| frames >= HINT_MIN_FRAMES && n * 10 >= frames * 9;
         let often = |n: u64| stats.renders >= HINT_MIN_FRAMES && n * 2 >= stats.renders;
         let mut hints = Vec::new();
@@ -692,15 +692,15 @@ impl PluginRow {
     }
 }
 
-/// Every loaded plugin, most expensive first.
+/// Every loaded mod, most expensive first.
 #[derive(Clone, Debug, Default)]
-pub struct PluginReport {
+pub struct ModReport {
     pub frames: u64,
     pub frame_total_us: u64,
-    pub rows: Vec<PluginRow>,
+    pub rows: Vec<ModRow>,
 }
 
-impl PluginReport {
+impl ModReport {
     /// A compact one-line summary of the costliest panes, for the
     /// `perf_window` log line.
     pub fn summary(&self, top: usize) -> String {
@@ -725,16 +725,13 @@ impl PluginReport {
     }
 }
 
-/// Rank the loaded plugins by UI-thread time and attach their hints.
+/// Rank the loaded mods by UI-thread time and attach their hints.
 ///
-/// Every loaded plugin gets a row, measured or not, so a pane that cost nothing
+/// Every loaded mod gets a row, measured or not, so a pane that cost nothing
 /// is visibly cheap rather than absent.
-pub fn plugin_report<'a>(
-    table: &PluginTable,
-    plugins: impl IntoIterator<Item = PluginMeta<'a>>,
-) -> PluginReport {
-    let empty = PluginStats::default();
-    let mut rows: Vec<PluginRow> = plugins
+pub fn mod_report<'a>(table: &ModTable, mods: impl IntoIterator<Item = ModMeta<'a>>) -> ModReport {
+    let empty = ModStats::default();
+    let mut rows: Vec<ModRow> = mods
         .into_iter()
         .map(|meta| {
             let stats = table.get(meta.path).unwrap_or(&empty);
@@ -743,14 +740,14 @@ pub fn plugin_report<'a>(
             } else {
                 (stats.render.sum_us() as f64 / table.frame_total_us as f64).min(1.0)
             };
-            PluginRow {
+            ModRow {
                 name: meta.name.to_string(),
                 file: meta.path.to_string(),
                 pure: meta.pure,
                 floats: meta.floats,
                 total_us: stats.total_us(),
                 frame_share,
-                hints: PluginRow::hints(&meta, stats, table.frames),
+                hints: ModRow::hints(&meta, stats, table.frames),
                 stats: stats.clone(),
             }
         })
@@ -761,7 +758,7 @@ pub fn plugin_report<'a>(
             .then(b.stats.renders.cmp(&a.stats.renders))
             .then_with(|| a.name.cmp(&b.name))
     });
-    PluginReport {
+    ModReport {
         frames: table.frames,
         frame_total_us: table.frame_total_us,
         rows,
@@ -789,7 +786,7 @@ pub fn snapshot_json(
     timings: &Timings,
     startup: &Startup,
     session_count: usize,
-    plugins: &PluginReport,
+    mods: &ModReport,
 ) -> Value {
     let captured_at = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -818,11 +815,11 @@ pub fn snapshot_json(
         "slow_ops": timings
             .slow_ops
             .iter_recent()
-            .map(|op| json!({ "op": op.name, "ms": op.ms, "plugin": op.plugin }))
+            .map(|op| json!({ "op": op.name, "ms": op.ms, "plugin": op.r#mod }))
             .collect::<Vec<_>>(),
         "startup": startup.to_json(),
-        "plugin_window": { "frames": plugins.frames, "frame_total_us": plugins.frame_total_us },
-        "plugins": plugins.rows.iter().map(PluginRow::to_json).collect::<Vec<_>>(),
+        "plugin_window": { "frames": mods.frames, "frame_total_us": mods.frame_total_us },
+        "plugins": mods.rows.iter().map(ModRow::to_json).collect::<Vec<_>>(),
     })
 }
 
@@ -880,7 +877,7 @@ mod tests {
             ops.push(SlowOp {
                 name: "op",
                 ms: i,
-                plugin: None,
+                r#mod: None,
             });
         }
         let seen: Vec<u64> = ops.iter_recent().map(|op| op.ms).collect();
@@ -941,7 +938,7 @@ mod tests {
             &timings,
             &startup,
             4,
-            &PluginReport::default(),
+            &ModReport::default(),
         );
 
         assert_eq!(json["session_count"], 4);
@@ -976,8 +973,8 @@ mod tests {
         assert_eq!(window.iterations, 0);
     }
 
-    fn meta<'a>(name: &'a str, pure: bool, floats: bool) -> PluginMeta<'a> {
-        PluginMeta {
+    fn meta<'a>(name: &'a str, pure: bool, floats: bool) -> ModMeta<'a> {
+        ModMeta {
             name,
             path: name,
             pure,
@@ -988,23 +985,23 @@ mod tests {
     #[test]
     fn a_hint_needs_enough_frames_to_mean_anything() {
         // Three impure renders in three frames is every frame, and says nothing.
-        let mut table = PluginTable::default();
+        let mut table = ModTable::default();
         for _ in 0..3 {
             table.note_frame(Duration::from_millis(1));
             table.stats_mut("a").renders += 1;
         }
-        let report = plugin_report(&table, [meta("a", false, false)]);
+        let report = mod_report(&table, [meta("a", false, false)]);
         assert!(report.rows[0].hints.is_empty(), "{:?}", report.rows[0]);
     }
 
     #[test]
-    fn an_unmeasured_plugin_still_gets_a_row_and_ranks_last() {
-        let mut table = PluginTable::default();
+    fn an_unmeasured_mod_still_gets_a_row_and_ranks_last() {
+        let mut table = ModTable::default();
         table
             .stats_mut("busy")
             .render
             .record(Duration::from_millis(4));
-        let report = plugin_report(
+        let report = mod_report(
             &table,
             [meta("idle", true, false), meta("busy", true, false)],
         );

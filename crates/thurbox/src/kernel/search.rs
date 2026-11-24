@@ -26,7 +26,7 @@ use std::sync::mpsc::{channel, Receiver, Sender};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-/// The key a plugin leaves in `store` to ask for a content search.
+/// The key a mod leaves in `store` to ask for a content search.
 ///
 /// A parameterised read, like the creation flow's repository questions: nobody
 /// wants every agent's history read on every frame, so it is served only while
@@ -925,7 +925,7 @@ pub struct Source {
 /// not be read.
 pub type Restore = Arc<dyn Fn() -> Option<crate::backend::SessionParser> + Send + Sync>;
 
-/// What a plugin asked for: the query text and, optionally, which sessions.
+/// What a mod asked for: the query text and, optionally, which sessions.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct Request {
     pub query: String,

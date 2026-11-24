@@ -1,6 +1,6 @@
 //! Live agent terminals behind session-backed surfaces.
 //!
-//! A plugin places a `surface` naming a session; this attaches to that
+//! A mod places a `surface` naming a session; this attaches to that
 //! session's pane — the terminal stream `fleet attach` names for a Fleet Task
 //! — keeps a vt100 parser fed from it, and paints the result with `tui_term`.
 //!
@@ -11,7 +11,7 @@
 //! The shared [`Terminals`] state and its per-frame [`Terminals::sync`] live
 //! here. Each job it runs has a file of its own: attaching a pane on a worker
 //! in `attach`, a Fleet session's stream in `fleet`, drawing a surface in `paint`, companion shells in `shells`,
-//! plugin programs in `programs`, and link detection / selection reads / OSC 8
+//! mod programs in `programs`, and link detection / selection reads / OSC 8
 //! re-printing in [`links`].
 //!
 //! Spawning sessions and sending them anything beyond keystrokes are not
@@ -328,7 +328,7 @@ pub struct Terminals {
     /// Captured once rather than looked up per attach so the failure mode is
     /// "no runtime at construction", not a surprise mid-session.
     runtime: Option<tokio::runtime::Handle>,
-    /// Programs plugins asked for, keyed by [`ProgramKey`].
+    /// Programs mods asked for, keyed by [`ProgramKey`].
     ///
     /// Here beside `live` rather than in a struct of their own, because a pane
     /// needs everything this struct already holds — the backend registry, the
@@ -348,7 +348,7 @@ pub struct Terminals {
     /// a death is news only if the occupant that died had been *started* after
     /// the last drain or was known running before it. Read as two sets, a
     /// restart on a later frame re-vouches for a death that was already
-    /// announced, and the plugin restarts twice for one process
+    /// announced, and the mod restarts twice for one process
     /// ([`Self::take_program_transitions`]).
     program_transitions: Vec<ProgramTransition>,
     /// How long a session's pane may be off screen before its grid is dropped
@@ -791,7 +791,7 @@ impl Terminals {
     ///
     /// A rect is recorded while painting and was never taken back, so a session
     /// whose surface stopped being drawn — a pane removed, an alternate no longer
-    /// selected, a plugin that changed its mind — kept the rect it last held, and a
+    /// selected, a mod that changed its mind — kept the rect it last held, and a
     /// click or wheel tick landing there was routed to a session that is not on
     /// screen. Cleared each frame, only what actually painted can be hit.
     pub fn forget_rects(&self) {
@@ -887,7 +887,7 @@ impl Terminals {
             return false;
         };
 
-        // The rect is the surface's own content area — the plugin's frame is
+        // The rect is the surface's own content area — the mod's frame is
         // outside it — so the offset needs no border adjustment. PTY cells are
         // 1-based.
         let rect = pane.painted().rect.get();

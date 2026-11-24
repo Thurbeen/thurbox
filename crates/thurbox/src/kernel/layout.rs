@@ -1,17 +1,17 @@
-//! The constraint pass: resolve every rect **before** any plugin renders.
+//! The constraint pass: resolve every rect **before** any mod renders.
 //!
 //! This is the one place the POC had to be inverted.
-//! The POC rendered every plugin first and arranged the returned trees
-//! afterwards, which makes a plugin's own rect unknowable while it is
+//! The POC rendered every mod first and arranged the returned trees
+//! afterwards, which makes a mod's own rect unknowable while it is
 //! rendering — so percentage widths, wrapping, truncation and scroll-window
 //! derivation are all impossible. The prior v2 attempt named this its single
 //! biggest gap.
 //!
 //! Here the order is: arrangement (a Lua function of the available size) →
-//! slot rects → per-plugin rects → *then* each plugin is called and told the
+//! slot rects → per-mod rects → *then* each mod is called and told the
 //! rect it is drawing into.
 //!
-//! The arrangement can do this without calling plugins because a plugin
+//! The arrangement can do this without calling mods because a mod
 //! declares the space it wants **statically**, in its declaration table, not
 //! in its render output. That is what breaks the circularity.
 
@@ -86,7 +86,7 @@ pub struct SlotRect {
 /// Walk the arrangement, assigning a rect to every named slot.
 ///
 /// A slot named more than once keeps its first placement; a slot named nowhere
-/// simply gets no rect, and its plugins are not rendered (which is how a
+/// simply gets no rect, and its mods are not rendered (which is how a
 /// responsive arrangement hides a column at a narrow width).
 pub fn resolve(region: &Region, area: Rect) -> Vec<SlotRect> {
     let mut out = Vec::new();
@@ -96,8 +96,8 @@ pub fn resolve(region: &Region, area: Rect) -> Vec<SlotRect> {
 
 /// Which slots an arrangement places, without their rects.
 ///
-/// The set a loaded plugin's slot is compared against to answer the one failure
-/// no other signal reports: a plugin whose slot the arrangement names nowhere
+/// The set a loaded mod's slot is compared against to answer the one failure
+/// no other signal reports: a mod whose slot the arrangement names nowhere
 /// loads without error, declares its keys, is granted its capabilities — and
 /// draws nothing. Every other check passes it.
 pub fn placed_slots(region: &Region, area: Rect) -> BTreeSet<String> {
@@ -155,9 +155,9 @@ fn walk(region: &Region, area: Rect, out: &mut Vec<SlotRect>) {
     }
 }
 
-/// Divide one slot's rect among the plugins occupying it.
+/// Divide one slot's rect among the mods occupying it.
 ///
-/// `sizes` are the plugins' **declared** sizes, read from their declaration
+/// `sizes` are the mods' **declared** sizes, read from their declaration
 /// tables — never from their render output, which does not exist yet.
 pub fn divide_slot(area: Rect, axis: Axis, sizes: &[Size], gap: u16) -> Vec<Rect> {
     let total = match axis {
@@ -192,7 +192,7 @@ pub fn divide_slot(area: Rect, axis: Axis, sizes: &[Size], gap: u16) -> Vec<Rect
 
 /// Read an arrangement returned by `ui/layout.lua`.
 ///
-/// Shape mirrors the view tree deliberately, so a plugin author learns one set
+/// Shape mirrors the view tree deliberately, so a mod author learns one set
 /// of sizing rules rather than two:
 ///
 /// ```lua

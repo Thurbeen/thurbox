@@ -42,12 +42,12 @@ pub(crate) fn scrub_git_location_env(cmd: &mut Command) {
     }
 }
 
-// ── working copies for installed interface plugins ─────────────────────────
+// ── working copies for installed interface mods ─────────────────────────
 //
-// A plugin that carries more than Lua is a repository: `git clone` delivers
+// A mod that carries more than Lua is a repository: `git clone` delivers
 // arbitrary bytes, preserves whatever layout the author chose, identifies exactly
 // what it delivered, and refuses to clobber a dirty working tree. These are the
-// operations `kernel::packages` needs for that, local only — a plugin's pane has no
+// operations `kernel::packages` needs for that, local only — a mod's pane has no
 // session and therefore no host to run on.
 
 /// A `git` [`Command`] with the ambient repo-location environment scrubbed (see

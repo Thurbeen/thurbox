@@ -1,11 +1,11 @@
-//! The centre pane, after agent and shell became two tabs of ONE plugin.
+//! The centre pane, after agent and shell became two tabs of ONE mod.
 //!
 //! v1's centre is a single pane with a tab strip on its border (`CentralTab`).
-//! v2 first modelled the two views as two plugins taking turns in the `switch`
+//! v2 first modelled the two views as two mods taking turns in the `switch`
 //! slot, which cost the strip on every tab but the agent's, a second stop in
 //! the focus ring, and a slot arbitration that refereed nothing else
 //! (v2-system-modals D4). These assert the shape that replaced it, against the
-//! *real* bundled plugins — so a plugin edit that loses a tab fails here.
+//! *real* bundled mods — so a mod edit that loses a tab fails here.
 
 use ratatui::backend::TestBackend;
 use ratatui::buffer::Buffer;
@@ -19,7 +19,7 @@ use thurbox::kernel::snapshot::{SessionRow, Snapshot};
 use thurbox::kernel::theme::Themes;
 use thurbox::session::SessionState;
 
-/// The plugin under test. It keeps its `agent` name: the name is what
+/// The mod under test. It keeps its `agent` name: the name is what
 /// `command("focus", …)`, the footer's focus label and the tests below spell,
 /// and renaming it is a separate edit from merging the views.
 const TERMINAL: &str = "agent";
@@ -122,9 +122,9 @@ fn ctx(width: u16, height: u16) -> RenderContext {
 }
 
 fn index_of(host: &LuaHost, name: &str) -> usize {
-    host.plugins
+    host.mods
         .iter()
-        .position(|plugin| plugin.name == name)
+        .position(|r#mod| r#mod.name == name)
         .unwrap_or_else(|| panic!("no plugin named {name}"))
 }
 
@@ -210,32 +210,32 @@ fn session_surface(node: &Node) -> String {
         .to_string()
 }
 
-// ── one plugin, one focus stop ────────────────────────────────────────────
+// ── one mod, one focus stop ────────────────────────────────────────────
 
 #[test]
-fn the_centre_holds_one_terminal_plugin_rather_than_two() {
+fn the_centre_holds_one_terminal_mod_rather_than_two() {
     let host = host();
-    let names: Vec<&str> = host.plugins.iter().map(|p| p.name.as_str()).collect();
+    let names: Vec<&str> = host.mods.iter().map(|p| p.name.as_str()).collect();
     assert!(
         !names.contains(&"shell"),
         "the shell is a tab of the terminal now, not a plugin: {names:?}"
     );
 
-    // The kernel does not know which plugin "is" the terminal — it knows which
+    // The kernel does not know which mod "is" the terminal — it knows which
     // asked for raw session input. Exactly one may, or a keystroke has two
     // homes.
     let raw: Vec<&str> = host
-        .plugins
+        .mods
         .iter()
-        .filter(|plugin| plugin.session_input)
-        .map(|plugin| plugin.name.as_str())
+        .filter(|r#mod| r#mod.session_input)
+        .map(|r#mod| r#mod.name.as_str())
         .collect();
     assert_eq!(raw, vec![TERMINAL], "one pane owns the pty");
 
     let focusable: Vec<&str> = host
         .focusable()
         .iter()
-        .map(|index| host.plugins[*index].name.as_str())
+        .map(|index| host.mods[*index].name.as_str())
         .collect();
     assert_eq!(
         focusable.iter().filter(|name| **name == TERMINAL).count(),
@@ -284,7 +284,7 @@ fn the_shell_view_names_itself_to_the_focus_badge() {
 
 #[test]
 fn the_shell_chord_survived_the_merge() {
-    // The opener moved plugins; the chords it is reachable by must not have.
+    // The opener moved mods; the chords it is reachable by must not have.
     let host = host();
     let registry = registry(&host);
     for press in [
@@ -305,7 +305,7 @@ fn the_shell_chord_survived_the_merge() {
             .resolve(&press, Some(TERMINAL))
             .unwrap_or_else(|| panic!("{} is not bound", press.name));
         assert_eq!(binding.action, "shell.open");
-        assert_eq!(binding.plugin, TERMINAL, "declared by the pane that acts");
+        assert_eq!(binding.r#mod, TERMINAL, "declared by the pane that acts");
     }
 }
 
@@ -314,7 +314,7 @@ fn the_shell_chord_survived_the_merge() {
 #[test]
 fn the_tab_strip_renders_on_the_shell_tab_too() {
     // The bug the merge exists to fix: the strip used to live in the agent
-    // plugin, so switching view took it off the screen with it.
+    // mod, so switching view took it off the screen with it.
     let host = with_a_selection();
     let index = index_of(&host, TERMINAL);
 
@@ -466,7 +466,7 @@ fn paging_is_the_agent_views_and_the_ptys_everywhere_else() {
 // ── the chips are click targets ───────────────────────────────────────────
 
 #[test]
-fn a_chip_selects_a_tab_rather_than_focusing_another_plugin() {
+fn a_chip_selects_a_tab_rather_than_focusing_another_mod() {
     let host = with_a_selection();
     let verbs: Vec<ClickVerb> = hits(&tree(&host, 100, 10), 100, 10)
         .iter()
@@ -485,7 +485,7 @@ fn a_chip_selects_a_tab_rather_than_focusing_another_plugin() {
         !verbs.contains(&ClickVerb::Focus("shell".into())),
         "there is no shell plugin to focus: {verbs:?}"
     );
-    // No chip may name a plugin that is not loaded: a `focus:` verb pointing at
+    // No chip may name a mod that is not loaded: a `focus:` verb pointing at
     // a removed pane would light up and then do nothing.
     assert!(
         !verbs

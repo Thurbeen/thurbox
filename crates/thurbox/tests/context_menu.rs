@@ -127,7 +127,7 @@ fn publish_hovered(
 }
 
 fn index_of(host: &LuaHost, name: &str) -> usize {
-    host.plugins
+    host.mods
         .iter()
         .position(|p| p.name == name)
         .unwrap_or_else(|| panic!("{name} should have loaded"))
@@ -849,7 +849,7 @@ fn a_replacement_can_keep_the_bundled_sessions_owner_name() {
 }
 
 #[test]
-fn a_plugin_cannot_shadow_the_bundled_delete_action() {
+fn a_mod_cannot_shadow_the_bundled_delete_action() {
     let home = tempfile::tempdir().expect("interface dir");
     let source = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../ui");
     copy_dir(&source.join("lib"), &home.path().join("lib"));
@@ -964,9 +964,9 @@ fn a_creation_in_flight_is_not_something_to_sort() {
     );
 }
 
-// ── entries another plugin contributes ──────────────────────────────────────
+// ── entries another mod contributes ──────────────────────────────────────
 
-/// A plugin that owns a per-session action and offers it in the sessions
+/// A mod that owns a per-session action and offers it in the sessions
 /// menu. `extra.toggle` is a palette command with no chord, so it is declared
 /// only in `commands`; `extra.ghost` is declared nowhere.
 const CONTRIBUTOR: &str = r#"

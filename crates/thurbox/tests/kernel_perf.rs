@@ -9,7 +9,7 @@ use thurbox::kernel::command::{Args, Command, CommandBus};
 use thurbox::kernel::events::Event;
 use thurbox::kernel::host::{Epoch, LuaHost, Published, RenderContext};
 use thurbox::kernel::perf::{
-    snapshot_json, Counters, Hint, PluginReport, PluginRow, Snapshot as Perf, Startup, Timings,
+    snapshot_json, Counters, Hint, ModReport, ModRow, Snapshot as Perf, Startup, Timings,
 };
 use thurbox::kernel::registry::Registry;
 use thurbox::kernel::runs::RunEvent;
@@ -26,20 +26,20 @@ fn ctx(width: u16, height: u16) -> RenderContext {
     }
 }
 
-fn plugin_dir(source: &str) -> tempfile::TempDir {
+fn mod_dir(source: &str) -> tempfile::TempDir {
     let dir = tempfile::tempdir().expect("tempdir");
-    let plugins = dir.path().join("mods");
-    std::fs::create_dir_all(&plugins).expect("mkdir");
-    std::fs::write(plugins.join("10_pane.lua"), source).expect("write");
+    let mods = dir.path().join("mods");
+    std::fs::create_dir_all(&mods).expect("mkdir");
+    std::fs::write(mods.join("10_pane.lua"), source).expect("write");
     dir
 }
 
 #[test]
 fn an_unchanged_tree_is_the_signal_to_skip_a_frame() {
-    // The heart of demand-driven repaint: a plugin returning the same tree
+    // The heart of demand-driven repaint: a mod returning the same tree
     // gives the loop nothing to paint. Asserted on the trees themselves rather
     // than by driving a terminal, so it is exact.
-    let dir = plugin_dir(
+    let dir = mod_dir(
         r#"return { name = "static", slot = "a",
                     render = function() return { text = "unchanging" } end }"#,
     );
@@ -56,7 +56,7 @@ fn an_unchanged_tree_is_the_signal_to_skip_a_frame() {
 fn a_changing_tree_is_never_equal() {
     // The other half: if this ever compared equal, the loop would stop
     // painting a pane that is actually moving.
-    let dir = plugin_dir(
+    let dir = mod_dir(
         r#"return { name = "clock", slot = "a",
                     render = function(ctx) return { text = "frame " .. ctx.frame } end }"#,
     );
@@ -157,7 +157,7 @@ fn dispatching_a_command_never_blocks_the_caller() {
 fn rendering_many_panes_stays_within_a_frame_budget() {
     // A regression guard, not a benchmark: generous enough for shared CI, tight
     // enough to catch an accidental O(n²) in the render path.
-    let dir = plugin_dir(
+    let dir = mod_dir(
         r#"return { name = "rows", slot = "a", render = function(ctx)
              local out = {}
              for i = 1, 200 do out[i] = { type = "text", len = 1, text = "row " .. i } end
@@ -268,7 +268,7 @@ fn timing_costs_nothing_until_something_asks_for_it() {
     assert!(json["slow_ops"].as_array().expect("array").is_empty());
 }
 
-// --- per plugin: which pane spent the time (ADR-P23) ------------------------
+// --- per mod: which pane spent the time (ADR-P23) ------------------------
 //
 // The counters above say a frame is expensive; these pin the half that says
 // *whose* it is. Nothing asserts a duration — only the ordering between a pane
@@ -284,10 +284,10 @@ fn interface() -> (tempfile::TempDir, LuaHost) {
 
 fn interface_with(extra: &[(&str, &str)]) -> (tempfile::TempDir, LuaHost) {
     let dir = tempfile::tempdir().expect("tempdir");
-    let plugins = dir.path().join("mods");
-    std::fs::create_dir_all(&plugins).expect("mkdir");
+    let mods = dir.path().join("mods");
+    std::fs::create_dir_all(&mods).expect("mkdir");
     let write = |file: &str, body: String| {
-        std::fs::write(plugins.join(file), body).expect("write");
+        std::fs::write(mods.join(file), body).expect("write");
     };
     // Every mistake the interface guide warns about, in one pane: not pure,
     // real work per render, and a fresh table written to `store` every frame.
@@ -372,14 +372,14 @@ fn publish(host: &LuaHost) {
 /// Paint `frames` frames the way the loop does: every pane, then the frame.
 fn paint(host: &LuaHost, frames: usize) {
     for _ in 0..frames {
-        for index in 0..host.plugins.len() {
+        for index in 0..host.mods.len() {
             host.render(index, ctx(40, 4)).expect("render");
         }
         host.note_frame(Duration::from_millis(1));
     }
 }
 
-fn row<'a>(report: &'a PluginReport, name: &str) -> &'a PluginRow {
+fn row<'a>(report: &'a ModReport, name: &str) -> &'a ModRow {
     report
         .rows
         .iter()
@@ -403,7 +403,7 @@ fn the_expensive_pane_ranks_first_and_the_pure_one_shows_its_reuse() {
     publish(&host);
     paint(&host, 20);
 
-    let report = host.plugin_report();
+    let report = host.mod_report();
     assert_eq!(report.frames, 20);
     assert_eq!(
         report.rows[0].name, "heavy",
@@ -431,7 +431,7 @@ fn the_expensive_pane_ranks_first_and_the_pure_one_shows_its_reuse() {
 }
 
 #[test]
-fn a_slow_on_event_is_attributed_to_its_plugin() {
+fn a_slow_on_event_is_attributed_to_its_mod() {
     let (_dir, host) = interface();
     host.set_perf_timing(true);
     publish(&host);
@@ -445,7 +445,7 @@ fn a_slow_on_event_is_attributed_to_its_plugin() {
         "a slow op names the plugin that spent it, not merely the last one called"
     );
 
-    let report = host.plugin_report();
+    let report = host.mod_report();
     let listener = row(&report, "listener");
     let cheap = row(&report, "cheap");
     assert_eq!(listener.stats.hooks.event.calls, 1);
@@ -472,7 +472,7 @@ fn a_pure_pane_that_keeps_re_rendering_while_idle_is_flagged() {
     host.set_idle(true);
     paint(&host, 12);
 
-    let report = host.plugin_report();
+    let report = host.mod_report();
     let restless = row(&report, "restless");
     assert_eq!(restless.stats.idle_renders, 12, "{restless:?}");
     assert!(restless.hints.contains(&Hint::IdleRenders), "{restless:?}");
@@ -485,14 +485,14 @@ fn a_pure_pane_that_keeps_re_rendering_while_idle_is_flagged() {
 }
 
 #[test]
-fn nothing_is_recorded_per_plugin_while_timing_is_off() {
+fn nothing_is_recorded_per_mod_while_timing_is_off() {
     let (_dir, host) = interface();
     publish(&host);
     paint(&host, 5);
     host.begin_op();
     let _ = host.dispatch_event(&ping());
 
-    let report = host.plugin_report();
+    let report = host.mod_report();
     assert_eq!(report.frames, 0);
     assert!(
         report.rows.iter().all(|row| row.stats.renders == 0
@@ -506,28 +506,28 @@ fn nothing_is_recorded_per_plugin_while_timing_is_off() {
 }
 
 #[test]
-fn turning_timing_on_starts_a_fresh_plugin_window() {
+fn turning_timing_on_starts_a_fresh_mod_window() {
     let (_dir, host) = interface();
     host.set_perf_timing(true);
     publish(&host);
     paint(&host, 3);
     host.set_perf_timing(false);
     host.set_perf_timing(true);
-    assert_eq!(host.plugin_report().frames, 0);
+    assert_eq!(host.mod_report().frames, 0);
 }
 
 #[test]
 fn a_run_is_counted_only_in_the_window_it_started_in() {
     let (_dir, host) = interface();
-    let path = host.plugins[host.index_of("heavy").expect("heavy")]
+    let path = host.mods[host.index_of("heavy").expect("heavy")]
         .path
         .clone();
     let started = |at| RunEvent::Started {
-        plugin: path.clone(),
+        r#mod: path.clone(),
         at,
     };
     let finished = |started, ms| RunEvent::Finished {
-        plugin: path.clone(),
+        r#mod: path.clone(),
         started,
         took: Duration::from_millis(ms),
     };
@@ -540,15 +540,15 @@ fn a_run_is_counted_only_in_the_window_it_started_in() {
     host.note_run(&finished(before, 30));
     let inside = Instant::now();
     host.note_run(&started(inside));
-    let runs = row(&host.plugin_report(), "heavy").stats.runs;
+    let runs = row(&host.mod_report(), "heavy").stats.runs;
     assert_eq!((runs.started, runs.finished), (1, 0), "{runs:?}");
 
     // A window roll splits the run in flight: the new window must not report
     // a finish whose start it never saw.
     std::thread::sleep(Duration::from_millis(2));
-    host.reset_plugin_perf();
+    host.reset_mod_perf();
     host.note_run(&finished(inside, 5));
-    let runs = row(&host.plugin_report(), "heavy").stats.runs;
+    let runs = row(&host.mod_report(), "heavy").stats.runs;
     assert_eq!((runs.started, runs.finished), (0, 0), "{runs:?}");
 }
 
@@ -576,27 +576,27 @@ const ROW_KEYS: [&str; 19] = [
 ];
 
 #[test]
-fn the_cli_prints_the_plugin_table_sorted_with_a_stable_json_shape() {
+fn the_cli_prints_the_mod_table_sorted_with_a_stable_json_shape() {
     let (_dir, host) = interface();
     host.set_perf_timing(true);
     publish(&host);
     paint(&host, 20);
-    let heavy = host.plugins[host.index_of("heavy").expect("heavy")]
+    let heavy = host.mods[host.index_of("heavy").expect("heavy")]
         .path
         .clone();
     for ms in [10, 20] {
         let at = Instant::now();
         host.note_run(&RunEvent::Started {
-            plugin: heavy.clone(),
+            r#mod: heavy.clone(),
             at,
         });
         host.note_run(&RunEvent::Finished {
-            plugin: heavy.clone(),
+            r#mod: heavy.clone(),
             started: at,
             took: Duration::from_millis(ms),
         });
     }
-    let report = host.plugin_report();
+    let report = host.mod_report();
 
     let json = snapshot_json(
         &Counters::default().read(),

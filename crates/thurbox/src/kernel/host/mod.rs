@@ -1,4 +1,4 @@
-//! Owns the Lua VM, the plugins loaded into it, and the slots they compose into.
+//! Owns the Lua VM, the mods loaded into it, and the slots they compose into.
 //!
 //! A reload throws the whole VM away and builds a fresh one. If the new VM
 //! fails to build, the previous one keeps running and the error is surfaced —
@@ -7,14 +7,14 @@
 //! Two isolation rules make this safe to work in, and both are spec
 //! requirements rather than niceties:
 //!
-//! - A plugin whose `render` throws is replaced by an error panel **in its own
+//! - A mod whose `render` throws is replaced by an error panel **in its own
 //!   rect**. Its neighbours keep drawing and keep their state.
-//! - A plugin that never returns is *interrupted*. Luau would have donated
+//! - A mod that never returns is *interrupted*. Luau would have donated
 //!   this; on Lua 5.4 it is ours to build, so every call runs
 //!   under an instruction-count hook and a memory ceiling.
 //!
 //! The VM is deliberately not `Send` — mlua's `send` feature stays off, which
-//! makes "plugins never touch the render thread" a compile error.
+//! makes "mods never touch the render thread" a compile error.
 
 use std::cell::RefCell;
 use std::collections::{BTreeMap, BTreeSet, HashMap};
@@ -40,11 +40,11 @@ mod publish;
 
 use self::api::{clean_error, install_api, Env, EnvParts};
 pub(crate) use self::api::{columns, take_left};
-use self::load::{load_arrangement, load_plugin, new_vm, read_float, Budget};
+use self::load::{load_arrangement, load_mod, new_vm, read_float, Budget};
 use self::publish::run_to_lua;
 use super::perf::Hook;
 
-/// Instructions a single plugin call may execute before it is interrupted.
+/// Instructions a single mod call may execute before it is interrupted.
 ///
 /// Generous — a session list formatting a few hundred rows uses a tiny
 /// fraction — but finite, so `while true do end` costs one red pane instead of
@@ -55,7 +55,7 @@ pub const INSTRUCTION_BUDGET: u32 = 20_000_000;
 /// pane or lowered to prove the guard fires without waiting 20M instructions.
 ///
 /// A setting rather than a constant because the right number depends on what
-/// plugins you run, and discovering it means measuring — see task 2.12.
+/// mods you run, and discovering it means measuring — see task 2.12.
 static BUDGET_OVERRIDE: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
 
 /// Set the per-call instruction budget. Zero restores the default.
@@ -74,7 +74,7 @@ pub fn instruction_budget() -> u32 {
 /// Override for [`MEMORY_LIMIT`], for the same reasons.
 static MEMORY_OVERRIDE: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
 
-/// Set the plugin VM's memory ceiling. Zero restores the default.
+/// Set the mod VM's memory ceiling. Zero restores the default.
 pub fn set_memory_limit(bytes: usize) {
     MEMORY_OVERRIDE.store(bytes, std::sync::atomic::Ordering::Relaxed);
 }
@@ -87,11 +87,11 @@ pub fn memory_limit() -> usize {
     }
 }
 
-/// Ceiling on the plugin VM's heap. Exceeding it fails the allocation as a
-/// plugin error rather than aborting the process.
+/// Ceiling on the mod VM's heap. Exceeding it fails the allocation as a
+/// mod error rather than aborting the process.
 pub const MEMORY_LIMIT: usize = 256 * 1024 * 1024;
 
-/// Why a plugin VM should be rebuilt — [`LuaHost::memory_pressure`].
+/// Why a mod VM should be rebuilt — [`LuaHost::memory_pressure`].
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum MemoryPressure {
     /// The live heap is within a thirty-second of the ceiling: allocations are
@@ -102,16 +102,16 @@ pub enum MemoryPressure {
     Grown,
 }
 
-/// Which standard libraries plugins get.
+/// Which standard libraries mods get.
 ///
 /// Chosen deliberately, not inherited: `io`, `os` and `debug` are **absent**,
-/// so a plugin has no filesystem, process or clock-tampering access — the
+/// so a mod has no filesystem, process or clock-tampering access — the
 /// capability model is enforced by absence, not by a binding
 /// that refuses. `package` is withheld too; `require` is ours (see
-/// [`install_require`]), scoped to the plugin directory.
-fn plugin_stdlib() -> StdLib {
+/// [`install_require`]), scoped to the mod directory.
+fn mod_stdlib() -> StdLib {
     // UTF8 is pure computation with no capability risk, and text handling
-    // needs it: Lua's `#` counts bytes, so without it a plugin measuring a name
+    // needs it: Lua's `#` counts bytes, so without it a mod measuring a name
     // like "Rosé Pine" pads it one column short.
     StdLib::STRING | StdLib::TABLE | StdLib::MATH | StdLib::COROUTINE | StdLib::UTF8
 }
@@ -127,12 +127,12 @@ enum Persisted {
     Table(Vec<(Persisted, Persisted)>),
 }
 
-/// `store` is shared by every plugin; `state` is keyed by plugin file too, so
-/// two plugins can both use `state.index` without colliding.
+/// `store` is shared by every mod; `state` is keyed by mod file too, so
+/// two mods can both use `state.index` without colliding.
 type Shared = Rc<RefCell<BTreeMap<String, Persisted>>>;
 /// `store`/`state` assignments so far, and how many of them assigned a table.
 type WriteCount = Rc<std::cell::Cell<(u64, u64)>>;
-/// How many times plugin state — shared or private — has been written.
+/// How many times mod state — shared or private — has been written.
 ///
 /// A pure pane's tree may legitimately depend on `store` or `state`: the agent
 /// pane remembers which tab each session is on, and one pane can read a value
@@ -142,19 +142,19 @@ type WriteCount = Rc<std::cell::Cell<(u64, u64)>>;
 /// happens on input rather than per frame.
 type StateVersion = Rc<std::cell::Cell<u64>>;
 type Private = Rc<RefCell<BTreeMap<(String, String), Persisted>>>;
-/// Commands a plugin issued this frame, drained by the loop.
-/// Each command with the path of the plugin that issued it, stamped by the
-/// kernel — empty for Lua that belongs to no plugin.
+/// Commands a mod issued this frame, drained by the loop.
+/// Each command with the path of the mod that issued it, stamped by the
+/// kernel — empty for Lua that belongs to no mod.
 type Queue = Rc<RefCell<Vec<(Vec<String>, Command)>>>;
 
-/// Run answers, keyed by the plugin that asked and then by its own key.
+/// Run answers, keyed by the mod that asked and then by its own key.
 pub type RunAnswers = std::collections::HashMap<String, Vec<(String, super::runs::Run)>>;
 /// Each session's working directory, so a file read can be rooted at one.
 /// Refreshed with the snapshot; a session not in here cannot be browsed.
 type Roots = Rc<RefCell<BTreeMap<String, PathBuf>>>;
 type FileWants = Rc<RefCell<BTreeMap<String, std::collections::HashSet<super::files::ReadKey>>>>;
 
-/// Which phase a plugin failed in — required so every failure is attributable.
+/// Which phase a mod failed in — required so every failure is attributable.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Phase {
     Load,
@@ -176,20 +176,20 @@ impl Phase {
     }
 }
 
-/// A failure attributed to a plugin and a phase.
+/// A failure attributed to a mod and a phase.
 #[derive(Debug, Clone, PartialEq)]
-pub struct PluginError {
-    pub plugin: String,
+pub struct ModError {
+    pub r#mod: String,
     pub phase: Phase,
     pub message: String,
 }
 
-impl std::fmt::Display for PluginError {
+impl std::fmt::Display for ModError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(
             f,
             "{} ({}): {}",
-            self.plugin,
+            self.r#mod,
             self.phase.as_str(),
             self.message
         )
@@ -208,12 +208,12 @@ enum Arrangement {
     Dynamic(Function),
 }
 
-/// A loaded plugin.
-pub struct Plugin {
+/// A loaded mod.
+pub struct Mod {
     pub name: String,
     pub file: String,
     /// Path relative to the interface directory — the identity every command
-    /// about this file uses, since the file name is the only name a plugin
+    /// about this file uses, since the file name is the only name a mod
     /// always has (it may declare no `name`, and two may declare the same one).
     pub path: String,
     pub slot: String,
@@ -228,25 +228,25 @@ pub struct Plugin {
     /// pane painted from a stale tree. Opt-in for exactly that reason: a pane
     /// that says nothing behaves as it always has (`frame-cost`).
     pub pure: bool,
-    /// Declared `input = "session"`: while this plugin holds focus, keys it
+    /// Declared `input = "session"`: while this mod holds focus, keys it
     /// does not handle are forwarded to the session its surface names.
     ///
-    /// This is how the terminal pane stays an ordinary plugin. The kernel does
-    /// not know which plugin "is" the terminal — it knows this one asked for
+    /// This is how the terminal pane stays an ordinary mod. The kernel does
+    /// not know which mod "is" the terminal — it knows this one asked for
     /// raw input, and which session the tree it just returned pointed at.
     pub session_input: bool,
-    /// Space this plugin asks of its slot. Declared **statically** here rather
+    /// Space this mod asks of its slot. Declared **statically** here rather
     /// than in render output — that is what lets the layout pass resolve rects
-    /// before any plugin runs.
+    /// before any mod runs.
     pub size: Size,
-    /// Slot whose rendered tree this plugin may transform.
+    /// Slot whose rendered tree this mod may transform.
     ///
-    /// Cross-plugin decoration: a decorator receives another plugin's tree
+    /// Cross-mod decoration: a decorator receives another mod's tree
     /// and returns a modified one, matching on the identity nodes already
     /// carry. No selector engine — that was the largest available instance of
     /// the mistake this whole design exists to avoid.
     pub decorates: Option<String>,
-    /// Whether this plugin is allowed to float. Declared statically so the
+    /// Whether this mod is allowed to float. Declared statically so the
     /// kernel knows to render it *after* the arrangement, without having to
     /// render it once to find out.
     pub floats: bool,
@@ -254,35 +254,35 @@ pub struct Plugin {
     /// above the bars, `size.len` rows high (one when unsaid), without the user
     /// editing `layout.lua` — published to the arrangement as `ctx.strips`.
     pub strip: bool,
-    /// Keys this plugin declared, as data — enumerable without invoking it.
+    /// Keys this mod declared, as data — enumerable without invoking it.
     pub bindings: Vec<Binding>,
-    /// Settings this plugin accepts.
+    /// Settings this mod accepts.
     pub settings: Vec<Setting>,
-    /// Action-band entries this plugin contributes.
+    /// Action-band entries this mod contributes.
     pub pills: Vec<Pill>,
-    /// Capabilities this plugin declared it needs.
+    /// Capabilities this mod declared it needs.
     ///
     /// Declaring one is not being granted it: the kernel installs a capability
-    /// only for a plugin the user has *trusted* with it. Kept as data so the
+    /// only for a mod the user has *trusted* with it. Kept as data so the
     /// interface's own file list can say which files ask to run programs
     /// without anyone reading their source.
     pub capabilities: Vec<Capability>,
-    /// Events this plugin subscribed to, each validated at load against
+    /// Events this mod subscribed to, each validated at load against
     /// [`super::events::KERNEL_EVENTS`] or the `user.` form.
     ///
     /// Data, like `keys`: a handler with no list receives nothing, so what a
-    /// plugin listens for is enumerable without calling it.
+    /// mod listens for is enumerable without calling it.
     pub events: Vec<String>,
-    /// Actions this plugin wants reachable without a chord — the palette's rows.
+    /// Actions this mod wants reachable without a chord — the palette's rows.
     pub commands: Vec<CommandDecl>,
     pub actions: Vec<ActionDecl>,
     order: f64,
     def: Table,
-    /// The environment its chunk runs in — see [`api::plugin_env`].
+    /// The environment its chunk runs in — see [`api::mod_env`].
     env: Env,
 }
 
-/// Something a plugin may ask to be able to do that ordinary Lua here cannot.
+/// Something a mod may ask to be able to do that ordinary Lua here cannot.
 ///
 /// The enum exists so a third is a compile error at every place that decides
 /// about the first two, rather than a string compared in four places.
@@ -303,7 +303,7 @@ pub enum Capability {
     ///
     /// The verbs listed in [`crate::kernel::command::Command::requires`]:
     /// `send` and `dispatch` put words in an agent's mouth, `create`, `fork` and
-    /// `restart` launch one, a force `delete` removes a worktree nothing restores, and `plugin` rewrites
+    /// `restart` launch one, a force `delete` removes a worktree nothing restores, and `mod` rewrites
     /// a file of the interface. A pane holding none of these can still ask the
     /// user through the bundled confirmation, which words the change itself and
     /// issues it only on their `y`.
@@ -342,7 +342,7 @@ impl Capability {
 
     /// Parse a declared name, or refuse it.
     ///
-    /// Refused rather than ignored: a plugin declaring `capabilities = { "rnu" }`
+    /// Refused rather than ignored: a mod declaring `capabilities = { "rnu" }`
     /// would otherwise load, be granted nothing, and look like the capability is
     /// broken.
     pub fn parse(name: &str) -> Option<Self> {
@@ -381,12 +381,12 @@ pub struct KeyPress {
     pub cmd: bool,
 }
 
-/// A click resolved onto a node one plugin painted.
+/// A click resolved onto a node one mod painted.
 ///
 /// The counterpart to [`KeyPress`], and deliberately shaped like one: the
-/// kernel hit-tests the tree it just painted, attributes the node to the plugin
+/// kernel hit-tests the tree it just painted, attributes the node to the mod
 /// that returned it, and hands over the identity plus where inside the node the
-/// press landed. It carries no rect — a plugin that knows *which* node was hit
+/// press landed. It carries no rect — a mod that knows *which* node was hit
 /// does not need to be told again where that node was.
 #[derive(Debug, Clone, Default)]
 pub struct Click {
@@ -443,9 +443,9 @@ pub struct Scroll {
     pub y: u16,
 }
 
-/// A plugin that is floating this frame, and how much room it wants.
+/// A mod that is floating this frame, and how much room it wants.
 ///
-/// Floating is a property of what the plugin *returned*, not of the plugin — a
+/// Floating is a property of what the mod *returned*, not of the mod — a
 /// modal appears by returning a float node and disappears by not doing so, with
 /// no separate open/close channel for the kernel to keep in sync.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -453,12 +453,12 @@ pub struct Float {
     /// Share of the screen, 0..100. Clamped when rendered.
     pub width_pct: f64,
     pub height_pct: f64,
-    /// Exact columns, when the plugin knows them. Wins over the percentage.
+    /// Exact columns, when the mod knows them. Wins over the percentage.
     ///
     /// A modal framing a list of a known length wants a size in cells, not a
     /// share of the screen: sized by percentage its frame drifts away from its
     /// content as the terminal grows. v1's modals are a fixed width with the
-    /// height fitted to what is inside them, and this is how a plugin says so.
+    /// height fitted to what is inside them, and this is how a mod says so.
     pub cols: Option<u16>,
     pub rows: Option<u16>,
     /// The screen cell to open at, instead of the centre: a menu opened by a
@@ -479,7 +479,7 @@ impl Default for Float {
     }
 }
 
-/// What a plugin produced this frame.
+/// What a mod produced this frame.
 ///
 /// The tree is behind an `Rc` so a pure-pane cache *hit* costs a refcount bump
 /// rather than a deep clone of the whole node tree — and so the settle diff
@@ -490,15 +490,15 @@ impl Default for Float {
 #[derive(Debug, Clone)]
 pub struct Rendered {
     pub node: std::rc::Rc<Node>,
-    /// Set when the plugin asked to float above the arrangement.
+    /// Set when the mod asked to float above the arrangement.
     pub float: Option<Float>,
 }
 
-/// Everything published to plugins in one frame.
+/// Everything published to mods in one frame.
 ///
 /// A struct rather than a parameter list because this grew from two to six in
 /// the course of one change, and each growth churned every call site. Adding
-/// something plugins can read should not be an edit to every test.
+/// something mods can read should not be an edit to every test.
 /// The version each published source stood at when a frame was published.
 ///
 /// A group rebuilt at one epoch and asked for again at the same one cannot have
@@ -562,7 +562,7 @@ type GroupKey = [u64; 4];
 pub const ANIMATION_HZ: f64 = 8.0;
 
 /// What a pure pane's cached tree was built for: the publish epoch, the parts of
-/// the render context it may depend on, and the plugin-state version.
+/// the render context it may depend on, and the mod-state version.
 ///
 /// `ctx.frame` and `ctx.elapsed` are deliberately absent. They move every frame,
 /// so reading either here would mean never reusing anything. A pane may still
@@ -683,7 +683,7 @@ pub struct Published<'a> {
     pub diffs: &'a super::diff::DiffStore,
     /// Links visible in each session's terminal, keyed by session.
     pub links: &'a std::collections::HashMap<String, Vec<(String, usize, usize)>>,
-    /// The last finished content search — `None` unless a plugin asked
+    /// The last finished content search — `None` unless a mod asked
     /// (`kernel::search::WANT_CONTENT`). Serving it only on demand is what keeps
     /// every agent's history off every frame.
     pub search: Option<&'a super::search::Answer>,
@@ -707,9 +707,9 @@ pub struct Published<'a> {
     /// drew a thing knows how it should look highlighted — the kernel knows
     /// where it is, not what it means.
     pub hovered: Option<&'a super::node::Identity>,
-    /// The focused plugin's name, so a pane can report focus it does not hold.
+    /// The focused mod's name, so a pane can report focus it does not hold.
     ///
-    /// `ctx.focused` is per-plugin and answers "am I focused?"; the footer has
+    /// `ctx.focused` is per-mod and answers "am I focused?"; the footer has
     /// to name whoever IS, and it is not focusable itself. v1 reads the same
     /// thing off `App::focus`.
     pub focus: Option<&'a str>,
@@ -735,8 +735,8 @@ pub struct Published<'a> {
     /// The interface's own files: where each came from and which are running.
     ///
     /// Published rather than drawn by the kernel, so the pane that lists the
-    /// panes is an ordinary plugin holding no capability a user's own could not
-    /// have — which is the standing rule for bundled plugins, and the only
+    /// panes is an ordinary mod holding no capability a user's own could not
+    /// have — which is the standing rule for bundled mods, and the only
     /// honest test of it (design D4).
     pub inventory: &'a [super::inventory::Row],
     /// The directory the interface was loaded from.
@@ -748,7 +748,7 @@ pub struct Published<'a> {
     /// The settings in force — the live half as last read, the restart-only half
     /// as published at startup (`kernel::config`).
     ///
-    /// Published because the arrangement needs some of it *before* any plugin
+    /// Published because the arrangement needs some of it *before* any mod
     /// runs (the column thresholds), and because a pane must be able to honour a
     /// feature switch the kernel has no knowledge of.
     pub settings: &'a crate::session::settings::Settings,
@@ -761,10 +761,10 @@ pub struct Published<'a> {
     pub wants: &'a super::repos::Wants,
 }
 
-/// What a plugin is told about the frame it is rendering into.
+/// What a mod is told about the frame it is rendering into.
 #[derive(Debug, Clone, Copy)]
 pub struct RenderContext {
-    /// The plugin's **own** resolved width, not the screen's.
+    /// The mod's **own** resolved width, not the screen's.
     pub width: u16,
     pub height: u16,
     pub focused: bool,
@@ -792,19 +792,19 @@ pub struct LuaHost {
     /// The heap the last of those left, so the next waits for new garbage.
     collected: std::cell::Cell<usize>,
     reused_groups: std::cell::Cell<u64>,
-    /// Per-plugin cost, recorded only while [`Self::set_perf_timing`] is on
+    /// Per-mod cost, recorded only while [`Self::set_perf_timing`] is on
     /// (ADR-P23).
     ///
-    /// Recorded here rather than at the loop's call sites because a plugin is
+    /// Recorded here rather than at the loop's call sites because a mod is
     /// reached from a dozen of them — every hook, every event subscriber, the
     /// pure cache's hit path — and only the host sees all of them and knows
-    /// which plugin each call was for. Off, a call pays two `Cell<bool>` reads.
+    /// which mod each call was for. Off, a call pays two `Cell<bool>` reads.
     perf_timing: std::cell::Cell<bool>,
-    plugin_perf: RefCell<super::perf::PluginTable>,
+    mod_perf: RefCell<super::perf::ModTable>,
     /// Whether the loop has seen no input for a while, for `idle_renders`.
     idle: std::cell::Cell<bool>,
     /// Open between [`Self::begin_op`] and [`Self::end_op`]: the longest single
-    /// plugin call since, so a slow op can name whose it was. Tracked whether or
+    /// mod call since, so a slow op can name whose it was. Tracked whether or
     /// not timing is on, because slow ops are.
     op_open: std::cell::Cell<bool>,
     op_heaviest: RefCell<Option<(String, std::time::Duration)>>,
@@ -813,7 +813,7 @@ pub struct LuaHost {
     store_writes: WriteCount,
     /// A pure pane's last converted tree, with the key it was built under.
     ///
-    /// Keyed by plugin index. Dropped whenever the VM is rebuilt, alongside
+    /// Keyed by mod index. Dropped whenever the VM is rebuilt, alongside
     /// [`Self::groups`] — a `Node` outlives the Lua it came from, but a tree
     /// built by the previous version of a pane is not that pane's answer.
     trees: RefCell<HashMap<usize, CachedTree>>,
@@ -841,15 +841,15 @@ pub struct LuaHost {
     state: Private,
     /// Bumped by every `store`/`state` write; part of a pure pane's tree key.
     state_version: StateVersion,
-    /// The plugin currently being called, so `state` can namespace itself.
+    /// The mod currently being called, so `state` can namespace itself.
     ///
     /// This is the file *stem*, which is what `state` has always keyed by.
     current: Rc<RefCell<String>>,
-    /// The same plugin, by its path.
+    /// The same mod, by its path.
     ///
     /// Kept beside `current` rather than replacing it: a run is attributed by
     /// path because that is the identity trust and the inventory use, and
-    /// changing what `state` keys by would silently move every plugin's stored
+    /// changing what `state` keys by would silently move every mod's stored
     /// state on upgrade.
     current_path: Rc<RefCell<String>>,
     /// Session working directories, the roots a file read is confined to.
@@ -860,17 +860,17 @@ pub struct LuaHost {
     /// The snapshot version [`Roots`] was last rebuilt from, so publish skips
     /// re-cloning every session's cwd on frames where the snapshot stood still.
     roots_snapshot: std::cell::Cell<Option<u64>>,
-    /// Commands issued by plugins, drained once per frame by the loop.
+    /// Commands issued by mods, drained once per frame by the loop.
     ///
     /// Queued rather than executed inline: `command()` must return instantly,
-    /// and a plugin must never be able to run a database write from inside a
+    /// and a mod must never be able to run a database write from inside a
     /// render call.
     queue: Queue,
     /// See [`Self::acting_for`].
     behalf: Rc<RefCell<Option<Vec<String>>>>,
-    /// Runs plugins asked for, drained once per frame like `queue`.
+    /// Runs mods asked for, drained once per frame like `queue`.
     ///
-    /// Separate from `queue` because a run carries the plugin that asked —
+    /// Separate from `queue` because a run carries the mod that asked —
     /// answers are namespaced by it — and because the command bus dispatches
     /// writes to workers, while this is a read whose worker the store owns.
     runs: Rc<RefCell<Vec<(String, super::runs::Request)>>>,
@@ -879,18 +879,18 @@ pub struct LuaHost {
     /// Paths the user turned off. Read by `build`, which simply does not load
     /// them — which is the whole implementation of being disabled (design D2).
     disabled: Rc<RefCell<Vec<String>>>,
-    /// Finished runs, per plugin. Published into `thurbox.runs` when that plugin
-    /// is entered, so a plugin sees its own answers and no one else's.
+    /// Finished runs, per mod. Published into `thurbox.runs` when that mod
+    /// is entered, so a mod sees its own answers and no one else's.
     run_answers: Rc<RefCell<RunAnswers>>,
-    pub plugins: Vec<Plugin>,
-    /// Index lists derived from `plugins`, rebuilt on reload.
+    pub mods: Vec<Mod>,
+    /// Index lists derived from `mods`, rebuilt on reload.
     ///
     /// Each answers a per-frame question — which panes are focusable, who
     /// occupies or decorates a slot, a slot's mode — that used to be a scan
     /// with a fresh `Vec` per call (several calls per frame, and `slot_mode` a
     /// Lua table read per member per call) over a set that only changes when
     /// the interface reloads.
-    index: PluginIndex,
+    index: ModIndex,
     layout: Arrangement,
     /// The last resolved arrangement, with everything it was resolved from.
     ///
@@ -904,7 +904,7 @@ pub struct LuaHost {
     /// The `status_rows` last published, the one arrangement input with no
     /// version — see [`Self::arrangement`]'s cache key.
     last_status_rows: std::cell::Cell<u16>,
-    /// The last build error. Transactional reloads retain the last good plugins;
+    /// The last build error. Transactional reloads retain the last good mods;
     /// a failed fresh build has none.
     pub error: Option<String>,
     pub reloads: u32,
@@ -918,7 +918,7 @@ pub struct LuaHost {
 ///
 /// Three states rather than a flag because "it should" and "it did" differ: a
 /// terminal can accept the kitty flag that asks for releases and still never
-/// send one, so a plugin offering a hold says so only once a release has
+/// send one, so a mod offering a hold says so only once a release has
 /// actually arrived, and treats `negotiated` as worth trying with a fallback.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum KeyReleases {
@@ -948,36 +948,36 @@ type LayoutKey = (u16, u16, u32, Option<Epoch>, u64, u16);
 
 /// See [`LuaHost::index`].
 #[derive(Default)]
-struct PluginIndex {
+struct ModIndex {
     focusable: Vec<usize>,
     floating: Vec<usize>,
-    /// Slot -> occupying plugin indices, in render order (decorators excluded).
+    /// Slot -> occupying mod indices, in render order (decorators excluded).
     slots: HashMap<String, Vec<usize>>,
-    /// Slot -> indices of the plugins decorating it, in render order.
+    /// Slot -> indices of the mods decorating it, in render order.
     decorators: HashMap<String, Vec<usize>>,
     /// Slot -> declared mode. Absent = stack, so the common case needs no entry.
     modes: HashMap<String, SlotMode>,
 }
 
-impl PluginIndex {
-    fn build(plugins: &[Plugin]) -> Self {
+impl ModIndex {
+    fn build(mods: &[Mod]) -> Self {
         let mut index = Self::default();
-        for (i, plugin) in plugins.iter().enumerate() {
-            if plugin.focusable {
+        for (i, r#mod) in mods.iter().enumerate() {
+            if r#mod.focusable {
                 index.focusable.push(i);
             }
-            if plugin.floats {
+            if r#mod.floats {
                 index.floating.push(i);
             }
-            match &plugin.decorates {
+            match &r#mod.decorates {
                 Some(slot) => index.decorators.entry(slot.clone()).or_default().push(i),
-                None => index.slots.entry(plugin.slot.clone()).or_default().push(i),
+                None => index.slots.entry(r#mod.slot.clone()).or_default().push(i),
             }
             // `slot_mode` is a static declaration, read once here instead of
             // through the Lua table on every placement query.
-            if let Ok(Value::String(mode)) = plugin.def.get::<Value>("slot_mode") {
+            if let Ok(Value::String(mode)) = r#mod.def.get::<Value>("slot_mode") {
                 if mode.to_string_lossy() == "switch" {
-                    index.modes.insert(plugin.slot.clone(), SlotMode::Switch);
+                    index.modes.insert(r#mod.slot.clone(), SlotMode::Switch);
                 }
             }
         }
@@ -990,14 +990,14 @@ impl LuaHost {
         Self::new_with_disabled(ui_dir, Vec::new())
     }
 
-    /// Build an independent VM with the same disabled plugins. A failed build
+    /// Build an independent VM with the same disabled mods. A failed build
     /// leaves an empty fresh VM carrying the error, never this host's heap.
     pub fn fresh_from(&self, ui_dir: impl Into<PathBuf>) -> Self {
         Self::new_with_disabled(ui_dir, self.disabled.borrow().clone())
     }
 
     /// An independent empty VM carrying `error`, with the same disabled
-    /// plugins: what replaces a full VM when no interface can go in, without
+    /// mods: what replaces a full VM when no interface can go in, without
     /// building the one that filled it again.
     pub fn retired(&self, error: String) -> Self {
         let mut host = Self::unbuilt(self.ui_dir.clone(), self.disabled.borrow().clone());
@@ -1029,7 +1029,7 @@ impl LuaHost {
             reused_groups: std::cell::Cell::new(0),
             key_releases: std::cell::Cell::new(KeyReleases::default()),
             perf_timing: std::cell::Cell::new(false),
-            plugin_perf: RefCell::new(super::perf::PluginTable::default()),
+            mod_perf: RefCell::new(super::perf::ModTable::default()),
             idle: std::cell::Cell::new(false),
             op_open: std::cell::Cell::new(false),
             op_heaviest: RefCell::new(None),
@@ -1050,8 +1050,8 @@ impl LuaHost {
             file_wants: FileWants::default(),
             file_rendered: RefCell::default(),
             roots_snapshot: std::cell::Cell::new(None),
-            plugins: Vec::new(),
-            index: PluginIndex::default(),
+            mods: Vec::new(),
+            index: ModIndex::default(),
             layout: Arrangement::Missing,
             layout_cache: RefCell::new(None),
             last_status_rows: std::cell::Cell::new(0),
@@ -1075,7 +1075,7 @@ impl LuaHost {
 
     pub fn reload(&mut self) {
         match self.build() {
-            Ok((lua, plugins, layout)) => {
+            Ok((lua, mods, layout)) => {
                 // Before the VM they point into is dropped: a cached group is a
                 // handle into `self.lua`, so carrying one across a reload would
                 // hand the next publish a value belonging to a Lua that no
@@ -1083,8 +1083,8 @@ impl LuaHost {
                 self.forget_groups();
                 self.file_wants.borrow_mut().clear();
                 self.lua = lua;
-                self.index = PluginIndex::build(&plugins);
-                self.plugins = plugins;
+                self.index = ModIndex::build(&mods);
+                self.mods = mods;
                 self.layout = layout;
                 self.layout_cache.replace(None);
                 self.error = None;
@@ -1095,7 +1095,7 @@ impl LuaHost {
         }
     }
 
-    fn build(&self) -> Result<(Lua, Vec<Plugin>, Arrangement), String> {
+    fn build(&self) -> Result<(Lua, Vec<Mod>, Arrangement), String> {
         let lua = new_vm().map_err(|e| e.to_string())?;
         install_api(
             &lua,
@@ -1121,7 +1121,7 @@ impl LuaHost {
             entered: self.current_path.clone(),
         };
 
-        let dir = self.ui_dir.join(crate::session::plugin_spec::MODS_DIR);
+        let dir = self.ui_dir.join(crate::session::mod_spec::MODS_DIR);
         let mut files: Vec<PathBuf> = fs::read_dir(&dir)
             .map_err(|e| format!("{}: {e}", dir.display()))?
             .filter_map(|entry| entry.ok().map(|entry| entry.path()))
@@ -1130,7 +1130,7 @@ impl LuaHost {
         // Sorted so `order` ties break by filename, deterministically.
         files.sort();
 
-        // Panes the spec names outside `mods/`. A plugin obtained as a repository
+        // Panes the spec names outside `mods/`. A mod obtained as a repository
         // keeps its author's layout, so its pane sits at `<name>/…` — invisible to
         // the scan above, which reads only the top level of `mods/`.
         //
@@ -1139,40 +1139,40 @@ impl LuaHost {
         // lives.
         let nested: Vec<String> = super::packages::read_spec(&self.ui_dir)
             .map(|spec| {
-                spec.plugins
+                spec.mods
                     .into_iter()
                     .map(|entry| entry.file)
-                    .filter(|file| crate::session::plugin_spec::is_nested_pane(file))
+                    .filter(|file| crate::session::mod_spec::is_nested_pane(file))
                     .collect()
             })
             // A malformed spec must not cost the whole interface: the panes in
-            // `mods/` still load, and `plugin check` reports the spec separately.
+            // `mods/` still load, and `mod check` reports the spec separately.
             .unwrap_or_default();
 
-        let mut plugins = Vec::new();
+        let mut mods = Vec::new();
         let disabled = self.disabled.borrow();
         for relative in nested {
             let path = self.ui_dir.join(&relative);
             if !path.is_file() || disabled.iter().any(|off| off == &relative) {
                 continue;
             }
-            plugins.push(load_plugin(&lua, &parts, &path, &relative)?);
+            mods.push(load_mod(&lua, &parts, &path, &relative)?);
         }
         for path in files {
             let name = path
                 .file_name()
                 .map(std::ffi::OsStr::to_string_lossy)
                 .unwrap_or_default();
-            let relative = format!("{}/{name}", crate::session::plugin_spec::MODS_DIR);
-            // A plugin the user turned off is simply not read. That is the
-            // entire implementation: it is absent from `plugins`, so it declares
+            let relative = format!("{}/{name}", crate::session::mod_spec::MODS_DIR);
+            // A mod the user turned off is simply not read. That is the
+            // entire implementation: it is absent from `mods`, so it declares
             // no key, occupies no slot, is granted no capability and cannot fail
             // to load — five properties that would otherwise each need enforcing
             // somewhere else (design D2).
             if disabled.iter().any(|off| off == &relative) {
                 continue;
             }
-            plugins.push(load_plugin(&lua, &parts, &path, &relative)?);
+            mods.push(load_mod(&lua, &parts, &path, &relative)?);
         }
         drop(disabled);
         // An EMPTY directory is not an error: removing every pane is something
@@ -1181,21 +1181,21 @@ impl LuaHost {
         // the removal it was just asked to make (design D6). A *missing*
         // directory still is one: delivery always creates it, so its absence
         // means the interface directory is not one.
-        plugins.sort_by(|a, b| a.order.total_cmp(&b.order));
+        mods.sort_by(|a, b| a.order.total_cmp(&b.order));
         let mut actions = std::collections::HashMap::<String, (String, String)>::new();
-        for plugin in &plugins {
-            for action in plugin
+        for r#mod in &mods {
+            for action in r#mod
                 .bindings
                 .iter()
                 .map(|row| &row.action)
-                .chain(plugin.commands.iter().map(|row| &row.action))
-                .chain(plugin.actions.iter().map(|row| &row.name))
+                .chain(r#mod.commands.iter().map(|row| &row.action))
+                .chain(r#mod.actions.iter().map(|row| &row.name))
             {
                 if let Some((owner, path)) =
-                    actions.insert(action.clone(), (plugin.name.clone(), plugin.path.clone()))
+                    actions.insert(action.clone(), (r#mod.name.clone(), r#mod.path.clone()))
                 {
-                    if owner != plugin.name
-                        || (path != plugin.path
+                    if owner != r#mod.name
+                        || (path != r#mod.path
                             && matches!(
                                 action.as_str(),
                                 "sessions.delete"
@@ -1206,7 +1206,7 @@ impl LuaHost {
                     {
                         return Err(format!(
                             "action {action} is declared by both {owner} and {}",
-                            plugin.name
+                            r#mod.name
                         ));
                     }
                 }
@@ -1214,10 +1214,10 @@ impl LuaHost {
         }
 
         let layout = load_arrangement(&lua, &parts)?;
-        Ok((lua, plugins, layout))
+        Ok((lua, mods, layout))
     }
 
-    /// Every declaration from every loaded plugin, for the registry.
+    /// Every declaration from every loaded mod, for the registry.
     pub fn declarations(&self) -> (Vec<Binding>, Vec<Setting>) {
         let (bindings, settings, _) = self.all_declarations();
         (bindings, settings)
@@ -1227,25 +1227,25 @@ impl LuaHost {
     ///
     /// Every declaration is collected the same way and at the same moment — at
     /// load and reload — which is what lets a band paint from data already in
-    /// hand rather than by asking a plugin while it draws.
+    /// hand rather than by asking a mod while it draws.
     pub fn all_declarations(&self) -> (Vec<Binding>, Vec<Setting>, Vec<Pill>) {
         let mut bindings = Vec::new();
         let mut settings = Vec::new();
         let mut pills = Vec::new();
-        for plugin in &self.plugins {
-            bindings.extend(plugin.bindings.iter().cloned());
-            settings.extend(plugin.settings.iter().cloned());
-            pills.extend(plugin.pills.iter().cloned());
+        for r#mod in &self.mods {
+            bindings.extend(r#mod.bindings.iter().cloned());
+            settings.extend(r#mod.settings.iter().cloned());
+            pills.extend(r#mod.pills.iter().cloned());
         }
         (bindings, settings, pills)
     }
 
-    /// Call a plugin's `on_action` with a declared action id.
+    /// Call a mod's `on_action` with a declared action id.
     ///
     /// Separate from `on_key`: a declared key is routed by the registry, which
     /// is what lets it be rebound, listed in help, and conflict-checked. Raw
     /// `on_key` stays for panes that need every keystroke (the terminal).
-    /// Run `f` as a request from the plugin at `issuer`: see [`Self::acting_for`].
+    /// Run `f` as a request from the mod at `issuer`: see [`Self::acting_for`].
     pub fn on_behalf_of<T>(&self, issuer: &str, f: impl FnOnce() -> T) -> T {
         let previous = self.acting_for(Some(vec![issuer.to_string()]));
         let out = f();
@@ -1253,62 +1253,62 @@ impl LuaHost {
         out
     }
 
-    /// Mark what runs from now on as a request made by `chain` — the plugin
+    /// Mark what runs from now on as a request made by `chain` — the mod
     /// that first asked, then each that passed it on — or clear the mark with
     /// `None`, returning the mark it replaces.
     ///
     /// `command("action")` runs the named action's own handler, which may
     /// hold a grant the asker does not, or lack one the asker holds. While it
     /// runs for that chain, every command it issues carries the chain with the
-    /// handler added, and the gate allows it only with what every plugin in it
+    /// handler added, and the gate allows it only with what every mod in it
     /// holds (`Command::refusal_by`): a pane with no grant cannot have a
     /// trusted one `send` for it, through any number of hops, and a trusted
     /// pane does not lend its grant to a handler it asks. Only the handler's
-    /// own commands are marked — another plugin's finalizer run meanwhile
+    /// own commands are marked — another mod's finalizer run meanwhile
     /// keeps its own name. A key or a click the user made runs it unmarked.
     pub fn acting_for(&self, chain: Option<Vec<String>>) -> Option<Vec<String>> {
         std::mem::replace(&mut *self.behalf.borrow_mut(), chain)
     }
 
-    pub fn on_action(&self, index: usize, action: &str) -> Result<bool, PluginError> {
+    pub fn on_action(&self, index: usize, action: &str) -> Result<bool, ModError> {
         self.on_action_with_args(index, action, &[])
     }
 
     /// Handler presence is checked without invoking user code. A gesture with
     /// no action handler cannot be promised through the external catalog.
     pub fn action_handler_present(&self, index: usize) -> bool {
-        self.plugins.get(index).is_some_and(|plugin| {
-            matches!(plugin.def.get::<Value>("on_action"), Ok(Value::Function(_)))
+        self.mods.get(index).is_some_and(|r#mod| {
+            matches!(r#mod.def.get::<Value>("on_action"), Ok(Value::Function(_)))
         })
     }
 
     pub fn raw_gesture_handlers(&self, index: usize) -> Vec<&'static str> {
-        let Some(plugin) = self.plugins.get(index) else {
+        let Some(r#mod) = self.mods.get(index) else {
             return Vec::new();
         };
         ["on_key", "on_click", "on_scroll"]
             .into_iter()
-            .filter(|name| matches!(plugin.def.get::<Value>(*name), Ok(Value::Function(_))))
+            .filter(|name| matches!(r#mod.def.get::<Value>(*name), Ok(Value::Function(_))))
             .collect()
     }
 
-    /// Pass a validated, typed argument table to a plugin action. Existing
+    /// Pass a validated, typed argument table to a mod action. Existing
     /// one-argument Lua handlers ignore the second argument.
     pub fn on_action_with_args(
         &self,
         index: usize,
         action: &str,
         args: &[(&str, &str)],
-    ) -> Result<bool, PluginError> {
-        let Some(plugin) = self.plugins.get(index) else {
+    ) -> Result<bool, ModError> {
+        let Some(r#mod) = self.mods.get(index) else {
             return Ok(false);
         };
-        let fail = |message: String| PluginError {
-            plugin: plugin.name.clone(),
+        let fail = |message: String| ModError {
+            r#mod: r#mod.name.clone(),
             phase: Phase::Key,
             message,
         };
-        let handler: Value = plugin
+        let handler: Value = r#mod
             .def
             .get("on_action")
             .map_err(|e| fail(e.to_string()))?;
@@ -1317,7 +1317,7 @@ impl LuaHost {
         };
 
         let start = self.call_started();
-        self.enter(plugin);
+        self.enter(r#mod);
         let guard = Budget::arm(&self.lua);
         let handled: Result<bool, mlua::Error> = if let Err(e) = &guard {
             Err(e.clone())
@@ -1353,60 +1353,60 @@ impl LuaHost {
             handler.call((action.to_string(), arguments))
         };
         drop(guard);
-        self.hook_finished(plugin, start, Hook::Action, handled.is_err());
+        self.hook_finished(r#mod, start, Hook::Action, handled.is_err());
         handled.map_err(|e| fail(clean_error(&e)))
     }
 
-    /// Index of a plugin by name.
+    /// Index of a mod by name.
     pub fn index_of(&self, name: &str) -> Option<usize> {
-        self.plugins.iter().position(|p| p.name == name)
+        self.mods.iter().position(|p| p.name == name)
     }
 
-    /// The name of the plugin at a path — what an event's `source` carries.
+    /// The name of the mod at a path — what an event's `source` carries.
     pub fn name_of_path(&self, path: &str) -> Option<&str> {
-        self.plugins
+        self.mods
             .iter()
-            .find(|plugin| plugin.path == path)
-            .map(|plugin| plugin.name.as_str())
+            .find(|r#mod| r#mod.path == path)
+            .map(|r#mod| r#mod.name.as_str())
     }
 
-    /// Every chord-less command every loaded plugin declared.
+    /// Every chord-less command every loaded mod declared.
     pub fn commands(&self) -> Vec<CommandDecl> {
-        self.plugins
+        self.mods
             .iter()
-            .flat_map(|plugin| plugin.commands.iter().cloned())
+            .flat_map(|r#mod| r#mod.commands.iter().cloned())
             .collect()
     }
 
     pub fn action_declarations(&self) -> Vec<ActionDecl> {
-        self.plugins
+        self.mods
             .iter()
-            .flat_map(|plugin| plugin.actions.iter().cloned())
+            .flat_map(|r#mod| r#mod.actions.iter().cloned())
             .collect()
     }
 
-    /// Indices of the plugins subscribed to an event, in load order.
+    /// Indices of the mods subscribed to an event, in load order.
     pub fn subscribers(&self, event: &str) -> Vec<usize> {
-        self.plugins
+        self.mods
             .iter()
             .enumerate()
-            .filter(|(_, plugin)| plugin.events.iter().any(|name| name == event))
+            .filter(|(_, r#mod)| r#mod.events.iter().any(|name| name == event))
             .map(|(index, _)| index)
             .collect()
     }
 
-    /// Hand one event to every plugin subscribed to it.
+    /// Hand one event to every mod subscribed to it.
     ///
     /// The payload table is built **once** and shared: a handler that mutates it
     /// changes what a later subscriber reads, which is the same contract a
     /// published table already has — and building it per subscriber would be a
-    /// table per plugin per event for a value nobody is meant to write.
+    /// table per mod per event for a value nobody is meant to write.
     ///
     /// Every subscriber is called whatever the earlier ones did: a handler that
-    /// throws or overruns its budget costs itself, reported against its plugin
+    /// throws or overruns its budget costs itself, reported against its mod
     /// with the event's name, and the next handler still runs. Return values are
     /// ignored — a handler cannot answer, only enqueue commands and write state.
-    pub fn dispatch_event(&self, event: &Event) -> Vec<PluginError> {
+    pub fn dispatch_event(&self, event: &Event) -> Vec<ModError> {
         let subscribers = match &event.only {
             None => self.subscribers(&event.name),
             // Addressed. Filtered on `path` because that is the identity a
@@ -1417,9 +1417,9 @@ impl LuaHost {
                 .subscribers(&event.name)
                 .into_iter()
                 .filter(|index| {
-                    self.plugins
+                    self.mods
                         .get(*index)
-                        .is_some_and(|plugin| plugin.path == *path)
+                        .is_some_and(|r#mod| r#mod.path == *path)
                 })
                 .collect(),
         };
@@ -1430,8 +1430,8 @@ impl LuaHost {
         let payload = match self.payload_table(event) {
             Ok(table) => table,
             Err(message) => {
-                failures.push(PluginError {
-                    plugin: "kernel".to_string(),
+                failures.push(ModError {
+                    r#mod: "kernel".to_string(),
                     phase: Phase::Event,
                     message: format!("{}: {message}", event.name),
                 });
@@ -1446,29 +1446,26 @@ impl LuaHost {
         failures
     }
 
-    /// Call one plugin's `on_event` with a name and a payload table.
-    fn on_event(&self, index: usize, name: &str, payload: &Table) -> Result<(), PluginError> {
-        let Some(plugin) = self.plugins.get(index) else {
+    /// Call one mod's `on_event` with a name and a payload table.
+    fn on_event(&self, index: usize, name: &str, payload: &Table) -> Result<(), ModError> {
+        let Some(r#mod) = self.mods.get(index) else {
             return Ok(());
         };
-        let fail = |message: String| PluginError {
-            plugin: plugin.name.clone(),
+        let fail = |message: String| ModError {
+            r#mod: r#mod.name.clone(),
             phase: Phase::Event,
             message: format!("{name}: {message}"),
         };
-        let handler: Value = plugin
-            .def
-            .get("on_event")
-            .map_err(|e| fail(e.to_string()))?;
+        let handler: Value = r#mod.def.get("on_event").map_err(|e| fail(e.to_string()))?;
         let Value::Function(handler) = handler else {
             return Ok(());
         };
 
         let start = self.call_started();
-        self.enter(plugin);
+        self.enter(r#mod);
         let outcome: Result<Value, mlua::Error> = Budget::arm(&self.lua)
             .and_then(|_budget| handler.call((name.to_string(), payload.clone())));
-        self.hook_finished(plugin, start, Hook::Event, outcome.is_err());
+        self.hook_finished(r#mod, start, Hook::Event, outcome.is_err());
         outcome.map(|_| ()).map_err(|e| fail(clean_error(&e)))
     }
 
@@ -1499,20 +1496,20 @@ impl LuaHost {
         Ok(table)
     }
 
-    /// Indices of the plugins occupying one slot, in render order.
+    /// Indices of the mods occupying one slot, in render order.
     ///
-    /// A decorator is not an occupant: it draws INTO another plugin's tree, so
-    /// it is indexed under `PluginIndex::decorators` instead — otherwise it
+    /// A decorator is not an occupant: it draws INTO another mod's tree, so
+    /// it is indexed under `ModIndex::decorators` instead — otherwise it
     /// would take the default slot and compete for the centre with the pane it
     /// exists to decorate.
     pub fn in_slot(&self, slot: &str) -> &[usize] {
         self.index.slots.get(slot).map(Vec::as_slice).unwrap_or(&[])
     }
 
-    /// Indices of plugins decorating `slot`, in render order.
+    /// Indices of mods decorating `slot`, in render order.
     ///
     /// Render order is the deterministic order the spec requires: it follows
-    /// each plugin's declared `order`, so two decorators on one slot apply the
+    /// each mod's declared `order`, so two decorators on one slot apply the
     /// same way every run.
     pub fn decorators_of(&self, slot: &str) -> &[usize] {
         self.index
@@ -1531,19 +1528,16 @@ impl LuaHost {
         index: usize,
         node: &Node,
         ctx: RenderContext,
-    ) -> Result<Node, PluginError> {
-        let Some(plugin) = self.plugins.get(index) else {
+    ) -> Result<Node, ModError> {
+        let Some(r#mod) = self.mods.get(index) else {
             return Ok(node.clone());
         };
-        let fail = |message: String| PluginError {
-            plugin: plugin.name.clone(),
+        let fail = |message: String| ModError {
+            r#mod: r#mod.name.clone(),
             phase: Phase::Render,
             message,
         };
-        let handler: Value = plugin
-            .def
-            .get("decorate")
-            .map_err(|e| fail(e.to_string()))?;
+        let handler: Value = r#mod.def.get("decorate").map_err(|e| fail(e.to_string()))?;
         let Value::Function(handler) = handler else {
             return Ok(node.clone());
         };
@@ -1559,22 +1553,22 @@ impl LuaHost {
         let tree = convert::to_lua(&self.lua, node).map_err(fail)?;
 
         let start = self.call_started();
-        self.enter(plugin);
+        self.enter(r#mod);
         let result: Result<Value, mlua::Error> =
             Budget::arm(&self.lua).and_then(|_budget| handler.call((tree, table)));
-        self.hook_finished(plugin, start, Hook::Decorate, result.is_err());
+        self.hook_finished(r#mod, start, Hook::Decorate, result.is_err());
 
         let value = result.map_err(|e| fail(clean_error(&e)))?;
         // The DECORATOR owns what it returns: a program surface it names is one of
-        // its own panes, not one belonging to the plugin whose tree it decorated.
-        convert::to_node(&value, &plugin.path).map_err(fail)
+        // its own panes, not one belonging to the mod whose tree it decorated.
+        convert::to_node(&value, &r#mod.path).map_err(fail)
     }
 
-    /// A string a plugin left in the shared `store`, if it put one there.
+    /// A string a mod left in the shared `store`, if it put one there.
     ///
-    /// Selection and search query belong to their plugins. Reading the store
+    /// Selection and search query belong to their mods. Reading the store
     /// keeps the instance-scoped UI state projection aligned with what those
-    /// plugins actually show.
+    /// mods actually show.
     pub fn shared_string(&self, key: &str) -> Option<String> {
         match self.store.borrow().get(key) {
             Some(Persisted::Str(text)) => Some(text.clone()),
@@ -1585,11 +1579,11 @@ impl LuaHost {
     /// Small, explicitly declared UI projections; no shared or private store is exposed.
     pub fn ui_states(&self) -> std::collections::BTreeMap<String, serde_json::Value> {
         let mut states = std::collections::BTreeMap::new();
-        for plugin in &self.plugins {
-            let Ok(Some(project)) = plugin.def.get::<Option<Function>>("ui_state") else {
+        for r#mod in &self.mods {
+            let Ok(Some(project)) = r#mod.def.get::<Option<Function>>("ui_state") else {
                 continue;
             };
-            self.enter(plugin);
+            self.enter(r#mod);
             let result: mlua::Result<Table> =
                 load::Budget::arm(&self.lua).and_then(|_budget| project.call(()));
             self.enter_nothing();
@@ -1611,7 +1605,7 @@ impl LuaHost {
                 };
                 fields.insert(key, value);
             }
-            states.insert(plugin.path.clone(), serde_json::Value::Object(fields));
+            states.insert(r#mod.path.clone(), serde_json::Value::Object(fields));
         }
         states
     }
@@ -1623,7 +1617,7 @@ impl LuaHost {
     /// Read a boolean out of the shared `store`.
     ///
     /// The panel flags live there (`panels.<name>`) because the arrangement has
-    /// to read them before any plugin runs, so this is how a caller outside Lua
+    /// to read them before any mod runs, so this is how a caller outside Lua
     /// asks whether a column is open.
     pub fn shared_bool(&self, key: &str) -> Option<bool> {
         match self.store.borrow().get(key) {
@@ -1633,7 +1627,7 @@ impl LuaHost {
     }
 
     /// Put a string into the shared `store`, for a request that arrives from
-    /// outside any plugin.
+    /// outside any mod.
     ///
     /// Focus requests and instance-scoped UI actions use this path. A request
     /// is written into the store rather than applied directly because selection belongs to the
@@ -1701,31 +1695,31 @@ impl LuaHost {
         }
     }
 
-    /// Indices of plugins that may float, in render order.
+    /// Indices of mods that may float, in render order.
     pub fn floating(&self) -> &[usize] {
         &self.index.floating
     }
 
-    /// Indices of every focusable plugin, in render order.
+    /// Indices of every focusable mod, in render order.
     pub fn focusable(&self) -> &[usize] {
         &self.index.focusable
     }
 
-    /// Take the commands plugins issued since the last drain.
-    /// The other half of [`Self::enter`], for Lua that runs outside any plugin.
+    /// Take the commands mods issued since the last drain.
+    /// The other half of [`Self::enter`], for Lua that runs outside any mod.
     ///
     /// `layout.lua` runs in an environment of its own that never holds `run`,
-    /// so there is nothing to withdraw — only the current plugin to forget, so
+    /// so there is nothing to withdraw — only the current mod to forget, so
     /// the layout's work is not attributed to whichever pane ran last.
     fn enter_nothing(&self) {
         self.current.borrow_mut().clear();
         self.current_path.borrow_mut().clear();
     }
 
-    /// Every name the plugin at `index` can reach as a global: its own
+    /// Every name the mod at `index` can reach as a global: its own
     /// environment's and the shared ones beneath it.
     ///
-    /// For the test that pins the plugin environment. Lua cannot list the shared
+    /// For the test that pins the mod environment. Lua cannot list the shared
     /// half itself — the environment's metatable is sealed — so it is read here.
     #[doc(hidden)]
     pub fn reachable_globals(&self, index: usize) -> Vec<String> {
@@ -1737,14 +1731,14 @@ impl LuaHost {
                 }
             }
         };
-        if let Some(plugin) = self.plugins.get(index) {
-            collect(plugin.env.table.clone());
+        if let Some(r#mod) = self.mods.get(index) {
+            collect(r#mod.env.table.clone());
         }
         collect(self.lua.globals());
         names.into_iter().collect()
     }
 
-    /// May this plugin use `capability`?
+    /// May this mod use `capability`?
     ///
     /// Two conditions, and both are needed: the file **declared** it, and the user
     /// **trusted** that file. One predicate rather than the check written out at
@@ -1752,106 +1746,106 @@ impl LuaHost {
     /// grant for one is not a grant for the other, and the way that breaks is a
     /// second site that checks trust and forgets to check which capability was
     /// asked for.
-    pub fn may(&self, plugin: &Plugin, capability: Capability) -> bool {
-        plugin.capabilities.contains(&capability) && self.trusted.borrow().contains(&plugin.path)
+    pub fn may(&self, r#mod: &Mod, capability: Capability) -> bool {
+        r#mod.capabilities.contains(&capability) && self.trusted.borrow().contains(&r#mod.path)
     }
 
-    /// [`Self::may`], for a plugin named by its path — the identity a queued
+    /// [`Self::may`], for a mod named by its path — the identity a queued
     /// command carries, since the command is honoured after the call that made it.
     pub fn may_path(&self, path: &str, capability: Capability) -> bool {
-        self.plugins
+        self.mods
             .iter()
-            .find(|plugin| plugin.path == path)
-            .is_some_and(|plugin| self.may(plugin, capability))
+            .find(|r#mod| r#mod.path == path)
+            .is_some_and(|r#mod| self.may(r#mod, capability))
     }
 
-    /// Make `plugin` the current one, and give it exactly the capabilities it
+    /// Make `mod` the current one, and give it exactly the capabilities it
     /// has been granted.
     ///
     /// Installed **per call** rather than once at load so a grant revoked on
     /// the Interface tab is gone on the next call. `run` and `files` go into
-    /// the plugin's own environment or are taken out of it: not a function that
+    /// the mod's own environment or are taken out of it: not a function that
     /// refuses, but no function at all (design D7).
-    fn enter(&self, plugin: &Plugin) {
-        *self.current.borrow_mut() = plugin.file.clone();
-        *self.current_path.borrow_mut() = plugin.path.clone();
-        // Only a plugin that asked for a capability can have answers, so every
+    fn enter(&self, r#mod: &Mod) {
+        *self.current.borrow_mut() = r#mod.file.clone();
+        *self.current_path.borrow_mut() = r#mod.path.clone();
+        // Only a mod that asked for a capability can have answers, so every
         // other one skips the rest. Worth the check: `enter` runs on every call
-        // to every plugin, and building a table per call for the panes that can
+        // to every mod, and building a table per call for the panes that can
         // never have runs would be a per-frame allocation for nothing.
-        if plugin.capabilities.is_empty() {
+        if r#mod.capabilities.is_empty() {
             return;
         }
-        self.publish_runs(plugin);
-        self.publish_granted(plugin);
-        let run = if self.may(plugin, Capability::Run) {
-            Value::Function(plugin.env.run.clone())
+        self.publish_runs(r#mod);
+        self.publish_granted(r#mod);
+        let run = if self.may(r#mod, Capability::Run) {
+            Value::Function(r#mod.env.run.clone())
         } else {
             Value::Nil
         };
-        let _ = plugin.env.table.raw_set("run", run);
-        let forget = if self.may(plugin, Capability::Run) {
-            Value::Function(plugin.env.run_forget.clone())
+        let _ = r#mod.env.table.raw_set("run", run);
+        let forget = if self.may(r#mod, Capability::Run) {
+            Value::Function(r#mod.env.run_forget.clone())
         } else {
             Value::Nil
         };
-        let _ = plugin.env.table.raw_set("run_forget", forget);
-        let files = if self.may(plugin, Capability::Files) {
-            Value::Table(plugin.env.files.clone())
+        let _ = r#mod.env.table.raw_set("run_forget", forget);
+        let files = if self.may(r#mod, Capability::Files) {
+            Value::Table(r#mod.env.files.clone())
         } else {
             Value::Nil
         };
-        let _ = plugin.env.table.raw_set("files", files);
+        let _ = r#mod.env.table.raw_set("files", files);
     }
 
-    /// This plugin's own answers, and nothing else's, as `thurbox.runs` — in
-    /// its own `thurbox` view (`api::Env::thurbox`), which no other plugin's
+    /// This mod's own answers, and nothing else's, as `thurbox.runs` — in
+    /// its own `thurbox` view (`api::Env::thurbox`), which no other mod's
     /// code can reach, whenever it runs.
-    fn publish_runs(&self, plugin: &Plugin) {
+    fn publish_runs(&self, r#mod: &Mod) {
         let Ok(table) = self.lua.create_table() else {
             return;
         };
-        if let Some(answers) = self.run_answers.borrow().get(&plugin.path) {
+        if let Some(answers) = self.run_answers.borrow().get(&r#mod.path) {
             for (key, run) in answers {
                 if let Ok(entry) = run_to_lua(&self.lua, run) {
                     let _ = table.set(key.clone(), entry);
                 }
             }
         }
-        let _ = plugin.env.thurbox.raw_set("runs", table);
+        let _ = r#mod.env.thurbox.raw_set("runs", table);
     }
 
-    /// What this plugin has actually been granted, as `thurbox.granted.<name>`,
+    /// What this mod has actually been granted, as `thurbox.granted.<name>`,
     /// in its own `thurbox` view like its runs.
     ///
     /// Needed because not every capability can be withheld by absence. `run` is
-    /// a global, so a plugin checks `if not run then` and draws an honest hint —
+    /// a global, so a mod checks `if not run then` and draws an honest hint —
     /// that IS the absence. `program` is asked for through `command`, which
-    /// every plugin has, so absence cannot express it and a pane would have no
+    /// every mod has, so absence cannot express it and a pane would have no
     /// way to tell "not trusted" from "still starting". This is that answer, and
     /// it grants nothing: it is a boolean about a decision the user already made.
-    fn publish_granted(&self, plugin: &Plugin) {
+    fn publish_granted(&self, r#mod: &Mod) {
         let Ok(table) = self.lua.create_table() else {
             return;
         };
         for capability in Capability::ALL {
-            if self.may(plugin, capability) {
+            if self.may(r#mod, capability) {
                 let _ = table.set(capability.as_str(), true);
             }
         }
-        let _ = plugin.env.thurbox.raw_set("granted", table);
+        let _ = r#mod.env.thurbox.raw_set("granted", table);
     }
 
     /// Hand over the retained run answers.
     ///
-    /// Keyed by plugin, and published per plugin in `enter` rather than into one
-    /// shared table: a plugin reading another's `docker` output would be a
+    /// Keyed by mod, and published per mod in `enter` rather than into one
+    /// shared table: a mod reading another's `docker` output would be a
     /// capability nobody granted.
     pub fn set_runs(&self, answers: RunAnswers) {
         *self.run_answers.borrow_mut() = answers;
     }
 
-    /// Record which plugins the user has turned off, by their path.
+    /// Record which mods the user has turned off, by their path.
     ///
     /// Handed in for the same reason trust is: the decision is persisted with
     /// the interface's other user preferences, and the host has no business
@@ -1860,7 +1854,7 @@ impl LuaHost {
         *self.disabled.borrow_mut() = paths;
     }
 
-    /// Record which plugins the user has trusted, by their path.
+    /// Record which mods the user has trusted, by their path.
     ///
     /// Handed in rather than read here: trust is persisted with the interface's
     /// other user decisions, and the host has no business opening that file.
@@ -1907,11 +1901,11 @@ impl LuaHost {
     /// Take execution/eviction operations from loaded owners in Lua call order.
     pub fn drain_run_requests(&self) -> Vec<(String, super::runs::Request)> {
         let mut asked = std::mem::take(&mut *self.runs.borrow_mut());
-        // Edit reloads keep this queue while replacing the plugins. Delivering
+        // Edit reloads keep this queue while replacing the mods. Delivering
         // a retired owner's ask would recreate state already pruned by reload.
-        asked.retain(|(owner, _)| self.plugins.iter().any(|plugin| plugin.path == *owner));
+        asked.retain(|(owner, _)| self.mods.iter().any(|r#mod| r#mod.path == *owner));
         if self.perf_timing.get() {
-            let mut table = self.plugin_perf.borrow_mut();
+            let mut table = self.mod_perf.borrow_mut();
             for (path, request) in &asked {
                 if matches!(request, super::runs::Request::Ask(_)) {
                     table.stats_mut(path).asked += 1;
@@ -1928,7 +1922,7 @@ impl LuaHost {
             .collect()
     }
 
-    /// [`Self::drain_commands`], each with the path of the plugin it was
+    /// [`Self::drain_commands`], each with the path of the mod it was
     /// first asked for by — the head of its chain ([`Self::drain_requests`]).
     pub fn drain_issued(&self) -> Vec<(String, Command)> {
         self.drain_requests()
@@ -1937,7 +1931,7 @@ impl LuaHost {
             .collect()
     }
 
-    /// [`Self::drain_commands`], each with the chain of plugins it was made by
+    /// [`Self::drain_commands`], each with the chain of mods it was made by
     /// ([`Self::acting_for`]) — what [`Command::refusal_by`] checks.
     pub fn drain_requests(&self) -> Vec<(Vec<String>, Command)> {
         std::mem::take(&mut *self.queue.borrow_mut())
@@ -1948,9 +1942,9 @@ impl LuaHost {
         self.key_releases.set(releases);
     }
 
-    /// Publish the current snapshot so plugins can read it.
+    /// Publish the current snapshot so mods can read it.
     ///
-    /// Called once per frame from the event loop — never from inside a plugin,
+    /// Called once per frame from the event loop — never from inside a mod,
     /// which is what keeps every read immediate.
     /// Build one published group, or hand back the one built at the same key.
     ///
@@ -1992,8 +1986,8 @@ impl LuaHost {
         self.skipped_renders.get()
     }
 
-    /// Bytes the plugin VM holds now — what [`memory_limit`] is measured
-    /// against, shared by every plugin.
+    /// Bytes the mod VM holds now — what [`memory_limit`] is measured
+    /// against, shared by every mod.
     pub fn used_memory(&self) -> usize {
         self.lua.used_memory()
     }
@@ -2008,7 +2002,7 @@ impl LuaHost {
     ///
     /// A heap at the ceiling that a collection cannot bring down never comes
     /// back: each allocation runs a full emergency collection and then fails,
-    /// so every plugin call pays one on every frame — a frozen interface, for
+    /// so every mod call pays one on every frame — a frozen interface, for
     /// as long as the process lives. Only a new VM returns the memory.
     ///
     /// Measured on the live heap. `used_memory` counts garbage not yet
@@ -2074,11 +2068,11 @@ impl LuaHost {
         self.reused_groups.get()
     }
 
-    /// Record per-plugin cost or stop. Turning it on starts a fresh window, so
+    /// Record per-mod cost or stop. Turning it on starts a fresh window, so
     /// what an opened HUD shows is what happened while it was open.
     pub fn set_perf_timing(&self, on: bool) {
         if on && !self.perf_timing.get() {
-            self.plugin_perf.borrow_mut().clear();
+            self.mod_perf.borrow_mut().clear();
         }
         self.perf_timing.set(on);
     }
@@ -2088,25 +2082,25 @@ impl LuaHost {
         self.idle.set(idle);
     }
 
-    /// Count one painted frame, the denominator of every per-plugin share.
+    /// Count one painted frame, the denominator of every per-mod share.
     pub fn note_frame(&self, took: std::time::Duration) {
         if self.perf_timing.get() {
-            self.plugin_perf.borrow_mut().note_frame(took);
+            self.mod_perf.borrow_mut().note_frame(took);
         }
     }
 
-    /// Start a new per-plugin window, alongside the loop's `perf_window`.
-    pub fn reset_plugin_perf(&self) {
-        self.plugin_perf.borrow_mut().clear();
+    /// Start a new per-mod window, alongside the loop's `perf_window`.
+    pub fn reset_mod_perf(&self) {
+        self.mod_perf.borrow_mut().clear();
     }
 
-    /// Start watching plugin calls for [`Self::end_op`].
+    /// Start watching mod calls for [`Self::end_op`].
     pub fn begin_op(&self) {
         self.op_open.set(true);
         self.op_heaviest.replace(None);
     }
 
-    /// The plugin whose single call was the longest since [`Self::begin_op`].
+    /// The mod whose single call was the longest since [`Self::begin_op`].
     ///
     /// The longest call, not the most total time: an op is one user action, and
     /// the pane that stalled it is the one call that took the time.
@@ -2115,28 +2109,28 @@ impl LuaHost {
         self.op_heaviest.take().map(|(name, _)| name)
     }
 
-    /// Every loaded plugin's cost this window, most expensive first.
-    pub fn plugin_report(&self) -> super::perf::PluginReport {
-        super::perf::plugin_report(
-            &self.plugin_perf.borrow(),
-            self.plugins.iter().map(|plugin| super::perf::PluginMeta {
-                name: &plugin.name,
-                path: &plugin.path,
-                pure: plugin.pure,
-                floats: plugin.floats,
+    /// Every loaded mod's cost this window, most expensive first.
+    pub fn mod_report(&self) -> super::perf::ModReport {
+        super::perf::mod_report(
+            &self.mod_perf.borrow(),
+            self.mods.iter().map(|r#mod| super::perf::ModMeta {
+                name: &r#mod.name,
+                path: &r#mod.path,
+                pure: r#mod.pure,
+                floats: r#mod.floats,
             }),
         )
     }
 
     /// Count a program starting or finishing, in the window its start belongs
-    /// to — see [`super::perf::PluginTable::note_run`].
+    /// to — see [`super::perf::ModTable::note_run`].
     pub fn note_run(&self, event: &super::runs::RunEvent) {
         if self.perf_timing.get() {
-            self.plugin_perf.borrow_mut().note_run(event);
+            self.mod_perf.borrow_mut().note_run(event);
         }
     }
 
-    /// A clock for one plugin call, when anything will read it.
+    /// A clock for one mod call, when anything will read it.
     fn call_started(&self) -> Option<std::time::Instant> {
         (self.perf_timing.get() || self.op_open.get()).then(std::time::Instant::now)
     }
@@ -2144,32 +2138,32 @@ impl LuaHost {
     /// Feed a finished call to an open op; its duration when timing is on.
     fn call_finished(
         &self,
-        plugin: &Plugin,
+        r#mod: &Mod,
         start: Option<std::time::Instant>,
     ) -> Option<std::time::Duration> {
         let took = start?.elapsed();
         if self.op_open.get() {
             let mut heaviest = self.op_heaviest.borrow_mut();
             if heaviest.as_ref().is_none_or(|(_, longest)| took > *longest) {
-                *heaviest = Some((plugin.name.clone(), took));
+                *heaviest = Some((r#mod.name.clone(), took));
             }
         }
         self.perf_timing.get().then_some(took)
     }
 
-    /// Charge one handler call to its plugin.
+    /// Charge one handler call to its mod.
     fn hook_finished(
         &self,
-        plugin: &Plugin,
+        r#mod: &Mod,
         start: Option<std::time::Instant>,
         hook: Hook,
         failed: bool,
     ) {
-        let Some(took) = self.call_finished(plugin, start) else {
+        let Some(took) = self.call_finished(r#mod, start) else {
             return;
         };
-        let mut table = self.plugin_perf.borrow_mut();
-        let stats = table.stats_mut(&plugin.path);
+        let mut table = self.mod_perf.borrow_mut();
+        let stats = table.stats_mut(&r#mod.path);
         stats.hooks.stat_mut(hook).record(took);
         stats.failures += u64::from(failed);
     }
@@ -2177,7 +2171,7 @@ impl LuaHost {
     /// Whether any pane rendered since the last call read `thurbox.diffs`, and
     /// start counting again. Asked once per painted frame, so it answers
     /// "does a pane on screen show a diff": only placed panes render, plus the
-    /// floating plugins, which render every frame to say whether they float —
+    /// floating mods, which render every frame to say whether they float —
     /// one that reads the diffs while closed keeps them fetched, as before.
     pub fn take_diffs_read(&self) -> bool {
         self.rendered_reads.take() & api::READ_DIFFS != 0
@@ -2189,19 +2183,19 @@ impl LuaHost {
         *self.epoch.borrow()
     }
 
-    /// Render one plugin into its resolved rect.
+    /// Render one mod into its resolved rect.
     ///
     /// Failures are returned rather than propagated, so the caller can paint an
-    /// error panel in this plugin's rect and carry on with the others.
-    pub fn render(&self, index: usize, ctx: RenderContext) -> Result<Rendered, PluginError> {
-        let plugin = self.plugins.get(index).ok_or_else(|| PluginError {
-            plugin: format!("#{index}"),
+    /// error panel in this mod's rect and carry on with the others.
+    pub fn render(&self, index: usize, ctx: RenderContext) -> Result<Rendered, ModError> {
+        let r#mod = self.mods.get(index).ok_or_else(|| ModError {
+            r#mod: format!("#{index}"),
             phase: Phase::Render,
             message: "mod index out of range".to_string(),
         })?;
 
-        if plugin.capabilities.contains(&Capability::Files) {
-            self.file_rendered.borrow_mut().insert(plugin.path.clone());
+        if r#mod.capabilities.contains(&Capability::Files) {
+            self.file_rendered.borrow_mut().insert(r#mod.path.clone());
         }
 
         // A pure pane asked at the same epoch, in the same rect, with the same
@@ -2218,7 +2212,7 @@ impl LuaHost {
                 self.state_version.get(),
             )
         });
-        if plugin.pure {
+        if r#mod.pure {
             if let Some(key) = key {
                 if let Some(cached) = self.trees.borrow().get(&index) {
                     if cached.answers(&key) {
@@ -2226,7 +2220,7 @@ impl LuaHost {
                             .set(self.rendered_reads.get() | cached.reads_sample);
                         self.skipped_renders.set(self.skipped_renders.get() + 1);
                         if self.perf_timing.get() {
-                            self.plugin_perf.borrow_mut().stats_mut(&plugin.path).reused += 1;
+                            self.mod_perf.borrow_mut().stats_mut(&r#mod.path).reused += 1;
                         }
                         return Ok(cached.rendered.clone());
                     }
@@ -2236,13 +2230,13 @@ impl LuaHost {
 
         let start = self.call_started();
         let writes = self.store_writes.get();
-        let result = self.render_lua(index, plugin, ctx, key);
+        let result = self.render_lua(index, r#mod, ctx, key);
         self.rendered_reads
             .set(self.rendered_reads.get() | self.sample_read.get());
-        if let Some(took) = self.call_finished(plugin, start) {
+        if let Some(took) = self.call_finished(r#mod, start) {
             let (all, tables) = self.store_writes.get();
-            let mut table = self.plugin_perf.borrow_mut();
-            let stats = table.stats_mut(&plugin.path);
+            let mut table = self.mod_perf.borrow_mut();
+            let stats = table.stats_mut(&r#mod.path);
             stats.renders += 1;
             stats.render.record(took);
             stats.idle_renders += u64::from(self.idle.get());
@@ -2251,7 +2245,7 @@ impl LuaHost {
             match &result {
                 Ok(rendered) => {
                     stats.note_tree(&rendered.node);
-                    stats.closed_renders += u64::from(plugin.floats && rendered.float.is_none());
+                    stats.closed_renders += u64::from(r#mod.floats && rendered.float.is_none());
                 }
                 Err(_) => stats.failures += 1,
             }
@@ -2259,22 +2253,22 @@ impl LuaHost {
         result
     }
 
-    /// The uncached half of [`Self::render`]: call the plugin and convert what it
+    /// The uncached half of [`Self::render`]: call the mod and convert what it
     /// returned, caching the tree for a pure pane.
     fn render_lua(
         &self,
         index: usize,
-        plugin: &Plugin,
+        r#mod: &Mod,
         ctx: RenderContext,
         key: Option<TreeKey>,
-    ) -> Result<Rendered, PluginError> {
-        let fail = |message: String| PluginError {
-            plugin: plugin.name.clone(),
+    ) -> Result<Rendered, ModError> {
+        let fail = |message: String| ModError {
+            r#mod: r#mod.name.clone(),
             phase: Phase::Render,
             message,
         };
 
-        let render: Function = plugin
+        let render: Function = r#mod
             .def
             .get("render")
             .map_err(|e| fail(format!("no render function: {e}")))?;
@@ -2299,29 +2293,29 @@ impl LuaHost {
             .set("frame", ctx.frame)
             .map_err(|e| fail(e.to_string()))?;
         table
-            .set("name", plugin.name.clone())
+            .set("name", r#mod.name.clone())
             .map_err(|e| fail(e.to_string()))?;
         table
-            .set("slot", plugin.slot.clone())
+            .set("slot", r#mod.slot.clone())
             .map_err(|e| fail(e.to_string()))?;
 
-        if plugin.capabilities.contains(&Capability::Files) {
-            self.file_wants.borrow_mut().remove(&plugin.path);
+        if r#mod.capabilities.contains(&Capability::Files) {
+            self.file_wants.borrow_mut().remove(&r#mod.path);
         }
-        self.enter(plugin);
+        self.enter(r#mod);
         let result: Result<Value, mlua::Error> =
             Budget::arm(&self.lua).and_then(|_budget| render.call(table));
 
         let value = result.map_err(|e| fail(clean_error(&e)))?;
         let float = read_float(&value).map_err(fail)?;
-        let node = convert::to_node(&value, &plugin.path).map_err(fail)?;
+        let node = convert::to_node(&value, &r#mod.path).map_err(fail)?;
         // Behind the `Rc` from birth, so caching it and every later hand-out
         // is a refcount bump — see [`Rendered`].
         let rendered = Rendered {
             node: std::rc::Rc::new(node),
             float,
         };
-        if plugin.pure {
+        if r#mod.pure {
             if let Some(key) = key {
                 self.trees.borrow_mut().insert(
                     index,
@@ -2340,17 +2334,17 @@ impl LuaHost {
         Ok(rendered)
     }
 
-    /// Offer the native cycle to a floating plugin. A missing hook or `false`
+    /// Offer the native cycle to a floating mod. A missing hook or `false`
     /// leaves the ordinary pane cycle in charge. Uses the key hook's budget.
-    pub fn on_focus_cycle(&self, index: usize, direction: &str) -> Result<bool, PluginError> {
-        if !self.plugins.get(index).is_some_and(|plugin| plugin.floats) {
+    pub fn on_focus_cycle(&self, index: usize, direction: &str) -> Result<bool, ModError> {
+        if !self.mods.get(index).is_some_and(|r#mod| r#mod.floats) {
             return Ok(false);
         }
         self.boolean_key_hook(index, "on_focus_cycle", |_| Ok(direction))
     }
 
-    /// Offer a key to one plugin. `Ok(true)` means it consumed the key.
-    pub fn on_key(&self, index: usize, key: &KeyPress) -> Result<bool, PluginError> {
+    /// Offer a key to one mod. `Ok(true)` means it consumed the key.
+    pub fn on_key(&self, index: usize, key: &KeyPress) -> Result<bool, ModError> {
         self.boolean_key_hook(index, "on_key", |lua| {
             let table = lua.create_table()?;
             table.set("key", key.name.clone())?;
@@ -2368,39 +2362,39 @@ impl LuaHost {
         index: usize,
         name: &str,
         arguments: impl FnOnce(&Lua) -> mlua::Result<A>,
-    ) -> Result<bool, PluginError> {
-        let Some(plugin) = self.plugins.get(index) else {
+    ) -> Result<bool, ModError> {
+        let Some(r#mod) = self.mods.get(index) else {
             return Ok(false);
         };
-        let fail = |message: String| PluginError {
-            plugin: plugin.name.clone(),
+        let fail = |message: String| ModError {
+            r#mod: r#mod.name.clone(),
             phase: Phase::Key,
             message,
         };
-        let handler: Value = plugin.def.get(name).map_err(|e| fail(e.to_string()))?;
+        let handler: Value = r#mod.def.get(name).map_err(|e| fail(e.to_string()))?;
         let Value::Function(handler) = handler else {
             return Ok(false);
         };
         let args = arguments(&self.lua).map_err(|e| fail(clean_error(&e)))?;
         let start = self.call_started();
-        self.enter(plugin);
+        self.enter(r#mod);
         let handled: Result<bool, mlua::Error> =
             Budget::arm(&self.lua).and_then(|_budget| handler.call(args));
-        self.hook_finished(plugin, start, Hook::Key, handled.is_err());
+        self.hook_finished(r#mod, start, Hook::Key, handled.is_err());
         handled.map_err(|e| fail(clean_error(&e)))
     }
 
-    /// Offer a click to the plugin that painted the node under it.
+    /// Offer a click to the mod that painted the node under it.
     ///
     /// Reached only for identity the kernel has no verb for — a list row, say.
     /// The verbs it does know ([`super::node::ClickVerb`]) are answered by the
     /// loop itself, so a footer pill or a modal button needs no `on_click` at
     /// all and cannot behave differently from its key.
-    pub fn on_click(&self, index: usize, click: &Click) -> Result<bool, PluginError> {
+    pub fn on_click(&self, index: usize, click: &Click) -> Result<bool, ModError> {
         self.pointer_hook(index, click, "on_click")
     }
 
-    /// Offer a RIGHT press to the plugin that painted the node under it.
+    /// Offer a RIGHT press to the mod that painted the node under it.
     ///
     /// Its own hook rather than a `button` field on [`Click`], because the two
     /// presses do not mean the same thing to anyone. Every `on_click` written
@@ -2413,7 +2407,7 @@ impl LuaHost {
     /// For the same reason the kernel does NOT resolve its own verbs here: a
     /// pill's action is what its LEFT press and its key do, and a right press
     /// on it means nothing until somebody says so.
-    pub fn on_context(&self, index: usize, click: &Click) -> Result<bool, PluginError> {
+    pub fn on_context(&self, index: usize, click: &Click) -> Result<bool, ModError> {
         self.pointer_hook(index, click, "on_context")
     }
 
@@ -2424,22 +2418,22 @@ impl LuaHost {
     /// menu needs in order to close. Its own hook for `on_context`'s reason: a
     /// float written before it existed is told nothing, so every modal keeps
     /// swallowing a stray press exactly as it did.
-    pub fn on_outside(&self, index: usize, click: &Click) -> Result<bool, PluginError> {
+    pub fn on_outside(&self, index: usize, click: &Click) -> Result<bool, ModError> {
         self.pointer_hook(index, click, "on_outside")
     }
 
     /// The body every pointer hook shares: same payload, different name.
-    fn pointer_hook(&self, index: usize, click: &Click, hook: &str) -> Result<bool, PluginError> {
-        let Some(plugin) = self.plugins.get(index) else {
+    fn pointer_hook(&self, index: usize, click: &Click, hook: &str) -> Result<bool, ModError> {
+        let Some(r#mod) = self.mods.get(index) else {
             return Ok(false);
         };
-        let fail = |message: String| PluginError {
-            plugin: plugin.name.clone(),
+        let fail = |message: String| ModError {
+            r#mod: r#mod.name.clone(),
             phase: Phase::Key,
             message,
         };
 
-        let handler: Value = plugin.def.get(hook).map_err(|e| fail(e.to_string()))?;
+        let handler: Value = r#mod.def.get(hook).map_err(|e| fail(e.to_string()))?;
         let Value::Function(handler) = handler else {
             return Ok(false);
         };
@@ -2472,30 +2466,30 @@ impl LuaHost {
             .map_err(|e| fail(e.to_string()))?;
 
         let start = self.call_started();
-        self.enter(plugin);
+        self.enter(r#mod);
         let handled: Result<bool, mlua::Error> =
             Budget::arm(&self.lua).and_then(|_budget| handler.call(table));
-        self.hook_finished(plugin, start, Hook::Click, handled.is_err());
+        self.hook_finished(r#mod, start, Hook::Click, handled.is_err());
 
         handled.map_err(|e| fail(clean_error(&e)))
     }
 
-    /// Offer a wheel tick to the plugin whose pane is under the pointer.
+    /// Offer a wheel tick to the mod whose pane is under the pointer.
     ///
     /// Declining (`false`, or declaring no `on_scroll` at all) is what puts the
     /// tick back on the keystroke path, so a pane that already scrolls by
     /// `up`/`down` needs nothing here. See [`Scroll`].
-    pub fn on_scroll(&self, index: usize, scroll: &Scroll) -> Result<bool, PluginError> {
-        let Some(plugin) = self.plugins.get(index) else {
+    pub fn on_scroll(&self, index: usize, scroll: &Scroll) -> Result<bool, ModError> {
+        let Some(r#mod) = self.mods.get(index) else {
             return Ok(false);
         };
-        let fail = |message: String| PluginError {
-            plugin: plugin.name.clone(),
+        let fail = |message: String| ModError {
+            r#mod: r#mod.name.clone(),
             phase: Phase::Key,
             message,
         };
 
-        let handler: Value = plugin
+        let handler: Value = r#mod
             .def
             .get("on_scroll")
             .map_err(|e| fail(e.to_string()))?;
@@ -2511,10 +2505,10 @@ impl LuaHost {
         table.set("y", scroll.y).map_err(|e| fail(e.to_string()))?;
 
         let start = self.call_started();
-        self.enter(plugin);
+        self.enter(r#mod);
         let handled: Result<bool, mlua::Error> =
             Budget::arm(&self.lua).and_then(|_budget| handler.call(table));
-        self.hook_finished(plugin, start, Hook::Scroll, handled.is_err());
+        self.hook_finished(r#mod, start, Hook::Scroll, handled.is_err());
 
         handled.map_err(|e| fail(clean_error(&e)))
     }
@@ -2524,7 +2518,7 @@ impl LuaHost {
     /// `ui/layout.lua` is loaded once per *reload*, not once per frame. Reading
     /// it every frame both wasted a syscall on the render path and — because
     /// inotify reports reads — made the host look like it was editing its own
-    /// plugins, which kept the reload debounce rolling forward forever.
+    /// mods, which kept the reload debounce rolling forward forever.
     pub fn arrangement(&self, width: u16, height: u16) -> Result<std::rc::Rc<Region>, String> {
         // The dynamic arrangement is a Lua call plus a node-by-node conversion,
         // and the static one a whole-Region clone — per frame, from inputs
@@ -2574,9 +2568,9 @@ impl LuaHost {
             }),
             Arrangement::Static(region) => Ok(region.clone()),
             Arrangement::Dynamic(arrange) => {
-                // `layout.lua` is not a plugin: it declares no capabilities and has
+                // `layout.lua` is not a mod: it declares no capabilities and has
                 // no trust record, so it must not execute under whichever grant the
-                // last plugin call left installed.
+                // last mod call left installed.
                 self.enter_nothing();
                 let ctx = self.lua.create_table().map_err(|e| e.to_string())?;
                 ctx.set("width", width).map_err(|e| e.to_string())?;
@@ -2595,39 +2589,39 @@ impl LuaHost {
         }
     }
 
-    /// Slots a loaded plugin would actually paint into, as `{ [slot] = true }`.
+    /// Slots a loaded mod would actually paint into, as `{ [slot] = true }`.
     ///
     /// Published to the arrangement so it can decline to reserve a rect nothing
     /// will fill. Without it the two switches that remove a pane disagree: the
     /// panel toggle is arrangement state and the disabled set is delivery state,
-    /// and `layout.lua` could only see the first — so turning a plugin off left
+    /// and `layout.lua` could only see the first — so turning a mod off left
     /// its column reserved and empty, which is the opposite of the promise that
     /// the arrangement closes up around what is left.
     ///
     /// Floats and decorators are excluded for the same reason they are excluded
     /// from [`Self::in_slot`]: a float draws *above* the arrangement and a
-    /// decorator draws *into* another plugin's tree, so neither one filling a
+    /// decorator draws *into* another mod's tree, so neither one filling a
     /// slot is a reason to carve space out of the screen for it.
     pub fn occupied_slots(&self) -> BTreeSet<&str> {
-        self.plugins
+        self.mods
             .iter()
-            .filter(|plugin| plugin.decorates.is_none() && !plugin.floats)
-            .map(|plugin| plugin.slot.as_str())
+            .filter(|r#mod| r#mod.decorates.is_none() && !r#mod.floats)
+            .map(|r#mod| r#mod.slot.as_str())
             .collect()
     }
 
-    /// Slots a loaded plugin occupies that the arrangement places nowhere.
+    /// Slots a loaded mod occupies that the arrangement places nowhere.
     ///
-    /// The failure this answers is invisible to every other check: such a plugin
+    /// The failure this answers is invisible to every other check: such a mod
     /// compiles, declares its keys, appears in the inventory and draws nothing.
     /// Reported by slot; the caller names the files, since it is the one holding
-    /// the plugin list the user recognises.
+    /// the mod list the user recognises.
     ///
-    /// Two kinds of plugin are excluded before the question is asked, because
+    /// Two kinds of mod are excluded before the question is asked, because
     /// neither is broken and reporting them would train the reader to ignore the
     /// answer. [`Self::occupied_slots`] already drops **floats** (they draw above
-    /// the arrangement) and **decorators** (they draw into another plugin's
-    /// tree); a **disabled** plugin never reaches `plugins` at all, since being
+    /// the arrangement) and **decorators** (they draw into another mod's
+    /// tree); a **disabled** mod never reaches `mods` at all, since being
     /// disabled is implemented as not loading the file.
     ///
     /// A third kind is handled by [`Self::placed_slots`], which this defers to: a
@@ -2671,7 +2665,7 @@ impl LuaHost {
     /// what the bundled arrangement places above the bars.
     ///
     /// This is how a pane that needs a row of its own arrives on screen without
-    /// `plugin install` writing `layout.lua`, which it never does: placement is
+    /// `mod install` writing `layout.lua`, which it never does: placement is
     /// the user's, so the arrangement still decides, by iterating this list in
     /// the file the user owns. Floats and decorators are excluded for the reason
     /// [`Self::occupied_slots`] gives — neither paints into a carved-out rect.
@@ -2683,11 +2677,11 @@ impl LuaHost {
     /// switch, which shows one at a time.
     pub fn strips(&self) -> Vec<(&str, u16)> {
         let mut strips: Vec<(&str, u16)> = Vec::new();
-        for plugin in &self.plugins {
-            let slot = plugin.slot.as_str();
-            if !plugin.strip
-                || plugin.decorates.is_some()
-                || plugin.floats
+        for r#mod in &self.mods {
+            let slot = r#mod.slot.as_str();
+            if !r#mod.strip
+                || r#mod.decorates.is_some()
+                || r#mod.floats
                 || strips.iter().any(|(placed, _)| *placed == slot)
             {
                 continue;
@@ -2695,7 +2689,7 @@ impl LuaHost {
             let lens = self
                 .in_slot(slot)
                 .iter()
-                .map(|index| &self.plugins[*index])
+                .map(|index| &self.mods[*index])
                 .filter(|occupant| !occupant.floats)
                 .map(|occupant| occupant.size.len.unwrap_or(1).max(1));
             let len = match self.slot_mode(slot) {
@@ -2729,14 +2723,14 @@ impl LuaHost {
     /// Why this pane may be impossible to find, if it may be.
     ///
     /// The one install that cannot demonstrate itself. A pane whose slot no
-    /// arrangement places fails `plugin check` loudly. A pane that is the **alternate
+    /// arrangement places fails `mod check` loudly. A pane that is the **alternate
     /// occupant of a `switch` slot** passes every check, reports `installed`, and
     /// shows the user nothing: the slot's first occupant draws, and this one waits to
     /// be focused. Somebody who installs it, follows its README and launches sees an
     /// unchanged screen and reasonably concludes the install failed.
     ///
     /// The kernel already offers three ways to reach it — the action band, `F1`, and
-    /// a `focus:<plugin>` click role — but none of them is automatic. The focus
+    /// a `focus:<mod>` click role — but none of them is automatic. The focus
     /// cycle is not one: it stops once per switch slot, on the default occupant
     /// (`kernel::focus::next_in_cycle`).
     /// A **pill** is: it is declared data the band enumerates without invoking
@@ -2747,18 +2741,18 @@ impl LuaHost {
     /// `None` when the pane draws by default, or when it declares a pill and is
     /// therefore advertised.
     pub fn undiscoverable(&self, index: usize) -> Option<String> {
-        let plugin = self.plugins.get(index)?;
-        if plugin.floats || plugin.decorates.is_some() {
+        let r#mod = self.mods.get(index)?;
+        if r#mod.floats || r#mod.decorates.is_some() {
             return None;
         }
-        if self.slot_mode(&plugin.slot) != SlotMode::Switch {
+        if self.slot_mode(&r#mod.slot) != SlotMode::Switch {
             return None;
         }
         // The first occupant of a switch slot is the one that draws.
-        if self.in_slot(&plugin.slot).first() == Some(&index) {
+        if self.in_slot(&r#mod.slot).first() == Some(&index) {
             return None;
         }
-        if !plugin.pills.is_empty() {
+        if !r#mod.pills.is_empty() {
             return None;
         }
         Some(format!(
@@ -2766,7 +2760,7 @@ impl LuaHost {
              pill — so nothing on screen offers it. Declare one \
              (`pills = {{ {{ action = \"…\", label = \"…\" }} }}`) or only a key of its \
              own reaches it — Ctrl+H/Ctrl+L never stop on it.",
-            plugin.slot
+            r#mod.slot
         ))
     }
 
@@ -2776,12 +2770,12 @@ impl LuaHost {
     /// and letting it win took the slot's real pane out of the cycle.
     pub fn switch_default(&self, slot: &str) -> Option<usize> {
         self.in_slot(slot).iter().copied().find(|index| {
-            let plugin = &self.plugins[*index];
-            plugin.focusable && !plugin.floats
+            let r#mod = &self.mods[*index];
+            r#mod.focusable && !r#mod.floats
         })
     }
 
-    /// Slot mode, declared by any plugin in the slot. Stack unless one says
+    /// Slot mode, declared by any mod in the slot. Stack unless one says
     /// otherwise, so the common case needs no declaration. Read off the index
     /// built at load — the declaration is static, and answering it through the
     /// Lua table cost a metamethod-capable read per slot member per placement

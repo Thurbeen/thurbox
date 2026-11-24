@@ -466,7 +466,7 @@ impl Terminals {
     /// Every attach failure, keyed by session id.
     ///
     /// Owned rather than borrowed because the record carries what was *tried* as
-    /// well as the message, and only the message is a plugin's business.
+    /// well as the message, and only the message is a mod's business.
     pub fn failures(&self) -> HashMap<String, String> {
         self.attach
             .failed

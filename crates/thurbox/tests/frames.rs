@@ -217,20 +217,20 @@ fn index_of(host: &LuaHost, name: &str) -> usize {
 
 /// Press a key the way the loop does: a declared chord resolves through the
 /// registry to `on_action`, anything else goes to `on_key`.
-fn press(host: &LuaHost, plugin: &str, ch: char) {
+fn press(host: &LuaHost, r#mod: &str, ch: char) {
     let key = KeyPress {
         name: ch.to_lowercase().to_string(),
         ch: Some(ch),
         ..KeyPress::default()
     };
-    if let Some(binding) = registry(host).resolve(&key, Some(plugin)) {
-        if let Some(index) = host.index_of(&binding.plugin) {
+    if let Some(binding) = registry(host).resolve(&key, Some(r#mod)) {
+        if let Some(index) = host.index_of(&binding.r#mod) {
             if host.on_action(index, &binding.action).expect("action") {
                 return;
             }
         }
     }
-    host.on_key(index_of(host, plugin), &key).expect("key");
+    host.on_key(index_of(host, r#mod), &key).expect("key");
 }
 
 // --- painting ---------------------------------------------------------------
@@ -631,7 +631,7 @@ fn a_selected_host_row_is_one_bar_rule_included() {
 
 // --- node props -------------------------------------------------------------
 
-/// Convert a Lua node table the way a plugin's return value is converted, then
+/// Convert a Lua node table the way a mod's return value is converted, then
 /// paint it alone into a fresh buffer.
 fn paint_lua_node(source: &str, width: u16, height: u16) -> Buffer {
     let lua = mlua::Lua::new();

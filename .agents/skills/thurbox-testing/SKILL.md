@@ -58,10 +58,10 @@ kernel over the real `ui/`** rather than a harness that imitates either:
 - **The per-surface files** — one file per surface or contract:
   `session_list`, `search`, `new_session`, `terminal_pane`,
   `keymap`, `focus`, `modals`, `chrome`, `mouse`, `hover`, `decoration`,
-  `plugin_{authoring,commands,lifecycle,settings,switching}`, `core_settings`.
+  `mod_{authoring,commands,lifecycle,settings,switching}`, `core_settings`.
   Several build an interface in a tempdir from the embedded copy, so delivery and
   loading are exercised together.
-  `plugin_switching` also runs the registry persistence path in an isolated child
+  `mod_switching` also runs the registry persistence path in an isolated child
   process under a Unix file-size limit: the forced mid-write failure must preserve
   every byte of the prior `mod-state.json` and `ui.json` and leave no staged
   file behind. The native

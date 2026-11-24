@@ -1,10 +1,10 @@
-//! Browsing a session's working directory, without giving plugins a filesystem.
+//! Browsing a session's working directory, without giving mods a filesystem.
 //!
 //! This is the case the prior v2 attempt called the sharpest test of the
 //! capability model, and it goes the same way here: the file viewer needs
-//! directory entries and file text, so the *kernel* reads them and the plugin
+//! directory entries and file text, so the *kernel* reads them and the mod
 //! only draws. Adding a filesystem capability to browse files would have been
-//! the easy wrong answer, and it would have handed every plugin — including
+//! the easy wrong answer, and it would have handed every mod — including
 //! ones nobody has written — the ability to read anything on the machine.
 //!
 //! Every read is rooted at a session's working directory and refuses anything
@@ -14,7 +14,7 @@ use std::path::{Component, Path, PathBuf};
 
 /// Largest file the viewer will read.
 ///
-/// A cap rather than streaming: the viewer renders text, and a plugin that
+/// A cap rather than streaming: the viewer renders text, and a mod that
 /// asked for a 2GB core dump should get a clear refusal rather than an
 /// out-of-memory.
 pub const MAX_FILE_BYTES: u64 = 2 * 1024 * 1024;
@@ -25,9 +25,9 @@ pub const MAX_ENTRIES: usize = 2_000;
 
 /// Session directory plus relative path: a changed root never reuses old text.
 pub type ReadKey = (PathBuf, String);
-/// Maximum distinct file-text dependencies a plugin may retain.
+/// Maximum distinct file-text dependencies a mod may retain.
 pub const MAX_READ_KEYS: usize = 16;
-/// The plugin file-text store.
+/// The mod file-text store.
 pub type ReadStore = super::worker_store::WorkerStore<ReadKey, Result<String, String>>;
 
 /// Reads are refreshed on workers, including while a pure pane holds its tree.
@@ -99,7 +99,7 @@ pub fn resolve(root: &Path, relative: &str) -> Result<PathBuf, String> {
 ///
 /// A symlink to a directory inside the served tree counts as a directory, so the
 /// flag agrees with what listing through that path and [`read`] already do with
-/// it. A plugin has no filesystem of its own, so this flag is the only thing it
+/// it. A mod has no filesystem of its own, so this flag is the only thing it
 /// can ask.
 pub fn list(root: &Path, relative: &str) -> Result<Vec<Entry>, String> {
     let path = resolve(root, relative)?;
@@ -117,7 +117,7 @@ pub fn list(root: &Path, relative: &str) -> Result<Vec<Entry>, String> {
         }
         let name = item.file_name().to_string_lossy().to_string();
         // `DirEntry::file_type` describes the link rather than its target, so a
-        // link to a directory was handed to a plugin as a file while `list` and
+        // link to a directory was handed to a mod as a file while `list` and
         // `read` through that same path both treated it as the directory it
         // points at. Gating on the link keeps the cost where the question is:
         // an ordinary entry in a node_modules-sized listing pays nothing it
@@ -137,7 +137,7 @@ pub fn list(root: &Path, relative: &str) -> Result<Vec<Entry>, String> {
 ///
 /// A link pointing out of the served tree answers `false` rather than its
 /// target's real type. `resolve` refuses to traverse such a link, so answering
-/// it here would hand a plugin the one thing the boundary exists to withhold —
+/// it here would hand a mod the one thing the boundary exists to withhold —
 /// whether some path outside the session is a directory. A target that cannot
 /// be resolved at all, dangling or a loop, is not a directory either, and
 /// nothing can expand it.
@@ -282,7 +282,7 @@ mod tests {
     #[test]
     fn a_symlink_out_of_the_directory_does_not_report_its_target() {
         // The target is a directory, and the listing must not say so: `resolve`
-        // refuses to open this path, and the flag is the only channel a plugin
+        // refuses to open this path, and the flag is the only channel a mod
         // has, so answering it would leak what the boundary withholds.
         #[cfg(unix)]
         {

@@ -1,4 +1,4 @@
-//! The command palette against the real bundled plugins: every action the
+//! The command palette against the real bundled mods: every action the
 //! registry knows is a row, typing filters them, and `Enter` runs the chosen one
 //! through the same path a key press takes.
 
@@ -21,7 +21,7 @@ fn host() -> LuaHost {
     host
 }
 
-/// The registry the binary builds: the plugins' declarations, their chord-less
+/// The registry the binary builds: the mods' declarations, their chord-less
 /// commands, and the kernel's own chords.
 fn registry(host: &LuaHost) -> Registry {
     let mut registry = Registry::default();
@@ -56,7 +56,7 @@ fn press(code: KeyCode) -> KeyEvent {
     KeyEvent::new(code, KeyModifiers::NONE)
 }
 
-/// Publish an empty world, so a plugin's handler has `thurbox.*` to read.
+/// Publish an empty world, so a mod's handler has `thurbox.*` to read.
 fn publish(host: &LuaHost, registry: &Registry) {
     let themes = Themes::load(None);
     let diffs = thurbox::kernel::diff::DiffStore::new();
@@ -129,7 +129,7 @@ fn every_kind_of_action_is_a_row() {
     let host = host();
     let mut registry = registry(&host);
     registry.declare_commands(vec![CommandDecl {
-        plugin: "mine".into(),
+        r#mod: "mine".into(),
         action: "mine.export".into(),
         description: "export the list".into(),
     }]);
@@ -139,7 +139,7 @@ fn every_kind_of_action_is_a_row() {
     // A key-bound action, with its chord beside it.
     let delete = find("sessions.delete").expect("a plugin's key is a row");
     assert_eq!(delete.chords.as_deref(), Some("ctrl+d"));
-    assert_eq!(delete.plugin, "sessions");
+    assert_eq!(delete.r#mod, "sessions");
     // Alternates joined as help joins them: the pane-scoped keys and the global
     // `ctrl+j` are one action.
     let next = find("sessions.next").expect("a plugin's key is a row");
@@ -151,7 +151,7 @@ fn every_kind_of_action_is_a_row() {
     // The kernel's own: the modals with their chords, plus reload and quit,
     // which no binding backs.
     let help = find("help.open").expect("a kernel modal is a row");
-    assert_eq!(help.plugin, modals::OWNER);
+    assert_eq!(help.r#mod, modals::OWNER);
     assert_eq!(help.chords.as_deref(), Some("f1 / ctrl+g"));
     assert_eq!(find(RELOAD_ACTION).unwrap().chords.as_deref(), Some("f10"));
     assert_eq!(find(QUIT_ACTION).unwrap().chords.as_deref(), Some("ctrl+q"));
@@ -160,7 +160,7 @@ fn every_kind_of_action_is_a_row() {
 }
 
 #[test]
-fn a_disabled_plugins_actions_are_absent() {
+fn a_disabled_mods_actions_are_absent() {
     let mut host = host();
     host.set_disabled(vec!["mods/65_search.lua".to_string()]);
     host.reload();
@@ -225,14 +225,14 @@ fn typing_filters_and_enter_runs_the_selection_through_on_action() {
         &mut themes,
     )
     .expect("Enter hands the loop an action");
-    assert_eq!(dispatch.plugin, "search");
+    assert_eq!(dispatch.r#mod, "search");
     assert_eq!(dispatch.action, "search.open");
     assert!(!modals.is_open(), "closed before the loop runs it");
 
-    // What the loop then does: the owning plugin's `on_action`, whether or not
+    // What the loop then does: the owning mod's `on_action`, whether or not
     // it is focused — and the strip opens exactly as `ctrl+/` opens it.
     publish(&host, &registry);
-    let index = host.index_of(&dispatch.plugin).expect("the search pane");
+    let index = host.index_of(&dispatch.r#mod).expect("the search pane");
     assert!(host.on_action(index, &dispatch.action).expect("on_action"));
     assert_eq!(host.shared_bool("panels.search"), Some(true));
 }
@@ -281,7 +281,7 @@ fn a_chord_less_command_can_be_given_a_chord_and_is_then_a_key() {
         Vec::<Setting>::new(),
     );
     registry.declare_commands(vec![CommandDecl {
-        plugin: "mine".into(),
+        r#mod: "mine".into(),
         action: "mine.export".into(),
         description: "export the list".into(),
     }]);
@@ -336,7 +336,7 @@ fn a_key_and_a_command_for_one_action_are_one_row_with_the_chord() {
         Vec::<Setting>::new(),
     );
     registry.declare_commands(vec![CommandDecl {
-        plugin: "mine".into(),
+        r#mod: "mine".into(),
         action: "mine.export".into(),
         description: "export the list".into(),
     }]);
@@ -381,7 +381,7 @@ fn the_palette_frame_is_pinned() {
         Vec::<Setting>::new(),
     );
     registry.declare_commands(vec![CommandDecl {
-        plugin: "mine".into(),
+        r#mod: "mine".into(),
         action: "mine.export".into(),
         description: "export the list".into(),
     }]);
@@ -458,7 +458,7 @@ fn the_agent_pane_is_reachable_by_name_from_the_palette() {
             .iter()
             .find(|row| row.action == action)
             .unwrap_or_else(|| panic!("{action} is not a palette row"));
-        assert_eq!(row.plugin, "agent");
+        assert_eq!(row.r#mod, "agent");
         assert_eq!(row.chords, None, "{action} is chord-less");
     }
     publish(&host, &registry);
@@ -468,7 +468,7 @@ fn the_agent_pane_is_reachable_by_name_from_the_palette() {
     assert_eq!(
         issued,
         vec![thurbox::kernel::command::Command::Focus {
-            plugin: "agent".into(),
+            r#mod: "agent".into(),
             toggle: false
         }]
     );

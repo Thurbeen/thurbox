@@ -1,8 +1,8 @@
-//! The plugin kernel: a session engine with a Lua-driven renderer.
+//! The mod kernel: a session engine with a Lua-driven renderer.
 //!
 //! The kernel owns no pane. It owns a *vocabulary* ([`node`], four primitives),
 //! the arithmetic that resolves where things go ([`layout`]), a read-only view
-//! of the session engine ([`snapshot`]), and the VM that plugins run in
+//! of the session engine ([`snapshot`]), and the VM that mods run in
 //! ([`host`]). Everything a user sees — the session list included — is Lua.
 
 pub mod bands;
@@ -41,14 +41,14 @@ pub mod updates;
 pub mod watch;
 pub mod worker_store;
 
-/// Hand `registry` everything the interface declares: every loaded plugin's
+/// Hand `registry` everything the interface declares: every loaded mod's
 /// keys, settings, pills and chord-less commands, plus the kernel's own chords
 /// and action-band entries.
 ///
 /// One function because two readers must agree on what "declared" means. The
 /// loop publishes from it, and `thurbox-cli mod check` builds the same
 /// registry to ask why a pill was dropped — and a registry missing the kernel's
-/// own bindings would report a plugin's pill for `help.open` as naming an
+/// own bindings would report a mod's pill for `help.open` as naming an
 /// action nothing declares, which is the diagnostic wrong in exactly the case
 /// it exists for.
 pub fn declare_interface(registry: &mut registry::Registry, host: &host::LuaHost) {

@@ -1,6 +1,6 @@
 //! Where focus may rest, and what is actually drawn.
 //!
-//! Two questions that look like one and are not, which is how the plugins pane
+//! Two questions that look like one and are not, which is how the mods pane
 //! became unreachable: it is an *alternate* occupant of the centre `switch`
 //! slot, and the loop asked "is it drawn?" when deciding whether focus could
 //! stay on it. The answer was no — a switch slot draws one occupant — so the
@@ -16,7 +16,7 @@
 //! Kept here rather than in the binary because it is the rule that was wrong,
 //! and a rule worth a test is worth a home.
 
-/// A plugin's position in its slot, as far as these two questions care.
+/// A mod's position in its slot, as far as these two questions care.
 ///
 /// `chosen_in_switch` is `None` for a slot that draws every occupant (a stack,
 /// or a slot with one), `Some(true)` for the visible occupant of a `switch`
@@ -37,7 +37,7 @@ pub struct Placement {
     pub chosen_in_switch: Option<bool>,
 }
 
-/// Is this plugin on screen right now?
+/// Is this mod on screen right now?
 ///
 /// The strict question, and the one the interface's own inventory answers with
 /// `visible` / `hidden`: an alternate of a switch slot is placed in the sense
@@ -59,7 +59,7 @@ pub fn is_drawn(placement: Placement) -> bool {
     placement.chosen_in_switch.unwrap_or(true)
 }
 
-/// May focus rest on this plugin?
+/// May focus rest on this mod?
 ///
 /// Differs from [`is_drawn`] in exactly one case, and it is the case that made a
 /// pane unreachable: a switch alternate is not drawn *yet*, and focusing it is

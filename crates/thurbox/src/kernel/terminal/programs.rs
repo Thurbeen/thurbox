@@ -1,7 +1,7 @@
-//! Program panes plugins asked for (`Capability::Program`).
+//! Program panes mods asked for (`Capability::Program`).
 //!
-//! A pane belongs to a **plugin**, not a session: the kernel stamps the owner
-//! from the plugin being rendered, so naming another plugin's pane is
+//! A pane belongs to a **mod**, not a session: the kernel stamps the owner
+//! from the mod being rendered, so naming another mod's pane is
 //! impossible by construction. The slots live on [`Terminals`] beside the
 //! session panes because a pane needs everything that struct already holds —
 //! the backend registry, the paint seam, the redraw stamp, the rect memo — and
@@ -16,24 +16,24 @@ use tracing::debug;
 
 use super::Terminals;
 
-/// Which plugin's pane, and which of that plugin's panes.
+/// Which mod's pane, and which of that mod's panes.
 ///
-/// The plugin is identified by **path**, the identity trust, the disabled set,
+/// The mod is identified by **path**, the identity trust, the disabled set,
 /// `run`'s attribution and the inventory all already use. Keying on a declared
 /// name instead would let two files claim one pane by declaring the same name,
-/// and would move a pane when its author renamed the plugin.
+/// and would move a pane when its author renamed the mod.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct ProgramKey {
-    /// The owning plugin's path, relative to the interface directory.
-    pub plugin: String,
-    /// The name the plugin gave this pane.
+    /// The owning mod's path, relative to the interface directory.
+    pub r#mod: String,
+    /// The name the mod gave this pane.
     pub name: String,
 }
 
 impl ProgramKey {
-    pub fn new(plugin: &str, name: &str) -> Self {
+    pub fn new(r#mod: &str, name: &str) -> Self {
         Self {
-            plugin: plugin.to_string(),
+            r#mod: r#mod.to_string(),
             name: name.to_string(),
         }
     }
@@ -43,7 +43,7 @@ impl ProgramKey {
     /// Prefixed so it cannot be confused with a session id, which is a UUID, and
     /// so a paint can tell the two apart by inspection.
     pub fn surface_id(&self) -> String {
-        format!("{PROGRAM_SURFACE_PREFIX}{}#{}", self.plugin, self.name)
+        format!("{PROGRAM_SURFACE_PREFIX}{}#{}", self.r#mod, self.name)
     }
 }
 
@@ -60,10 +60,10 @@ pub enum ProgramTransition {
     Replaced(ProgramKey, String),
 }
 
-/// Does this surface id name a plugin's program rather than a session?
+/// Does this surface id name a mod's program rather than a session?
 ///
 /// A prefix test, and deliberately **not** a parse. Splitting the id back into
-/// `(plugin, name)` looked obvious and is ambiguous in both directions: a pane
+/// `(mod, name)` looked obvious and is ambiguous in both directions: a pane
 /// name may contain the separator, and so — on POSIX — may a file name, so
 /// neither the first nor the last `#` is reliably the right one. Since the keys
 /// are what *generate* these ids, the way back is to look one up
@@ -92,23 +92,23 @@ pub fn validate_program_name(name: &str) -> Result<(), String> {
     Ok(())
 }
 
-/// Marks a surface id as naming a plugin's program rather than a session.
+/// Marks a surface id as naming a mod's program rather than a session.
 ///
 /// A session id is a UUID, so no session can collide with this — but it is
 /// spelled out rather than relying on that, because "a session id is a UUID" is a
 /// fact about the id generator and this is a parsing rule.
 pub const PROGRAM_SURFACE_PREFIX: &str = "program:";
 
-/// The most panes one plugin may hold at once.
+/// The most panes one mod may hold at once.
 ///
 /// Matches `runs::MAX_CONCURRENT` so there is one number to remember rather than
 /// two. `run`'s other bounds deliberately do not transfer — an output cap is
 /// meaningless for a screen overwritten in place, and a timeout is the opposite of
 /// what an interactive program wants — which leaves how many as the only thing
 /// left to bound, and the reason the capability is granted separately.
-pub const MAX_PROGRAMS_PER_PLUGIN: usize = 4;
+pub const MAX_PROGRAMS_PER_MOD: usize = 4;
 
-/// Which panes belong to a plugin that is no longer loaded.
+/// Which panes belong to a mod that is no longer loaded.
 ///
 /// Separated from releasing them so the decision is testable without a
 /// multiplexer — releasing kills a real process, choosing what to release is a set
@@ -117,39 +117,39 @@ fn stale_program_keys<'a>(
     keys: impl Iterator<Item = &'a ProgramKey>,
     live: &[String],
 ) -> Vec<ProgramKey> {
-    keys.filter(|key| !live.contains(&key.plugin))
+    keys.filter(|key| !live.contains(&key.r#mod))
         .cloned()
         .collect()
 }
 
-/// May a plugin already holding `held` panes take one more, for `program`?
+/// May a mod already holding `held` panes take one more, for `program`?
 ///
 /// Pure, and separated from starting the pane for the reason `bundled::decide`
 /// is: the decision is the part worth testing, and testing it through the spawn
 /// would need a multiplexer, which the unit suite deliberately does not have.
 ///
-/// The refusal is a message rather than a silent no, because the plugin surfaces
+/// The refusal is a message rather than a silent no, because the mod surfaces
 /// it — a pane that says why it is empty is the difference between a bound and a
 /// bug.
-fn admit_program(plugin: &str, held: usize, program: &str) -> Result<(), String> {
+fn admit_program(r#mod: &str, held: usize, program: &str) -> Result<(), String> {
     if program.trim().is_empty() {
         return Err("a program pane needs a program to run".to_string());
     }
-    if held >= MAX_PROGRAMS_PER_PLUGIN {
+    if held >= MAX_PROGRAMS_PER_MOD {
         return Err(format!(
-            "{plugin} already holds {held} program panes (the limit is \
-             {MAX_PROGRAMS_PER_PLUGIN})"
+            "{mod} already holds {held} program panes (the limit is \
+             {MAX_PROGRAMS_PER_MOD})"
         ));
     }
     Ok(())
 }
 
-/// What `keys` sent to a plugin's pane should do.
+/// What `keys` sent to a mod's pane should do.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum KeysPlan {
     /// The program is running: type at it.
     Send,
-    /// Nothing is running and the plugin named a program: start that instead.
+    /// Nothing is running and the mod named a program: start that instead.
     Start,
     /// Nothing is running and nothing was named to start.
     Refuse(String),
@@ -163,35 +163,35 @@ pub enum KeysPlan {
 /// as "not running", that refusal was reported as a missing program, or handed
 /// to the start — which answers `Ok` for the pane already there, so the keys
 /// were lost with nothing said. Pure for the reason `admit_program` is.
-pub fn plan_keys(plugin: &str, name: &str, running: bool, program: &str) -> KeysPlan {
+pub fn plan_keys(r#mod: &str, name: &str, running: bool, program: &str) -> KeysPlan {
     if running {
         return KeysPlan::Send;
     }
     if program.trim().is_empty() {
         return KeysPlan::Refuse(format!(
-            "{plugin} has no running program named {name:?} to type into"
+            "{mod} has no running program named {name:?} to type into"
         ));
     }
     KeysPlan::Start
 }
 
-/// One plugin's program pane, and the rect it was last painted into.
+/// One mod's program pane, and the rect it was last painted into.
 pub(super) struct ProgramSlot {
     pub(super) pane: crate::backend::pane::ProgramPane,
     /// Where it was last painted and the size it was last told about — the same
     /// per-surface record a session's two panes each hold, and for the same
     /// reason: geometry belongs to one surface.
     pub(super) painted: super::Painted,
-    /// What the plugin asked to run, kept so a restart can re-adopt with the same
+    /// What the mod asked to run, kept so a restart can re-adopt with the same
     /// program recorded and a report can name it.
     pub(super) program: String,
 }
 
 impl Terminals {
-    /// Start `program` in a pane belonging to `key.plugin`, or keep the one it
+    /// Start `program` in a pane belonging to `key.mod`, or keep the one it
     /// already has.
     ///
-    /// **Idempotent**, deliberately: a plugin asks on every frame — the pattern
+    /// **Idempotent**, deliberately: a mod asks on every frame — the pattern
     /// `run` established — so asking for a pane that exists must be a map lookup
     /// and not a second copy of the program.
     ///
@@ -216,7 +216,7 @@ impl Terminals {
             // The exit has to be remembered before the slot that carries it is
             // replaced: `program.exited` is derived by comparing the live set
             // against the previous look, and the loop applies commands *before*
-            // it derives. A plugin asking to restart on the frame after its
+            // it derives. A mod asking to restart on the frame after its
             // program died would otherwise hand the deriver a live pane under
             // the same key, and the ending would never be announced.
             self.program_transitions.push(ProgramTransition::Replaced(
@@ -225,9 +225,9 @@ impl Terminals {
             ));
             self.release_program(key);
         }
-        admit_program(&key.plugin, self.program_count(&key.plugin), program)?;
+        admit_program(&key.r#mod, self.program_count(&key.r#mod), program)?;
 
-        // Local only, by design: a plugin-owned pane has no session and therefore
+        // Local only, by design: a mod-owned pane has no session and therefore
         // no host, so there is nothing to resolve one from. Recorded as an open
         // question rather than guessed at.
         let backend = Arc::clone(self.backends.default_backend());
@@ -238,7 +238,7 @@ impl Terminals {
         }
 
         let window = crate::backend::identity::program_window_name(
-            &crate::kernel::bundled::digest(&key.plugin),
+            &crate::kernel::bundled::digest(&key.r#mod),
             &key.name,
         );
         let env: HashMap<String, String> = HashMap::new();
@@ -355,7 +355,7 @@ impl Terminals {
     /// The key a surface id names, by matching against the keys that generate
     /// them — see `is_program_surface` for why this is a lookup and not a parse.
     ///
-    /// Linear over a map holding at most `MAX_PROGRAMS_PER_PLUGIN` per plugin,
+    /// Linear over a map holding at most `MAX_PROGRAMS_PER_MOD` per mod,
     /// on a path that runs once per program surface per frame.
     pub fn program_key(&self, surface: &str) -> Option<&ProgramKey> {
         if !is_program_surface(surface) {
@@ -364,11 +364,11 @@ impl Terminals {
         self.programs.keys().find(|key| key.surface_id() == surface)
     }
 
-    /// How many panes a plugin is holding.
-    pub fn program_count(&self, plugin: &str) -> usize {
+    /// How many panes a mod is holding.
+    pub fn program_count(&self, r#mod: &str) -> usize {
         self.programs
             .keys()
-            .filter(|key| key.plugin == plugin)
+            .filter(|key| key.r#mod == r#mod)
             .count()
     }
 
@@ -387,18 +387,18 @@ impl Terminals {
         }
     }
 
-    /// Release every pane held by a plugin that is no longer loaded.
+    /// Release every pane held by a mod that is no longer loaded.
     ///
-    /// Mirrors `runs::retain_plugins`, which `reload_interface` already calls for
-    /// the same reason: a plugin edited away, renamed, removed or turned off must
+    /// Mirrors `runs::retain_mods`, which `reload_interface` already calls for
+    /// the same reason: a mod edited away, renamed, removed or turned off must
     /// not leave anything of itself behind across reloads.
-    pub fn retain_program_plugins(&mut self, live: &[String]) {
+    pub fn retain_program_mods(&mut self, live: &[String]) {
         for key in stale_program_keys(self.programs.keys(), live) {
             self.release_program(&key);
         }
     }
 
-    /// Send bytes to a plugin's program.
+    /// Send bytes to a mod's program.
     ///
     /// The error says which refusal it was — no pane, a finished program, or an
     /// input channel that is full — because a caller that reports one as another
@@ -455,7 +455,7 @@ mod tests {
     use super::*;
 
     /// A program surface is distinguishable from a session's by inspection, and a
-    /// session id must never read as one — otherwise a plugin could aim
+    /// session id must never read as one — otherwise a mod could aim
     /// keystrokes at somebody's agent.
     #[test]
     fn a_program_surface_is_told_from_a_session_surface() {
@@ -501,19 +501,19 @@ mod tests {
     }
 
     #[test]
-    fn a_plugin_may_not_hold_unbounded_panes() {
-        for held in 0..MAX_PROGRAMS_PER_PLUGIN {
+    fn a_mod_may_not_hold_unbounded_panes() {
+        for held in 0..MAX_PROGRAMS_PER_MOD {
             assert!(
                 admit_program("mods/90_watch.lua", held, "watch").is_ok(),
                 "{held} should be admitted"
             );
         }
-        let refused = admit_program("mods/90_watch.lua", MAX_PROGRAMS_PER_PLUGIN, "watch")
+        let refused = admit_program("mods/90_watch.lua", MAX_PROGRAMS_PER_MOD, "watch")
             .expect_err("the limit is a limit");
-        // The refusal names the plugin and the limit, because the plugin shows it.
+        // The refusal names the mod and the limit, because the mod shows it.
         assert!(refused.contains("90_watch.lua"), "{refused}");
         assert!(
-            refused.contains(&MAX_PROGRAMS_PER_PLUGIN.to_string()),
+            refused.contains(&MAX_PROGRAMS_PER_MOD.to_string()),
             "{refused}"
         );
     }
@@ -570,17 +570,17 @@ mod tests {
         let KeysPlan::Refuse(error) = plan_keys("mods/90_editor.lua", "editor", false, "  ") else {
             panic!("nothing to type into and nothing to start must be refused");
         };
-        // Names the plugin and the pane, because the plugin shows it.
+        // Names the mod and the pane, because the mod shows it.
         assert!(error.contains("90_editor.lua"), "{error}");
         assert!(error.contains("\"editor\""), "{error}");
     }
 
-    /// A plugin that is still loaded keeps its pane; one that is gone does not.
+    /// A mod that is still loaded keeps its pane; one that is gone does not.
     ///
     /// The first half is the one that matters most: a reload happens after every
     /// edit, and losing a running program to one would make reloading unusable.
     #[test]
-    fn a_reload_keeps_a_live_plugins_pane_and_releases_a_vanished_ones() {
+    fn a_reload_keeps_a_live_mods_pane_and_releases_a_vanished_ones() {
         let watch = ProgramKey::new("mods/90_watch.lua", "watch");
         let gone = ProgramKey::new("mods/91_deleted.lua", "top");
         let keys = [watch.clone(), gone.clone()];
@@ -596,7 +596,7 @@ mod tests {
         let live = vec!["mods/90_watch.lua".to_string()];
         assert_eq!(stale_program_keys(keys.iter(), &live), vec![gone]);
 
-        // Every plugin gone (a failed reload leaves none loaded): all of them.
+        // Every mod gone (a failed reload leaves none loaded): all of them.
         let all: Vec<ProgramKey> = stale_program_keys(keys.iter(), &[]);
         assert_eq!(all.len(), 2);
         let _ = watch;

@@ -1,16 +1,16 @@
-//! The write side: commands a plugin issues, executed off the render path.
+//! The write side: commands a mod issues, executed off the render path.
 //!
-//! The other half of "Lua never blocks". A plugin **cannot** wait for
+//! The other half of "Lua never blocks". A mod **cannot** wait for
 //! anything, so a state-changing operation is not a function that returns a
 //! result — it is a command that is accepted immediately and whose effect
 //! appears in a later snapshot. That removes a whole class of stall (SQLite
-//! contention, a git shell-out, an unreachable SSH host) for plugins nobody
+//! contention, a git shell-out, an unreachable SSH host) for mods nobody
 //! has written yet.
 //!
 //! Three consequences the spec requires and this implements:
 //!
 //! - issuing a command returns at once, always;
-//! - work in flight is *readable*, so a plugin can draw it rather than leaving
+//! - work in flight is *readable*, so a mod can draw it rather than leaving
 //!   an unexplained gap (v1 needed `PendingSpawn` for exactly this);
 //! - a failure surfaces through a later snapshot, not as an immediate error.
 //!
@@ -38,7 +38,7 @@ trait Executor: Send + Sync {
 
 use super::registry::Value as SettingValue;
 
-/// A state change a plugin asked for.
+/// A state change a mod asked for.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Command {
     /// Recheck an external confirmation's target on the command worker.
@@ -143,16 +143,16 @@ pub enum Command {
     /// UI-thread applied: focus is the loop's state, and there is nothing to
     /// wait for.
     Focus {
-        plugin: String,
+        r#mod: String,
         /// Focus this pane, or — when it already holds focus — return to whatever
         /// was focused before it.
         ///
-        /// Here rather than in each plugin because the kernel is what remembers
+        /// Here rather than in each mod because the kernel is what remembers
         /// where focus came from (`focus_return`, the same memory `Esc` uses). A
         /// pane implementing this itself would have to name the pane to go back
         /// to, and the only name it could hard-code is the one that happens to
         /// share its slot today — which is the user's arrangement, not the
-        /// plugin's to assume.
+        /// mod's to assume.
         toggle: bool,
     },
     /// Open a shell beside a session's agent.
@@ -160,13 +160,13 @@ pub enum Command {
     /// UI-thread applied: the pane is wired into the same `!Send` world the
     /// agent's is.
     Shell { session: String },
-    /// Start — or close — an interactive program in a pane a plugin owns.
+    /// Start — or close — an interactive program in a pane a mod owns.
     ///
     /// UI-thread applied for the same reason `Shell` is: the pane is wired into
     /// the `!Send` world the agent's terminal lives in.
     ///
-    /// `owner` is **stamped by the kernel** from the plugin currently executing,
-    /// never read from Lua. That is what makes naming another plugin's pane
+    /// `owner` is **stamped by the kernel** from the mod currently executing,
+    /// never read from Lua. That is what makes naming another mod's pane
     /// impossible by construction rather than refused by a check — the same
     /// reasoning that keeps `run`'s implementation in the VM registry instead of
     /// in globals.
@@ -181,7 +181,7 @@ pub enum Command {
         /// Type into the program instead of starting it: the bytes go to the
         /// pane's stdin exactly as if they had been typed at it.
         ///
-        /// The third thing a plugin can do to its own pane, after starting and
+        /// The third thing a mod can do to its own pane, after starting and
         /// closing it, and the one that lets a long-lived program be *told*
         /// something rather than replaced. Restarting an editor to open a
         /// second file is the case that asked for it: the process is the
@@ -190,12 +190,12 @@ pub enum Command {
         ///
         /// Sent WITH a program, it means "type at it, or start it if it is not
         /// running" — the coordinator picks, because whether the pane is alive
-        /// is not something a plugin can read. A running pane that refuses the
+        /// is not something a mod can read. A running pane that refuses the
         /// keys (its input channel is full) is reported, never started over.
         /// See `terminal::plan_keys`.
         ///
         /// Bytes, not text: what a program is told is a keystroke sequence, and
-        /// a plugin is free to write one its program understands and UTF-8 does
+        /// a mod is free to write one its program understands and UTF-8 does
         /// not.
         keys: Option<Vec<u8>>,
     },
@@ -217,7 +217,7 @@ pub enum Command {
     /// lives in-process.
     Setting {
         key: String,
-        /// `None` resets to the plugin's declared default.
+        /// `None` resets to the mod's declared default.
         value: Option<SettingValue>,
     },
     /// Make a theme active and persist the choice.
@@ -229,10 +229,10 @@ pub enum Command {
     Theme { name: String },
     /// Write the user's settings back to `settings.toml`.
     ///
-    /// Not parseable from a plugin, and deliberately: a pane may *read* what the
+    /// Not parseable from a mod, and deliberately: a pane may *read* what the
     /// user configured (`thurbox.settings`) but writing their file is the
     /// settings modal's business, which is kernel-owned chrome. So this variant
-    /// has no arm in [`Command::parse`] — there is no spelling of it a plugin
+    /// has no arm in [`Command::parse`] — there is no spelling of it a mod
     /// could produce.
     ///
     /// A command rather than a UI-thread write because `save_settings` re-parses
@@ -243,22 +243,22 @@ pub enum Command {
     },
     /// Restore or remove one file of the interface itself.
     ///
-    /// The reason this is a command at all: plugins have no filesystem, so the
+    /// The reason this is a command at all: mods have no filesystem, so the
     /// pane that lists them cannot write one — and must not be given the
-    /// capability, since it is an ordinary bundled plugin and those hold none
+    /// capability, since it is an ordinary bundled mod and those hold none
     /// a user's own could not have (design D3). Applied on the UI thread like
     /// [`Command::Theme`]: it is two file operations, and the watcher turns the
     /// write into a reload, so a worker would only add a race.
-    Plugin {
+    Mod {
         /// Path relative to the interface directory.
         file: String,
-        edit: PluginEdit,
+        edit: ModEdit,
     },
-    /// Publish a user event to every plugin subscribed to it.
+    /// Publish a user event to every mod subscribed to it.
     ///
     /// UI-thread applied: the event queue is the loop's own, and delivery is the
     /// next thing the loop does. `owner` is **stamped by the kernel** from the
-    /// plugin executing, like [`Command::Program`]'s, so a plugin cannot forge
+    /// mod executing, like [`Command::Program`]'s, so a mod cannot forge
     /// the `source` its subscribers see. `name` already carries the `user.`
     /// prefix — a kernel name was refused at parse time.
     Emit {
@@ -275,7 +275,7 @@ pub enum Command {
     /// at all, and three panes rebuilt a float shell rather than reuse the
     /// modal furniture the kernel already has.
     ///
-    /// `fallback` is the plugin whose code issued it, stamped by the kernel:
+    /// `fallback` is the mod whose code issued it, stamped by the kernel:
     /// an action no binding declares is offered to that pane, which is how a
     /// pane reaches its own undeclared verbs. It never decides a grant. Whose
     /// request the action is comes from the queue entry instead
@@ -294,7 +294,7 @@ pub enum Command {
     /// UI-thread applied: the band draws from state the loop holds, and its
     /// text expires on a timer the loop owns.
     ///
-    /// The band is kernel chrome and stays kernel-drawn — a plugin contributes
+    /// The band is kernel chrome and stays kernel-drawn — a mod contributes
     /// a sentence and a severity, exactly as it contributes a pill or a
     /// binding. That is what lets a pane report a refusal it made itself
     /// without spending a row of its own on a message line.
@@ -327,7 +327,7 @@ pub enum BookmarkEdit {
 
 /// What to do to one file of the interface.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum PluginEdit {
+pub enum ModEdit {
     /// Write the embedded copy back, undoing an edit or a removal alike.
     Restore,
     /// Delete it. A bundled file stays deleted; delivery will not write it
@@ -336,7 +336,7 @@ pub enum PluginEdit {
 }
 
 impl Command {
-    /// Short stable name, as a plugin wrote it and as it is published back.
+    /// Short stable name, as a mod wrote it and as it is published back.
     pub fn kind(&self) -> &'static str {
         match self {
             Command::Guarded { inner, .. } => inner.kind(),
@@ -354,7 +354,7 @@ impl Command {
             Command::Focus { .. } => "focus",
             Command::OpenLink { .. } => "open",
             Command::Theme { .. } => "theme",
-            Command::Plugin { .. } => "plugin",
+            Command::Mod { .. } => "plugin",
             Command::Bookmark { .. } => "bookmark",
             Command::Configure { .. } => "configure",
             Command::Order { .. } => "order",
@@ -384,13 +384,13 @@ impl Command {
             Command::Create { .. } => "",
             // Global, not per-session.
             Command::Theme { .. }
-            | Command::Plugin { .. }
+            | Command::Mod { .. }
             | Command::Bookmark { .. }
             | Command::Configure { .. }
             | Command::Setting { .. }
             | Command::OpenLink { .. }
             | Command::Order { .. }
-            // A plugin's pane belongs to the plugin, not to a session — which is
+            // A mod's pane belongs to the mod, not to a session — which is
             // the whole point of it, and why it must never appear in anything
             // that enumerates sessions.
             | Command::Program { .. }
@@ -425,7 +425,7 @@ impl Command {
                 | Command::Program { .. }
                 | Command::Editor { .. }
                 | Command::Focus { .. }
-                | Command::Plugin { .. }
+                | Command::Mod { .. }
                 | Command::Emit { .. }
                 | Command::Action { .. }
                 | Command::ActionTarget { .. }
@@ -433,7 +433,7 @@ impl Command {
         )
     }
 
-    /// The capability the issuing plugin must hold for this to be applied.
+    /// The capability the issuing mod must hold for this to be applied.
     ///
     /// Every variant answers for itself, with no catch-all arm: a new verb does
     /// not compile until someone decides what it needs, so a gap is a choice
@@ -442,7 +442,7 @@ impl Command {
     /// `sessions` covers what drives an agent or loses something for good:
     /// `send`, `create`, `delete`, and restoring or removing a file of
     /// the interface. `run` covers what reaches the outside world as the user:
-    /// a URL opened without anyone clicking it. `program` covers a plugin's own
+    /// a URL opened without anyone clicking it. `program` covers a mod's own
     /// program pane.
     pub fn requires(&self) -> Option<super::host::Capability> {
         use super::host::Capability;
@@ -453,7 +453,7 @@ impl Command {
             Command::Send { .. }
             | Command::Pause { .. }
             | Command::Create { .. }
-            | Command::Plugin { .. }
+            | Command::Mod { .. }
             // Fleet has no undo window, so every delete is for good.
             | Command::Delete { .. } => Some(Capability::Sessions),
             // Arrange, name or resume what already exists; nothing is typed
@@ -484,7 +484,7 @@ impl Command {
                 Some(Capability::Sessions)
             }
             Command::Action { .. } | Command::ActionTarget { .. } => None,
-            // Issued by the kernel, never parsed from a plugin.
+            // Issued by the kernel, never parsed from a mod.
             Command::Configure { .. } => None,
         }
     }
@@ -497,12 +497,12 @@ impl Command {
             .then(|| chain.to_vec())
     }
 
-    /// Why the plugin at `owner` may not have this applied, when it may not.
+    /// Why the mod at `owner` may not have this applied, when it may not.
     ///
     /// The coordinator's whole decision, kept here so it is tested without a
     /// running interface: `may(owner, capability)` is the host's grant check,
     /// and `owner` is the path the kernel stamped when the command was issued —
-    /// empty for Lua that belongs to no plugin, which holds no grant.
+    /// empty for Lua that belongs to no mod, which holds no grant.
     pub fn refusal(
         &self,
         owner: &str,
@@ -512,7 +512,7 @@ impl Command {
     }
 
     /// Why this may not be applied for a request made by `chain`, when it may
-    /// not: allowed only with what every plugin in the chain holds, so the
+    /// not: allowed only with what every mod in the chain holds, so the
     /// least-privileged one decides, and the refusal names it.
     pub fn refusal_by(
         &self,
@@ -592,10 +592,10 @@ impl Command {
         }
     }
 
-    /// Build from the `(kind, options)` pair a plugin passes.
+    /// Build from the `(kind, options)` pair a mod passes.
     ///
     /// Rejected rather than guessed: an unknown kind or a missing field is a
-    /// plugin error, reported like any other.
+    /// mod error, reported like any other.
     pub fn parse(kind: &str, args: Args) -> Result<Self, String> {
         match kind {
             "emit" => Self::parse_emit(args),
@@ -603,15 +603,15 @@ impl Command {
             // verb the registry already knows, the other a sentence.
             "action" => Self::parse_action(args),
             "message" => Self::parse_message(args),
-            "mod" | "plugin" => Self::parse_plugin(args),
+            "mod" | "plugin" => Self::parse_mod(args),
             "set" => Self::parse_setting(args),
             // Creation names a repository, not a session.
             "create" => Self::parse_create(args),
             "bookmark" => Self::parse_bookmark(args),
             // Focus names a pane, not a session.
             "focus" => match args.text.filter(|t| !t.is_empty()) {
-                Some(plugin) => Ok(Command::Focus {
-                    plugin,
+                Some(r#mod) => Ok(Command::Focus {
+                    r#mod,
                     toggle: args.toggle,
                 }),
                 None => Err("command \"focus\" needs a mod name".to_string()),
@@ -645,7 +645,7 @@ impl Command {
 
     /// An event names nothing the kernel owns: the name is the subject, and
     /// every other field travels as the payload. Refused for a kernel name so
-    /// a plugin cannot forge what only the kernel derives.
+    /// a mod cannot forge what only the kernel derives.
     fn parse_emit(args: Args) -> Result<Self, String> {
         let Some(name) = args.text.filter(|t| !t.is_empty()) else {
             return Err("command \"emit\" needs an event name in text".to_string());
@@ -706,20 +706,20 @@ impl Command {
     }
 
     /// The interface's own files name no session, and the verb is explicit:
-    /// removing a plugin is destructive, so it is never the default.
-    fn parse_plugin(args: Args) -> Result<Self, String> {
+    /// removing a mod is destructive, so it is never the default.
+    fn parse_mod(args: Args) -> Result<Self, String> {
         let Some(file) = args.file.filter(|f| !f.is_empty()) else {
             return Err("command \"mod\" needs a file".to_string());
         };
         let edit = match args.action.as_deref() {
-            Some("restore") => PluginEdit::Restore,
-            Some("remove") => PluginEdit::Remove,
+            Some("restore") => ModEdit::Restore,
+            Some("remove") => ModEdit::Remove,
             _ => return Err("command \"mod\" needs action = \"restore\" or \"remove\"".to_string()),
         };
-        Ok(Command::Plugin { file, edit })
+        Ok(Command::Mod { file, edit })
     }
 
-    /// A setting names a `plugin.id`, not a session.
+    /// A setting names a `mod.id`, not a session.
     fn parse_setting(args: Args) -> Result<Self, String> {
         let Some(key) = args.text.filter(|t| !t.is_empty()) else {
             return Err("command \"set\" needs a plugin.setting key".to_string());
@@ -756,7 +756,7 @@ impl Command {
     }
 
     /// Repository memory names a path and a host, not a session. The verb is
-    /// explicit for the same reason the plugin command's is: forgetting is
+    /// explicit for the same reason the mod command's is: forgetting is
     /// destructive, so it is never the default.
     fn parse_bookmark(args: Args) -> Result<Self, String> {
         let Some(path) = args
@@ -793,11 +793,11 @@ impl Command {
         })
     }
 
-    /// A plugin's program pane belongs to the plugin, not to a session.
+    /// A mod's program pane belongs to the mod, not to a session.
     fn parse_program(args: Args) -> Result<Self, String> {
         let name = args.text.unwrap_or_default();
         super::terminal::validate_program_name(&name)?;
-        // The verb, spelled the way `plugin` and `bookmark` spell theirs.
+        // The verb, spelled the way `mod` and `bookmark` spell theirs.
         let close = matches!(args.action.as_deref(), Some("close") | Some("stop"));
         let program = args.repo.unwrap_or_default();
         // Typing is checked before the program is required: `keys` alone
@@ -872,7 +872,7 @@ pub struct ExtraMember {
     pub worktree: bool,
 }
 
-/// Options a plugin passed alongside a command name.
+/// Options a mod passed alongside a command name.
 ///
 /// A struct rather than a parameter list because commands want different
 /// fields, and threading six positional `Option`s through was already at the
@@ -904,19 +904,19 @@ pub struct Args {
     pub extras: Vec<ExtraMember>,
     /// An ordered list of session ids, for the order command.
     pub list: Vec<String>,
-    /// A path within the interface directory, for the plugin command.
+    /// A path within the interface directory, for the mod command.
     pub file: Option<String>,
-    /// A verb: the plugin and bookmark commands each take one.
+    /// A verb: the mod and bookmark commands each take one.
     pub action: Option<String>,
-    /// The plugin that issued this command, by path.
+    /// The mod that issued this command, by path.
     ///
-    /// **Stamped by the kernel**, never read from the options table — a plugin
+    /// **Stamped by the kernel**, never read from the options table — a mod
     /// that could set this could act as another one. Empty for a command that did
-    /// not come from a plugin.
+    /// not come from a mod.
     pub owner: String,
-    /// Arguments for a program a plugin asked to run.
+    /// Arguments for a program a mod asked to run.
     pub argv: Vec<String>,
-    /// Bytes to type into a program a plugin already started.
+    /// Bytes to type into a program a mod already started.
     ///
     /// Read off the Lua table as bytes, so a sequence that is not UTF-8 arrives
     /// rather than vanishing — see `install_command`.
@@ -970,7 +970,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn kinds_parse_from_what_a_plugin_writes() {
+    fn kinds_parse_from_what_a_mod_writes() {
         assert_eq!(
             Command::parse(
                 "delete",
@@ -1021,7 +1021,7 @@ mod tests {
     }
 
     /// Every kind against the fields it reads and the refusal each missing one
-    /// earns, compared whole: a plugin sees the message verbatim, so its wording
+    /// earns, compared whole: a mod sees the message verbatim, so its wording
     /// is part of what `parse` promises.
     #[test]
     fn each_kind_reads_its_own_fields_and_names_what_is_missing() {
@@ -1070,9 +1070,9 @@ mod tests {
                     action: text("restore"),
                     ..Args::default()
                 },
-                Ok(Command::Plugin {
+                Ok(Command::Mod {
                     file: "mods/a.lua".into(),
-                    edit: PluginEdit::Restore,
+                    edit: ModEdit::Restore,
                 }),
             ),
             (
@@ -1082,9 +1082,9 @@ mod tests {
                     action: text("remove"),
                     ..Args::default()
                 },
-                Ok(Command::Plugin {
+                Ok(Command::Mod {
                     file: "mods/a.lua".into(),
-                    edit: PluginEdit::Remove,
+                    edit: ModEdit::Remove,
                 }),
             ),
             (
@@ -1423,7 +1423,7 @@ mod tests {
         }
     }
 
-    /// Every verb a plugin can issue, and what it needs. `requires` has no
+    /// Every verb a mod can issue, and what it needs. `requires` has no
     /// catch-all arm, so a new variant does not compile until it decides; this
     /// pins each decision, so changing one is a visible edit here too.
     #[test]
@@ -1577,7 +1577,7 @@ mod tests {
     /// only way it can open help, settings, themes or the palette without
     /// painting a node and waiting for a click.
     #[test]
-    fn an_action_command_carries_the_action_and_the_plugin_that_asked() {
+    fn an_action_command_carries_the_action_and_the_mod_that_asked() {
         assert_eq!(
             Command::parse(
                 "action",
@@ -1598,7 +1598,7 @@ mod tests {
         assert!(error.contains("text"), "{error}");
     }
 
-    /// The message band is kernel chrome, so a plugin contributes to it rather
+    /// The message band is kernel chrome, so a mod contributes to it rather
     /// than drawing it — and it names a severity the band already badges.
     #[test]
     fn a_message_names_a_level_the_band_can_badge() {
@@ -1661,7 +1661,7 @@ mod tests {
     /// `toggle` is what lets one key both enter and leave a pane.
     ///
     /// Off by default, so every existing `command("focus", …)` keeps meaning "go
-    /// there" — a plugin that wanted the old behaviour did not have to change.
+    /// there" — a mod that wanted the old behaviour did not have to change.
     #[test]
     fn focus_carries_whether_it_toggles() {
         let plain = Command::parse(
@@ -1684,8 +1684,8 @@ mod tests {
         )
         .expect("focus parses");
         match toggling {
-            Command::Focus { plugin, toggle } => {
-                assert_eq!(plugin, "review");
+            Command::Focus { r#mod, toggle } => {
+                assert_eq!(r#mod, "review");
                 assert!(toggle);
             }
             other => panic!("{other:?}"),
@@ -1918,7 +1918,7 @@ mod tests {
 
     #[test]
     fn phases_have_stable_names() {
-        // Published to plugins, so these are contract, not debug output.
+        // Published to mods, so these are contract, not debug output.
         assert_eq!(Phase::Queued.as_str(), "queued");
         assert_eq!(Phase::Running.as_str(), "running");
         assert_eq!(Phase::Failed.as_str(), "failed");
@@ -1936,7 +1936,7 @@ mod tests {
         let mut bus =
             CommandBus::fleet(crate::fleet_link::FleetLink::local("thurbox-test-no-fleet"));
         let id = bus.dispatch(Command::Focus {
-            plugin: "agent".into(),
+            r#mod: "agent".into(),
             toggle: false,
         });
         assert!(
@@ -1959,7 +1959,7 @@ mod tests {
         let mut bus =
             CommandBus::fleet(crate::fleet_link::FleetLink::local("thurbox-test-no-fleet"));
         let id = bus.dispatch(Command::Focus {
-            plugin: "agent".into(),
+            r#mod: "agent".into(),
             toggle: false,
         });
         bus.finish_for_test(id, Some("no such pane".to_string()));
@@ -1972,7 +1972,7 @@ mod tests {
         assert_eq!(item.error.as_deref(), Some("no such pane"));
     }
 
-    // ── a plugin's program is not a session ────────────────────────────────
+    // ── a mod's program is not a session ────────────────────────────────
 
     /// The command names no session, which is what keeps a program pane out of
     /// everything that enumerates them.

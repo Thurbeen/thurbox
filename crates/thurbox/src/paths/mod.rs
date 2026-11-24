@@ -930,7 +930,7 @@ pub(crate) fn unique_link_name(name: &str, used: &mut std::collections::HashSet<
 /// untrusted relative paths onto a base).
 ///
 /// This is the one canonical implementation (see also [`safe_join`]).
-/// `session::plugin_spec::validate_destination` deliberately keeps its own,
+/// `session::mod_spec::validate_destination` deliberately keeps its own,
 /// stricter variant: `session` is the pure-data leaf and may reference no
 /// crate module (crates/architecture.toml), and its rule set is different
 /// (Lua-only, string-level checks on both separators so a spec written on

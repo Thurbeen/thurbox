@@ -1,4 +1,4 @@
-//! The interface's plugins as *managed* files: the spec, the lock, and the
+//! The interface's mods as *managed* files: the spec, the lock, and the
 //! operations that move the directory between them.
 //!
 //! `bundled` delivers what the binary carries; this delivers what the spec asks
@@ -12,15 +12,13 @@
 //! directory**, which is the identity the spec, the lock, the inventory, trust and
 //! the disabled set already all use.
 //!
-//! The types live in `session::plugin_spec` (pure data, so the CLI and the kernel
+//! The types live in `session::mod_spec` (pure data, so the CLI and the kernel
 //! agree on one definition); the filesystem is here.
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
-use crate::session::plugin_spec::{
-    self, LockEntry, PluginEntry, PluginLock, PluginSpec, LOCK_FILE, SPEC_FILE,
-};
+use crate::session::mod_spec::{self, LockEntry, ModEntry, ModLock, ModSpec, LOCK_FILE, SPEC_FILE};
 use crate::session::PackageManifest;
 
 use super::bundled::{decide, digest, Action, Delivered};
@@ -42,10 +40,10 @@ pub fn lock_path(dir: &Path) -> PathBuf {
 /// untouched. A spec that is *there* and unreadable is a different matter: it is
 /// reported with the file named and the location `toml` gave, and no caller of
 /// this proceeds to change anything.
-pub fn read_spec(dir: &Path) -> Result<PluginSpec, String> {
+pub fn read_spec(dir: &Path) -> Result<ModSpec, String> {
     match std::fs::read_to_string(spec_path(dir)) {
-        Ok(text) => PluginSpec::parse(&text).map_err(|e| format!("{SPEC_FILE}: {e}")),
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(PluginSpec::default()),
+        Ok(text) => ModSpec::parse(&text).map_err(|e| format!("{SPEC_FILE}: {e}")),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(ModSpec::default()),
         Err(e) => Err(format!("{}: {e}", spec_path(dir).display())),
     }
 }
@@ -60,10 +58,10 @@ pub fn read_spec_text(dir: &Path) -> Result<String, String> {
 }
 
 /// The record, or an empty one.
-pub fn read_lock(dir: &Path) -> Result<PluginLock, String> {
+pub fn read_lock(dir: &Path) -> Result<ModLock, String> {
     match std::fs::read_to_string(lock_path(dir)) {
-        Ok(text) => PluginLock::parse(&text).map_err(|e| format!("{LOCK_FILE}: {e}")),
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(PluginLock::default()),
+        Ok(text) => ModLock::parse(&text).map_err(|e| format!("{LOCK_FILE}: {e}")),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(ModLock::default()),
         Err(e) => Err(format!("{}: {e}", lock_path(dir).display())),
     }
 }
@@ -72,10 +70,10 @@ pub fn read_lock(dir: &Path) -> Result<PluginLock, String> {
 ///
 /// Rendered wholesale rather than edited in place: nobody hand-maintains this
 /// file, which is the entire reason it is a second file (design D2).
-pub fn write_lock(dir: &Path, lock: &PluginLock) -> Result<(), String> {
+pub fn write_lock(dir: &Path, lock: &ModLock) -> Result<(), String> {
     // An emptied lock is removed rather than left as an empty table, so a
     // directory with nothing managed looks like one.
-    if lock.plugins.is_empty() {
+    if lock.mods.is_empty() {
         return match std::fs::remove_file(lock_path(dir)) {
             Ok(()) => Ok(()),
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
@@ -88,15 +86,15 @@ pub fn write_lock(dir: &Path, lock: &PluginLock) -> Result<(), String> {
 }
 
 /// Record an entry in the spec, keeping every comment already in the file.
-pub fn add_to_spec(dir: &Path, entry: &PluginEntry) -> Result<(), String> {
-    let text = plugin_spec::insert_entry(&read_spec_text(dir)?, entry)?;
+pub fn add_to_spec(dir: &Path, entry: &ModEntry) -> Result<(), String> {
+    let text = mod_spec::insert_entry(&read_spec_text(dir)?, entry)?;
     write_spec(dir, &text)
 }
 
 /// Drop an entry from the spec, returning it. Errors when the spec does not list
 /// it, which the caller reports rather than treating as done.
-pub fn remove_from_spec(dir: &Path, key: &str) -> Result<PluginEntry, String> {
-    let (text, removed) = plugin_spec::remove_entry(&read_spec_text(dir)?, key)?;
+pub fn remove_from_spec(dir: &Path, key: &str) -> Result<ModEntry, String> {
+    let (text, removed) = mod_spec::remove_entry(&read_spec_text(dir)?, key)?;
     write_spec(dir, &text)?;
     Ok(removed)
 }
@@ -165,15 +163,15 @@ impl Outcome {
 /// than something the next `sync` undoes.
 pub fn deliver(
     dir: &Path,
-    entry: &PluginEntry,
+    entry: &ModEntry,
     resolved: &str,
     version: &str,
     payloads: &[Payload],
-    lock: &mut PluginLock,
+    lock: &mut ModLock,
 ) -> Result<Outcome, String> {
     entry.validate()?;
     for payload in payloads {
-        plugin_spec::validate_destination(&payload.file)?;
+        mod_spec::validate_destination(&payload.file)?;
         refuse_a_pane_owned_elsewhere(entry, payload, lock)?;
     }
 
@@ -225,9 +223,9 @@ pub fn deliver(
 /// before anything is written. Modules are left out, since `lib/` is not a pane and
 /// two single-pane copies of a package sharing one has always been allowed.
 fn refuse_a_pane_owned_elsewhere(
-    entry: &PluginEntry,
+    entry: &ModEntry,
     payload: &Payload,
-    lock: &PluginLock,
+    lock: &ModLock,
 ) -> Result<(), String> {
     if payload.file.starts_with("lib/") {
         return Ok(());
@@ -325,7 +323,7 @@ fn escalate(current: &mut Outcome, candidate: Outcome) {
 ///
 /// Only files still byte-identical to what was delivered are deleted; anything
 /// the user changed is left where it is and reported as kept, which is the same
-/// rule `bundled::retire` applies to a plugin that stopped shipping. Removal does
+/// rule `bundled::retire` applies to a mod that stopped shipping. Removal does
 /// not need the source to be reachable — everything needed is in the record.
 pub fn withdraw(dir: &Path, entry: &LockEntry) -> Result<Vec<(String, Outcome)>, String> {
     let mut report = Vec::new();
@@ -367,7 +365,7 @@ fn prune_empty(dir: &Path, removed: &Path) {
     }
 }
 
-/// The directory in the thurbox repository that bare plugin names resolve against
+/// The directory in the thurbox repository that bare mod names resolve against
 /// — `examples/panes/`, pinned to this binary's release tag.
 ///
 /// Pinning to the tag is worth keeping even for examples: a pane reads `thurbox.*`,
@@ -386,7 +384,7 @@ pub const EXAMPLE_SET: &str = "examples/panes";
 ///
 /// A small static list rather than a remote index: a misspelled name should be
 /// caught without a network round-trip. Keep in step with `examples/panes/<name>/`.
-pub const EXAMPLE_PLUGINS: &[(&str, &str)] = &[
+pub const EXAMPLE_MODS: &[(&str, &str)] = &[
     ("tasks", "A todo pane: read the snapshot, send or spawn"),
     ("top", "CPU, memory and load as gauges, parsed from `top`"),
 ];
@@ -407,7 +405,7 @@ pub struct Resolved {
 /// otherwise ignored. For a bare name it selects the git ref, which is what makes
 /// a lock reproducible after the binary moves on.
 pub fn resolve_source(src: &str, pin: Option<&str>) -> Resolved {
-    let bare = plugin_spec::is_bare_name(src);
+    let bare = mod_spec::is_bare_name(src);
     let version = match (pin, bare) {
         (Some(pin), _) => pin.to_string(),
         // A bare name is fetched at the binary's release tag, so that IS the
@@ -455,7 +453,7 @@ pub struct Fetched {
 /// pane a package declares or selects among several. It is required for the
 /// degenerate shape, which proposes no destination at all.
 pub fn fetch(src: &str, resolved: &Resolved, as_file: Option<&str>) -> Result<Fetched, String> {
-    let as_file = as_file.map(plugin_spec::mod_destination);
+    let as_file = as_file.map(mod_spec::mod_destination);
     let as_file = as_file.as_deref();
     if src.trim().ends_with(".lua") {
         let file = as_file
@@ -463,7 +461,7 @@ pub fn fetch(src: &str, resolved: &Resolved, as_file: Option<&str>) -> Result<Fe
                 format!("{src} is a single file, so it needs a destination: --as mods/90_x.lua")
             })?
             .to_string();
-        plugin_spec::validate_destination(&file)?;
+        mod_spec::validate_destination(&file)?;
         // Fetched relative to the *parent*, since the source names the file itself.
         let (base, name) = split_last(src);
         let source = match &resolved.source {
@@ -508,7 +506,7 @@ pub fn fetch(src: &str, resolved: &Resolved, as_file: Option<&str>) -> Result<Fe
 
     let mut payloads = Vec::new();
     for (destination, file) in deliveries(&manifest, as_file)? {
-        plugin_spec::validate_destination(&destination)?;
+        mod_spec::validate_destination(&destination)?;
         payloads.push(Payload {
             file: destination,
             contents: crate::agent::fetch::fetch_file(&resolved.source, &file.source)?,
@@ -617,7 +615,7 @@ fn split_last(src: &str) -> (String, String) {
 pub fn trust_of(
     dir: &Path,
     relative: &str,
-    lock: &PluginLock,
+    lock: &ModLock,
     registry: &super::registry::Registry,
 ) -> super::inventory::Trust {
     let absolute = dir.join(relative);
@@ -691,7 +689,7 @@ pub fn is_repository(src: &str) -> bool {
 /// `.git`.
 ///
 /// Refused rather than sanitised when it is not one safe segment, for the reason
-/// `plugin new` refuses a bad name: a clone landing somewhere other than where it
+/// `mod new` refuses a bad name: a clone landing somewhere other than where it
 /// said is worse than one that stops.
 pub fn repository_name(url: &str) -> Result<String, String> {
     let last = last_segment(url, cfg!(windows));
@@ -739,7 +737,7 @@ fn last_segment(source: &str, windows: bool) -> &str {
 ///
 /// 1. **`--as`**, because an explicit request wins over anything inferred.
 /// 2. **The repository's own `mod.toml` or `plugin.toml`**, if it has one and it names a single
-///    pane. A manifest is therefore *not* irrelevant to a cloned plugin, and it
+///    pane. A manifest is therefore *not* irrelevant to a cloned mod, and it
 ///    means one repository serves both install mechanisms rather than presenting two
 ///    doors that behave differently. Read leniently (`pane_sources_of`) — the
 ///    copy-model rules do not apply to a tree that keeps its own layout. A manifest
@@ -761,7 +759,7 @@ fn pane_in_working_copy(
         // `<name>/mods/40_x.lua`, since both readings are natural.
         let rel = rel.strip_prefix(&format!("{name}/")).unwrap_or(rel);
         let file = format!("{name}/{rel}");
-        plugin_spec::validate_destination(&file)?;
+        mod_spec::validate_destination(&file)?;
         if !root.join(rel).is_file() {
             return Err(format!("{rel} is not in the repository"));
         }
@@ -772,7 +770,7 @@ fn pane_in_working_copy(
         .into_iter()
         .find_map(|file| Some((file, std::fs::read_to_string(root.join(file)).ok()?)));
     if let Some((manifest_file, text)) = manifest {
-        let sources = plugin_spec::pane_sources_of(&text);
+        let sources = mod_spec::pane_sources_of(&text);
         if sources.len() > 1 {
             let named: Vec<&str> = sources
                 .iter()
@@ -786,7 +784,7 @@ fn pane_in_working_copy(
         }
         if let Some(Some(source)) = sources.first() {
             let file = format!("{name}/{}", source.trim_start_matches('/'));
-            plugin_spec::validate_destination(&file)?;
+            mod_spec::validate_destination(&file)?;
             if !root.join(source).is_file() {
                 return Err(format!(
                     "{manifest_file} names {source} as its pane, which is not in the repository"
@@ -796,7 +794,7 @@ fn pane_in_working_copy(
         }
     }
 
-    let Some((panes_dir, entries)) = [plugin_spec::MODS_DIR, plugin_spec::LEGACY_MODS_DIR]
+    let Some((panes_dir, entries)) = [mod_spec::MODS_DIR, mod_spec::LEGACY_MODS_DIR]
         .into_iter()
         .find_map(|dir| Some((dir, std::fs::read_dir(root.join(dir)).ok()?)))
     else {
@@ -825,7 +823,7 @@ fn pane_in_working_copy(
     }
 }
 
-/// Install a plugin by obtaining a working copy of its repository.
+/// Install a mod by obtaining a working copy of its repository.
 ///
 /// Everything the repository holds is delivered, in the layout its author chose.
 /// The lock records the **commit**, not the ref asked for, which is what makes the
@@ -836,8 +834,8 @@ fn install_repository(
     url: &str,
     as_file: Option<&str>,
     pin: Option<&str>,
-    spec: &PluginSpec,
-    lock: &mut PluginLock,
+    spec: &ModSpec,
+    lock: &mut ModLock,
 ) -> Result<EntryReport, String> {
     let name = repository_name(url)?;
     let root = dir.join(&name);
@@ -845,7 +843,7 @@ fn install_repository(
     // Occupied by something this spec does not manage: not ours to replace.
     if root.exists()
         && !spec
-            .plugins
+            .mods
             .iter()
             .any(|entry| entry.file.starts_with(&format!("{name}/")))
     {
@@ -858,7 +856,7 @@ fn install_repository(
         std::fs::remove_dir_all(&root).map_err(|e| format!("{}: {e}", root.display()))?;
     }
 
-    crate::git::clone_plugin(url, &root, pin).map_err(|e| format!("{e:#}"))?;
+    crate::git::clone_mod(url, &root, pin).map_err(|e| format!("{e:#}"))?;
     let commit = crate::git::head_commit(&root).map_err(|e| format!("{e:#}"))?;
 
     let (file, legacy_manifest) =
@@ -868,7 +866,7 @@ fn install_repository(
             let _ = std::fs::remove_dir_all(&root);
         })?;
 
-    let entry = PluginEntry {
+    let entry = ModEntry {
         src: src.to_string(),
         file: file.clone(),
         pin: pin.map(str::to_string),
@@ -902,7 +900,7 @@ fn install_repository(
     })
 }
 
-/// Install one plugin, recording it in the spec and the lock.
+/// Install one mod, recording it in the spec and the lock.
 ///
 /// Refuses before it writes anything: a destination already holding a file the
 /// spec does not manage is somebody else's, and overwriting it is not this
@@ -942,7 +940,7 @@ pub fn install(
     }
 
     let version = version_of(&resolved, fetched.manifest.as_ref());
-    let entry = PluginEntry {
+    let entry = ModEntry {
         src: src.to_string(),
         file: file.clone(),
         pin: pin.map(str::to_string),
@@ -977,10 +975,10 @@ pub fn install(
 /// recorded commit) from an update (take what the remote has now).
 fn converge_repository(
     dir: &Path,
-    entry: &PluginEntry,
+    entry: &ModEntry,
     url: &str,
     advance: bool,
-    lock: &mut PluginLock,
+    lock: &mut ModLock,
 ) -> Result<(Outcome, String, Option<String>), String> {
     let name = repository_name(url)?;
     let root = dir.join(&name);
@@ -994,13 +992,13 @@ fn converge_repository(
                 "{name} exists but is not a working copy — move it aside"
             ));
         }
-        crate::git::clone_plugin(url, &root, entry.pin.as_deref()).map_err(|e| format!("{e:#}"))?;
+        crate::git::clone_mod(url, &root, entry.pin.as_deref()).map_err(|e| format!("{e:#}"))?;
         // Reproducing a recorded commit: a shallow clone has only the tip, so the
         // exact object has to be asked for.
         if let Some(commit) = recorded.as_deref().filter(|c| !c.is_empty()) {
             if crate::git::head_commit(&root).map_err(|e| format!("{e:#}"))? != commit {
                 crate::git::fetch_ref(&root, commit).map_err(|e| format!("{e:#}"))?;
-                crate::git::checkout_plugin(&root, commit).map_err(|e| format!("{e:#}"))?;
+                crate::git::checkout_mod(&root, commit).map_err(|e| format!("{e:#}"))?;
             }
         }
         let commit = crate::git::head_commit(&root).map_err(|e| format!("{e:#}"))?;
@@ -1020,7 +1018,7 @@ fn converge_repository(
         match recorded.as_deref().filter(|c| !c.is_empty()) {
             Some(commit) if commit != head => {
                 crate::git::fetch_ref(&root, commit).map_err(|e| format!("{e:#}"))?;
-                crate::git::checkout_plugin(&root, commit).map_err(|e| format!("{e:#}"))?;
+                crate::git::checkout_mod(&root, commit).map_err(|e| format!("{e:#}"))?;
                 return Ok((Outcome::Updated, commit.to_string(), Some(head)));
             }
             _ => return Ok((Outcome::Current, head, None)),
@@ -1036,7 +1034,7 @@ fn converge_repository(
         Some(pin) => crate::git::fetch_ref(&root, pin).map_err(|e| format!("{e:#}"))?,
         None => crate::git::fetch_tip(&root).map_err(|e| format!("{e:#}"))?,
     }
-    crate::git::checkout_plugin(&root, "FETCH_HEAD").map_err(|e| format!("{e:#}"))?;
+    crate::git::checkout_mod(&root, "FETCH_HEAD").map_err(|e| format!("{e:#}"))?;
     let moved = crate::git::head_commit(&root).map_err(|e| format!("{e:#}"))?;
     if moved == head {
         return Ok((Outcome::Current, head, None));
@@ -1045,13 +1043,7 @@ fn converge_repository(
 }
 
 /// Record what a repository entry converged to.
-fn record_repository(
-    lock: &mut PluginLock,
-    dir: &Path,
-    entry: &PluginEntry,
-    url: &str,
-    commit: &str,
-) {
+fn record_repository(lock: &mut ModLock, dir: &Path, entry: &ModEntry, url: &str, commit: &str) {
     let mut files = BTreeMap::new();
     if let Ok(contents) = std::fs::read_to_string(dir.join(&entry.file)) {
         files.insert(entry.file.clone(), digest(&contents));
@@ -1083,7 +1075,7 @@ pub fn sync(dir: &Path) -> Result<Vec<EntryReport>, String> {
     // not have the old file taken back after the new one is written.
     let mut reports = withdraw_stale(dir, &spec, &mut lock, |_| true)?;
 
-    for entry in &spec.plugins {
+    for entry in &spec.mods {
         if let Some(url) = crate::agent::fetch::git_url(&entry.src) {
             let (outcome, commit, from) = converge_repository(dir, entry, &url, false, &mut lock)?;
             record_repository(&mut lock, dir, entry, &url, &commit);
@@ -1136,8 +1128,8 @@ pub fn sync(dir: &Path) -> Result<Vec<EntryReport>, String> {
 /// records the next `sync` would reconcile by withdrawing the live entry's files.
 fn withdraw_stale(
     dir: &Path,
-    spec: &PluginSpec,
-    lock: &mut PluginLock,
+    spec: &ModSpec,
+    lock: &mut ModLock,
     wanted: impl Fn(&LockEntry) -> bool,
 ) -> Result<Vec<EntryReport>, String> {
     let stale: Vec<LockEntry> = lock
@@ -1173,11 +1165,11 @@ pub fn update(dir: &Path, key: Option<&str>) -> Result<Vec<EntryReport>, String>
     let spec = read_spec(dir)?;
     let mut lock = read_lock(dir)?;
 
-    let targets: Vec<&PluginEntry> = match key {
+    let targets: Vec<&ModEntry> = match key {
         Some(key) => vec![spec
             .find(key)
             .ok_or_else(|| format!("{key} is not listed in {SPEC_FILE}"))?],
-        None => spec.plugins.iter().collect(),
+        None => spec.mods.iter().collect(),
     };
     if targets.is_empty() {
         return Ok(Vec::new());
@@ -1190,11 +1182,11 @@ pub fn update(dir: &Path, key: Option<&str>) -> Result<Vec<EntryReport>, String>
     // update that does not deliver that entry would leave it without its files.
     // Copied packages only: a repository's record names a file inside a working
     // copy git owns.
-    let owned_by = |stale: &LockEntry, target: &PluginEntry| {
+    let owned_by = |stale: &LockEntry, target: &ModEntry| {
         stale.src == target.src
             && stale.files.contains_key(&target.file)
             && !spec
-                .plugins
+                .mods
                 .iter()
                 .any(|other| other.file != target.file && stale.files.contains_key(&other.file))
     };
@@ -1246,7 +1238,7 @@ pub fn update(dir: &Path, key: Option<&str>) -> Result<Vec<EntryReport>, String>
     Ok(reports)
 }
 
-/// Remove one installed plugin: its files, its spec entry and its record.
+/// Remove one installed mod: its files, its spec entry and its record.
 ///
 /// Needs nothing from the source, which may be long gone — everything required is
 /// in the lock. A key the spec does not list is an error rather than a no-op, so a
@@ -1319,17 +1311,17 @@ fn version_of(resolved: &Resolved, manifest: Option<&crate::session::PackageMani
 /// binary was built still installs by name, and a typo still gets an answer
 /// without a network round-trip deciding it.
 fn not_found_help(src: &str, error: String) -> String {
-    if !plugin_spec::is_bare_name(src) {
+    if !mod_spec::is_bare_name(src) {
         return error;
     }
     // The fetcher's own message is two downloaders' stderr and a raw URL, which
     // buries the one thing a mistyped name needs. It is REPLACED rather than
     // appended to: this is the common failure, and the answer to it is short.
     let mut message = format!("no example mod named {src:?}");
-    if let Some(suggestion) = suggest_plugin(src) {
+    if let Some(suggestion) = suggest_mod(src) {
         message.push_str(&format!(" — did you mean {suggestion:?}?"));
     }
-    let available: Vec<&str> = EXAMPLE_PLUGINS.iter().map(|(name, _)| *name).collect();
+    let available: Vec<&str> = EXAMPLE_MODS.iter().map(|(name, _)| *name).collect();
     message.push_str(&format!("\n  available: {}", available.join(", ")));
     // Kept, indented, because a bare name can also fail for reasons that are not
     // a typo at all — no network, a proxy, a broken package upstream — and
@@ -1338,12 +1330,12 @@ fn not_found_help(src: &str, error: String) -> String {
     message
 }
 
-/// Suggest the closest example plugin name, within a small edit budget so an
+/// Suggest the closest example mod name, within a small edit budget so an
 /// unrelated typo suggests nothing.
-pub fn suggest_plugin(name: &str) -> Option<&'static str> {
+pub fn suggest_mod(name: &str) -> Option<&'static str> {
     let name = name.trim().to_lowercase();
     let budget = (name.len() / 3).clamp(2, 3);
-    EXAMPLE_PLUGINS
+    EXAMPLE_MODS
         .iter()
         .map(|(official, _)| (*official, edit_distance(&name, official)))
         .filter(|(_, distance)| *distance <= budget)
@@ -1414,8 +1406,8 @@ mod tests {
         assert_eq!(last_segment(r"/home/me/odd\name", false), r"odd\name");
     }
 
-    fn entry(file: &str) -> PluginEntry {
-        PluginEntry {
+    fn entry(file: &str) -> ModEntry {
+        ModEntry {
             src: "atlas".into(),
             file: file.into(),
             pin: Some("v1".into()),
@@ -1433,10 +1425,10 @@ mod tests {
     fn a_missing_spec_is_an_interface_with_nothing_installed() {
         let dir = tempfile::tempdir().expect("tempdir");
         let spec = read_spec(dir.path()).expect("no spec is not a failure");
-        assert!(spec.plugins.is_empty());
+        assert!(spec.mods.is_empty());
         assert!(read_lock(dir.path())
             .expect("no lock either")
-            .plugins
+            .mods
             .is_empty());
     }
 
@@ -1459,7 +1451,7 @@ mod tests {
 
         let removed = remove_from_spec(dir.path(), "atlas").expect("remove");
         assert_eq!(removed.file, "mods/75_atlas.lua");
-        assert!(read_spec(dir.path()).expect("read").plugins.is_empty());
+        assert!(read_spec(dir.path()).expect("read").mods.is_empty());
     }
 
     #[test]
@@ -1471,7 +1463,7 @@ mod tests {
     #[test]
     fn an_emptied_lock_leaves_no_file_behind() {
         let dir = tempfile::tempdir().expect("tempdir");
-        let mut lock = PluginLock::default();
+        let mut lock = ModLock::default();
         deliver(
             dir.path(),
             &entry("mods/a.lua"),
@@ -1496,7 +1488,7 @@ mod tests {
     fn delivering_writes_then_settles_then_updates() {
         let dir = tempfile::tempdir().expect("tempdir");
         let file = "mods/75_atlas.lua";
-        let mut lock = PluginLock::default();
+        let mut lock = ModLock::default();
 
         let first = deliver(
             dir.path(),
@@ -1542,7 +1534,7 @@ mod tests {
     fn an_edit_survives_an_update_and_is_reported() {
         let dir = tempfile::tempdir().expect("tempdir");
         let file = "mods/75_atlas.lua";
-        let mut lock = PluginLock::default();
+        let mut lock = ModLock::default();
         deliver(
             dir.path(),
             &entry(file),
@@ -1592,7 +1584,7 @@ mod tests {
     fn a_deletion_is_remembered_rather_than_undone() {
         let dir = tempfile::tempdir().expect("tempdir");
         let file = "mods/75_atlas.lua";
-        let mut lock = PluginLock::default();
+        let mut lock = ModLock::default();
         deliver(
             dir.path(),
             &entry(file),
@@ -1625,7 +1617,7 @@ mod tests {
     #[test]
     fn a_package_delivers_its_own_modules_too() {
         let dir = tempfile::tempdir().expect("tempdir");
-        let mut lock = PluginLock::default();
+        let mut lock = ModLock::default();
         deliver(
             dir.path(),
             &entry("mods/75_atlas.lua"),
@@ -1651,7 +1643,7 @@ mod tests {
     #[test]
     fn withdrawing_removes_what_it_delivered_and_keeps_what_was_changed() {
         let dir = tempfile::tempdir().expect("tempdir");
-        let mut lock = PluginLock::default();
+        let mut lock = ModLock::default();
         deliver(
             dir.path(),
             &entry("mods/75_atlas.lua"),
@@ -1694,7 +1686,7 @@ mod tests {
         let file = "mods/75_atlas.lua";
         let absolute = dir.join(file).to_string_lossy().into_owned();
 
-        let mut lock = PluginLock::default();
+        let mut lock = ModLock::default();
         deliver(
             &dir,
             &entry(file),
@@ -1753,7 +1745,7 @@ mod tests {
             "same version, different contents — the hole the digest closes"
         );
         assert_eq!(
-            trust_of(&dir, file, &PluginLock::default(), &registry),
+            trust_of(&dir, file, &ModLock::default(), &registry),
             super::super::inventory::Trust::Untrusted,
             "no lock entry must not turn it into a file of the user's own"
         );
@@ -1779,8 +1771,8 @@ mod tests {
     #[test]
     fn a_destination_that_would_escape_the_directory_is_refused() {
         let dir = tempfile::tempdir().expect("tempdir");
-        let mut lock = PluginLock::default();
-        let escape = PluginEntry {
+        let mut lock = ModLock::default();
+        let escape = ModEntry {
             src: "atlas".into(),
             file: "../escape.lua".into(),
             pin: None,

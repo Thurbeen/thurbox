@@ -7,8 +7,8 @@
 //! handed over here too, or the agent's line editing quietly stops working the
 //! day the pane it belongs to lands.
 //!
-//! The bundled plugins are loaded exactly as the binary loads them, so this
-//! fails if a plugin drops a chord as readily as if the kernel does.
+//! The bundled mods are loaded exactly as the binary loads them, so this
+//! fails if a mod drops a chord as readily as if the kernel does.
 
 use std::path::PathBuf;
 
@@ -41,7 +41,7 @@ fn registry(host: &LuaHost) -> Registry {
     let mut registry = Registry::default();
     let (mut bindings, settings) = host.declarations();
     // As the binary does: the kernel's own chords — the ones that open a system
-    // modal, and the clipboard pair — are declared alongside the plugins', so
+    // modal, and the clipboard pair — are declared alongside the mods', so
     // they are listed, routed and conflict-checked with everything else.
     bindings.extend(thurbox::kernel::modals::bindings());
     bindings.extend(thurbox::kernel::clipboard::bindings());
@@ -115,9 +115,9 @@ fn publish(host: &LuaHost, snapshot: &Snapshot) {
     .expect("publish");
 }
 
-fn index_of(host: &LuaHost, plugin: &str) -> usize {
-    host.index_of(plugin)
-        .unwrap_or_else(|| panic!("no plugin named {plugin}"))
+fn index_of(host: &LuaHost, r#mod: &str) -> usize {
+    host.index_of(r#mod)
+        .unwrap_or_else(|| panic!("no mod named {mod}"))
 }
 
 /// Build the keypress a terminal would deliver for a canonical chord.
@@ -161,13 +161,13 @@ fn press(chord: &str) -> KeyPress {
 }
 
 /// Route a chord the way the binary does for a *global* key: resolve it with
-/// nothing focused, then call the owning plugin's action.
+/// nothing focused, then call the owning mod's action.
 fn fire(host: &LuaHost, chord: &str) {
     let registry = registry(host);
     let binding = registry
         .resolve(&press(chord), None)
         .unwrap_or_else(|| panic!("{chord} resolves to nothing"));
-    let index = index_of(host, &binding.plugin);
+    let index = index_of(host, &binding.r#mod);
     host.on_action(index, &binding.action)
         .unwrap_or_else(|e| panic!("{chord}: {e}"));
 }
@@ -175,7 +175,7 @@ fn fire(host: &LuaHost, chord: &str) {
 /// Every chord v1's key table calls global **whose owner still exists**, and
 /// what v2 does with it.
 ///
-/// Spelled out because the mapping from a v1 `Action` to a v2 plugin action is
+/// Spelled out because the mapping from a v1 `Action` to a v2 mod action is
 /// the thing under test: inferring it would only prove the inference.
 ///
 /// The chords v1 also binds globally but v2 currently answers with nothing are
@@ -267,7 +267,7 @@ fn a_chord_whose_pane_was_removed_is_unbound_rather_than_reused() {
 #[test]
 fn the_session_list_column_is_hidden_and_restored_by_its_own_key() {
     // v1's F9 (`Action::ToggleSessionList`) gives the terminal the full width.
-    // The arrangement decides this before any plugin renders, so the toggle has
+    // The arrangement decides this before any mod renders, so the toggle has
     // to move state the arrangement can read — `ui/lib/panels.lua`.
     let host = host();
     let area = Rect {
@@ -391,9 +391,9 @@ fn a_bare_ctrl_letter_is_the_only_chord_that_defers() {
 }
 
 #[test]
-fn no_plugin_claims_a_chord_the_kernel_reserves() {
+fn no_mod_claims_a_chord_the_kernel_reserves() {
     // The escape route: quit, reload, focus movement and the perf HUD must work
-    // whatever a plugin declares, so nothing may shadow them.
+    // whatever a mod declares, so nothing may shadow them.
     let host = host();
     for binding in registry(&host).bindings() {
         assert!(
@@ -406,7 +406,7 @@ fn no_plugin_claims_a_chord_the_kernel_reserves() {
 }
 
 #[test]
-fn the_bundled_plugins_agree_on_who_owns_which_chord() {
+fn the_bundled_mods_agree_on_who_owns_which_chord() {
     // Two panes declaring `j` is fine — focus decides. A global chord claimed
     // twice is not, and the shadowed one would silently never fire.
     let host = host();
@@ -485,7 +485,7 @@ fn a_cmd_chord_canonicalises_and_resolves() {
 fn the_agent_panes_page_keys_are_declared_rather_than_hidden_in_on_key() {
     let host = host();
     let index = index_of(&host, "agent");
-    let bindings = &host.plugins[index].bindings;
+    let bindings = &host.mods[index].bindings;
     for chord in ["pageup", "pagedown"] {
         assert!(
             bindings.iter().any(|binding| binding.chord == chord),

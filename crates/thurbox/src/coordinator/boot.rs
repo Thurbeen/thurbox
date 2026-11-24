@@ -305,7 +305,7 @@ pub(crate) async fn run() -> Result<(), Box<dyn Error>> {
         // v1 boots with the TERMINAL focused, not the session list: the point
         // of the app is the agent, and you should be able to type at it without
         // a keystroke of navigation first. Falls back to the first focusable
-        // plugin when the agent pane is absent (a user who removed it).
+        // mod when the agent pane is absent (a user who removed it).
         focus: initial_focus,
         focus_return: initial_focus,
         reload_at: None,
@@ -358,15 +358,15 @@ pub(crate) async fn run() -> Result<(), Box<dyn Error>> {
 
     // The user's decisions have to reach the host before the interface it will
     // run is built: `LuaHost::new` already built one, from every file on disk,
-    // so a plugin turned off would be loaded for exactly one frame. Told, then
+    // so a mod turned off would be loaded for exactly one frame. Told, then
     // rebuilt.
     app.publish_disabled();
     app.reload_interface(crate::coordinator::events::ReloadReason::Boot);
     // Declarations are collected once up front and again on every reload, so
-    // a newly added plugin's keys appear in help with nothing else edited.
+    // a newly added mod's keys appear in help with nothing else edited.
     app.collect_declarations();
     // Everything from `LuaHost::new` to here is what it costs to have an
-    // interface at all — a v2-only startup phase, and the one a slow plugin
+    // interface at all — a v2-only startup phase, and the one a slow mod
     // shows up in.
     app.startup.ui_build_ms = ui_phase.elapsed().as_millis() as u64;
     // Non-empty only on a profile's first wire-up or on a failure, so this is a
@@ -464,22 +464,22 @@ fn install_signal_restore() {
     }
 }
 
-/// Index into the host's focusable plugins for `name`, or 0.
+/// Index into the host's focusable mods for `name`, or 0.
 ///
-/// `App::focus` indexes the FOCUSABLE list, not the plugin list, so this cannot
-/// just be `plugins.position(...)`.
+/// `App::focus` indexes the FOCUSABLE list, not the mod list, so this cannot
+/// just be `mods.position(...)`.
 fn focus_index_of(host: &LuaHost, name: &str) -> usize {
     host.focusable()
         .iter()
         .position(|index| {
-            host.plugins
+            host.mods
                 .get(*index)
-                .is_some_and(|plugin| plugin.name == name)
+                .is_some_and(|r#mod| r#mod.name == name)
         })
         .unwrap_or(0)
 }
 
-/// Find the plugin directory.
+/// Find the mod directory.
 ///
 /// Two rules, in order: `THURBOX_UI_DIR`, then the user's own copy —
 /// materialized from the embedded interface on first run, preserving anything

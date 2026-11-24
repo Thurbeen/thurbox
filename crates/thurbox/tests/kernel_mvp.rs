@@ -1,17 +1,17 @@
-//! End-to-end test of the kernel against the *real* bundled plugins.
+//! End-to-end test of the kernel against the *real* bundled mods.
 //!
 //! Loads `ui/` exactly as the binary does, publishes a snapshot, resolves the
-//! arrangement and renders every plugin into its resolved rect — so this fails
-//! if the kernel breaks *or* if a shipped plugin does.
+//! arrangement and renders every mod into its resolved rect — so this fails
+//! if the kernel breaks *or* if a shipped mod does.
 //!
 //! The properties under test are the load-bearing design decisions:
 //!
 //! - **D1** the kernel exposes four node kinds, and the panes are built from
 //!   them via `ui/lib/widgets.lua` rather than from kernel widgets
-//! - **D2** a plugin is told its own resolved rect, not the screen's
+//! - **D2** a mod is told its own resolved rect, not the screen's
 //! - **D3** the agent pane places a `surface` it does not paint
-//! - **D5** plugin reads are served from a snapshot and never block
-//! - isolation: a throwing plugin costs its own pane, not the frame
+//! - **D5** mod reads are served from a snapshot and never block
+//! - isolation: a throwing mod costs its own pane, not the frame
 
 use std::path::PathBuf;
 
@@ -95,7 +95,7 @@ fn publish_full(
     .expect("publish");
 }
 
-/// A registry holding whatever the given host's plugins declared.
+/// A registry holding whatever the given host's mods declared.
 fn registry(host: &LuaHost) -> Registry {
     let mut registry = Registry::default();
     let (bindings, settings) = host.declarations();
@@ -128,7 +128,7 @@ fn shipped_operator_actions_have_catalog_descriptors_and_handlers() {
         let descriptor = by_name(&binding.action)
             .unwrap_or_else(|| panic!("missing key action {}", binding.action));
         assert_eq!(
-            descriptor.owner, binding.plugin,
+            descriptor.owner, binding.r#mod,
             "{} changed owner",
             binding.action
         );
@@ -136,7 +136,7 @@ fn shipped_operator_actions_have_catalog_descriptors_and_handlers() {
     for command in registry.commands() {
         let descriptor = by_name(&command.action)
             .unwrap_or_else(|| panic!("missing palette action {}", command.action));
-        assert_eq!(descriptor.owner, command.plugin);
+        assert_eq!(descriptor.owner, command.r#mod);
     }
     for pill in registry.pills() {
         assert!(
@@ -163,7 +163,7 @@ fn shipped_operator_actions_have_catalog_descriptors_and_handlers() {
     for declaration in host.action_declarations() {
         let descriptor = by_name(&declaration.name)
             .unwrap_or_else(|| panic!("missing declared action {}", declaration.name));
-        assert_eq!(descriptor.owner, declaration.plugin);
+        assert_eq!(descriptor.owner, declaration.r#mod);
         assert_eq!(descriptor.arguments, declaration.arguments);
     }
 }
@@ -228,7 +228,7 @@ fn ctx(width: u16, height: u16, focused: bool) -> RenderContext {
     }
 }
 
-/// Render one plugin into a rect and return the painted screen as text.
+/// Render one mod into a rect and return the painted screen as text.
 fn paint(host: &LuaHost, index: usize, width: u16, height: u16) -> Vec<String> {
     let node = host
         .render(index, ctx(width, height, true))
@@ -289,23 +289,23 @@ fn paint_node(node: &Node, width: u16, height: u16) -> Vec<String> {
 }
 
 fn index_of(host: &LuaHost, name: &str) -> usize {
-    host.plugins
+    host.mods
         .iter()
-        .position(|plugin| plugin.name == name)
+        .position(|r#mod| r#mod.name == name)
         .unwrap_or_else(|| panic!("no plugin named {name}"))
 }
 
 #[test]
-fn the_bundled_plugins_load_and_claim_their_slots() {
+fn the_bundled_mods_load_and_claim_their_slots() {
     let host = host();
-    let names: Vec<&str> = host.plugins.iter().map(|p| p.name.as_str()).collect();
+    let names: Vec<&str> = host.mods.iter().map(|p| p.name.as_str()).collect();
     // The interface is three panes — the list, the centre and the search strip —
     // plus four floats that occupy no slot at all: the creation flow, the
     // confirmation, the rename field and the context menu. The view of the
     // interface's own files is
     // NOT among them: it is a tab of the settings modal, because a recovery tool
-    // that is itself a plugin can be the thing that is broken. Every other v1
-    // surface was removed with its plugin, and its slot with it — see
+    // that is itself a mod can be the thing that is broken. Every other v1
+    // surface was removed with its mod, and its slot with it — see
     // `ui/layout.lua`.
     assert_eq!(
         names,
@@ -326,15 +326,15 @@ fn the_bundled_plugins_load_and_claim_their_slots() {
 
     assert_eq!(host.in_slot("sessions").len(), 1);
     // The centre is still a `switch` slot even with one occupant: the mode is a
-    // property of the slot, not of how many plugins happen to want it, and the
+    // property of the slot, not of how many mods happen to want it, and the
     // agent's own shell tab already relies on it.
     let centre: Vec<&str> = host
         .in_slot("center")
         .iter()
-        .map(|i| host.plugins[*i].name.as_str())
+        .map(|i| host.mods[*i].name.as_str())
         .collect();
     // One occupant today. The slot keeps its mode anyway: it is a property of
-    // the slot, not of how many plugins happen to want it, and the next centre
+    // the slot, not of how many mods happen to want it, and the next centre
     // pane (the code review) will share it.
     assert_eq!(centre, ["agent"], "{centre:?}");
     // Help, settings and the theme picker are kernel modals, so they overlay
@@ -349,7 +349,7 @@ fn the_bundled_plugins_load_and_claim_their_slots() {
     let focusable: Vec<&str> = host
         .focusable()
         .iter()
-        .map(|i| host.plugins[*i].name.as_str())
+        .map(|i| host.mods[*i].name.as_str())
         .collect();
     assert!(focusable.contains(&"sessions"), "{focusable:?}");
     assert!(focusable.contains(&"agent"), "{focusable:?}");
@@ -359,7 +359,7 @@ fn the_bundled_plugins_load_and_claim_their_slots() {
     let floating: Vec<&str> = host
         .floating()
         .iter()
-        .map(|i| host.plugins[*i].name.as_str())
+        .map(|i| host.mods[*i].name.as_str())
         .collect();
     assert_eq!(
         floating,
@@ -590,7 +590,7 @@ fn the_working_spinner_advances_with_elapsed_time() {
 }
 
 #[test]
-fn a_plugin_is_told_its_own_rect_not_the_screens() {
+fn a_mod_is_told_its_own_rect_not_the_screens() {
     // The session list budgets its name column against the width
     // it was given, so a narrow pane must truncate where a wide one does not.
     let host = host();
@@ -623,7 +623,7 @@ fn a_plugin_is_told_its_own_rect_not_the_screens() {
 #[test]
 fn a_long_list_windows_against_the_resolved_height() {
     // The other half of D2: the scroll window and its overflow markers are
-    // derived from the height the plugin was handed.
+    // derived from the height the mod was handed.
     let host = host();
     let rows: Vec<SessionRow> = (0..40)
         .map(|n| row(&format!("session-{n:02}"), "thurbox", "idle"))
@@ -641,8 +641,8 @@ fn a_long_list_windows_against_the_resolved_height() {
 
 #[test]
 fn the_agent_pane_places_a_surface_it_does_not_paint() {
-    // The plugin frames and positions the terminal; the kernel
-    // fills it. The plugin never sees a cell.
+    // The mod frames and positions the terminal; the kernel
+    // fills it. The mod never sees a cell.
     let host = host();
     publish(&host, &sample());
 
@@ -757,7 +757,7 @@ fn an_unclaimed_key_is_left_for_the_kernel() {
 }
 
 #[test]
-fn plugin_reads_are_served_from_the_snapshot() {
+fn mod_reads_are_served_from_the_snapshot() {
     // Reads never consult the database, so they cannot block.
     // Rendering a thousand times touches nothing but the published table.
     let host = host();
@@ -805,19 +805,19 @@ fn the_panes_are_built_from_primitives_not_kernel_widgets() {
 }
 
 #[test]
-fn a_broken_plugin_costs_only_its_own_pane() {
-    // The isolation rule, end to end: a plugin that throws is reported against
+fn a_broken_mod_costs_only_its_own_pane() {
+    // The isolation rule, end to end: a mod that throws is reported against
     // itself, and its neighbours still render.
     let dir = tempfile::tempdir().expect("tempdir");
-    let plugins = dir.path().join("mods");
-    std::fs::create_dir_all(&plugins).expect("mkdir");
+    let mods = dir.path().join("mods");
+    std::fs::create_dir_all(&mods).expect("mkdir");
     std::fs::write(
-        plugins.join("10_good.lua"),
+        mods.join("10_good.lua"),
         r#"return { name = "good", slot = "a", render = function() return { text = "fine" } end }"#,
     )
     .expect("write good");
     std::fs::write(
-        plugins.join("20_bad.lua"),
+        mods.join("20_bad.lua"),
         r#"return { name = "bad", slot = "b", render = function() error("boom") end }"#,
     )
     .expect("write bad");
@@ -831,16 +831,16 @@ fn a_broken_plugin_costs_only_its_own_pane() {
     let bad = host
         .render(index_of(&host, "bad"), ctx(20, 3, false))
         .expect_err("the throwing plugin must fail");
-    assert_eq!(bad.plugin, "bad", "the failure must name its plugin");
+    assert_eq!(bad.r#mod, "bad", "the failure must name its plugin");
     assert!(bad.message.contains("boom"), "{}", bad.message);
 }
 
 #[test]
-fn a_failed_reload_keeps_the_last_good_plugins_running() {
+fn a_failed_reload_keeps_the_last_good_mods_running() {
     let dir = tempfile::tempdir().expect("tempdir");
-    let plugins = dir.path().join("mods");
-    std::fs::create_dir_all(&plugins).expect("mkdir");
-    let file = plugins.join("10_pane.lua");
+    let mods = dir.path().join("mods");
+    std::fs::create_dir_all(&mods).expect("mkdir");
+    let file = mods.join("10_pane.lua");
     std::fs::write(
         &file,
         r#"return { name = "pane", slot = "a", render = function() return { text = "v1" } end }"#,
@@ -872,14 +872,14 @@ fn a_failed_reload_keeps_the_last_good_plugins_running() {
 }
 
 #[test]
-fn an_unterminated_plugin_is_interrupted_rather_than_hanging() {
+fn an_unterminated_mod_is_interrupted_rather_than_hanging() {
     // Lua 5.4 gives no set_interrupt, so the kernel builds this
     // from a count hook. Without it, this test would never return.
     let dir = tempfile::tempdir().expect("tempdir");
-    let plugins = dir.path().join("mods");
-    std::fs::create_dir_all(&plugins).expect("mkdir");
+    let mods = dir.path().join("mods");
+    std::fs::create_dir_all(&mods).expect("mkdir");
     std::fs::write(
-        plugins.join("10_spin.lua"),
+        mods.join("10_spin.lua"),
         r#"return { name = "spin", slot = "a", render = function() while true do end end }"#,
     )
     .expect("write");
@@ -888,7 +888,7 @@ fn an_unterminated_plugin_is_interrupted_rather_than_hanging() {
     let error = host
         .render(index_of(&host, "spin"), ctx(20, 3, false))
         .expect_err("an unterminated render must be interrupted");
-    assert_eq!(error.plugin, "spin");
+    assert_eq!(error.r#mod, "spin");
     assert!(
         error.message.contains("instruction budget"),
         "{}",
@@ -897,14 +897,14 @@ fn an_unterminated_plugin_is_interrupted_rather_than_hanging() {
 }
 
 #[test]
-fn plugins_have_no_filesystem_or_process_access() {
+fn mods_have_no_filesystem_or_process_access() {
     // Enforcement by ABSENCE. `io`, `os` and the real `package`
     // are simply not in the environment, so there is no binding to refuse.
     let dir = tempfile::tempdir().expect("tempdir");
-    let plugins = dir.path().join("mods");
-    std::fs::create_dir_all(&plugins).expect("mkdir");
+    let mods = dir.path().join("mods");
+    std::fs::create_dir_all(&mods).expect("mkdir");
     std::fs::write(
-        plugins.join("10_probe.lua"),
+        mods.join("10_probe.lua"),
         r#"
         return {
           name = "probe", slot = "a",
@@ -933,14 +933,14 @@ fn plugins_have_no_filesystem_or_process_access() {
 }
 
 #[test]
-fn plugin_state_is_private_and_survives_a_reload() {
+fn mod_state_is_private_and_survives_a_reload() {
     let dir = tempfile::tempdir().expect("tempdir");
-    let plugins = dir.path().join("mods");
-    std::fs::create_dir_all(&plugins).expect("mkdir");
-    // Both plugins write state.n; neither may see the other's.
+    let mods = dir.path().join("mods");
+    std::fs::create_dir_all(&mods).expect("mkdir");
+    // Both mods write state.n; neither may see the other's.
     for (file, name, value) in [("10_a.lua", "a", 1), ("20_b.lua", "b", 2)] {
         std::fs::write(
-            plugins.join(file),
+            mods.join(file),
             format!(
                 r#"return {{ name = "{name}", slot = "{name}", render = function()
                      state.n = state.n or {value}
@@ -966,7 +966,7 @@ fn plugin_state_is_private_and_survives_a_reload() {
 fn a_slot_divides_its_rect_among_its_occupants() {
     let host = host();
     let members = host.in_slot("sessions");
-    let sizes: Vec<_> = members.iter().map(|i| host.plugins[*i].size).collect();
+    let sizes: Vec<_> = members.iter().map(|i| host.mods[*i].size).collect();
     let rects = divide_slot(
         Rect {
             x: 0,
@@ -982,7 +982,7 @@ fn a_slot_divides_its_rect_among_its_occupants() {
     assert_eq!(rects.iter().map(|r| r.height).sum::<u16>(), 20);
 }
 
-/// Every node kind present in a tree, for asserting what a plugin built with.
+/// Every node kind present in a tree, for asserting what a mod built with.
 fn collect_kinds(node: &Node) -> Vec<&'static str> {
     let mut kinds = vec![node.kind()];
     if let Node::Box { children, .. } = node {
@@ -997,13 +997,13 @@ fn collect_kinds(node: &Node) -> Vec<&'static str> {
 
 #[test]
 fn the_agent_pane_asks_for_raw_session_input() {
-    // How the terminal stays an ordinary plugin: the kernel does not know which
-    // plugin "is" the terminal, only that this one declared `input = "session"`.
+    // How the terminal stays an ordinary mod: the kernel does not know which
+    // mod "is" the terminal, only that this one declared `input = "session"`.
     let host = host();
-    let agent = &host.plugins[index_of(&host, "agent")];
+    let agent = &host.mods[index_of(&host, "agent")];
     assert!(agent.session_input, "the agent pane must ask for raw input");
 
-    let sessions = &host.plugins[index_of(&host, "sessions")];
+    let sessions = &host.mods[index_of(&host, "sessions")];
     assert!(
         !sessions.session_input,
         "the session list must not swallow keys into a pty"
@@ -1013,7 +1013,7 @@ fn the_agent_pane_asks_for_raw_session_input() {
 #[test]
 fn the_focused_session_is_read_off_the_rendered_tree() {
     // The kernel learns which session has focus from the tree it just painted,
-    // not from a name it was told. Replace the plugin and this still works.
+    // not from a name it was told. Replace the mod and this still works.
     let host = host();
     publish(&host, &sample());
     host.render(index_of(&host, "sessions"), ctx(40, 12, true))
@@ -1085,16 +1085,16 @@ use thurbox::session::SessionState;
 
 /// Press a key and route it exactly as the binary does: registry first
 /// (declared actions), then raw `on_key`. Returns whatever commands it issued.
-fn press_key(host: &LuaHost, plugin: &str, ch: char) {
-    press_chord(host, plugin, ch, false);
+fn press_key(host: &LuaHost, r#mod: &str, ch: char) {
+    press_chord(host, r#mod, ch, false);
 }
 
 /// The same, with Ctrl held.
-fn press_ctrl_key(host: &LuaHost, plugin: &str, ch: char) {
-    press_chord(host, plugin, ch, true);
+fn press_ctrl_key(host: &LuaHost, r#mod: &str, ch: char) {
+    press_chord(host, r#mod, ch, true);
 }
 
-fn press_chord(host: &LuaHost, plugin: &str, ch: char, ctrl: bool) {
+fn press_chord(host: &LuaHost, r#mod: &str, ch: char, ctrl: bool) {
     let registry = registry(host);
     let key = KeyPress {
         name: ch.to_lowercase().to_string(),
@@ -1102,23 +1102,23 @@ fn press_chord(host: &LuaHost, plugin: &str, ch: char, ctrl: bool) {
         ctrl,
         ..KeyPress::default()
     };
-    if let Some(binding) = registry.resolve(&key, Some(plugin)) {
-        if let Some(index) = host.index_of(&binding.plugin) {
+    if let Some(binding) = registry.resolve(&key, Some(r#mod)) {
+        if let Some(index) = host.index_of(&binding.r#mod) {
             if host.on_action(index, &binding.action).expect("action") {
                 return;
             }
         }
     }
-    host.on_key(index_of(host, plugin), &key).expect("key");
+    host.on_key(index_of(host, r#mod), &key).expect("key");
 }
 
-fn keys_to_commands(host: &LuaHost, plugin: &str, ch: char) -> Vec<Command> {
-    press_key(host, plugin, ch);
+fn keys_to_commands(host: &LuaHost, r#mod: &str, ch: char) -> Vec<Command> {
+    press_key(host, r#mod, ch);
     host.drain_commands()
 }
 
-fn ctrl_keys_to_commands(host: &LuaHost, plugin: &str, ch: char) -> Vec<Command> {
-    press_ctrl_key(host, plugin, ch);
+fn ctrl_keys_to_commands(host: &LuaHost, r#mod: &str, ch: char) -> Vec<Command> {
+    press_ctrl_key(host, r#mod, ch);
     host.drain_commands()
 }
 
@@ -1290,12 +1290,12 @@ fn plain_navigation_issues_no_commands() {
 }
 
 #[test]
-fn a_malformed_command_is_reported_against_the_plugin() {
+fn a_malformed_command_is_reported_against_the_mod() {
     let dir = tempfile::tempdir().expect("tempdir");
-    let plugins = dir.path().join("mods");
-    std::fs::create_dir_all(&plugins).expect("mkdir");
+    let mods = dir.path().join("mods");
+    std::fs::create_dir_all(&mods).expect("mkdir");
     std::fs::write(
-        plugins.join("10_bad.lua"),
+        mods.join("10_bad.lua"),
         r#"return {
              name = "bad", slot = "a",
              render = function() return { text = "x" } end,
@@ -1401,17 +1401,17 @@ fn the_manual_order_is_published_so_a_reorder_is_visible() {
 // --- theming ---------------------------------------------------------------
 
 #[test]
-fn the_theme_reaches_plugins_as_roles() {
-    // The kernel resolves, plugins name roles. Publishing is the
-    // whole interface between them, so this asserts a plugin can read the
-    // resolved theme — through a throwaway plugin that prints it, since no
+fn the_theme_reaches_mods_as_roles() {
+    // The kernel resolves, mods name roles. Publishing is the
+    // whole interface between them, so this asserts a mod can read the
+    // resolved theme — through a throwaway mod that prints it, since no
     // bundled pane shows the theme's name any more (the header is gone and the
     // picker is a kernel modal — `tests/modals.rs`).
     let dir = tempfile::tempdir().expect("tempdir");
-    let plugins = dir.path().join("mods");
-    std::fs::create_dir_all(&plugins).expect("mkdir");
+    let mods = dir.path().join("mods");
+    std::fs::create_dir_all(&mods).expect("mkdir");
     std::fs::write(
-        plugins.join("10_probe.lua"),
+        mods.join("10_probe.lua"),
         r#"return {
              name = "probe", slot = "center",
              render = function()
@@ -1465,8 +1465,8 @@ fn hardcodes_colour(line: &str) -> bool {
 }
 
 #[test]
-fn no_bundled_plugin_hardcodes_a_colour() {
-    // The coherence rule made checkable: a literal in a plugin opts out of
+fn no_bundled_mod_hardcodes_a_colour() {
+    // The coherence rule made checkable: a literal in a mod opts out of
     // theming for everyone downstream of it.
     let ui = ui_dir();
     let mut offenders = Vec::new();
@@ -1504,17 +1504,17 @@ fn colour_offenders(path: &std::path::Path, source: &str) -> Vec<String> {
 // --- registry --------------------------------------------------------------
 
 #[test]
-fn every_bundled_plugin_declares_its_keys_as_data() {
+fn every_bundled_mod_declares_its_keys_as_data() {
     // The declaration is what makes a key listable, rebindable and
     // conflict-checkable. A pane that only implements on_key gets none of that.
     let host = host();
     let registry = registry(&host);
     assert!(!registry.bindings().is_empty());
 
-    for plugin in ["sessions", "agent"] {
+    for r#mod in ["sessions", "agent"] {
         assert!(
-            registry.bindings().iter().any(|b| b.plugin == plugin),
-            "{plugin} declares no keys"
+            registry.bindings().iter().any(|b| b.r#mod == r#mod),
+            "{mod} declares no keys"
         );
     }
     for binding in registry.bindings() {
@@ -1529,7 +1529,7 @@ fn every_bundled_plugin_declares_its_keys_as_data() {
 
 #[test]
 fn the_bundled_set_has_no_key_conflicts() {
-    // Several panes declare `j`; that is fine because each is plugin-scoped and
+    // Several panes declare `j`; that is fine because each is mod-scoped and
     // focus decides. A genuine clash would show up here.
     let host = host();
     let registry = registry(&host);
@@ -1596,13 +1596,13 @@ fn capitals_route_the_same_from_either_terminal_encoding() {
     }
 }
 
-// --- floating plugins ------------------------------------------------------
+// --- floating mods ------------------------------------------------------
 
 // --- guards ----------------------------------------------------------------
 
 #[test]
 fn the_lua_vm_stays_non_send() {
-    // With mlua's `send` feature off, "plugins never touch the
+    // With mlua's `send` feature off, "mods never touch the
     // render thread" is a compile error rather than a review rule. Enabling it
     // would silently remove that guarantee, so the dependency is asserted here.
     let manifest =
@@ -1621,12 +1621,12 @@ fn the_lua_vm_stays_non_send() {
 #[test]
 fn the_granted_capability_set_matches_a_declared_list() {
     // Capabilities are introduced with their consumer, never
-    // ahead of one. This is the tripwire — a new global in the plugin
+    // ahead of one. This is the tripwire — a new global in the mod
     // environment has to be added here deliberately.
     //
     // `files` is not on it: a session's directory holds its `.env`, so the two
-    // rooted reads are present only for a plugin granted the `files`
-    // capability, as `run` is (`tests/plugin_commands.rs`).
+    // rooted reads are present only for a mod granted the `files`
+    // capability, as `run` is (`tests/mod_commands.rs`).
     const GRANTED: [&str; 7] = [
         "require",
         "state",
@@ -1641,10 +1641,10 @@ fn the_granted_capability_set_matches_a_declared_list() {
     ];
 
     let dir = tempfile::tempdir().expect("tempdir");
-    let plugins = dir.path().join("mods");
-    std::fs::create_dir_all(&plugins).expect("mkdir");
+    let mods = dir.path().join("mods");
+    std::fs::create_dir_all(&mods).expect("mkdir");
     std::fs::write(
-        plugins.join("10_probe.lua"),
+        mods.join("10_probe.lua"),
         r#"
         return {
           name = "probe", slot = "a",
@@ -1677,8 +1677,8 @@ fn the_granted_capability_set_matches_a_declared_list() {
     for name in globals.split_whitespace() {
         // No blanket excuse for a leading underscore. `_G`/`_VERSION` are named in
         // STDLIB above; anything else spelled `__like_this` is thurbox's own, and
-        // a plugin's `_ENV` *is* this table — which is how `__run_impl` sat here
-        // handing every untrusted plugin the run capability under a second name.
+        // a mod's `_ENV` *is* this table — which is how `__run_impl` sat here
+        // handing every untrusted mod the run capability under a second name.
         let known = GRANTED.contains(&name)
             || STDLIB.contains(&name)
             // Remaining base-library functions: pure computation, no capability.
@@ -1709,10 +1709,10 @@ fn every_session_field_reaches_lua() {
     // snapshot struct and the published table are two independent lists of
     // fields, and nothing else checks they agree.
     let dir = tempfile::tempdir().expect("tempdir");
-    let plugins = dir.path().join("mods");
-    std::fs::create_dir_all(&plugins).expect("mkdir");
+    let mods = dir.path().join("mods");
+    std::fs::create_dir_all(&mods).expect("mkdir");
     std::fs::write(
-        plugins.join("10_fields.lua"),
+        mods.join("10_fields.lua"),
         r#"
         return {
           name = "fields", slot = "a",
@@ -2123,16 +2123,16 @@ fn a_creation_into_a_fresh_repo_brings_its_own_header() {
 #[test]
 fn a_failing_decorator_leaves_the_pane_drawn() {
     let dir = tempfile::tempdir().expect("tempdir");
-    let plugins = dir.path().join("mods");
-    std::fs::create_dir_all(&plugins).expect("mkdir");
+    let mods = dir.path().join("mods");
+    std::fs::create_dir_all(&mods).expect("mkdir");
     std::fs::write(
-        plugins.join("10_pane.lua"),
+        mods.join("10_pane.lua"),
         r#"return { name = "pane", slot = "a",
                    render = function() return { text = "content" } end }"#,
     )
     .expect("write");
     std::fs::write(
-        plugins.join("20_bad.lua"),
+        mods.join("20_bad.lua"),
         r#"return { name = "bad", slot = "b", decorates = "a",
                    render = function() return { text = "" } end,
                    decorate = function() error("boom") end }"#,
@@ -2148,7 +2148,7 @@ fn a_failing_decorator_leaves_the_pane_drawn() {
     let error = host
         .decorate(decorator, &node, ctx(20, 3, false))
         .expect_err("the decorator must fail");
-    assert_eq!(error.plugin, "bad");
+    assert_eq!(error.r#mod, "bad");
     // And the caller still has the original to draw.
     assert!(paint_node(&node, 20, 3).join("").contains("content"));
 }
@@ -2161,11 +2161,11 @@ fn the_review_body_is_a_surface_not_a_tree() {
     // ever becomes a tree, the pane has stopped being able to do side-by-side
     // and horizontal scrolling.
     let dir = tempfile::tempdir().expect("tempdir");
-    let plugins = dir.path().join("mods");
-    std::fs::create_dir_all(&plugins).expect("mkdir");
+    let mods = dir.path().join("mods");
+    std::fs::create_dir_all(&mods).expect("mkdir");
     // A stand-in that renders the same shape the review pane does.
     std::fs::write(
-        plugins.join("10_body.lua"),
+        mods.join("10_body.lua"),
         r#"return { name = "body", slot = "a", render = function()
              return { type = "box", children = {
                { type = "surface", cells = { "+added", "-removed" } },
@@ -2303,7 +2303,7 @@ fn a_shell_is_a_second_surface_over_the_same_primitive() {
     publish(&host, &sample());
     host.render(index_of(&host, "sessions"), ctx(40, 12, true))
         .expect("render");
-    // The shell is a TAB of the terminal pane, not a plugin of its own, so the
+    // The shell is a TAB of the terminal pane, not a mod of its own, so the
     // pane that opens it is the one that shows it.
     let index = index_of(&host, "agent");
 
@@ -2381,8 +2381,8 @@ fn a_stage_name_reaches_the_pending_row() {
     }];
     publish_with(&host, &sample(), &Default::default(), &inflight);
 
-    // The plugin currently renders "creating…" for any non-failed phase; what
-    // matters here is that the stage survives publishing, so a plugin *can*
+    // The mod currently renders "creating…" for any non-failed phase; what
+    // matters here is that the stage survives publishing, so a mod *can*
     // show it.
     let screen = paint(&host, index_of(&host, "sessions"), 46, 14).join("\n");
     assert!(screen.contains("creating"), "{screen}");
@@ -2427,14 +2427,14 @@ fn a_selection_is_clamped_to_its_pane() {
 }
 
 #[test]
-fn a_plugin_earns_a_band_entry_by_declaring_one() {
+fn a_mod_earns_a_band_entry_by_declaring_one() {
     // The whole extension point: one table field, and the pane knows nothing
     // about how the band draws.
     let dir = tempfile::tempdir().expect("tempdir");
-    let plugins = dir.path().join("mods");
-    std::fs::create_dir_all(&plugins).expect("mkdir");
+    let mods = dir.path().join("mods");
+    std::fs::create_dir_all(&mods).expect("mkdir");
     std::fs::write(
-        plugins.join("10_contributor.lua"),
+        mods.join("10_contributor.lua"),
         r#"return {
              name = "contributor", slot = "center",
              keys = { { key = "f7", action = "contributor.open", desc = "open it", scope = "global" } },
@@ -2447,7 +2447,7 @@ fn a_plugin_earns_a_band_entry_by_declaring_one() {
     let host = LuaHost::new(dir.path());
     let (bindings, settings, pills) = host.all_declarations();
     assert_eq!(pills.len(), 1, "{pills:?}");
-    assert_eq!(pills[0].plugin, "contributor", "stamped with its author");
+    assert_eq!(pills[0].r#mod, "contributor", "stamped with its author");
 
     let mut registry = Registry::default();
     registry.declare_all(bindings, settings, pills);
@@ -2457,15 +2457,15 @@ fn a_plugin_earns_a_band_entry_by_declaring_one() {
 }
 
 #[test]
-fn a_plugin_that_becomes_unloadable_leaves_the_last_good_set_in_force() {
-    // Plugins load as a SET, so a file that stops parsing does not quietly
+fn a_mod_that_becomes_unloadable_leaves_the_last_good_set_in_force() {
+    // Mods load as a SET, so a file that stops parsing does not quietly
     // remove one entry — the whole previous set stays in force and the failure is
     // reported. A half-loaded interface missing the pane you wanted, with no
     // indication why, is the outcome this trades away.
     let dir = tempfile::tempdir().expect("tempdir");
-    let plugins = dir.path().join("mods");
-    std::fs::create_dir_all(&plugins).expect("mkdir");
-    let good = plugins.join("10_good.lua");
+    let mods = dir.path().join("mods");
+    std::fs::create_dir_all(&mods).expect("mkdir");
+    let good = mods.join("10_good.lua");
     std::fs::write(
         &good,
         r#"return {
@@ -2504,13 +2504,13 @@ fn a_plugin_that_becomes_unloadable_leaves_the_last_good_set_in_force() {
 
 #[test]
 fn a_band_is_never_a_focus_stop() {
-    // Bands are not plugins, so they cannot enter the focus ring — asserted
+    // Bands are not mods, so they cannot enter the focus ring — asserted
     // rather than assumed, because the ring is what makes them unreachable.
     let host = host();
     let focusable: Vec<&str> = host
         .focusable()
         .iter()
-        .map(|index| host.plugins[*index].name.as_str())
+        .map(|index| host.mods[*index].name.as_str())
         .collect();
     for band in thurbox::kernel::bands::Band::DROP_ORDER {
         assert!(
@@ -2611,7 +2611,7 @@ fn a_selection_is_painted_in_the_themes_own_colours() {
 }
 
 #[test]
-fn copy_and_paste_are_reachable_from_a_plugin() {
+fn copy_and_paste_are_reachable_from_a_mod() {
     use thurbox::kernel::command::{Args, Command};
     let copy = Command::parse(
         "copy",

@@ -3,7 +3,7 @@
 //! Fleet owns a session's state (ADR-41): the snapshot maps a Task's
 //! `status.sessionState` onto [`SessionState`]
 //! (`kernel::snapshot::fleet`). The words an agent's own hooks report are
-//! part of the vocabulary, so a plugin can tell them from what Fleet infers.
+//! part of the vocabulary, so a mod can tell them from what Fleet infers.
 
 /// Every state a session can be in.
 ///

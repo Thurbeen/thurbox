@@ -263,7 +263,7 @@ examples live under examples/lua/ and carry their own block below.
 ### `examples/lua/**`
 
 Worked example panes, not prose: selene and stylua cover them under `just
-lint`, and examples/lua/plugin.lua is embedded in the binary as what
+lint`, and examples/lua/mod.lua is embedded in the binary as what
 `thurbox-cli mod new` writes, so a break here ships a starter that does not
 load. Read them the more carefully for it - the Lua type check runs against ui/
 only, so a type error here reaches neither linter. The same mod sandbox as

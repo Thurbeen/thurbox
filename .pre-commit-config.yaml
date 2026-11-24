@@ -136,7 +136,7 @@ repos:
         pass_filenames: false
 
       # The plugin interface. `selene` also enforces the VM's sandbox: its
-      # standard library (`thurbox.yml`) declares only what `plugin_stdlib`
+      # standard library (`thurbox.yml`) declares only what `mod_stdlib`
       # grants, so a plugin reaching for `os` or `io` fails here rather than at
       # runtime.
       - id: selene

@@ -202,7 +202,7 @@ pub enum Hover {
 ///
 /// Refilled by `render` and read by the click and hover paths, because that is
 /// the only way either can work: a modal paints cell by cell and has no node
-/// tree for the kernel to collect identity from, unlike a plugin.
+/// tree for the kernel to collect identity from, unlike a mod.
 #[derive(Default)]
 pub struct Hits {
     /// Selectable list rows, each with the index it selects.

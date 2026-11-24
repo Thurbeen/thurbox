@@ -24,7 +24,7 @@ use super::output::CommandOutput;
 
 /// The starting point `new` writes, and the one the guide shows: one artifact, so
 /// a correct example and a broken scaffold cannot be the same release.
-const STARTER: &str = include_str!("../../../../examples/lua/plugin.lua");
+const STARTER: &str = include_str!("../../../../examples/lua/mod.lua");
 
 /// Where a starter lands in the load order. Above every bundled pane (10–70), so
 /// a new mod never renders between two that expect to be neighbours.
@@ -134,19 +134,19 @@ fn resolve() -> Result<(PathBuf, crate::kernel::bundled::Chosen), String> {
 
 fn dir() -> Result<CommandOutput, String> {
     let (dir, chosen) = resolve()?;
-    let plugins = dir.join(crate::session::plugin_spec::MODS_DIR);
+    let mods = dir.join(crate::session::mod_spec::MODS_DIR);
     let human = format!(
         "{}\n  mods  {}\n  chosen   {} ({})",
         dir.display(),
-        plugins.display(),
+        mods.display(),
         chosen.as_str(),
         chosen.reason()
     );
     Ok(CommandOutput::new(
         json!({
             "dir": dir.display().to_string(),
-            "mods_dir": plugins.display().to_string(),
-            "plugins_dir": plugins.display().to_string(),
+            "mods_dir": mods.display().to_string(),
+            "plugins_dir": mods.display().to_string(),
             "chosen": chosen.as_str(),
             "reason": chosen.reason(),
             "exists": dir.is_dir(),
@@ -170,7 +170,7 @@ fn new(name: &str) -> Result<CommandOutput, String> {
     let (dir, chosen) = resolve()?;
 
     // A starter `require`s `lib.theme` and `lib.widgets`, so a directory that has
-    // no `lib/` is not an interface yet and the new plugin would fail to load
+    // no `lib/` is not an interface yet and the new mod would fail to load
     // before it was ever edited. Delivering the bundled files first is what the
     // interface does on its own first run; it preserves anything already there.
     let delivered = if dir.join("lib").is_dir() {
@@ -187,10 +187,10 @@ fn new(name: &str) -> Result<CommandOutput, String> {
         true
     };
 
-    let plugins = dir.join(crate::session::plugin_spec::MODS_DIR);
-    std::fs::create_dir_all(&plugins).map_err(|e| format!("{}: {e}", plugins.display()))?;
+    let mods = dir.join(crate::session::mod_spec::MODS_DIR);
+    std::fs::create_dir_all(&mods).map_err(|e| format!("{}: {e}", mods.display()))?;
 
-    let file = plugins.join(format!("{STARTER_ORDER}_{name}.lua"));
+    let file = mods.join(format!("{STARTER_ORDER}_{name}.lua"));
     if file.exists() {
         return Err(format!("already exists: {}", file.display()));
     }
@@ -256,15 +256,15 @@ fn host_at(dir: &std::path::Path) -> crate::kernel::host::LuaHost {
 /// clashed with itself, with the other author's file absent. Every file that answers
 /// to the name is named instead: less precise than a lie, and the reader can see
 /// which two to open.
-fn file_of(host: &crate::kernel::host::LuaHost, plugin: &str) -> String {
+fn file_of(host: &crate::kernel::host::LuaHost, r#mod: &str) -> String {
     let files: Vec<&str> = host
-        .plugins
+        .mods
         .iter()
-        .filter(|loaded| loaded.name == plugin)
+        .filter(|loaded| loaded.name == r#mod)
         .map(|loaded| loaded.path.as_str())
         .collect();
     match files.is_empty() {
-        true => plugin.to_string(),
+        true => r#mod.to_string(),
         false => files.join(", "),
     }
 }
@@ -279,11 +279,7 @@ fn check() -> Result<CommandOutput, String> {
         ));
     }
     let host = host_at(&dir);
-    let loaded: Vec<String> = host
-        .plugins
-        .iter()
-        .map(|plugin| plugin.name.clone())
-        .collect();
+    let loaded: Vec<String> = host.mods.iter().map(|r#mod| r#mod.name.clone()).collect();
 
     // One error means the whole directory failed to load: the host reports the
     // first file that would not compile and stops, because a half-loaded
@@ -310,7 +306,7 @@ fn check() -> Result<CommandOutput, String> {
         format!("{}\n  ✓ loads — {}", dir.display(), loaded.join(", "))
     };
 
-    // Loading is not the same as drawing. A plugin whose slot the arrangement
+    // Loading is not the same as drawing. A mod whose slot the arrangement
     // names nowhere passes every check above it — it compiles, declares its keys
     // and is listed — and paints nothing, which is the one failure a pipe could
     // not see. Resolved at a stated size because placement is size-dependent;
@@ -344,10 +340,10 @@ fn check() -> Result<CommandOutput, String> {
         let mut rows = Vec::new();
         for slot in &unplaced {
             let files: Vec<&str> = host
-                .plugins
+                .mods
                 .iter()
-                .filter(|plugin| &plugin.slot == slot)
-                .map(|plugin| plugin.path.as_str())
+                .filter(|r#mod| &r#mod.slot == slot)
+                .map(|r#mod| r#mod.path.as_str())
                 .collect();
             lines.push(format!(
                 "  ✗ {} — loaded, but nothing places slot {slot:?}\n      {}",
@@ -377,21 +373,21 @@ fn check() -> Result<CommandOutput, String> {
     // cannot demonstrate itself completely silent.
     let mut warnings = Vec::new();
     let sources = crate::kernel::bundled::sources(&dir);
-    for (index, plugin) in host.plugins.iter().enumerate() {
+    for (index, r#mod) in host.mods.iter().enumerate() {
         if let Some(reason) = host.undiscoverable(index) {
-            warnings.push(json!({ "file": plugin.path, "warning": reason }));
+            warnings.push(json!({ "file": r#mod.path, "warning": reason }));
         }
-        for binding in &plugin.bindings {
+        for binding in &r#mod.bindings {
             if crate::kernel::registry::protected_action(&binding.action) {
                 warnings.push(json!({
-                    "file": plugin.path,
+                    "file": r#mod.path,
                     "warning": format!("{} is reserved for the kernel", binding.action),
                     "action": binding.action,
                 }));
             }
         }
         if matches!(
-            sources.get(&plugin.path),
+            sources.get(&r#mod.path),
             Some(crate::kernel::bundled::Source::Bundled)
         ) {
             continue;
@@ -402,7 +398,7 @@ fn check() -> Result<CommandOutput, String> {
                 continue;
             }
             warnings.push(json!({
-                "file": plugin.path,
+                "file": r#mod.path,
                 "warning": format!("{handler} handles gestures that are not advertised as catalog actions; declare semantic actions or addressed input equivalents"),
                 "handler": handler,
             }));
@@ -416,21 +412,21 @@ fn check() -> Result<CommandOutput, String> {
     // is missing is one button.
     let registry = declared(&host);
     let catalog = registry.action_catalog();
-    for plugin in &host.plugins {
-        for action in plugin
+    for r#mod in &host.mods {
+        for action in r#mod
             .bindings
             .iter()
             .map(|entry| entry.action.as_str())
-            .chain(plugin.commands.iter().map(|entry| entry.action.as_str()))
+            .chain(r#mod.commands.iter().map(|entry| entry.action.as_str()))
         {
             if let Some(owner) = catalog
                 .iter()
                 .find(|entry| entry.name == action)
                 .map(|entry| entry.owner.as_str())
             {
-                if owner != plugin.name {
+                if owner != r#mod.name {
                     warnings.push(json!({
-                        "file": plugin.path,
+                        "file": r#mod.path,
                         "warning": format!("{action} is owned by {owner}; this declaration cannot be advertised"),
                         "action": action,
                     }));
@@ -450,8 +446,8 @@ fn check() -> Result<CommandOutput, String> {
     let literal_values =
         regex::Regex::new(r#"^\s*['"][^'"]+['"](?:\s*,\s*['"][^'"]+['"])*\s*(?:--.*)?$"#)
             .expect("literal assignments");
-    for plugin in &host.plugins {
-        let Ok(source) = std::fs::read_to_string(dir.join(&plugin.path)) else {
+    for r#mod in &host.mods {
+        let Ok(source) = std::fs::read_to_string(dir.join(&r#mod.path)) else {
             continue;
         };
         let mut constants = std::collections::BTreeMap::new();
@@ -486,7 +482,7 @@ fn check() -> Result<CommandOutput, String> {
                 used.push(name.clone());
             } else {
                 warnings.push(json!({
-                    "file": plugin.path,
+                    "file": r#mod.path,
                     "warning": format!("constructed click action {variable} cannot be advertised; declare a constant action name"),
                 }));
             }
@@ -494,7 +490,7 @@ fn check() -> Result<CommandOutput, String> {
         for name in used {
             if name.contains('.') && !advertised.contains(name.as_str()) {
                 warnings.push(json!({
-                    "file": plugin.path,
+                    "file": r#mod.path,
                     "warning": format!("{name} is used by a menu or clickable node but has no catalog action"),
                     "action": name,
                 }));
@@ -502,10 +498,10 @@ fn check() -> Result<CommandOutput, String> {
         }
     }
     let mut dropped = Vec::new();
-    for plugin in &host.plugins {
-        for (pill, reason) in crate::kernel::bands::dropped(&plugin.pills, &registry) {
+    for r#mod in &host.mods {
+        for (pill, reason) in crate::kernel::bands::dropped(&r#mod.pills, &registry) {
             dropped.push(json!({
-                "file": plugin.path,
+                "file": r#mod.path,
                 "label": pill.label,
                 "action": pill.action,
                 "reason": reason.as_str(),
@@ -523,10 +519,10 @@ fn check() -> Result<CommandOutput, String> {
     // their own half.
     for conflict in registry.conflicts() {
         warnings.push(json!({
-            "file": file_of(&host, &conflict.shadowed_plugin),
+            "file": file_of(&host, &conflict.shadowed_mod),
             "warning": conflict.message(),
             "chord": conflict.chord,
-            "shadowed_by": file_of(&host, &conflict.kept_plugin),
+            "shadowed_by": file_of(&host, &conflict.kept_mod),
         }));
     }
     let mut human = loads;
@@ -590,7 +586,7 @@ fn list() -> Result<CommandOutput, String> {
     let managed: std::collections::BTreeMap<String, String> =
         crate::kernel::packages::read_spec(&dir)
             .map(|spec| {
-                spec.plugins
+                spec.mods
                     .iter()
                     .map(|entry| (entry.file.clone(), entry.name().to_string()))
                     .collect()
@@ -608,7 +604,7 @@ fn list() -> Result<CommandOutput, String> {
         .into_iter()
         .collect();
     let rows = crate::kernel::inventory::rows(
-        &host.plugins,
+        &host.mods,
         &sources,
         &Default::default(),
         &placed,
@@ -696,9 +692,9 @@ fn install_dir() -> Result<PathBuf, String> {
 /// a height the pane declares itself.
 fn layout_fix(host: &crate::kernel::host::LuaHost, slot: &str) -> String {
     let is_strip = host
-        .plugins
+        .mods
         .iter()
-        .any(|plugin| plugin.slot == slot && plugin.strip);
+        .any(|r#mod| r#mod.slot == slot && r#mod.strip);
     if is_strip {
         "it is a strip, and this layout.lua has no strips loop — add it before the message \
          band: for _, strip in ipairs(ctx.strips or {}) do children[#children + 1] = \
@@ -716,19 +712,19 @@ fn layout_fix(host: &crate::kernel::host::LuaHost, slot: &str) -> String {
 /// instruction should arrive before anybody has to go looking for it.
 fn placement_hint(dir: &Path, file: &str) -> Option<String> {
     let host = host_at(dir);
-    let index = host.plugins.iter().position(|plugin| plugin.path == file)?;
-    let plugin = &host.plugins[index];
-    if plugin.floats || plugin.decorates.is_some() {
+    let index = host.mods.iter().position(|r#mod| r#mod.path == file)?;
+    let r#mod = &host.mods[index];
+    if r#mod.floats || r#mod.decorates.is_some() {
         return None;
     }
     let unplaced = host
         .unplaced_slots(crate::kernel::layout::REFERENCE)
         .unwrap_or_default();
-    if unplaced.contains(&plugin.slot) {
+    if unplaced.contains(&r#mod.slot) {
         return Some(format!(
             "nothing places slot {slot:?} yet — {}",
-            layout_fix(&host, &plugin.slot),
-            slot = plugin.slot
+            layout_fix(&host, &r#mod.slot),
+            slot = r#mod.slot
         ));
     }
     // Placed, loaded, and still invisible: the alternate occupant of a switch slot.
@@ -739,7 +735,7 @@ fn placement_hint(dir: &Path, file: &str) -> Option<String> {
             "it shares the {slot:?} slot, so it is not shown by default, and ctrl+h/ctrl+l \
              pass it over — give it a key of its own, or declare a pill so the action \
              band offers it",
-            slot = plugin.slot
+            slot = r#mod.slot
         ));
     }
     None
@@ -802,7 +798,7 @@ fn install(src: &str, as_file: Option<&str>, pin: Option<&str>) -> Result<Comman
         ));
     }
     if repository {
-        // Said at the moment it happens, not only in the guide. Installing a plugin
+        // Said at the moment it happens, not only in the guide. Installing a mod
         // from a repository puts that repository's files on your disk — binaries
         // included — which is what cloning anything does, and is worse left unsaid.
         human.push_str("\n  a working copy of that repository is now in your interface directory");
@@ -929,17 +925,17 @@ fn remove(name: &str) -> Result<CommandOutput, String> {
 }
 
 fn available() -> Result<CommandOutput, String> {
-    let plugins = crate::kernel::packages::EXAMPLE_PLUGINS;
+    let mods = crate::kernel::packages::EXAMPLE_MODS;
     let table = super::output::table(
         &["name", "description"],
-        &plugins
+        &mods
             .iter()
             .map(|(name, description)| vec![(*name).to_string(), (*description).to_string()])
             .collect::<Vec<_>>(),
     );
     Ok(CommandOutput::new(
         json!({
-            "plugins": plugins
+            "plugins": mods
                 .iter()
                 .map(|(name, description)| json!({ "name": name, "description": description }))
                 .collect::<Vec<_>>(),
@@ -958,10 +954,10 @@ mod tests {
     #[test]
     fn check_refuses_a_subscription_to_an_unknown_event() {
         let dir = tempfile::tempdir().expect("tempdir");
-        let plugins = dir.path().join("mods");
-        std::fs::create_dir_all(&plugins).expect("mkdir");
+        let mods = dir.path().join("mods");
+        std::fs::create_dir_all(&mods).expect("mkdir");
         std::fs::write(
-            plugins.join("10_typo.lua"),
+            mods.join("10_typo.lua"),
             r#"return {
                  name = "typo", slot = "center",
                  events = { "sesion.status" },
@@ -988,7 +984,7 @@ mod tests {
     /// The starter has to be a mod, not a snippet: the whole point is that a
     /// new file loads before it is edited.
     #[test]
-    fn the_starter_declares_what_a_plugin_needs() {
+    fn the_starter_declares_what_a_mod_needs() {
         assert!(STARTER.contains("render = function"));
         assert!(STARTER.contains("name = \"example\""));
         assert!(STARTER.contains("keys = {"));

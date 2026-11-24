@@ -1,5 +1,5 @@
 //! The dispatch machinery: accept a command, run it off the render path, keep
-//! the in-flight record a plugin can draw. Split from the protocol (`mod.rs`)
+//! the in-flight record a mod can draw. Split from the protocol (`mod.rs`)
 //! and the effects (`execute.rs`) so the write side reads as its three
 //! halves.
 
@@ -50,7 +50,7 @@ pub struct InFlight {
     /// and for every command that already names a session.
     pub host: Option<String>,
     pub phase: Phase,
-    /// Set once the command has failed; retained briefly so a plugin can show
+    /// Set once the command has failed; retained briefly so a mod can show
     /// it, then swept.
     pub error: Option<String>,
 }
@@ -328,7 +328,7 @@ impl CommandBus {
         true
     }
 
-    /// Everything accepted but not yet done, for publishing to plugins.
+    /// Everything accepted but not yet done, for publishing to mods.
     /// Whether anything is in flight, without cloning the list.
     ///
     /// The animation clock asks this on every published frame, and

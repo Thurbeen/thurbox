@@ -1,4 +1,4 @@
-//! The new-session flow, against the real bundled plugin.
+//! The new-session flow, against the real bundled mod.
 //!
 //! What is worth testing here is not the pixels, but the two things v1 got
 //! wrong often enough to have grown machinery for:
@@ -25,7 +25,7 @@ use thurbox::kernel::repos::{BookmarkRow, BrowseEntry, Listing, RepoStore, Wants
 use thurbox::kernel::snapshot::{AgentRow, FleetRow, FleetState, HostRow, Snapshot};
 use thurbox::kernel::theme::Themes;
 
-const PLUGIN: &str = "new_session";
+const MOD: &str = "new_session";
 
 fn host() -> LuaHost {
     let dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../ui");
@@ -233,7 +233,7 @@ fn painted_sized(
     screen_rows: u16,
 ) -> Option<(Buffer, Vec<Hit>)> {
     publish_hovered(host, world, hovered);
-    let index = index_of(host, PLUGIN);
+    let index = index_of(host, MOD);
     let rendered = host
         .render(
             index,
@@ -328,7 +328,7 @@ fn click_on(host: &LuaHost, world: &World, needle: &str, below: u16) -> Identity
         clicks: 1,
         ..Click::default()
     };
-    host.on_click(index_of(host, PLUGIN), &click)
+    host.on_click(index_of(host, MOD), &click)
         .expect("on_click");
     identity
 }
@@ -337,12 +337,12 @@ fn click_on(host: &LuaHost, world: &World, needle: &str, below: u16) -> Identity
 /// registry to `on_action`, and anything else goes to `on_key`.
 fn press(host: &LuaHost, world: &World, chord: &str) {
     publish(host, world);
-    let index = index_of(host, PLUGIN);
+    let index = index_of(host, MOD);
     let key = key_press(chord);
     let mut registry = Registry::default();
     let (bindings, settings) = host.declarations();
     registry.declare(bindings, settings);
-    if let Some(binding) = registry.resolve(&key, Some(PLUGIN)) {
+    if let Some(binding) = registry.resolve(&key, Some(MOD)) {
         let action = binding.action.clone();
         if host.on_action(index, &action).expect("on_action") {
             return;
@@ -387,14 +387,14 @@ fn type_text(host: &LuaHost, world: &World, text: &str) {
             key.name = "space".to_string();
         }
         publish(host, world);
-        let index = index_of(host, PLUGIN);
+        let index = index_of(host, MOD);
         // Typed text is never a declared chord in a field: the flow returns
         // `false` from those actions while a field has focus, which is the
         // behaviour this exercises.
         let mut registry = Registry::default();
         let (bindings, settings) = host.declarations();
         registry.declare(bindings, settings);
-        let consumed = match registry.resolve(&key, Some(PLUGIN)) {
+        let consumed = match registry.resolve(&key, Some(MOD)) {
             Some(binding) => {
                 let action = binding.action.clone();
                 host.on_action(index, &action).expect("on_action")
@@ -3540,11 +3540,11 @@ fn what_the_flow_asks_for_is_what_the_loop_reads() {
 #[test]
 fn the_flow_is_a_float_that_never_joins_the_focus_ring() {
     let host = host();
-    let index = index_of(&host, PLUGIN);
-    let plugin = &host.plugins[index];
-    assert!(plugin.floats, "the flow overlays rather than taking a slot");
+    let index = index_of(&host, MOD);
+    let r#mod = &host.mods[index];
+    assert!(r#mod.floats, "the flow overlays rather than taking a slot");
     assert!(
-        !plugin.focusable,
+        !r#mod.focusable,
         "a closed modal must not be a tab stop, as v1's pickers are not"
     );
 }
@@ -3554,8 +3554,8 @@ fn every_key_the_flow_uses_is_declared_rather_than_only_handled() {
     // Declared keys are what help can list and a user can rebind; the fixed ones
     // (enter/esc/tab) are v1's fixed ones too.
     let host = host();
-    let index = index_of(&host, PLUGIN);
-    let declared: Vec<&str> = host.plugins[index]
+    let index = index_of(&host, MOD);
+    let declared: Vec<&str> = host.mods[index]
         .bindings
         .iter()
         .map(|binding| binding.chord.as_str())

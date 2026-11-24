@@ -57,7 +57,7 @@ fn seed_repo(dir: &Path, file: &str, contents: &str) -> String {
 /// A clone delivers whatever the repository holds — including bytes no text
 /// path could carry — and reports the commit, not the ref.
 #[test]
-fn cloning_a_plugin_delivers_its_files_and_reports_the_commit() {
+fn cloning_a_mod_delivers_its_files_and_reports_the_commit() {
     let tmp = tempfile::tempdir().expect("tempdir");
     let origin = tmp.path().join("origin");
     // A pane in a nested directory, and a non-UTF-8 payload beside it: the exact
@@ -73,7 +73,7 @@ fn cloning_a_plugin_delivers_its_files_and_reports_the_commit() {
     };
 
     let dest = tmp.path().join("ui").join("x");
-    clone_plugin(&origin.to_string_lossy(), &dest, None).expect("clone");
+    clone_mod(&origin.to_string_lossy(), &dest, None).expect("clone");
 
     assert_eq!(
         std::fs::read(dest.join("payload.bin")).expect("read"),
@@ -92,7 +92,7 @@ fn cloning_over_something_that_exists_is_refused() {
     let dest = tmp.path().join("taken");
     std::fs::create_dir_all(&dest).expect("mkdir");
     std::fs::write(dest.join("mine.lua"), "return {}").expect("write");
-    let error = clone_plugin("https://example.com/x.git", &dest, None).expect_err("should refuse");
+    let error = clone_mod("https://example.com/x.git", &dest, None).expect_err("should refuse");
     assert!(error.to_string().contains("already exists"), "{error}");
     assert!(dest.join("mine.lua").is_file(), "and leaves it alone");
 }
@@ -143,7 +143,7 @@ fn an_edited_working_copy_reports_itself_dirty() {
     let origin = tmp.path().join("origin");
     seed_repo(&origin, "mods/40_x.lua", "return {}\n");
     let dest = tmp.path().join("clone");
-    clone_plugin(&origin.to_string_lossy(), &dest, None).expect("clone");
+    clone_mod(&origin.to_string_lossy(), &dest, None).expect("clone");
 
     assert!(!is_dirty(&dest).expect("clean"));
     std::fs::write(dest.join("mods/40_x.lua"), "-- mine\n").expect("edit");

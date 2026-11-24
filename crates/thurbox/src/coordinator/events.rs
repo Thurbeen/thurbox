@@ -1,4 +1,4 @@
-//! Delivering events to the plugins that subscribed to them.
+//! Delivering events to the mods that subscribed to them.
 //!
 //! One dispatch point per iteration, after the worker stores and the command
 //! bus have published and before the paint — so a handler sees the iteration's
@@ -20,7 +20,7 @@ use ratatui::DefaultTerminal;
 
 use thurbox::kernel::bands::Level;
 use thurbox::kernel::events::{Deriver, Event, Field, MAX_DEPTH};
-use thurbox::kernel::host::PluginError;
+use thurbox::kernel::host::ModError;
 use thurbox::kernel::terminal::{ProgramKey, ProgramTransition};
 
 use crate::{App, TrackedCommand};
@@ -37,7 +37,7 @@ pub(crate) enum ReloadReason {
     Watch,
     /// A switch or a trust change in the settings modal's Interface tab.
     Settings,
-    /// The plugin VM filled up (`LuaHost::near_memory_limit`).
+    /// The mod VM filled up (`LuaHost::near_memory_limit`).
     Memory,
 }
 
@@ -64,9 +64,9 @@ pub(crate) struct Events {
     /// did: an emit from a depth-zero handler read as a root and cascaded
     /// unbounded.
     current: Option<u8>,
-    /// `(plugin, event)` pairs already reported, so a handler that throws on
+    /// `(mod, event)` pairs already reported, so a handler that throws on
     /// every `session.status` is reported once per event rather than per
-    /// delivery. Cleared on reload, since the plugin was rebuilt.
+    /// delivery. Cleared on reload, since the mod was rebuilt.
     reported: std::collections::HashSet<(String, String)>,
     /// The program panes seen RUNNING on the last iteration, by surface id.
     ///
@@ -112,7 +112,7 @@ impl App {
         // batch — the same rule an input batch follows.
         self.republish();
         self.events.cascade_reported = false;
-        // Timed as an op like a keypress: a handler is plugin Lua on the UI
+        // Timed as an op like a keypress: a handler is mod Lua on the UI
         // thread, and a slow one stalls the loop exactly as a slow key does.
         // Only reached with something queued, so an idle loop pays no clock.
         self.time_op("event_dispatch", |app| {
@@ -164,8 +164,8 @@ impl App {
             .host
             .focusable()
             .get(self.focus)
-            .and_then(|index| self.host.plugins.get(*index))
-            .map(|plugin| plugin.name.clone());
+            .and_then(|index| self.host.mods.get(*index))
+            .map(|r#mod| r#mod.name.clone());
         match &self.events.focus {
             None => self.events.focus = Some((selected, pane)),
             Some((last_selected, last_pane)) => {
@@ -193,14 +193,14 @@ impl App {
             }
         }
 
-        // Programs: which of a plugin's own panes have ended since the last
+        // Programs: which of a mod's own panes have ended since the last
         // look. The kernel has always known — `has_exited` is an atomic the
         // reader loop sets — but nothing published it, so a pane could neither
         // say that its program had finished nor move on from it.
         //
         // Derived here rather than fired where the process is reaped because
         // nothing reaps it: `start_program` replaces a finished slot lazily, the
-        // next time the plugin asks. Two readings, because the live walk alone
+        // next time the mod asks. Two readings, because the live walk alone
         // cannot see every ending — see [`program_endings`].
         let ended = program_endings(
             &mut self.events.programs,
@@ -210,7 +210,7 @@ impl App {
         for (key, program) in ended {
             self.enqueue_event(
                 Event::new("program.exited")
-                    .to(key.plugin)
+                    .to(key.r#mod)
                     .with("name", Some(key.name))
                     .with("program", Some(program)),
             );
@@ -295,9 +295,9 @@ impl App {
         );
     }
 
-    /// A reload replaces every plugin: what was queued for the old ones is
+    /// A reload replaces every mod: what was queued for the old ones is
     /// dropped, the deriver seeds again from the next snapshot, and the rebuilt
-    /// plugins hear `interface.reloaded` first.
+    /// mods hear `interface.reloaded` first.
     pub(crate) fn note_reload(&mut self, reason: ReloadReason) {
         self.events.queue.clear();
         self.events.deriver.reset();
@@ -310,8 +310,8 @@ impl App {
         }
     }
 
-    fn report_event_failure(&mut self, failure: PluginError, event: &str) {
-        let key = (failure.plugin.clone(), event.to_string());
+    fn report_event_failure(&mut self, failure: ModError, event: &str) {
+        let key = (failure.r#mod.clone(), event.to_string());
         if !self.events.reported.insert(key) {
             return;
         }
@@ -332,7 +332,7 @@ impl App {
 /// the slots since the last drain — carries both:
 ///
 /// - **`Replaced`** — an ending whose slot is already gone. The loop applies
-///   commands before it derives, so a plugin asking to restart on the frame
+///   commands before it derives, so a mod asking to restart on the frame
 ///   after its program died hands this walk a *live* pane under the same key.
 /// - **`Started`** — a pane spawned here. Without it the memo is the only
 ///   evidence a pane ever ran, and a program that dies inside one iteration —
@@ -348,7 +348,7 @@ impl App {
 /// already-told death is told a second time.
 ///
 /// A key can still legitimately appear twice: a pane that died, was restarted,
-/// and died again inside one iteration is two programs ending, and a plugin
+/// and died again inside one iteration is two programs ending, and a mod
 /// that restarts on the event owes itself both.
 fn program_endings(
     seen: &mut std::collections::HashSet<String>,
@@ -436,7 +436,7 @@ mod tests {
     /// A corpse found on startup is not an ending. This is the rule the seeding
     /// below has to leave standing: a window adopted from a previous run of the
     /// interface holds a program that stopped while nothing was watching, and
-    /// announcing it would tell a plugin its editor "just closed" at boot.
+    /// announcing it would tell a mod its editor "just closed" at boot.
     #[test]
     fn a_corpse_adopted_from_a_previous_run_is_not_an_ending() {
         let mut memo = HashSet::new();
@@ -496,7 +496,7 @@ mod tests {
     /// Two deaths in one iteration are two events, not one and not three.
     ///
     /// A pane died, was restarted, and the replacement died too before anything
-    /// looked. Both endings are real, and a plugin that restarts its program on
+    /// looked. Both endings are real, and a mod that restarts its program on
     /// the event owes itself both — but a single death must never arrive twice,
     /// which is what draining against the old memo is for.
     #[test]
@@ -514,9 +514,9 @@ mod tests {
         assert_eq!(names(&ended), ["editor", "editor"]);
     }
 
-    /// Each ending is addressed to the plugin whose pane it was.
+    /// Each ending is addressed to the mod whose pane it was.
     #[test]
-    fn endings_carry_the_plugin_that_owns_them() {
+    fn endings_carry_the_mod_that_owns_them() {
         let mine = ProgramKey::new("mods/90_files.lua", "editor");
         let theirs = ProgramKey::new("mods/50_notes.lua", "editor");
         let mut memo = seen(&[&mine, &theirs]);
@@ -531,7 +531,7 @@ mod tests {
         assert_eq!(
             ended
                 .iter()
-                .map(|(k, _)| k.plugin.as_str())
+                .map(|(k, _)| k.r#mod.as_str())
                 .collect::<Vec<_>>(),
             ["mods/90_files.lua"],
             "two mods' panes share a name, and the wrong one was told"
@@ -543,7 +543,7 @@ mod tests {
     ///
     /// The restart records the slot it overwrites, and the spawn beside it puts
     /// the surface back in the memo — so a drain that reads the memo *after* the
-    /// spawn finds the same death vouched for a second time. The plugin that
+    /// spawn finds the same death vouched for a second time. The mod that
     /// restarts on the event then restarts twice for one process.
     #[test]
     fn an_ending_already_announced_is_not_announced_again_by_the_restart() {

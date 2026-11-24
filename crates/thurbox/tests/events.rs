@@ -1,11 +1,11 @@
-//! Plugin events, through the real kernel: a plugin declares what it listens
+//! Mod events, through the real kernel: a mod declares what it listens
 //! for, the kernel derives what changed and hands each subscriber one call per
 //! change, and a handler that fails costs only itself.
 //!
 //! What lives in the loop — the dispatch point, the cascade bound, focus and
 //! command events, the reload — is the binary's and is asserted by its unit
 //! tests and the design; this file covers the kernel's half, which is the half
-//! a plugin author can observe.
+//! a mod author can observe.
 
 use std::path::PathBuf;
 
@@ -17,19 +17,19 @@ use thurbox::kernel::snapshot::{SessionRow, Snapshot};
 use thurbox::kernel::theme::Themes;
 use thurbox::session::SessionState;
 
-/// An interface directory holding the given plugins, each `(file, source)`.
-fn interface(plugins: &[(&str, &str)]) -> tempfile::TempDir {
+/// An interface directory holding the given mods, each `(file, source)`.
+fn interface(mods: &[(&str, &str)]) -> tempfile::TempDir {
     let dir = tempfile::tempdir().expect("tempdir");
-    let plugins_dir = dir.path().join("mods");
-    std::fs::create_dir_all(&plugins_dir).expect("mkdir");
-    for (file, source) in plugins {
-        std::fs::write(plugins_dir.join(file), source).expect("write");
+    let mods_dir = dir.path().join("mods");
+    std::fs::create_dir_all(&mods_dir).expect("mkdir");
+    for (file, source) in mods {
+        std::fs::write(mods_dir.join(file), source).expect("write");
     }
     dir
 }
 
-fn host_of(plugins: &[(&str, &str)]) -> (tempfile::TempDir, LuaHost) {
-    let dir = interface(plugins);
+fn host_of(mods: &[(&str, &str)]) -> (tempfile::TempDir, LuaHost) {
+    let dir = interface(mods);
     let host = LuaHost::new(dir.path());
     assert!(host.error.is_none(), "{:?}", host.error);
     (dir, host)
@@ -111,7 +111,7 @@ fn status_event(session: &str, from: &str, to: &str) -> Event {
         .with("to", Some(to))
 }
 
-/// A plugin that records every event it receives in the shared `store`, so a
+/// A mod that records every event it receives in the shared `store`, so a
 /// test can read what it saw without rendering it.
 const RECORDER: &str = r#"
 return {
@@ -175,7 +175,7 @@ fn a_subscription_to_a_name_the_kernel_does_not_emit_refuses_to_load() {
         error.contains("session.status"),
         "the message should list what was available: {error}"
     );
-    // The `user.` form loads, so plugins can talk to each other by name.
+    // The `user.` form loads, so mods can talk to each other by name.
     let dir = interface(&[(
         "10_user.lua",
         r#"return {
@@ -204,7 +204,7 @@ fn one_subscriber_throwing_costs_neither_the_others_nor_its_own_pane() {
     ]);
     let failures = host.dispatch_event(&status_event("s1", "idle", "blocked"));
     assert_eq!(failures.len(), 1, "{failures:?}");
-    assert_eq!(failures[0].plugin, "thrower");
+    assert_eq!(failures[0].r#mod, "thrower");
     assert_eq!(failures[0].phase, Phase::Event);
     assert!(
         failures[0].message.contains("session.status") && failures[0].message.contains("no thanks"),
@@ -267,7 +267,7 @@ fn a_handler_reads_the_published_tables_and_can_only_enqueue() {
 }
 
 #[test]
-fn a_plugin_emits_a_user_event_and_another_receives_it_with_the_source() {
+fn a_mod_emits_a_user_event_and_another_receives_it_with_the_source() {
     let (_dir, host) = host_of(&[
         (
             "10_sender.lua",
@@ -305,14 +305,14 @@ fn a_plugin_emits_a_user_event_and_another_receives_it_with_the_source() {
     else {
         panic!("expected an emit, got {issued:?}");
     };
-    // Owner is stamped from the executing plugin, never read from Lua.
+    // Owner is stamped from the executing mod, never read from Lua.
     assert_eq!(owner, "mods/10_sender.lua");
     assert_eq!(name, "user.refresh");
     assert!(payload.contains(&("scope".to_string(), Field::Text("x".into()))));
     assert!(payload.contains(&("count".to_string(), Field::Number(2.0))));
     assert!(payload.contains(&("urgent".to_string(), Field::Bool(true))));
 
-    // As the loop delivers it: the source is the emitting plugin's NAME.
+    // As the loop delivers it: the source is the emitting mod's NAME.
     let source = host.name_of_path(&owner).expect("the owner is loaded");
     let mut event = Event::new(name);
     event.payload = payload;
@@ -326,7 +326,7 @@ fn a_plugin_emits_a_user_event_and_another_receives_it_with_the_source() {
 }
 
 #[test]
-fn a_plugin_cannot_emit_a_kernel_event() {
+fn a_mod_cannot_emit_a_kernel_event() {
     let (_dir, host) = host_of(&[(
         "10_forger.lua",
         r#"return {
@@ -348,7 +348,7 @@ fn a_plugin_cannot_emit_a_kernel_event() {
 
 #[test]
 fn emit_is_reachable_only_through_command() {
-    // No new global: the event bus rides the one write channel plugins have.
+    // No new global: the event bus rides the one write channel mods have.
     let (_dir, host) = host_of(&[(
         "10_probe.lua",
         r#"return {
@@ -394,7 +394,7 @@ fn what_the_deriver_says_changed_is_what_a_subscriber_hears() {
         sessions: vec![row("a", "idle")],
         ..Snapshot::default()
     };
-    // Seeds: the rows that existed before the plugin did are not news.
+    // Seeds: the rows that existed before the mod did are not news.
     for event in deriver.observe(&first, 1) {
         host.dispatch_event(&event);
     }
@@ -425,8 +425,8 @@ fn what_the_deriver_says_changed_is_what_a_subscriber_hears() {
 #[test]
 fn a_subscription_is_listed_as_data() {
     let (_dir, host) = host_of(&[("10_recorder.lua", RECORDER)]);
-    let plugin = &host.plugins[host.index_of("recorder").expect("loaded")];
-    assert_eq!(plugin.events, vec!["session.status".to_string()]);
+    let r#mod = &host.mods[host.index_of("recorder").expect("loaded")];
+    assert_eq!(r#mod.events, vec!["session.status".to_string()]);
     assert_eq!(host.subscribers("session.status"), vec![0]);
     assert!(host.subscribers("session.created").is_empty());
 }

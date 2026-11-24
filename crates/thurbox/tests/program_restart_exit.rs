@@ -3,13 +3,13 @@
 //! `program.exited` is derived by comparing the program panes held now against
 //! the ones held at the previous look: a key whose pane reports `has_exited` and
 //! was seen running before is an ending. The loop, though, applies the commands
-//! plugins enqueued **before** it derives — and a plugin that asks for its
+//! mods enqueued **before** it derives — and a mod that asks for its
 //! program on every frame (the documented pattern, which is what makes
 //! `start_program` idempotent) asks again on the very frame after its program
 //! died. `start_program` then replaces the finished slot, and the derivation
 //! that runs a few lines later is handed a *live* pane under the same key. No
-//! transition, no event: the plugin that restarted the program is never told the
-//! old one finished, which is exactly the plugin that most needs to know.
+//! transition, no event: the mod that restarted the program is never told the
+//! old one finished, which is exactly the mod that most needs to know.
 //!
 //! So the ending is recorded where the slot is overwritten, and drained where
 //! the transition is derived. Asserted through the real restart path on a real
@@ -100,7 +100,7 @@ async fn restarting_a_finished_program_still_reports_the_ending() {
          before anything replaced it"
     );
 
-    // The plugin asks again, as it does on every frame.
+    // The mod asks again, as it does on every frame.
     let long = ["-c".to_string(), "sleep 300".to_string()];
     let restarted = terminals.start_program(&key, "sh", &long, Some(dir.path()), 24, 80);
     let transitions = terminals.take_program_transitions();

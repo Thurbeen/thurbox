@@ -3,13 +3,13 @@
 //! Three single-row surfaces — who is running (`identity`), what just happened
 //! (`message`), and what can be pressed (`action`). They are the non-modal half
 //! of the rule `kernel::modals` states for the modal half: **system chrome is
-//! kernel-owned, and plugins contribute data to it**.
+//! kernel-owned, and mods contribute data to it**.
 //!
 //! Two properties follow from that, and both are the point:
 //!
 //! * **Drawing a band runs no Lua.** Contributions are collected once, at load
 //!   and reload, and every value that changes while running is read from state
-//!   the kernel already holds. A plugin that throws, hangs or fails to load
+//!   the kernel already holds. A mod that throws, hangs or fails to load
 //!   costs its own pane and its own entries — never the chrome.
 //! * **The arrangement decides placement, the kernel decides contents.** A band
 //!   is named as a slot in `ui/layout.lua` exactly as a pane's region is, so the
@@ -34,7 +34,7 @@ pub enum Level {
 }
 
 impl Level {
-    /// The name a plugin writes in `command("message", { level = … })`.
+    /// The name a mod writes in `command("message", { level = … })`.
     ///
     /// `None` for anything else, so a level nobody badges is refused at parse
     /// time rather than quietly read as `Info` — a misspelt severity that
@@ -70,7 +70,7 @@ impl Level {
 
 /// Which band a slot names.
 ///
-/// A slot the arrangement placed that is not one of these belongs to plugins,
+/// A slot the arrangement placed that is not one of these belongs to mods,
 /// and is not this module's business.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Band {
@@ -204,7 +204,7 @@ impl Entry {
 /// An entry naming an action the registry does not know is **dropped**. A chip
 /// that lights on hover and then does nothing costs a press to discover, which
 /// is worse than never offering it — learned from the tab strip, which kept
-/// advertising a review pane after that plugin was deleted.
+/// advertising a review pane after that mod was deleted.
 pub fn entries(pills: &[Pill], registry: &Registry) -> Vec<Entry> {
     let mut out: Vec<Entry> = pills
         .iter()
@@ -239,7 +239,7 @@ pub enum DropReason {
     /// The action is declared, as a chord-less `commands` entry, and nothing
     /// binds a key to it. Reachable from the palette; not from the band.
     PaletteOnly,
-    /// Nothing loaded declares the action at all — a misspelling, or a plugin
+    /// Nothing loaded declares the action at all — a misspelling, or a mod
     /// that is turned off or gone.
     Unknown,
 }
@@ -469,12 +469,12 @@ fn fit_to_budget(mut spans: Vec<Span<'static>>, budget: usize) -> Vec<Span<'stat
 /// already resolves from its tree. A surface named `<id>#<view>` is a sub-view,
 /// and the part after the `#` is what it is called — so a pane that adds a view
 /// gets a correct badge with no change here.
-pub fn focus_label(surface: Option<&str>, plugin: &str) -> String {
+pub fn focus_label(surface: Option<&str>, r#mod: &str) -> String {
     let view = surface
         .and_then(|surface| surface.split_once('#'))
         .map(|(_, view)| view)
         .filter(|view| !view.is_empty());
-    capitalise(view.unwrap_or(plugin))
+    capitalise(view.unwrap_or(r#mod))
 }
 
 /// A pane's own name, title-cased for the badge.
@@ -526,7 +526,7 @@ struct PreparedEntry {
 ///
 /// Resolving the entries is O(pills × bindings) with a chord `String` per
 /// comparison, then a sort, then a `format!` per label — and it ran on every
-/// painted frame for a row that only changes when the plugin set (re)declares
+/// painted frame for a row that only changes when the mod set (re)declares
 /// or the band is resized. So: the registry's change counter plus the width.
 /// Hover and theme reach only the paint styles below, so neither is a key; the
 /// registry pointer is one because the counters of two *different* registries
@@ -759,7 +759,7 @@ mod tests {
 
     fn binding(action: &str, chord: &str) -> Binding {
         Binding {
-            plugin: "p".into(),
+            r#mod: "p".into(),
             action: action.into(),
             default_chord: chord.into(),
             chord: chord.into(),
@@ -774,7 +774,7 @@ mod tests {
 
     fn pill(action: &str, label: &str, priority: i64) -> Pill {
         Pill {
-            plugin: "p".into(),
+            r#mod: "p".into(),
             action: action.into(),
             label: label.into(),
             priority,
@@ -868,7 +868,7 @@ mod tests {
             ],
         );
         registry.declare_commands(vec![CommandDecl {
-            plugin: "p".into(),
+            r#mod: "p".into(),
             action: "notes.open".into(),
             description: "open the notes".into(),
         }]);
@@ -901,7 +901,7 @@ mod tests {
     fn a_command_the_user_bound_a_chord_to_is_no_longer_a_dropped_pill() {
         let mut registry = registry_with(Vec::new(), vec![pill("notes.open", "Notes", 9)]);
         registry.declare_commands(vec![CommandDecl {
-            plugin: "p".into(),
+            r#mod: "p".into(),
             action: "notes.open".into(),
             description: "open the notes".into(),
         }]);

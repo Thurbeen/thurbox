@@ -494,13 +494,13 @@ fn cell_style(cell: &ratatui::buffer::Cell) -> Style {
         .add_modifier(cell.modifier)
 }
 
-/// One paint per drawn row of `rect`, so a node a plugin painted can be a link
+/// One paint per drawn row of `rect`, so a node a mod painted can be a link
 /// the outer terminal opens. Every row names the same url, which is how a
 /// wrapped link is spelled in OSC 8 anyway.
 ///
 /// The pane counterpart of `drawn_label_cells`, and it differs in the one way
 /// a pane differs from a vt100 grid: there is no label to match the glyphs
-/// against, because the text lives in the plugin's tree and has already been
+/// against, because the text lives in the mod's tree and has already been
 /// through wrapping, alignment and scroll by the time it reaches the frame. So
 /// the frame is the source of truth outright — whatever the node's rect
 /// actually shows is what gets linked, which keeps the property that a node
@@ -524,7 +524,7 @@ pub fn drawn_link_paints(buf: &Buffer, rect: Rect, url: &str) -> Vec<HyperlinkPa
     let mut paints = Vec::new();
     for y in rect.top()..rect.bottom() {
         // The first glyph's column, and `None` while the row has shown none:
-        // only a non-blank cell sets it, so a row the plugin left blank yields
+        // only a non-blank cell sets it, so a row the mod left blank yields
         // no link at all rather than a link with no text in it.
         let mut start = None;
         let mut cells: Vec<(String, Style)> = Vec::new();
@@ -1052,7 +1052,7 @@ mod tests {
         assert_eq!(printed, "Open MR !123");
     }
 
-    /// A row the plugin left blank is not a link with no text in it — it is not
+    /// A row the mod left blank is not a link with no text in it — it is not
     /// a link. Same for a rect the frame is too small to hold.
     #[test]
     fn a_blank_row_yields_no_link() {

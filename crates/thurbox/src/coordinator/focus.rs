@@ -1,6 +1,6 @@
 //! Which pane has focus, and which panes may.
 //!
-//! Focus is an index into the host's focusable plugins, but the rules are about
+//! Focus is an index into the host's focusable mods, but the rules are about
 //! *visibility*: a slot the arrangement did not place is not a cycle stop, and a
 //! switch slot's alternates are not either — they are reached by their own key.
 //! `pending_focus` is the one subtlety — a pane that opens its own slot asks for
@@ -12,12 +12,12 @@ use thurbox::kernel::layout::SlotMode;
 use crate::App;
 
 impl App {
-    /// Move focus onto a plugin, if focus can rest there at all.
+    /// Move focus onto a mod, if focus can rest there at all.
     ///
     /// A request focus cannot take is *held for one layout* rather than dropped —
     /// see `kernel::focus::defer_until_placed` for why, and `apply_pending_focus`,
     /// which re-asks it once the arrangement has run.
-    pub(crate) fn focus_plugin(&mut self, index: usize) {
+    pub(crate) fn focus_mod(&mut self, index: usize) {
         if thurbox::kernel::focus::defer_until_placed(self.placement(index)) {
             self.pending_focus = Some(index);
             return;
@@ -36,14 +36,14 @@ impl App {
     /// not placed is one the arrangement declines to give (a column closed, a pane
     /// turned off), and a request that outlived its layout would chase focus
     /// across frames the user has since moved on from. Which is also why the check
-    /// is here rather than left to `focus_plugin`: that one re-arms the request it
+    /// is here rather than left to `focus_mod`: that one re-arms the request it
     /// cannot honour, so calling it blind would make the wait permanent.
     pub(crate) fn apply_pending_focus(&mut self) {
         let Some(index) = self.pending_focus.take() else {
             return;
         };
-        if self.can_focus_plugin(index) {
-            self.focus_plugin(index);
+        if self.can_focus_mod(index) {
+            self.focus_mod(index);
         }
     }
 
@@ -71,10 +71,10 @@ impl App {
         let ring: Vec<_> = focusable
             .iter()
             .map(|&index| {
-                let plugin = &self.host.plugins[index];
-                let switch_slot = (!plugin.floats
-                    && matches!(self.host.slot_mode(&plugin.slot), SlotMode::Switch))
-                .then_some(plugin.slot.as_str());
+                let r#mod = &self.host.mods[index];
+                let switch_slot = (!r#mod.floats
+                    && matches!(self.host.slot_mode(&r#mod.slot), SlotMode::Switch))
+                .then_some(r#mod.slot.as_str());
                 let default_in_slot =
                     switch_slot.is_some_and(|slot| self.host.switch_default(slot) == Some(index));
                 thurbox::kernel::focus::CycleEntry {
@@ -89,29 +89,29 @@ impl App {
         }
     }
 
-    /// Plugins may have come and gone under us; focus must land on one that
+    /// Mods may have come and gone under us; focus must land on one that
     /// still exists.
     pub(crate) fn clamp_focus(&mut self) {
         let count = self.host.focusable().len();
         self.focus = self.focus.min(count.saturating_sub(1));
     }
 
-    /// Whether focus may rest on a plugin — which for a `switch` alternate is
+    /// Whether focus may rest on a mod — which for a `switch` alternate is
     /// **not** the same question, since focusing it is what brings it forward.
     /// See `kernel::focus`.
-    pub(crate) fn can_focus_plugin(&self, index: usize) -> bool {
+    pub(crate) fn can_focus_mod(&self, index: usize) -> bool {
         thurbox::kernel::focus::can_focus(self.placement(index))
     }
 
-    /// Whether a plugin would be drawn right now: its slot was placed on the
+    /// Whether a mod would be drawn right now: its slot was placed on the
     /// last frame, or it floats above the arrangement and so needs no slot.
-    pub(crate) fn is_visible_plugin(&self, index: usize) -> bool {
+    pub(crate) fn is_visible_mod(&self, index: usize) -> bool {
         thurbox::kernel::focus::is_drawn(self.placement(index))
     }
 
-    /// Where a plugin sits, as the two focus rules need to see it.
+    /// Where a mod sits, as the two focus rules need to see it.
     pub(crate) fn placement(&self, index: usize) -> thurbox::kernel::focus::Placement {
-        let Some(plugin) = self.host.plugins.get(index) else {
+        let Some(r#mod) = self.host.mods.get(index) else {
             return thurbox::kernel::focus::Placement {
                 floats: false,
                 float_open: false,
@@ -121,18 +121,18 @@ impl App {
         };
         // A `switch` slot draws ONE of its occupants; the rest are alternatives.
         let chosen_in_switch =
-            matches!(self.host.slot_mode(&plugin.slot), SlotMode::Switch).then(|| {
+            matches!(self.host.slot_mode(&r#mod.slot), SlotMode::Switch).then(|| {
                 // `slot_selection` stores a position WITHIN the slot's members,
-                // not a plugin index — comparing it to one made the terminal
+                // not a mod index — comparing it to one made the terminal
                 // look unselected and cycled focus off it at startup. Resolve it.
-                let members = self.host.in_slot(&plugin.slot);
-                let chosen = self.slot_selection.get(&plugin.slot).copied().unwrap_or(0);
+                let members = self.host.in_slot(&r#mod.slot);
+                let chosen = self.slot_selection.get(&r#mod.slot).copied().unwrap_or(0);
                 members.get(chosen) == Some(&index)
             });
         thurbox::kernel::focus::Placement {
-            floats: plugin.floats,
+            floats: r#mod.floats,
             float_open: self.drawn_floats.contains(&index),
-            slot_placed: self.visible_slots.contains(&plugin.slot),
+            slot_placed: self.visible_slots.contains(&r#mod.slot),
             chosen_in_switch,
         }
     }
@@ -148,7 +148,7 @@ impl App {
     /// creating several sessions in a row a fight with the cursor.
     ///
     /// The selection travels through the store rather than being set here,
-    /// because the list is a plugin and it is the only thing that knows the
+    /// because the list is a mod and it is the only thing that knows the
     /// rendered order.
     pub(crate) fn focus_on_session(&mut self, id: &str) {
         self.host.set_shared_string("focus_session", id);
@@ -160,13 +160,13 @@ impl App {
         self.dirty = true;
     }
 
-    /// Whether the focused plugin declared `input = "session"`.
+    /// Whether the focused mod declared `input = "session"`.
     pub(crate) fn focused_wants_session_input(&self) -> bool {
         self.host
             .focusable()
             .get(self.focus)
-            .and_then(|index| self.host.plugins.get(*index))
-            .is_some_and(|plugin| plugin.session_input)
+            .and_then(|index| self.host.mods.get(*index))
+            .is_some_and(|r#mod| r#mod.session_input)
     }
 
     /// Whether the terminal the focused pane is showing has a dead pane.

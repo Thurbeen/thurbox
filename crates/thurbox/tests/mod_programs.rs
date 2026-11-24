@@ -1,4 +1,4 @@
-//! A plugin running an interactive program in a pane it owns.
+//! A mod running an interactive program in a pane it owns.
 //!
 //! **No multiplexer is started here.** Spawning a real program needs tmux, which
 //! this file deliberately does not touch (the real binary against a real pane is
@@ -10,18 +10,18 @@
 //! The invisible failures are the gate and the attribution, exactly as they are
 //! for `run`: a capability that is *present and refusing* looks identical to one
 //! that is absent until you read the error, and a pane resolved to the wrong owner
-//! looks like nothing at all until two plugins both want `watch`.
+//! looks like nothing at all until two mods both want `watch`.
 
 use thurbox::kernel::command::Command;
 use thurbox::kernel::host::{Capability, LuaHost, RenderContext};
 use thurbox::kernel::terminal::{ProgramKey, Terminals};
 
-/// Build an interface out of `plugins`, each `(file name, source)`.
-fn interface(plugins: &[(&str, &str)]) -> (tempfile::TempDir, std::path::PathBuf) {
+/// Build an interface out of `mods`, each `(file name, source)`.
+fn interface(mods: &[(&str, &str)]) -> (tempfile::TempDir, std::path::PathBuf) {
     let home = tempfile::tempdir().expect("tempdir");
     let ui = home.path().join("ui");
     thurbox::kernel::bundled::materialize(&ui);
-    for (name, source) in plugins {
+    for (name, source) in mods {
         std::fs::write(ui.join("mods").join(name), source).expect("write");
     }
     (home, ui)
@@ -66,7 +66,7 @@ fn watch_pane(name: &str, pane: &str, declares: bool) -> String {
 // ── who may ask ────────────────────────────────────────────────────────────
 
 #[test]
-fn an_undeclared_plugin_asking_for_a_program_is_queued_but_may_not_run_it() {
+fn an_undeclared_mod_asking_for_a_program_is_queued_but_may_not_run_it() {
     // The command is *queued* — `command` is always available — and refused when
     // it is honoured, because trust can be revoked between the ask and the doing.
     // What must never happen is the program starting.
@@ -75,39 +75,39 @@ fn an_undeclared_plugin_asking_for_a_program_is_queued_but_may_not_run_it() {
     assert!(host.error.is_none(), "{:?}", host.error);
     render(&host, "watch");
 
-    let plugin = &host.plugins[host.index_of("watch").expect("loaded")];
+    let r#mod = &host.mods[host.index_of("watch").expect("loaded")];
     assert!(
-        !host.may(plugin, Capability::Program),
+        !host.may(r#mod, Capability::Program),
         "declared nothing, so it may not run a program"
     );
 }
 
 #[test]
-fn a_declared_but_untrusted_plugin_still_may_not_run_a_program() {
+fn a_declared_but_untrusted_mod_still_may_not_run_a_program() {
     let (_home, ui) = interface(&[("91_watch.lua", &watch_pane("watch", "watch", true))]);
     let host = LuaHost::new(&ui);
-    let plugin = &host.plugins[host.index_of("watch").expect("loaded")];
-    assert_eq!(plugin.capabilities, vec![Capability::Program]);
+    let r#mod = &host.mods[host.index_of("watch").expect("loaded")];
+    assert_eq!(r#mod.capabilities, vec![Capability::Program]);
     assert!(
-        !host.may(plugin, Capability::Program),
+        !host.may(r#mod, Capability::Program),
         "declaring is asking, not being granted"
     );
 
     host.set_trusted(vec!["mods/91_watch.lua".to_string()]);
-    let plugin = &host.plugins[host.index_of("watch").expect("loaded")];
-    assert!(host.may(plugin, Capability::Program));
+    let r#mod = &host.mods[host.index_of("watch").expect("loaded")];
+    assert!(host.may(r#mod, Capability::Program));
 }
 
 // ── whose pane is it ───────────────────────────────────────────────────────
 
-/// The surface a plugin draws resolves to *its own* pane, always.
+/// The surface a mod draws resolves to *its own* pane, always.
 ///
-/// The plugin writes a bare name and the kernel supplies the owner, so naming
-/// another plugin's pane is impossible by construction rather than refused by a
+/// The mod writes a bare name and the kernel supplies the owner, so naming
+/// another mod's pane is impossible by construction rather than refused by a
 /// check that could be forgotten — the lesson `run`'s implementation-in-globals
 /// bug taught.
 #[test]
-fn two_plugins_asking_for_the_same_name_get_different_panes() {
+fn two_mods_asking_for_the_same_name_get_different_panes() {
     let (_home, ui) = interface(&[
         ("91_one.lua", &watch_pane("one", "watch", true)),
         ("92_two.lua", &watch_pane("two", "watch", true)),
@@ -248,7 +248,7 @@ fn a_key_for_an_absent_program_is_not_reported_as_delivered() {
 /// The failure this pins is silent: read through a Rust `String`, a sequence Lua
 /// is perfectly happy to hold — an escape for a program that speaks its own
 /// encoding — was dropped whole, leaving a command that says "start it" where the
-/// plugin wrote "type at it". Nothing reports that, and the pane looks like an
+/// mod wrote "type at it". Nothing reports that, and the pane looks like an
 /// editor that ignored the file.
 #[test]
 fn keys_that_are_not_utf8_reach_the_command_intact() {
@@ -300,7 +300,7 @@ fn a_program_surface_is_never_resolved_to_a_session() {
 
 // ── not a session ──────────────────────────────────────────────────────────
 
-/// Nothing that enumerates sessions can see a plugin's pane.
+/// Nothing that enumerates sessions can see a mod's pane.
 ///
 /// It holds because a pane is never a database row — but it is asserted, because
 /// the machinery underneath is shared with sessions and a leak would be a session
@@ -324,14 +324,14 @@ fn a_program_pane_is_absent_from_every_session_enumeration() {
 
 // ── what machine am I on ───────────────────────────────────────────────────
 
-/// A plugin delivering more than one build has to be able to choose, so the
+/// A mod delivering more than one build has to be able to choose, so the
 /// platform is published rather than expressed in a package manifest.
 ///
 /// A substitution template states one rule; a pane that can read this states every
 /// rule it needs — prefer something already on `PATH`, fall back to a portable
 /// build, or say politely that there is nothing for this machine.
 #[test]
-fn a_plugin_can_read_the_platform_it_is_running_on() {
+fn a_mod_can_read_the_platform_it_is_running_on() {
     let pane = r#"return {
   name = "probe",
   slot = "center",
@@ -378,7 +378,7 @@ fn a_plugin_can_read_the_platform_it_is_running_on() {
 
     let drawn = format!("{:?}", render(&host, "probe").node);
     // The values the binary was built for — asserted against the same constants, so
-    // this is "the plugin sees what the kernel knows", not a hardcoded platform.
+    // this is "the mod sees what the kernel knows", not a hardcoded platform.
     assert!(
         drawn.contains(&format!("os={}", std::env::consts::OS)),
         "{drawn}"

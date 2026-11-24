@@ -8,7 +8,7 @@
 //!
 //! So these tests assert the reach of a setting rather than its parsing: that the
 //! file is what is in force, that a change to it lands where it has to, and that a
-//! plugin can see it.
+//! mod can see it.
 
 use thurbox::kernel::config::{Config, Reloaded};
 use thurbox::session::settings::Settings;
@@ -332,11 +332,9 @@ fn publish_with(host: &thurbox::kernel::host::LuaHost, settings: &Settings) {
     .expect("publish");
 }
 
-/// Send a chord to a plugin the way the loop does.
-fn press(host: &thurbox::kernel::host::LuaHost, plugin: &str, chord: &str) {
-    let index = host
-        .index_of(plugin)
-        .unwrap_or_else(|| panic!("no {plugin}"));
+/// Send a chord to a mod the way the loop does.
+fn press(host: &thurbox::kernel::host::LuaHost, r#mod: &str, chord: &str) {
+    let index = host.index_of(r#mod).unwrap_or_else(|| panic!("no {mod}"));
     let mut key = thurbox::kernel::host::KeyPress {
         name: chord.to_string(),
         ..Default::default()
@@ -347,7 +345,7 @@ fn press(host: &thurbox::kernel::host::LuaHost, plugin: &str, chord: &str) {
     let mut registry = thurbox::kernel::registry::Registry::default();
     let (bindings, declared) = host.declarations();
     registry.declare(bindings, declared);
-    if let Some(binding) = registry.resolve(&key, Some(plugin)) {
+    if let Some(binding) = registry.resolve(&key, Some(r#mod)) {
         let action = binding.action.clone();
         if host.on_action(index, &action).expect("on_action") {
             return;
@@ -497,7 +495,7 @@ fn the_update_switches_are_editable_and_marked_as_needing_a_restart() {
 
 #[test]
 fn a_raised_column_threshold_leaves_only_the_central_pane() {
-    // The arrangement runs before any plugin, so it reads the threshold from what
+    // The arrangement runs before any mod, so it reads the threshold from what
     // the kernel published rather than from a constant compiled into it.
     let host = host();
     let settings = Settings {

@@ -3,7 +3,7 @@
 #
 # This file IS the sandbox contract, checked statically.
 #
-# There is deliberately **no `base:`**. `kernel::host::plugin_stdlib` grants
+# There is deliberately **no `base:`**. `kernel::host::mod_stdlib` grants
 # plugins `string`, `table`, `math`, `coroutine` and `utf8` and nothing else, and
 # the capability model is enforced by *absence* rather than by a binding that
 # refuses. Declaring the granted set and inheriting nothing
@@ -15,7 +15,7 @@
 # that to plain functions but not to a table's fields, so `os.time()` passed
 # review while `dofile` was caught. Verified by probing both.
 #
-# Keep in step with `plugin_stdlib` and `install_api` in `src/kernel/host/`.
+# Keep in step with `mod_stdlib` and `install_api` in `src/kernel/host/`.
 # Events and the palette add nothing here on purpose: `events`, `commands` and
 # `on_event` are fields of the declaration table, and `emit` is a kind of
 # `command` — the one write channel a plugin already has.

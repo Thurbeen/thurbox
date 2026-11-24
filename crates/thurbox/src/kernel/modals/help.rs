@@ -1,18 +1,18 @@
 //! The keybindings modal: everything declared, and an editor for it.
 //!
-//! It knows no plugin. It renders [`Registry::bindings`], which is whatever the
-//! loaded plugins declared plus the kernel's own — so a plugin added tomorrow
+//! It knows no mod. It renders [`Registry::bindings`], which is whatever the
+//! loaded mods declared plus the kernel's own — so a mod added tomorrow
 //! appears here with nothing else edited.
 //!
 //! Grouped by FUNCTION rather than by owner, matching v1's `help_sections()`:
 //! you look for "how do I delete a session", not "what does the session list
-//! offer". A plugin declares which group each key belongs to, so a group appears,
-//! grows and disappears with the plugins that name it — including one v1 never
+//! offer". A mod declares which group each key belongs to, so a group appears,
+//! grows and disappears with the mods that name it — including one v1 never
 //! had, which is listed after v1's own.
 //!
 //! **Why this is an editor**: v1's F1 panel rebinds live, and
 //! `Registry::rebind` already carries conflict detection and persistence. While
-//! capturing, *every* chord is data — including `ctrl+q`, which no plugin could
+//! capturing, *every* chord is data — including `ctrl+q`, which no mod could
 //! ever be allowed to swallow. That is the reason the modal layer is the
 //! kernel's rather than Lua's.
 
@@ -40,7 +40,7 @@ const KEY_WIDTH: usize = 16;
 /// which was simply untrue — `RESERVED` does not contain it and nothing binds it, on
 /// purpose: every coding agent uses Tab for completion, and a full-screen program in
 /// a pane needs it too (`doom`'s automap, vim, a pager). Listing it told users the
-/// interface would eat a key it forwards, and a downstream plugin author read that
+/// interface would eat a key it forwards, and a downstream mod author read that
 /// and concluded their pane could never receive it. Focus moves on `ctrl+h`/`ctrl+l`.
 ///
 /// Listed because they are real and cannot be rebound, which is exactly what
@@ -89,7 +89,7 @@ fn rows(registry: &Registry) -> Vec<(String, Vec<Row>)> {
         push_binding(&mut groups[position].1, binding);
     }
     // v1's sections first, in its order; anything else follows alphabetically,
-    // so a third-party plugin's group appears without editing this list.
+    // so a third-party mod's group appears without editing this list.
     groups.sort_by_key(|(name, _)| {
         (
             HELP_SECTIONS
@@ -421,7 +421,7 @@ impl HelpModal {
 }
 
 /// The rows after the rebindable ones: the fixed chords, then the events a
-/// plugin may subscribe to.
+/// mod may subscribe to.
 fn push_reference_lines(lines: &mut Vec<Line<'_>>, key_width: usize, chrome: Chrome) {
     // Never selectable: the escape route out of any pane, which a reader needs
     // to know exists but can never change.
@@ -440,9 +440,9 @@ fn push_reference_lines(lines: &mut Vec<Line<'_>>, key_width: usize, chrome: Chr
         ));
     }
 
-    // The events a plugin may subscribe to, from the same table the loader
+    // The events a mod may subscribe to, from the same table the loader
     // validates against — so what help shows is what `events = { … }` may
-    // name, and a plugin author need not leave the interface to find out.
+    // name, and a mod author need not leave the interface to find out.
     lines.push(Line::default());
     lines.push(Line::from(Span::styled(
         "Events (for mods: events = { … } + on_event)",
@@ -592,9 +592,9 @@ mod tests {
         registry
     }
 
-    fn binding(plugin: &str, chord: &str, action: &str, group: &str) -> Binding {
+    fn binding(r#mod: &str, chord: &str, action: &str, group: &str) -> Binding {
         binding_from(
-            plugin,
+            r#mod,
             chord,
             action,
             "does a thing",
@@ -607,7 +607,7 @@ mod tests {
     /// The rows may not claim a chord the kernel does not actually take.
     ///
     /// The existing check below is one-directional — every `RESERVED` chord appears
-    /// here — so an extra row went unnoticed for as long as it took a plugin author
+    /// here — so an extra row went unnoticed for as long as it took a mod author
     /// to trust it. `tab` was listed as moving focus while being forwarded to the
     /// pane, and this is the direction that catches the next one.
     #[test]

@@ -10,7 +10,7 @@
 //! Everything downstream is built on that flag. `program.exited` never fired,
 //! so a pane could not move on from a finished program; the surface kept
 //! painting the grid it left behind; and `start_program` — idempotent by
-//! design, because plugins ask on every frame — kept answering `Ok(())` to
+//! design, because mods ask on every frame — kept answering `Ok(())` to
 //! every request to start it again. Quitting the editor with `:q` therefore
 //! made its pane unopenable for the rest of the session, with nothing in the
 //! log to say why.

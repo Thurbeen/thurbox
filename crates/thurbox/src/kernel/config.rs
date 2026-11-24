@@ -15,7 +15,7 @@
 //! consumes a restart-only value is handed it when it is built — the backends,
 //! the terminals, the snapshot store, the command bus — so [`Config::in_force`]
 //! is the one answer to "what is the user running with", and it is what gets
-//! published to plugins. There is no process-wide copy: `session` holds no
+//! published to mods. There is no process-wide copy: `session` holds no
 //! state (#1477).
 
 use std::path::PathBuf;

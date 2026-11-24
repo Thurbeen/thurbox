@@ -1,13 +1,13 @@
-//! Click targeting, against the *real* bundled plugins.
+//! Click targeting, against the *real* bundled mods.
 //!
 //! The kernel hit-tests the tree it painted, so these render the shipped Lua
 //! and then ask "what is under this cell?". That is deliberately the same
-//! question the event loop asks — if a plugin stops declaring a target, a test
+//! question the event loop asks — if a mod stops declaring a target, a test
 //! here fails rather than a click quietly doing nothing.
 //!
 //! What is NOT here is the loop's dispatch of a hit, which needs a live
 //! `LuaHost` plus a terminal plus a registry the binary owns; the pieces it is
-//! built from — verb parsing, hit ordering, plugin attribution — are each
+//! built from — verb parsing, hit ordering, mod attribution — are each
 //! asserted below.
 
 use ratatui::backend::TestBackend;
@@ -69,8 +69,8 @@ fn sample() -> Snapshot {
     }
 }
 
-/// Render one bundled plugin and return every hitbox it declared.
-fn hits_of(plugin: &str, width: u16, height: u16) -> Vec<Hit> {
+/// Render one bundled mod and return every hitbox it declared.
+fn hits_of(r#mod: &str, width: u16, height: u16) -> Vec<Hit> {
     let host = host();
     let themes = Themes::load(None);
     let mut registry = Registry::default();
@@ -109,9 +109,9 @@ fn hits_of(plugin: &str, width: u16, height: u16) -> Vec<Hit> {
     // knows it has a session to show — without it that pane draws its empty
     // state, whose border carries no tab strip and no collapse toggle. The loop
     // paints the list first for the same reason.
-    if plugin != "sessions" {
+    if r#mod != "sessions" {
         let sessions = host
-            .plugins
+            .mods
             .iter()
             .position(|p| p.name == "sessions")
             .expect("sessions plugin");
@@ -129,10 +129,10 @@ fn hits_of(plugin: &str, width: u16, height: u16) -> Vec<Hit> {
     }
 
     let index = host
-        .plugins
+        .mods
         .iter()
-        .position(|p| p.name == plugin)
-        .unwrap_or_else(|| panic!("no plugin {plugin}"));
+        .position(|p| p.name == r#mod)
+        .unwrap_or_else(|| panic!("no mod {mod}"));
     let node = host
         .render(
             index,
@@ -184,7 +184,7 @@ fn a_verb_is_read_off_the_role_and_nothing_else_is() {
         Some(ClickVerb::Url("https://example.test/a?q=1".into()))
     );
     // `row` is what widgets.lua writes for an ordinary list row, and it must
-    // keep meaning "ask the plugin" rather than becoming a kernel verb.
+    // keep meaning "ask the mod" rather than becoming a kernel verb.
     assert!(ClickVerb::parse(Some("row")).is_none());
 }
 
@@ -194,7 +194,7 @@ fn a_verb_is_read_off_the_role_and_nothing_else_is() {
 ///
 /// Asserted here rather than in the kernel's own tests because it is the
 /// *combination* that has to hold — a hitbox is recorded for the node, and the
-/// cells at that rect are the ones the plugin drew. A node whose rect drifted
+/// cells at that rect are the ones the mod drew. A node whose rect drifted
 /// from its glyphs would link the wrong text without either half looking wrong.
 #[test]
 fn a_pane_url_node_becomes_a_link_over_the_cells_it_drew() {
@@ -491,7 +491,7 @@ fn a_framed_node_is_clickable_on_its_border() {
     assert_eq!(hits[0].rect, Rect::new(0, 0, 8, 3));
 }
 
-// ── the bundled plugins declare what v1 recorded ──────────────────────────
+// ── the bundled mods declare what v1 recorded ──────────────────────────
 
 #[test]
 fn every_session_row_is_a_click_target_carrying_its_id() {
@@ -530,7 +530,7 @@ fn a_session_row_click_lands_on_the_session_under_it() {
     assert_eq!(picked.identity.id, first.identity.id);
 }
 
-// ── the plugins that answer a click themselves ────────────────────────────
+// ── the mods that answer a click themselves ────────────────────────────
 
 /// The sessions pane, published a two-session snapshot and rendered once, so a
 /// click has rows to land on.
@@ -570,7 +570,7 @@ fn published_sessions_pane() -> (LuaHost, usize, RenderContext) {
     .expect("publish");
 
     let index = host
-        .plugins
+        .mods
         .iter()
         .position(|p| p.name == "sessions")
         .expect("sessions");
@@ -666,7 +666,7 @@ fn only_a_double_click_on_a_session_row_hands_focus_to_the_agent_pane() {
 fn a_click_on_nothing_is_declined_rather_than_guessed() {
     let host = host();
     let index = host
-        .plugins
+        .mods
         .iter()
         .position(|p| p.name == "sessions")
         .expect("sessions");
@@ -678,7 +678,7 @@ fn a_click_on_nothing_is_declined_rather_than_guessed() {
 }
 
 #[test]
-fn a_plugin_without_on_click_declines_instead_of_failing() {
+fn a_mod_without_on_click_declines_instead_of_failing() {
     // Most panes never opt in, and a click on one has to fall through to the
     // pane focus fallback rather than surfacing an error panel.
     let host = host();
@@ -686,7 +686,7 @@ fn a_plugin_without_on_click_declines_instead_of_failing() {
     // is the surviving example of the case: a press on it must fall through to
     // the focus fallback (and, over a terminal, arm a drag) rather than error.
     let index = host
-        .plugins
+        .mods
         .iter()
         .position(|p| p.name == "agent")
         .expect("agent");
@@ -740,11 +740,11 @@ return {
 }
 "#;
 
-fn host_with(plugins: &[(&str, &str)]) -> (tempfile::TempDir, LuaHost) {
+fn host_with(mods: &[(&str, &str)]) -> (tempfile::TempDir, LuaHost) {
     let home = tempfile::tempdir().expect("tempdir");
     let ui = home.path().join("ui");
     std::fs::create_dir_all(ui.join("mods")).expect("mkdir");
-    for (file, body) in plugins {
+    for (file, body) in mods {
         std::fs::write(ui.join("mods").join(file), body).expect("write plugin");
     }
     let host = LuaHost::new(ui);
@@ -753,7 +753,7 @@ fn host_with(plugins: &[(&str, &str)]) -> (tempfile::TempDir, LuaHost) {
 }
 
 fn index_of(host: &LuaHost, name: &str) -> usize {
-    host.plugins
+    host.mods
         .iter()
         .position(|p| p.name == name)
         .unwrap_or_else(|| panic!("{name} should have loaded"))

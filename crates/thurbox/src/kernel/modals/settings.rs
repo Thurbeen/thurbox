@@ -1,11 +1,11 @@
-//! The settings modal: every setting any plugin declared.
+//! The settings modal: every setting any mod declared.
 //!
 //! Like help, it renders the registry rather than a list it maintains, grouped
-//! by the plugin that declared each row — so a plugin gets a settings row by
+//! by the mod that declared each row — so a mod gets a settings row by
 //! declaring one table field and never learns how the row is drawn.
 //!
 //! Values stay a knob rather than a document: `Bool`, `Number`,
-//! `Text`, and nothing else. A plugin wanting structured configuration reads a
+//! `Text`, and nothing else. A mod wanting structured configuration reads a
 //! file through its own capability.
 //!
 //! Unlike v1 — whose panel edits a draft and applies on `Ctrl+S`, because its
@@ -38,7 +38,7 @@ use crate::session::settings::{NotificationBackend, Settings};
 const RESTART_MARK: &str = "*";
 
 const MODAL_WIDTH: u16 = 66;
-/// The most this modal will take, however wide the terminal or long a plugin's
+/// The most this modal will take, however wide the terminal or long a mod's
 /// description. Past this, lines are too long to scan as a table.
 const MODAL_WIDTH_MAX: u16 = 108;
 /// Columns left to the interface either side, so the modal always reads as a
@@ -60,7 +60,7 @@ const NUMBER_STEP: f64 = 1.0;
 type Row = Option<usize>;
 
 /// Owner the core settings are listed under, so one section header covers them
-/// and a write can be told apart from a plugin's by owner alone.
+/// and a write can be told apart from a mod's by owner alone.
 pub const CORE_OWNER: &str = "core";
 
 /// A row that edits `settings.toml` rather than the registry.
@@ -303,13 +303,13 @@ fn next_backend(name: &str, forward: bool) -> String {
 ///
 /// `default` is what the file would hold with nothing set, so the renderer's
 /// "changed" highlight means "you moved this" for a core row exactly as it does
-/// for a plugin's.
+/// for a mod's.
 fn core_rows(draft: &Settings) -> Vec<Setting> {
     let defaults = Settings::default();
     CORE_FIELDS
         .iter()
         .map(|field| Setting {
-            plugin: CORE_OWNER.to_string(),
+            r#mod: CORE_OWNER.to_string(),
             id: field.id.to_string(),
             // The marker rides in the description because a row is one line and
             // this is the same information v1 puts in its own column.
@@ -397,7 +397,7 @@ pub struct SettingsModal {
     /// The core settings as edited, seeded on first touch from what the *file*
     /// holds.
     ///
-    /// A draft, unlike a plugin setting: these are a *file*, and some of them
+    /// A draft, unlike a mod setting: these are a *file*, and some of them
     /// cannot take effect until the next launch, so applying each keystroke
     /// would mean writing the document a dozen times and lying about half of
     /// them. Dropped with the modal, which is what makes `Esc` a discard.
@@ -435,7 +435,7 @@ impl SettingsModal {
         self.draft.as_ref().is_some_and(|draft| draft != on_disk)
     }
 
-    /// Every row on screen: the core settings, then whatever plugins declared.
+    /// Every row on screen: the core settings, then whatever mods declared.
     ///
     /// Rebuilt per call rather than cached: it is a dozen rows, and a cache would
     /// be one more thing that can disagree with the registry.
@@ -550,9 +550,9 @@ impl SettingsModal {
             Value::Number(_) => self.step(registry, on_disk, NUMBER_STEP),
             Value::Text(text) => {
                 // An enum is stepped, not typed: there are four spellings and a
-                // fifth would be silently ignored. A plugin's declared choices
+                // fifth would be silently ignored. A mod's declared choices
                 // are one for the same reason.
-                if setting.plugin == CORE_OWNER || !setting.choices.is_empty() {
+                if setting.r#mod == CORE_OWNER || !setting.choices.is_empty() {
                     return self.step(registry, on_disk, NUMBER_STEP);
                 }
                 self.editing = Some(text.clone());
@@ -568,9 +568,9 @@ impl SettingsModal {
             // A bool has two states, so a horizontal step is the same act as a
             // toggle.
             Value::Bool(on) => self.put(registry, on_disk, &setting, Value::Bool(!on)),
-            // A core text value is an enum, and it cycles; a plugin's is free
+            // A core text value is an enum, and it cycles; a mod's is free
             // text, which only typing changes.
-            Value::Text(name) if setting.plugin == CORE_OWNER => {
+            Value::Text(name) if setting.r#mod == CORE_OWNER => {
                 let next = next_backend(name, by >= 0.0);
                 self.put(registry, on_disk, &setting, Value::Text(next))
             }
@@ -584,22 +584,22 @@ impl SettingsModal {
 
     fn reset(&mut self, registry: &mut Registry, on_disk: &Settings) -> Option<String> {
         let setting = self.current(registry, on_disk)?;
-        if setting.plugin == CORE_OWNER {
+        if setting.r#mod == CORE_OWNER {
             // Back to what an untouched file would hold — still a draft, so the
             // file is not written until save.
             let value = setting.default.clone();
             return self.write_core(on_disk, &setting.id, value);
         }
         Some(
-            match registry.set_setting(&setting.plugin, &setting.id, None) {
-                Ok(()) => format!("{}.{} reset to its default", setting.plugin, setting.id),
+            match registry.set_setting(&setting.r#mod, &setting.id, None) {
+                Ok(()) => format!("{}.{} reset to its default", setting.r#mod, setting.id),
                 Err(e) => e,
             },
         )
     }
 
     /// Route a write by owner: the draft for a core row, the registry for a
-    /// plugin's. The one place the two halves differ, so it is the one place that
+    /// mod's. The one place the two halves differ, so it is the one place that
     /// has to know they do.
     fn put(
         &mut self,
@@ -608,7 +608,7 @@ impl SettingsModal {
         setting: &Setting,
         value: Value,
     ) -> Option<String> {
-        if setting.plugin == CORE_OWNER {
+        if setting.r#mod == CORE_OWNER {
             return self.write_core(on_disk, &setting.id, value);
         }
         Some(write(registry, setting, value))
@@ -690,7 +690,7 @@ impl SettingsModal {
         // the description column is what is left after the widest id and the
         // widest value, so one long id starved every description of ~40 columns
         // and the wide tier was already in force when it happened. Deriving it
-        // also means a plugin declaring a long description widens the modal
+        // also means a mod declaring a long description widens the modal
         // instead of being quietly cut off.
         let cap = area
             .width
@@ -755,7 +755,7 @@ impl SettingsModal {
             1,
         );
         // ` Save ` appears only with something to save: the core half is a
-        // document, while a plugin's value went through the registry the moment
+        // document, while a mod's value went through the registry the moment
         // the key was pressed. ` Close ` replays the `Esc` the layer above turns
         // into a close, which is also what discards an unsaved draft.
         let mut pills = Vec::new();
@@ -882,17 +882,17 @@ impl SettingsModal {
         let mut rows = Vec::new();
         let mut section: Option<&str> = None;
         for (index, setting) in settings.iter().enumerate() {
-            if section != Some(setting.plugin.as_str()) {
+            if section != Some(setting.r#mod.as_str()) {
                 if section.is_some() {
                     lines.push(Line::default());
                     rows.push(None);
                 }
                 lines.push(Line::from(Span::styled(
-                    format!("  {}", setting.plugin.to_uppercase()),
+                    format!("  {}", setting.r#mod.to_uppercase()),
                     chrome.section_header(),
                 )));
                 rows.push(None);
-                section = Some(setting.plugin.as_str());
+                section = Some(setting.r#mod.as_str());
             }
             let editing = self.editing.as_deref().filter(|_| index == self.selected);
             lines.push(setting_line(
@@ -920,8 +920,8 @@ impl SettingsModal {
         let mut footer = Vec::new();
         match settings.get(self.selected) {
             // A core row is named by its path in the file, which is where the
-            // change will land; a plugin's by `plugin.id`.
-            Some(setting) if setting.plugin == CORE_OWNER => footer.push(Line::from(vec![
+            // change will land; a mod's by `mod.id`.
+            Some(setting) if setting.r#mod == CORE_OWNER => footer.push(Line::from(vec![
                 Span::styled("  settings.toml  ", chrome.muted()),
                 Span::styled(setting.id.clone(), chrome.muted()),
                 // Said here rather than left to be inferred: the mark is the only
@@ -930,7 +930,7 @@ impl SettingsModal {
                 Span::styled(format!("   {RESTART_MARK} needs restart"), chrome.muted()),
             ])),
             Some(setting) => {
-                let key = format!("  key  {}.{}", setting.plugin, setting.id);
+                let key = format!("  key  {}.{}", setting.r#mod, setting.id);
                 let used = key.chars().count();
                 let mut line = vec![Span::styled(key, chrome.muted())];
                 // A pick says what it picks among, since the row shows one.
@@ -993,9 +993,9 @@ impl SettingsModal {
 /// Write a value back through the registry, which validates the type and
 /// persists. The message is what the loop reports.
 fn write(registry: &mut Registry, setting: &Setting, value: Value) -> String {
-    let key = format!("{}.{}", setting.plugin, setting.id);
+    let key = format!("{}.{}", setting.r#mod, setting.id);
     let shown = display(&value);
-    match registry.set_setting(&setting.plugin, &setting.id, Some(value)) {
+    match registry.set_setting(&setting.r#mod, &setting.id, Some(value)) {
         Ok(()) => format!("{key} = {shown}"),
         Err(e) => e,
     }
@@ -1118,7 +1118,7 @@ fn value_column(settings: &[Setting]) -> usize {
 }
 
 /// v1's `settings_modal::field_line`, minus the restart marker — a v2 setting
-/// is read live by the plugin that declared it, so none of them can require a
+/// is read live by the mod that declared it, so none of them can require a
 /// restart.
 #[allow(clippy::too_many_arguments)]
 fn setting_line<'a>(
@@ -1196,9 +1196,9 @@ fn setting_line<'a>(
 mod tests {
     use super::*;
 
-    fn setting(plugin: &str, id: &str, default: Value) -> Setting {
+    fn setting(r#mod: &str, id: &str, default: Value) -> Setting {
         Setting {
-            plugin: plugin.to_string(),
+            r#mod: r#mod.to_string(),
             id: id.to_string(),
             description: format!("what {id} does"),
             value: default.clone(),
@@ -1282,9 +1282,9 @@ mod tests {
         }
     }
 
-    /// A modal whose cursor is on the nth row a plugin declared: the core rows
+    /// A modal whose cursor is on the nth row a mod declared: the core rows
     /// come first, and there is no point restating their count in every test.
-    fn on_plugin_row(nth: usize) -> SettingsModal {
+    fn on_mod_row(nth: usize) -> SettingsModal {
         SettingsModal {
             selected: CORE_FIELDS.len() + nth,
             ..SettingsModal::default()
@@ -1309,7 +1309,7 @@ mod tests {
             setting("a", "size", Value::Number(4.0)),
             setting("b", "label", Value::Text("x".into())),
         ]);
-        let mut modal = on_plugin_row(0);
+        let mut modal = on_mod_row(0);
         message(modal.on_key(&press(KeyCode::Char(' ')), &mut registry, &on_disk, &[]));
         assert_eq!(registry.settings()[0].value, Value::Bool(true));
 
@@ -1332,7 +1332,7 @@ mod tests {
         let _guard = crate::paths::TestPathGuard::new(dir.path());
         let on_disk = Settings::default();
         let mut registry = registry_with(vec![setting("a", "flag", Value::Bool(false))]);
-        let mut modal = on_plugin_row(0);
+        let mut modal = on_mod_row(0);
         message(modal.on_key(&press(KeyCode::Char(' ')), &mut registry, &on_disk, &[]));
         assert_eq!(registry.settings()[0].value, Value::Bool(true));
         message(modal.on_key(&press(KeyCode::Char('d')), &mut registry, &on_disk, &[]));
@@ -1350,7 +1350,7 @@ mod tests {
     }
 
     #[test]
-    fn the_core_settings_are_listed_beside_what_plugins_declared() {
+    fn the_core_settings_are_listed_beside_what_mods_declared() {
         let on_disk = Settings::default();
         let registry = registry_with(vec![setting("a", "flag", Value::Bool(false))]);
         let modal = SettingsModal::default();
@@ -1358,7 +1358,7 @@ mod tests {
         assert_eq!(rows.len(), CORE_FIELDS.len() + 1);
         assert!(rows.iter().any(|row| row.id == "features.shell_pane"));
         assert!(
-            rows.last().is_some_and(|row| row.plugin == "a"),
+            rows.last().is_some_and(|row| row.r#mod == "a"),
             "a mod's rows follow the core ones"
         );
     }
@@ -1470,7 +1470,7 @@ mod tests {
 
     #[test]
     fn an_empty_registry_renders_rather_than_panicking() {
-        // Nothing declared is a real state — a user who removed every plugin —
+        // Nothing declared is a real state — a user who removed every mod —
         // and the modal must say so rather than divide by an empty list.
         let registry = registry_with(Vec::new());
         let mut modal = SettingsModal::default();
@@ -1533,7 +1533,7 @@ mod tests {
         let mut registry =
             registry_with(vec![setting("plugin", "label", Value::Text("hi".into()))]);
         let on_disk = Settings::default();
-        let mut modal = on_plugin_row(0);
+        let mut modal = on_mod_row(0);
         message(modal.on_key(&press(KeyCode::Enter), &mut registry, &on_disk, &[]));
         assert!(modal.editing(), "Enter on a text value starts an edit");
 

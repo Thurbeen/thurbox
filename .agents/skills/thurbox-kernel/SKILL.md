@@ -125,8 +125,8 @@ crate graph and `runtime-mux`'s module rules.
   scrollback and the data directory; `wiring::local_only`: this machine's
   adapters).
 - **`session/`** — plain data: `SessionState` (`hook_status`, the one
-  vocabulary every surface prints), settings, `PluginSpec`/`PluginLock`/`PackageManifest`
-  (`plugin_spec`, so the kernel and the CLI share one definition) and `review`;
+  vocabulary every surface prints), settings, `ModSpec`/`ModLock`/`PackageManifest`
+  (`mod_spec`, so the kernel and the CLI share one definition) and `review`;
   plus runtime-mux's `SessionId`, host model, routes and `hyperlink` table,
   re-exported. Holds no process state, reads no environment and names no
   rendering crate (`crates/architecture.toml`).
@@ -225,7 +225,7 @@ vendored; both are downstream consumers of the published `thurbox.*` shape.
 Two **example** panes live in `examples/panes/` (`tasks`, `top`) and install by bare
 name; `examples/lua/{plugin,composite,events,layout}.lua` are copied by hand. They are
 examples to read and copy from, not a catalogue thurbox maintains for anyone —
-`EXAMPLE_PLUGINS` is the list a bare name and a typo suggestion resolve against.
+`EXAMPLE_MODS` is the list a bare name and a typo suggestion resolve against.
 `check` fails on a pane that **loaded but which no arrangement places** — the only
 failure with no symptom — and prints the `layout.lua` line to add.
 
@@ -343,7 +343,7 @@ mod declares no keys, occupies no slot and is granted no capability. A broken on
 can be switched off to get a working interface back.
 
 **A mod that carries more than Lua is a repository** (`fetch::Source::Git`,
-`git::clone_plugin`). The fetch path returns a `String` and decodes remote output
+`git::clone_mod`). The fetch path returns a `String` and decodes remote output
 lossily, so a binary through it is *corrupted rather than refused* — which is why
 payload arrives only by clone and that path stays Lua-only. Recognition is
 **explicit**: `git+<url>`, a `.git` suffix, or `git@host:path`; a bare `https://` URL
@@ -365,7 +365,7 @@ for, read once from `fleet version --json` on the Fleet watch's worker, and
 `nil` until Fleet has answered: a flow tells a pending list from an empty one.
 thurbox probes no agent binary and publishes no multiplexer preflight.
 
-**Panes are installable** (`kernel::packages`, `session::plugin_spec`). `mods.toml`
+**Panes are installable** (`kernel::packages`, `session::mod_spec`). `mods.toml`
 in the interface directory lists a `src` (a bare name resolving to `examples/panes/<name>`
 at the binary's release tag, a URL, or a path — `fetch::resolve_source_in`,
 one resolver), a destination `file`, and an optional `pin`;
@@ -442,7 +442,7 @@ forget retired ones: queue/answer counts have no automatic cap. Request identity
 lives only with retained entries and active work, with no tombstone map. Full
 result and lifetime semantics are owned by `docs/thurbox/mods.md`.
 
-**Every mod runs in its own `_ENV`** (`host::api::plugin_env`): one Lua state
+**Every mod runs in its own `_ENV`** (`host::api::mod_env`): one Lua state
 is shared, so identity is bound where a function is made, never read from who is
 running, so a pane that wraps `type` never runs inside a trusted pane's call
 with its `run` and its path. `command`, `run`, `run_forget`, `files`, `state` and `require` (with a

@@ -6,7 +6,7 @@
 //!
 //! The subject is the **agent pane's tab strip**, which is where the surviving
 //! hoverable affordances live: the footer pills these tests used to read went
-//! with the footer plugin.
+//! with the footer mod.
 //!
 //! The rule these pin down is the one that keeps it honest: the kernel
 //! publishes the identity it resolved through the SAME hitboxes it routes
@@ -73,7 +73,7 @@ fn chip_backgrounds(host: &LuaHost, hovered: Option<&Identity>) -> Vec<(String, 
     // The session list publishes `store.selected`, which is how the agent pane
     // knows what to show — so it renders first, exactly as the loop paints it.
     let sessions = host
-        .plugins
+        .mods
         .iter()
         .position(|p| p.name == "sessions")
         .expect("sessions plugin");
@@ -90,7 +90,7 @@ fn chip_backgrounds(host: &LuaHost, hovered: Option<&Identity>) -> Vec<(String, 
     .expect("render the list");
 
     let index = host
-        .plugins
+        .mods
         .iter()
         .position(|p| p.name == "agent")
         .expect("agent plugin");
@@ -304,7 +304,7 @@ fn a_hovered_row_is_banded_and_keeps_its_own_colours() {
         })
         .expect("publish");
         let index = host
-            .plugins
+            .mods
             .iter()
             .position(|p| p.name == "sessions")
             .expect("sessions plugin");

@@ -7,7 +7,7 @@
 //! selection changed anyway, and `j` navigating instead of typing looks fine
 //! until someone searches for a session with a `j` in its name.
 //!
-//! So these drive the plugin the way the loop does — declared action first, raw
+//! So these drive the mod the way the loop does — declared action first, raw
 //! key second — and assert on the two things that outlive the frame: the shared
 //! selection, and the commands it emits.
 
@@ -19,7 +19,7 @@ use thurbox::kernel::snapshot::{SessionRow, Snapshot};
 use thurbox::kernel::theme::Themes;
 use thurbox::session::SessionState;
 
-const PLUGIN: &str = "search";
+const MOD: &str = "search";
 const SESSIONS: &str = "sessions";
 
 fn host() -> LuaHost {
@@ -135,11 +135,9 @@ fn publish_hovered(
     .expect("publish");
 }
 
-fn render(host: &LuaHost, plugin: &str) {
+fn render(host: &LuaHost, r#mod: &str) {
     publish(host);
-    let index = host
-        .index_of(plugin)
-        .unwrap_or_else(|| panic!("no {plugin}"));
+    let index = host.index_of(r#mod).unwrap_or_else(|| panic!("no {mod}"));
     host.render(
         index,
         RenderContext {
@@ -157,7 +155,7 @@ fn render(host: &LuaHost, plugin: &str) {
 /// declared chord to an action, and anything it does not claim is raw input.
 fn press(host: &LuaHost, chord: &str) {
     publish(host);
-    let index = host.index_of(PLUGIN).expect("no search plugin");
+    let index = host.index_of(MOD).expect("no search plugin");
     let mut key = KeyPress {
         name: chord.to_string(),
         ..KeyPress::default()
@@ -173,7 +171,7 @@ fn press(host: &LuaHost, chord: &str) {
     let mut registry = Registry::default();
     let (bindings, settings) = host.declarations();
     registry.declare(bindings, settings);
-    if let Some(binding) = registry.resolve(&key, Some(PLUGIN)) {
+    if let Some(binding) = registry.resolve(&key, Some(MOD)) {
         let action = binding.action.clone();
         if host.on_action(index, &action).expect("on_action") {
             return;
@@ -213,7 +211,7 @@ fn the_strip_opens_closed_and_takes_focus() {
     assert_eq!(
         host.drain_commands(),
         vec![Command::Focus {
-            plugin: "search".into(),
+            r#mod: "search".into(),
             toggle: false,
         }],
         "an open strip that does not take focus cannot be typed into"
@@ -227,7 +225,7 @@ fn it_matches_a_subsequence_not_a_substring() {
     let host = host();
     open(&host);
     type_query(&host, "fb");
-    render(&host, PLUGIN);
+    render(&host, MOD);
 
     // The single match is previewed, which is how the result set is observable
     // without reading the painted strip.
@@ -241,7 +239,7 @@ fn a_letter_is_typed_rather_than_navigating() {
     let host = host();
     open(&host);
     type_query(&host, "j");
-    render(&host, PLUGIN);
+    render(&host, MOD);
     // Nothing matches a bare `j`, so the preview stayed where it was rather than
     // stepping down the list the way `j` would elsewhere.
     assert_eq!(selected(&host).as_deref(), Some("aaa"));
@@ -254,7 +252,7 @@ fn moving_the_selection_previews_it_in_the_list() {
     // chosen.
     let host = host();
     open(&host);
-    render(&host, PLUGIN);
+    render(&host, MOD);
     assert_eq!(selected(&host).as_deref(), Some("aaa"));
 
     press(&host, "down");
@@ -314,7 +312,7 @@ fn enter_keeps_the_jump_and_lands_in_the_session() {
     assert_eq!(
         host.drain_commands(),
         vec![Command::Focus {
-            plugin: "agent".into(),
+            r#mod: "agent".into(),
             toggle: false,
         }]
     );
@@ -327,7 +325,7 @@ fn a_session_found_by_something_other_than_its_name_still_matches() {
     let host = host();
     open(&host);
     type_query(&host, "codex");
-    render(&host, PLUGIN);
+    render(&host, MOD);
     assert_eq!(selected(&host).as_deref(), Some("bbb"));
 }
 
@@ -354,14 +352,14 @@ fn backspace_widens_the_search_again() {
     // results and points the list at whatever that lands on. The strip used to
     // do both — the scan of every session, and once a query settled every
     // session's *screen*, ran twice per keystroke for the same answer.
-    render(&host, PLUGIN);
+    render(&host, MOD);
     assert_eq!(selected(&host).as_deref(), Some("ccc"));
 
     for _ in 0..4 {
         press(&host, "backspace");
     }
     assert_eq!(host.shared_string("search.query").as_deref(), Some(""));
-    render(&host, PLUGIN);
+    render(&host, MOD);
     // Everything matches an empty query, so the cursor is back on the first row.
     assert_eq!(selected(&host).as_deref(), Some("aaa"));
 }
@@ -369,8 +367,8 @@ fn backspace_widens_the_search_again() {
 #[test]
 fn the_opening_chord_is_declared_so_help_lists_it_and_it_can_be_rebound() {
     let host = host();
-    let index = host.index_of(PLUGIN).expect("no search plugin");
-    let bindings = &host.plugins[index].bindings;
+    let index = host.index_of(MOD).expect("no search plugin");
+    let bindings = &host.mods[index].bindings;
     assert!(
         bindings.iter().any(|binding| binding.chord == "ctrl+/"),
         "a key that only exists inside on_key is invisible to help and unrebindable"
@@ -408,7 +406,7 @@ fn answer(query: &str, hits: &[(&str, &str, usize)]) -> Answer {
 /// Render with `search` as the kernel's published answer.
 fn render_answered(host: &LuaHost, search: Option<&Answer>) {
     PUBLISHED.with(|p| *p.borrow_mut() = search.cloned());
-    let index = host.index_of(PLUGIN).expect("no search plugin");
+    let index = host.index_of(MOD).expect("no search plugin");
     publish_with(host, search);
     host.render(
         index,
@@ -432,11 +430,11 @@ fn an_open_strip_warms_the_terminals_and_a_keystroke_asks_at_once() {
     // supersedes it, so a debounce would only add its wait to every keystroke.
     let host = host();
     open(&host);
-    render(&host, PLUGIN);
+    render(&host, MOD);
     assert_eq!(host.shared_string("want_content").as_deref(), Some(""));
 
     type_query(&host, "err");
-    render(&host, PLUGIN);
+    render(&host, MOD);
     assert_eq!(host.shared_string("want_content").as_deref(), Some("err"));
 }
 
@@ -600,7 +598,7 @@ fn a_hit_that_comes_back_after_an_empty_answer_is_revealed_again() {
 
 #[test]
 fn opening_a_text_hit_lands_the_agent_pane_on_the_line() {
-    // The operator's failure, at the plugin level: opening a hit must show the
+    // The operator's failure, at the mod level: opening a hit must show the
     // session SCROLLED TO the match, not merely focus it. The agent pane is
     // driven the way the kernel routes the action, and its surface node is
     // what the kernel paints with.
@@ -617,7 +615,7 @@ fn opening_a_text_hit_lands_the_agent_pane_on_the_line() {
     let commands = host.drain_commands();
     assert!(
         commands.contains(&Command::Focus {
-            plugin: "agent".into(),
+            r#mod: "agent".into(),
             toggle: false,
         }),
         "{commands:?}"
@@ -651,7 +649,7 @@ fn every_word_must_match_in_any_order_across_fields() {
     let host = host();
     open(&host);
     type_query(&host, "docs claude");
-    render(&host, PLUGIN);
+    render(&host, MOD);
     assert_eq!(host.shared_string("search.matches").as_deref(), Some("ccc"));
 }
 
@@ -660,14 +658,14 @@ fn a_capital_makes_the_query_case_sensitive() {
     let host = host();
     open(&host);
     type_query(&host, "osc");
-    render(&host, PLUGIN);
+    render(&host, MOD);
     assert_eq!(host.shared_string("search.matches").as_deref(), Some("aaa"));
 
     for _ in 0..3 {
         press(&host, "backspace");
     }
     type_query(&host, "OSC");
-    render(&host, PLUGIN);
+    render(&host, MOD);
     assert_eq!(host.shared_string("search.matches").as_deref(), Some(""));
 }
 
@@ -684,7 +682,7 @@ fn an_exact_match_ranks_above_a_subsequence() {
         ..Snapshot::default()
     };
     publish_snapshot(&host, &snap, None);
-    let index = host.index_of(PLUGIN).expect("search");
+    let index = host.index_of(MOD).expect("search");
     host.on_action(index, "search.open").expect("open");
     for ch in "ch".chars() {
         publish_snapshot(&host, &snap, None);
@@ -826,7 +824,7 @@ fn every_match_still_paints_when_the_results_fill_the_strip() {
         })
         .expect("publish");
 
-        let index = host.index_of(PLUGIN).expect("no search plugin");
+        let index = host.index_of(MOD).expect("no search plugin");
         let node = host
             .render(
                 index,
@@ -901,7 +899,7 @@ fn a_match_keeps_its_colour_under_the_selection_bar() {
             open(&host);
             type_query(&host, text);
             // The strip previews as it renders, which is what selects the row.
-            render(&host, PLUGIN);
+            render(&host, MOD);
             assert_eq!(selected(&host).as_deref(), Some("bbb"));
         } else {
             render(&host, SESSIONS);
@@ -978,7 +976,7 @@ fn painted_strip(host: &LuaHost, width: u16, height: u16, search: Option<&Answer
 
     render_answered(host, search);
     publish_with(host, search);
-    let index = host.index_of(PLUGIN).expect("no search plugin");
+    let index = host.index_of(MOD).expect("no search plugin");
     let node = host
         .render(
             index,
@@ -1290,7 +1288,7 @@ fn publish_at(host: &LuaHost, epoch: Epoch, snapshot: &Snapshot, search: &Answer
 }
 
 fn render_strip(host: &LuaHost) -> Result<(), String> {
-    let index = host.index_of(PLUGIN).expect("no search plugin");
+    let index = host.index_of(MOD).expect("no search plugin");
     host.render(
         index,
         RenderContext {
@@ -1443,7 +1441,7 @@ fn a_hovered_result_is_banded_and_the_others_are_not() {
     open(&host);
     let backgrounds = |hovered: Option<&Identity>| {
         publish_hovered(&host, &snapshot(), None, hovered);
-        let index = host.index_of(PLUGIN).expect("no search plugin");
+        let index = host.index_of(MOD).expect("no search plugin");
         let node = host
             .render(
                 index,

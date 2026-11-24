@@ -112,9 +112,9 @@ fn entries_as_tables(doc: &mut toml_edit::DocumentMut) {
 const ENTRIES_KEY: &str = "mod";
 const LEGACY_ENTRIES_KEY: &str = "plugin";
 
-/// One plugin the interface is composed of.
+/// One mod the interface is composed of.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct PluginEntry {
+pub struct ModEntry {
     /// Where it comes from: a bare name resolving to the repository's examples for
     /// this release, a URL, or a filesystem path (`agent::fetch` resolves it).
     pub src: String,
@@ -128,13 +128,13 @@ pub struct PluginEntry {
     pub pin: Option<String>,
 }
 
-impl PluginEntry {
+impl ModEntry {
     /// The name this entry answers to on the command line.
     ///
     /// A bare-name source is its own name; anything else is named by the file it
     /// delivers, since a URL is not something anyone wants to retype — with the
     /// leading load-order prefix dropped, because `75_` is where the pane sits in
-    /// the order and not what it is called. Nobody types `plugin remove 75_atlas`.
+    /// the order and not what it is called. Nobody types `mod remove 75_atlas`.
     pub fn name(&self) -> &str {
         if is_bare_name(&self.src) {
             &self.src
@@ -146,7 +146,7 @@ impl PluginEntry {
     /// Refuse an entry that could write outside the interface directory, or that
     /// names something the host would never load.
     ///
-    /// Refused rather than sanitised, for the reason `plugin new` refuses a bad
+    /// Refused rather than sanitised, for the reason `mod new` refuses a bad
     /// name: a spec that quietly delivers somewhere other than where it says is
     /// worse than one that stops.
     pub fn validate(&self) -> Result<(), String> {
@@ -229,10 +229,10 @@ pub fn pane_sources_of(text: &str) -> Vec<Option<String>> {
         .collect()
 }
 
-/// Is this destination inside an installed plugin's own directory rather than the
+/// Is this destination inside an installed mod's own directory rather than the
 /// interface's shared `mods/`?
 ///
-/// A plugin obtained as a repository keeps the layout its author chose, so its pane
+/// A mod obtained as a repository keeps the layout its author chose, so its pane
 /// lives at `<name>/…` — which the loader has to be told about, because it otherwise
 /// reads only the top level of `mods/`.
 pub fn is_nested_pane(file: &str) -> bool {
@@ -272,14 +272,14 @@ fn strip_order(stem: &str) -> &str {
 
 /// The interface's composition, as the spec states it.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
-pub struct PluginSpec {
+pub struct ModSpec {
     /// `[[mod]]` entries, in the order they appear. `[[plugin]]` is read as the
     /// same thing.
     #[serde(default, rename = "mod", alias = "plugin")]
-    pub plugins: Vec<PluginEntry>,
+    pub mods: Vec<ModEntry>,
 }
 
-impl PluginSpec {
+impl ModSpec {
     /// Read a spec, reporting a malformed one with the location of the problem.
     ///
     /// An absent file is not this function's concern: **no spec means nothing
@@ -287,14 +287,14 @@ impl PluginSpec {
     /// string or does not call at all.
     pub fn parse(text: &str) -> Result<Self, String> {
         let spec: Self = toml::from_str(text).map_err(|e| e.to_string())?;
-        for entry in &spec.plugins {
+        for entry in &spec.mods {
             entry.validate()?;
         }
         // Two entries delivering to one path cannot both be honoured, and
         // silently letting the last win would make the interface depend on
         // file order in a way nothing reports.
         let mut seen = BTreeMap::new();
-        for (index, entry) in spec.plugins.iter().enumerate() {
+        for (index, entry) in spec.mods.iter().enumerate() {
             if let Some(first) = seen.insert(entry.file.clone(), index) {
                 return Err(format!(
                     "{}: delivered twice, by entry {} and entry {}",
@@ -312,22 +312,22 @@ impl PluginSpec {
     /// The question `install` asks before writing and `sync` asks before
     /// removing: a file the spec never listed is nobody's to touch.
     pub fn manages(&self, file: &str) -> bool {
-        self.plugins.iter().any(|entry| entry.file == file)
+        self.mods.iter().any(|entry| entry.file == file)
     }
 
     /// The entry a command-line argument refers to.
     ///
     /// Accepts the entry's name, the path it delivers to, its source, or the bare
-    /// filename — so `plugin remove atlas`, `plugin remove 75_atlas` and `plugin
+    /// filename — so `mod remove atlas`, `mod remove 75_atlas` and `mod
     /// remove mods/75_atlas.lua` all work. What the user has in front of them
     /// is a listing that shows the path, and a message that names it either way.
-    pub fn find(&self, key: &str) -> Option<&PluginEntry> {
-        self.index_of(key).map(|index| &self.plugins[index])
+    pub fn find(&self, key: &str) -> Option<&ModEntry> {
+        self.index_of(key).map(|index| &self.mods[index])
     }
 
     /// Position of the entry `key` refers to.
     pub fn index_of(&self, key: &str) -> Option<usize> {
-        self.plugins.iter().position(|entry| {
+        self.mods.iter().position(|entry| {
             entry.name() == key
                 || entry.file == key
                 || entry.src == key
@@ -366,7 +366,7 @@ impl PluginSpec {
 /// ```
 ///
 /// **Several panes per package**, because a package is a unit of *distribution* —
-/// one version, one pin, one lock record — and not a unit of pane. The plugins
+/// one version, one pin, one lock record — and not a unit of pane. The mods
 /// people have shipped carry two and three panes over one `lib/`, one gate and one
 /// version history; under one pane each, a manifest's `version` and
 /// `requires_thurbox` would describe one of them and the rest would install a
@@ -498,7 +498,7 @@ impl PackageManifest {
         }
         // Two files landing on one path cannot both be honoured, and letting the
         // last win would make what is installed depend on the order the manifest
-        // happens to list them in — the rule `PluginSpec::parse` already applies to
+        // happens to list them in — the rule `ModSpec::parse` already applies to
         // two spec entries, now reachable within one package.
         let mut seen = BTreeSet::new();
         for file in self.files() {
@@ -557,12 +557,12 @@ impl LockEntry {
 
 /// What each entry resolved to, so the same spec produces the same interface.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
-pub struct PluginLock {
+pub struct ModLock {
     #[serde(default, rename = "mod", alias = "plugin")]
-    pub plugins: Vec<LockEntry>,
+    pub mods: Vec<LockEntry>,
 }
 
-impl PluginLock {
+impl ModLock {
     /// Read a lock. A malformed one is reported like a malformed spec — it is
     /// machine-written, but it is also a file people merge.
     pub fn parse(text: &str) -> Result<Self, String> {
@@ -571,7 +571,7 @@ impl PluginLock {
 
     /// The record for a delivered path.
     pub fn entry(&self, file: &str) -> Option<&LockEntry> {
-        self.plugins.iter().find(|entry| entry.file == file)
+        self.mods.iter().find(|entry| entry.file == file)
     }
 
     /// The record covering a delivered path, whether it is the entry's own pane
@@ -581,7 +581,7 @@ impl PluginLock {
     /// delivered them, so this is how the inventory says where such a file came
     /// from — the alternative being a `lib/` module reported as the user's own.
     pub fn covering(&self, file: &str) -> Option<&LockEntry> {
-        self.plugins
+        self.mods
             .iter()
             .find(|entry| entry.files.contains_key(file))
     }
@@ -589,20 +589,20 @@ impl PluginLock {
     /// Replace or add the record for one entry, keyed by destination.
     pub fn record(&mut self, entry: LockEntry) {
         match self
-            .plugins
+            .mods
             .iter()
             .position(|existing| existing.file == entry.file)
         {
-            Some(index) => self.plugins[index] = entry,
-            None => self.plugins.push(entry),
+            Some(index) => self.mods[index] = entry,
+            None => self.mods.push(entry),
         }
-        self.plugins.sort_by(|a, b| a.file.cmp(&b.file));
+        self.mods.sort_by(|a, b| a.file.cmp(&b.file));
     }
 
     /// Drop the record for a destination, returning it.
     pub fn forget(&mut self, file: &str) -> Option<LockEntry> {
-        let index = self.plugins.iter().position(|entry| entry.file == file)?;
-        Some(self.plugins.remove(index))
+        let index = self.mods.iter().position(|entry| entry.file == file)?;
+        Some(self.mods.remove(index))
     }
 
     /// Records the spec no longer lists.
@@ -610,8 +610,8 @@ impl PluginLock {
     /// What convergence removes, and the reason the lock cannot silently disagree
     /// with the spec: the spec is authoritative, so a record beyond it is a file
     /// to take back.
-    pub fn beyond(&self, spec: &PluginSpec) -> Vec<&LockEntry> {
-        self.plugins
+    pub fn beyond(&self, spec: &ModSpec) -> Vec<&LockEntry> {
+        self.mods
             .iter()
             .filter(|entry| !spec.manages(&entry.file))
             .collect()
@@ -626,9 +626,9 @@ impl PluginLock {
 ///
 /// The spec is the one file here a person maintains by hand, so a command that
 /// rewrote it from the parsed form would delete their notes as the price of
-/// installing a plugin. `toml_edit` is the same tool `settings.toml` is written
+/// installing a mod. `toml_edit` is the same tool `settings.toml` is written
 /// back through, and for the same reason.
-pub fn insert_entry(text: &str, entry: &PluginEntry) -> Result<String, String> {
+pub fn insert_entry(text: &str, entry: &ModEntry) -> Result<String, String> {
     entry.validate()?;
     let mut doc: toml_edit::DocumentMut = if text.trim().is_empty() {
         toml_edit::DocumentMut::new()
@@ -672,12 +672,12 @@ pub fn insert_entry(text: &str, entry: &PluginEntry) -> Result<String, String> {
 ///
 /// Returns the text and the entry that was removed; `None` when the spec does not
 /// list it, which the caller reports rather than treating as success.
-pub fn remove_entry(text: &str, key: &str) -> Result<(String, PluginEntry), String> {
-    let spec = PluginSpec::parse(text)?;
+pub fn remove_entry(text: &str, key: &str) -> Result<(String, ModEntry), String> {
+    let spec = ModSpec::parse(text)?;
     let index = spec
         .index_of(key)
         .ok_or_else(|| format!("{key} is not listed in {SPEC_FILE}"))?;
-    let removed = spec.plugins[index].clone();
+    let removed = spec.mods[index].clone();
 
     let mut doc: toml_edit::DocumentMut = text
         .parse()
@@ -776,21 +776,18 @@ mod tests {
     #[test]
     fn an_inline_spec_is_edited_like_a_list_of_tables() {
         let inline = "mod = [{ src = \"a\", file = \"mods/50_a.lua\" }]\n";
-        let entry = PluginEntry {
+        let entry = ModEntry {
             src: "b".into(),
             file: "mods/60_b.lua".into(),
             pin: None,
         };
         let added = insert_entry(inline, &entry).expect("insert");
-        assert_eq!(PluginSpec::parse(&added).expect("parse").plugins.len(), 2);
+        assert_eq!(ModSpec::parse(&added).expect("parse").mods.len(), 2);
 
         let (removed, entry) = remove_entry(inline, "a").expect("remove");
         assert_eq!(entry.file, "mods/50_a.lua");
         assert!(
-            PluginSpec::parse(&removed)
-                .expect("parse")
-                .plugins
-                .is_empty(),
+            ModSpec::parse(&removed).expect("parse").mods.is_empty(),
             "{removed}"
         );
     }
@@ -798,8 +795,8 @@ mod tests {
     #[test]
     fn a_plugin_table_reads_as_a_mod_and_an_edit_renames_it() {
         let old = "# mine\n[[plugin]]\nsrc = \"a\"\nfile = \"mods/50_a.lua\"\n";
-        assert_eq!(PluginSpec::parse(old).expect("parse").plugins.len(), 1);
-        let entry = PluginEntry {
+        assert_eq!(ModSpec::parse(old).expect("parse").mods.len(), 1);
+        let entry = ModEntry {
             src: "b".into(),
             file: "mods/60_b.lua".into(),
             pin: None,
@@ -807,7 +804,7 @@ mod tests {
         let edited = insert_entry(old, &entry).expect("insert");
         assert!(edited.starts_with("# mine\n[[mod]]\n"), "{edited}");
         assert!(!edited.contains("[[plugin]]"), "{edited}");
-        assert_eq!(PluginSpec::parse(&edited).expect("parse").plugins.len(), 2);
+        assert_eq!(ModSpec::parse(&edited).expect("parse").mods.len(), 2);
     }
 
     /// A file header, then an entry with a comment of its own — the two kinds of
@@ -827,26 +824,26 @@ file = "mods/80_notes.lua"
 
     #[test]
     fn a_spec_round_trips() {
-        let spec = PluginSpec::parse(SPEC).expect("parses");
-        assert_eq!(spec.plugins.len(), 2);
-        assert_eq!(spec.plugins[0].src, "atlas");
-        assert_eq!(spec.plugins[0].pin.as_deref(), Some("v0.3.1"));
-        assert_eq!(spec.plugins[1].pin, None);
+        let spec = ModSpec::parse(SPEC).expect("parses");
+        assert_eq!(spec.mods.len(), 2);
+        assert_eq!(spec.mods[0].src, "atlas");
+        assert_eq!(spec.mods[0].pin.as_deref(), Some("v0.3.1"));
+        assert_eq!(spec.mods[1].pin, None);
 
-        let again = PluginSpec::parse(&spec.to_toml().expect("render")).expect("reparses");
+        let again = ModSpec::parse(&spec.to_toml().expect("render")).expect("reparses");
         assert_eq!(again, spec);
     }
 
     #[test]
     fn an_empty_spec_is_an_interface_with_nothing_installed() {
-        let spec = PluginSpec::parse("").expect("an empty spec is valid");
-        assert!(spec.plugins.is_empty());
+        let spec = ModSpec::parse("").expect("an empty spec is valid");
+        assert!(spec.mods.is_empty());
         assert!(!spec.manages("mods/10_sessions.lua"));
     }
 
     #[test]
     fn a_malformed_spec_is_reported_with_its_location() {
-        let error = PluginSpec::parse("[[mod]]\nsrc = \n").expect_err("should fail");
+        let error = ModSpec::parse("[[mod]]\nsrc = \n").expect_err("should fail");
         assert!(
             error.contains("line") || error.contains("TOML"),
             "the reader needs to know WHERE: {error}"
@@ -863,14 +860,14 @@ file = "mods/80_notes.lua"
             "mods/notes.txt",
             "",
         ] {
-            let entry = PluginEntry {
+            let entry = ModEntry {
                 src: "atlas".into(),
                 file: bad.into(),
                 pin: None,
             };
             assert!(entry.validate().is_err(), "{bad:?} should be refused");
         }
-        assert!(PluginEntry {
+        assert!(ModEntry {
             src: "atlas".into(),
             file: "mods/75_atlas.lua".into(),
             pin: None,
@@ -881,7 +878,7 @@ file = "mods/80_notes.lua"
 
     #[test]
     fn two_entries_cannot_deliver_to_one_path() {
-        let error = PluginSpec::parse(
+        let error = ModSpec::parse(
             "[[mod]]\nsrc = \"a\"\nfile = \"mods/x.lua\"\n\
              [[mod]]\nsrc = \"b\"\nfile = \"mods/x.lua\"\n",
         )
@@ -891,7 +888,7 @@ file = "mods/80_notes.lua"
 
     #[test]
     fn an_entry_is_addressable_by_name_path_or_source() {
-        let spec = PluginSpec::parse(SPEC).expect("parses");
+        let spec = ModSpec::parse(SPEC).expect("parses");
         for key in ["atlas", "mods/75_atlas.lua"] {
             assert_eq!(
                 spec.find(key).map(|e| e.src.as_str()),
@@ -908,14 +905,14 @@ file = "mods/80_notes.lua"
                 "{key}"
             );
         }
-        assert_eq!(spec.plugins[1].name(), "notes");
+        assert_eq!(spec.mods[1].name(), "notes");
     }
 
     #[test]
     fn adding_an_entry_keeps_the_comments_around_it() {
         let text = insert_entry(
             SPEC,
-            &PluginEntry {
+            &ModEntry {
                 src: "top".into(),
                 file: "mods/85_top.lua".into(),
                 pin: Some("v1".into()),
@@ -930,8 +927,8 @@ file = "mods/80_notes.lua"
             text.contains("# the map pane"),
             "and so did the entry's:\n{text}"
         );
-        let spec = PluginSpec::parse(&text).expect("still parses");
-        assert_eq!(spec.plugins.len(), 3);
+        let spec = ModSpec::parse(&text).expect("still parses");
+        assert_eq!(spec.mods.len(), 3);
         assert!(spec.manages("mods/85_top.lua"));
     }
 
@@ -940,15 +937,15 @@ file = "mods/80_notes.lua"
         // Otherwise installing twice leaves a spec that will not parse.
         let once = insert_entry(
             SPEC,
-            &PluginEntry {
+            &ModEntry {
                 src: "atlas".into(),
                 file: "mods/75_atlas.lua".into(),
                 pin: Some("v0.4.0".into()),
             },
         )
         .expect("insert");
-        let spec = PluginSpec::parse(&once).expect("parses");
-        assert_eq!(spec.plugins.len(), 2);
+        let spec = ModSpec::parse(&once).expect("parses");
+        assert_eq!(spec.mods.len(), 2);
         assert_eq!(
             spec.find("atlas").and_then(|e| e.pin.as_deref()),
             Some("v0.4.0")
@@ -959,21 +956,21 @@ file = "mods/80_notes.lua"
     fn adding_to_an_empty_file_writes_a_usable_spec() {
         let text = insert_entry(
             "",
-            &PluginEntry {
+            &ModEntry {
                 src: "atlas".into(),
                 file: "mods/75_atlas.lua".into(),
                 pin: None,
             },
         )
         .expect("insert");
-        assert_eq!(PluginSpec::parse(&text).expect("parses").plugins.len(), 1);
+        assert_eq!(ModSpec::parse(&text).expect("parses").mods.len(), 1);
     }
 
     #[test]
     fn removing_the_first_entry_keeps_the_file_header_but_not_its_own_comment() {
         // The spec is documented in comments, like `settings.toml`, and every byte
         // above the first entry belongs to that entry as far as `toml_edit` is
-        // concerned — so without carrying the header down, one `plugin remove`
+        // concerned — so without carrying the header down, one `mod remove`
         // would delete the file's documentation.
         let (text, removed) = remove_entry(SPEC, "atlas").expect("remove");
         assert_eq!(removed.file, "mods/75_atlas.lua");
@@ -985,8 +982,8 @@ file = "mods/80_notes.lua"
             !text.contains("# the map pane"),
             "but a comment written about the entry goes with it:\n{text}"
         );
-        let spec = PluginSpec::parse(&text).expect("parses");
-        assert_eq!(spec.plugins.len(), 1);
+        let spec = ModSpec::parse(&text).expect("parses");
+        assert_eq!(spec.mods.len(), 1);
         assert!(!spec.manages("mods/75_atlas.lua"));
         assert!(spec.manages("mods/80_notes.lua"));
     }
@@ -996,7 +993,7 @@ file = "mods/80_notes.lua"
         let (text, _) = remove_entry(SPEC, "80_notes").expect("remove");
         assert!(text.contains("# what this interface is made of"), "{text}");
         assert!(text.contains("# the map pane"), "{text}");
-        assert_eq!(PluginSpec::parse(&text).expect("parses").plugins.len(), 1);
+        assert_eq!(ModSpec::parse(&text).expect("parses").mods.len(), 1);
     }
 
     #[test]
@@ -1006,7 +1003,7 @@ file = "mods/80_notes.lua"
         let one = "# mine\n\n[[mod]]\nsrc = \"atlas\"\nfile = \"mods/a.lua\"\n";
         let (text, _) = remove_entry(one, "atlas").expect("remove");
         assert!(text.contains("# mine"), "{text}");
-        assert!(PluginSpec::parse(&text).expect("parses").plugins.is_empty());
+        assert!(ModSpec::parse(&text).expect("parses").mods.is_empty());
     }
 
     #[test]
@@ -1017,7 +1014,7 @@ file = "mods/80_notes.lua"
 
     #[test]
     fn a_lock_records_every_file_an_entry_delivered() {
-        let mut lock = PluginLock::default();
+        let mut lock = ModLock::default();
         let mut files = BTreeMap::new();
         files.insert("mods/75_atlas.lua".to_string(), "aaaa".to_string());
         files.insert("lib/atlas/util.lua".to_string(), "bbbb".to_string());
@@ -1030,7 +1027,7 @@ file = "mods/80_notes.lua"
             removed: Vec::new(),
         });
 
-        let again = PluginLock::parse(&lock.to_toml().expect("render")).expect("reparses");
+        let again = ModLock::parse(&lock.to_toml().expect("render")).expect("reparses");
         assert_eq!(again, lock);
         let entry = again.entry("mods/75_atlas.lua").expect("entry");
         assert_eq!(entry.digest("mods/75_atlas.lua"), Some("aaaa"));
@@ -1045,7 +1042,7 @@ file = "mods/80_notes.lua"
 
     #[test]
     fn recording_the_same_destination_twice_replaces_it() {
-        let mut lock = PluginLock::default();
+        let mut lock = ModLock::default();
         for version in ["v1", "v2"] {
             lock.record(LockEntry {
                 src: "atlas".into(),
@@ -1056,14 +1053,14 @@ file = "mods/80_notes.lua"
                 removed: Vec::new(),
             });
         }
-        assert_eq!(lock.plugins.len(), 1);
-        assert_eq!(lock.plugins[0].version, "v2");
+        assert_eq!(lock.mods.len(), 1);
+        assert_eq!(lock.mods[0].version, "v2");
     }
 
     #[test]
     fn a_record_the_spec_no_longer_lists_is_what_convergence_takes_back() {
-        let spec = PluginSpec::parse(SPEC).expect("parses");
-        let mut lock = PluginLock::default();
+        let spec = ModSpec::parse(SPEC).expect("parses");
+        let mut lock = ModLock::default();
         for file in ["mods/75_atlas.lua", "mods/99_gone.lua"] {
             lock.record(LockEntry {
                 src: "atlas".into(),
@@ -1138,7 +1135,7 @@ file = "mods/80_notes.lua"
     }
 
     #[test]
-    fn every_pane_is_held_to_the_plugins_rule() {
+    fn every_pane_is_held_to_the_mods_rule() {
         let error = PackageManifest::parse(
             "name = \"atlas\"\n\
              [[pane]]\nsource = \"a.lua\"\npath = \"mods/75_atlas.lua\"\n\

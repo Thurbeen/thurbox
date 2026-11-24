@@ -307,7 +307,7 @@ session = { use = [], external = [
   "chrono", "chrono_tz", "cron", "otel_env", "runtime_mux", "serde", "serde_json",
   "toml", "toml_edit", "unicode_width", "uuid",
 ] }
-# The downloads plugins and the updater make, and keyboard input. Never a
+# The downloads mods and the updater make, and keyboard input. Never a
 # session backend: the multiplexer runtime (`backend`) is reached through its
 # own module. Every file is a module of its own, so a grant names what it
 # reads and a file added here is reachable by nobody until that is decided.
@@ -346,7 +346,7 @@ theme = { use = [] }
 telemetry = { use = [] }
 # Thin headless dispatch: must not depend on the TUI or the live backend.
 # `kernel` for the two subcommands that drive the interface's own files:
-# `plugin` (`check` loads the real host: the failures worth reporting are
+# `mod` (`check` loads the real host: the failures worth reporting are
 # declaration-shaped, no `render`, an unplaced slot, a clashing key, and a
 # syntax check passes all of them) and `config` (the interface directory and
 # its `ui.json` overrides). Both are kernel-owned surfaces asked about from
@@ -356,14 +356,14 @@ cli = { use = ["session", "paths", "notifications", "ui_control", "theme", "flee
   "config::settings", "config::themes", "update::self_update",
   "update::version_check",
 ] }
-# The plugin kernel: hosts the Lua VM the whole UI is written in. Builds the
-# snapshot plugins render from Fleet's rows (`session` for the types, `paths`
-# for the interface's files and plugin directories).
+# The mod kernel: hosts the Lua VM the whole UI is written in. Builds the
+# snapshot mods render from Fleet's rows (`session` for the types, `paths`
+# for the interface's files and mod directories).
 #
 # `git` IS allowed, and the rule is about where: the worker-backed stores
 # (`diff`, `repos`, `packages`, `command`) shell out to it off-thread, which
 # is rule 5 rather than an exception to it. What must not happen is a `git`
-# call from a render path; the loop's shape enforces that (a plugin returns a
+# call from a render path; the loop's shape enforces that (a mod returns a
 # tree; it cannot call Rust), not this allowlist.
 #
 # Live agent terminals: `kernel::terminal` adopts a session's real pane
@@ -492,7 +492,7 @@ why = "which multiplexer serves a session is the route's decision"
 # Everything a user edits or thurbox reads back, through `std::fs` or
 # `tokio::fs`, goes through `paths::write_atomically`, which a crash, a full
 # disk or a second writer cannot leave half-written. A truncated
-# `agents.toml`, manifest or plugin lock is a broken install; a cut log line
+# `agents.toml`, manifest or mod lock is a broken install; a cut log line
 # or a stale cache is not. Each
 # exception is exact, so a further write in an allowed file needs its own
 # reason, and a write that moves to the atomic writer takes its exception

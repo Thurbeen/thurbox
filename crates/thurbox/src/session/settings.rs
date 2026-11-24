@@ -121,7 +121,7 @@ pub const RETIRED_KEYS: &[(&str, &str)] = &[
 ];
 
 /// Keys an older `settings.toml` may hold that are accepted and ignored with
-/// no warning: v1's switches for panels that are now plugins, kept loading
+/// no warning: v1's switches for panels that are now mods, kept loading
 /// quietly since 2.0.
 pub const IGNORED_KEYS: &[&str] = &["features.tasks"];
 
