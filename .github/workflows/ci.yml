@@ -224,6 +224,7 @@ jobs:
             # in the `fleet` filter, so a change to thurbox alone skips it.
             runtime:
               - 'crates/runtime-mux/**'
+              - 'crates/runtime-herdr/**'
               - 'crates/term-stream/**'
               - 'crates/workspace-git/**'
               - '.github/workflows/ci.yml'
@@ -355,6 +356,19 @@ jobs:
       - name: Install tmux, Xvfb, dbus, jq, sshd and sqlite3
         if: needs.changes.outputs.rust == 'true' || needs.changes.outputs.fleet == 'true'
         run: sudo apt-get update && sudo apt-get install -y tmux xvfb dbus jq openssh-server sqlite3
+      # herdr-core: `e2e_runtime_exec` drives `runtime-herdr` against a real
+      # herdr-core on a private runtime directory. The version and checksum
+      # are the ones nix/herdr-core.nix pins.
+      - name: Install herdr-core
+        if: needs.changes.outputs.rust == 'true' || needs.changes.outputs.fleet == 'true'
+        env:
+          HERDR_CORE_VERSION: 0.1.22
+          HERDR_CORE_SHA256: 3054ec3992ce80c5715d721caa9dcefa6056721d15dc113f4750afce763ba5df
+        run: |
+          curl -fsSLo "$RUNNER_TEMP/herdr-core.tar.gz" "https://releases.herdr.dev/core/${HERDR_CORE_VERSION}/herdr-core-linux-x86_64.tar.gz"
+          echo "${HERDR_CORE_SHA256}  $RUNNER_TEMP/herdr-core.tar.gz" | sha256sum -c -
+          tar -xzf "$RUNNER_TEMP/herdr-core.tar.gz" -C "$RUNNER_TEMP" herdr-core
+          sudo install -m755 "$RUNNER_TEMP/herdr-core" /usr/local/bin/herdr-core
       # The `fleet` binary, beside `thurbox-cli` in target/debug, for the
       # tests that drive a real Fleet: `tests/fleet_engine_e2e.rs` and the
       # `Profile::real_fleet` scenarios of `tests/tui_e2e.rs`. The run below
@@ -378,11 +392,14 @@ jobs:
           cargo nextest run -p thurbox --test fleet_engine_e2e --test tui_e2e --profile ci
       # The runtime protocol from Fleet's side: the real `fleet` against the
       # real `runtime-mux` and `workspace-git`, all three built above, so this
-      # compiles only the test. Here rather than in the Fleet job, which
-      # would build `fleet` again and has neither tmux nor `runtime-mux`. A
-      # change to thurbox alone cannot affect it.
+      # compiles only the test, and `runtime-herdr`, whose binary no test run
+      # above builds: it has no test of its own. Here rather than in the Fleet
+      # job, which would build `fleet` again and has neither tmux nor
+      # `runtime-mux`. A change to thurbox alone cannot affect it.
       - if: needs.changes.outputs.fleet == 'true' || needs.changes.outputs.runtime == 'true'
-        run: cargo nextest run --locked -p fleet-cli --test e2e_runtime_exec --profile ci
+        run: |
+          cargo build --locked -p runtime-herdr --bin runtime-herdr
+          cargo nextest run --locked -p fleet-cli --test e2e_runtime_exec --profile ci
       # The architecture checker reads every crate, so a change to any of them
       # runs it, here and nowhere else: every other run excludes it.
       - if: needs.changes.outputs.rust == 'true' || needs.changes.outputs.fleet == 'true'

@@ -7,7 +7,9 @@
 //! in cargo's target directory (built by a workspace build), or at
 //! `RUNTIME_MUX_BIN`. Without it, tmux or jq these tests say so and skip,
 //! except under `CI`, where they fail: CI's Nextest job provides all three,
-//! and the Fleet job, which does not, excludes this binary.
+//! and the Fleet job, which does not, excludes this binary. The same holds
+//! for `runtime-herdr` (`RUNTIME_HERDR_BIN`) and herdr-core, whose cores run
+//! on a private runtime directory.
 
 #![cfg(unix)]
 
@@ -67,14 +69,7 @@ struct Sockets(PathBuf);
 
 impl Sockets {
     fn new(name: &str) -> Sockets {
-        let base = std::env::var_os("XDG_RUNTIME_DIR")
-            .map(PathBuf::from)
-            .filter(|d| d.is_dir())
-            .unwrap_or_else(short_temp_dir);
-        let dir = base.join(format!("fx-{name}-{}", std::process::id()));
-        let _ = fs::remove_dir_all(&dir);
-        fs::create_dir_all(&dir).expect("socket dir");
-        Sockets(dir)
+        Sockets(short_private_dir(name))
     }
 
     fn tmux(&self, args: &[&str]) -> std::process::Output {
@@ -86,6 +81,18 @@ impl Sockets {
             .output()
             .expect("tmux")
     }
+}
+
+/// A fresh directory short enough to hold a socket.
+fn short_private_dir(name: &str) -> PathBuf {
+    let base = std::env::var_os("XDG_RUNTIME_DIR")
+        .map(PathBuf::from)
+        .filter(|d| d.is_dir())
+        .unwrap_or_else(short_temp_dir);
+    let dir = base.join(format!("fx-{name}-{}", std::process::id()));
+    let _ = fs::remove_dir_all(&dir);
+    fs::create_dir_all(&dir).expect("socket dir");
+    dir
 }
 
 /// The directory a socket directory goes in without `XDG_RUNTIME_DIR`: `/tmp`
@@ -6416,4 +6423,455 @@ fn a_stopped_service_leaves_no_manager_process_but_keeps_the_tmux_server_and_ses
         "a manager process outlived the stop: {:?}",
         fs::read_to_string(cgroup.join("cgroup.procs"))
     );
+}
+
+fn runtime_herdr() -> Option<PathBuf> {
+    let found = std::env::var_os("RUNTIME_HERDR_BIN")
+        .map(PathBuf::from)
+        .or_else(|| {
+            Path::new(env!("CARGO_BIN_EXE_fleet"))
+                .parent()
+                .map(|dir| dir.join("runtime-herdr"))
+        })
+        .filter(|p| p.is_file());
+    if found.is_none() {
+        missing("no runtime-herdr binary; build it with `cargo build -p runtime-herdr`");
+    }
+    found
+}
+
+fn herdr_core() -> Option<PathBuf> {
+    let found = std::env::var_os("PATH").and_then(|path| {
+        std::env::split_paths(&path)
+            .map(|dir| dir.join("herdr-core"))
+            .find(|p| p.is_file())
+    });
+    if found.is_none() {
+        missing("herdr-core is not installed");
+    }
+    found
+}
+
+/// A private home for herdr-core: its socket, state and config, short
+/// enough for the socket path. Its core stops with it.
+struct HerdrHome(PathBuf);
+
+impl HerdrHome {
+    fn new(name: &str) -> HerdrHome {
+        HerdrHome(short_private_dir(&format!("hc-{name}")))
+    }
+
+    fn vars(&self) -> [(&'static str, PathBuf); 5] {
+        [
+            ("HOME", self.0.clone()),
+            ("XDG_RUNTIME_DIR", self.0.clone()),
+            ("XDG_STATE_HOME", self.0.join("state")),
+            ("XDG_CONFIG_HOME", self.0.join("config")),
+            ("XDG_DATA_HOME", self.0.join("data")),
+        ]
+    }
+
+    fn hc(&self, args: &[&str]) -> std::process::Output {
+        Command::new("herdr-core")
+            .env_remove("HC_SESSION")
+            .env_remove("HC_SOCKET")
+            .envs(self.vars())
+            .args(args)
+            .output()
+            .expect("herdr-core")
+    }
+}
+
+impl Drop for HerdrHome {
+    fn drop(&mut self) {
+        let _ = self.hc(&["server", "stop"]);
+        let _ = fs::remove_dir_all(&self.0);
+    }
+}
+
+fn herdr_env(name: &str, program: &Path, home: &HerdrHome) -> Env {
+    let mut env = Env::new(name);
+    fs::write(
+        &env.config,
+        format!(
+            "version = 1\n\n[data]\ndir = \"data\"\n\n[runtimes.herdr]\nprogram = '{}'\ncallTimeoutMs = 10000\n",
+            program.display()
+        ),
+    )
+    .expect("config");
+    for (name, value) in home.vars() {
+        if name != "HOME" {
+            env.set_var(name, &value.to_string_lossy());
+        }
+    }
+    env
+}
+
+#[test]
+fn runtime_herdr_passes_the_conformance_suite() {
+    let (Some(program), Some(_)) = (runtime_herdr(), herdr_core()) else {
+        return;
+    };
+    let home = HerdrHome::new("check");
+    let env = herdr_env("runtime-check-herdr", &program, &home);
+    let run = env.fleet(&["runtime", "check", "--", program.to_str().unwrap()]);
+    run.ok()
+        .stdout_has("ok   two starts with one key leave one process")
+        .stdout_has("ok   concurrent starts with one key leave one process")
+        .stdout_has("ok   a protocol mismatch answers Unknown")
+        .stdout_has("ok   an error answers Unknown, never None")
+        .stdout_has("ok   a stop of an absent process succeeds")
+        .stdout_has("ok   a stop ends the process")
+        .stdout_has("ok   an exited process answers Exited with its code, or None")
+        .stdout_has("ok   workspace: idempotent by key")
+        .stdout_has("ok   workspace: release never removes what it did not make")
+        .stdout_has("ok   manifest reports each place it was asked about")
+        .stdout_has("ok   a version 2 request without a place answers Unknown")
+        .stdout_has("speaks runtime protocol 2");
+    assert!(!run.stdout.contains("FAIL"), "{}", run.stdout);
+}
+
+/// One `runtime-herdr <verb>` call on `home`'s herdr-core, at the `local`
+/// place.
+fn herdr_call(program: &Path, home: &HerdrHome, verb: &str, fields: Value) -> Value {
+    herdr_call_at(program, home, "local", verb, fields)
+}
+
+fn herdr_call_at(
+    program: &Path,
+    home: &HerdrHome,
+    place: &str,
+    verb: &str,
+    fields: Value,
+) -> Value {
+    use std::io::Write;
+    let mut request = json!({"protocol": 2, "place": {"name": place, "config": {}}});
+    request
+        .as_object_mut()
+        .expect("an object")
+        .extend(fields.as_object().expect("an object").clone());
+    let mut child = Command::new(program)
+        .arg(verb)
+        .env_remove("HC_SESSION")
+        .env_remove("HC_SOCKET")
+        .envs(home.vars())
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .spawn()
+        .expect("runtime-herdr");
+    child
+        .stdin
+        .take()
+        .expect("stdin")
+        .write_all(request.to_string().as_bytes())
+        .expect("request");
+    let out = child.wait_with_output().expect("answer");
+    serde_json::from_slice(&out.stdout).expect("a JSON answer")
+}
+
+fn herdr_inspect_until(
+    program: &Path,
+    home: &HerdrHome,
+    key: &str,
+    done: impl Fn(&Value) -> bool,
+) -> Value {
+    let deadline = Instant::now() + Duration::from_secs(10);
+    loop {
+        let answer = herdr_call(program, home, "inspect", json!({"key": key}));
+        if done(&answer) || Instant::now() >= deadline {
+            return answer;
+        }
+        std::thread::sleep(Duration::from_millis(100));
+    }
+}
+
+fn herdr_start(program: &Path, home: &HerdrHome, key: &str, argv: &[&str]) -> Value {
+    herdr_call(
+        program,
+        home,
+        "start",
+        json!({"key": key, "argv": argv, "env": {"FLEET_PROBE": "probe"}}),
+    )
+}
+
+#[test]
+fn runtime_herdr_reports_an_exited_process_with_its_code() {
+    let (Some(program), Some(_)) = (runtime_herdr(), herdr_core()) else {
+        return;
+    };
+    let home = HerdrHome::new("exit");
+    let started = herdr_start(&program, &home, "k-exit", &["sh", "-c", "exit 7"]);
+    assert!(started["known"]["started"]["id"].is_string(), "{started}");
+    let inspected = herdr_inspect_until(&program, &home, "k-exit", |a| {
+        a["known"].get("exited").is_some()
+    });
+    assert_eq!(inspected["known"]["exited"]["code"], 7, "{inspected}");
+    let stopped = herdr_call(&program, &home, "stop", json!({"key": "k-exit"}));
+    assert_eq!(stopped["known"], "stopped", "{stopped}");
+    let after = herdr_call(&program, &home, "inspect", json!({"key": "k-exit"}));
+    assert_eq!(after["known"], "none", "{after}");
+}
+
+/// herdr-core's holders keep a process running while the core restarts, so
+/// the key is still running and a start adopts it.
+#[test]
+fn runtime_herdr_keeps_a_key_running_across_a_core_restart() {
+    let (Some(program), Some(_)) = (runtime_herdr(), herdr_core()) else {
+        return;
+    };
+    let home = HerdrHome::new("restart");
+    let first = herdr_start(&program, &home, "k-restart", &["sleep", "300"]);
+    let id = first["known"]["started"]["id"].clone();
+    assert!(id.is_string(), "{first}");
+    let restarted = home.hc(&["server", "restart"]);
+    assert!(restarted.status.success(), "{restarted:?}");
+    let running = herdr_call(&program, &home, "inspect", json!({"key": "k-restart"}));
+    assert_eq!(running["known"]["running"]["id"], id, "{running}");
+    let again = herdr_start(&program, &home, "k-restart", &["sleep", "300"]);
+    assert_eq!(again["known"]["started"]["adopted"], true, "{again}");
+    assert_eq!(again["known"]["started"]["id"], id, "{again}");
+}
+
+/// A process the core lost reads as exited, never as none: Fleet revives
+/// an exited key, and the next start runs it again.
+#[test]
+fn runtime_herdr_reads_a_key_its_core_lost_as_exited() {
+    let (Some(program), Some(_)) = (runtime_herdr(), herdr_core()) else {
+        return;
+    };
+    let home = HerdrHome::new("lost");
+    let first = herdr_start(&program, &home, "k-lost", &["sleep", "300"]);
+    assert_eq!(first["known"]["started"]["adopted"], false, "{first}");
+    let stopped = home.hc(&["server", "stop"]);
+    assert!(stopped.status.success(), "{stopped:?}");
+    let lost = herdr_inspect_until(&program, &home, "k-lost", |a| {
+        a["known"].get("exited").is_some()
+    });
+    assert!(lost["known"]["exited"].is_object(), "{lost}");
+    let revived = herdr_start(&program, &home, "k-lost", &["sleep", "300"]);
+    assert_eq!(revived["known"]["started"]["adopted"], false, "{revived}");
+    let running = herdr_call(&program, &home, "inspect", json!({"key": "k-lost"}));
+    assert!(running["known"]["running"].is_object(), "{running}");
+}
+
+/// herdr's desktop app shows a terminal labelled with a space and a tab:
+/// each key's terminal carries them, beside the key, and its environment.
+#[test]
+fn runtime_herdr_labels_a_key_s_terminal_for_herdr_s_app() {
+    let (Some(program), Some(_)) = (runtime_herdr(), herdr_core()) else {
+        return;
+    };
+    let home = HerdrHome::new("labels");
+    let started = herdr_start(
+        &program,
+        &home,
+        "k-labels",
+        &["sh", "-c", "echo probe=$FLEET_PROBE; sleep 300"],
+    );
+    let id = started["known"]["started"]["id"]
+        .as_str()
+        .unwrap_or_else(|| panic!("{started}"))
+        .to_string();
+    let got = home.hc(&["get", &id, "--json"]);
+    let terminal: Value = serde_json::from_slice(&got.stdout).expect("a JSON terminal");
+    assert_eq!(
+        terminal["labels"],
+        json!({
+            "fleet.key": "k-labels",
+            "fleet.place": "local",
+            "herdr.space": "fleet",
+            "herdr.tab": "k-labels"
+        }),
+        "{terminal}"
+    );
+    let deadline = Instant::now() + Duration::from_secs(10);
+    loop {
+        let screen = String::from_utf8_lossy(&home.hc(&["read", &id]).stdout).into_owned();
+        if screen.contains("probe=probe") {
+            break;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "the environment never reached it: {screen}"
+        );
+        std::thread::sleep(Duration::from_millis(100));
+    }
+}
+
+fn herdr_keys(program: &Path, home: &HerdrHome, place: &str) -> Value {
+    herdr_call_at(program, home, place, "list", json!({}))["known"]["keys"].clone()
+}
+
+/// `list` answers for one place: two places on one herdr-core session do not
+/// list each other's keys.
+#[test]
+fn runtime_herdr_lists_a_place_s_own_keys() {
+    let (Some(program), Some(_)) = (runtime_herdr(), herdr_core()) else {
+        return;
+    };
+    let home = HerdrHome::new("places");
+    let started = herdr_call_at(
+        &program,
+        &home,
+        "here",
+        "start",
+        json!({"key": "k-here", "argv": ["sleep", "300"], "env": {}}),
+    );
+    assert!(started["known"]["started"].is_object(), "{started}");
+    assert_eq!(herdr_keys(&program, &home, "here"), json!(["k-here"]));
+    assert_eq!(herdr_keys(&program, &home, "there"), json!([]));
+}
+
+/// A start cut short after herdr-core made the terminal, before the runtime
+/// learned its address, leaves a live terminal labelled with the key: the
+/// key reads as running and the next start adopts that terminal.
+#[test]
+fn runtime_herdr_adopts_the_terminal_of_an_interrupted_start() {
+    let (Some(program), Some(_)) = (runtime_herdr(), herdr_core()) else {
+        return;
+    };
+    let home = HerdrHome::new("cut");
+    let status = home.hc(&["server", "status", "--json"]);
+    let core: Value = serde_json::from_slice(&status.stdout).expect("a JSON status");
+    let core_id = core["core"]["id"].as_str().expect("a core id");
+    let records = home
+        .0
+        .join("state/runtime-herdr")
+        .join(core_id)
+        .join("local");
+    fs::create_dir_all(&records).expect("records");
+    fs::write(
+        records.join("k-cut.start"),
+        r#"{"terminal":null,"pid":null}"#,
+    )
+    .expect("record");
+    let ran = home.hc(&[
+        "run",
+        "--bg",
+        "--json",
+        "--label",
+        "fleet.key=k-cut",
+        "--label",
+        "fleet.place=local",
+        "--",
+        "sleep",
+        "300",
+    ]);
+    let terminal: Value = serde_json::from_slice(&ran.stdout)
+        .unwrap_or_else(|e| panic!("{e}: {}", String::from_utf8_lossy(&ran.stdout)));
+    let address = terminal["address"].clone();
+    assert!(address.is_string(), "{terminal}");
+    let running = herdr_call(&program, &home, "inspect", json!({"key": "k-cut"}));
+    assert_eq!(running["known"]["running"]["id"], address, "{running}");
+    let again = herdr_start(&program, &home, "k-cut", &["sleep", "300"]);
+    assert_eq!(again["known"]["started"]["adopted"], true, "{again}");
+    assert_eq!(again["known"]["started"]["id"], address, "{again}");
+}
+
+/// `list` names a key that holds only a workspace, so a client can find it
+/// and release it.
+#[test]
+fn runtime_herdr_lists_a_key_that_holds_only_a_workspace() {
+    let (Some(program), Some(_)) = (runtime_herdr(), herdr_core()) else {
+        return;
+    };
+    let home = HerdrHome::new("ws");
+    let dir = home.0.join("notes");
+    fs::create_dir_all(&dir).expect("dir");
+    let made = herdr_call(
+        &program,
+        &home,
+        "workspace",
+        json!({"key": "k-ws", "urls": [format!("file://{}", dir.display())]}),
+    );
+    assert!(made["known"]["made"].is_object(), "{made}");
+    assert_eq!(herdr_keys(&program, &home, "local"), json!(["k-ws"]));
+}
+
+/// Two places on one herdr-core session each hold their own terminal for a
+/// key: a start at one adopts nothing of the other's, and a stop at one
+/// leaves the other's running.
+#[test]
+fn runtime_herdr_keeps_each_place_s_terminals_apart() {
+    let (Some(program), Some(_)) = (runtime_herdr(), herdr_core()) else {
+        return;
+    };
+    let home = HerdrHome::new("apart");
+    let start_at = |place: &str| {
+        herdr_call_at(
+            &program,
+            &home,
+            place,
+            "start",
+            json!({"key": "k-both", "argv": ["sleep", "300"], "env": {}}),
+        )
+    };
+    let here = start_at("here");
+    let there = start_at("there");
+    assert_eq!(there["known"]["started"]["adopted"], false, "{there}");
+    assert_ne!(
+        here["known"]["started"]["id"], there["known"]["started"]["id"],
+        "{here} {there}"
+    );
+    let stopped = herdr_call_at(&program, &home, "there", "stop", json!({"key": "k-both"}));
+    assert_eq!(stopped["known"], "stopped", "{stopped}");
+    let still = herdr_call_at(&program, &home, "here", "inspect", json!({"key": "k-both"}));
+    assert_eq!(
+        still["known"]["running"]["id"], here["known"]["started"]["id"],
+        "{still}"
+    );
+}
+
+/// A workspace belongs to its place: another place neither lists it nor
+/// releases it.
+#[test]
+fn runtime_herdr_keeps_each_place_s_workspaces_apart() {
+    let (Some(program), Some(_)) = (runtime_herdr(), herdr_core()) else {
+        return;
+    };
+    let home = HerdrHome::new("wsapart");
+    let repo = home.0.join("repo");
+    fs::create_dir_all(&repo).expect("repo");
+    let git = |args: &[&str]| {
+        let mut cmd = Command::new("git");
+        for var in GIT_LOCATION {
+            cmd.env_remove(var);
+        }
+        let out = cmd.arg("-C").arg(&repo).args(args).output().expect("git");
+        assert!(out.status.success(), "git {args:?}: {out:?}");
+    };
+    git(&["init", "-q", "-b", "main"]);
+    git(&[
+        "-c",
+        "user.name=t",
+        "-c",
+        "user.email=t@t",
+        "commit",
+        "-q",
+        "--allow-empty",
+        "-m",
+        "first",
+    ]);
+    let made = herdr_call_at(
+        &program,
+        &home,
+        "here",
+        "workspace",
+        json!({"key": "k-ws", "urls": [format!("git+file://{}", repo.display())]}),
+    );
+    let dir = made["known"]["made"]["dirs"][0]
+        .as_str()
+        .unwrap_or_else(|| panic!("{made}"))
+        .to_string();
+    assert_eq!(herdr_keys(&program, &home, "here"), json!(["k-ws"]));
+    assert_eq!(herdr_keys(&program, &home, "there"), json!([]));
+    let released = herdr_call_at(
+        &program,
+        &home,
+        "there",
+        "stop",
+        json!({"key": "k-ws", "release": true}),
+    );
+    assert_eq!(released["known"], "stopped", "{released}");
+    assert!(Path::new(&dir).is_dir(), "another place released {dir}");
 }

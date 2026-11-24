@@ -120,7 +120,8 @@ docs/
 │   └── resources/             one page per resource kind
 └── runtime/                   the runtimes
     ├── README.md              protocol, terminal stream, workspaces (+ .svg)
-    └── runtime-mux.md         hosts, psmux, the status channel
+    ├── runtime-mux.md         hosts, psmux, the status channel
+    └── herdr.md               runtime-herdr: Tasks as herdr-core terminals
 ```
 
 Naming: one directory per component, each with a `README.md` index. Pages are
