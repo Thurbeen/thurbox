@@ -9,9 +9,9 @@ use std::ffi::OsString;
 use std::time::Duration;
 
 use fleet_api::forge::{
-    ChangeObservation, ChangeRef, ChangeSnapshot, ChangeState, Checks, Expected, FailingCheck,
-    Forge, HeadSeen, Mergeable, Note, NoteKind, Review, ReviewDecision, ReviewState, Threads,
-    Uncertainty,
+    CONFLICTS, ChangeObservation, ChangeRef, ChangeSnapshot, ChangeState, Checks, Expected,
+    FailingCheck, Forge, HeadSeen, Mergeable, Note, NoteKind, Review, ReviewDecision, ReviewState,
+    Threads, Uncertainty,
 };
 use fleet_api::plan::EffectOutcome;
 use fleet_api::{Millis, Observation};
@@ -457,6 +457,10 @@ pub fn snapshot(
             value: None,
             reason: None,
         },
+        Some("conflict") => Mergeable {
+            value: Some(false),
+            reason: Some(CONFLICTS.into()),
+        },
         Some(other) => Mergeable {
             value: Some(false),
             reason: Some(other.to_string()),
@@ -647,6 +651,13 @@ mod tests {
         .unwrap();
         assert_eq!(s.mergeable.value, None);
         assert_eq!(s.review_decision, ReviewDecision::None);
+        let s = snapshot(
+            &mr(json!({"detailed_merge_status": "conflict"})),
+            &[],
+            &json!({"approved": false}),
+        )
+        .unwrap();
+        assert_eq!(s.mergeable.conflicts(), Some(true));
     }
 
     #[test]

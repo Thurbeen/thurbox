@@ -10,8 +10,8 @@ use std::ffi::OsString;
 use std::time::Duration;
 
 use fleet_api::forge::{
-    ChangeObservation, ChangeRef, ChangeSnapshot, ChangeState, Checks, Expected, FailingCheck,
-    Forge, HeadSeen, Mergeable, Note, NoteKind, ReviewDecision, Threads, Uncertainty,
+    CONFLICTS, ChangeObservation, ChangeRef, ChangeSnapshot, ChangeState, Checks, Expected,
+    FailingCheck, Forge, HeadSeen, Mergeable, Note, NoteKind, ReviewDecision, Threads, Uncertainty,
 };
 use fleet_api::plan::EffectOutcome;
 use fleet_api::{Millis, Observation};
@@ -404,7 +404,7 @@ fn snapshot(
             },
             Some("conflicts") => Mergeable {
                 value: Some(false),
-                reason: Some("conflicts".into()),
+                reason: Some(CONFLICTS.into()),
             },
             Some("rejectedByPolicy") => Mergeable {
                 value: Some(false),

@@ -178,7 +178,7 @@ else:
         and (not bot or forge.relayBots or (policy needs bots and the note blocks it))
         and (kind != inline or not resolved)
         and not answered_in_thread(note)
-    transitions = those of state, reviewDecision, head with seq > entry.cursor
+    transitions = those of state, reviewDecision, head, conflicts with seq > entry.cursor
 if there is anything to send:
     append to status.inbox { key: task/<name>/<uid>/relay/<change uid>/<cr.revision>,
                              from: "forge/<change>", text: render(...),
@@ -205,9 +205,15 @@ and not instructions. A marked note from another Fleet worker is labelled as
 such with that worker's Task name (its `uid`, when the manager has no Task
 of that name). A transition reads as "state changed to `<new>`" (the mirror
 keeps no previous value, so the old one is not named), "review decision
-changed to `<value>`" or "checks `<state>` on head `<id>`" with the failing
-names and URLs; a head whose checks are `none` or `pending` is not a
-transition worth a message. When the change settled on this pass the
+changed to `<value>`", "checks `<state>` on head `<id>`" with the failing
+names and URLs, "forge says mergeable: no (`conflicts`)" when the change
+starts to conflict with its base, or "forge says the change no longer
+conflicts with its base" when that clears; a head whose checks are `none`
+or `pending` is not a transition worth a message. Other reasons the forge
+gives for not merging (`blocked`, `unstable`, `behind`, `draft`) move with
+every CI run and are never relayed: the join snapshot names them. A
+conflict has no `spec.forge.relay` toggle, like a state or review decision
+transition. When the change settled on this pass the
 message ends by saying so, with the mirror's `Settled` reason. The message
 carries `about`, the mirror's `uid`, `revision` and `head` it was computed
 from, because by the

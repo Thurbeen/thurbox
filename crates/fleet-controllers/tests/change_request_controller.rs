@@ -3,7 +3,7 @@
 //! transition or one Unknown of the mirror's lifecycle.
 
 use fleet_api::change_request::{
-    ChangeRequestDefaults, ChangeRequestStatus, DEFAULT_POLL_MS, NOTE_CAP, Phase,
+    ChangeRequestDefaults, ChangeRequestStatus, DEFAULT_POLL_MS, NOTE_CAP, Phase, Sequenced,
 };
 use fleet_api::condition::ConditionStatus;
 use fleet_api::forge::{
@@ -328,6 +328,79 @@ fn head_state_and_decision_transitions_take_the_revision() {
     assert_eq!(st.state.as_ref().unwrap().seq, 1, "the state never moved");
     assert_eq!(st.reviews.len(), 1);
     assert_eq!(cond(&st, "Mergeable").status, ConditionStatus::True);
+}
+
+fn merge(value: Option<bool>, reason: Option<&str>) -> Mergeable {
+    Mergeable {
+        value,
+        reason: reason.map(Into::into),
+    }
+}
+
+#[test]
+fn a_conflict_with_the_base_is_numbered_when_it_appears_and_when_it_clears() {
+    let before = watched();
+    assert_eq!(before.conflicts, None, "no conflict seen yet");
+
+    let mut s = snapshot(ChangeState::Open);
+    s.mergeable = merge(Some(false), Some("unstable"));
+    let (_, st) = run_at(&object(Some(&before)), seen(s.clone()), NOW + POLL);
+    assert_eq!(
+        (st.revision, st.conflicts.clone()),
+        (2, None),
+        "another reason moves the revision and never the conflict"
+    );
+
+    s.mergeable = merge(Some(false), Some("conflicts"));
+    let (_, st) = run_at(&object(Some(&st)), seen(s.clone()), NOW + 2 * POLL);
+    assert_eq!(st.revision, 3);
+    assert_eq!(
+        st.conflicts,
+        Some(Sequenced {
+            value: true,
+            seq: 3
+        })
+    );
+
+    s.mergeable = merge(None, None);
+    let (_, st) = run_at(&object(Some(&st)), seen(s.clone()), NOW + 3 * POLL);
+    assert_eq!(
+        st.conflicts.as_ref().map(|c| (c.value, c.seq)),
+        Some((true, 3)),
+        "an answer still being computed flips nothing"
+    );
+
+    s.mergeable = merge(Some(false), Some("conflicts"));
+    let (_, st) = run_at(&object(Some(&st)), seen(s.clone()), NOW + 4 * POLL);
+    assert_eq!(st.conflicts.as_ref().map(|c| c.seq), Some(3));
+
+    s.mergeable = merge(Some(false), Some("blocked"));
+    let (_, st) = run_at(&object(Some(&st)), seen(s), NOW + 5 * POLL);
+    assert_eq!(
+        st.conflicts,
+        Some(Sequenced {
+            value: false,
+            seq: st.revision
+        })
+    );
+}
+
+#[test]
+fn a_mirror_stored_before_conflicts_were_numbered_loads_and_numbers_a_standing_conflict() {
+    let mut old = serde_json::to_value(watched()).unwrap();
+    old.as_object_mut().unwrap().remove("conflicts");
+    let mut obj = object(None);
+    obj.status = old;
+    let mut s = snapshot(ChangeState::Open);
+    s.mergeable = merge(Some(false), Some("conflicts"));
+    let (_, st) = run_at(&obj, seen(s), NOW + POLL);
+    assert_eq!(
+        st.conflicts,
+        Some(Sequenced {
+            value: true,
+            seq: 2
+        })
+    );
 }
 
 #[test]

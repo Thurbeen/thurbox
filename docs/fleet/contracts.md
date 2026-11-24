@@ -417,7 +417,8 @@ ChangeRequest. Guarantees, each with its test in `forge_controller`,
 - **Relay by cursor.** Every note with `seq` above the cursor that passes the
   filters (never this Task's own marked words; bots only per `relayBots`;
   never a resolved thread or one this Task already answered in) and every
-  transition of state, review decision or passed/failed checks above it
+  transition of state, review decision, passed/failed checks or a conflict
+  with the base entering or clearing above it
   become one entry, with `about` naming the mirror's `uid`, `revision` and
   head; the cursor advances in the same write, whether or not anything was
   sent. Another worker's marked note is relayed and labelled with its Task.

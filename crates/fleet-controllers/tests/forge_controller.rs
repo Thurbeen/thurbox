@@ -597,6 +597,55 @@ fn transitions_of_state_decision_and_checks_are_relayed_with_the_failing_names()
 }
 
 #[test]
+fn a_conflict_with_the_base_and_its_clearing_are_relayed_and_other_reasons_are_not() {
+    let obj = task(declared(), Some(following(4)), Value::Null);
+    let mut cr = mirror(5, Vec::new());
+    cr.mergeable = Some(Mergeable {
+        value: Some(false),
+        reason: Some("conflicts".into()),
+    });
+    cr.conflicts = Some(Sequenced {
+        value: true,
+        seq: 5,
+    });
+    let (plan, forge) = run(&obj, seen(&cr));
+    assert_eq!(entry(&forge).cursor, 5);
+    let t = text(&plan);
+    assert!(t.contains("1 transition(s), 0 note(s)"), "{t}");
+    assert!(
+        t.contains("- forge says mergeable: no (`conflicts`): the change conflicts with its base"),
+        "{t}"
+    );
+
+    let obj = task(declared(), Some(following(5)), Value::Null);
+    cr.revision = 6;
+    cr.mergeable = Some(Mergeable {
+        value: Some(false),
+        reason: Some("unstable".into()),
+    });
+    cr.conflicts = Some(Sequenced {
+        value: false,
+        seq: 6,
+    });
+    let (plan, _) = run(&obj, seen(&cr));
+    assert!(
+        text(&plan).contains("- forge says the change no longer conflicts with its base"),
+        "{}",
+        text(&plan)
+    );
+
+    let obj = task(declared(), Some(following(6)), Value::Null);
+    cr.revision = 7;
+    cr.mergeable = Some(Mergeable {
+        value: Some(false),
+        reason: Some("blocked".into()),
+    });
+    let (plan, forge) = run(&obj, seen(&cr));
+    assert!(plan.appends.is_empty(), "{plan:#?}");
+    assert_eq!(entry(&forge).cursor, 7);
+}
+
+#[test]
 fn spec_forge_relay_turns_notes_or_checks_off_without_stopping_the_other() {
     let mut cr = mirror(5, vec![note("n3", 5, 30, "bob", "new")]);
     cr.head = Some(Head {

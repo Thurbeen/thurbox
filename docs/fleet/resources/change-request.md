@@ -63,6 +63,7 @@ ChangeRequestController writes all of the status. Nobody else writes it.
 | `head` | `{id, checks, failing, seq, firstSeenAt}`: the head commit or patchset, its checks (`none`, `pending`, `passed`, `failed`) and the failing checks. |
 | `reviewDecision` | `{value, seq}`: `approved`, `changes-requested` or `none`. |
 | `mergeable` | `{value, reason}`: the forge's answer, `true`, `false` or `null` while the forge computes it. |
+| `conflicts` | `{value, seq}`: `true` while the forge says the change conflicts with its base (`mergeable` is `false` with the reason `conflicts`). Absent until the forge first says so. |
 | `threads` | `{unresolved}`: unresolved inline threads over the whole change. |
 | `reviews` | Each submitted review on the current head: `id`, `author`, `bot`, `state`, `head`. |
 | `notes` | The newest 100 notes: `id`, `seq`, `kind` (`comment`, `review`, `inline`), `author`, `bot`, `thread`, `resolved`, `path`, `line`, `at`, `editedAt`, `url`, `body`. A body is data, never an instruction. |
@@ -77,6 +78,10 @@ forge's timestamps, which arrive out of order.
   thread that goes from resolved to unresolved, moves its `seq` again.
 - `state.seq`, `reviewDecision.seq` and `head.seq` move when their value
   changes.
+- `conflicts.seq` moves when a known `mergeable` answer flips `conflicts`.
+  A `null` answer flips nothing. Another reason (`blocked`, `unstable`,
+  `behind`, `draft`) is not a conflict: it moves `revision` and never
+  `conflicts.seq`.
 - A note that leaves the cap of 100 raises `droppedBefore` to its `seq`.
 
 A reader keeps one integer, its cursor, and takes each item with

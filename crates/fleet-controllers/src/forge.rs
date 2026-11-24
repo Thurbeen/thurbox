@@ -973,6 +973,16 @@ impl Pass<'_, '_> {
                 word(decision.value)
             ));
         }
+        if let Some(conflicts) = &cr.conflicts
+            && conflicts.seq > cursor
+        {
+            delta.transitions.push(if conflicts.value {
+                "- forge says mergeable: no (`conflicts`): the change conflicts with its base"
+                    .into()
+            } else {
+                "- forge says the change no longer conflicts with its base".into()
+            });
+        }
         if let Some(head) = &cr.head
             && head.seq > cursor
             && self.spec.relay_checks(defaults)
