@@ -98,8 +98,9 @@ Before mods were mods, these files had other names: `ui/plugins/`,
 each one to its new name once, at startup and before each `thurbox-cli mod`
 or `thurbox-cli config` command. The move keeps every trust grant, the
 disabled set and each edited or deleted shipped pane. An older thurbox does not
-move them back. A move that cannot save a file leaves the old names in place,
-and thurbox does not start until the file is fixed. `thurbox-cli doctor` warns
+move them back. A move that cannot save a file leaves the old names in place.
+thurbox then starts on the embedded interface and names the file.
+`thurbox-cli doctor` warns
 about an old name that is still there.
 [mods.md → Before mods were mods](mods.md#before-mods-were-mods) has the
 detail.

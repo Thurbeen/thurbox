@@ -847,7 +847,7 @@ fn an_old_plugins_interface_moves_to_mods_on_startup() {
 }
 
 #[test]
-fn an_interface_that_cannot_move_to_mods_stops_startup() {
+fn an_interface_that_cannot_move_to_mods_starts_on_the_embedded_one() {
     let profile = Profile::new();
     let ui = profile.path("config/ui");
     std::fs::create_dir_all(ui.join("plugins")).expect("plugins");
@@ -860,15 +860,9 @@ fn an_interface_that_cannot_move_to_mods_stops_startup() {
     permissions.set_readonly(true);
     std::fs::set_permissions(&manifest, permissions).expect("read-only");
 
-    let mut tui = Tui::spawn(&profile, 30, 160);
-    let status = tui.wait_exit("a migration that cannot save");
-    assert!(!status.success(), "{status:?}");
-    assert!(
-        tui.raw_since(0)
-            .contains("could not finish moving plugins to mods"),
-        "{}",
-        tui.raw_since(0)
-    );
+    let tui = Tui::spawn(&profile, 30, 160);
+    tui.wait_for("could not finish moving plugins to mods");
+    tui.wait_for("No sessions yet");
     assert!(ui.join("plugins/91_old.lua").is_file());
     assert!(!ui.join("mods").exists());
 }
