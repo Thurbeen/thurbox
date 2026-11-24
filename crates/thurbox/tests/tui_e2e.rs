@@ -867,6 +867,47 @@ fn an_interface_that_cannot_move_to_mods_starts_on_the_embedded_one() {
     assert!(!ui.join("mods").exists());
 }
 
+#[test]
+fn the_embedded_interface_of_a_failed_move_saves_no_choice() {
+    let profile = Profile::new();
+    let ui = profile.path("config/ui");
+    std::fs::create_dir_all(ui.join("plugins")).expect("plugins");
+    std::fs::write(ui.join("plugins/91_old.lua"), "return {\n").expect("old pane");
+    let manifest = ui.join(".bundled.json");
+    std::fs::write(&manifest, r#"{"plugins/64_menu.lua":{"removed":true}}"#).expect("manifest");
+    let mut permissions = std::fs::metadata(&manifest)
+        .expect("metadata")
+        .permissions();
+    permissions.set_readonly(true);
+    std::fs::set_permissions(&manifest, permissions).expect("read-only");
+    let old_state = serde_json::json!({
+        "trusted": {},
+        "disabled": [ui.join("plugins/91_old.lua").to_string_lossy()],
+    })
+    .to_string();
+    std::fs::write(profile.path("config/plugin-state.json"), &old_state).expect("old state");
+
+    let mut tui = Tui::spawn(&profile, 40, 160);
+    tui.wait_for("not saved");
+    tui.wait_for("No sessions yet");
+    open_interface_tab(&mut tui);
+    select_file(&mut tui, "20_agent.lua");
+    let before = line_of(&tui, "20_agent.lua");
+    tui.send(b" ");
+    tui.wait_until("the pane to switch off", |frame| {
+        frame
+            .lines()
+            .any(|line| line.contains("20_agent.lua") && line != before)
+    });
+    assert!(tui.quit().success());
+
+    assert!(!profile.path("config/mod-state.json").exists());
+    assert_eq!(
+        std::fs::read_to_string(profile.path("config/plugin-state.json")).expect("old state"),
+        old_state
+    );
+}
+
 /// What every exit owes the terminal. A missing one of these is the "my shell
 /// is streaming mouse reports" bug, which no in-process test and no
 /// capture-pane assertion can see.

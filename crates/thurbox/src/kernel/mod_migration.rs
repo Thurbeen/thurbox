@@ -70,10 +70,12 @@ pub fn migrate_in_force() -> Migration {
 
 /// Migrate `ui_dir`'s files and the state store in `config_dir`.
 ///
-/// Every rewrite is written under its new name first, and the old files stay
-/// where they are. Only when every one of those writes succeeded does the
-/// directory move and are the old files deleted, so a migration that reports
-/// [`Migration::errors`] has left the old layout as it found it.
+/// Every rewrite is written under its new name first, with the old files left
+/// where they are. Then the renames run: the state store's link, if it is one,
+/// and the panes. Each write and each rename is recorded, and any failure takes
+/// every recorded step back in reverse, so a migration that reports
+/// [`Migration::errors`] has left the old layout as it found it. Only after
+/// every step succeeded are the old files deleted.
 pub fn migrate(ui_dir: Option<&Path>, config_dir: Option<&Path>) -> Migration {
     let mut migration = Migration::default();
     let mut staged = Staged::default();
@@ -87,7 +89,7 @@ pub fn migrate(ui_dir: Option<&Path>, config_dir: Option<&Path>) -> Migration {
             |relative| stays_in_plugins(ui_dir, relative),
         ) {
             Ok(()) if std::fs::read(&manifest).ok() != before => {
-                staged.undo.push((manifest, before));
+                staged.undo.push(Undo::Contents(manifest, before));
             }
             Ok(()) => {}
             Err(e) => migration.errors.push(e),
@@ -110,29 +112,31 @@ pub fn migrate(ui_dir: Option<&Path>, config_dir: Option<&Path>) -> Migration {
     if let Some(config_dir) = config_dir {
         stage_state(config_dir, ui_dir, &mut migration, &mut staged);
     }
+    if migration.errors.is_empty() {
+        for (link, to) in std::mem::take(&mut staged.relinked) {
+            if let Err(e) = staged.rename(&link, &to) {
+                migration
+                    .errors
+                    .push(format!("{} → {}: {e}", link.display(), to.display()));
+            }
+        }
+    }
+    if migration.errors.is_empty() {
+        if let Some(ui_dir) = ui_dir {
+            move_mods_dir(ui_dir, &mut migration, &mut staged);
+        }
+    }
     if !migration.errors.is_empty() {
         staged.take_back(&mut migration);
         return migration;
     }
-    if let Some(ui_dir) = ui_dir {
-        move_mods_dir(ui_dir, &mut migration);
-    }
-    if !migration.errors.is_empty() {
-        return migration;
-    }
     migration.moved.extend(staged.moved);
+    migration.kept.extend(staged.kept);
     for old in staged.replaced {
         if let Err(e) = std::fs::remove_file(&old) {
             migration
                 .kept
                 .push(format!("{} (could not delete it: {e})", old.display()));
-        }
-    }
-    for (link, to) in staged.relinked {
-        if let Err(e) = std::fs::rename(&link, &to) {
-            migration
-                .kept
-                .push(format!("{} (could not rename it: {e})", link.display()));
         }
     }
     migration
@@ -141,24 +145,49 @@ pub fn migrate(ui_dir: Option<&Path>, config_dir: Option<&Path>) -> Migration {
 #[derive(Default)]
 struct Staged {
     moved: Vec<String>,
+    kept: Vec<String>,
     replaced: Vec<PathBuf>,
     relinked: Vec<(PathBuf, PathBuf)>,
-    undo: Vec<(PathBuf, Option<Vec<u8>>)>,
+    undo: Vec<Undo>,
+}
+
+enum Undo {
+    Contents(PathBuf, Option<Vec<u8>>),
+    Renamed { from: PathBuf, to: PathBuf },
 }
 
 impl Staged {
     fn write(&mut self, path: &Path, text: &str) -> std::io::Result<()> {
         let before = std::fs::read(path).ok();
         crate::paths::write_atomically(path, text)?;
-        self.undo.push((path.to_path_buf(), before));
+        self.undo.push(Undo::Contents(path.to_path_buf(), before));
+        Ok(())
+    }
+
+    fn rename(&mut self, from: &Path, to: &Path) -> std::io::Result<()> {
+        std::fs::rename(from, to)?;
+        self.undo.push(Undo::Renamed {
+            from: from.to_path_buf(),
+            to: to.to_path_buf(),
+        });
         Ok(())
     }
 
     fn take_back(self, migration: &mut Migration) {
-        for (path, before) in self.undo.into_iter().rev() {
-            let undone = match before {
-                Some(bytes) => crate::paths::write_atomically(&path, bytes),
-                None => std::fs::remove_file(&path),
+        for step in self.undo.into_iter().rev() {
+            let (path, undone) = match step {
+                Undo::Contents(path, Some(bytes)) => {
+                    let undone = crate::paths::write_atomically(&path, bytes);
+                    (path, undone)
+                }
+                Undo::Contents(path, None) => {
+                    let undone = std::fs::remove_file(&path);
+                    (path, undone)
+                }
+                Undo::Renamed { from, to } => {
+                    let undone = std::fs::rename(&to, &from);
+                    (to, undone)
+                }
             };
             if let Err(e) = undone {
                 migration
@@ -199,17 +228,16 @@ pub fn config_dir() -> Option<PathBuf> {
     crate::paths::config_file().and_then(|file| file.parent().map(Path::to_path_buf))
 }
 
-fn move_mods_dir(ui_dir: &Path, migration: &mut Migration) {
+fn move_mods_dir(ui_dir: &Path, migration: &mut Migration, staged: &mut Staged) {
     let legacy = ui_dir.join(LEGACY_MODS_DIR);
     let current = ui_dir.join(MODS_DIR);
     if !legacy.is_dir() {
         return;
     }
+    let moved = format!("{LEGACY_MODS_DIR}/ → {MODS_DIR}/");
     if !current.exists() {
-        match std::fs::rename(&legacy, &current) {
-            Ok(()) => migration
-                .moved
-                .push(format!("{LEGACY_MODS_DIR}/ → {MODS_DIR}/")),
+        match staged.rename(&legacy, &current) {
+            Ok(()) => staged.moved.push(moved),
             Err(e) => {
                 migration
                     .errors
@@ -234,18 +262,19 @@ fn move_mods_dir(ui_dir: &Path, migration: &mut Migration) {
         let shown = format!("{LEGACY_MODS_DIR}/{}", name.to_string_lossy());
         let to = current.join(&name);
         if to.exists() {
-            migration.kept.push(shown);
+            staged.kept.push(shown);
             continue;
         }
-        match std::fs::rename(legacy.join(&name), &to) {
+        match staged.rename(&legacy.join(&name), &to) {
             Ok(()) => moved_any = true,
-            Err(e) => migration.errors.push(format!("{shown}: {e}")),
+            Err(e) => {
+                migration.errors.push(format!("{shown}: {e}"));
+                return;
+            }
         }
     }
     if moved_any {
-        migration
-            .moved
-            .push(format!("{LEGACY_MODS_DIR}/ → {MODS_DIR}/"));
+        staged.moved.push(moved);
     }
     let _ = std::fs::remove_dir(&legacy);
 }
@@ -273,7 +302,7 @@ fn stage_text(
         if std::fs::read_to_string(&current).is_ok_and(|existing| existing == rewritten) {
             staged.replaced.push(legacy);
         } else {
-            migration.kept.push(legacy_name.to_string());
+            staged.kept.push(legacy_name.to_string());
         }
         return;
     }
@@ -370,7 +399,7 @@ fn stage_state(
                 staged.replaced.push(legacy);
                 return;
             }
-            Ok(_) => migration.kept.push(LEGACY_STATE_FILE.to_string()),
+            Ok(_) => staged.kept.push(LEGACY_STATE_FILE.to_string()),
             Err(e) => {
                 migration.errors.push(e);
                 return;
@@ -565,6 +594,60 @@ mod tests {
             before
         );
         assert!(ui.join("plugins/10_sessions.lua").is_file());
+    }
+
+    #[cfg(unix)]
+    fn set_mode(path: &Path, mode: u32) {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(path, std::fs::Permissions::from_mode(mode)).expect("mode");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_link_that_cannot_be_renamed_leaves_the_old_layout() {
+        let root = tempfile::tempdir().expect("tempdir");
+        let ui = root.path().join("ui");
+        write(&ui.join("plugins/10_a.lua"), "-- a\n");
+        let managed = root.path().join("managed/state.json");
+        let old_state = disabling(&ui, "plugins/10_a.lua");
+        write(&managed, &old_state);
+        let config = root.path().join("config");
+        std::fs::create_dir_all(&config).expect("config");
+        std::os::unix::fs::symlink(&managed, config.join(LEGACY_STATE_FILE)).expect("link");
+        set_mode(&config, 0o555);
+
+        let migration = migrate(Some(&ui), Some(&config));
+        set_mode(&config, 0o755);
+        assert!(!migration.errors.is_empty(), "{migration:?}");
+        assert!(ui.join("plugins/10_a.lua").is_file());
+        assert!(!ui.join("mods").exists());
+        assert!(config.join(LEGACY_STATE_FILE).exists());
+        assert!(!config.join(STATE_FILE).exists());
+        assert_eq!(
+            std::fs::read_to_string(&managed).expect("managed"),
+            old_state
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_directory_that_cannot_move_takes_back_every_staged_write() {
+        let root = tempfile::tempdir().expect("tempdir");
+        let ui = root.path().join("ui");
+        write(&ui.join("plugins/10_a.lua"), "-- a\n");
+        let config = root.path().join("config");
+        write(
+            &config.join(LEGACY_STATE_FILE),
+            &disabling(&ui, "plugins/10_a.lua"),
+        );
+        set_mode(&ui, 0o555);
+
+        let migration = migrate(Some(&ui), Some(&config));
+        set_mode(&ui, 0o755);
+        assert!(!migration.errors.is_empty(), "{migration:?}");
+        assert!(ui.join("plugins/10_a.lua").is_file());
+        assert!(config.join(LEGACY_STATE_FILE).is_file());
+        assert!(!config.join(STATE_FILE).exists(), "{migration:?}");
     }
 
     #[cfg(unix)]

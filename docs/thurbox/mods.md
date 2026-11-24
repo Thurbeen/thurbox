@@ -2223,15 +2223,20 @@ reads them:
 - When `mods/` already exists, the move takes only the files `mods/` does not
   have. It leaves each clash in `plugins/` and names it. Delivery does not
   touch a clash that the move left in `plugins/`.
-- The move writes each rewritten file under its new name first. The directory
-  moves, and the old files go, only after every one of those writes succeeded.
-- When a write fails, for example on a read-only file, the old layout stays as
-  it was. The move takes back each file it already wrote, so the next attempt
-  starts from the old files again. The interface then starts on the embedded
-  panes only, in a throwaway directory, and the `thurbox-cli` command fails.
+- The move works in two steps. First it writes each rewritten file under its
+  new name and leaves the old files in place. When `plugin-state.json` is a
+  symlink, it writes through the link instead. Then it renames: the link to
+  `mod-state.json`, then `plugins/` (or each file that `mods/` lacks) to
+  `mods/`. A symlinked store stays a link.
+- The move records each write and each rename. When one fails, for example on
+  a read-only file or directory, the move takes every recorded step back. The
+  old layout then stays as it was, and the next attempt starts from the old
+  files again.
+- The old files go only after every step succeeded.
+- After a failed move, the interface starts on the embedded panes only, in a
+  throwaway directory. It saves nothing you change there: no grant, no
+  turned-off pane and no setting. The `thurbox-cli` command fails instead.
   Both name the file. Fix it and run again.
-- When `plugin-state.json` is a symlink, the move rewrites the file it points
-  to and renames the link to `mod-state.json`, so the link stays a link.
 - The move keeps the comments in the spec. It deletes no file you wrote. It
   prints one notice that starts `plugins are mods now`, and nothing on a later
   run.
