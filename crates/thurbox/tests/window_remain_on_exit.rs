@@ -126,7 +126,6 @@ async fn an_agent_window_keeps_its_corpse_and_a_program_window_does_not() {
         }
     };
 
-    // The mod's program, through the control-mode path.
     let key = ProgramKey::new("mods/90_files.lua", "editor_opts");
     let mut terminals = Terminals::with_registry(
         std::sync::Arc::new(thurbox::backend::wiring::local_only(&Default::default())),

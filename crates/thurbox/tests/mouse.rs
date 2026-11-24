@@ -69,7 +69,6 @@ fn sample() -> Snapshot {
     }
 }
 
-/// Render one bundled mod and return every hitbox it declared.
 fn hits_of(mod_name: &str, width: u16, height: u16) -> Vec<Hit> {
     let host = host();
     let themes = Themes::load(None);
@@ -183,19 +182,9 @@ fn a_verb_is_read_off_the_role_and_nothing_else_is() {
         ClickVerb::parse(Some("url:https://example.test/a?q=1")),
         Some(ClickVerb::Url("https://example.test/a?q=1".into()))
     );
-    // `row` is what widgets.lua writes for an ordinary list row, and it must
-    // keep meaning "ask the mod" rather than becoming a kernel verb.
     assert!(ClickVerb::parse(Some("row")).is_none());
 }
 
-/// The seam the loop uses to turn a pane's `url:` node into a link the outer
-/// terminal can open: the recorded hit's rect, read back out of the frame that
-/// was just painted.
-///
-/// Asserted here rather than in the kernel's own tests because it is the
-/// *combination* that has to hold — a hitbox is recorded for the node, and the
-/// cells at that rect are the ones the mod drew. A node whose rect drifted
-/// from its glyphs would link the wrong text without either half looking wrong.
 #[test]
 fn a_pane_url_node_becomes_a_link_over_the_cells_it_drew() {
     use thurbox::kernel::node::{Node, Run, Size};
@@ -491,8 +480,6 @@ fn a_framed_node_is_clickable_on_its_border() {
     assert_eq!(hits[0].rect, Rect::new(0, 0, 8, 3));
 }
 
-// ── the bundled mods declare what v1 recorded ──────────────────────────
-
 #[test]
 fn every_session_row_is_a_click_target_carrying_its_id() {
     let hits = hits_of("sessions", 40, 12);
@@ -529,8 +516,6 @@ fn a_session_row_click_lands_on_the_session_under_it() {
     let picked = target_at(&hits, first.rect.x, first.rect.y).expect("something under the row");
     assert_eq!(picked.identity.id, first.identity.id);
 }
-
-// ── the mods that answer a click themselves ────────────────────────────
 
 /// The sessions pane, published a two-session snapshot and rendered once, so a
 /// click has rows to land on.

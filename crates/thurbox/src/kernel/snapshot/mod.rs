@@ -739,17 +739,6 @@ pub(crate) fn repo_name(cwd: &Option<PathBuf>, repo_path: Option<&PathBuf>) -> O
         .map(|name| name.to_string_lossy().to_string())
 }
 
-/// The instant a snapshot was taken, to the second.
-///
-/// Deliberately coarser than the clock. `taken_at_ms` is published, and its only
-/// reader is `widgets.now_ms` feeding `time_ago`, which floors the difference to
-/// whole seconds — so sub-second precision is unobservable to the interface,
-/// while re-stamping it moved [`SnapshotStore::version`] 2.5 times a second
-/// and capped how long any pure pane could stay cached (`frame-cost`).
-///
-/// Quantising the published *value* rather than delaying the signal is what
-/// keeps "a mod never reads a stale published value" true: the field means
-/// "when these rows were read, to the second", and it is never behind that.
 fn taken_at_stamp() -> i64 {
     now_ms() / 1000 * 1000
 }

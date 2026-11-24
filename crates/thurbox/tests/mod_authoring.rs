@@ -9,7 +9,6 @@
 
 use thurbox::cli::mods::{run, Action};
 
-/// Keep mod checks independent of the operator's saved keybinding overrides.
 fn at(dir: &std::path::Path) -> std::path::PathBuf {
     let ui = dir.join("ui");
     std::fs::create_dir_all(&ui).expect("mkdir");
@@ -114,11 +113,6 @@ fn an_override_at_a_checkout_is_reported_as_the_checkout() {
 
     let report = json(Action::Dir);
     assert_eq!(report["chosen"], "checkout", "{report}");
-    // Absolute, not the bare `ui` it may have been named by. Trust, the disabled
-    // set and every rebinding are keyed by this directory joined with a filename
-    // and compared verbatim, so a relative one is not an identity: every checkout
-    // on the machine shares it, and trusting a mod in one worktree would grant
-    // `run` to a same-named file in another.
     assert_eq!(
         report["dir"],
         repo.join("ui").display().to_string(),
@@ -145,8 +139,6 @@ fn asking_where_mods_live_writes_nothing() {
 
 #[test]
 fn an_override_that_is_not_there_is_an_error_naming_it() {
-    // Falling back silently would send the mod somewhere the user did not ask
-    // for; the TUI refuses to start for the same reason.
     let home = tempfile::tempdir().expect("tempdir");
     let missing = home.path().join("nowhere");
     std::env::set_var("THURBOX_UI_DIR", &missing);
@@ -262,8 +254,6 @@ fn the_shipped_interface_checks_out() {
     );
 }
 
-/// A mod the arrangement places nowhere is the failure no other signal
-/// reports: it compiles, declares its keys, is listed, and paints nothing.
 #[test]
 fn a_pane_nothing_places_is_a_failure_that_says_what_to_add() {
     let home = tempfile::tempdir().expect("tempdir");
@@ -349,12 +339,6 @@ fn the_listing_does_not_report_working_panes_as_unplaced() {
     assert_eq!(state_of(&json(Action::List), "nowhere"), "unplaced");
 }
 
-/// The listing has to hand back a name the next command accepts.
-///
-/// `name` is a display name: the pane's own, or its bare filename when it did not
-/// load — and `40_review.lua` is not a key `mod remove` takes. A managed row
-/// therefore also carries `entry`, which is exactly what `remove`/`update` resolve.
-/// Without it a script reading the listing has no way to address what it found.
 #[test]
 fn the_listing_reports_the_name_that_commands_accept() {
     let home = tempfile::tempdir().expect("tempdir");
@@ -494,7 +478,6 @@ fn an_interface_with_no_panes_is_reported_not_failed() {
     let home = tempfile::tempdir().expect("tempdir");
     let ui = at(home.path());
     std::fs::create_dir_all(ui.join("mods")).expect("mkdir");
-    // `layout.lua` and `lib/` are what the host needs; no mods at all.
     thurbox::kernel::bundled::materialize(&ui);
     for entry in std::fs::read_dir(ui.join("mods")).expect("read plugins") {
         std::fs::remove_file(entry.expect("entry").path()).expect("remove");
@@ -616,8 +599,6 @@ fn the_listing_tells_a_shipped_file_from_an_edited_one() {
 
 #[test]
 fn the_documented_example_is_a_mod_that_loads() {
-    // It is what `mod new` writes and what the guide shows, so it cannot be
-    // allowed to rot: this builds an interface out of it and renders it.
     let home = tempfile::tempdir().expect("tempdir");
     let ui = at(home.path());
     thurbox::kernel::bundled::materialize(&ui);
@@ -678,8 +659,6 @@ fn the_composite_example_loads_and_declares_what_it_needs() {
 
 #[test]
 fn an_untrusted_composite_draws_how_to_trust_it_rather_than_failing() {
-    // The state every user of a capability-using mod meets first. A pane that
-    // looks broken before you have done anything is a mod nobody keeps.
     let home = tempfile::tempdir().expect("tempdir");
     let ui = at(home.path());
     thurbox::kernel::bundled::materialize(&ui);
@@ -713,13 +692,6 @@ fn an_untrusted_composite_draws_how_to_trust_it_rather_than_failing() {
 
 // ── the install that cannot demonstrate itself ─────────────────────────────
 
-/// A pane sharing a `switch` slot draws nothing until it is focused.
-///
-/// This is the sibling of the unplaced-slot failure and it is *quieter*: an unplaced
-/// slot fails the check loudly, while a switch alternate loads, is placed, reports
-/// `installed`, and shows the user an unchanged screen. It was found by a mod
-/// author whose pane nobody could see. Warned rather than failed — the author may
-/// have meant it, and failing a judgement makes the check unusable as a gate.
 #[test]
 fn a_pane_sharing_a_switch_slot_with_no_pill_is_warned_about() {
     let home = tempfile::tempdir().expect("tempdir");
@@ -880,16 +852,6 @@ fn a_dropped_pill_says_whether_the_palette_has_its_action_or_nothing_does() {
 
 // ── the chord somebody else already spent ──────────────────────────────────
 
-/// Two mods claiming one global chord: both load, both are placed, and one
-/// of them simply never fires.
-///
-/// The registry has found this for as long as it has existed — `detect_conflicts`
-/// walks every declaration and `warnings()` renders each clash — but `check` built
-/// its warnings from the undiscoverable set alone and declared nothing into a
-/// registry, so the one pre-flight tool a mod author has answered `warnings: []`
-/// for the single thing they cannot foresee: which keys their users already spent.
-/// A conflict inside your own interface is yours to see; a published mod's is
-/// not.
 #[test]
 fn two_mods_claiming_one_global_chord_are_both_named() {
     let home = tempfile::tempdir().expect("tempdir");
@@ -953,11 +915,6 @@ fn two_mods_claiming_one_global_chord_are_both_named() {
     );
 }
 
-/// A chord two panes claim in their own scopes is not a conflict.
-///
-/// Focus decides between them, which is the whole point of a mod-scoped key —
-/// the shipped interface binds `j` in three panes. Reporting it would make the
-/// warning meaningless by the second mod an author installs.
 #[test]
 fn the_same_chord_in_two_mod_scopes_is_not_reported() {
     let home = tempfile::tempdir().expect("tempdir");
@@ -992,13 +949,6 @@ fn the_same_chord_in_two_mod_scopes_is_not_reported() {
     );
 }
 
-/// The chord a mod takes from the kernel is the same clash, reported the same way.
-///
-/// The kernel's modal and clipboard chords are bindings in the same registry with no
-/// Lua file behind them, and `kernel::declare_interface` is where both `check` and the
-/// running loop pick them up. Drop them from it and a pane taking `F1` reads as clean
-/// here while the loop shadows the help modal its author never knew they had
-/// displaced — nothing else in this file notices.
 #[test]
 fn a_mod_taking_a_kernel_chord_is_reported_against_the_kernel() {
     let home = tempfile::tempdir().expect("tempdir");
@@ -1150,13 +1100,6 @@ fn a_mod_cannot_claim_the_kernel_owner_name() {
     );
 }
 
-/// Two files answering to one name must not be reported as one file.
-///
-/// A mod's name defaults to its filename with the ordering prefix stripped, and
-/// nothing rejects two files that land on the same one. A conflict carries the name
-/// each claim was declared under, so resolving that to a file by first match named
-/// the same file twice: the row said a file clashed with itself, and whichever author
-/// owned the other copy was sent to edit the wrong one.
 #[test]
 fn a_name_two_files_answer_to_names_both_of_them() {
     let home = tempfile::tempdir().expect("tempdir");

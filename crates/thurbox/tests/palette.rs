@@ -21,8 +21,6 @@ fn host() -> LuaHost {
     host
 }
 
-/// The registry the binary builds: the mods' declarations, their chord-less
-/// commands, and the kernel's own chords.
 fn registry(host: &LuaHost) -> Registry {
     let mut registry = Registry::default();
     let (mut bindings, settings) = host.declarations();
@@ -56,7 +54,6 @@ fn press(code: KeyCode) -> KeyEvent {
     KeyEvent::new(code, KeyModifiers::NONE)
 }
 
-/// Publish an empty world, so a mod's handler has `thurbox.*` to read.
 fn publish(host: &LuaHost, registry: &Registry) {
     let themes = Themes::load(None);
     let diffs = thurbox::kernel::diff::DiffStore::new();
@@ -229,8 +226,6 @@ fn typing_filters_and_enter_runs_the_selection_through_on_action() {
     assert_eq!(dispatch.action, "search.open");
     assert!(!modals.is_open(), "closed before the loop runs it");
 
-    // What the loop then does: the owning mod's `on_action`, whether or not
-    // it is focused — and the strip opens exactly as `ctrl+/` opens it.
     publish(&host, &registry);
     let index = host.index_of(&dispatch.owner).expect("the search pane");
     assert!(host.on_action(index, &dispatch.action).expect("on_action"));

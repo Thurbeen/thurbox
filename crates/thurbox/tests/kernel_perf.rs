@@ -36,9 +36,6 @@ fn mod_dir(source: &str) -> tempfile::TempDir {
 
 #[test]
 fn an_unchanged_tree_is_the_signal_to_skip_a_frame() {
-    // The heart of demand-driven repaint: a mod returning the same tree
-    // gives the loop nothing to paint. Asserted on the trees themselves rather
-    // than by driving a terminal, so it is exact.
     let dir = mod_dir(
         r#"return { name = "static", slot = "a",
                     render = function() return { text = "unchanging" } end }"#,
@@ -267,13 +264,6 @@ fn timing_costs_nothing_until_something_asks_for_it() {
     }
     assert!(json["slow_ops"].as_array().expect("array").is_empty());
 }
-
-// --- per mod: which pane spent the time (ADR-P23) ------------------------
-//
-// The counters above say a frame is expensive; these pin the half that says
-// *whose* it is. Nothing asserts a duration — only the ordering between a pane
-// built to do 300k Lua iterations per call and panes that do next to nothing,
-// which no machine confuses, and the counts beside it, which are exact.
 
 /// Enough Lua work to be measurable on any machine, and far inside the budget.
 const BUSY: &str = "local s = 0 for i = 1, 300000 do s = s + i end";

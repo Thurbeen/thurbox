@@ -416,8 +416,6 @@ mod tests {
 
     #[test]
     fn published_colours_parse_back_through_the_node_vocabulary() {
-        // The round trip that matters: whatever we publish, a mod must be
-        // able to hand straight back as a style.
         for preset in ThemePreset::all() {
             let roles = palette_roles(&preset.palette());
             for (role, text) in roles {

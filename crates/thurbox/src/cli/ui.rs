@@ -72,7 +72,6 @@ pub enum Action {
     Confirm { ticket: String },
     /// Send addressed key, text, or scroll input to an active modal or mod.
     Input {
-        /// `modal` or the name of the active mod.
         target: String,
         #[arg(long)]
         key: Option<String>,

@@ -152,8 +152,6 @@ fn the_tab_keys_are_offered_where_they_can_be_seen() {
 
 #[test]
 fn no_interface_file_declares_a_chord_for_it() {
-    // A leftover `f11` pointing at a mod that no longer exists would resolve
-    // to nothing and look like the original bug all over again.
     let host = host();
     let mut registry = Registry::default();
     let (bindings, settings) = host.declarations();

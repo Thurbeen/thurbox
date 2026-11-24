@@ -169,10 +169,6 @@ fn new(name: &str) -> Result<CommandOutput, String> {
     check_name(name)?;
     let (dir, chosen) = resolve()?;
 
-    // A starter `require`s `lib.theme` and `lib.widgets`, so a directory that has
-    // no `lib/` is not an interface yet and the new mod would fail to load
-    // before it was ever edited. Delivering the bundled files first is what the
-    // interface does on its own first run; it preserves anything already there.
     let delivered = if dir.join("lib").is_dir() {
         false
     } else {
@@ -306,11 +302,6 @@ fn check() -> Result<CommandOutput, String> {
         format!("{}\n  ✓ loads — {}", dir.display(), loaded_names.join(", "))
     };
 
-    // Loading is not the same as drawing. A mod whose slot the arrangement
-    // names nowhere passes every check above it — it compiles, declares its keys
-    // and is listed — and paints nothing, which is the one failure a pipe could
-    // not see. Resolved at a stated size because placement is size-dependent;
-    // see `layout::REFERENCE`.
     let reference = crate::kernel::layout::REFERENCE;
     let size = format!("{}x{}", reference.width, reference.height);
     let unplaced = match host.unplaced_slots(reference) {
@@ -798,9 +789,6 @@ fn install(src: &str, as_file: Option<&str>, pin: Option<&str>) -> Result<Comman
         ));
     }
     if repository {
-        // Said at the moment it happens, not only in the guide. Installing a mod
-        // from a repository puts that repository's files on your disk — binaries
-        // included — which is what cloning anything does, and is worse left unsaid.
         human.push_str("\n  a working copy of that repository is now in your interface directory");
     }
     for hint in &hints {

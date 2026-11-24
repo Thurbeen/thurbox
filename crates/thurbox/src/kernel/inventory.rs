@@ -324,11 +324,6 @@ pub fn rows(
     out
 }
 
-/// Whether a load error names this file.
-///
-/// `load_mod` prefixes the file stem and `load_arrangement` the file name,
-/// so matching on either is what attributes an all-or-nothing reload failure to
-/// the one file that caused it.
 fn blames(error: &str, path: &str) -> bool {
     let name = file_name(path);
     let stem = name.strip_suffix(".lua").unwrap_or(name);

@@ -36,8 +36,6 @@ fn host() -> LuaHost {
     host
 }
 
-/// The registry the binary builds: every mod's declarations plus the
-/// kernel's own modal chords.
 fn registry(host: &LuaHost) -> Registry {
     let mut registry = Registry::default();
     let (mut bindings, settings) = host.declarations();
@@ -117,8 +115,6 @@ fn publish(host: &LuaHost, registry: &Registry, themes: &Themes) {
     .expect("publish");
 }
 
-/// Paint the whole interface — every mod in its resolved rect — and then,
-/// optionally, the modal layer over it. This is the binary's own order.
 fn screen(
     host: &LuaHost,
     modals: &mut Modals,
@@ -521,8 +517,6 @@ fn no_modal_is_a_mod_or_a_focus_stop() {
 
 #[test]
 fn every_modal_chord_v1_binds_opens_its_modal() {
-    // Declared through the ordinary registry, so they are listed in help and
-    // rebindable — but routed to the kernel, since no mod owns them.
     let host = host();
     let registry = registry(&host);
     for (chord, kind) in [
@@ -571,9 +565,6 @@ fn a_modal_covers_the_interface_rather_than_replacing_it() {
     let themes = Themes::load(None);
     publish(&host, &registry, &themes);
 
-    // Rendered once first: a mod settles state on its first frame (the list
-    // picks a row, and the header then names it), and that settling would
-    // otherwise read as the modal having repainted the row.
     let mut closed = Modals::default();
     screen(&host, &mut closed, &registry, &themes);
     let before = screen(&host, &mut closed, &registry, &themes);
@@ -605,8 +596,6 @@ fn a_modal_covers_the_interface_rather_than_replacing_it() {
 
 #[test]
 fn help_lists_keys_from_mods_it_never_heard_of() {
-    // The payoff of declaring keys as data: help renders the registry, so a
-    // mod added tomorrow appears with no edit to the modal.
     let host = host();
     let mut registry = registry(&host);
     let mut themes = Themes::load(None);
@@ -614,10 +603,8 @@ fn help_lists_keys_from_mods_it_never_heard_of() {
     modals.toggle(ModalKind::Help);
 
     let screen = modal_screen(&mut modals, &registry, &themes, 120, 90);
-    // Grouped by function, as v1 groups it — not by which mod owns the key.
     assert!(screen.contains("Navigation"), "{screen}");
     assert!(screen.contains("Sessions"), "{screen}");
-    // A key declared by a mod the modal has never heard of.
     assert!(screen.contains("delete session"), "{screen}");
     // The kernel's own chords are declarations like any other.
     assert!(screen.contains("open keybindings help"), "{screen}");
@@ -803,8 +790,6 @@ fn reset_puts_an_action_back_on_its_declared_chord() {
 
 #[test]
 fn settings_renders_what_the_bundled_mods_declare() {
-    // The modal is only worth having if something reaches it: at least one
-    // shipped mod must declare a setting.
     let host = host();
     let registry = registry(&host);
     let themes = Themes::load(None);
@@ -814,16 +799,11 @@ fn settings_renders_what_the_bundled_mods_declare() {
     );
     let mut modals = Modals::default();
     modals.toggle(ModalKind::Settings);
-    // Tall enough that the core rows above do not push the mod's off screen.
     let screen = modal_screen(&mut modals, &registry, &themes, 130, 60);
     let first = &registry.settings()[0];
     assert!(screen.contains("Settings"), "{screen}");
-    // The kernel's own settings are listed first, so `settings.toml` is editable
-    // from the same screen as everything a mod declared.
     assert!(screen.contains("CORE"), "{screen}");
     assert!(screen.contains("features.shell_pane"), "{screen}");
-    // Grouped by the declaring mod, which is the only grouping the registry
-    // knows about.
     assert!(screen.contains(&first.owner.to_uppercase()), "{screen}");
     assert!(screen.contains(&first.id), "{screen}");
 }
@@ -1060,9 +1040,6 @@ fn a_setting_declared_by_an_unknown_mod_is_editable_without_touching_settings() 
     let mut modals = Modals::default();
     modals.toggle(ModalKind::Settings);
 
-    // The kernel's own core settings come first, so a mod's row is the last
-    // one — `End` is how the modal gets there, and it is what a user with a long
-    // list does too.
     send(
         &mut modals,
         press(KeyCode::End),

@@ -119,13 +119,6 @@ const PERF_PUBLISH_INTERVAL: Duration = Duration::from_secs(5);
 /// what made v2 feel less responsive than v1.
 const MIN_FRAME_INTERVAL: Duration = Duration::from_millis(16);
 
-/// How long a mod that threw keeps drawing as failed after its last throw.
-///
-/// A pane whose data is half there fails on some frames and not others, and
-/// drawing each frame's own outcome alternated its content with its error panel
-/// on every tick — or, for a float, put a modal over most of the screen and took
-/// it away again. Held this long, an intermittent failure reads as one steady
-/// state, and a pane that has really recovered comes back once.
 const FAILURE_HOLD: Duration = Duration::from_secs(5);
 
 /// The floor when the only thing owed a frame is new agent output.
@@ -224,14 +217,6 @@ fn require_terminal() {
     }
 }
 
-/// A hitbox from the frame just painted, and the mod that painted it.
-///
-/// v1's `App::ClickTarget`, with the crucial difference that its `action` is
-/// not an enum the kernel has to know: the identity travels as the mod wrote
-/// it, and only the handful of [`ClickVerb`]s are the kernel's business.
-///
-/// An **empty** identity is the mod's own rect — v1's `FocusPane` fallback,
-/// recorded before the tree so anything inside it wins.
 #[derive(Debug, Clone)]
 struct ClickTarget {
     mod_index: usize,
@@ -293,8 +278,6 @@ struct App {
         Option<String>,
     ),
     host: LuaHost,
-    /// The directory the interface was loaded from. Held because every command
-    /// about a mod file names a path relative to it.
     ui_dir: PathBuf,
     /// Where each file of the interface came from.
     ///
@@ -414,11 +397,6 @@ struct App {
     /// double-click from two clicks. See `coordinator::mouse`.
     click_train: coordinator::mouse::ClickTrain,
     themes: Themes,
-    /// Which occupant of each `switch` slot is visible, by slot name.
-    ///
-    /// Focusing a mod in a switch slot makes it the visible one, which is
-    /// both how switching is driven and how the "focus never rests on a
-    /// hidden pane" rule is satisfied without a second mechanism.
     slot_selection: std::collections::HashMap<String, usize>,
     /// Whether a newer release exists, and the silent update if it was allowed.
     updates: thurbox::kernel::updates::Updates,
@@ -445,11 +423,6 @@ struct App {
     /// The session a `Command::Editor` asked to open the editor over, until
     /// the loop hands the editor its tty.
     editor_request: Option<String>,
-    /// Every identified node of the frame just painted, in paint order.
-    ///
-    /// Rebuilt each frame and scanned in reverse, so the innermost node under a
-    /// point — and, across mods, the one painted last — wins. That is how a
-    /// tab pill on a pane's border beats the pane's own focus fallback.
     click_targets: Vec<ClickTarget>,
     /// The area the last frame was painted into.
     ///
@@ -496,24 +469,14 @@ struct App {
     /// Keys held on a binding that asked for its release, and whether this
     /// terminal reports releases at all (`coordinator::input::Holds`).
     holds: coordinator::input::Holds,
-    /// The session shown by the focused mod's surface, as of the last frame.
-    /// Read off the tree that was just painted, so the kernel never needs to
-    /// know which mod is "the terminal".
     focused_session: Option<String>,
     /// Whether the last painted frame drew a pane that reads `thurbox.diffs`.
     /// A diff over ssh is fetched only while one does (`serve_worker_stores`).
     diffs_shown: bool,
-    /// The surface the focused pane is showing, of either kind — a session's
-    /// terminal or a program a mod owns.
-    ///
-    /// Distinct from `focused_session` because the two answer different questions:
-    /// that one is "which session am I looking at", which a program pane has no
-    /// answer to, and this one is "where do unclaimed keys go".
     focused_surface: Option<String>,
     /// Whether the focused pane holds the caret in a field of its own, so a
     /// paste is typing for it rather than text for a terminal.
     focused_typing: bool,
-    /// Index into the host's focusable mods.
     focus: usize,
     /// Where focus was before the last deliberate move, so `Esc` can go back.
     ///
@@ -524,11 +487,7 @@ struct App {
     focus_return: usize,
     /// Set once a change is seen, fired after the debounce window.
     reload_at: Option<Instant>,
-    /// Failures from this frame's render calls, one per failing mod.
     errors: Vec<ModError>,
-    /// Each mod that threw within [`FAILURE_HOLD`], by index, with its last
-    /// failure and when it happened. Cleared on reload, since the indices are
-    /// positions in the mod list a reload replaces.
     failing: std::collections::HashMap<usize, (ModError, Instant)>,
     /// A failure from `ui/layout.lua`, cleared by the next arrangement that
     /// works.
@@ -545,9 +504,6 @@ struct App {
     /// inventory can still name the file that caused it: the bundled host that
     /// replaced the user's reports no error of its own.
     floor_cause: Option<String>,
-    /// When the mod VM was last replaced for memory, so a rebuild that did
-    /// not help is not repeated on every loop iteration
-    /// (`App::rebuild_full_vm`).
     memory_rebuilt: Option<Instant>,
     /// What just happened, and when. Separate from `layout_error` because that
     /// field is reset by every successful arrangement — which is once a frame —
@@ -567,26 +523,11 @@ struct App {
     /// while it still can be: a deleted session's row is gone by the time its
     /// delete reports.
     tracked_commands: std::collections::HashMap<u64, TrackedCommand>,
-    /// Where the chrome bands drew their buttons this frame.
-    ///
-    /// Kept apart from `click_targets` because a band is not a mod: a click
-    /// on one must not focus a pane, and there is no mod index to record.
-    /// Same reason the system modals keep their own click path.
     band_targets: Vec<thurbox::kernel::bands::Hit>,
     started: Instant,
     frames: u64,
-    /// The last painted trees, per mod index. A frame is skipped when every
-    /// mod returns what it returned last time and nothing else moved — the
-    /// mod-model equivalent of v1's `needs_redraw`.
     last_trees: Vec<Option<std::rc::Rc<thurbox::kernel::node::Node>>>,
-    /// The last float each mod painted, and where.
-    ///
-    /// What each chrome band painted last frame, and where. Bands have no tree
-    /// to diff, so their cells are compared instead — see `render_band`.
     last_bands: std::collections::HashMap<Band, (Rect, u64)>,
-    /// Kept apart from `last_trees` because a float is rendered in its own pass at
-    /// its own rect, so the two would overwrite each other for a mod that did
-    /// both. Its purpose is the same: settle the loop when nothing moved.
     last_floats: std::collections::HashMap<usize, (Rect, std::rc::Rc<thurbox::kernel::node::Node>)>,
     /// Floats that actually painted on the last frame.
     ///
@@ -618,7 +559,6 @@ struct App {
     /// Set by anything that invalidates the screen outside the tree diff:
     /// input, a reload, a resize, a completed command.
     dirty: bool,
-    /// Set while drawing when any mod's tree differed from last frame.
     changed_this_frame: bool,
     /// Output stamp each surface was last painted at, keyed by surface name.
     /// What makes a quiet terminal settle rather than repaint every frame.
@@ -630,7 +570,6 @@ struct App {
     /// happening counts as a change — which is why, without this, a printing
     /// agent was drawn at the 250ms floor rather than at once.
     last_output_gen: u64,
-    /// Mod holding an exclusive key grab this frame, if any.
     grabbed: Option<usize>,
     /// The node holding the pointer between a press and its release, if any.
     pointer_grab: Option<PointerGrab>,
@@ -644,13 +583,7 @@ struct App {
     /// one of them took the press. Opaque here — it is handed straight back to
     /// the terminal store, which is what resolves it.
     pty_pointer: Option<String>,
-    /// Programs mods asked to be run, and what they printed.
     runs: thurbox::kernel::runs::RunStore,
-    /// Every file of the interface, as of the last painted frame.
-    ///
-    /// Computed for the mods that used to list it and kept because the
-    /// settings modal's Interface tab lists it too — one join per frame, read
-    /// by both.
     inventory: Vec<thurbox::kernel::inventory::Row>,
     /// Whether a bookmark command is still running.
     ///
@@ -708,8 +641,6 @@ struct App {
     trust_stale: bool,
     /// Whether the perf counters are painted over the interface (F12).
     hud: bool,
-    /// Events queued for mods, and what the kernel's own are derived from.
-    /// See `coordinator::events`.
     events: coordinator::events::Events,
     quit: bool,
 }

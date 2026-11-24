@@ -34,25 +34,6 @@ use crate::kernel::registry::{Binding, Registry, HELP_SECTIONS, QUIT_CHORD};
 /// collided. See [`key_column`].
 const KEY_WIDTH: usize = 16;
 
-/// The chords the kernel keeps for itself, with what they do.
-///
-/// **`tab` is deliberately absent.** It used to be listed here as moving focus,
-/// which was simply untrue — `RESERVED` does not contain it and nothing binds it, on
-/// purpose: every coding agent uses Tab for completion, and a full-screen program in
-/// a pane needs it too (`doom`'s automap, vim, a pager). Listing it told users the
-/// interface would eat a key it forwards, and a downstream mod author read that
-/// and concluded their pane could never receive it. Focus moves on `ctrl+h`/`ctrl+l`.
-///
-/// Listed because they are real and cannot be rebound, which is exactly what
-/// someone reading help wants to know. Kept in step with
-/// [`crate::kernel::registry::RESERVED`] by a test below; the settings tabs are
-/// here too because they belong to a modal rather than to the registry — a key
-/// nobody can discover is a key nobody uses.
-///
-/// **Copy and paste used to be listed here** and no longer are: they are
-/// declared bindings now ([`crate::kernel::clipboard`]), so they appear in the
-/// editable rows above like anything else and can be moved — onto `Cmd+C` on a
-/// Mac, where `Ctrl+C` is spent on interrupt.
 const RESERVED_ROWS: [(&str, &str); 5] = [
     (QUIT_CHORD, "Quit"),
     ("f10", "Reload mods"),
@@ -88,8 +69,6 @@ fn rows(registry: &Registry) -> Vec<(String, Vec<Row>)> {
         };
         push_binding(&mut groups[position].1, binding);
     }
-    // v1's sections first, in its order; anything else follows alphabetically,
-    // so a third-party mod's group appears without editing this list.
     groups.sort_by_key(|(name, _)| {
         (
             HELP_SECTIONS
@@ -420,8 +399,6 @@ impl HelpModal {
     }
 }
 
-/// The rows after the rebindable ones: the fixed chords, then the events a
-/// mod may subscribe to.
 fn push_reference_lines(lines: &mut Vec<Line<'_>>, key_width: usize, chrome: Chrome) {
     // Never selectable: the escape route out of any pane, which a reader needs
     // to know exists but can never change.
@@ -440,9 +417,6 @@ fn push_reference_lines(lines: &mut Vec<Line<'_>>, key_width: usize, chrome: Chr
         ));
     }
 
-    // The events a mod may subscribe to, from the same table the loader
-    // validates against — so what help shows is what `events = { … }` may
-    // name, and a mod author need not leave the interface to find out.
     lines.push(Line::default());
     lines.push(Line::from(Span::styled(
         "Events (for mods: events = { … } + on_event)",
@@ -604,12 +578,6 @@ mod tests {
         )
     }
 
-    /// The rows may not claim a chord the kernel does not actually take.
-    ///
-    /// The existing check below is one-directional — every `RESERVED` chord appears
-    /// here — so an extra row went unnoticed for as long as it took a mod author
-    /// to trust it. `tab` was listed as moving focus while being forwarded to the
-    /// pane, and this is the direction that catches the next one.
     #[test]
     fn no_row_claims_a_chord_the_kernel_does_not_take() {
         use crate::kernel::registry::RESERVED;

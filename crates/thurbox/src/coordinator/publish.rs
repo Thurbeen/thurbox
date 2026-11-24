@@ -14,10 +14,6 @@ use super::browser_available;
 use crate::{App, LINK_SCAN_INTERVAL};
 
 impl App {
-    /// Rebuild everything a mod can read.
-    ///
-    /// Called just before a paint and before dispatching input — the only two
-    /// moments Lua runs — rather than once per loop iteration.
     pub(crate) fn republish(&mut self) {
         // Before `advance_animation`, which asks whether a printing `running`
         // session is on screen — a stale set there would freeze the very
@@ -157,13 +153,6 @@ impl App {
         self.link_stamps.insert(id.to_string(), stamp);
         self.link_scans.insert(id.to_string(), now);
         let found = self.terminals.links(id);
-        // Absent rather than empty when there are none, which is the shape a
-        // mod reads: `thurbox.links[surface]` is nil for a screen with no
-        // links, not a table with nothing in it.
-        //
-        // Compared before storing: a printing agent moves its stamp every frame
-        // while the links on screen usually stay put, and treating a re-scan as
-        // a change would move the epoch every frame for nothing.
         let changed = if found.is_empty() {
             self.links.remove(id).is_some()
         } else if self.links.get(id) == Some(&found) {
@@ -177,22 +166,6 @@ impl App {
         }
     }
 
-    /// Rescan for the links on each named surface's screen, where that screen
-    /// moved — and no more often than [`LINK_SCAN_INTERVAL`] while it keeps
-    /// moving.
-    ///
-    /// Part of publishing rather than a standing cost of the loop, because the
-    /// answer is only ever read by a mod — and gated on the session's
-    /// `output_stamp`, because finding them walks every cell of its grid building
-    /// a `String` per row. Ungated, a held-down key rescanned every terminal on
-    /// screen per repeat for answers that could not have changed.
-    ///
-    /// The stamp alone is exact for a screen that has *stopped* and no gate at
-    /// all for one that has not, which is the case that matters: a printing
-    /// agent moves it every frame, and a scrolling screen puts its URLs on new
-    /// rows each time, so the compare below found a change every frame and moved
-    /// the data epoch — undoing ADR-P16's gating wholesale for anyone whose
-    /// agent prints a URL. Hence the second gate, an age (ADR-P13).
     pub(crate) fn refresh_links(&mut self, surfaces: &[String]) {
         let now = Instant::now();
         for id in surfaces {
@@ -305,10 +278,6 @@ impl App {
         self.trust_stale = false;
     }
 
-    /// Tell the host which mods the user trusted, by the path it knows them by.
-    ///
-    /// Relative, because that is `Mod::path`; trust is stored absolute so two
-    /// interface directories cannot share it, so this is where the two meet.
     pub(crate) fn publish_trust(&self) {
         self.host.set_trusted(thurbox::kernel::packages::granted(
             &self.ui_dir,
@@ -317,11 +286,6 @@ impl App {
         ));
     }
 
-    /// Tell the host which mods the user turned off.
-    ///
-    /// Derived from the *stored* absolute paths rather than from the loaded
-    /// mods, because a disabled one is not loaded — it would not be in the
-    /// list to filter. Relative, because that is what `build` compares against.
     pub(crate) fn publish_disabled(&self) {
         let disabled: Vec<String> = self
             .registry
@@ -358,19 +322,8 @@ impl App {
             .collect()
     }
 
-    /// Hand the registry what every loaded mod declared, plus the kernel's
-    /// own chords.
-    ///
-    /// The system modals and the clipboard pair go through the same registry as
-    /// everything else, which is what makes them listable in help, conflict-checked
-    /// against a mod's keys, and rebindable — they simply have no Lua mod
-    /// behind them. The composition itself is
-    /// [`kernel::declare_interface`](thurbox::kernel::declare_interface), shared
-    /// with `thurbox-cli mod check`.
     pub(crate) fn collect_declarations(&mut self) {
         thurbox::kernel::declare_interface(&mut self.registry, &self.host);
-        // Trust is read against the mod set that just loaded, so a reload —
-        // including the one a trust change triggers — lands both together.
         self.publish_trust();
     }
 }

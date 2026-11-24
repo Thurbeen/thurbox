@@ -731,23 +731,6 @@ fn last_segment(source: &str, windows: bool) -> &str {
         .trim_end_matches(".git")
 }
 
-/// The pane inside a freshly-cloned working copy.
-///
-/// Three answers in order, and the order is the point:
-///
-/// 1. **`--as`**, because an explicit request wins over anything inferred.
-/// 2. **The repository's own `mod.toml` or `plugin.toml`**, if it has one and it names a single
-///    pane. A manifest is therefore *not* irrelevant to a cloned mod, and it
-///    means one repository serves both install mechanisms rather than presenting two
-///    doors that behave differently. Read leniently (`pane_sources_of`) — the
-///    copy-model rules do not apply to a tree that keeps its own layout. A manifest
-///    declaring several is an ambiguity like step 3's, not an answer: a nested pane
-///    loads only because the spec names it, and a spec entry names one.
-/// 3. **The single `.lua` under `mods/` (or `plugins/`)**, which is what a one-pane repository
-///    looks like and makes "clone it and it works" true with no manifest at all.
-///
-/// Anything else is ambiguous and says so, listing what it found: guessing which of
-/// several panes is the entry point would be a silent wrong answer.
 fn pane_in_working_copy(
     root: &Path,
     name: &str,
@@ -823,11 +806,6 @@ fn pane_in_working_copy(
     }
 }
 
-/// Install a mod by obtaining a working copy of its repository.
-///
-/// Everything the repository holds is delivered, in the layout its author chose.
-/// The lock records the **commit**, not the ref asked for, which is what makes the
-/// same spec reproduce the same bytes after a branch moves.
 fn install_repository(
     dir: &Path,
     src: &str,

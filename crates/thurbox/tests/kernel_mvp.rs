@@ -95,7 +95,6 @@ fn publish_full(
     .expect("publish");
 }
 
-/// A registry holding whatever the given host's mods declared.
 fn registry(host: &LuaHost) -> Registry {
     let mut registry = Registry::default();
     let (bindings, settings) = host.declarations();
@@ -228,7 +227,6 @@ fn ctx(width: u16, height: u16, focused: bool) -> RenderContext {
     }
 }
 
-/// Render one mod into a rect and return the painted screen as text.
 fn paint(host: &LuaHost, index: usize, width: u16, height: u16) -> Vec<String> {
     let node = host
         .render(index, ctx(width, height, true))
@@ -299,14 +297,6 @@ fn index_of(host: &LuaHost, name: &str) -> usize {
 fn the_bundled_mods_load_and_claim_their_slots() {
     let host = host();
     let names: Vec<&str> = host.mods.iter().map(|p| p.name.as_str()).collect();
-    // The interface is three panes — the list, the centre and the search strip —
-    // plus four floats that occupy no slot at all: the creation flow, the
-    // confirmation, the rename field and the context menu. The view of the
-    // interface's own files is
-    // NOT among them: it is a tab of the settings modal, because a recovery tool
-    // that is itself a mod can be the thing that is broken. Every other v1
-    // surface was removed with its mod, and its slot with it — see
-    // `ui/layout.lua`.
     assert_eq!(
         names,
         [
@@ -325,17 +315,11 @@ fn the_bundled_mods_load_and_claim_their_slots() {
     assert_eq!(host.in_slot("search").len(), 1);
 
     assert_eq!(host.in_slot("sessions").len(), 1);
-    // The centre is still a `switch` slot even with one occupant: the mode is a
-    // property of the slot, not of how many mods happen to want it, and the
-    // agent's own shell tab already relies on it.
     let centre: Vec<&str> = host
         .in_slot("center")
         .iter()
         .map(|i| host.mods[*i].name.as_str())
         .collect();
-    // One occupant today. The slot keeps its mode anyway: it is a property of
-    // the slot, not of how many mods happen to want it, and the next centre
-    // pane (the code review) will share it.
     assert_eq!(centre, ["agent"], "{centre:?}");
     // Help, settings and the theme picker are kernel modals, so they overlay
     // rather than compete for this slot — and must never reappear as panes.
@@ -622,8 +606,6 @@ fn a_mod_is_told_its_own_rect_not_the_screens() {
 
 #[test]
 fn a_long_list_windows_against_the_resolved_height() {
-    // The other half of D2: the scroll window and its overflow markers are
-    // derived from the height the mod was handed.
     let host = host();
     let rows: Vec<SessionRow> = (0..40)
         .map(|n| row(&format!("session-{n:02}"), "thurbox", "idle"))
@@ -641,8 +623,6 @@ fn a_long_list_windows_against_the_resolved_height() {
 
 #[test]
 fn the_agent_pane_places_a_surface_it_does_not_paint() {
-    // The mod frames and positions the terminal; the kernel
-    // fills it. The mod never sees a cell.
     let host = host();
     publish(&host, &sample());
 
@@ -806,8 +786,6 @@ fn the_panes_are_built_from_primitives_not_kernel_widgets() {
 
 #[test]
 fn a_broken_mod_costs_only_its_own_pane() {
-    // The isolation rule, end to end: a mod that throws is reported against
-    // itself, and its neighbours still render.
     let dir = tempfile::tempdir().expect("tempdir");
     let mods = dir.path().join("mods");
     std::fs::create_dir_all(&mods).expect("mkdir");
@@ -937,7 +915,6 @@ fn mod_state_is_private_and_survives_a_reload() {
     let dir = tempfile::tempdir().expect("tempdir");
     let mods = dir.path().join("mods");
     std::fs::create_dir_all(&mods).expect("mkdir");
-    // Both mods write state.n; neither may see the other's.
     for (file, name, value) in [("10_a.lua", "a", 1), ("20_b.lua", "b", 2)] {
         std::fs::write(
             mods.join(file),
@@ -982,7 +959,6 @@ fn a_slot_divides_its_rect_among_its_occupants() {
     assert_eq!(rects.iter().map(|r| r.height).sum::<u16>(), 20);
 }
 
-/// Every node kind present in a tree, for asserting what a mod built with.
 fn collect_kinds(node: &Node) -> Vec<&'static str> {
     let mut kinds = vec![node.kind()];
     if let Node::Box { children, .. } = node {
@@ -997,8 +973,6 @@ fn collect_kinds(node: &Node) -> Vec<&'static str> {
 
 #[test]
 fn the_agent_pane_asks_for_raw_session_input() {
-    // How the terminal stays an ordinary mod: the kernel does not know which
-    // mod "is" the terminal, only that this one declared `input = "session"`.
     let host = host();
     let agent = &host.mods[index_of(&host, "agent")];
     assert!(agent.session_input, "the agent pane must ask for raw input");
@@ -1012,8 +986,6 @@ fn the_agent_pane_asks_for_raw_session_input() {
 
 #[test]
 fn the_focused_session_is_read_off_the_rendered_tree() {
-    // The kernel learns which session has focus from the tree it just painted,
-    // not from a name it was told. Replace the mod and this still works.
     let host = host();
     publish(&host, &sample());
     host.render(index_of(&host, "sessions"), ctx(40, 12, true))
@@ -1402,11 +1374,6 @@ fn the_manual_order_is_published_so_a_reorder_is_visible() {
 
 #[test]
 fn the_theme_reaches_mods_as_roles() {
-    // The kernel resolves, mods name roles. Publishing is the
-    // whole interface between them, so this asserts a mod can read the
-    // resolved theme — through a throwaway mod that prints it, since no
-    // bundled pane shows the theme's name any more (the header is gone and the
-    // picker is a kernel modal — `tests/modals.rs`).
     let dir = tempfile::tempdir().expect("tempdir");
     let mods = dir.path().join("mods");
     std::fs::create_dir_all(&mods).expect("mkdir");
@@ -1466,8 +1433,6 @@ fn hardcodes_colour(line: &str) -> bool {
 
 #[test]
 fn no_bundled_mod_hardcodes_a_colour() {
-    // The coherence rule made checkable: a literal in a mod opts out of
-    // theming for everyone downstream of it.
     let ui = ui_dir();
     let mut offenders = Vec::new();
     for dir in [ui.join("mods"), ui.join("lib")] {
@@ -1529,8 +1494,6 @@ fn every_bundled_mod_declares_its_keys_as_data() {
 
 #[test]
 fn the_bundled_set_has_no_key_conflicts() {
-    // Several panes declare `j`; that is fine because each is mod-scoped and
-    // focus decides. A genuine clash would show up here.
     let host = host();
     let registry = registry(&host);
     assert!(
@@ -1596,8 +1559,6 @@ fn capitals_route_the_same_from_either_terminal_encoding() {
     }
 }
 
-// --- floating mods ------------------------------------------------------
-
 // --- guards ----------------------------------------------------------------
 
 #[test]
@@ -1620,13 +1581,6 @@ fn the_lua_vm_stays_non_send() {
 
 #[test]
 fn the_granted_capability_set_matches_a_declared_list() {
-    // Capabilities are introduced with their consumer, never
-    // ahead of one. This is the tripwire — a new global in the mod
-    // environment has to be added here deliberately.
-    //
-    // `files` is not on it: a session's directory holds its `.env`, so the two
-    // rooted reads are present only for a mod granted the `files`
-    // capability, as `run` is (`tests/mod_commands.rs`).
     const GRANTED: [&str; 7] = [
         "require",
         "state",
@@ -1675,10 +1629,6 @@ fn the_granted_capability_set_matches_a_declared_list() {
         "tonumber",
     ];
     for name in globals.split_whitespace() {
-        // No blanket excuse for a leading underscore. `_G`/`_VERSION` are named in
-        // STDLIB above; anything else spelled `__like_this` is thurbox's own, and
-        // a mod's `_ENV` *is* this table — which is how `__run_impl` sat here
-        // handing every untrusted mod the run capability under a second name.
         let known = GRANTED.contains(&name)
             || STDLIB.contains(&name)
             // Remaining base-library functions: pure computation, no capability.
@@ -2303,8 +2253,6 @@ fn a_shell_is_a_second_surface_over_the_same_primitive() {
     publish(&host, &sample());
     host.render(index_of(&host, "sessions"), ctx(40, 12, true))
         .expect("render");
-    // The shell is a TAB of the terminal pane, not a mod of its own, so the
-    // pane that opens it is the one that shows it.
     let index = index_of(&host, "agent");
 
     host.on_action(index, "shell.open").expect("open");
@@ -2381,9 +2329,6 @@ fn a_stage_name_reaches_the_pending_row() {
     }];
     publish_with(&host, &sample(), &Default::default(), &inflight);
 
-    // The mod currently renders "creating…" for any non-failed phase; what
-    // matters here is that the stage survives publishing, so a mod *can*
-    // show it.
     let screen = paint(&host, index_of(&host, "sessions"), 46, 14).join("\n");
     assert!(screen.contains("creating"), "{screen}");
 }
@@ -2458,10 +2403,6 @@ fn a_mod_earns_a_band_entry_by_declaring_one() {
 
 #[test]
 fn a_mod_that_becomes_unloadable_leaves_the_last_good_set_in_force() {
-    // Mods load as a SET, so a file that stops parsing does not quietly
-    // remove one entry — the whole previous set stays in force and the failure is
-    // reported. A half-loaded interface missing the pane you wanted, with no
-    // indication why, is the outcome this trades away.
     let dir = tempfile::tempdir().expect("tempdir");
     let mods = dir.path().join("mods");
     std::fs::create_dir_all(&mods).expect("mkdir");
@@ -2504,8 +2445,6 @@ fn a_mod_that_becomes_unloadable_leaves_the_last_good_set_in_force() {
 
 #[test]
 fn a_band_is_never_a_focus_stop() {
-    // Bands are not mods, so they cannot enter the focus ring — asserted
-    // rather than assumed, because the ring is what makes them unreachable.
     let host = host();
     let focusable: Vec<&str> = host
         .focusable()

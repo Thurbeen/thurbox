@@ -110,8 +110,6 @@ fn a_disabled_mod_declares_nothing() {
 
 #[test]
 fn a_freed_key_can_be_claimed_without_a_conflict() {
-    // The consequence worth stating: while it is off, the chord is genuinely
-    // unowned rather than reserved for a mod that is not running.
     let (_home, ui) = interface(&[
         ("90_mine.lua", pane("mine")),
         ("91_other.lua", pane("other")),

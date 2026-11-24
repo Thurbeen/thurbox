@@ -33,14 +33,6 @@ pub const BUNDLED: &[(&str, &str)] = &[
     // — four node kinds, ask-every-frame, `run` absent until trusted — are not
     // guessable from the Lua beside it.
     ("README.md", include_str!("../../../../ui/README.md")),
-    // The same reasoning, under the name an agent actually reads on its own.
-    // README.md is what a person opens; `AGENTS.md` is what a coding CLI loads as
-    // context without being told to — which is what stops "install this mod"
-    // being read as a package-manager request. `CLAUDE.md` and `GEMINI.md` are
-    // pointers rather than copies: two files saying the same thing drift, and the
-    // stale one is the one somebody reads. An extension surfaces its own spec the
-    // same way, as symlinks — which it can do because it copies its own files, and
-    // delivery here writes contents.
     ("AGENTS.md", include_str!("../../../../ui/AGENTS.md")),
     ("CLAUDE.md", include_str!("../../../../ui/CLAUDE.md")),
     ("GEMINI.md", include_str!("../../../../ui/GEMINI.md")),
@@ -365,12 +357,6 @@ fn deliver(
 /// empty and a verb that always fails.
 const WITHDRAWN: &[&str] = &["mods/80_restore.lua"];
 
-/// Take back what we shipped and no longer ship.
-///
-/// Without this, renaming a bundled mod between releases leaves the old copy
-/// on disk and loading, so an upgrade the user did nothing to hands them two of
-/// it. Same rule as everywhere else, read from the other side: we clean up only
-/// what we wrote and the user has not claimed (design D2).
 fn retire(dir: &Path, manifest: &mut BTreeMap<String, Record>, report: &mut Report) {
     let shipped: BTreeSet<&str> = BUNDLED.iter().map(|(name, _)| *name).collect();
     let stale: Vec<String> = manifest
@@ -553,14 +539,6 @@ fn interface_files(dir: &Path, spec: &crate::session::mod_spec::ModSpec) -> Vec<
         files.push((format!("lib/{name}"), dir.join("lib").join(&name)));
     }
 
-    // Panes the spec names outside `mods/` — a mod obtained as a repository
-    // keeps its author's layout. Without this such a pane is LOADED but absent from
-    // the inventory, which is exactly the "a file the tab cannot account for"
-    // problem the tab exists to prevent.
-    //
-    // The rest of a working copy is deliberately NOT walked: a repository can hold
-    // hundreds of files, none of them interface code, and listing them would bury
-    // the panes among one mod's assets.
     for entry in &spec.mods {
         if !crate::session::mod_spec::is_nested_pane(&entry.file) {
             continue;
@@ -668,10 +646,6 @@ pub fn restore(dir: &Path, relative: &str) -> Result<Option<PathBuf>, String> {
 /// The arrangement, the one file whose restore keeps a backup.
 const LAYOUT: &str = "layout.lua";
 
-/// The first `layout.lua.bak[.N]` that does not exist yet.
-///
-/// Not a `.lua` name on purpose: nothing loads it, so a backup can never become
-/// a second arrangement or a stray mod.
 fn free_backup_path(dir: &Path) -> PathBuf {
     let first = dir.join(format!("{LAYOUT}.bak"));
     if !first.exists() {
@@ -700,12 +674,6 @@ pub fn remove(dir: &Path, relative: &str) -> Result<(), String> {
     write_manifest(dir, &manifest)
 }
 
-/// Resolve a path that came from a mod, or refuse it.
-///
-/// Lua has no filesystem and this command is the one door into one, so the door
-/// opens only onto Lua files inside the interface directory: no absolute paths,
-/// no `..`, and nothing that is not a `.lua` file — which also keeps the
-/// manifest itself out of reach.
 fn checked(dir: &Path, relative: &str) -> Result<PathBuf, String> {
     let candidate = Path::new(relative);
     if !candidate
@@ -751,23 +719,6 @@ pub(crate) enum Delivered<'a> {
     Tombstoned,
 }
 
-/// What to do with one file, given what is there, what we last put there, and
-/// what we would put there now.
-///
-/// Pure, and the whole of the policy — every caller that writes a delivered file
-/// asks this first. Two properties are load-bearing and are why the order of the
-/// arms matters:
-///
-/// * **An edit is the user's to keep.** A file whose contents do not match what
-///   we recorded is `Preserve`, whatever we would rather write.
-/// * **A deletion is remembered.** A file we wrote and that is now gone is
-///   tombstoned once and left alone forever after, so removing a mod is a way
-///   to remove it rather than a thing delivery undoes on next launch.
-///
-/// `Settle` is tested before `Update` so a byte-identical file is adopted without
-/// a write — including one the user deleted and then put back unchanged, which is
-/// theirs by the first rule and ours by the second, and is resolved in favour of
-/// adopting it.
 pub(crate) fn decide(existing: Option<&str>, delivered: Delivered<'_>, payload: &str) -> Action {
     match (existing, delivered) {
         // Never delivered here: a first run, or a file new in this release.
@@ -1029,8 +980,6 @@ mod tests {
 
         #[test]
         fn nothing_there_but_we_wrote_it_once_is_tombstoned() {
-            // The user deleted it. Recorded so the next run leaves it alone —
-            // this is the arm that makes deleting a mod a way to remove it.
             let recorded = digest(OLD);
             assert_eq!(
                 decide(None, Delivered::Digest(&recorded), NEW),
@@ -1136,12 +1085,6 @@ mod tests {
         assert_eq!(relative_to(dir, "/home/me/.config/thurbox/ui/"), None);
     }
 
-    /// The directory tells whoever edits it how to, under the name their tool reads.
-    ///
-    /// `README.md` is what a person opens; `AGENTS.md` is what a coding CLI loads as
-    /// context on its own. Without the second, "install this mod" reads as a
-    /// package-manager request — which is the specific confusion it exists to
-    /// prevent, so the instruction that prevents it is pinned here.
     #[test]
     fn the_interface_ships_its_own_guidance_for_whoever_edits_it() {
         let file = |name: &str| -> &str {
@@ -1293,8 +1236,6 @@ mod tests {
 
     #[test]
     fn a_deleted_file_stays_deleted() {
-        // The whole point of the manifest's third state: deleting a mod is
-        // how you remove it, so delivery must not undo that on the next start.
         let dir = tempfile::tempdir().expect("tempdir");
         materialize(dir.path());
         let path = dir.path().join("mods/10_sessions.lua");
@@ -1675,11 +1616,6 @@ mod tests {
         assert!(dir.0.join("layout.lua").exists(), "still a whole interface");
     }
 
-    /// Every key the interface stores — trust, disabled, rebindings — is
-    /// `ui_dir.join(file)` compared verbatim, so the directory has to be an
-    /// absolute identity. A relative `ui` is shared by every checkout on the
-    /// machine, which made trusting a mod in one worktree grant `run` to a
-    /// same-named file in another.
     #[test]
     fn the_resolved_directory_is_absolute_and_still_the_one_that_was_asked_for() {
         let dir = tempfile::tempdir().expect("tempdir");

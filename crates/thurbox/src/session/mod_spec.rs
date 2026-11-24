@@ -496,10 +496,6 @@ impl PackageManifest {
                 return Err(format!("the pane {} belongs in mods/", pane.path));
             }
         }
-        // Two files landing on one path cannot both be honoured, and letting the
-        // last win would make what is installed depend on the order the manifest
-        // happens to list them in — the rule `ModSpec::parse` already applies to
-        // two spec entries, now reachable within one package.
         let mut seen = BTreeSet::new();
         for file in self.files() {
             if !seen.insert(file.path.as_str()) {

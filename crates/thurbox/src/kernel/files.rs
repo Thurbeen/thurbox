@@ -116,12 +116,6 @@ pub fn list(root: &Path, relative: &str) -> Result<Vec<Entry>, String> {
             break;
         }
         let name = item.file_name().to_string_lossy().to_string();
-        // `DirEntry::file_type` describes the link rather than its target, so a
-        // link to a directory was handed to a mod as a file while `list` and
-        // `read` through that same path both treated it as the directory it
-        // points at. Gating on the link keeps the cost where the question is:
-        // an ordinary entry in a node_modules-sized listing pays nothing it
-        // did not pay before.
         let is_dir = match item.file_type() {
             Ok(kind) if kind.is_symlink() => links_to_directory_inside(&real_root, &item.path()),
             Ok(kind) => kind.is_dir(),
@@ -133,14 +127,6 @@ pub fn list(root: &Path, relative: &str) -> Result<Vec<Entry>, String> {
     Ok(entries)
 }
 
-/// Whether `link` resolves to a directory that is still inside `root`.
-///
-/// A link pointing out of the served tree answers `false` rather than its
-/// target's real type. `resolve` refuses to traverse such a link, so answering
-/// it here would hand a mod the one thing the boundary exists to withhold —
-/// whether some path outside the session is a directory. A target that cannot
-/// be resolved at all, dangling or a loop, is not a directory either, and
-/// nothing can expand it.
 fn links_to_directory_inside(root: &Path, link: &Path) -> bool {
     match link.canonicalize() {
         Ok(target) => target.starts_with(root) && target.is_dir(),
@@ -281,9 +267,6 @@ mod tests {
 
     #[test]
     fn a_symlink_out_of_the_directory_does_not_report_its_target() {
-        // The target is a directory, and the listing must not say so: `resolve`
-        // refuses to open this path, and the flag is the only channel a mod
-        // has, so answering it would leak what the boundary withholds.
         #[cfg(unix)]
         {
             let dir = fixture();

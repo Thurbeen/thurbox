@@ -33,28 +33,6 @@ use super::{next_event, to_press};
 use crate::{App, INPUT_FAILURE_LIMIT};
 
 impl App {
-    /// Drain EVERY pending event, not one per iteration, and dispatch each.
-    ///
-    /// Reading one event per 10ms poll cannot keep up with a mouse: a single drag
-    /// emits events far faster than 100/s, so the queue grew without bound. That
-    /// is felt as an unresponsive mouse, and the backlog outlives the process —
-    /// the leftover reports are what printed `\x1b[<35;92;31M` into the terminal
-    /// afterwards.
-    ///
-    /// The batch is also what `thurbox.*` is published for: once, before the first
-    /// event that runs Lua, rather than once per event. A handler has to read
-    /// something current, and almost nothing between two events of one batch can
-    /// change what it would say — the snapshot is refreshed at the top of the
-    /// iteration, and a command a handler queues is drained on the next one. Per
-    /// event, a held-down key paid for the whole publish (every session's links,
-    /// the interface inventory, the mod lock) on every repeat.
-    ///
-    /// The one exception is the mouse text selection: a drag mutates it mid-batch,
-    /// and a chord queued behind the drag must read the finished selection, not
-    /// the one the batch published at its start. So a left drag patches just the
-    /// published `selection` scalar when its text moves — not a full republish,
-    /// which would rerun per crossed cell. See the mouse arm,
-    /// `refresh_selection_text` and `LuaHost::set_published_selection`.
     pub(crate) fn drain_input(&mut self, input_failures: &mut u32) -> Result<(), Box<dyn Error>> {
         let mut published = false;
         let mut waited = false;
@@ -318,12 +296,6 @@ impl App {
         false
     }
 
-    /// The reserved minimum: focus, reload and quit always work, even if a
-    /// mod consumes every key it is offered.
-    ///
-    /// Quit is Ctrl+Q, not Ctrl+C: with a live terminal attached, Ctrl+C has to
-    /// reach the agent so a turn can be interrupted. v1 reserves the same chord
-    /// for the same reason.
     pub(crate) fn dispatch_reserved(&mut self, key: &KeyEvent) -> bool {
         let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
         let action = match key.code {
@@ -359,25 +331,11 @@ impl App {
         true
     }
 
-    /// The action this chord fires **if the kernel itself owns it** — a system
-    /// modal, or copy and paste. `None` for a mod's chord or an unbound one.
-    ///
-    /// The owner check is the point: nothing stops a mod declaring the action
-    /// id `kernel.copy`, and running the kernel's copy for it would be a pane
-    /// taking a capability by naming it. Resolved with nothing focused, because
-    /// the kernel's chords are all global — a mod-scoped claim does not
-    /// outrank a global one.
     pub(crate) fn kernel_action(&self, press: &KeyPress) -> Option<String> {
         let binding = self.registry.resolve(press, None)?;
         (binding.owner == thurbox::kernel::modals::OWNER).then(|| binding.action.clone())
     }
 
-    /// Copy and paste, run ahead of a float's exclusive grab and of every mod
-    /// binding — which is where the literal `Ctrl+C`/`Ctrl+V` arms used to sit.
-    ///
-    /// They "must work from any pane", and a pane that grabs every key would
-    /// otherwise swallow them. Any other kernel action falls through: this step
-    /// claims only the two it knows.
     pub(crate) fn dispatch_clipboard(&mut self, action: Option<&str>, key: &KeyEvent) -> bool {
         let Some(action) = action else {
             return false;
@@ -472,12 +430,6 @@ impl App {
         true
     }
 
-    /// A declared key: the registry resolves the chord to an action and the
-    /// mod that owns it.
-    ///
-    /// This is the path that can be rebound, conflict-checked and listed in
-    /// help. Falls through (`false`) when nothing claimed the chord — including
-    /// when it was deferred to the agent.
     pub(crate) fn dispatch_declared(
         &mut self,
         press: &KeyPress,
@@ -523,9 +475,6 @@ impl App {
         if defer_to_agent {
             return false;
         }
-        // A chord the kernel declared for itself opens a system modal; there is
-        // no mod to hand it to. (The kernel's other declarations — copy and
-        // paste — are resolved before a float can grab them, above.)
         if owner == thurbox::kernel::modals::OWNER {
             if let Some(kind) = ModalKind::from_action(&action) {
                 self.toggle_modal(kind);
@@ -535,9 +484,6 @@ impl App {
         let Some(index) = self.host.index_of(&owner) else {
             return false;
         };
-        // A binding that asked for its release is told which half this is, and
-        // the key is remembered only once the mod took the press — so a
-        // release can never reach a mod that did not act on the press.
         let handled = if release {
             self.host
                 .on_action_with_args(index, &action, &[("event", "press")])
@@ -559,8 +505,6 @@ impl App {
         }
     }
 
-    /// The second half of a hold: the mod that took the press is told the
-    /// key went up, wherever focus moved meanwhile and whatever is open.
     fn deliver_release(&mut self, mod_name: &str, action: &str) {
         self.dirty = true;
         let Some(index) = self.host.index_of(mod_name) else {
@@ -574,7 +518,6 @@ impl App {
         }
     }
 
-    /// Raw keys: the focused mod, then the non-focusable listeners.
     pub(crate) fn dispatch_raw(&mut self, press: &KeyPress) -> bool {
         let focusable = self.host.focusable();
         let mut order: Vec<usize> = focusable.get(self.focus).copied().into_iter().collect();
@@ -590,12 +533,6 @@ impl App {
         false
     }
 
-    /// Nothing claimed it. If the focused mod asked for raw session input and
-    /// its surface names a live session, the key belongs to the agent.
-    ///
-    /// The kernel does not know which mod is "the terminal": it knows one
-    /// declared `input = "session"` and which session the tree it returned
-    /// pointed at. Replace that mod and this still works.
     pub(crate) fn dispatch_session_input(&mut self, key: &KeyEvent) -> bool {
         if !self.focused_wants_session_input() {
             return false;
@@ -666,20 +603,12 @@ impl App {
         self.dirty = true;
     }
 
-    /// `F10`, and the palette's reload entry: rebuild from disk and re-collect
-    /// what the rebuilt mods declare.
     pub(crate) fn reload_by_key(&mut self) {
         self.reload_interface(super::events::ReloadReason::Key);
         self.collect_declarations();
         self.clamp_focus();
     }
 
-    /// Run an action the palette chose, exactly as its chord would have.
-    ///
-    /// A kernel action goes to the kernel's own handler; a mod's goes through
-    /// `host.on_action` whether or not that mod is focused, which is what a
-    /// global chord already does. The modal has closed by the time this runs, so
-    /// the action sees the focus state a key press would have seen.
     pub(crate) fn run_action(&mut self, mod_name: &str, action: &str) {
         self.dirty = true;
         if !self
@@ -731,11 +660,6 @@ impl App {
         }
     }
 
-    /// Offer a keystroke to one specific mod: its declared action first, then
-    /// its raw handler.
-    ///
-    /// Unlike `on_key` this never walks the focus order — the caller has already
-    /// decided who should get it (the pane under the pointer, or a float).
     pub(crate) fn dispatch_key_to(&mut self, index: usize, key: &KeyEvent) {
         let press = to_press(key);
         let Some(mod_name) = self.host.mods.get(index).map(|p| p.name.clone()) else {
@@ -946,12 +870,6 @@ impl App {
         self.modals.is_open() || self.grabbed.is_some() || self.focused_typing
     }
 
-    /// Send `bytes` to a surface, routed by what the pane is **showing**.
-    ///
-    /// A pane showing a mod's program talks to that program and nothing
-    /// else; everything else goes to the session's terminal. The one rule, so a
-    /// paste cannot land somewhere a keystroke would not — and a pane with
-    /// nothing behind it delivers nothing, since neither send finds a target.
     fn send_to_surface(&mut self, surface: &str, bytes: Vec<u8>) -> bool {
         let echo = self.expect_echo(surface);
         let delivered = match self.terminals.program_key(surface).cloned() {
@@ -1287,8 +1205,10 @@ pub(crate) fn sort_key(
 pub(crate) enum Route {
     /// Dispatch it as a press, through the coalescer and `on_key`.
     Press(KeyEvent),
-    /// Tell `owner` that `action`'s key was let go.
-    Release { owner: String, action: String },
+    Release {
+        owner: String,
+        action: String,
+    },
     /// Nothing receives it.
     Drop,
 }
@@ -1330,8 +1250,6 @@ impl Holds {
         }
     }
 
-    /// The mod and action a release ends a hold for, closing that hold —
-    /// `None` for a release nobody holds, which then goes nowhere.
     pub(crate) fn release_target(&mut self, key: &KeyEvent) -> Option<(String, String)> {
         match self.route(key, false) {
             Route::Release { owner, action } => Some((owner, action)),
@@ -1339,8 +1257,6 @@ impl Holds {
         }
     }
 
-    /// Remember that `owner` took the press of `code` with `modifiers` for
-    /// `action`. Only where a release can come: elsewhere a hold would never end.
     pub(crate) fn hold(
         &mut self,
         code: KeyCode,
@@ -1356,7 +1272,6 @@ impl Holds {
         self.held.push((code, modifiers, owner, action));
     }
 
-    /// Forget every hold: the mods that took the presses were rebuilt.
     pub(crate) fn clear(&mut self) {
         self.held.clear();
     }

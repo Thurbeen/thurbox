@@ -17,7 +17,6 @@ use thurbox::kernel::snapshot::{SessionRow, Snapshot};
 use thurbox::kernel::theme::Themes;
 use thurbox::session::SessionState;
 
-/// An interface directory holding the given mods, each `(file, source)`.
 fn interface(mods: &[(&str, &str)]) -> tempfile::TempDir {
     let dir = tempfile::tempdir().expect("tempdir");
     let mods_dir = dir.path().join("mods");
@@ -111,8 +110,6 @@ fn status_event(session: &str, from: &str, to: &str) -> Event {
         .with("to", Some(to))
 }
 
-/// A mod that records every event it receives in the shared `store`, so a
-/// test can read what it saw without rendering it.
 const RECORDER: &str = r#"
 return {
   name = "recorder", slot = "a",
@@ -175,7 +172,6 @@ fn a_subscription_to_a_name_the_kernel_does_not_emit_refuses_to_load() {
         error.contains("session.status"),
         "the message should list what was available: {error}"
     );
-    // The `user.` form loads, so mods can talk to each other by name.
     let dir = interface(&[(
         "10_user.lua",
         r#"return {
@@ -305,14 +301,12 @@ fn a_mod_emits_a_user_event_and_another_receives_it_with_the_source() {
     else {
         panic!("expected an emit, got {issued:?}");
     };
-    // Owner is stamped from the executing mod, never read from Lua.
     assert_eq!(owner, "mods/10_sender.lua");
     assert_eq!(name, "user.refresh");
     assert!(payload.contains(&("scope".to_string(), Field::Text("x".into()))));
     assert!(payload.contains(&("count".to_string(), Field::Number(2.0))));
     assert!(payload.contains(&("urgent".to_string(), Field::Bool(true))));
 
-    // As the loop delivers it: the source is the emitting mod's NAME.
     let source = host.name_of_path(&owner).expect("the owner is loaded");
     let mut event = Event::new(name);
     event.payload = payload;
@@ -348,7 +342,6 @@ fn a_mod_cannot_emit_a_kernel_event() {
 
 #[test]
 fn emit_is_reachable_only_through_command() {
-    // No new global: the event bus rides the one write channel mods have.
     let (_dir, host) = host_of(&[(
         "10_probe.lua",
         r#"return {
@@ -394,7 +387,6 @@ fn what_the_deriver_says_changed_is_what_a_subscriber_hears() {
         sessions: vec![row("a", "idle")],
         ..Snapshot::default()
     };
-    // Seeds: the rows that existed before the mod did are not news.
     for event in deriver.observe(&first, 1) {
         host.dispatch_event(&event);
     }

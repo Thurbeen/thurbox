@@ -137,15 +137,6 @@ fn an_unstyled_run_stays_unstyled() {
     assert_eq!(round_trip(&node), node);
 }
 
-/// The rule applied to every field a node carries, not only a text run's style.
-///
-/// `an_untouched_tree_comes_back_unchanged` above proves the rule for the field
-/// that was fixed; these are the ones that were still being dropped, each of which
-/// makes an identity decorator change the pane it decorated: a framed box lost its
-/// border colour, a sized child lost the `min`/`max` that keep it on screen, a
-/// scrolled paragraph jumped back to the top, an input lost its colour, and a
-/// mod-fed surface — where a review diff's syntax colouring lives — was
-/// flattened to plain text.
 #[test]
 fn every_field_survives_the_trip_out_and_back() {
     use thurbox::kernel::node::{

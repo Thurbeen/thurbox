@@ -30,11 +30,6 @@ use crate::{
 };
 
 impl App {
-    /// Demand-driven paint: when something changed, or when the forced-redraw
-    /// floor elapsed.
-    ///
-    /// `draw` diffs each mod's tree and clears `dirty` when every one matched,
-    /// so an idle screen settles at the floor.
     pub(crate) fn paint_if_due(
         &mut self,
         terminal: &mut DefaultTerminal,
@@ -68,10 +63,6 @@ impl App {
                 return Ok(());
             }
         }
-        // Published HERE rather than every iteration: a mod only reads
-        // `thurbox.*` while it renders, so rebuilding those tables on a tick
-        // that paints nothing is pure waste. At `drain_input`'s 10ms poll that
-        // was 100 rebuilds a second to feed a screen that redraws four times.
         let timing = self.perf_timing_active();
         if timing {
             self.host
@@ -268,7 +259,6 @@ impl App {
         // would include this frame while `note_frame` has not counted it yet.
         let mod_report = self.hud.then(|| self.host.mod_report());
 
-        // 1. The arrangement decides where slots go — before any mod runs.
         let region = match self.host.arrangement(area.width, area.height) {
             Ok(region) => {
                 self.layout_error = None;
@@ -276,8 +266,6 @@ impl App {
             }
             Err(e) => {
                 self.layout_error = Some(e);
-                // A broken arrangement must not take the mods with it, so
-                // fall back to giving everything to the centre.
                 std::rc::Rc::new(thurbox::kernel::layout::Region {
                     slot: Some("center".to_string()),
                     ..Default::default()
@@ -306,15 +294,6 @@ impl App {
         // and before the guard below, which would otherwise read the pane as one
         // focus cannot rest on and walk straight off it.
         self.apply_pending_focus();
-        // Closing the column you were standing in must not strand focus on it.
-        // Corrected here rather than at key time because the toggle only shows
-        // up in the arrangement on the frame AFTER it is flipped.
-        //
-        // Asked as `can_focus`, not `is_drawn`, and the difference is load-
-        // bearing: this runs BEFORE the switch slot below records its selection,
-        // so a pane focused by its own opening chord is still an alternate at
-        // this point. Judging it drawn would move focus off it every time —
-        // which is exactly what made the mods pane unreachable by `F11`.
         let focusable_now = self.host.focusable();
         if focusable_now
             .get(self.focus)
@@ -323,25 +302,14 @@ impl App {
             self.cycle_focus(1);
         }
 
-        // 2. Each slot divides its rect among its mods, by their DECLARED
-        //    sizes — which is why this can happen before rendering.
         let focusable = self.host.focusable();
         let focused_mod = focusable.get(self.focus).copied();
 
         self.draw_slots(frame, &placed, focused_mod);
 
-        // 2b. Floats, above the arrangement. A mod only floats on the
-        //     frames it returns a float node, so a modal opens and closes with
-        //     no separate channel for the kernel to keep in sync.
         self.draw_floats(frame, area);
         self.diffs_shown = self.host.take_diffs_read();
 
-        // System modals, above the arrangement and above every mod float —
-        // they are not in the layout, so nothing below could shrink them and
-        // they shrink nothing. Deliberately NOT marked as a change: a modal's
-        // content only moves when a key arrives, and that already marks the
-        // screen dirty, so an open modal settles like everything else instead
-        // of repainting sixty times a second.
         if self.modals.is_open() {
             // Given the area WITHOUT the chrome bands, for two reasons that are
             // really one: a modal dims everything it is handed
@@ -456,17 +424,6 @@ impl App {
         // something does or the floor elapses.
         self.dirty = self.changed_this_frame;
 
-        // 3. A reload failure outranks anything a stale-but-working mod says.
-        //    The floor comes last of the three: while it is up the host is the
-        //    bundled copy and reports no error of its own, so without it the
-        //    interface would silently be something other than what the user
-        //    edited.
-        //
-        //    Not over a system modal: the settings modal's Interface tab is how a
-        //    broken interface is fixed, and it names the failing file and prints
-        //    this same error itself. Painted over it, the panel hid the recovery
-        //    tool behind the fault it was opened to fix. Closing the modal brings
-        //    the panel back.
         if let Some(error) = self
             .host
             .error
@@ -490,8 +447,6 @@ impl App {
         }
     }
 
-    /// Step 2: each placed slot divides its rect among its mods, by their
-    /// DECLARED sizes — which is why this can happen before rendering.
     pub(crate) fn draw_slots(
         &mut self,
         frame: &mut Frame,
@@ -499,10 +454,6 @@ impl App {
         focused_mod: Option<usize>,
     ) {
         for slot in placed {
-            // A band is a slot the KERNEL occupies: the arrangement names and
-            // places it exactly as it does a pane's region, and the contents come
-            // from here rather than from any mod. Drawing one runs no Lua, so
-            // no mod can break it.
             if let Some(band) = Band::from_slot(&slot.slot) {
                 self.render_band(frame, slot.rect, band);
                 continue;
@@ -521,9 +472,6 @@ impl App {
         }
     }
 
-    /// One visible occupant; the rest are alternatives waiting to be selected.
-    ///
-    /// The focused mod wins, so tabbing into a pane brings it forward.
     pub(crate) fn draw_switch_slot(
         &mut self,
         frame: &mut Frame,
@@ -568,10 +516,6 @@ impl App {
         }
     }
 
-    /// Step 2b: floats, above the arrangement.
-    ///
-    /// A mod only floats on the frames it returns a float node, so a modal
-    /// opens and closes with no separate channel for the kernel to keep in sync.
     pub(crate) fn draw_floats(&mut self, frame: &mut Frame, area: Rect) {
         self.grabbed = None;
         self.drawn_floats.clear();
@@ -613,8 +557,6 @@ impl App {
             // click that misses every button still lands on the modal rather than
             // on the pane it covers.
             self.push_targets(index, Some(rect), hits);
-            // The topmost float takes input; later mods win, matching the
-            // order they are painted in.
             self.grabbed = Some(index);
             // Settled like a pane, by comparing what it drew — not marked changed
             // for simply being open. Unconditional, an open float held `dirty` set
@@ -640,11 +582,6 @@ impl App {
         }
     }
 
-    /// Render one mod, painting an error panel in ITS OWN rect on failure.
-    ///
-    /// This is the isolation rule made concrete: a mod that throws costs its
-    /// own pane and nothing else. Its neighbours keep drawing, and its state
-    /// survives for when the file is fixed.
     pub(crate) fn draw_mod(&mut self, frame: &mut Frame, index: usize, rect: Rect, focused: bool) {
         let ctx = RenderContext {
             width: rect.width,
@@ -666,20 +603,11 @@ impl App {
             Err(e) => {
                 paint::render_error(frame, rect, &e.owner, &e.message);
                 self.errors.push(e);
-                // The pane's own rect, though it drew no rows to record. A
-                // press matching no target at all falls through to
-                // `begin_selection`, so without this a throwing mod costs
-                // not just its pane but the pointer over it — clicks there
-                // silently paint a text selection across the error panel
-                // instead of focusing it. Isolation is the rule everywhere
-                // else here; this is its mouse half.
                 let fallback = self.host.mods[index].focusable.then_some(rect);
                 self.push_targets(index, fallback, Vec::new());
                 return;
             }
         };
-        // A mod that floats is drawn above the arrangement instead, so it
-        // takes no room in its slot.
         if rendered.float.is_some() {
             return;
         }
@@ -687,10 +615,6 @@ impl App {
             // The session, for everything that is about sessions — the focus
             // label, the info the bands show, `Ctrl+O`.
             self.focused_session = rendered.node.first_session_surface().map(str::to_string);
-            // And whatever this pane is actually showing, which is where raw
-            // input goes. `input = "session"` never meant "the selected
-            // session"; it meant "what this pane is showing", and a mod's own
-            // program is now one of the things that can be.
             self.focused_surface = rendered.node.first_live_surface().map(str::to_string);
             self.focused_typing = rendered.node.has_focused_input();
         }
@@ -740,13 +664,6 @@ impl App {
         self.push_targets(index, fallback, hits);
     }
 
-    /// Hold a mod in its failed state for [`FAILURE_HOLD`] after its last
-    /// throw, so a render that succeeds in the meantime answers with the held
-    /// failure instead of its tree.
-    ///
-    /// Only the start and the end of a failure are changes; a failure that
-    /// repeats on every tick moves nothing on screen. A float has no rect to
-    /// show its failure in, so its start goes to the message band.
     pub(crate) fn hold_failure(
         &mut self,
         index: usize,
@@ -784,12 +701,6 @@ impl App {
         }
     }
 
-    /// Let every decorator of this mod's slot restyle its tree.
-    ///
-    /// A decorator that fails costs its decoration, not the pane — so the
-    /// original is what gets drawn. `None` means no decorator claims the slot,
-    /// which is nearly every pane on nearly every frame: the caller keeps the
-    /// shared tree instead of paying a clone for a restyle that never runs.
     pub(crate) fn decorate_tree(
         &mut self,
         index: usize,
@@ -815,9 +726,6 @@ impl App {
 
     /// Place a float in `area`: centred, or opened at its `at` point.
     pub(crate) fn float_rect(area: Rect, float: thurbox::kernel::host::Float) -> Rect {
-        // Cells when the mod knows them, else a share of the screen. A modal
-        // whose height follows its content — v1's pickers, all of them — can only
-        // say so in cells; clamping keeps an over-ambitious one on screen.
         let width = clamp_span(
             float
                 .cols
@@ -889,11 +797,6 @@ impl App {
         }
     }
 
-    /// Draw one chrome band into the rect the arrangement gave it.
-    ///
-    /// Every value is read from state the kernel already holds — the version, the
-    /// theme, the counts, the focused surface, the message — which is what makes
-    /// "a band cannot be broken by a mod" true rather than aspirational.
     pub(crate) fn render_band(&mut self, frame: &mut Frame, rect: Rect, band: Band) {
         let snapshot = self.snapshots.current();
         let selected = self.host.shared_string("selected");
@@ -957,15 +860,6 @@ impl App {
         }
         let hits = bands::render(frame, rect, band, &state);
         self.band_targets.extend(hits);
-        // A band is chrome the kernel paints directly, so there is no tree to
-        // diff the way a mod's is — and marking it changed for having been
-        // *drawn* is not the same question. It held `dirty` set after every
-        // single frame, which defeated the demand-driven redraw entirely: the
-        // loop never settled to the 250ms floor and repainted at the frame cap
-        // forever, on an idle screen with no sessions at all.
-        //
-        // The cells it just painted are the honest analog of a mod's tree —
-        // exact, and immune to a new `BandState` field being forgotten here.
         let painted = read_cells(frame, rect);
         let entry = (rect, painted);
         if self.last_bands.get(&band) != Some(&entry) {
@@ -1052,12 +946,6 @@ impl App {
         stamp.is_some() && previous != stamp
     }
 
-    /// Record one mod's hitboxes, its own rect first.
-    ///
-    /// Order is the whole contract: the pane fallback goes in before the tree
-    /// so that scanning in reverse finds an identified node first and the
-    /// fallback only when nothing inside matched. v1 spells the same rule the
-    /// other way round — specific targets recorded first, first match wins.
     pub(crate) fn push_targets(
         &mut self,
         mod_index: usize,

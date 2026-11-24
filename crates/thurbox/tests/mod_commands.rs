@@ -10,7 +10,6 @@
 use thurbox::kernel::host::{Capability, LuaHost, RenderContext};
 use thurbox::kernel::runs::{Ask, Run, Target};
 
-/// Build an interface out of `mods`, each `(file name, source)`.
 fn interface(mods: &[(&str, &str)]) -> (tempfile::TempDir, std::path::PathBuf) {
     let home = tempfile::tempdir().expect("tempdir");
     let ui = home.path().join("ui");
@@ -141,12 +140,6 @@ fn a_declared_but_untrusted_mod_has_no_run_either() {
     );
 }
 
-/// A mod chunk's `_ENV` *is* the globals table, so a capability parked there
-/// under an internal name is granted to everyone. `run` used to be: the
-/// implementation sat in globals as `__run_impl`, and binding the name `run` per
-/// call only decided what the *published* name pointed at. An untrusted mod
-/// declaring nothing could call the other name and get a program run with the
-/// user's authority.
 #[test]
 fn an_untrusted_mod_cannot_reach_run_under_another_name() {
     let sneak = r#"return {
@@ -194,7 +187,6 @@ fn a_trusted_mod_may_run_and_the_ask_is_attributed_to_it() {
 
 #[test]
 fn trusting_one_mod_does_not_trust_another() {
-    // The whole reason trust is per mod rather than a switch.
     let (_home, ui) = interface(&[
         ("91_yes.lua", &asker("yes", "k", true)),
         ("92_no.lua", &asker("no", "k", true)),
@@ -321,11 +313,6 @@ fn a_mod_reads_its_own_answers_and_no_one_elses() {
     );
 }
 
-/// A pane that prints whatever its `mine` run returned.
-///
-/// Declares the capability because only a mod that can ASK can have answers —
-/// the kernel skips the whole per-call publish for one that declared nothing,
-/// since it could never have any.
 fn reader(name: &str) -> String {
     format!(
         r#"return {{
@@ -731,8 +718,6 @@ fn each_capability_says_what_it_would_let_a_file_do() {
     );
 }
 
-/// Deliver `contents` as version `version` of a package, the way `mod update`
-/// does, and return the lock entry's `src@version`.
 fn deliver_package(ui: &std::path::Path, file: &str, version: &str, contents: &str) -> String {
     use thurbox::kernel::packages;
     use thurbox::session::mod_spec::ModEntry;
@@ -1383,9 +1368,6 @@ end }"#;
 
 #[test]
 fn a_finalizer_reads_only_its_own_panes_answers() {
-    // A finalizer runs whenever the collector gets to it — inside another
-    // pane's call. It must still see its own pane's world, never the one being
-    // drawn: answers live in each mod's own environment.
     let plain = r#"local function litter()
   for _ = 1, 200 do
     setmetatable({}, { __gc = function()
@@ -1581,9 +1563,6 @@ end }"#;
 
 #[test]
 fn an_untrusted_pane_may_not_reach_an_agent_through_another_verb() {
-    // The gate used to name four verbs and pass every other, and these destroy
-    // something or reach out too: `mod` rewrites or deletes a file of the
-    // interface, and `open` sends whatever the URL carries to the network.
     let source = r#"return { name = "driver", slot = "sessions", render = function()
   command("plugin", { file = "mods/10_sessions.lua", action = "remove" })
   command("open", { text = "https://example.invalid/?q=secret" })
@@ -1845,9 +1824,6 @@ fn a_chained_action_still_runs_for_the_pane_that_first_asked() {
 
 #[test]
 fn a_trusted_pane_cannot_lend_its_grant_to_a_handler_it_asks() {
-    // The other direction of the same deputy: a request is allowed only with
-    // what every mod in its chain holds, so a trusted pane asking an
-    // untrusted handler does not give that handler its `sessions`.
     let untrusted = GRANTEE
         .replace(r#"name = "grantee""#, r#"name = "untrusted""#)
         .replace("g.send", "u.send");

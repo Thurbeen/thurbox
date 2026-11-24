@@ -332,7 +332,6 @@ fn publish_with(host: &thurbox::kernel::host::LuaHost, settings: &Settings) {
     .expect("publish");
 }
 
-/// Send a chord to a mod the way the loop does.
 fn press(host: &thurbox::kernel::host::LuaHost, mod_name: &str, chord: &str) {
     let index = host
         .index_of(mod_name)
@@ -497,8 +496,6 @@ fn the_update_switches_are_editable_and_marked_as_needing_a_restart() {
 
 #[test]
 fn a_raised_column_threshold_leaves_only_the_central_pane() {
-    // The arrangement runs before any mod, so it reads the threshold from what
-    // the kernel published rather than from a constant compiled into it.
     let host = host();
     let settings = Settings {
         two_panel_min_cols: 200,

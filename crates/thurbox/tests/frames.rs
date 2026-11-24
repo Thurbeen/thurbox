@@ -631,8 +631,6 @@ fn a_selected_host_row_is_one_bar_rule_included() {
 
 // --- node props -------------------------------------------------------------
 
-/// Convert a Lua node table the way a mod's return value is converted, then
-/// paint it alone into a fresh buffer.
 fn paint_lua_node(source: &str, width: u16, height: u16) -> Buffer {
     let lua = mlua::Lua::new();
     let value: mlua::Value = lua.load(source).eval().expect("the table evaluates");

@@ -138,8 +138,6 @@ fn index_of(host: &LuaHost, name: &str) -> usize {
         .unwrap_or_else(|| panic!("no plugin named {name}"))
 }
 
-/// Render one pane and paint it, the way `draw_mod` does — the two halves
-/// that can each fail on a size nobody tried.
 fn render_and_paint(host: &LuaHost, index: usize, width: u16, height: u16) {
     let node = host
         .render(index, ctx(width, height))
@@ -155,10 +153,6 @@ fn render_and_paint(host: &LuaHost, index: usize, width: u16, height: u16) {
 
 #[test]
 fn every_bundled_pane_renders_and_paints_at_any_size() {
-    // The size a pane is handed is the arrangement's business, not the
-    // mod's, so every bundled pane must render and paint whatever it gets,
-    // down to a single cell. The floats are included: a float's rect is
-    // clamped to the screen, which on a tiny one is a rect nobody sized for.
     let host = host();
     publish(&host, sample());
     let panes = host.mods.len();
@@ -252,9 +246,6 @@ fn any_key() -> impl Strategy<Value = KeyPress> {
     })
 }
 
-/// Press a key the way the loop does: a declared chord resolves through the
-/// registry to `on_action` on the mod that claimed it, anything else goes
-/// to the focused mod's `on_key`. Returns the error, if either raised one.
 fn press(
     host: &LuaHost,
     registry: &Registry,

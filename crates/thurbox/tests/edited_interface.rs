@@ -399,9 +399,6 @@ fn lib_still_exports_every_name_it_ever_published() {
 
 #[test]
 fn restoring_an_edited_layout_keeps_the_edit_as_a_backup() {
-    // Restore is a user's act (settings → Interface → `r`), but a pane's
-    // `command("mod", …)` can ask for one too, so it may replace the edit
-    // but never make it unrecoverable.
     let (release, edited) = RELEASES[0];
     let dir = upgraded_edited_interface(release, edited);
     let backup = bundled::restore(dir.path(), "layout.lua").expect("restore");

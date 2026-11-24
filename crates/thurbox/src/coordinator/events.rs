@@ -37,7 +37,6 @@ pub(crate) enum ReloadReason {
     Watch,
     /// A switch or a trust change in the settings modal's Interface tab.
     Settings,
-    /// The mod VM filled up (`LuaHost::near_memory_limit`).
     Memory,
 }
 
@@ -64,9 +63,6 @@ pub(crate) struct Events {
     /// did: an emit from a depth-zero handler read as a root and cascaded
     /// unbounded.
     current: Option<u8>,
-    /// `(mod, event)` pairs already reported, so a handler that throws on
-    /// every `session.status` is reported once per event rather than per
-    /// delivery. Cleared on reload, since the mod was rebuilt.
     reported: std::collections::HashSet<(String, String)>,
     /// The program panes seen RUNNING on the last iteration, by surface id.
     ///
@@ -112,9 +108,6 @@ impl App {
         // batch — the same rule an input batch follows.
         self.republish();
         self.events.cascade_reported = false;
-        // Timed as an op like a keypress: a handler is mod Lua on the UI
-        // thread, and a slow one stalls the loop exactly as a slow key does.
-        // Only reached with something queued, so an idle loop pays no clock.
         self.time_op("event_dispatch", |app| {
             while let Some(event) = app.events.queue.pop_front() {
                 if event.depth > MAX_DEPTH {
@@ -193,15 +186,6 @@ impl App {
             }
         }
 
-        // Programs: which of a mod's own panes have ended since the last
-        // look. The kernel has always known — `has_exited` is an atomic the
-        // reader loop sets — but nothing published it, so a pane could neither
-        // say that its program had finished nor move on from it.
-        //
-        // Derived here rather than fired where the process is reaped because
-        // nothing reaps it: `start_program` replaces a finished slot lazily, the
-        // next time the mod asks. Two readings, because the live walk alone
-        // cannot see every ending — see [`program_endings`].
         let ended = program_endings(
             &mut self.events.programs,
             self.terminals.program_liveness(),
@@ -295,9 +279,6 @@ impl App {
         );
     }
 
-    /// A reload replaces every mod: what was queued for the old ones is
-    /// dropped, the deriver seeds again from the next snapshot, and the rebuilt
-    /// mods hear `interface.reloaded` first.
     pub(crate) fn note_reload(&mut self, reason: ReloadReason) {
         self.events.queue.clear();
         self.events.deriver.reset();
@@ -320,36 +301,6 @@ impl App {
     }
 }
 
-/// Which program panes ended since the last look, and what to remember for the
-/// next one.
-///
-/// `seen` is the memo of surfaces whose death would be news — panes known
-/// running, and panes this run spawned. It is updated in place.
-///
-/// The live walk (`liveness`) is what is held right now: a key that reports
-/// `has_exited` and is in the memo is the ordinary transition. It cannot see
-/// two things, and `transitions` — the kernel's ordered log of what happened to
-/// the slots since the last drain — carries both:
-///
-/// - **`Replaced`** — an ending whose slot is already gone. The loop applies
-///   commands before it derives, so a mod asking to restart on the frame
-///   after its program died hands this walk a *live* pane under the same key.
-/// - **`Started`** — a pane spawned here. Without it the memo is the only
-///   evidence a pane ever ran, and a program that dies inside one iteration —
-///   a bad file, a missing binary inside a wrapper, a program that prints usage
-///   and exits — was never in it, so its ending was dropped by the very gate
-///   that exists to ignore *adopted* corpses from a previous run.
-///
-/// Walked in order, and that is what keeps one death one event: a `Replaced`
-/// consumes the memo entry it reports, so the same death cannot be reported
-/// again by a restart that follows it, and a `Started` after it vouches only
-/// for the pane it spawned. Read as two unordered sets instead, a restart on a
-/// frame *after* the ending was announced re-seeds the memo and the
-/// already-told death is told a second time.
-///
-/// A key can still legitimately appear twice: a pane that died, was restarted,
-/// and died again inside one iteration is two programs ending, and a mod
-/// that restarts on the event owes itself both.
 fn program_endings(
     seen: &mut std::collections::HashSet<String>,
     liveness: Vec<(ProgramKey, String, bool)>,
@@ -433,10 +384,6 @@ mod tests {
         );
     }
 
-    /// A corpse found on startup is not an ending. This is the rule the seeding
-    /// below has to leave standing: a window adopted from a previous run of the
-    /// interface holds a program that stopped while nothing was watching, and
-    /// announcing it would tell a mod its editor "just closed" at boot.
     #[test]
     fn a_corpse_adopted_from_a_previous_run_is_not_an_ending() {
         let mut memo = HashSet::new();
@@ -493,12 +440,6 @@ mod tests {
         );
     }
 
-    /// Two deaths in one iteration are two events, not one and not three.
-    ///
-    /// A pane died, was restarted, and the replacement died too before anything
-    /// looked. Both endings are real, and a mod that restarts its program on
-    /// the event owes itself both — but a single death must never arrive twice,
-    /// which is what draining against the old memo is for.
     #[test]
     fn a_pane_that_died_twice_in_one_iteration_ends_twice() {
         let editor = key("editor");
@@ -514,7 +455,6 @@ mod tests {
         assert_eq!(names(&ended), ["editor", "editor"]);
     }
 
-    /// Each ending is addressed to the mod whose pane it was.
     #[test]
     fn endings_carry_the_mod_that_owns_them() {
         let mine = ProgramKey::new("mods/90_files.lua", "editor");
@@ -538,13 +478,6 @@ mod tests {
         );
     }
 
-    /// A death announced once is not announced again when the pane is restarted
-    /// on a later frame.
-    ///
-    /// The restart records the slot it overwrites, and the spawn beside it puts
-    /// the surface back in the memo — so a drain that reads the memo *after* the
-    /// spawn finds the same death vouched for a second time. The mod that
-    /// restarts on the event then restarts twice for one process.
     #[test]
     fn an_ending_already_announced_is_not_announced_again_by_the_restart() {
         let editor = key("editor");

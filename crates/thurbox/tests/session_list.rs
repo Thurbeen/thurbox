@@ -733,8 +733,6 @@ fn creating(repo: &str) -> InFlight {
     }
 }
 
-/// The registry the kernel would build from what the bundled mods declare —
-/// separate so a test can override a setting before publishing it.
 fn registry_for(host: &LuaHost) -> Registry {
     let mut registry = Registry::default();
     let (bindings, settings) = host.declarations();
@@ -1171,7 +1169,6 @@ fn post_create(id: &str, name: &str) -> Event {
         .with("agent", Some("claude"))
 }
 
-/// The setting on, in the registry the mod reads its value back from.
 fn following_new_sessions(host: &LuaHost) -> Registry {
     let mut registry = registry_for(host);
     registry

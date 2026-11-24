@@ -42,8 +42,6 @@ use tmux_server::TmuxServer;
 const SOCKET: &str = "thurbox-failing-hook-e2e";
 const SESSION_ID: &str = "11111111-1111-4111-8111-111111111111";
 
-/// The hook an uninstalled mod leaves behind: a script that is no longer on
-/// the disk, which the server keeps calling for the rest of its life.
 const DEAD_HOOK: &str = "run-shell 'thurbox-uninstalled-plugin-script'";
 
 fn have_tmux() -> bool {

@@ -498,21 +498,10 @@ impl App {
         }
     }
 
-    /// Note that something a mod reads has moved.
-    ///
-    /// Separate from [`Self::note_data_change`] because the callers inside
-    /// `republish` are already *in* the frame that will show the new value:
-    /// marking it dirty there would buy a second repaint of what is about to be
-    /// painted anyway.
     pub(crate) fn note_published_change(&mut self) {
         self.data_epoch = self.data_epoch.wrapping_add(1);
     }
 
-    /// Note that published data moved, and that the screen owes a frame.
-    ///
-    /// The two go together everywhere this is used: something that changes what
-    /// a mod would read is also something worth repainting for, and worth
-    /// polling quickly again after.
     pub(crate) fn note_data_change(&mut self) {
         self.note_published_change();
         // A worker result or a row another process wrote is the answer to
@@ -539,16 +528,6 @@ impl App {
         if self.host.poll_files() {
             self.note_data_change();
         }
-        // The selected session's diff, computed on a worker. Requesting is
-        // idempotent, so calling it every frame costs nothing after the
-        // first.
-        //
-        // Driven by the *selection*, not by `focused_session`: the latter is
-        // re-derived each frame from the focused mod's session surface, so
-        // only a pane drawing a terminal ever asked for one. A pane that shows
-        // a diff draws no terminal by definition, and would never be handed the
-        // thing it exists to show. The selection is what "the session the user
-        // is looking at" actually means, and the session list publishes it.
         let wanted = self
             .host
             .shared_string("selected")
@@ -652,24 +631,11 @@ impl App {
         }
         self.settle_echo();
         self.collect_shells();
-        // Programs mods asked for. Served here because resolving a
-        // session to a directory and a machine is the loop's knowledge, not
-        // a store's — the store owns the bounds and the queue.
         self.serve_runs();
     }
 
-    /// Take what mods asked for, start what may start, and publish answers.
-    ///
-    /// Session directories/routes are snapshotted for the runner; host
-    /// resolution and execution stay on its worker. An unknown target is a
-    /// reported failure, never a fallback to another machine.
     pub(crate) fn serve_runs(&mut self) {
         let asked = self.host.drain_run_requests();
-        // Nothing asked now, nothing ever asked: every interface with no
-        // capability-using mod, i.e. almost all of them. Checked *before*
-        // `self.runner()`, which clones every session's id, cwd and backend into a
-        // fresh map behind a new `Arc` — the `||` below evaluates it whenever
-        // nothing was asked, so that was happening on every 10 ms iteration.
         if asked.is_empty() && self.runs.is_empty() {
             return;
         }
@@ -694,7 +660,6 @@ impl App {
         for event in self.runs.drain_events() {
             self.host.note_run(&event);
         }
-        // Answers, per mod, for the next render to read.
         let mut answers = thurbox::kernel::host::RunAnswers::new();
         for loaded in &self.host.mods {
             if loaded.capabilities.is_empty() {

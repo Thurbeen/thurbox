@@ -13,16 +13,6 @@ use ratatui::{DefaultTerminal, Frame};
 
 use thurbox::kernel::host::KeyPress;
 
-/// Can a link actually be opened here?
-///
-/// On a remote session or a bare tty there is no browser, and spawning an
-/// opener goes nowhere silently — which is why v1 learned to copy instead and
-/// say so. Published to mods so a pane can label its key "open" or "copy"
-/// *before* you press it.
-///
-/// v1's `has_browser_target`: any of the three set and non-blank is enough, and
-/// `BROWSER` overrides the display check because a terminal browser is a valid
-/// target on a machine with no X or Wayland session.
 pub(crate) fn browser_available() -> bool {
     if cfg!(target_os = "macos") || cfg!(target_os = "windows") {
         return true;
@@ -64,14 +54,6 @@ pub(crate) fn open_url(url: &str) -> Result<(), String> {
         })
 }
 
-/// Turn a written chord back into the keystroke it names.
-///
-/// The inverse of `registry::canonical_chord`, needed only by
-/// [`ClickVerb::Key`]: replaying a click as a real key event is what stops a
-/// modal button and its letter from ever diverging. Built on
-/// `registry::normalise_chord` so the spellings a mod may write (`Ctrl+D`,
-/// `command+j`) stay the registry's vocabulary rather than becoming a second
-/// one.
 pub(crate) fn key_event_from_chord(chord: &str) -> Option<KeyEvent> {
     let normalised = thurbox::kernel::registry::normalise_chord(chord);
     let mut modifiers = KeyModifiers::NONE;
@@ -458,9 +440,6 @@ pub(crate) fn clamp_span(value: u16, floor: u16, cap: u16) -> u16 {
 /// Where the reload-failure panel goes: the bottom of the screen, sized to the
 /// message but never more than half the height.
 pub(crate) fn error_area(area: Rect) -> Rect {
-    // Half the screen, but never less than the three rows the message needs and
-    // never more than the screen has. This panel is what a broken mod shows
-    // through, so it is the last thing that may itself panic.
     let cap = (area.height / 2).max(3).min(area.height);
     let height = clamp_span(area.height.saturating_sub(2), 3, cap);
     Rect {
@@ -594,9 +573,6 @@ pub(crate) fn render_hud(
     );
 }
 
-/// Rows of the per-pane table. The table is ranked, so an interface with more
-/// mods than this shows its most expensive ones; `thurbox-cli perf
-/// --mods` lists all of them.
 const MOD_HUD_ROWS: usize = 8;
 
 /// Columns the per-pane table wants: the widest row it formats, plus borders.
@@ -724,10 +700,6 @@ mod tests {
 
     use crate::App;
 
-    /// Every chrome rect is derived from the space available, so each one has to
-    /// hold at a size smaller than its own content floor. The error panel matters
-    /// most: it is what a broken mod shows through, and a five-row pane plus a
-    /// syntax error under `ui/` is the ordinary state while authoring one.
     #[test]
     fn chrome_rects_survive_a_terminal_too_small_for_them() {
         for height in 0..=10u16 {

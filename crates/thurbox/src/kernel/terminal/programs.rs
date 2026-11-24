@@ -108,11 +108,6 @@ pub const PROGRAM_SURFACE_PREFIX: &str = "program:";
 /// left to bound, and the reason the capability is granted separately.
 pub const MAX_PROGRAMS_PER_MOD: usize = 4;
 
-/// Which panes belong to a mod that is no longer loaded.
-///
-/// Separated from releasing them so the decision is testable without a
-/// multiplexer — releasing kills a real process, choosing what to release is a set
-/// difference. The same split `admit_program` makes, for the same reason.
 fn stale_program_keys<'a>(
     keys: impl Iterator<Item = &'a ProgramKey>,
     live: &[String],
@@ -122,15 +117,6 @@ fn stale_program_keys<'a>(
         .collect()
 }
 
-/// May a mod already holding `held` panes take one more, for `program`?
-///
-/// Pure, and separated from starting the pane for the reason `bundled::decide`
-/// is: the decision is the part worth testing, and testing it through the spawn
-/// would need a multiplexer, which the unit suite deliberately does not have.
-///
-/// The refusal is a message rather than a silent no, because the mod surfaces
-/// it — a pane that says why it is empty is the difference between a bound and a
-/// bug.
 fn admit_program(mod_name: &str, held: usize, program: &str) -> Result<(), String> {
     if program.trim().is_empty() {
         return Err("a program pane needs a program to run".to_string());
@@ -175,15 +161,12 @@ pub fn plan_keys(mod_name: &str, name: &str, running: bool, program: &str) -> Ke
     KeysPlan::Start
 }
 
-/// One mod's program pane, and the rect it was last painted into.
 pub(super) struct ProgramSlot {
     pub(super) pane: crate::backend::pane::ProgramPane,
     /// Where it was last painted and the size it was last told about — the same
     /// per-surface record a session's two panes each hold, and for the same
     /// reason: geometry belongs to one surface.
     pub(super) painted: super::Painted,
-    /// What the mod asked to run, kept so a restart can re-adopt with the same
-    /// program recorded and a report can name it.
     pub(super) program: String,
 }
 
@@ -213,12 +196,6 @@ impl Terminals {
             if !slot.pane.has_exited() {
                 return Ok(());
             }
-            // The exit has to be remembered before the slot that carries it is
-            // replaced: `program.exited` is derived by comparing the live set
-            // against the previous look, and the loop applies commands *before*
-            // it derives. A mod asking to restart on the frame after its
-            // program died would otherwise hand the deriver a live pane under
-            // the same key, and the ending would never be announced.
             self.program_transitions.push(ProgramTransition::Replaced(
                 key.clone(),
                 slot.program.clone(),
@@ -227,9 +204,6 @@ impl Terminals {
         }
         admit_program(&key.owner, self.program_count(&key.owner), program)?;
 
-        // Local only, by design: a mod-owned pane has no session and therefore
-        // no host, so there is nothing to resolve one from. Recorded as an open
-        // question rather than guessed at.
         let backend = Arc::clone(self.backends.default_backend());
         // This local-only spawn still runs inline; a companion shell opens
         // through Fleet, on a worker of its own.
@@ -454,9 +428,6 @@ impl Terminals {
 mod tests {
     use super::*;
 
-    /// A program surface is distinguishable from a session's by inspection, and a
-    /// session id must never read as one — otherwise a mod could aim
-    /// keystrokes at somebody's agent.
     #[test]
     fn a_program_surface_is_told_from_a_session_surface() {
         let key = ProgramKey::new("mods/90_watch.lua", "watch");
@@ -510,7 +481,6 @@ mod tests {
         }
         let refused = admit_program("mods/90_watch.lua", MAX_PROGRAMS_PER_MOD, "watch")
             .expect_err("the limit is a limit");
-        // The refusal names the mod and the limit, because the mod shows it.
         assert!(refused.contains("90_watch.lua"), "{refused}");
         assert!(
             refused.contains(&MAX_PROGRAMS_PER_MOD.to_string()),
@@ -570,15 +540,10 @@ mod tests {
         let KeysPlan::Refuse(error) = plan_keys("mods/90_editor.lua", "editor", false, "  ") else {
             panic!("nothing to type into and nothing to start must be refused");
         };
-        // Names the mod and the pane, because the mod shows it.
         assert!(error.contains("90_editor.lua"), "{error}");
         assert!(error.contains("\"editor\""), "{error}");
     }
 
-    /// A mod that is still loaded keeps its pane; one that is gone does not.
-    ///
-    /// The first half is the one that matters most: a reload happens after every
-    /// edit, and losing a running program to one would make reloading unusable.
     #[test]
     fn a_reload_keeps_a_live_mods_pane_and_releases_a_vanished_ones() {
         let watch = ProgramKey::new("mods/90_watch.lua", "watch");
@@ -596,7 +561,6 @@ mod tests {
         let live = vec!["mods/90_watch.lua".to_string()];
         assert_eq!(stale_program_keys(keys.iter(), &live), vec![gone]);
 
-        // Every mod gone (a failed reload leaves none loaded): all of them.
         let all: Vec<ProgramKey> = stale_program_keys(keys.iter(), &[]);
         assert_eq!(all.len(), 2);
         let _ = watch;

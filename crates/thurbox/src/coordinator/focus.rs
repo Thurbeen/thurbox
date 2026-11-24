@@ -12,11 +12,6 @@ use thurbox::kernel::layout::SlotMode;
 use crate::App;
 
 impl App {
-    /// Move focus onto a mod, if focus can rest there at all.
-    ///
-    /// A request focus cannot take is *held for one layout* rather than dropped —
-    /// see `kernel::focus::defer_until_placed` for why, and `apply_pending_focus`,
-    /// which re-asks it once the arrangement has run.
     pub(crate) fn focus_mod(&mut self, index: usize) {
         if thurbox::kernel::focus::defer_until_placed(self.placement(index)) {
             self.pending_focus = Some(index);
@@ -30,14 +25,6 @@ impl App {
         }
     }
 
-    /// Take a focus request that was waiting for its slot to be placed.
-    ///
-    /// Attempted once and then forgotten, whether or not it landed: a slot still
-    /// not placed is one the arrangement declines to give (a column closed, a pane
-    /// turned off), and a request that outlived its layout would chase focus
-    /// across frames the user has since moved on from. Which is also why the check
-    /// is here rather than left to `focus_mod`: that one re-arms the request it
-    /// cannot honour, so calling it blind would make the wait permanent.
     pub(crate) fn apply_pending_focus(&mut self) {
         let Some(index) = self.pending_focus.take() else {
             return;
@@ -89,27 +76,19 @@ impl App {
         }
     }
 
-    /// Mods may have come and gone under us; focus must land on one that
-    /// still exists.
     pub(crate) fn clamp_focus(&mut self) {
         let count = self.host.focusable().len();
         self.focus = self.focus.min(count.saturating_sub(1));
     }
 
-    /// Whether focus may rest on a mod — which for a `switch` alternate is
-    /// **not** the same question, since focusing it is what brings it forward.
-    /// See `kernel::focus`.
     pub(crate) fn can_focus_mod(&self, index: usize) -> bool {
         thurbox::kernel::focus::can_focus(self.placement(index))
     }
 
-    /// Whether a mod would be drawn right now: its slot was placed on the
-    /// last frame, or it floats above the arrangement and so needs no slot.
     pub(crate) fn is_visible_mod(&self, index: usize) -> bool {
         thurbox::kernel::focus::is_drawn(self.placement(index))
     }
 
-    /// Where a mod sits, as the two focus rules need to see it.
     pub(crate) fn placement(&self, index: usize) -> thurbox::kernel::focus::Placement {
         let Some(loaded) = self.host.mods.get(index) else {
             return thurbox::kernel::focus::Placement {
@@ -122,9 +101,6 @@ impl App {
         // A `switch` slot draws ONE of its occupants; the rest are alternatives.
         let chosen_in_switch =
             matches!(self.host.slot_mode(&loaded.slot), SlotMode::Switch).then(|| {
-                // `slot_selection` stores a position WITHIN the slot's members,
-                // not a mod index — comparing it to one made the terminal
-                // look unselected and cycled focus off it at startup. Resolve it.
                 let members = self.host.in_slot(&loaded.slot);
                 let chosen = self.slot_selection.get(&loaded.slot).copied().unwrap_or(0);
                 members.get(chosen) == Some(&index)
@@ -137,19 +113,6 @@ impl App {
         }
     }
 
-    /// Select a session and put the input focus on the pane that shows it.
-    ///
-    /// Only for a request made *now*: a clicked notification,
-    /// `thurbox-cli session focus`, or an instance-scoped UI action.
-    /// A session this instance just created is
-    /// deliberately not one — creation finishes on a worker seconds after the
-    /// wizard closed, so steering the view then lands at a moment the user did
-    /// not choose, and taking the selection back after every one of them made
-    /// creating several sessions in a row a fight with the cursor.
-    ///
-    /// The selection travels through the store rather than being set here,
-    /// because the list is a mod and it is the only thing that knows the
-    /// rendered order.
     pub(crate) fn focus_on_session(&mut self, id: &str) {
         self.host.set_shared_string("focus_session", id);
         if let Some(index) = self.host.index_of("agent") {
@@ -160,7 +123,6 @@ impl App {
         self.dirty = true;
     }
 
-    /// Whether the focused mod declared `input = "session"`.
     pub(crate) fn focused_wants_session_input(&self) -> bool {
         self.host
             .focusable()

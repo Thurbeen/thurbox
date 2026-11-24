@@ -40,9 +40,6 @@ fn host() -> LuaHost {
 fn registry(host: &LuaHost) -> Registry {
     let mut registry = Registry::default();
     let (mut bindings, settings) = host.declarations();
-    // As the binary does: the kernel's own chords — the ones that open a system
-    // modal, and the clipboard pair — are declared alongside the mods', so
-    // they are listed, routed and conflict-checked with everything else.
     bindings.extend(thurbox::kernel::modals::bindings());
     bindings.extend(thurbox::kernel::clipboard::bindings());
     registry.declare(bindings, settings);
@@ -160,8 +157,6 @@ fn press(chord: &str) -> KeyPress {
     key
 }
 
-/// Route a chord the way the binary does for a *global* key: resolve it with
-/// nothing focused, then call the owning mod's action.
 fn fire(host: &LuaHost, chord: &str) {
     let registry = registry(host);
     let binding = registry
@@ -172,16 +167,6 @@ fn fire(host: &LuaHost, chord: &str) {
         .unwrap_or_else(|e| panic!("{chord}: {e}"));
 }
 
-/// Every chord v1's key table calls global **whose owner still exists**, and
-/// what v2 does with it.
-///
-/// Spelled out because the mapping from a v1 `Action` to a v2 mod action is
-/// the thing under test: inferring it would only prove the inference.
-///
-/// The chords v1 also binds globally but v2 currently answers with nothing are
-/// below, in `CHORDS_AWAITING_THEIR_PANE`. They are listed rather than dropped so
-/// re-adding a pane has an obvious place to reconnect, and so the shortfall is
-/// counted rather than forgotten.
 const GLOBAL_CHORDS: [(&str, &str); 19] = [
     ("ctrl+n", "new_session.open"),
     // Reassigned deliberately, not reused quietly: v1 spent it on an
@@ -266,9 +251,6 @@ fn a_chord_whose_pane_was_removed_is_unbound_rather_than_reused() {
 
 #[test]
 fn the_session_list_column_is_hidden_and_restored_by_its_own_key() {
-    // v1's F9 (`Action::ToggleSessionList`) gives the terminal the full width.
-    // The arrangement decides this before any mod renders, so the toggle has
-    // to move state the arrangement can read — `ui/lib/panels.lua`.
     let host = host();
     let area = Rect {
         x: 0,
@@ -392,8 +374,6 @@ fn a_bare_ctrl_letter_is_the_only_chord_that_defers() {
 
 #[test]
 fn no_mod_claims_a_chord_the_kernel_reserves() {
-    // The escape route: quit, reload, focus movement and the perf HUD must work
-    // whatever a mod declares, so nothing may shadow them.
     let host = host();
     for binding in registry(&host).bindings() {
         assert!(

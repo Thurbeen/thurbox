@@ -16,7 +16,6 @@ use thurbox::kernel::command::Command;
 use thurbox::kernel::host::{Capability, LuaHost, RenderContext};
 use thurbox::kernel::terminal::{ProgramKey, Terminals};
 
-/// Build an interface out of `mods`, each `(file name, source)`.
 fn interface(mods: &[(&str, &str)]) -> (tempfile::TempDir, std::path::PathBuf) {
     let home = tempfile::tempdir().expect("tempdir");
     let ui = home.path().join("ui");
@@ -100,12 +99,6 @@ fn a_declared_but_untrusted_mod_still_may_not_run_a_program() {
 
 // ── whose pane is it ───────────────────────────────────────────────────────
 
-/// The surface a mod draws resolves to *its own* pane, always.
-///
-/// The mod writes a bare name and the kernel supplies the owner, so naming
-/// another mod's pane is impossible by construction rather than refused by a
-/// check that could be forgotten — the lesson `run`'s implementation-in-globals
-/// bug taught.
 #[test]
 fn two_mods_asking_for_the_same_name_get_different_panes() {
     let (_home, ui) = interface(&[
@@ -243,13 +236,6 @@ fn a_key_for_an_absent_program_is_not_reported_as_delivered() {
     );
 }
 
-/// `keys` is a byte string, and a byte that is not UTF-8 must arrive anyway.
-///
-/// The failure this pins is silent: read through a Rust `String`, a sequence Lua
-/// is perfectly happy to hold — an escape for a program that speaks its own
-/// encoding — was dropped whole, leaving a command that says "start it" where the
-/// mod wrote "type at it". Nothing reports that, and the pane looks like an
-/// editor that ignored the file.
 #[test]
 fn keys_that_are_not_utf8_reach_the_command_intact() {
     let pane = r#"return {
@@ -300,11 +286,6 @@ fn a_program_surface_is_never_resolved_to_a_session() {
 
 // ── not a session ──────────────────────────────────────────────────────────
 
-/// Nothing that enumerates sessions can see a mod's pane.
-///
-/// It holds because a pane is never a database row — but it is asserted, because
-/// the machinery underneath is shared with sessions and a leak would be a session
-/// the user cannot delete, restart or explain.
 #[test]
 fn a_program_pane_is_absent_from_every_session_enumeration() {
     let terminals = Terminals::with_registry(
@@ -324,12 +305,6 @@ fn a_program_pane_is_absent_from_every_session_enumeration() {
 
 // ── what machine am I on ───────────────────────────────────────────────────
 
-/// A mod delivering more than one build has to be able to choose, so the
-/// platform is published rather than expressed in a package manifest.
-///
-/// A substitution template states one rule; a pane that can read this states every
-/// rule it needs — prefer something already on `PATH`, fall back to a portable
-/// build, or say politely that there is nothing for this machine.
 #[test]
 fn a_mod_can_read_the_platform_it_is_running_on() {
     let pane = r#"return {
@@ -377,8 +352,6 @@ fn a_mod_can_read_the_platform_it_is_running_on() {
     .expect("publish");
 
     let drawn = format!("{:?}", render(&host, "probe").node);
-    // The values the binary was built for — asserted against the same constants, so
-    // this is "the mod sees what the kernel knows", not a hardcoded platform.
     assert!(
         drawn.contains(&format!("os={}", std::env::consts::OS)),
         "{drawn}"

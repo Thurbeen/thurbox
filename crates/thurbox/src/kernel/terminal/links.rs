@@ -523,9 +523,6 @@ fn cell_style(cell: &ratatui::buffer::Cell) -> Style {
 pub fn drawn_link_paints(buf: &Buffer, rect: Rect, url: &str) -> Vec<HyperlinkPaint> {
     let mut paints = Vec::new();
     for y in rect.top()..rect.bottom() {
-        // The first glyph's column, and `None` while the row has shown none:
-        // only a non-blank cell sets it, so a row the mod left blank yields
-        // no link at all rather than a link with no text in it.
         let mut start = None;
         let mut cells: Vec<(String, Style)> = Vec::new();
         let mut x = rect.left();
@@ -1052,8 +1049,6 @@ mod tests {
         assert_eq!(printed, "Open MR !123");
     }
 
-    /// A row the mod left blank is not a link with no text in it — it is not
-    /// a link. Same for a rect the frame is too small to hold.
     #[test]
     fn a_blank_row_yields_no_link() {
         let buf = buffer_with(20, 2, &["   ", "  x"]);

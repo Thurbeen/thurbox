@@ -133,8 +133,6 @@ pub struct DurationHistogram {
     counts: [u64; HISTO_BUCKETS_US.len() + 1],
     total: u64,
     max_us: u64,
-    /// Exact, unlike the percentiles: what a pane's "share of frame time" and
-    /// the per-mod ranking are computed from.
     sum_us: u64,
 }
 

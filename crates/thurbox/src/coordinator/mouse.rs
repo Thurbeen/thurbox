@@ -295,9 +295,6 @@ impl App {
             // is not still there when Help closes.
             let missed = self.grabbed;
             match hit.identity.click_verb() {
-                // `clicked` is only the fallback owner, and a band has no mod
-                // to fall back to; the action's own declaration is what resolves
-                // it, exactly as for a pill drawn by a pane.
                 Some(ClickVerb::Action(action)) => {
                     if let Some(float) = missed {
                         self.dispatch_outside(float, x, y);
@@ -394,7 +391,6 @@ impl App {
         }
     }
 
-    /// Offer a right press to the mod that painted the node under it.
     fn dispatch_context(&mut self, target: ClickTarget, x: u16, y: u16) {
         let click = self.click_at(&target, x, y, false, 1);
         match self.host.on_context(target.mod_index, &click) {
@@ -497,10 +493,6 @@ impl App {
         }
     }
 
-    /// Run a declared action, on the mod that declared it.
-    ///
-    /// The catalog maps action to owner, so a button may name another pane's
-    /// action without guessing which mod will handle it.
     pub(crate) fn run_clicked_action(&mut self, action: &str, _clicked: usize) {
         self.run_clicked_action_with_args(action, _clicked, &[]);
     }
@@ -833,23 +825,6 @@ impl App {
         self.toast(message);
     }
 
-    /// Hand every visible link back to the terminal thurbox runs in.
-    ///
-    /// The only route to a browser when the agent is on a remote host: the
-    /// outer terminal opens the link, so it has to be told the runs are links.
-    /// Every attached session is offered rather than only the focused one,
-    /// because the paints are validated against the drawn buffer — a session
-    /// not painted this frame contributes nothing on its own.
-    ///
-    /// A pane's [`ClickVerb::Url`] nodes ride the same leg, which is the whole
-    /// point of the verb: a mod hands the kernel cells and can emit no
-    /// escape of its own, so this is the only place its content can become a
-    /// link the outer terminal knows about.
-    ///
-    /// `self.links` — already maintained for `thurbox.links`, and paced by its
-    /// own stamp and age — is handed over so a **plain-text** URL is offered
-    /// too, not only an OSC 8 run. Nothing rescans here: the list is the one
-    /// [`Self::refresh_links`] built before this frame was drawn.
     pub(crate) fn paint_outer_hyperlinks(&mut self, buf: &ratatui::buffer::Buffer) {
         let mut paints = Vec::new();
         for row in &self.snapshots.current().sessions {
@@ -865,8 +840,6 @@ impl App {
                 paints.extend(self.terminals.hyperlink_paints(&surface, buf, scanned));
             }
         }
-        // A band's hit carries no mod, which is also what makes it unable to
-        // be its own float — hence the `Option`.
         let panes = self
             .click_targets
             .iter()
@@ -900,16 +873,6 @@ impl App {
         }
     }
 
-    /// Is something drawn over these cells, so that linking them would link
-    /// somebody else's glyphs?
-    ///
-    /// `hyperlink_paints` gets this for free by matching the glyphs it expects
-    /// against the frame — a run the frame no longer prints there drops out. A
-    /// pane's node has no label to match (the text is in the mod's tree, and
-    /// wrapping and scroll have moved it since), so what covers it is checked
-    /// directly instead: a modal owns the whole screen while it is up, and a
-    /// float owns its rect. Without this a modal over a `url:` node would make
-    /// the modal's own text `Ctrl+Click` to that url.
     pub(crate) fn link_paint_obscured(&self, mod_index: Option<usize>, rect: Rect) -> bool {
         if self.modals.is_open() {
             return true;

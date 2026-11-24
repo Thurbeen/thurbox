@@ -32,19 +32,11 @@ const OUTPUT_CAP: usize = 256 * 1024;
 /// How long a program may run before it is given up on.
 pub const DEFAULT_TIMEOUT: Duration = Duration::from_secs(30);
 
-/// The longest timeout a mod may ask for. `npm ci` legitimately takes
-/// minutes; nothing legitimately takes an hour, and a mod that asks for one
-/// has made a mistake the kernel should not honour.
 const MAX_TIMEOUT: Duration = Duration::from_secs(600);
 
 /// How long an answer stays fresh when the asker does not say.
 pub const DEFAULT_TTL: Duration = Duration::from_secs(2);
 
-/// The shortest TTL the kernel will honour.
-///
-/// A mod asking for zero would run a process per frame — which is not a
-/// choice it should be able to make, since the cost lands on the whole
-/// interface rather than on that pane.
 const MIN_TTL: Duration = Duration::from_millis(250);
 
 /// Programs running at once. The rest queue.
@@ -661,14 +653,6 @@ mod tests {
         assert_eq!(count.load(std::sync::atomic::Ordering::SeqCst), 2);
     }
 
-    /// Asking every frame is the documented way to use `run`, so asking while a
-    /// run is in flight has to be free.
-    ///
-    /// It was not: a refresh leaves the old answer `Done` on purpose, and
-    /// `Run::Pending` was the only "already going" test — so once an answer went
-    /// stale, every ask started another process until the whole concurrency pool
-    /// was full. A program slower than its own TTL never settled and held all four
-    /// slots for good, starving every other key and mod.
     #[test]
     fn asking_repeatedly_while_a_refresh_is_in_flight_starts_one_run() {
         let count = Arc::new(std::sync::atomic::AtomicUsize::new(0));
@@ -986,8 +970,6 @@ mod tests {
 
     #[test]
     fn what_a_mod_asked_for_is_clamped_to_what_the_kernel_will_do() {
-        // A mod choosing its own bounds could take the interface down, so the
-        // numbers it offers are a preference, not a decision.
         let greedy = Ask {
             ttl: Duration::ZERO,
             timeout: Duration::from_secs(86_400),

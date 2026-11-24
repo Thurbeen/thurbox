@@ -600,10 +600,6 @@ fn a_hit_that_comes_back_after_an_empty_answer_is_revealed_again() {
 
 #[test]
 fn opening_a_text_hit_lands_the_agent_pane_on_the_line() {
-    // The operator's failure, at the mod level: opening a hit must show the
-    // session SCROLLED TO the match, not merely focus it. The agent pane is
-    // driven the way the kernel routes the action, and its surface node is
-    // what the kernel paints with.
     let host = host();
     open(&host);
     type_query(&host, "ENOSPC");

@@ -51,11 +51,6 @@ use super::perf::Hook;
 /// the application.
 pub const INSTRUCTION_BUDGET: u32 = 20_000_000;
 
-/// Override for [`INSTRUCTION_BUDGET`], so the bound can be raised for a heavy
-/// pane or lowered to prove the guard fires without waiting 20M instructions.
-///
-/// A setting rather than a constant because the right number depends on what
-/// mods you run, and discovering it means measuring — see task 2.12.
 static BUDGET_OVERRIDE: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
 
 /// Set the per-call instruction budget. Zero restores the default.
@@ -102,13 +97,6 @@ pub enum MemoryPressure {
     Grown,
 }
 
-/// Which standard libraries mods get.
-///
-/// Chosen deliberately, not inherited: `io`, `os` and `debug` are **absent**,
-/// so a mod has no filesystem, process or clock-tampering access — the
-/// capability model is enforced by absence, not by a binding
-/// that refuses. `package` is withheld too; `require` is ours (see
-/// [`install_require`]), scoped to the mod directory.
 fn mod_stdlib() -> StdLib {
     // UTF8 is pure computation with no capability risk, and text handling
     // needs it: Lua's `#` counts bytes, so without it a mod measuring a name
@@ -127,24 +115,11 @@ enum Persisted {
     Table(Vec<(Persisted, Persisted)>),
 }
 
-/// `store` is shared by every mod; `state` is keyed by mod file too, so
-/// two mods can both use `state.index` without colliding.
 type Shared = Rc<RefCell<BTreeMap<String, Persisted>>>;
 /// `store`/`state` assignments so far, and how many of them assigned a table.
 type WriteCount = Rc<std::cell::Cell<(u64, u64)>>;
-/// How many times mod state — shared or private — has been written.
-///
-/// A pure pane's tree may legitimately depend on `store` or `state`: the agent
-/// pane remembers which tab each session is on, and one pane can read a value
-/// another wrote. Neither is a published source, so without this a tree cached
-/// before a keypress would survive it (`frame-cost`). Coarse on purpose — any
-/// write invalidates every cached tree, which is right for something that
-/// happens on input rather than per frame.
 type StateVersion = Rc<std::cell::Cell<u64>>;
 type Private = Rc<RefCell<BTreeMap<(String, String), Persisted>>>;
-/// Commands a mod issued this frame, drained by the loop.
-/// Each command with the path of the mod that issued it, stamped by the
-/// kernel — empty for Lua that belongs to no mod.
 type Queue = Rc<RefCell<Vec<(Vec<String>, Command)>>>;
 
 /// Run answers, keyed by the mod that asked and then by its own key.
@@ -278,7 +253,6 @@ pub struct Mod {
     pub actions: Vec<ActionDecl>,
     order: f64,
     def: Table,
-    /// The environment its chunk runs in — see [`api::mod_env`].
     env: Env,
 }
 
@@ -561,20 +535,6 @@ type GroupKey = [u64; 4];
 /// for nothing. The loop owns the counter — see [`Epoch::animation`].
 pub const ANIMATION_HZ: f64 = 8.0;
 
-/// What a pure pane's cached tree was built for: the publish epoch, the parts of
-/// the render context it may depend on, and the mod-state version.
-///
-/// `ctx.frame` and `ctx.elapsed` are deliberately absent. They move every frame,
-/// so reading either here would mean never reusing anything. A pane may still
-/// animate and be pure, but only from the shared clock in [`Epoch::animation`],
-/// which advances at [`ANIMATION_HZ`] *and only while something is animating* —
-/// which is why a pane animating per frame, or on a schedule of its own, may not
-/// declare `pure`.
-///
-/// The last field is [`StateVersion`]. A pure render may read `store` or
-/// `state` — the agent pane remembers a tab per session — and those are written
-/// by handlers, not by anything published, so without it a tree cached before a
-/// keypress would outlive it.
 type TreeKey = (Epoch, u16, u16, bool, u64);
 
 /// A pure pane's cached tree, and whether the clock is part of what keyed it.
@@ -792,30 +752,15 @@ pub struct LuaHost {
     /// The heap the last of those left, so the next waits for new garbage.
     collected: std::cell::Cell<usize>,
     reused_groups: std::cell::Cell<u64>,
-    /// Per-mod cost, recorded only while [`Self::set_perf_timing`] is on
-    /// (ADR-P23).
-    ///
-    /// Recorded here rather than at the loop's call sites because a mod is
-    /// reached from a dozen of them — every hook, every event subscriber, the
-    /// pure cache's hit path — and only the host sees all of them and knows
-    /// which mod each call was for. Off, a call pays two `Cell<bool>` reads.
     perf_timing: std::cell::Cell<bool>,
     mod_perf: RefCell<super::perf::ModTable>,
     /// Whether the loop has seen no input for a while, for `idle_renders`.
     idle: std::cell::Cell<bool>,
-    /// Open between [`Self::begin_op`] and [`Self::end_op`]: the longest single
-    /// mod call since, so a slow op can name whose it was. Tracked whether or
-    /// not timing is on, because slow ops are.
     op_open: std::cell::Cell<bool>,
     op_heaviest: RefCell<Option<(String, std::time::Duration)>>,
     /// Every `store`/`state` write, counted in the VM's `__newindex`; a render's
     /// share is the difference across the call.
     store_writes: WriteCount,
-    /// A pure pane's last converted tree, with the key it was built under.
-    ///
-    /// Keyed by mod index. Dropped whenever the VM is rebuilt, alongside
-    /// [`Self::groups`] — a `Node` outlives the Lua it came from, but a tree
-    /// built by the previous version of a pane is not that pane's answer.
     trees: RefCell<HashMap<usize, CachedTree>>,
     /// The clock the current render is being handed, and whether it read it.
     ///
@@ -841,16 +786,7 @@ pub struct LuaHost {
     state: Private,
     /// Bumped by every `store`/`state` write; part of a pure pane's tree key.
     state_version: StateVersion,
-    /// The mod currently being called, so `state` can namespace itself.
-    ///
-    /// This is the file *stem*, which is what `state` has always keyed by.
     current: Rc<RefCell<String>>,
-    /// The same mod, by its path.
-    ///
-    /// Kept beside `current` rather than replacing it: a run is attributed by
-    /// path because that is the identity trust and the inventory use, and
-    /// changing what `state` keys by would silently move every mod's stored
-    /// state on upgrade.
     current_path: Rc<RefCell<String>>,
     /// Session working directories, the roots a file read is confined to.
     roots: Roots,
@@ -860,36 +796,17 @@ pub struct LuaHost {
     /// The snapshot version [`Roots`] was last rebuilt from, so publish skips
     /// re-cloning every session's cwd on frames where the snapshot stood still.
     roots_snapshot: std::cell::Cell<Option<u64>>,
-    /// Commands issued by mods, drained once per frame by the loop.
-    ///
-    /// Queued rather than executed inline: `command()` must return instantly,
-    /// and a mod must never be able to run a database write from inside a
-    /// render call.
     queue: Queue,
     /// See [`Self::acting_for`].
     behalf: Rc<RefCell<Option<Vec<String>>>>,
-    /// Runs mods asked for, drained once per frame like `queue`.
-    ///
-    /// Separate from `queue` because a run carries the mod that asked —
-    /// answers are namespaced by it — and because the command bus dispatches
-    /// writes to workers, while this is a read whose worker the store owns.
     runs: Rc<RefCell<Vec<(String, super::runs::Request)>>>,
     /// Paths the user trusted, as `set_trusted` last recorded them.
     trusted: Rc<RefCell<Vec<String>>>,
     /// Paths the user turned off. Read by `build`, which simply does not load
     /// them — which is the whole implementation of being disabled (design D2).
     disabled: Rc<RefCell<Vec<String>>>,
-    /// Finished runs, per mod. Published into `thurbox.runs` when that mod
-    /// is entered, so a mod sees its own answers and no one else's.
     run_answers: Rc<RefCell<RunAnswers>>,
     pub mods: Vec<Mod>,
-    /// Index lists derived from `mods`, rebuilt on reload.
-    ///
-    /// Each answers a per-frame question — which panes are focusable, who
-    /// occupies or decorates a slot, a slot's mode — that used to be a scan
-    /// with a fresh `Vec` per call (several calls per frame, and `slot_mode` a
-    /// Lua table read per member per call) over a set that only changes when
-    /// the interface reloads.
     index: ModIndex,
     layout: Arrangement,
     /// The last resolved arrangement, with everything it was resolved from.
@@ -951,9 +868,7 @@ type LayoutKey = (u16, u16, u32, Option<Epoch>, u64, u16);
 struct ModIndex {
     focusable: Vec<usize>,
     floating: Vec<usize>,
-    /// Slot -> occupying mod indices, in render order (decorators excluded).
     slots: HashMap<String, Vec<usize>>,
-    /// Slot -> indices of the mods decorating it, in render order.
     decorators: HashMap<String, Vec<usize>>,
     /// Slot -> declared mode. Absent = stack, so the common case needs no entry.
     modes: HashMap<String, SlotMode>,
@@ -1130,13 +1045,6 @@ impl LuaHost {
         // Sorted so `order` ties break by filename, deterministically.
         files.sort();
 
-        // Panes the spec names outside `mods/`. A mod obtained as a repository
-        // keeps its author's layout, so its pane sits at `<name>/…` — invisible to
-        // the scan above, which reads only the top level of `mods/`.
-        //
-        // Its place in the load order is unaffected: `order` comes from the
-        // *basename*'s numeric prefix, so `40_x.lua` sorts as `40_x.lua` wherever it
-        // lives.
         let nested: Vec<String> = super::packages::read_spec(&self.ui_dir)
             .map(|spec| {
                 spec.mods
@@ -1145,8 +1053,6 @@ impl LuaHost {
                     .filter(|file| crate::session::mod_spec::is_nested_pane(file))
                     .collect()
             })
-            // A malformed spec must not cost the whole interface: the panes in
-            // `mods/` still load, and `mod check` reports the spec separately.
             .unwrap_or_default();
 
         let mut mods = Vec::new();
@@ -1164,11 +1070,6 @@ impl LuaHost {
                 .map(std::ffi::OsStr::to_string_lossy)
                 .unwrap_or_default();
             let relative = format!("{}/{name}", crate::session::mod_spec::MODS_DIR);
-            // A mod the user turned off is simply not read. That is the
-            // entire implementation: it is absent from `mods`, so it declares
-            // no key, occupies no slot, is granted no capability and cannot fail
-            // to load — five properties that would otherwise each need enforcing
-            // somewhere else (design D2).
             if disabled.iter().any(|off| off == &relative) {
                 continue;
             }
@@ -1446,7 +1347,6 @@ impl LuaHost {
         failures
     }
 
-    /// Call one mod's `on_event` with a name and a payload table.
     fn on_event(&self, index: usize, name: &str, payload: &Table) -> Result<(), ModError> {
         let Some(loaded) = self.mods.get(index) else {
             return Ok(());
@@ -1565,8 +1465,6 @@ impl LuaHost {
         self.hook_finished(loaded, start, Hook::Decorate, result.is_err());
 
         let value = result.map_err(|e| fail(clean_error(&e)))?;
-        // The DECORATOR owns what it returns: a program surface it names is one of
-        // its own panes, not one belonging to the mod whose tree it decorated.
         convert::to_node(&value, &loaded.path).map_err(fail)
     }
 
@@ -1711,12 +1609,6 @@ impl LuaHost {
         &self.index.focusable
     }
 
-    /// Take the commands mods issued since the last drain.
-    /// The other half of [`Self::enter`], for Lua that runs outside any mod.
-    ///
-    /// `layout.lua` runs in an environment of its own that never holds `run`,
-    /// so there is nothing to withdraw — only the current mod to forget, so
-    /// the layout's work is not attributed to whichever pane ran last.
     fn enter_nothing(&self) {
         self.current.borrow_mut().clear();
         self.current_path.borrow_mut().clear();
@@ -1765,20 +1657,9 @@ impl LuaHost {
             .is_some_and(|loaded| self.may(loaded, capability))
     }
 
-    /// Make `loaded` the current one, and give it exactly the capabilities it
-    /// has been granted.
-    ///
-    /// Installed **per call** rather than once at load so a grant revoked on
-    /// the Interface tab is gone on the next call. `run` and `files` go into
-    /// the mod's own environment or are taken out of it: not a function that
-    /// refuses, but no function at all (design D7).
     fn enter(&self, loaded: &Mod) {
         *self.current.borrow_mut() = loaded.file.clone();
         *self.current_path.borrow_mut() = loaded.path.clone();
-        // Only a mod that asked for a capability can have answers, so every
-        // other one skips the rest. Worth the check: `enter` runs on every call
-        // to every mod, and building a table per call for the panes that can
-        // never have runs would be a per-frame allocation for nothing.
         if loaded.capabilities.is_empty() {
             return;
         }
@@ -1804,9 +1685,6 @@ impl LuaHost {
         let _ = loaded.env.table.raw_set("files", files);
     }
 
-    /// This mod's own answers, and nothing else's, as `thurbox.runs` — in
-    /// its own `thurbox` view (`api::Env::thurbox`), which no other mod's
-    /// code can reach, whenever it runs.
     fn publish_runs(&self, loaded: &Mod) {
         let Ok(table) = self.lua.create_table() else {
             return;
@@ -1821,15 +1699,6 @@ impl LuaHost {
         let _ = loaded.env.thurbox.raw_set("runs", table);
     }
 
-    /// What this mod has actually been granted, as `thurbox.granted.<name>`,
-    /// in its own `thurbox` view like its runs.
-    ///
-    /// Needed because not every capability can be withheld by absence. `run` is
-    /// a global, so a mod checks `if not run then` and draws an honest hint —
-    /// that IS the absence. `program` is asked for through `command`, which
-    /// every mod has, so absence cannot express it and a pane would have no
-    /// way to tell "not trusted" from "still starting". This is that answer, and
-    /// it grants nothing: it is a boolean about a decision the user already made.
     fn publish_granted(&self, loaded: &Mod) {
         let Ok(table) = self.lua.create_table() else {
             return;
@@ -1907,8 +1776,6 @@ impl LuaHost {
     /// Take execution/eviction operations from loaded owners in Lua call order.
     pub fn drain_run_requests(&self) -> Vec<(String, super::runs::Request)> {
         let mut asked = std::mem::take(&mut *self.runs.borrow_mut());
-        // Edit reloads keep this queue while replacing the mods. Delivering
-        // a retired owner's ask would recreate state already pruned by reload.
         asked.retain(|(owner, _)| self.mods.iter().any(|loaded| loaded.path == *owner));
         if self.perf_timing.get() {
             let mut table = self.mod_perf.borrow_mut();
@@ -1948,16 +1815,6 @@ impl LuaHost {
         self.key_releases.set(releases);
     }
 
-    /// Publish the current snapshot so mods can read it.
-    ///
-    /// Called once per frame from the event loop — never from inside a mod,
-    /// which is what keeps every read immediate.
-    /// Build one published group, or hand back the one built at the same key.
-    ///
-    /// `key` combines only the versions that group actually reads, so a source
-    /// moving every frame invalidates what reads it and nothing else. The value
-    /// is a Lua reference, so reusing it costs a clone of a registry handle
-    /// rather than a rebuild of the table behind it.
     fn group(
         &self,
         name: &'static str,
@@ -2136,7 +1993,6 @@ impl LuaHost {
         }
     }
 
-    /// A clock for one mod call, when anything will read it.
     fn call_started(&self) -> Option<std::time::Instant> {
         (self.perf_timing.get() || self.op_open.get()).then(std::time::Instant::now)
     }
@@ -2157,7 +2013,6 @@ impl LuaHost {
         self.perf_timing.get().then_some(took)
     }
 
-    /// Charge one handler call to its mod.
     fn hook_finished(
         &self,
         loaded: &Mod,
@@ -2259,8 +2114,6 @@ impl LuaHost {
         result
     }
 
-    /// The uncached half of [`Self::render`]: call the mod and convert what it
-    /// returned, caching the tree for a pure pane.
     fn render_lua(
         &self,
         index: usize,
@@ -2574,9 +2427,6 @@ impl LuaHost {
             }),
             Arrangement::Static(region) => Ok(region.clone()),
             Arrangement::Dynamic(arrange) => {
-                // `layout.lua` is not a mod: it declares no capabilities and has
-                // no trust record, so it must not execute under whichever grant the
-                // last mod call left installed.
                 self.enter_nothing();
                 let ctx = self.lua.create_table().map_err(|e| e.to_string())?;
                 ctx.set("width", width).map_err(|e| e.to_string())?;

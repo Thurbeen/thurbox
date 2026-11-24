@@ -79,10 +79,6 @@ impl Drop for Budget<'_> {
     }
 }
 
-/// Read `ui/layout.lua`, if there is one.
-///
-/// A parse error here fails the whole reload, exactly like a broken mod —
-/// so the previous arrangement keeps running rather than the screen collapsing.
 pub(super) fn load_arrangement(lua: &Lua, parts: &EnvParts) -> Result<Arrangement, String> {
     let path = parts.ui_dir.join("layout.lua");
     let source = match fs::read_to_string(&path) {
@@ -90,8 +86,6 @@ pub(super) fn load_arrangement(lua: &Lua, parts: &EnvParts) -> Result<Arrangemen
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Arrangement::Missing),
         Err(e) => return Err(format!("{}: {e}", path.display())),
     };
-    // An environment of its own like any mod's, under an owner no grant
-    // names: the arrangement asks for nothing.
     let env = mod_env(lua, parts, "", "").map_err(|e| format!("layout.lua: {e}"))?;
     let value: Value = lua
         .load(&source)
@@ -107,11 +101,6 @@ pub(super) fn load_arrangement(lua: &Lua, parts: &EnvParts) -> Result<Arrangemen
     }
 }
 
-/// Read one mod file into a [`Mod`].
-///
-/// `relative` is the path within the interface directory, carried through
-/// rather than re-derived: the kernel writes and removes files by that name, so
-/// it must be the same string everywhere.
 pub(super) fn load_mod(
     lua: &Lua,
     parts: &EnvParts,
@@ -151,9 +140,6 @@ pub(super) fn load_mod(
         return Err(format!("{file}.name: kernel is reserved"));
     }
 
-    // Refused before the rest of the declaration is read: a mod written
-    // against a newer contract may misread every field below, and why it did
-    // not load is the one thing its author needs to see in the inventory.
     let requires_api = def
         .get::<Option<u32>>("requires_api")
         .map_err(|e| format!("{file}.requires_api: {e}"))?;
@@ -438,11 +424,6 @@ fn read_capabilities(def: &Table, file: &str) -> Result<Vec<Capability>, String>
     Ok(out)
 }
 
-/// Read the `float` field off whatever a mod returned.
-///
-/// `float = true` takes the default size; a table may set `width`/`height` as
-/// percentages of the screen, or `cols`/`rows` to ask in cells; `at = { x, y }`
-/// opens it at that screen cell instead of the centre.
 pub(super) fn read_float(value: &Value) -> Result<Option<Float>, String> {
     let Value::Table(table) = value else {
         return Ok(None);
@@ -489,10 +470,6 @@ pub(super) fn read_float(value: &Value) -> Result<Option<Float>, String> {
     }
 }
 
-/// Read a mod's `keys` declaration.
-///
-/// Declared as data rather than handled imperatively so the registry can
-/// enumerate, conflict-check and rebind them without ever calling the mod.
 fn read_bindings(def: &Table, mod_name: &str) -> Result<Vec<Binding>, String> {
     let raw: Value = def
         .get("keys")
@@ -554,7 +531,6 @@ fn read_bindings(def: &Table, mod_name: &str) -> Result<Vec<Binding>, String> {
     Ok(bindings)
 }
 
-/// Read a mod's `settings` declaration.
 fn read_settings(def: &Table, mod_name: &str) -> Result<Vec<Setting>, String> {
     let raw: Value = def
         .get("settings")
@@ -593,10 +569,6 @@ fn read_settings(def: &Table, mod_name: &str) -> Result<Vec<Setting>, String> {
             .get::<Option<Vec<String>>>("choices")
             .map_err(|e| format!("{where_}.choices: {e}"))?
             .unwrap_or_default();
-        // Refused rather than repaired: a default the mod does not offer
-        // would be shown as the value of a row whose every step leaves it, a
-        // choice listed twice would be a step that goes nowhere, and a choice on
-        // a boolean or a number has nothing to choose between.
         if let Some(twice) = choices
             .iter()
             .enumerate()
@@ -636,11 +608,6 @@ fn read_settings(def: &Table, mod_name: &str) -> Result<Vec<Setting>, String> {
     Ok(settings)
 }
 
-/// Read a mod's `pills` declaration — its entries in the action band.
-///
-/// Data, like `keys` and `settings`, for the same reason: the band must be able
-/// to enumerate every entry without invoking any mod, because drawing chrome
-/// that can call into Lua is chrome a mod can break.
 fn read_pills(def: &Table, mod_name: &str) -> Result<Vec<Pill>, String> {
     let raw: Value = def
         .get("pills")

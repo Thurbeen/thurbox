@@ -16,24 +16,9 @@ use thurbox::kernel::perf::Counters;
 
 use crate::{App, DEBOUNCE};
 
-/// How soon after a memory rebuild pressure again means the rebuild did not
-/// help. Well under the time a leaking mod takes to refill the VM — about
-/// 30 s at 2 MiB a render — and far over the few frames an interface takes to
-/// reach its resident size.
 const MEMORY_REFILL: Duration = Duration::from_secs(10);
 
 impl App {
-    /// Rebuild the interface from the directory the user actually edits, dropping
-    /// to the bundled copy only for as long as that one will not load.
-    ///
-    /// Every reload goes through here rather than `host.reload()` because the host
-    /// rebuilds from whichever directory it was last built from. Once the floor had
-    /// been installed, that was `/tmp`: the watcher fired on the user's fix, the
-    /// fallback was rebuilt from itself, nothing changed, and no error appeared —
-    /// while `ui_dir`, the watcher, the inventory and every Interface-tab action
-    /// still pointed at the user's copy, so `r`/`d`/`space`/`t` wrote the right
-    /// file to no visible effect. Only a restart recovered. It also cost a mod
-    /// author their edit-reload loop, since a `./ui` checkout takes the same path.
     pub(crate) fn reload_interface(&mut self, reason: super::events::ReloadReason) {
         let memory = reason == super::events::ReloadReason::Memory;
         if memory {
@@ -61,8 +46,6 @@ impl App {
     /// What every reload ends with, whichever interface it put in.
     fn settle_reload(&mut self, reason: super::events::ReloadReason) {
         let memory = reason == super::events::ReloadReason::Memory;
-        // A failed memory rebuild retired every mod without loading any.
-        // Clear old events, but do not announce a successful interface reload.
         self.note_reload(if memory && self.host.error.is_some() {
             super::events::ReloadReason::Boot
         } else {
@@ -118,11 +101,7 @@ impl App {
         self.settle_reload(super::events::ReloadReason::Memory);
     }
 
-    /// Drop what mods that are no longer loaded were holding.
     fn forget_unloaded_mods(&mut self) {
-        // A mod that was edited away, renamed, removed or turned off must not
-        // leave its answers behind to accumulate across reloads — and must not be
-        // able to read them again if a file of that name comes back.
         let live: Vec<String> = self
             .host
             .mods
@@ -130,21 +109,9 @@ impl App {
             .map(|loaded| loaded.path.clone())
             .collect();
         self.runs.retain_mods(&live);
-        // The same rule for a program it was holding, and here it matters more: an
-        // answer left behind is a few bytes, a program left behind is a process
-        // nothing on screen can ever reach again. A mod that is still loaded
-        // keeps its pane — a reload is an edit to a file, and losing your game to
-        // one would make reloading unusable.
         self.terminals.retain_program_mods(&live);
     }
 
-    /// Turn one interface file off, or back on, and reload.
-    ///
-    /// The reload is the mechanism, not a side effect: a disabled mod is one
-    /// `build` did not read, so the decision only becomes true when the VM is
-    /// built again (design D2/D3). No confirmation — the action is reversible by
-    /// the same key, and confirming a reversible act is what teaches people to
-    /// confirm without reading.
     pub(crate) fn apply_switch(&mut self, file: &str, off: bool) {
         let absolute = self.ui_dir.join(file);
         let key = absolute.to_string_lossy().into_owned();
@@ -165,12 +132,6 @@ impl App {
         }
     }
 
-    /// Record the user's decision about one interface file, and reload.
-    ///
-    /// The reload is not incidental: a mod's capabilities are installed when
-    /// its environment is built, so revoking has to rebuild it — that is what
-    /// makes the capability *absent* on the next frame rather than present and
-    /// refusing (design D7).
     pub(crate) fn apply_trust(&mut self, file: &str, trusted: bool) {
         let absolute = self.ui_dir.join(file);
         let key = absolute.to_string_lossy().into_owned();
@@ -235,11 +196,6 @@ impl App {
         self.dirty = true;
     }
 
-    /// Restore or remove one interface file, and ask for the reload.
-    ///
-    /// One implementation for both callers — a mod's `command("mod", …)`
-    /// and the settings modal's Interface tab — so the two cannot come to mean
-    /// different things about what restoring is.
     pub(crate) fn apply_mod_edit(&mut self, file: &str, edit: thurbox::kernel::command::ModEdit) {
         let outcome = match edit {
             thurbox::kernel::command::ModEdit::Restore => {
@@ -325,17 +281,6 @@ impl App {
         self.report(message, Level::Info);
     }
 
-    /// Rebuild the interface once its VM has filled up — see
-    /// [`thurbox::kernel::host::LuaHost::memory_pressure`]. Said out loud,
-    /// because the panes lose whatever they held in memory and the cause is a
-    /// mod holding too much.
-    ///
-    /// A rebuild that did not help is not repeated: pressure again within
-    /// [`MEMORY_REFILL`] of the last one means the interface, not a leak, is
-    /// what fills the VM. Grown back is its size, so it is kept; exhausted
-    /// again, it cannot run in the VM at all, so the bundled interface runs
-    /// until the user's next reload. Either way the user's interface is
-    /// rebuilt at most once per window, never on every loop iteration.
     pub(crate) fn rebuild_full_vm(&mut self) {
         use thurbox::kernel::host::MemoryPressure;
         let Some(pressure) = self.host.memory_pressure() else {

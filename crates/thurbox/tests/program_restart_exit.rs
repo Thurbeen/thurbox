@@ -100,7 +100,6 @@ async fn restarting_a_finished_program_still_reports_the_ending() {
          before anything replaced it"
     );
 
-    // The mod asks again, as it does on every frame.
     let long = ["-c".to_string(), "sleep 300".to_string()];
     let restarted = terminals.start_program(&key, "sh", &long, Some(dir.path()), 24, 80);
     let transitions = terminals.take_program_transitions();

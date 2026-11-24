@@ -162,10 +162,6 @@ impl Terminals {
         let Ok(mut parser) = parser.lock() else {
             return false;
         };
-        // Scrollback is a property of the screen, not of the widget, so it is
-        // set before reading and left where the mod asked for it. The shell
-        // has one of its own — it is wired up by the same `wire_up` the agent
-        // pane is — and it is this surface's offset that is applied here.
         parser.screen_mut().set_scrollback(usize::from(scroll));
         super::links::clear_uncovered(frame, area, parser.screen());
         let top = grid_top(parser.screen(), area);

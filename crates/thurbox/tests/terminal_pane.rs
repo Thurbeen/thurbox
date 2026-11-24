@@ -19,9 +19,6 @@ use thurbox::kernel::snapshot::{SessionRow, Snapshot};
 use thurbox::kernel::theme::Themes;
 use thurbox::session::SessionState;
 
-/// The mod under test. It keeps its `agent` name: the name is what
-/// `command("focus", …)`, the footer's focus label and the tests below spell,
-/// and renaming it is a separate edit from merging the views.
 const TERMINAL: &str = "agent";
 
 fn host() -> LuaHost {
@@ -210,8 +207,6 @@ fn session_surface(node: &Node) -> String {
         .to_string()
 }
 
-// ── one mod, one focus stop ────────────────────────────────────────────
-
 #[test]
 fn the_centre_holds_one_terminal_mod_rather_than_two() {
     let host = host();
@@ -221,9 +216,6 @@ fn the_centre_holds_one_terminal_mod_rather_than_two() {
         "the shell is a tab of the terminal now, not a plugin: {names:?}"
     );
 
-    // The kernel does not know which mod "is" the terminal — it knows which
-    // asked for raw session input. Exactly one may, or a keystroke has two
-    // homes.
     let raw: Vec<&str> = host
         .mods
         .iter()
@@ -284,7 +276,6 @@ fn the_shell_view_names_itself_to_the_focus_badge() {
 
 #[test]
 fn the_shell_chord_survived_the_merge() {
-    // The opener moved mods; the chords it is reachable by must not have.
     let host = host();
     let registry = registry(&host);
     for press in [
@@ -313,8 +304,6 @@ fn the_shell_chord_survived_the_merge() {
 
 #[test]
 fn the_tab_strip_renders_on_the_shell_tab_too() {
-    // The bug the merge exists to fix: the strip used to live in the agent
-    // mod, so switching view took it off the screen with it.
     let host = with_a_selection();
     let index = index_of(&host, TERMINAL);
 
@@ -485,8 +474,6 @@ fn a_chip_selects_a_tab_rather_than_focusing_another_mod() {
         !verbs.contains(&ClickVerb::Focus("shell".into())),
         "there is no shell plugin to focus: {verbs:?}"
     );
-    // No chip may name a mod that is not loaded: a `focus:` verb pointing at
-    // a removed pane would light up and then do nothing.
     assert!(
         !verbs
             .iter()

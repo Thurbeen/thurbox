@@ -233,18 +233,6 @@ pub const QUIT_CHORD: &str = "ctrl+q";
 ///
 /// The escape route: a mod that consumes every key it is offered must not be
 /// able to trap you inside it. Declaring or overriding one of these is refused.
-// Reload is F10 because v1 already spends F5 on the tasks panel; the kernel
-// takes one of the two F-keys v1 leaves free rather than shadowing a pane.
-//
-// Focus movement is here as well as on Tab: v1 binds it to Ctrl+H/Ctrl+L and
-// refuses to defer either to the agent, precisely because they are how you get
-// *out* of a focused terminal. F12 is v1's perf HUD, which reports on the loop
-// and so must not be something a mod can take over.
-// Tab and Shift+Tab are DELIBERATELY absent. v1 forwards both to the agent
-// (`agent::input::key_to_bytes` maps Tab to `\t` and BackTab to CSI Z), because
-// every coding agent uses Tab for completion — taking it for focus movement
-// makes the pane unusable for the thing the pane exists to run. Focus moves on
-// Ctrl+H/Ctrl+L, which v1 reserves for exactly this reason.
 pub const RESERVED: [&str; 5] = [QUIT_CHORD, "f10", "ctrl+h", "ctrl+l", "f12"];
 
 /// Kernel shortcuts have stable action names even though no Lua pane owns them.
@@ -336,41 +324,9 @@ pub struct Registry {
     conflicts: Vec<Conflict>,
     /// Persisted overrides: action → chord.
     binding_overrides: BTreeMap<String, String>,
-    /// Persisted overrides: `mod.setting` → value.
     setting_overrides: BTreeMap<String, Value>,
-    /// Persisted overrides: a pill's action → the priority it is given.
-    ///
-    /// The one decision about the interface that used to live in the mod
-    /// that declared it, which meant ordering the action band by editing
-    /// somebody else's file. No default is kept beside it: `declare_all`
-    /// replaces the pill list, so the declared number is simply what is there
-    /// when no entry names the action.
-    ///
-    /// Held as the JSON the file carried rather than as an `i64`, so a value of
-    /// the wrong shape is *kept* and refused at apply time — which is what
-    /// `setting_overrides` does, and it matters more here. `persist` rewrites
-    /// `ui.json` from these maps on any unrelated change, so an entry dropped at
-    /// read time would take the user's own typo out of their file before they
-    /// ever ran `thurbox-cli config validate` over it, leaving nothing to find.
     pill_overrides: BTreeMap<String, serde_json::Value>,
-    /// Mods the user turned off: absolute paths, present on disk and not
-    /// loaded.
-    ///
-    /// Kept here rather than in the delivery manifest deliberately.
-    /// `.bundled.json` records what the *binary* did to the directory — wrote,
-    /// updated, preserved, tombstoned — and a disabled bundled file is still one
-    /// delivery should keep up to date. Putting a user's preference there would
-    /// make "I turned this off" and "we stopped shipping this" the same kind of
-    /// fact (design D1).
     disabled: BTreeSet<String>,
-    /// Mods the user trusted with a capability: absolute path → the digest
-    /// its contents had when trust was granted.
-    ///
-    /// Keyed by **absolute** path because a repo's `./ui` and the config
-    /// directory's are different sets of files and must not share trust. Keyed
-    /// by path rather than by digest because revoking on every edit would make
-    /// writing your own mod intolerable — the digest is kept so the drift can
-    /// be *reported* instead (design D6).
     trusted: BTreeMap<String, Granted>,
     /// What would not load: a config file that failed to parse, a rejected
     /// override. Conflicts are *not* kept here — see [`Registry::warnings`].
@@ -388,19 +344,6 @@ pub struct Registry {
     version: u64,
 }
 
-/// Where a registry's overrides came from.
-///
-/// A registry built with [`Default`] holds no overrides at all, so persisting
-/// one does not *change* `ui.json` and `mod-state.json` — it empties them:
-/// every disabled mod, every trust grant and every setting a user chose is
-/// gone, replaced by the empty tables the fresh registry has. That is not hypothetical. thurbox
-/// injects `THURBOX_CONFIG_DIR` into the sessions it spawns, so a `cargo test`
-/// run from inside thurbox resolves the *real* config directory, and the tests
-/// that build a registry to assert routing wiped the running interface's
-/// decisions as a side effect.
-///
-/// So writing back is a capability of a registry that was *read*, and the type
-/// carries which kind it is rather than every caller remembering.
 #[derive(Default, Clone, Copy, PartialEq, Eq, Debug)]
 enum Origin {
     /// Never read: it has nothing of the user's to write back.
@@ -527,26 +470,12 @@ impl Registry {
         for setting in &mut self.settings {
             let key = format!("{}.{}", setting.owner, setting.id);
             if let Some(value) = self.setting_overrides.get(&key) {
-                // A stored value of the wrong shape is ignored rather than
-                // coerced: a mod that declared a number should never be
-                // handed a string because an old file said so — nor a choice
-                // the mod no longer offers.
                 if setting.admits(value) {
                     setting.value = value.clone();
                 }
             }
         }
         for pill in &mut self.pills {
-            // Only what the user moved, and only onto something a mod
-            // declared. An entry naming an unknown action is left alone rather
-            // than turned into a button: a binding may be synthesised from an
-            // override because a bound command becomes a key, but a pill has no
-            // such source, and a chip that does nothing when pressed is what
-            // `bands::entries` already drops declared entries to avoid.
-            //
-            // A priority is a whole number, so `"75"` or `75.5` is refused here
-            // rather than coerced — the same check the settings loop above makes
-            // against a declared default.
             let overridden = self
                 .pill_overrides
                 .get(&pill.action)
@@ -592,10 +521,6 @@ impl Registry {
         }
     }
 
-    /// Find chords claimed twice in overlapping scopes.
-    ///
-    /// Two mod-scoped declarations of `j` are fine — focus decides. A global
-    /// claim overlaps with everything.
     fn detect_conflicts(&mut self) {
         let mut seen: Vec<(String, usize)> = Vec::new();
         for (index, binding) in self.bindings.iter().enumerate() {
@@ -1148,7 +1073,6 @@ fn add_chord(chords: &mut String, chord: &str) {
 /// Do two declarations compete for the same chord?
 fn scopes_overlap(a: &Binding, b: &Binding) -> bool {
     match (a.scope, b.scope) {
-        // Two mod-scoped claims only collide when the same mod makes both.
         (Scope::Mod, Scope::Mod) => a.owner == b.owner,
         _ => true,
     }
@@ -1600,9 +1524,6 @@ mod tests {
         }
     }
 
-    /// One row per `(mod, action)`: its chords joined once each in
-    /// declaration order, the first description kept, a command filling only a
-    /// blank one, and a chord-less command after every binding.
     #[test]
     fn palette_rows_merge_an_actions_chords_and_descriptions() {
         let mut registry = Registry::default();
@@ -1730,7 +1651,6 @@ mod tests {
                 .map(|b| b.action.as_str()),
             Some("themes.next")
         );
-        // Two mods declaring `j` is not a conflict — focus decides.
         assert!(
             registry.conflicts().is_empty(),
             "{:?}",
@@ -1808,9 +1728,6 @@ mod tests {
 
     #[test]
     fn an_override_of_the_wrong_type_is_ignored() {
-        // A stored value that no longer matches the declaration must not be
-        // coerced — handing a mod a string where it declared a number is
-        // worse than ignoring the file.
         let mut registry = Registry::default();
         registry
             .setting_overrides
@@ -1835,8 +1752,6 @@ mod tests {
 
     #[test]
     fn an_override_survives_a_reload_that_drops_its_action() {
-        // The user's override belongs to the user: a mod that is broken for
-        // one reload must get its binding back when it returns.
         let mut registry = Registry::default();
         registry
             .binding_overrides
@@ -1973,11 +1888,6 @@ mod tests {
         );
     }
 
-    /// The bug this guards: a registry nobody read from disk used to write
-    /// itself over `ui.json`, and its five empty tables *are* the whole file. A
-    /// test run inherits `THURBOX_CONFIG_DIR` from the session that spawned it,
-    /// so `cargo test` from inside thurbox emptied the running interface's
-    /// disabled set, trust grants and mod settings.
     #[test]
     fn a_registry_that_was_never_read_does_not_write_over_the_file() {
         let dir = tempfile::tempdir().expect("temp dir");
@@ -2081,8 +1991,6 @@ mod tests {
         std::fs::write(dir.join("ui.json"), body).expect("write ui.json");
     }
 
-    /// The issue's own case: ordering the band meant editing the mod that
-    /// declared the number, and one of those mods was somebody else's.
     #[test]
     fn a_pills_priority_is_overridden_from_ui_json() {
         let home = tempfile::TempDir::new().expect("tempdir");
@@ -2096,9 +2004,6 @@ mod tests {
         assert_eq!(band_labels(&registry), vec!["Fleet", "Settings"]);
     }
 
-    /// Removing the entry is how the mod's own number comes back. There is no
-    /// second copy of it to restore from — `declare_all` replaces the list, so
-    /// the declared value is simply what is there when no override names it.
     #[test]
     fn clearing_a_pill_override_restores_the_declared_priority() {
         let home = tempfile::TempDir::new().expect("tempdir");
@@ -2216,8 +2121,6 @@ mod tests {
         let mut registry = Registry::load();
         let (bindings, pills) = banded();
         registry.declare_all(bindings, Vec::new(), pills);
-        // Nothing to do with the band: trusting a file, rebinding a chord in the
-        // help editor or turning a mod off all reach the same `persist`.
         registry
             .trust("/ui/mods/mine.lua", "return {}")
             .expect("trust");

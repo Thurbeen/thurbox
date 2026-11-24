@@ -249,12 +249,6 @@ impl Table {
 
 // --- a frame, as the loop actually draws one ---------------------------------
 
-/// The panes an arrangement of this size actually places, at their real rects.
-///
-/// This is the difference between a measurement and a fiction: a closed search
-/// strip occupies no slot, so `draw_slots` never reaches it and it costs a real
-/// frame nothing. Rendering every mod regardless reported it as the second
-/// most expensive pane in the interface.
 fn placed_panes(host: &LuaHost) -> Vec<(usize, String, ratatui::layout::Rect)> {
     let area = ratatui::layout::Rect::new(0, 0, WIDTH(), HEIGHT());
     let region = host.arrangement(WIDTH(), HEIGHT()).expect("arrangement");
@@ -277,10 +271,6 @@ fn placed_panes(host: &LuaHost) -> Vec<(usize, String, ratatui::layout::Rect)> {
     out
 }
 
-/// The float probe every frame pays: `draw_floats` renders each floating mod
-/// to discover whether it is floating *this* frame. Three of the bundled panes
-/// are floats, and all three declare `pure`, so this is a cache hit — which is
-/// exactly the claim worth measuring.
 fn float_probe(host: &LuaHost, frame: u64) {
     for &index in host.floating() {
         let _ = host.render(

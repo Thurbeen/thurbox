@@ -1052,8 +1052,6 @@ pub fn selene_paths() -> Vec<String> {
     paths
 }
 
-/// The same paths as a mod really writes them — `runs.*` as a key a mod
-/// would pick — for the probe that must lint clean.
 fn probe_paths() -> Vec<String> {
     let mut paths = Vec::new();
     walk_paths("thurbox", &API_ROOT, &mut paths, false);

@@ -398,8 +398,6 @@ fn the_limits_are_settable_and_enforced() {
 #[test]
 fn a_healthy_mod_is_unaffected_by_the_hook() {
     let _limits = limits();
-    // The overhead question from task 2.12, as a bound rather than a number:
-    // a mod doing ordinary work must not be near the budget.
     let dir = mod_dir(
         r#"return {
              name = "ordinary", slot = "a",

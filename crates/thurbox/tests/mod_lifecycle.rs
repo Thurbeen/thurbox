@@ -22,7 +22,6 @@ use thurbox::kernel::layout::{divide_slot, resolve};
 use thurbox::kernel::node::Axis;
 use thurbox::kernel::registry::Registry;
 
-/// A pane that draws nothing, in as few lines as a mod can be written.
 fn pane(name: &str, slot: &str) -> String {
     format!(
         "return {{ name = \"{name}\", slot = \"{slot}\", focusable = true,\n\
@@ -261,9 +260,6 @@ fn the_arrangement_decides_which_panes_have_a_rect() {
 
 #[test]
 fn removing_every_pane_is_an_empty_interface_rather_than_a_fault() {
-    // The failure this guards: an empty mod set used to be an error, the
-    // error summoned the recovery floor, and the floor delivered the bundled
-    // interface again — undoing the removal it was asked to make.
     let dir = interface();
     for (relative, _) in bundled::BUNDLED {
         if relative.starts_with("mods/") {
@@ -337,16 +333,6 @@ fn restoring_brings_a_removed_pane_back() {
     );
 }
 
-/// The recovery floor is a state, not a one-way door.
-///
-/// A user copy that will not load is swapped for the bundled interface so thurbox
-/// stays usable while the file is fixed from inside it. But a `LuaHost` reloads
-/// from the directory it was *built* from, so once the floor was installed every
-/// later reload rebuilt the bundled copy: the watcher fired on the user's fix,
-/// nothing changed, and no error said why — while the watcher, the inventory and
-/// every Interface-tab action still pointed at the user's own directory. Only a
-/// restart recovered, and a `./ui` checkout took the same path, so it cost a
-/// mod author their edit-reload loop too.
 #[test]
 fn a_broken_interface_loads_again_once_it_is_fixed() {
     let dir = interface();
@@ -609,8 +595,6 @@ fn the_demo_examples_load_and_stack_where_the_layout_says() {
             host.error
         );
     }
-    // The `top` example asks to run a program, and declaring that is not being
-    // granted it — the whole point of the capability being per-mod.
     let top = host
         .mods
         .iter()
@@ -665,8 +649,6 @@ fn the_demo_examples_load_and_stack_where_the_layout_says() {
     );
 }
 
-/// A slot the arrangement reserves for a mod that was not copied is an empty
-/// column, and an empty column reads as breakage.
 #[test]
 fn the_demo_layout_drops_a_stack_slot_whose_mod_is_missing() {
     let dir = interface();
@@ -717,11 +699,6 @@ fn rect_of(rects: &[(String, Rect)], slot: &str) -> Rect {
         .1
 }
 
-/// The whole point: installing a pane that wants a full-width row is enough.
-/// `mod install` never writes `layout.lua` — placement is the user's — so a
-/// pane in a slot of its own used to load, declare its keys, and draw nothing
-/// until the user found the line to add. The bundled arrangement places every
-/// declared strip instead, so the user's file is still where it is decided.
 #[test]
 fn a_strip_is_placed_above_the_bars_at_its_declared_height_with_no_layout_edit() {
     let dir = interface();

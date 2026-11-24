@@ -964,11 +964,6 @@ fn a_creation_in_flight_is_not_something_to_sort() {
     );
 }
 
-// ── entries another mod contributes ──────────────────────────────────────
-
-/// A mod that owns a per-session action and offers it in the sessions
-/// menu. `extra.toggle` is a palette command with no chord, so it is declared
-/// only in `commands`; `extra.ghost` is declared nowhere.
 const CONTRIBUTOR: &str = r#"
 -- Offered at load, which runs again on every reload: rewriting the same list
 -- under the same name is idempotent.

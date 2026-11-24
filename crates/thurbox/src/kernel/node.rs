@@ -918,8 +918,6 @@ mod tests {
 
     #[test]
     fn a_plain_role_is_not_a_verb() {
-        // `row` and `overflow` are what widgets.lua already writes; they must
-        // keep meaning "ask the mod", not "the kernel handles this".
         assert_eq!(ClickVerb::parse(Some("row")), None);
         assert_eq!(ClickVerb::parse(Some("overflow")), None);
         assert_eq!(ClickVerb::parse(Some("action:")), None);
@@ -927,9 +925,6 @@ mod tests {
         assert_eq!(ClickVerb::parse(None), None);
     }
 
-    /// Raw input follows the tree, and now the tree can name either kind of live
-    /// surface. The session behaviour must be identical — `20_agent.lua` depends
-    /// on it — and a mod-drawn `cells` surface has nothing behind it to type at.
     #[test]
     fn the_first_live_surface_is_either_kind_but_never_mod_drawn_cells() {
         let session = Node::Surface {

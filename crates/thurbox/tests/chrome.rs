@@ -142,7 +142,6 @@ fn prime(host: &LuaHost, mod_name: &str) {
     .expect("render");
 }
 
-/// Paint `mod_name` into a `width` x `height` buffer, after priming `first`.
 fn screen(
     host: &LuaHost,
     snapshot: &Snapshot,
@@ -338,8 +337,6 @@ fn progress_outranks_a_message_because_it_outlives_one() {
 fn the_action_band_carries_the_focus_the_counts_and_the_entries() {
     let themes = Themes::load(None);
     let host = host();
-    // Declared exactly as the loop declares them: every mod's contributions
-    // plus the kernel's own, so the band sees what it sees at runtime.
     let mut registry = Registry::default();
     let (mut bindings, settings, mut pills) = host.all_declarations();
     bindings.extend(thurbox::kernel::modals::bindings());
@@ -355,11 +352,6 @@ fn the_action_band_carries_the_focus_the_counts_and_the_entries() {
     assert!(row.contains("3 session(s)"), "v1's count spelling: {row}");
     assert!(row.contains("^H/^L Focus"), "the focus hint: {row}");
     assert!(row.contains("^O Open"), "the open hint: {row}");
-    // The kernel's own modals contribute these three; no bundled PANE declares an
-    // entry, and that is deliberate — see `ui/mods/20_agent.lua`. The
-    // mod-contributed path is covered in `tests/kernel_mvp.rs` with a
-    // throwaway mod, so this asserting nothing about a pane's entry is not a
-    // gap in coverage.
     assert!(row.contains("Help · F1"), "{row}");
     assert!(row.contains("Theme · F4"), "{row}");
     assert!(row.contains("Settings · F6"), "{row}");
@@ -646,9 +638,6 @@ fn pane_slots(placed: &[SlotRect]) -> Vec<&str> {
 
 #[test]
 fn the_two_panes_split_the_width_between_the_bands() {
-    // The interface is the session column plus the centre. v1's info/tasks/files
-    // columns went with their mods, and so did their slots — a slot no mod
-    // can fill would reserve a rect for nothing.
     let host = host();
     let placed = slots(&host, &world(), 160, 40);
     assert_eq!(pane_slots(&placed), ["sessions", "center"]);

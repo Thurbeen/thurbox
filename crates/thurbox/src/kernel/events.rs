@@ -438,8 +438,6 @@ mod tests {
             .find(|spec| spec.name == "program.exited")
             .expect("the spec is what `mod events` and `F1` print");
         assert_eq!(spec.fields, &["name", "program"]);
-        // Broadcast is the default; this one is addressed, because a program pane
-        // belongs to one mod and two may name theirs the same.
         assert!(Event::new("program.exited").only.is_none());
         assert_eq!(
             Event::new("program.exited")

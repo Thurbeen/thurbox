@@ -273,9 +273,6 @@ fn a_change_of_what_is_printing_rebuilds_one_group_and_no_others() {
 
 #[test]
 fn a_moved_source_is_published_even_though_groups_are_gated() {
-    // The requirement gating exists to not break: what a mod reads after a
-    // source moves is the new value. A group reused when its inputs changed is
-    // undetectable from Lua, so this asserts on what the pane actually renders.
     let (_dir, host) = interface();
     let themes = Themes::load(None);
 
@@ -301,9 +298,6 @@ fn a_moved_source_is_published_even_though_groups_are_gated() {
 
 #[test]
 fn a_gated_publish_matches_a_full_rebuild() {
-    // The proof: for the same inputs, gating changes nothing
-    // a mod can observe. `always_fresh` rebuilds every group, so it stands in
-    // for the ungated build.
     let (_dir, host) = interface();
     let themes = Themes::load(None);
     let snapshot = Snapshot {
@@ -445,8 +439,6 @@ fn a_pure_pane_is_not_re_rendered_while_its_inputs_stand() {
 
 #[test]
 fn an_undeclared_pane_renders_every_time() {
-    // The promise to every mod that predates the declaration: nothing about
-    // it changed. Rendering it repeatedly must never be served from a cache.
     let (_dir, host) = two_panes();
     let themes = Themes::load(None);
     publish_at(&host, Epoch::default(), &Snapshot::default(), &themes);
@@ -603,10 +595,6 @@ fn a_different_rect_or_focus_re_renders_a_pure_pane() {
         .expect("render")
     };
 
-    // Each of these is a distinct key, so each must reach the mod rather than
-    // being served the previous one. Asserted through the cache's own behaviour:
-    // a second ask at the SAME key is served from it, so if width or focus were
-    // ignored these would collide.
     let _ = at(40, false);
     let _ = at(80, false);
     let _ = at(40, true);
@@ -1043,12 +1031,6 @@ fn a_non_string_index_on_the_render_context_is_nil_rather_than_an_error() {
 
 #[test]
 fn a_mod_cannot_reach_or_replace_the_render_context_metatable() {
-    // The metatable is built once per VM and shared by every render, and both
-    // `getmetatable` and `setmetatable` are in the sandbox. Handing it out would
-    // let one mod rewrite `__index` and freeze every other pane's clock —
-    // and silently make the kernel's "did this render read it" answer false
-    // everywhere. `__metatable` is what makes it neither readable nor settable
-    // from Lua, the same boundary `RUN_IMPL` gets from the registry.
     let dir = tempfile::tempdir().expect("tempdir");
     let mods = dir.path().join("mods");
     std::fs::create_dir_all(&mods).expect("mkdir");

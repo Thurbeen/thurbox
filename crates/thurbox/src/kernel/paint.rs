@@ -46,12 +46,6 @@ pub trait SurfaceProvider {
     /// behind it, and the caller draws a placeholder instead.
     fn render_session(&self, frame: &mut Frame, area: Rect, session: &str, scroll: u16) -> bool;
 
-    /// Paint the program `surface` names into `area`, for a pane a mod owns.
-    ///
-    /// Returns what to draw instead when there is nothing to paint, so a pane
-    /// that has not been started and one whose program has ended read
-    /// differently — a frozen grid and an empty box are the two answers this
-    /// exists to avoid.
     fn render_program(&self, frame: &mut Frame, area: Rect, surface: &str) -> ProgramPaint;
 }
 

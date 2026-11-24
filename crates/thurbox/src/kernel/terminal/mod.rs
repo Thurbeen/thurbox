@@ -328,28 +328,7 @@ pub struct Terminals {
     /// Captured once rather than looked up per attach so the failure mode is
     /// "no runtime at construction", not a surprise mid-session.
     runtime: Option<tokio::runtime::Handle>,
-    /// Programs mods asked for, keyed by [`ProgramKey`].
-    ///
-    /// Here beside `live` rather than in a struct of their own, because a pane
-    /// needs everything this struct already holds — the backend registry, the
-    /// paint seam, the redraw stamp, the rect memo — and `SurfaceProvider` has
-    /// one implementor by design, so a second provider is not on the table.
     programs: HashMap<ProgramKey, ProgramSlot>,
-    /// Spawns and replacements since the last look, **in the order they
-    /// happened**.
-    ///
-    /// `program.exited` is derived by comparing [`Self::program_liveness`]
-    /// against the previous look, and the loop applies commands before it
-    /// derives — so the map alone cannot answer either question the deriver
-    /// has. A restart hides the ending it overwrote, and a program that starts
-    /// and dies inside one iteration was never seen running at all.
-    ///
-    /// One log rather than two lists because the answer depends on the order:
-    /// a death is news only if the occupant that died had been *started* after
-    /// the last drain or was known running before it. Read as two sets, a
-    /// restart on a later frame re-vouches for a death that was already
-    /// announced, and the mod restarts twice for one process
-    /// ([`Self::take_program_transitions`]).
     program_transitions: Vec<ProgramTransition>,
     /// How long a session's pane may be off screen before its grid is dropped
     /// ([`Self::evict_hidden`]); `None` keeps every grid for as long as the
@@ -887,9 +866,6 @@ impl Terminals {
             return false;
         };
 
-        // The rect is the surface's own content area — the mod's frame is
-        // outside it — so the offset needs no border adjustment. PTY cells are
-        // 1-based.
         let rect = pane.painted().rect.get();
         let col = u32::from(x - rect.x) + 1;
         let row = u32::from(y - rect.y) + u32::from(pane.painted().top.get()) + 1;

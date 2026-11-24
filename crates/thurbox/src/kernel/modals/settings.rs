@@ -38,8 +38,6 @@ use crate::session::settings::{NotificationBackend, Settings};
 const RESTART_MARK: &str = "*";
 
 const MODAL_WIDTH: u16 = 66;
-/// The most this modal will take, however wide the terminal or long a mod's
-/// description. Past this, lines are too long to scan as a table.
 const MODAL_WIDTH_MAX: u16 = 108;
 /// Columns left to the interface either side, so the modal always reads as a
 /// modal rather than as the whole screen.
@@ -298,12 +296,6 @@ fn next_backend(name: &str, forward: bool) -> String {
     BACKENDS[next].0.to_string()
 }
 
-/// The core rows as the renderer wants them: ordinary [`Setting`]s owned by
-/// [`CORE_OWNER`], so one row renderer draws both halves of the screen.
-///
-/// `default` is what the file would hold with nothing set, so the renderer's
-/// "changed" highlight means "you moved this" for a core row exactly as it does
-/// for a mod's.
 fn core_rows(draft: &Settings) -> Vec<Setting> {
     let defaults = Settings::default();
     CORE_FIELDS
@@ -394,18 +386,6 @@ pub struct SettingsModal {
     selected: usize,
     /// The in-progress text edit, when a `Text` row is being typed into.
     editing: Option<String>,
-    /// The core settings as edited, seeded on first touch from what the *file*
-    /// holds.
-    ///
-    /// A draft, unlike a mod setting: these are a *file*, and some of them
-    /// cannot take effect until the next launch, so applying each keystroke
-    /// would mean writing the document a dozen times and lying about half of
-    /// them. Dropped with the modal, which is what makes `Esc` a discard.
-    ///
-    /// Seeded from the file rather than from what is in force, which is the
-    /// load-bearing half: seeded from what is *running*, a draft proposes
-    /// reverting every restart-only change already saved
-    /// ([`crate::kernel::config::Config::on_disk`]).
     draft: Option<Settings>,
     hits: Hits,
 }
@@ -435,10 +415,6 @@ impl SettingsModal {
         self.draft.as_ref().is_some_and(|draft| draft != on_disk)
     }
 
-    /// Every row on screen: the core settings, then whatever mods declared.
-    ///
-    /// Rebuilt per call rather than cached: it is a dozen rows, and a cache would
-    /// be one more thing that can disagree with the registry.
     fn rows(&self, registry: &Registry, on_disk: &Settings) -> Vec<Setting> {
         let draft = self.draft.clone().unwrap_or_else(|| on_disk.clone());
         let mut rows = core_rows(&draft);
@@ -549,9 +525,6 @@ impl SettingsModal {
             Value::Bool(on) => self.put(registry, on_disk, &setting, Value::Bool(!on)),
             Value::Number(_) => self.step(registry, on_disk, NUMBER_STEP),
             Value::Text(text) => {
-                // An enum is stepped, not typed: there are four spellings and a
-                // fifth would be silently ignored. A mod's declared choices
-                // are one for the same reason.
                 if setting.owner == CORE_OWNER || !setting.choices.is_empty() {
                     return self.step(registry, on_disk, NUMBER_STEP);
                 }
@@ -568,8 +541,6 @@ impl SettingsModal {
             // A bool has two states, so a horizontal step is the same act as a
             // toggle.
             Value::Bool(on) => self.put(registry, on_disk, &setting, Value::Bool(!on)),
-            // A core text value is an enum, and it cycles; a mod's is free
-            // text, which only typing changes.
             Value::Text(name) if setting.owner == CORE_OWNER => {
                 let next = next_backend(name, by >= 0.0);
                 self.put(registry, on_disk, &setting, Value::Text(next))
@@ -598,9 +569,6 @@ impl SettingsModal {
         )
     }
 
-    /// Route a write by owner: the draft for a core row, the registry for a
-    /// mod's. The one place the two halves differ, so it is the one place that
-    /// has to know they do.
     fn put(
         &mut self,
         registry: &mut Registry,
@@ -685,13 +653,6 @@ impl SettingsModal {
         self.hits.clear();
         let rows_data = self.rows(registry, on_disk);
         let settings = rows_data.as_slice();
-        // Sized to what the rows need, then clamped to the screen — the same rule
-        // the height below already follows. Two fixed widths could not do this:
-        // the description column is what is left after the widest id and the
-        // widest value, so one long id starved every description of ~40 columns
-        // and the wide tier was already in force when it happened. Deriving it
-        // also means a mod declaring a long description widens the modal
-        // instead of being quietly cut off.
         let cap = area
             .width
             .saturating_sub(MODAL_MARGIN)
@@ -754,10 +715,6 @@ impl SettingsModal {
             inner.width,
             1,
         );
-        // ` Save ` appears only with something to save: the core half is a
-        // document, while a mod's value went through the registry the moment
-        // the key was pressed. ` Close ` replays the `Esc` the layer above turns
-        // into a close, which is also what discards an unsaved draft.
         let mut pills = Vec::new();
         if self.dirty(on_disk) {
             pills.push(Pill {
@@ -919,8 +876,6 @@ impl SettingsModal {
     ) -> Vec<Line<'a>> {
         let mut footer = Vec::new();
         match settings.get(self.selected) {
-            // A core row is named by its path in the file, which is where the
-            // change will land; a mod's by `mod.id`.
             Some(setting) if setting.owner == CORE_OWNER => footer.push(Line::from(vec![
                 Span::styled("  settings.toml  ", chrome.muted()),
                 Span::styled(setting.id.clone(), chrome.muted()),
@@ -1117,9 +1072,6 @@ fn value_column(settings: &[Setting]) -> usize {
         .clamp(3, VALUE_WIDTH_MAX)
 }
 
-/// v1's `settings_modal::field_line`, minus the restart marker — a v2 setting
-/// is read live by the mod that declared it, so none of them can require a
-/// restart.
 #[allow(clippy::too_many_arguments)]
 fn setting_line<'a>(
     setting: &Setting,
@@ -1282,8 +1234,6 @@ mod tests {
         }
     }
 
-    /// A modal whose cursor is on the nth row a mod declared: the core rows
-    /// come first, and there is no point restating their count in every test.
     fn on_mod_row(nth: usize) -> SettingsModal {
         SettingsModal {
             selected: CORE_FIELDS.len() + nth,
@@ -1470,8 +1420,6 @@ mod tests {
 
     #[test]
     fn an_empty_registry_renders_rather_than_panicking() {
-        // Nothing declared is a real state — a user who removed every mod —
-        // and the modal must say so rather than divide by an empty list.
         let registry = registry_with(Vec::new());
         let mut modal = SettingsModal::default();
         let palette = crate::theme::ThemePreset::Default.palette();

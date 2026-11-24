@@ -15,10 +15,6 @@ use super::open_editor;
 use crate::{App, TrackedCommand};
 
 impl App {
-    /// Commands mods issued last frame, handed to the bus.
-    ///
-    /// Draining here rather than inside the render call is what keeps `command()`
-    /// a queue push and nothing more.
     pub(crate) fn apply_commands(&mut self, terminal: &mut DefaultTerminal) {
         for (chain, command) in self.host.drain_requests() {
             if self.refuse_ungranted(&chain, &command) || self.apply_local_command(&chain, &command)
@@ -30,13 +26,6 @@ impl App {
         self.open_requested_editor(terminal);
     }
 
-    /// Refuse a mod's command that needs a grant its issuer does not hold,
-    /// reporting why. `true` = refused, and nothing else is done with it.
-    ///
-    /// Here rather than on a worker, which knows no grant: `send`, `create`,
-    /// `restart` and a force `delete` drive an agent or destroy a worktree, so
-    /// each is checked before anything applies it — against every mod in
-    /// the chain the request came through, so the least-privileged one decides.
     fn refuse_ungranted(
         &mut self,
         chain: &[String],
@@ -120,9 +109,6 @@ impl App {
                 self.bookmark_in_flight = true;
                 return false;
             }
-            // A user event: queued for the next dispatch, with the emitting
-            // mod's *name* as its source — the owner is stamped by path, and
-            // the name is what subscribers know a mod by.
             Command::Emit {
                 owner,
                 name,
@@ -138,10 +124,6 @@ impl App {
                 event.payload.push(("source".to_string(), source.into()));
                 self.enqueue_event(event);
             }
-            // A declared action, run exactly as a click on an `action:` node
-            // runs one — the same handler, so a pane's key and its own button
-            // cannot come to mean different things. The issuing mod is the
-            // fallback owner, which is what the click path passes too.
             Command::Action { fallback, action } => {
                 let asked = self.fallback_pane(fallback);
                 // The handler runs for the chain the queue says made this —
@@ -165,8 +147,6 @@ impl App {
                 self.run_clicked_action_with_args(action, asked, &[(argument, value)]);
                 self.host.acting_for(previous);
             }
-            // The message band is kernel chrome; this is a mod contributing
-            // to it, like a pill or a binding.
             Command::Message { text, level } => self.report(text.clone(), *level),
             _ => return false,
         }
@@ -204,12 +184,6 @@ impl App {
             }
             return;
         }
-        // Through `focus_mod`, not by assigning `focus`: it records where focus
-        // came from, and holds a request for a slot the arrangement has not placed
-        // yet rather than refusing it (`kernel::focus::defer_until_placed`) —
-        // which is what a pane opening itself needs. Assigning directly skipped
-        // both, so a pane reached from a mod command could not be left with
-        // `Esc`.
         self.focus_mod(index);
         self.dirty = true;
     }
@@ -235,8 +209,6 @@ impl App {
         }
     }
 
-    /// Store a theme the picker or a mod chose in `interface.json`, on a
-    /// thread of its own so a slow disk delays the write and not the frame.
     pub(crate) fn store_chosen_theme(&mut self) {
         if let Some(name) = self.themes.take_chosen() {
             std::thread::spawn(move || {
@@ -491,17 +463,6 @@ impl App {
         self.note_data_change();
     }
 
-    /// Start or close a mod's program pane.
-    ///
-    /// The gate is here rather than in the queue: a command is honoured after the
-    /// call that made it, so the check is "may the mod that asked, right now" —
-    /// which is also what makes revoking trust take effect on the next frame
-    /// rather than at the next reload.
-    ///
-    /// A refusal is **reported** — see `refuse_program` — rather than silently
-    /// dropped, because a pane that cannot start needs to be able to say why: an
-    /// empty box that never explains itself is the failure mode the capability
-    /// model is otherwise prone to.
     pub(crate) fn apply_program(
         &mut self,
         owner: &str,
@@ -518,10 +479,6 @@ impl App {
             }
             return;
         }
-        // Absent rather than refusing, as `run` is: a mod that did not declare
-        // the capability, or that the user has not trusted, simply cannot start
-        // anything. Reported so an untrusted pane can say so instead of looking
-        // broken.
         if !self
             .host
             .may_path(owner, thurbox::kernel::host::Capability::Program)
@@ -533,17 +490,6 @@ impl App {
             return;
         }
 
-        // Typing into a pane that is already running, checked after the
-        // capability and before the start: this changes what a live program is
-        // doing, which is the same privilege as starting one, and a mod whose
-        // trust was revoked must not keep driving a process it started while it
-        // had it.
-        //
-        // `keys` WITH a program is "type at it, or start it if it is not there" —
-        // one command, decided here by `plan_keys`. The mod cannot make that
-        // decision itself: liveness is not in the snapshot, and a mod that
-        // tracked it in its own state would be wrong across an interface reload,
-        // which keeps panes but re-runs the file.
         if let Some(keys) = keys {
             use thurbox::kernel::terminal::{plan_keys, KeysPlan};
             let running = self
@@ -582,8 +528,6 @@ impl App {
             Some(rect) if rect.width > 0 && rect.height > 0 => (rect.height, rect.width),
             _ => (rows, cols),
         };
-        // The interface directory: the one directory a mod-owned pane can be
-        // said to belong to, since it has no session and therefore no worktree.
         let cwd = self.ui_dir.clone();
         if let Err(e) = self
             .terminals
@@ -595,13 +539,6 @@ impl App {
         self.changed_this_frame = true;
     }
 
-    /// Report a refused `program` command to the message band and to
-    /// `command.failed`.
-    ///
-    /// Both, because the band is the user's and the event is the mod's: a pane
-    /// that cannot start or be typed at has to be able to react, not only be
-    /// explained. Applied on this thread, so there is no `TrackedCommand` for
-    /// `report_finished_commands` to report it through.
     fn refuse_program(&mut self, name: &str, error: String) {
         self.enqueue_event(
             thurbox::kernel::events::Event::new("command.failed")

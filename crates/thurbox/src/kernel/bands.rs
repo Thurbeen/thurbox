@@ -522,17 +522,6 @@ struct PreparedEntry {
     role: String,
 }
 
-/// The last action band prepared, keyed on everything its entries depend on.
-///
-/// Resolving the entries is O(pills × bindings) with a chord `String` per
-/// comparison, then a sort, then a `format!` per label — and it ran on every
-/// painted frame for a row that only changes when the mod set (re)declares
-/// or the band is resized. So: the registry's change counter plus the width.
-/// Hover and theme reach only the paint styles below, so neither is a key; the
-/// registry pointer is one because the counters of two *different* registries
-/// are not comparable. Thread-local rather than a field because `render` is
-/// handed a shared [`BandState`] assembled fresh each frame — there is nothing
-/// longer-lived here to hang state on.
 struct ActionCache {
     registry: *const Registry,
     registry_version: u64,

@@ -13,8 +13,6 @@ use std::path::{Path, PathBuf};
 
 use thurbox::cli::mods::{run, Action};
 
-/// Point the interface directory at a fresh tempdir, with the bundled interface
-/// delivered — a mod `require`s `lib/`, so a bare directory is not one yet.
 fn interface(dir: &Path) -> PathBuf {
     let ui = dir.join("ui");
     std::fs::create_dir_all(&ui).expect("mkdir");
@@ -301,10 +299,6 @@ fn a_module_may_not_be_delivered_outside_its_own_namespace() {
 
 // ── a package that carries several panes ───────────────────────────────────
 
-/// A package with two panes sharing one module, one version and one lock entry.
-///
-/// Modelled on the mods people actually ship: `thurbox-annotate` carries two
-/// panes and `thurbox-files` three, sharing a `lib/`, a gate and one history.
 fn multi_pane_package(root: &Path, name: &str, version: &str) -> PathBuf {
     let dir = root.join(name);
     std::fs::create_dir_all(&dir).expect("mkdir");
@@ -929,16 +923,10 @@ fn removing_works_without_the_source_and_refuses_an_unknown_name() {
     assert!(checked.failure.is_none(), "{:?}", checked.json);
 }
 
-// ── a mod that carries more than Lua ────────────────────────────────────
-
-/// Build a throwaway mod **repository**: a pane in a nested directory, a module
-/// beside it, and a payload no text path could carry.
 fn mod_repo(root: &Path, marker: &str) -> PathBuf {
     mod_repo_in(root, marker, "sha1")
 }
 
-/// [`mod_repo`] on a named object format (`sha1` or `sha256`), so a repository
-/// whose object ids are 64 characters rather than 40 can be installed from too.
 fn mod_repo_in(root: &Path, marker: &str, object_format: &str) -> PathBuf {
     let repo = root.join("thurbox-widget");
     std::fs::create_dir_all(repo.join("mods")).expect("mkdir");
@@ -1542,9 +1530,6 @@ fn removing_a_repository_takes_the_whole_working_copy() {
     assert!(checked.failure.is_none(), "{:?}", checked.json);
 }
 
-/// A repository with several panes names its entry point in its own manifest — so a
-/// manifest is not irrelevant to a cloned mod, and one repository serves both
-/// install mechanisms rather than presenting two doors that behave differently.
 #[test]
 fn a_cloned_repository_takes_its_pane_from_its_own_manifest() {
     let home = tempfile::tempdir().expect("tempdir");

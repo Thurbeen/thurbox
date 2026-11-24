@@ -142,19 +142,7 @@ pub enum Command {
     ///
     /// UI-thread applied: focus is the loop's state, and there is nothing to
     /// wait for.
-    Focus {
-        mod_name: String,
-        /// Focus this pane, or — when it already holds focus — return to whatever
-        /// was focused before it.
-        ///
-        /// Here rather than in each mod because the kernel is what remembers
-        /// where focus came from (`focus_return`, the same memory `Esc` uses). A
-        /// pane implementing this itself would have to name the pane to go back
-        /// to, and the only name it could hard-code is the one that happens to
-        /// share its slot today — which is the user's arrangement, not the
-        /// mod's to assume.
-        toggle: bool,
-    },
+    Focus { mod_name: String, toggle: bool },
     /// Open a shell beside a session's agent.
     ///
     /// UI-thread applied: the pane is wired into the same `!Send` world the
@@ -178,25 +166,6 @@ pub enum Command {
         argv: Vec<String>,
         /// Give the pane up instead of starting it.
         close: bool,
-        /// Type into the program instead of starting it: the bytes go to the
-        /// pane's stdin exactly as if they had been typed at it.
-        ///
-        /// The third thing a mod can do to its own pane, after starting and
-        /// closing it, and the one that lets a long-lived program be *told*
-        /// something rather than replaced. Restarting an editor to open a
-        /// second file is the case that asked for it: the process is the
-        /// expensive part, and `start_program` is idempotent, so without this
-        /// the only way to change what it shows was to close it first.
-        ///
-        /// Sent WITH a program, it means "type at it, or start it if it is not
-        /// running" — the coordinator picks, because whether the pane is alive
-        /// is not something a mod can read. A running pane that refuses the
-        /// keys (its input channel is full) is reported, never started over.
-        /// See `terminal::plan_keys`.
-        ///
-        /// Bytes, not text: what a program is told is a keystroke sequence, and
-        /// a mod is free to write one its program understands and UTF-8 does
-        /// not.
         keys: Option<Vec<u8>>,
     },
     /// Open a session's working directory in the configured editor.
@@ -217,7 +186,6 @@ pub enum Command {
     /// lives in-process.
     Setting {
         key: String,
-        /// `None` resets to the mod's declared default.
         value: Option<SettingValue>,
     },
     /// Make a theme active and persist the choice.
@@ -390,9 +358,6 @@ impl Command {
             | Command::Setting { .. }
             | Command::OpenLink { .. }
             | Command::Order { .. }
-            // A mod's pane belongs to the mod, not to a session — which is
-            // the whole point of it, and why it must never appear in anything
-            // that enumerates sessions.
             | Command::Program { .. }
             | Command::Emit { .. }
             // Chrome, not a row: an action names a verb and a message a
@@ -484,7 +449,6 @@ impl Command {
                 Some(Capability::Sessions)
             }
             Command::Action { .. } | Command::ActionTarget { .. } => None,
-            // Issued by the kernel, never parsed from a mod.
             Command::Configure { .. } => None,
         }
     }
@@ -643,9 +607,6 @@ impl Command {
         }
     }
 
-    /// An event names nothing the kernel owns: the name is the subject, and
-    /// every other field travels as the payload. Refused for a kernel name so
-    /// a mod cannot forge what only the kernel derives.
     fn parse_emit(args: Args) -> Result<Self, String> {
         let Some(name) = args.text.filter(|t| !t.is_empty()) else {
             return Err("command \"emit\" needs an event name in text".to_string());
@@ -705,8 +666,6 @@ impl Command {
         Ok(Command::Message { text, level })
     }
 
-    /// The interface's own files name no session, and the verb is explicit:
-    /// removing a mod is destructive, so it is never the default.
     fn parse_mod(args: Args) -> Result<Self, String> {
         let Some(file) = args.file.filter(|f| !f.is_empty()) else {
             return Err("command \"mod\" needs a file".to_string());
@@ -719,7 +678,6 @@ impl Command {
         Ok(Command::Mod { file, edit })
     }
 
-    /// A setting names a `mod.id`, not a session.
     fn parse_setting(args: Args) -> Result<Self, String> {
         let Some(key) = args.text.filter(|t| !t.is_empty()) else {
             return Err("command \"set\" needs a plugin.setting key".to_string());
@@ -755,9 +713,6 @@ impl Command {
         })
     }
 
-    /// Repository memory names a path and a host, not a session. The verb is
-    /// explicit for the same reason the mod command's is: forgetting is
-    /// destructive, so it is never the default.
     fn parse_bookmark(args: Args) -> Result<Self, String> {
         let Some(path) = args
             .repo
@@ -793,11 +748,9 @@ impl Command {
         })
     }
 
-    /// A mod's program pane belongs to the mod, not to a session.
     fn parse_program(args: Args) -> Result<Self, String> {
         let name = args.text.unwrap_or_default();
         super::terminal::validate_program_name(&name)?;
-        // The verb, spelled the way `mod` and `bookmark` spell theirs.
         let close = matches!(args.action.as_deref(), Some("close") | Some("stop"));
         let program = args.repo.unwrap_or_default();
         // Typing is checked before the program is required: `keys` alone
@@ -1020,9 +973,6 @@ mod tests {
         }
     }
 
-    /// Every kind against the fields it reads and the refusal each missing one
-    /// earns, compared whole: a mod sees the message verbatim, so its wording
-    /// is part of what `parse` promises.
     #[test]
     fn each_kind_reads_its_own_fields_and_names_what_is_missing() {
         fn text(value: &str) -> Option<String> {
@@ -1423,9 +1373,6 @@ mod tests {
         }
     }
 
-    /// Every verb a mod can issue, and what it needs. `requires` has no
-    /// catch-all arm, so a new variant does not compile until it decides; this
-    /// pins each decision, so changing one is a visible edit here too.
     #[test]
     fn every_verb_states_what_it_requires() {
         use super::super::host::Capability::{Program, Run, Sessions};
@@ -1598,8 +1545,6 @@ mod tests {
         assert!(error.contains("text"), "{error}");
     }
 
-    /// The message band is kernel chrome, so a mod contributes to it rather
-    /// than drawing it — and it names a severity the band already badges.
     #[test]
     fn a_message_names_a_level_the_band_can_badge() {
         assert_eq!(
@@ -1658,10 +1603,6 @@ mod tests {
         assert!(error.contains("delete"), "{error}");
     }
 
-    /// `toggle` is what lets one key both enter and leave a pane.
-    ///
-    /// Off by default, so every existing `command("focus", …)` keeps meaning "go
-    /// there" — a mod that wanted the old behaviour did not have to change.
     #[test]
     fn focus_carries_whether_it_toggles() {
         let plain = Command::parse(
@@ -1918,7 +1859,6 @@ mod tests {
 
     #[test]
     fn phases_have_stable_names() {
-        // Published to mods, so these are contract, not debug output.
         assert_eq!(Phase::Queued.as_str(), "queued");
         assert_eq!(Phase::Running.as_str(), "running");
         assert_eq!(Phase::Failed.as_str(), "failed");
@@ -1971,8 +1911,6 @@ mod tests {
             .expect("a failure stays visible");
         assert_eq!(item.error.as_deref(), Some("no such pane"));
     }
-
-    // ── a mod's program is not a session ────────────────────────────────
 
     /// The command names no session, which is what keeps a program pane out of
     /// everything that enumerates them.

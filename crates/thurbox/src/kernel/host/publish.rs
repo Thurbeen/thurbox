@@ -115,10 +115,6 @@ impl LuaHost {
         })?;
         set(&table, "printing", printing_value)?;
 
-        // What a creation flow can choose among. Reads, so picking is mod
-        // state and only committing is a command.
-        // Built from the snapshot alone, so it changes when the database does
-        // and not once a frame.
         let repos = self.group("repos", [epoch.snapshot, 0, 0, 0], || {
             build_repos(&self.lua, snapshot)
         })?;
@@ -151,20 +147,8 @@ impl LuaHost {
         self.publish_settings(&table, settings)?;
 
         set(&table, "taken_at_ms", snapshot.taken_at_ms)?;
-        // The running release, for the header banner. v1 baked it into
-        // `ui::status_bar::render_header` at compile time; a mod cannot read
-        // an env var, and hardcoding it in Lua would leave every shipped copy
-        // claiming whatever version it was written against.
         set(&table, "version", env!("THURBOX_VERSION"))?;
-        // The contract a mod is written against, which `version` cannot
-        // say: a minor release may add fields but never removes or re-means
-        // one without moving this (`kernel::lua_api::API`).
         set(&table, "api", crate::kernel::lua_api::API)?;
-        // What the pointer is over, as `id` and `role`, so a mod can match
-        // whichever it used to mark the affordance. The common case is nothing
-        // hovered, which is one shared empty table (a constant key never
-        // moves); only while the pointer sits on an affordance is a fresh
-        // table built per publish.
         let hover = match hovered {
             None => self.group("hover", [0, 0, 0, 0], || {
                 self.lua
@@ -192,38 +176,18 @@ impl LuaHost {
         // like `focus`: a pane painting it live must be impure, since it moves no
         // epoch — see `Published::selection`.
         set(&table, "selection", selection.unwrap_or(""))?;
-        // Published so a mod can render how many times it has been reloaded
-        // — the feedback that tells you a save actually took effect.
         set(&table, "reloads", self.reloads)?;
 
-        // Work accepted but not yet visible in the rows above. Published so a
-        // mod can draw it rather than leaving an unexplained gap — what v1
-        // needed `PendingSpawn` for. Gated on the data epoch: accepting a
-        // command, every phase move and its completion all bump it (that is
-        // the ADR-P16 follow-up), and agent output deliberately does not — so
-        // a streaming turn reuses this table instead of rebuilding it per
-        // frame.
         let commands = self.group("commands", [epoch.data, 0, 0, 0], || {
             build_commands(&self.lua, inflight)
         })?;
         set(&table, "commands", commands)?;
 
-        // The active palette, as role -> colour. Mods name roles and never
-        // colours, so this is the only place a literal enters the UI — and
-        // swapping it restyles every pane, including ones the theme's author
-        // never saw.
-        // Thirty-six palettes, each a table, rebuilt for every frame that was
-        // painted — and changed only when someone picks a different one.
         let theme = self.group("theme", [epoch.themes, 0, 0, 0], || {
             build_theme(&self.lua, themes)
         })?;
         set(&table, "theme", theme)?;
 
-        // The registry, so help and settings can be mods rendering what the
-        // kernel collected — including declarations from mods they have
-        // never heard of.
-        // Every declared binding and setting. Moves when a mod is (re)declared,
-        // a chord is rebound or a setting is set — never within a frame.
         let reg = self.group("registry", [epoch.registry, 0, 0, 0], || {
             build_registry(&self.lua, registry)
         })?;
@@ -290,13 +254,6 @@ impl LuaHost {
         // the arrangement cache can key on it (see `LayoutKey`).
         self.last_status_rows.set(*status_rows);
 
-        // The interface's own files. One row per file rather than per loaded
-        // mod, because the ones worth acting on are exactly those that did
-        // NOT load — a removed pane, or one whose error is why the screen still
-        // shows the last good version. There is no version counter behind the
-        // rows (they are re-derived each republish), so the key is a digest of
-        // what they say — cheap against a per-frame Lua conversion of seven
-        // strings per file.
         let inventory_key = fnv64(inventory.iter().flat_map(|row| {
             [
                 row.path.as_bytes(),
@@ -315,16 +272,6 @@ impl LuaHost {
         set(&table, "plugins", inventory_value)?;
         set(&table, "ui_dir", to_lua_string(&self.lua, ui_dir)?)?;
 
-        // The machine this is running on, so a mod delivering more than one
-        // build can choose between them itself.
-        //
-        // Published rather than expressed in a package manifest, deliberately: a
-        // substitution template states one rule, while a pane that can read this
-        // states every rule it actually needs — prefer a binary already on `PATH`,
-        // fall back to a portable build, distinguish a libc variant, or say politely
-        // that it has nothing for you. The kernel models none of that.
-        // Constant for the life of the process, so it is built once and then
-        // handed back — an all-zero key never moves.
         let platform = self.group("platform", [0, 0, 0, 0], || build_platform(&self.lua))?;
         set(&table, "platform", platform)?;
 
@@ -339,7 +286,6 @@ impl LuaHost {
         })?;
         set(&table, "keyboard", keyboard)?;
 
-        // So a mod can say "open" or "copy" before you press it.
         set(&table, "can_open_links", *can_open)?;
         set(
             &table,
@@ -381,9 +327,6 @@ impl LuaHost {
         published
             .set("features", features)
             .map_err(|e| e.to_string())?;
-        // The one the arrangement needs, and the one a terminal pane may want
-        // to show. The notification knobs are deliberately absent: nothing a mod
-        // draws depends on them.
         published
             .set("two_panel_min_cols", settings.two_panel_min_cols)
             .map_err(|e| e.to_string())?;
@@ -396,12 +339,6 @@ impl LuaHost {
         Ok(())
     }
 
-    /// Publish the creation flow's four parameterised reads.
-    ///
-    /// Only what was asked for this frame: a flow that is closed asks nothing,
-    /// so all four are empty tables. Each carries its own request back
-    /// (`host`, `dir`, `repo`) so a mod can tell an answer to its current
-    /// question from one still in flight for the previous.
     fn publish_repo_reads(
         &self,
         table: &Table,
@@ -545,9 +482,6 @@ impl LuaHost {
                     .map_err(|e| e.to_string())?;
                 item.set("is_parent", row.is_parent)
                     .map_err(|e| e.to_string())?;
-                // True only for a row the flow offers on its own account. It
-                // leads the list by construction, so a mod reading the list
-                // as most-recent-first has to be able to step over it.
                 item.set("offered", row.offered)
                     .map_err(|e| e.to_string())?;
                 // `nil` means never established, which is a third state beside
@@ -755,11 +689,7 @@ fn build_sessions(
             }
             set(&entry, "meta", meta)?;
         }
-        // Manual position. Without this a mod cannot honour the order a
-        // reorder command just wrote, and the list silently ignores it.
         set(&entry, "display_order", row.display_order)?;
-        // Absent means "not computed yet", which a mod must be able to
-        // tell apart from a clean tree.
         if let Some(git) = row.git {
             let stats = lua.create_table().map_err(|e| e.to_string())?;
             set(&stats, "files", git.files_changed)?;
@@ -769,8 +699,6 @@ fn build_sessions(
             set(&stats, "dirty", git.dirty)?;
             set(&stats, "ahead", git.ahead)?;
             set(&stats, "behind", git.behind)?;
-            // Absent when unknown, so a mod can tell "not merged" from
-            // "nobody could say".
             set(&stats, "merged", git.merged)?;
             set(&entry, "git", stats)?;
         }
@@ -888,7 +816,6 @@ fn build_theme(lua: &Lua, themes: &Themes) -> Result<Value, String> {
     )?;
     set(&theme, "roles", roles)?;
 
-    // The selectable list, so a picker can be an ordinary mod.
     let choices = lua.create_table().map_err(|e| e.to_string())?;
     for (index, choice) in themes.choices().iter().enumerate() {
         let item = lua.create_table().map_err(|e| e.to_string())?;
@@ -942,9 +869,6 @@ fn build_registry(lua: &Lua, registry: &Registry) -> Result<Value, String> {
             .raw_set(index + 1, item)
             .map_err(|e| e.to_string())?;
     }
-    // The chord-less actions, so a pane offering another mod's action (the
-    // sessions menu's contributed entries) can tell a palette-only one from
-    // one nothing declares.
     let commands = lua.create_table().map_err(|e| e.to_string())?;
     for (index, command) in registry.commands().iter().enumerate() {
         let item = lua.create_table().map_err(|e| e.to_string())?;
@@ -960,8 +884,6 @@ fn build_registry(lua: &Lua, registry: &Registry) -> Result<Value, String> {
     set(&reg, "keys", keys)?;
     set(&reg, "commands", commands)?;
     set(&reg, "settings", settings)?;
-    // The section order help renders in, so a mod choosing a `group` can
-    // see where it will land without hardcoding the list.
     let sections = lua.create_table().map_err(|e| e.to_string())?;
     for (index, name) in crate::kernel::registry::HELP_SECTIONS.iter().enumerate() {
         sections
@@ -1188,11 +1110,6 @@ fn build_platform(lua: &Lua) -> Result<Value, String> {
     Ok(Value::Table(platform))
 }
 
-/// One run as a mod reads it.
-///
-/// `state` is the field to branch on — `pending`, `done` or `failed` — because a
-/// pane must be able to tell a program that has not answered from one that
-/// answered with nothing.
 pub(super) fn run_to_lua(lua: &Lua, run: &crate::kernel::runs::Run) -> mlua::Result<Table> {
     let table = lua.create_table()?;
     match run {
