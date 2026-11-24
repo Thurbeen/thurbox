@@ -573,6 +573,21 @@ impl Env {
         }
     }
 
+    pub fn expire_idle_waits(&self, name: &str) {
+        let path = self.object_path("Task", name);
+        let mut obj: Value =
+            serde_json::from_slice(&fs::read(&path).expect("record")).expect("json");
+        if let Some(attempts) = obj["status"]["deliveryAttempts"].as_object_mut() {
+            for attempt in attempts.values_mut() {
+                if attempt["idleSince"].is_u64() {
+                    attempt["idleSince"] = json!(0);
+                }
+            }
+            obj["status"].as_object_mut().unwrap().remove("notBefore");
+            fs::write(&path, obj.to_string()).expect("record");
+        }
+    }
+
     pub fn forget_announced(&self, name: &str) {
         let path = self.object_path("Task", name);
         let mut obj: Value =

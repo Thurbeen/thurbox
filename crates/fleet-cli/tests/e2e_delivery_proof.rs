@@ -227,6 +227,39 @@ fn a_typed_entry_waits_for_its_report_however_long_the_turn_runs() {
     assert_eq!(env.calls("brief"), 3);
 }
 
+fn idle_hook(env: &Env) {
+    let mut cmd = env.command(&["signal", "idle"]);
+    cmd.env("FLEET_SIGNAL_FILE", signal_file(env));
+    wait(cmd.spawn().expect("fleet signal")).ok();
+}
+
+#[test]
+fn a_typed_entry_an_idle_agent_never_submits_holds_back_no_later_entry() {
+    let env = setup("proof-inbox-held");
+    env.reconcile().ok();
+    assert_eq!(env.status("t1")["phase"], "Briefed");
+    idle_hook(&env);
+    env.host().set_prompt_hook_silent(true).unwrap();
+    env.fleet(&["send", "t1", "resume your work"]).ok();
+    env.reconcile().ok();
+    env.fleet(&["send", "t1", "second"]).ok();
+    env.reconcile().ok();
+    env.reconcile().ok();
+    assert_eq!(env.calls("brief"), 2, "the second waits behind the first");
+
+    env.expire_idle_waits("t1");
+    env.host().set_prompt_hook_silent(false).unwrap();
+    env.reconcile().ok();
+    env.reconcile().ok();
+    env.reconcile().ok();
+    let st = env.status("t1");
+    assert_condition(&st, "NeedsAttention", "True", "DeliveryUnconfirmed");
+    let full = full_status(&env);
+    assert_eq!(queued_texts(&full), vec!["resume your work"], "{full:#}");
+    assert_eq!(delivered_keys(&env).len(), 1, "{full:#}");
+    assert_eq!(env.calls("brief"), 3, "never a second send of the first");
+}
+
 fn queued_texts(status: &Value) -> Vec<&str> {
     status["inbox"]
         .as_array()
