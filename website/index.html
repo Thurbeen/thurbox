@@ -1,7 +1,7 @@
 ---
 layout: base.njk
 title: 'thurbox and Fleet — run coding agents'
-description: 'Fleet runs coding agents on any machine, reconciles them like Kubernetes, lets them work together and follows their pull requests. thurbox is the terminal interface on top.'
+description: 'Fleet runs coding agents on this machine or one you reach over ssh, reconciles them like Kubernetes, lets them work together and follows their pull requests. thurbox is the terminal interface on top.'
 root: '.'
 extraCss: ['landing.css']
 footer: true
@@ -14,8 +14,8 @@ footer: true
           <span class="hero-headline-phrase">agents</span>
         </h1>
         <p class="subtitle">
-          <strong>Fleet</strong> runs your coding agents on any machine, keeps each one to what you
-          declared and lets them work together. <strong>thurbox</strong> is the terminal interface
+          <strong>Fleet</strong> runs your coding agents here or on any machine you reach over ssh,
+          keeps each one to what you declared and lets them work together. <strong>thurbox</strong> is the terminal interface
           on top.<span
             class="hero-cursor"
             aria-hidden="true"
@@ -112,7 +112,7 @@ footer: true
                 The Task fix-login names its harness, claude, and its host, mux/box. Fleet, run by
                 fleet up, has three places on runtime-mux: local, this machine; box, a server over
                 ssh; and ubuntu, a WSL distro. Fleet clones the workspace on box and starts the
-                session there. thurbox lists every session with its place. When thurbox quits, the
+                session there. thurbox lists every session of the Fleet. When thurbox quits, the
                 sessions keep running.
               </desc>
               <g class="s1">
@@ -134,14 +134,14 @@ footer: true
                 <text x="280" y="48" class="st-small">Sessions</text>
                 <circle cx="286" cy="64" r="3.5" class="st-ring st-ring--ok" />
                 <text x="296" y="68" class="st-tui-row">laptop:api-docs</text>
-                <text x="648" y="68" class="st-tui-meta" text-anchor="end">mux/local</text>
+                <text x="648" y="68" class="st-tui-meta" text-anchor="end">codex</text>
                 <rect x="273" y="78" width="382" height="22" class="st-tui-sel" />
                 <circle cx="286" cy="89" r="3.5" class="st-ring st-ring--ok" />
                 <text x="296" y="93" class="st-tui-row st-tui-row--sel">laptop:fix-login</text>
-                <text x="648" y="93" class="st-tui-meta" text-anchor="end">mux/box</text>
+                <text x="648" y="93" class="st-tui-meta" text-anchor="end">claude</text>
                 <circle cx="286" cy="114" r="3.5" class="st-ring st-ring--idle" />
                 <text x="296" y="118" class="st-tui-row">laptop:win-build</text>
-                <text x="648" y="118" class="st-tui-meta" text-anchor="end">mux/ubuntu</text>
+                <text x="648" y="118" class="st-tui-meta" text-anchor="end">opencode</text>
                 <text x="272" y="160" class="st-small">3 session(s)</text>
                 <text x="656" y="160" class="st-tui-key" text-anchor="end">Quit · ^Q</text>
               </g>
@@ -220,7 +220,7 @@ footer: true
               <h3><span class="step-number" aria-hidden="true">2</span>Fleet starts it there</h3>
               <p>
                 runtime-mux clones the workspace on that machine and starts the agent in tmux there.
-                thurbox lists the session with its place, and its shell opens on the same machine.
+                thurbox lists the session with the others, and its shell opens on the same machine.
               </p>
               <p class="story__gain">No ssh-ing in to set up a checkout by hand.</p>
             </li>
@@ -447,8 +447,9 @@ footer: true
                 lead Task billing, tied to the thread, with the request as its brief. The lead runs
                 fleet apply to start two child Tasks, api and tests. A child's Questions, Drafts and
                 result go to the lead's inbox, and the lead answers with fleet send. The lead's
-                Comments are posted in the thread. Tasks publish events to a Board, which every
-                Task can read and subscribe to.
+                Comments are posted in the thread. Tasks publish events to the shared Board, Fleet
+                publishes each Task's events to the Board fleet, and every Task can read and
+                subscribe to both.
               </desc>
               <defs>
                 <marker
@@ -545,12 +546,12 @@ footer: true
               <text x="408" y="278" class="st-small st-edge s4" style="--d: 0.9s">notice</text>
               <g class="s4" style="--d: 0.6s">
                 <rect x="270" y="300" width="398" height="136" class="st-card" />
-                <text x="286" y="326" class="st-label">Board · shared</text>
+                <text x="286" y="326" class="st-label">Boards</text>
                 <rect x="284" y="338" width="370" height="28" class="st-sunk" />
-                <text x="296" y="357" class="st-mono"><tspan class="st-dim">api</tspan> schema v2 published</text>
+                <text x="296" y="357" class="st-mono"><tspan class="st-dim">shared</tspan> api: schema v2 published</text>
                 <rect x="284" y="372" width="370" height="28" class="st-sunk" />
-                <text x="296" y="391" class="st-mono"><tspan class="st-dim">fleet</tspan> fleet.task.result · tests</text>
-                <text x="286" y="424" class="st-small">every Task can read it and subscribe</text>
+                <text x="296" y="391" class="st-mono"><tspan class="st-dim">fleet</tspan>  fleet.task.result · tests</text>
+                <text x="286" y="424" class="st-small">every Task can read them and subscribe</text>
               </g>
             </svg>
           </figure>
@@ -584,7 +585,8 @@ footer: true
               <h3><span class="step-number" aria-hidden="true">4</span>News reaches everyone</h3>
               <p>
                 The lead's Comments and Questions are posted in the thread. Tasks publish events to
-                a Board, and Fleet adds its own; a Task that subscribes gets a notice in its inbox.
+                a Board, and Fleet publishes each Task's events to the Board <code>fleet</code>. A
+                Task that subscribes gets a notice in its inbox.
               </p>
               <p class="story__gain">Agents share what changed without a person passing it on.</p>
             </li>
@@ -766,8 +768,8 @@ footer: true
             <p class="story__extend-layer">Harness profiles</p>
             <h4>Any agent CLI</h4>
             <p>
-              Fleet ships nine harness profiles, among them claude, codex and opencode. A TOML file
-              in Fleet's config adds another agent or replaces a bundled profile.
+              Fleet ships harness profiles for claude, codex, opencode and more agent CLIs. A TOML
+              file in Fleet's config adds another agent or replaces a bundled profile.
             </p>
             <a href="docs/agents.html">Agents &rarr;</a>
           </li>
@@ -794,8 +796,6 @@ footer: true
       </div>
     </section>
 
-    <!-- thurbox: the interface on top of one or more Fleets. It comes first:
-         it is what a visitor sees and uses; the engine under it follows. -->
     <section class="section product" id="thurbox">
       <div class="container">
         <div class="product__grid" data-reveal>

@@ -232,6 +232,11 @@ test('homepage presents Fleet and thurbox apart, links each official plugin, and
     assert.ok(extend.querySelector(`a[href="${href}"]`), `the extension part links ${href}`);
   }
   assert.ok(existsSync('examples/fleet/plugin/files.py'), 'the example Fleet plugin exists');
+  const harnesses = readFileSync('crates/fleet-api/src/harness/bundled.rs', 'utf8');
+  for (const harness of ['claude', 'codex', 'opencode']) {
+    assert.match(harnesses, new RegExp(`^name = "${harness}"$`, 'm'), `${harness} is a bundled harness profile`);
+    assert.match(text(extend), new RegExp(harness), `the extension part names ${harness}`);
+  }
   for (const step of fit.querySelectorAll('[data-story]')) {
     const numbers = step.querySelectorAll('[data-step]').map((s) => Number(s.getAttribute('data-step')));
     assert.deepEqual(numbers, numbers.map((_, i) => i + 1), 'each story numbers its steps from 1');
