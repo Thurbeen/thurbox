@@ -19,7 +19,8 @@
 /// attention. Since 2.1.325 its prompt hook gets a typed brief, a bracketed
 /// paste, wrapped in `<pasted_content id="…">` tags. Its telemetry exports
 /// metrics and events; its `OTEL_LOG_*` content switches stay unset, which
-/// is off.
+/// is off. It names its messaging socket to its hooks; the launch clears an
+/// inherited one, so a Claude Code that sets none never reports another's.
 pub const CLAUDE: &str = r#"
 name = "claude"
 program = "claude"
@@ -32,6 +33,7 @@ args = [
   '{"hooks":{"SessionStart":[{"hooks":[{"type":"command","command":"fleet signal idle 2>/dev/null || true"}]}],"UserPromptSubmit":[{"hooks":[{"type":"command","command":"fleet signal prompt 2>/dev/null || true"}]}],"PreToolUse":[{"hooks":[{"type":"command","command":"fleet signal working 2>/dev/null || true"}]}],"Notification":[{"matcher":"permission_prompt","hooks":[{"type":"command","command":"fleet signal blocked 2>/dev/null || true"}]}],"Stop":[{"hooks":[{"type":"command","command":"fleet signal idle 2>/dev/null || true"}]}]}}',
 ]
 add_dir = "--add-dir"
+env = { CLAUDE_CODE_MESSAGING_SOCKET = "" }
 
 [resume]
 args = ["{program}", "{launch_args}", "--resume", "{conversation}"]
@@ -43,6 +45,10 @@ mode = "dialog"
 prompt = ["prompt"]
 conversation = ["session_id"]
 paste = "pasted_content"
+
+[inbox]
+address = "CLAUDE_CODE_MESSAGING_SOCKET"
+args = ["fleet", "inbox-post", "{address}", "--", "{text}"]
 
 [telemetry]
 env = { CLAUDE_CODE_ENABLE_TELEMETRY = "1", OTEL_METRICS_EXPORTER = "otlp", OTEL_LOGS_EXPORTER = "otlp", OTEL_EXPORTER_OTLP_ENDPOINT = "{endpoint}", OTEL_EXPORTER_OTLP_PROTOCOL = "{protocol}", OTEL_EXPORTER_OTLP_HEADERS = "{headers}", OTEL_SERVICE_NAME = "claude", OTEL_RESOURCE_ATTRIBUTES = "{resource}" }
@@ -74,6 +80,9 @@ args = ["-c", 'projects={"{root}"={trust_level="trusted"}}']
 [payload]
 prompt = ["input-messages"]
 conversation = ["thread-id"]
+
+[inbox]
+args = ["{program}", "queue", "--thread", "{conversation}", "--message={text}"]
 
 [telemetry]
 args = [

@@ -87,9 +87,12 @@ pub enum Action {
         workspace: crate::workspace::WorkspaceRef,
     },
     Spawn(SpawnSpec),
+    /// Hand `text` to the session's agent: through `inbox`, the argv its
+    /// harness profile's `[inbox]` renders, when there is one; else typed.
     Brief {
         session: SessionRef,
         text: String,
+        inbox: Option<Vec<String>>,
     },
     /// Delete the session: its checkout and conversation go with it.
     Release {

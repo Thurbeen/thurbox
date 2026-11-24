@@ -2615,7 +2615,16 @@ impl Manager<'_> {
             Action::Materialize { host, key, urls } => self.runtime.workspace(host, key, urls),
             Action::CleanWorkspace { workspace } => self.runtime.release_workspace(workspace),
             Action::Spawn(spec) => self.runtime.spawn(spec),
-            Action::Brief { session, text } => self.runtime.brief(session, text, &effect.key),
+            Action::Brief {
+                session,
+                text,
+                inbox: None,
+            } => self.runtime.brief(session, text, &effect.key),
+            Action::Brief {
+                session,
+                text,
+                inbox: Some(argv),
+            } => self.runtime.deliver(session, text, &effect.key, argv),
             Action::Release { session } => self.runtime.release(session),
             Action::Revive {
                 session,

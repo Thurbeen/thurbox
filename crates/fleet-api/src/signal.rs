@@ -81,6 +81,10 @@ pub struct Signal {
     /// 0, which stands for no report at all.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub seq: Option<u64>,
+    /// Where the agent's own inbox takes a message: the value of its
+    /// profile's `[inbox] address` variable in the hook.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub inbox: Option<String>,
 }
 
 impl Signal {
@@ -160,6 +164,7 @@ impl Signal {
             prompts,
             conversation: conversation.filter(|c| !c.is_empty()),
             seq: None,
+            inbox: None,
         }
     }
 }
@@ -177,6 +182,8 @@ pub struct Reported {
     pub prompt_seqs: BTreeMap<String, u64>,
     /// The last conversation id reported.
     pub conversation: Option<String>,
+    /// The last inbox address the running process reported.
+    pub inbox: Option<String>,
 }
 
 impl Reported {
@@ -200,6 +207,9 @@ impl Reported {
             if s.conversation.is_some() {
                 r.conversation = s.conversation;
             }
+            if s.state == State::Started || s.inbox.is_some() {
+                r.inbox = s.inbox;
+            }
         }
         r
     }
@@ -208,11 +218,14 @@ impl Reported {
     /// file held `before`: `after` is what was appended since. A state in
     /// `before` is the previous process's, so until a state in `after` the
     /// state is [`State::Started`]. Prompts and the conversation of both are
-    /// kept, as a `Started` line keeps them. No time is compared: a place's
+    /// kept, as a `Started` line keeps them; an inbox is the new process's
+    /// alone, as after a `Started` line. No time is compared: a place's
     /// clock need not agree with Fleet's.
     pub fn fold_restarted(before: &str, after: &str) -> Reported {
         let mut r = Reported::fold(&format!("{before}\n{after}"));
-        r.state = Some(Reported::fold(after).state.unwrap_or(State::Started));
+        let since = Reported::fold(after);
+        r.state = Some(since.state.unwrap_or(State::Started));
+        r.inbox = since.inbox;
         r
     }
 
@@ -344,6 +357,26 @@ pub trait Signals {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn a_restart_drops_the_inbox_the_previous_process_reported() {
+        let before = format!(
+            "{}\n",
+            json!({"at": 1, "state": "idle", "inbox": "/old.sock"})
+        );
+        assert_eq!(Reported::fold(&before).inbox.as_deref(), Some("/old.sock"));
+        assert_eq!(Reported::fold_restarted(&before, "").inbox, None);
+        let marked = format!("{before}{}\n", json!({"at": 2, "state": "started"}));
+        assert_eq!(Reported::fold(&marked).inbox, None);
+        let after = format!(
+            "{}\n",
+            json!({"at": 3, "state": "idle", "inbox": "/new.sock"})
+        );
+        assert_eq!(
+            Reported::fold_restarted(&before, &after).inbox.as_deref(),
+            Some("/new.sock")
+        );
+    }
 
     #[test]
     fn a_restart_hides_the_states_reported_before_it() {

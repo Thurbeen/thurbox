@@ -186,8 +186,10 @@ running:
    writes the ChangeRequest's status.
 10. ForgeController reads the ChangeRequest. It writes `status.forge` and
     appends new review feedback to the Task's inbox.
-11. TaskController delivers the inbox entry through the runtime's `input`
-    call, then removes it from the inbox.
+11. TaskController delivers the inbox entry to the agent's own inbox
+    (Claude Code's messaging socket, `codex queue`) through the runtime's
+    `exec` call, or types it through `input` for an agent without one. It
+    then removes the entry from the inbox.
 12. The worker runs
     `fleet result fix-login --generation 1 --outcome shipped`. This
     writes `status.result`.

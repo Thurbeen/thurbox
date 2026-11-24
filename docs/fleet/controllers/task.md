@@ -700,6 +700,10 @@ paste = "pasted_content"       # omit when the agent does not wrap a paste
 [screen]
 rules = "codex"                # a bundled rule set; omit for the set named as the profile
 
+[inbox]                        # the agent's own inbox; omit to type every message
+address = "STUB_INBOX"         # a variable of the hooks' that `fleet signal` reports
+args = ["stub-agent", "post", "{address}", "{text}"]
+
 [telemetry]                    # the agent's own OpenTelemetry; omit for none
 env = { STUB_OTEL_ENDPOINT = "{endpoint}", OTEL_RESOURCE_ATTRIBUTES = "{resource}" }
 args = []                      # after the launch arguments; never {headers}
@@ -733,6 +737,14 @@ comment = "#"                  # what starts a comment line there
   launch argument after the program.
 - In `[trust]`, `{root}` is the trust root, escaped for a double-quoted
   string. A root with a control character fails the spawn.
+- `[inbox]` hands an inbox entry to the agent's own inbox instead of its
+  composer. `fleet signal` reports the value of the `address` variable in
+  the hook. In `args`, `{program}` is the profile's program,
+  `{conversation}` the reported conversation, `{address}` the reported
+  address and `{text}` the entry. An entry goes out typed while an argument
+  names a value no hook reported since the last start. The brief is always
+  typed. Claude Code's address is its messaging socket, which
+  `fleet inbox-post` writes to; Codex's entry goes to `codex queue`.
 - An omitted `[payload]` list is the default one, shown above.
 - `[payload] paste` names the tag that the agent puts around a pasted
   text. `fleet signal` then also reports the text inside that wrapper. The
@@ -934,7 +946,7 @@ pub struct Plan {
 | `status` | Desired typed Task status serialized as JSON, including every new effect intent; `None` means unchanged. The worker-owned `result` and the unowned `inbox` are passed back as read. |
 | `effects` | Ordered effects, each with a deterministic key and `Action`. The controller does not execute them. |
 | `remove_finalizer` | Request to remove `fleet.dev/release` after the status and effects; present only for a deleting Task whose release is established. |
-| `delivery` | An inbox entry proven delivered: `{key, at, recovered, deliveredVia, mayHold}`. `deliveredVia` is the runtime's route, when the send named one. `mayHold` is true when that route can hold the text behind an approval dialog; it raises no attention. The manager writes it with `status` as one record-and-remove mutation: the receipt into `status.deliveries`, the entry out of `status.inbox`. |
+| `delivery` | An inbox entry proven delivered: `{key, at, recovered, deliveredVia, mayHold}`. `deliveredVia` is the runtime's route, when the send named one: `inbox` for the agent's own inbox, `input` for typed text. `mayHold` is true when that route can hold the text behind an approval dialog; it raises no attention. The manager writes it with `status` as one record-and-remove mutation: the receipt into `status.deliveries`, the entry out of `status.inbox`. |
 
 TaskController plans the actions `Spawn(SpawnSpec)`, `Brief { session,
 text }`, `Release { session }`, `Revive { session }`, `Pause { session }`

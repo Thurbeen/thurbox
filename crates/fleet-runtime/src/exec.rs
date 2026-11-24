@@ -727,6 +727,7 @@ impl ExecRuntime {
                 prompts: Vec::new(),
                 conversation: None,
                 seq: None,
+                inbox: None,
             };
             // On another host the file is the place's: the restart is kept
             // in Fleet's own data, as the file's length then, and a start
@@ -1251,6 +1252,41 @@ impl Runtime for ExecRuntime {
                 why: "no process holds the session's key".into(),
             },
         })
+    }
+
+    fn deliver(
+        &self,
+        session: &SessionRef,
+        text: &str,
+        intent_key: &str,
+        inbox: &[String],
+    ) -> Observation<EffectOutcome> {
+        let rt = match self.program(&session.host) {
+            Ok(rt) => rt,
+            Err(why) => return Observation::unknown(why),
+        };
+        match rt.manifest() {
+            Observation::Known(m) if m.verbs.iter().any(|v| v == "exec") => {}
+            Observation::Known(_) => return self.brief(session, text, intent_key),
+            Observation::Unknown { why } => return Observation::Unknown { why },
+        }
+        let argv: Vec<&str> = inbox.iter().map(String::as_str).collect();
+        match self.exec_on(&session.host, &argv) {
+            Observation::Known(Executed::Exited { code: Some(0), .. }) => {
+                Observation::Known(EffectOutcome::Delivered {
+                    already: false,
+                    via: Some("inbox".into()),
+                    may_hold: false,
+                })
+            }
+            Observation::Known(Executed::Exited { .. } | Executed::Failed { .. }) => {
+                self.brief(session, text, intent_key)
+            }
+            Observation::Known(Executed::TimedOut { .. }) => {
+                Observation::unknown("the agent's inbox did not answer in time")
+            }
+            Observation::Unknown { why } => Observation::Unknown { why },
+        }
     }
 
     /// A runtime cannot read a typed text back; the agent's prompt hook
@@ -2192,6 +2228,114 @@ mod tests {
             "the next request asks the manifest again"
         );
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    fn delivering(exec: Option<&str>) -> (std::path::PathBuf, Observation<EffectOutcome>) {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = std::env::temp_dir().join(format!(
+            "fleet-exec-deliver-{}-{}",
+            std::process::id(),
+            exec.map_or(0, str::len)
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("dir");
+        let script = dir.join("runtime.sh");
+        std::fs::write(
+            &script,
+            format!(
+                "#!/bin/sh\ncat >/dev/null\necho \"$1\" >> '{0}/calls'\nexec cat '{0}/'\"$1\"\n",
+                dir.display()
+            ),
+        )
+        .expect("script");
+        std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).expect("chmod");
+        let verbs = if exec.is_some() {
+            r#"["manifest","start","inspect","stop","input","exec"]"#
+        } else {
+            r#"["manifest","start","inspect","stop","input"]"#
+        };
+        std::fs::write(
+            dir.join("manifest"),
+            format!(r#"{{"known":{{"protocol":2,"verbs":{verbs}}}}}"#),
+        )
+        .expect("answer");
+        std::fs::write(dir.join("input"), r#"{"known":"sent"}"#).expect("answer");
+        if let Some(answer) = exec {
+            std::fs::write(dir.join("exec"), answer).expect("answer");
+        }
+        let runtime = ExecRuntime::new(BTreeMap::from([(
+            "local".to_string(),
+            ExecProgram::new("test", script.to_string_lossy()),
+        )]));
+        let session = SessionRef {
+            id: "k".into(),
+            host: "local".into(),
+            key: "k".into(),
+        };
+        let outcome = runtime.deliver(&session, "hi", "task/t/u/send/1", &["post".into()]);
+        (dir, outcome)
+    }
+
+    fn verbs_sent(dir: &std::path::Path) -> Vec<String> {
+        let calls = std::fs::read_to_string(dir.join("calls")).unwrap_or_default();
+        let sent = calls
+            .lines()
+            .filter(|v| *v != "manifest")
+            .map(String::from)
+            .collect();
+        let _ = std::fs::remove_dir_all(dir);
+        sent
+    }
+
+    fn typed() -> Observation<EffectOutcome> {
+        Observation::Known(EffectOutcome::Delivered {
+            already: false,
+            via: Some("input".into()),
+            may_hold: true,
+        })
+    }
+
+    #[test]
+    fn an_inbox_post_that_exits_zero_is_delivered_through_the_inbox() {
+        let (dir, outcome) = delivering(Some(
+            r#"{"known":{"exited":{"code":0,"stdout":"","stderr":""}}}"#,
+        ));
+        assert_eq!(
+            outcome,
+            Observation::Known(EffectOutcome::Delivered {
+                already: false,
+                via: Some("inbox".into()),
+                may_hold: false,
+            })
+        );
+        assert_eq!(verbs_sent(&dir), ["exec"]);
+    }
+
+    #[test]
+    fn an_inbox_post_that_fails_types_the_entry() {
+        for answer in [
+            r#"{"known":{"exited":{"code":2,"stdout":"","stderr":"usage"}}}"#,
+            r#"{"known":{"failed":{"why":"no such program"}}}"#,
+        ] {
+            let (dir, outcome) = delivering(Some(answer));
+            assert_eq!(outcome, typed(), "{answer}");
+            assert_eq!(verbs_sent(&dir), ["exec", "input"], "{answer}");
+        }
+    }
+
+    #[test]
+    fn a_runtime_without_exec_types_the_entry() {
+        let (dir, outcome) = delivering(None);
+        assert_eq!(outcome, typed());
+        assert_eq!(verbs_sent(&dir), ["input"]);
+    }
+
+    #[test]
+    fn an_inbox_post_that_times_out_is_unknown_and_types_nothing() {
+        let (dir, outcome) =
+            delivering(Some(r#"{"known":{"timedOut":{"stdout":"","stderr":""}}}"#));
+        assert!(outcome.is_unknown(), "{outcome:?}");
+        assert_eq!(verbs_sent(&dir), ["exec"]);
     }
 
     #[test]

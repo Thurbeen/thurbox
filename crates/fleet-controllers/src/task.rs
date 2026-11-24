@@ -955,7 +955,14 @@ impl Pass<'_, '_> {
         let text = self
             .spec
             .assignment(&self.input.task.metadata.name, self.generation);
-        self.intend(key, Action::Brief { session, text });
+        self.intend(
+            key,
+            Action::Brief {
+                session,
+                text,
+                inbox: None,
+            },
+        );
     }
 
     /// Whether the session's agent trusts its workspace on this pass. A
@@ -1358,7 +1365,20 @@ impl Pass<'_, '_> {
         attempt.other_prompt_seq = other_prompt_seq;
         self.st.not_before = None;
         self.st.receipts.remove(key);
-        self.intend(key.to_string(), Action::Brief { session, text });
+        let inbox =
+            match &self.input.observations.signals {
+                Some(Observation::Known(r)) => fleet_api::harness::profile(&self.spec.harness)
+                    .inbox(r.inbox.as_deref(), r.conversation.as_deref(), &text),
+                _ => None,
+            };
+        self.intend(
+            key.to_string(),
+            Action::Brief {
+                session,
+                text,
+                inbox,
+            },
+        );
         Sent::Pending
     }
 

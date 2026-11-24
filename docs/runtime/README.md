@@ -184,7 +184,12 @@ What Fleet's `exec` kind does with the answers:
   ([harness profiles](../fleet/controllers/task.md#harness-profiles)).
   Before its first report, a trust dialog on its `capture` is Untrusted, and
   anything else Unknown, so a brief waits;
-- delivery is proven by the agent's prompt hook, not by `input`;
+- an inbox entry goes to the agent's own inbox when its harness profile has
+  one and its hooks reported the address: `exec` runs the profile's
+  `[inbox]` argv on the place. A runtime without `exec`, or an argv that
+  exits non-zero or cannot start, types the entry with `input`. The brief
+  is always typed;
+- delivery is proven by the agent's prompt hook, not by `input` or `exec`;
 - the agent state of a session whose hooks do not say it now is read off its
   `capture` text and title with the harness's screen rules
   ([screen rules](../fleet/controllers/task.md#screen-rules)), at most one
