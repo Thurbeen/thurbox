@@ -22,14 +22,147 @@ footer: true
           ></span>
         </p>
         <div class="hero-ctas">
-          <a href="#thurbox" class="btn btn-primary">Thurbox</a>
-          <a href="#fleet" class="btn btn-secondary">Fleet</a>
+          <a href="#fleet" class="btn btn-primary">Fleet</a>
+          <a href="#thurbox" class="btn btn-secondary">Thurbox</a>
         </div>
         <button class="hero-press-start" id="press-start" type="button">
           <span class="arrow" aria-hidden="true">&#9654;</span>
           Press any key to begin
           <span class="arrow" aria-hidden="true">&#9654;</span>
         </button>
+      </div>
+    </section>
+
+    <!-- Fleet: the engine thurbox runs on. It also stands on its own. -->
+    <section class="section product" id="fleet">
+      <div class="container">
+        <div class="product__grid" data-reveal>
+          <div class="product__text">
+            <p class="section-eyebrow">The engine</p>
+            <h2>Fleet</h2>
+            <p class="product__lede">
+              Fleet runs coding-agent sessions. Each session is a Task: a file that names the
+              agent, the place it runs, the repository and the brief. You apply it with
+              <code>fleet apply</code>, and Fleet starts the session, keeps it running, delivers
+              your messages and records the result.
+            </p>
+            <p class="product__lede">
+              <strong>Fleet works on its own.</strong> It is headless and needs no thurbox.
+            </p>
+            <p class="product__more">
+              <a href="docs/fleet.html">What Fleet is &rarr;</a>
+              <a href="docs/fleet-features.html">Fleet features &rarr;</a>
+            </p>
+          </div>
+          <div class="product__media">
+            <pre data-title="drive it from a script"><code class="language-bash">fleet apply -f fix-login.json
+fleet list task
+fleet send fix-login "Run the tests too"</code></pre>
+          </div>
+        </div>
+
+        <!-- Fleet alone. Its own block so the install line can change without
+             touching thurbox's. -->
+        <div class="get-started" id="fleet-start" data-reveal>
+          <h3>Get started with Fleet alone</h3>
+          <pre data-wrap><code class="language-bash">curl -fsSL https://raw.githubusercontent.com/Thurbeen/thurbox/main/scripts/install.sh | sh -s -- --fleet-only
+fleet init
+fleet doctor
+fleet up</code></pre>
+          <p>
+            <code>--fleet-only</code> installs <code>fleet</code>, <code>runtime-mux</code> and
+            <code>workspace-git</code>, and nothing else.
+            <a href="docs/fleet-install.html">Install Fleet &rarr;</a>
+          </p>
+        </div>
+      </div>
+    </section>
+
+    <section class="section product product--alt" id="thurbox">
+      <div class="container">
+        <div class="product__grid" data-reveal>
+          <div class="product__text">
+            <p class="section-eyebrow">The interface</p>
+            <h2>thurbox</h2>
+            <p class="product__lede">
+              thurbox is a terminal interface on top of one or more Fleets. It shows every session
+              of every Fleet in one list, with the agent's live terminal beside it. Every pane is a
+              Lua file you can move, turn off or replace.
+            </p>
+            <p class="product__lede">
+              <strong>Quit thurbox and the agents keep running</strong>: Fleet runs them.
+            </p>
+            <p class="product__more">
+              <a href="docs/thurbox.html">What thurbox is &rarr;</a>
+              <a href="docs/thurbox-features.html">thurbox features &rarr;</a>
+            </p>
+          </div>
+          <div class="product__media" id="demo">
+            <div class="terminal-frame">
+              <div class="terminal-header">
+                <span class="terminal-title">thurbox</span>
+              </div>
+              <div class="terminal-body">
+                <video
+                  src="assets/thurbox-demo.mp4"
+                  poster="assets/thurbox-demo-poster.webp"
+                  width="1944"
+                  height="1288"
+                  autoplay
+                  loop
+                  muted
+                  playsinline
+                  preload="none"
+                >
+                  Four coding-agent sessions in parallel, with a tasks pane and a CPU/memory
+                  pane stacked beside them &mdash; both from examples/panes/, neither bundled
+                </video>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div class="get-started" id="thurbox-start" data-reveal>
+          <h3>Get started with thurbox</h3>
+          <pre data-wrap><code class="language-bash">curl -fsSL https://raw.githubusercontent.com/Thurbeen/thurbox/main/scripts/install.sh | sh
+thurbox</code></pre>
+          <p>
+            The first <code>thurbox</code> runs <code>fleet init</code> and starts Fleet on this
+            machine. On Windows, run <code>irm https://raw.githubusercontent.com/Thurbeen/thurbox/main/scripts/install.ps1 | iex</code>.
+            <a href="docs/installation.html">Other install routes &rarr;</a>
+          </p>
+        </div>
+
+        <!-- The official plugins, one line each. Setup lives in each README and
+             in the catalog, so the home page stays a list of names. -->
+        <div class="plugin-strip" id="plugins">
+          <h3>Plugins to start from</h3>
+          <ul class="plugin-strip__list" data-reveal>
+            <li>
+              <a href="https://github.com/Thurbeen/thurbox-info-panel">thurbox-info-panel</a>
+              <span>Session, git, agent, account quota and system readouts beside the terminal.</span>
+            </li>
+            <li>
+              <a href="https://github.com/Thurbeen/thurbox-code-review">thurbox-code-review</a>
+              <span>A Review tab: the session's diff against its base branch, with notes sent to the agent.</span>
+            </li>
+            <li>
+              <a href="https://github.com/Thurbeen/thurbox-auto-continue">thurbox-auto-continue</a>
+              <span>When a Claude Code session hits its usage limit, waits for the reset and continues.</span>
+            </li>
+            <li>
+              <a href="https://github.com/Thurbeen/thurbox-fleetlens">thurbox-fleetlens</a>
+              <span>Fleet Lens: browse Fleet's Tasks and other resources in a read-only float.</span>
+            </li>
+            <li>
+              <a href="https://github.com/Thurbeen/thurbox-doom">thurbox-doom</a>
+              <span>DOOM as a tab of the agent pane.</span>
+            </li>
+          </ul>
+          <p class="product__more">
+            <a href="plugins.html">All plugins, including community ones &rarr;</a>
+          </p>
+        </div>
       </div>
     </section>
 
@@ -792,139 +925,6 @@ footer: true
             <a href="plugins.html">Plugins &rarr;</a>
           </li>
         </ul>
-        </div>
-      </div>
-    </section>
-
-    <section class="section product" id="thurbox">
-      <div class="container">
-        <div class="product__grid" data-reveal>
-          <div class="product__text">
-            <p class="section-eyebrow">The interface</p>
-            <h2>thurbox</h2>
-            <p class="product__lede">
-              thurbox is a terminal interface on top of one or more Fleets. It shows every session
-              of every Fleet in one list, with the agent's live terminal beside it. Every pane is a
-              Lua file you can move, turn off or replace.
-            </p>
-            <p class="product__lede">
-              <strong>Quit thurbox and the agents keep running</strong>: Fleet runs them.
-            </p>
-            <p class="product__more">
-              <a href="docs/thurbox.html">What thurbox is &rarr;</a>
-              <a href="docs/thurbox-features.html">thurbox features &rarr;</a>
-            </p>
-          </div>
-          <div class="product__media" id="demo">
-            <div class="terminal-frame">
-              <div class="terminal-header">
-                <span class="terminal-title">thurbox</span>
-              </div>
-              <div class="terminal-body">
-                <video
-                  src="assets/thurbox-demo.mp4"
-                  poster="assets/thurbox-demo-poster.webp"
-                  width="1944"
-                  height="1288"
-                  autoplay
-                  loop
-                  muted
-                  playsinline
-                  preload="none"
-                >
-                  Four coding-agent sessions in parallel, with a tasks pane and a CPU/memory
-                  pane stacked beside them &mdash; both from examples/panes/, neither bundled
-                </video>
-              </div>
-            </div>
-          </div>
-        </div>
-
-        <div class="get-started" id="thurbox-start" data-reveal>
-          <h3>Get started with thurbox</h3>
-          <pre data-wrap><code class="language-bash">curl -fsSL https://raw.githubusercontent.com/Thurbeen/thurbox/main/scripts/install.sh | sh
-thurbox</code></pre>
-          <p>
-            The first <code>thurbox</code> runs <code>fleet init</code> and starts Fleet on this
-            machine. On Windows, run <code>irm https://raw.githubusercontent.com/Thurbeen/thurbox/main/scripts/install.ps1 | iex</code>.
-            <a href="docs/installation.html">Other install routes &rarr;</a>
-          </p>
-        </div>
-
-        <!-- The official plugins, one line each. Setup lives in each README and
-             in the catalog, so the home page stays a list of names. -->
-        <div class="plugin-strip" id="plugins">
-          <h3>Plugins to start from</h3>
-          <ul class="plugin-strip__list" data-reveal>
-            <li>
-              <a href="https://github.com/Thurbeen/thurbox-info-panel">thurbox-info-panel</a>
-              <span>Session, git, agent, account quota and system readouts beside the terminal.</span>
-            </li>
-            <li>
-              <a href="https://github.com/Thurbeen/thurbox-code-review">thurbox-code-review</a>
-              <span>A Review tab: the session's diff against its base branch, with notes sent to the agent.</span>
-            </li>
-            <li>
-              <a href="https://github.com/Thurbeen/thurbox-auto-continue">thurbox-auto-continue</a>
-              <span>When a Claude Code session hits its usage limit, waits for the reset and continues.</span>
-            </li>
-            <li>
-              <a href="https://github.com/Thurbeen/thurbox-fleetlens">thurbox-fleetlens</a>
-              <span>Fleet Lens: browse Fleet's Tasks and other resources in a read-only float.</span>
-            </li>
-            <li>
-              <a href="https://github.com/Thurbeen/thurbox-doom">thurbox-doom</a>
-              <span>DOOM as a tab of the agent pane.</span>
-            </li>
-          </ul>
-          <p class="product__more">
-            <a href="plugins.html">All plugins, including community ones &rarr;</a>
-          </p>
-        </div>
-      </div>
-    </section>
-
-    <!-- Fleet: the engine thurbox runs on. It also stands on its own. -->
-    <section class="section product product--alt" id="fleet">
-      <div class="container">
-        <div class="product__grid" data-reveal>
-          <div class="product__text">
-            <p class="section-eyebrow">The engine</p>
-            <h2>Fleet</h2>
-            <p class="product__lede">
-              Fleet runs coding-agent sessions. Each session is a Task: a file that names the
-              agent, the place it runs, the repository and the brief. You apply it with
-              <code>fleet apply</code>, and Fleet starts the session, keeps it running, delivers
-              your messages and records the result.
-            </p>
-            <p class="product__lede">
-              <strong>Fleet works on its own.</strong> It is headless and needs no thurbox.
-            </p>
-            <p class="product__more">
-              <a href="docs/fleet.html">What Fleet is &rarr;</a>
-              <a href="docs/fleet-features.html">Fleet features &rarr;</a>
-            </p>
-          </div>
-          <div class="product__media">
-            <pre data-title="drive it from a script"><code class="language-bash">fleet apply -f fix-login.json
-fleet list task
-fleet send fix-login "Run the tests too"</code></pre>
-          </div>
-        </div>
-
-        <!-- Fleet alone. Its own block so the install line can change without
-             touching thurbox's. -->
-        <div class="get-started" id="fleet-start" data-reveal>
-          <h3>Get started with Fleet alone</h3>
-          <pre data-wrap><code class="language-bash">curl -fsSL https://raw.githubusercontent.com/Thurbeen/thurbox/main/scripts/install.sh | sh -s -- --fleet-only
-fleet init
-fleet doctor
-fleet up</code></pre>
-          <p>
-            <code>--fleet-only</code> installs <code>fleet</code>, <code>runtime-mux</code> and
-            <code>workspace-git</code>, and nothing else.
-            <a href="docs/fleet-install.html">Install Fleet &rarr;</a>
-          </p>
         </div>
       </div>
     </section>

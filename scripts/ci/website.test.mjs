@@ -124,14 +124,12 @@ test('homepage presents Fleet and thurbox apart, links each official plugin, and
   const code = (node) =>
     node.querySelectorAll('pre').map((pre) => parse(pre.innerHTML).textContent.trim().split(/\s*\n\s*/));
 
-  // The interface first, then the engine: the bands, the hero's buttons and the
-  // first steps all run thurbox, then Fleet.
   const bands = home.querySelectorAll('section.product').map((s) => s.getAttribute('id'));
-  assert.deepEqual(bands, ['thurbox', 'fleet'], 'the thurbox band comes before the Fleet band');
+  assert.deepEqual(bands, ['fleet', 'thurbox'], 'the Fleet band comes before the thurbox band');
   const ctas = home.querySelectorAll('.hero-ctas a').map((a) => a.getAttribute('href'));
-  assert.deepEqual(ctas, ['#thurbox', '#fleet'], 'the hero leads with thurbox');
+  assert.deepEqual(ctas, ['#fleet', '#thurbox'], 'the hero leads with Fleet');
   const starts = home.querySelectorAll('.get-started').map((s) => s.getAttribute('id'));
-  assert.deepEqual(starts, ['thurbox-start', 'fleet-start'], 'thurbox gets started first');
+  assert.deepEqual(starts, ['fleet-start', 'thurbox-start'], 'Fleet gets started first');
 
   // Fleet stands on its own: its own band, its own first steps, no thurbox in them.
   const fleet = home.querySelector('#fleet');
@@ -171,7 +169,7 @@ test('homepage presents Fleet and thurbox apart, links each official plugin, and
   assert.ok(home.querySelector('a[href="docs/fleet-install.html"]'), 'installing Fleet alone is linked');
   const fit = home.querySelector('#how-they-fit');
   const order = home.querySelectorAll('section[id]').map((s) => s.getAttribute('id'));
-  assert.ok(order.indexOf('how-they-fit') < order.indexOf('thurbox'), 'the pitch comes before the product bands');
+  assert.ok(order.indexOf('how-they-fit') > order.indexOf('thurbox'), 'the scenes follow the product bands');
   const scenes = fit.querySelectorAll('[data-story] svg');
   assert.equal(scenes.length, 4, 'one scene each for places, the reconcile loop, agents working together and change requests');
   for (const svg of scenes) {
