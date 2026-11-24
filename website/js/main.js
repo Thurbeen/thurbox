@@ -454,7 +454,8 @@
     });
   }
 
-  var storyBesideFigure = window.matchMedia && window.matchMedia('(min-width: 960px)');
+  var storyStepMs = 4200;
+  var storyLastStepMs = 7000;
   var stories = document.querySelectorAll('[data-story]');
   if (
     stories.length > 0 &&
@@ -467,45 +468,151 @@
   }
 
   function playStory(story) {
-    var steps = story.querySelectorAll('[data-step]');
-    function showStep(at) {
-      story.dataset.at = String(at);
-      for (var k = 1; k <= steps.length; k++) story.classList.toggle('at-' + k, k <= at);
-      steps.forEach(function (step) {
-        step.classList.toggle('is-current', Number(step.dataset.step) === at);
-      });
-    }
+    var steps = Array.prototype.slice.call(story.querySelectorAll('[data-step]'));
+    var list = story.querySelector('.story__steps');
     var figure = story.querySelector('.story__figure');
-    function stepLine() {
-      var freeTop = storyBesideFigure.matches ? 0 : figure.getBoundingClientRect().bottom;
-      return (Math.max(freeTop, 0) + window.innerHeight) / 2;
-    }
-    function followScroll() {
-      var line = stepLine();
-      var passed = Array.prototype.filter.call(steps, function (step) {
-        return step.getBoundingClientRect().top < line;
+    var at = 0;
+    var timer = null;
+    var paused = false;
+    var visible = false;
+
+    story.querySelectorAll('.st-wire').forEach(function (wire) {
+      var pulse = wire.cloneNode(false);
+      pulse.classList.replace('st-wire', 'st-pulse');
+      pulse.removeAttribute('marker-start');
+      pulse.removeAttribute('marker-end');
+      pulse.setAttribute('aria-hidden', 'true');
+      wire.after(pulse);
+    });
+
+    var stepButtons = steps.map(function (step, i) {
+      var heading = step.querySelector('h3');
+      var button = document.createElement('button');
+      button.type = 'button';
+      button.className = 'story__step-btn';
+      while (heading.firstChild) button.appendChild(heading.firstChild);
+      heading.appendChild(button);
+      button.addEventListener('click', function () {
+        setPaused(true);
+        showStep(i + 1);
       });
-      showStep(passed.length);
+      return button;
+    });
+
+    var progress = document.createElement('figcaption');
+    progress.className = 'story__progress';
+    var toggle = document.createElement('button');
+    toggle.type = 'button';
+    toggle.className = 'story__toggle';
+    toggle.addEventListener('click', function () {
+      setPaused(!paused);
+      if (!paused) showStep(at >= steps.length ? 1 : at);
+      schedule();
+    });
+    var dots = document.createElement('span');
+    dots.className = 'story__progress-dots';
+    dots.setAttribute('aria-hidden', 'true');
+    var dotList = steps.map(function () {
+      var dot = document.createElement('span');
+      dot.className = 'story__progress-dot';
+      dots.appendChild(dot);
+      return dot;
+    });
+    var label = document.createElement('span');
+    label.className = 'story__progress-label';
+    label.setAttribute('aria-hidden', 'true');
+    progress.append(toggle, dots, label);
+    figure.appendChild(progress);
+
+    function stepMs(n) {
+      return n === steps.length ? storyLastStepMs : storyStepMs;
     }
-    var scheduled = false;
-    function scheduleFollow() {
-      if (scheduled || !story.classList.contains('is-visible')) return;
-      scheduled = true;
-      window.requestAnimationFrame(function () {
-        scheduled = false;
-        followScroll();
+
+    function showStep(n) {
+      at = n;
+      story.dataset.at = String(n);
+      story.style.setProperty('--story-step', stepMs(n) + 'ms');
+      for (var k = 1; k <= steps.length; k++) story.classList.toggle('at-' + k, k <= n);
+      steps.forEach(function (step, i) {
+        var current = i + 1 === n;
+        step.classList.toggle('is-current', current);
+        stepButtons[i].setAttribute('aria-expanded', String(current));
       });
+      dotList.forEach(function (dot, i) {
+        dot.classList.remove('is-current');
+        dot.classList.toggle('is-done', i + 1 < n);
+      });
+      if (n > 0) {
+        void dotList[n - 1].offsetWidth;
+        dotList[n - 1].classList.add('is-current');
+      }
+      var current = steps[n - 1];
+      label.textContent = current
+        ? n +
+          '/' +
+          steps.length +
+          ' · ' +
+          current
+            .querySelector('h3')
+            .textContent.trim()
+            .replace(/^\d+\s*/, '')
+        : '';
     }
-    showStep(0);
+
+    function schedule() {
+      window.clearTimeout(timer);
+      if (paused || !visible) return;
+      timer = window.setTimeout(function () {
+        showStep(at >= steps.length ? 1 : at + 1);
+        schedule();
+      }, stepMs(at));
+    }
+
+    function setPaused(value) {
+      paused = value;
+      story.classList.toggle('is-paused', value);
+      toggle.textContent = value ? 'Play' : 'Pause';
+      toggle.setAttribute('aria-label', (value ? 'Play' : 'Pause') + ' this animation');
+      schedule();
+    }
+
+    function reserveListHeight() {
+      list.style.minHeight = '';
+      var tallest = 0;
+      var shown = at;
+      steps.forEach(function (_, i) {
+        showStep(i + 1);
+        tallest = Math.max(tallest, list.offsetHeight);
+      });
+      showStep(shown);
+      list.style.minHeight = tallest + 'px';
+      schedule();
+    }
+
     story.classList.add('story--live');
-    new IntersectionObserver(function (entries) {
-      entries.forEach(function (entry) {
-        story.classList.toggle('is-visible', entry.isIntersecting);
-      });
-      followScroll();
-    }).observe(story);
-    window.addEventListener('scroll', scheduleFollow, { passive: true });
-    window.addEventListener('resize', scheduleFollow);
+    setPaused(false);
+    showStep(0);
+    reserveListHeight();
+    var resizeTimer = null;
+    var measuredWidth = list.offsetWidth;
+    window.addEventListener('resize', function () {
+      if (list.offsetWidth === measuredWidth) return;
+      measuredWidth = list.offsetWidth;
+      window.clearTimeout(resizeTimer);
+      resizeTimer = window.setTimeout(reserveListHeight, 150);
+    });
+
+    new IntersectionObserver(
+      function (entries) {
+        entries.forEach(function (entry) {
+          visible = entry.isIntersecting;
+          story.classList.toggle('is-visible', visible);
+          if (visible && at === 0) showStep(1);
+          schedule();
+        });
+      },
+      { threshold: 0.35 },
+    ).observe(story);
   }
 
   // ---- Mobile sidebar toggle (docs pages) ----
