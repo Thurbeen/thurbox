@@ -461,12 +461,59 @@ fn history_keeps_the_newest_concluded_tasks() {
         w.conclude(&newest);
     }
     w.at(MONDAY_3AM + 3 * DAY - MINUTE);
-    // Due again only at its next time; a spec change makes it due now.
-    let mut doc = nightly(json!({"historyLimit": 1, "concurrencyPolicy": "Allow"}));
-    doc["spec"]["template"]["metadata"]["labels"]["team"] = json!("review-2");
-    w.apply(doc);
     w.reconcile();
     assert_eq!(names(&w.tasks_of("nightly")), ["nightly-29916180"]);
+}
+
+#[test]
+fn a_task_that_concludes_leaves_active_and_history_at_once() {
+    let w = World::new("cron-conclude", MONDAY_3AM - MINUTE);
+    w.apply(nightly(json!({"historyLimit": 3})));
+    for day in 0..4 {
+        if let Some(previous) = names(&w.tasks_of("nightly")).pop() {
+            w.conclude(&previous);
+        }
+        w.at(MONDAY_3AM + day * DAY);
+        w.reconcile();
+    }
+    w.at(MONDAY_3AM + 3 * DAY + 10 * MINUTE);
+    w.reconcile();
+    let newest = "nightly-29917620";
+    let st = w.cron_task("nightly")["status"].clone();
+    assert_eq!(st["active"], json!([newest]));
+    assert_eq!(st["notBefore"], st["nextScheduleTime"]);
+    w.conclude(newest);
+
+    w.at(MONDAY_3AM + 3 * DAY + 60 * MINUTE);
+    w.reconcile();
+    let st = w.cron_task("nightly")["status"].clone();
+    assert_eq!(st["active"], Value::Null, "{st:#}");
+    assert_eq!(
+        names(&w.tasks_of("nightly")),
+        ["nightly-29914740", "nightly-29916180", newest]
+    );
+}
+
+#[test]
+fn a_task_deleted_before_it_dispatches_leaves_active_at_once() {
+    let w = World::new("cron-deleted", MONDAY_3AM - MINUTE);
+    let mut doc = nightly(json!({}));
+    doc["spec"]["template"]["spec"]["dispatch"] = json!(false);
+    w.apply(doc);
+    w.at(MONDAY_3AM);
+    w.reconcile();
+    w.at(MONDAY_3AM + 10 * MINUTE);
+    w.reconcile();
+    let st = w.cron_task("nightly")["status"].clone();
+    assert_eq!(st["active"], json!(["nightly-29913300"]));
+    assert_eq!(st["notBefore"], st["nextScheduleTime"]);
+    fleet_manager::delete(&w.store, "Task", "nightly-29913300").expect("deleted");
+
+    w.at(MONDAY_3AM + 60 * MINUTE);
+    w.reconcile();
+    assert!(names_of_all(&w).is_empty(), "{:?}", names_of_all(&w));
+    let st = w.cron_task("nightly")["status"].clone();
+    assert_eq!(st["active"], Value::Null, "{st:#}");
 }
 
 #[test]

@@ -57,13 +57,16 @@ impl CronTaskController {
     pub const MANAGER: FieldManager = FieldManager::CronTaskController;
 
     /// Whether the manager should reconcile `obj` at `now`: never seen, its
-    /// spec changed, or its next time came.
-    pub fn due(obj: &Object, now: Millis) -> bool {
+    /// spec changed, its next time came, or a Task its `active` names
+    /// concluded, is being deleted, or is gone with no create in flight.
+    pub fn due(obj: &Object, tasks: &[&Object], now: Millis) -> bool {
         if obj.status.is_null() {
             return true;
         }
         let seen = obj.status["observedGeneration"].as_u64().unwrap_or(0);
-        seen != obj.metadata.generation || obj.status["notBefore"].as_u64().is_none_or(|t| t <= now)
+        seen != obj.metadata.generation
+            || obj.status["notBefore"].as_u64().is_none_or(|t| t <= now)
+            || left_active(obj, tasks)
     }
 
     pub fn reconcile(&self, input: &CronTaskInput<'_>) -> Result<Plan, StoreError> {
@@ -629,6 +632,29 @@ impl Pass<'_, '_> {
             .collect();
         self.st.effects.retain(|k, _| !drop.contains_key(k));
     }
+}
+
+fn left_active(obj: &Object, tasks: &[&Object]) -> bool {
+    let Ok(st) = serde_json::from_value::<CronTaskStatus>(obj.status.clone()) else {
+        return false;
+    };
+    st.active.iter().any(
+        |name| match tasks.iter().find(|t| t.metadata.name == *name) {
+            Some(task) => concluded(task) || task.is_deleting(),
+            None => !creating(&st, name),
+        },
+    )
+}
+
+fn creating(st: &CronTaskStatus, name: &str) -> bool {
+    st.effects.values().any(|r| {
+        r.intent.action == CREATE_ACTION
+            && r.task == name
+            && !matches!(
+                r.receipt.as_ref().map(|x| &x.outcome),
+                Some(Observation::Known(EffectOutcome::Created { .. }))
+            )
+    })
 }
 
 fn concluded(task: &Object) -> bool {

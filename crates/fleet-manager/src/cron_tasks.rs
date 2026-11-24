@@ -27,16 +27,9 @@ impl Manager<'_> {
                 return Ok(false);
             }
         };
-        let now = self.clock.now();
-        let due: Vec<&Object> = cron_tasks
-            .iter()
-            .filter(|c| CronTaskController::due(c, now))
-            .collect();
-        if due.is_empty() {
+        if cron_tasks.is_empty() {
             return Ok(false);
         }
-        // Unknown Tasks are never read as none: a Forbid policy would then
-        // start a second one.
         let tasks = match self.store.list(task::KIND) {
             Observation::Known(t) => t,
             Observation::Unknown { why } => {
@@ -44,6 +37,11 @@ impl Manager<'_> {
                 return Ok(false);
             }
         };
+        let now = self.clock.now();
+        let due: Vec<&Object> = cron_tasks
+            .iter()
+            .filter(|c| CronTaskController::due(c, &owned(c, &tasks), now))
+            .collect();
         let mut busy = false;
         for obj in due {
             *lease = self.store.renew_lease(lease, ttl)?;
@@ -66,13 +64,9 @@ impl Manager<'_> {
         ttl: Millis,
         report: &mut RunReport,
     ) -> Result<Step, StoreError> {
-        let owned = tasks
-            .iter()
-            .filter(|t| t.metadata.labels.get(cron_task::UID_LABEL) == Some(&obj.metadata.uid))
-            .collect();
         let input = CronTaskInput {
             object: obj,
-            tasks: owned,
+            tasks: owned(obj, tasks),
             now: self.clock.now(),
         };
         let plan = CronTaskController.reconcile(&input)?;
@@ -282,4 +276,11 @@ impl Manager<'_> {
             obj.key()
         )))
     }
+}
+
+fn owned<'a>(parent: &Object, tasks: &'a [Object]) -> Vec<&'a Object> {
+    tasks
+        .iter()
+        .filter(|t| t.metadata.labels.get(cron_task::UID_LABEL) == Some(&parent.metadata.uid))
+        .collect()
 }
