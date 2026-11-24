@@ -671,6 +671,35 @@ distro = "Ubuntu-24.04"
   `fleet runtime branches` read the place, so thurbox's new-session dialog
   picks a folder and a branch there.
 
+#### Places on runtime-herdr
+
+[`runtime-herdr`](../runtime/herdr.md) runs each Task in a pane of the
+user's own herdr:
+
+```toml
+[runtimes.herdr]
+program = "runtime-herdr"
+
+# herdr's default session; spec.host = "herdr/local"
+[runtimes.herdr.places.local]
+
+# the herdr named session "work"; spec.host = "herdr/work"
+[runtimes.herdr.places.work]
+session = "work"
+workspace = "agents"
+```
+
+| Key | Default | Meaning |
+| --- | --- | --- |
+| `session` | herdr's default session | The herdr named session (`herdr --session`). |
+| `workspace` | `fleet` | The label of the herdr workspace that holds the Tasks' tabs. `start` makes it when it is not there. |
+
+- `runtime-herdr` refuses any other key, and names it.
+- With `default = true` on `[runtimes.herdr]`, `local` names
+  `herdr/local`.
+- A place needs `herdr` on the `PATH`. `fleet runtime places` and
+  `fleet doctor` say when it is missing.
+
 A second Fleet installation on the same runtime needs a distinct
 `keyPrefix`. Store and config must remain separate paths.
 

@@ -224,6 +224,7 @@ jobs:
             # in the `fleet` filter, so a change to thurbox alone skips it.
             runtime:
               - 'crates/runtime-mux/**'
+              - 'crates/runtime-herdr/**'
               - 'crates/term-stream/**'
               - 'crates/workspace-git/**'
               - '.github/workflows/ci.yml'
@@ -355,6 +356,18 @@ jobs:
       - name: Install tmux, Xvfb, dbus, jq, sshd and sqlite3
         if: needs.changes.outputs.rust == 'true' || needs.changes.outputs.fleet == 'true'
         run: sudo apt-get update && sudo apt-get install -y tmux xvfb dbus jq openssh-server sqlite3
+      # herdr: `e2e_runtime_exec` drives `runtime-herdr` against a real herdr
+      # on a private config directory. The version and checksum are the ones
+      # nix/herdr.nix pins.
+      - name: Install herdr
+        if: needs.changes.outputs.rust == 'true' || needs.changes.outputs.fleet == 'true'
+        env:
+          HERDR_VERSION: 0.9.5
+          HERDR_SHA256: 14d9e8bc8b4a9e0118d77c32266f76d461f09b40342eb23752960bd89f59929d
+        run: |
+          curl -fsSLo "$RUNNER_TEMP/herdr" "https://github.com/herdrdev/herdr/releases/download/v${HERDR_VERSION}/herdr-linux-x86_64"
+          echo "${HERDR_SHA256}  $RUNNER_TEMP/herdr" | sha256sum -c -
+          sudo install -m755 "$RUNNER_TEMP/herdr" /usr/local/bin/herdr
       # The `fleet` binary, beside `thurbox-cli` in target/debug, for the
       # tests that drive a real Fleet: `tests/fleet_engine_e2e.rs` and the
       # `Profile::real_fleet` scenarios of `tests/tui_e2e.rs`. The run below
@@ -371,10 +384,11 @@ jobs:
       # session is a Fleet session), so it runs whole rather than by a list
       # of names that a new scenario would miss. They also need `runtime-mux`
       # beside `fleet`, and the `workspace-git` it runs to prepare a Task's
-      # workspace, which a `-p thurbox` run does not build.
+      # workspace, which a `-p thurbox` run does not build. `runtime-herdr`
+      # is for `e2e_runtime_exec`, below.
       - if: needs.changes.outputs.rust != 'true' && needs.changes.outputs.fleet == 'true'
         run: |
-          cargo build -p runtime-mux -p workspace-git --bin runtime-mux --bin workspace-git
+          cargo build -p runtime-mux -p runtime-herdr -p workspace-git --bin runtime-mux --bin runtime-herdr --bin workspace-git
           cargo nextest run -p thurbox --test fleet_engine_e2e --test tui_e2e --profile ci
       # The runtime protocol from Fleet's side: the real `fleet` against the
       # real `runtime-mux` and `workspace-git`, all three built above, so this

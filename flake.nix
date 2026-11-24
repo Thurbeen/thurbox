@@ -129,6 +129,7 @@
           # stdenv shell is Bash without interactive builtins such as `bind`.
           bashInteractive
           tmux # session backend (AGENTS.md: >= 3.2)
+          (callPackage ./nix/herdr.nix { }) # runtime-herdr's e2e tests
           git
           shellcheck # shell linter (pre-commit + CI)
           selene # Lua linter for ui/ (pre-commit + CI); enforces the plugin sandbox

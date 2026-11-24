@@ -1,0 +1,24 @@
+[package]
+name = "runtime-herdr"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+description = "Fleet's runtime protocol over herdr: each session is a pane in the user's own herdr"
+
+[lib]
+name = "runtime_herdr"
+
+[[bin]]
+name = "runtime-herdr"
+path = "src/main.rs"
+
+[dependencies]
+serde.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
+
+[lints]
+workspace = true

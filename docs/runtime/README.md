@@ -15,7 +15,8 @@ status channel are [runtime-mux.md](runtime-mux.md).
 - A **runtime** is a role. Any program that answers
   [the runtime protocol](#the-runtime-protocol) at a place is a runtime.
   `runtime-mux` is the runtime that Fleet ships. It runs sessions in tmux or
-  psmux. `examples/runtimes/tmux.sh` is a minimal runtime in a shell script.
+  psmux. [`runtime-herdr`](herdr.md) runs them as panes of the user's own
+  herdr. `examples/runtimes/tmux.sh` is a minimal runtime in a shell script.
   Write your own for containers, VMs or a remote service.
   `fleet runtime check` runs the conformance suite against it.
 - A **workspace provider** is a role inside a runtime. It is a program that
