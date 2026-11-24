@@ -321,3 +321,31 @@ fn an_as_plugins_destination_lands_in_mods() {
     assert!(ui.join("mods/89_single.lua").is_file());
     assert!(!ui.join("plugins").exists());
 }
+
+#[test]
+fn a_migration_that_cannot_save_leaves_the_old_layout_and_refuses() {
+    let root = tempfile::tempdir().expect("tempdir");
+    old_layout(root.path());
+    let ui = ui_dir(root.path());
+    let manifest = ui.join(".bundled.json");
+    let mut permissions = std::fs::metadata(&manifest)
+        .expect("metadata")
+        .permissions();
+    permissions.set_readonly(true);
+    std::fs::set_permissions(&manifest, permissions).expect("read-only");
+
+    for verb in ["mod", "plugin"] {
+        let output = cli(root.path(), &[verb, "list", "--json"]);
+        assert!(!output.status.success(), "{verb}: {}", text(&output.stdout));
+        assert!(
+            text(&output.stderr).contains("could not finish moving plugins to mods"),
+            "{verb}: {}",
+            text(&output.stderr)
+        );
+    }
+    assert!(ui.join("plugins/90_mine.lua").is_file());
+    assert!(ui.join("plugins/20_agent.lua").is_file());
+    assert!(!ui.join("mods").exists());
+    assert!(ui.join("plugins.toml").is_file());
+    assert!(config_dir(root.path()).join("plugin-state.json").is_file());
+}

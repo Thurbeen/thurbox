@@ -499,7 +499,12 @@ pub fn fetch(src: &str, resolved: &Resolved, as_file: Option<&str>) -> Result<Fe
                     })?
             }
         };
-    let manifest = PackageManifest::parse(&manifest_text).map_err(|e| format!("{src}: {e}"))?;
+    let manifest_file = match legacy_manifest {
+        true => PackageManifest::LEGACY_FILE,
+        false => PackageManifest::FILE,
+    };
+    let manifest = PackageManifest::parse(&manifest_text)
+        .map_err(|e| format!("{src}: {manifest_file}: {e}"))?;
 
     let mut payloads = Vec::new();
     for (destination, file) in deliveries(&manifest, as_file)? {
@@ -745,7 +750,11 @@ fn last_segment(source: &str, windows: bool) -> &str {
 ///
 /// Anything else is ambiguous and says so, listing what it found: guessing which of
 /// several panes is the entry point would be a silent wrong answer.
-fn pane_in_working_copy(root: &Path, name: &str, as_file: Option<&str>) -> Result<String, String> {
+fn pane_in_working_copy(
+    root: &Path,
+    name: &str,
+    as_file: Option<&str>,
+) -> Result<(String, bool), String> {
     if let Some(rel) = as_file {
         let rel = rel.trim_start_matches('/');
         // Accept either `mods/40_x.lua` (inside the repo) or the full
@@ -756,7 +765,7 @@ fn pane_in_working_copy(root: &Path, name: &str, as_file: Option<&str>) -> Resul
         if !root.join(rel).is_file() {
             return Err(format!("{rel} is not in the repository"));
         }
-        return Ok(file);
+        return Ok((file, false));
     }
 
     let manifest = [PackageManifest::FILE, PackageManifest::LEGACY_FILE]
@@ -783,7 +792,7 @@ fn pane_in_working_copy(root: &Path, name: &str, as_file: Option<&str>) -> Resul
                     "{manifest_file} names {source} as its pane, which is not in the repository"
                 ));
             }
-            return Ok(file);
+            return Ok((file, manifest_file == PackageManifest::LEGACY_FILE));
         }
     }
 
@@ -804,7 +813,7 @@ fn pane_in_working_copy(root: &Path, name: &str, as_file: Option<&str>) -> Resul
         .collect();
     found.sort();
     match found.len() {
-        1 => Ok(format!("{name}/{panes_dir}/{}", found[0])),
+        1 => Ok((format!("{name}/{panes_dir}/{}", found[0]), false)),
         0 => Err(format!(
             "the repository's {panes_dir}/ directory holds no Lua"
         )),
@@ -852,11 +861,12 @@ fn install_repository(
     crate::git::clone_plugin(url, &root, pin).map_err(|e| format!("{e:#}"))?;
     let commit = crate::git::head_commit(&root).map_err(|e| format!("{e:#}"))?;
 
-    let file = pane_in_working_copy(&root, &name, as_file).inspect_err(|_| {
-        // A clone whose pane cannot be identified is not an install: take it back so
-        // a second attempt with `--as` starts clean.
-        let _ = std::fs::remove_dir_all(&root);
-    })?;
+    let (file, legacy_manifest) =
+        pane_in_working_copy(&root, &name, as_file).inspect_err(|_| {
+            // A clone whose pane cannot be identified is not an install: take it back so
+            // a second attempt with `--as` starts clean.
+            let _ = std::fs::remove_dir_all(&root);
+        })?;
 
     let entry = PluginEntry {
         src: src.to_string(),
@@ -887,7 +897,7 @@ fn install_repository(
         src: src.to_string(),
         version: commit,
         from: None,
-        legacy_manifest: false,
+        legacy_manifest,
         outcome: Outcome::Installed,
     })
 }

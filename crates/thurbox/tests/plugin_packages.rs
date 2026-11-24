@@ -1712,3 +1712,56 @@ fn a_repository_with_several_panes_and_no_manifest_says_so() {
         "and says how to resolve it: {error}"
     );
 }
+
+#[test]
+fn a_repository_read_through_plugin_toml_says_so() {
+    let home = tempfile::tempdir().expect("tempdir");
+    interface(home.path());
+    let repo = plugin_repo(home.path(), "first");
+    std::fs::write(
+        repo.join("plugin.toml"),
+        "name = \"thurbox-widget\"\n\
+         pane = { source = \"mods/40_widget.lua\", path = \"mods/40_widget.lua\" }\n",
+    )
+    .expect("manifest");
+    git_in(&repo, &["add", "-A"]);
+    git_in(&repo, &["commit", "-m", "manifest"]);
+
+    let report = run(Action::Install {
+        src: format!("git+{}", repo.display()),
+        as_file: None,
+        pin: None,
+    })
+    .expect("install");
+    assert!(report.failure.is_none(), "{:?}", report.json);
+    assert!(
+        report.json["legacy_manifest"]
+            .as_str()
+            .is_some_and(|note| note.contains("plugin.toml")),
+        "{:?}",
+        report.json
+    );
+}
+
+#[test]
+fn an_invalid_plugin_toml_is_named_in_its_error() {
+    let home = tempfile::tempdir().expect("tempdir");
+    interface(home.path());
+    let package = home.path().join("broken");
+    std::fs::create_dir_all(&package).expect("mkdir");
+    std::fs::write(
+        package.join("plugin.toml"),
+        "name = \"\"\npane = { source = \"a.lua\", path = \"plugins/50_a.lua\" }\n",
+    )
+    .expect("manifest");
+    std::fs::write(package.join("a.lua"), "return {}\n").expect("pane");
+
+    let error = run(Action::Install {
+        src: package.display().to_string(),
+        as_file: None,
+        pin: None,
+    })
+    .expect_err("an invalid manifest is refused");
+    assert!(error.contains("plugin.toml: name is empty"), "{error}");
+    assert!(!error.contains("mod.toml"), "{error}");
+}

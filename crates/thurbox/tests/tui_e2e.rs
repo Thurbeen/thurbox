@@ -846,6 +846,33 @@ fn an_old_plugins_interface_moves_to_mods_on_startup() {
     );
 }
 
+#[test]
+fn an_interface_that_cannot_move_to_mods_stops_startup() {
+    let profile = Profile::new();
+    let ui = profile.path("config/ui");
+    std::fs::create_dir_all(ui.join("plugins")).expect("plugins");
+    std::fs::write(ui.join("plugins/91_old.lua"), "return {\n").expect("old pane");
+    let manifest = ui.join(".bundled.json");
+    std::fs::write(&manifest, r#"{"plugins/64_menu.lua":{"removed":true}}"#).expect("manifest");
+    let mut permissions = std::fs::metadata(&manifest)
+        .expect("metadata")
+        .permissions();
+    permissions.set_readonly(true);
+    std::fs::set_permissions(&manifest, permissions).expect("read-only");
+
+    let mut tui = Tui::spawn(&profile, 30, 160);
+    let status = tui.wait_exit("a migration that cannot save");
+    assert!(!status.success(), "{status:?}");
+    assert!(
+        tui.raw_since(0)
+            .contains("could not finish moving plugins to mods"),
+        "{}",
+        tui.raw_since(0)
+    );
+    assert!(ui.join("plugins/91_old.lua").is_file());
+    assert!(!ui.join("mods").exists());
+}
+
 /// What every exit owes the terminal. A missing one of these is the "my shell
 /// is streaming mouse reports" bug, which no in-process test and no
 /// capture-pane assertion can see.

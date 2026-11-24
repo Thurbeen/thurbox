@@ -69,39 +69,65 @@ pub fn migrate_in_force() -> Migration {
 }
 
 /// Migrate `ui_dir`'s files and the state store in `config_dir`.
+///
+/// Every rewrite is written under its new name first, and the old files stay
+/// where they are. Only when every one of those writes succeeded does the
+/// directory move and are the old files deleted, so a migration that reports
+/// [`Migration::errors`] has left the old layout as it found it.
 pub fn migrate(ui_dir: Option<&Path>, config_dir: Option<&Path>) -> Migration {
     let mut migration = Migration::default();
-    if let Some(ui_dir) = ui_dir.filter(|dir| dir.is_dir()) {
-        move_mods_dir(ui_dir, &mut migration);
-        move_text(
+    let mut staged = Staged::default();
+    let ui_dir = ui_dir.filter(|dir| dir.is_dir());
+    if let Some(ui_dir) = ui_dir {
+        if let Err(e) = super::bundled::rename_records(
             ui_dir,
-            LEGACY_SPEC_FILE,
-            SPEC_FILE,
-            rewrite_spec,
-            &mut migration,
-        );
-        move_text(
-            ui_dir,
-            LEGACY_LOCK_FILE,
-            LOCK_FILE,
-            rewrite_lock,
-            &mut migration,
-        );
-        if let Err(e) =
-            super::bundled::rename_records(ui_dir, |relative| moved_destination(ui_dir, relative))
-        {
+            |relative| planned_destination(ui_dir, relative),
+            |relative| stays_in_plugins(ui_dir, relative),
+        ) {
             migration.errors.push(e);
         }
+        stage_text(
+            ui_dir,
+            (LEGACY_SPEC_FILE, SPEC_FILE),
+            rewrite_spec,
+            &mut migration,
+            &mut staged,
+        );
+        stage_text(
+            ui_dir,
+            (LEGACY_LOCK_FILE, LOCK_FILE),
+            rewrite_lock,
+            &mut migration,
+            &mut staged,
+        );
     }
     if let Some(config_dir) = config_dir {
-        move_state(config_dir, &mut migration);
-        if let Some(ui_dir) = ui_dir {
-            if let Err(e) = rewrite_state_keys(&config_dir.join(STATE_FILE), ui_dir) {
-                migration.errors.push(e);
-            }
+        stage_state(config_dir, ui_dir, &mut migration, &mut staged);
+    }
+    if !migration.errors.is_empty() {
+        return migration;
+    }
+    if let Some(ui_dir) = ui_dir {
+        move_mods_dir(ui_dir, &mut migration);
+    }
+    if !migration.errors.is_empty() {
+        return migration;
+    }
+    migration.moved.extend(staged.moved);
+    for old in staged.replaced {
+        if let Err(e) = std::fs::remove_file(&old) {
+            migration
+                .kept
+                .push(format!("{} (could not delete it: {e})", old.display()));
         }
     }
     migration
+}
+
+#[derive(Default)]
+struct Staged {
+    moved: Vec<String>,
+    replaced: Vec<PathBuf>,
 }
 
 /// Old paths still present, each with the new path it should have become.
@@ -185,12 +211,12 @@ fn move_mods_dir(ui_dir: &Path, migration: &mut Migration) {
     let _ = std::fs::remove_dir(&legacy);
 }
 
-fn move_text(
+fn stage_text(
     dir: &Path,
-    legacy_name: &str,
-    name: &str,
+    (legacy_name, name): (&str, &str),
     rewrite: fn(&str) -> Result<String, String>,
     migration: &mut Migration,
+    staged: &mut Staged,
 ) {
     let legacy = dir.join(legacy_name);
     let current = dir.join(name);
@@ -206,7 +232,7 @@ fn move_text(
     };
     if current.exists() {
         if std::fs::read_to_string(&current).is_ok_and(|existing| existing == rewritten) {
-            let _ = std::fs::remove_file(&legacy);
+            staged.replaced.push(legacy);
         } else {
             migration.kept.push(legacy_name.to_string());
         }
@@ -216,10 +242,8 @@ fn move_text(
         migration.errors.push(format!("{}: {e}", current.display()));
         return;
     }
-    match std::fs::remove_file(&legacy) {
-        Ok(()) => migration.moved.push(format!("{legacy_name} → {name}")),
-        Err(e) => migration.errors.push(format!("{}: {e}", legacy.display())),
-    }
+    staged.moved.push(format!("{legacy_name} → {name}"));
+    staged.replaced.push(legacy);
 }
 
 /// The spec's text with `[[plugin]]` as `[[mod]]` and each `plugins/`
@@ -229,20 +253,18 @@ pub fn rewrite_spec(text: &str) -> Result<String, String> {
         .parse()
         .map_err(|e: toml_edit::TomlError| e.to_string())?;
     crate::session::plugin_spec::rename_entries_key(&mut doc);
-    if let Some(entries) = doc
-        .get_mut("mod")
-        .and_then(|item| item.as_array_of_tables_mut())
-    {
-        for entry in entries.iter_mut() {
-            let mapped = entry
-                .get("file")
-                .and_then(|file| file.as_str())
-                .map(mod_destination);
-            if let Some(mapped) = mapped {
-                entry["file"] = toml_edit::value(mapped);
-            }
+    crate::session::plugin_spec::for_each_entry_file(&mut doc, |file| {
+        let Some(current) = file.as_str() else {
+            return;
+        };
+        let mapped = mod_destination(current);
+        if mapped == current {
+            return;
         }
-    }
+        let decor = file.decor().clone();
+        *file = mapped.into();
+        *file.decor_mut() = decor;
+    });
     Ok(doc.to_string())
 }
 
@@ -262,49 +284,79 @@ pub fn rewrite_lock(text: &str) -> Result<String, String> {
     lock.to_toml()
 }
 
-fn moved_destination(ui_dir: &Path, relative: &str) -> Option<String> {
+fn stays_in_plugins(ui_dir: &Path, relative: &str) -> bool {
     let mapped = mod_destination(relative);
-    (mapped != relative && !ui_dir.join(relative).exists()).then_some(mapped)
+    mapped != relative && ui_dir.join(relative).exists() && ui_dir.join(&mapped).exists()
 }
 
-fn move_state(config_dir: &Path, migration: &mut Migration) {
+fn planned_destination(ui_dir: &Path, relative: &str) -> Option<String> {
+    let mapped = mod_destination(relative);
+    (mapped != relative && !stays_in_plugins(ui_dir, relative)).then_some(mapped)
+}
+
+fn stage_state(
+    config_dir: &Path,
+    ui_dir: Option<&Path>,
+    migration: &mut Migration,
+    staged: &mut Staged,
+) {
     let legacy = config_dir.join(LEGACY_STATE_FILE);
     let current = config_dir.join(STATE_FILE);
-    if !legacy.is_file() {
-        return;
-    }
-    if current.exists() {
-        migration.kept.push(LEGACY_STATE_FILE.to_string());
-        return;
-    }
-    match std::fs::rename(&legacy, &current) {
-        Ok(()) => migration
-            .moved
-            .push(format!("{LEGACY_STATE_FILE} → {STATE_FILE}")),
-        Err(e) => {
-            migration
-                .errors
-                .push(format!("{} → {}: {e}", legacy.display(), current.display()))
+    if legacy.is_file() {
+        match state_rewritten(&legacy, ui_dir) {
+            Ok((text, _)) if !current.exists() => {
+                match crate::paths::write_atomically(&current, &text) {
+                    Ok(()) => {
+                        staged
+                            .moved
+                            .push(format!("{LEGACY_STATE_FILE} → {STATE_FILE}"));
+                        staged.replaced.push(legacy);
+                    }
+                    Err(e) => migration.errors.push(format!("{}: {e}", current.display())),
+                }
+                return;
+            }
+            Ok((text, _))
+                if std::fs::read_to_string(&current).is_ok_and(|existing| existing == text) =>
+            {
+                staged.replaced.push(legacy);
+                return;
+            }
+            Ok(_) => migration.kept.push(LEGACY_STATE_FILE.to_string()),
+            Err(e) => {
+                migration.errors.push(e);
+                return;
+            }
         }
+    }
+    if !current.is_file() {
+        return;
+    }
+    match state_rewritten(&current, ui_dir) {
+        Ok((text, true)) => {
+            if let Err(e) = crate::paths::write_atomically(&current, text) {
+                migration.errors.push(format!("{}: {e}", current.display()));
+            }
+        }
+        Ok((_, false)) => {}
+        Err(e) => migration.errors.push(e),
     }
 }
 
-fn rewrite_state_keys(state: &Path, ui_dir: &Path) -> Result<(), String> {
-    let Ok(text) = std::fs::read_to_string(state) else {
-        return Ok(());
-    };
-    let Ok(mut parsed) = serde_json::from_str::<Value>(&text) else {
-        return Ok(());
+fn state_rewritten(path: &Path, ui_dir: Option<&Path>) -> Result<(String, bool), String> {
+    let text = std::fs::read_to_string(path).map_err(|e| format!("{}: {e}", path.display()))?;
+    let (Some(ui_dir), Ok(mut parsed)) = (ui_dir, serde_json::from_str::<Value>(&text)) else {
+        return Ok((text, false));
     };
     let rename = |key: &str| -> Option<String> {
         if let Some(relative) = super::bundled::relative_to(ui_dir, key) {
-            return moved_destination(ui_dir, &relative)
+            return planned_destination(ui_dir, &relative)
                 .map(|mapped| ui_dir.join(mapped).to_string_lossy().into_owned());
         }
         if Path::new(key).is_absolute() {
             return None;
         }
-        moved_destination(ui_dir, &key.replace('\\', "/"))
+        planned_destination(ui_dir, &key.replace('\\', "/"))
     };
     let mut changed = false;
     if let Some(trusted) = parsed.get_mut("trusted").and_then(Value::as_object_mut) {
@@ -331,10 +383,10 @@ fn rewrite_state_keys(state: &Path, ui_dir: &Path) -> Result<(), String> {
         }
     }
     if !changed {
-        return Ok(());
+        return Ok((text, false));
     }
     let text = serde_json::to_string_pretty(&parsed).map_err(|e| e.to_string())?;
-    crate::paths::write_atomically(state, text).map_err(|e| format!("{}: {e}", state.display()))
+    Ok((text, true))
 }
 
 #[cfg(test)]
@@ -344,6 +396,107 @@ mod tests {
     fn write(path: &Path, text: &str) {
         std::fs::create_dir_all(path.parent().expect("parent")).expect("mkdir");
         std::fs::write(path, text).expect("write");
+    }
+
+    fn delivered_by_an_old_release(ui: &Path) {
+        let report = super::super::bundled::materialize(ui);
+        assert!(report.errors.is_empty(), "{report:?}");
+        std::fs::rename(ui.join("mods"), ui.join("plugins")).expect("rename");
+        let manifest = ui.join(".bundled.json");
+        let old = std::fs::read_to_string(&manifest)
+            .expect("manifest")
+            .replace("\"mods/", "\"plugins/");
+        std::fs::write(&manifest, old).expect("manifest");
+    }
+
+    fn set_read_only(path: &Path) {
+        let mut permissions = std::fs::metadata(path).expect("metadata").permissions();
+        permissions.set_readonly(true);
+        std::fs::set_permissions(path, permissions).expect("read-only");
+    }
+
+    #[test]
+    fn a_kept_clash_survives_the_delivery_that_follows() {
+        let root = tempfile::tempdir().expect("tempdir");
+        let ui = root.path().join("ui");
+        delivered_by_an_old_release(&ui);
+        write(&ui.join("mods/10_sessions.lua"), "-- mine\n");
+
+        let migration = migrate(Some(&ui), None);
+        assert_eq!(migration.kept, vec!["plugins/10_sessions.lua".to_string()]);
+        let delivery = super::super::bundled::materialize(&ui);
+        assert!(delivery.errors.is_empty(), "{delivery:?}");
+        assert!(
+            ui.join("plugins/10_sessions.lua").is_file(),
+            "the kept copy was deleted: {delivery:?}"
+        );
+    }
+
+    #[test]
+    fn a_read_only_delivery_record_leaves_the_old_layout_untouched() {
+        let root = tempfile::tempdir().expect("tempdir");
+        let ui = root.path().join("ui");
+        delivered_by_an_old_release(&ui);
+        write(
+            &ui.join(LEGACY_SPEC_FILE),
+            "[[plugin]]\nsrc = \"x\"\nfile = \"plugins/50_x.lua\"\n",
+        );
+        set_read_only(&ui.join(".bundled.json"));
+
+        let migration = migrate(Some(&ui), Some(root.path()));
+        assert!(!migration.errors.is_empty(), "{migration:?}");
+        assert!(migration.moved.is_empty(), "{migration:?}");
+        assert!(ui.join("plugins/10_sessions.lua").is_file());
+        assert!(!ui.join("mods").exists());
+        assert!(ui.join(LEGACY_SPEC_FILE).is_file());
+    }
+
+    #[test]
+    fn a_read_only_plugin_state_still_moves_its_keys() {
+        let root = tempfile::tempdir().expect("tempdir");
+        let ui = root.path().join("ui");
+        write(&ui.join("plugins/10_a.lua"), "-- a\n");
+        let old = ui.join("plugins/10_a.lua").to_string_lossy().into_owned();
+        let state = root.path().join(LEGACY_STATE_FILE);
+        write(
+            &state,
+            &serde_json::json!({ "trusted": {}, "disabled": [old] }).to_string(),
+        );
+        set_read_only(&state);
+
+        let migration = migrate(Some(&ui), Some(root.path()));
+        assert!(migration.errors.is_empty(), "{migration:?}");
+        assert_eq!(
+            read_json(&root.path().join(STATE_FILE))["disabled"],
+            serde_json::json!([ui.join("mods/10_a.lua").to_string_lossy()])
+        );
+        assert!(ui.join("mods/10_a.lua").is_file());
+    }
+
+    #[test]
+    fn an_inline_spec_has_its_destinations_moved_too() {
+        let rewritten =
+            rewrite_spec("plugin = [{ src = \"atlas\", file = \"plugins/75_atlas.lua\" }]\n")
+                .expect("rewrite");
+        let spec = crate::session::plugin_spec::PluginSpec::parse(&rewritten).expect("parse");
+        assert_eq!(spec.plugins[0].file, "mods/75_atlas.lua", "{rewritten}");
+    }
+
+    #[test]
+    fn a_destination_keeps_its_comment_and_an_unchanged_one_is_untouched() {
+        let rewritten = rewrite_spec(
+            "[[plugin]]\nsrc = \"a\"\nfile = \"plugins/75_a.lua\" # keep this order\n\n\
+             [[plugin]]\nsrc = \"b\"\nfile =   \"y/40_y.lua\"   # theirs\n",
+        )
+        .expect("rewrite");
+        assert!(
+            rewritten.contains("file = \"mods/75_a.lua\" # keep this order"),
+            "{rewritten}"
+        );
+        assert!(
+            rewritten.contains("file =   \"y/40_y.lua\"   # theirs"),
+            "{rewritten}"
+        );
     }
 
     fn read_json(path: &Path) -> Value {
@@ -445,7 +598,6 @@ mod tests {
         let manifest = read_json(&ui.join(".bundled.json"));
         assert_eq!(manifest["mods/10_a.lua"], "abc");
         assert_eq!(manifest["mods/64_menu.lua"]["removed"], true);
-        assert!(manifest.get("plugins/10_a.lua").is_none());
         let state = read_json(&root.path().join(STATE_FILE));
         assert_eq!(
             state["trusted"][ui.join("mods/10_a.lua").to_string_lossy().as_ref()],

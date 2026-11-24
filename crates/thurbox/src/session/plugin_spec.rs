@@ -63,6 +63,52 @@ pub fn rename_entries_key(doc: &mut toml_edit::DocumentMut) {
     }
 }
 
+/// Visit each entry's `file` value in a spec document, in either TOML form:
+/// `[[mod]]` tables, or an inline `mod = [{ … }]` array.
+pub fn for_each_entry_file(
+    doc: &mut toml_edit::DocumentMut,
+    mut visit: impl FnMut(&mut toml_edit::Value),
+) {
+    match doc.get_mut(ENTRIES_KEY) {
+        Some(toml_edit::Item::ArrayOfTables(tables)) => {
+            for table in tables.iter_mut() {
+                if let Some(file) = table
+                    .get_mut("file")
+                    .and_then(toml_edit::Item::as_value_mut)
+                {
+                    visit(file);
+                }
+            }
+        }
+        Some(toml_edit::Item::Value(toml_edit::Value::Array(entries))) => {
+            for entry in entries.iter_mut() {
+                if let Some(file) = entry
+                    .as_inline_table_mut()
+                    .and_then(|table| table.get_mut("file"))
+                {
+                    visit(file);
+                }
+            }
+        }
+        _ => {}
+    }
+}
+
+fn entries_as_tables(doc: &mut toml_edit::DocumentMut) {
+    let Some(toml_edit::Item::Value(toml_edit::Value::Array(entries))) = doc.get(ENTRIES_KEY)
+    else {
+        return;
+    };
+    let mut tables = toml_edit::ArrayOfTables::new();
+    for entry in entries.iter() {
+        let Some(table) = entry.as_inline_table() else {
+            return;
+        };
+        tables.push(table.clone().into_table());
+    }
+    doc.insert(ENTRIES_KEY, toml_edit::Item::ArrayOfTables(tables));
+}
+
 const ENTRIES_KEY: &str = "mod";
 const LEGACY_ENTRIES_KEY: &str = "plugin";
 
@@ -420,17 +466,16 @@ impl PackageManifest {
     /// about packages.
     pub fn validate(&self) -> Result<(), String> {
         if self.name.trim().is_empty() {
-            return Err(format!("{}: name is empty", Self::FILE));
+            return Err("name is empty".to_string());
         }
         if !is_bare_name(&self.name) {
             return Err(format!(
-                "{}: name {:?} must be one plain segment, since it is also a namespace",
-                Self::FILE,
+                "name {:?} must be one plain segment, since it is also a namespace",
                 self.name
             ));
         }
         if self.panes.is_empty() {
-            return Err(format!("{}: declares no pane", Self::FILE));
+            return Err("declares no pane".to_string());
         }
         for file in self.files() {
             validate_destination(&file.path)?;
@@ -440,20 +485,15 @@ impl PackageManifest {
         for module in &self.modules {
             if !module.path.starts_with(&namespace) {
                 return Err(format!(
-                    "{}: module {} must be delivered under {namespace} — a package \
+                    "module {} must be delivered under {namespace} — a package \
                      may not replace a shared module",
-                    Self::FILE,
                     module.path
                 ));
             }
         }
         for pane in &self.panes {
             if pane.path.starts_with("lib/") {
-                return Err(format!(
-                    "{}: the pane {} belongs in mods/",
-                    Self::FILE,
-                    pane.path
-                ));
+                return Err(format!("the pane {} belongs in mods/", pane.path));
             }
         }
         // Two files landing on one path cannot both be honoured, and letting the
@@ -463,7 +503,7 @@ impl PackageManifest {
         let mut seen = BTreeSet::new();
         for file in self.files() {
             if !seen.insert(file.path.as_str()) {
-                return Err(format!("{}: {} is delivered twice", Self::FILE, file.path));
+                return Err(format!("{} is delivered twice", file.path));
             }
         }
         Ok(())
@@ -598,6 +638,7 @@ pub fn insert_entry(text: &str, entry: &PluginEntry) -> Result<String, String> {
     };
 
     rename_entries_key(&mut doc);
+    entries_as_tables(&mut doc);
     let array = doc
         .entry(ENTRIES_KEY)
         .or_insert(toml_edit::Item::ArrayOfTables(
@@ -642,6 +683,7 @@ pub fn remove_entry(text: &str, key: &str) -> Result<(String, PluginEntry), Stri
         .parse()
         .map_err(|e: toml_edit::TomlError| e.to_string())?;
     rename_entries_key(&mut doc);
+    entries_as_tables(&mut doc);
     let mut orphaned_header = None;
     if let Some(array) = doc
         .get_mut(ENTRIES_KEY)
@@ -729,6 +771,28 @@ mod tests {
         .expect("parse");
         assert_eq!(manifest.panes[0].path, "mods/88_a.lua");
         assert_eq!(manifest.modules[0].path, "lib/legacy/u.lua");
+    }
+
+    #[test]
+    fn an_inline_spec_is_edited_like_a_list_of_tables() {
+        let inline = "mod = [{ src = \"a\", file = \"mods/50_a.lua\" }]\n";
+        let entry = PluginEntry {
+            src: "b".into(),
+            file: "mods/60_b.lua".into(),
+            pin: None,
+        };
+        let added = insert_entry(inline, &entry).expect("insert");
+        assert_eq!(PluginSpec::parse(&added).expect("parse").plugins.len(), 2);
+
+        let (removed, entry) = remove_entry(inline, "a").expect("remove");
+        assert_eq!(entry.file, "mods/50_a.lua");
+        assert!(
+            PluginSpec::parse(&removed)
+                .expect("parse")
+                .plugins
+                .is_empty(),
+            "{removed}"
+        );
     }
 
     #[test]

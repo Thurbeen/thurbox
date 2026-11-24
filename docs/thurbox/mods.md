@@ -2221,7 +2221,13 @@ reads them:
   shipped pane you deleted stays deleted. A grant and a disabled pane stay as
   they were.
 - When `mods/` already exists, the move takes only the files `mods/` does not
-  have. It leaves each clash in `plugins/` and names it.
+  have. It leaves each clash in `plugins/` and names it. Delivery does not
+  touch a clash that the move left in `plugins/`.
+- The move writes each rewritten file under its new name first. The directory
+  moves, and the old files go, only after every one of those writes succeeded.
+- When a write fails, for example on a read-only file, the old layout stays as
+  it was. The interface then does not start, and the `thurbox-cli` command
+  fails. Both name the file. Fix it and run again.
 - The move keeps the comments in the spec. It deletes no file you wrote. It
   prints one notice that starts `plugins are mods now`, and nothing on a later
   run.

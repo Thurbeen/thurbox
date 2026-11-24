@@ -801,23 +801,32 @@ fn write_manifest(dir: &Path, manifest: &BTreeMap<String, Record>) -> Result<(),
         .map_err(|e| format!("{}: {e}", dir.join(MANIFEST).display()))
 }
 
-/// Move each delivery record `rename` gives a new path to, unless a record is
+/// Copy each delivery record `rename` gives a new path to, unless a record is
 /// already there, so an edited file stays edited and a deleted one deleted
-/// under its new name. Writes nothing when nothing moved.
-pub fn rename_records(dir: &Path, rename: impl Fn(&str) -> Option<String>) -> Result<(), String> {
+/// under its new name; and drop each record `forget` names, so delivery never
+/// takes back a file kept outside the interface.
+///
+/// The old record stays beside its copy: until the files move, the directory
+/// still reads as it did, and once they have moved delivery drops a record
+/// whose file is gone. Writes nothing when nothing changed.
+pub fn rename_records(
+    dir: &Path,
+    rename: impl Fn(&str) -> Option<String>,
+    forget: impl Fn(&str) -> bool,
+) -> Result<(), String> {
     let mut manifest = read_manifest(dir);
-    let moves: Vec<(String, String)> = manifest
-        .keys()
-        .filter_map(|old| rename(old).map(|new| (old.clone(), new)))
-        .filter(|(_, new)| !manifest.contains_key(new))
+    let copies: Vec<(String, Record)> = manifest
+        .iter()
+        .filter_map(|(old, record)| rename(old).map(|new| (new, record.clone())))
+        .filter(|(new, _)| !manifest.contains_key(new))
         .collect();
-    if moves.is_empty() {
+    let forgotten: Vec<String> = manifest.keys().filter(|key| forget(key)).cloned().collect();
+    if copies.is_empty() && forgotten.is_empty() {
         return Ok(());
     }
-    for (old, new) in moves {
-        if let Some(record) = manifest.remove(&old) {
-            manifest.insert(new, record);
-        }
+    manifest.extend(copies);
+    for key in forgotten {
+        manifest.remove(&key);
     }
     write_manifest(dir, &manifest)
 }

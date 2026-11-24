@@ -488,6 +488,9 @@ fn resolve_ui_dir() -> Result<(PathBuf, Vec<String>), Box<dyn Error>> {
     // reports the directory this will actually load. Writing the user's copy is
     // the interface's business, which is why it asks for it.
     let migration = thurbox::kernel::mod_migration::migrate_in_force();
+    if !migration.errors.is_empty() {
+        return Err(migration.notice().unwrap_or_default().into());
+    }
     let (dir, chosen, report) = thurbox::kernel::bundled::resolve(true)?;
     let mut notices = Vec::new();
     notices.extend(migration.notice());
