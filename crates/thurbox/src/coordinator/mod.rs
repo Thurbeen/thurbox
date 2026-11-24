@@ -403,7 +403,7 @@ impl App {
                 tick_p50_us = self.timings.tick.percentile_us(50),
                 tick_p95_us = self.timings.tick.percentile_us(95),
                 slow_ops = slow.join(" "),
-                mods,
+                plugins = mods,
                 "perf_window"
             );
             self.perf_window_base = counters;
