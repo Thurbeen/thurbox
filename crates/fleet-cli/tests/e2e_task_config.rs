@@ -87,7 +87,10 @@ fn references_overrides_validation_and_missing_source_do_not_launch_wrong_worker
             .as_deref(),
         Some("task-model")
     );
-    assert_eq!(launch(&e)["env"], json!({"LANGUAGE":"task","OTHER":"kept"}));
+    assert_eq!(
+        launch(&e)["env"],
+        json!({"CLAUDE_CODE_MESSAGING_SOCKET":"","LANGUAGE":"task","OTHER":"kept"})
+    );
     let mut invalid = task("invalid", true);
     invalid["spec"]["env"] = json!({"BAD=KEY":"value-never-in-error"});
     let r = e.apply(invalid);

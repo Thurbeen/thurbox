@@ -2,11 +2,8 @@
 //! it names to its hooks in `CLAUDE_CODE_MESSAGING_SOCKET`: one stream-json
 //! `user` line starts a turn, or waits for the current one to end, and its
 //! prompt hook reports the text. Nothing is typed into its composer.
-use std::io::{self, Write};
+use std::io;
 use std::path::Path;
-use std::time::Duration;
-
-const WRITE_BOUND: Duration = Duration::from_secs(5);
 
 /// The line Claude Code's socket reads as one user turn.
 pub fn claude_line(text: &str) -> String {
@@ -20,9 +17,11 @@ pub fn claude_line(text: &str) -> String {
 /// Write `text` to the Claude Code socket at `socket`.
 #[cfg(unix)]
 pub fn post_claude(socket: &Path, text: &str) -> io::Result<()> {
+    use std::io::Write;
     use std::os::unix::net::UnixStream;
+    let write_bound = std::time::Duration::from_secs(5);
     let mut stream = UnixStream::connect(socket)?;
-    stream.set_write_timeout(Some(WRITE_BOUND))?;
+    stream.set_write_timeout(Some(write_bound))?;
     stream.write_all(claude_line(text).as_bytes())?;
     stream.flush()?;
     stream.shutdown(std::net::Shutdown::Write)
