@@ -74,6 +74,9 @@ on its stdin and stdout. It relays herdr-core's framed `terminal.attach`
 | `RESIZE` | `resized` |
 | `CLOSE` with the program's exit | `exit` with its code |
 
+- `hello` comes first, before the stream reads anything: thurbox's stream
+  pane waits for it before it sends its size, as runtime-mux's view
+  answers it.
 - `hello` lists `resize` only. herdr-core sends its first paint as bytes,
   so the view builds its grid from `output`, as on psmux.
 - A view that cannot reach herdr-core gets `exit` with Unknown and why.

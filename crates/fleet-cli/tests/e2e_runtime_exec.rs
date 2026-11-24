@@ -7132,9 +7132,10 @@ fn herdr_view(home: &HerdrHome, attach: &Value) -> support::view::View {
     support::view::View::open(cmd)
 }
 
-/// The stream relays the key's screen and output after the view's first
-/// resize, types what the view sends, and leaves the process running on a
-/// detach.
+/// The stream says hello before it reads anything, as thurbox's stream pane
+/// waits for it before sending its size; it relays the key's screen and
+/// output after the view's first resize, types what the view sends, and
+/// leaves the process running on a detach.
 #[test]
 fn runtime_herdr_streams_a_key_s_terminal() {
     use term_stream::{Capability, Down, Size, Up};
@@ -7146,11 +7147,11 @@ fn runtime_herdr_streams_a_key_s_terminal() {
     herdr_start(&program, &home, "k-stream", &["sh", "-c", echo]);
     let attach = herdr_call(&program, &home, "attach", json!({"key": "k-stream"}));
     let mut view = herdr_view(&home, &attach);
-    view.send(&Up::Resize(Size { rows: 24, cols: 80 }));
     let Down::Hello(hello) = view.next() else {
         panic!("the stream did not start with hello")
     };
     assert!(!hello.has(Capability::Snapshot), "{hello:?}");
+    view.send(&Up::Resize(Size { rows: 24, cols: 80 }));
     view.until_text("ready");
     view.send(&Up::Input(b"ping\r".to_vec()));
     view.until_text("got[ping]");

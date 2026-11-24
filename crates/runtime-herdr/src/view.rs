@@ -40,6 +40,14 @@ fn stream(args: &[String]) -> Result<(), String> {
         [terminal] => (None, terminal),
         _ => return Err("usage: runtime-herdr view [--session S] <terminal>".to_string()),
     };
+    let mut down = std::io::stdout().lock();
+    write_down(
+        &mut down,
+        &Down::Hello(Hello {
+            version: term_stream::VERSION,
+            capabilities: vec![Capability::Resize],
+        }),
+    )?;
     let mut view = std::io::stdin();
     let size = loop {
         match term_stream::read::<Up>(&mut view) {
@@ -84,14 +92,6 @@ fn stream(args: &[String]) -> Result<(), String> {
     } });
     send(&upstream, CONTROL, DATA, attach.to_string().as_bytes())?;
     let channel = await_channel(&mut replies)?;
-    let mut down = std::io::stdout().lock();
-    write_down(
-        &mut down,
-        &Down::Hello(Hello {
-            version: term_stream::VERSION,
-            capabilities: vec![Capability::Resize],
-        }),
-    )?;
     let bracketed = Arc::new(AtomicBool::new(false));
     relay_view(
         view_frames(),
