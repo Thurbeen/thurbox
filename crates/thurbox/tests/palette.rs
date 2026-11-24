@@ -162,7 +162,7 @@ fn every_kind_of_action_is_a_row() {
 #[test]
 fn a_disabled_plugins_actions_are_absent() {
     let mut host = host();
-    host.set_disabled(vec!["plugins/65_search.lua".to_string()]);
+    host.set_disabled(vec!["mods/65_search.lua".to_string()]);
     host.reload();
     assert!(host.error.is_none(), "{:?}", host.error);
     let rows = palette::rows(&registry(&host));

@@ -20,7 +20,7 @@ use thurbox::session::SessionState;
 /// An interface directory holding the given plugins, each `(file, source)`.
 fn interface(plugins: &[(&str, &str)]) -> tempfile::TempDir {
     let dir = tempfile::tempdir().expect("tempdir");
-    let plugins_dir = dir.path().join("plugins");
+    let plugins_dir = dir.path().join("mods");
     std::fs::create_dir_all(&plugins_dir).expect("mkdir");
     for (file, source) in plugins {
         std::fs::write(plugins_dir.join(file), source).expect("write");
@@ -306,7 +306,7 @@ fn a_plugin_emits_a_user_event_and_another_receives_it_with_the_source() {
         panic!("expected an emit, got {issued:?}");
     };
     // Owner is stamped from the executing plugin, never read from Lua.
-    assert_eq!(owner, "plugins/10_sender.lua");
+    assert_eq!(owner, "mods/10_sender.lua");
     assert_eq!(name, "user.refresh");
     assert!(payload.contains(&("scope".to_string(), Field::Text("x".into()))));
     assert!(payload.contains(&("count".to_string(), Field::Number(2.0))));

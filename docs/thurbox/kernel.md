@@ -32,7 +32,7 @@ entirely from the snapshot). Each is its own repository, installed by clone —
    convert   table <-> node              lib/ui        panel, list, cursor, row…
                                          lib/widgets   measure, window, list…
    paint     node -> ratatui             lib/tree      decoration helper
-   host      VM, reload, isolation       plugins/*     3 panes + 5 floats
+   host      VM, reload, isolation       mods/*        3 panes + 5 floats
    registry  keys, settings, commands
    modals    help, settings, theme, files, palette
    events    derived from the snapshot

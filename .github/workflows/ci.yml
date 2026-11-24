@@ -71,7 +71,7 @@ jobs:
               # The Lua trees are Rust inputs, not merely neighbours: they are
               # `include_str!`d into the binary, and the suite asserts on their
               # CONTENT — `crates/thurbox/tests/new_session.rs` checks a string that exists
-              # only in `ui/plugins/10_sessions.lua`. Without these, a Lua-only
+              # only in `ui/mods/10_sessions.lua`. Without these, a Lua-only
               # change skips clippy, nextest and both Windows jobs, and can
               # red-build main while its own PR is
               # green. The `lua` filter below lists the same two roots.

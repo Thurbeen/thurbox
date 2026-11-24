@@ -2,10 +2,10 @@
 #
 #     thurbox-cli mod install tasks
 #
-# `file` below is where the pane lands by default. `--as plugins/NN_tasks.lua`
+# `file` below is where the pane lands by default. `--as mods/NN_tasks.lua`
 # moves it, since the number is load order and yours to choose.
 name = "tasks"
 description = "A scratch to-do list pane, kept until thurbox quits"
 requires_thurbox = ">=2.0"
 
-pane = { source = "tasks.lua", path = "plugins/80_tasks.lua" }
+pane = { source = "tasks.lua", path = "mods/80_tasks.lua" }

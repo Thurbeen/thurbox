@@ -82,7 +82,7 @@ enum Group {
     /// sources end in the same name are still two groups.
     Package(String, String),
     Shipped,
-    /// Modules, docs, `layout.lua` and `plugins.toml`: what the panes are built
+    /// Modules, docs, `layout.lua` and `mods.toml`: what the panes are built
     /// from and arranged by. Listed only on `a`, or when one needs attention.
     Support,
 }
@@ -203,7 +203,7 @@ fn package(src: &str) -> &str {
 fn label(row: &Row) -> &str {
     match Group::of(row) {
         Group::Package(..) => row.path.rsplit('/').next().unwrap_or(&row.path),
-        Group::Yours | Group::Shipped => row.path.strip_prefix("plugins/").unwrap_or(&row.path),
+        Group::Yours | Group::Shipped => row.path.strip_prefix("mods/").unwrap_or(&row.path),
         Group::Support => &row.path,
     }
 }
@@ -1053,7 +1053,7 @@ impl InterfaceTab {
                             chrome.muted(),
                         )),
                         Line::from(Span::styled(
-                            " add one: a .lua file in plugins/, or `thurbox-cli mod install <source>`",
+                            " add one: a .lua file in mods/, or `thurbox-cli mod install <source>`",
                             chrome.muted(),
                         )),
                     ]),
@@ -1205,7 +1205,7 @@ mod tests {
             capabilities: vec![Capability::Run],
             trust: FileTrust::Untrusted,
             ..row(
-                "plugins/85_top.lua",
+                "mods/85_top.lua",
                 Source::Installed {
                     src: "/home/user/code/thurbox/examples/panes/top".into(),
                 },
@@ -1306,7 +1306,7 @@ mod tests {
         let lines = |row: Row| paint(&mut InterfaceTab::default(), &[row], 90, 12);
         let edited = row_of(
             &lines(row(
-                "plugins/10_sessions.lua",
+                "mods/10_sessions.lua",
                 Source::Edited,
                 FileState::Visible,
             )),
@@ -1314,7 +1314,7 @@ mod tests {
         );
         assert!(edited.contains("edited"), "{edited}");
         // Your own file says so once, in its group's header, not on each row.
-        let mine = lines(row("plugins/90_mine.lua", Source::User, FileState::Visible));
+        let mine = lines(row("mods/90_mine.lua", Source::User, FileState::Visible));
         assert!(mine.iter().any(|line| line.trim() == "YOURS"), "{mine:#?}");
         assert!(!row_of(&mine, "90_mine.lua").contains("yours"));
 
@@ -1339,7 +1339,7 @@ mod tests {
         // word on every bundled row would bury the one row that differs.
         let plain = row_of(
             &lines(row(
-                "plugins/20_agent.lua",
+                "mods/20_agent.lua",
                 Source::Bundled,
                 FileState::Visible,
             )),
@@ -1352,7 +1352,7 @@ mod tests {
     #[test]
     fn a_narrow_row_cuts_the_path_and_keeps_the_state() {
         let rows = [row(
-            "plugins/85_a_pane_with_a_name_long_enough_to_fill_a_narrow_row.lua",
+            "mods/85_a_pane_with_a_name_long_enough_to_fill_a_narrow_row.lua",
             Source::Edited,
             FileState::Disabled,
         )];
@@ -1379,7 +1379,7 @@ mod tests {
         ];
         let mut words = Vec::new();
         for state in states {
-            let rows = [row("plugins/50_x.lua", Source::Bundled, state)];
+            let rows = [row("mods/50_x.lua", Source::Bundled, state)];
             let lines = paint(&mut InterfaceTab::default(), &rows, 72, 12);
             let line = row_of(&lines, "50_x.lua");
             let tail = line
@@ -1408,13 +1408,9 @@ mod tests {
             file("AGENTS.md", Kind::Doc),
             file("layout.lua", Kind::Arrangement),
             file("lib/chrome.lua", Kind::Module),
-            row(
-                "plugins/10_sessions.lua",
-                Source::Bundled,
-                FileState::Visible,
-            ),
-            row("plugins/90_notes.lua", Source::User, FileState::Unplaced),
-            row("plugins/91_ok.lua", Source::User, FileState::Visible),
+            row("mods/10_sessions.lua", Source::Bundled, FileState::Visible),
+            row("mods/90_notes.lua", Source::User, FileState::Unplaced),
+            row("mods/91_ok.lua", Source::User, FileState::Visible),
             top,
         ];
         let mut tab = InterfaceTab {
@@ -1446,7 +1442,7 @@ mod tests {
         let rows = [
             file("lib/chrome.lua", Kind::Module),
             layout,
-            row("plugins/90_mine.lua", Source::User, FileState::Visible),
+            row("mods/90_mine.lua", Source::User, FileState::Visible),
         ];
         let mut tab = InterfaceTab::default();
         let text = screen(&mut tab, &rows);
@@ -1492,7 +1488,7 @@ mod tests {
     #[test]
     fn the_grant_question_shortens_the_file_name_to_fit() {
         let mut long = row(
-            "plugins/94_a_pane_with_a_name_long_enough_to_need_cutting.lua",
+            "mods/94_a_pane_with_a_name_long_enough_to_need_cutting.lua",
             Source::User,
             FileState::Unplaced,
         );
@@ -1518,10 +1514,10 @@ mod tests {
     fn panes_held_back_by_a_failed_reload_are_not_called_failed() {
         // A reload is all-or-nothing: one broken file leaves every other one
         // unloaded. Only the file the error names is the fault.
-        let mut broken = row("plugins/93_broken.lua", Source::User, FileState::Failed);
+        let mut broken = row("mods/93_broken.lua", Source::User, FileState::Failed);
         broken.error = Some("93_broken: syntax error near <eof>".into());
         let rows = [
-            row("plugins/92_fine.lua", Source::User, FileState::Failed),
+            row("mods/92_fine.lua", Source::User, FileState::Failed),
             broken,
         ];
         let mut tab = InterfaceTab::default();
@@ -1541,15 +1537,12 @@ mod tests {
             .iter()
             .any(|line| line.contains("syntax error near <eof>")));
 
-        select(&mut tab, &rows, "plugins/92_fine.lua");
+        select(&mut tab, &rows, "mods/92_fine.lua");
         let text = paint(&mut tab, &rows, 90, 14).join("\n");
-        assert!(
-            text.contains("plugins/93_broken.lua failed to load"),
-            "{text}"
-        );
+        assert!(text.contains("mods/93_broken.lua failed to load"), "{text}");
 
         // With nothing named, a pane that did not load is still its own fault.
-        let alone = [row("plugins/92_fine.lua", Source::User, FileState::Failed)];
+        let alone = [row("mods/92_fine.lua", Source::User, FileState::Failed)];
         let line = row_of(
             &paint(&mut InterfaceTab::default(), &alone, 90, 12),
             "92_fine",
@@ -1559,7 +1552,7 @@ mod tests {
 
     #[test]
     fn a_long_load_error_wraps_into_the_room_under_it() {
-        let mut broken = row("plugins/93_broken.lua", Source::User, FileState::Failed);
+        let mut broken = row("mods/93_broken.lua", Source::User, FileState::Failed);
         broken.error = Some(format!("93_broken: {}tail-of-error", "word ".repeat(20)));
         let text = paint(&mut InterfaceTab::default(), &[broken], 60, 12).join("\n");
         assert!(text.contains("tail-of-error"), "{text}");
@@ -1583,7 +1576,7 @@ mod tests {
         assert_eq!(
             edit,
             Some(Edit::Trust {
-                file: "plugins/85_top.lua".into(),
+                file: "mods/85_top.lua".into(),
                 trusted: true,
             })
         );
@@ -1598,7 +1591,7 @@ mod tests {
         assert_eq!(
             edit,
             Some(Edit::Trust {
-                file: "plugins/85_top.lua".into(),
+                file: "mods/85_top.lua".into(),
                 trusted: false,
             }),
             "revoking risks nothing, so it does not ask"
@@ -1607,7 +1600,7 @@ mod tests {
 
     #[test]
     fn the_summary_counts_what_needs_attention_and_shortens_the_directory() {
-        let mut off = row("plugins/90_mine.lua", Source::User, FileState::Disabled);
+        let mut off = row("mods/90_mine.lua", Source::User, FileState::Disabled);
         off.capabilities = vec![Capability::Run];
         off.trust = FileTrust::Untrusted;
         let rows = [off, installed_top()];
@@ -1621,7 +1614,7 @@ mod tests {
         // A shipped pane you deleted is drawn as a fault, but it did not fail:
         // counting it would send the reader looking for an error that is not there.
         let gone = [row(
-            "plugins/20_agent.lua",
+            "mods/20_agent.lua",
             Source::Removed,
             FileState::Removed,
         )];
@@ -1632,9 +1625,9 @@ mod tests {
     #[test]
     fn two_packages_sharing_a_name_stay_in_groups_of_their_own() {
         let mut ours = installed_top();
-        ours.path = "plugins/85_top.lua".into();
+        ours.path = "mods/85_top.lua".into();
         let mut theirs = installed_top();
-        theirs.path = "other/plugins/86_top.lua".into();
+        theirs.path = "other/mods/86_top.lua".into();
         theirs.source = Source::Installed {
             src: "git+https://github.com/someone/top".into(),
         };
@@ -1649,12 +1642,8 @@ mod tests {
     #[test]
     fn the_selected_row_carries_the_pointer_the_settings_tab_uses() {
         let rows = [
-            row(
-                "plugins/10_sessions.lua",
-                Source::Bundled,
-                FileState::Visible,
-            ),
-            row("plugins/20_agent.lua", Source::Bundled, FileState::Visible),
+            row("mods/10_sessions.lua", Source::Bundled, FileState::Visible),
+            row("mods/20_agent.lua", Source::Bundled, FileState::Visible),
         ];
         let mut tab = InterfaceTab::default();
         tab.on_key(&press(KeyCode::Char('j')), &rows, &Hits::default());
@@ -1694,16 +1683,12 @@ mod tests {
             "the reason allows for a pane placed on demand: {text}"
         );
 
-        let off = [row(
-            "plugins/90_notes.lua",
-            Source::User,
-            FileState::Disabled,
-        )];
+        let off = [row("mods/90_notes.lua", Source::User, FileState::Disabled)];
         let text = screen(&mut InterfaceTab::default(), &off);
         assert!(text.contains("space turns it back on"), "{text}");
 
         let gone = [row(
-            "plugins/20_agent.lua",
+            "mods/20_agent.lua",
             Source::Removed,
             FileState::Removed,
         )];
@@ -1711,7 +1696,7 @@ mod tests {
         assert!(text.contains("you deleted"), "{text}");
         assert!(text.contains("r puts it back"), "{text}");
 
-        let mut broken = row("plugins/90_notes.lua", Source::User, FileState::Failed);
+        let mut broken = row("mods/90_notes.lua", Source::User, FileState::Failed);
         broken.error = Some("90_notes: attempt to index a nil value".into());
         let text = screen(&mut InterfaceTab::default(), &[broken]);
         assert!(text.contains("attempt to index a nil value"), "{text}");
@@ -1735,7 +1720,7 @@ mod tests {
         assert!(text.contains("changed since"), "{text}");
 
         let quiet = [row(
-            "plugins/10_sessions.lua",
+            "mods/10_sessions.lua",
             Source::Bundled,
             FileState::Visible,
         )];
@@ -1759,7 +1744,7 @@ mod tests {
     fn the_footer_offers_only_the_keys_the_selected_row_answers_to() {
         let tab = InterfaceTab::default();
         let shipped = [row(
-            "plugins/10_sessions.lua",
+            "mods/10_sessions.lua",
             Source::Bundled,
             FileState::Visible,
         )];
@@ -1769,7 +1754,7 @@ mod tests {
         assert!(!keys.contains("trust"), "nothing to trust: {keys}");
 
         let edited = [row(
-            "plugins/10_sessions.lua",
+            "mods/10_sessions.lua",
             Source::Edited,
             FileState::Disabled,
         )];
@@ -1805,11 +1790,7 @@ mod tests {
 
         // The binary's own copy holds its grant with no record to revoke, so `t`
         // explains rather than writing a decision that would change nothing.
-        let mut shipped = row(
-            "plugins/60_confirm.lua",
-            Source::Bundled,
-            FileState::Present,
-        );
+        let mut shipped = row("mods/60_confirm.lua", Source::Bundled, FileState::Present);
         shipped.capabilities = vec![Capability::Sessions];
         shipped.trust = FileTrust::Shipped;
         let keys = footer(&tab, std::slice::from_ref(&shipped));
@@ -1833,7 +1814,7 @@ mod tests {
         // A restore writes the shipped copy over the file. For a pane nothing
         // keeps the edit, so a stray `r` used to cost it without a word.
         let rows = [row(
-            "plugins/10_sessions.lua",
+            "mods/10_sessions.lua",
             Source::Edited,
             FileState::Visible,
         )];
@@ -1848,7 +1829,7 @@ mod tests {
         assert_eq!(
             edit,
             Some(Edit::File {
-                file: "plugins/10_sessions.lua".into(),
+                file: "mods/10_sessions.lua".into(),
                 kind: crate::kernel::command::PluginEdit::Restore,
             })
         );
@@ -1868,17 +1849,13 @@ mod tests {
     #[test]
     fn restoring_a_deleted_file_or_moving_away_asks_nothing() {
         let rows = [
-            row(
-                "plugins/10_sessions.lua",
-                Source::Edited,
-                FileState::Visible,
-            ),
-            row("plugins/20_agent.lua", Source::Removed, FileState::Removed),
+            row("mods/10_sessions.lua", Source::Edited, FileState::Visible),
+            row("mods/20_agent.lua", Source::Removed, FileState::Removed),
         ];
         let mut tab = InterfaceTab::default();
-        select(&mut tab, &rows, "plugins/10_sessions.lua");
+        select(&mut tab, &rows, "mods/10_sessions.lua");
         tab.on_key(&press(KeyCode::Char('r')), &rows, &Hits::default());
-        select(&mut tab, &rows, "plugins/20_agent.lua");
+        select(&mut tab, &rows, "mods/20_agent.lua");
         assert!(tab.armed().is_none(), "moving away disarms");
         let (_, edit) = tab.on_key(&press(KeyCode::Char('r')), &rows, &Hits::default());
         assert!(edit.is_some(), "putting back a deleted file loses nothing");
@@ -1890,24 +1867,16 @@ mod tests {
         // a cursor kept as an index was left on whichever file slid into its
         // place — and the next key acted on that one.
         let before = [
-            row(
-                "plugins/10_sessions.lua",
-                Source::Bundled,
-                FileState::Visible,
-            ),
-            row("plugins/90_notes.lua", Source::User, FileState::Visible),
+            row("mods/10_sessions.lua", Source::Bundled, FileState::Visible),
+            row("mods/90_notes.lua", Source::User, FileState::Visible),
         ];
         let mut tab = InterfaceTab::default();
-        select(&mut tab, &before, "plugins/90_notes.lua");
+        select(&mut tab, &before, "mods/90_notes.lua");
         tab.on_key(&press(KeyCode::Char(' ')), &before, &Hits::default());
 
         let after = [
-            row(
-                "plugins/10_sessions.lua",
-                Source::Bundled,
-                FileState::Visible,
-            ),
-            row("plugins/90_notes.lua", Source::User, FileState::Disabled),
+            row("mods/10_sessions.lua", Source::Bundled, FileState::Visible),
+            row("mods/90_notes.lua", Source::User, FileState::Disabled),
         ];
         let lines = paint(&mut tab, &after, 72, 14);
         assert!(row_of(&lines, "90_notes.lua").contains('▸'), "{lines:#?}");
@@ -1915,7 +1884,7 @@ mod tests {
         assert_eq!(
             edit,
             Some(Edit::Switch {
-                file: "plugins/90_notes.lua".into(),
+                file: "mods/90_notes.lua".into(),
                 off: false
             })
         );
@@ -1924,26 +1893,22 @@ mod tests {
     #[test]
     fn space_turns_a_plugin_off_and_on_again() {
         let mut tab = InterfaceTab::default();
-        let on = [row("plugins/90_mine.lua", Source::User, FileState::Visible)];
+        let on = [row("mods/90_mine.lua", Source::User, FileState::Visible)];
         let (_, edit) = tab.on_key(&press(KeyCode::Char(' ')), &on, &Hits::default());
         assert_eq!(
             edit,
             Some(Edit::Switch {
-                file: "plugins/90_mine.lua".into(),
+                file: "mods/90_mine.lua".into(),
                 off: true
             })
         );
 
-        let off = [row(
-            "plugins/90_mine.lua",
-            Source::User,
-            FileState::Disabled,
-        )];
+        let off = [row("mods/90_mine.lua", Source::User, FileState::Disabled)];
         let (_, edit) = tab.on_key(&press(KeyCode::Char(' ')), &off, &Hits::default());
         assert_eq!(
             edit,
             Some(Edit::Switch {
-                file: "plugins/90_mine.lua".into(),
+                file: "mods/90_mine.lua".into(),
                 off: false
             }),
             "the same key must turn it back on"
@@ -1955,7 +1920,7 @@ mod tests {
         // Nothing is at risk, and a confirmation on a reversible action is what
         // teaches people to confirm without reading.
         let mut tab = InterfaceTab::default();
-        let rows = [row("plugins/90_mine.lua", Source::User, FileState::Visible)];
+        let rows = [row("mods/90_mine.lua", Source::User, FileState::Visible)];
         let (_, edit) = tab.on_key(&press(KeyCode::Char(' ')), &rows, &Hits::default());
         assert!(edit.is_some(), "it happens on the first press");
         assert!(tab.armed().is_none(), "and arms no confirmation");
@@ -1965,14 +1930,14 @@ mod tests {
     fn deleting_says_whether_it_can_be_undone() {
         // The two removals are different acts. A reflex learned on the
         // restorable one must not carry to the permanent one.
-        let ours = [row("plugins/90_mine.lua", Source::User, FileState::Visible)];
+        let ours = [row("mods/90_mine.lua", Source::User, FileState::Visible)];
         let mut tab = InterfaceTab::default();
         tab.on_key(&press(KeyCode::Char('d')), &ours, &Hits::default());
         let mine = footer(&tab, &ours);
         assert!(mine.contains("cannot be undone"), "{mine}");
 
         let shipped = [row(
-            "plugins/10_sessions.lua",
+            "mods/10_sessions.lua",
             Source::Bundled,
             FileState::Visible,
         )];

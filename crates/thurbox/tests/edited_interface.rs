@@ -29,9 +29,11 @@ use thurbox::kernel::bundled;
 use thurbox::kernel::command::Command;
 use thurbox::kernel::host::{LuaHost, Published, RenderContext};
 use thurbox::kernel::layout::resolve;
+use thurbox::kernel::mod_migration;
 use thurbox::kernel::registry::Registry;
 use thurbox::kernel::snapshot::{SessionRow, Snapshot};
 use thurbox::kernel::theme::Themes;
+use thurbox::session::plugin_spec::mod_destination;
 use thurbox::session::SessionState;
 
 /// Every release a user may have edited files from, each with what they edited.
@@ -52,30 +54,43 @@ fn fixture(relative: &str) -> String {
     std::fs::read_to_string(fixtures().join(relative)).expect("fixture")
 }
 
+fn delivered_by_an_old_release(dir: &Path) {
+    let first = bundled::materialize(dir);
+    assert!(first.errors.is_empty(), "{:?}", first.errors);
+    std::fs::rename(dir.join("mods"), dir.join("plugins")).expect("rename");
+    let manifest = dir.join(".bundled.json");
+    let old = std::fs::read_to_string(&manifest)
+        .expect("manifest")
+        .replace("\"mods/", "\"plugins/");
+    std::fs::write(&manifest, old).expect("manifest");
+}
+
 /// A delivered interface the user then edited, upgraded once more.
 ///
-/// The second `materialize` is the upgrade: it is what runs on every start of a
-/// new release, and it must hand the edits back untouched.
+/// The upgrade is what runs on every start of a new release: the migration to
+/// `mods/`, then `materialize`. It must hand the edits back untouched.
 fn upgraded_edited_interface(release: &str, edited: &[&str]) -> tempfile::TempDir {
     let dir = tempfile::tempdir().expect("tempdir");
-    let first = bundled::materialize(dir.path());
-    assert!(first.errors.is_empty(), "{:?}", first.errors);
+    delivered_by_an_old_release(dir.path());
     for relative in edited {
         let frozen = fixture(&format!("{release}/{relative}"));
         std::fs::write(dir.path().join(relative), frozen).expect("edit");
     }
 
+    let migration = mod_migration::migrate(Some(dir.path()), None);
+    assert!(migration.errors.is_empty(), "{migration:?}");
     let upgrade = bundled::materialize(dir.path());
     assert!(upgrade.errors.is_empty(), "{:?}", upgrade.errors);
     for relative in edited {
+        let moved = mod_destination(relative);
         assert!(
-            upgrade.preserved.iter().any(|p| p == relative),
-            "{release}: {relative} was not preserved: {upgrade:?}"
+            upgrade.preserved.contains(&moved),
+            "{release}: {moved} was not preserved: {upgrade:?}"
         );
         assert_eq!(
-            std::fs::read_to_string(dir.path().join(relative)).expect("read"),
+            std::fs::read_to_string(dir.path().join(&moved)).expect("read"),
             fixture(&format!("{release}/{relative}")),
-            "{release}: the upgrade wrote into the edited {relative}"
+            "{release}: the upgrade wrote into the edited {moved}"
         );
     }
     dir
@@ -339,7 +354,7 @@ return {{
 }}
 "#
     );
-    std::fs::write(dir.path().join("plugins/99_lib_surface.lua"), probe).expect("probe");
+    std::fs::write(dir.path().join("mods/99_lib_surface.lua"), probe).expect("probe");
 
     let host = LuaHost::new(dir.path());
     assert!(host.error.is_none(), "{:?}", host.error);

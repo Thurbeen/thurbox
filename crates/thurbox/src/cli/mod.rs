@@ -314,11 +314,20 @@ fn parse_fields(spec: &str) -> Vec<String> {
 const DEPRECATED_PLUGIN_VERB: &str =
     "thurbox-cli: `thurbox-cli plugin` is deprecated; use `thurbox-cli mod`";
 
+fn migrate_mods() {
+    if let Some(notice) = crate::kernel::mod_migration::migrate_in_force().notice() {
+        eprintln!("thurbox-cli: {notice}");
+    }
+}
+
 /// Route one subcommand to the module that owns it.
 fn dispatch(command: Command, settings: &Settings) -> Result<CommandOutput, CommandError> {
     Ok(match command {
         Command::Editor { action } => editor::run(action)?,
-        Command::Config { action } => config::run(action, settings)?,
+        Command::Config { action } => {
+            migrate_mods();
+            config::run(action, settings)?
+        }
         Command::Version(args) => version::run(
             args,
             settings.features.version_check,
@@ -336,9 +345,13 @@ fn dispatch(command: Command, settings: &Settings) -> Result<CommandOutput, Comm
             }
             perf::run(args.mods || args.plugins)?
         }
-        Command::Mod { action } => plugins::run(action)?,
+        Command::Mod { action } => {
+            migrate_mods();
+            plugins::run(action)?
+        }
         Command::Plugin { action } => {
             eprintln!("{DEPRECATED_PLUGIN_VERB}");
+            migrate_mods();
             plugins::run(action)?
         }
         Command::Ui { instance, action } => ui::run(instance, action)?,

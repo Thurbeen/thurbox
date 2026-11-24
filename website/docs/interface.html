@@ -74,9 +74,9 @@ breadcrumb: 'Interface'
   <strong>1. The pane.</strong>
   <code>thurbox-cli mod install top</code>
   delivers
-  <code>plugins/85_top.lua</code>
+  <code>mods/85_top.lua</code>
   and records the entry in
-  <code>plugins.toml</code>. It declares
+  <code>mods.toml</code>. It declares
   <code>slot = "top"</code>
   and the
   <code>run</code>
@@ -135,7 +135,7 @@ columns[#columns + 1] = { slot = "center" }</code></pre>
     <pre>ui/
 ├── layout.lua              the arrangement: which slot goes where
 ├── lib/                    widgets, theme roles, fuzzy match, text input
-└── plugins/
+└── mods/
     ├── 10_sessions.lua     the session list
     ├── 20_agent.lua        the agent terminal
     ├── 65_search.lua       global search
@@ -254,11 +254,11 @@ columns[#columns + 1] = { slot = "center" }</code></pre>
     </tr>
     <tr>
       <td><code>thurbox-cli mod install &lt;src&gt;</code></td>
-      <td>Fetches a pane and records it in <code>plugins.toml</code></td>
+      <td>Fetches a pane and records it in <code>mods.toml</code></td>
     </tr>
     <tr>
       <td><code>thurbox-cli mod sync</code></td>
-      <td>Brings the directory into agreement with <code>plugins.toml</code></td>
+      <td>Brings the directory into agreement with <code>mods.toml</code></td>
     </tr>
     <tr>
       <td><code>thurbox-cli mod update</code> / <code>remove</code></td>
@@ -268,10 +268,10 @@ columns[#columns + 1] = { slot = "center" }</code></pre>
 </table>
 <p>
   <strong>A pane does not have to be one you wrote.</strong>
-  <code>plugins.toml</code>
+  <code>mods.toml</code>
   in your interface directory lists what it is composed of &mdash; a source, a destination file, an
   optional pin &mdash; and
-  <code>plugins.lock</code>
+  <code>mods.lock</code>
   beside it records what each entry resolved to, so the same spec reproduces the same interface on
   another machine. A mod that carries a program or a data file is itself a
   <strong>repository</strong>
@@ -437,7 +437,7 @@ thurbox-cli mod install git+https://github.com/Thurbeen/thurbox-info-panel</code
 <p>
   Neither is bundled and neither is vendored into thurbox, which is the point: they are ordinary
   panes on the same terms as one you write, recorded in your
-  <code>plugins.toml</code>
+  <code>mods.toml</code>
   and pinned by your
-  <code>plugins.lock</code>.
+  <code>mods.lock</code>.
 </p>

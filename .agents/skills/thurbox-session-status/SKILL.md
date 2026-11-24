@@ -70,7 +70,7 @@ command, which runs `fleet pause <task>` and needs the `sessions` capability;
 session yet). A held Task (`spec.dispatch = false`) never reads `paused ·
 resuming`: Fleet does not resume it.
 
-The agent pane (`ui/plugins/20_agent.lua`) draws such a row as its state, its
+The agent pane (`ui/mods/20_agent.lua`) draws such a row as its state, its
 reason and the way back, with the chords read from the registry. A start the
 interface sent is tracked in `Terminals` (`start_requested`, `start_failed`,
 `settle_starts` in `src/kernel/terminal/attach.rs`) and published per row as
@@ -130,7 +130,7 @@ so each preset and a custom theme set them.
 ## Animation
 
 `ui.status(status, elapsed, printing)` (`ui/lib/ui.lua`) picks the glyph the
-sessions pane draws (`ui/plugins/10_sessions.lua`). Two words animate:
+sessions pane draws (`ui/mods/10_sessions.lua`). Two words animate:
 
 - `working` always animates.
 - `running` animates only while its pane prints. `running` says an agent holds

@@ -809,7 +809,7 @@ fn a_broken_plugin_costs_only_its_own_pane() {
     // The isolation rule, end to end: a plugin that throws is reported against
     // itself, and its neighbours still render.
     let dir = tempfile::tempdir().expect("tempdir");
-    let plugins = dir.path().join("plugins");
+    let plugins = dir.path().join("mods");
     std::fs::create_dir_all(&plugins).expect("mkdir");
     std::fs::write(
         plugins.join("10_good.lua"),
@@ -838,7 +838,7 @@ fn a_broken_plugin_costs_only_its_own_pane() {
 #[test]
 fn a_failed_reload_keeps_the_last_good_plugins_running() {
     let dir = tempfile::tempdir().expect("tempdir");
-    let plugins = dir.path().join("plugins");
+    let plugins = dir.path().join("mods");
     std::fs::create_dir_all(&plugins).expect("mkdir");
     let file = plugins.join("10_pane.lua");
     std::fs::write(
@@ -876,7 +876,7 @@ fn an_unterminated_plugin_is_interrupted_rather_than_hanging() {
     // Lua 5.4 gives no set_interrupt, so the kernel builds this
     // from a count hook. Without it, this test would never return.
     let dir = tempfile::tempdir().expect("tempdir");
-    let plugins = dir.path().join("plugins");
+    let plugins = dir.path().join("mods");
     std::fs::create_dir_all(&plugins).expect("mkdir");
     std::fs::write(
         plugins.join("10_spin.lua"),
@@ -901,7 +901,7 @@ fn plugins_have_no_filesystem_or_process_access() {
     // Enforcement by ABSENCE. `io`, `os` and the real `package`
     // are simply not in the environment, so there is no binding to refuse.
     let dir = tempfile::tempdir().expect("tempdir");
-    let plugins = dir.path().join("plugins");
+    let plugins = dir.path().join("mods");
     std::fs::create_dir_all(&plugins).expect("mkdir");
     std::fs::write(
         plugins.join("10_probe.lua"),
@@ -935,7 +935,7 @@ fn plugins_have_no_filesystem_or_process_access() {
 #[test]
 fn plugin_state_is_private_and_survives_a_reload() {
     let dir = tempfile::tempdir().expect("tempdir");
-    let plugins = dir.path().join("plugins");
+    let plugins = dir.path().join("mods");
     std::fs::create_dir_all(&plugins).expect("mkdir");
     // Both plugins write state.n; neither may see the other's.
     for (file, name, value) in [("10_a.lua", "a", 1), ("20_b.lua", "b", 2)] {
@@ -1292,7 +1292,7 @@ fn plain_navigation_issues_no_commands() {
 #[test]
 fn a_malformed_command_is_reported_against_the_plugin() {
     let dir = tempfile::tempdir().expect("tempdir");
-    let plugins = dir.path().join("plugins");
+    let plugins = dir.path().join("mods");
     std::fs::create_dir_all(&plugins).expect("mkdir");
     std::fs::write(
         plugins.join("10_bad.lua"),
@@ -1408,7 +1408,7 @@ fn the_theme_reaches_plugins_as_roles() {
     // bundled pane shows the theme's name any more (the header is gone and the
     // picker is a kernel modal — `tests/modals.rs`).
     let dir = tempfile::tempdir().expect("tempdir");
-    let plugins = dir.path().join("plugins");
+    let plugins = dir.path().join("mods");
     std::fs::create_dir_all(&plugins).expect("mkdir");
     std::fs::write(
         plugins.join("10_probe.lua"),
@@ -1470,7 +1470,7 @@ fn no_bundled_plugin_hardcodes_a_colour() {
     // theming for everyone downstream of it.
     let ui = ui_dir();
     let mut offenders = Vec::new();
-    for dir in [ui.join("plugins"), ui.join("lib")] {
+    for dir in [ui.join("mods"), ui.join("lib")] {
         for entry in std::fs::read_dir(&dir).expect("read ui dir") {
             let path = entry.expect("entry").path();
             if !path.extension().is_some_and(|e| e == "lua") {
@@ -1641,7 +1641,7 @@ fn the_granted_capability_set_matches_a_declared_list() {
     ];
 
     let dir = tempfile::tempdir().expect("tempdir");
-    let plugins = dir.path().join("plugins");
+    let plugins = dir.path().join("mods");
     std::fs::create_dir_all(&plugins).expect("mkdir");
     std::fs::write(
         plugins.join("10_probe.lua"),
@@ -1709,7 +1709,7 @@ fn every_session_field_reaches_lua() {
     // snapshot struct and the published table are two independent lists of
     // fields, and nothing else checks they agree.
     let dir = tempfile::tempdir().expect("tempdir");
-    let plugins = dir.path().join("plugins");
+    let plugins = dir.path().join("mods");
     std::fs::create_dir_all(&plugins).expect("mkdir");
     std::fs::write(
         plugins.join("10_fields.lua"),
@@ -2123,7 +2123,7 @@ fn a_creation_into_a_fresh_repo_brings_its_own_header() {
 #[test]
 fn a_failing_decorator_leaves_the_pane_drawn() {
     let dir = tempfile::tempdir().expect("tempdir");
-    let plugins = dir.path().join("plugins");
+    let plugins = dir.path().join("mods");
     std::fs::create_dir_all(&plugins).expect("mkdir");
     std::fs::write(
         plugins.join("10_pane.lua"),
@@ -2161,7 +2161,7 @@ fn the_review_body_is_a_surface_not_a_tree() {
     // ever becomes a tree, the pane has stopped being able to do side-by-side
     // and horizontal scrolling.
     let dir = tempfile::tempdir().expect("tempdir");
-    let plugins = dir.path().join("plugins");
+    let plugins = dir.path().join("mods");
     std::fs::create_dir_all(&plugins).expect("mkdir");
     // A stand-in that renders the same shape the review pane does.
     std::fs::write(
@@ -2431,7 +2431,7 @@ fn a_plugin_earns_a_band_entry_by_declaring_one() {
     // The whole extension point: one table field, and the pane knows nothing
     // about how the band draws.
     let dir = tempfile::tempdir().expect("tempdir");
-    let plugins = dir.path().join("plugins");
+    let plugins = dir.path().join("mods");
     std::fs::create_dir_all(&plugins).expect("mkdir");
     std::fs::write(
         plugins.join("10_contributor.lua"),
@@ -2463,7 +2463,7 @@ fn a_plugin_that_becomes_unloadable_leaves_the_last_good_set_in_force() {
     // reported. A half-loaded interface missing the pane you wanted, with no
     // indication why, is the outcome this trades away.
     let dir = tempfile::tempdir().expect("tempdir");
-    let plugins = dir.path().join("plugins");
+    let plugins = dir.path().join("mods");
     std::fs::create_dir_all(&plugins).expect("mkdir");
     let good = plugins.join("10_good.lua");
     std::fs::write(

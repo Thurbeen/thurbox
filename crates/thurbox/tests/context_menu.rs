@@ -1,4 +1,4 @@
-//! The context menu: the generic float (`ui/plugins/64_menu.lua`) and the
+//! The context menu: the generic float (`ui/mods/64_menu.lua`) and the
 //! sessions pane that opens it.
 //!
 //! Driven through the host's hooks with the bundled interface, so what is
@@ -60,13 +60,13 @@ fn menu_host() -> (tempfile::TempDir, LuaHost) {
     let home = tempfile::tempdir().expect("tempdir");
     let source = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../ui");
     copy_dir(&source.join("lib"), &home.path().join("lib"));
-    std::fs::create_dir_all(home.path().join("plugins")).expect("mkdir");
+    std::fs::create_dir_all(home.path().join("mods")).expect("mkdir");
     std::fs::copy(
-        source.join("plugins/64_menu.lua"),
-        home.path().join("plugins/64_menu.lua"),
+        source.join("mods/64_menu.lua"),
+        home.path().join("mods/64_menu.lua"),
     )
     .expect("copy the menu");
-    std::fs::write(home.path().join("plugins/10_opener.lua"), OPENER).expect("write opener");
+    std::fs::write(home.path().join("mods/10_opener.lua"), OPENER).expect("write opener");
     let host = LuaHost::new(home.path().to_path_buf());
     assert!(host.error.is_none(), "{:?}", host.error);
     publish(&host, &Snapshot::default());
@@ -836,8 +836,8 @@ fn session_actions_classified_destructive_ask_on_a_key_or_click() {
 #[test]
 fn a_replacement_can_keep_the_bundled_sessions_owner_name() {
     let home = tempfile::tempdir().expect("interface dir");
-    std::fs::create_dir_all(home.path().join("plugins")).expect("plugins");
-    std::fs::write(home.path().join("plugins/00_impostor.lua"),
+    std::fs::create_dir_all(home.path().join("mods")).expect("mods");
+    std::fs::write(home.path().join("mods/00_impostor.lua"),
         "return { name = 'sessions', render = function() return { type = 'text', text = '' } end }\n")
         .expect("impostor");
     let host = LuaHost::new(home.path().to_path_buf());
@@ -853,9 +853,9 @@ fn a_plugin_cannot_shadow_the_bundled_delete_action() {
     let home = tempfile::tempdir().expect("interface dir");
     let source = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../ui");
     copy_dir(&source.join("lib"), &home.path().join("lib"));
-    copy_dir(&source.join("plugins"), &home.path().join("plugins"));
+    copy_dir(&source.join("mods"), &home.path().join("mods"));
     std::fs::copy(source.join("layout.lua"), home.path().join("layout.lua")).expect("layout");
-    std::fs::write(home.path().join("plugins/00_impostor.lua"),
+    std::fs::write(home.path().join("mods/00_impostor.lua"),
         "return { name = 'impostor', keys = { { key = 'x', action = 'sessions.delete' } }, render = function() return { type = 'text', text = '' } end }\n")
         .expect("impostor");
     let host = LuaHost::new(home.path().to_path_buf());
@@ -870,9 +870,9 @@ fn a_second_sessions_pane_cannot_shadow_the_bundled_delete_action() {
     let home = tempfile::tempdir().expect("interface dir");
     let source = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../ui");
     copy_dir(&source.join("lib"), &home.path().join("lib"));
-    copy_dir(&source.join("plugins"), &home.path().join("plugins"));
+    copy_dir(&source.join("mods"), &home.path().join("mods"));
     std::fs::copy(source.join("layout.lua"), home.path().join("layout.lua")).expect("layout");
-    std::fs::write(home.path().join("plugins/00_impostor.lua"),
+    std::fs::write(home.path().join("mods/00_impostor.lua"),
         "return { name = 'sessions', keys = { { key = 'x', action = 'sessions.delete' } }, render = function() return { type = 'text', text = '' } end }\n")
         .expect("impostor");
     let host = LuaHost::new(home.path().to_path_buf());
@@ -1012,9 +1012,9 @@ fn contributed_host() -> (tempfile::TempDir, LuaHost) {
     let home = tempfile::tempdir().expect("tempdir");
     let source = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../ui");
     copy_dir(&source.join("lib"), &home.path().join("lib"));
-    copy_dir(&source.join("plugins"), &home.path().join("plugins"));
+    copy_dir(&source.join("mods"), &home.path().join("mods"));
     std::fs::copy(source.join("layout.lua"), home.path().join("layout.lua")).expect("layout");
-    std::fs::write(home.path().join("plugins/90_extra.lua"), CONTRIBUTOR).expect("write");
+    std::fs::write(home.path().join("mods/90_extra.lua"), CONTRIBUTOR).expect("write");
     let host = LuaHost::new(home.path().to_path_buf());
     assert!(host.error.is_none(), "{:?}", host.error);
     publish(&host, &two_sessions());

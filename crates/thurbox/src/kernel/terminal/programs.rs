@@ -459,7 +459,7 @@ mod tests {
     /// keystrokes at somebody's agent.
     #[test]
     fn a_program_surface_is_told_from_a_session_surface() {
-        let key = ProgramKey::new("plugins/90_watch.lua", "watch");
+        let key = ProgramKey::new("mods/90_watch.lua", "watch");
         assert!(is_program_surface(&key.surface_id()));
         for not_a_program in [
             "5f9c1f6e-1b2a-4c3d-8e9f-0a1b2c3d4e5f",
@@ -483,7 +483,7 @@ mod tests {
             &crate::session::settings::Settings::default(),
         );
         // Nothing is running, so nothing resolves — including a well-formed id.
-        let key = ProgramKey::new("plugins/90_watch.lua", "watch");
+        let key = ProgramKey::new("mods/90_watch.lua", "watch");
         assert!(terminals.program_key(&key.surface_id()).is_none());
         assert!(terminals.program_key("not-a-program").is_none());
     }
@@ -504,11 +504,11 @@ mod tests {
     fn a_plugin_may_not_hold_unbounded_panes() {
         for held in 0..MAX_PROGRAMS_PER_PLUGIN {
             assert!(
-                admit_program("plugins/90_watch.lua", held, "watch").is_ok(),
+                admit_program("mods/90_watch.lua", held, "watch").is_ok(),
                 "{held} should be admitted"
             );
         }
-        let refused = admit_program("plugins/90_watch.lua", MAX_PROGRAMS_PER_PLUGIN, "watch")
+        let refused = admit_program("mods/90_watch.lua", MAX_PROGRAMS_PER_PLUGIN, "watch")
             .expect_err("the limit is a limit");
         // The refusal names the plugin and the limit, because the plugin shows it.
         assert!(refused.contains("90_watch.lua"), "{refused}");
@@ -521,8 +521,8 @@ mod tests {
     #[test]
     fn a_pane_with_no_program_named_is_refused() {
         // Otherwise the pane spawns the backend's idea of an empty command line.
-        assert!(admit_program("plugins/90_watch.lua", 0, "   ").is_err());
-        assert!(admit_program("plugins/90_watch.lua", 0, "").is_err());
+        assert!(admit_program("mods/90_watch.lua", 0, "   ").is_err());
+        assert!(admit_program("mods/90_watch.lua", 0, "").is_err());
     }
 
     /// Nothing running means nothing to send to, and nothing to report — asserted
@@ -538,8 +538,8 @@ mod tests {
             std::sync::Arc::new(crate::backend::registry::inert()),
             &crate::session::settings::Settings::default(),
         );
-        let key = ProgramKey::new("plugins/90_watch.lua", "watch");
-        assert_eq!(terminals.program_count("plugins/90_watch.lua"), 0);
+        let key = ProgramKey::new("mods/90_watch.lua", "watch");
+        assert_eq!(terminals.program_count("mods/90_watch.lua"), 0);
         assert!(terminals.send_to_program(&key, b"x".to_vec()).is_err());
         assert!(terminals.program_state(&key).is_none());
     }
@@ -552,7 +552,7 @@ mod tests {
     /// and reports success. The keys were lost and nothing was reported.
     #[test]
     fn keys_for_a_running_program_are_sent_even_with_a_program_named() {
-        let plan = |program| plan_keys("plugins/90_editor.lua", "editor", true, program);
+        let plan = |program| plan_keys("mods/90_editor.lua", "editor", true, program);
         assert_eq!(plan("nvim"), KeysPlan::Send);
         assert_eq!(plan(""), KeysPlan::Send);
     }
@@ -560,15 +560,14 @@ mod tests {
     #[test]
     fn keys_for_a_program_that_is_not_running_start_the_one_named() {
         assert_eq!(
-            plan_keys("plugins/90_editor.lua", "editor", false, "nvim"),
+            plan_keys("mods/90_editor.lua", "editor", false, "nvim"),
             KeysPlan::Start
         );
     }
 
     #[test]
     fn keys_with_nothing_running_and_nothing_to_start_are_refused_by_name() {
-        let KeysPlan::Refuse(error) = plan_keys("plugins/90_editor.lua", "editor", false, "  ")
-        else {
+        let KeysPlan::Refuse(error) = plan_keys("mods/90_editor.lua", "editor", false, "  ") else {
             panic!("nothing to type into and nothing to start must be refused");
         };
         // Names the plugin and the pane, because the plugin shows it.
@@ -582,19 +581,19 @@ mod tests {
     /// edit, and losing a running program to one would make reloading unusable.
     #[test]
     fn a_reload_keeps_a_live_plugins_pane_and_releases_a_vanished_ones() {
-        let watch = ProgramKey::new("plugins/90_watch.lua", "watch");
-        let gone = ProgramKey::new("plugins/91_deleted.lua", "top");
+        let watch = ProgramKey::new("mods/90_watch.lua", "watch");
+        let gone = ProgramKey::new("mods/91_deleted.lua", "top");
         let keys = [watch.clone(), gone.clone()];
 
         // Both still loaded: nothing is released.
         let live = vec![
-            "plugins/90_watch.lua".to_string(),
-            "plugins/91_deleted.lua".to_string(),
+            "mods/90_watch.lua".to_string(),
+            "mods/91_deleted.lua".to_string(),
         ];
         assert!(stale_program_keys(keys.iter(), &live).is_empty());
 
         // One edited away, renamed or turned off: only its pane goes.
-        let live = vec!["plugins/90_watch.lua".to_string()];
+        let live = vec!["mods/90_watch.lua".to_string()];
         assert_eq!(stale_program_keys(keys.iter(), &live), vec![gone]);
 
         // Every plugin gone (a failed reload leaves none loaded): all of them.

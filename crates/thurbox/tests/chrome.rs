@@ -356,7 +356,7 @@ fn the_action_band_carries_the_focus_the_counts_and_the_entries() {
     assert!(row.contains("^H/^L Focus"), "the focus hint: {row}");
     assert!(row.contains("^O Open"), "the open hint: {row}");
     // The kernel's own modals contribute these three; no bundled PANE declares an
-    // entry, and that is deliberate — see `ui/plugins/20_agent.lua`. The
+    // entry, and that is deliberate — see `ui/mods/20_agent.lua`. The
     // plugin-contributed path is covered in `tests/kernel_mvp.rs` with a
     // throwaway plugin, so this asserting nothing about a pane's entry is not a
     // gap in coverage.
@@ -907,7 +907,7 @@ fn widgets_panel_keeps_the_shape_it_always_returned() {
     let ui = home.path().join("ui");
     thurbox::kernel::bundled::materialize(&ui);
     std::fs::write(
-        ui.join("plugins").join("50_shape.lua"),
+        ui.join("mods").join("50_shape.lua"),
         r#"local widgets = require("lib.widgets")
 return {
   name = "shape",
@@ -993,7 +993,7 @@ fn a_third_party_pane_calling_ui_panel_gets_the_focus_treatment_for_free() {
     let ui = home.path().join("ui");
     thurbox::kernel::bundled::materialize(&ui);
     std::fs::write(
-        ui.join("plugins").join("50_notes.lua"),
+        ui.join("mods").join("50_notes.lua"),
         r#"local ui = require("lib.ui")
 return {
   name = "notes",

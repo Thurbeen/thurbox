@@ -17,7 +17,7 @@ lib/            shared helpers — widgets, theme roles, fuzzy match, text input
 lib/thurbox.d.lua   the API as types: node props, ctx, the event payloads, every
                 published `thurbox.*` row, every command verb's options, and the
                 theme roles. Declarations only — nothing loads it at runtime
-plugins/        the panes themselves, loaded in filename order
+mods/           the panes themselves, loaded in filename order
 ```
 
 ## Check your work without a terminal
@@ -146,7 +146,7 @@ return {
 }
 ```
 
-Save it as `plugins/90_example.lua` and it is a pane. `thurbox-cli mod new
+Save it as `mods/90_example.lua` and it is a pane. `thurbox-cli mod new
 <name>` writes a starter that already loads.
 
 ## The component layer (`lib/ui.lua`)
@@ -485,19 +485,19 @@ These are the ones that cost real time.
 
 ## Panes somebody else wrote
 
-You do not have to write one from scratch. `plugins.toml` here lists what this
+You do not have to write one from scratch. `mods.toml` here lists what this
 interface is composed of, and the manager keeps the directory in step with it:
 
 ```bash
 thurbox-cli mod available          # what installs by bare name
-thurbox-cli mod install top        # fetch it, and record it in plugins.toml
+thurbox-cli mod install top        # fetch it, and record it in mods.toml
 thurbox-cli mod sync               # make the directory match the spec
 thurbox-cli mod remove top         # file, spec entry and record
 ```
 
 `install` prints the `layout.lua` line the new pane needs, since that is the edit
 it cannot make for you — **nothing here writes your arrangement.** After editing
-`plugins.toml` by hand, `sync` is the one command to run: it installs what is
+`mods.toml` by hand, `sync` is the one command to run: it installs what is
 missing, takes back what you removed from the spec, and leaves everything else
 alone. Running it twice changes nothing.
 
@@ -505,12 +505,12 @@ Your edits survive all of it. A managed file you changed is reported as `kept` a
 never overwritten, and a managed file you deleted stays deleted — that is how you
 remove one.
 
-`plugins.lock` beside the spec records what each entry resolved to. You edit the
+`mods.lock` beside the spec records what each entry resolved to. You edit the
 spec; nothing edits the lock. Commit both and this interface reproduces elsewhere.
 
 ## Files here are yours, and recoverable
 
-`.bundled.json` records what delivery did; `ui.json` and `plugin-state.json`
+`.bundled.json` records what delivery did; `ui.json` and `mod-state.json`
 record what you decided (any rebindings and the action band's order; which files
 are off and which are trusted). Editing a shipped
 file is fine — delivery stops overwriting it once you have. Deleting one is how

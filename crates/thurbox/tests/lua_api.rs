@@ -248,7 +248,7 @@ fn full() -> Snapshot {
 
 fn host_with(source: &str) -> (tempfile::TempDir, LuaHost) {
     let dir = tempfile::tempdir().expect("tempdir");
-    let plugins = dir.path().join("plugins");
+    let plugins = dir.path().join("mods");
     std::fs::create_dir_all(&plugins).expect("mkdir");
     std::fs::write(plugins.join("10_probe.lua"), source).expect("write");
     let host = LuaHost::new(dir.path());
@@ -336,7 +336,7 @@ fn publish(host: &LuaHost, snapshot: &Snapshot) {
         ..Default::default()
     };
     let inventory = [thurbox::kernel::inventory::Row {
-        path: "plugins/10_x.lua".into(),
+        path: "mods/10_x.lua".into(),
         name: "x".into(),
         kind: thurbox::kernel::inventory::Kind::Pane,
         slot: "a".into(),
@@ -469,7 +469,7 @@ fn a_plugin_needing_a_newer_api_is_refused_and_says_why() {
     // what `inventory::rows` pins a failure on.
     let future = API + 1;
     let dir = tempfile::tempdir().expect("tempdir");
-    let plugins = dir.path().join("plugins");
+    let plugins = dir.path().join("mods");
     std::fs::create_dir_all(&plugins).expect("mkdir");
     std::fs::write(
         plugins.join("10_future.lua"),
@@ -514,7 +514,7 @@ fn mods_is_the_inventory_and_plugins_is_the_same_table() {
         }"#,
     );
     publish(&host, &full());
-    assert_eq!(render_text(&host), "true plugins/10_x.lua");
+    assert_eq!(render_text(&host), "true mods/10_x.lua");
 }
 
 #[test]

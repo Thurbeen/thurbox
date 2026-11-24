@@ -199,9 +199,9 @@ fn the_centre_is_still_a_switch_slot() {
 fn host_with(plugins: &[(&str, &str)]) -> (tempfile::TempDir, LuaHost) {
     let home = tempfile::tempdir().expect("tempdir");
     let ui = home.path().join("ui");
-    std::fs::create_dir_all(ui.join("plugins")).expect("mkdir");
+    std::fs::create_dir_all(ui.join("mods")).expect("mkdir");
     for (file, body) in plugins {
-        std::fs::write(ui.join("plugins").join(file), body).expect("write plugin");
+        std::fs::write(ui.join("mods").join(file), body).expect("write plugin");
     }
     let host = LuaHost::new(ui);
     assert!(host.error.is_none(), "{:?}", host.error);

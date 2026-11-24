@@ -235,7 +235,7 @@ specifically for `perf` / `flamegraph` workflows.
 
 **Choice**: There is no "project" entity above sessions: each session picks
 its own agent and repository when it is created. The session list
-(`ui/plugins/10_sessions.lua`) renders selectable host and repository fold
+(`ui/mods/10_sessions.lua`) renders selectable host and repository fold
 rows, with child sessions nested under their parent within each repository.
 These are view rows derived from host config and each session's `cwd` and
 parent (the Task's `gateway.fleet.dev/parent` label); they add no entity and

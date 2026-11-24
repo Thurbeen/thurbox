@@ -732,7 +732,7 @@ impl App {
                 if descriptor.destructive
                     && descriptor.owner == "sessions"
                     && !self.host.index_of("sessions").is_some_and(|index| {
-                        self.host.plugins[index].path == "plugins/10_sessions.lua"
+                        self.host.plugins[index].path == "mods/10_sessions.lua"
                     })
                 {
                     descriptor.available = false;

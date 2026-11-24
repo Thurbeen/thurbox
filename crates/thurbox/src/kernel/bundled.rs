@@ -113,32 +113,32 @@ pub const BUNDLED: &[(&str, &str)] = &[
         include_str!("../../../../ui/lib/textinput.lua"),
     ),
     (
-        "plugins/10_sessions.lua",
-        include_str!("../../../../ui/plugins/10_sessions.lua"),
+        "mods/10_sessions.lua",
+        include_str!("../../../../ui/mods/10_sessions.lua"),
     ),
     (
-        "plugins/20_agent.lua",
-        include_str!("../../../../ui/plugins/20_agent.lua"),
+        "mods/20_agent.lua",
+        include_str!("../../../../ui/mods/20_agent.lua"),
     ),
     (
-        "plugins/60_confirm.lua",
-        include_str!("../../../../ui/plugins/60_confirm.lua"),
+        "mods/60_confirm.lua",
+        include_str!("../../../../ui/mods/60_confirm.lua"),
     ),
     (
-        "plugins/62_rename.lua",
-        include_str!("../../../../ui/plugins/62_rename.lua"),
+        "mods/62_rename.lua",
+        include_str!("../../../../ui/mods/62_rename.lua"),
     ),
     (
-        "plugins/64_menu.lua",
-        include_str!("../../../../ui/plugins/64_menu.lua"),
+        "mods/64_menu.lua",
+        include_str!("../../../../ui/mods/64_menu.lua"),
     ),
     (
-        "plugins/65_search.lua",
-        include_str!("../../../../ui/plugins/65_search.lua"),
+        "mods/65_search.lua",
+        include_str!("../../../../ui/mods/65_search.lua"),
     ),
     (
-        "plugins/70_new_session.lua",
-        include_str!("../../../../ui/plugins/70_new_session.lua"),
+        "mods/70_new_session.lua",
+        include_str!("../../../../ui/mods/70_new_session.lua"),
     ),
 ];
 
@@ -360,10 +360,10 @@ fn deliver(
 /// Shipped files whose edited copy is moved aside, not kept loading, once this
 /// binary stops shipping them.
 ///
-/// `plugins/80_restore.lua` listed deleted sessions to restore, which Fleet's
+/// `mods/80_restore.lua` listed deleted sessions to restore, which Fleet's
 /// engine refuses: kept loading, an edited copy offers a list that is always
 /// empty and a verb that always fails.
-const WITHDRAWN: &[&str] = &["plugins/80_restore.lua"];
+const WITHDRAWN: &[&str] = &["mods/80_restore.lua"];
 
 /// Take back what we shipped and no longer ship.
 ///
@@ -440,7 +440,7 @@ const LIB_DEPTH: usize = 3;
 /// the inventory — keys on the path relative to the directory with **`/`**
 /// separators. This is the conversion between the two, and it exists in one place
 /// because getting it wrong is invisible on Linux: `Path::join` writes a `\` on
-/// Windows, so a hand-rolled strip yields `plugins\90_notes.lua`, which matches
+/// Windows, so a hand-rolled strip yields `mods\90_notes.lua`, which matches
 /// nothing and fails silently. That is exactly how "turn a plugin off" came to be
 /// a no-op on Windows.
 ///
@@ -543,20 +543,20 @@ fn interface_files(
             files.push(((*relative).to_string(), path));
         }
     }
-    // `plugins/` flat, `lib/` deep. Not an inconsistency: `build` reads only the
-    // top level of `plugins/`, so a nested file there is never loaded and
+    // `mods/` flat, `lib/` deep. Not an inconsistency: `build` reads only the
+    // top level of `mods/`, so a nested file there is never loaded and
     // reporting it would be a pane that "failed" nobody asked to load — while
     // `require` splits a module name on every dot, so `lib/<vendor>/util.lua` is
     // requirable and is where a package puts its own modules without colliding
     // with `lib/theme.lua`.
-    for name in lua_files(&dir.join("plugins"), 1) {
-        files.push((format!("plugins/{name}"), dir.join("plugins").join(&name)));
+    for name in lua_files(&dir.join("mods"), 1) {
+        files.push((format!("mods/{name}"), dir.join("mods").join(&name)));
     }
     for name in lua_files(&dir.join("lib"), LIB_DEPTH) {
         files.push((format!("lib/{name}"), dir.join("lib").join(&name)));
     }
 
-    // Panes the spec names outside `plugins/` — a plugin obtained as a repository
+    // Panes the spec names outside `mods/` — a plugin obtained as a repository
     // keeps its author's layout. Without this such a pane is LOADED but absent from
     // the inventory, which is exactly the "a file the tab cannot account for"
     // problem the tab exists to prevent.
@@ -579,7 +579,7 @@ fn interface_files(
 /// Where each file of the interface in `dir` came from.
 ///
 /// Keyed by path relative to `dir`. Covers the three places the interface lives
-/// — the arrangement, `lib/` and `plugins/` — plus every bundled file the user
+/// — the arrangement, `lib/` and `mods/` — plus every bundled file the user
 /// deleted, which by definition is not on disk to be found.
 pub fn sources(dir: &Path) -> BTreeMap<String, Source> {
     let bundled: BTreeMap<&str, &str> = BUNDLED.iter().copied().collect();
@@ -801,6 +801,27 @@ fn write_manifest(dir: &Path, manifest: &BTreeMap<String, Record>) -> Result<(),
         .map_err(|e| format!("{}: {e}", dir.join(MANIFEST).display()))
 }
 
+/// Move each delivery record `rename` gives a new path to, unless a record is
+/// already there, so an edited file stays edited and a deleted one deleted
+/// under its new name. Writes nothing when nothing moved.
+pub fn rename_records(dir: &Path, rename: impl Fn(&str) -> Option<String>) -> Result<(), String> {
+    let mut manifest = read_manifest(dir);
+    let moves: Vec<(String, String)> = manifest
+        .keys()
+        .filter_map(|old| rename(old).map(|new| (old.clone(), new)))
+        .filter(|(_, new)| !manifest.contains_key(new))
+        .collect();
+    if moves.is_empty() {
+        return Ok(());
+    }
+    for (old, new) in moves {
+        if let Some(record) = manifest.remove(&old) {
+            manifest.insert(new, record);
+        }
+    }
+    write_manifest(dir, &manifest)
+}
+
 /// Which rule chose the interface directory.
 ///
 /// Reported alongside the path because "where" without "why" is what makes the
@@ -868,7 +889,7 @@ pub fn resolve(materialize_user_copy: bool) -> Result<(PathBuf, Chosen, Report),
             // answer to "which interface am I running" names the thing the reader
             // recognises rather than just the mechanism.
             let chosen = if dir.file_name().is_some_and(|name| name == "ui")
-                && dir.join("plugins").is_dir()
+                && dir.join("mods").is_dir()
                 && Path::new("Cargo.toml").is_file()
             {
                 Chosen::Checkout
@@ -908,7 +929,7 @@ pub fn resolve(materialize_user_copy: bool) -> Result<(PathBuf, Chosen, Report),
 /// Trust, the disabled set and every rebinding are keyed by `ui_dir.join(file)`
 /// and compared verbatim, so a **relative** directory is not an identity: `ui` in
 /// one checkout and `ui` in another produce the same key, and trusting
-/// `plugins/70_tools.lua` in one repository would silently grant `run` to a
+/// `mods/70_tools.lua` in one repository would silently grant `run` to a
 /// different file of the same name in the next.
 ///
 /// Resolved against the working directory rather than *canonicalised*, which is
@@ -1085,8 +1106,8 @@ mod tests {
     fn a_stored_path_becomes_the_identity_the_loader_compares() {
         let dir = Path::new("/home/me/.config/thurbox/ui");
         assert_eq!(
-            relative_to(dir, "/home/me/.config/thurbox/ui/plugins/90_notes.lua").as_deref(),
-            Some("plugins/90_notes.lua")
+            relative_to(dir, "/home/me/.config/thurbox/ui/mods/90_notes.lua").as_deref(),
+            Some("mods/90_notes.lua")
         );
 
         // A Windows root, with the separators `Path::join` would have written.
@@ -1094,17 +1115,17 @@ mod tests {
         assert_eq!(
             relative_to(
                 windows,
-                r"C:\Users\me\AppData\Roaming\thurbox\ui\plugins\90_notes.lua"
+                r"C:\Users\me\AppData\Roaming\thurbox\ui\mods\90_notes.lua"
             )
             .as_deref(),
-            Some("plugins/90_notes.lua"),
-            "`build` keys on `plugins/<name>`, so a backslash here matches nothing"
+            Some("mods/90_notes.lua"),
+            "`build` keys on `mods/<name>`, so a backslash here matches nothing"
         );
 
         // Not inside the directory, and the directory itself: neither is a file
         // identity, and returning `""` for the second is how an empty entry used
         // to reach the disabled set.
-        assert_eq!(relative_to(dir, "/elsewhere/plugins/x.lua"), None);
+        assert_eq!(relative_to(dir, "/elsewhere/mods/x.lua"), None);
         assert_eq!(relative_to(dir, "/home/me/.config/thurbox/ui"), None);
         assert_eq!(relative_to(dir, "/home/me/.config/thurbox/ui/"), None);
     }
@@ -1161,8 +1182,8 @@ mod tests {
             "lib/theme.lua",
             "lib/widgets.lua",
             "lib/ui.lua",
-            "plugins/10_sessions.lua",
-            "plugins/20_agent.lua",
+            "mods/10_sessions.lua",
+            "mods/20_agent.lua",
         ] {
             assert!(names.contains(&required), "{required} is not bundled");
         }
@@ -1177,7 +1198,7 @@ mod tests {
         let report = materialize(dir.path());
         assert_eq!(report.written.len(), BUNDLED.len());
         assert!(report.errors.is_empty(), "{:?}", report.errors);
-        assert!(dir.path().join("plugins/10_sessions.lua").exists());
+        assert!(dir.path().join("mods/10_sessions.lua").exists());
     }
 
     #[test]
@@ -1208,7 +1229,7 @@ mod tests {
         write_manifest(dir.path(), &manifest).expect("write manifest");
 
         // And carry an edit into the upgrade, which must survive it.
-        let edited = dir.path().join("plugins/10_sessions.lua");
+        let edited = dir.path().join("mods/10_sessions.lua");
         std::fs::write(&edited, "-- mine\n").expect("edit");
 
         let report = materialize(dir.path());
@@ -1224,7 +1245,7 @@ mod tests {
         );
         assert!(report
             .preserved
-            .contains(&"plugins/10_sessions.lua".to_string()));
+            .contains(&"mods/10_sessions.lua".to_string()));
     }
 
     #[test]
@@ -1270,11 +1291,11 @@ mod tests {
         // how you remove it, so delivery must not undo that on the next start.
         let dir = tempfile::tempdir().expect("tempdir");
         materialize(dir.path());
-        let path = dir.path().join("plugins/10_sessions.lua");
+        let path = dir.path().join("mods/10_sessions.lua");
         std::fs::remove_file(&path).expect("remove");
 
         let report = materialize(dir.path());
-        assert_eq!(report.removed, vec!["plugins/10_sessions.lua"]);
+        assert_eq!(report.removed, vec!["mods/10_sessions.lua"]);
         assert!(!path.exists());
 
         // And it is said once, not on every start.
@@ -1293,10 +1314,7 @@ mod tests {
         // A newer release carrying different contents still must not write it.
         let mut manifest = read_manifest(dir.path());
         assert!(manifest["lib/theme.lua"].is_removed());
-        manifest.insert(
-            "plugins/20_agent.lua".into(),
-            Record::Written("stale".into()),
-        );
+        manifest.insert("mods/20_agent.lua".into(), Record::Written("stale".into()));
         write_manifest(dir.path(), &manifest).expect("manifest");
 
         let report = materialize(dir.path());
@@ -1308,7 +1326,7 @@ mod tests {
     fn discarding_the_directory_delivers_everything_again() {
         let dir = tempfile::tempdir().expect("tempdir");
         materialize(dir.path());
-        std::fs::remove_file(dir.path().join("plugins/10_sessions.lua")).expect("remove");
+        std::fs::remove_file(dir.path().join("mods/10_sessions.lua")).expect("remove");
         materialize(dir.path());
 
         // The record lives with the directory, so losing one loses the other.
@@ -1317,14 +1335,14 @@ mod tests {
 
         let report = materialize(dir.path());
         assert_eq!(report.written.len(), BUNDLED.len());
-        assert!(dir.path().join("plugins/10_sessions.lua").exists());
+        assert!(dir.path().join("mods/10_sessions.lua").exists());
     }
 
     #[test]
     fn a_user_written_file_is_never_touched() {
         let dir = tempfile::tempdir().expect("tempdir");
         materialize(dir.path());
-        let mine = dir.path().join("plugins/50_mine.lua");
+        let mine = dir.path().join("mods/50_mine.lua");
         std::fs::write(&mine, "return { name = \"mine\" }").expect("write");
 
         let report = materialize(dir.path());
@@ -1333,7 +1351,7 @@ mod tests {
             std::fs::read_to_string(&mine).expect("read"),
             "return { name = \"mine\" }"
         );
-        assert!(!read_manifest(dir.path()).contains_key("plugins/50_mine.lua"));
+        assert!(!read_manifest(dir.path()).contains_key("mods/50_mine.lua"));
     }
 
     #[test]
@@ -1342,29 +1360,29 @@ mod tests {
         materialize(dir.path());
 
         // Two files from a release that shipped them and this one does not.
-        let untouched = dir.path().join("plugins/40_gone.lua");
-        let claimed = dir.path().join("plugins/41_kept.lua");
+        let untouched = dir.path().join("mods/40_gone.lua");
+        let claimed = dir.path().join("mods/41_kept.lua");
         std::fs::write(&untouched, "return {}").expect("write");
         std::fs::write(&claimed, "-- mine now\nreturn {}").expect("write");
         let mut manifest = read_manifest(dir.path());
         manifest.insert(
-            "plugins/40_gone.lua".into(),
+            "mods/40_gone.lua".into(),
             Record::Written(digest("return {}")),
         );
         manifest.insert(
-            "plugins/41_kept.lua".into(),
+            "mods/41_kept.lua".into(),
             Record::Written(digest("return {}")),
         );
         write_manifest(dir.path(), &manifest).expect("manifest");
 
         let report = materialize(dir.path());
-        assert_eq!(report.retired, vec!["plugins/40_gone.lua"]);
-        assert_eq!(report.preserved, vec!["plugins/41_kept.lua"]);
+        assert_eq!(report.retired, vec!["mods/40_gone.lua"]);
+        assert_eq!(report.preserved, vec!["mods/41_kept.lua"]);
         assert!(!untouched.exists());
         assert!(claimed.exists());
         let manifest = read_manifest(dir.path());
-        assert!(!manifest.contains_key("plugins/40_gone.lua"));
-        assert!(!manifest.contains_key("plugins/41_kept.lua"));
+        assert!(!manifest.contains_key("mods/40_gone.lua"));
+        assert!(!manifest.contains_key("mods/41_kept.lua"));
     }
 
     #[test]
@@ -1372,11 +1390,11 @@ mod tests {
         let dir = tempfile::tempdir().expect("tempdir");
         materialize(dir.path());
 
-        let pane = dir.path().join("plugins/80_restore.lua");
+        let pane = dir.path().join("mods/80_restore.lua");
         std::fs::write(&pane, "-- mine\nreturn {}").expect("write");
         let mut manifest = read_manifest(dir.path());
         manifest.insert(
-            "plugins/80_restore.lua".into(),
+            "mods/80_restore.lua".into(),
             Record::Written(digest("return {}")),
         );
         write_manifest(dir.path(), &manifest).expect("manifest");
@@ -1384,31 +1402,31 @@ mod tests {
         let report = materialize(dir.path());
         assert_eq!(
             report.retired,
-            vec!["plugins/80_restore.lua (your edit is in plugins/80_restore.lua.bak)"]
+            vec!["mods/80_restore.lua (your edit is in mods/80_restore.lua.bak)"]
         );
         assert!(report.preserved.is_empty(), "{:?}", report.preserved);
         assert!(!pane.exists());
         assert_eq!(
-            std::fs::read_to_string(dir.path().join("plugins/80_restore.lua.bak")).expect("read"),
+            std::fs::read_to_string(dir.path().join("mods/80_restore.lua.bak")).expect("read"),
             "-- mine\nreturn {}"
         );
-        assert!(!read_manifest(dir.path()).contains_key("plugins/80_restore.lua"));
+        assert!(!read_manifest(dir.path()).contains_key("mods/80_restore.lua"));
 
         // Once more, over the backup that is now there: it is not replaced.
         std::fs::write(&pane, "-- again\nreturn {}").expect("write");
         let mut manifest = read_manifest(dir.path());
         manifest.insert(
-            "plugins/80_restore.lua".into(),
+            "mods/80_restore.lua".into(),
             Record::Written(digest("return {}")),
         );
         write_manifest(dir.path(), &manifest).expect("manifest");
         materialize(dir.path());
         assert_eq!(
-            std::fs::read_to_string(dir.path().join("plugins/80_restore.lua.bak")).expect("read"),
+            std::fs::read_to_string(dir.path().join("mods/80_restore.lua.bak")).expect("read"),
             "-- mine\nreturn {}"
         );
         assert_eq!(
-            std::fs::read_to_string(dir.path().join("plugins/80_restore.lua.bak.2")).expect("read"),
+            std::fs::read_to_string(dir.path().join("mods/80_restore.lua.bak.2")).expect("read"),
             "-- again\nreturn {}"
         );
     }
@@ -1440,7 +1458,7 @@ mod tests {
         let dir = tempfile::tempdir().expect("tempdir");
         materialize(dir.path());
 
-        let removed = "plugins/10_sessions.lua";
+        let removed = "mods/10_sessions.lua";
         remove(dir.path(), removed).expect("remove");
         assert!(!dir.path().join(removed).exists());
         restore(dir.path(), removed).expect("restore");
@@ -1459,7 +1477,7 @@ mod tests {
     fn removing_a_user_file_records_nothing() {
         let dir = tempfile::tempdir().expect("tempdir");
         materialize(dir.path());
-        let mine = "plugins/50_mine.lua";
+        let mine = "mods/50_mine.lua";
         std::fs::write(dir.path().join(mine), "return {}").expect("write");
 
         remove(dir.path(), mine).expect("remove");
@@ -1476,11 +1494,11 @@ mod tests {
             "../secrets.lua",
             "/etc/passwd.lua",
             ".bundled.json",
-            "plugins/../../escape.lua",
+            "mods/../../escape.lua",
         ] {
             assert!(checked(dir.path(), refused).is_err(), "{refused} allowed");
         }
-        assert!(checked(dir.path(), "plugins/10_sessions.lua").is_ok());
+        assert!(checked(dir.path(), "mods/10_sessions.lua").is_ok());
     }
 
     #[test]
@@ -1488,14 +1506,14 @@ mod tests {
         let dir = tempfile::tempdir().expect("tempdir");
         materialize(dir.path());
         std::fs::write(dir.path().join("lib/theme.lua"), "-- mine").expect("edit");
-        std::fs::write(dir.path().join("plugins/50_mine.lua"), "return {}").expect("write");
-        remove(dir.path(), "plugins/20_agent.lua").expect("remove");
+        std::fs::write(dir.path().join("mods/50_mine.lua"), "return {}").expect("write");
+        remove(dir.path(), "mods/20_agent.lua").expect("remove");
 
         let sources = sources(dir.path());
         assert_eq!(sources["layout.lua"], Source::Bundled);
         assert_eq!(sources["lib/theme.lua"], Source::Edited);
-        assert_eq!(sources["plugins/50_mine.lua"], Source::User);
-        assert_eq!(sources["plugins/20_agent.lua"], Source::Removed);
+        assert_eq!(sources["mods/50_mine.lua"], Source::User);
+        assert_eq!(sources["mods/20_agent.lua"], Source::Removed);
     }
 
     /// A file the user did not write is a different answer from one they did,
@@ -1508,7 +1526,7 @@ mod tests {
 
         let entry = crate::session::PluginEntry {
             src: "atlas".into(),
-            file: "plugins/75_atlas.lua".into(),
+            file: "mods/75_atlas.lua".into(),
             pin: Some("v0.3.1".into()),
         };
         let mut lock = crate::session::PluginLock::default();
@@ -1519,7 +1537,7 @@ mod tests {
             "v0.3.1",
             &[
                 super::super::packages::Payload {
-                    file: "plugins/75_atlas.lua".into(),
+                    file: "mods/75_atlas.lua".into(),
                     contents: "return {}\n".into(),
                 },
                 super::super::packages::Payload {
@@ -1534,37 +1552,31 @@ mod tests {
 
         let fresh = sources(dir.path());
         assert_eq!(
-            fresh["plugins/75_atlas.lua"],
+            fresh["mods/75_atlas.lua"],
             Source::Installed {
                 src: "atlas".into()
             }
         );
         assert!(
-            !fresh["plugins/75_atlas.lua"].is_theirs(),
+            !fresh["mods/75_atlas.lua"].is_theirs(),
             "an installed pane is not the user's own file"
         );
-        assert_eq!(
-            fresh["plugins/75_atlas.lua"].installed_from(),
-            Some("atlas")
-        );
+        assert_eq!(fresh["mods/75_atlas.lua"].installed_from(), Some("atlas"));
         // A module the package brought is traceable too — otherwise a `lib/` file
         // somebody else shipped reads as one the user wrote.
         assert_eq!(fresh["lib/atlas/util.lua"].installed_from(), Some("atlas"));
 
         // Changed since: locally, or re-tagged upstream. The inventory cannot tell
         // which, and says only that the contents are no longer the version's.
-        std::fs::write(dir.path().join("plugins/75_atlas.lua"), "-- mine\n").expect("edit");
+        std::fs::write(dir.path().join("mods/75_atlas.lua"), "-- mine\n").expect("edit");
         let after = sources(dir.path());
         assert_eq!(
-            after["plugins/75_atlas.lua"],
+            after["mods/75_atlas.lua"],
             Source::InstalledEdited {
                 src: "atlas".into()
             }
         );
-        assert_eq!(
-            after["plugins/75_atlas.lua"].installed_from(),
-            Some("atlas")
-        );
+        assert_eq!(after["mods/75_atlas.lua"].installed_from(), Some("atlas"));
     }
 
     #[test]
@@ -1578,7 +1590,7 @@ mod tests {
             dir.path(),
             &crate::session::PluginEntry {
                 src: "atlas".into(),
-                file: "plugins/75_atlas.lua".into(),
+                file: "mods/75_atlas.lua".into(),
                 pin: None,
             },
         )
@@ -1597,7 +1609,7 @@ mod tests {
     fn a_broken_lock_does_not_break_the_inventory() {
         let dir = tempfile::tempdir().expect("tempdir");
         materialize(dir.path());
-        std::fs::write(dir.path().join("plugins/50_mine.lua"), "return {}").expect("write");
+        std::fs::write(dir.path().join("mods/50_mine.lua"), "return {}").expect("write");
         std::fs::write(
             super::super::packages::lock_path(dir.path()),
             "[[plugin]]\nsrc =\n",
@@ -1606,7 +1618,7 @@ mod tests {
 
         let sources = sources(dir.path());
         assert_eq!(sources["layout.lua"], Source::Bundled);
-        assert_eq!(sources["plugins/50_mine.lua"], Source::User);
+        assert_eq!(sources["mods/50_mine.lua"], Source::User);
     }
 
     /// Removes a directory when it drops. [`fallback_dir`] hands back a plain
@@ -1624,7 +1636,7 @@ mod tests {
     #[test]
     fn the_fallback_directory_holds_a_loadable_interface() {
         let dir = RemoveOnDrop(fallback_dir().expect("fallback"));
-        assert!(dir.0.join("plugins").is_dir());
+        assert!(dir.0.join("mods").is_dir());
         assert!(dir.0.join("layout.lua").exists());
     }
 
@@ -1643,14 +1655,14 @@ mod tests {
         let planted =
             std::env::temp_dir().join(format!("thurbox-ui-fallback-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&planted);
-        std::fs::create_dir_all(planted.join("plugins")).expect("plant");
-        std::fs::write(planted.join("plugins/99_evil.lua"), "return {}").expect("plant");
+        std::fs::create_dir_all(planted.join("mods")).expect("plant");
+        std::fs::write(planted.join("mods/99_evil.lua"), "return {}").expect("plant");
         let planted = RemoveOnDrop(planted);
 
         let dir = RemoveOnDrop(fallback_dir().expect("fallback"));
         assert_ne!(dir.0, planted.0, "adopted a pre-existing directory");
         assert!(
-            !dir.0.join("plugins/99_evil.lua").exists(),
+            !dir.0.join("mods/99_evil.lua").exists(),
             "the planted file came along: {}",
             dir.0.display()
         );
@@ -1665,7 +1677,7 @@ mod tests {
     #[test]
     fn the_resolved_directory_is_absolute_and_still_the_one_that_was_asked_for() {
         let dir = tempfile::tempdir().expect("tempdir");
-        std::fs::create_dir_all(dir.path().join("plugins")).expect("mkdir");
+        std::fs::create_dir_all(dir.path().join("mods")).expect("mkdir");
         std::env::set_var("THURBOX_UI_DIR", dir.path());
         let (resolved, chosen, _) = resolve(false).expect("resolve");
         std::env::remove_var("THURBOX_UI_DIR");

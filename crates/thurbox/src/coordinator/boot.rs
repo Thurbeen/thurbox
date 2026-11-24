@@ -487,8 +487,10 @@ fn resolve_ui_dir() -> Result<(PathBuf, Vec<String>), Box<dyn Error>> {
     // The resolution itself lives in the library, so `thurbox-cli mod dir`
     // reports the directory this will actually load. Writing the user's copy is
     // the interface's business, which is why it asks for it.
+    let migration = thurbox::kernel::mod_migration::migrate_in_force();
     let (dir, chosen, report) = thurbox::kernel::bundled::resolve(true)?;
     let mut notices = Vec::new();
+    notices.extend(migration.notice());
     notices.extend(directory_notice(&dir, chosen));
     notices.extend(delivery_notice(&report));
     Ok((dir, notices))

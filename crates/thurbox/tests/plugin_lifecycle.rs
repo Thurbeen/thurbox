@@ -140,7 +140,7 @@ fn screen_text(backend: &ratatui::backend::TestBackend) -> String {
 fn a_pane_is_added_by_adding_a_file() {
     let dir = interface();
     fs::write(
-        dir.path().join("plugins/50_mine.lua"),
+        dir.path().join("mods/50_mine.lua"),
         pane("mine", "sessions"),
     )
     .expect("write");
@@ -151,7 +151,7 @@ fn a_pane_is_added_by_adding_a_file() {
         .iter()
         .find(|plugin| plugin.name == "mine")
         .expect("the added pane loads");
-    assert_eq!(mine.path, "plugins/50_mine.lua");
+    assert_eq!(mine.path, "mods/50_mine.lua");
     assert!(host
         .focusable()
         .iter()
@@ -160,7 +160,7 @@ fn a_pane_is_added_by_adding_a_file() {
     // And delivery has no opinion about a file it did not write.
     let report = bundled::materialize(dir.path());
     assert!(report.is_empty(), "{report:?}");
-    assert_eq!(sources(dir.path())["plugins/50_mine.lua"], Source::User);
+    assert_eq!(sources(dir.path())["mods/50_mine.lua"], Source::User);
 }
 
 #[test]
@@ -172,7 +172,7 @@ fn a_decorator_and_a_module_are_added_the_same_way() {
     )
     .expect("write");
     fs::write(
-        dir.path().join("plugins/51_decor.lua"),
+        dir.path().join("mods/51_decor.lua"),
         "local mine = require(\"lib.mine\")\n\
          return { name = \"decor\", decorates = \"sessions\",\n\
          decorate = function(tree) tree.badge = mine.badge return tree end }\n",
@@ -201,9 +201,9 @@ fn a_decorator_and_a_module_are_added_the_same_way() {
 #[test]
 fn a_bundled_pane_is_replaced_by_a_differently_named_file() {
     let dir = interface();
-    bundled::remove(dir.path(), "plugins/10_sessions.lua").expect("remove");
+    bundled::remove(dir.path(), "mods/10_sessions.lua").expect("remove");
     fs::write(
-        dir.path().join("plugins/15_my_sessions.lua"),
+        dir.path().join("mods/15_my_sessions.lua"),
         pane("sessions", "sessions"),
     )
     .expect("write");
@@ -218,17 +218,13 @@ fn a_bundled_pane_is_replaced_by_a_differently_named_file() {
         .filter(|plugin| plugin.slot == "sessions")
         .map(|plugin| plugin.path.as_str())
         .collect();
-    assert_eq!(occupants, vec!["plugins/15_my_sessions.lua"]);
+    assert_eq!(occupants, vec!["mods/15_my_sessions.lua"]);
 }
 
 #[test]
 fn the_arrangement_decides_which_panes_have_a_rect() {
     let dir = interface();
-    fs::write(
-        dir.path().join("plugins/52_notes.lua"),
-        pane("notes", "notes"),
-    )
-    .expect("write");
+    fs::write(dir.path().join("mods/52_notes.lua"), pane("notes", "notes")).expect("write");
 
     // The stock arrangement has no `notes` region, so the pane loads and is
     // simply not placed — the silent drop this inventory exists to name.
@@ -247,7 +243,7 @@ fn the_arrangement_decides_which_panes_have_a_rect() {
     );
     let notes = rows
         .iter()
-        .find(|row| row.path == "plugins/52_notes.lua")
+        .find(|row| row.path == "mods/52_notes.lua")
         .expect("listed");
     assert_eq!(notes.state, State::Unplaced);
 
@@ -270,7 +266,7 @@ fn removing_every_pane_is_an_empty_interface_rather_than_a_fault() {
     // interface again — undoing the removal it was asked to make.
     let dir = interface();
     for (relative, _) in bundled::BUNDLED {
-        if relative.starts_with("plugins/") {
+        if relative.starts_with("mods/") {
             bundled::remove(dir.path(), relative).expect("remove");
         }
     }
@@ -292,7 +288,7 @@ fn removing_every_pane_is_an_empty_interface_rather_than_a_fault() {
     );
     assert!(rows
         .iter()
-        .any(|row| row.path == "plugins/10_sessions.lua" && row.state == State::Removed));
+        .any(|row| row.path == "mods/10_sessions.lua" && row.state == State::Removed));
 }
 
 #[test]
@@ -310,7 +306,7 @@ fn the_view_that_lists_the_files_is_not_one_of_them() {
 
     // Removing every pane there is must still leave it reachable, since it is
     // the only way back from exactly that state.
-    for path in ["plugins/10_sessions.lua", "plugins/20_agent.lua"] {
+    for path in ["mods/10_sessions.lua", "mods/20_agent.lua"] {
         bundled::remove(dir.path(), path).expect("remove");
     }
     bundled::materialize(dir.path());
@@ -321,21 +317,21 @@ fn the_view_that_lists_the_files_is_not_one_of_them() {
 #[test]
 fn restoring_brings_a_removed_pane_back() {
     let dir = interface();
-    bundled::remove(dir.path(), "plugins/20_agent.lua").expect("remove");
+    bundled::remove(dir.path(), "mods/20_agent.lua").expect("remove");
     bundled::materialize(dir.path());
     assert!(!loaded(dir.path())
         .plugins
         .iter()
-        .any(|plugin| plugin.path == "plugins/20_agent.lua"));
+        .any(|plugin| plugin.path == "mods/20_agent.lua"));
 
-    bundled::restore(dir.path(), "plugins/20_agent.lua").expect("restore");
+    bundled::restore(dir.path(), "mods/20_agent.lua").expect("restore");
     let host = loaded(dir.path());
     assert!(host
         .plugins
         .iter()
-        .any(|plugin| plugin.path == "plugins/20_agent.lua"));
+        .any(|plugin| plugin.path == "mods/20_agent.lua"));
     assert_eq!(
-        sources(dir.path())["plugins/20_agent.lua"],
+        sources(dir.path())["mods/20_agent.lua"],
         Source::Bundled,
         "restored means shipped, not edited"
     );
@@ -354,7 +350,7 @@ fn restoring_brings_a_removed_pane_back() {
 #[test]
 fn a_broken_interface_loads_again_once_it_is_fixed() {
     let dir = interface();
-    let broken = dir.path().join("plugins/50_broken.lua");
+    let broken = dir.path().join("mods/50_broken.lua");
     fs::write(&broken, "this is not lua(((").expect("write");
 
     let mut host = LuaHost::new(dir.path());
@@ -411,14 +407,14 @@ fn a_disabled_pane_does_not_reserve_its_column() {
     );
     assert!(before.contains("center"), "{before:?}");
 
-    host.set_disabled(vec!["plugins/10_sessions.lua".to_string()]);
+    host.set_disabled(vec!["mods/10_sessions.lua".to_string()]);
     host.reload();
     assert!(host.error.is_none(), "{:?}", host.error);
     assert!(
         !host
             .plugins
             .iter()
-            .any(|p| p.path == "plugins/10_sessions.lua"),
+            .any(|p| p.path == "mods/10_sessions.lua"),
         "a disabled file is not loaded at all"
     );
 
@@ -459,7 +455,7 @@ fn a_float_does_not_make_its_slot_count_as_occupied() {
     // Replace the session list with a FLOAT that claims the same slot, so the
     // slot is claimed but nothing will ever paint into the column.
     fs::write(
-        dir.path().join("plugins/10_sessions.lua"),
+        dir.path().join("mods/10_sessions.lua"),
         "return { name = \"floaty\", slot = \"sessions\", floats = true,\n\
          render = function() return { type = \"text\", text = \"x\" } end }",
     )
@@ -514,10 +510,10 @@ fn a_float_drawing_nothing_is_reported_on_demand_rather_than_on_screen() {
     };
 
     for float in [
-        "plugins/60_confirm.lua",
-        "plugins/62_rename.lua",
-        "plugins/64_menu.lua",
-        "plugins/70_new_session.lua",
+        "mods/60_confirm.lua",
+        "mods/62_rename.lua",
+        "mods/64_menu.lua",
+        "mods/70_new_session.lua",
     ] {
         assert_eq!(
             state_of(float),
@@ -602,8 +598,8 @@ fn the_demo_examples_load_and_stack_where_the_layout_says() {
     )
     .expect("layout");
     for (from, to) in [
-        ("examples/panes/tasks/tasks.lua", "plugins/80_tasks.lua"),
-        ("examples/panes/top/top.lua", "plugins/85_top.lua"),
+        ("examples/panes/tasks/tasks.lua", "mods/80_tasks.lua"),
+        ("examples/panes/top/top.lua", "mods/85_top.lua"),
     ] {
         fs::copy(root.join(from), dir.path().join(to)).expect(from);
     }
@@ -686,7 +682,7 @@ fn the_demo_layout_drops_a_stack_slot_whose_plugin_is_missing() {
     // Only one of the two, which is the likeliest half-finished state.
     fs::copy(
         root.join("examples/panes/tasks/tasks.lua"),
-        dir.path().join("plugins/80_tasks.lua"),
+        dir.path().join("mods/80_tasks.lua"),
     )
     .expect("tasks");
 
@@ -733,7 +729,7 @@ fn rect_of(rects: &[(String, Rect)], slot: &str) -> Rect {
 fn a_strip_is_placed_above_the_bars_at_its_declared_height_with_no_layout_edit() {
     let dir = interface();
     fs::write(
-        dir.path().join("plugins/50_strip.lua"),
+        dir.path().join("mods/50_strip.lua"),
         strip_plugin("dictation", "dictation", "size = { len = 2 },"),
     )
     .expect("write");
@@ -759,12 +755,12 @@ fn a_strip_is_placed_above_the_bars_at_its_declared_height_with_no_layout_edit()
 fn strips_stack_in_load_order_and_default_to_one_row() {
     let dir = interface();
     fs::write(
-        dir.path().join("plugins/50_first.lua"),
+        dir.path().join("mods/50_first.lua"),
         strip_plugin("first", "first", ""),
     )
     .expect("write");
     fs::write(
-        dir.path().join("plugins/51_second.lua"),
+        dir.path().join("mods/51_second.lua"),
         strip_plugin("second", "second", "size = { len = 3 },"),
     )
     .expect("write");
@@ -783,7 +779,7 @@ fn strips_stack_in_load_order_and_default_to_one_row() {
 fn a_float_is_not_a_strip() {
     let dir = interface();
     fs::write(
-        dir.path().join("plugins/50_strip.lua"),
+        dir.path().join("mods/50_strip.lua"),
         strip_plugin("hover", "hover", "floats = true, size = { len = 2 },"),
     )
     .expect("write");
@@ -826,12 +822,12 @@ fn assert_no_blank_rows(placed: &[(String, Rect)], top: &str) {
 fn two_strips_sharing_a_stack_slot_get_one_rect_with_both_heights() {
     let dir = interface();
     fs::write(
-        dir.path().join("plugins/50_first.lua"),
+        dir.path().join("mods/50_first.lua"),
         strip_plugin("first", "ticker", "size = { len = 2 },"),
     )
     .expect("write");
     fs::write(
-        dir.path().join("plugins/51_second.lua"),
+        dir.path().join("mods/51_second.lua"),
         strip_plugin("second", "ticker", "size = { len = 3 },"),
     )
     .expect("write");
@@ -853,7 +849,7 @@ fn two_strips_sharing_a_stack_slot_get_one_rect_with_both_heights() {
 fn two_strips_sharing_a_switch_slot_get_the_tallest_height() {
     let dir = interface();
     fs::write(
-        dir.path().join("plugins/50_first.lua"),
+        dir.path().join("mods/50_first.lua"),
         strip_plugin(
             "first",
             "ticker",
@@ -862,7 +858,7 @@ fn two_strips_sharing_a_switch_slot_get_the_tallest_height() {
     )
     .expect("write");
     fs::write(
-        dir.path().join("plugins/51_second.lua"),
+        dir.path().join("mods/51_second.lua"),
         strip_plugin("second", "ticker", "size = { len = 3 },"),
     )
     .expect("write");
@@ -879,7 +875,7 @@ fn two_strips_sharing_a_switch_slot_get_the_tallest_height() {
 fn a_strip_placed_by_hand_is_not_placed_again_by_the_loop() {
     let dir = interface();
     fs::write(
-        dir.path().join("plugins/50_strip.lua"),
+        dir.path().join("mods/50_strip.lua"),
         strip_plugin("ticker", "ticker", "size = { len = 2 },"),
     )
     .expect("write");
@@ -913,7 +909,7 @@ fn a_strip_placed_by_hand_is_not_placed_again_by_the_loop() {
 fn a_strip_placed_by_hand_below_the_loop_is_not_placed_again() {
     let dir = interface();
     fs::write(
-        dir.path().join("plugins/50_strip.lua"),
+        dir.path().join("mods/50_strip.lua"),
         strip_plugin("ticker", "ticker", "size = { len = 2 },"),
     )
     .expect("write");

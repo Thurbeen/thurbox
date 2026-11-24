@@ -29,12 +29,12 @@ fn package(root: &Path, name: &str, version: &str, marker: &str) -> PathBuf {
     let dir = root.join(name);
     std::fs::create_dir_all(&dir).expect("mkdir");
     std::fs::write(
-        dir.join("plugin.toml"),
+        dir.join("mod.toml"),
         format!(
             "name = \"{name}\"\n\
              description = \"a test pane\"\n\
              version = \"{version}\"\n\
-             pane = {{ source = \"pane.lua\", path = \"plugins/75_{name}.lua\" }}\n\
+             pane = {{ source = \"pane.lua\", path = \"mods/75_{name}.lua\" }}\n\
              [[module]]\n\
              source = \"util.lua\"\n\
              path = \"lib/{name}/util.lua\"\n"
@@ -158,17 +158,17 @@ fn a_package_installs_its_pane_and_its_own_modules() {
     assert!(report.failure.is_none(), "{:?}", report.json);
     assert_eq!(report.json["outcome"], "installed", "{:?}", report.json);
     assert_eq!(report.json["version"], "v0.3.1", "{:?}", report.json);
-    assert!(ui.join("plugins/75_atlas.lua").is_file());
+    assert!(ui.join("mods/75_atlas.lua").is_file());
     assert!(
         ui.join("lib/atlas/util.lua").is_file(),
         "a package's shared module lands in a namespace of its own"
     );
 
     // The spec records the source, the destination and what it resolved to.
-    let spec = std::fs::read_to_string(ui.join("plugins.toml")).expect("spec");
-    assert!(spec.contains("plugins/75_atlas.lua"), "{spec}");
+    let spec = std::fs::read_to_string(ui.join("mods.toml")).expect("spec");
+    assert!(spec.contains("mods/75_atlas.lua"), "{spec}");
     assert!(spec.contains("atlas"), "{spec}");
-    let lock = std::fs::read_to_string(ui.join("plugins.lock")).expect("lock");
+    let lock = std::fs::read_to_string(ui.join("mods.lock")).expect("lock");
     assert!(lock.contains("v0.3.1"), "{lock}");
     assert!(lock.contains("lib/atlas/util.lua"), "{lock}");
 
@@ -226,12 +226,12 @@ fn a_single_lua_file_needs_a_destination_and_then_installs() {
 
     let done = run(Action::Install {
         src: loose.display().to_string(),
-        as_file: Some("plugins/90_notes.lua".into()),
+        as_file: Some("mods/90_notes.lua".into()),
         pin: None,
     })
     .expect("install");
     assert!(done.failure.is_none(), "{:?}", done.json);
-    assert!(ui.join("plugins/90_notes.lua").is_file());
+    assert!(ui.join("mods/90_notes.lua").is_file());
     // Nothing to pin to, and saying so is better than inventing a version.
     assert_eq!(done.json["version"], "unpinned", "{:?}", done.json);
 }
@@ -241,12 +241,12 @@ fn a_destination_already_holding_an_unmanaged_file_is_refused() {
     let home = tempfile::tempdir().expect("tempdir");
     let ui = interface(home.path());
     let src = package(home.path(), "atlas", "v1", "atlas");
-    let occupied = ui.join("plugins/10_sessions.lua");
+    let occupied = ui.join("mods/10_sessions.lua");
     let before = std::fs::read_to_string(&occupied).expect("read");
 
     let error = run(Action::Install {
         src: src.display().to_string(),
-        as_file: Some("plugins/10_sessions.lua".into()),
+        as_file: Some("mods/10_sessions.lua".into()),
         pin: None,
     })
     .expect_err("should refuse");
@@ -257,7 +257,7 @@ fn a_destination_already_holding_an_unmanaged_file_is_refused() {
         "the existing file is left exactly as it was"
     );
     assert!(
-        !ui.join("plugins.toml").exists(),
+        !ui.join("mods.toml").exists(),
         "and nothing is recorded either"
     );
 }
@@ -274,9 +274,9 @@ fn a_module_may_not_be_delivered_outside_its_own_namespace() {
     let src = home.path().join("bad");
     std::fs::create_dir_all(&src).expect("mkdir");
     std::fs::write(
-        src.join("plugin.toml"),
+        src.join("mod.toml"),
         "name = \"bad\"\n\
-         pane = { source = \"pane.lua\", path = \"plugins/95_bad.lua\" }\n\
+         pane = { source = \"pane.lua\", path = \"mods/95_bad.lua\" }\n\
          [[module]]\n\
          source = \"theme.lua\"\n\
          path = \"lib/theme.lua\"\n",
@@ -309,17 +309,17 @@ fn multi_pane_package(root: &Path, name: &str, version: &str) -> PathBuf {
     let dir = root.join(name);
     std::fs::create_dir_all(&dir).expect("mkdir");
     std::fs::write(
-        dir.join("plugin.toml"),
+        dir.join("mod.toml"),
         format!(
             "name = \"{name}\"\n\
              description = \"two panes, one package\"\n\
              version = \"{version}\"\n\
              [[pane]]\n\
              source = \"main.lua\"\n\
-             path = \"plugins/75_{name}.lua\"\n\
+             path = \"mods/75_{name}.lua\"\n\
              [[pane]]\n\
              source = \"notes.lua\"\n\
-             path = \"plugins/76_{name}_notes.lua\"\n\
+             path = \"mods/76_{name}_notes.lua\"\n\
              [[module]]\n\
              source = \"util.lua\"\n\
              path = \"lib/{name}/util.lua\"\n"
@@ -362,11 +362,11 @@ fn a_package_with_several_panes_installs_all_of_them() {
     let report = install(&src);
     assert!(report.failure.is_none(), "{:?}", report.json);
     assert!(
-        ui.join("plugins/75_atlas.lua").is_file(),
+        ui.join("mods/75_atlas.lua").is_file(),
         "the first pane lands"
     );
     assert!(
-        ui.join("plugins/76_atlas_notes.lua").is_file(),
+        ui.join("mods/76_atlas_notes.lua").is_file(),
         "and so does the second — one install, not two"
     );
     assert!(ui.join("lib/atlas/util.lua").is_file(), "with their module");
@@ -378,8 +378,8 @@ fn a_package_with_several_panes_installs_all_of_them() {
     let entry = &lock.plugins[0];
     assert_eq!(entry.version, "v0.3.1");
     for file in [
-        "plugins/75_atlas.lua",
-        "plugins/76_atlas_notes.lua",
+        "mods/75_atlas.lua",
+        "mods/76_atlas_notes.lua",
         "lib/atlas/util.lua",
     ] {
         assert!(entry.files.contains_key(file), "{file} recorded: {entry:?}");
@@ -410,25 +410,25 @@ fn a_singular_pane_manifest_installs_exactly_as_it_did() {
     let report = install(&src);
     assert!(report.failure.is_none(), "{:?}", report.json);
     assert_eq!(
-        report.json["file"], "plugins/75_atlas.lua",
+        report.json["file"], "mods/75_atlas.lua",
         "{:?}",
         report.json
     );
-    assert!(ui.join("plugins/75_atlas.lua").is_file());
+    assert!(ui.join("mods/75_atlas.lua").is_file());
 
     let moved = package(home.path(), "beacon", "v1", "beacon");
     let done = run(Action::Install {
         src: moved.display().to_string(),
-        as_file: Some("plugins/88_beacon.lua".into()),
+        as_file: Some("mods/88_beacon.lua".into()),
         pin: None,
     })
     .expect("install");
     assert!(done.failure.is_none(), "{:?}", done.json);
     assert!(
-        ui.join("plugins/88_beacon.lua").is_file(),
+        ui.join("mods/88_beacon.lua").is_file(),
         "--as still redirects the one pane a singular manifest declares"
     );
-    assert!(!ui.join("plugins/75_beacon.lua").is_file());
+    assert!(!ui.join("mods/75_beacon.lua").is_file());
 }
 
 #[test]
@@ -439,22 +439,22 @@ fn as_selects_which_pane_the_entry_is_keyed_on() {
 
     let done = run(Action::Install {
         src: src.display().to_string(),
-        as_file: Some("plugins/76_atlas_notes.lua".into()),
+        as_file: Some("mods/76_atlas_notes.lua".into()),
         pin: None,
     })
     .expect("install");
     assert!(done.failure.is_none(), "{:?}", done.json);
     assert_eq!(
-        done.json["file"], "plugins/76_atlas_notes.lua",
+        done.json["file"], "mods/76_atlas_notes.lua",
         "the named pane is the one the spec entry is keyed on: {:?}",
         done.json
     );
     // Selecting is not installing half a package: every pane still arrives.
-    assert!(ui.join("plugins/75_atlas.lua").is_file());
-    assert!(ui.join("plugins/76_atlas_notes.lua").is_file());
+    assert!(ui.join("mods/75_atlas.lua").is_file());
+    assert!(ui.join("mods/76_atlas_notes.lua").is_file());
 
-    let spec = std::fs::read_to_string(ui.join("plugins.toml")).expect("spec");
-    assert!(spec.contains("plugins/76_atlas_notes.lua"), "{spec}");
+    let spec = std::fs::read_to_string(ui.join("mods.toml")).expect("spec");
+    assert!(spec.contains("mods/76_atlas_notes.lua"), "{spec}");
 }
 
 #[test]
@@ -468,14 +468,14 @@ fn as_naming_no_declared_pane_is_refused_and_lists_them() {
 
     let error = run(Action::Install {
         src: src.display().to_string(),
-        as_file: Some("plugins/90_elsewhere.lua".into()),
+        as_file: Some("mods/90_elsewhere.lua".into()),
         pin: None,
     })
     .expect_err("should refuse");
-    assert!(error.contains("plugins/75_atlas.lua"), "{error}");
-    assert!(error.contains("plugins/76_atlas_notes.lua"), "{error}");
+    assert!(error.contains("mods/75_atlas.lua"), "{error}");
+    assert!(error.contains("mods/76_atlas_notes.lua"), "{error}");
     assert!(
-        !ui.join("plugins.toml").exists(),
+        !ui.join("mods.toml").exists(),
         "and nothing is recorded: {error}"
     );
 }
@@ -491,12 +491,12 @@ fn keying_an_installed_package_on_another_pane_is_refused() {
 
     let error = run(Action::Install {
         src: src.display().to_string(),
-        as_file: Some("plugins/76_atlas_notes.lua".into()),
+        as_file: Some("mods/76_atlas_notes.lua".into()),
         pin: None,
     })
     .expect_err("should refuse");
     assert!(
-        error.contains("plugins/75_atlas.lua"),
+        error.contains("mods/75_atlas.lua"),
         "names the owner: {error}"
     );
     let spec = thurbox::kernel::packages::read_spec(&ui).expect("spec");
@@ -515,12 +515,12 @@ fn syncing_a_spec_that_keys_one_package_twice_is_refused() {
     let ui = interface(home.path());
     let src = multi_pane_package(home.path(), "atlas", "v1");
     install(&src);
-    let spec = std::fs::read_to_string(ui.join("plugins.toml")).expect("spec");
+    let spec = std::fs::read_to_string(ui.join("mods.toml")).expect("spec");
     std::fs::write(
-        ui.join("plugins.toml"),
+        ui.join("mods.toml"),
         format!(
             // A literal string, so a Windows path's backslashes are not escapes.
-            "{spec}\n[[plugin]]\nsrc = '{}'\nfile = \"plugins/76_atlas_notes.lua\"\n",
+            "{spec}\n[[mod]]\nsrc = '{}'\nfile = \"mods/76_atlas_notes.lua\"\n",
             src.display()
         ),
     )
@@ -528,7 +528,7 @@ fn syncing_a_spec_that_keys_one_package_twice_is_refused() {
 
     let error = run(Action::Sync).expect_err("should refuse");
     assert!(
-        error.contains("plugins/75_atlas.lua"),
+        error.contains("mods/75_atlas.lua"),
         "names the owner: {error}"
     );
     let lock = thurbox::kernel::packages::read_lock(&ui).expect("lock");
@@ -544,10 +544,10 @@ fn rekeying_the_sole_entry_by_hand_then_updating_converges() {
     let ui = interface(home.path());
     let src = multi_pane_package(home.path(), "atlas", "v1");
     install(&src);
-    let spec = std::fs::read_to_string(ui.join("plugins.toml")).expect("spec");
+    let spec = std::fs::read_to_string(ui.join("mods.toml")).expect("spec");
     std::fs::write(
-        ui.join("plugins.toml"),
-        spec.replace("plugins/75_atlas.lua", "plugins/76_atlas_notes.lua"),
+        ui.join("mods.toml"),
+        spec.replace("mods/75_atlas.lua", "mods/76_atlas_notes.lua"),
     )
     .expect("hand edit");
 
@@ -555,9 +555,9 @@ fn rekeying_the_sole_entry_by_hand_then_updating_converges() {
     assert!(updated.failure.is_none(), "{:?}", updated.json);
     let lock = thurbox::kernel::packages::read_lock(&ui).expect("lock");
     assert_eq!(lock.plugins.len(), 1, "{lock:?}");
-    assert_eq!(lock.plugins[0].file, "plugins/76_atlas_notes.lua");
-    assert!(ui.join("plugins/75_atlas.lua").is_file());
-    assert!(ui.join("plugins/76_atlas_notes.lua").is_file());
+    assert_eq!(lock.plugins[0].file, "mods/76_atlas_notes.lua");
+    assert!(ui.join("mods/75_atlas.lua").is_file());
+    assert!(ui.join("mods/76_atlas_notes.lua").is_file());
 
     // And the result is one a later sync agrees with, not one it undoes.
     let synced = run(Action::Sync).expect("sync");
@@ -566,7 +566,7 @@ fn rekeying_the_sole_entry_by_hand_then_updating_converges() {
         "{:?}",
         synced.json
     );
-    assert!(ui.join("plugins/75_atlas.lua").is_file());
+    assert!(ui.join("mods/75_atlas.lua").is_file());
 }
 
 #[test]
@@ -581,19 +581,19 @@ fn a_targeted_update_leaves_another_entrys_stale_record_alone() {
     install(&src);
     run(Action::Install {
         src: src.display().to_string(),
-        as_file: Some("plugins/88_beacon.lua".into()),
+        as_file: Some("mods/88_beacon.lua".into()),
         pin: None,
     })
     .expect("second copy");
-    let spec = std::fs::read_to_string(ui.join("plugins.toml")).expect("spec");
+    let spec = std::fs::read_to_string(ui.join("mods.toml")).expect("spec");
     std::fs::write(
-        ui.join("plugins.toml"),
-        spec.replace("plugins/75_beacon.lua", "plugins/77_beacon.lua"),
+        ui.join("mods.toml"),
+        spec.replace("mods/75_beacon.lua", "mods/77_beacon.lua"),
     )
     .expect("hand edit");
 
     let updated = run(Action::Update {
-        name: Some("plugins/88_beacon.lua".into()),
+        name: Some("mods/88_beacon.lua".into()),
     })
     .expect("update runs");
     assert!(
@@ -601,7 +601,7 @@ fn a_targeted_update_leaves_another_entrys_stale_record_alone() {
         "nothing of the other entry's is taken back: {:?}",
         updated.json
     );
-    assert!(ui.join("plugins/75_beacon.lua").is_file());
+    assert!(ui.join("mods/75_beacon.lua").is_file());
 }
 
 #[test]
@@ -613,24 +613,24 @@ fn a_targeted_update_leaves_a_live_entrys_old_record_alone() {
     let home = tempfile::tempdir().expect("tempdir");
     let ui = interface(home.path());
     let src = multi_pane_package(home.path(), "atlas", "v1");
-    let manifest = std::fs::read_to_string(src.join("plugin.toml")).expect("manifest");
+    let manifest = std::fs::read_to_string(src.join("mod.toml")).expect("manifest");
     std::fs::write(
-        src.join("plugin.toml"),
+        src.join("mod.toml"),
         manifest.replace(
             "[[module]]",
-            "[[pane]]\nsource = \"notes.lua\"\npath = \"plugins/77_atlas_extra.lua\"\n[[module]]",
+            "[[pane]]\nsource = \"notes.lua\"\npath = \"mods/77_atlas_extra.lua\"\n[[module]]",
         ),
     )
     .expect("third pane");
     install(&src);
     let loose = home.path().join("extra.lua");
     std::fs::write(&loose, "return { name = \"extra\", slot = \"extra\" }\n").expect("loose");
-    let spec = std::fs::read_to_string(ui.join("plugins.toml")).expect("spec");
+    let spec = std::fs::read_to_string(ui.join("mods.toml")).expect("spec");
     std::fs::write(
-        ui.join("plugins.toml"),
+        ui.join("mods.toml"),
         format!(
-            "{}\n[[plugin]]\nsrc = '{}'\nfile = \"plugins/77_atlas_extra.lua\"\n",
-            spec.replace("plugins/75_atlas.lua", "plugins/76_atlas_notes.lua"),
+            "{}\n[[mod]]\nsrc = '{}'\nfile = \"mods/77_atlas_extra.lua\"\n",
+            spec.replace("mods/75_atlas.lua", "mods/76_atlas_notes.lua"),
             loose.display()
         ),
     )
@@ -638,11 +638,11 @@ fn a_targeted_update_leaves_a_live_entrys_old_record_alone() {
 
     // Refused or not, it must not have taken anything of the re-keyed entry's back.
     let _ = run(Action::Update {
-        name: Some("plugins/77_atlas_extra.lua".into()),
+        name: Some("mods/77_atlas_extra.lua".into()),
     });
-    assert!(ui.join("plugins/75_atlas.lua").is_file());
+    assert!(ui.join("mods/75_atlas.lua").is_file());
     assert!(
-        ui.join("plugins/76_atlas_notes.lua").is_file(),
+        ui.join("mods/76_atlas_notes.lua").is_file(),
         "the re-keyed entry's own pane is still installed"
     );
 }
@@ -664,7 +664,7 @@ fn the_legacy_placement_hint_is_about_the_keyed_pane() {
 
     let report = install(&src);
     assert!(report.failure.is_none(), "{:?}", report.json);
-    assert_eq!(report.json["file"], "plugins/75_atlas.lua");
+    assert_eq!(report.json["file"], "mods/75_atlas.lua");
     assert!(
         report.json["placement_hint"].is_null(),
         "the keyed pane needs no hint: {:?}",
@@ -690,9 +690,9 @@ fn removing_a_multi_pane_package_takes_back_every_pane() {
         name: "atlas".into(),
     })
     .expect("remove runs");
-    assert!(!ui.join("plugins/75_atlas.lua").exists());
+    assert!(!ui.join("mods/75_atlas.lua").exists());
     assert!(
-        !ui.join("plugins/76_atlas_notes.lua").exists(),
+        !ui.join("mods/76_atlas_notes.lua").exists(),
         "one record covers both panes, so one removal takes both back"
     );
     assert!(!ui.join("lib/atlas/util.lua").exists());
@@ -712,8 +712,8 @@ fn syncing_a_multi_pane_package_is_idempotent() {
         "a second run changes nothing: {:?}",
         synced.json
     );
-    assert!(ui.join("plugins/75_atlas.lua").is_file());
-    assert!(ui.join("plugins/76_atlas_notes.lua").is_file());
+    assert!(ui.join("mods/75_atlas.lua").is_file());
+    assert!(ui.join("mods/76_atlas_notes.lua").is_file());
 }
 
 // ── converging ─────────────────────────────────────────────────────────────
@@ -744,7 +744,7 @@ fn syncing_installs_what_the_spec_lists_and_the_directory_lacks() {
     let src = package(home.path(), "atlas", "v1", "atlas");
     install(&src);
 
-    std::fs::remove_file(ui.join("plugins/75_atlas.lua")).expect("remove");
+    std::fs::remove_file(ui.join("mods/75_atlas.lua")).expect("remove");
     std::fs::remove_file(ui.join("lib/atlas/util.lua")).expect("remove");
     // A genuinely fresh machine has the spec and the lock and no delivered files.
     // Its lock records versions but no digests — and that must read as "never
@@ -763,7 +763,7 @@ fn syncing_installs_what_the_spec_lists_and_the_directory_lacks() {
 
     let report = run(Action::Sync).expect("sync");
     assert_eq!(report.json["changed"], true, "{:?}", report.json);
-    assert!(ui.join("plugins/75_atlas.lua").is_file());
+    assert!(ui.join("mods/75_atlas.lua").is_file());
     assert!(ui.join("lib/atlas/util.lua").is_file());
 }
 
@@ -775,7 +775,7 @@ fn syncing_takes_back_what_the_spec_no_longer_lists() {
     install(&src);
 
     // The hand edit the spec exists for.
-    std::fs::write(ui.join("plugins.toml"), "").expect("empty the spec");
+    std::fs::write(ui.join("mods.toml"), "").expect("empty the spec");
 
     let report = run(Action::Sync).expect("sync");
     assert_eq!(
@@ -783,7 +783,7 @@ fn syncing_takes_back_what_the_spec_no_longer_lists() {
         "{:?}",
         report.json
     );
-    assert!(!ui.join("plugins/75_atlas.lua").exists());
+    assert!(!ui.join("mods/75_atlas.lua").exists());
     assert!(
         !ui.join("lib/atlas").exists(),
         "and the namespace it owned goes with it"
@@ -794,7 +794,7 @@ fn syncing_takes_back_what_the_spec_no_longer_lists() {
 fn syncing_leaves_a_pane_the_spec_never_listed_alone() {
     let home = tempfile::tempdir().expect("tempdir");
     let ui = interface(home.path());
-    let mine = ui.join("plugins/90_mine.lua");
+    let mine = ui.join("mods/90_mine.lua");
     std::fs::write(&mine, "return {}\n").expect("write");
 
     let report = run(Action::Sync).expect("sync");
@@ -817,7 +817,7 @@ fn an_edit_to_an_installed_pane_survives_a_sync_and_is_reported() {
     let src = package(home.path(), "atlas", "v1", "atlas");
     install(&src);
 
-    let pane = ui.join("plugins/75_atlas.lua");
+    let pane = ui.join("mods/75_atlas.lua");
     std::fs::write(&pane, "-- mine\nreturn {}\n").expect("edit");
     // Upstream moves under them, which is when a manager is most tempted to win.
     package(home.path(), "atlas", "v2", "atlas v2");
@@ -841,7 +841,7 @@ fn a_deleted_pane_is_not_silently_reinstalled() {
     let ui = interface(home.path());
     let src = package(home.path(), "atlas", "v1", "atlas");
     install(&src);
-    std::fs::remove_file(ui.join("plugins/75_atlas.lua")).expect("delete");
+    std::fs::remove_file(ui.join("mods/75_atlas.lua")).expect("delete");
 
     for _ in 0..2 {
         let report = run(Action::Sync).expect("sync");
@@ -851,7 +851,7 @@ fn a_deleted_pane_is_not_silently_reinstalled() {
             report.json
         );
         assert!(
-            !ui.join("plugins/75_atlas.lua").exists(),
+            !ui.join("mods/75_atlas.lua").exists(),
             "convergence must not undo a removal"
         );
     }
@@ -912,16 +912,16 @@ fn removing_works_without_the_source_and_refuses_an_unknown_name() {
     })
     .expect("remove");
     assert!(removed.failure.is_none(), "{:?}", removed.json);
-    assert!(!ui.join("plugins/75_atlas.lua").exists());
+    assert!(!ui.join("mods/75_atlas.lua").exists());
     assert!(!ui.join("lib/atlas").exists());
     assert!(
-        !std::fs::read_to_string(ui.join("plugins.toml"))
+        !std::fs::read_to_string(ui.join("mods.toml"))
             .expect("spec")
             .contains("75_atlas"),
         "its spec entry is gone"
     );
     assert!(
-        !ui.join("plugins.lock").exists(),
+        !ui.join("mods.lock").exists(),
         "and so is its record — an empty lock leaves no file behind"
     );
     // The interface still loads with the pane gone.
@@ -941,14 +941,14 @@ fn plugin_repo(root: &Path, marker: &str) -> PathBuf {
 /// whose object ids are 64 characters rather than 40 can be installed from too.
 fn plugin_repo_in(root: &Path, marker: &str, object_format: &str) -> PathBuf {
     let repo = root.join("thurbox-widget");
-    std::fs::create_dir_all(repo.join("plugins")).expect("mkdir");
+    std::fs::create_dir_all(repo.join("mods")).expect("mkdir");
     std::fs::create_dir_all(repo.join("lib")).expect("mkdir");
     std::fs::create_dir_all(repo.join("bin")).expect("mkdir");
 
     // The pane requires a module by the repo-relative path `require` already
     // resolves, and reads the platform to find its own payload.
     std::fs::write(
-        repo.join("plugins/40_widget.lua"),
+        repo.join("mods/40_widget.lua"),
         "local util = require(\"thurbox-widget.lib.util\")\n\
          return {\n\
            name = \"widget\",\n\
@@ -1074,7 +1074,7 @@ fn installing_at_a_commit_pin_checks_out_that_commit() {
     );
     let lock = thurbox::kernel::packages::read_lock(&ui).expect("lock");
     assert_eq!(
-        lock.entry("thurbox-widget/plugins/40_widget.lua")
+        lock.entry("thurbox-widget/mods/40_widget.lua")
             .expect("recorded")
             .version,
         pinned
@@ -1396,7 +1396,7 @@ fn installing_a_repository_delivers_its_payload_and_loads_its_pane() {
     assert!(report.failure.is_none(), "{:?}", report.json);
 
     // Delivered in the layout the author chose, payload included.
-    assert!(ui.join("thurbox-widget/plugins/40_widget.lua").is_file());
+    assert!(ui.join("thurbox-widget/mods/40_widget.lua").is_file());
     assert!(ui.join("thurbox-widget/lib/util.lua").is_file());
     assert_eq!(
         std::fs::read(ui.join("thurbox-widget/bin/payload.bin")).expect("read"),
@@ -1411,7 +1411,7 @@ fn installing_a_repository_delivers_its_payload_and_loads_its_pane() {
     // The lock records the COMMIT, not the ref: `main` moves, a commit does not.
     let lock = thurbox::kernel::packages::read_lock(&ui).expect("lock");
     let entry = lock
-        .entry("thurbox-widget/plugins/40_widget.lua")
+        .entry("thurbox-widget/mods/40_widget.lua")
         .expect("recorded");
     assert_eq!(
         entry.version.len(),
@@ -1420,7 +1420,7 @@ fn installing_a_repository_delivers_its_payload_and_loads_its_pane() {
         entry.version
     );
 
-    // And the pane LOADS, from outside `plugins/`, requiring its own module.
+    // And the pane LOADS, from outside `mods/`, requiring its own module.
     let checked = run(Action::Check).expect("check runs");
     assert!(
         checked.json["loaded"].to_string().contains("widget"),
@@ -1434,7 +1434,7 @@ fn installing_a_repository_delivers_its_payload_and_loads_its_pane() {
         .as_array()
         .expect("files")
         .iter()
-        .find(|row| row["file"] == "thurbox-widget/plugins/40_widget.lua")
+        .find(|row| row["file"] == "thurbox-widget/mods/40_widget.lua")
         .cloned()
         .unwrap_or_else(|| panic!("the pane must be listed: {:?}", listing.json));
     assert_eq!(row["source"], "installed", "{row}");
@@ -1459,7 +1459,7 @@ fn an_edit_inside_a_working_copy_survives_sync_and_update() {
     })
     .expect("install");
 
-    let pane = ui.join("thurbox-widget/plugins/40_widget.lua");
+    let pane = ui.join("thurbox-widget/mods/40_widget.lua");
     std::fs::write(&pane, "-- mine\nreturn {}\n").expect("edit");
 
     for action in [
@@ -1537,7 +1537,7 @@ fn removing_a_repository_takes_the_whole_working_copy() {
         !ui.join("thurbox-widget").exists(),
         "the directory and its .git go together, not just the files the lock named"
     );
-    assert!(!ui.join("plugins.lock").exists());
+    assert!(!ui.join("mods.lock").exists());
     let checked = run(Action::Check).expect("check");
     assert!(checked.failure.is_none(), "{:?}", checked.json);
 }
@@ -1553,16 +1553,16 @@ fn a_cloned_repository_takes_its_pane_from_its_own_manifest() {
 
     // A second pane makes auto-detection ambiguous, and a manifest that resolves it.
     std::fs::write(
-        repo.join("plugins/50_extra.lua"),
+        repo.join("mods/50_extra.lua"),
         "return { name = \"extra\", slot = \"extra\", render = function() return \"\" end }\n",
     )
     .expect("second pane");
     // Modules at `lib/…` inside its own tree — legitimate for a clone, and something
     // the copy-model rules would reject, which is why the manifest is read leniently.
     std::fs::write(
-        repo.join("plugin.toml"),
+        repo.join("mod.toml"),
         "name = \"widget\"\n\
-         pane = { source = \"plugins/40_widget.lua\", path = \"plugins/40_widget.lua\" }\n\
+         pane = { source = \"mods/40_widget.lua\", path = \"mods/40_widget.lua\" }\n\
          [[module]]\n\
          source = \"lib/util.lua\"\n\
          path = \"lib/util.lua\"\n",
@@ -1593,7 +1593,7 @@ fn a_cloned_repository_takes_its_pane_from_its_own_manifest() {
         report.json
     );
     assert_eq!(
-        report.json["file"], "thurbox-widget/plugins/40_widget.lua",
+        report.json["file"], "thurbox-widget/mods/40_widget.lua",
         "{:?}",
         report.json
     );
@@ -1613,15 +1613,15 @@ fn a_cloned_repository_declaring_several_panes_asks_which_to_load() {
     let _ui = interface(home.path());
     let repo = plugin_repo(home.path(), "widget");
     std::fs::write(
-        repo.join("plugins/50_extra.lua"),
+        repo.join("mods/50_extra.lua"),
         "return { name = \"extra\", slot = \"extra\", render = function() return \"\" end }\n",
     )
     .expect("second pane");
     std::fs::write(
-        repo.join("plugin.toml"),
+        repo.join("mod.toml"),
         "name = \"widget\"\n\
-         [[pane]]\nsource = \"plugins/40_widget.lua\"\npath = \"plugins/40_widget.lua\"\n\
-         [[pane]]\nsource = \"plugins/50_extra.lua\"\npath = \"plugins/50_extra.lua\"\n",
+         [[pane]]\nsource = \"mods/40_widget.lua\"\npath = \"mods/40_widget.lua\"\n\
+         [[pane]]\nsource = \"mods/50_extra.lua\"\npath = \"mods/50_extra.lua\"\n",
     )
     .expect("manifest");
     git_in(&repo, &["add", "-A"]);
@@ -1633,18 +1633,18 @@ fn a_cloned_repository_declaring_several_panes_asks_which_to_load() {
         pin: None,
     })
     .expect_err("several panes is not one entry point");
-    assert!(error.contains("plugins/40_widget.lua"), "{error}");
-    assert!(error.contains("plugins/50_extra.lua"), "{error}");
+    assert!(error.contains("mods/40_widget.lua"), "{error}");
+    assert!(error.contains("mods/50_extra.lua"), "{error}");
     assert!(error.contains("--as"), "and says how to choose: {error}");
 
     let chosen = run(Action::Install {
         src: format!("git+{}", repo.display()),
-        as_file: Some("plugins/50_extra.lua".into()),
+        as_file: Some("mods/50_extra.lua".into()),
         pin: None,
     })
     .expect("install with --as");
     assert!(chosen.failure.is_none(), "{:?}", chosen.json);
-    assert_eq!(chosen.json["file"], "thurbox-widget/plugins/50_extra.lua");
+    assert_eq!(chosen.json["file"], "thurbox-widget/mods/50_extra.lua");
 }
 
 /// A declaration missing its `source` is still a declaration: dropping it would
@@ -1655,10 +1655,10 @@ fn a_cloned_repository_with_a_malformed_second_pane_still_asks() {
     let _ui = interface(home.path());
     let repo = plugin_repo(home.path(), "widget");
     std::fs::write(
-        repo.join("plugin.toml"),
+        repo.join("mod.toml"),
         "name = \"widget\"\n\
-         [[pane]]\nsource = \"plugins/40_widget.lua\"\npath = \"plugins/40_widget.lua\"\n\
-         [[pane]]\npath = \"plugins/50_extra.lua\"\n",
+         [[pane]]\nsource = \"mods/40_widget.lua\"\npath = \"mods/40_widget.lua\"\n\
+         [[pane]]\npath = \"mods/50_extra.lua\"\n",
     )
     .expect("manifest");
     git_in(&repo, &["add", "-A"]);
@@ -1680,7 +1680,7 @@ fn a_repository_with_several_panes_and_no_manifest_says_so() {
     let _ui = interface(home.path());
     let repo = plugin_repo(home.path(), "widget");
     std::fs::write(
-        repo.join("plugins/50_extra.lua"),
+        repo.join("mods/50_extra.lua"),
         "return { name = \"extra\", slot = \"extra\", render = function() return \"\" end }\n",
     )
     .expect("second pane");

@@ -56,7 +56,7 @@ async fn restarting_a_finished_program_still_reports_the_ending() {
     let _server = TmuxServer::pin(SOCKET);
     thurbox::paths::set_test_dir(dir.path());
 
-    let key = ProgramKey::new("plugins/90_files.lua", "editor_opts");
+    let key = ProgramKey::new("mods/90_files.lua", "editor_opts");
     let mut terminals = Terminals::with_registry(
         std::sync::Arc::new(thurbox::backend::wiring::local_only(&Default::default())),
         &Default::default(),

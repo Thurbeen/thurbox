@@ -282,7 +282,7 @@ impl App {
     /// Re-read where each file of the interface stands with the user.
     ///
     /// Answering it reads and digests every file in the directory and parses
-    /// `plugins.lock`, so it is done when something says the answer moved rather
+    /// `mods.lock`, so it is done when something says the answer moved rather
     /// than per publish. Trust is keyed by absolute path, and drift is answered by
     /// reading the file; an INSTALLED file is judged differently (its
     /// `src@version` as well as its contents), and `trust_of` owns that split so

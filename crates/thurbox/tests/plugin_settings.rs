@@ -350,7 +350,7 @@ fn host_with_choices() -> (tempfile::TempDir, LuaHost) {
         dir.path(),
     );
     std::fs::write(
-        dir.path().join("plugins/91_picker.lua"),
+        dir.path().join("mods/91_picker.lua"),
         r#"return {
   name = "picker",
   slot = "picker",
@@ -519,7 +519,7 @@ fn load_error_for(setting: &str) -> Option<String> {
         dir.path(),
     );
     std::fs::write(
-        dir.path().join("plugins/91_bad.lua"),
+        dir.path().join("mods/91_bad.lua"),
         format!(
             r#"return {{
   name = "bad",

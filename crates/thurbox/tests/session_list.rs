@@ -1526,7 +1526,7 @@ fn sorting_with_a_creation_in_flight_does_not_take_the_pane_down() {
 /// list either way.
 fn sorted_by_order_lua(items: &str) -> String {
     let dir = tempfile::tempdir().expect("tempdir");
-    let plugins = dir.path().join("plugins");
+    let plugins = dir.path().join("mods");
     std::fs::create_dir_all(&plugins).expect("mkdir");
 
     // `require` reads the interface directory, so the module under test is the

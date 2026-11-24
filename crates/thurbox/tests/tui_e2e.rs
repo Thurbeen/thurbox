@@ -813,6 +813,39 @@ fn boots_paints_and_quits_restoring_the_terminal() {
     assert_terminal_restored(&tui.raw_since(0), "a clean exit");
 }
 
+#[test]
+fn an_old_plugins_interface_moves_to_mods_on_startup() {
+    let profile = Profile::new();
+    let ui = profile.path("config/ui");
+    std::fs::create_dir_all(ui.join("plugins")).expect("plugins");
+    std::fs::write(ui.join("plugins/91_old.lua"), "return {\n").expect("old pane");
+    let key = ui.join("plugins/91_old.lua").to_string_lossy().into_owned();
+    std::fs::write(
+        profile.path("config/plugin-state.json"),
+        serde_json::json!({ "trusted": {}, "disabled": [key] }).to_string(),
+    )
+    .expect("old state");
+
+    let mut tui = Tui::spawn(&profile, 30, 160);
+    tui.wait_for("plugins are mods now");
+    tui.wait_for("No sessions yet");
+    let status = tui.quit();
+    assert!(status.success(), "{status:?}");
+
+    assert!(!ui.join("plugins").exists());
+    assert!(ui.join("mods/91_old.lua").is_file());
+    assert!(ui.join("mods/10_sessions.lua").is_file());
+    assert!(!profile.path("config/plugin-state.json").exists());
+    let state: serde_json::Value = serde_json::from_str(
+        &std::fs::read_to_string(profile.path("config/mod-state.json")).expect("mod-state"),
+    )
+    .expect("json");
+    assert_eq!(
+        state["disabled"],
+        serde_json::json!([ui.join("mods/91_old.lua").to_string_lossy()])
+    );
+}
+
 /// What every exit owes the terminal. A missing one of these is the "my shell
 /// is streaming mouse reports" bug, which no in-process test and no
 /// capture-pane assertion can see.
@@ -1682,10 +1715,7 @@ fn ui_state_and_watch_report_modal_changes_only_for_the_target_instance() {
         initial["search"]["selected_result"],
         serde_json::Value::Null
     );
-    assert_eq!(
-        initial["plugin_state"]["plugins/65_search.lua"]["open"],
-        false
-    );
+    assert_eq!(initial["plugin_state"]["mods/65_search.lua"]["open"], false);
 
     let mut watch_cmd = Command::new(env!("CARGO_BIN_EXE_thurbox-cli"));
     profile.apply(&mut watch_cmd);
@@ -1841,7 +1871,7 @@ return {
         let output = cmd.args(["--json", "ui", "state"]).output().expect("state");
         assert!(output.status.success());
         let state: serde_json::Value = serde_json::from_slice(&output.stdout).expect("JSON");
-        state["plugin_state"]["plugins/91_counter.lua"]["count"]
+        state["plugin_state"]["mods/91_counter.lua"]["count"]
             .as_u64()
             .expect("the counter's ui_state")
     };
@@ -1977,7 +2007,7 @@ fn float_focus_error_falls_back_and_recovery_keys_still_work() {
     tui.send(F12);
     tui.wait_gone("rend/reuse");
     std::fs::write(
-        interface.path().join("plugins/91_cards.lua"),
+        interface.path().join("mods/91_cards.lua"),
         include_str!("fixtures/float_focus/91_cards.lua"),
     )
     .unwrap();
@@ -2042,7 +2072,7 @@ fn ui_state_reports_the_focused_switch_pane_after_it_is_drawn() {
         .expect("center slot");
     assert_eq!(
         center["visible_pane_ids"],
-        serde_json::json!(["plugins/21_alt.lua"])
+        serde_json::json!(["mods/21_alt.lua"])
     );
     tui.wait_for("ALT PANE");
     assert!(tui.quit().success());
@@ -2104,13 +2134,13 @@ fn ui_state_reports_an_explicit_error_when_the_snapshot_exceeds_the_reply_limit(
   end,
 }"#,
     );
-    let source = std::fs::read_to_string(interface.path().join("plugins/90_bulk_00.lua"))
-        .expect("bulk plugin");
+    let source =
+        std::fs::read_to_string(interface.path().join("mods/90_bulk_00.lua")).expect("bulk plugin");
     for index in 1..70 {
         std::fs::write(
             interface
                 .path()
-                .join(format!("plugins/90_bulk_{index:02}.lua")),
+                .join(format!("mods/90_bulk_{index:02}.lua")),
             source.replace("bulk00", &format!("bulk{index:02}")),
         )
         .expect("bulk plugin");
@@ -2152,13 +2182,13 @@ return {
   end,
 }"#,
     );
-    let source = std::fs::read_to_string(interface.path().join("plugins/90_bulk_00.lua"))
-        .expect("bulk plugin");
+    let source =
+        std::fs::read_to_string(interface.path().join("mods/90_bulk_00.lua")).expect("bulk plugin");
     for index in 1..4 {
         std::fs::write(
             interface
                 .path()
-                .join(format!("plugins/90_bulk_{index:02}.lua")),
+                .join(format!("mods/90_bulk_{index:02}.lua")),
             source.replace("bulk00", &format!("bulk{index:02}")),
         )
         .expect("bulk plugin");
@@ -2444,7 +2474,7 @@ fn a_pane_that_fails_to_load_is_reported_and_the_rest_of_the_interface_runs() {
     // down or leave a blank screen: the error is painted where the user can
     // read it, the kernel-owned overlays still open (they are how the pane
     // gets switched off or restored), and quitting is still clean.
-    let interface = interface_with("plugins/10_sessions.lua", "return {\n");
+    let interface = interface_with("mods/10_sessions.lua", "return {\n");
     let profile = Profile::new();
     let mut tui = Tui::spawn_with(&profile, 40, 120, |cmd| {
         cmd.env("THURBOX_UI_DIR", interface.path());
@@ -2498,21 +2528,21 @@ fn the_interface_tab_explains_each_file_and_drives_every_action() {
     // about it" without reading the guide. So: every file grouped, one word of
     // state per row, the selected row's reason and fix spelled out, only the
     // keys that row answers to, and the one destructive key asking first.
-    let interface = interface_with("plugins/10_sessions.lua", {
+    let interface = interface_with("mods/10_sessions.lua", {
         let shipped = std::fs::read_to_string(
-            Path::new(env!("CARGO_MANIFEST_DIR")).join("../../ui/plugins/10_sessions.lua"),
+            Path::new(env!("CARGO_MANIFEST_DIR")).join("../../ui/mods/10_sessions.lua"),
         )
         .expect("shipped pane");
         &format!("{shipped}\n-- tb-edit\n")
     });
     std::fs::write(
-        interface.path().join("plugins/91_tbnotes.lua"),
+        interface.path().join("mods/91_tbnotes.lua"),
         r#"return { name = "tbnotes", slot = "tbnotes",
   render = function() return { type = "text", text = "tb-notes" } end }"#,
     )
     .expect("an unplaced pane");
     std::fs::write(
-        interface.path().join("plugins/92_tbrun.lua"),
+        interface.path().join("mods/92_tbrun.lua"),
         r#"return { name = "tbrun", slot = "tbrun", capabilities = { "run" },
   render = function() return { type = "text", text = "tb-run" } end }"#,
     )
@@ -2560,8 +2590,8 @@ fn the_interface_tab_explains_each_file_and_drives_every_action() {
     tui.send(b"r");
     tui.wait_for("edits are lost");
     tui.send(b"r");
-    tui.wait_for("restored plugins/10_sessions.lua");
-    let restored = std::fs::read_to_string(interface.path().join("plugins/10_sessions.lua"))
+    tui.wait_for("restored mods/10_sessions.lua");
+    let restored = std::fs::read_to_string(interface.path().join("mods/10_sessions.lua"))
         .expect("restored pane");
     assert!(!restored.contains("tb-edit"), "the shipped copy is back");
 
@@ -2575,21 +2605,21 @@ fn the_interface_tab_explains_each_file_and_drives_every_action() {
 /// example installed as a package, a pane of your own the layout does not
 /// place, one that asks to run programs, and an edited shipped pane.
 fn mixed_interface(profile: &Profile) -> tempfile::TempDir {
-    let interface = interface_with("plugins/10_sessions.lua", {
+    let interface = interface_with("mods/10_sessions.lua", {
         let shipped = std::fs::read_to_string(
-            Path::new(env!("CARGO_MANIFEST_DIR")).join("../../ui/plugins/10_sessions.lua"),
+            Path::new(env!("CARGO_MANIFEST_DIR")).join("../../ui/mods/10_sessions.lua"),
         )
         .expect("shipped pane");
         &format!("{shipped}\n-- tb-edit\n")
     });
     std::fs::write(
-        interface.path().join("plugins/91_tbnotes.lua"),
+        interface.path().join("mods/91_tbnotes.lua"),
         r#"return { name = "tbnotes", slot = "tbnotes",
   render = function() return { type = "text", text = "tb-notes" } end }"#,
     )
     .expect("an unplaced pane");
     std::fs::write(
-        interface.path().join("plugins/92_tbrun.lua"),
+        interface.path().join("mods/92_tbrun.lua"),
         r#"return { name = "tbrun", slot = "tbrun", capabilities = { "run" },
   render = function() return { type = "text", text = "tb-run" } end }"#,
     )
@@ -2692,9 +2722,9 @@ fn a_plugin_that_breaks_the_reload_is_named_and_the_others_are_not_blamed() {
         &Path::new(env!("CARGO_MANIFEST_DIR")).join("../../ui"),
         &interface,
     );
-    std::fs::write(interface.join("plugins/93_tbbroken.lua"), "return {\n").expect("break");
+    std::fs::write(interface.join("mods/93_tbbroken.lua"), "return {\n").expect("break");
     std::fs::write(
-        interface.join("plugins/92_tbrun.lua"),
+        interface.join("mods/92_tbrun.lua"),
         r#"return { name = "tbrun", slot = "tbrun", capabilities = { "run" },
   render = function() return { type = "text", text = "tb-run" } end }"#,
     )
@@ -2766,7 +2796,7 @@ fn granting_a_capability_asks_first_and_revoking_does_not() {
     });
     tui.wait_for("No sessions yet");
     open_interface_tab(&mut tui);
-    let store = profile.path("config/plugin-state.json");
+    let store = profile.path("config/mod-state.json");
     let granted = || {
         std::fs::read_to_string(&store)
             .unwrap_or_default()
@@ -2822,7 +2852,7 @@ fn the_interface_tab_keeps_each_rows_state_on_a_narrow_terminal() {
     std::fs::write(
         interface
             .path()
-            .join("plugins/94_a_pane_with_a_name_long_enough_to_need_cutting.lua"),
+            .join("mods/94_a_pane_with_a_name_long_enough_to_need_cutting.lua"),
         r#"return { name = "tblong", slot = "tblong", capabilities = { "run" },
   render = function() return { type = "text", text = "tb-long" } end }"#,
     )
@@ -2865,7 +2895,7 @@ fn interface_plus(name: &str, body: &str) -> tempfile::TempDir {
     let dir = tempfile::tempdir().expect("tempdir");
     let source = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../ui");
     copy_tree(&source, dir.path());
-    std::fs::write(dir.path().join("plugins").join(name), body).expect("add a pane");
+    std::fs::write(dir.path().join("mods").join(name), body).expect("add a pane");
     dir
 }
 
@@ -2979,11 +3009,8 @@ fn the_right_button_reaches_on_context_and_the_left_one_still_reaches_on_click()
         )
     };
     let interface = interface_plus("91_hook.lua", &pane("hook", 5));
-    std::fs::write(
-        interface.path().join("plugins/92_other.lua"),
-        pane("other", 6),
-    )
-    .expect("add the second pane");
+    std::fs::write(interface.path().join("mods/92_other.lua"), pane("other", 6))
+        .expect("add the second pane");
     let profile = Profile::new();
     let mut tui = Tui::spawn_with(&profile, 40, 120, |cmd| {
         cmd.env("THURBOX_UI_DIR", interface.path());
@@ -3060,7 +3087,7 @@ const PIN_OPENER: &str = r#"return {
 #[test]
 fn a_float_opens_where_it_was_asked_and_closes_on_a_press_elsewhere() {
     let interface = interface_plus("92_opener.lua", PIN_OPENER);
-    std::fs::write(interface.path().join("plugins/91_pinned.lua"), PINNED).expect("add pinned");
+    std::fs::write(interface.path().join("mods/91_pinned.lua"), PINNED).expect("add pinned");
     let profile = Profile::new();
     let mut tui = Tui::spawn_with(&profile, 40, 120, |cmd| {
         cmd.env("THURBOX_UI_DIR", interface.path());
@@ -3092,7 +3119,7 @@ fn a_float_opens_where_it_was_asked_and_closes_on_a_press_elsewhere() {
 #[test]
 fn a_press_on_a_band_pill_is_told_to_the_float_it_missed() {
     let interface = interface_plus("92_opener.lua", PIN_OPENER);
-    std::fs::write(interface.path().join("plugins/91_pinned.lua"), PINNED).expect("add pinned");
+    std::fs::write(interface.path().join("mods/91_pinned.lua"), PINNED).expect("add pinned");
     let profile = Profile::new();
     let mut tui = Tui::spawn_with(&profile, 40, 120, |cmd| {
         cmd.env("THURBOX_UI_DIR", interface.path());
@@ -3145,7 +3172,7 @@ fn listening_pane(name: &str, order: u8) -> String {
 #[test]
 fn a_press_right_after_a_reload_never_reaches_a_pane_that_did_not_paint_it() {
     let interface = interface_plus("06_tbgone.lua", &listening_pane("gone", 6));
-    let plugins = interface.path().join("plugins");
+    let plugins = interface.path().join("mods");
     std::fs::write(plugins.join("07_tbaim.lua"), listening_pane("aim", 7)).expect("add aim");
     std::fs::write(plugins.join("08_tbnear.lua"), listening_pane("near", 8)).expect("add near");
     let profile = Profile::new();
@@ -3190,7 +3217,7 @@ fn trust(profile: &Profile, interface: &Path, file: &str, contents: &str) {
     let raw = interface.join(file);
     let canonical = raw.canonicalize().expect("canonicalize");
     std::fs::write(
-        profile.path("config/plugin-state.json"),
+        profile.path("config/mod-state.json"),
         format!(r#"{{"trusted": {{ {raw:?}: "{digest}", {canonical:?}: "{digest}" }}}}"#),
     )
     .expect("seed trust");
@@ -3214,14 +3241,14 @@ fn a_sessionless_run_is_refused_before_queueing_and_local_runs_complete() {
     } }
   end,
 }"#;
-    let interface = interface_with("plugins/10_sessions.lua", body);
+    let interface = interface_with("mods/10_sessions.lua", body);
     std::fs::write(
         interface.path().join("layout.lua"),
         "return function() return { children = { { slot = 'sessions' } } } end",
     )
     .expect("layout");
     let profile = Profile::new();
-    trust(&profile, interface.path(), "plugins/10_sessions.lua", body);
+    trust(&profile, interface.path(), "mods/10_sessions.lua", body);
     let mut tui = Tui::spawn_with(&profile, 24, 140, |cmd| {
         cmd.env("THURBOX_UI_DIR", interface.path());
     });
@@ -3400,7 +3427,7 @@ const CONFIGURED_HOST_RUN: &str = r#"return {
 
 #[test]
 fn configured_host_runs_still_require_a_trusted_run_capability() {
-    let interface = interface_with("plugins/10_sessions.lua", CONFIGURED_HOST_RUN);
+    let interface = interface_with("mods/10_sessions.lua", CONFIGURED_HOST_RUN);
     let profile = configured_host_run_profile();
     let mut tui = Tui::spawn_with(&profile, 24, 140, |cmd| {
         cmd.env("THURBOX_UI_DIR", interface.path());
@@ -3448,8 +3475,8 @@ fn forgetting_an_asked_key_preserves_another_plugins_answer_with_that_key() {
     return { type = "text", text = got and (got.stdout or got.state) or "KEEPER-ANSWER-MISSING" }
   end,
 }"#;
-    let interface = interface_with("plugins/10_sessions.lua", forgetting);
-    let second = "plugins/91_keeper.lua";
+    let interface = interface_with("mods/10_sessions.lua", forgetting);
+    let second = "mods/91_keeper.lua";
     std::fs::write(interface.path().join(second), keeping).expect("keeper");
     std::fs::write(
         interface.path().join("layout.lua"),
@@ -3460,10 +3487,10 @@ fn forgetting_an_asked_key_preserves_another_plugins_answer_with_that_key() {
     trust(
         &profile,
         interface.path(),
-        "plugins/10_sessions.lua",
+        "mods/10_sessions.lua",
         forgetting,
     );
-    let grants = profile.path("config/plugin-state.json");
+    let grants = profile.path("config/mod-state.json");
     let mut config: serde_json::Value =
         serde_json::from_str(&std::fs::read_to_string(&grants).expect("trust")).expect("json");
     let path = interface.path().join(second);
@@ -3550,7 +3577,7 @@ fn a_refused_keystroke_reaches_the_plugin_with_the_reason_it_was_refused() {
     let interface = interface_plus("91_typist.lua", TYPIST);
     let profile = Profile::new();
     let mut relay = CutProgramInput::install(&profile);
-    trust(&profile, interface.path(), "plugins/91_typist.lua", TYPIST);
+    trust(&profile, interface.path(), "mods/91_typist.lua", TYPIST);
     let mut tui = Tui::spawn_with(&profile, 40, 120, |cmd| {
         cmd.env("THURBOX_UI_DIR", interface.path());
     });
@@ -3634,12 +3661,7 @@ fn a_program_pane_draws_what_its_program_prints() {
     }
     let interface = interface_plus("91_painter.lua", PAINTER);
     let profile = Profile::new();
-    trust(
-        &profile,
-        interface.path(),
-        "plugins/91_painter.lua",
-        PAINTER,
-    );
+    trust(&profile, interface.path(), "mods/91_painter.lua", PAINTER);
     let mut tui = Tui::spawn_with(&profile, 30, 100, |cmd| {
         cmd.env("THURBOX_UI_DIR", interface.path());
     });
@@ -5612,7 +5634,7 @@ fn a_call_whose_instruction_budget_cannot_be_armed_does_not_freeze_the_interface
     // wait gives up.
     let interface = interface_plus("91_filler.lua", FILLER_PANE);
     std::fs::write(
-        interface.path().join("plugins").join("92_spinner.lua"),
+        interface.path().join("mods").join("92_spinner.lua"),
         SPINNER_PANE,
     )
     .expect("add the spinner");
@@ -5684,10 +5706,10 @@ fn a_vm_that_fills_on_its_first_frame_is_rebuilt_once_then_kept() {
 fn the_memory_floor_keeps_the_plugins_the_user_turned_off() {
     let interface = interface_plus("91_hog.lua", HOG_PANE);
     let profile = Profile::new();
-    let off = interface.path().join("plugins").join("93_off.lua");
+    let off = interface.path().join("mods").join("93_off.lua");
     std::fs::write(&off, "return {").expect("a plugin that does not load");
     std::fs::write(
-        profile.path("config/plugin-state.json"),
+        profile.path("config/mod-state.json"),
         format!(r#"{{"disabled": [{:?}]}}"#, off.display().to_string()),
     )
     .expect("turn the plugin off");
@@ -5695,7 +5717,7 @@ fn the_memory_floor_keeps_the_plugins_the_user_turned_off() {
         cmd.env("THURBOX_UI_DIR", interface.path());
     });
     tui.wait_for("hog-idle");
-    let broken = interface.path().join("plugins").join("92_broken.lua");
+    let broken = interface.path().join("mods").join("92_broken.lua");
     std::fs::write(&broken, "return {").expect("break the interface");
     tui.wait_for("reload failed");
 
@@ -5798,9 +5820,9 @@ fn memory_fallback_keeps_disabled_bundled_plugins_disabled() {
     let interface = interface_plus("91_hog.lua", HOG_PANE);
     let profile = Profile::new();
     std::fs::write(
-        profile.path("config/plugin-state.json"),
+        profile.path("config/mod-state.json"),
         serde_json::json!({
-            "disabled": [interface.path().join("plugins/20_agent.lua")]
+            "disabled": [interface.path().join("mods/20_agent.lua")]
         })
         .to_string(),
     )
@@ -5852,9 +5874,9 @@ fn memory_fallback_reaps_programs_owned_by_panes_it_removed() {
     return { type = "text", text = "owned-program-ready" }
   end,
 }"#;
-    std::fs::write(interface.path().join("plugins/92_owned.lua"), program).expect("program pane");
+    std::fs::write(interface.path().join("mods/92_owned.lua"), program).expect("program pane");
     let profile = Profile::new();
-    trust(&profile, interface.path(), "plugins/92_owned.lua", program);
+    trust(&profile, interface.path(), "mods/92_owned.lua", program);
     let mut tui = Tui::spawn_with(&profile, 40, 120, |cmd| {
         cmd.env("THURBOX_UI_DIR", interface.path());
     });
@@ -6258,7 +6280,7 @@ const FLAKY: &str =
 /// when it does not.
 fn flaky_column(ui: &Path, guard: &str) {
     std::fs::write(
-        ui.join("plugins/31_flaky.lua"),
+        ui.join("mods/31_flaky.lua"),
         format!(
             "return {{ name = 'flaky', slot = 'flaky', pure = false, render = function(ctx)\n\
              {guard}\n\
@@ -6291,7 +6313,7 @@ fn an_intermittently_failing_pane_does_not_flicker() {
     assert!(report.errors.is_empty(), "{:?}", report.errors);
     flaky_column(&ui, FLAKY);
     std::fs::write(
-        ui.join("plugins/33_flakyfloat.lua"),
+        ui.join("mods/33_flakyfloat.lua"),
         format!(
             "return {{ name = 'flakyfloat', slot = 'float', floats = true, pure = false,\n\
              render = function(ctx)\n\
@@ -6409,7 +6431,7 @@ fn hold_state(profile: &Profile) -> (String, u64, String) {
     let output = cmd.args(["--json", "ui", "state"]).output().expect("state");
     assert!(output.status.success(), "ui state failed");
     let state: serde_json::Value = serde_json::from_slice(&output.stdout).expect("JSON");
-    let pane = &state["plugin_state"]["plugins/91_hold.lua"];
+    let pane = &state["plugin_state"]["mods/91_hold.lua"];
     (
         pane["events"].as_str().unwrap_or_default().to_string(),
         pane["plain"].as_u64().unwrap_or(0),
@@ -6558,7 +6580,7 @@ fn spaces(profile: &Profile) -> u64 {
     profile.apply(&mut cmd);
     let output = cmd.args(["--json", "ui", "state"]).output().expect("state");
     let state: serde_json::Value = serde_json::from_slice(&output.stdout).expect("JSON");
-    state["plugin_state"]["plugins/91_hold.lua"]["spaces"]
+    state["plugin_state"]["mods/91_hold.lua"]["spaces"]
         .as_u64()
         .unwrap_or(0)
 }

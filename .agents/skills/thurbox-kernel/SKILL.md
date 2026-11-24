@@ -1,6 +1,6 @@
 ---
 name: thurbox-kernel
-description: The thurbox mod kernel: the five rules, where the module dependency rules live (crates/architecture.toml), module responsibilities, the event loop, and writing an interface mod - the bundled panes, delivery vs decision vs composition, installable panes and plugins.toml, capabilities (run, program, events, commands) and trust. Use when working on src/kernel, src/coordinator, module boundaries, or the mod API and its capabilities.
+description: The thurbox mod kernel: the five rules, where the module dependency rules live (crates/architecture.toml), module responsibilities, the event loop, and writing an interface mod - the bundled panes, delivery vs decision vs composition, installable panes and mods.toml, capabilities (run, program, events, commands) and trust. Use when working on src/kernel, src/coordinator, module boundaries, or the mod API and its capabilities.
 ---
 
 # Thurbox mod kernel and mod authoring
@@ -157,7 +157,7 @@ crate graph and `runtime-mux`'s module rules.
   pane halves: `chrome` (every framed pane's focus styling), `modal`
   (frame + footer), `scroll`,
   `order` and `session_model` (the session list's model, with its memo),
-  `pathpicker` and `repo_picker` (the creation flow's); `plugins/` holds the
+  `pathpicker` and `repo_picker` (the creation flow's); `mods/` holds the
   panes.
 - **`fleet_link`** — `FleetLink`, the one place a `fleet …` call becomes a
   process: the kernel's commands, watch, manager and attach and `doctor`'s
@@ -210,7 +210,7 @@ thurbox-cli mod dir            # which directory is live, and which rule chose i
 thurbox-cli mod new notes      # a starter that already loads
 thurbox-cli mod check          # load it the way thurbox does; non-zero on failure
 thurbox-cli mod list           # the inventory the Interface tab shows
-thurbox-cli mod install top    # a distributed pane, recorded in plugins.toml
+thurbox-cli mod install top    # a distributed pane, recorded in mods.toml
 thurbox-cli mod sync           # make the directory match the spec
 ```
 
@@ -324,13 +324,13 @@ macOS, and this path is shown to people.
 
 **Delivery vs. decision vs. composition.** `.bundled.json` records what delivery did
 (bundled / edited / yours / removed / installed); `ui.json` records what the *user*
-decided about the interface (rebindings, settings, pill order) and `plugin-state.json`
-what a mod may do (trust, the disabled set); `plugins.toml` records what the interface is
-**composed of** and `plugins.lock` what each entry resolved to.
-`ui.json` and `plugin-state.json` share the atomic config writer with
+decided about the interface (rebindings, settings, pill order) and `mod-state.json`
+what a mod may do (trust, the disabled set); `mods.toml` records what the interface is
+**composed of** and `mods.lock` what each entry resolved to.
+`ui.json` and `mod-state.json` share the atomic config writer with
 `settings.toml`: each stages the whole file beside the destination before a native
 same-directory replacement, so a failed save cannot expose a truncated mix of those
-decisions. A grant or a disabled toggle writes only `plugin-state.json`. The
+decisions. A grant or a disabled toggle writes only `mod-state.json`. The
 writer does not promise durability
 across storage or operating-system failure because neither file nor directory is
 explicitly synced. An existing config-file symlink remains a link and its target is
@@ -352,7 +352,7 @@ keeps meaning "fetch the manifest's files from this base". The working copy land
 edits are yours" (a dirty tree is never moved and reports `kept`). The lock records
 the **commit**, not the ref, which is what makes a spec reproducible and why there is
 no checksum field. Two consequences elsewhere: `build` loads panes the spec names
-outside `plugins/` (`is_nested_pane`; the load order still comes from the basename's
+outside `mods/` (`is_nested_pane`; the load order still comes from the basename's
 numeric prefix) and `sources()` inventories those panes but deliberately does **not**
 walk the rest of a working copy. `.git` is watcher noise (`watch::is_noise`) — a fix
 in its own right, since it already affected anyone versioning their own panes, and the
@@ -365,11 +365,11 @@ for, read once from `fleet version --json` on the Fleet watch's worker, and
 `nil` until Fleet has answered: a flow tells a pending list from an empty one.
 thurbox probes no agent binary and publishes no multiplexer preflight.
 
-**Panes are installable** (`kernel::packages`, `session::plugin_spec`). `plugins.toml`
+**Panes are installable** (`kernel::packages`, `session::plugin_spec`). `mods.toml`
 in the interface directory lists a `src` (a bare name resolving to `examples/panes/<name>`
 at the binary's release tag, a URL, or a path — `fetch::resolve_source_in`,
 one resolver), a destination `file`, and an optional `pin`;
-`plugins.lock` records what each resolved to plus the digest of every file delivered.
+`mods.lock` records what each resolved to plus the digest of every file delivered.
 `mod sync` converges the directory to the spec, which reduces an agent's job to
 *edit one file, run one command, read the exit status*. Delivery semantics are
 **shared with the bundled path, not reimplemented**: both call `bundled::decide`, so an

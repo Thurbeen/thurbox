@@ -31,7 +31,7 @@ impl Field {
         let report = thurbox::kernel::bundled::materialize(dir.path());
         assert!(report.errors.is_empty(), "{:?}", report.errors);
         std::fs::write(
-            dir.path().join("plugins").join("95_probe.lua"),
+            dir.path().join("mods").join("95_probe.lua"),
             format!(
                 r#"local textinput = require("lib.textinput")
 local field = {{ value = {value:?}, cursor = {cursor} }}

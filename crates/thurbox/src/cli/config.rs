@@ -107,8 +107,8 @@ fn validate_ui_json() -> (Value, bool) {
     )
 }
 
-/// Validate `plugin-state.json` — trust grants and the disabled set.
-fn validate_plugin_state() -> (Value, bool) {
+/// Validate `mod-state.json` — trust grants and the disabled set.
+fn validate_mod_state() -> (Value, bool) {
     let path = crate::kernel::registry::decisions_file();
     let exists = path.as_ref().is_some_and(|p| p.exists());
     let problems = crate::kernel::registry::validate_decisions();
@@ -130,13 +130,13 @@ fn validate() -> (Value, Vec<String>) {
         "themes.toml",
     );
     let (ui_json, ui_ok) = validate_ui_json();
-    let (plugin_state, plugin_state_ok) = validate_plugin_state();
+    let (plugin_state, plugin_state_ok) = validate_mod_state();
 
     let failed: Vec<String> = [
         ("settings.toml", settings_ok),
         ("themes.toml", themes_ok),
         ("ui.json", ui_ok),
-        ("plugin-state.json", plugin_state_ok),
+        ("mod-state.json", plugin_state_ok),
     ]
     .iter()
     .filter(|(_, ok)| !ok)
@@ -148,7 +148,7 @@ fn validate() -> (Value, Vec<String>) {
         "settings_toml": settings,
         "themes_toml": themes,
         "ui_json": ui_json,
-        "plugin_state_json": plugin_state,
+        "mod_state_json": plugin_state,
     });
     (report, failed)
 }
@@ -159,7 +159,7 @@ fn render_validate(report: &Value, failed: &[String]) -> String {
         ("settings.toml", "settings_toml"),
         ("themes.toml", "themes_toml"),
         ("ui.json", "ui_json"),
-        ("plugin-state.json", "plugin_state_json"),
+        ("mod-state.json", "mod_state_json"),
     ];
     let mut lines = Vec::new();
     for (label, key) in files {
@@ -258,7 +258,7 @@ fn show(settings: &crate::session::settings::Settings) -> Value {
                 .map(|p| p.display().to_string()),
             "ui_json": crate::kernel::registry::overrides_file()
                 .map(|p| p.display().to_string()),
-            "plugin_state_json": crate::kernel::registry::decisions_file()
+            "mod_state_json": crate::kernel::registry::decisions_file()
                 .map(|p| p.display().to_string()),
             "interface_json": crate::config::file::path("interface.json")
                 .map(|p| p.display().to_string()),
@@ -346,11 +346,8 @@ mod tests {
         std::fs::write(&path, "{ this is not json").unwrap();
 
         let (report, failed) = validate();
-        assert!(
-            failed.iter().any(|f| f == "plugin-state.json"),
-            "{failed:?}"
-        );
-        assert_eq!(report["plugin_state_json"]["exists"], true, "{report}");
+        assert!(failed.iter().any(|f| f == "mod-state.json"), "{failed:?}");
+        assert_eq!(report["mod_state_json"]["exists"], true, "{report}");
     }
 
     /// `serde_ignored` reports nested unknown keys, so a typo inside

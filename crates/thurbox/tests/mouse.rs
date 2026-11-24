@@ -289,8 +289,8 @@ fn the_collapse_toggle_is_one_target_covering_its_chevron_and_its_hint() {
 fn hits_for(source: &str, width: u16, height: u16) -> Vec<Hit> {
     let lua = mlua::Lua::new();
     let value: mlua::Value = lua.load(source).eval().expect("the table evaluates");
-    let node = thurbox::kernel::convert::to_node(&value, "plugins/90_test.lua")
-        .expect("the table converts");
+    let node =
+        thurbox::kernel::convert::to_node(&value, "mods/90_test.lua").expect("the table converts");
     let mut hits = Vec::new();
     let mut terminal = Terminal::new(TestBackend::new(width, height)).expect("terminal");
     terminal
@@ -354,8 +354,8 @@ fn a_center_aligned_run_hit_lines_up_with_where_ratatui_paints_it() {
         .load(r#"{ text = { { { text = "x", role = "action:go" } } }, align = "center" }"#)
         .eval()
         .expect("the table evaluates");
-    let node = thurbox::kernel::convert::to_node(&value, "plugins/90_test.lua")
-        .expect("the table converts");
+    let node =
+        thurbox::kernel::convert::to_node(&value, "mods/90_test.lua").expect("the table converts");
     let mut hits = Vec::new();
     let mut terminal = Terminal::new(TestBackend::new(4, 1)).expect("terminal");
     terminal
@@ -743,9 +743,9 @@ return {
 fn host_with(plugins: &[(&str, &str)]) -> (tempfile::TempDir, LuaHost) {
     let home = tempfile::tempdir().expect("tempdir");
     let ui = home.path().join("ui");
-    std::fs::create_dir_all(ui.join("plugins")).expect("mkdir");
+    std::fs::create_dir_all(ui.join("mods")).expect("mkdir");
     for (file, body) in plugins {
-        std::fs::write(ui.join("plugins").join(file), body).expect("write plugin");
+        std::fs::write(ui.join("mods").join(file), body).expect("write plugin");
     }
     let host = LuaHost::new(ui);
     assert!(host.error.is_none(), "{:?}", host.error);

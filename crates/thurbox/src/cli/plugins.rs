@@ -43,7 +43,7 @@ pub enum Action {
     Check,
     /// List every file of the interface: where it came from, and whether it draws.
     List,
-    /// Install a mod from a source, recording it in `plugins.toml`.
+    /// Install a mod from a source, recording it in `mods.toml`.
     Install {
         /// A bare name from the examples in the repo, a URL, or a filesystem path.
         src: String,
@@ -57,7 +57,7 @@ pub enum Action {
         #[arg(long)]
         pin: Option<String>,
     },
-    /// Bring the interface into agreement with `plugins.toml`.
+    /// Bring the interface into agreement with `mods.toml`.
     Sync,
     /// Advance an entry, or every entry, to what its source carries now.
     Update {
@@ -134,7 +134,7 @@ fn resolve() -> Result<(PathBuf, crate::kernel::bundled::Chosen), String> {
 
 fn dir() -> Result<CommandOutput, String> {
     let (dir, chosen) = resolve()?;
-    let plugins = dir.join("plugins");
+    let plugins = dir.join(crate::session::plugin_spec::MODS_DIR);
     let human = format!(
         "{}\n  mods  {}\n  chosen   {} ({})",
         dir.display(),
@@ -145,6 +145,7 @@ fn dir() -> Result<CommandOutput, String> {
     Ok(CommandOutput::new(
         json!({
             "dir": dir.display().to_string(),
+            "mods_dir": plugins.display().to_string(),
             "plugins_dir": plugins.display().to_string(),
             "chosen": chosen.as_str(),
             "reason": chosen.reason(),
@@ -186,7 +187,7 @@ fn new(name: &str) -> Result<CommandOutput, String> {
         true
     };
 
-    let plugins = dir.join("plugins");
+    let plugins = dir.join(crate::session::plugin_spec::MODS_DIR);
     std::fs::create_dir_all(&plugins).map_err(|e| format!("{}: {e}", plugins.display()))?;
 
     let file = plugins.join(format!("{STARTER_ORDER}_{name}.lua"));
@@ -809,10 +810,21 @@ fn install(src: &str, as_file: Option<&str>, pin: Option<&str>) -> Result<Comman
     for hint in &hints {
         human.push_str(&format!("\n  {hint}"));
     }
+    let legacy_manifest = report.legacy_manifest.then(|| {
+        format!(
+            "read the package's {}: it has no {} yet",
+            crate::session::PackageManifest::LEGACY_FILE,
+            crate::session::PackageManifest::FILE
+        )
+    });
+    if let Some(note) = &legacy_manifest {
+        human.push_str(&format!("\n  {note}"));
+    }
     human.push_str("\n  `thurbox-cli mod check` to confirm it loads and draws");
     Ok(CommandOutput::new(
         json!({
             "dir": dir.display().to_string(),
+            "legacy_manifest": legacy_manifest,
             "file": report.file,
             "name": report.name,
             "src": report.src,
@@ -946,7 +958,7 @@ mod tests {
     #[test]
     fn check_refuses_a_subscription_to_an_unknown_event() {
         let dir = tempfile::tempdir().expect("tempdir");
-        let plugins = dir.path().join("plugins");
+        let plugins = dir.path().join("mods");
         std::fs::create_dir_all(&plugins).expect("mkdir");
         std::fs::write(
             plugins.join("10_typo.lua"),
@@ -998,13 +1010,13 @@ mod tests {
         assert!(!body.contains("example"), "no stale name is left behind");
     }
 
-    /// `plugins/` is where the host looks, so that is where a starter goes.
+    /// `mods/` is where the host looks, so that is where a starter goes.
     #[test]
     fn a_starter_is_named_to_load_after_the_bundled_panes() {
         // Asserted by component rather than as one string: Windows joins with a
         // backslash, and the native separator is the right one to write there.
-        let file = std::path::Path::new("plugins").join(format!("{STARTER_ORDER}_notes.lua"));
-        assert_eq!(file.parent().and_then(|p| p.to_str()), Some("plugins"));
+        let file = std::path::Path::new("mods").join(format!("{STARTER_ORDER}_notes.lua"));
+        assert_eq!(file.parent().and_then(|p| p.to_str()), Some("mods"));
         assert_eq!(
             file.file_name().and_then(|n| n.to_str()),
             Some("90_notes.lua")

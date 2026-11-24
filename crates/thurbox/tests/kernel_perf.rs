@@ -28,7 +28,7 @@ fn ctx(width: u16, height: u16) -> RenderContext {
 
 fn plugin_dir(source: &str) -> tempfile::TempDir {
     let dir = tempfile::tempdir().expect("tempdir");
-    let plugins = dir.path().join("plugins");
+    let plugins = dir.path().join("mods");
     std::fs::create_dir_all(&plugins).expect("mkdir");
     std::fs::write(plugins.join("10_pane.lua"), source).expect("write");
     dir
@@ -284,7 +284,7 @@ fn interface() -> (tempfile::TempDir, LuaHost) {
 
 fn interface_with(extra: &[(&str, &str)]) -> (tempfile::TempDir, LuaHost) {
     let dir = tempfile::tempdir().expect("tempdir");
-    let plugins = dir.path().join("plugins");
+    let plugins = dir.path().join("mods");
     std::fs::create_dir_all(&plugins).expect("mkdir");
     let write = |file: &str, body: String| {
         std::fs::write(plugins.join(file), body).expect("write");

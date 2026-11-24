@@ -119,7 +119,7 @@ fn the_engine_leaves_no_code_behind() {
     let restore = Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("../..")
         .join("ui")
-        .join("plugins")
+        .join("mods")
         .join("80_restore.lua");
     assert!(!restore.exists(), "the restore list is still shipped");
 }

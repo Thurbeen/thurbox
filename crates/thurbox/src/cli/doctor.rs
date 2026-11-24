@@ -114,6 +114,15 @@ pub fn run(settings: &crate::session::settings::Settings) -> Result<CommandOutpu
     findings.extend(retired_automations_finding(
         crate::config::file::path("automations.json").as_deref(),
     ));
+    findings.extend(mod_leftovers_finding(
+        &crate::kernel::mod_migration::leftovers(
+            crate::kernel::bundled::resolve(false)
+                .ok()
+                .map(|(dir, _, _)| dir)
+                .as_deref(),
+            crate::kernel::mod_migration::config_dir().as_deref(),
+        ),
+    ));
     findings.extend(heartbeat_finding(&LocalServer::of_this_instance()));
     findings.extend(automation_timer_finding(
         automation_timer_state().as_deref(),
@@ -162,6 +171,49 @@ fn retired_hosts_finding(path: Option<&std::path::Path>) -> Option<Finding> {
             "list each machine's Fleet under [fleets] in settings.toml, then delete {}",
             path.display()
         )),
+    )
+}
+
+fn mod_leftovers_finding(
+    leftovers: &[(std::path::PathBuf, std::path::PathBuf)],
+) -> Option<Finding> {
+    if leftovers.is_empty() {
+        return None;
+    }
+    let steps: Vec<String> = leftovers
+        .iter()
+        .map(|(old, new)| {
+            if new.exists() {
+                format!(
+                    "move what you keep from {} into {}, then delete {}",
+                    old.display(),
+                    new.display(),
+                    old.display()
+                )
+            } else {
+                format!(
+                    "run `thurbox-cli mod list` to move {} to {}",
+                    old.display(),
+                    new.display()
+                )
+            }
+        })
+        .collect();
+    let named: Vec<String> = leftovers
+        .iter()
+        .map(|(old, _)| old.display().to_string())
+        .collect();
+    Some(
+        Finding::new(
+            "mod-leftovers",
+            Level::Warn,
+            format!(
+                "{} still uses a name from before plugins were mods; thurbox reads only the \
+                 new names (see docs/thurbox/mods.md)",
+                named.join(", ")
+            ),
+        )
+        .fix(steps.join("; ")),
     )
 }
 
@@ -749,6 +801,37 @@ impl FleetFacts {
 #[cfg(all(test, unix))]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_left_over_plugins_dir_is_a_warning_with_its_fix() {
+        let dir = tempfile::tempdir().expect("dir");
+        let ui = dir.path().join("ui");
+        std::fs::create_dir_all(ui.join("plugins")).expect("plugins");
+        std::fs::create_dir_all(ui.join("mods")).expect("mods");
+        std::fs::write(dir.path().join("plugin-state.json"), "{}").expect("state");
+        assert!(mod_leftovers_finding(&[]).is_none());
+
+        let leftovers = crate::kernel::mod_migration::leftovers(Some(&ui), Some(dir.path()));
+        let finding = mod_leftovers_finding(&leftovers).expect("a finding");
+        assert_eq!(finding.key, "mod-leftovers");
+        assert_eq!(finding.level, Level::Warn);
+        let fix = finding.fix.expect("a fix");
+        assert!(
+            fix.contains(&format!(
+                "move what you keep from {} into {}",
+                ui.join("plugins").display(),
+                ui.join("mods").display()
+            )),
+            "{fix}"
+        );
+        assert!(
+            fix.contains(&format!(
+                "run `thurbox-cli mod list` to move {}",
+                dir.path().join("plugin-state.json").display()
+            )),
+            "{fix}"
+        );
+    }
 
     /// A `hosts.toml` left by an earlier thurbox is reported as unread, with
     /// the fix; none at all reports nothing.
