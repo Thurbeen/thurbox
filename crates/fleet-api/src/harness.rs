@@ -932,19 +932,20 @@ mod tests {
     #[test]
     fn an_inbox_argv_names_what_the_hooks_reported() {
         assert_eq!(
-            profile("claude").inbox(Some("/run/s.sock"), None, "hi {address}"),
+            profile("claude").inbox(Some("/run/s.sock"), None, "- hi {address}"),
             Some(vec![
                 "fleet".into(),
                 "inbox-post".into(),
                 "/run/s.sock".into(),
-                "hi {address}".into()
+                "--".into(),
+                "- hi {address}".into()
             ])
         );
         assert_eq!(profile("claude").inbox(None, Some("c1"), "hi"), None);
         assert_eq!(
-            profile("codex").inbox(None, Some("t9"), "hi"),
+            profile("codex").inbox(None, Some("t9"), "- hi"),
             Some(
-                ["codex", "queue", "--thread", "t9", "--message", "hi"]
+                ["codex", "queue", "--thread", "t9", "--message=- hi"]
                     .map(String::from)
                     .to_vec()
             )

@@ -861,6 +861,7 @@ fn an_entry_goes_to_the_inbox_the_agent_reported_and_the_brief_is_typed() {
                     "fleet".to_string(),
                     "inbox-post".into(),
                     "/run/s.sock".into(),
+                    "--".into(),
                     "message task/t/u7/send/1".into()
                 ][..]
             )

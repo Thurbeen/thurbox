@@ -48,7 +48,7 @@ paste = "pasted_content"
 
 [inbox]
 address = "CLAUDE_CODE_MESSAGING_SOCKET"
-args = ["fleet", "inbox-post", "{address}", "{text}"]
+args = ["fleet", "inbox-post", "{address}", "--", "{text}"]
 
 [telemetry]
 env = { CLAUDE_CODE_ENABLE_TELEMETRY = "1", OTEL_METRICS_EXPORTER = "otlp", OTEL_LOGS_EXPORTER = "otlp", OTEL_EXPORTER_OTLP_ENDPOINT = "{endpoint}", OTEL_EXPORTER_OTLP_PROTOCOL = "{protocol}", OTEL_EXPORTER_OTLP_HEADERS = "{headers}", OTEL_SERVICE_NAME = "claude", OTEL_RESOURCE_ATTRIBUTES = "{resource}" }
@@ -82,7 +82,7 @@ prompt = ["input-messages"]
 conversation = ["thread-id"]
 
 [inbox]
-args = ["{program}", "queue", "--thread", "{conversation}", "--message", "{text}"]
+args = ["{program}", "queue", "--thread", "{conversation}", "--message={text}"]
 
 [telemetry]
 args = [

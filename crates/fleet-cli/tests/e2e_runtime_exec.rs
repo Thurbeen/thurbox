@@ -3169,7 +3169,7 @@ fn a_message_reaches_claude_code_through_its_messaging_socket_not_its_composer()
         env.get("t1")["status"]["phase"] == "Briefed"
     });
 
-    env.fleet(&["send", "t1", "are you there?"]).ok();
+    env.fleet(&["send", "t1", "- are you there?"]).ok();
     reconcile_until(&env, "the message delivered", |env| {
         env.get("t1")["status"]["deliveries"]["receipts"]
             .as_array()
@@ -3183,7 +3183,7 @@ fn a_message_reaches_claude_code_through_its_messaging_socket_not_its_composer()
     );
     assert_eq!(
         read("inbox.log"),
-        "are you there?\n",
+        "- are you there?\n",
         "the message is in the inbox"
     );
     let status = env.get("t1")["status"].clone();
