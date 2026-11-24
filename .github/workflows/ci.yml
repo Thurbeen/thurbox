@@ -385,19 +385,21 @@ jobs:
       # session is a Fleet session), so it runs whole rather than by a list
       # of names that a new scenario would miss. They also need `runtime-mux`
       # beside `fleet`, and the `workspace-git` it runs to prepare a Task's
-      # workspace, which a `-p thurbox` run does not build. `runtime-herdr`
-      # is for `e2e_runtime_exec`, below.
+      # workspace, which a `-p thurbox` run does not build.
       - if: needs.changes.outputs.rust != 'true' && needs.changes.outputs.fleet == 'true'
         run: |
-          cargo build -p runtime-mux -p runtime-herdr -p workspace-git --bin runtime-mux --bin runtime-herdr --bin workspace-git
+          cargo build -p runtime-mux -p workspace-git --bin runtime-mux --bin workspace-git
           cargo nextest run -p thurbox --test fleet_engine_e2e --test tui_e2e --profile ci
       # The runtime protocol from Fleet's side: the real `fleet` against the
       # real `runtime-mux` and `workspace-git`, all three built above, so this
-      # compiles only the test. Here rather than in the Fleet job, which
-      # would build `fleet` again and has neither tmux nor `runtime-mux`. A
-      # change to thurbox alone cannot affect it.
+      # compiles only the test, and `runtime-herdr`, whose binary no test run
+      # above builds: it has no test of its own. Here rather than in the Fleet
+      # job, which would build `fleet` again and has neither tmux nor
+      # `runtime-mux`. A change to thurbox alone cannot affect it.
       - if: needs.changes.outputs.fleet == 'true' || needs.changes.outputs.runtime == 'true'
-        run: cargo nextest run --locked -p fleet-cli --test e2e_runtime_exec --profile ci
+        run: |
+          cargo build --locked -p runtime-herdr --bin runtime-herdr
+          cargo nextest run --locked -p fleet-cli --test e2e_runtime_exec --profile ci
       # The architecture checker reads every crate, so a change to any of them
       # runs it, here and nowhere else: every other run excludes it.
       - if: needs.changes.outputs.rust == 'true' || needs.changes.outputs.fleet == 'true'
