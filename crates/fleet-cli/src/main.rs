@@ -152,7 +152,7 @@ enum Command {
         /// On a Concluded Task the message is an amendment that re-opens it.
         #[arg(long = "answers", value_name = "ID")]
         answers: Vec<String>,
-        /// Print the appended inbox entry as JSON.
+        /// Print the appended inbox entry, or the amendment an answer became, as JSON.
         #[arg(long)]
         json: bool,
     },
