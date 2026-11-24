@@ -1266,7 +1266,7 @@ owns `status.gateway` and:
 | `declared` | How many items of `status.declared` were read. |
 | `result` | The result generation logged, or read while no log channel is configured. |
 | `changes` | Per ChangeRequest name, the `state.seq` logged through, or read while no log channel is configured. |
-| `children` | Per child Task name, `{uid, seen, declared, result}`. |
+| `children` | Per child Task name, `{uid, seen, declared, result, answered}`. `answered` lists the keys of the child's Questions that wait in this Task's inbox and are in the child's `status.answered`. |
 | `posts` | Per intent key, `{intent, receipt, attempts, recovery}`, for thread posts, log posts and reactions alike. `intent.action` tells them apart: `post`, `open`, `receive`, `log` or `react`. The newest 100 settled, and every unsettled. A `react` record is dropped once it is settled or given up. |
 | `posted` | Every Question and Comment id posted, and every Draft id logged, for the life of the Task. |
 | `logged` | How many items of `status.declared` the log lane read for Drafts. |
@@ -1381,6 +1381,9 @@ again. An item without an `id` is skipped and named in
   first, then each child's items in order.
 - A child's items past that bound wait for the next pass after a delivery.
   The items that went out are not sent again.
+- A child's Question that the child has in `status.answered` while its
+  entry waits is named in `children.<child>.answered`. TaskController
+  records that entry's receipt without a send.
 
 #### Answers
 

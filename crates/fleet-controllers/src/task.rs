@@ -1136,6 +1136,10 @@ impl Pass<'_, '_> {
         let Some(entry) = next_entry(&self.st).cloned() else {
             return;
         };
+        if answered_relay(&self.st, &entry.key) {
+            self.record_delivery(&entry, false, None, false);
+            return;
+        }
         let what = format!("inbox entry {} from {}", entry.key, entry.from);
         let Some(generation) = entry.amends else {
             if let Sent::Delivered {
@@ -2584,6 +2588,14 @@ fn pause_request_since_last_transition(st: &TaskStatus, asked: Option<Millis>) -
 
 /// The oldest inbox entry still to deliver: an entry given up on after its
 /// sends ran out stays queued but blocks nothing.
+fn answered_relay(st: &TaskStatus, key: &str) -> bool {
+    st.gateway.as_ref().is_some_and(|gw| {
+        gw.children
+            .values()
+            .any(|c| c.answered.iter().any(|k| k == key))
+    })
+}
+
 fn next_entry(st: &TaskStatus) -> Option<&InboxEntry> {
     st.inbox.iter().find(|e| {
         !st.delivery_attempts

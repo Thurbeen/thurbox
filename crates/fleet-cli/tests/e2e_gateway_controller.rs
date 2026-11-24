@@ -662,6 +662,69 @@ fn a_child_relays_its_declarations_and_result_into_its_parents_inbox() {
 }
 
 #[test]
+fn a_childs_question_answered_while_its_relay_waits_is_receipted_without_a_send() {
+    let mut env = Env::new("child-answered");
+    env.set_var("USER", "tester");
+    env.apply(support::task("p", true)).ok();
+    env.reconcile().ok();
+    let p_uid = uid_of(&env, "task", "p");
+    env.apply(child_of("c", "p", &p_uid, true)).ok();
+    env.reconcile().ok();
+    let c_uid = uid_of(&env, "task", "c");
+    let parent_session = env.session_key("p");
+    env.host().set_ready(&parent_session, false).unwrap();
+    env.fleet(&[
+        "declare",
+        "c",
+        "--json",
+        r#"{"kind":"Question","id":"q1","text":"May I restart the exporter?"}"#,
+    ])
+    .ok();
+    env.fleet(&[
+        "declare",
+        "c",
+        "--json",
+        r#"{"kind":"Question","id":"q2","text":"And the importer?"}"#,
+    ])
+    .ok();
+    env.reconcile().ok();
+    let relay = |i: u32| format!("task/p/{p_uid}/gateway/child/{c_uid}/{i}");
+    let waiting: Vec<Value> = env.get("p")["status"]["inbox"]
+        .as_array()
+        .cloned()
+        .unwrap_or_default();
+    assert_eq!(waiting.len(), 2, "{waiting:#?}");
+    assert_eq!(texts(&env, "p").len(), 1, "busy parent: nothing typed");
+
+    env.fleet(&["send", "c", "--answers", "q1", "Yes, go ahead."])
+        .ok();
+    env.reconcile().ok();
+    let got = receipts(&env, "p");
+    let keys: Vec<&str> = got.iter().filter_map(|r| r["key"].as_str()).collect();
+    assert_eq!(keys, [relay(0)], "answered while busy: {got:#?}");
+    assert_eq!(texts(&env, "p").len(), 1, "a receipt without a send");
+
+    env.host().set_ready(&parent_session, true).unwrap();
+    let report = env
+        .fleet(&["reconcile", "--json", "--max-passes", "20"])
+        .ok()
+        .json();
+    assert_eq!(report["errors"], json!([]), "{report:#}");
+
+    let got = receipts(&env, "p");
+    let keys: Vec<&str> = got.iter().filter_map(|r| r["key"].as_str()).collect();
+    assert_eq!(keys, [relay(0), relay(1)], "{got:#?}");
+    let got = texts(&env, "p");
+    assert_eq!(got.len(), 2, "only the open Question is typed: {got:#?}");
+    assert!(
+        got[1].contains("q2") && !got[1].contains("q1"),
+        "{}",
+        got[1]
+    );
+    env.assert_no_temp();
+}
+
+#[test]
 fn a_childs_declared_change_request_stays_out_of_its_parents_inbox() {
     let mut env = Env::forge("child-change-request");
     env.set_var("USER", "tester");

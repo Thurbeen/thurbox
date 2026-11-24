@@ -1059,7 +1059,8 @@ fn a_childs_declarations_and_result_each_become_one_entry_in_its_parents_inbox()
             uid: "k1".into(),
             seen: 12,
             declared: 6,
-            result: None
+            result: None,
+            answered: Vec::new(),
         }
     );
     assert!(
@@ -1365,6 +1366,7 @@ fn due_follows_the_tie_the_conversations_revision_and_the_children() {
                 seen: 12,
                 declared: 0,
                 result: None,
+                answered: Vec::new(),
             },
         )]),
         ..GatewayStatus::default()

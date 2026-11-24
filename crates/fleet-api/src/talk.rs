@@ -88,8 +88,10 @@ pub struct ConversationTie {
 }
 
 /// What was read of one child: its `uid`, the `resourceVersion` last read,
-/// how many of its declarations were read, and the result generation
-/// relayed, if any.
+/// how many of its declarations were read, the result generation relayed,
+/// if any, and the keys of its relayed Questions that are still in the
+/// parent's inbox but answered in the child's `status.answered`.
+/// TaskController records each of those without a send.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ChildEntry {
@@ -100,6 +102,8 @@ pub struct ChildEntry {
     pub declared: u64,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub result: Option<u64>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub answered: Vec<String>,
 }
 
 /// Where and when a Question was posted: the Conversation's name, the

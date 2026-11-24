@@ -532,6 +532,32 @@ impl Pass<'_, '_> {
     /// Whether the store would refuse one more append: it accepts each
     /// while at most MAX_INBOX entries are still to deliver, counting those
     /// this pass already planned.
+    fn answered_relays(
+        &self,
+        task_name: &str,
+        task_uid: &str,
+        child_uid: &str,
+        child: &TaskStatus,
+    ) -> Vec<String> {
+        child
+            .declared
+            .iter()
+            .enumerate()
+            .filter(|(_, item)| {
+                item.get("kind").and_then(Value::as_str) == Some(DECLARED_QUESTION)
+                    && declared_id(item).is_some_and(|id| child.answered.contains_key(id))
+            })
+            .map(|(i, _)| child_key(task_name, task_uid, child_uid, &i.to_string()))
+            .filter(|key| {
+                self.st
+                    .inbox
+                    .iter()
+                    .chain(&self.appends)
+                    .any(|e| &e.key == key)
+            })
+            .collect()
+    }
+
     fn inbox_full(&self) -> bool {
         inbox::due(&self.st.inbox, &self.st.delivery_attempts) + self.appends.len() > MAX_INBOX
     }
@@ -854,6 +880,7 @@ impl Pass<'_, '_> {
                     seen: 0,
                     declared: 0,
                     result: None,
+                    answered: Vec::new(),
                 });
             let Ok(cst) = decode(child) else {
                 // Unreadable: read again when it changes.
@@ -916,6 +943,7 @@ impl Pass<'_, '_> {
             if done {
                 entry.seen = child.metadata.resource_version;
             }
+            entry.answered = self.answered_relays(&task_name, &task_uid, &uid, &cst);
             children.insert(name, entry);
         }
         self.gw.children = children;
