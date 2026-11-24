@@ -8,6 +8,7 @@ use serde_json::{Value, json};
 
 const DEFAULT_TIMEOUT_MS: u64 = 30_000;
 const DEFAULT_OUTPUT_CAP: usize = 1 << 20;
+const READER_GRACE: Duration = Duration::from_millis(500);
 
 type Captured = Arc<Mutex<Vec<u8>>>;
 
@@ -66,11 +67,10 @@ pub fn run(request: &Value) -> Result<Value, String> {
             Err(e) => return Err(format!("{program}: {e}")),
         }
     };
-    if code.is_none() {
-        end_group(&mut child);
-    }
+    end_group(&mut child);
+    let readers_until = (started + deadline).max(Instant::now() + READER_GRACE);
     for reader in [stdout_reader, stderr_reader] {
-        while !reader.is_finished() && started.elapsed() < deadline {
+        while !reader.is_finished() && Instant::now() < readers_until {
             std::thread::sleep(Duration::from_millis(20));
         }
     }

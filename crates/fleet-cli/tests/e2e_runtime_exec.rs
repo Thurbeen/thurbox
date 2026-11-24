@@ -7041,3 +7041,75 @@ fn a_task_on_runtime_herdr_is_briefed_and_revives_on_its_conversation() {
     let status = env.get("t1")["status"].clone();
     assert_eq!(status["session"]["id"], id, "{status:#}");
 }
+
+/// A command that leaves a background child behind does not outlive its
+/// answer: `exec` ends the command's whole process group.
+#[test]
+fn runtime_herdr_exec_ends_what_a_command_left_running() {
+    let (Some(program), Some(_)) = (runtime_herdr(), herdr_core()) else {
+        return;
+    };
+    let home = HerdrHome::new("execbg");
+    let marker = format!("{}.{}", 301, std::process::id());
+    let script = format!("sleep {marker} & echo started");
+    let started = Instant::now();
+    let ran = herdr_call(
+        &program,
+        &home,
+        "exec",
+        json!({"argv": ["sh", "-c", script], "in": "host", "timeoutMs": 10000, "outputCap": 1024}),
+    );
+    assert_eq!(ran["known"]["exited"]["code"], 0, "{ran}");
+    assert!(
+        started.elapsed() < Duration::from_secs(5),
+        "the answer waited for the background child: {:?}",
+        started.elapsed()
+    );
+    let left = Command::new("pgrep")
+        .args(["-f", &format!("sleep {marker}")])
+        .output()
+        .expect("pgrep");
+    assert!(
+        String::from_utf8_lossy(&left.stdout).trim().is_empty(),
+        "still running: {}",
+        String::from_utf8_lossy(&left.stdout)
+    );
+}
+
+/// A pause cut short after the agent ended leaves its shell; the next pause
+/// closes it.
+#[test]
+fn runtime_herdr_pause_again_closes_a_shell_left_open() {
+    let (Some(program), Some(_)) = (runtime_herdr(), herdr_core()) else {
+        return;
+    };
+    let home = HerdrHome::new("pausecut");
+    let started = herdr_start(&program, &home, "k-cut", &["sleep", "300"]);
+    let agent = started["known"]["started"]["id"]
+        .as_str()
+        .unwrap_or_else(|| panic!("{started}"))
+        .to_string();
+    let shell = herdr_call(&program, &home, "shell", json!({"key": "k-cut"}));
+    assert!(shell["known"].is_object(), "{shell}");
+    let status = home.hc(&["server", "status", "--json"]);
+    let core: Value = serde_json::from_slice(&status.stdout).expect("a JSON status");
+    let records = home
+        .0
+        .join("state/runtime-herdr")
+        .join(core["core"]["id"].as_str().expect("a core id"))
+        .join("local");
+    fs::write(records.join("k-cut.paused"), "").expect("mark");
+    assert!(home.hc(&["kill", &agent]).status.success());
+    let live_shells = || {
+        let listed = home.hc(&["ls", "--json"]);
+        let listed: Value = serde_json::from_slice(&listed.stdout).expect("a JSON list");
+        listed["terminals"]
+            .as_array()
+            .map(|ts| ts.iter().filter(|t| t["state"] == "live").count())
+            .unwrap_or(0)
+    };
+    assert_eq!(live_shells(), 1, "the shell is left open");
+    let paused = herdr_call(&program, &home, "pause", json!({"key": "k-cut"}));
+    assert_eq!(paused["known"], "paused", "{paused}");
+    assert_eq!(live_shells(), 0, "the second pause closed the shell");
+}

@@ -353,12 +353,8 @@ fn pause(place: &Place, key: &str) -> Result<Value, String> {
     let records = place.records(&core)?;
     let _lock = records.lock()?;
     let live = running(&mut core, place, key)?.is_some();
-    if !live {
-        return Ok(json!(if records.is_paused(key) {
-            "paused"
-        } else {
-            "none"
-        }));
+    if !live && !records.is_paused(key) {
+        return Ok(json!("none"));
     }
     records.mark_paused(key)?;
     for terminal in core.terminals_labelled(&key_labels(place, key))? {
