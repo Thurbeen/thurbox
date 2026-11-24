@@ -210,7 +210,7 @@ impl Conflict {
     /// One clash, in words: both claimants and the one that fires.
     ///
     /// Spelled here rather than at each reporting surface so `warnings()` and
-    /// `thurbox-cli plugin check` cannot come to describe the same clash
+    /// `thurbox-cli mod check` cannot come to describe the same clash
     /// differently — the check is a plugin author's pre-flight for exactly the
     /// diagnostic the running interface collects.
     pub fn message(&self) -> String {

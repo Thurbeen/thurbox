@@ -1,0 +1,58 @@
+---
+layout: base.njk
+title: Mods — Thurbox
+description: Official and community mods for Thurbox — panes, extensions, themes and other add-ons.
+extraCss: [mods.css]
+activeNav: mods
+footer: true
+navScrolled: true
+---
+<div class="container plugin-page">
+  <header class="plugin-intro">
+    <p class="plugin-eyebrow">Extend your workspace</p>
+    <h1>Mods</h1>
+    <p>Make Thurbox yours. Browse official and community mods, then follow each repository’s README for setup.</p>
+    <p><a href="#submit-mod">Submit a mod</a> · <a href="./docs/interface.html">Mod guide</a></p>
+  </header>
+  <p class="plugin-notice">Official means maintained by Thurbeen. Community entries are reviewed submissions, with support provided by their authors. Platform notes describe the repositories’ setup, not a compatibility guarantee. Check capability grants and pane conflicts before installing.</p>
+  <form class="plugin-filters" id="plugin-filters" hidden role="search" aria-label="Filter mods">
+    <div><label for="plugin-search">Search mods</label><input id="plugin-search" type="search" placeholder="Name, author or description" /></div>
+    <div><label for="plugin-kind">Kind</label><select id="plugin-kind"><option value="">All kinds</option><option value="pane">Pane</option><option value="extension">Extension</option><option value="agent">Agent</option><option value="theme">Theme</option><option value="other">Other</option></select></div>
+    <div><label for="plugin-badge">Maintainer</label><select id="plugin-badge"><option value="">All maintainers</option><option value="official">Official</option><option value="community">Community</option></select></div>
+    <button type="reset">Reset</button>
+  </form>
+  <p id="plugin-count" role="status" aria-live="polite" aria-atomic="true">{{ mods | length }} mods</p>
+  <noscript><p>All mods are listed below. Enable JavaScript to search and filter.</p></noscript>
+  <div class="plugin-grid">
+    {% for mod in mods %}
+    <article class="plugin-card" data-plugin data-kind="{{ mod.kind | escape }}" data-badge="{{ mod.badge | escape }}">
+      <div class="plugin-badges"><span class="plugin-badge plugin-badge--{{ mod.badge | escape }}">{{ mod.badge | capitalize }}</span><span class="plugin-badge">{{ mod.kind | capitalize }}</span></div>
+      <h2><a href="{{ mod.repo | escape }}">{{ mod.name | escape }}</a></h2>
+      <p>{{ mod.description | escape }}</p>
+      {% if mod.media %}
+      <a class="plugin-preview" href="{{ mod.repo | escape }}#readme"><img src="{{ mod.media.url | escape }}" alt="{{ mod.media.alt | escape }}" loading="lazy" decoding="async" /></a>
+      {% else %}
+      <div class="plugin-preview"><div class="plugin-preview-placeholder"><span aria-hidden="true">&gt;_</span>No preview yet<br /><a href="{{ mod.repo | escape }}#readme">Explore the README</a></div></div>
+      {% endif %}
+      <dl class="plugin-meta">
+        <div><dt>Author</dt><dd>{{ mod.author | escape }}</dd></div>
+        <div><dt>Platforms</dt><dd>{{ mod.platforms | join(', ') | escape }}</dd></div>
+        {% if mod.release %}<div><dt>Release</dt><dd>{{ mod.release | escape }}</dd></div>{% endif %}
+        <div><dt>Last update</dt><dd><time datetime="{{ mod.updated | escape }}">{{ mod.updated | escape }}</time></dd></div>
+      </dl>
+      <details class="plugin-install"><summary>Install command</summary><pre data-wrap data-title="Install"><code class="language-bash">{{ mod.install | escape }}</code></pre></details>
+      <p class="plugin-notes">{{ mod.notes | escape }}</p>
+      <a href="{{ mod.repo | escape }}#readme">Repository &amp; setup →</a>
+    </article>
+    {% endfor %}
+  </div>
+  <p id="plugin-empty" hidden>No mods match these filters. Try another search or reset the filters.</p>
+  <section class="plugin-submit" id="submit-mod" aria-labelledby="submit-heading">
+    <h2 id="submit-heading">Share your mod</h2>
+    <p>Add the <code>thurbox-plugin</code> GitHub topic to your repository, then open a PR adding one entry to <a href="https://github.com/Thurbeen/thurbox/blob/main/website/_data/mods.json">mods.json</a>. Include supported platforms, setup notes and a screenshot or GIF when available.</p>
+    <p>The <a href="https://github.com/Thurbeen/thurbox/blob/main/CONTRIBUTING.md#mod-catalog">submission template and schema</a> describe the required fields and checks. Maintainers review entries before they appear here; a topic alone does not publish a listing.</p>
+    <p>This catalog uses checked-in metadata; “Last update” is the recorded repository push date. Updates arrive through reviewed PRs. Media is linked directly from the author’s repository.</p>
+    <details><summary>Official repositories outside this catalog</summary><p><a href="https://github.com/Thurbeen/thurbox-plugin-orchestrator">thurbox-plugin-orchestrator</a> is archived and targets the earlier admin plugin model. <a href="https://github.com/Thurbeen/thurbox-discord">thurbox-discord</a> manages the community Discord server; it is not a Thurbox add-on.</p></details>
+  </section>
+</div>
+<script src="./js/mods.js"></script>

@@ -34,13 +34,13 @@
 -- branch list is a READ the kernel serves from a worker (`kernel::repos`),
 -- asked for by leaving a key in `store`.
 --
--- WHY ONE PLUGIN AND NOT SIX. The kernel renders every floating plugin each
+-- WHY ONE PLUGIN AND NOT SIX. The kernel renders every floating mod each
 -- frame purely to discover it is not floating, so six closed modals would cost
 -- six Lua calls a frame forever. They also share one thing — the pending choice
--- — which as six plugins would have to live in `store` as a protocol between
+-- — which as six mods would have to live in `store` as a protocol between
 -- panes that only ever run in sequence.
 --
--- WHERE A REFUSAL APPEARS. v1 puts "Not a git repo…" in the status bar. A plugin
+-- WHERE A REFUSAL APPEARS. v1 puts "Not a git repo…" in the status bar. A mod
 -- cannot write the message band (it is kernel chrome), so a refusal this flow
 -- makes itself is shown on its own footer row instead. A refusal from the
 -- *kernel* — a path that does not exist, a folder with no repositories — comes
@@ -1566,7 +1566,7 @@ local function confirm_repos(flow)
   ask(load())
 end
 
--- ── The plugin ─────────────────────────────────────────────────────────────
+-- ── The mod ─────────────────────────────────────────────────────────────
 
 --- Whether the browse dropdown is up and holding the keys.
 ---

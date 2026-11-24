@@ -72,7 +72,7 @@ pub enum Edit {
 ///
 /// By where a plugin came from, because that is what decides what can be done
 /// with it: yours are edited by hand, a package's are put back and advanced by
-/// `thurbox-cli plugin`, the shipped ones are restored from the binary. Yours
+/// `thurbox-cli mod`, the shipped ones are restored from the binary. Yours
 /// and the packages first — they are what an operator manages; the shipped
 /// panes follow, and everything that is not a pane last.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
@@ -319,7 +319,7 @@ fn reason(row: &Row, culprit: Option<&Row>) -> (String, Option<String>) {
                 Kind::Pane => "draws into another pane rather than a slot of its own",
                 Kind::Module => "loaded when a pane requires it",
                 Kind::Arrangement => "decides where every pane goes",
-                Kind::Manifest => "what `thurbox-cli plugin sync` installs",
+                Kind::Manifest => "what `thurbox-cli mod sync` installs",
                 Kind::Doc => "guidance for whoever edits this directory",
             }),
             None,
@@ -597,7 +597,7 @@ impl InterfaceTab {
             // an installed file is put back by the manager that put it there.
             return (
                 Some(format!(
-                    "{} came from {src}; `thurbox-cli plugin sync` puts it back",
+                    "{} came from {src}; `thurbox-cli mod sync` puts it back",
                     row.path
                 )),
                 None,
@@ -886,7 +886,7 @@ impl InterfaceTab {
         let ungranted = count(&|row| grant_word(row).is_some_and(|(_, granted)| !granted));
         let off = count(&|row| row.state == FileState::Disabled);
 
-        let noun = if panes == 1 { "plugin" } else { "plugins" };
+        let noun = if panes == 1 { "mod" } else { "mods" };
         let mut spans = vec![Span::styled(
             format!(" {panes} {noun}"),
             chrome.normal_item(),
@@ -1002,7 +1002,7 @@ impl InterfaceTab {
             }
         }
         hints.push(if self.all {
-            ("a", " plugins only  ")
+            ("a", " mods only  ")
         } else {
             ("a", " all files  ")
         });
@@ -1049,11 +1049,11 @@ impl InterfaceTab {
                 frame.render_widget(
                     Paragraph::new(vec![
                         Line::from(Span::styled(
-                            " no plugins here yet — thurbox writes the shipped ones when it starts",
+                            " no mods here yet — thurbox writes the shipped ones when it starts",
                             chrome.muted(),
                         )),
                         Line::from(Span::styled(
-                            " add one: a .lua file in plugins/, or `thurbox-cli plugin install <source>`",
+                            " add one: a .lua file in plugins/, or `thurbox-cli mod install <source>`",
                             chrome.muted(),
                         )),
                     ]),
@@ -1457,7 +1457,7 @@ mod tests {
         tab.on_key(&press(KeyCode::Char('a')), &rows, &Hits::default());
         let text = screen(&mut tab, &rows);
         assert!(text.contains("lib/chrome.lua"), "{text}");
-        assert!(footer(&tab, &rows).contains("plugins only"));
+        assert!(footer(&tab, &rows).contains("mods only"));
     }
 
     #[test]
@@ -1612,7 +1612,7 @@ mod tests {
         off.trust = FileTrust::Untrusted;
         let rows = [off, installed_top()];
         let lines = paint(&mut InterfaceTab::default(), &rows, 90, 12);
-        assert!(lines[0].contains("2 plugins"), "{}", lines[0]);
+        assert!(lines[0].contains("2 mods"), "{}", lines[0]);
         assert!(lines[0].contains("2 not granted"), "{}", lines[0]);
         assert!(lines[0].contains("1 off"), "{}", lines[0]);
         assert!(!lines[0].contains("failed"), "{}", lines[0]);
@@ -1666,8 +1666,8 @@ mod tests {
     #[test]
     fn an_empty_interface_says_so() {
         let text = screen(&mut InterfaceTab::default(), &[]);
-        assert!(text.contains("no plugins here yet"), "{text}");
-        assert!(text.contains("thurbox-cli plugin install"), "{text}");
+        assert!(text.contains("no mods here yet"), "{text}");
+        assert!(text.contains("thurbox-cli mod install"), "{text}");
     }
 
     // ── what the selected row explains ──────────────────────────────────────

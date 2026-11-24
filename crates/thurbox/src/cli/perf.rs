@@ -1,7 +1,7 @@
 //! `thurbox-cli perf` — read the perf snapshot a running TUI publishes.
 //!
 //! The TUI writes a JSON snapshot (counters, frame/republish/tick timing
-//! percentiles, slow ops, startup phase breakdown, and the per-plugin report)
+//! percentiles, slow ops, startup phase breakdown, and the per-mod report)
 //! to `perf.json` in the data directory while perf timing is active —
 //! `THURBOX_PERF_LOG=1` or an open perf HUD (F12). `kernel::perf::snapshot_json`
 //! owns the shape; this renders it. This command prints the latest one, so a
@@ -15,20 +15,25 @@ use super::output::{kv, CommandOutput};
 
 #[derive(clap::Args, Debug)]
 pub struct PerfArgs {
-    /// One row per loaded plugin instead of the loop's totals: render and
+    /// One row per loaded mod instead of the loop's totals: render and
     /// handler time, reuse, runs, store writes and tree size, most expensive
     /// first, with hints naming the likely cause.
     #[arg(long)]
+    pub mods: bool,
+    #[arg(long, hide = true)]
     pub plugins: bool,
 }
+
+pub const DEPRECATED_PLUGINS_FLAG: &str =
+    "thurbox-cli: `perf --plugins` is deprecated; use `perf --mods`";
 
 /// Human hint shown when no snapshot exists (or it can't be parsed).
 const NO_SNAPSHOT_HINT: &str = "No perf snapshot published. Run the TUI with THURBOX_PERF_LOG=1 \
      or open its perf HUD (F12), then retry.";
 
 /// Shown for a snapshot published by a thurbox that predates `--plugins`.
-const NO_PLUGINS_HINT: &str = "This perf snapshot has no per-plugin section: the running TUI \
-     is older than `perf --plugins`.";
+const NO_PLUGINS_HINT: &str = "This perf snapshot has no per-mod section: the running TUI \
+     is older than `perf --mods`.";
 
 /// Run the `perf` command: print the last published snapshot.
 pub fn run(plugins: bool) -> Result<CommandOutput, String> {
@@ -108,11 +113,8 @@ fn render_human(s: &Value) -> String {
                 u(s, &["counters", "echo_frames"])
             ),
         ),
-        ("plugin renders", u(s, &["counters", "renders"]).to_string()),
-        (
-            "plugin failures",
-            u(s, &["counters", "failures"]).to_string(),
-        ),
+        ("mod renders", u(s, &["counters", "renders"]).to_string()),
+        ("mod failures", u(s, &["counters", "failures"]).to_string()),
         ("reloads", u(s, &["counters", "reloads"]).to_string()),
         (
             "renders skipped",
@@ -155,17 +157,17 @@ fn render_human(s: &Value) -> String {
         }
         _ => out.push_str("\n\nslow ops: none recorded"),
     }
-    out.push_str("\n\nper pane: thurbox-cli perf --plugins");
+    out.push_str("\n\nper pane: thurbox-cli perf --mods");
     out
 }
 
-/// The per-plugin table, in the order the snapshot ranked it.
+/// The per-mod table, in the order the snapshot ranked it.
 fn render_plugins(s: &Value) -> CommandOutput {
     let Some(rows) = s.get("plugins").and_then(Value::as_array) else {
         return CommandOutput::failed(
             json!({ "plugins": null }),
             NO_PLUGINS_HINT,
-            "no per-plugin data",
+            "no per-mod data",
         );
     };
     let json = json!({
@@ -183,7 +185,7 @@ fn render_plugins(s: &Value) -> CommandOutput {
         u(s, &["plugin_window", "frames"]),
     );
     if rows.is_empty() {
-        out.push_str("\n\nno plugins loaded");
+        out.push_str("\n\nno mods loaded");
         return CommandOutput::new(json, out);
     }
     let name_of = |row: &Value| row["name"].as_str().unwrap_or("?").to_string();
@@ -310,7 +312,7 @@ mod tests {
         publish(SNAPSHOT);
         let out = run(true).unwrap();
         assert!(out.failure.is_some());
-        assert!(out.human.contains("per-plugin"), "{}", out.human);
+        assert!(out.human.contains("per-mod"), "{}", out.human);
     }
 
     #[test]

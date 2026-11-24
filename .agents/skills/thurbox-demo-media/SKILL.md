@@ -44,7 +44,7 @@ in `website/`, or the page reflows when it decodes.
 
 **The website's `iddqd` easter egg is a separate recording.**
 `scripts/demo/record-doom.sh` writes `media/doom-easter-egg.mp4` plus its
-poster: asciinema records the real TUI and agg rasterises the cast. Doom is a **plugin** there, not an agent — the script installs
+poster: asciinema records the real TUI and agg rasterises the cast. Doom is a **mod** there, not an agent — the script installs
 [`thurbox-doom`](https://github.com/Thurbeen/thurbox-doom) into the throwaway
 interface directory, seeds the `program` grant the settings modal would have written
 (trust is a decision made *in* a running interface, so there is deliberately no CLI

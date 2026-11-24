@@ -52,7 +52,7 @@ bound chord, so the menu cannot drift from the keyboard: Delete still asks
 first, and a rebound chord shows up in the menu. Sort and the panel toggle are
 left out of the row menu because neither is about the session that was pressed.
 
-**Why can other plugins add to a row's menu?** A plugin that owns a
+**Why can other mods add to a row's menu?** A mod that owns a
 per-session action would otherwise reach it only through `Ctrl+P` or a chord of
 its own. It leaves its entries in `store["sessions.menu_extra"]` under its own
 name, and they follow the pane's own entries after a rule. An entry whose
@@ -60,14 +60,14 @@ action nothing declares is dropped, the same rule that keeps Sort out when it
 would do nothing. Its owner reads the pressed row from
 the action's `args.session_id`, so it acts on the row that was clicked even if
 the cursor moved. The contract is *Adding entries to the sessions menu* in
-`docs/thurbox/plugins.md`.
+`docs/thurbox/mods.md`.
 
 **Why opened at the pointer, and closed by a click elsewhere?** That is what a
 context menu is. The kernel supplies only the mechanism — the pressed cell on
 `hit`, `float.at`, and `on_outside` for the float holding the pointer — so the
 menu itself stays a plain Lua float (`ui/plugins/64_menu.lua`) that any pane can
 fill. A terminal that keeps the right button for itself never sends the press;
-see *The right button* in `docs/thurbox/plugins.md`.
+see *The right button* in `docs/thurbox/mods.md`.
 
 ### Fuzzy search
 
@@ -236,7 +236,7 @@ moved fall back to creation order:
   sessions needing attention beside the host name. Up/down navigation skips the hidden sessions. Searching
   temporarily reveals them; Esc restores the fold, while accepting a hit
   unfolds its host so the selected session stays visible.
-  Folded host names are saved in the `sessions.folded_hosts` plugin setting, so
+  Folded host names are saved in the `sessions.folded_hosts` mod setting, so
   they survive a restart. A host row is a band: tinted with the theme's
   `accent` over its background, its arrow, mark and name in `accent`, bold.
   This machine is `⌂ local`; any other host is `@ <name>` (`@ WSL <name>` for a
@@ -307,7 +307,7 @@ instead of the host handle. A creation in flight also gets its host handle.
 
 **Why a second switch and not one choice row.** `none / repo / host / host then
 repo` would read as one decision, and the settings modal cannot render it: a
-plugin's values are `Bool`, `Number` and `Text`, and a `Text` row is free text
+mod's values are `Bool`, `Number` and `Text`, and a `Text` row is free text
 you type into — cycling a fixed set is wired to the core rows' one enum, not
 declared. So the row would be a box where a misspelling silently means "none",
 and it would first need a choice type in the registry, in the Lua declaration
@@ -703,7 +703,7 @@ effect on the next keystroke — no restart. The file can also be hand-edited
 directly.
 
 **Context-scoped keys.** Each action belongs to a scope — `global`, or
-`plugin`, which fires only while the declaring pane holds focus
+`mod` (`plugin` is its deprecated spelling), which fires only while the declaring pane holds focus
 (`kernel::registry::Scope`). Global
 actions fire anywhere; scoped actions fire only while their pane is focused, so
 the same single-letter key (e.g. `j`) can drive the session list and another
@@ -791,7 +791,7 @@ lost session itself.
 ### Session Rename (`Ctrl+E`)
 
 `Ctrl+E` on the session list, or `command("rename", { session = id, text =
-name })` from a plugin. A session's name is its Task's `thurbox.dev/name`
+name })` from a mod. A session's name is its Task's `thurbox.dev/name`
 label (ADR-41): the rename runs `fleet label task <task>
 thurbox.dev/name=<name>`, which sets that label and changes nothing else of
 the Task. `fleet apply` would not do: it refuses a manifest carrying the labels
@@ -995,7 +995,7 @@ and an invalid regex says why. Below 40 columns a text result drops its session
 column and keeps the line.
 
 The strip does not take `Ctrl+P`/`Ctrl+N`: every chord goes through one
-registry where a plugin-scoped claim does not outrank a global one, so declaring
+registry where a mod-scoped claim does not outrank a global one, so declaring
 them would take `Ctrl+N` from new-session everywhere. Recorded in
 `tests/keymap.rs`.
 
@@ -1032,7 +1032,7 @@ chord did nothing.
 
 ## Settings Panel (`Ctrl+,` / `F6`)
 
-> Now `kernel::modals::settings` — kernel-owned chrome that plugins contribute rows
+> Now `kernel::modals::settings` — kernel-owned chrome that mods contribute rows
 > to. Core settings still write `settings.toml` through `toml_edit`, and whether a
 > row applies live is *asked of* `Settings::restart_only_differs` rather than
 > recorded beside the field. The rows show `Config::on_disk` — the file — because a
@@ -1215,8 +1215,8 @@ historical output.
 All UI colors are centralized via a semantic palette:
 `theme` holds the presets and the user's overrides,
 `kernel::theme::Themes` resolves one and publishes **roles** to Lua
-(`ui/lib/theme.lua`). A plugin asks for `theme.accent` or `theme.muted`
-rather than a colour, which is what lets one plugin look right under all
+(`ui/lib/theme.lua`). A mod asks for `theme.accent` or `theme.muted`
+rather than a colour, which is what lets one mod look right under all
 thirty-six palettes and the whole interface be re-skinned by swapping the
 active one.
 
@@ -1594,7 +1594,7 @@ what you just copied, and a write it made while hidden is not released
 when you bring it forward: the clipboard belongs to the machine you sit
 at, not to whatever host an agent runs on. A write is ignored unless it
 targets the clipboard (`c`), is valid base64, decodes to non-empty UTF-8
-text, and fits in one OSC 52 (~74 KB). A focused program pane a plugin
+text, and fits in one OSC 52 (~74 KB). A focused program pane a mod
 opened is not a session and does not write the clipboard either.
 
 No app can **read** the clipboard. thurbox never answers an OSC 52 `?`,
@@ -1715,7 +1715,7 @@ a line you type and submit with `Enter` still submits. Rationale: ADR-4 in
 ## Mouse Navigation
 
 The whole TUI is clickable. The kernel hit-tests the node tree a pane
-returns and delivers the press as `hit` (`docs/thurbox/plugins.md` → Clicks).
+returns and delivers the press as `hit` (`docs/thurbox/mods.md` → Clicks).
 `F9` toggles the session column (`sessions.toggle_panel`), the agent pane
 offers its shell as a tab on its own border (`Ctrl+T` / `F8`), and the action
 band's pills are declared by the panes.
@@ -1988,12 +1988,12 @@ than an equal start, because a run opened part-way through printed URL
 text starts to the right of the bare text underneath it.
 
 **An interface pane rides the same pass**, via the `url:<link>` click verb
-(`ClickVerb::Url`). It has to: a plugin returns cells and the kernel paints
+(`ClickVerb::Url`). It has to: a mod returns cells and the kernel paints
 them, so nothing in that path can put an escape on the wire — the identical
 text in a pane was not Ctrl+Click-able while an agent's transcript was, and
 on a remote host the outer terminal is the only leg with a browser to reach.
 The verb's nodes are read out of the drawn frame like a session's runs, and
-`docs/thurbox/plugins.md` has the authoring side.
+`docs/thurbox/mods.md` has the authoring side.
 
 Three properties keep this safe and cheap:
 
@@ -2010,7 +2010,7 @@ Three properties keep this safe and cheap:
   there, so a covering overlay, a scrolled pane, or a repainted row
   yields nothing instead of escapes written over current content. A label
   clipped by the pane's right edge is linked as far as it is visible.
-  A `url:` node has no label to match — its text lives in the plugin's
+  A `url:` node has no label to match — its text lives in the mod's
   tree, already through wrapping, alignment and scroll — so the covering
   surfaces are checked directly instead (`App::link_paint_obscured`: a
   modal owns the screen, a float owns its rect). Without it a modal over

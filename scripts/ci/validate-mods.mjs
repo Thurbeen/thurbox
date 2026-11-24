@@ -2,7 +2,7 @@ import { readFile } from 'node:fs/promises';
 import { pathToFileURL } from 'node:url';
 
 export const schema = JSON.parse(
-  await readFile(new URL('../../website/plugins.schema.json', import.meta.url), 'utf8'),
+  await readFile(new URL('../../website/mods.schema.json', import.meta.url), 'utf8'),
 );
 
 function validUrl(value, repository = false) {
@@ -23,7 +23,7 @@ function validUrl(value, repository = false) {
   }
 }
 
-export function validatePlugins(entries) {
+export function validateMods(entries) {
   if (!Array.isArray(entries)) return ['Catalog must be an array'];
   const errors = [];
   const repos = new Set();
@@ -124,15 +124,15 @@ export async function checkLinks(entries, request = fetch) {
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
   const entries = JSON.parse(
-    await readFile(process.argv[2] || 'website/_data/plugins.json', 'utf8'),
+    await readFile(process.argv[2] || 'website/_data/mods.json', 'utf8'),
   );
-  let errors = validatePlugins(entries);
+  let errors = validateMods(entries);
   if (!errors.length && process.argv.includes('--links')) errors = await checkLinks(entries);
   if (errors.length) {
     console.error(errors.join('\n'));
     process.exitCode = 1;
   } else
     console.log(
-      `Validated ${entries.length} plugins${process.argv.includes('--links') ? ' and their URLs' : ''}`,
+      `Validated ${entries.length} mods${process.argv.includes('--links') ? ' and their URLs' : ''}`,
     );
 }

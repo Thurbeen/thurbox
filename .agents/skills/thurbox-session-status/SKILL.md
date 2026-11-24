@@ -105,7 +105,7 @@ agent's own hook words (`working`, `blocked`, `background`, `done`, `idle`);
 inferred word is spelled apart from `idle`, so "nothing reported" never reads
 as "the agent says it is at rest". The Fleet mapping above produces
 `working`, `blocked`, `idle`, `running`, `stopped`, `failed` and
-`unreported`; a plugin still draws every word.
+`unreported`; a mod still draws every word.
 
 | State | Theme role | Glyph |
 |-------|------------|-------|

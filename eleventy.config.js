@@ -163,7 +163,7 @@ function writeCoreBundle() {
 }
 
 // ---- The repository's Fleet and runtime docs, rendered as pages ----
-// docs/fleet and docs/runtime, and thurbox's plugin-author guides, are the one
+// docs/fleet and docs/runtime, and thurbox's mod-author guides, are the one
 // source of these pages: each Markdown file becomes /docs/<same path>.html (a
 // README becomes the directory's index.html) through the paginated
 // website/repo-docs.njk. A directory is read on every build, so a new or
@@ -173,7 +173,7 @@ function writeCoreBundle() {
 export const RENDERED_DOCS = [
   'docs/fleet',
   'docs/runtime',
-  'docs/thurbox/plugins.md',
+  'docs/thurbox/mods.md',
   'docs/thurbox/kernel.md',
   'docs/thurbox/architecture.md',
   'docs/observability.md',
@@ -252,7 +252,7 @@ function listRepoDocs() {
           'docs/fleet/configuration.md': 'fleet-configuration',
           'docs/fleet/resources/workspace.md': 'fleet-workspace',
           'docs/observability.md': 'observability',
-          'docs/thurbox/plugins.md': 'thurbox-plugins',
+          'docs/thurbox/mods.md': 'thurbox-mods',
           'docs/thurbox/kernel.md': 'thurbox-kernel',
         }[src] ?? (dir === 'docs/fleet' && file.includes('/') ? `fleet-${area}` : ''),
     };
@@ -355,11 +355,11 @@ export default function (eleventyConfig) {
   // Only the page-specific sheets are copied: the four core files are shipped
   // as the generated core.css bundle instead, so copying them too would be dead
   // weight in the deployed output.
-  for (const sheet of ['landing', 'docs', 'tutorial', 'plugins']) {
+  for (const sheet of ['landing', 'docs', 'tutorial', 'mods']) {
     eleventyConfig.addPassthroughCopy(`website/css/${sheet}.css`);
   }
   eleventyConfig.addPassthroughCopy('website/js');
-  eleventyConfig.addPassthroughCopy('website/plugins.schema.json');
+  eleventyConfig.addPassthroughCopy('website/mods.schema.json');
   eleventyConfig.addPassthroughCopy('website/assets');
   // robots.txt (crawler discovery) + CNAME (the GitHub Pages custom domain,
   // tracked so a redeploy can't drop it) + llms.txt (curated entry point for

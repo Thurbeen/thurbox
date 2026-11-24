@@ -553,7 +553,7 @@ fn the_interface_ships_guidance_and_lists_it_as_a_doc() {
     assert!(readme.is_file(), "delivery writes it like any other file");
     let text = fs::read_to_string(&readme).expect("read");
     assert!(
-        text.contains("plugin check"),
+        text.contains("mod check"),
         "it points at the command that catches a broken edit"
     );
 

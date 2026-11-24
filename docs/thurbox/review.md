@@ -80,7 +80,7 @@ content, commands and metrics whole.
 A signal is also worth scoping to whoever reads it. The animation clock
 invalidated every pure pane eight times a second for a spinner one of them
 draws, until `ctx.elapsed` became something the kernel could see a pane ask for
-(ADR-P21). Prefer observing a dependency over asking a plugin to declare one: a
+(ADR-P21). Prefer observing a dependency over asking a mod to declare one: a
 declaration that defaults to "no dependency" fails silently for whoever did not
 read the release note, and one that defaults to "yes" saves nothing.
 
@@ -136,7 +136,7 @@ unreachable code left behind.
 
 ### `ui/**`
 
-This is the Lua interface running on the Rust kernel, and the plugin sandbox is
+This is the Lua interface running on the Rust kernel, and the mod sandbox is
 enforced by absence: os, io, debug, package, print and the loaders are not in
 the environment. thurbox.yml is selene's standard library for this tree; its
 thurbox.* entries, like the published half of ui/lib/thurbox.d.lua, are
@@ -169,7 +169,7 @@ unreachable code left behind.
 
 ### `examples/panes/**`
 
-Example panes that install by bare name. The same plugin sandbox as ui/
+Example panes that install by bare name. The same mod sandbox as ui/
 applies: no os, io, debug, package or print, four node kinds only,
 snapshot-read and command-write, and theme roles rather than colours. These are
 examples to read and copy from, not a catalogue thurbox maintains for anyone.
@@ -189,7 +189,7 @@ cannot rot silently.
 
 Judge it on one question: does it measure what the loop actually does? A bench
 that measures something no frame performs is worse than none, because it is
-believed. The trap already paid for here is rendering every loaded plugin
+believed. The trap already paid for here is rendering every loaded mod
 rather than the panes an arrangement of that size places - a closed search
 strip occupies no slot, `draw_slots` never reaches it, and the bench reported
 it as the second most expensive pane in the interface. So a phase must
@@ -264,9 +264,9 @@ examples live under examples/lua/ and carry their own block below.
 
 Worked example panes, not prose: selene and stylua cover them under `just
 lint`, and examples/lua/plugin.lua is embedded in the binary as what
-`thurbox-cli plugin new` writes, so a break here ships a starter that does not
+`thurbox-cli mod new` writes, so a break here ships a starter that does not
 load. Read them the more carefully for it - the Lua type check runs against ui/
-only, so a type error here reaches neither linter. The same plugin sandbox as
+only, so a type error here reaches neither linter. The same mod sandbox as
 ui/ applies: no os, io, debug, package or print, four node kinds only,
 snapshot-read and command-write, and theme roles rather than colours.
 
@@ -337,7 +337,7 @@ docs/thurbox/config.md's. docs/thurbox/review.md owns the house rules a change i
 against - the per-path blocks above, the trees excluded from review, and this
 ownership map. docs/thurbox/agents.md says where an agent is defined:
 Fleet's harness profiles. docs/thurbox/kernel.md owns the
-kernel's shape and its five rules, and docs/thurbox/plugins.md owns interface-plugin
+kernel's shape and its five rules, and docs/thurbox/mods.md owns interface-mod
 authoring. docs/thurbox/development.md owns the dev environment and the runtime
 sandbox - CONTRIBUTING.md deliberately defers to it rather than restating it,
 so dev-setup facts stay there. docs/thurbox/releasing.md owns the release process and

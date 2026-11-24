@@ -42,9 +42,9 @@ The interface is Lua on a Rust kernel, so most coverage drives the **real
 kernel over the real `ui/`** rather than a harness that imitates either:
 
 - **`tests/kernel_mvp.rs`** — the kernel's contract: the four node kinds and their
-  count, the plugin environment enumerated global-by-global (no blanket exemption
+  count, the mod environment enumerated global-by-global (no blanket exemption
   for a leading underscore — that is how a capability once hid under `__run_impl`),
-  the instruction/memory bounds, snapshot reads, and painting a plugin to a
+  the instruction/memory bounds, snapshot reads, and painting a mod to a
   `TestBackend`.
 - **`tests/fleet_engine_e2e.rs`** — the Fleet engine against
   the real `fleet` binary, found beside `thurbox-cli` (or `FLEET_BIN`), with
@@ -71,7 +71,7 @@ kernel over the real `ui/`** rather than a harness that imitates either:
 - **`tests/edited_interface.rs`** — an edited interface keeps working across an
   upgrade. It holds files frozen from old releases with a user's edit
   (`tests/fixtures/edited_interface/<release>/`: v2.22.4's layout, session
-  list and agent pane), and checks that they are preserved, arrange, render and pass `plugin check`
+  list and agent pane), and checks that they are preserved, arrange, render and pass `mod check`
   against the current `lib/` and kernel. It also pins every name `lib/` exports
   (`lib_surface.txt`). This is the check behind `lib/`'s compatibility promise
   in `ui/AGENTS.md`. Never refresh the frozen files to follow `ui/`. A new
@@ -83,7 +83,7 @@ kernel over the real `ui/`** rather than a harness that imitates either:
   `ui/lib/thurbox.d.lua`), `stylua` (format). The three cover different halves;
   see *Linting & Formatting* in `AGENTS.md`.
 - **`scripts/ci/check-lua-types.sh`** — the definitions' own test. Three panes in
-  `tests/fixtures/lua_types/` each misspell one thing the plugin API otherwise
+  `tests/fixtures/lua_types/` each misspell one thing the mod API otherwise
   drops in silence (a node prop, a command option, a theme role) and each must
   still be reported. `--check ui` proves the panes are clean; this proves the
   types have teeth. Runs in the Lua Lint job and in `just lint`.
@@ -95,9 +95,9 @@ kernel over the real `ui/`** rather than a harness that imitates either:
   code from its `Json2` output and attributes a finding by the file it came
   from, so no assertion depends on message wording. A checked path stops at the
   first `[…]`, so a list has nothing below it to probe, and `runs` is the one map
-  whose keys are the plugin's own literals rather than a session id. Same two
+  whose keys are the mod's own literals rather than a session id. Same two
   runners.
-- **`tests/lua_api.rs`** — the plugin API against `kernel::lua_api`: the generated declaration files equal what it renders
+- **`tests/lua_api.rs`** — the mod API against `kernel::lua_api`: the generated declaration files equal what it renders
   (`THURBOX_REGENERATE=1`, i.e. `just lua-api`, rewrites them), a pane walking
   every key of a fully populated publish finds none undeclared, and
   `thurbox.api`/`requires_api` hold; its `meta` module drives `ui.*` session

@@ -352,14 +352,14 @@ impl App {
             .is_some_and(|at| at.elapsed() < MEMORY_REFILL);
         if again && pressure == MemoryPressure::Grown {
             tracing::info!(
-                "the plugin VM grew back to {used} of its {limit} MiB after a rebuild; kept as the interface's size"
+                "the mod VM grew back to {used} of its {limit} MiB after a rebuild; kept as the interface's size"
             );
             self.host.accept_resident_memory();
             return;
         }
         if again {
             self.floor_refilled_interface(format!(
-                "it filled a new plugin VM to its {limit} MiB limit within {} s of the last rebuild",
+                "it filled a new mod VM to its {limit} MiB limit within {} s of the last rebuild",
                 MEMORY_REFILL.as_secs()
             ));
         } else {
@@ -372,20 +372,18 @@ impl App {
         self.clamp_focus();
         if self.host.error.is_none() && again && self.floor.is_some() {
             tracing::warn!(
-                "the plugin VM held {used} of its {limit} MiB again right after a rebuild; using the bundled interface"
+                "the mod VM held {used} of its {limit} MiB again right after a rebuild; using the bundled interface"
             );
             self.report(
                 format!(
-                    "the interface filled its {limit} MiB plugin memory again right after a rebuild; using the bundled interface"
+                    "the interface filled its {limit} MiB mod memory again right after a rebuild; using the bundled interface"
                 ),
                 Level::Error,
             );
         } else if self.host.error.is_none() {
-            tracing::warn!("the plugin VM held {used} of its {limit} MiB; rebuilt the interface");
+            tracing::warn!("the mod VM held {used} of its {limit} MiB; rebuilt the interface");
             self.report(
-                format!(
-                    "the interface reached its {limit} MiB plugin memory limit and was rebuilt"
-                ),
+                format!("the interface reached its {limit} MiB mod memory limit and was rebuilt"),
                 Level::Error,
             );
         } else {
@@ -393,13 +391,13 @@ impl App {
             // recovery keys in the kernel error panel as well as the log.
             let cause = self.host.error.take().unwrap_or_default();
             self.host.error = Some(format!(
-                "plugin VM replaced; interface failed to load\n{cause}\nFix the interface and press F10 to reload; F6 opens settings."
+                "mod VM replaced; interface failed to load\n{cause}\nFix the interface and press F10 to reload; F6 opens settings."
             ));
             tracing::warn!(
-                "the plugin VM held {used} of its {limit} MiB; plugin VM replaced; interface failed to load"
+                "the mod VM held {used} of its {limit} MiB; mod VM replaced; interface failed to load"
             );
             self.report(
-                "plugin VM replaced; interface failed to load — fix the interface and reload",
+                "mod VM replaced; interface failed to load — fix the interface and reload",
                 Level::Error,
             );
         }

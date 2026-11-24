@@ -1,10 +1,10 @@
 ---@meta
 --
--- The plugin API, as types. Loaded by lua-language-server through
--- `.luarc.json`'s `workspace.library`; never loaded by the plugin VM.
+-- The mod API, as types. Loaded by lua-language-server through
+-- `.luarc.json`'s `workspace.library`; never loaded by the mod VM.
 --
 -- It exists because every mistake the API allows is silent. `convert.rs` drops
--- a node key it does not know (that is how a plugin carries its own bookkeeping
+-- a node key it does not know (that is how a mod carries its own bookkeeping
 -- on the node table), `command` reads a fixed list of option names and ignores
 -- the rest, and `lib/theme.lua`'s `__index` answers nil for a role no palette
 -- defines. Each of those renders something plausible and reports nothing, so
@@ -95,7 +95,7 @@
 --- Sizing resolves exact → percentage → share, each clamped by `min`/`max`; a
 --- node that asks for nothing takes an equal share of the remainder. `role`
 --- carries the kernel's own click verbs (`action:`, `key:`, `focus:`, `url:`,
---- and the bare `drag`); any other role hands the click to the plugin.
+--- and the bare `drag`); any other role hands the click to the mod.
 ---@class thurbox.NodeCommon
 ---@field len? integer
 ---@field pct? number
@@ -135,8 +135,8 @@
 ---@field focused? boolean
 ---@field style? thurbox.StyleSpec
 
---- Pre-rendered cells: a live session's terminal, a program this plugin asked
---- to run, or lines the plugin produced itself. Exactly one source.
+--- Pre-rendered cells: a live session's terminal, a program this mod asked
+--- to run, or lines the mod produced itself. Exactly one source.
 ---@class (exact) thurbox.SurfaceNode : thurbox.NodeCommon
 ---@field type? "surface"|"terminal"
 ---@field session? string
@@ -203,7 +203,7 @@
 ---@field height integer
 
 --- What `ui/layout.lua` is told. Smaller than a render's: an arrangement sees
---- the screen and which slots are occupied, and no plugin.
+--- the screen and which slots are occupied, and no mod.
 ---@class (exact) thurbox.LayoutCtx
 ---@field width integer
 ---@field height integer
@@ -224,7 +224,7 @@
 ---@field shift boolean
 ---@field cmd boolean
 
---- A click on a node this plugin painted, with the rect it landed in.
+--- A click on a node this mod painted, with the rect it landed in.
 --- Reached only for identity the kernel has no verb for.
 ---@class (exact) thurbox.Hit
 ---@field id? string
@@ -239,7 +239,7 @@
 ---@field dragging boolean
 ---@field clicks integer 2 for the second press on the same node in quick succession, else 1.
 
---- A wheel tick over this plugin's pane. Declining puts it back on the key path.
+--- A wheel tick over this mod's pane. Declining puts it back on the key path.
 ---@class (exact) thurbox.Wheel
 ---@field up boolean
 ---@field x integer
@@ -260,15 +260,15 @@
 ---| "command.failed"
 ---| "program.exited"
 ---| "interface.reloaded"
----| string A `user.<name>` a plugin emits.
+---| string A `user.<name>` a mod emits.
 
---- A key a plugin declares. Declared as data so the registry can enumerate,
---- conflict-check and rebind it without calling the plugin.
+--- A key a mod declares. Declared as data so the registry can enumerate,
+--- conflict-check and rebind it without calling the mod.
 ---@class (exact) thurbox.Binding
 ---@field key string
 ---@field action string
 ---@field desc? string
----@field scope? "global"|"plugin"
+---@field scope? "global"|"mod"|"plugin" `plugin` is the deprecated spelling of `mod`.
 ---@field passthrough? boolean
 ---@field release? boolean Also call `on_action(action, { event = "release" })` when the key is let go; the press then arrives as `{ event = "press" }` and auto-repeat is swallowed — on a chord with `ctrl`, `alt` or `super`, since outside Windows a held text key (`v`, `space`) repeats as fresh presses. Needs a terminal reporting releases — see `thurbox.keyboard`.
 ---@field group? string
@@ -286,7 +286,7 @@
 ---@class (exact) thurbox.ActionDecl
 ---@field name string
 ---@field desc? string
----@field scope? "global"|"plugin"
+---@field scope? "global"|"mod"|"plugin" `plugin` is the deprecated spelling of `mod`.
 ---@field effect? "read"|"ui-write"|"kernel-write"
 ---@field destructive? boolean
 ---@field args? thurbox.ActionArgument[]
@@ -297,7 +297,7 @@
 ---@field label string
 ---@field priority? integer
 
---- A switch in the settings panel, owned by the declaring plugin.
+--- A switch in the settings panel, owned by the declaring mod.
 ---@class (exact) thurbox.SettingDecl
 ---@field id string
 ---@field desc? string
@@ -305,25 +305,25 @@
 ---@field list? boolean A `;`-separated list of percent-escaped entries, shown as a count.
 ---@field choices? string[] The only values a string setting may take; the panel steps through them instead of offering a text field, and the default must be one of them.
 
---- What a plugin file returns.
+--- What a mod file returns.
 ---
---- `render` is required unless the plugin `decorates` another, which draws
+--- `render` is required unless the mod `decorates` another, which draws
 --- nothing of its own. Its return type is `thurbox.Root` rather than
 --- `thurbox.Node` because `float` is read from that value alone; `decorate`
 --- keeps `thurbox.Node`, since nothing reads `float` off its result.
----@class thurbox.Plugin
+---@class thurbox.Mod
 ---@field name? string Defaults to the filename, minus a numeric ordering prefix.
 ---@field slot? string Defaults to `"center"`.
 ---@field slot_mode? "stack"|"switch"
 ---@field order? number Defaults to 100.
----@field requires_api? integer The lowest `thurbox.api` this plugin works with; a thurbox serving an older one refuses to load it and says why.
+---@field requires_api? integer The lowest `thurbox.api` this mod works with; a thurbox serving an older one refuses to load it and says why.
 ---@field focusable? boolean
 ---@field pure? boolean Cache the tree until an input changes.
 ---@field floats? boolean
 ---@field strip? boolean A full-width row above the bars, `size.len` high, placed without editing `layout.lua`.
 ---@field input? "session"
 ---@field size? thurbox.Size
----@field decorates? string A slot whose tree this plugin transforms.
+---@field decorates? string A slot whose tree this mod transforms.
 ---@field keys? thurbox.Binding[]
 ---@field pills? thurbox.Pill[]
 ---@field settings? thurbox.SettingDecl[]
@@ -354,7 +354,7 @@
 --- The second argument `on_action` may receive. A binding declared
 --- `release = true` gets `event`; an action with declared `args` gets those.
 --- An action run from the palette or `thurbox-cli ui action` gets no `event`,
---- which a hold-aware plugin should treat as a press.
+--- which a hold-aware mod should treat as a press.
 ---@alias thurbox.ActionArgs table<string, string>|{ event: "press"|"release" }
 
 -- BEGIN GENERATED by src/kernel/lua_api.rs: edit there, then `just lua-api`
@@ -428,7 +428,7 @@
 ---| "none"
 
 --- Uncommitted work in a session's tree. Absent until it has been measured,
---- which a plugin must be able to tell apart from a clean tree.
+--- which a mod must be able to tell apart from a clean tree.
 ---@class (exact) thurbox.GitStats
 ---@field files integer
 ---@field insertions integer
@@ -559,7 +559,7 @@
 ---@field row integer
 ---@field col integer
 
---- An answer to a program this plugin asked to run. Branch on `state`: a
+--- An answer to a program this mod asked to run. Branch on `state`: a
 --- program that has not answered is not one that answered with nothing.
 ---@class (exact) thurbox.Run
 ---@field state "pending"|"done"|"failed"
@@ -697,7 +697,8 @@
 ---@field choices thurbox.ThemeChoice[]
 
 ---@class (exact) thurbox.RegistryKey
----@field plugin string
+---@field mod string
+---@field plugin string Deprecated: the same name as `mod`.
 ---@field action string
 ---@field key string
 ---@field default_key string
@@ -706,14 +707,16 @@
 ---@field rebound boolean
 ---@field group string
 
---- A chord-less action a plugin declares in `commands`, for the palette.
+--- A chord-less action a mod declares in `commands`, for the palette.
 ---@class (exact) thurbox.RegistryCommand
----@field plugin string
+---@field mod string
+---@field plugin string Deprecated: the same name as `mod`.
 ---@field action string
 ---@field desc string
 
 ---@class (exact) thurbox.RegistrySetting
----@field plugin string
+---@field mod string
+---@field plugin string Deprecated: the same name as `mod`.
 ---@field id string
 ---@field desc string
 ---@field type string
@@ -721,7 +724,7 @@
 ---@field default boolean|number|string
 ---@field choices? string[] Present only when the setting declared them.
 
---- What every plugin declared, so help and settings render from it.
+--- What every mod declared, so help and settings render from it.
 ---@class (exact) thurbox.RegistrySnapshot
 ---@field keys thurbox.RegistryKey[]
 ---@field commands thurbox.RegistryCommand[]
@@ -729,7 +732,7 @@
 ---@field sections string[] The order help renders its sections in.
 
 --- One of the interface's own files: where it came from, and whether it runs.
----@class (exact) thurbox.PluginRow
+---@class (exact) thurbox.ModRow
 ---@field path string
 ---@field name string
 ---@field kind string
@@ -742,19 +745,19 @@
 ---@class (exact) thurbox.Chrome
 ---@field status_rows integer
 
---- Capabilities THIS plugin has been granted. A boolean about a decision the
+--- Capabilities THIS mod has been granted. A boolean about a decision the
 --- user already made; it grants nothing. Absent, like `thurbox.runs`, for a
---- plugin that declares no capability.
+--- mod that declares no capability.
 ---@class (exact) thurbox.Granted
 ---@field run? boolean
 ---@field program? boolean
----@field sessions? boolean Verbs that drive an agent or lose something for good are applied (docs/thurbox/plugins.md).
+---@field sessions? boolean Verbs that drive an agent or lose something for good are applied (docs/thurbox/mods.md).
 ---@field files? boolean `files` is present.
 
 --- Everything readable. Rebuilt each publish; a group whose inputs did not move
 --- is handed back as the same table, which is what `lib/theme.lua` memoizes on.
 ---@class (exact) thurbox.Api
----@field api integer The plugin API contract number. It moves only when a field is removed or changes meaning; declare `requires_api` to need a newer one.
+---@field api integer The mod API contract number. It moves only when a field is removed or changes meaning; declare `requires_api` to need a newer one.
 ---@field sessions thurbox.Session[]
 ---@field repos thurbox.Repo[]
 ---@field agents? thurbox.Agent[] Nil until Fleet has said which harnesses it has.
@@ -769,7 +772,7 @@
 ---@field links table<string, thurbox.Link[]> Keyed by SURFACE, not by session: a session's companion shell is `<id>#shell` and has links of its own.
 ---@field search? thurbox.SearchAnswer The content search's answer, while `store.want_content` asks. Nil until one lands.
 ---@field printing table<string, boolean> Sessions whose pane is producing output right now, keyed by id. The evidence `running` animates on — see `ui.status`.
----@field runs table<string, thurbox.Run> Answers to THIS plugin's runs.
+---@field runs table<string, thurbox.Run> Answers to THIS mod's runs.
 ---@field granted thurbox.Granted
 ---@field metrics thurbox.Metrics
 ---@field platform thurbox.Platform
@@ -782,7 +785,8 @@
 ---@field focus string Which pane holds focus, by name.
 ---@field selection string The mouse text selection, empty when nothing is selected.
 ---@field hover thurbox.Hover
----@field plugins thurbox.PluginRow[]
+---@field mods thurbox.ModRow[]
+---@field plugins thurbox.ModRow[] Deprecated: the same list as `mods`.
 ---@field ui_dir string
 ---@field chrome thurbox.Chrome
 ---@field theme thurbox.ThemeSnapshot
@@ -790,19 +794,19 @@
 thurbox = {}
 -- END GENERATED
 
---- Persistent, shared by every plugin — the bus between them. Survives a
+--- Persistent, shared by every mod — the bus between them. Survives a
 --- reload, not a restart.
 ---@type table<string, any>
 store = {}
 
---- Persistent and private to the declaring plugin. Same lifetime as `store`.
+--- Persistent and private to the declaring mod. Same lifetime as `store`.
 ---@type table<string, any>
 state = {}
 
---- The path of the plugin that last wrote `store[key]` — written for another
---- plugin's request, that request's chain, "a.lua via b.lua" — or nil when
+--- The path of the mod that last wrote `store[key]` — written for another
+--- mod's request, that request's chain, "a.lua via b.lua" — or nil when
 --- nothing has, or the kernel or `layout.lua` did. Recorded by the writer's own view
---- of `store`, so it cannot be claimed for another plugin.
+--- of `store`, so it cannot be claimed for another mod.
 ---@param key string
 ---@return string?
 function store_writer(key) end
@@ -813,7 +817,7 @@ function store_writer(key) end
 
 --- Directory entries and file text, rooted at a session's working directory.
 --- Not a filesystem: a path outside the root is refused. Absent unless this
---- plugin declares `capabilities = { "files" }` AND the user has trusted it.
+--- mod declares `capabilities = { "files" }` AND the user has trusted it.
 ---@class thurbox.Files
 files = {}
 
@@ -826,7 +830,7 @@ function files.list(session, path) end
 --- Retained answers refresh after one second; the previous text stays visible
 --- during refresh. Read failures raise on a later call. At most 16 keys and
 --- two active reads; excess requests stay pending until capacity is available.
---- A plugin may retain at most 16 distinct paths per render.
+--- A mod may retain at most 16 distinct paths per render.
 ---@param session string
 ---@param path string Relative to the session's root.
 ---@return string? text
@@ -874,17 +878,17 @@ function text.pad(str, cols, align) end
 
 --- Ask for a program and read the answer later, from `thurbox.runs[key]`.
 ---
---- Queued, never executed here — a plugin cannot call anything that waits.
---- Absent unless this plugin declares `capabilities = { "run" }` AND the user
+--- Queued, never executed here — a mod cannot call anything that waits.
+--- Absent unless this mod declares `capabilities = { "run" }` AND the user
 --- has trusted it, so `if not run then` is the honest check.
 ---@param key string
 ---@param program string
 ---@param opts thurbox.RunOpts
 function run(key, program, opts) end
 
---- Forget this plugin's answer/queued request; discard its late completion.
+--- Forget this mod's answer/queued request; discard its late completion.
 --- Same grant as run; asynchronous, idempotent, and does not cancel active work.
----@param key string Nonempty key, implicitly scoped to this plugin.
+---@param key string Nonempty key, implicitly scoped to this mod.
 function run_forget(key) end
 
 --- Loads any `.lua` under the interface directory, and nothing outside it.
@@ -897,7 +901,7 @@ function require(name) end
 ---@class thurbox.cmd.Emit
 ---@field text string The event's name; subscribers see `user.<name>`.
 
----@class (exact) thurbox.cmd.Plugin
+---@class (exact) thurbox.cmd.Mod
 ---@field file string A path within the interface directory.
 ---@field action "restore"|"remove"
 
@@ -949,7 +953,7 @@ function require(name) end
 ---@field host? string
 
 ---@class (exact) thurbox.cmd.Focus
----@field text string The plugin to focus.
+---@field text string The mod to focus.
 ---@field toggle? boolean Return to the previous pane when it already has focus.
 
 ---@class (exact) thurbox.cmd.Open
@@ -962,7 +966,7 @@ function require(name) end
 ---@field list string[] Every session id, in the order wanted.
 
 ---@class (exact) thurbox.cmd.Program
----@field text string This plugin's name for the pane.
+---@field text string This mod's name for the pane.
 ---@field repo? string The program to run; required unless closing or typing.
 ---@field args? string[]
 ---@field action? "close"|"stop"
@@ -1019,7 +1023,7 @@ function require(name) end
 
 --- Run a declared action, exactly as its chord or a click on it would — which
 --- is how a pane opens help, settings, themes or the palette from a key
---- handler. The plugin that asked is the fallback owner, stamped by the kernel.
+--- handler. The mod that asked is the fallback owner, stamped by the kernel.
 ---@class (exact) thurbox.cmd.Action
 ---@field text string The action id. `action` is not read.
 ---@field session? string Pass this row as the action's `session_id` argument.
@@ -1032,18 +1036,19 @@ function require(name) end
 ---@field level? "info"|"success"|"error" Defaults to `info`; anything else is refused.
 
 ---@alias thurbox.Verb
----| "emit" | "plugin" | "set" | "task" | "dispatch"
+---| "emit" | "mod" | "plugin" | "set" | "task" | "dispatch"
 ---| "create" | "bookmark" | "focus" | "open" | "theme" | "order" | "program"
 ---| "delete" | "restore" | "restart" | "start" | "pause" | "send" | "reorder" | "fork"
 ---| "sync" | "rename" | "copy" | "diff" | "shell" | "editor" | "action" | "message"
 
---- The only way a plugin changes anything. Enqueues and returns; it never runs
---- the operation, which is why a plugin cannot stall the loop.
+--- The only way a mod changes anything. Enqueues and returns; it never runs
+--- the operation, which is why a mod cannot stall the loop.
 ---
 --- An option name no verb reads is collected and ignored, so the overloads
 --- below name what each verb actually requires.
 ---@overload fun(verb: "emit", opts: thurbox.cmd.Emit)
----@overload fun(verb: "plugin", opts: thurbox.cmd.Plugin)
+---@overload fun(verb: "mod", opts: thurbox.cmd.Mod)
+---@overload fun(verb: "plugin", opts: thurbox.cmd.Mod)
 ---@overload fun(verb: "set", opts: thurbox.cmd.Set)
 ---@overload fun(verb: "task", opts: thurbox.cmd.Task)
 ---@overload fun(verb: "dispatch", opts: thurbox.cmd.Dispatch)
@@ -1073,3 +1078,12 @@ function require(name) end
 ---@param verb thurbox.Verb
 ---@param opts? table
 function command(verb, opts) end
+
+---@deprecated Use `thurbox.Mod`.
+---@alias thurbox.Plugin thurbox.Mod
+
+---@deprecated Use `thurbox.ModRow`.
+---@alias thurbox.PluginRow thurbox.ModRow
+
+---@deprecated Use `thurbox.cmd.Mod`.
+---@alias thurbox.cmd.Plugin thurbox.cmd.Mod

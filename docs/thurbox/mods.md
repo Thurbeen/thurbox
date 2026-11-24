@@ -1,21 +1,21 @@
-# Writing a thurbox plugin
+# Writing a thurbox mod
 
 > **The API is settled in its essentials, not frozen.** The four node kinds and
 > the snapshot-read/command-write split are load-bearing and asserted by tests.
 > What still moves is the published `thurbox.*` shape, and `thurbox.api` says
 > how: any release may add a field, and removing one or changing what it means
-> moves that integer. Declare `requires_api = N` in your plugin's table for the
+> moves that integer. Declare `requires_api = N` in your mod's table for the
 > contract you wrote against, and a thurbox serving an older one refuses to load
 > it with that reason instead of drawing against a field that is not there.
 > `plugins.lock` records the commit each installed pane resolved to, so pin what
-> you install and re-run `thurbox-cli plugin check` after an upgrade.
+> you install and re-run `thurbox-cli mod check` after an upgrade.
 >
-> **Plugins are trusted code.** They run in-process with whatever capabilities
+> **Mods are trusted code.** They run in-process with whatever capabilities
 > the kernel grants. Install one the
 > way you would install a shell script from a stranger — which is to say, read
 > it first.
 
-A plugin is one `.lua` file. Drop it in your plugin directory and it loads on the
+A mod is one `.lua` file. Drop it in your mod directory and it loads on the
 next save; there is no build step and no restart.
 
 ## Start here
@@ -24,19 +24,19 @@ Four commands, and you have a pane on screen. None of them need the interface to
 be running.
 
 ```bash
-thurbox-cli plugin dir          # where plugins live, and which rule chose it
-thurbox-cli plugin new notes    # a starter that already loads
-thurbox-cli plugin check        # does it load? exits non-zero if not
-thurbox-cli plugin list         # every file, where it came from, is it drawn
+thurbox-cli mod dir          # where mods live, and which rule chose it
+thurbox-cli mod new notes    # a starter that already loads
+thurbox-cli mod check        # does it load? exits non-zero if not
+thurbox-cli mod list         # every file, where it came from, is it drawn
 ```
 
-`plugin new` writes [`examples/lua/plugin.lua`](../../examples/lua/plugin.lua) under your
+`mod new` writes [`examples/lua/plugin.lua`](../../examples/lua/plugin.lua) under your
 chosen name — a pane that renders, declares a key and a setting, and comments the
 one rule that catches everybody (see **Traps**). Edit it, run `check`, and it is
 live on the next save: the interface watches the directory.
 
 **Which directory?** Two rules — `THURBOX_UI_DIR` if it is set, otherwise your own
-copy at `~/.config/thurbox/ui`. `plugin dir` reports the one in force *and why*,
+copy at `~/.config/thurbox/ui`. `mod dir` reports the one in force *and why*,
 because "my edit did nothing" is almost always the other one.
 
 That third path follows the same rule every other config path does: a **dev
@@ -57,21 +57,21 @@ misread, and both are worth knowing before you conclude a path is wrong:
 `thurbox-cli config show` prints the resolved `ui_dir` and `ui_json` alongside
 every other config path, which is the quickest way to see which set is in play.
 
-Plugins may declare `ui_state = function() return { open = state.open == true,
+Mods may declare `ui_state = function() return { open = state.open == true,
 selection = state.cursor or 1 } end`. The local `thurbox-cli ui state` snapshot
-calls it on the TUI loop and includes at most 16 scalar fields per plugin, with
+calls it on the TUI loop and includes at most 16 scalar fields per mod, with
 short string keys and values. It is a public projection: return only state a
 local controller needs, never terminal text, credentials, or the whole `store`.
 
 ```text
-<the directory plugin dir reports>/
+<the directory mod dir reports>/
   layout.lua                   how the screen is arranged
   lib/                         shared modules, via require("lib.theme")
   plugins/*.lua                one file per pane
 ```
 
 Inside a running interface, the **settings modal's Interface tab** shows the same
-inventory `plugin list` does, and restores a file you broke. Open settings with
+inventory `mod list` does, and restores a file you broke. Open settings with
 `Ctrl+,` or `F6`, then `[` / `]` to move between its tabs — or click a heading.
 
 ## Traps
@@ -120,7 +120,7 @@ The mechanism is a metatable on the render context, which has two visible
 consequences: `elapsed` is not a *key* of `ctx`, so it does not appear in
 `pairs(ctx)`; and that metatable is sealed — `getmetatable(ctx)` is `false` and
 `setmetatable(ctx, …)` raises, because one table is shared by every render and a
-plugin replacing it would stop every other pane's clock. Every other field is an
+mod replacing it would stop every other pane's clock. Every other field is an
 ordinary one. Ask `ctx` for facts by name.
 
 Reading `store`/`state` is fine, and so is `command(...)` from a handler. If you
@@ -174,7 +174,7 @@ until a `nil`". A table built by index where one slot was left empty — a diff 
 no old side, a session with no worktree — ends the loop early and *silently*, and the
 symptom is never an error: it is a filter that keeps everything, a count that is short,
 or a row reported missing that the screen plainly shows. This has cost real time twice,
-once in a bundled pane and once in a plugin written against it. If a table can have a
+once in a bundled pane and once in a mod written against it. If a table can have a
 hole, iterate its indices (`for i = 1, n`) or do not leave one.
 
 **A pane in a `switch` slot needs one key that goes both ways.** `command("focus",
@@ -244,8 +244,8 @@ levers, in the order they pay:
 
 `F12` (the perf HUD) is the check: `renders` climbing on an untouched screen
 means a pane is not settling. To find **which** pane, read the `panes` table
-under the counters — one row per plugin, most expensive first, the worst in red
-and a `!` on any pane with a hint — then run `thurbox-cli perf --plugins` for
+under the counters — one row per mod, most expensive first, the worst in red
+and a `!` on any pane with a hint — then run `thurbox-cli perf --mods` for
 render p50/p95/max, handler time, reuse, `run` durations, `store` writes per
 render and tree size, with each hint spelled out (`--json` to script it). The
 hints name the traps above: not `pure` yet rendering every frame, a float
@@ -259,8 +259,8 @@ and the search strip's per-session content memo.
 `AGENTS.md` and `README.md` are delivered into the interface directory itself, so a
 session pointed at it has the rules to hand without finding this file. `AGENTS.md`
 is the one a coding CLI loads on its own; it is deliberately short and covers what
-is easy to get wrong — that "install a plugin" is `thurbox-cli plugin install` and
-not a package manager, that `plugin check` gates every edit, and that adding a pane
+is easy to get wrong — that "install a mod" is `thurbox-cli mod install` and
+not a package manager, that `mod check` gates every edit, and that adding a pane
 is two edits. `CLAUDE.md` and `GEMINI.md` beside them point at it rather than
 repeating it.
 
@@ -299,7 +299,7 @@ Removing every pane is allowed and does what it says: nothing draws, the chrome
 still works, and the Interface tab still lists what you removed. It is not treated as a broken
 directory.
 
-## The smallest plugin
+## The smallest mod
 
 ```lua
 return {
@@ -314,7 +314,7 @@ return {
 ```
 
 `render` returns a plain table describing what to draw. **Lua never holds a
-ratatui object** — that indirection is why reloading is safe, and why a plugin
+ratatui object** — that indirection is why reloading is safe, and why a mod
 that throws costs its own pane and nothing else.
 
 A pane that throws draws an error panel in its own rect, and keeps drawing it
@@ -329,19 +329,19 @@ and takes no input, and the message band says why, once per failure.
 |---|---|
 | `thurbox` | Everything readable: sessions, tasks, repos, agents, hosts, theme, registry, diffs, links |
 | `command(kind, opts)` | The only way to change anything. Enqueues and returns |
-| `state` | Private to your plugin. Survives a reload; **not** a restart |
-| `store` | Shared by every plugin — the bus between them. Same lifetime as `state` |
+| `state` | Private to your mod. Survives a reload; **not** a restart |
+| `store` | Shared by every mod — the bus between them. Same lifetime as `state` |
 | `files.list/read` | Directory entries and file text, rooted at a session's directory. Needs the `files` capability and your trust |
 | `text.width/truncate/pad` | Display width in terminal COLUMNS, and the two cuts that spend a budget in it |
-| `thurbox.api` | The plugin API contract number. It moves only when a published field is removed or changes meaning; `requires_api` in your declaration table names the one you need |
+| `thurbox.api` | The mod API contract number. It moves only when a published field is removed or changes meaning; `requires_api` in your declaration table names the one you need |
 | `session.meta` | On each `thurbox.sessions` row: the session's `ui.*` meta keys by full key (`meta["ui.note"]`). Absent when there are none, which is every row the Fleet engine publishes. Treat them as untrusted text: one line, control and invisible characters (bidi overrides, zero-width spaces, tag characters, Hangul fillers) stripped, at most 256 characters, 32 keys per session. Other keys are never published, nor is a `ui.*` key carrying such a character. The bundled list draws `ui.note` muted on the row and groups by `ui.group` |
 | `thurbox.settings` | The settings in force: every `[features]` switch, plus the panel breakpoints and scrollback. Read your own switch and decline to draw when it is off — the kernel gates only what it owns |
 | `thurbox.search` | The content search's answer: lines found in every session's terminals, scrollback included, ranked, each with how far back it is (`back`) and the scroll offset that shows it (`scroll`). Served only while `store.want_content` holds a query (optionally narrowed by `store["want_content.sessions"]`), off the render thread; an empty query reads every history into the cache and matches nothing, so an open search strip is ready before the first keystroke; nil until the first answer lands |
 | `thurbox.bookmarks/browse` | The creation flow's reads: remembered repositories and a directory listing — each served only while `store.want_bookmarks`/`want_browse` asks for it |
 | `require` | Loads **any** `.lua` under the interface directory, and nothing outside it |
 
-**Your globals are your own.** Each plugin runs in an environment of its own: a
-global you assign is invisible to every other plugin, and `require` gives you your
+**Your globals are your own.** Each mod runs in an environment of its own: a
+global you assign is invisible to every other mod, and `require` gives you your
 own copy of a module. Share through `store`. The library everyone reads —
 `string`, `table`, `math`, `coroutine`, `utf8`, `text` — is read-only, so
 `string.upper = …` fails the load rather than changing another pane. This is what
@@ -349,9 +349,9 @@ lets a grant belong to one file: code you write always acts as you, whichever
 pane happens to call it.
 
 That is worth stating on its own, because it is easy to read `require` as "the
-`lib/` the interface shipped": **a pure-Lua library can be vendored into a plugin's
+`lib/` the interface shipped": **a pure-Lua library can be vendored into a mod's
 own repository and required from there**, with no kernel change and no capability.
-`require("your-pane.vendor.thing")` resolves like any other path, and `plugin
+`require("your-pane.vendor.thing")` resolves like any other path, and `mod
 install git+…` is already the delivery mechanism for a repository that carries more
 than one file. A Lua tokenizer, a date library, a pretty-printer — none of those
 need anything added to the sandbox.
@@ -562,7 +562,7 @@ truncation and scroll windows possible at all.
 
 ## Slots: where your pane lands
 
-`slot` names the region of `layout.lua` your plugin draws into. The stock
+`slot` names the region of `layout.lua` your mod draws into. The stock
 arrangement is two columns:
 
 | Slot | Where | Shown when |
@@ -573,25 +573,25 @@ arrangement is two columns:
 A pane that only ever floats — the new-session flow is the bundled example —
 names a slot nothing places, so it never competes for the centre.
 
-A slot exists because a plugin fills it, not the other way round: a slot nothing
+A slot exists because a mod fills it, not the other way round: a slot nothing
 can fill would reserve a rect for nothing. **Adding a pane means adding its slot
 to `layout.lua`**, which is a file you edit rather than a layout compiled into
 the binary.
 
-Several plugins may name the same slot. `center` is a **switch** slot — one
+Several mods may name the same slot. `center` is a **switch** slot — one
 occupant is visible at a time and focusing one brings it forward. The `ctrl+h` /
 `ctrl+l` cycle walks columns, not panes: it stops **once** per switch slot, on its
 default occupant (the first focusable one — the agent pane in `center`), and from an
 alternate it steps off the slot rather than back to its sibling. An alternate is
-reached only by asking for it — its own key, a pill, or a `focus:<plugin>` click
+reached only by asking for it — its own key, a pill, or a `focus:<mod>` click
 role — so a pane that replaces the centre needs one of those or nothing reaches it
-(`plugin check` warns about a pill-less one). A slot the arrangement
-did not place this frame simply does not draw, and focus skips its plugins, so a
+(`mod check` warns about a pill-less one). A slot the arrangement
+did not place this frame simply does not draw, and focus skips its mods, so a
 closed column can never hold focus.
 
 The distinction between "not drawn" and "cannot hold focus" is load-bearing:
 focusing a switch alternate is *what makes it drawn*, so the two questions have
-separate answers in `kernel::focus`. Conflating them cost the old plugins pane every
+separate answers in `kernel::focus`. Conflating them cost the old mods pane every
 way in it had — the ring skipped it, and its own opening chord was undone a frame
 later by the guard that keeps focus off closed columns.
 
@@ -616,7 +616,7 @@ panels.toggle("sessions")  -- flip it, returns the new state
 
 A pane that wants a full-width row of its own — an indicator, a ticker — sits
 in a slot nothing else names, and a slot needs the arrangement to place it.
-`plugin install` never writes `layout.lua`, so such an install would load and
+`mod install` never writes `layout.lua`, so such an install would load and
 draw nothing until you added the line. Declare it a strip instead:
 
 ```lua
@@ -646,7 +646,7 @@ end
 
 The arrangement is still yours: move the loop, or delete it to keep strips off
 the screen. A `layout.lua` written before strips existed has no loop, and
-`plugin check` says so, naming the loop as the fix rather than a line per
+`mod check` says so, naming the loop as the fix rather than a line per
 strip. A float is never a strip: it draws above the arrangement, so a row
 reserved for it would stay empty.
 
@@ -661,7 +661,7 @@ local theme = require("lib.theme")
 The active theme resolves roles to colours. Naming a role means your pane
 follows every one of the 36 built-in themes and any the user wrote, without you
 knowing they exist. Hardcoding a colour opts out of that for everyone
-downstream — and there is a test that greps the bundled plugins for literals.
+downstream — and there is a test that greps the bundled mods for literals.
 
 ## Keys: declare them, don't just handle them
 
@@ -678,8 +678,8 @@ end,
 ```
 
 Declaring keys as data is what lets the kernel list them in help, detect a clash
-with another plugin, and let the user rebind them — none of which it could do if
-they only existed inside `on_key`. Help is a kernel modal rather than a plugin,
+with another mod, and let the user rebind them — none of which it could do if
+they only existed inside `on_key`. Help is a kernel modal rather than a mod,
 and it renders the registry, so your key appears in it (and becomes rebindable)
 by being declared and nothing else. The same is true of `settings`: declare
 `{ id, desc, default }` and the settings modal grows a row for it. A text setting
@@ -697,15 +697,15 @@ settings = {
 The settings modal then steps through them (`Enter`, `Space`, `←`/`→`) instead of
 opening a text field, and lists them in its footer. A value outside them is refused
 — from the modal and from `command("set")` alike — and one stored in `ui.json` that
-the plugin no longer offers falls back to the default. The default must be one of
-the choices, or the plugin fails to load with an error naming the setting.
+the mod no longer offers falls back to the default. The default must be one of
+the choices, or the mod fails to load with an error naming the setting.
 
-A plugin can also **write** its own settings — `command("set", { text =
+A mod can also **write** its own settings — `command("set", { text =
 "yourpane.wrap", flag = true })` for a boolean, `number = 2` for a number, or
 `value = "compact"` for text. A `state` value may hold the requested value until
 the queued command lands; after that, read the registry's value so a change in
 the settings modal is respected. One durable home per setting.
-Plugin-scoped keys fire only while you have focus, so several panes can all
+Mod-scoped keys fire only while you have focus, so several panes can all
 declare `j`.
 
 Chords are canonicalised, which matters more than it sounds: `shift+j` reaches
@@ -739,7 +739,7 @@ end,
 ```
 
 Return `true` from the press, or the release is never delivered: the release goes to
-the plugin that took the press, whichever pane has focus by then, and only to it.
+the mod that took the press, whichever pane has focus by then, and only to it.
 Where the terminal reports releases, a held key's auto-repeat is swallowed rather than
 fired again. Give `release` to a chord that types nothing — one with `ctrl`, `alt` or
 `super`, or a key such as `f5`: outside Windows, kitty-protocol terminals send a held
@@ -767,7 +767,7 @@ uses it, alongside `input = "session"` to forward what it does not handle.
 
 ## Floating views and the native focus cycle
 
-A floating plugin opts in by declaring `on_focus_cycle(direction)`. The
+A floating mod opts in by declaring `on_focus_cycle(direction)`. The
 kernel offers `"next"` for Ctrl+L and `"previous"` for Ctrl+H to the **topmost
 open float**, before moving between panes. The same hook handles the existing
 `kernel.focus_next` and `kernel.focus_previous` actions in the action catalog.
@@ -821,9 +821,9 @@ end,
 Declare what you listen for and the kernel calls you **once
 per change**, off the render path, with the tables current: a session appeared,
 disappeared, changed status, name or branch; the selection or the focused pane
-moved; a command a plugin issued finished or failed; a program you started
+moved; a command a mod issued finished or failed; a program you started
 ended; the interface reloaded. The
-whole list, with each payload, is `thurbox-cli plugin events` and the last
+whole list, with each payload, is `thurbox-cli mod events` and the last
 section of `F1`.
 
 The kernel **derives** these by diffing the snapshot, so a session made by
@@ -842,9 +842,9 @@ subscribers still run, your pane still draws, and the failure is reported once
 per event in the message band rather than painted into your rect every frame.
 
 **One event is addressed rather than broadcast.** `program.exited` goes only to
-the plugin whose pane it was. A program pane belongs to the plugin that started
-it and no other plugin can even name it, so the news that it ended has the same
-owner — and two plugins may both call their pane `editor`, which a broadcast
+the mod whose pane it was. A program pane belongs to the mod that started
+it and no other mod can even name it, so the news that it ended has the same
+owner — and two mods may both call their pane `editor`, which a broadcast
 would have each of them acting on. Every other event is about something every
 pane can already see in the snapshot, and is delivered to every subscriber.
 
@@ -858,15 +858,15 @@ restarts once. What it does not announce is a corpse adopted from a *previous*
 run: that program stopped while nothing was watching, and reporting it at boot
 would tell a pane its editor had just closed.
 
-**A subscription to a name nothing emits refuses to load** (`plugin check` says
+**A subscription to a name nothing emits refuses to load** (`mod check` says
 which), because a handler that never fires is the one failure with no symptom.
 
-**Plugins can talk to each other.** `command("emit", { text = "refresh", scope =
-"x" })` reaches every plugin subscribed to `user.refresh` on the next iteration,
+**Mods can talk to each other.** `command("emit", { text = "refresh", scope =
+"x" })` reaches every mod subscribed to `user.refresh` on the next iteration,
 with the other fields as the payload and `payload.source` set to your name — by
 the kernel, so nobody can forge it. A kernel name cannot be emitted. Emits may
 cascade (a handler emitting to a handler) four generations deep per dispatch;
-the fifth is dropped and reported, so two plugins cannot pin the loop between
+the fifth is dropped and reported, so two mods cannot pin the loop between
 them.
 
 `examples/lua/events.lua` is the worked example: it selects the session that
@@ -881,7 +881,7 @@ commands = {
 },
 ```
 
-`Ctrl+P` opens the command palette — every plugin's declared keys, every
+`Ctrl+P` opens the command palette — every mod's declared keys, every
 `commands` entry, and the kernel's own modals, reload and quit — filtered as you
 type, with the chord beside each row that has one. `Enter` runs the chosen row
 through the same `on_action` a key press takes, **whether or not your pane is
@@ -891,7 +891,7 @@ one row; a user may later bind a chord to a command from `F1`, at which point it
 is a key like any other.
 
 The running interface publishes these declarations through `thurbox-cli ui
-actions` and `thurbox-cli schema`. A plugin action keeps its existing
+actions` and `thurbox-cli schema`. A mod action keeps its existing
 `on_action(action)` callback; a typed invocation may pass a read-only second
 argument table. Declare argument and effect metadata alongside keys when an
 action takes input:
@@ -904,7 +904,7 @@ actions = { { name = "mine.search", effect = "ui-write", args = {
 
 Supported argument kinds are `string` and `uuid`; `required = true` refuses
 an omitted argument. Action IDs reserved by the kernel cannot be claimed by a
-plugin. `thurbox-cli plugin check` warns about raw `on_click` handlers and
+mod. `thurbox-cli mod check` warns about raw `on_click` handlers and
 menu or click action names missing from the catalog. Key and scroll handlers
 remain available through addressed `ui input` for the active pane; give
 repeatable controls a declared semantic action.
@@ -925,11 +925,11 @@ verb and the kernel answers it without calling you at all:
 { type = "text", len = 1, role = "url:" .. mr.url,     text = { … } }
 ```
 
-- `action:<id>` runs a declared action, on whichever plugin declared it — so one
+- `action:<id>` runs a declared action, on whichever mod declared it — so one
   pane's button can name an action belonging to a pane it has never heard of.
 - `key:<chord>` replays the keystroke through the handler the keyboard uses, so
   a button and its letter cannot come to mean different things.
-- `focus:<plugin>` focuses that plugin, which in a `switch` slot is also how its
+- `focus:<mod>` focuses that mod, which in a `switch` slot is also how its
   view is brought forward.
 - `url:<link>` opens the link, and is the one verb that also changes how the
   node is *painted* — see below.
@@ -987,7 +987,7 @@ Four consequences worth knowing:
 `command("open", { text = url })` is the imperative half, for a link you open
 from a keypress rather than a click. The field is `text`, not `url`.
 
-Everything else — a list row, most often — is offered to the plugin that painted
+Everything else — a list row, most often — is offered to the mod that painted
 it:
 
 ```lua
@@ -1064,7 +1064,7 @@ the session's id (`<fleet>:<task>`) as `args.session_id`. The bundled menu also 
 `store["menu.chosen"]` handoff until edited copies of either bundled pane have
 been migrated; new handlers should use the typed argument.
 
-An entry's `action` has to be one some plugin **declares**, in `keys` or in
+An entry's `action` has to be one some mod **declares**, in `keys` or in
 `commands`: that declaration is how `command("action")` finds the pane whose
 `on_action` answers it. An undeclared one falls back to the menu float itself,
 which answers nothing, so the entry closes the menu and does nothing — declare
@@ -1072,7 +1072,7 @@ which answers nothing, so the entry closes the menu and does nothing — declare
 
 #### Adding entries to the sessions menu
 
-The sessions column's row menu is open to other plugins. A plugin that owns a
+The sessions column's row menu is open to other mods. A mod that owns a
 per-session action offers it by leaving its entries in
 `store["sessions.menu_extra"]`, under its own name. Write it at the top level
 of your file, which runs on every load and reload, or from a handler — never
@@ -1089,7 +1089,7 @@ store["sessions.menu_extra"] = extra   -- a read is a copy: write it back
 Each contributor's list takes the same entries and `"sep"` rules as
 `store.menu.items`. The pane appends them after its own entries when a row's
 menu opens, contributors in name order and each after a rule. Keying the table
-by owner means rewriting your own list never overwrites another plugin's, and
+by owner means rewriting your own list never overwrites another mod's, and
 writing the same list again changes nothing. Write `nil` under your name to
 withdraw.
 
@@ -1233,8 +1233,8 @@ for _, item in ipairs(thurbox.commands) do
 end
 ```
 
-This is not a limitation to work around. A plugin that could wait would be a
-plugin that can freeze the interface on a slow git fetch or an unreachable SSH
+This is not a limitation to work around. A mod that could wait would be a
+mod that can freeze the interface on a slow git fetch or an unreachable SSH
 host.
 
 Two verbs reach outside your own rect:
@@ -1257,7 +1257,7 @@ notices.
 the palette. Before it, those were reachable only by painting a node and waiting
 for a click — which is why three floats rebuilt a modal shell of their own.
 
-The action goes to whichever plugin declared it — as a key **or** as a chord-less
+The action goes to whichever mod declared it — as a key **or** as a chord-less
 palette row in `commands` — so it is also how one pane asks another to act. An
 action carries no argument; leave one in `store` first. The search strip asks the
 terminal pane to scroll to a hit this way: it writes `store["terminal.reveal"]`
@@ -1284,7 +1284,7 @@ the terminal grows.
 ```
 
 A modal is *open* on the frames it returns a `float` node, and closed on the
-ones it does not. There is no open/close state for the kernel and your plugin to
+ones it does not. There is no open/close state for the kernel and your mod to
 disagree about. While it floats it takes every key — except the reserved ones,
 so it can never trap the user, and except copy and paste, which have to work
 from any pane.
@@ -1318,17 +1318,17 @@ decorate = function(tree)
 end,
 ```
 
-You receive another plugin's rendered tree and return a modified one, matching
+You receive another mod's rendered tree and return a modified one, matching
 on the `id`/`class`/`role` nodes carry. This is how search highlights matches
 inside panes it does not own. A decorator that throws costs its decoration, not
 the pane.
 
-## Turning a plugin off
+## Turning a mod off
 
-`space` in the Interface tab turns the selected plugin off, and on again. The
+`space` in the Interface tab turns the selected mod off, and on again. The
 file is not touched: it stays exactly where it is and is simply not loaded. That
 is the thing to reach for when you want a pane gone for an afternoon, when you
-are bisecting a problem, or when a plugin you are writing has broken the
+are bisecting a problem, or when a mod you are writing has broken the
 interface — turning it off is enough to get a working one back, and for a pane you
 wrote it is the *only* way back, since `r` has no shipped copy to restore
 ([When something goes wrong](#when-something-goes-wrong)).
@@ -1338,18 +1338,18 @@ wrote it is the *only* way back, since `r` has no shipped copy to restore
 and the removal is permanent. The confirmation says which one you are about to
 do — read it.
 
-A disabled plugin is genuinely absent, not dormant: it declares no keys, offers
+A disabled mod is genuinely absent, not dormant: it declares no keys, offers
 no settings, occupies no slot and is granted no capability. Two things follow
-that are worth knowing. Its key is **free** while it is off, so another plugin
+that are worth knowing. Its key is **free** while it is off, so another mod
 may claim it — and turning the first one back on can then surface a conflict that
-did not exist. And a **broken** disabled plugin reports nothing, because nothing
+did not exist. And a **broken** disabled mod reports nothing, because nothing
 tried to load it; its error reappears when you turn it on.
 
 ## Running a program
 
 A pane over `git status`, `docker compose ps` or `npm outdated` needs to *run*
 those, and Lua here has no process, no filesystem and no network. `run` is the
-one door, and it opens only for a plugin that asks for it and that you have
+one door, and it opens only for a mod that asks for it and that you have
 trusted.
 
 ```lua
@@ -1377,7 +1377,7 @@ run("quota", "quota-axi --json", { machine = "local", ttl = 60, timeout = 30 })
 ```
 
 A session on another machine, and `machine = "host:<name>"`, are refused
-with a `failed` answer: a plugin's program runs on this machine only, and
+with a `failed` answer: a mod's program runs on this machine only, and
 never falls back to another one.
 
 **Account quotas are yours to fetch.** thurbox reads no agent credentials and
@@ -1393,7 +1393,7 @@ its own `ttl`: without it every frame after the answer went stale would start
 another copy. `refresh = true` overrides freshness; that is what a "reload" key
 does.
 
-**Trusting a plugin** is settings (`Ctrl+,`) → `]` → select it → `t`, then `t`
+**Trusting a mod** is settings (`Ctrl+,`) → `]` → select it → `t`, then `t`
 again to confirm what the footer says it will hold. The
 Interface tab shows which files ask for a capability, which are trusted, and
 whether a trusted file has changed since you trusted it. Revoking takes effect on
@@ -1401,10 +1401,10 @@ the next frame.
 
 This is not a sandbox and does not pretend to be one. A program thurbox runs for
 you has your authority, and no gate here changes that — what trust buys is that
-nothing runs *unasked*, per plugin, revocably. Treat a plugin you did not write
+nothing runs *unasked*, per mod, revocably. Treat a mod you did not write
 the way you would treat a shell profile someone sent you.
 
-**The kernel's bounds**, which a plugin cannot raise: output is capped per stream
+**The kernel's bounds**, which a mod cannot raise: output is capped per stream
 and flagged when truncated, a run times out (30 s by default, `timeout = n` up to
 ten minutes), and four run at once with the rest queued. A run happens **on
 this machine only**, in the session's working directory — which is what makes
@@ -1426,24 +1426,24 @@ did not ask for: `"host:<name>"` names another machine, and its run fails.
 This grants nothing new: a session's runs already execute here as you, so it is
 the same `run` capability and the same trust.
 
-**Retire keys explicitly.** Answers belong to `(plugin, key)`, not to the
+**Retire keys explicitly.** Answers belong to `(mod, key)`, not to the
 program or target. A fresh or in-flight key ignores another request even if its
 program or target differs. Use stable target-specific keys. For a retired host
-or provider, call `run_forget(key)` from the same plugin:
+or provider, call `run_forget(key)` from the same mod:
 
 ```lua
 run_forget("quota:retired-host")
 ```
 
 The nonempty string key is required; unknown or repeated keys are a no-op. It
-returns no values. Like `run`, this function is absent without the plugin's
+returns no values. Like `run`, this function is absent without the mod's
 existing `run` declaration and trust grant. It removes that owner's cached
 answer and queued request; other owners' identical keys are untouched. Both
 operations are asynchronous and preserve Lua call order, so
 `run_forget(key); run(key, program, opts)` starts a new request. Published reads
 reflect forgetting after the coordinator processes it, rather than within the
 issuing handler. An old active completion cannot repopulate a forgotten entry
-or overwrite a new request under the same key. Removing a plugin also discards
+or overwrite a new request under the same key. Removing a mod also discards
 its unserved requests and late completions.
 
 Forgetting **does not cancel active execution**: its capture still occupies one
@@ -1455,13 +1455,13 @@ of descendants or remote commands. There is no public cancel API. Results remain
 nonzero exits are `done` with their stderr/status; timeout has `timed_out = true`,
 `status = nil`, and `ok = false`.
 
-There is no automatic key-count, queue-size, or answer-cache limit. Plugins must
+There is no automatic key-count, queue-size, or answer-cache limit. Mods must
 bound their desired keys and forget retired ones, including after host/provider
 churn. This leaves only their desired answer/queued entries plus at most four
 active captures globally; forgotten keys leave no invalidation tombstones.
-After a Lua VM rebuild or reload, reconcile the plugin's published
+After a Lua VM rebuild or reload, reconcile the mod's published
 `thurbox.runs` keys against its desired keys: private Lua tracking state may
-have reset while core answers for the surviving plugin path remain.
+have reset while core answers for the surviving mod path remain.
 Each capture retains at most 256 KiB of bytes per stream before UTF-8 decoding,
 which can expand invalid bytes into replacement characters. The same `run`
 grant authorizes configured hosts without sessions: trust remains shell-level
@@ -1469,18 +1469,19 @@ user authority, rather than a per-host sandbox.
 
 ## Driving sessions and reading files
 
-`command` is every plugin's, but some of its verbs drive an agent or lose something
+`command` is every mod's, but some of its verbs drive an agent or lose something
 for good, and those need the `sessions` capability:
 
 - `send` types into an agent.
 - `create` launches an agent.
 - `delete` with `force = true`.
-- `plugin` restores or removes a file of the interface.
+- `mod` restores or removes a file of the interface. `plugin` is its deprecated
+  spelling; `command.failed` still names either one `plugin`.
 - `action` naming `kernel.paste` types the clipboard into the focused agent.
 
-Any other `action` runs the handler of the plugin that declared it — but as your
-request. Every request carries the chain of plugins it came through, the one that
-first asked first, and is allowed only with what *every* plugin in that chain
+Any other `action` runs the handler of the mod that declared it — but as your
+request. Every request carries the chain of mods it came through, the one that
+first asked first, and is allowed only with what *every* mod in that chain
 holds: a pane holding no grant cannot have a trusted one `send` for it, however
 many actions it forwards through, and a trusted pane does not lend its grant to a
 handler it asks. A key or a click the user makes runs the handler under its own
@@ -1497,7 +1498,7 @@ grant; Fleet has no undo window, so it deletes the Task like a forced one.
 is granted, as `run` is. A session's directory holds its `.env` files and keys, and
 a pane that can read them and `send` could hand them to an agent.
 
-`files.read(session, path)` is asynchronous in plugin API 2. It returns `nil`
+`files.read(session, path)` is asynchronous in mod API 2. It returns `nil`
 until the worker finishes; request it from `render` to pick up the answer. A
 completed failure raises on a later call (use `pcall` to display it). Paths remain
 relative to the session directory; absolute paths, parent traversal and symlinks
@@ -1516,9 +1517,9 @@ render = function()
 end,
 ```
 
-The host shares one `WorkerStore` across granted plugins: two reusable workers,
+The host shares one `WorkerStore` across granted mods: two reusable workers,
 16 retained keys (session directory plus relative path), and a one-second TTL.
-Each plugin may retain at most 16 distinct paths per render; exceeding this
+Each mod may retain at most 16 distinct paths per render; exceeding this
 limit raises an error. The store keeps one deferred admission key, retried
 before refreshes. New completions wake pure panes; demand beyond the shared
 cache limit can churn entries and has no fairness guarantee.
@@ -1527,7 +1528,7 @@ in the background, keeping the previous answer while refreshing; an unchanged
 answer renews its age without invalidating pure panes. Changed answers repaint
 pure panes too. Completed least-recently-requested entries may be evicted; when
 all entries are pending, a new key returns `nil` and must be retried. A blocked
-read occupies a worker until it returns. Reloading plugins keeps this bounded
+read occupies a worker until it returns. Reloading mods keeps this bounded
 pool. Dependencies retire when a pane stops reading a path, is hidden,
 is reloaded, loses its grant, or loses its session root. Queued retired reads are
 skipped; active ones may finish but their answers are discarded. Dropping the
@@ -1546,7 +1547,7 @@ writes `store`, so the question is only its author's words. The confirmation
 therefore words what `y` does itself, from the command and the session's name,
 and names the pane that asked. It learns which
 pane that was from `store_writer("confirm")`, which returns the path of the
-plugin that last wrote a `store` key — or, written for another plugin's request,
+mod that last wrote a `store` key — or, written for another mod's request,
 that request's chain (`plugins/a.lua via plugins/b.lua`). That record is made by the writer's own
 view of `store`, so no pane can claim another's. On `y` it issues exactly the
 request it drew, never `store.confirm` read again at the keypress, which a later
@@ -1576,7 +1577,7 @@ end,
 ```
 
 The pane is **yours**, not a session's: one instance whatever is selected. You write
-its name and the kernel supplies the owner, so two plugins can both call their pane
+its name and the kernel supplies the owner, so two mods can both call their pane
 `watch` and get two different programs — and neither can name the other's.
 
 `repo` is the program and `args` its arguments, kept separate because the
@@ -1584,7 +1585,7 @@ multiplexer quotes each one: a path with a space in it survives that and would n
 survive being concatenated into a command line.
 
 Give one up with `command("program", { text = "watch", action = "close" })`. A
-plugin that is removed, renamed or turned off has its panes released for it.
+mod that is removed, renamed or turned off has its panes released for it.
 
 **Telling a running program something.** Starting is idempotent, so asking again
 with different `args` does nothing — the pane is already there. To change what a
@@ -1626,8 +1627,8 @@ command("program", {
 })
 ```
 
-Do not try to make this decision in the plugin. Whether a pane is alive is not in
-the snapshot, and a plugin that kept the answer in its own `state` would be wrong
+Do not try to make this decision in the mod. Whether a pane is alive is not in
+the snapshot, and a mod that kept the answer in its own `state` would be wrong
 after an interface reload, which keeps panes but re-runs the file. The kernel is
 asking the pane. The keys are **not** sent to a program it just started: a process
 that has not begun reading yet would lose them.
@@ -1651,7 +1652,7 @@ It fires once, on the transition, and only for **your** panes.
 **Why `thurbox.granted` and not `if not program then`.** A capability is normally
 withheld by *absence* — that is rule 4, and it is why `run` is simply not a
 function until you are trusted. A program pane is asked for through `command`,
-which every plugin has, so absence cannot express it: without `granted` a pane
+which every mod has, so absence cannot express it: without `granted` a pane
 could not tell "you have not trusted me" from "still starting". It grants nothing;
 it reports a decision you already made.
 
@@ -1662,7 +1663,7 @@ seconds is not the same decision as letting it hold a process open on your
 keystrokes, so it is asked separately. The Interface tab says which of the two a
 file wants.
 
-**Bounds.** Four panes per plugin — the same number as `run`'s concurrency, so
+**Bounds.** Four panes per mod — the same number as `run`'s concurrency, so
 there is one to remember. `run`'s others do not transfer: an output cap is
 meaningless for a screen overwritten in place, and a timeout is the opposite of what
 an interactive program wants.
@@ -1673,7 +1674,7 @@ leaves it running; the next launch finds it again by its window name, so nothing
 persisted that could go stale. A program that exits on its own is *reported* as
 exited rather than drawn as a frozen screen, and asking again starts it afresh.
 
-**Local only, for now.** A plugin's pane has no session and therefore no host, so
+**Local only, for now.** A mod's pane has no session and therefore no host, so
 it runs on this machine in the interface directory. `run` goes remote because a
 session tells it where to; there is nothing here to ask.
 
@@ -1681,17 +1682,17 @@ session tells it where to; there is nothing here to ask.
 
 `ctrl+q` quit · `f10` reload · `ctrl+h` / `ctrl+l` move focus · `f12` perf counters.
 
-These cannot be rebound or consumed, so a misbehaving plugin can never leave the
+These cannot be rebound or consumed, so a misbehaving mod can never leave the
 user stuck inside it.
 
 **`tab` is not among them**, deliberately. Every coding agent uses it for completion,
 and a full-screen program in a pane needs it too — an automap, a pager, `vim`. So it
-reaches your pane, and a plugin may claim it (the creation flow does). This list used
-to name `tab` as moving focus, which was never true and cost a plugin author real
+reaches your pane, and a mod may claim it (the creation flow does). This list used
+to name `tab` as moving focus, which was never true and cost a mod author real
 time; focus has only ever moved on `ctrl+h`/`ctrl+l`.
 
-**A disabled plugin reports nothing.** Its keys are free while it is off — another
-plugin may claim one, and turning the first back on can then surface a conflict
+**A disabled mod reports nothing.** Its keys are free while it is off — another
+mod may claim one, and turning the first back on can then surface a conflict
 that did not exist. And a broken one shows no error, because nothing tried to
 load it; the error reappears when you turn it on.
 
@@ -1699,32 +1700,32 @@ load it; the error reappears when you turn it on.
 is what the shell pane (`Ctrl+T`) is for — it is a real terminal, in the session's
 directory, on the session's machine.
 
-**A plugin must handle not being trusted.** The capability is *absent*, not
+**A mod must handle not being trusted.** The capability is *absent*, not
 refusing: `run` is nil, so `command`-style error handling never fires. Check for
 it and draw something useful, as `examples/lua/composite.lua` does — that state
-is the first thing every user of your plugin will see.
+is the first thing every user of your mod will see.
 
 ## When something goes wrong
 
-- A plugin that fails to load leaves the **last good version running**, with the
+- A mod that fails to load leaves the **last good version running**, with the
   error on screen.
-- A plugin that throws while rendering shows a red panel **in its own rect**.
-- A plugin that never returns is **interrupted** — an unterminated loop costs one
+- A mod that throws while rendering shows a red panel **in its own rect**.
+- A mod that never returns is **interrupted** — an unterminated loop costs one
   pane, not the application. The interruption is a hook installed before each
   call, and installing it allocates: on a VM too full for it, the call is **not
   run** and fails with "its instruction budget could not be armed", rather than
   running without a bound.
-- A plugin that allocates without bound hits a **memory ceiling** and fails. Every
-  plugin shares that VM, so once it is full the interface is **rebuilt** on a fresh
+- A mod that allocates without bound hits a **memory ceiling** and fails. Every
+  mod shares that VM, so once it is full the interface is **rebuilt** on a fresh
   one: panes lose what they held in memory. Full means the live heap is at the
   ceiling, or past nine-tenths of it and still growing; an interface that simply
   holds a lot from load is left alone. A successful rebuild sends
   `interface.reloaded` with `reason = "memory"`. If the fresh VM fills right back
   up, the rebuild is not repeated: an interface that grew back to the same size
   is kept, and one that fills it to the ceiling again is replaced by the embedded
-  interface until you next reload. Disabled plugins stay disabled, including when
+  interface until you next reload. Disabled mods stay disabled, including when
   recovery uses the embedded interface.
-- If your whole plugin directory will not load, the **embedded copies** run
+- If your whole mod directory will not load, the **embedded copies** run
   instead, so you can fix the file from inside the thing it broke. An explicit
   `THURBOX_UI_DIR` keeps its last good interface during ordinary edit reloads;
   memory recovery must discard the exhausted VM even under that override.
@@ -1737,8 +1738,8 @@ is the first thing every user of your plugin will see.
 ### Settings → Interface: the way back
 
 `Ctrl+,` (or `F6`), then `]`. It is **chrome, not a pane** — a recovery tool that
-was itself a plugin could be the thing that is broken, so nothing you do to the
-directory can take it away. It lists the plugins the interface is made of, what
+was itself a mod could be the thing that is broken, so nothing you do to the
+directory can take it away. It lists the mods the interface is made of, what
 state each is in and what it asks for. The header line counts what needs you —
 `failed`, `not granted`, `off` — and ends with the directory in force (under your
 home as `~/…`), which is the answer to "my edits did nothing": they are usually
@@ -1803,12 +1804,12 @@ the file came from, and the row's group and tail are what tell you:
 | `SHIPPED`, `edited` | a bundled pane you changed | `r` — the shipped copy is in the binary |
 | `SHIPPED`, `deleted` | a bundled pane you deleted | `r` |
 | `YOURS` | one you wrote | **`space`**, then fix the file. `r` reports that thurbox ships no version of it |
-| `PACKAGE · <name>` | an installed pane | `thurbox-cli plugin sync` — the manager that put it there puts it back. `r` says so and refuses |
+| `PACKAGE · <name>` | an installed pane | `thurbox-cli mod sync` — the manager that put it there puts it back. `r` says so and refuses |
 
 A pane you wrote yourself is therefore the one case with no restore, and `space`
 is what you reach for: turning it off is enough to get a working interface back
 while you fix it, and it is also how you bisect which of several files is at
-fault. Remember that **a disabled plugin reports nothing** — nothing tried to
+fault. Remember that **a disabled mod reports nothing** — nothing tried to
 load it, so its error reappears only when you turn it back on.
 
 `layout.lua` and the `lib/` modules are the files whose mistakes cost the whole
@@ -1819,9 +1820,9 @@ from inside a working interface, not from a blank one.
 
 ### The same answers without a terminal
 
-- `thurbox-cli plugin list` — the inventory above, as text.
-- `thurbox-cli plugin dir` — the directory in force, and which rule chose it.
-- `thurbox-cli plugin check` — loads the interface the way `thurbox` does and
+- `thurbox-cli mod list` — the inventory above, as text.
+- `thurbox-cli mod dir` — the directory in force, and which rule chose it.
+- `thurbox-cli mod check` — loads the interface the way `thurbox` does and
   exits non-zero on a failure, including on a pane that loaded but which no
   arrangement places (it prints the `layout.lua` line to add).
 
@@ -1857,7 +1858,7 @@ below.
 
 | Example file | What it is |
 |---|---|
-| [`plugin.lua`](../../examples/lua/plugin.lua) | what `plugin new` writes: a pane, a key, a setting |
+| [`plugin.lua`](../../examples/lua/plugin.lua) | what `mod new` writes: a pane, a key, a setting |
 | [`composite.lua`](../../examples/lua/composite.lua) | the worked `run` example — git status and log, on the session's own host |
 | [`events.lua`](../../examples/lua/events.lua) | the worked `on_event` example — selects a session the moment it blocks, with a palette command to switch it off |
 | [`layout.lua`](../../examples/lua/layout.lua) | an arrangement putting the two panes above in a column beside the agent |
@@ -1865,15 +1866,15 @@ below.
 Together they are one demo:
 
 ```bash
-thurbox-cli plugin install tasks
-thurbox-cli plugin install top
+thurbox-cli mod install tasks
+thurbox-cli mod install top
 cp examples/lua/layout.lua ~/.config/thurbox/ui/layout.lua
 ```
 
 Each install prints the `layout.lua` line the pane needs, because a pane whose slot
 nothing places loads cleanly and draws nothing. Press `F10`, then trust
 `85_top.lua` (settings → Interface → `t`) so it may run a program — installing a
-plugin grants it nothing.
+mod grants it nothing.
 
 `layout.lua` **replaces** the shipped arrangement — delete yours afterwards and the
 Interface tab restores it, so there is nothing here you cannot undo. It is copied
@@ -1884,15 +1885,15 @@ Two things they are chosen to show. `tasks.lua` draws the `input` node kind, whi
 is the one of the four nothing bundled uses. And `top.lua` reads the machine **the
 selected session runs on**, because `run` executes in that session's directory on
 that session's host — so moving the cursor onto a session over SSH shows the remote
-box's load, with nothing in the plugin knowing what SSH is.
+box's load, with nothing in the mod knowing what SSH is.
 
-`layout.lua` is the half people forget: adding a pane is two edits, the plugin and
+`layout.lua` is the half people forget: adding a pane is two edits, the mod and
 the slot. Both panes name a slot of their own, and a slot no arrangement places is
-a pane that loads and never draws. `plugin check` **fails** on exactly that and
+a pane that loads and never draws. `mod check` **fails** on exactly that and
 prints the line to add, so it is caught rather than puzzled over:
 
 ```console
-$ thurbox-cli plugin check
+$ thurbox-cli mod check
   ✓ loads — sessions, agent, confirm, search, new_session, tasks
   ✗ plugins/80_tasks.lua — loaded, but nothing places slot "tasks"
       add it to layout.lua's children: { slot = "tasks" }
@@ -1907,13 +1908,13 @@ were never asked for, so neither is reported.
 **The quieter sibling: sharing a `switch` slot.** A slot in switch mode shows one
 occupant and keeps the rest as alternates, so a pane that is not first draws nothing
 until it is focused. Unlike an unplaced slot this fails no check — it loads, it is
-placed, `plugin list` says `installed`, and the user's screen is unchanged. It is the
+placed, `mod list` says `installed`, and the user's screen is unchanged. It is the
 one install that cannot demonstrate itself, and the person it fools is whoever followed
 your README.
 
 So **declare a pill**. The action band is kernel chrome and enumerates pills as declared
 data, without invoking anything, which makes it the only advertisement that is
-automatic — the tab strip beside the agent's views is that *plugin's* own chrome and
+automatic — the tab strip beside the agent's views is that *mod's* own chrome and
 cannot carry a third occupant:
 
 ```lua
@@ -1922,7 +1923,7 @@ pills = { { action = "mine.open", label = "Mine", priority = 10 } },
 
 A low `priority` is right for anything optional: the band drops the least important
 entries first when it runs out of width, and orders left to right by the same number.
-`plugin check` **warns** about a pane in this state, and `plugin install` says it at the
+`mod check` **warns** about a pane in this state, and `mod install` says it at the
 moment you install one — but it does not fail either, because you may have meant it.
 
 **The number you declare is a default, not the last word.** Whoever installs your pane
@@ -1936,7 +1937,7 @@ so they never have to edit a file you ship:
 ```
 
 An entry is keyed by the pill's `action`, so a reader lists only the buttons they moved
-and every other pill keeps what its plugin declared; deleting the entry gives yours back.
+and every other pill keeps what its mod declared; deleting the entry gives yours back.
 The section is read at startup, beside `bindings` and `settings`, and what it cannot do
 is invent a button — a priority names a pill that already exists and nothing else. That
 is the same standard the band holds your own declaration to: it draws a pill only when a
@@ -1944,12 +1945,12 @@ is the same standard the band holds your own declaration to: it draws a pill onl
 dropped exactly like one naming nothing. Give the action a key as well.
 
 The drop stays — a chip that lights on hover and then does nothing costs a press to
-discover — but it is not silent: `plugin check` reports every pill the band dropped, and
+discover — but it is not silent: `mod check` reports every pill the band dropped, and
 says which of the two mistakes it was, because an action the palette can reach and a
 misspelt one look identical from the outside.
 
 ```console
-$ thurbox-cli plugin check
+$ thurbox-cli mod check
   ✓ loads — …, notes
   ! plugins/90_notes.lua — pill "Notes" is not drawn: "notes.open" is a command with no key, …
   ! plugins/90_notes.lua — pill "Memory" is not drawn: nothing loaded declares "notes.opne" — …
@@ -1964,10 +1965,10 @@ earlier declaration keeps the key, or a user's rebinding does. Inside your own
 interface that is yours to notice; a *published* pane cannot know which keys its
 users have spent — the code-review pane below takes `Ctrl+X` and `F7` because both
 are free in the interface thurbox ships, which says nothing about yours. So
-`plugin check` reports it, with both claimants and the one that wins:
+`mod check` reports it, with both claimants and the one that wins:
 
 ```console
-$ thurbox-cli plugin check
+$ thurbox-cli mod check
   ✓ loads — sessions, agent, confirm, search, new_session, notes, scratch
   ! plugins/91_scratch.lua — f7 is claimed by both notes.toggle and scratch.toggle; notes.toggle wins (declared in plugins/90_notes.lua)
 ```
@@ -1976,7 +1977,7 @@ A warning, like the missing pill and for the same reason — two authors wanting
 chord is a judgement call, and the user can settle it by rebinding either action in
 the settings panel. The kernel's own chords are in the same registry, so a pane that
 takes `F1` is reported against `kernel` rather than against a file. A chord claimed
-in two *plugin* scopes is not a conflict at all: focus decides, which is why three
+in two *mod* scopes is not a conflict at all: focus decides, which is why three
 bundled panes can each bind `j`.
 
 ## Panes kept in their own repositories
@@ -1990,11 +1991,11 @@ interface directory thurbox ships:
 | [`thurbox-info-panel`](https://github.com/Thurbeen/thurbox-info-panel) | session, git, agent, usage and system readouts in a column beside the terminal. Claims `F2` |
 
 Both carry more than one file, so both install by **cloning** the repository
-([A plugin that carries more than Lua](#a-plugin-that-carries-more-than-lua)):
+([A mod that carries more than Lua](#a-mod-that-carries-more-than-lua)):
 
 ```bash
-thurbox-cli plugin install git+https://github.com/Thurbeen/thurbox-code-review
-thurbox-cli plugin install git+https://github.com/Thurbeen/thurbox-info-panel
+thurbox-cli mod install git+https://github.com/Thurbeen/thurbox-code-review
+thurbox-cli mod install git+https://github.com/Thurbeen/thurbox-info-panel
 ```
 
 They differ in the two ways that matter here, which is most of why they are worth
@@ -2038,21 +2039,21 @@ what a bare name fetches matches the binary asking for it. Bare names reach the
 That tag is also why a bare name can stop resolving: the examples lived under
 `ui-plugins/` before they moved to `examples/panes/`, so a `plugins.lock` written
 by a binary from before the move records a tag whose tree has no `examples/panes/`
-and `plugin sync` reports the pane as not found. Re-run `thurbox-cli plugin install
+and `mod sync` reports the pane as not found. Re-run `thurbox-cli mod install
 <name>` to re-lock it at the current tag, or name a URL or a path in
 `plugins.toml` instead — which is the same advice as the paragraph above, for the
 same reason.
 
-### A plugin that carries more than Lua
+### A mod that carries more than Lua
 
 A pane that runs a program needs that program, and a pane with data needs the data.
 Neither can arrive as text: the file-by-file path returns a `String` and decodes
 remote output lossily, so a binary through it is **corrupted rather than refused**.
 
-So a plugin with a payload is a **repository**, and installing it clones it:
+So a mod with a payload is a **repository**, and installing it clones it:
 
 ```bash
-thurbox-cli plugin install git+https://github.com/you/thurbox-widget
+thurbox-cli mod install git+https://github.com/you/thurbox-widget
 ```
 
 Everything the repository holds arrives, in the layout you chose — Lua in whatever
@@ -2075,7 +2076,7 @@ runs a program is the pane tempted to build one. **Never write inside your own w
 copy.** A build artefact, a
 downloaded engine, a cache — anything you produce there makes the tree dirty, and a
 dirty tree is exactly what makes `update` report `kept` and refuse to move. Keeping
-your working copy clean is not tidiness; it is what keeps your plugin updatable. Put
+your working copy clean is not tidiness; it is what keeps your mod updatable. Put
 what you generate in `$XDG_CACHE_HOME/<your-plugin>/` (or `~/.cache/<your-plugin>/`),
 outside the interface directory entirely — which the next paragraph is also the reason
 for.
@@ -2091,7 +2092,7 @@ file = "thurbox-widget/plugins/40_widget.lua"
 You rarely write that by hand — `install` finds it, taking the single `.lua` in the
 repository's `plugins/` directory, and asks for `--as plugins/<file>` when there is
 more than one. Its place in the load order still comes from the `40_` prefix, so
-where a plugin came from does not change where it sits. Its own modules are
+where a mod came from does not change where it sits. Its own modules are
 requirable by path: `require("thurbox-widget.lib.util")`.
 
 The lock records the **commit**, not the branch. `main` moves; a commit does not, so
@@ -2109,7 +2110,7 @@ it is produced by the source rather than transcribed by hand.
 | a commit — the **full** object id | that commit | stays |
 
 A pin is a pin: `update` on a tagged or committed entry reports `current` rather
-than moving it, so pinning is how you hold a plugin still. Pinning a commit is what
+than moving it, so pinning is how you hold a mod still. Pinning a commit is what
 `--pin` is *for* — it is what the lock writes — and it is worth knowing that `git
 clone --branch` cannot do it: a commit is fetched and checked out after the clone.
 You get one shallow round trip either way; a pin that cannot be obtained fails with
@@ -2123,14 +2124,14 @@ name like any other and still installs — only the remote can tell the two apar
 unless it is exactly an object id's length, where git reads the id it parses as
 and asks for that object rather than for the name.
 
-**Installing a plugin from a repository puts that repository's files on your disk,
+**Installing a mod from a repository puts that repository's files on your disk,
 executable bits included.** That is what cloning anything does. What it does *not*
 do is run any of it: nothing executes at install time, and a program still needs the
 `program` capability you grant per file. Treat a repository you did not write the way
 you would treat one you were about to `make` in.
 
 **Picking the right build.** `thurbox.platform` gives you `os` and `arch`, so a
-plugin shipping several binaries chooses for itself:
+mod shipping several binaries chooses for itself:
 
 ```lua
 local p = thurbox.platform
@@ -2144,7 +2145,7 @@ an honest "nothing here for this machine".
 
 **Do not build under the interface directory.** It is watched *recursively*, so an
 `npm install` or a compile there fires thousands of events. `.git` is filtered;
-a plugin's own build tree is not, and filtering every possible one is not a rule worth
+a mod's own build tree is not, and filtering every possible one is not a rule worth
 having — the rule is "build somewhere else". The symptom if you ignore this is the
 counter-intuitive one: a burst of events keeps the reload debounce rolling forward, so
 the interface does not reload too often, it **stops reloading at all** while you are
@@ -2169,11 +2170,11 @@ every file delivered. You hand-edit the spec; nothing hand-edits the lock. Commi
 both and the same interface reproduces elsewhere.
 
 ```bash
-thurbox-cli plugin install <src> [--as FILE] [--pin V]  # and record it
-thurbox-cli plugin sync                                 # make the directory match the spec
-thurbox-cli plugin update [name]                        # advance a pin, when you ask
-thurbox-cli plugin remove <name>                        # file, spec entry and record
-thurbox-cli plugin available                            # what installs by bare name
+thurbox-cli mod install <src> [--as FILE] [--pin V]  # and record it
+thurbox-cli mod sync                                 # make the directory match the spec
+thurbox-cli mod update [name]                        # advance a pin, when you ask
+thurbox-cli mod remove <name>                        # file, spec entry and record
+thurbox-cli mod available                            # what installs by bare name
 ```
 
 `sync` is the one to reach for after editing the spec by hand, and it is the one an
@@ -2223,7 +2224,7 @@ indistinguishable, and either way the capability is withdrawn until you trust th
 file again. A file you wrote yourself is different: editing it reads
 `trusted · modified` and keeps its grant, since it is yours to change.
 
-What the Interface tab says is what the plugin holds: the grant the kernel enforces
+What the Interface tab says is what the mod holds: the grant the kernel enforces
 and the row you read come from one decision (`packages::trust_of`). A grant made to a
 version needs `plugins.lock` to list the file: if the lock is missing, unreadable or
 has no entry for it, the grant is withdrawn rather than judged as if the file were
@@ -2232,6 +2233,6 @@ your own.
 ### There is no lazy loading
 
 The Neovim package managers this borrows from make it the headline feature. Here it
-would optimise nothing: a disabled plugin is never read, an unplaced pane never
+would optimise nothing: a disabled mod is never read, an unplaced pane never
 renders, and the bundled set is 30 files. A load scheduler would add machinery and
 a new class of "why is my pane missing".

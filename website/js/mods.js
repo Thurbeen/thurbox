@@ -20,7 +20,7 @@
       card.hidden = !matches;
       if (matches) visible += 1;
     });
-    count.textContent = visible + ' of ' + cards.length + ' plugins';
+    count.textContent = visible + ' of ' + cards.length + ' mods';
     empty.hidden = visible !== 0;
   }
 

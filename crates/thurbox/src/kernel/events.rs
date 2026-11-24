@@ -13,7 +13,7 @@
 //!
 //! The set is a closed enumeration ([`KERNEL_EVENTS`]) with one reader for each
 //! of its three uses: the loader validates a subscription against it, the help
-//! modal renders it, and `thurbox-cli plugin events` prints it. One list, so a
+//! modal renders it, and `thurbox-cli mod events` prints it. One list, so a
 //! name a plugin can subscribe to is always one the kernel can emit.
 
 use std::collections::BTreeSet;
@@ -163,22 +163,22 @@ pub const KERNEL_EVENTS: &[EventSpec] = &[
     },
     EventSpec {
         name: "focus.pane",
-        when: "focus moves to another plugin",
+        when: "focus moves to another mod",
         fields: &["from", "to"],
     },
     EventSpec {
         name: "command.done",
-        when: "a command a plugin issued completed",
+        when: "a command a mod issued completed",
         fields: &["kind", "session", "subject"],
     },
     EventSpec {
         name: "command.failed",
-        when: "a command a plugin issued failed",
+        when: "a command a mod issued failed",
         fields: &["kind", "session", "subject", "error"],
     },
     EventSpec {
         name: "program.exited",
-        when: "a program THIS plugin started ended, however it ended",
+        when: "a program THIS mod started ended, however it ended",
         fields: &["name", "program"],
     },
     EventSpec {
@@ -233,7 +233,7 @@ pub fn validate_subscription(name: &str) -> Result<(), String> {
 pub fn user_event_name(name: &str) -> Result<String, String> {
     if is_kernel_event(name) {
         return Err(format!(
-            "command \"emit\": {name:?} is a kernel event and cannot be emitted by a plugin"
+            "command \"emit\": {name:?} is a kernel event and cannot be emitted by a mod"
         ));
     }
     if name.starts_with(USER_PREFIX) {
@@ -436,7 +436,7 @@ mod tests {
         let spec = KERNEL_EVENTS
             .iter()
             .find(|spec| spec.name == "program.exited")
-            .expect("the spec is what `plugin events` and `F1` print");
+            .expect("the spec is what `mod events` and `F1` print");
         assert_eq!(spec.fields, &["name", "program"]);
         // Broadcast is the default; this one is addressed, because a program pane
         // belongs to one plugin and two may name theirs the same.

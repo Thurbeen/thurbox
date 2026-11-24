@@ -649,13 +649,13 @@ impl App {
                 let index = self
                     .host
                     .index_of("search")
-                    .ok_or(("unavailable", "search plugin is not loaded".into()))?;
+                    .ok_or(("unavailable", "search mod is not loaded".into()))?;
                 let handled = self
                     .host
                     .on_action_with_args(index, name, &[("query", query)])
                     .map_err(|e| ("action_failed", e.to_string()))?;
                 if !handled {
-                    return Err(("unavailable", "search plugin declined the action".into()));
+                    return Err(("unavailable", "search mod declined the action".into()));
                 }
                 if let Some(position) = self
                     .host
@@ -693,7 +693,7 @@ impl App {
                 if handled {
                     Ok(())
                 } else {
-                    Err(("unavailable", "plugin declined the action".into()))
+                    Err(("unavailable", "mod declined the action".into()))
                 }
             }
         }
@@ -783,7 +783,7 @@ impl App {
         let index = self
             .host
             .index_of(target)
-            .ok_or(("unavailable", "plugin is not loaded".into()))?;
+            .ok_or(("unavailable", "mod is not loaded".into()))?;
         if self.host.plugins[index].session_input && !matches!(input, InputOperation::Scroll { .. })
         {
             return Err((
@@ -797,7 +797,7 @@ impl App {
             self.host.focusable().get(self.focus) == Some(&index)
         };
         if !active {
-            return Err(("unavailable", "plugin does not own input now".into()));
+            return Err(("unavailable", "mod does not own input now".into()));
         }
         match input {
             InputOperation::Key { chord } => {
@@ -841,7 +841,7 @@ impl App {
                     return Err(("invalid_arguments", "text is too long".into()));
                 }
                 if self.grabbed != Some(index) && !self.focused_typing {
-                    return Err(("unavailable", "plugin has no active text field".into()));
+                    return Err(("unavailable", "mod has no active text field".into()));
                 }
                 self.on_paste(text);
             }

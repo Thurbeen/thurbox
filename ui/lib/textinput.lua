@@ -20,7 +20,7 @@
 -- would misplace the caret in exactly the double-width text it exists for.
 --
 -- One chord v1 has is missing, and cannot be had: `ctrl+h` (delete backwards) is
--- reserved by the kernel for moving focus, so it never reaches a plugin.
+-- reserved by the kernel for moving focus, so it never reaches a mod.
 -- `backspace` does the same thing and is what a keyboard sends anyway. It is
 -- also what most terminals send for `ctrl+backspace`, so that chord deletes a
 -- word only where the terminal tells the two apart (the kitty keyboard

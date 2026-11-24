@@ -1359,7 +1359,7 @@ mod tests {
         assert!(rows.iter().any(|row| row.id == "features.shell_pane"));
         assert!(
             rows.last().is_some_and(|row| row.plugin == "a"),
-            "a plugin's rows follow the core ones"
+            "a mod's rows follow the core ones"
         );
     }
 

@@ -526,7 +526,7 @@ impl Command {
             .map(String::as_str)
             .or_else(|| chain.is_empty().then_some(""))?;
         let who = if owner.is_empty() {
-            "Lua outside any plugin"
+            "Lua outside any mod"
         } else {
             owner
         };
@@ -603,7 +603,7 @@ impl Command {
             // verb the registry already knows, the other a sentence.
             "action" => Self::parse_action(args),
             "message" => Self::parse_message(args),
-            "plugin" => Self::parse_plugin(args),
+            "mod" | "plugin" => Self::parse_plugin(args),
             "set" => Self::parse_setting(args),
             // Creation names a repository, not a session.
             "create" => Self::parse_create(args),
@@ -614,7 +614,7 @@ impl Command {
                     plugin,
                     toggle: args.toggle,
                 }),
-                None => Err("command \"focus\" needs a plugin name".to_string()),
+                None => Err("command \"focus\" needs a mod name".to_string()),
             },
             // A link names a url, not a session.
             "open" => match args.text.filter(|t| !t.is_empty()) {
@@ -709,16 +709,12 @@ impl Command {
     /// removing a plugin is destructive, so it is never the default.
     fn parse_plugin(args: Args) -> Result<Self, String> {
         let Some(file) = args.file.filter(|f| !f.is_empty()) else {
-            return Err("command \"plugin\" needs a file".to_string());
+            return Err("command \"mod\" needs a file".to_string());
         };
         let edit = match args.action.as_deref() {
             Some("restore") => PluginEdit::Restore,
             Some("remove") => PluginEdit::Remove,
-            _ => {
-                return Err(
-                    "command \"plugin\" needs action = \"restore\" or \"remove\"".to_string(),
-                )
-            }
+            _ => return Err("command \"mod\" needs action = \"restore\" or \"remove\"".to_string()),
         };
         Ok(Command::Plugin { file, edit })
     }
@@ -1068,7 +1064,7 @@ mod tests {
                 err("command \"emit\": name \"user.deploy\" without the \"user.\" prefix — it is added for you"),
             ),
             (
-                "plugin",
+                "mod",
                 Args {
                     file: text("plugins/a.lua"),
                     action: text("restore"),
@@ -1092,21 +1088,21 @@ mod tests {
                 }),
             ),
             (
-                "plugin",
+                "mod",
                 Args {
                     file: text(""),
                     action: text("remove"),
                     ..Args::default()
                 },
-                err("command \"plugin\" needs a file"),
+                err("command \"mod\" needs a file"),
             ),
             (
-                "plugin",
+                "mod",
                 Args {
                     file: text("plugins/a.lua"),
                     ..Args::default()
                 },
-                err("command \"plugin\" needs action = \"restore\" or \"remove\""),
+                err("command \"mod\" needs action = \"restore\" or \"remove\""),
             ),
             (
                 "set",
@@ -1270,7 +1266,7 @@ mod tests {
                     text: text(""),
                     ..Args::default()
                 },
-                err("command \"focus\" needs a plugin name"),
+                err("command \"focus\" needs a mod name"),
             ),
             (
                 "open",
@@ -1468,7 +1464,7 @@ mod tests {
             ("pause", with(Args::default()), Some(Sessions)),
             ("start", with(Args::default()), None),
             (
-                "plugin",
+                "mod",
                 with(Args {
                     file: Some("plugins/x.lua".into()),
                     action: Some("remove".into()),
@@ -1714,6 +1710,22 @@ mod tests {
         assert!(matches!(command, Command::Diff { .. }));
         // And it is refused without one, like every session-scoped command.
         assert!(Command::parse("diff", Args::default()).is_err());
+    }
+
+    #[test]
+    fn mod_and_its_deprecated_spelling_publish_the_same_kind() {
+        for verb in ["mod", "plugin"] {
+            let command = Command::parse(
+                verb,
+                Args {
+                    file: Some("plugins/a.lua".into()),
+                    action: Some("remove".into()),
+                    ..Args::default()
+                },
+            )
+            .expect("parses");
+            assert_eq!(command.kind(), "plugin", "{verb}");
+        }
     }
 
     #[test]

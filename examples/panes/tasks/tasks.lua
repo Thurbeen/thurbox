@@ -1,12 +1,12 @@
--- A to-do list pane, as a plugin.
+-- A to-do list pane, as a mod.
 --
 -- NOT bundled. Install it into your interface with:
 --
---     thurbox-cli plugin install tasks
+--     thurbox-cli mod install tasks
 --
 -- The list is a scratch list for this run of thurbox: it lives in the pane's
 -- `state`, which outlives an interface reload but not a restart (thurbox gives
--- a plugin no storage that does). Nothing here is privileged: it reads nothing
+-- a mod no storage that does). Nothing here is privileged: it reads nothing
 -- but its own state, issues no command, and declares no capabilities, so it
 -- needs no trust.
 --
@@ -16,7 +16,7 @@
 --     draws — the other three are text, box and surface
 --   * an armed destructive key, so `x` cannot delete on a mistouch
 --   * a pane in a slot of its OWN, placed by `examples/lua/layout.lua` — which is
---     the half people forget: adding a pane is two edits, the plugin and the slot
+--     the half people forget: adding a pane is two edits, the mod and the slot
 
 local theme = require("lib.theme")
 local widgets = require("lib.widgets")
@@ -95,7 +95,7 @@ end
 return {
   name = "tasks",
   -- Its own slot, placed by `examples/lua/layout.lua` — copy that too, or this
-  -- pane loads and never draws (`plugin list` says `no slot`, which is the fastest
+  -- pane loads and never draws (`mod list` says `no slot`, which is the fastest
   -- way to spot it). To use it with the SHIPPED arrangement instead, set
   -- `slot = "center"` and `slot_mode = "switch"`: it then shares the centre with
   -- the agent and F5 brings it forward.

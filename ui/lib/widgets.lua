@@ -58,7 +58,7 @@ end
 --- on screen.
 ---
 --- This is the function that could not exist before the layout pass: it needs
---- the pane's RESOLVED height, which a plugin only has because the kernel
+--- the pane's RESOLVED height, which a mod only has because the kernel
 --- resolves rects before calling render.
 ---
 --- Returns first, last (1-based, inclusive) and whether rows are hidden above
@@ -393,7 +393,7 @@ end
 
 --- Epoch milliseconds the frame is being drawn for.
 ---
---- v1's formatters read the wall clock; a plugin has no clock (the stdlib ships
+--- v1's formatters read the wall clock; a mod has no clock (the stdlib ships
 --- no `os`), so ages are measured against the snapshot's own instant — which is
 --- the moment the rows being drawn were read.
 function widgets.now_ms()

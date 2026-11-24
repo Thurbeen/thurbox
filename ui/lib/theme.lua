@@ -5,9 +5,9 @@
 -- same three sources v1 used, so your themes and your current selection carry
 -- over untouched.
 --
--- That is the whole contract: a plugin names a ROLE, never a colour. Change the
+-- That is the whole contract: a mod names a ROLE, never a colour. Change the
 -- active theme and every pane restyles at once, including panes whose author
--- never heard of your theme. A plugin that hardcodes "#5fafff" opts out of all
+-- never heard of your theme. A mod that hardcodes "#5fafff" opts out of all
 -- of that, which is why nothing here hands one out.
 
 --- Declared so the shorthands the metatable serves are checkable: `__index`
@@ -60,7 +60,7 @@ function theme.role(name)
 end
 
 -- Short names for the roles the bundled panes draw with, resolved on access so
--- a theme change is picked up on the next frame — no reload, no plugin edit.
+-- a theme change is picked up on the next frame — no reload, no mod edit.
 local SHORTHAND = {
   accent = "accent",
   accent_bright = "accent_bright",

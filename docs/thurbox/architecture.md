@@ -405,7 +405,7 @@ U+FFFD, which vt100 drops, and a non-ASCII word loses a letter
 depends on what the window is for, so each window states its own at spawn
 (`keeps_dead_pane`). An agent's window keeps its dead pane — its liveness is
 read from a listing (`#{pane_dead}`), and the corpse holds the error it printed.
-A companion shell's and a plugin's program's do not: those are read from their
+A companion shell's and a mod's program's do not: those are read from their
 pane's output stream, and tmux announces a pane's death only by closing its
 window, so a kept window is an ending that is never announced.
 
@@ -582,7 +582,7 @@ server does not know expands to nothing and reads as off; when only
 
 **Choice**: The headless commands live in a separate binary
 (`thurbox-cli`). It exposes `editor`, `config`, `version`,
-`update`, `notify`, `perf`, `plugin`, `ui`, `schema` and `doctor` as
+`update`, `notify`, `perf`, `mod`, `ui`, `schema` and `doctor` as
 subcommands (`thurbox-cli --help`), printing JSON results. Sessions are not
 among them: they are Fleet's, driven through Fleet's own command line
 (ADR-41).
@@ -602,9 +602,9 @@ TUI's event loop. The `cli` module never reaches a backend adapter
 
 ---
 
-## ADR-23: The interface is a Lua plugin kernel
+## ADR-23: The interface is a Lua mod kernel
 
-**Choice**: `thurbox` boots a Rust kernel that renders whatever Lua plugins it
+**Choice**: `thurbox` boots a Rust kernel that renders whatever Lua mods it
 finds under `ui/`. There is no built-in pane — the session list, the agent
 terminal and the search strip are files a user can edit, move, turn off, delete or
 replace.
@@ -612,28 +612,28 @@ replace.
 **Why**: a pane built, styled, keybound and tested in Rust makes the binary the
 bottleneck on the interface's evolution, and leaves a user who wants a different
 pane no move short of a fork. Making panes data moves that cost to a file, and
-the constraint that makes it safe is that a plugin is handed a snapshot and
+the constraint that makes it safe is that a mod is handed a snapshot and
 returns a tree — it never gets the world.
 
 Five rules carry it, each load-bearing:
 
 1. **Four node kinds** — `text`, `box`, `input`, `surface`; everything else
    composes in Lua.
-2. **Layout resolves before render**, so a plugin knows its own rect and can wrap,
+2. **Layout resolves before render**, so a mod knows its own rect and can wrap,
    truncate and window. Sizes are declared *statically*, which breaks the
    circularity.
-3. **Snapshot-read, command-write** — Lua never blocks, so no plugin, including
+3. **Snapshot-read, command-write** — Lua never blocks, so no mod, including
    one nobody has written, can stall the loop on Fleet, git or a dead host.
 4. **Capabilities by absence** — an ungranted capability is not in the
    environment. Enforced statically by `thurbox.yml` as well as at runtime.
 5. **Anything touching the world runs on a worker.**
 
-**Floating focus stays plugin-defined.** The topmost open float can consume the
+**Floating focus stays mod-defined.** The topmost open float can consume the
 native focus cycle through the bounded `on_focus_cycle("next"|"previous")` hook.
 The kernel routes the direction and preserves pane focus when consumed; Lua
 owns target order, selection and wrapping. Declining retains the ordinary pane
-cycle. This extends the plugin API without giving the kernel a card or row model;
-quit, reload and recovery keys remain reserved. See `docs/thurbox/plugins.md`.
+cycle. This extends the mod API without giving the kernel a card or row model;
+quit, reload and recovery keys remain reserved. See `docs/thurbox/mods.md`.
 
 **One model, one loop.** `App` and its state are declared in `main.rs`; its
 methods live in `src/coordinator/`, split by purpose (the loop and its workers,
@@ -659,7 +659,7 @@ own repository, installed by clone.
 - *Splitting `App` into several models or loops* — every group reads the same
   selection and focus, so the coupling would move into the parameters.
 - *An embedded scripting language with the host's capabilities* — the point of
-  rule 4 is that a plugin someone else wrote is safe to load.
+  rule 4 is that a mod someone else wrote is safe to load.
 
 ---
 
@@ -712,7 +712,7 @@ it describes.
 attaches to, not what a teardown targets, and no code resolves ownership
 through it. `discover` lists `tbs-` and `tbp-` windows too: leaving them out
 lets a name look unambiguous when it is not, and the *role*, not the listing,
-is what keeps a plugin's program from ever resolving as somebody's agent.
+is what keeps a mod's program from ever resolving as somebody's agent.
 Ambiguity refuses: a session whose window cannot be resolved is left alone
 rather than given a second one. An unstamped window is adoptable only while it
 is the only one with that name, and it is stamped on adoption. psmux
@@ -1064,14 +1064,14 @@ Routing through a backend would confuse a session's persistent terminal with
 the ephemeral interface drawing it.
 
 **What it serves**: `session.focus` checks the target's snapshot and selects the
-session there; `search.open` sets a query through the loaded search plugin and
+session there; `search.open` sets a query through the loaded search mod and
 is idempotent. `ui state` reports focus, selection and query. Lua action handlers
 may receive a read-only typed argument table as a second parameter; existing
 one-parameter handlers continue to work. The runtime action catalog combines
-kernel shortcuts with loaded plugin bindings and commands. The same descriptors
+kernel shortcuts with loaded mod bindings and commands. The same descriptors
 drive the palette, `ui actions`, and `schema`; local action requests validate
 arguments and availability before invoking the owner. Addressed `ui input`
-handles active modal and plugin text, keys and scroll without forwarding terminal
+handles active modal and mod text, keys and scroll without forwarding terminal
 bytes. Destructive external actions receive one-use, instance-bound tickets;
 the second request revalidates the target and records an owner-only audit
 decision before dispatch. The receipt and action event report acceptance;
@@ -1188,7 +1188,7 @@ changes, and a sentence that happens to contain "not found" can authorize a
 teardown it should not. A typed absence is evidence; a sentence is only a
 diagnosis.
 
-## ADR-40: The plugin API is declared once in Rust, and versioned
+## ADR-40: The mod API is declared once in Rust, and versioned
 
 **Decision:** `kernel::lua_api` declares every field `LuaHost::publish` and
 `LuaHost::enter` serve on `thurbox`, with its luals type and one line of
@@ -1196,23 +1196,23 @@ documentation. The published region of `ui/lib/thurbox.d.lua`, the `thurbox.*`
 entries of `thurbox.yml` and `tests/fixtures/lua_std/reads.lua` are rendered
 from it by `just lua-api`, between `BEGIN GENERATED`/`END GENERATED` markers.
 `tests/lua_api.rs` fails when a file differs from the rendering, and when a
-plugin walking a fully populated publish meets a key the schema does not
+mod walking a fully populated publish meets a key the schema does not
 declare. `thurbox.api` publishes `lua_api::API`, an integer that moves only
-when a field is removed or changes meaning; a plugin's `requires_api` above it
+when a field is removed or changes meaning; a mod's `requires_api` above it
 is a load error naming the file. The first field added under it is
 `session.meta`, a session's `ui.*` labels, which a Fleet session leaves empty.
 
 **Why:** the same shape was written by hand in four places, nothing compared
-them, and a table published without its fields passed CI. Plugins saw
+them, and a table published without its fields passed CI. Mods saw
 only the application version, while a field could be renamed in a minor
 release and an edited bundled pane is kept forever, so the rename broke it with
 no message. Generating the declarations from the publish side's own list makes
-an undeclared field a test failure, and the contract number gives a plugin
+an undeclared field a test failure, and the contract number gives a mod
 something to state rather than a release to guess.
 
 **Limits:** the schema covers what is published, not node props, `ctx`, the
 event payloads or command verbs, which `thurbox.d.lua` still keeps by hand. A
-load stays all-or-nothing, so a plugin needing a newer API fails the reload as
+load stays all-or-nothing, so a mod needing a newer API fails the reload as
 any broken pane does, and the inventory names it. A meta value is stripped of
 the characters that would act on the terminal, reorder the row or hide text,
 though not of everything unusual, and a key carrying one is not published; it

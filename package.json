@@ -8,11 +8,11 @@
     "lint:css": "stylelint 'website/css/**/*.css'",
     "lint:js": "eslint 'website/js/**/*.js'",
     "lint:format": "prettier --check 'website/css/**/*.css' 'website/js/**/*.js' 'eleventy.config.js'",
-    "lint:website": "npm run check:plugins && npm run test:plugins && npm run build:website && npm run test:website && npm run lint:format && npm run lint:html && npm run lint:css && npm run lint:js",
+    "lint:website": "npm run check:mods && npm run test:mods && npm run build:website && npm run test:website && npm run lint:format && npm run lint:html && npm run lint:css && npm run lint:js",
     "fmt:website": "prettier --write 'website/css/**/*.css' 'website/js/**/*.js' 'eleventy.config.js'",
-    "test:plugins": "node --test scripts/ci/plugins.test.mjs",
-    "check:plugins": "node scripts/ci/validate-plugins.mjs",
-    "check:plugins:links": "node scripts/ci/validate-plugins.mjs website/_data/plugins.json --links",
+    "test:mods": "node --test scripts/ci/mods.test.mjs",
+    "check:mods": "node scripts/ci/validate-mods.mjs",
+    "check:mods:links": "node scripts/ci/validate-mods.mjs website/_data/mods.json --links",
     "test:website": "node --test scripts/ci/website.test.mjs"
   },
   "devDependencies": {

@@ -1,17 +1,17 @@
--- Reading back what your plugin declared.
+-- Reading back what your mod declared.
 --
--- A plugin declares settings as data:
+-- A mod declares settings as data:
 --
 --   settings = {
 --     { id = "group_by_repo", desc = "Group sessions under foldable repo rows", default = true },
 --   },
 --
--- and the kernel collects every plugin's declarations into one registry, which
+-- and the kernel collects every mod's declarations into one registry, which
 -- the settings modal renders. That is the whole extension point: you get a row
 -- in settings by declaring a field, and the modal never learns what it is for.
 --
--- The registry is published FLAT -- every plugin's settings in one list -- so
--- reading your own means filtering it. This module is that filter, so a plugin
+-- The registry is published FLAT -- every mod's settings in one list -- so
+-- reading your own means filtering it. This module is that filter, so a mod
 -- reads a knob in one line instead of repeating the search.
 
 local settings = {}
@@ -23,11 +23,11 @@ end
 --- The effective value of `plugin`'s `id`, or `fallback` when it is unset.
 ---
 --- `value` is what the registry resolved: the user's override when there is
---- one, otherwise the declared default. A plugin therefore never needs to know
+--- one, otherwise the declared default. A mod therefore never needs to know
 --- whether a setting was overridden, only what it currently is.
 function settings.get(plugin, id, fallback)
   for _, entry in ipairs(all()) do
-    if entry.plugin == plugin and entry.id == id then
+    if entry.mod == plugin and entry.id == id then
       if entry.value ~= nil then
         return entry.value
       end
@@ -48,7 +48,7 @@ function settings.enabled(plugin, id, fallback)
 end
 
 --- A `[features]` flag from the CORE settings (`settings.toml`), which are a
---- different thing from the plugin declarations above: the kernel publishes
+--- different thing from the mod declarations above: the kernel publishes
 --- them whole as `thurbox.settings`, and a pane gating a surface on one reads
 --- three levels that can each be absent. This is that read, nil-safe once,
 --- returning `fallback` when the flag was never set.

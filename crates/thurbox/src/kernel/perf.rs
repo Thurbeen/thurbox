@@ -16,7 +16,7 @@
 //! The **per-plugin** half (ADR-P23) answers which pane spent the time:
 //! [`PluginTable`] is recorded by the Lua host under the same gate, and
 //! [`plugin_report`] turns it into the one ranked, hinted [`PluginReport`] the
-//! HUD, the snapshot and `thurbox-cli perf --plugins` all read.
+//! HUD, the snapshot and `thurbox-cli perf --mods` all read.
 
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};

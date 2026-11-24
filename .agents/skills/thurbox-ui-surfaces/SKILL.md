@@ -9,14 +9,14 @@ description: Thurbox's interface surfaces and their contracts: the keybinding re
 
 ## Keybindings
 
-Every chord goes through **one registry** (`kernel::registry`). Plugins *declare*
+Every chord goes through **one registry** (`kernel::registry`). Mods *declare*
 keys in their declaration table; the kernel resolves a press to an action and hands
-it back to the plugin that claimed it. There is no hardcoded table to keep in step
+it back to the mod that claimed it. There is no hardcoded table to keep in step
 with a help screen, because the help modal renders the registry.
 
 Global chords in the shipped interface (the kernel's own, plus the two session
 chords the bundled panes declare — `Ctrl+N` is `70_new_session`'s and
-`Ctrl+J`/`Ctrl+K` are `10_sessions`', so each is an ordinary plugin binding):
+`Ctrl+J`/`Ctrl+K` are `10_sessions`', so each is an ordinary mod binding):
 
 | Key | Action |
 |-----|--------|
@@ -32,7 +32,7 @@ chords the bundled panes declare — `Ctrl+N` is `70_new_session`'s and
 | `F12` | Perf HUD |
 | `Ctrl+C` / `Ctrl+V` (+ `Cmd+C` / `Cmd+V` on macOS) | Copy the selection / paste — copy only with `[clipboard] copy_on_select = false`; by default a drag's release copies and `Ctrl+C` is the interrupt |
 
-Everything else belongs to a plugin and is listed in `F1`. Rebindings persist to
+Everything else belongs to a mod and is listed in `F1`. Rebindings persist to
 `ui.json` — a *user decision*, distinct from the delivery facts in `.bundled.json`;
 trust and the disabled set live in `plugin-state.json` beside it.
 
@@ -40,37 +40,37 @@ trust and the disabled set live in `plugin-state.json` beside it.
 registry is consulted and cannot be rebound at all (`registry::RESERVED`: quit,
 `F10`, `Ctrl+H`/`Ctrl+L`, `F12`) — they are the escape route out of a pane that
 consumes every key. Everything else the kernel owns is an ordinary *binding* with
-no Lua plugin behind it: the modal chords (`kernel::modals::bindings`) and copy
+no Lua mod behind it: the modal chords (`kernel::modals::bindings`) and copy
 and paste (`kernel::clipboard`). Copy and paste resolve through the registry,
 so a Mac user can put copy on `Cmd+C`. They resolve ahead of a float's
 exclusive grab so they still work from any pane, and copy
 *declines* the chord when there is no selection so `Ctrl+C` still interrupts the
 agent.
 
-A topmost open floating plugin may handle the reserved focus actions through
+A topmost open floating mod may handle the reserved focus actions through
 `on_focus_cycle("next"|"previous")`, under the key hook's budget. `true` consumes
 without changing pane focus; `false`, no hook, or an error keeps the normal pane
 cycle. Closed and covered floats are not offered it. This is an opt-in hook,
 not a way to claim reserved chords; quit, reload and recovery remain reserved.
-`docs/thurbox/plugins.md` → Floating views and the native focus cycle has the example.
+`docs/thurbox/mods.md` → Floating views and the native focus cycle has the example.
 
 Two properties the registry holds and `tests/keymap.rs` asserts:
 
-- **A plugin-scoped claim does not outrank a global one.** This is why search does
+- **A mod-scoped claim does not outrank a global one.** This is why search does
   not take `Ctrl+P`/`Ctrl+N`: doing so would take `Ctrl+N` from new-session
   everywhere.
 - **A chord freed by a removed pane stays unbound** rather than being silently
   reused by whatever loads next.
 
 `Registry::detect_conflicts` finds every chord two overlapping scopes both claim,
-and `thurbox-cli plugin check` is where that set surfaces — as warnings, naming
+and `thurbox-cli mod check` is where that set surfaces — as warnings, naming
 both claimants and which one wins. It is the only reporting surface the conflict
-set has, and it exists for the plugin author, who cannot know which keys their
+set has, and it exists for the mod author, who cannot know which keys their
 users have already spent.
 
 **Terminal passthrough.** thurbox's chords share the `Ctrl+<letter>` namespace with
 readline (`Ctrl+A`, `Ctrl+E`, `Ctrl+W`, `Ctrl+U`, `Ctrl+R`, `Ctrl+D`, …). While a
-session terminal is focused, a chord a plugin flags as passthrough reaches the agent
+session terminal is focused, a chord a mod flags as passthrough reaches the agent
 instead. Navigation and app-control chords (`Ctrl+H/J/K/L`, `Ctrl+Q`, `Ctrl+N`) are
 **never** deferred — they are the way out of a focused terminal.
 
@@ -94,7 +94,7 @@ on.
 **Key releases.** Event types are pushed with the flags so a binding declared
 `release = true` can be told when its key is let go
 (`on_action(action, { event = "press" | "release" })`). The routing is one struct,
-`coordinator::input::Holds`: a release reaches only the plugin that took the
+`coordinator::input::Holds`: a release reaches only the mod that took the
 press (matched by key code, since `ctrl` is often released first) and is dropped
 otherwise — never a modal, `on_key`, a field or the pty; a held key's repeats are
 swallowed (on Windows, whose console reports repeats as presses, a press of a held
@@ -126,8 +126,8 @@ Thirty-six palettes — twenty-eight dark, eight light; the enumeration is in
 appear in the picker after the built-ins and persist by name exactly like a preset.
 
 `kernel::theme::Themes` resolves them and publishes **roles** to Lua
-(`ui/lib/theme.lua`), so a plugin asks for `theme.accent` or `theme.muted` rather
-than a colour — which is what lets one plugin look right under all thirty-six. Pick
+(`ui/lib/theme.lua`), so a mod asks for `theme.accent` or `theme.muted` rather
+than a colour — which is what lets one mod look right under all thirty-six. Pick
 one with `Ctrl+Y` (or `F4`, avoiding terminals that take Ctrl+Y as DSUSP); the choice
 persists as `theme` in `interface.json` (`config::interface_state`), and other
 thurbox processes pick it up when they next start.
@@ -146,19 +146,19 @@ palette other than the previewed one.
 
 `Ctrl+,` (or `F6`) opens a **kernel-owned modal** (`kernel::modals::settings`) —
 chrome about thurbox itself, so it overlays the arrangement, captures input and
-stays out of the focus ring. Plugins contribute *data* to it: declare
+stays out of the focus ring. Mods contribute *data* to it: declare
 `{ id, desc, default }` and the modal grows a row. A text setting declared
 `list = true` (the session list's `folded_hosts`/`folded_repos`) shows its entry
 count in the row and its unescaped entries in the footer when selected; the value
 column is capped at `VALUE_WIDTH_MAX` so one long value cannot starve the rest. A text setting declared
 `choices = { … }` is stepped through them like a core enum (`Enter`/`Space`/`←`/`→`),
 never typed into, and lists them in the footer; `Registry::set_setting` refuses a
-value outside them and a stored one the plugin no longer offers falls back to the
+value outside them and a stored one the mod no longer offers falls back to the
 default (`Setting::admits`).
 
 Two halves on one screen:
 
-- **Plugin settings** go through `Registry::set_setting` — in-process, effective on
+- **Mod settings** go through `Registry::set_setting` — in-process, effective on
   the next frame. Nothing to save, no Cancel.
 - **Core settings** are `settings.toml`, written back through a `toml_edit`
   `DocumentMut` so the seed's documentation comments survive.
@@ -203,13 +203,13 @@ It is therefore **the recovery path for a broken interface**, and the shape of t
 is not symmetric: a `failed` row sorts to the top with its load error under the list,
 but `r` only writes back a copy thurbox *ships* — it refuses for a file the user
 wrote ("thurbox ships no version of it") and points an installed pane at
-`thurbox-cli plugin sync`. For a pane of the user's own the way back is `space`:
+`thurbox-cli mod sync`. For a pane of the user's own the way back is `space`:
 present on disk, not loaded, so nothing tried to load it and its error is silent
 until it is switched on. Each of the four keys reloads the interface, so the result
 is on the next frame. The `reload failed` panel is not painted over an open system
 modal, so it never covers this tab, the tool for fixing it; it returns on close.
-Documented for users in `docs/thurbox/plugins.md` → **When something goes wrong**; the same three answers with no TTY are `plugin list` / `plugin dir` /
-`plugin check`.
+Documented for users in `docs/thurbox/mods.md` → **When something goes wrong**; the same three answers with no TTY are `mod list` / `mod dir` /
+`mod check`.
 
 `settings.toml` is **live-reloaded** (mtime poll): an outside edit re-applies the
 live half and toasts, noting a restart when `restart_only_differs` says so.
@@ -273,14 +273,14 @@ hold, **scrollback included**, matched by the kernel on a worker).
   `on_paste` replays the text (`focused_typing`), before any terminal, straight to
   `on_key` so a pasted letter never fires a declared chord. One
   deliberate divergence: no `Ctrl+P`/`Ctrl+N` inside the strip — every chord goes
-  through one registry where a plugin-scoped claim does not outrank a global one.
+  through one registry where a mod-scoped claim does not outrank a global one.
 
 ## Code review
 
 The binary draws no diff view. The reviewer is a **pane** in its own
 repository:
 [`thurbox-code-review`](https://github.com/Thurbeen/thurbox-code-review) —
-installed by clone (`thurbox-cli plugin install
+installed by clone (`thurbox-cli mod install
 git+https://github.com/Thurbeen/thurbox-code-review`). It takes the `center`
 switch slot beside the agent, binds `Ctrl+X`/`F7`, and reads `thurbox.diffs`. It
 is not vendored here and not bundled: a change to the snapshot's diff shape or to

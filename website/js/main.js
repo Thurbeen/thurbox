@@ -698,7 +698,7 @@
 
     // The overlay is a modal dialog, so Tab must not walk out of it into the
     // page behind. Only the close button, the video's controls and the caption's
-    // link to the plugin are focusable.
+    // link to the mod are focusable.
     var trapDoomTab = function (e) {
       if (e.key !== 'Tab') return;
       var focusable = doomOverlay.querySelectorAll('button, video, a[href]');
@@ -757,17 +757,15 @@
       var caption = document.createElement('p');
       caption.className = 'doom-overlay__caption';
       caption.textContent =
-        'Doom inside a thurbox pane — the thurbox-doom plugin, in a program pane of its own. ';
+        'Doom inside a thurbox pane — the thurbox-doom mod, in a program pane of its own. ';
 
-      // The plugin is advertised nowhere else on the site, and somebody who just
-      // typed a 1993 cheat code is exactly the person who would go and install it.
-      var pluginLink = document.createElement('a');
-      pluginLink.className = 'doom-overlay__link';
-      pluginLink.href = 'https://github.com/Thurbeen/thurbox-doom';
-      pluginLink.target = '_blank';
-      pluginLink.rel = 'noopener';
-      pluginLink.textContent = 'Install it';
-      caption.appendChild(pluginLink);
+      var modLink = document.createElement('a');
+      modLink.className = 'doom-overlay__link';
+      modLink.href = 'https://github.com/Thurbeen/thurbox-doom';
+      modLink.target = '_blank';
+      modLink.rel = 'noopener';
+      modLink.textContent = 'Install it';
+      caption.appendChild(modLink);
 
       frame.appendChild(bar);
       frame.appendChild(doomVideo);

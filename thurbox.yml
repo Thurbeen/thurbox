@@ -440,6 +440,8 @@ globals:
     property: read-only
   thurbox.hover.role:
     property: read-only
+  thurbox.mods:
+    property: read-only
   thurbox.plugins:
     property: read-only
   thurbox.ui_dir:

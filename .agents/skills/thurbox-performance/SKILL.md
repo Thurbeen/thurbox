@@ -50,11 +50,11 @@ next flush, so every pane toggle blinked the whole interface.
 A frame is expensive by structure: every pane is a Lua call
 returning a table that is converted to nodes and painted. The **conversion** is
 the surprise in that sentence and the biggest single cost in a frame — bigger
-than running the plugins' Lua. `kernel::convert` therefore reads each node's
+than running the mods' Lua. `kernel::convert` therefore reads each node's
 fields in **one `pairs` pass** rather than ~25 keyed lookups, and builds its
 error paths as a borrowed chain (`Crumb`) rather than a `String` per node; both
 are measured in `docs/thurbox/performance.md`. So the loop settles
-aggressively. `draw` compares each plugin's returned tree against the last one and
+aggressively. `draw` compares each mod's returned tree against the last one and
 only marks the frame changed when it differs; a float does the same against its own
 last tree and rect, and a **chrome band** compares the *cells* it just painted
 against the ones it painted last frame — it has no tree to diff, and marking it
@@ -195,7 +195,7 @@ stderr is scrolled away long before anyone looks.
 **Measuring it**: two instruments, both outside the PR gate (ADR-P5).
 `cargo bench --bench frame_cost` times the *pieces* of a frame against the real
 `ui/` — publish, arrangement, each placed pane, the paint, the vt100 surface and
-link scan — modelling what `draw` does rather than what the plugin list contains
+link scan — modelling what `draw` does rather than what the mod list contains
 (a closed search strip occupies no slot, so nothing renders it).
 `scripts/dev/perf-run.sh` runs the *whole binary* under a reproducible load in an
 isolated sandbox and reports CPU from `/proc` beside the loop's own
@@ -212,11 +212,11 @@ folds the events `fleet watch` streams; nothing polls.
 `thurbox-cli perf`. Three histograms, kept separate so they **decompose** rather
 than nest: `frame` is the paint, `republish` is the per-frame table rebuild
 above, and `tick` is the rest of one iteration. `kernel::perf::snapshot_json`
-owns the published shape and `cli::perf` only renders it. **Per plugin**
-(ADR-P23): the Lua host records each plugin's renders, reuses, render and
+owns the published shape and `cli::perf` only renders it. **Per mod**
+(ADR-P23): the Lua host records each mod's renders, reuses, render and
 handler time, `run` asks, render-time `store` writes and tree size into a
 `PluginTable` under the same gate (`LuaHost::set_perf_timing`), and
 `perf::plugin_report` ranks it with hints into the one `PluginReport` the HUD's
-`panes` table, the snapshot's `plugins` array and `thurbox-cli perf --plugins`
-read; `time_op` names the plugin whose call was longest. Full rationale:
+`panes` table, the snapshot's `plugins` array and `thurbox-cli perf --mods`
+read; `time_op` names the mod whose call was longest. Full rationale:
 `docs/thurbox/performance.md`.

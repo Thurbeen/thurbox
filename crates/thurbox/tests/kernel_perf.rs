@@ -552,7 +552,7 @@ fn a_run_is_counted_only_in_the_window_it_started_in() {
     assert_eq!((runs.started, runs.finished), (0, 0), "{runs:?}");
 }
 
-/// The key set an agent scripting `thurbox-cli perf --plugins --json` relies on.
+/// The key set an agent scripting `thurbox-cli perf --mods --json` relies on.
 const ROW_KEYS: [&str; 19] = [
     "closed_renders",
     "failures",
@@ -659,10 +659,10 @@ fn the_cli_prints_the_plugin_table_sorted_with_a_stable_json_shape() {
     assert!(heavy_at < cheap_at, "{human}");
     assert!(human.contains("not pure"), "{human}");
 
-    // Without --plugins the aggregate view is unchanged, and says where the
+    // Without --mods the aggregate view is unchanged, and says where the
     // per-pane view lives.
     let plain = thurbox::cli::perf::run(false).expect("render");
-    assert!(plain.human.contains("--plugins"), "{}", plain.human);
+    assert!(plain.human.contains("--mods"), "{}", plain.human);
 }
 
 #[path = "../../runtime-mux/tests/support/tmux_server.rs"]

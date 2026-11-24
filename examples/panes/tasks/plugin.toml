@@ -1,6 +1,6 @@
 # A tasks pane. Install it with:
 #
-#     thurbox-cli plugin install tasks
+#     thurbox-cli mod install tasks
 #
 # `file` below is where the pane lands by default. `--as plugins/NN_tasks.lua`
 # moves it, since the number is load order and yours to choose.

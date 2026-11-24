@@ -18,7 +18,7 @@ fails if the optimization regresses.
 frame only when the screen is *dirty* or the `FORCE_REDRAW_INTERVAL` floor
 (250 ms) elapsed, not on every iteration. ADR-P13 lists what marks the screen
 dirty. The loop still polls input, output and workers every iteration, but
-layout, the plugin renders and the paint are skipped when nothing changed.
+layout, the mod renders and the paint are skipped when nothing changed.
 
 **Why**: a loop that draws unconditionally paints ~100 frames a second on an
 idle screen, which is the largest idle-CPU cost of a TUI that sits untouched
@@ -78,7 +78,7 @@ back rather than left wherever the last run ended.
 
 **Choice**: Performance regressions are caught by **counting**, not timing.
 `kernel::perf::Counters` holds wall-clock-free `u64` counters bumped on the
-loop's hot paths: iterations, frames painted and skipped, plugin renders and
+loop's hot paths: iterations, frames painted and skipped, mod renders and
 failures, VM reloads, pure-pane renders served from cache, published groups
 reused, and keystroke echoes (ADR-P28). Tests assert on them
 (`tests/kernel_perf.rs`, `tests/tui_e2e.rs`) — e.g. *an idle loop paints no
@@ -185,8 +185,8 @@ CI-asserted (the counters remain the sole regression gate):
   iteration, so a default run pays one bool, keeping ADR-P5's zero-overhead
   promise.
 - **Slow ops** wrap `interface_reload` (the whole reload: rebuild, sources,
-  declarations) and `input_dispatch` (a keypress, which runs plugin Lua and so
-  is where a slow plugin is felt). ≥5 ms rings, ≥100 ms also logs a `slow op`
+  declarations) and `input_dispatch` (a keypress, which runs mod Lua and so
+  is where a slow mod is felt). ≥5 ms rings, ≥100 ms also logs a `slow op`
   warning, so an interactive stall is attributable even when nobody was
   watching.
 - **Steady-state reporting**: under `THURBOX_PERF_LOG`, every
@@ -238,9 +238,9 @@ marks the screen dirty:
 - **new visible output** — `Terminals::visible_output_generation` sums the
   surfaces painted in the last frame. Hidden output still invalidates search
   content through `output_generation`, but owes no frame (ADR-P29).
-- **a plugin's tree differing from the last one it returned.** `draw` keeps
+- **a mod's tree differing from the last one it returned.** `draw` keeps
   `last_trees[index]` and only marks the frame changed when the new tree differs.
-  This is what makes an animating plugin work without a plugin-visible animation
+  This is what makes an animating mod work without a plugin-visible animation
   API: a spinner's tree differs each frame, so it keeps the loop awake by itself,
   and a static pane costs one comparison
 
@@ -303,17 +303,17 @@ key, and a `false` is also aged by the caller (`snapshot`'s `MERGE_RECHECK`,
 ADR-P25), because only one direction of staleness is safe without a clock: a
 stale `true` hides work, a stale `false` costs one needless question.
 
-**Bounds belong to the kernel, not the plugin.** A plugin may ask for a program
+**Bounds belong to the kernel, not the mod.** A mod may ask for a program
 (`kernel::runs`) every frame — that is the documented pattern, because a fresh answer
 is a map lookup — so the store refuses a duplicate while the answer is fresh *or*
 while a run for that key is in flight, caps output with truncation flagged, times
 out, and runs four at a time with the rest queued. The Lua VM has an instruction
-budget and a memory ceiling (`tests/kernel_limits.rs`), so a plugin cannot spin the
+budget and a memory ceiling (`tests/kernel_limits.rs`), so a mod cannot spin the
 frame either. Installing the budget's hook allocates, so a call whose hook cannot go
 in on a full VM is refused rather than run unbounded (`Budget::arm`). A VM near
 that ceiling is rebuilt rather than called again
 (`LuaHost::memory_pressure`): at the ceiling every allocation runs a full
-emergency collection before it fails, so each plugin call cost a collection of the
+emergency collection before it fails, so each mod call cost a collection of the
 whole heap on every frame, and nothing ever freed it — a frozen interface.
 Pressure is measured on the live heap: the loop's per-iteration check pays for a
 full collection only once the raw count passes a threshold and, below the
@@ -338,12 +338,12 @@ The 256 MiB default bounds the Lua heap, not process RSS or Rust-side caches.
 
 **Rejected**:
 
-- *Caching converted nodes across frames* — the tree is the plugin's output and
+- *Caching converted nodes across frames* — the tree is the mod's output and
   cheap to compare; caching it would need invalidation the kernel cannot see into.
 - *A plugin-facing animation API* (`request_frame`) — the tree diff already gives
-  it, without a second way to keep the loop awake or a plugin that forgets to stop.
+  it, without a second way to keep the loop awake or a mod that forgets to stop.
 - *Rendering panes in parallel* — one Lua VM, and the isolation model
-  (`enter` stamps the current plugin per call) depends on calls being serial.
+  (`enter` stamps the current mod per call) depends on calls being serial.
 
 ---
 
@@ -360,7 +360,7 @@ release builds, with the observability of ADR-P11:
 | **CPU per frame** | **9.9ms** | **7.7ms** |
 
 Inside a frame the draw was ~75% and `republish` ~25%; inside the draw, the
-Lua->node **conversion** cost more than running every plugin's Lua put together
+Lua->node **conversion** cost more than running every mod's Lua put together
 (session list: 897us of Lua, 3006us of conversion, for 187 nodes — ~14us *per
 node*). ratatui's own flush was never the problem (~0.6ms).
 
@@ -530,7 +530,7 @@ the second** now (`taken_at_stamp`), because its only reader is
 `widgets.now_ms` feeding `time_ago`, which floors the difference to whole
 seconds — so the precision being dropped is precision no reader could ever see.
 Quantising the published *value* rather than delaying the signal is what keeps
-"a plugin never reads a stale published value" true. The unconditional touch it
+"a mod never reads a stale published value" true. The unconditional touch it
 replaced was also covering git stats landing in the same branch, so
 `attach_git_stats` now reports whether it changed a row. Idle 3.57% -> 3.33%.
 
@@ -704,7 +704,7 @@ were enough:
   is already equal, and decoration clones only when a decorator claims the
   slot. Painting borrows (`to_line` yields `Line<'a>`), the frame buffer is
   read in place instead of cloned to end a borrow, the band settle stores a
-  hash instead of the cells, and the per-plugin index lists (focusable,
+  hash instead of the cells, and the per-mod index lists (focusable,
   floating, slot members, slot modes) are built once per reload instead of
   scanned with an allocation per query per frame.
 - **Every cache now carries its age.** `DiffStore` holds `(at, diff,
@@ -920,9 +920,9 @@ alongside the two directions and one test against the real bundled interface.
 
 **Consequences**: the render context stops being an ordinary table — `elapsed`
 is served by a metatable rather than being a key, and that metatable is sealed
-so one plugin cannot replace the `__index` behind every other pane's clock.
+so one mod cannot replace the `__index` behind every other pane's clock.
 Neither is load-bearing for any pane (nothing iterates or re-metatables a render
-context); both are stated for plugin authors in `docs/thurbox/plugins.md`, which owns
+context); both are stated for mod authors in `docs/thurbox/mods.md`, which owns
 that contract, along with the rule the mechanism creates: reading `ctx.elapsed`
 is what subscribes a tree to the animation tick, so read it where you animate and
 not at the top of a render that usually draws nothing moving.
@@ -937,11 +937,11 @@ pane*. On an interface made of the user's own panes (a task list, a file
 browser, a review pane) that was the question actually being asked, and the only
 way to answer it was to delete panes until the number moved.
 
-**Decision**: the Lua host records cost per plugin, keyed by the plugin's path,
+**Decision**: the Lua host records cost per mod, keyed by the mod's path,
 into one `kernel::perf::PluginTable`, and `kernel::perf::plugin_report` turns it
 into the one ranked `PluginReport` that all three surfaces read — the HUD's
 `panes` table under the counters, the `plugins` array of the published snapshot,
-and `thurbox-cli perf --plugins` (text, or `--json` for a script). Per plugin:
+and `thurbox-cli perf --mods` (text, or `--json` for a script). Per mod:
 Lua renders and pure-cache reuses, render time (p50/p95/max and the exact sum),
 share of painted-frame time, time in each handler (`on_key`, `on_action`,
 `on_click`/`on_context`/`on_outside`, `on_scroll`, `on_event`, `decorate`), `run` asks plus
@@ -953,24 +953,24 @@ beside the pane's cost, never added to it), `store`/`state` writes made while
 rendering and how many assigned a table, the last tree's node and run counts,
 failures, idle renders and closed-float renders. Rows sort by UI-thread time.
 
-- **Recorded in the host**, not around the coordinator's call sites: a plugin is
+- **Recorded in the host**, not around the coordinator's call sites: a mod is
   reached from a dozen of them, and the pure cache's hit path is inside
   `render`. `render` is split into the cache check and `render_lua`, so one
   place charges a Lua render and another a reuse.
 - **Gated like ADR-P11.** The loop hands the host `perf_timing_active()` once per
-  iteration; off, a plugin call pays two `Cell<bool>` reads and no `Instant`.
+  iteration; off, a mod call pays two `Cell<bool>` reads and no `Instant`.
   Turning it on clears the table, so an opened HUD shows what happened while it
   was open, and the `perf_window` roll clears it with the histograms.
 - **Writes are counted in `__newindex`**, one add per write, always; a render's
   share is the difference across that render. Attribution by difference is what
-  keeps the closure from needing to know which plugin is current.
+  keeps the closure from needing to know which mod is current.
 - **Hints, not only numbers**, each the cause `ui/AGENTS.md` names: an impure
   pane rendering on ≥90% of frames, a float rendering while closed, fresh tables
   (or any writes) to `store`/`state` from a render, and a *pure* pane re-rendering
   while idle (an impure one renders on every paint by definition, which the first
   hint already says). None fires under `HINT_MIN_FRAMES` frames.
 - **Slow ops are attributed.** `time_op` opens an op on the host, which remembers
-  the longest single plugin call inside it, so `input_dispatch 140ms` carries the
+  the longest single mod call inside it, so `input_dispatch 140ms` carries the
   pane. Tracked whether or not timing is on, because slow ops are. Event dispatch
   is now an op of its own (`event_dispatch`), timed only when something is queued.
 
@@ -985,7 +985,7 @@ failures, idle renders and closed-float renders. Rows sort by UI-thread time.
 
 **Consequences**: pinned by `tests/kernel_perf.rs` — a deliberately expensive,
 impure pane ranks above a cheap pure one, the pure one shows its reuse, a slow
-`on_event` is attributed to its plugin, nothing is recorded while timing is off,
+`on_event` is attributed to its mod, nothing is recorded while timing is off,
 and the CLI's JSON row shape — and by `tests/tui_e2e.rs`'s F12 scenario, which
 opens the HUD on the real binary and waits for the session list's row.
 
@@ -1184,9 +1184,9 @@ than ahead of it.
   session's next commit — `at_risk` would stop warning, which is the failure
   this check exists to prevent.
 - *Polling only what the screen shows.* The kernel does not know which rows a
-  plugin drew — panes are Lua and the list is theirs — and a snapshot that
+  mod drew — panes are Lua and the list is theirs — and a snapshot that
   answered differently depending on who looked would break the one rule this
-  module has: plugins read a snapshot, they do not drive it.
+  module has: mods read a snapshot, they do not drive it.
 - *Watching the worktree with an fs notifier instead of polling.* A watch per
   session, recursive, over directories an agent writes constantly — more
   machinery and more wakeups than the thing it replaces, and it still cannot
@@ -1391,7 +1391,7 @@ change):
 | the content search (ADR-P26) | every row of history | reads the pane back from tmux on its worker (below) |
 | `hyperlink_paints`, the link scan, selection, mouse | the visible grid | only painted surfaces, which ask for their grid first |
 | `visible_text` (the Copy command) | the visible grid | a pane with no grid answers "nothing to copy" rather than two blank rows |
-| the session list, queue and plugin panes | the snapshot | never the parser |
+| the session list, queue and mod panes | the snapshot | never the parser |
 
 **Weighed**:
 
@@ -1574,7 +1574,7 @@ three kinds of work, each structural:
 - **The key's dispatch (~0.5 ms).** A key is published for and offered to the
   focused pane's Lua `on_key` before it is known to be the terminal's (the agent
   pane uses it to snap a scrolled-back view to the live end). Sending first would
-  let no plugin claim a key it had not declared — a plugin API change, not a
+  let no mod claim a key it had not declared — a mod API change, not a
   pacing one.
 
 The kept frame
@@ -1708,9 +1708,9 @@ gate, per ADR-P5.
 
 **`cargo bench --bench frame_cost`** — the pieces of a frame, against the real
 `ui/` and a synthetic snapshot. It models what `draw` does rather than what the
-plugin list contains: it resolves the arrangement and renders only the panes an
+mod list contains: it resolves the arrangement and renders only the panes an
 arrangement of that size actually *places*, plus the float probe every frame
-pays. Rendering every loaded plugin instead reported the closed search strip as
+pays. Rendering every loaded mod instead reported the closed search strip as
 the second most expensive pane in the interface, which it is not — it occupies no
 slot, so `draw_slots` never reaches it.
 
@@ -1769,10 +1769,10 @@ was. `uptime` before believing a percentage.
 | Measure startup | `THURBOX_PERF_LOG=1 thurbox`, read the `startup` line in `thurbox.log` |
 | Break down startup time | Read the `startup` line's phase fields: `config_init_ms`, `snapshot_open_ms`, `theme_activate_ms`, `ui_build_ms` (building the Lua interface) and `first_frame_ms` |
 | Watch steady-state cost | `THURBOX_PERF_LOG=1 thurbox`, read the `perf_window` lines (~1000 iterations: counter deltas + frame/republish/tick percentiles + slow ops) |
-| Attribute an interactive stall | Look for `slow op` warnings in `thurbox.log` (named op + ms + the plugin whose call was longest), or the slow-op list in `perf_window` |
+| Attribute an interactive stall | Look for `slow op` warnings in `thurbox.log` (named op + ms + the mod whose call was longest), or the slow-op list in `perf_window` |
 | Watch perf live in the TUI | Press `F12` (perf HUD overlay; `[features] perf_hud`) |
-| Find the slow pane | `F12`, read the `panes` table (worst in red, `!` = a hint), then `thurbox-cli perf --plugins` for every column and the hints spelled out — ADR-P23 |
-| Script per-pane cost | `thurbox-cli perf --plugins --json` — one row per plugin, sorted by `total_us` |
+| Find the slow pane | `F12`, read the `panes` table (worst in red, `!` = a hint), then `thurbox-cli perf --mods` for every column and the hints spelled out — ADR-P23 |
+| Script per-pane cost | `thurbox-cli perf --mods --json` — one row per mod, sorted by `total_us` |
 | Inspect a running TUI from outside | `thurbox-cli perf` (needs THURBOX_PERF_LOG or an open HUD in that TUI) |
 | See what a frame costs | `thurbox-cli perf` — `frame` is the paint and `republish` the table rebuild beside it; a frame is roughly the two added together |
 | See binary size | Check the `Binary Size` CI job summary, or `cargo bloat --release --crates` |

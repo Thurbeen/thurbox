@@ -484,7 +484,7 @@ fn focus_index_of(host: &LuaHost, name: &str) -> usize {
 /// embedded copies are written somewhere throwaway and used from there, because
 /// no interface at all is the one outcome worth avoiding.
 fn resolve_ui_dir() -> Result<(PathBuf, Vec<String>), Box<dyn Error>> {
-    // The resolution itself lives in the library, so `thurbox-cli plugin dir`
+    // The resolution itself lives in the library, so `thurbox-cli mod dir`
     // reports the directory this will actually load. Writing the user's copy is
     // the interface's business, which is why it asks for it.
     let (dir, chosen, report) = thurbox::kernel::bundled::resolve(true)?;

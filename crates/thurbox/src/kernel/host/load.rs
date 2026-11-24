@@ -135,7 +135,7 @@ pub(super) fn load_plugin(
         .map_err(|e| format!("{file}: {}", clean_error(&e)))?;
 
     let Value::Table(def) = value else {
-        return Err(format!("{file}: a plugin must return a table"));
+        return Err(format!("{file}: a mod must return a table"));
     };
 
     let name: String = def
@@ -236,7 +236,7 @@ pub(super) fn load_plugin(
     // nothing — which the loader would then treat as an occupant of a slot.
     if !def.contains_key("render").unwrap_or(false) && decorates.is_none() {
         return Err(format!(
-            "{file}: a plugin must define a render function, or decorate another"
+            "{file}: a mod must define a render function, or decorate another"
         ));
     }
 
@@ -303,7 +303,7 @@ fn read_actions(def: &Table, plugin: &str) -> Result<Vec<ActionDecl>, String> {
             .as_deref()
         {
             Some("global") => Scope::Global,
-            Some("plugin") | None => Scope::Plugin,
+            Some("mod" | "plugin") | None => Scope::Plugin,
             Some(other) => {
                 return Err(format!(
                     "{plugin}.actions[{}]: unknown scope {other}",

@@ -5,13 +5,13 @@
 -- shows a LIVE terminal, which cannot round-trip through Lua tables at 20fps.
 --
 -- The resolution is that `surface` is a NODE KIND, not a kernel pane. This
--- plugin places and frames it, decides which session it shows, and owns the key
+-- mod places and frames it, decides which session it shows, and owns the key
 -- rules; the kernel only fills the rect with cells. Lua does not paint a
 -- `list`'s glyphs either — same deal.
 --
--- The two views are ONE plugin because that is what v1 is: `CentralTab` selects
+-- The two views are ONE mod because that is what v1 is: `CentralTab` selects
 -- a view of a single pane, and the strip that selects it is drawn on that
--- pane's border. Modelling them as two plugins taking turns in the `switch`
+-- pane's border. Modelling them as two mods taking turns in the `switch`
 -- slot cost the strip on every tab but the agent's, a second stop in the focus
 -- ring, and a slot arbitration that existed only to referee them
 -- (v2-system-modals D4).
@@ -35,7 +35,7 @@ local theme = require("lib.theme")
 local ui = require("lib.ui")
 local widgets = require("lib.widgets")
 
---- What this plugin is called. Declared once because the pane has to name
+--- What this mod is called. Declared once because the pane has to name
 --- ITSELF to bring itself forward (`command("focus", …)`).
 local NAME = "agent"
 
@@ -537,7 +537,7 @@ end
 ---
 --- Memoized on the published registry's identity: `thurbox.registry` is a
 --- gated group, so the same table object means the same bindings — and this
---- runs from the border strip on every render, scanning every plugin's
+--- runs from the border strip on every render, scanning every mod's
 --- bindings each time.
 local shortcut_cache = { src = nil, by_action = {} }
 
@@ -614,7 +614,7 @@ end
 --- action, so a chip and the keyboard agree by construction.
 ---
 --- v1 lists a third chip here, `Review · F7`. It is absent because the review
---- plugin is: a chip whose `focus:review` role names a plugin that does not
+--- mod is: a chip whose `focus:review` role names a mod that does not
 --- exist would light up and then do nothing, which is worse than not offering
 --- it. Re-adding the pane means re-adding its chip.
 local function tab_specs(active)
@@ -977,8 +977,8 @@ return {
   -- is painted from, which is not in the tree at all — so the tree can be
   -- reused every frame and the pane still repaints.
   pure = true,
-  -- Keys this plugin does not handle go straight to the pty of whichever view
-  -- is showing. That is what makes this an ordinary plugin rather than a kernel
+  -- Keys this mod does not handle go straight to the pty of whichever view
+  -- is showing. That is what makes this an ordinary mod rather than a kernel
   -- special case: replace the file and the terminal behaviour goes with it.
   input = "session",
   order = 20,
@@ -1012,14 +1012,14 @@ return {
       key = "pageup",
       action = SCROLL_UP,
       desc = "scroll the agent's output back",
-      scope = "plugin",
+      scope = "mod",
       group = "Terminal",
     },
     {
       key = "pagedown",
       action = SCROLL_DOWN,
       desc = "scroll the agent's output forward",
-      scope = "plugin",
+      scope = "mod",
       group = "Terminal",
     },
   },
@@ -1051,7 +1051,7 @@ return {
     -- v1 draws neither the chevron nor the tabs on the empty welcome screen, so
     -- the strip is built only once a session exists — after the branch above.
     -- It carries the active tab, so it is the SAME strip on every tab; that is
-    -- the whole reason the views share one plugin.
+    -- the whole reason the views share one mod.
     local tab = tab_of(session.id)
     local strip, reserved_left = border_strip(width, border, tab, chrome.rule(level))
     -- Both views are live terminals with a scrollback each, so the offset is

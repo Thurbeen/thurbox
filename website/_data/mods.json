@@ -8,7 +8,7 @@
     "kind": "pane",
     "platforms": ["Linux"],
     "updated": "2026-10-29",
-    "install": "thurbox-cli plugin install git+https://github.com/Thurbeen/thurbox-fleetlens\nthurbox-cli plugin check",
+    "install": "thurbox-cli mod install git+https://github.com/Thurbeen/thurbox-fleetlens\nthurbox-cli mod check",
     "notes": "Reads Fleet only through fleet \u2026 --json. Trust the pane to run fleet: Settings (Ctrl+,), then ], select thurbox-fleetlens/plugins/88_fleet_lens.lua and press t. Alt+K opens it. Read-only. The fleetlens settings choose the fleet binary, its config, and the host it runs on (POSIX only).",
     "media": {
       "url": "https://raw.githubusercontent.com/Thurbeen/thurbox-fleetlens/main/media/demo.gif",
@@ -24,8 +24,8 @@
     "kind": "pane",
     "platforms": ["Linux", "macOS", "Windows (pane; metrics depend on host)"],
     "updated": "2026-10-07",
-    "install": "thurbox-cli plugin install git+https://github.com/Thurbeen/thurbox-info-panel",
-    "notes": "Requires Thurbox \u2265 2.51.7. Add the info slot to layout.lua, then press F2. Account quotas need quota-axi \u2265 0.1.58 and a run grant; install the optional refresh extension from the cloned plugin directory. See README for setup.",
+    "install": "thurbox-cli mod install git+https://github.com/Thurbeen/thurbox-info-panel",
+    "notes": "Requires Thurbox \u2265 2.51.7. Add the info slot to layout.lua, then press F2. Account quotas need quota-axi \u2265 0.1.58 and a run grant; install the optional refresh extension from the cloned mod directory. See README for setup.",
     "media": {
       "url": "https://raw.githubusercontent.com/Thurbeen/thurbox-info-panel/main/media/demo.gif",
       "alt": "Info panel in the Thurbox interface"
@@ -60,7 +60,7 @@
       "Windows (Lua pane; optional shell commands need a POSIX shell)"
     ],
     "updated": "2026-09-27",
-    "install": "thurbox-cli plugin install git+https://github.com/Thurbeen/thurbox-code-review",
+    "install": "thurbox-cli mod install git+https://github.com/Thurbeen/thurbox-code-review",
     "notes": "Requires Thurbox \u2265 2.35.0. Replaces the bundled agent pane; follow README setup and capability grants. Cannot combine with the thurbox-files agent pane fork.",
     "media": {
       "url": "https://raw.githubusercontent.com/Thurbeen/thurbox-code-review/main/media/demo.gif",
@@ -76,7 +76,7 @@
     "kind": "pane",
     "platforms": ["Linux x86_64 (bundled engine)", "Other platforms (bring or build an engine)"],
     "updated": "2026-10-02",
-    "install": "thurbox-cli plugin install git+https://github.com/Thurbeen/thurbox-doom",
+    "install": "thurbox-cli mod install git+https://github.com/Thurbeen/thurbox-doom",
     "notes": "Install code-review for the integrated Doom tab, then grant its agent pane program. F5 opens Doom. GIF shows the earlier standalone pane; README documents current setup.",
     "media": {
       "url": "https://raw.githubusercontent.com/Thurbeen/thurbox-doom/main/media/demo.gif",
@@ -92,7 +92,7 @@
     "kind": "pane",
     "platforms": ["Linux", "macOS"],
     "updated": "2026-10-09",
-    "install": "git clone https://github.com/TMSCH/thurbox-voice && cd thurbox-voice\ncargo install --locked --path crates/thurbox-voice\nthurbox-voice pull parakeet\nthurbox-cli plugin install git+https://github.com/TMSCH/thurbox-voice\nthurbox-cli plugin check",
+    "install": "git clone https://github.com/TMSCH/thurbox-voice && cd thurbox-voice\ncargo install --locked --path crates/thurbox-voice\nthurbox-voice pull parakeet\nthurbox-cli mod install git+https://github.com/TMSCH/thurbox-voice\nthurbox-cli mod check",
     "notes": "Requires Thurbox ≥ 2.56.0, Rust and cmake; Linux also needs pkg-config and ALSA headers. Trust the voice pane to run its helper. Audio stays local. An optional cleanup pass, on by default, sends the transcript and session context to a language model, hosted unless you point it at a local server. See README.",
     "media": {
       "url": "https://raw.githubusercontent.com/TMSCH/thurbox-voice/main/media/demo.gif",
@@ -111,7 +111,7 @@
       "Other platforms (POSIX tools and nvim required; unverified)"
     ],
     "updated": "2026-09-24",
-    "install": "thurbox-cli plugin install git+https://github.com/spscream/thurbox-files --as plugins/90_files.lua\nthurbox-cli plugin install git+https://github.com/spscream/thurbox-files --as plugins/95_files_menu.lua\nthurbox-cli plugin install git+https://github.com/spscream/thurbox-files --as plugins/20_agent.lua",
+    "install": "thurbox-cli mod install git+https://github.com/spscream/thurbox-files --as plugins/90_files.lua\nthurbox-cli mod install git+https://github.com/spscream/thurbox-files --as plugins/95_files_menu.lua\nthurbox-cli mod install git+https://github.com/spscream/thurbox-files --as plugins/20_agent.lua",
     "notes": "Follow the README to replace the bundled agent pane, place the files slot in layout.lua and grant capabilities. Requires nvim. Conflicts with the code-review agent pane fork.",
     "media": {
       "url": "https://raw.githubusercontent.com/spscream/thurbox-files/main/media/demo.gif",
@@ -131,7 +131,7 @@
       "Windows / WSL (Lite clipboard support; Full requires POSIX scripts)"
     ],
     "updated": "2026-09-17",
-    "install": "thurbox-cli plugin install git+https://github.com/spscream/thurbox-annotate --as plugins/41_notes.lua",
+    "install": "thurbox-cli mod install git+https://github.com/spscream/thurbox-annotate --as plugins/41_notes.lua",
     "notes": "Shown command installs Lite; requires Thurbox \u2265 2.25.0. Grant run for agent clipboard selection. Full uses plannotator-tui and the program capability; see README for its installer. F2 opens Lite; GIF shows Full.",
     "media": {
       "url": "https://raw.githubusercontent.com/spscream/thurbox-annotate/main/media/demo.gif",

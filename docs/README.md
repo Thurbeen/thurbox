@@ -108,7 +108,7 @@ docs/
 ├── thurbox/                   the interface
 │   ├── README.md              its index
 │   ├── architecture.md        decisions
-│   ├── features.md · performance.md · kernel.md · plugins.md
+│   ├── features.md · performance.md · kernel.md · mods.md
 │   ├── agents.md · config.md · orchestration.md · releasing.md · review.md
 │   └── development.md · tutorial.md
 ├── fleet/                     the engine

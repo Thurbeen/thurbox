@@ -208,7 +208,7 @@ print(paths["ui_dir"]); print(paths["plugin_state_json"]); print(paths["interfac
 } <<< "$paths"
 
 echo "==> installing the doom plugin into $UI_DIR"
-thurbox-cli plugin install "$DOOM_PLUGIN_SRC" --text || exit 1
+thurbox-cli mod install "$DOOM_PLUGIN_SRC" --text || exit 1
 
 # The plugin ships one built engine (linux-x86_64) and names the platform it has
 # nothing for rather than exec'ing a path it has no reason to believe in — which

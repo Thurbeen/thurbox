@@ -730,7 +730,7 @@ impl App {
                 thurbox::kernel::runs::Target::Session(session) => session,
                 thurbox::kernel::runs::Target::Host(name) => {
                     return thurbox::kernel::runs::Run::Failed(format!(
-                        "{name} is another machine; a plugin's program runs on this one only"
+                        "{name} is another machine; a mod's program runs on this one only"
                     ));
                 }
                 thurbox::kernel::runs::Target::Local => {
@@ -750,7 +750,7 @@ impl App {
             };
             if let Some(name) = remote {
                 return thurbox::kernel::runs::Run::Failed(format!(
-                    "session {session} runs on {name}; a plugin's program runs on this machine only"
+                    "session {session} runs on {name}; a mod's program runs on this machine only"
                 ));
             }
             let command = thurbox::kernel::runs::command_for(&ask.program, cwd);
