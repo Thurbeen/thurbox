@@ -529,9 +529,6 @@ impl Pass<'_, '_> {
         (&m.name, &m.uid)
     }
 
-    /// Whether the store would refuse one more append: it accepts each
-    /// while at most MAX_INBOX entries are still to deliver, counting those
-    /// this pass already planned.
     fn answered_relays(
         &self,
         task_name: &str,
@@ -558,6 +555,9 @@ impl Pass<'_, '_> {
             .collect()
     }
 
+    /// Whether the store would refuse one more append: it accepts each
+    /// while at most MAX_INBOX entries are still to deliver, counting those
+    /// this pass already planned.
     fn inbox_full(&self) -> bool {
         inbox::due(&self.st.inbox, &self.st.delivery_attempts) + self.appends.len() > MAX_INBOX
     }

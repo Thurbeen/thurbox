@@ -2586,8 +2586,6 @@ fn pause_request_since_last_transition(st: &TaskStatus, asked: Option<Millis>) -
     })
 }
 
-/// The oldest inbox entry still to deliver: an entry given up on after its
-/// sends ran out stays queued but blocks nothing.
 fn answered_relay(st: &TaskStatus, key: &str) -> bool {
     st.gateway.as_ref().is_some_and(|gw| {
         gw.children
@@ -2596,6 +2594,8 @@ fn answered_relay(st: &TaskStatus, key: &str) -> bool {
     })
 }
 
+/// The oldest inbox entry still to deliver: an entry given up on after its
+/// sends ran out stays queued but blocks nothing.
 fn next_entry(st: &TaskStatus) -> Option<&InboxEntry> {
     st.inbox.iter().find(|e| {
         !st.delivery_attempts
