@@ -1084,3 +1084,6 @@ function command(verb, opts) end
 
 ---@deprecated Use `thurbox.ModRow`.
 ---@alias thurbox.PluginRow thurbox.ModRow
+
+---@deprecated Use `thurbox.cmd.Mod`.
+---@alias thurbox.cmd.Plugin thurbox.cmd.Mod
