@@ -143,10 +143,10 @@ concludes nothing.
 | Spawned | Known Delivered receipt, and the agent's prompt hook reported the brief (or its harness has none); or, with the answer lost, the hook reported it, or for a harness with no prompt hook the journal proves it | Briefed | Record the brief key and the generation of the brief intent; a recovered delivery becomes a receipt. |
 | Spawned | The brief was sent, or may have been, and the agent's prompt hook has not reported it, or its report cannot be read | Spawned | Set `Briefed=Unknown/AwaitingPrompt`. Never send it again; read the hook's report on the next pass. |
 | Spawned | Workspace trust Known untrusted | Spawned | Set `WorkspaceTrusted=False` with the gap as reason, raise `NeedsAttention/WorkspaceUntrusted`, wait, then probe again. Do not send. |
-| Spawned | Workspace trust Unknown | Spawned | Set `WorkspaceTrusted=Unknown/TrustUnknown`. Do not send and raise no attention. Probe again on the next pass, without a wait. |
+| Spawned | Workspace trust Unknown | Spawned | Set `WorkspaceTrusted=Unknown/TrustUnknown`. After one minute of Unknown, add to the message that the harness has made no hook report yet and that `fleet doctor` checks its integration. Do not send and raise no attention. Probe again on the next pass, without a wait. |
 | Spawned | Workspace trust unanswered | Spawned | Do not send. Change nothing. |
 | Spawned | No brief intent yet, or delivery proven absent; workspace trusted; fresh readiness true; fewer than 3 sends spent | Spawned | Set `WorkspaceTrusted=True/Trusted` and clear its attention. Persist brief intent and plan Brief, with the brief and every amendment so far as one message, for the current generation. A later pass consumes its receipt. |
-| Spawned | Session not ready or readiness Unknown | Spawned | Do not send, including on a retry. Receipt recovery may still proceed. |
+| Spawned | Session not ready or readiness Unknown | Spawned | Do not send, including on a retry. Receipt recovery may still proceed. After one minute of `Briefed=Unknown/ReadyUnknown`, add the same hook-report hint as for `TrustUnknown`. |
 | Spawned | Delivery unreadable after an ambiguous send | Spawned | Wait, then probe again; after 3 unreadable probes raise NeedsAttention. |
 | Spawned | Another send would exceed the 3-send bound | Stalled | Raise `Stalled/BriefAttemptsExhausted` and NeedsAttention. |
 | Briefed | No result for `status.brief.generation`; recorded session present or lookup unreadable | Briefed | Wait for result; Unknown does not mean WorkerGone. |

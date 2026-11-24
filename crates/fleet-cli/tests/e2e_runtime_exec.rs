@@ -2252,6 +2252,63 @@ fn a_kimi_task_on_runtime_mux_is_briefed_before_its_first_report() {
     assert_eq!(env.get("t1")["status"]["conversation"], "session_k1");
 }
 
+/// Claude Code 2.1.322 at its empty composer, as it shows it only past its
+/// trust dialog: the placeholder between two rules, the cursor after its
+/// `❯`, the `? for shortcuts` footer under it. Its hooks never report, as
+/// on a custom profile whose integration is broken.
+const SILENT_CLAUDE: &str = r#"#!/bin/sh
+rule=$(printf '\342\224\200%.0s' $(seq 1 80))
+printf ' Claude Code v2.1.322\n\n'
+printf '%s\n' "$rule"
+printf '\342\235\257 Try "create a util logging.py that..."\n'
+printf '%s\n' "$rule"
+printf '  ? for shortcuts'
+printf '\033[2A\r\033[2C'
+while IFS= read -r line; do :; done
+"#;
+
+/// A Claude Task whose hooks have not reported shows its composer only in
+/// a workspace it trusts, so the composer reads as Trusted.
+#[test]
+fn a_claude_composer_on_screen_reads_as_a_trusted_workspace() {
+    let (Some(program), Some(_)) = (runtime_mux(), tmux()) else {
+        return;
+    };
+    let sockets = Sockets::new("claude-composer");
+    let mut env = mux_env("runtime-mux-claude-composer", &program, &sockets);
+    stand_in(&mut env, "claude", "claude", SILENT_CLAUDE);
+    let work = env.root.join("work").join("t1");
+    fs::create_dir_all(&work).expect("workspace");
+    let mut task = support::task("t1", true);
+    task["spec"]["workspace"] = json!([format!("file://{}", work.display())]);
+    env.apply(json!([task])).ok();
+
+    reconcile_until(&env, "trusted on its composer", |env| {
+        env.get("t1")["status"]["conditions"]
+            .as_array()
+            .is_some_and(|cs| {
+                cs.iter()
+                    .any(|c| c["type"] == "WorkspaceTrusted" && c["status"] == "True")
+            })
+    });
+    let status = env.get("t1")["status"].clone();
+    support::assert_condition(&status, "WorkspaceTrusted", "True", "Trusted");
+
+    support::assert_condition(&status, "Briefed", "Unknown", "ReadyUnknown");
+    env.backdate_condition("t1", "Briefed", 61_000);
+    env.reconcile();
+    let status = env.get("t1")["status"].clone();
+    let message = support::condition(&status, "Briefed")["message"]
+        .as_str()
+        .unwrap_or_default()
+        .to_string();
+    assert!(
+        message.contains("no hook report yet for harness claude-code")
+            && message.contains("check `fleet doctor` for its integration"),
+        "a silent Claude waits on readiness, and the wait names its cause: {message}"
+    );
+}
+
 /// GitHub Copilot CLI as Fleet starts it in a trusted folder, read off
 /// Copilot 1.0.105: its empty composer, a bare `❯` between two rules with
 /// the cursor after it, the `/ commands` footer under it, and no hook until
