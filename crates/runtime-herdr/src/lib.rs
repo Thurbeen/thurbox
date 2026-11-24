@@ -325,6 +325,9 @@ fn inspect(place: &Place, key: &str) -> Result<Value, String> {
     let paused = place.records(&core)?.is_paused(key);
     Ok(match holder(&mut core, place, key)? {
         Holder::Running(terminal) => json!({ "running": { "id": terminal.address } }),
+        _ if paused && left_open(&mut core, place, key)? => {
+            return Err("a pause left a terminal open; the next pause closes it".to_string());
+        }
         _ if paused => json!("paused"),
         Holder::Exited(started, code) => {
             json!({ "exited": { "id": started.terminal.unwrap_or_else(|| key.to_string()), "code": code } })
@@ -346,6 +349,13 @@ fn stop(place: &Place, key: &str, release: bool) -> Result<Value, String> {
         workspace::release(&place.name, key)?;
     }
     Ok(json!("stopped"))
+}
+
+fn left_open(core: &mut Core, place: &Place, key: &str) -> Result<bool, String> {
+    Ok(core
+        .terminals_labelled(&key_labels(place, key))?
+        .iter()
+        .any(Terminal::is_live))
 }
 
 fn pause(place: &Place, key: &str) -> Result<Value, String> {

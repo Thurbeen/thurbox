@@ -7109,6 +7109,11 @@ fn runtime_herdr_pause_again_closes_a_shell_left_open() {
             .unwrap_or(0)
     };
     assert_eq!(live_shells(), 1, "the shell is left open");
+    let half = herdr_call(&program, &home, "inspect", json!({"key": "k-cut"}));
+    assert!(
+        half["unknown"].is_object(),
+        "a mark with a shell left: {half}"
+    );
     let paused = herdr_call(&program, &home, "pause", json!({"key": "k-cut"}));
     assert_eq!(paused["known"], "paused", "{paused}");
     assert_eq!(live_shells(), 0, "the second pause closed the shell");
