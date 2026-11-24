@@ -68,6 +68,8 @@ fn known(answer: Value) -> Value {
 #[derive(Deserialize, Default)]
 #[serde(deny_unknown_fields)]
 struct Place {
+    #[serde(skip)]
+    name: String,
     session: Option<String>,
     space: Option<String>,
 }
@@ -78,7 +80,20 @@ impl Place {
             .get("place")
             .ok_or("a protocol 2 request names its place")?;
         let name = place["name"].as_str().ok_or("the place has no name")?;
-        Place::configured(name, &place["config"])
+        let path_safe = !name.is_empty()
+            && !name.starts_with('.')
+            && name
+                .bytes()
+                .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'-' | b'_'));
+        if !path_safe {
+            return Err(format!(
+                "place {name:?}: use ASCII letters, digits, '.', '-' or '_'"
+            ));
+        }
+        Ok(Place {
+            name: name.to_string(),
+            ..Place::configured(name, &place["config"])?
+        })
     }
 
     fn configured(name: &str, config: &Value) -> Result<Place, String> {
@@ -95,6 +110,10 @@ impl Place {
 
     fn space(&self) -> &str {
         self.space.as_deref().unwrap_or(DEFAULT_SPACE)
+    }
+
+    fn records(&self, core: &Core) -> Result<Records, String> {
+        Records::for_place(&core.id, &self.name)
     }
 
     fn connect(&self) -> Result<Core, String> {
@@ -181,12 +200,15 @@ fn holder(core: &mut Core, records: &Records, key: &str) -> Result<Holder, Strin
     let Some(started) = records.started(key)? else {
         return Ok(Holder::None);
     };
-    let ours = core
-        .terminals_labelled(&key_labels(key))?
-        .into_iter()
-        .find(|t| t.address == started.terminal);
+    let terminals = core.terminals_labelled(&key_labels(key))?;
+    let ours = match &started.terminal {
+        Some(address) => terminals.into_iter().find(|t| &t.address == address),
+        None => terminals.into_iter().rev().find(Terminal::is_live),
+    };
     Ok(match ours {
-        Some(t) if t.is_live() && t.pid == started.pid => Holder::Running(t),
+        Some(t) if t.is_live() && (started.terminal.is_none() || t.pid == started.pid) => {
+            Holder::Running(t)
+        }
         Some(t) if !t.is_live() => {
             let code = t.exit_code;
             Holder::Exited(started, code)
@@ -220,14 +242,16 @@ fn start(place: &Place, key: &str, request: &Value) -> Result<Value, String> {
         Err(Failure::NotInstalled) => return Ok(json!({ "failed": { "why": not_installed() } })),
         Err(Failure::Unanswered(why)) => return Err(why),
     };
-    let records = Records::for_core(&core.id)?;
+    let records = place.records(&core)?;
     let _lock = records.lock()?;
     if let Holder::Running(terminal) = holder(&mut core, &records, key)? {
+        record_terminal(&records, key, &terminal)?;
         return Ok(json!({ "started": { "id": terminal.address, "adopted": true } }));
     }
     for stale in core.terminals_labelled(&key_labels(key))? {
         core.end(&stale)?;
     }
+    records.record_start(key, &Started::intended())?;
     let terminal = core.run(json!({
         "argv": argv,
         "cwd": dir,
@@ -236,23 +260,27 @@ fn start(place: &Place, key: &str, request: &Value) -> Result<Value, String> {
         "no_parent": true,
         "no_notify": true,
     }))?;
+    record_terminal(&records, key, &terminal)?;
+    Ok(json!({ "started": { "id": terminal.address, "adopted": false } }))
+}
+
+fn record_terminal(records: &Records, key: &str, terminal: &Terminal) -> Result<(), String> {
     records.record_start(
         key,
         &Started {
-            terminal: terminal.address.clone(),
+            terminal: Some(terminal.address.clone()),
             pid: terminal.pid,
         },
-    )?;
-    Ok(json!({ "started": { "id": terminal.address, "adopted": false } }))
+    )
 }
 
 fn inspect(place: &Place, key: &str) -> Result<Value, String> {
     let mut core = place.connect()?;
-    let records = Records::for_core(&core.id)?;
+    let records = place.records(&core)?;
     Ok(match holder(&mut core, &records, key)? {
         Holder::Running(terminal) => json!({ "running": { "id": terminal.address } }),
         Holder::Exited(started, code) => {
-            json!({ "exited": { "id": started.terminal, "code": code } })
+            json!({ "exited": { "id": started.terminal.unwrap_or_else(|| key.to_string()), "code": code } })
         }
         Holder::None => json!("none"),
     })
@@ -260,7 +288,7 @@ fn inspect(place: &Place, key: &str) -> Result<Value, String> {
 
 fn stop(place: &Place, key: &str, release: bool) -> Result<Value, String> {
     let mut core = place.connect()?;
-    let records = Records::for_core(&core.id)?;
+    let records = place.records(&core)?;
     let lock = records.lock()?;
     for terminal in core.terminals_labelled(&key_labels(key))? {
         core.end(&terminal)?;
@@ -275,8 +303,11 @@ fn stop(place: &Place, key: &str, release: bool) -> Result<Value, String> {
 
 fn list(place: &Place) -> Result<Value, String> {
     let core = place.connect()?;
-    let records = Records::for_core(&core.id)?;
-    Ok(json!({ "keys": records.keys()? }))
+    let mut keys = place.records(&core)?.keys()?;
+    keys.extend(workspace::keys()?);
+    keys.sort();
+    keys.dedup();
+    Ok(json!({ "keys": keys }))
 }
 
 fn make_workspace(key: &str, request: &Value) -> Result<Value, String> {

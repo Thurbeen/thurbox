@@ -6,6 +6,8 @@ use serde_json::{Value, json};
 
 use crate::records::data_home;
 
+const WORKSPACE_RECORD: &str = ".fleet-workspace.json";
+
 pub const SCHEMES: &[&str] = &["git+https", "git+ssh", "git+file", "file"];
 
 fn root() -> Result<PathBuf, String> {
@@ -50,6 +52,19 @@ fn call(verb: &str, request: &Value) -> Result<Value, String> {
             String::from_utf8_lossy(&out.stderr).trim()
         )
     })
+}
+
+pub fn keys() -> Result<Vec<String>, String> {
+    let root = root()?;
+    let entries = match std::fs::read_dir(&root) {
+        Ok(entries) => entries,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(e) => return Err(format!("cannot list {}: {e}", root.display())),
+    };
+    Ok(entries
+        .filter_map(|entry| entry.ok()?.file_name().into_string().ok())
+        .filter(|name| root.join(name).join(WORKSPACE_RECORD).is_file())
+        .collect())
 }
 
 pub fn make(key: &str, urls: &[String]) -> Result<Value, String> {

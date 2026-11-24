@@ -6,7 +6,7 @@ rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
 publish.workspace = true
-description = "Fleet's runtime protocol over herdr: each session is a pane in the user's own herdr"
+description = "Fleet's runtime protocol over herdr-core: each session is a herdr-core terminal"
 
 [lib]
 name = "runtime_herdr"

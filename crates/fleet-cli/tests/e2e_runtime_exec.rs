@@ -6533,8 +6533,18 @@ fn runtime_herdr_passes_the_conformance_suite() {
 /// One `runtime-herdr <verb>` call on `home`'s herdr-core, at the `local`
 /// place.
 fn herdr_call(program: &Path, home: &HerdrHome, verb: &str, fields: Value) -> Value {
+    herdr_call_at(program, home, "local", verb, fields)
+}
+
+fn herdr_call_at(
+    program: &Path,
+    home: &HerdrHome,
+    place: &str,
+    verb: &str,
+    fields: Value,
+) -> Value {
     use std::io::Write;
-    let mut request = json!({"protocol": 2, "place": {"name": "local", "config": {}}});
+    let mut request = json!({"protocol": 2, "place": {"name": place, "config": {}}});
     request
         .as_object_mut()
         .expect("an object")
@@ -6680,4 +6690,92 @@ fn runtime_herdr_labels_a_key_s_terminal_for_herdr_s_app() {
         );
         std::thread::sleep(Duration::from_millis(100));
     }
+}
+
+fn herdr_keys(program: &Path, home: &HerdrHome, place: &str) -> Value {
+    herdr_call_at(program, home, place, "list", json!({}))["known"]["keys"].clone()
+}
+
+/// `list` answers for one place: two places on one herdr-core session do not
+/// list each other's keys.
+#[test]
+fn runtime_herdr_lists_a_place_s_own_keys() {
+    let (Some(program), Some(_)) = (runtime_herdr(), herdr_core()) else {
+        return;
+    };
+    let home = HerdrHome::new("places");
+    let started = herdr_call_at(
+        &program,
+        &home,
+        "here",
+        "start",
+        json!({"key": "k-here", "argv": ["sleep", "300"], "env": {}}),
+    );
+    assert!(started["known"]["started"].is_object(), "{started}");
+    assert_eq!(herdr_keys(&program, &home, "here"), json!(["k-here"]));
+    assert_eq!(herdr_keys(&program, &home, "there"), json!([]));
+}
+
+/// A start cut short after herdr-core made the terminal, before the runtime
+/// learned its address, leaves a live terminal labelled with the key: the
+/// key reads as running and the next start adopts that terminal.
+#[test]
+fn runtime_herdr_adopts_the_terminal_of_an_interrupted_start() {
+    let (Some(program), Some(_)) = (runtime_herdr(), herdr_core()) else {
+        return;
+    };
+    let home = HerdrHome::new("cut");
+    let status = home.hc(&["server", "status", "--json"]);
+    let core: Value = serde_json::from_slice(&status.stdout).expect("a JSON status");
+    let core_id = core["core"]["id"].as_str().expect("a core id");
+    let records = home
+        .0
+        .join("state/runtime-herdr")
+        .join(core_id)
+        .join("local");
+    fs::create_dir_all(&records).expect("records");
+    fs::write(
+        records.join("k-cut.start"),
+        r#"{"terminal":null,"pid":null}"#,
+    )
+    .expect("record");
+    let ran = home.hc(&[
+        "run",
+        "--bg",
+        "--json",
+        "--label",
+        "fleet.key=k-cut",
+        "--",
+        "sleep",
+        "300",
+    ]);
+    let terminal: Value = serde_json::from_slice(&ran.stdout)
+        .unwrap_or_else(|e| panic!("{e}: {}", String::from_utf8_lossy(&ran.stdout)));
+    let address = terminal["address"].clone();
+    assert!(address.is_string(), "{terminal}");
+    let running = herdr_call(&program, &home, "inspect", json!({"key": "k-cut"}));
+    assert_eq!(running["known"]["running"]["id"], address, "{running}");
+    let again = herdr_start(&program, &home, "k-cut", &["sleep", "300"]);
+    assert_eq!(again["known"]["started"]["adopted"], true, "{again}");
+    assert_eq!(again["known"]["started"]["id"], address, "{again}");
+}
+
+/// `list` names a key that holds only a workspace, so a client can find it
+/// and release it.
+#[test]
+fn runtime_herdr_lists_a_key_that_holds_only_a_workspace() {
+    let (Some(program), Some(_)) = (runtime_herdr(), herdr_core()) else {
+        return;
+    };
+    let home = HerdrHome::new("ws");
+    let dir = home.0.join("notes");
+    fs::create_dir_all(&dir).expect("dir");
+    let made = herdr_call(
+        &program,
+        &home,
+        "workspace",
+        json!({"key": "k-ws", "urls": [format!("file://{}", dir.display())]}),
+    );
+    assert!(made["known"]["made"].is_object(), "{made}");
+    assert_eq!(herdr_keys(&program, &home, "local"), json!(["k-ws"]));
 }

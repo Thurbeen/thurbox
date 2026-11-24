@@ -38,10 +38,10 @@ Fleet ── runtime-herdr <verb> ──▶ herdr-core connect      JSON-RPC 2.0
 | Verb | What it does in herdr-core |
 | --- | --- |
 | `manifest` | Reports each place asked about. A place is ready when its core answers `hello`. As every verb does, it starts the core when the core does not run. |
-| `start` | `terminal.run` with the argv, `env` and `dir`, and the labels above. A live terminal of the key, with the process `start` started, is adopted. |
+| `start` | Writes the key's start record, then `terminal.run` with the argv, `env` and `dir`, and the labels above, then records the terminal's address and pid. A live terminal of the key, with the process `start` started, is adopted. So is the live terminal of a start cut short before it recorded the address. |
 | `inspect` | `running` while the key's terminal is live and holds the process `start` started. `exited` with the terminal's exit code once it has finished, or with no code when the core no longer has it. `none` when the key has no start record. |
 | `stop` | `terminal.kill`, then `terminal.rm`, for each terminal of the key. `release: true` also releases the key's workspace. |
-| `list` | Every key with a start record. |
+| `list` | Every key with a start record at the place, and every key that holds a workspace. |
 | `workspace` | Runs `workspace-git`, as `runtime-mux` does. |
 
 The environment goes over the API. It is in no process's argv.
@@ -74,12 +74,13 @@ the labels.
 
 | Path | Content |
 | --- | --- |
-| `${XDG_STATE_HOME:-~/.local/state}/runtime-herdr/<core>/<key>.start` | The start record: the key's terminal address and its process's pid. |
-| `${XDG_STATE_HOME:-~/.local/state}/runtime-herdr/<core>/lock` | Starts and stops on one core hold this lock, one at a time. |
+| `${XDG_STATE_HOME:-~/.local/state}/runtime-herdr/<core>/<place>/<key>.start` | The start record: the key's terminal address and its process's pid. Before `terminal.run`, it holds neither. |
+| `${XDG_STATE_HOME:-~/.local/state}/runtime-herdr/<core>/<place>/lock` | Starts and stops at one place hold this lock, one at a time. |
 | `${XDG_DATA_HOME:-~/.local/share}/runtime-herdr/workspaces/` | The workspaces that `workspace-git` makes. |
 
 `<core>` is the core's id from `hello`, so two herdr-core sessions keep
-separate records. The directory is `0700`.
+separate records. `<place>` is the place's name, so two places on one session
+list only their own keys. The directory is `0700`.
 
 ## Limits
 
@@ -100,4 +101,7 @@ private runtime directory (`XDG_RUNTIME_DIR`):
 - a key stays running across a core restart, and a start adopts it;
 - a key lost to a core stop answers `exited`, and the next `start` runs it
   again;
-- a key's terminal has its environment and the labels herdr's app reads.
+- a key's terminal has its environment and the labels herdr's app reads;
+- two places on one session list only their own keys;
+- a start cut short before it recorded the terminal is adopted;
+- a key that holds only a workspace is listed.

@@ -9,8 +9,17 @@ const START_SUFFIX: &str = ".start";
 
 #[derive(Serialize, Deserialize)]
 pub struct Started {
-    pub terminal: String,
+    pub terminal: Option<String>,
     pub pid: Option<u32>,
+}
+
+impl Started {
+    pub fn intended() -> Started {
+        Started {
+            terminal: None,
+            pid: None,
+        }
+    }
 }
 
 pub struct Records {
@@ -32,9 +41,9 @@ pub fn data_home() -> Option<PathBuf> {
 }
 
 impl Records {
-    pub fn for_core(core_id: &str) -> Result<Records, String> {
+    pub fn for_place(core_id: &str, place: &str) -> Result<Records, String> {
         let base = state_home().ok_or("neither XDG_STATE_HOME nor HOME is set")?;
-        let dir = base.join("runtime-herdr").join(core_id);
+        let dir = base.join("runtime-herdr").join(core_id).join(place);
         make_private_dir(&dir)?;
         Ok(Records { dir })
     }
