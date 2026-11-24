@@ -170,37 +170,68 @@ test('homepage presents Fleet and thurbox apart, links each official plugin, and
   assert.ok(home.querySelector('a[href="docs/installation.html"]'), 'other install routes are linked');
   assert.ok(home.querySelector('a[href="docs/fleet-install.html"]'), 'installing Fleet alone is linked');
   const fit = home.querySelector('#how-they-fit');
+  const order = home.querySelectorAll('section[id]').map((s) => s.getAttribute('id'));
+  assert.ok(order.indexOf('how-they-fit') < order.indexOf('thurbox'), 'the pitch comes before the product bands');
   const scenes = fit.querySelectorAll('[data-story] svg');
-  assert.equal(scenes.length, 3, 'one scene each for the interface, the reconcile loop and the gateway');
+  assert.equal(scenes.length, 4, 'one scene each for places, the reconcile loop, agents working together and change requests');
   for (const svg of scenes) {
     const labels = svg.getAttribute('aria-labelledby').split(' ');
     assert.deepEqual(labels.map((id) => svg.querySelector(`#${id}`)?.tagName), ['TITLE', 'DESC'], 'each scene has a title and a description');
   }
-  const [fleets, loop, gateway] = scenes.map((svg) => text(svg));
-  for (const word of ['Slack', 'Discord', 'gateway', 'Task', 'inbox', 'log channel']) {
-    assert.match(gateway, new RegExp(word), `the gateway scene reads "${word}" as text`);
-  }
-  assert.doesNotMatch(text(fit), /Telegram|Teams|Matrix|Mattermost/, 'only the chat platforms Fleet has adapters for are shown');
-  const adapters = readdirSync('crates/fleet-gateway/src').map((file) => file.replace(/\.rs$/, ''));
-  for (const platform of ['slack', 'discord']) assert.ok(adapters.includes(platform), `${platform} has a gateway adapter`);
+  const [places, loop, team, reviews] = scenes.map((svg) => text(svg));
+
   const benefits = fit.querySelectorAll('.story__benefits .card');
-  assert.equal(benefits.length, 4, 'four benefits sit above the scenes');
+  assert.equal(benefits.length, 5, 'five differentiators sit above the scenes');
   for (const card of benefits) {
     const target = card.querySelector('a')?.getAttribute('href') ?? '';
-    assert.ok(target.startsWith('#') && fit.querySelector(target), `"${text(card.querySelector('h3'))}" links to the scene that shows it`);
+    assert.ok(target.startsWith('#') && fit.querySelector(target), `"${text(card.querySelector('h3'))}" links to the part that shows it`);
   }
-  for (const word of ['thurbox', 'Fleet laptop', 'Fleet box', 'Fleet ubuntu', 'ssh', 'wsl', 'laptop:fix-login']) {
-    assert.match(fleets, new RegExp(word), `the fleets scene reads "${word}" as text`);
+  const headlines = benefits.map((card) => text(card.querySelector('h3'))).join(' | ');
+  assert.doesNotMatch(headlines, /one screen/i, 'one screen for every agent is no longer a headline');
+  assert.doesNotMatch(text(fit), /\bmirror/i, 'the pitch says what Fleet does, not "mirror"');
+
+  const placeKinds = readFileSync('crates/runtime-mux/src/host/host_def.rs', 'utf8');
+  for (const kind of ['Ssh', 'Wsl']) assert.match(placeKinds, new RegExp(`^    ${kind},`, 'm'), `${kind} is a place kind runtime-mux has`);
+  for (const word of ['thurbox', 'local', 'ssh', 'wsl', 'mux/box', 'workspace', 'session']) {
+    assert.match(places, new RegExp(word), `the places scene reads "${word}" as text`);
   }
+  assert.doesNotMatch(text(home), /herdr|docker|podman|kubernetes pod|devcontainer/i, 'no place kind Fleet does not ship is claimed');
+
   for (const word of ['Task', 'spec', 'status', 'controllers', 'fleet up', 'observe', 'compare', 'act', 'runtime-mux', 'workspace', 'session', 'TaskConfig', 'CronTask', 'ChangeRequest']) {
     assert.match(loop, new RegExp(word), `the reconcile scene reads "${word}" as text`);
   }
+  assert.match(text(fit.querySelector('#story-reconcile')), /Kubernetes/, 'the reconcile loop is compared to Kubernetes');
   const kinds = readFileSync('docs/fleet/README.md', 'utf8');
   for (const kind of ['Task', 'TaskConfig', 'EnvProvider', 'ChangeRequest', 'CronTask', 'Board', 'Conversation']) {
     assert.match(kinds, new RegExp(`^\\| \\[${kind}\\]\\(resources/`, 'm'), `${kind} is a kind Fleet documents`);
   }
   const phases = readFileSync('docs/fleet/resources/task.md', 'utf8');
   for (const phase of ['Pending', 'Spawning', 'Briefed']) assert.match(phases, new RegExp(`\`${phase}\``), `${phase} is a Task phase`);
+
+  for (const word of ['Slack', 'Discord', 'gateway', 'lead', 'child', 'inbox', 'Question', 'Board']) {
+    assert.match(team, new RegExp(word), `the team scene reads "${word}" as text`);
+  }
+  assert.doesNotMatch(text(fit), /Telegram|Teams|Matrix|Mattermost/, 'only the chat platforms Fleet has adapters for are shown');
+  const adapters = readdirSync('crates/fleet-gateway/src').map((file) => file.replace(/\.rs$/, ''));
+  for (const platform of ['slack', 'discord']) assert.ok(adapters.includes(platform), `${platform} has a gateway adapter`);
+
+  const forges = readdirSync('crates/fleet-forge/src').map((file) => file.replace(/\.rs$/, ''));
+  for (const [forge, adapter] of [['GitHub', 'github'], ['GitLab', 'gitlab'], ['Bitbucket', 'bitbucket'], ['Azure DevOps', 'azure_devops']]) {
+    assert.ok(forges.includes(adapter), `${forge} has a forge adapter`);
+    assert.match(text(fit.querySelector('#story-reviews')), new RegExp(forge), `the change-request part names ${forge}`);
+  }
+  for (const word of ['checks', 'review', 'comment', 'inbox', 'controllers']) {
+    assert.match(reviews, new RegExp(word), `the change-request scene reads "${word}" as text`);
+  }
+
+  const extend = fit.querySelector('#story-extend');
+  for (const word of ['plugin', 'kind', 'controller', 'CRD', 'harness', 'runtime protocol', 'Lua']) {
+    assert.match(text(extend), new RegExp(word), `the extension part reads "${word}"`);
+  }
+  for (const href of ['docs/fleet/plugins.html', 'plugins.html', 'docs/runtime/index.html', 'docs/agents.html']) {
+    assert.ok(extend.querySelector(`a[href="${href}"]`), `the extension part links ${href}`);
+  }
+  assert.ok(existsSync('examples/fleet/plugin/files.py'), 'the example Fleet plugin exists');
   for (const step of fit.querySelectorAll('[data-story]')) {
     const numbers = step.querySelectorAll('[data-step]').map((s) => Number(s.getAttribute('data-step')));
     assert.deepEqual(numbers, numbers.map((_, i) => i + 1), 'each story numbers its steps from 1');

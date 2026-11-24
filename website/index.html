@@ -1,7 +1,7 @@
 ---
 layout: base.njk
 title: 'thurbox and Fleet — run coding agents'
-description: 'thurbox is the terminal interface to watch and drive coding agents across one or more Fleets. Fleet runs the sessions and keeps them running, under thurbox or on its own.'
+description: 'Fleet runs coding agents on any machine, reconciles them like Kubernetes, lets them work together and follows their pull requests. thurbox is the terminal interface on top.'
 root: '.'
 extraCss: ['landing.css']
 footer: true
@@ -14,8 +14,9 @@ footer: true
           <span class="hero-headline-phrase">agents</span>
         </h1>
         <p class="subtitle">
-          <strong>thurbox</strong> is the terminal interface to watch and drive your coding
-          agents. <strong>Fleet</strong> runs them and keeps them running.<span
+          <strong>Fleet</strong> runs your coding agents on any machine, keeps each one to what you
+          declared and lets them work together. <strong>thurbox</strong> is the terminal interface
+          on top.<span
             class="hero-cursor"
             aria-hidden="true"
           ></span>
@@ -29,6 +30,767 @@ footer: true
           Press any key to begin
           <span class="arrow" aria-hidden="true">&#9654;</span>
         </button>
+      </div>
+    </section>
+
+    <section class="section story" id="how-they-fit">
+      <div class="container">
+        <p class="section-eyebrow">Why thurbox and Fleet</p>
+        <h2>A control plane for your coding agents</h2>
+        <p class="product__lede">
+          Most agent tools put your sessions side by side on one screen. Fleet goes further: it runs
+          each agent on the machine you name, keeps it to what you declared, lets agents hand work
+          to each other and follows their pull requests. thurbox is the screen on top.
+        </p>
+
+        <ul class="story__benefits grid grid-3 grid--stretch">
+          <li class="card">
+            <div class="card-icon" aria-hidden="true">&#x2933;</div>
+            <h3>Sessions on any machine</h3>
+            <p>
+              Run an agent here, on a server over ssh or in a WSL distro. Fleet clones the workspace
+              there and starts the agent.
+            </p>
+            <a href="#story-places">See it start &rarr;</a>
+          </li>
+          <li class="card">
+            <div class="card-icon" aria-hidden="true">&#x21BB;</div>
+            <h3>Declare it, Fleet keeps it true</h3>
+            <p>
+              Like Kubernetes: a Task is a spec, and controllers reconcile it. Its session outlives a
+              quit, a crash or a reboot.
+            </p>
+            <a href="#story-reconcile">See the loop &rarr;</a>
+          </li>
+          <li class="card">
+            <div class="card-icon" aria-hidden="true">&#x2687;</div>
+            <h3>Agents that work together</h3>
+            <p>
+              A lead agent starts child Tasks, and their questions and results come back to its
+              inbox. Start a lead from Slack or Discord.
+            </p>
+            <a href="#story-team">See a team &rarr;</a>
+          </li>
+          <li class="card">
+            <div class="card-icon" aria-hidden="true">&#x2713;</div>
+            <h3>Pull requests followed for you</h3>
+            <p>
+              New review comments, CI results and merges reach the agent's inbox. Nobody copies them
+              in by hand.
+            </p>
+            <a href="#story-reviews">See the follow-up &rarr;</a>
+          </li>
+          <li class="card">
+            <div class="card-icon" aria-hidden="true">&#x2B21;</div>
+            <h3>Extend it like Kubernetes</h3>
+            <p>
+              Fleet plugins add your own resource kinds and controllers, like CRDs and operators.
+              Bring any agent CLI, runtime or pane.
+            </p>
+            <a href="#story-extend">See what to add &rarr;</a>
+          </li>
+        </ul>
+
+        <header class="story__intro" id="story-places">
+          <p class="section-eyebrow">01 · Places</p>
+          <h3>Start a session on any machine</h3>
+          <p>
+            A Task names the place it runs. Fleet's runtime, runtime-mux, reaches this machine, a
+            server over ssh and a WSL distro today.
+          </p>
+        </header>
+        <div class="story__chapter" data-story>
+          <figure class="story__figure">
+            <svg
+              class="story__svg"
+              viewBox="0 0 680 446"
+              role="img"
+              aria-labelledby="places-title places-desc"
+            >
+              <title id="places-title">A Task starts on the place it names</title>
+              <desc id="places-desc">
+                The Task fix-login names its harness, claude, and its host, mux/box. Fleet, run by
+                fleet up, has three places on runtime-mux: local, this machine; box, a server over
+                ssh; and ubuntu, a WSL distro. Fleet clones the workspace on box and starts the
+                session there. thurbox lists every session with its place. When thurbox quits, the
+                sessions keep running.
+              </desc>
+              <g class="s1">
+                <rect x="12" y="12" width="224" height="160" class="st-card" />
+                <text x="28" y="40" class="st-name">Task</text>
+                <text x="220" y="40" class="st-mono st-dim" text-anchor="end">fix-login</text>
+                <text x="28" y="64" class="st-label">spec</text>
+                <text x="28" y="90" class="st-mono"><tspan class="st-dim">harness</tspan> claude</text>
+                <text x="28" y="114" class="st-mono"><tspan class="st-dim">host</tspan> <tspan class="st-hot-text">mux/box</tspan></text>
+                <text x="28" y="138" class="st-mono"><tspan class="st-dim">repo</tspan> app.git</text>
+                <text x="28" y="160" class="st-small">fleet apply -f task.json</text>
+              </g>
+
+              <g class="st-tbx s2" style="--d: 0.9s">
+                <rect x="260" y="12" width="408" height="160" class="st-tui" />
+                <text x="274" y="33" class="st-tui-brand">thurbox</text>
+                <rect x="270" y="44" width="388" height="92" class="st-tui-pane" />
+                <rect x="276" y="38" width="62" height="12" class="st-tui-mask" />
+                <text x="280" y="48" class="st-small">Sessions</text>
+                <circle cx="286" cy="64" r="3.5" class="st-ring st-ring--ok" />
+                <text x="296" y="68" class="st-tui-row">laptop:api-docs</text>
+                <text x="648" y="68" class="st-tui-meta" text-anchor="end">mux/local</text>
+                <rect x="273" y="78" width="382" height="22" class="st-tui-sel" />
+                <circle cx="286" cy="89" r="3.5" class="st-ring st-ring--ok" />
+                <text x="296" y="93" class="st-tui-row st-tui-row--sel">laptop:fix-login</text>
+                <text x="648" y="93" class="st-tui-meta" text-anchor="end">mux/box</text>
+                <circle cx="286" cy="114" r="3.5" class="st-ring st-ring--idle" />
+                <text x="296" y="118" class="st-tui-row">laptop:win-build</text>
+                <text x="648" y="118" class="st-tui-meta" text-anchor="end">mux/ubuntu</text>
+                <text x="272" y="160" class="st-small">3 session(s)</text>
+                <text x="656" y="160" class="st-tui-key" text-anchor="end">Quit · ^Q</text>
+              </g>
+              <g class="st-quit" aria-hidden="true">
+                <rect x="414" y="74" width="100" height="32" class="st-key" />
+                <text x="464" y="95" class="st-mono" text-anchor="middle">Ctrl+Q</text>
+              </g>
+
+              <path d="M124 172V196" pathLength="1" class="st-wire s1" />
+              <path d="M464 172V196" pathLength="1" class="st-wire s2" style="--d: 0.9s" />
+              <g class="s1">
+                <rect x="12" y="196" width="656" height="40" class="st-hot" />
+                <text x="28" y="221" class="st-brand">Fleet</text>
+                <text x="104" y="221" class="st-mono st-dim">fleet up · runtime-mux</text>
+                <text x="652" y="221" class="st-small" text-anchor="end">3 places</text>
+              </g>
+
+              <path d="M112 236V290" pathLength="1" class="st-wire s1" />
+              <path d="M340 236V290" pathLength="1" class="st-wire st-spawn s2" />
+              <path d="M568 236V290" pathLength="1" class="st-wire s1" />
+              <g class="s1">
+                <rect x="84" y="253" width="56" height="20" class="st-pill" />
+                <text x="112" y="267" class="st-small" text-anchor="middle">local</text>
+                <rect x="546" y="253" width="44" height="20" class="st-pill" />
+                <text x="568" y="267" class="st-small" text-anchor="middle">wsl</text>
+              </g>
+              <g class="s2" style="--d: 0.2s">
+                <rect x="318" y="253" width="44" height="20" class="st-pill st-pill--hot" />
+                <text x="340" y="267" class="st-small st-hot-text" text-anchor="middle">ssh</text>
+              </g>
+
+              <g class="s1">
+                <rect x="12" y="290" width="200" height="146" class="st-card" />
+                <text x="28" y="318" class="st-name">local</text>
+                <text x="28" y="340" class="st-dim">this machine</text>
+                <rect x="26" y="388" width="172" height="30" class="st-sunk" />
+                <circle cx="41" cy="403" r="4" class="st-ok st-beat" />
+                <text x="53" y="408" class="st-mono">api-docs</text>
+              </g>
+              <g class="s1">
+                <rect x="240" y="290" width="200" height="146" class="st-card st-target" />
+                <text x="256" y="318" class="st-name">box</text>
+                <text x="424" y="318" class="st-mono st-dim" text-anchor="end">mux/box</text>
+                <text x="256" y="340" class="st-dim">a server, over ssh</text>
+              </g>
+              <g class="s2" style="--d: 0.4s">
+                <rect x="254" y="352" width="172" height="30" class="st-sunk" />
+                <text x="266" y="372" class="st-mono"><tspan class="st-dim">workspace</tspan> app</text>
+              </g>
+              <g class="s2" style="--d: 0.7s">
+                <rect x="254" y="388" width="172" height="30" class="st-sunk" />
+                <circle cx="269" cy="403" r="4" class="st-ok st-beat" />
+                <text x="281" y="408" class="st-mono"><tspan class="st-dim">session</tspan> claude</text>
+              </g>
+              <g class="s1">
+                <rect x="468" y="290" width="200" height="146" class="st-card" />
+                <text x="484" y="318" class="st-name">ubuntu</text>
+                <text x="484" y="340" class="st-dim">a WSL distro</text>
+                <rect x="482" y="388" width="172" height="30" class="st-sunk" />
+                <circle cx="497" cy="403" r="4" class="st-idle" />
+                <text x="509" y="408" class="st-mono">win-build</text>
+              </g>
+            </svg>
+          </figure>
+          <ol class="story__steps">
+            <li class="story__step" data-step="1">
+              <h3><span class="step-number" aria-hidden="true">1</span>Name a place</h3>
+              <p>
+                A Task's host is a place, <code>&lt;runtime&gt;/&lt;place&gt;</code>:
+                <code>local</code>, a server you reach over ssh, or a WSL distro. Each place is a
+                few lines of Fleet's config.
+              </p>
+              <p class="story__gain">Put the agent where the code, the GPU or the credentials are.</p>
+            </li>
+            <li class="story__step" data-step="2">
+              <h3><span class="step-number" aria-hidden="true">2</span>Fleet starts it there</h3>
+              <p>
+                runtime-mux clones the workspace on that machine and starts the agent in tmux there.
+                thurbox lists the session with its place, and its shell opens on the same machine.
+              </p>
+              <p class="story__gain">No ssh-ing in to set up a checkout by hand.</p>
+            </li>
+            <li class="story__step" data-step="3">
+              <h3><span class="step-number" aria-hidden="true">3</span>Quit, and they keep running</h3>
+              <p>
+                Fleet runs the sessions, not thurbox. Quit thurbox and every agent keeps working.
+                thurbox can also follow other Fleets over ssh or WSL, each in the same list.
+              </p>
+              <p class="story__gain">Close the laptop lid: the work on the server goes on.</p>
+            </li>
+          </ol>
+        </div>
+
+        <header class="story__intro" id="story-reconcile">
+          <p class="section-eyebrow">02 · Declarative</p>
+          <h3>Declare it once, Fleet keeps it true</h3>
+          <p>
+            Fleet works like Kubernetes. You write the state you want as a resource; controllers
+            compare it with what runs and close the gap, sweep after sweep. Nobody has to watch it.
+          </p>
+        </header>
+        <div class="story__chapter" data-story>
+          <figure class="story__figure">
+            <svg
+              class="story__svg"
+              viewBox="0 0 680 446"
+              role="img"
+              aria-labelledby="loop-title loop-desc"
+            >
+              <title id="loop-title">Fleet reconciles, like Kubernetes</title>
+              <desc id="loop-desc">
+                The store keeps a Task: its spec says what you want, the harness, the host and
+                dispatch; its status says what is, the phase and the session state. TaskConfig,
+                EnvProvider, ChangeRequest and CronTask are resources too. Controllers, run by fleet
+                up, observe, compare and act in a loop: they read the spec, act through the runtime,
+                runtime-mux, which makes the workspace and starts the session, observe it, and
+                write the status back. After a crash or a reboot they revive the same session.
+              </desc>
+              <defs>
+                <marker
+                  id="st-head"
+                  viewBox="0 0 8 8"
+                  refX="7"
+                  refY="4"
+                  markerWidth="4"
+                  markerHeight="4"
+                  orient="auto-start-reverse"
+                >
+                  <path d="M0 0L8 4L0 8z" class="st-arrowhead" />
+                </marker>
+                <marker
+                  id="st-loop-head"
+                  viewBox="0 0 8 8"
+                  refX="7"
+                  refY="4"
+                  markerWidth="4"
+                  markerHeight="4"
+                  orient="auto"
+                >
+                  <path d="M0 0L8 4L0 8z" class="st-loophead" />
+                </marker>
+              </defs>
+
+              <g class="s1">
+                <rect x="12" y="12" width="206" height="424" class="st-card" />
+                <text x="28" y="40" class="st-name">store</text>
+                <rect x="26" y="54" width="178" height="222" class="st-sunk" />
+                <text x="40" y="80" class="st-name">Task</text>
+                <text x="190" y="80" class="st-mono st-dim" text-anchor="end">fix-login</text>
+                <text x="40" y="104" class="st-label">spec · what you want</text>
+                <text x="40" y="126" class="st-mono"><tspan class="st-dim">harness</tspan> claude</text>
+                <text x="40" y="146" class="st-mono"><tspan class="st-dim">host</tspan> mux/box</text>
+                <text x="40" y="166" class="st-mono"><tspan class="st-dim">dispatch</tspan> true</text>
+                <path d="M40 182H190" class="st-rule" />
+              </g>
+              <g class="s4" style="--d: 0.4s">
+                <text x="40" y="204" class="st-label st-hot-text">status · what is</text>
+              </g>
+              <g class="s1">
+                <text x="40" y="228" class="st-mono st-dim">phase</text>
+                <text x="40" y="250" class="st-mono st-dim">sessionState</text>
+              </g>
+              <text x="190" y="228" class="st-mono st-phase st-phase--a" text-anchor="end">Pending</text>
+              <text x="190" y="228" class="st-mono st-phase st-phase--b" text-anchor="end">Spawning</text>
+              <text x="190" y="228" class="st-mono st-phase st-phase--c st-hot-text" text-anchor="end">Briefed</text>
+              <text x="190" y="268" class="st-mono st-phase st-phase--a st-phase--b st-dim" text-anchor="end">—</text>
+              <text x="190" y="268" class="st-mono st-phase st-phase--c st-hot-text" text-anchor="end">Running</text>
+              <g class="s1" style="--d: 0.3s">
+                <rect x="26" y="290" width="178" height="24" class="st-sunk" />
+                <text x="38" y="307" class="st-kind">TaskConfig</text>
+                <rect x="26" y="320" width="178" height="24" class="st-sunk" />
+                <text x="38" y="337" class="st-kind">EnvProvider</text>
+                <rect x="26" y="350" width="178" height="24" class="st-sunk" />
+                <text x="38" y="367" class="st-kind">ChangeRequest</text>
+                <rect x="26" y="380" width="178" height="24" class="st-sunk" />
+                <text x="38" y="397" class="st-kind">CronTask</text>
+                <text x="28" y="424" class="st-dim">Board · Conversation · …</text>
+              </g>
+
+              <path d="M218 124H268" pathLength="1" class="st-wire s2" marker-end="url(#st-head)" />
+              <text x="244" y="114" class="st-small st-edge s2" text-anchor="middle">spec</text>
+              <path d="M270 330H220" pathLength="1" class="st-wire s4" marker-end="url(#st-head)" />
+              <text x="244" y="320" class="st-small st-edge s4" text-anchor="middle">status</text>
+
+              <g class="s2" style="--d: 0.2s">
+                <rect x="270" y="12" width="156" height="424" class="st-hot" />
+                <text x="348" y="42" class="st-brand" text-anchor="middle">controllers</text>
+                <text x="348" y="64" class="st-mono st-dim" text-anchor="middle">fleet up</text>
+                <text x="348" y="404" class="st-dim" text-anchor="middle">one reconcile</text>
+                <text x="348" y="422" class="st-dim" text-anchor="middle">per sweep</text>
+              </g>
+              <g class="st-loop s2" style="--d: 0.5s">
+                <circle cx="348" cy="232" r="62" class="st-sigil-ring" />
+                <circle cx="348" cy="232" r="56" class="st-track" />
+                <circle cx="348" cy="232" r="44" class="st-sigil-ring" />
+                <path d="M348 276L322.14 196.4L389.85 245.6L306.15 245.6L373.86 196.4Z" class="st-sigil-line" />
+                <circle cx="348" cy="232" r="13" class="st-ember-glow" />
+                <circle cx="348" cy="232" r="5" class="st-ember" />
+                <path d="M361.55 177.66A56 56 0 0 1 401.83 247.44" class="st-arc" marker-end="url(#st-loop-head)" />
+                <path d="M388.28 270.9A56 56 0 0 1 307.72 270.9" class="st-arc" marker-end="url(#st-loop-head)" />
+                <path d="M294.17 247.44A56 56 0 0 1 334.45 177.66" class="st-arc" marker-end="url(#st-loop-head)" />
+                <rect x="343.5" y="171.5" width="9" height="9" class="st-node" />
+                <rect x="392" y="255.5" width="9" height="9" class="st-node" />
+                <rect x="295" y="255.5" width="9" height="9" class="st-node" />
+                <g class="st-orbit"><circle cx="348" cy="176" r="4" class="st-comet" /></g>
+                <text x="348" y="160" class="st-small" text-anchor="middle">observe</text>
+                <text x="397" y="294" class="st-small" text-anchor="middle">compare</text>
+                <text x="300" y="294" class="st-small" text-anchor="middle">act</text>
+              </g>
+
+              <path d="M426 136H476" pathLength="1" class="st-wire s3" marker-end="url(#st-head)" />
+              <text x="452" y="126" class="st-small st-edge s3" text-anchor="middle">act</text>
+              <path d="M478 222H428" pathLength="1" class="st-wire s2" style="--d: 0.4s" marker-end="url(#st-head)" />
+              <text x="452" y="212" class="st-small st-edge s2" style="--d: 0.4s" text-anchor="middle">observe</text>
+              <path d="M428 370H476" pathLength="1" class="st-wire s4" style="--d: 0.6s" marker-end="url(#st-head)" />
+              <text x="452" y="360" class="st-small st-edge s4" style="--d: 0.6s" text-anchor="middle">revive</text>
+
+              <g class="s2" style="--d: 0.4s">
+                <rect x="478" y="12" width="190" height="272" class="st-card" />
+                <text x="494" y="38" class="st-label">runtime</text>
+                <text x="494" y="62" class="st-mono st-strong">runtime-mux</text>
+              </g>
+              <g class="s3" style="--d: 0.3s">
+                <rect x="492" y="80" width="162" height="78" class="st-sunk" />
+                <text x="506" y="106" class="st-name">workspace</text>
+                <text x="506" y="130" class="st-dim">by workspace-git</text>
+              </g>
+              <g class="s3" style="--d: 0.8s">
+                <rect x="492" y="172" width="162" height="96" class="st-sunk" />
+                <text x="506" y="198" class="st-name">session</text>
+                <circle cx="511" cy="222" r="4.5" class="st-ok st-beat" />
+                <text x="523" y="227" class="st-mono">claude · box</text>
+                <text x="506" y="252" class="st-dim">the agent, briefed</text>
+              </g>
+              <g class="s4" style="--d: 0.8s">
+                <rect x="478" y="300" width="190" height="136" class="st-card" />
+                <text x="494" y="326" class="st-label">after a reboot</text>
+                <text x="494" y="350" class="st-name">same session</text>
+                <text x="494" y="374" class="st-dim">same id, same</text>
+                <text x="494" y="398" class="st-dim">worktree, and the</text>
+                <text x="494" y="422" class="st-dim">conversation resumed</text>
+              </g>
+            </svg>
+          </figure>
+          <ol class="story__steps">
+            <li class="story__step" data-step="1">
+              <h3><span class="step-number" aria-hidden="true">1</span>Declare</h3>
+              <p>
+                You write what you want as a resource. A Task names the agent, the place and the
+                brief; <code>fleet apply</code>, thurbox, a script or another agent puts it in the
+                store. TaskConfig, EnvProvider, ChangeRequest and CronTask are resources too.
+              </p>
+              <p class="story__gain">One file describes the work, so a script or a schedule can start it too.</p>
+            </li>
+            <li class="story__step" data-step="2">
+              <h3><span class="step-number" aria-hidden="true">2</span>Compare</h3>
+              <p>
+                Controllers, run by <code>fleet up</code>, read each spec and observe the runtime. A
+                Task that should run and has no session is a gap to close.
+              </p>
+              <p class="story__gain">No babysitting: every sweep finds the Task that should run and does not.</p>
+            </li>
+            <li class="story__step" data-step="3">
+              <h3><span class="step-number" aria-hidden="true">3</span>Act</h3>
+              <p>
+                They close the gap through the runtime: make the workspace, start the session, type
+                the brief. The manager records each effect's intent before it runs it.
+              </p>
+              <p class="story__gain">After a crash, Fleet looks a spawn up by its key first, so no session starts twice.</p>
+            </li>
+            <li class="story__step" data-step="4">
+              <h3><span class="step-number" aria-hidden="true">4</span>Write back, sweep again</h3>
+              <p>
+                They write the phase and the session's state back to the status, then sweep again.
+                After a reboot, they revive the session with the same id and worktree, and the
+                agent's conversation resumes.
+              </p>
+              <p class="story__gain">The status stays true, and a reboot costs the agent nothing.</p>
+            </li>
+          </ol>
+        </div>
+
+        <header class="story__intro" id="story-team">
+          <p class="section-eyebrow">03 · Orchestration</p>
+          <h3>Agents that work together</h3>
+          <p>
+            An agent can run <code>fleet</code> like any other command. A lead splits its work into
+            child Tasks, and Fleet routes what each child says back to the lead. Your team's Slack or
+            Discord is one more way in.
+          </p>
+        </header>
+        <div class="story__chapter" data-story>
+          <figure class="story__figure">
+            <svg
+              class="story__svg"
+              viewBox="0 0 680 446"
+              role="img"
+              aria-labelledby="team-title team-desc"
+            >
+              <title id="team-title">A lead Task and its children</title>
+              <desc id="team-desc">
+                A person mentions Fleet's bot in a Slack or Discord thread. The gateway starts the
+                lead Task billing, tied to the thread, with the request as its brief. The lead runs
+                fleet apply to start two child Tasks, api and tests. A child's Questions, Drafts and
+                result go to the lead's inbox, and the lead answers with fleet send. The lead's
+                Comments are posted in the thread. Tasks publish events to a Board, which every
+                Task can read and subscribe to.
+              </desc>
+              <defs>
+                <marker
+                  id="tm-head"
+                  viewBox="0 0 8 8"
+                  refX="7"
+                  refY="4"
+                  markerWidth="4"
+                  markerHeight="4"
+                  orient="auto"
+                >
+                  <path d="M0 0L8 4L0 8z" class="st-arrowhead" />
+                </marker>
+              </defs>
+
+              <g class="s1">
+                <rect x="12" y="12" width="212" height="424" class="st-card" />
+                <text x="28" y="38" class="st-label">chat</text>
+                <rect x="28" y="50" width="62" height="22" class="st-pill" />
+                <text x="59" y="65" class="st-small" text-anchor="middle">Slack</text>
+                <rect x="98" y="50" width="76" height="22" class="st-pill" />
+                <text x="136" y="65" class="st-small" text-anchor="middle">Discord</text>
+                <rect x="26" y="86" width="184" height="300" class="st-sunk" />
+                <rect x="38" y="100" width="18" height="18" class="st-avatar" />
+                <text x="64" y="112" class="st-name st-chat-name">you</text>
+                <text x="64" y="134" class="st-mono"><tspan class="st-hot-text">@fleet</tspan> ship</text>
+                <text x="64" y="154" class="st-mono">the billing</text>
+                <text x="64" y="174" class="st-mono">export</text>
+                <text x="28" y="414" class="st-dim">one thread, one lead</text>
+              </g>
+              <g class="s4" style="--d: 0.5s">
+                <rect x="38" y="278" width="18" height="18" class="st-avatar st-avatar--bot" />
+                <text x="64" y="290" class="st-name st-chat-name st-hot-text">fleet</text>
+                <text x="64" y="312" class="st-mono">export shipped</text>
+                <text x="64" y="332" class="st-mono">by 2 workers</text>
+              </g>
+
+              <path d="M224 120H268" pathLength="1" class="st-wire s1" style="--d: 0.3s" marker-end="url(#tm-head)" />
+              <text x="246" y="110" class="st-small st-edge s1" style="--d: 0.3s" text-anchor="middle">gateway</text>
+              <path d="M300 248V300H228" pathLength="1" class="st-wire s4" style="--d: 0.2s" marker-end="url(#tm-head)" />
+              <text x="262" y="292" class="st-small st-edge s4" style="--d: 0.2s" text-anchor="middle">post</text>
+
+              <g class="s1" style="--d: 0.4s">
+                <rect x="270" y="12" width="192" height="236" class="st-hot" />
+                <text x="286" y="36" class="st-label">lead Task</text>
+                <text x="286" y="60" class="st-name">billing</text>
+                <rect x="284" y="74" width="164" height="160" class="st-sunk" />
+                <text x="296" y="94" class="st-label">inbox</text>
+                <circle cx="301" cy="114" r="4" class="st-ok st-beat" />
+                <text x="313" y="119" class="st-mono">brief</text>
+              </g>
+              <g class="s3" style="--d: 0.6s">
+                <circle cx="301" cy="140" r="4" class="st-idle" />
+                <text x="313" y="145" class="st-mono">Question</text>
+                <text x="440" y="145" class="st-small" text-anchor="end">tests</text>
+              </g>
+              <g class="s3" style="--d: 0.9s">
+                <circle cx="301" cy="166" r="4" class="st-ok" />
+                <text x="313" y="171" class="st-mono">result</text>
+                <text x="440" y="171" class="st-small" text-anchor="end">api</text>
+              </g>
+              <g class="s3" style="--d: 1.3s">
+                <text x="296" y="200" class="st-small">fleet send tests</text>
+                <text x="296" y="218" class="st-small st-hot-text">--answers q1 …</text>
+              </g>
+
+              <path d="M462 48H500" pathLength="1" class="st-wire s2" marker-end="url(#tm-head)" />
+              <path d="M462 164H500" pathLength="1" class="st-wire s2" style="--d: 0.4s" marker-end="url(#tm-head)" />
+              <text x="481" y="38" class="st-small st-edge s2" text-anchor="middle">apply</text>
+              <path d="M500 96H464" pathLength="1" class="st-wire s3" style="--d: 0.6s" marker-end="url(#tm-head)" />
+              <path d="M500 212H464" pathLength="1" class="st-wire s3" style="--d: 0.3s" marker-end="url(#tm-head)" />
+              <text x="481" y="86" class="st-small st-edge s3" style="--d: 0.6s" text-anchor="middle">report</text>
+
+              <g class="s2" style="--d: 0.2s">
+                <rect x="500" y="12" width="168" height="104" class="st-card" />
+                <text x="516" y="36" class="st-label">child</text>
+                <text x="516" y="60" class="st-name">api</text>
+                <text x="516" y="82" class="st-small">parent: billing</text>
+                <circle cx="521" cy="100" r="4" class="st-ok st-beat" />
+                <text x="533" y="105" class="st-mono">working</text>
+              </g>
+              <g class="s2" style="--d: 0.6s">
+                <rect x="500" y="128" width="168" height="104" class="st-card" />
+                <text x="516" y="152" class="st-label">child</text>
+                <text x="516" y="176" class="st-name">tests</text>
+                <text x="516" y="198" class="st-small">parent: billing</text>
+                <circle cx="521" cy="216" r="4" class="st-ok st-beat" />
+                <text x="533" y="221" class="st-mono">working</text>
+              </g>
+
+              <path d="M584 232V300" pathLength="1" class="st-wire s4" style="--d: 0.4s" marker-end="url(#tm-head)" />
+              <text x="592" y="270" class="st-small st-edge s4" style="--d: 0.4s">event</text>
+              <path d="M400 300V248" pathLength="1" class="st-wire s4" style="--d: 0.9s" marker-end="url(#tm-head)" />
+              <text x="408" y="278" class="st-small st-edge s4" style="--d: 0.9s">notice</text>
+              <g class="s4" style="--d: 0.6s">
+                <rect x="270" y="300" width="398" height="136" class="st-card" />
+                <text x="286" y="326" class="st-label">Board · shared</text>
+                <rect x="284" y="338" width="370" height="28" class="st-sunk" />
+                <text x="296" y="357" class="st-mono"><tspan class="st-dim">api</tspan> schema v2 published</text>
+                <rect x="284" y="372" width="370" height="28" class="st-sunk" />
+                <text x="296" y="391" class="st-mono"><tspan class="st-dim">fleet</tspan> fleet.task.result · tests</text>
+                <text x="286" y="424" class="st-small">every Task can read it and subscribe</text>
+              </g>
+            </svg>
+          </figure>
+          <ol class="story__steps">
+            <li class="story__step" data-step="1">
+              <h3><span class="step-number" aria-hidden="true">1</span>Ask in a thread</h3>
+              <p>
+                Mention Fleet's bot in a Slack or Discord thread. The gateway admits the people your
+                config lists and starts a lead Task tied to that thread. The gateway only moves
+                messages: it never runs a model.
+              </p>
+              <p class="story__gain">Start work where your team already talks.</p>
+            </li>
+            <li class="story__step" data-step="2">
+              <h3><span class="step-number" aria-hidden="true">2</span>The lead splits the work</h3>
+              <p>
+                The lead's agent runs <code>fleet apply</code> to start child Tasks that name it as
+                their parent. thurbox nests each child under its lead.
+              </p>
+              <p class="story__gain">One agent plans; several agents build, each in its own workspace.</p>
+            </li>
+            <li class="story__step" data-step="3">
+              <h3><span class="step-number" aria-hidden="true">3</span>Children report to the lead</h3>
+              <p>
+                A child's Questions, Drafts and result reach the lead's inbox, not the thread. The
+                lead answers a Question with <code>fleet send --answers</code>.
+              </p>
+              <p class="story__gain">You hear from the lead, not from every worker.</p>
+            </li>
+            <li class="story__step" data-step="4">
+              <h3><span class="step-number" aria-hidden="true">4</span>News reaches everyone</h3>
+              <p>
+                The lead's Comments and Questions are posted in the thread. Tasks publish events to
+                a Board, and Fleet adds its own; a Task that subscribes gets a notice in its inbox.
+              </p>
+              <p class="story__gain">Agents share what changed without a person passing it on.</p>
+            </li>
+          </ol>
+        </div>
+
+        <header class="story__intro" id="story-reviews">
+          <p class="section-eyebrow">04 · Change requests</p>
+          <h3>Pull requests followed for you</h3>
+          <p>
+            Once an agent opens a pull request or merge request, Fleet keeps it up to date with what
+            happens there, on GitHub, GitLab, Bitbucket Cloud and Azure DevOps.
+          </p>
+        </header>
+        <div class="story__chapter" data-story>
+          <figure class="story__figure">
+            <svg
+              class="story__svg"
+              viewBox="0 0 680 446"
+              role="img"
+              aria-labelledby="reviews-title reviews-desc"
+            >
+              <title id="reviews-title">A pull request followed for the agent</title>
+              <desc id="reviews-desc">
+                The agent of the Task fix-login pushes, opens pull request 42 as a draft and runs
+                fleet declare with the change request's URL. Fleet's controllers, run by fleet up,
+                follow the change on the forge: its state, checks, reviews, comments and open
+                threads. New comments, reviews and check results reach the agent's inbox as one
+                entry. The agent's own replies are not relayed back.
+              </desc>
+              <defs>
+                <marker
+                  id="rv-head"
+                  viewBox="0 0 8 8"
+                  refX="7"
+                  refY="4"
+                  markerWidth="4"
+                  markerHeight="4"
+                  orient="auto-start-reverse"
+                >
+                  <path d="M0 0L8 4L0 8z" class="st-arrowhead" />
+                </marker>
+              </defs>
+
+              <g class="s1">
+                <rect x="12" y="12" width="222" height="424" class="st-card" />
+                <text x="28" y="38" class="st-label">agent session</text>
+                <text x="28" y="62" class="st-name">fix-login</text>
+                <rect x="26" y="76" width="194" height="116" class="st-sunk" />
+                <text x="38" y="100" class="st-small">$ git push</text>
+                <text x="38" y="122" class="st-small">$ gh pr create --draft</text>
+                <text x="38" y="144" class="st-small st-hot-text">$ fleet declare fix-login</text>
+                <text x="38" y="166" class="st-small st-hot-text">  --change-request URL</text>
+                <rect x="26" y="232" width="194" height="190" class="st-sunk" />
+                <text x="38" y="254" class="st-label">inbox</text>
+              </g>
+              <g class="s3" style="--d: 0.5s">
+                <circle cx="43" cy="280" r="4" class="st-hot-dot" />
+                <text x="55" y="285" class="st-mono">comment · ana</text>
+                <text x="55" y="305" class="st-small">rename the flag</text>
+              </g>
+              <g class="s3" style="--d: 0.8s">
+                <circle cx="43" cy="331" r="4" class="st-fail" />
+                <text x="55" y="336" class="st-mono">checks · ci failed</text>
+                <text x="55" y="356" class="st-small">test: login_redirect</text>
+              </g>
+              <g class="s3" style="--d: 1.1s">
+                <circle cx="43" cy="382" r="4" class="st-idle" />
+                <text x="55" y="387" class="st-mono">review · changes</text>
+                <text x="55" y="407" class="st-small">requested</text>
+              </g>
+
+              <path d="M234 58H450" pathLength="1" class="st-wire s1" style="--d: 0.3s" marker-end="url(#rv-head)" />
+              <text x="342" y="48" class="st-small st-edge s1" style="--d: 0.3s" text-anchor="middle">push · open</text>
+              <path d="M234 156H282" pathLength="1" class="st-wire s1" style="--d: 0.6s" marker-end="url(#rv-head)" />
+              <text x="258" y="146" class="st-small st-edge s1" style="--d: 0.6s" text-anchor="middle">declare</text>
+
+              <g class="s1" style="--d: 0.5s">
+                <rect x="284" y="104" width="144" height="332" class="st-hot" />
+                <text x="356" y="132" class="st-brand" text-anchor="middle">controllers</text>
+                <text x="356" y="154" class="st-mono st-dim" text-anchor="middle">fleet up</text>
+              </g>
+              <g class="s2" style="--d: 0.2s">
+                <rect x="320" y="200" width="72" height="22" class="st-pill" />
+                <text x="356" y="215" class="st-small" text-anchor="middle">follow</text>
+                <text x="356" y="240" class="st-dim st-caption" text-anchor="middle">every sweep</text>
+              </g>
+              <g class="s3" style="--d: 0.2s">
+                <rect x="320" y="310" width="72" height="22" class="st-pill" />
+                <text x="356" y="325" class="st-small" text-anchor="middle">relay</text>
+                <text x="356" y="350" class="st-dim st-caption" text-anchor="middle">only what's new</text>
+              </g>
+
+              <path d="M430 210H450" pathLength="1" class="st-wire s2" marker-start="url(#rv-head)" marker-end="url(#rv-head)" />
+              <path d="M284 321H222" pathLength="1" class="st-wire s3" style="--d: 0.3s" marker-end="url(#rv-head)" />
+              <text x="253" y="311" class="st-small st-edge s3" style="--d: 0.3s" text-anchor="middle">inbox</text>
+
+              <g class="s1" style="--d: 0.8s">
+                <rect x="452" y="12" width="216" height="424" class="st-card" />
+                <text x="468" y="38" class="st-label">forge</text>
+                <text x="468" y="62" class="st-name">PR #42</text>
+                <text x="652" y="62" class="st-small" text-anchor="end">draft</text>
+                <text x="468" y="350" class="st-small">GitHub · GitLab</text>
+                <text x="468" y="372" class="st-small">Bitbucket Cloud</text>
+                <text x="468" y="394" class="st-small">Azure DevOps</text>
+              </g>
+              <g class="s2" style="--d: 0.4s">
+                <rect x="466" y="80" width="188" height="30" class="st-sunk" />
+                <circle cx="481" cy="95" r="4" class="st-fail" />
+                <text x="493" y="100" class="st-mono"><tspan class="st-dim">checks</tspan> ci failed</text>
+              </g>
+              <g class="s2" style="--d: 0.7s">
+                <rect x="466" y="118" width="188" height="30" class="st-sunk" />
+                <circle cx="481" cy="133" r="4" class="st-idle" />
+                <text x="493" y="138" class="st-mono"><tspan class="st-dim">review</tspan> changes</text>
+              </g>
+              <g class="s2" style="--d: 1s">
+                <rect x="466" y="156" width="188" height="30" class="st-sunk" />
+                <circle cx="481" cy="171" r="4" class="st-hot-dot" />
+                <text x="493" y="176" class="st-mono"><tspan class="st-dim">comment</tspan> ana</text>
+              </g>
+              <g class="s2" style="--d: 1.2s">
+                <rect x="466" y="194" width="188" height="30" class="st-sunk" />
+                <text x="481" y="214" class="st-mono"><tspan class="st-dim">threads</tspan> 1 open</text>
+              </g>
+            </svg>
+          </figure>
+          <ol class="story__steps">
+            <li class="story__step" data-step="1">
+              <h3><span class="step-number" aria-hidden="true">1</span>The agent opens a change</h3>
+              <p>
+                The agent pushes, opens a draft with the forge's CLI and runs
+                <code>fleet declare &lt;task&gt; --change-request &lt;url&gt;</code>. Fleet's
+                standing policy tells every agent to do this.
+              </p>
+              <p class="story__gain">One line ties the pull request to the Task.</p>
+            </li>
+            <li class="story__step" data-step="2">
+              <h3><span class="step-number" aria-hidden="true">2</span>Fleet follows it</h3>
+              <p>
+                Every sweep, controllers read the change on GitHub, GitLab, Bitbucket Cloud or Azure
+                DevOps: its state, checks, reviews, comments, open threads and mergeability.
+              </p>
+              <p class="story__gain">Nobody keeps the pull request open in a browser tab.</p>
+            </li>
+            <li class="story__step" data-step="3">
+              <h3><span class="step-number" aria-hidden="true">3</span>News reaches the agent</h3>
+              <p>
+                What is new since the last sweep, a review comment, a failed check, a merge, becomes
+                one inbox entry for the agent's session. The agent's own replies are not relayed
+                back to it.
+              </p>
+              <p class="story__gain">The agent answers the review and fixes CI without you pasting anything.</p>
+            </li>
+          </ol>
+        </div>
+
+        <div id="story-extend">
+        <header class="story__intro">
+          <p class="section-eyebrow">05 · Extensible</p>
+          <h3>Extend every layer</h3>
+          <p>
+            Fleet grows the way Kubernetes does: new kinds and the controllers that reconcile them.
+            Each other layer has its own way in too.
+          </p>
+        </header>
+        <ul class="story__extend">
+          <li>
+            <p class="story__extend-layer">Fleet plugins</p>
+            <h4>Your own resource kinds</h4>
+            <p>
+              A plugin adds a resource kind and the controller that reconciles it, the way a CRD and
+              an operator extend Kubernetes. It is one program in any language that reads JSON and
+              writes JSON; the manager does every write.
+            </p>
+            <a href="docs/fleet/plugins.html">Write a plugin &rarr;</a>
+          </li>
+          <li>
+            <p class="story__extend-layer">Harness profiles</p>
+            <h4>Any agent CLI</h4>
+            <p>
+              Fleet ships nine harness profiles, among them claude, codex and opencode. A TOML file
+              in Fleet's config adds another agent or replaces a bundled profile.
+            </p>
+            <a href="docs/agents.html">Agents &rarr;</a>
+          </li>
+          <li>
+            <p class="story__extend-layer">Runtimes</p>
+            <h4>Your own runtime</h4>
+            <p>
+              A runtime is any program that speaks the runtime protocol. runtime-mux ships with
+              Fleet; <code>fleet runtime check</code> tests your own against the protocol.
+            </p>
+            <a href="docs/runtime/index.html">The runtime protocol &rarr;</a>
+          </li>
+          <li>
+            <p class="story__extend-layer">thurbox panes</p>
+            <h4>An interface you script</h4>
+            <p>
+              Every pane of thurbox is a Lua file. Move it, turn it off, replace it, or install
+              another from the plugin catalog.
+            </p>
+            <a href="plugins.html">Plugins &rarr;</a>
+          </li>
+        </ul>
+        </div>
       </div>
     </section>
 
@@ -163,544 +925,6 @@ fleet up</code></pre>
             <code>workspace-git</code>, and nothing else.
             <a href="docs/fleet-install.html">Install Fleet &rarr;</a>
           </p>
-        </div>
-      </div>
-    </section>
-
-    <section class="section story" id="how-they-fit">
-      <div class="container">
-        <p class="section-eyebrow">Why thurbox and Fleet</p>
-        <h2>Many agents, one screen, no babysitting</h2>
-        <p class="product__lede">
-          thurbox is the screen. Fleet is the engine. Here is what that gives you; scroll on to
-          watch it work.
-        </p>
-
-        <ul class="story__benefits grid grid-2 grid--stretch">
-          <li class="card">
-            <div class="card-icon" aria-hidden="true">&#x25A4;</div>
-            <h3>Every agent on one screen</h3>
-            <p>Sessions on your laptop, a server over ssh and WSL sit in one thurbox list.</p>
-            <a href="#story-fleets">See one list &rarr;</a>
-          </li>
-          <li class="card">
-            <div class="card-icon" aria-hidden="true">&#x21BB;</div>
-            <h3>Work that keeps itself on track</h3>
-            <p>
-              You declare a Task once. Fleet reconciles it, and its session outlives a quit or a
-              crash.
-            </p>
-            <a href="#story-reconcile">See the loop &rarr;</a>
-          </li>
-          <li class="card">
-            <div class="card-icon" aria-hidden="true">&#x2713;</div>
-            <h3>Reviews followed for you</h3>
-            <p>
-              Fleet mirrors each pull request a Task declares and brings new checks and reviews
-              into its inbox.
-            </p>
-            <a href="#story-reconcile">See the write-back &rarr;</a>
-          </li>
-          <li class="card">
-            <div class="card-icon" aria-hidden="true">@</div>
-            <h3>Agents in Slack and Discord</h3>
-            <p>Mention Fleet's bot in a thread and a Task starts. Its questions come back there.</p>
-            <a href="#story-gateway">See the gateway &rarr;</a>
-          </li>
-        </ul>
-
-        <header class="story__intro" id="story-fleets">
-          <p class="section-eyebrow">01 · The interface</p>
-          <h3>One screen for every agent</h3>
-          <p>Run agents on your laptop, a bigger machine and WSL, and watch them all from one list.</p>
-        </header>
-        <div class="story__chapter" data-story>
-          <figure class="story__figure">
-            <svg
-              class="story__svg"
-              viewBox="0 0 680 446"
-              role="img"
-              aria-labelledby="fleets-title fleets-desc"
-            >
-              <title id="fleets-title">One interface, several Fleets</title>
-              <desc id="fleets-desc">
-                thurbox, a terminal interface, shows one list of sessions from three Fleets: Fleet
-                laptop on this machine,
-                Fleet box over ssh and Fleet ubuntu in WSL. Each Fleet runs its own Tasks: fix-login
-                on laptop, migrate-db and bench on box, docs on ubuntu. A row's id is the Fleet and
-                the Task. The sessions keep running when thurbox quits.
-              </desc>
-              <g class="st-tbx s1">
-                <rect x="120" y="12" width="440" height="196" class="st-tui" />
-                <text x="132" y="32" class="st-tui-brand">thurbox</text>
-                <text x="194" y="32" class="st-small">Multi-Session Agent Orchestrator</text>
-                <rect x="128" y="44" width="190" height="128" class="st-tui-pane" />
-                <rect x="134" y="38" width="62" height="12" class="st-tui-mask" />
-                <text x="138" y="48" class="st-small">Sessions</text>
-                <g class="st-row s1" style="--d: 0.5s">
-                  <rect x="131" y="56" width="184" height="20" class="st-tui-sel" />
-                  <circle cx="142" cy="66" r="3.5" class="st-ring st-ring--ok" />
-                  <text x="152" y="70" class="st-tui-row st-tui-row--sel">laptop:fix-login</text>
-                  <text x="310" y="70" class="st-tui-meta" text-anchor="end">claude</text>
-                </g>
-                <g class="st-row s1" style="--d: 0.8s">
-                  <circle cx="142" cy="90" r="3.5" class="st-ring st-ring--ok" />
-                  <text x="152" y="94" class="st-tui-row">box:migrate-db</text>
-                  <text x="310" y="94" class="st-tui-meta" text-anchor="end">codex</text>
-                </g>
-                <g class="st-row s1" style="--d: 0.9s">
-                  <circle cx="142" cy="114" r="3.5" class="st-ring st-ring--idle" />
-                  <text x="152" y="118" class="st-tui-row">box:bench</text>
-                  <text x="310" y="118" class="st-tui-meta" text-anchor="end">claude</text>
-                </g>
-                <g class="st-row s1" style="--d: 1.1s">
-                  <circle cx="142" cy="138" r="3.5" class="st-ring st-ring--ok" />
-                  <text x="152" y="142" class="st-tui-row">ubuntu:docs</text>
-                  <text x="310" y="142" class="st-tui-meta" text-anchor="end">opencode</text>
-                </g>
-                <rect x="326" y="44" width="226" height="128" class="st-tui-focus" />
-                <rect x="332" y="38" width="88" height="12" class="st-tui-mask" />
-                <text x="336" y="48" class="st-small"><tspan class="st-tui-tab">Agent</tspan> — Shell</text>
-                <rect x="462" y="38" width="86" height="13" class="st-tui-badge" />
-                <text x="505" y="48" class="st-tui-badge-text" text-anchor="middle">▸ fix-login</text>
-                <rect x="338" y="62" width="148" height="6" class="st-ghost" />
-                <rect x="338" y="76" width="196" height="6" class="st-ghost" />
-                <rect x="338" y="90" width="124" height="6" class="st-ghost" />
-                <rect x="338" y="104" width="170" height="6" class="st-ghost" />
-                <text x="338" y="154" class="st-mono">❯</text>
-                <rect x="352" y="143" width="7" height="13" class="st-cursor" />
-                <rect x="128" y="182" width="44" height="16" class="st-tui-badge" />
-                <text x="150" y="194" class="st-tui-badge-text" text-anchor="middle">Agent</text>
-                <text x="180" y="194" class="st-small">4 session(s)</text>
-                <text x="478" y="194" class="st-tui-key" text-anchor="end">Help · F1</text>
-                <text x="552" y="194" class="st-tui-key" text-anchor="end">Quit · ^Q</text>
-              </g>
-              <g class="st-quit" aria-hidden="true">
-                <rect x="290" y="94" width="100" height="32" class="st-key" />
-                <text x="340" y="115" class="st-mono" text-anchor="middle">Ctrl+Q</text>
-              </g>
-
-              <path d="M340 208V236H120V284" pathLength="1" class="st-wire s2" style="--d: 0s" />
-              <path d="M340 208V284" pathLength="1" class="st-wire s2" style="--d: 0.3s" />
-              <path d="M340 208V236H560V284" pathLength="1" class="st-wire s2" style="--d: 0.6s" />
-              <g class="s2" style="--d: 0.2s">
-                <rect x="92" y="248" width="56" height="20" class="st-pill" />
-                <text x="120" y="262" class="st-small" text-anchor="middle">local</text>
-              </g>
-              <g class="s2" style="--d: 0.5s">
-                <rect x="318" y="248" width="44" height="20" class="st-pill" />
-                <text x="340" y="262" class="st-small" text-anchor="middle">ssh</text>
-              </g>
-              <g class="s2" style="--d: 0.8s">
-                <rect x="538" y="248" width="44" height="20" class="st-pill" />
-                <text x="560" y="262" class="st-small" text-anchor="middle">wsl</text>
-              </g>
-
-              <g class="st-fleet s2" style="--d: 0.3s">
-                <rect x="20" y="284" width="200" height="150" class="st-card" />
-                <circle cx="40" cy="312" r="5" class="st-led" />
-                <text x="54" y="318" class="st-name">Fleet laptop</text>
-                <text x="34" y="342" class="st-dim">this machine</text>
-                <rect x="34" y="356" width="172" height="28" class="st-sunk" />
-                <circle cx="49" cy="370" r="4" class="st-ok st-beat" />
-                <text x="61" y="375" class="st-mono">fix-login</text>
-              </g>
-              <g class="st-fleet s2" style="--d: 0.6s">
-                <rect x="240" y="284" width="200" height="150" class="st-card" />
-                <circle cx="260" cy="312" r="5" class="st-led" />
-                <text x="274" y="318" class="st-name">Fleet box</text>
-                <text x="254" y="342" class="st-dim">another machine</text>
-                <rect x="254" y="356" width="172" height="28" class="st-sunk" />
-                <circle cx="269" cy="370" r="4" class="st-ok st-beat" />
-                <text x="281" y="375" class="st-mono">migrate-db</text>
-                <rect x="254" y="392" width="172" height="28" class="st-sunk" />
-                <circle cx="269" cy="406" r="4" class="st-idle" />
-                <text x="281" y="411" class="st-mono">bench</text>
-              </g>
-              <g class="st-fleet s2" style="--d: 0.9s">
-                <rect x="460" y="284" width="200" height="150" class="st-card" />
-                <circle cx="480" cy="312" r="5" class="st-led" />
-                <text x="494" y="318" class="st-name">Fleet ubuntu</text>
-                <text x="474" y="342" class="st-dim">a WSL distro</text>
-                <rect x="474" y="356" width="172" height="28" class="st-sunk" />
-                <circle cx="489" cy="370" r="4" class="st-ok st-beat" />
-                <text x="501" y="375" class="st-mono">docs</text>
-              </g>
-            </svg>
-          </figure>
-          <ol class="story__steps">
-            <li class="story__step" data-step="1">
-              <h3><span class="step-number" aria-hidden="true">1</span>One list</h3>
-              <p>
-                thurbox shows the sessions of every Fleet that <code>settings.toml</code> lists, in
-                one list. A row's id is <code>&lt;fleet&gt;:&lt;task&gt;</code>.
-              </p>
-              <p class="story__gain">One place to see what every agent is doing.</p>
-            </li>
-            <li class="story__step" data-step="2">
-              <h3><span class="step-number" aria-hidden="true">2</span>Several Fleets</h3>
-              <p>
-                Each Fleet runs its own Tasks: on this machine, on another one over ssh, or in a
-                WSL distro. On each machine, <code>fleet up</code> runs its Fleet.
-              </p>
-              <p class="story__gain">Put agents on the machine that fits the work, and keep one screen.</p>
-            </li>
-            <li class="story__step" data-step="3">
-              <h3><span class="step-number" aria-hidden="true">3</span>Quit, and they keep running</h3>
-              <p>
-                Fleet runs the sessions, not thurbox. Quit thurbox and every agent keeps working. A
-                Fleet that cannot be reached keeps its rows, marked unreachable.
-              </p>
-              <p class="story__gain">Close the terminal or quit thurbox: the work goes on.</p>
-            </li>
-          </ol>
-        </div>
-
-        <header class="story__intro" id="story-reconcile">
-          <p class="section-eyebrow">02 · The engine</p>
-          <h3>Declare it once, Fleet keeps it true</h3>
-          <p>Like Kubernetes, Fleet compares what you asked for with what runs, and closes the gap. Nobody has to watch it.</p>
-        </header>
-        <div class="story__chapter" data-story>
-          <figure class="story__figure">
-            <svg
-              class="story__svg"
-              viewBox="0 0 680 446"
-              role="img"
-              aria-labelledby="loop-title loop-desc"
-            >
-              <title id="loop-title">Fleet reconciles, like Kubernetes</title>
-              <desc id="loop-desc">
-                The store keeps a Task: its spec says what you want, the harness, the place and
-                dispatch; its status says what is, the phase and the session state. TaskConfig,
-                EnvProvider, ChangeRequest and CronTask are resources too. Controllers, run by fleet
-                up, observe, compare and act in a loop: they read the spec, act through the runtime,
-                runtime-mux, which makes the workspace and starts the session, observe it, and
-                write the status back. ChangeRequests mirror pull requests on the forge.
-              </desc>
-              <defs>
-                <marker
-                  id="st-head"
-                  viewBox="0 0 8 8"
-                  refX="7"
-                  refY="4"
-                  markerWidth="4"
-                  markerHeight="4"
-                  orient="auto-start-reverse"
-                >
-                  <path d="M0 0L8 4L0 8z" class="st-arrowhead" />
-                </marker>
-                <marker
-                  id="st-loop-head"
-                  viewBox="0 0 8 8"
-                  refX="7"
-                  refY="4"
-                  markerWidth="4"
-                  markerHeight="4"
-                  orient="auto"
-                >
-                  <path d="M0 0L8 4L0 8z" class="st-loophead" />
-                </marker>
-              </defs>
-
-              <g class="s1">
-                <rect x="12" y="12" width="206" height="424" class="st-card" />
-                <text x="28" y="40" class="st-name">store</text>
-                <rect x="26" y="54" width="178" height="222" class="st-sunk" />
-                <text x="40" y="80" class="st-name">Task</text>
-                <text x="190" y="80" class="st-mono st-dim" text-anchor="end">fix-login</text>
-                <text x="40" y="104" class="st-label">spec · what you want</text>
-                <text x="40" y="126" class="st-mono"><tspan class="st-dim">harness</tspan> claude</text>
-                <text x="40" y="146" class="st-mono"><tspan class="st-dim">host</tspan> local</text>
-                <text x="40" y="166" class="st-mono"><tspan class="st-dim">dispatch</tspan> true</text>
-                <path d="M40 182H190" class="st-rule" />
-              </g>
-              <g class="s4" style="--d: 0.4s">
-                <text x="40" y="204" class="st-label st-hot-text">status · what is</text>
-              </g>
-              <g class="s1">
-                <text x="40" y="228" class="st-mono st-dim">phase</text>
-                <text x="40" y="250" class="st-mono st-dim">sessionState</text>
-              </g>
-              <text x="190" y="228" class="st-mono st-phase st-phase--a" text-anchor="end">Pending</text>
-              <text x="190" y="228" class="st-mono st-phase st-phase--b" text-anchor="end">Spawning</text>
-              <text x="190" y="228" class="st-mono st-phase st-phase--c st-hot-text" text-anchor="end">Briefed</text>
-              <text x="190" y="268" class="st-mono st-phase st-phase--a st-phase--b st-dim" text-anchor="end">—</text>
-              <text x="190" y="268" class="st-mono st-phase st-phase--c st-hot-text" text-anchor="end">Running</text>
-              <g class="s1" style="--d: 0.3s">
-                <rect x="26" y="290" width="178" height="24" class="st-sunk" />
-                <text x="38" y="307" class="st-kind">TaskConfig</text>
-                <rect x="26" y="320" width="178" height="24" class="st-sunk" />
-                <text x="38" y="337" class="st-kind">EnvProvider</text>
-                <rect x="26" y="350" width="178" height="24" class="st-sunk" />
-                <text x="38" y="367" class="st-kind">ChangeRequest</text>
-                <rect x="26" y="380" width="178" height="24" class="st-sunk" />
-                <text x="38" y="397" class="st-kind">CronTask</text>
-                <text x="28" y="424" class="st-dim">Board · Conversation · …</text>
-              </g>
-
-              <path d="M218 124H268" pathLength="1" class="st-wire s2" marker-end="url(#st-head)" />
-              <text x="244" y="114" class="st-small st-edge s2" text-anchor="middle">spec</text>
-              <path d="M270 330H220" pathLength="1" class="st-wire s4" marker-end="url(#st-head)" />
-              <text x="244" y="320" class="st-small st-edge s4" text-anchor="middle">status</text>
-
-              <g class="s2" style="--d: 0.2s">
-                <rect x="270" y="12" width="156" height="424" class="st-hot" />
-                <text x="348" y="42" class="st-brand" text-anchor="middle">controllers</text>
-                <text x="348" y="64" class="st-mono st-dim" text-anchor="middle">fleet up</text>
-                <text x="348" y="404" class="st-dim" text-anchor="middle">one reconcile</text>
-                <text x="348" y="422" class="st-dim" text-anchor="middle">per sweep</text>
-              </g>
-              <g class="st-loop s2" style="--d: 0.5s">
-                <circle cx="348" cy="232" r="62" class="st-sigil-ring" />
-                <circle cx="348" cy="232" r="56" class="st-track" />
-                <circle cx="348" cy="232" r="44" class="st-sigil-ring" />
-                <path d="M348 276L322.14 196.4L389.85 245.6L306.15 245.6L373.86 196.4Z" class="st-sigil-line" />
-                <circle cx="348" cy="232" r="13" class="st-ember-glow" />
-                <circle cx="348" cy="232" r="5" class="st-ember" />
-                <path d="M361.55 177.66A56 56 0 0 1 401.83 247.44" class="st-arc" marker-end="url(#st-loop-head)" />
-                <path d="M388.28 270.9A56 56 0 0 1 307.72 270.9" class="st-arc" marker-end="url(#st-loop-head)" />
-                <path d="M294.17 247.44A56 56 0 0 1 334.45 177.66" class="st-arc" marker-end="url(#st-loop-head)" />
-                <rect x="343.5" y="171.5" width="9" height="9" class="st-node" />
-                <rect x="392" y="255.5" width="9" height="9" class="st-node" />
-                <rect x="295" y="255.5" width="9" height="9" class="st-node" />
-                <g class="st-orbit"><circle cx="348" cy="176" r="4" class="st-comet" /></g>
-                <text x="348" y="160" class="st-small" text-anchor="middle">observe</text>
-                <text x="397" y="294" class="st-small" text-anchor="middle">compare</text>
-                <text x="300" y="294" class="st-small" text-anchor="middle">act</text>
-              </g>
-
-              <path d="M426 136H476" pathLength="1" class="st-wire s3" marker-end="url(#st-head)" />
-              <text x="452" y="126" class="st-small st-edge s3" text-anchor="middle">act</text>
-              <path d="M478 222H428" pathLength="1" class="st-wire s2" style="--d: 0.4s" marker-end="url(#st-head)" />
-              <text x="452" y="212" class="st-small st-edge s2" style="--d: 0.4s" text-anchor="middle">observe</text>
-              <path d="M428 370H476" pathLength="1" class="st-wire s4" marker-start="url(#st-head)" marker-end="url(#st-head)" />
-              <text x="452" y="360" class="st-small st-edge s4" text-anchor="middle">mirror</text>
-
-              <g class="s2" style="--d: 0.4s">
-                <rect x="478" y="12" width="190" height="272" class="st-card" />
-                <text x="494" y="38" class="st-label">runtime</text>
-                <text x="494" y="62" class="st-mono st-strong">runtime-mux</text>
-              </g>
-              <g class="s3" style="--d: 0.3s">
-                <rect x="492" y="80" width="162" height="78" class="st-sunk" />
-                <text x="506" y="106" class="st-name">workspace</text>
-                <text x="506" y="130" class="st-dim">by workspace-git</text>
-              </g>
-              <g class="s3" style="--d: 0.8s">
-                <rect x="492" y="172" width="162" height="96" class="st-sunk" />
-                <text x="506" y="198" class="st-name">session</text>
-                <circle cx="511" cy="222" r="4.5" class="st-ok st-beat" />
-                <text x="523" y="227" class="st-mono">claude · local</text>
-                <text x="506" y="252" class="st-dim">the agent, briefed</text>
-              </g>
-              <g class="s4" style="--d: 0.6s">
-                <rect x="478" y="300" width="190" height="136" class="st-card" />
-                <text x="494" y="326" class="st-label">forge</text>
-                <text x="494" y="350" class="st-name">pull requests</text>
-                <text x="494" y="374" class="st-dim">GitHub, GitLab, …</text>
-                <text x="494" y="398" class="st-dim">checks and reviews</text>
-              </g>
-            </svg>
-          </figure>
-          <ol class="story__steps">
-            <li class="story__step" data-step="1">
-              <h3><span class="step-number" aria-hidden="true">1</span>Declare</h3>
-              <p>
-                You write what you want as a resource. A Task names the agent, the place and the
-                brief; <code>fleet apply</code>, thurbox or a script puts it in the store.
-                TaskConfig, EnvProvider, ChangeRequest and CronTask are resources too.
-              </p>
-              <p class="story__gain">One file describes the work, so a script or a schedule can start it too.</p>
-            </li>
-            <li class="story__step" data-step="2">
-              <h3><span class="step-number" aria-hidden="true">2</span>Compare</h3>
-              <p>
-                Controllers, run by <code>fleet up</code>, read each spec and observe the runtime. A
-                Task that should run and has no session is a gap to close.
-              </p>
-              <p class="story__gain">No babysitting: every sweep finds the Task that should run and does not.</p>
-            </li>
-            <li class="story__step" data-step="3">
-              <h3><span class="step-number" aria-hidden="true">3</span>Act</h3>
-              <p>
-                They close the gap through the runtime: make the workspace, start the session, type
-                the brief. The manager records each effect's intent before it runs it.
-              </p>
-              <p class="story__gain">After a crash, Fleet looks a spawn up by its key first, so no session starts twice.</p>
-            </li>
-            <li class="story__step" data-step="4">
-              <h3><span class="step-number" aria-hidden="true">4</span>Write back, sweep again</h3>
-              <p>
-                They write the phase and the session's state back to the status, then sweep again.
-                An observation they cannot read never counts as the session being gone.
-              </p>
-              <p class="story__gain">The status stays true, and new checks and reviews reach the agent.</p>
-            </li>
-          </ol>
-        </div>
-
-        <header class="story__intro" id="story-gateway">
-          <p class="section-eyebrow">03 · The gateway</p>
-          <h3>Your team's chat is an interface too</h3>
-          <p>
-            Start and steer agents from a Slack or Discord thread, without opening a terminal. Those
-            are the two platforms Fleet's gateway has adapters for today.
-          </p>
-        </header>
-        <div class="story__chapter" data-story>
-          <figure class="story__figure">
-            <svg
-              class="story__svg"
-              viewBox="0 0 680 446"
-              role="img"
-              aria-labelledby="gateway-title gateway-desc"
-            >
-              <title id="gateway-title">Chat with your Tasks</title>
-              <desc id="gateway-desc">
-                A person mentions Fleet's bot in a Slack or Discord thread. The gateway, run by fleet
-                up, admits the person and starts a Task tied to the thread. Later messages in the
-                thread are relayed into the Task's inbox; on Discord, a reply without a mention needs the
-                message content intent. What the Task declares, such as a Question,
-                is posted back in the thread. Drafts, results and change news go to a log channel.
-                The gateway never runs a model.
-              </desc>
-              <defs>
-                <marker
-                  id="gw-head"
-                  viewBox="0 0 8 8"
-                  refX="7"
-                  refY="4"
-                  markerWidth="4"
-                  markerHeight="4"
-                  orient="auto"
-                >
-                  <path d="M0 0L8 4L0 8z" class="st-arrowhead" />
-                </marker>
-              </defs>
-
-              <g class="s1">
-                <rect x="12" y="12" width="232" height="424" class="st-card" />
-                <text x="28" y="38" class="st-label">chat</text>
-                <rect x="28" y="50" width="62" height="22" class="st-pill" />
-                <text x="59" y="65" class="st-small" text-anchor="middle">Slack</text>
-                <rect x="98" y="50" width="76" height="22" class="st-pill" />
-                <text x="136" y="65" class="st-small" text-anchor="middle">Discord</text>
-                <rect x="26" y="86" width="204" height="300" class="st-sunk" />
-                <rect x="38" y="100" width="18" height="18" class="st-avatar" />
-                <text x="64" y="112" class="st-name st-chat-name">you</text>
-                <text x="64" y="132" class="st-mono"><tspan class="st-hot-text">@fleet</tspan> fix the</text>
-                <text x="64" y="150" class="st-mono">login redirect</text>
-              </g>
-              <g class="s2" style="--d: 0.4s">
-                <rect x="38" y="180" width="18" height="18" class="st-avatar" />
-                <text x="64" y="192" class="st-name st-chat-name">you</text>
-                <text x="64" y="212" class="st-mono">use the staging</text>
-                <text x="64" y="230" class="st-mono">config too</text>
-              </g>
-              <g class="s3" style="--d: 0.6s">
-                <rect x="38" y="262" width="18" height="18" class="st-avatar st-avatar--bot" />
-                <text x="64" y="274" class="st-name st-chat-name st-hot-text">fleet</text>
-                <text x="64" y="294" class="st-mono">Question: keep</text>
-                <text x="64" y="312" class="st-mono">the old route?</text>
-              </g>
-              <text x="28" y="414" class="st-dim s1">one thread, one Task</text>
-
-              <path d="M244 124H290" pathLength="1" class="st-wire s1" marker-end="url(#gw-head)" />
-              <text x="268" y="114" class="st-small st-edge s1" text-anchor="middle">mention</text>
-              <path d="M244 204H290" pathLength="1" class="st-wire s2" marker-end="url(#gw-head)" />
-              <text x="268" y="194" class="st-small st-edge s2" text-anchor="middle">reply</text>
-              <path d="M292 288H246" pathLength="1" class="st-wire s3" marker-end="url(#gw-head)" />
-              <text x="268" y="278" class="st-small st-edge s3" text-anchor="middle">post</text>
-
-              <g class="s1" style="--d: 0.2s">
-                <rect x="292" y="12" width="120" height="424" class="st-hot" />
-                <text x="352" y="42" class="st-brand" text-anchor="middle">gateway</text>
-                <text x="352" y="64" class="st-mono st-dim" text-anchor="middle">fleet up</text>
-                <rect x="316" y="113" width="72" height="22" class="st-pill" />
-                <text x="352" y="128" class="st-small" text-anchor="middle">admit</text>
-                <text x="352" y="152" class="st-dim st-caption" text-anchor="middle">who may ask</text>
-              </g>
-              <g class="s2" style="--d: 0.2s">
-                <rect x="316" y="193" width="72" height="22" class="st-pill" />
-                <text x="352" y="208" class="st-small" text-anchor="middle">relay</text>
-                <text x="352" y="232" class="st-dim st-caption" text-anchor="middle">thread → inbox</text>
-              </g>
-              <g class="s3" style="--d: 0.2s">
-                <rect x="316" y="277" width="72" height="22" class="st-pill" />
-                <text x="352" y="292" class="st-small" text-anchor="middle">post</text>
-                <text x="352" y="316" class="st-dim st-caption" text-anchor="middle">Task → thread</text>
-              </g>
-              <g class="s1" style="--d: 0.2s">
-                <text x="352" y="404" class="st-dim" text-anchor="middle">never runs</text>
-                <text x="352" y="422" class="st-dim" text-anchor="middle">a model</text>
-              </g>
-
-              <path d="M412 112H458" pathLength="1" class="st-wire s1" style="--d: 0.3s" marker-end="url(#gw-head)" />
-              <text x="436" y="102" class="st-small st-edge s1" style="--d: 0.3s" text-anchor="middle">start</text>
-              <path d="M412 168H472" pathLength="1" class="st-wire s2" style="--d: 0.3s" marker-end="url(#gw-head)" />
-              <text x="436" y="158" class="st-small st-edge s2" style="--d: 0.3s" text-anchor="middle">inbox</text>
-              <path d="M474 250H414" pathLength="1" class="st-wire s3" marker-end="url(#gw-head)" />
-              <text x="436" y="240" class="st-small st-edge s3" text-anchor="middle">declare</text>
-              <path d="M412 368H458" pathLength="1" class="st-wire s3" style="--d: 0.5s" marker-end="url(#gw-head)" />
-              <text x="436" y="358" class="st-small st-edge s3" style="--d: 0.5s" text-anchor="middle">logs</text>
-
-              <g class="s1" style="--d: 0.4s">
-                <rect x="460" y="12" width="208" height="272" class="st-card" />
-                <text x="476" y="40" class="st-name">Task</text>
-                <text x="652" y="40" class="st-mono st-dim" text-anchor="end">fix-login</text>
-                <text x="476" y="62" class="st-dim">tied to the thread</text>
-                <rect x="474" y="80" width="180" height="106" class="st-sunk" />
-                <text x="486" y="100" class="st-label">inbox</text>
-                <circle cx="491" cy="120" r="4" class="st-ok st-beat" />
-                <text x="503" y="125" class="st-mono">brief</text>
-              </g>
-              <g class="s2" style="--d: 0.6s">
-                <circle cx="491" cy="148" r="4" class="st-ok" />
-                <text x="503" y="153" class="st-mono">use the staging…</text>
-              </g>
-              <g class="s3" style="--d: 0.3s">
-                <rect x="474" y="200" width="180" height="70" class="st-sunk" />
-                <text x="486" y="220" class="st-label">declares</text>
-                <text x="486" y="250" class="st-mono st-hot-text">Question</text>
-              </g>
-              <g class="s3" style="--d: 0.7s">
-                <rect x="460" y="300" width="208" height="136" class="st-card" />
-                <text x="476" y="326" class="st-label">chat</text>
-                <text x="476" y="350" class="st-name">log channel</text>
-                <text x="476" y="374" class="st-dim">drafts</text>
-                <text x="476" y="398" class="st-dim">results</text>
-                <text x="476" y="422" class="st-dim">change news</text>
-              </g>
-            </svg>
-          </figure>
-          <ol class="story__steps">
-            <li class="story__step" data-step="1">
-              <h3><span class="step-number" aria-hidden="true">1</span>Ask in a thread</h3>
-              <p>
-                Mention Fleet's bot in a Slack or Discord thread. The gateway admits the people your
-                config lists and starts a Task tied to that thread.
-              </p>
-              <p class="story__gain">Start work where your team already talks.</p>
-            </li>
-            <li class="story__step" data-step="2">
-              <h3><span class="step-number" aria-hidden="true">2</span>Keep talking</h3>
-              <p>
-                Every later message in the thread reaches the Task's inbox. On Discord, a reply
-                without a mention needs <code>messageContent = true</code> and Discord's message
-                content intent. The gateway only moves messages: it never runs a model.
-              </p>
-              <p class="story__gain">Steer an agent mid-task from the thread.</p>
-            </li>
-            <li class="story__step" data-step="3">
-              <h3><span class="step-number" aria-hidden="true">3</span>Answers come back</h3>
-              <p>
-                The Task's Comments and Questions are posted in the thread. Drafts, results and
-                change news go to one log channel, when your config names one.
-              </p>
-              <p class="story__gain">Questions find you. You do not go looking for them.</p>
-            </li>
-          </ol>
         </div>
       </div>
     </section>

@@ -474,8 +474,40 @@
       steps.forEach(function (step) {
         step.classList.toggle('is-current', Number(step.dataset.step) === at);
       });
+      showProgress(at);
     }
     var figure = story.querySelector('.story__figure');
+    story.querySelectorAll('.st-wire').forEach(function (wire) {
+      var pulse = wire.cloneNode(false);
+      pulse.classList.replace('st-wire', 'st-pulse');
+      pulse.removeAttribute('marker-start');
+      pulse.removeAttribute('marker-end');
+      pulse.setAttribute('aria-hidden', 'true');
+      wire.after(pulse);
+    });
+    var progress = document.createElement('figcaption');
+    progress.className = 'story__progress';
+    progress.setAttribute('aria-hidden', 'true');
+    var dots = document.createElement('span');
+    dots.className = 'story__progress-dots';
+    steps.forEach(function () {
+      var dot = document.createElement('span');
+      dot.className = 'story__progress-dot';
+      dots.appendChild(dot);
+    });
+    var label = document.createElement('span');
+    label.className = 'story__progress-label';
+    progress.append(dots, label);
+    figure.appendChild(progress);
+    function showProgress(at) {
+      Array.prototype.forEach.call(dots.children, function (dot, i) {
+        dot.classList.toggle('is-done', i < at);
+      });
+      var current = steps[at - 1];
+      label.textContent = current
+        ? at + '/' + steps.length + ' · ' + current.querySelector('h3').lastChild.textContent.trim()
+        : 'Scroll to play';
+    }
     function stepLine() {
       var freeTop = storyBesideFigure.matches ? 0 : figure.getBoundingClientRect().bottom;
       return (Math.max(freeTop, 0) + window.innerHeight) / 2;
