@@ -126,7 +126,7 @@ breadcrumb: 'Configuration'
                 <td>JSON</td>
                 <td>thurbox</td>
                 <td>startup, and after each change</td>
-                <td>theme, editor command, manual session order, companion shells</td>
+                <td>theme, editor command, manual session order</td>
               </tr>
               <tr>
                 <td><code>~/.local/share/thurbox/thurbox.log</code></td>
@@ -448,6 +448,14 @@ transport = { wsl = "Ubuntu" }</code></pre>
                 </td>
               </tr>
               <tr>
+                <td><code>stream_panes</code></td>
+                <td><code>false</code></td>
+                <td>
+                  open each local tmux session's pane through <code>runtime-mux view</code>, a
+                  terminal stream, instead of thurbox's own control-mode connection
+                </td>
+              </tr>
+              <tr>
                 <td><code>two_panel_min_cols</code></td>
                 <td><code>80</code></td>
                 <td>width below which only the terminal renders</td>
@@ -474,6 +482,7 @@ transport = { wsl = "Ubuntu" }</code></pre>
 # Scalar tuning knobs (top level)
 scrollback_lines      = 1000   # terminal scrollback kept per session
 hidden_terminal_secs  = 30     # seconds off screen before a grid is dropped; 0 = keep all
+stream_panes          = false  # local tmux panes through runtime-mux view, a terminal stream
 two_panel_min_cols    = 80     # width below which only the terminal renders
 git_poll_secs         = 5      # seconds between git stats of a session; 0 = off
 
@@ -489,7 +498,11 @@ auto_update   = true           # downloads + replaces binaries
 backend             = "auto"   # auto / dbus / windows / off
 suppress_for_active = true     # skip the session you're currently viewing
 sound               = true     # play the OS default notification sound
-min_interval_secs   = 5        # per-session floor between notifications</code></pre>
+min_interval_secs   = 5        # per-session floor between notifications
+
+[clipboard]
+provider       = "auto"        # auto | native | osc52 | none
+copy_on_select = true          # releasing a drag copies; false = Ctrl+C copies a selection</code></pre>
 
           <h3 id="features"><code>[features]</code> &mdash; whole-feature switches</h3>
           <p>
@@ -569,8 +582,9 @@ min_interval_secs   = 5        # per-session floor between notifications</code><
             <code>version_check = true</code>
             enables the update check. On launch the TUI reads a cached result
             (<code>~/.local/share/thurbox/version-check.json</code>) and, if it is older than 24&nbsp;h,
-            fires a single best-effort background fetch of GitHub's latest release (via
-            <code>curl</code>/<code>wget</code>); a newer release shows a
+            fires a single best-effort background fetch of GitHub's release list (via
+            <code>curl</code>/<code>wget</code>) and takes the newest release on the binary's own
+            major line; a newer release shows a
             <code>&uarr; vX.Y.Z available</code>
             badge next to the version in the header. The fetch never blocks startup and failures are
             silent. Dev builds (<code>0.0.0-dev</code>) never show the badge. The same flag enables
@@ -580,12 +594,13 @@ min_interval_secs   = 5        # per-session floor between notifications</code><
           <p>
             <code>auto_update = true</code>
             goes a step further than <code>version_check</code>: instead of just showing a badge, the
-            TUI <strong>silently updates itself</strong> on startup. After the same 24&nbsp;h cache
-            check, if a newer release exists it downloads that release's tarball + checksums from
-            GitHub Releases (<code>curl</code>/<code>wget</code>), verifies the SHA256
-            (<code>sha256sum</code>/<code>shasum</code>), extracts it (<code>tar</code>), and
-            atomically replaces the installed <code>thurbox</code>/<code>thurbox-cli</code> binaries
-            in place &mdash; mirroring <code>scripts/install.sh</code>. The download is verified
+            TUI <strong>silently updates itself</strong> on startup. On every launch (it does not reuse
+            the badge's 24&nbsp;h cache) it fetches the release list; if a newer release exists on the
+            same major line it downloads that release's tarball + checksums from GitHub Releases
+            (<code>curl</code>/<code>wget</code>), verifies the SHA256 in process, extracts it
+            (<code>tar</code>), and installs every program the release ships (<code>thurbox</code>,
+            <code>thurbox-cli</code>, <code>fleet</code>, <code>runtime-mux</code>,
+            <code>workspace-git</code>) &mdash; mirroring <code>scripts/install.sh</code>. The download is verified
             <strong>before</strong> any installed file is touched, so a failed download leaves the
             current binaries untouched; the step runs before the TUI takes the terminal and is
             best-effort. The replaced binary takes effect on the <strong>next launch</strong>, so the
@@ -610,18 +625,17 @@ min_interval_secs   = 5        # per-session floor between notifications</code><
 
           <h3 id="notifications"><code>[notifications]</code> &mdash; OS notification settings</h3>
           <p>
-            Surfaces an OS notification when a session crosses into a state that needs the user's
-            attention (the agent rang the terminal bell or emitted an OSC&nbsp;9 / OSC&nbsp;777
-            message &mdash; usually because it's waiting on an answer or has finished a task). Linux
-            dispatches via dbus and supports
+            Surfaces an OS notification when a session goes into <code>blocked</code>
+            (<code>&lt;name&gt; needs you</code>): its Task's <code>agentState</code> is
+            <code>attention</code>. Fleet reports no finished state, so a finished turn raises
+            nothing. Linux dispatches via dbus and supports
             <strong>click-to-focus</strong>: clicking the banner writes a focus request that the
-            running TUI reads on its next tick and switches to that session. macOS shows the banner
-            but ignores clicks (the modern <code>UNUserNotificationCenter</code> API requires a
-            signed app bundle, which thurbox is not). The notification body is the agent's last OSC
-            message when present, otherwise <code>Waiting for input</code>.
+            running TUI reads on its next tick and switches to that session. On macOS a click
+            focuses the session when <code>terminal-notifier</code> is on <code>PATH</code>; the
+            <code>osascript</code> fallback ignores clicks. The notification body is
+            <code>&lt;agent&gt; is waiting for input</code>.
             <strong>Only fires while the TUI is open</strong>
-            &mdash; the agent terminal parser is what sees the bell, and it doesn't run when thurbox
-            isn't. Gated by the <code>notifications</code> feature flag above.
+            &mdash; the dispatcher runs only inside the TUI. Gated by the <code>notifications</code> feature flag above.
           </p>
           <table>
             <thead>
@@ -659,11 +673,6 @@ min_interval_secs   = 5        # per-session floor between notifications</code><
               </tr>
             </tbody>
           </table>
-          <p>
-            The default-on <code>Attention</code> trigger is the right knob for any agent that
-            respects the terminal bell / OSC&nbsp;9 / OSC&nbsp;777 conventions (Claude Code out of
-            the box, for example).
-          </p>
 
           <h2 id="themes-toml">
             themes.toml
@@ -811,8 +820,8 @@ app_bg = "reset"             # keep the terminal's native background</code></pre
             <code>Ctrl+Y</code>
             picker), the editor
             <code>Ctrl+O</code>
-            opens (<code>thurbox-cli editor set "&lt;cmd&gt;"</code>), the manual session order
-            and each session's companion shell. thurbox rewrites it whole under a lock every
+            opens (<code>thurbox-cli editor set "&lt;cmd&gt;"</code>) and the manual session
+            order. thurbox rewrites it whole under a lock every
             process takes. A missing or unreadable file means the defaults.
           </p>
 
@@ -845,7 +854,7 @@ app_bg = "reset"             # keep the terminal's native background</code></pre
               </tr>
               <tr>
                 <td><code>SHELL</code></td>
-                <td>the <code>Ctrl+T</code> companion shell pane (fallback <code>/bin/sh</code>)</td>
+                <td>not read by thurbox: the runtime opens the <code>Ctrl+T</code> shell with the place's own shell</td>
               </tr>
               <tr>
                 <td><code>RUST_LOG</code></td>

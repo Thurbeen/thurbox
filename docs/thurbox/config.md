@@ -337,6 +337,7 @@ version_check = true           # on by default (1.0): makes a network call
 auto_update   = true           # on by default (1.0): downloads + replaces binaries
 
 [notifications]
+backend             = "auto"   # auto / dbus / windows / off
 suppress_for_active = true     # skip the session you're currently viewing
 sound               = true     # play the OS default notification sound
 min_interval_secs   = 5        # per-session floor between notifications
@@ -1026,12 +1027,11 @@ Rebindings live in `ui.json`'s `bindings` (action id → one chord), which
 - **Terminal passthrough.** When a session **terminal is focused**, the
   readline / shell line-editing chords (`Ctrl+A` start-of-line, `Ctrl+E`
   end-of-line, `Ctrl+W` delete-word, `Ctrl+U` kill-line, `Ctrl+R`
-  reverse-search, `Ctrl+D` EOF, plus `Ctrl+B/F/O/P/S`) are **forwarded to the
+  reverse-search, `Ctrl+D` EOF, plus `Ctrl+B/F/O/S`) are **forwarded to the
   agent CLI** instead of triggering their thurbox command, so your terminal
-  muscle memory works inside a session. Those thurbox commands stay reachable
-  from the **session list** (focus it with `Ctrl+H`) and via their `F`-key
-  alternates (`F4` theme picker, `F6` settings, `F8` shell tab, `F9` session
-  list). Rebinding such an
+  muscle memory works inside a session. The thurbox commands they shadow
+  (`Ctrl+D` delete, `Ctrl+O` editor, `Ctrl+E` rename) stay reachable from the
+  **session list** (focus it with `Ctrl+H`). Rebinding such an
   action to a key that isn't a bare `Ctrl+<letter>` makes it work in the
   terminal too. Navigation/quit chords (`Ctrl+H/J/K/L`, `Ctrl+Q`, `Ctrl+N`) are
   **never** forwarded — they're how you leave the terminal.

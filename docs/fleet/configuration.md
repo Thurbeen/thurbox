@@ -485,7 +485,7 @@ Selection order is `--config PATH`, then `FLEET_CONFIG`, then one native path:
 
 | Platform | Native configuration path |
 | --- | --- |
-| Linux | `$XDG_CONFIG_HOME/fleet/config.toml`, falling back to `~/.config/fleet/config.toml`. |
+| Linux, macOS | `$XDG_CONFIG_HOME/fleet/config.toml`, falling back to `~/.config/fleet/config.toml`. |
 | Windows | `%APPDATA%\fleet\config.toml`. |
 
 Fleet does not search the current directory or parents. Explicit config paths
@@ -579,6 +579,7 @@ image = "agent-base"
   warns, and `fleet runtime places --json` has `"local": null` and a
   `localWhy`.
 - A runtime or place name is 1 to 253 lowercase letters, digits, `-` or `.`.
+  It starts and ends with a letter or a digit, and holds no `..`.
 - A place's table comes only from this file. The runtime trusts it.
 - A runtime of protocol version 1 serves only `local`, with no config: a
   Task on another of its places waits, unknown.
