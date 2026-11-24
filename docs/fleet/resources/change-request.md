@@ -80,8 +80,8 @@ forge's timestamps, which arrive out of order.
   changes.
 - `conflicts.seq` moves when a known `mergeable` answer flips `conflicts`.
   A `null` answer flips nothing. Another reason (`blocked`, `unstable`,
-  `behind`, `draft`) is not a conflict: it moves `revision` and never
-  `conflicts.seq`.
+  `behind`, `draft`) does not create a conflict, but does move
+  `conflicts.seq` when it clears a recorded conflict.
 - A note that leaves the cap of 100 raises `droppedBefore` to its `seq`.
 
 A reader keeps one integer, its cursor, and takes each item with
