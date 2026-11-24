@@ -95,7 +95,9 @@ impl Core {
         let reply = loop {
             let mut line = String::new();
             if self.replies.read_line(&mut line).map_err(lost)? == 0 {
-                return Err(format!("herdr-core connect closed before it answered {method}"));
+                return Err(format!(
+                    "herdr-core connect closed before it answered {method}"
+                ));
             }
             let message: Value = serde_json::from_str(&line)
                 .map_err(|e| format!("herdr-core answered {method} with no JSON ({e})"))?;
