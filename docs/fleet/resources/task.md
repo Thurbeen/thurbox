@@ -113,7 +113,7 @@ repositories.
 - `Briefed`: the agent's prompt hook proved that the brief arrived.
 - `Concluded`: a result for the current generation arrived. The session
   stays, and inbox entries still reach it. An amendment re-opens the Task.
-  An answer to a declared Question is an amendment there.
+  `fleet send --answers` to it is an amendment there.
 - `Stalled`: spawn or brief attempts are exhausted.
 - `Releasing`: the Task is deleting. TaskController releases the session
   and cleans the workspace. Then the finalizer goes.
