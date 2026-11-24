@@ -110,7 +110,7 @@ const UNSUPPORTED: &str = "WorkspaceUnsupported";
 const TRUST_UNMAPPED: &str = "TrustUnmapped";
 /// The NeedsAttention reason while a known trust gap holds the brief.
 const WORKSPACE_UNTRUSTED: &str = "WorkspaceUntrusted";
-const TRUST_UNKNOWN_HINT_MS: Millis = 60_000;
+const HOOK_REPORT_HINT_MS: Millis = 60_000;
 const BRIEF: &str = "brief";
 /// The Briefed reason of a Task with no brief.
 const INTERACTIVE: &str = "Interactive";
@@ -940,6 +940,7 @@ impl Pass<'_, '_> {
                 return;
             }
             Some(Observation::Unknown { why }) => {
+                let why = self.with_hook_report_hint(BRIEFED, why);
                 self.cond(BRIEFED, ConditionStatus::Unknown, "ReadyUnknown", why);
                 return;
             }
@@ -989,14 +990,7 @@ impl Pass<'_, '_> {
                 false
             }
             Some(Observation::Unknown { why }) => {
-                let why = if self.trust_unknown_since() + TRUST_UNKNOWN_HINT_MS <= self.now() {
-                    format!(
-                        "{why}; no hook report yet for harness {}: check `fleet doctor` for its integration",
-                        self.spec.harness
-                    )
-                } else {
-                    why
-                };
+                let why = self.with_hook_report_hint(WORKSPACE_TRUSTED, why);
                 self.cond(
                     WORKSPACE_TRUSTED,
                     ConditionStatus::Unknown,
@@ -1009,8 +1003,18 @@ impl Pass<'_, '_> {
         }
     }
 
-    fn trust_unknown_since(&self) -> Millis {
-        condition(&self.st.conditions, WORKSPACE_TRUSTED)
+    fn with_hook_report_hint(&self, type_: &str, why: String) -> String {
+        if self.unknown_since(type_) + HOOK_REPORT_HINT_MS > self.now() {
+            return why;
+        }
+        format!(
+            "{why}; no hook report yet for harness {}: check `fleet doctor` for its integration",
+            self.spec.harness
+        )
+    }
+
+    fn unknown_since(&self, type_: &str) -> Millis {
+        condition(&self.st.conditions, type_)
             .filter(|c| c.status == ConditionStatus::Unknown)
             .map_or_else(|| self.now(), |c| c.last_transition_time)
     }

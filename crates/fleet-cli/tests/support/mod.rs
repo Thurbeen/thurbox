@@ -548,6 +548,19 @@ impl Env {
         }
     }
 
+    pub fn backdate_condition(&self, task: &str, type_: &str, by_ms: u64) {
+        let path = self.object_path("Task", task);
+        let mut obj: Value =
+            serde_json::from_slice(&fs::read(&path).expect("record")).expect("json");
+        let c = obj["status"]["conditions"]
+            .as_array_mut()
+            .and_then(|cs| cs.iter_mut().find(|c| c["type"] == type_))
+            .expect("condition");
+        let at = c["lastTransitionTime"].as_u64().expect("transition time");
+        c["lastTransitionTime"] = json!(at.saturating_sub(by_ms));
+        fs::write(&path, obj.to_string()).expect("record");
+    }
+
     pub fn forget_prompt_boundaries(&self, name: &str) {
         let path = self.object_path("Task", name);
         let mut obj: Value =

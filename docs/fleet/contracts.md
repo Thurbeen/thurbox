@@ -227,8 +227,10 @@ Guarantees, each with its test:
   is probed again after each wait. Unknown holds the brief, raises nothing
   and is probed again on the next pass. After one minute of Unknown, the
   message names the cause to check: no hook report yet for the harness,
-  and `fleet doctor` for its integration. A held brief spends no send, and no
-  inbox entry goes out before the brief.
+  and `fleet doctor` for its integration. A readiness wait
+  (`Briefed=Unknown/ReadyUnknown`) names the same cause after one minute.
+  A held brief spends no send, and no inbox entry goes out before the
+  brief.
 - **Retries.** Spawns and brief sends are tried at most `MAX_ATTEMPTS` (3)
   times before `Stalled` and `NeedsAttention`. Failed attempts wait
   `RETRY_DELAY_MS` (30 seconds), persisted as `status.notBefore` across manager

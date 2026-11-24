@@ -2293,6 +2293,20 @@ fn a_claude_composer_on_screen_reads_as_a_trusted_workspace() {
     });
     let status = env.get("t1")["status"].clone();
     support::assert_condition(&status, "WorkspaceTrusted", "True", "Trusted");
+
+    support::assert_condition(&status, "Briefed", "Unknown", "ReadyUnknown");
+    env.backdate_condition("t1", "Briefed", 61_000);
+    env.reconcile();
+    let status = env.get("t1")["status"].clone();
+    let message = support::condition(&status, "Briefed")["message"]
+        .as_str()
+        .unwrap_or_default()
+        .to_string();
+    assert!(
+        message.contains("no hook report yet for harness claude-code")
+            && message.contains("check `fleet doctor` for its integration"),
+        "a silent Claude waits on readiness, and the wait names its cause: {message}"
+    );
 }
 
 /// GitHub Copilot CLI as Fleet starts it in a trusted folder, read off
