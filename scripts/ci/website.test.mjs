@@ -260,6 +260,9 @@ test('the story scenes draw in the site theme: squared panels, theme tokens, num
   for (const step of [1, 2, 3, 4]) {
     assert.match(story, new RegExp(`\\.story--live:not\\(\\.at-${step}\\) \\.s${step}:not\\(\\.st-pulse\\)`), `a pulse of step ${step} stays hidden until its step, not dimmed with the scene`);
   }
+  const paused = story.match(/\.story--live\.is-visible\.is-paused\[data-at\] \.story__svg \*\s*\{([^}]*)\}/);
+  assert.ok(paused, 'a paused scene has a rule over everything its figure draws');
+  assert.match(paused[1], /animation-play-state:\s*paused/, 'Pause stops every animation in the figure, not only the step timer');
 });
 
 test('the docs sidebar gives Fleet and thurbox a group each', () => {

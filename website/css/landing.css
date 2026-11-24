@@ -926,6 +926,10 @@
   }
 }
 
+.story--live.is-visible.is-paused[data-at] .story__svg * {
+  animation-play-state: paused;
+}
+
 .story__progress {
   display: flex;
   align-items: center;
