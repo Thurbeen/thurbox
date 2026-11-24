@@ -21,6 +21,7 @@ Fleet ── runtime-herdr <verb> ──▶ herdr-core connect      JSON-RPC 2.0
                                                                    fleet.place=<place>
                                                                    herdr.space=<space>
                                                                    herdr.tab=<key>
+                                                                   fleet.role=shell (the shell only)
 ```
 
 - Each call runs `herdr-core connect` and speaks herdr-core's API over its
@@ -40,8 +41,14 @@ Fleet ── runtime-herdr <verb> ──▶ herdr-core connect      JSON-RPC 2.0
 | --- | --- |
 | `manifest` | Reports each place asked about. A place is ready when its core answers `hello`. As every verb does, it starts the core when the core does not run. |
 | `start` | Writes the key's start record, then `terminal.run` with the argv, `env` and `dir`, and the labels above, then records the terminal's address and pid. A live terminal of the key, with the process `start` started, is adopted. So is the live terminal of a start cut short before it recorded the address. |
-| `inspect` | `running` while the key's terminal is live and holds the process `start` started. `exited` with the terminal's exit code once it has finished, or with no code when the core no longer has it. `none` when the key has no start record. |
-| `stop` | `terminal.kill`, then `terminal.rm`, for each terminal of the key at the place. `release: true` also releases the key's workspace at the place. |
+| `inspect` | `running` while the key's terminal is live and holds the process `start` started. `paused` after a `pause`, or Unknown while a pause cut short left a terminal open, until the next `pause` closes it. `exited` with the terminal's exit code once it has finished, or with no code when the core no longer has it. `none` when the key has no start record. |
+| `stop` | `terminal.kill`, then `terminal.rm`, for each terminal of the key at the place, its shell among them. `release: true` also releases the key's workspace at the place. |
+| `pause` | Writes a pause mark for the key, then ends its terminals as `stop` does. The start record stays, so a later `start` runs the key again. A pause of a paused key ends any terminal a pause cut short left open. |
+| `input` | `terminal.send` with the text and `force`, which pastes it and presses Enter even when herdr-core reads the program as blocked: Fleet decides when to send. Fleet always sends `submit: true`; `submit: false` answers Unknown, because herdr-core cannot paste without Enter. |
+| `capture` | `terminal.read` and the terminal's title. herdr-core reports no cursor and no foreground process, so both are `null`. |
+| `exec` | Runs the command on this machine, `in: host` only, bounded by `timeoutMs` and `outputCap`. When the command ends, or at the deadline, it kills the command's process group, so nothing it started outlives the answer. Its output readers get up to 500 ms more to drain the pipes. |
+| `attach` | A `tty` answer: `herdr-core attach <terminal>`, with `HC_SESSION` for a place's session. `fleet attach` bridges it. The view starts on a blank screen until the program redraws. |
+| `shell` | A shell terminal beside the key's, in the directory the key's terminal is in, labelled `fleet.role=shell`. A second call opens the same shell. The answer has the shape of `attach`'s. |
 | `list` | Every key with a start record at the place, and every key that holds a workspace. |
 | `workspace` | Runs `workspace-git`, as `runtime-mux` does, under a root of the place's own. |
 
@@ -93,6 +100,10 @@ release only their own terminals and workspaces. The state directory is
   (`hc machine`) is not a place.
 - The herdr 1 terminal interface (the `herdr` program) does not share
   herdr-core's terminals, so it does not show the Tasks.
+- `terminal.send` waits while a person has an unfinished draft in the
+  terminal, up to herdr-core's `draft_wait` (60 s by default). A wait past
+  the runtime's call bound reads as Unknown, and Fleet does not send the
+  entry again until a hook proves where it stands.
 
 ## Tests
 
@@ -108,4 +119,11 @@ private runtime directory (`XDG_RUNTIME_DIR`):
 - two places on one session list only their own keys, and each keeps its
   own terminal and workspace for a key;
 - a start cut short before it recorded the terminal is adopted;
-- a key that holds only a workspace is listed.
+- a key that holds only a workspace is listed;
+- `input` types into a key's terminal and `capture` reads it back;
+- `attach` names `herdr-core attach` on the key's terminal;
+- `exec` answers a command's code and output, or its deadline;
+- `shell` and `pause` pass the conformance suite's cases;
+- a Task is briefed through `input`, reports idle through its hooks, and is
+  revived on its conversation under the same session after its process
+  ends.

@@ -27,11 +27,19 @@ pub struct Terminal {
     pub pid: Option<u32>,
     pub exit_code: Option<i64>,
     pub created_ms: Option<u64>,
+    pub title: Option<String>,
+    pub cwd: Option<String>,
+    #[serde(default)]
+    pub labels: serde_json::Map<String, Value>,
 }
 
 impl Terminal {
     pub fn is_live(&self) -> bool {
         self.state == "live"
+    }
+
+    pub fn has_label(&self, name: &str, value: &str) -> bool {
+        self.labels.get(name).and_then(Value::as_str) == Some(value)
     }
 }
 

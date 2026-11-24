@@ -3,6 +3,7 @@
 //! the key, which herdr's desktop app shows (docs/runtime/herdr.md).
 
 mod core;
+mod exec;
 mod records;
 mod workspace;
 
@@ -15,8 +16,23 @@ use records::{Records, Started};
 const PROTOCOL: u64 = 2;
 const KEY_LABEL: &str = "fleet.key";
 const PLACE_LABEL: &str = "fleet.place";
+const ROLE_LABEL: &str = "fleet.role";
+const SHELL_ROLE: &str = "shell";
 const DEFAULT_SPACE: &str = "fleet";
-const VERBS: &[&str] = &["manifest", "start", "inspect", "stop", "list", "workspace"];
+const VERBS: &[&str] = &[
+    "manifest",
+    "start",
+    "inspect",
+    "stop",
+    "pause",
+    "list",
+    "input",
+    "capture",
+    "exec",
+    "workspace",
+    "attach",
+    "shell",
+];
 
 /// One answer: `{"known": …}` or `{"unknown": {"why": …}}`.
 pub fn answer(verb: &str, request: &[u8]) -> Value {
@@ -44,10 +60,16 @@ pub fn answer(verb: &str, request: &[u8]) -> Value {
     };
     let answered = match verb {
         "list" => list(&place),
+        "exec" => exec::run(&request),
         "workspace" => key_of(&request).and_then(|key| make_workspace(&place, &key, &request)),
         _ => key_of(&request).and_then(|key| match verb {
             "start" => start(&place, &key, &request),
             "inspect" => inspect(&place, &key),
+            "pause" => pause(&place, &key),
+            "input" => input(&place, &key, &request),
+            "capture" => capture(&place, &key, &request),
+            "attach" => attach(&place, &key),
+            "shell" => shell(&place, &key),
             _ => stop(&place, &key, request["release"] == true),
         }),
     };
@@ -202,7 +224,7 @@ fn holder(core: &mut Core, place: &Place, key: &str) -> Result<Holder, String> {
     let Some(started) = records.started(key)? else {
         return Ok(Holder::None);
     };
-    let terminals = core.terminals_labelled(&key_labels(place, key))?;
+    let terminals = agent_terminals(core, place, key)?;
     let ours = match &started.terminal {
         Some(address) => terminals.into_iter().find(|t| &t.address == address),
         None => terminals.into_iter().rev().find(Terminal::is_live),
@@ -216,6 +238,21 @@ fn holder(core: &mut Core, place: &Place, key: &str) -> Result<Holder, String> {
             Holder::Exited(started, code)
         }
         _ => Holder::Exited(started, None),
+    })
+}
+
+fn agent_terminals(core: &mut Core, place: &Place, key: &str) -> Result<Vec<Terminal>, String> {
+    Ok(core
+        .terminals_labelled(&key_labels(place, key))?
+        .into_iter()
+        .filter(|t| !t.has_label(ROLE_LABEL, SHELL_ROLE))
+        .collect())
+}
+
+fn running(core: &mut Core, place: &Place, key: &str) -> Result<Option<Terminal>, String> {
+    Ok(match holder(core, place, key)? {
+        Holder::Running(terminal) => Some(terminal),
+        Holder::Exited(..) | Holder::None => None,
     })
 }
 
@@ -248,9 +285,10 @@ fn start(place: &Place, key: &str, request: &Value) -> Result<Value, String> {
     let _lock = records.lock()?;
     if let Holder::Running(terminal) = holder(&mut core, place, key)? {
         record_terminal(&records, key, &terminal)?;
+        records.unmark_paused(key)?;
         return Ok(json!({ "started": { "id": terminal.address, "adopted": true } }));
     }
-    for stale in core.terminals_labelled(&key_labels(place, key))? {
+    for stale in agent_terminals(&mut core, place, key)? {
         core.end(&stale)?;
     }
     records.record_start(key, &Started::intended())?;
@@ -268,6 +306,7 @@ fn start(place: &Place, key: &str, request: &Value) -> Result<Value, String> {
         "no_notify": true,
     }))?;
     record_terminal(&records, key, &terminal)?;
+    records.unmark_paused(key)?;
     Ok(json!({ "started": { "id": terminal.address, "adopted": false } }))
 }
 
@@ -283,8 +322,13 @@ fn record_terminal(records: &Records, key: &str, terminal: &Terminal) -> Result<
 
 fn inspect(place: &Place, key: &str) -> Result<Value, String> {
     let mut core = place.connect()?;
+    let paused = place.records(&core)?.is_paused(key);
     Ok(match holder(&mut core, place, key)? {
         Holder::Running(terminal) => json!({ "running": { "id": terminal.address } }),
+        _ if paused && left_open(&mut core, place, key)? => {
+            return Err("a pause left a terminal open; the next pause closes it".to_string());
+        }
+        _ if paused => json!("paused"),
         Holder::Exited(started, code) => {
             json!({ "exited": { "id": started.terminal.unwrap_or_else(|| key.to_string()), "code": code } })
         }
@@ -305,6 +349,115 @@ fn stop(place: &Place, key: &str, release: bool) -> Result<Value, String> {
         workspace::release(&place.name, key)?;
     }
     Ok(json!("stopped"))
+}
+
+fn left_open(core: &mut Core, place: &Place, key: &str) -> Result<bool, String> {
+    Ok(core
+        .terminals_labelled(&key_labels(place, key))?
+        .iter()
+        .any(Terminal::is_live))
+}
+
+fn pause(place: &Place, key: &str) -> Result<Value, String> {
+    let mut core = place.connect()?;
+    let records = place.records(&core)?;
+    let _lock = records.lock()?;
+    let live = running(&mut core, place, key)?.is_some();
+    if !live && !records.is_paused(key) {
+        return Ok(json!("none"));
+    }
+    records.mark_paused(key)?;
+    for terminal in core.terminals_labelled(&key_labels(place, key))? {
+        core.end(&terminal)?;
+    }
+    Ok(json!("paused"))
+}
+
+fn input(place: &Place, key: &str, request: &Value) -> Result<Value, String> {
+    let text = request["text"].as_str().ok_or("text: a string")?;
+    if request["submit"] != true {
+        return Err(
+            "runtime-herdr types only with submit: herdr-core pastes and presses Enter".into(),
+        );
+    }
+    let mut core = place.connect()?;
+    let Some(terminal) = running(&mut core, place, key)? else {
+        return Ok(json!("none"));
+    };
+    core.expect(
+        "terminal.send",
+        json!({ "terminal": terminal.address, "text": text, "force": true }),
+    )?;
+    Ok(json!("sent"))
+}
+
+fn capture(place: &Place, key: &str, request: &Value) -> Result<Value, String> {
+    let mut core = place.connect()?;
+    let Some(terminal) = running(&mut core, place, key)? else {
+        return Ok(json!("none"));
+    };
+    let read = core.expect(
+        "terminal.read",
+        json!({ "terminal": terminal.address, "lines": request["lines"].as_u64().unwrap_or(0) }),
+    )?;
+    Ok(json!({ "screen": {
+        "text": read["text"].as_str().unwrap_or_default(),
+        "cursorRow": null,
+        "cursorCol": null,
+        "foreground": null,
+        "title": terminal.title.filter(|t| !t.is_empty()),
+    } }))
+}
+
+fn attach_argv(place: &Place, terminal: &str) -> Value {
+    let mut argv: Vec<String> = Vec::new();
+    if let Some(session) = place.session() {
+        argv.extend(["env".to_string(), format!("HC_SESSION={session}")]);
+    }
+    argv.extend([
+        core::PROGRAM.to_string(),
+        "attach".to_string(),
+        terminal.to_string(),
+    ]);
+    json!({ "tty": { "argv": argv } })
+}
+
+fn attach(place: &Place, key: &str) -> Result<Value, String> {
+    let mut core = place.connect()?;
+    Ok(match running(&mut core, place, key)? {
+        Some(terminal) => attach_argv(place, &terminal.address),
+        None => json!("none"),
+    })
+}
+
+fn shell(place: &Place, key: &str) -> Result<Value, String> {
+    let mut core = place.connect()?;
+    let records = place.records(&core)?;
+    let _lock = records.lock()?;
+    let Some(agent) = running(&mut core, place, key)? else {
+        return Ok(json!("none"));
+    };
+    let open = core
+        .terminals_labelled(&key_labels(place, key))?
+        .into_iter()
+        .find(|t| t.is_live() && t.has_label(ROLE_LABEL, SHELL_ROLE));
+    let shell = match open {
+        Some(shell) => shell,
+        None => core.run(json!({
+            "argv": [std::env::var("SHELL").unwrap_or_else(|_| "/bin/sh".to_string())],
+            "cwd": agent.cwd,
+            "labels": {
+                KEY_LABEL: key,
+                PLACE_LABEL: place.name,
+                ROLE_LABEL: SHELL_ROLE,
+                "herdr.space": place.space(),
+                "herdr.tab": key,
+            },
+            "no_parent": true,
+            "no_notify": true,
+        }))?,
+    };
+    Ok(attach_argv(place, &shell.address))
 }
 
 fn list(place: &Place) -> Result<Value, String> {

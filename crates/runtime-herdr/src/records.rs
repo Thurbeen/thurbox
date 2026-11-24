@@ -6,6 +6,7 @@ use serde::{Deserialize, Serialize};
 
 const LOCK_WAIT: Duration = Duration::from_secs(10);
 const START_SUFFIX: &str = ".start";
+const PAUSED_SUFFIX: &str = ".paused";
 
 #[derive(Serialize, Deserialize)]
 pub struct Started {
@@ -91,7 +92,20 @@ impl Records {
     }
 
     pub fn forget(&self, key: &str) -> Result<(), String> {
-        remove(&self.path(key, START_SUFFIX))
+        remove(&self.path(key, START_SUFFIX))?;
+        self.unmark_paused(key)
+    }
+
+    pub fn is_paused(&self, key: &str) -> bool {
+        self.path(key, PAUSED_SUFFIX).is_file()
+    }
+
+    pub fn mark_paused(&self, key: &str) -> Result<(), String> {
+        write_atomically(&self.path(key, PAUSED_SUFFIX), b"")
+    }
+
+    pub fn unmark_paused(&self, key: &str) -> Result<(), String> {
+        remove(&self.path(key, PAUSED_SUFFIX))
     }
 
     pub fn keys(&self) -> Result<Vec<String>, String> {
@@ -99,9 +113,14 @@ impl Records {
             .map_err(|e| format!("cannot list {}: {e}", self.dir.display()))?;
         let mut keys: Vec<String> = entries
             .filter_map(|entry| entry.ok()?.file_name().into_string().ok())
-            .filter_map(|name| name.strip_suffix(START_SUFFIX).map(String::from))
+            .filter_map(|name| {
+                [START_SUFFIX, PAUSED_SUFFIX]
+                    .iter()
+                    .find_map(|suffix| name.strip_suffix(suffix).map(String::from))
+            })
             .collect();
         keys.sort();
+        keys.dedup();
         Ok(keys)
     }
 }

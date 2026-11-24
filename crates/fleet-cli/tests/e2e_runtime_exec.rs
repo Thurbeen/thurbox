@@ -6527,6 +6527,11 @@ fn runtime_herdr_passes_the_conformance_suite() {
         .stdout_has("ok   workspace: release never removes what it did not make")
         .stdout_has("ok   manifest reports each place it was asked about")
         .stdout_has("ok   a version 2 request without a place answers Unknown")
+        .stdout_has("ok   shell: a key no process holds answers none")
+        .stdout_has("ok   shell: a running key answers how to open its shell, on each call")
+        .stdout_has("ok   shell: a stop leaves nothing to open")
+        .stdout_has("ok   pause: a key no process holds answers none")
+        .stdout_has("ok   pause: stops the process and keeps the key until a start or a stop")
         .stdout_has("speaks runtime protocol 2");
     assert!(!run.stdout.contains("FAIL"), "{}", run.stdout);
 }
@@ -6874,4 +6879,242 @@ fn runtime_herdr_keeps_each_place_s_workspaces_apart() {
     );
     assert_eq!(released["known"], "stopped", "{released}");
     assert!(Path::new(&dir).is_dir(), "another place released {dir}");
+}
+
+/// `input` types into the key's terminal and submits it; `capture` reads
+/// the screen back. A key no process holds answers none to both.
+#[test]
+fn runtime_herdr_types_into_a_key_and_reads_its_screen() {
+    let (Some(program), Some(_)) = (runtime_herdr(), herdr_core()) else {
+        return;
+    };
+    let home = HerdrHome::new("input");
+    let echo = "while IFS= read -r l; do printf 'got[%s]\\n' \"$l\"; done";
+    herdr_start(&program, &home, "k-input", &["sh", "-c", echo]);
+    let sent = herdr_call(
+        &program,
+        &home,
+        "input",
+        json!({"key": "k-input", "text": "hello herdr", "submit": true}),
+    );
+    assert_eq!(sent["known"], "sent", "{sent}");
+    let deadline = Instant::now() + Duration::from_secs(10);
+    let screen = loop {
+        let captured = herdr_call(&program, &home, "capture", json!({"key": "k-input"}));
+        let text = captured["known"]["screen"]["text"]
+            .as_str()
+            .unwrap_or_default();
+        if text.contains("got[hello herdr]") || Instant::now() >= deadline {
+            break captured;
+        }
+        std::thread::sleep(Duration::from_millis(100));
+    };
+    assert!(
+        screen["known"]["screen"]["text"]
+            .as_str()
+            .is_some_and(|t| t.contains("got[hello herdr]")),
+        "{screen}"
+    );
+    for verb in ["input", "capture"] {
+        let absent = herdr_call(
+            &program,
+            &home,
+            verb,
+            json!({"key": "k-absent", "text": "x", "submit": true}),
+        );
+        assert_eq!(absent["known"], "none", "{verb}: {absent}");
+    }
+}
+
+/// `attach` names herdr-core's own client on the key's terminal, which
+/// `fleet attach` bridges into a stream.
+#[test]
+fn runtime_herdr_attaches_through_herdr_core_s_client() {
+    let (Some(program), Some(_)) = (runtime_herdr(), herdr_core()) else {
+        return;
+    };
+    let home = HerdrHome::new("attach");
+    let started = herdr_start(&program, &home, "k-attach", &["sleep", "300"]);
+    let id = started["known"]["started"]["id"].clone();
+    let attach = herdr_call(&program, &home, "attach", json!({"key": "k-attach"}));
+    let argv = attach["known"]["tty"]["argv"]
+        .as_array()
+        .unwrap_or_else(|| panic!("{attach}"))
+        .clone();
+    assert_eq!(
+        argv[argv.len() - 3..],
+        [json!("herdr-core"), json!("attach"), id]
+    );
+    let absent = herdr_call(&program, &home, "attach", json!({"key": "k-absent"}));
+    assert_eq!(absent["known"], "none", "{absent}");
+}
+
+/// `exec` runs a bounded command on this machine and answers its code and
+/// output, or that its deadline passed.
+#[test]
+fn runtime_herdr_runs_a_bounded_command() {
+    let (Some(program), Some(_)) = (runtime_herdr(), herdr_core()) else {
+        return;
+    };
+    let home = HerdrHome::new("exec");
+    let ran = herdr_call(
+        &program,
+        &home,
+        "exec",
+        json!({"argv": ["sh", "-c", "echo out; echo err >&2; exit 3"], "in": "host", "timeoutMs": 5000, "outputCap": 1024}),
+    );
+    assert_eq!(
+        ran["known"],
+        json!({"exited": {"code": 3, "stdout": "out\n", "stderr": "err\n"}}),
+        "{ran}"
+    );
+    let slow = herdr_call(
+        &program,
+        &home,
+        "exec",
+        json!({"argv": ["sleep", "30"], "in": "host", "timeoutMs": 300, "outputCap": 1024}),
+    );
+    assert!(slow["known"]["timedOut"].is_object(), "{slow}");
+}
+
+/// A Task on runtime-herdr: briefed through `input` on its prompt hook's
+/// proof, idle as its hooks report, and revived on its conversation under
+/// the same session when its process ends.
+#[test]
+fn a_task_on_runtime_herdr_is_briefed_and_revives_on_its_conversation() {
+    let (Some(program), Some(_)) = (runtime_herdr(), herdr_core()) else {
+        return;
+    };
+    let home = HerdrHome::new("task");
+    let mut env = herdr_env("runtime-herdr-task", &program, &home);
+    let bin = env.root.join("bin");
+    fs::create_dir_all(&bin).expect("bin");
+    let claude = bin.join("claude");
+    fs::write(&claude, CLAUDE).expect("harness");
+    use std::os::unix::fs::PermissionsExt;
+    fs::set_permissions(&claude, fs::Permissions::from_mode(0o755)).expect("chmod");
+    let fleet_dir = Path::new(env!("CARGO_BIN_EXE_fleet")).parent().unwrap();
+    let path = std::env::var("PATH").unwrap_or_default();
+    env.only_on_path(Path::new(&format!(
+        "{}:{}:{path}",
+        bin.display(),
+        fleet_dir.display()
+    )));
+    let work = env.root.join("work").join("t1");
+    fs::create_dir_all(&work).expect("workspace");
+    let mut task = support::task("t1", true);
+    task["spec"]["workspace"] = json!([format!("file://{}", work.display())]);
+    env.apply(json!([task])).ok();
+
+    reconcile_until(&env, "briefed on the prompt hook's proof", |env| {
+        env.get("t1")["status"]["phase"] == "Briefed"
+    });
+    reconcile_until(&env, "idle, as its hooks report", |env| {
+        env.get("t1")["status"]["sessionState"] == "Idle"
+    });
+    assert_eq!(env.get("t1")["status"]["conversation"], "conv-1");
+
+    let id = env.get("t1")["status"]["session"]["id"].clone();
+    let listed = home.hc(&["ls", "--json"]);
+    let listed: Value = serde_json::from_slice(&listed.stdout).expect("a JSON list");
+    let terminal = listed["terminals"]
+        .as_array()
+        .and_then(|ts| {
+            ts.iter()
+                .find(|t| t["cwd"] == work.to_string_lossy().as_ref())
+        })
+        .and_then(|t| t["address"].as_str())
+        .unwrap_or_else(|| panic!("no terminal for t1: {listed}"))
+        .to_string();
+    let killed = home.hc(&["kill", &terminal]);
+    assert!(killed.status.success(), "{killed:?}");
+    reconcile_until(&env, "revived", |_| starts(&work).len() >= 2);
+    let second = &starts(&work)[1];
+    assert_eq!(
+        &second[second.len() - 2..],
+        ["--resume", "conv-1"],
+        "{second:?}"
+    );
+    reconcile_until(&env, "the terminal back", |env| {
+        support::condition(&env.get("t1")["status"], "SessionLost")["status"] == "False"
+    });
+    let status = env.get("t1")["status"].clone();
+    assert_eq!(status["session"]["id"], id, "{status:#}");
+}
+
+/// A command that leaves a background child behind does not outlive its
+/// answer: `exec` ends the command's whole process group.
+#[test]
+fn runtime_herdr_exec_ends_what_a_command_left_running() {
+    let (Some(program), Some(_)) = (runtime_herdr(), herdr_core()) else {
+        return;
+    };
+    let home = HerdrHome::new("execbg");
+    let marker = format!("{}.{}", 301, std::process::id());
+    let script = format!("sleep {marker} & echo started");
+    let started = Instant::now();
+    let ran = herdr_call(
+        &program,
+        &home,
+        "exec",
+        json!({"argv": ["sh", "-c", script], "in": "host", "timeoutMs": 10000, "outputCap": 1024}),
+    );
+    assert_eq!(ran["known"]["exited"]["code"], 0, "{ran}");
+    assert!(
+        started.elapsed() < Duration::from_secs(5),
+        "the answer waited for the background child: {:?}",
+        started.elapsed()
+    );
+    let left = Command::new("pgrep")
+        .args(["-f", &format!("sleep {marker}")])
+        .output()
+        .expect("pgrep");
+    assert!(
+        String::from_utf8_lossy(&left.stdout).trim().is_empty(),
+        "still running: {}",
+        String::from_utf8_lossy(&left.stdout)
+    );
+}
+
+/// A pause cut short after the agent ended leaves its shell; the next pause
+/// closes it.
+#[test]
+fn runtime_herdr_pause_again_closes_a_shell_left_open() {
+    let (Some(program), Some(_)) = (runtime_herdr(), herdr_core()) else {
+        return;
+    };
+    let home = HerdrHome::new("pausecut");
+    let started = herdr_start(&program, &home, "k-cut", &["sleep", "300"]);
+    let agent = started["known"]["started"]["id"]
+        .as_str()
+        .unwrap_or_else(|| panic!("{started}"))
+        .to_string();
+    let shell = herdr_call(&program, &home, "shell", json!({"key": "k-cut"}));
+    assert!(shell["known"].is_object(), "{shell}");
+    let status = home.hc(&["server", "status", "--json"]);
+    let core: Value = serde_json::from_slice(&status.stdout).expect("a JSON status");
+    let records = home
+        .0
+        .join("state/runtime-herdr")
+        .join(core["core"]["id"].as_str().expect("a core id"))
+        .join("local");
+    fs::write(records.join("k-cut.paused"), "").expect("mark");
+    assert!(home.hc(&["kill", &agent]).status.success());
+    let live_shells = || {
+        let listed = home.hc(&["ls", "--json"]);
+        let listed: Value = serde_json::from_slice(&listed.stdout).expect("a JSON list");
+        listed["terminals"]
+            .as_array()
+            .map(|ts| ts.iter().filter(|t| t["state"] == "live").count())
+            .unwrap_or(0)
+    };
+    assert_eq!(live_shells(), 1, "the shell is left open");
+    let half = herdr_call(&program, &home, "inspect", json!({"key": "k-cut"}));
+    assert!(
+        half["unknown"].is_object(),
+        "a mark with a shell left: {half}"
+    );
+    let paused = herdr_call(&program, &home, "pause", json!({"key": "k-cut"}));
+    assert_eq!(paused["known"], "paused", "{paused}");
+    assert_eq!(live_shells(), 0, "the second pause closed the shell");
 }
