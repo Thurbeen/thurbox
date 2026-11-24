@@ -148,7 +148,8 @@ fn validate() -> (Value, Vec<String>) {
         "settings_toml": settings,
         "themes_toml": themes,
         "ui_json": ui_json,
-        "mod_state_json": plugin_state,
+        "mod_state_json": plugin_state.clone(),
+        "plugin_state_json": plugin_state,
     });
     (report, failed)
 }
@@ -200,6 +201,7 @@ fn render_show(report: &Value) -> String {
     if let Some(paths) = report["paths"].as_object() {
         let pairs: Vec<(&str, String)> = paths
             .iter()
+            .filter(|(k, _)| k.as_str() != "plugin_state_json")
             .map(|(k, v)| (k.as_str(), output::dash(v.as_str())))
             .collect();
         sections.push(format!("Paths\n{}", output::kv(&pairs)));
@@ -259,6 +261,8 @@ fn show(settings: &crate::session::settings::Settings) -> Value {
             "ui_json": crate::kernel::registry::overrides_file()
                 .map(|p| p.display().to_string()),
             "mod_state_json": crate::kernel::registry::decisions_file()
+                .map(|p| p.display().to_string()),
+            "plugin_state_json": crate::kernel::registry::decisions_file()
                 .map(|p| p.display().to_string()),
             "interface_json": crate::config::file::path("interface.json")
                 .map(|p| p.display().to_string()),
@@ -348,6 +352,7 @@ mod tests {
         let (report, failed) = validate();
         assert!(failed.iter().any(|f| f == "mod-state.json"), "{failed:?}");
         assert_eq!(report["mod_state_json"]["exists"], true, "{report}");
+        assert_eq!(report["plugin_state_json"], report["mod_state_json"]);
     }
 
     /// `serde_ignored` reports nested unknown keys, so a typo inside
@@ -382,5 +387,9 @@ mod tests {
         );
         assert!(v["settings"]["scrollback_lines"].is_number());
         assert_eq!(v["settings"]["features"]["mouse"], json!(true));
+        assert_eq!(
+            v["paths"]["plugin_state_json"],
+            v["paths"]["mod_state_json"]
+        );
     }
 }

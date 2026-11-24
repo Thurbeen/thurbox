@@ -2234,6 +2234,9 @@ A package with only a `plugin.toml` still installs, and `install` says that it
 read that file. A destination under `plugins/`, in a manifest or in `--as`,
 lands under `mods/`. A spec entry written as `[[plugin]]` still reads, and the
 next `install` or `remove` rewrites it as `[[mod]]`.
+`thurbox-cli config validate --json` and `config show --json` name the state
+store `mod_state_json`. They also keep `plugin_state_json`, with the same value,
+for scripts written before the rename.
 
 ### Trust for a pane you did not write
 

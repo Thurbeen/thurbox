@@ -575,9 +575,8 @@ fn deliveries<'a>(
 /// the same thing — the list, since nothing in front of them holds the manifest.
 fn pick_a_pane(given: &str, panes: &[crate::session::PackageFile]) -> String {
     format!(
-        "{} carries {} panes and none of them is {given} — an entry is keyed on one \
-         of {}, which --as selects rather than moves",
-        crate::session::PackageManifest::FILE,
+        "the package carries {} panes and none of them is {given} — an entry is keyed \
+         on one of {}, which --as selects rather than moves",
         panes.len(),
         panes
             .iter()
