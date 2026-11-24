@@ -113,7 +113,7 @@ jobs:
             lua:
               - 'ui/**'
               # `examples/lua/` is Lua that ships — the starter is embedded in the
-              # binary and is what `thurbox-cli plugin new` writes. `examples/panes/`
+              # binary and is what `thurbox-cli mod new` writes. `examples/panes/`
               # is Lua somebody installs into their interface. Both are subject to
               # the same sandbox as a bundled pane.
               - 'examples/**'

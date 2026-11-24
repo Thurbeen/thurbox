@@ -366,7 +366,7 @@ impl App {
     /// against a plugin's keys, and rebindable — they simply have no Lua plugin
     /// behind them. The composition itself is
     /// [`kernel::declare_interface`](thurbox::kernel::declare_interface), shared
-    /// with `thurbox-cli plugin check`.
+    /// with `thurbox-cli mod check`.
     pub(crate) fn collect_declarations(&mut self) {
         thurbox::kernel::declare_interface(&mut self.registry, &self.host);
         // Trust is read against the plugin set that just loaded, so a reload —

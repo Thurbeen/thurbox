@@ -45,7 +45,7 @@ pub mod worker_store;
 /// and action-band entries.
 ///
 /// One function because two readers must agree on what "declared" means. The
-/// loop publishes from it, and `thurbox-cli plugin check` builds the same
+/// loop publishes from it, and `thurbox-cli mod check` builds the same
 /// registry to ask why a pill was dropped — and a registry missing the kernel's
 /// own bindings would report a plugin's pill for `help.open` as naming an
 /// action nothing declares, which is the diagnostic wrong in exactly the case

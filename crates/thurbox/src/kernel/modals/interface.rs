@@ -72,7 +72,7 @@ pub enum Edit {
 ///
 /// By where a plugin came from, because that is what decides what can be done
 /// with it: yours are edited by hand, a package's are put back and advanced by
-/// `thurbox-cli plugin`, the shipped ones are restored from the binary. Yours
+/// `thurbox-cli mod`, the shipped ones are restored from the binary. Yours
 /// and the packages first — they are what an operator manages; the shipped
 /// panes follow, and everything that is not a pane last.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]

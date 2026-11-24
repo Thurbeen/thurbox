@@ -13,7 +13,7 @@
 //!
 //! The set is a closed enumeration ([`KERNEL_EVENTS`]) with one reader for each
 //! of its three uses: the loader validates a subscription against it, the help
-//! modal renders it, and `thurbox-cli plugin events` prints it. One list, so a
+//! modal renders it, and `thurbox-cli mod events` prints it. One list, so a
 //! name a plugin can subscribe to is always one the kernel can emit.
 
 use std::collections::BTreeSet;
