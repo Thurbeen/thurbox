@@ -92,10 +92,17 @@ impl Core {
             .write_all(format!("{request}\n").as_bytes())
             .map_err(lost)?;
         self.requests.flush().map_err(lost)?;
-        let mut line = String::new();
-        self.replies.read_line(&mut line).map_err(lost)?;
-        let reply: Value = serde_json::from_str(&line)
-            .map_err(|e| format!("herdr-core answered {method} with no JSON ({e})"))?;
+        let reply = loop {
+            let mut line = String::new();
+            if self.replies.read_line(&mut line).map_err(lost)? == 0 {
+                return Err(format!("herdr-core connect closed before it answered {method}"));
+            }
+            let message: Value = serde_json::from_str(&line)
+                .map_err(|e| format!("herdr-core answered {method} with no JSON ({e})"))?;
+            if message["id"] == self.next_id {
+                break message;
+            }
+        };
         if let Some(error) = reply.get("error") {
             return Ok(Err(error["data"]["kind"]
                 .as_str()
