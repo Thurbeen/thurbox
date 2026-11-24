@@ -212,8 +212,8 @@ pub trait Runtime {
     ) -> Observation<EffectOutcome>;
     /// Send `text` under `intent_key` through `inbox`, the argv the
     /// agent's harness profile rendered for its own inbox, run on the
-    /// session's place. A runtime that cannot run it there types it, as
-    /// [`RuntimePort::brief`].
+    /// session's place. A runtime that cannot run it there, or whose run
+    /// exits non-zero, types it, as [`RuntimePort::brief`].
     fn deliver(
         &self,
         session: &SessionRef,

@@ -1254,9 +1254,6 @@ impl Runtime for ExecRuntime {
         })
     }
 
-    /// The inbox argv runs on the place through the runtime's `exec`. A
-    /// runtime without `exec`, or an argv that ran and did not deliver,
-    /// types the text instead: nothing reached the agent yet.
     fn deliver(
         &self,
         session: &SessionRef,
