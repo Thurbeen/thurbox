@@ -67,13 +67,9 @@ fn known(answer: Value) -> Value {
 
 #[derive(Deserialize, Default)]
 #[serde(deny_unknown_fields)]
-struct PlaceConfig {
+struct Place {
     session: Option<String>,
     workspace: Option<String>,
-}
-
-struct Place {
-    config: PlaceConfig,
 }
 
 impl Place {
@@ -82,28 +78,23 @@ impl Place {
             .get("place")
             .ok_or("a protocol 2 request names its place")?;
         let name = place["name"].as_str().ok_or("the place has no name")?;
-        Ok(Place {
-            config: place_config(name, &place["config"])?,
-        })
+        Place::configured(name, &place["config"])
+    }
+
+    fn configured(name: &str, config: &Value) -> Result<Place, String> {
+        match config {
+            Value::Null => Ok(Place::default()),
+            config => serde_json::from_value(config.clone())
+                .map_err(|e| format!("place {name:?}: {e}; its keys are session and workspace")),
+        }
     }
 
     fn session(&self) -> Option<&str> {
-        self.config.session.as_deref()
+        self.session.as_deref()
     }
 
     fn workspace_label(&self) -> &str {
-        self.config
-            .workspace
-            .as_deref()
-            .unwrap_or(DEFAULT_WORKSPACE_LABEL)
-    }
-}
-
-fn place_config(name: &str, config: &Value) -> Result<PlaceConfig, String> {
-    match config {
-        Value::Null => Ok(PlaceConfig::default()),
-        config => serde_json::from_value(config.clone())
-            .map_err(|e| format!("place {name:?}: {e}; its keys are session and workspace")),
+        self.workspace.as_deref().unwrap_or(DEFAULT_WORKSPACE_LABEL)
     }
 }
 
@@ -123,7 +114,7 @@ fn manifest(request: &Value) -> Value {
     let places: Vec<Value> = asked
         .iter()
         .map(|(name, config)| {
-            let readiness = place_config(name, config).and_then(|config| readiness(&config));
+            let readiness = Place::configured(name, config).and_then(|place| readiness(&place));
             json!({
                 "name": name,
                 "platform": "posix",
@@ -142,11 +133,11 @@ fn manifest(request: &Value) -> Value {
     })
 }
 
-fn readiness(config: &PlaceConfig) -> Result<(), String> {
+fn readiness(place: &Place) -> Result<(), String> {
     if cfg!(not(unix)) {
         return Err("runtime-herdr runs on Linux and macOS only".to_string());
     }
-    match herdr::observe(config.session.as_deref()) {
+    match herdr::observe(place.session()) {
         Ok(_) => Ok(()),
         Err(Failure::NotInstalled) => Err(not_installed()),
         Err(Failure::Unanswered(why)) => Err(why),

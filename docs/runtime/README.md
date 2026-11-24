@@ -7,6 +7,8 @@ Fleet reaches every session through it and links no runtime's code.
 and Fleet is the [overview](../README.md).
 How `runtime-mux` reaches hosts, where psmux differs from tmux, and its
 status channel are [runtime-mux.md](runtime-mux.md).
+How `runtime-herdr` runs sessions as panes of herdr is
+[herdr.md](herdr.md).
 
 ## Two roles
 

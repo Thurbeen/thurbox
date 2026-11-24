@@ -48,7 +48,7 @@ The environment goes over herdr's socket. It is in no process's argv.
 
 | herdr | runtime-herdr |
 | --- | --- |
-| herdr keeps no exit code: a pane whose process exits is removed. | The pane runs the argv under `/bin/sh`, which writes the exit code to a file. `inspect` reads it. |
+| herdr keeps no exit code: a pane whose process exits is removed. | The pane runs the argv under `/bin/sh`, which writes the exit code to a file. `inspect` reads it. A process that a signal ends reports 128 plus the signal's number, as `sh` gives it. |
 | A herdr restart ends every process and brings back the layout only, with new shells in the old panes. | `start` records the pane and its herdr terminal id. A restored pane has a new terminal id, so `inspect` answers `exited` and Fleet revives the Task. The next `start` closes the restored pane. |
 | A reboot ends the server. | The start record survives it, so `inspect` answers `exited`, never `none`. |
 
