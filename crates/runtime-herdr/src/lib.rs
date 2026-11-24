@@ -1,21 +1,21 @@
 //! `runtime-herdr <verb>`: Fleet's runtime protocol (docs/runtime/README.md)
-//! over herdr. Each key's process runs in a pane of the user's own herdr,
-//! labelled with the key, in a herdr workspace of its own (docs/runtime/herdr.md).
+//! over herdr-core. Each key's process is a herdr-core terminal labelled with
+//! the key, which herdr's desktop app shows (docs/runtime/herdr.md).
 
-mod herdr;
+mod core;
 mod records;
 mod workspace;
 
 use serde::Deserialize;
 use serde_json::{Map, Value, json};
 
-use herdr::{Failure, Server};
+use crate::core::{Core, Failure, Terminal};
 use records::{Records, Started};
 
 const PROTOCOL: u64 = 2;
-const DEFAULT_WORKSPACE_LABEL: &str = "fleet";
+const KEY_LABEL: &str = "fleet.key";
+const DEFAULT_SPACE: &str = "fleet";
 const VERBS: &[&str] = &["manifest", "start", "inspect", "stop", "list", "workspace"];
-const RECORD_EXIT_CODE: &str = r#"exit_file=$0; "$@"; code=$?; printf '%s\n' "$code" > "$exit_file.partial" && mv "$exit_file.partial" "$exit_file"; exit "$code""#;
 
 /// One answer: `{"known": …}` or `{"unknown": {"why": …}}`.
 pub fn answer(verb: &str, request: &[u8]) -> Value {
@@ -69,7 +69,7 @@ fn known(answer: Value) -> Value {
 #[serde(deny_unknown_fields)]
 struct Place {
     session: Option<String>,
-    workspace: Option<String>,
+    space: Option<String>,
 }
 
 impl Place {
@@ -85,7 +85,7 @@ impl Place {
         match config {
             Value::Null => Ok(Place::default()),
             config => serde_json::from_value(config.clone())
-                .map_err(|e| format!("place {name:?}: {e}; its keys are session and workspace")),
+                .map_err(|e| format!("place {name:?}: {e}; its keys are session and space")),
         }
     }
 
@@ -93,8 +93,15 @@ impl Place {
         self.session.as_deref()
     }
 
-    fn workspace_label(&self) -> &str {
-        self.workspace.as_deref().unwrap_or(DEFAULT_WORKSPACE_LABEL)
+    fn space(&self) -> &str {
+        self.space.as_deref().unwrap_or(DEFAULT_SPACE)
+    }
+
+    fn connect(&self) -> Result<Core, String> {
+        Core::connect(self.session()).map_err(|failure| match failure {
+            Failure::NotInstalled => not_installed(),
+            Failure::Unanswered(why) => why,
+        })
     }
 }
 
@@ -137,15 +144,14 @@ fn readiness(place: &Place) -> Result<(), String> {
     if cfg!(not(unix)) {
         return Err("runtime-herdr runs on Linux and macOS only".to_string());
     }
-    match herdr::observe(place.session()) {
-        Ok(_) => Ok(()),
-        Err(Failure::NotInstalled) => Err(not_installed()),
-        Err(Failure::Unanswered(why)) => Err(why),
-    }
+    place.connect().map(drop)
 }
 
 fn not_installed() -> String {
-    "herdr is not installed: install it from https://herdr.dev".to_string()
+    format!(
+        "{} is not installed: install it from https://herdr.dev",
+        core::PROGRAM
+    )
 }
 
 fn key_of(request: &Value) -> Result<String, String> {
@@ -161,30 +167,31 @@ fn key_of(request: &Value) -> Result<String, String> {
     }
 }
 
-fn observed(place: &Place) -> Result<Server, String> {
-    match herdr::observe(place.session()) {
-        Ok(server) => Ok(server),
-        Err(Failure::NotInstalled) => Err(not_installed()),
-        Err(Failure::Unanswered(why)) => Err(why),
-    }
+fn key_labels(key: &str) -> Value {
+    json!({ KEY_LABEL: key })
 }
 
 enum Holder {
-    Running(String),
-    Gone,
+    Running(Terminal),
+    Exited(Started, Option<i64>),
+    None,
 }
 
-fn holder(server: &Server, records: &Records, key: &str) -> Result<Holder, String> {
+fn holder(core: &mut Core, records: &Records, key: &str) -> Result<Holder, String> {
     let Some(started) = records.started(key)? else {
-        return Ok(Holder::Gone);
+        return Ok(Holder::None);
     };
-    let same_process = server
-        .panes_labelled(key)?
+    let ours = core
+        .terminals_labelled(&key_labels(key))?
         .into_iter()
-        .any(|pane| pane.id == started.pane && pane.terminal == started.terminal);
-    Ok(match same_process {
-        true => Holder::Running(started.pane),
-        false => Holder::Gone,
+        .find(|t| t.address == started.terminal);
+    Ok(match ours {
+        Some(t) if t.is_live() && t.pid == started.pid => Holder::Running(t),
+        Some(t) if !t.is_live() => {
+            let code = t.exit_code;
+            Holder::Exited(started, code)
+        }
+        _ => Holder::Exited(started, None),
     })
 }
 
@@ -208,76 +215,55 @@ fn start(place: &Place, key: &str, request: &Value) -> Result<Value, String> {
     if dir.is_some_and(|d| !d.starts_with('/')) {
         return Err("dir: an absolute path".to_string());
     }
-    let server = match herdr::serve(place.session()) {
-        Ok(server) => server,
+    let mut core = match Core::connect(place.session()) {
+        Ok(core) => core,
         Err(Failure::NotInstalled) => return Ok(json!({ "failed": { "why": not_installed() } })),
         Err(Failure::Unanswered(why)) => return Err(why),
     };
-    let records = Records::for_server(&server.socket)?;
+    let records = Records::for_core(&core.id)?;
     let _lock = records.lock()?;
-    if let Holder::Running(pane) = holder(&server, &records, key)? {
-        return Ok(json!({ "started": { "id": pane, "adopted": true } }));
+    if let Holder::Running(terminal) = holder(&mut core, &records, key)? {
+        return Ok(json!({ "started": { "id": terminal.address, "adopted": true } }));
     }
-    for stale in server.panes_labelled(key)? {
-        server.close(&stale.id)?;
+    for stale in core.terminals_labelled(&key_labels(key))? {
+        core.end(&stale)?;
     }
-    records.forget_exit(key)?;
-    let workspace = server.workspace_labelled(place.workspace_label(), dir)?;
-    let mut command = vec![
-        "/bin/sh".to_string(),
-        "-c".to_string(),
-        RECORD_EXIT_CODE.to_string(),
-        records.exit_file(key).to_string_lossy().into_owned(),
-    ];
-    command.extend(argv);
-    let applied = server.expect(
-        "layout.apply",
-        json!({
-            "workspace_id": workspace,
-            "tab_label": key,
-            "focus": false,
-            "root": { "type": "pane", "label": key, "command": command, "cwd": dir, "env": env },
-        }),
-    )?;
-    let pane = applied["layout"]["root"]["pane_id"]
-        .as_str()
-        .ok_or("herdr layout.apply named no pane")?
-        .to_string();
-    let terminal = server
-        .panes()?
-        .into_iter()
-        .find(|p| p.id == pane)
-        .and_then(|p| p.terminal);
+    let terminal = core.run(json!({
+        "argv": argv,
+        "cwd": dir,
+        "env": env,
+        "labels": { KEY_LABEL: key, "herdr.space": place.space(), "herdr.tab": key },
+        "no_parent": true,
+        "no_notify": true,
+    }))?;
     records.record_start(
         key,
         &Started {
-            pane: pane.clone(),
-            terminal,
+            terminal: terminal.address.clone(),
+            pid: terminal.pid,
         },
     )?;
-    Ok(json!({ "started": { "id": pane, "adopted": false } }))
+    Ok(json!({ "started": { "id": terminal.address, "adopted": false } }))
 }
 
 fn inspect(place: &Place, key: &str) -> Result<Value, String> {
-    let server = observed(place)?;
-    let records = Records::for_server(&server.socket)?;
-    if let Holder::Running(pane) = holder(&server, &records, key)? {
-        return Ok(json!({ "running": { "id": pane } }));
-    }
-    Ok(match records.started(key)? {
-        Some(started) => {
-            json!({ "exited": { "id": started.pane, "code": records.exit_code(key) } })
+    let mut core = place.connect()?;
+    let records = Records::for_core(&core.id)?;
+    Ok(match holder(&mut core, &records, key)? {
+        Holder::Running(terminal) => json!({ "running": { "id": terminal.address } }),
+        Holder::Exited(started, code) => {
+            json!({ "exited": { "id": started.terminal, "code": code } })
         }
-        None => json!("none"),
+        Holder::None => json!("none"),
     })
 }
 
 fn stop(place: &Place, key: &str, release: bool) -> Result<Value, String> {
-    let server = observed(place)?;
-    let records = Records::for_server(&server.socket)?;
+    let mut core = place.connect()?;
+    let records = Records::for_core(&core.id)?;
     let lock = records.lock()?;
-    for pane in server.panes_labelled(key)? {
-        server.close(&pane.id)?;
+    for terminal in core.terminals_labelled(&key_labels(key))? {
+        core.end(&terminal)?;
     }
     records.forget(key)?;
     drop(lock);
@@ -288,8 +274,8 @@ fn stop(place: &Place, key: &str, release: bool) -> Result<Value, String> {
 }
 
 fn list(place: &Place) -> Result<Value, String> {
-    let server = observed(place)?;
-    let records = Records::for_server(&server.socket)?;
+    let core = place.connect()?;
+    let records = Records::for_core(&core.id)?;
     Ok(json!({ "keys": records.keys()? }))
 }
 

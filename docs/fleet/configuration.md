@@ -673,31 +673,31 @@ distro = "Ubuntu-24.04"
 
 #### Places on runtime-herdr
 
-[`runtime-herdr`](../runtime/herdr.md) runs each Task in a pane of the
-user's own herdr:
+[`runtime-herdr`](../runtime/herdr.md) runs each Task in a herdr-core
+terminal, which herdr's desktop app shows:
 
 ```toml
 [runtimes.herdr]
 program = "runtime-herdr"
 
-# herdr's default session; spec.host = "herdr/local"
+# herdr-core's default session; spec.host = "herdr/local"
 [runtimes.herdr.places.local]
 
-# the herdr named session "work"; spec.host = "herdr/work"
+# the herdr-core session "work"; spec.host = "herdr/work"
 [runtimes.herdr.places.work]
 session = "work"
-workspace = "agents"
+space = "agents"
 ```
 
 | Key | Default | Meaning |
 | --- | --- | --- |
-| `session` | herdr's default session | The herdr named session (`herdr --session`). |
-| `workspace` | `fleet` | The label of the herdr workspace that holds the Tasks' tabs. `start` makes it when it is not there. |
+| `session` | herdr-core's default session | The herdr-core session (`HC_SESSION`). |
+| `space` | `fleet` | The herdr app space that shows the Tasks, as its `herdr.space` label. |
 
 - `runtime-herdr` refuses any other key, and names it.
 - With `default = true` on `[runtimes.herdr]`, `local` names
   `herdr/local`.
-- A place needs `herdr` on the `PATH`. `fleet runtime places` and
+- A place needs `herdr-core` on the `PATH`. `fleet runtime places` and
   `fleet doctor` say when it is missing.
 
 A second Fleet installation on the same runtime needs a distinct

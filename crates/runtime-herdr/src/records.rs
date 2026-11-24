@@ -3,16 +3,14 @@ use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
 use serde::{Deserialize, Serialize};
-use sha2::{Digest, Sha256};
 
 const LOCK_WAIT: Duration = Duration::from_secs(10);
 const START_SUFFIX: &str = ".start";
-const EXIT_SUFFIX: &str = ".exit";
 
 #[derive(Serialize, Deserialize)]
 pub struct Started {
-    pub pane: String,
-    pub terminal: Option<String>,
+    pub terminal: String,
+    pub pid: Option<u32>,
 }
 
 pub struct Records {
@@ -33,15 +31,10 @@ pub fn data_home() -> Option<PathBuf> {
         .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".local/share")))
 }
 
-fn server_digest(socket: &Path) -> String {
-    let digest = Sha256::digest(socket.as_os_str().as_encoded_bytes());
-    digest[..8].iter().map(|b| format!("{b:02x}")).collect()
-}
-
 impl Records {
-    pub fn for_server(socket: &Path) -> Result<Records, String> {
+    pub fn for_core(core_id: &str) -> Result<Records, String> {
         let base = state_home().ok_or("neither XDG_STATE_HOME nor HOME is set")?;
-        let dir = base.join("runtime-herdr").join(server_digest(socket));
+        let dir = base.join("runtime-herdr").join(core_id);
         make_private_dir(&dir)?;
         Ok(Records { dir })
     }
@@ -73,10 +66,6 @@ impl Records {
         self.dir.join(format!("{key}{suffix}"))
     }
 
-    pub fn exit_file(&self, key: &str) -> PathBuf {
-        self.path(key, EXIT_SUFFIX)
-    }
-
     pub fn started(&self, key: &str) -> Result<Option<Started>, String> {
         match fs::read(self.path(key, START_SUFFIX)) {
             Ok(bytes) => serde_json::from_slice(&bytes)
@@ -92,21 +81,8 @@ impl Records {
         write_atomically(&self.path(key, START_SUFFIX), &json)
     }
 
-    pub fn exit_code(&self, key: &str) -> Option<i64> {
-        fs::read_to_string(self.exit_file(key))
-            .ok()
-            .and_then(|code| code.trim().parse().ok())
-    }
-
-    pub fn forget_exit(&self, key: &str) -> Result<(), String> {
-        remove(&self.exit_file(key))
-    }
-
     pub fn forget(&self, key: &str) -> Result<(), String> {
-        for suffix in [START_SUFFIX, EXIT_SUFFIX] {
-            remove(&self.path(key, suffix))?;
-        }
-        Ok(())
+        remove(&self.path(key, START_SUFFIX))
     }
 
     pub fn keys(&self) -> Result<Vec<String>, String> {

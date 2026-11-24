@@ -51,13 +51,13 @@ and the `fleet-*` skills own the detail):
   no Rust type: `fleet runtime check -- <program>` (the conformance suite,
   `fleet_runtime::exec::check`) and `crates/fleet-cli/tests/e2e_runtime_exec.rs`,
   which drives the real `runtime-mux` binary on a private tmux socket
-  directory and the real `runtime-herdr` on a private herdr config directory,
-  hold both sides to one protocol. Those tests skip without tmux or herdr, or
-  without a built `runtime-mux` or `runtime-herdr` (`cargo build -p
-  runtime-mux -p runtime-herdr`, or `RUNTIME_MUX_BIN` and
+  directory and the real `runtime-herdr` on a private herdr-core runtime
+  directory, hold both sides to one protocol. Those tests skip without tmux
+  or herdr-core, or without a built `runtime-mux` or `runtime-herdr`
+  (`cargo build -p runtime-mux -p runtime-herdr`, or `RUNTIME_MUX_BIN` and
   `RUNTIME_HERDR_BIN`), except under `CI`, where they fail; CI's Nextest job
-  has them all (herdr at the version `nix/herdr.nix` pins) and the Fleet job
-  excludes them. The `exec` kind starts the
+  has them all (herdr-core at the version `nix/herdr-core.nix` pins) and the
+  Fleet job excludes them. The `exec` kind starts the
   harness profile's argv (`fleet_api::harness`) and learns what only the
   agent knows from its `fleet signal` reports, never from the runtime.
 - A test that runs `git` in a scratch directory removes git's location

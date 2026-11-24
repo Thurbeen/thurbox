@@ -21,7 +21,7 @@
 #   term-stream          the terminal stream's frames: a wire format
 #   otel-env             OTLP export from the OTEL_* variables, off unless they ask
 #   runtime-mux          component the multiplexer runtime: tmux, psmux, rmux -> term-stream, otel-env
-#   runtime-herdr        component the herdr runtime: each session a pane of the user's herdr
+#   runtime-herdr        component the herdr runtime: each session a herdr-core terminal
 #   workspace-git        component makes workspaces from git URLs; runtimes run its program -> otel-env
 #   thurbox              component the interface; reaches Fleet only by
 #                                  running its CLI   -> term-stream, otel-env, and
@@ -250,7 +250,7 @@ applies_to = ["host::route", "contract"]
 production_only = true
 why = "the route and the contract know no launcher, adapter or build OS"
 
-# Sessions as panes of the user's own herdr, over herdr's socket API. Runs
+# Sessions as herdr-core terminals, over herdr-core's JSON-RPC API. Runs
 # `workspace-git` for its workspaces; links no other runtime.
 [crates.runtime-herdr]
 role = "component"
