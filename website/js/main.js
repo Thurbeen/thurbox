@@ -586,6 +586,7 @@
       });
       showStep(shown);
       list.style.minHeight = tallest + 'px';
+      schedule();
     }
 
     story.classList.add('story--live');
@@ -593,7 +594,10 @@
     showStep(0);
     reserveListHeight();
     var resizeTimer = null;
+    var measuredWidth = list.offsetWidth;
     window.addEventListener('resize', function () {
+      if (list.offsetWidth === measuredWidth) return;
+      measuredWidth = list.offsetWidth;
       window.clearTimeout(resizeTimer);
       resizeTimer = window.setTimeout(reserveListHeight, 150);
     });
