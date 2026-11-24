@@ -2234,8 +2234,9 @@ reads them:
   files again.
 - The old files go only after every step succeeded.
 - After a failed move, the interface starts on the embedded panes only, in a
-  throwaway directory. It saves nothing you change there: no grant, no
-  turned-off pane and no setting. The `thurbox-cli` command fails instead.
+  throwaway directory. It saves no grant, turned-off pane, mod setting or
+  rebound key you change there. thurbox's own settings and the theme still
+  save as usual. The `thurbox-cli` command fails instead.
   Both name the file. Fix it and run again.
 - The move keeps the comments in the spec. It deletes no file you wrote. It
   prints one notice that starts `plugins are mods now`, and nothing on a later

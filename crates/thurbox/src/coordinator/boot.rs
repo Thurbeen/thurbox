@@ -511,7 +511,7 @@ fn resolve_ui_dir() -> Result<(PathBuf, Vec<String>, bool), Box<dyn Error>> {
 }
 
 const RECOVERY_NOTICE: &str =
-    "until the move to mods succeeds, trust, turned-off panes and settings changed here are not saved";
+    "until the move to mods succeeds, trust, turned-off panes, mod settings and rebound keys changed here are not saved";
 
 /// Which interface just loaded — said only when there is a question.
 ///
