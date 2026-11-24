@@ -92,6 +92,11 @@ it. Each harness profile names the fields in its `[payload]` table
 `fleet signal` also takes the payload as its last argument, in place of
 stdin.
 
+When the profile has an `[inbox] address`, `fleet signal` also writes that
+variable's value from the hook's environment, as `inbox`. Fleet delivers
+inbox entries there. A restart drops the address the previous process
+reported.
+
 ## Which fields Fleet reads
 
 Fleet sets `FLEET_HARNESS` to the session's harness name at spawn, and

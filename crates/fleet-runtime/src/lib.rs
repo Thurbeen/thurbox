@@ -20,6 +20,7 @@ pub mod bridge;
 pub mod events;
 pub mod exec;
 pub mod fake;
+pub mod inbox;
 pub mod integration;
 pub mod program;
 pub mod signals;

@@ -837,6 +837,53 @@ fn live() -> Option<Observation<Option<SessionRef>>> {
 }
 
 #[test]
+fn an_entry_goes_to_the_inbox_the_agent_reported_and_the_brief_is_typed() {
+    let obj = briefed_with(&["task/t/u7/send/1"], |_| {});
+    let reported = fleet_api::signal::Reported {
+        inbox: Some("/run/s.sock".into()),
+        ..Default::default()
+    };
+    let (plan, _) = run(
+        &obj,
+        Observations {
+            find: live(),
+            ready: Some(Observation::Known(true)),
+            workspace_trust: trusted(),
+            signals: Some(Observation::Known(reported.clone())),
+            ..Default::default()
+        },
+    );
+    match &plan.effects[0].action {
+        Action::Brief { inbox, .. } => assert_eq!(
+            inbox.as_deref(),
+            Some(
+                &[
+                    "fleet".to_string(),
+                    "inbox-post".into(),
+                    "/run/s.sock".into(),
+                    "message task/t/u7/send/1".into()
+                ][..]
+            )
+        ),
+        other => panic!("{other:?}"),
+    }
+    let (plan, _) = run(
+        &spawned(|_| {}),
+        Observations {
+            find: live(),
+            ready: Some(Observation::Known(true)),
+            workspace_trust: trusted(),
+            signals: Some(Observation::Known(reported)),
+            ..Default::default()
+        },
+    );
+    match &plan.effects[0].action {
+        Action::Brief { inbox, .. } => assert_eq!(*inbox, None, "the brief is typed"),
+        other => panic!("{other:?}"),
+    }
+}
+
+#[test]
 fn the_oldest_inbox_entry_is_sent_to_a_ready_session_under_its_key() {
     let obj = briefed_with(&["task/t/u7/send/1", "task/t/u7/send/2"], |_| {});
     assert_eq!(

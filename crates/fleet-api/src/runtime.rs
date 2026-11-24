@@ -210,6 +210,20 @@ pub trait Runtime {
         text: &str,
         intent_key: &str,
     ) -> Observation<EffectOutcome>;
+    /// Send `text` under `intent_key` through `inbox`, the argv the
+    /// agent's harness profile rendered for its own inbox, run on the
+    /// session's place. A runtime that cannot run it there types it, as
+    /// [`RuntimePort::brief`].
+    fn deliver(
+        &self,
+        session: &SessionRef,
+        text: &str,
+        intent_key: &str,
+        inbox: &[String],
+    ) -> Observation<EffectOutcome> {
+        let _ = inbox;
+        self.brief(session, text, intent_key)
+    }
     /// Read the intent key back: did a brief under it arrive?
     fn brief_delivered(&self, session: &SessionRef, intent_key: &str) -> Observation<bool>;
     /// The agent finished its turn and waits. Nothing is deleted unless this

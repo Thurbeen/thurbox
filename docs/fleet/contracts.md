@@ -348,7 +348,9 @@ Guarantees, each with its test:
   the resourceVersion appended against. The oldest entry not given up on is
   delivered as the brief is: to a session observed ready on that pass, under
   its key as the runtime intent key, one entry per pass, at most three
-  sends. It counts as delivered once the agent's prompt hook reports its
+  sends. It goes to the agent's own inbox when its harness profile has an
+  `[inbox]` and the hooks reported every value it names; otherwise it is
+  typed. It counts as delivered once the agent's prompt hook reports its
   digest after the send's intent: a report of the same text before it
   proves an earlier send, not this one. A lost answer is settled by that
   report alone, never resent (the runtime's journal decides only for a
@@ -1118,6 +1120,8 @@ outlast it.
   a running agent's `at_rest` read the agent's signals; `lost` is an
   `exited` process. `release` is `stop` with `release: true`. `brief` is
   `input` of the text, and only the agent's prompt hook proves it.
+  `deliver` runs the harness profile's `[inbox]` argv through `exec` and
+  falls back to `input` when it exits non-zero or cannot start.
   `pause` is the [`pause` verb](../runtime/README.md#pause), and `paused` is
   an `inspect` that answers `paused`, when the runtime's `manifest` declares
   the verb; on any other runtime `paused` stays Unknown. It passes no model to its

@@ -727,6 +727,7 @@ impl ExecRuntime {
                 prompts: Vec::new(),
                 conversation: None,
                 seq: None,
+                inbox: None,
             };
             // On another host the file is the place's: the restart is kept
             // in Fleet's own data, as the file's length then, and a start
@@ -1251,6 +1252,44 @@ impl Runtime for ExecRuntime {
                 why: "no process holds the session's key".into(),
             },
         })
+    }
+
+    /// The inbox argv runs on the place through the runtime's `exec`. A
+    /// runtime without `exec`, or an argv that ran and did not deliver,
+    /// types the text instead: nothing reached the agent yet.
+    fn deliver(
+        &self,
+        session: &SessionRef,
+        text: &str,
+        intent_key: &str,
+        inbox: &[String],
+    ) -> Observation<EffectOutcome> {
+        let rt = match self.program(&session.host) {
+            Ok(rt) => rt,
+            Err(why) => return Observation::unknown(why),
+        };
+        match rt.manifest() {
+            Observation::Known(m) if m.verbs.iter().any(|v| v == "exec") => {}
+            Observation::Known(_) => return self.brief(session, text, intent_key),
+            Observation::Unknown { why } => return Observation::Unknown { why },
+        }
+        let argv: Vec<&str> = inbox.iter().map(String::as_str).collect();
+        match self.exec_on(&session.host, &argv) {
+            Observation::Known(Executed::Exited { code: Some(0), .. }) => {
+                Observation::Known(EffectOutcome::Delivered {
+                    already: false,
+                    via: Some("inbox".into()),
+                    may_hold: false,
+                })
+            }
+            Observation::Known(Executed::Exited { .. } | Executed::Failed { .. }) => {
+                self.brief(session, text, intent_key)
+            }
+            Observation::Known(Executed::TimedOut { .. }) => {
+                Observation::unknown("the agent's inbox did not answer in time")
+            }
+            Observation::Unknown { why } => Observation::Unknown { why },
+        }
     }
 
     /// A runtime cannot read a typed text back; the agent's prompt hook

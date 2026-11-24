@@ -118,6 +118,19 @@ pub struct Resume {
     pub args: Vec<String>,
 }
 
+/// The `[inbox]` table: the argv that hands the agent a message through its
+/// own inbox, on the session's place, instead of typing it. Each `{program}`,
+/// `{conversation}`, `{address}` and `{text}` is replaced; `{address}` is the
+/// value of the variable `address` names in the agent's hooks, which
+/// `fleet signal` reports. Omitted: every message is typed.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Inbox {
+    #[serde(default)]
+    pub address: Option<String>,
+    pub args: Vec<String>,
+}
+
 /// The `[trust]` table.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -305,6 +318,8 @@ pub struct Profile {
     pub install: Option<Install>,
     #[serde(default)]
     pub telemetry: TelemetrySpec,
+    #[serde(default)]
+    pub inbox: Option<Inbox>,
 }
 
 /// Parse one profile.
@@ -357,6 +372,7 @@ pub fn bare(harness: &str) -> Profile {
         screen: ScreenSpec::default(),
         install: None,
         telemetry: TelemetrySpec::default(),
+        inbox: None,
     }
 }
 
@@ -611,6 +627,30 @@ impl Profile {
 
     /// Whether Fleet can start the agent again on its conversation: a stop
     /// of one it cannot ends the conversation.
+    /// The argv that hands `text` to the agent's inbox, when the profile
+    /// has one and every value it names was reported.
+    pub fn inbox(
+        &self,
+        address: Option<&str>,
+        conversation: Option<&str>,
+        text: &str,
+    ) -> Option<Vec<String>> {
+        let inbox = self.inbox.as_ref()?;
+        inbox
+            .args
+            .iter()
+            .map(|a| {
+                let mut arg = a.replace("{program}", &self.program);
+                for (name, value) in [("{address}", address), ("{conversation}", conversation)] {
+                    if arg.contains(name) {
+                        arg = arg.replace(name, value?);
+                    }
+                }
+                Some(arg.replace("{text}", text))
+            })
+            .collect()
+    }
+
     pub fn resumes(&self) -> bool {
         !self.resume.args.is_empty()
     }
@@ -887,6 +927,30 @@ mod tests {
             profile("aider").resume(&["aider".into()], Some("x")),
             ["aider"]
         );
+    }
+
+    #[test]
+    fn an_inbox_argv_names_what_the_hooks_reported() {
+        assert_eq!(
+            profile("claude").inbox(Some("/run/s.sock"), None, "hi {address}"),
+            Some(vec![
+                "fleet".into(),
+                "inbox-post".into(),
+                "/run/s.sock".into(),
+                "hi {address}".into()
+            ])
+        );
+        assert_eq!(profile("claude").inbox(None, Some("c1"), "hi"), None);
+        assert_eq!(
+            profile("codex").inbox(None, Some("t9"), "hi"),
+            Some(
+                ["codex", "queue", "--thread", "t9", "--message", "hi"]
+                    .map(String::from)
+                    .to_vec()
+            )
+        );
+        assert_eq!(profile("codex").inbox(None, None, "hi"), None);
+        assert_eq!(profile("aider").inbox(Some("a"), Some("c"), "hi"), None);
     }
 
     #[test]

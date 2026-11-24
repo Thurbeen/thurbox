@@ -293,6 +293,11 @@ enum Command {
         #[arg(long, value_name = "OFFSET", conflicts_with_all = ["length", "since"])]
         from: Option<u64>,
     },
+    /// Hand TEXT to the Claude Code session listening on SOCKET, the path
+    /// its hooks see in CLAUDE_CODE_MESSAGING_SOCKET: what Fleet runs on a
+    /// session's place, through the runtime's exec, to deliver a message.
+    #[command(hide = true)]
+    InboxPost { socket: PathBuf, text: String },
     /// A raw interactive command as a terminal stream on stdin and stdout:
     /// what `fleet attach` wraps a runtime's `tty` answer in.
     TermBridge {
@@ -860,6 +865,7 @@ fn subject(command: &Command) -> Vec<KeyValue> {
         | Command::Version { .. }
         | Command::Signal { .. }
         | Command::SignalRead { .. }
+        | Command::InboxPost { .. }
         | Command::TermBridge { .. }
         | Command::Runtime { .. }
         | Command::Integration { .. }
@@ -900,6 +906,10 @@ fn run(cli: Cli) -> Result<(), Failure> {
             Some(from) => cmd_outbox_read(file, *from),
             None => cmd_signal_read(*length, file, *since),
         };
+    }
+    if let Command::InboxPost { socket, text } = &cli.command {
+        return fleet_runtime::inbox::post_claude(socket, text)
+            .map_err(|e| fail(format!("{}: {e}", socket.display())));
     }
     let mut queued = None;
     if let Command::Event {
@@ -1463,6 +1473,7 @@ fn run(cli: Cli) -> Result<(), Failure> {
         Command::Version { .. }
         | Command::Signal { .. }
         | Command::SignalRead { .. }
+        | Command::InboxPost { .. }
         | Command::Runtime { .. }
         | Command::Integration { .. }
         | Command::Doctor { .. }
@@ -1553,18 +1564,27 @@ fn cmd_signal(
     // at spawn, else the one beside the config this `fleet` finds. A user
     // profile that cannot be read never fails the agent's turn: the bundled
     // profile, or the default fields, read the payload.
-    let fields = harness
+    let profile = harness
         .or_else(|| std::env::var(HARNESS_ENV).ok())
         .filter(|h| !h.is_empty())
-        .map_or_else(Payload::default, |h| {
+        .map(|h| {
             let dir = std::env::var_os(HARNESS_DIR_ENV)
                 .filter(|d| !d.is_empty())
                 .map(PathBuf::from)
                 .or_else(|| harness_dir(config::discover(config).as_deref()));
             let user = user_profiles(dir.as_deref(), false).unwrap_or_default();
-            Profiles::bundled().with(user).get(&h).payload
+            Profiles::bundled().with(user).get(&h)
         });
-    let signal = Signal::from_hook_with(now, state, payload.as_ref(), &fields);
+    let fields = profile
+        .as_ref()
+        .map_or_else(Payload::default, |p| p.payload.clone());
+    let signal = Signal {
+        inbox: profile
+            .and_then(|p| p.inbox?.address)
+            .and_then(|var| std::env::var(var).ok())
+            .filter(|a| !a.is_empty()),
+        ..Signal::from_hook_with(now, state, payload.as_ref(), &fields)
+    };
     // A session on another host than Fleet's reports to a file under that
     // host's home, `~/…`, whose directory the first report makes.
     let on_place = file.to_string_lossy().starts_with("~/");
