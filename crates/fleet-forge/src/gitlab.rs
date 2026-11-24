@@ -449,6 +449,10 @@ pub fn snapshot(
         ReviewDecision::None
     };
     let mergeable = match mr["detailed_merge_status"].as_str() {
+        _ if mr["has_conflicts"] == true => Mergeable {
+            value: Some(false),
+            reason: Some(CONFLICTS.into()),
+        },
         Some("mergeable") => Mergeable {
             value: Some(true),
             reason: None,
@@ -653,6 +657,13 @@ mod tests {
         assert_eq!(s.review_decision, ReviewDecision::None);
         let s = snapshot(
             &mr(json!({"detailed_merge_status": "conflict"})),
+            &[],
+            &json!({"approved": false}),
+        )
+        .unwrap();
+        assert_eq!(s.mergeable.conflicts(), Some(true));
+        let s = snapshot(
+            &mr(json!({"detailed_merge_status": "draft_status", "has_conflicts": true})),
             &[],
             &json!({"approved": false}),
         )

@@ -290,6 +290,37 @@ fn latest_iteration(iterations: &[Value]) -> Result<(u64, &Value), String> {
     latest.ok_or_else(|| "pull request has no iteration".into())
 }
 
+fn mergeable_of(state: ChangeState, pr: &Value) -> Result<Mergeable, String> {
+    let status = pr["mergeStatus"].as_str();
+    Ok(match status {
+        Some("conflicts") => Mergeable {
+            value: Some(false),
+            reason: Some(CONFLICTS.into()),
+        },
+        _ if state == ChangeState::Draft => Mergeable {
+            value: Some(false),
+            reason: Some("draft".into()),
+        },
+        Some("succeeded") => Mergeable {
+            value: Some(true),
+            reason: None,
+        },
+        Some("rejectedByPolicy") => Mergeable {
+            value: Some(false),
+            reason: Some("policy".into()),
+        },
+        Some("failure") => Mergeable {
+            value: Some(false),
+            reason: Some("failure".into()),
+        },
+        Some("queued" | "notSet") | None => Mergeable {
+            value: None,
+            reason: None,
+        },
+        other => return Err(format!("mergeStatus {other:?} cannot be placed")),
+    })
+}
+
 fn snapshot(
     expected_project: &str,
     expected_repository: &str,
@@ -391,36 +422,7 @@ fn snapshot(
         ReviewDecision::None
     };
     let state = state_of(pr)?;
-    let mergeable = if state == ChangeState::Draft {
-        Mergeable {
-            value: Some(false),
-            reason: Some("draft".into()),
-        }
-    } else {
-        match pr["mergeStatus"].as_str() {
-            Some("succeeded") => Mergeable {
-                value: Some(true),
-                reason: None,
-            },
-            Some("conflicts") => Mergeable {
-                value: Some(false),
-                reason: Some(CONFLICTS.into()),
-            },
-            Some("rejectedByPolicy") => Mergeable {
-                value: Some(false),
-                reason: Some("policy".into()),
-            },
-            Some("failure") => Mergeable {
-                value: Some(false),
-                reason: Some("failure".into()),
-            },
-            Some("queued" | "notSet") | None => Mergeable {
-                value: None,
-                reason: None,
-            },
-            other => return Err(format!("mergeStatus {other:?} cannot be placed")),
-        }
-    };
+    let mergeable = mergeable_of(state, pr)?;
     let web = pr["remoteUrl"].as_str().unwrap_or("");
     let mut notes = Vec::new();
     let mut unresolved = 0;
@@ -722,6 +724,7 @@ impl Forge for AzureDevopsForge {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serde_json::json;
 
     #[test]
     fn hosted_and_legacy_urls_have_one_organization_scoped_identity() {
@@ -739,6 +742,23 @@ mod tests {
                 .canonical()
         );
         assert!(parse_url("https://server.example/Project/_git/Widgets/pullrequest/7").is_err());
+    }
+
+    #[test]
+    fn a_conflict_is_reported_ahead_of_the_draft_that_would_hide_it() {
+        let m = |state, status: &str| mergeable_of(state, &json!({"mergeStatus": status})).unwrap();
+        assert_eq!(m(ChangeState::Draft, "conflicts").conflicts(), Some(true));
+        assert_eq!(m(ChangeState::Open, "conflicts").conflicts(), Some(true));
+        assert_eq!(
+            m(ChangeState::Draft, "succeeded").reason.as_deref(),
+            Some("draft")
+        );
+        assert_eq!(
+            m(ChangeState::Open, "rejectedByPolicy").conflicts(),
+            Some(false)
+        );
+        assert_eq!(m(ChangeState::Open, "queued").conflicts(), None);
+        assert!(mergeable_of(ChangeState::Open, &json!({"mergeStatus": "odd"})).is_err());
     }
 
     #[test]
