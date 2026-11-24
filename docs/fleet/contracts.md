@@ -364,7 +364,8 @@ Guarantees, each with its test:
   `NeedsAttention/DeliveryFailed` naming the entry, which stays while later
   entries go out; three unreadable journal reads, or a typed entry whose
   prompt hook reported another prompt since the send and not this one, or
-  whose agent stayed idle for 30 s with the entry unreported, raise
+  whose agent stayed idle for 30 s with the entry unreported (a profile with
+  `authority = "full"` only), raise
   `DeliveryUnconfirmed` naming the entry, which is never resent and stays while
   later entries go out; more than 20 entries still to deliver raise `InboxFull`.
   A person resolves an entry given up on: `fleet send TASK --retry KEY`

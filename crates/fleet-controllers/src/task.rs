@@ -1329,10 +1329,13 @@ impl Pass<'_, '_> {
     }
 
     fn held_by_an_idle_agent(&mut self, key: &str) -> bool {
-        let idle = matches!(
-            &self.input.observations.signals,
-            Some(Observation::Known(r)) if r.activity() == Some(Activity::Idle)
-        );
+        let reports_every_turn = fleet_api::harness::profile(&self.spec.harness).authority
+            == fleet_api::harness::Authority::Full;
+        let idle = reports_every_turn
+            && matches!(
+                &self.input.observations.signals,
+                Some(Observation::Known(r)) if r.activity() == Some(Activity::Idle)
+            );
         let now = self.now();
         let attempt = self
             .st

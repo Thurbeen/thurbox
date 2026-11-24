@@ -260,6 +260,32 @@ fn a_typed_entry_an_idle_agent_never_submits_holds_back_no_later_entry() {
     assert_eq!(env.calls("brief"), 3, "never a second send of the first");
 }
 
+#[test]
+fn a_typed_entry_waits_through_an_idle_reading_of_a_hook_that_reports_no_turn() {
+    let env = Env::new("proof-inbox-codex-idle");
+    let mut task = support::task("t1", true);
+    task["spec"]["harness"] = json!("codex");
+    env.apply(json!([task])).ok();
+    env.reconcile().ok();
+    assert_eq!(env.status("t1")["phase"], "Briefed");
+    idle_hook(&env);
+    env.host().set_prompt_hook_silent(true).unwrap();
+    env.fleet(&["send", "t1", "a long turn"]).ok();
+    env.reconcile().ok();
+    env.reconcile().ok();
+    env.expire_idle_waits("t1");
+    env.reconcile().ok();
+    env.reconcile().ok();
+    let full = full_status(&env);
+    assert_eq!(queued_texts(&full), vec!["a long turn"], "{full:#}");
+    assert!(
+        full["deliveryAttempts"]
+            .as_object()
+            .is_some_and(|a| a.values().all(|a| a["failed"] != true)),
+        "Codex reports idle only when its turn ends: {full:#}"
+    );
+}
+
 fn queued_texts(status: &Value) -> Vec<&str> {
     status["inbox"]
         .as_array()

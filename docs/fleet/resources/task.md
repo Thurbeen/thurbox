@@ -265,7 +265,8 @@ An entry that exhausts its sends raises
 `NeedsAttention/DeliveryFailed` naming it and stays queued behind nothing: later
 entries are still delivered. An entry whose journal stays unreadable for 3 reads,
 or whose prompt hook reported another prompt since the send and not this
-one, or whose agent stayed idle for 30 s with the entry unreported, raises `NeedsAttention/DeliveryUnconfirmed` naming it. That entry is never sent
+one, or whose agent stayed idle for 30 s with the entry unreported (a
+profile with `authority = "full"` only), raises `NeedsAttention/DeliveryUnconfirmed` naming it. That entry is never sent
 again, stays in `status.inbox`, and holds back no later entry. An entry the
 runtime only queued, where the agent does not read it, raises
 `NeedsAttention/DeliveryQueued` naming it, with the same outcome. More than
