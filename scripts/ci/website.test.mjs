@@ -257,6 +257,9 @@ test('the story scenes draw in the site theme: squared panels, theme tokens, num
   assert.doesNotMatch(story, /#[0-9a-f]{3,8}\b|rgba?\(|hsla?\(/i, 'story colours come from theme variables');
   assert.doesNotMatch(story, /font-family:(?!\s*var\()/, 'story fonts come from theme variables');
   assert.doesNotMatch(story, /\.story__step[^{]*\{[^}]*opacity/, 'a step is never dimmed below readable contrast');
+  for (const step of [1, 2, 3, 4]) {
+    assert.match(story, new RegExp(`\\.story--live:not\\(\\.at-${step}\\) \\.s${step}:not\\(\\.st-pulse\\)`), `a pulse of step ${step} stays hidden until its step, not dimmed with the scene`);
+  }
 });
 
 test('the docs sidebar gives Fleet and thurbox a group each', () => {

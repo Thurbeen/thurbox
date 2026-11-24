@@ -808,10 +808,10 @@
     stroke-dashoffset 0.9s var(--st-ease) var(--d, 0s);
 }
 
-.story--live:not(.at-1) .s1,
-.story--live:not(.at-2) .s2,
-.story--live:not(.at-3) .s3,
-.story--live:not(.at-4) .s4 {
+.story--live:not(.at-1) .s1:not(.st-pulse),
+.story--live:not(.at-2) .s2:not(.st-pulse),
+.story--live:not(.at-3) .s3:not(.st-pulse),
+.story--live:not(.at-4) .s4:not(.st-pulse) {
   opacity: 0.12;
   transition-delay: 0s;
 }
