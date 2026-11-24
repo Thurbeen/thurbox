@@ -5,6 +5,7 @@
 mod core;
 mod exec;
 mod records;
+pub mod view;
 mod workspace;
 
 use serde::Deserialize;
@@ -409,23 +410,21 @@ fn capture(place: &Place, key: &str, request: &Value) -> Result<Value, String> {
     } }))
 }
 
-fn attach_argv(place: &Place, terminal: &str) -> Value {
-    let mut argv: Vec<String> = Vec::new();
+fn attach_argv(place: &Place, terminal: &str) -> Result<Value, String> {
+    let program = std::env::current_exe()
+        .map_err(|e| format!("cannot name runtime-herdr's own program: {e}"))?;
+    let mut argv = vec![program.to_string_lossy().into_owned(), "view".to_string()];
     if let Some(session) = place.session() {
-        argv.extend(["env".to_string(), format!("HC_SESSION={session}")]);
+        argv.extend(["--session".to_string(), session.to_string()]);
     }
-    argv.extend([
-        core::PROGRAM.to_string(),
-        "attach".to_string(),
-        terminal.to_string(),
-    ]);
-    json!({ "tty": { "argv": argv } })
+    argv.push(terminal.to_string());
+    Ok(json!({ "stream": { "argv": argv } }))
 }
 
 fn attach(place: &Place, key: &str) -> Result<Value, String> {
     let mut core = place.connect()?;
     Ok(match running(&mut core, place, key)? {
-        Some(terminal) => attach_argv(place, &terminal.address),
+        Some(terminal) => attach_argv(place, &terminal.address)?,
         None => json!("none"),
     })
 }
@@ -457,7 +456,7 @@ fn shell(place: &Place, key: &str) -> Result<Value, String> {
             "no_notify": true,
         }))?,
     };
-    Ok(attach_argv(place, &shell.address))
+    attach_argv(place, &shell.address)
 }
 
 fn list(place: &Place) -> Result<Value, String> {

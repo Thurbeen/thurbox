@@ -697,7 +697,7 @@ command closed its terminal.
 | Runtime | Screen keeper | `attach` answers |
 | --- | --- | --- |
 | `runtime-mux` | tmux, psmux, rmux | `stream`: `runtime-mux view <key>`, control mode encoded as frames |
-| `runtime-herdr` | herdr-core | `tty`: `herdr-core attach <terminal>`, bridged by Fleet ([runtime-herdr](herdr.md)) |
+| `runtime-herdr` | herdr-core | `stream`: `runtime-herdr view <terminal>`, herdr-core's framed attach encoded as frames ([runtime-herdr](herdr.md#the-stream)) |
 | any runtime, minimal | none | `tty`: bridged by Fleet, no history; the reference script answers it |
 
 ## Workspaces
