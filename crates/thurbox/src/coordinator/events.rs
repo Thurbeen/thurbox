@@ -390,7 +390,7 @@ mod tests {
     use std::collections::HashSet;
 
     fn key(name: &str) -> ProgramKey {
-        ProgramKey::new("plugins/90_files.lua", name)
+        ProgramKey::new("mods/90_files.lua", name)
     }
 
     fn seen(keys: &[&ProgramKey]) -> HashSet<String> {
@@ -517,8 +517,8 @@ mod tests {
     /// Each ending is addressed to the plugin whose pane it was.
     #[test]
     fn endings_carry_the_plugin_that_owns_them() {
-        let mine = ProgramKey::new("plugins/90_files.lua", "editor");
-        let theirs = ProgramKey::new("plugins/50_notes.lua", "editor");
+        let mine = ProgramKey::new("mods/90_files.lua", "editor");
+        let theirs = ProgramKey::new("mods/50_notes.lua", "editor");
         let mut memo = seen(&[&mine, &theirs]);
         let ended = program_endings(
             &mut memo,
@@ -533,7 +533,7 @@ mod tests {
                 .iter()
                 .map(|(k, _)| k.plugin.as_str())
                 .collect::<Vec<_>>(),
-            ["plugins/90_files.lua"],
+            ["mods/90_files.lua"],
             "two mods' panes share a name, and the wrong one was told"
         );
     }

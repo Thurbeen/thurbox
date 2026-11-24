@@ -62,7 +62,7 @@ fn cloning_a_plugin_delivers_its_files_and_reports_the_commit() {
     let origin = tmp.path().join("origin");
     // A pane in a nested directory, and a non-UTF-8 payload beside it: the exact
     // pair the text fetch path corrupts.
-    let commit = seed_repo(&origin, "plugins/40_x.lua", "return {}\n");
+    let commit = seed_repo(&origin, "mods/40_x.lua", "return {}\n");
     std::fs::write(origin.join("payload.bin"), [0x00u8, 0xff, 0xfe, 0x01]).expect("write");
     for args in [vec!["add", "-A"], vec!["commit", "-m", "payload"]] {
         run_git(git_command(&origin, &args), "git").expect("commit");
@@ -80,7 +80,7 @@ fn cloning_a_plugin_delivers_its_files_and_reports_the_commit() {
         [0x00u8, 0xff, 0xfe, 0x01],
         "the bytes survive, which is the whole point of a clone"
     );
-    assert!(dest.join("plugins/40_x.lua").is_file());
+    assert!(dest.join("mods/40_x.lua").is_file());
     assert!(is_working_copy(&dest), "the clone keeps its .git");
     assert_eq!(head_commit(&dest).expect("head"), commit);
     assert!(!is_dirty(&dest).expect("status"));
@@ -141,12 +141,12 @@ fn a_pin_is_routed_by_length_and_explained_by_shape() {
 fn an_edited_working_copy_reports_itself_dirty() {
     let tmp = tempfile::tempdir().expect("tempdir");
     let origin = tmp.path().join("origin");
-    seed_repo(&origin, "plugins/40_x.lua", "return {}\n");
+    seed_repo(&origin, "mods/40_x.lua", "return {}\n");
     let dest = tmp.path().join("clone");
     clone_plugin(&origin.to_string_lossy(), &dest, None).expect("clone");
 
     assert!(!is_dirty(&dest).expect("clean"));
-    std::fs::write(dest.join("plugins/40_x.lua"), "-- mine\n").expect("edit");
+    std::fs::write(dest.join("mods/40_x.lua"), "-- mine\n").expect("edit");
     assert!(
         is_dirty(&dest).expect("dirty"),
         "an edit has to be visible, or nothing can refuse to overwrite it"

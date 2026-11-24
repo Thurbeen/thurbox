@@ -376,7 +376,7 @@ pub struct Registry {
     /// override. Conflicts are *not* kept here — see [`Registry::warnings`].
     load_warnings: Vec<String>,
     /// Whether this registry's overrides came from `ui.json` and
-    /// `plugin-state.json`, and so whether writing them back is an edit or an
+    /// `mod-state.json`, and so whether writing them back is an edit or an
     /// erasure.
     origin: Origin,
     /// Moves whenever anything published from this registry does — the
@@ -391,7 +391,7 @@ pub struct Registry {
 /// Where a registry's overrides came from.
 ///
 /// A registry built with [`Default`] holds no overrides at all, so persisting
-/// one does not *change* `ui.json` and `plugin-state.json` — it empties them:
+/// one does not *change* `ui.json` and `mod-state.json` — it empties them:
 /// every disabled plugin, every trust grant and every setting a user chose is
 /// gone, replaced by the empty tables the fresh registry has. That is not hypothetical. thurbox
 /// injects `THURBOX_CONFIG_DIR` into the sessions it spawns, so a `cargo test`
@@ -406,16 +406,16 @@ enum Origin {
     /// Never read: it has nothing of the user's to write back.
     #[default]
     Detached,
-    /// Read from `ui.json` and `plugin-state.json` — a write back is an edit of
+    /// Read from `ui.json` and `mod-state.json` — a write back is an edit of
     /// what was read.
     File,
 }
 
 impl Registry {
     /// Load persisted overrides: `ui.json`'s chords, settings and pills, and
-    /// `plugin-state.json`'s trust and disabled set.
+    /// `mod-state.json`'s trust and disabled set.
     ///
-    /// The one constructor that reads `ui.json` and `plugin-state.json`, and so
+    /// The one constructor that reads `ui.json` and `mod-state.json`, and so
     /// the one whose registry may write them back — see the private `Origin`,
     /// which carries that distinction so no caller has to remember it.
     pub fn load() -> Self {
@@ -1257,7 +1257,7 @@ pub fn validate_overrides() -> Vec<String> {
     read_overrides().3
 }
 
-/// Problems with `plugin-state.json`, the store trust and the disabled set
+/// Problems with `mod-state.json`, the store trust and the disabled set
 /// live in. Empty when it is absent: a fresh install has decided nothing yet.
 pub fn validate_decisions() -> Vec<String> {
     match read_decisions() {
@@ -1267,7 +1267,7 @@ pub fn validate_decisions() -> Vec<String> {
     }
 }
 
-/// Where trust grants and the disabled set live: `<config>/plugin-state.json`.
+/// Where trust grants and the disabled set live: `<config>/mod-state.json`.
 ///
 /// Public so `thurbox-cli config` can report it, like [`overrides_file`].
 pub fn decisions_file() -> Option<PathBuf> {
@@ -1275,11 +1275,14 @@ pub fn decisions_file() -> Option<PathBuf> {
 }
 
 fn decisions_path() -> Option<PathBuf> {
-    crate::paths::config_file()
-        .and_then(|config| config.parent().map(|dir| dir.join("plugin-state.json")))
+    crate::paths::config_file().and_then(|config| {
+        config
+            .parent()
+            .map(|dir| dir.join(super::mod_migration::STATE_FILE))
+    })
 }
 
-/// What `plugin-state.json` held when it was read.
+/// What `mod-state.json` held when it was read.
 enum Decisions {
     /// No store yet: an install that predates it, or one that decided nothing.
     Absent,
@@ -1448,7 +1451,7 @@ fn read_pills(
     pills
 }
 
-/// The `trusted` table of `plugin-state.json`: path
+/// The `trusted` table of `mod-state.json`: path
 /// → the grant made to it.
 fn read_trusted(
     parsed: &serde_json::Value,
@@ -1474,7 +1477,7 @@ fn read_trusted(
     trusted
 }
 
-/// The `disabled` table of `plugin-state.json`: the
+/// The `disabled` table of `mod-state.json`: the
 /// files present but not loaded.
 fn read_disabled(parsed: &serde_json::Value) -> BTreeSet<String> {
     let Some(list) = parsed.get("disabled").and_then(|v| v.as_array()) else {
@@ -1902,26 +1905,24 @@ mod tests {
         std::env::set_var("THURBOX_CONFIG_DIR", home.path());
 
         let mut registry = Registry::default();
-        assert!(!registry.trusted_digest("/ui/plugins/mine.lua").is_some());
+        assert!(!registry.trusted_digest("/ui/mods/mine.lua").is_some());
 
         registry
-            .trust("/ui/plugins/mine.lua", "return {}")
+            .trust("/ui/mods/mine.lua", "return {}")
             .expect("trust");
-        assert!(registry.trusted_digest("/ui/plugins/mine.lua").is_some());
+        assert!(registry.trusted_digest("/ui/mods/mine.lua").is_some());
         let recorded = registry
-            .trusted_digest("/ui/plugins/mine.lua")
+            .trusted_digest("/ui/mods/mine.lua")
             .expect("a digest is recorded");
         assert_eq!(recorded, super::super::bundled::digest("return {}"));
 
         // Trusting one file says nothing about another.
-        assert!(!registry.trusted_digest("/ui/plugins/other.lua").is_some());
+        assert!(!registry.trusted_digest("/ui/mods/other.lua").is_some());
 
-        registry.revoke("/ui/plugins/mine.lua").expect("revoke");
-        assert!(!registry.trusted_digest("/ui/plugins/mine.lua").is_some());
+        registry.revoke("/ui/mods/mine.lua").expect("revoke");
+        assert!(!registry.trusted_digest("/ui/mods/mine.lua").is_some());
         // Revoking what was never trusted is a state, not a transition.
-        registry
-            .revoke("/ui/plugins/never.lua")
-            .expect("idempotent");
+        registry.revoke("/ui/mods/never.lua").expect("idempotent");
 
         std::env::remove_var("THURBOX_CONFIG_DIR");
     }
@@ -1934,13 +1935,11 @@ mod tests {
         // Loaded rather than default, because only a registry that read the
         // file writes it back — see `Origin`.
         let mut written = Registry::load();
-        written
-            .trust("/ui/plugins/mine.lua", "body")
-            .expect("trust");
+        written.trust("/ui/mods/mine.lua", "body").expect("trust");
 
         let read = Registry::load();
         assert!(
-            read.trusted_digest("/ui/plugins/mine.lua").is_some(),
+            read.trusted_digest("/ui/mods/mine.lua").is_some(),
             "a decision that does not survive a restart is not a decision"
         );
 
@@ -1988,7 +1987,7 @@ mod tests {
         let decisions = r#"{"bindings":{},"settings":{"sessions.group_by_repo":false}}"#;
         std::fs::write(&path, decisions).expect("write");
         let store = decisions_path().expect("a store path");
-        let grants = r#"{"disabled":["/ui/plugins/40_review.lua"],"trusted":{}}"#;
+        let grants = r#"{"disabled":["/ui/mods/40_review.lua"],"trusted":{}}"#;
         std::fs::write(&store, grants).expect("write store");
 
         let mut registry = Registry::default();
@@ -2002,14 +2001,12 @@ mod tests {
             .rebind("sessions.delete", Some("x"))
             .expect("rebind");
         registry
-            .set_disabled("/ui/plugins/10_sessions.lua", true)
+            .set_disabled("/ui/mods/10_sessions.lua", true)
             .expect("disable");
         registry
-            .trust("/ui/plugins/10_sessions.lua", "-- mine")
+            .trust("/ui/mods/10_sessions.lua", "-- mine")
             .expect("trust");
-        registry
-            .revoke("/ui/plugins/10_sessions.lua")
-            .expect("revoke");
+        registry.revoke("/ui/mods/10_sessions.lua").expect("revoke");
 
         assert_eq!(
             std::fs::read_to_string(&path).expect("read"),
@@ -2036,7 +2033,7 @@ mod tests {
             Vec::new(),
         );
         registry
-            .set_disabled("/ui/plugins/65_search.lua", true)
+            .set_disabled("/ui/mods/65_search.lua", true)
             .expect("disable");
 
         let path = decisions_path().expect("a config directory");
@@ -2045,7 +2042,7 @@ mod tests {
 
         // And it comes back on the next launch, which is the whole point.
         let reloaded = Registry::load();
-        assert!(reloaded.is_disabled("/ui/plugins/65_search.lua"));
+        assert!(reloaded.is_disabled("/ui/mods/65_search.lua"));
     }
 
     fn pill(plugin: &str, action: &str, label: &str, priority: i64) -> Pill {
@@ -2222,7 +2219,7 @@ mod tests {
         // Nothing to do with the band: trusting a file, rebinding a chord in the
         // help editor or turning a plugin off all reach the same `persist`.
         registry
-            .trust("/ui/plugins/mine.lua", "return {}")
+            .trust("/ui/mods/mine.lua", "return {}")
             .expect("trust");
 
         let mut reloaded = Registry::load();

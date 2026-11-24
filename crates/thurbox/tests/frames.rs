@@ -636,8 +636,8 @@ fn a_selected_host_row_is_one_bar_rule_included() {
 fn paint_lua_node(source: &str, width: u16, height: u16) -> Buffer {
     let lua = mlua::Lua::new();
     let value: mlua::Value = lua.load(source).eval().expect("the table evaluates");
-    let node = thurbox::kernel::convert::to_node(&value, "plugins/90_test.lua")
-        .expect("the table converts");
+    let node =
+        thurbox::kernel::convert::to_node(&value, "mods/90_test.lua").expect("the table converts");
     let mut terminal = Terminal::new(TestBackend::new(width, height)).expect("terminal");
     terminal
         .draw(|frame| render(frame, frame.area(), &node, &PlaceholderSurfaces))
@@ -811,7 +811,7 @@ fn paint_probe(render_body: &str, hovered: Option<&str>, width: u16, height: u16
     let report = thurbox::kernel::bundled::materialize(dir.path());
     assert!(report.errors.is_empty(), "{:?}", report.errors);
     std::fs::write(
-        dir.path().join("plugins").join("95_probe.lua"),
+        dir.path().join("mods").join("95_probe.lua"),
         format!(
             "local widgets = require(\"lib.widgets\")\n\
              return {{ name = \"probe\", slot = \"center\", focusable = true,\n\

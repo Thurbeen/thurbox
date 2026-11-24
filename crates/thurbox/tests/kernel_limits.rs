@@ -10,7 +10,7 @@ use thurbox::kernel::host::{self, LuaHost, MemoryPressure, RenderContext};
 
 fn plugin_dir(source: &str) -> tempfile::TempDir {
     let dir = tempfile::tempdir().expect("tempdir");
-    let plugins = dir.path().join("plugins");
+    let plugins = dir.path().join("mods");
     std::fs::create_dir_all(&plugins).expect("mkdir");
     std::fs::write(plugins.join("10_probe.lua"), source).expect("write");
     dir
@@ -129,7 +129,7 @@ fn reload_beside_a_filler(limit: usize) -> Option<Vec<host::PluginError>> {
     let (sent, received) = std::sync::mpsc::channel();
     std::thread::spawn(move || {
         let dir = plugin_dir(FILLER);
-        std::fs::write(dir.path().join("plugins").join("20_spinner.lua"), SPINNER).expect("write");
+        std::fs::write(dir.path().join("mods").join("20_spinner.lua"), SPINNER).expect("write");
         let host = LuaHost::new(dir.path());
         assert!(host.error.is_none(), "{:?}", host.error);
         let event =

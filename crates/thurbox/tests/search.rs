@@ -503,7 +503,7 @@ fn stepping_onto_a_text_hit_scrolls_its_terminal_to_the_line() {
         Some("-ccc;aaa 40 7")
     );
     assert!(host.drain_commands().contains(&Command::Action {
-        fallback: "plugins/65_search.lua".into(),
+        fallback: "mods/65_search.lua".into(),
         action: "terminal.reveal".into(),
     }));
 
@@ -543,7 +543,7 @@ fn the_selected_text_hit_is_revealed_without_a_key_and_followed_when_it_moves() 
         Some("ccc 120 7")
     );
     assert!(host.drain_commands().contains(&Command::Action {
-        fallback: "plugins/65_search.lua".into(),
+        fallback: "mods/65_search.lua".into(),
         action: "terminal.reveal".into(),
     }));
 
@@ -564,7 +564,7 @@ fn the_selected_text_hit_is_revealed_without_a_key_and_followed_when_it_moves() 
         Some("ccc 127 7")
     );
     assert!(host.drain_commands().contains(&Command::Action {
-        fallback: "plugins/65_search.lua".into(),
+        fallback: "mods/65_search.lua".into(),
         action: "terminal.reveal".into(),
     }));
 }
@@ -593,7 +593,7 @@ fn a_hit_that_comes_back_after_an_empty_answer_is_revealed_again() {
         Some("ccc 120 7")
     );
     assert!(host.drain_commands().contains(&Command::Action {
-        fallback: "plugins/65_search.lua".into(),
+        fallback: "mods/65_search.lua".into(),
         action: "terminal.reveal".into(),
     }));
 }

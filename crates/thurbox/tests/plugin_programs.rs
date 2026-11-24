@@ -22,7 +22,7 @@ fn interface(plugins: &[(&str, &str)]) -> (tempfile::TempDir, std::path::PathBuf
     let ui = home.path().join("ui");
     thurbox::kernel::bundled::materialize(&ui);
     for (name, source) in plugins {
-        std::fs::write(ui.join("plugins").join(name), source).expect("write");
+        std::fs::write(ui.join("mods").join(name), source).expect("write");
     }
     (home, ui)
 }
@@ -93,7 +93,7 @@ fn a_declared_but_untrusted_plugin_still_may_not_run_a_program() {
         "declaring is asking, not being granted"
     );
 
-    host.set_trusted(vec!["plugins/91_watch.lua".to_string()]);
+    host.set_trusted(vec!["mods/91_watch.lua".to_string()]);
     let plugin = &host.plugins[host.index_of("watch").expect("loaded")];
     assert!(host.may(plugin, Capability::Program));
 }
@@ -170,7 +170,7 @@ fn an_unstarted_program_surface_is_reported_as_such() {
         std::sync::Arc::new(thurbox::backend::wiring::local_only(&Default::default())),
         &Default::default(),
     );
-    let key = ProgramKey::new("plugins/91_watch.lua", "watch");
+    let key = ProgramKey::new("mods/91_watch.lua", "watch");
 
     let mut term =
         ratatui::Terminal::new(ratatui::backend::TestBackend::new(30, 6)).expect("terminal");
@@ -236,7 +236,7 @@ fn a_key_for_an_absent_program_is_not_reported_as_delivered() {
         std::sync::Arc::new(thurbox::backend::wiring::local_only(&Default::default())),
         &Default::default(),
     );
-    let key = ProgramKey::new("plugins/91_watch.lua", "watch");
+    let key = ProgramKey::new("mods/91_watch.lua", "watch");
     assert!(
         terminals.send_to_program(&key, b"q".to_vec()).is_err(),
         "nothing is running, so nothing accepted it"
@@ -289,7 +289,7 @@ fn a_program_surface_is_never_resolved_to_a_session() {
     );
     // A well-formed program id resolves to nothing while nothing is running, and a
     // session id never resolves to a program at all.
-    let key = ProgramKey::new("plugins/91_watch.lua", "watch");
+    let key = ProgramKey::new("mods/91_watch.lua", "watch");
     assert!(terminals.program_key(&key.surface_id()).is_none());
     assert!(terminals
         .program_key("5f9c1f6e-1b2a-4c3d-8e9f-0a1b2c3d4e5f")
@@ -311,7 +311,7 @@ fn a_program_pane_is_absent_from_every_session_enumeration() {
         std::sync::Arc::new(thurbox::backend::wiring::local_only(&Default::default())),
         &Default::default(),
     );
-    let key = ProgramKey::new("plugins/91_watch.lua", "watch");
+    let key = ProgramKey::new("mods/91_watch.lua", "watch");
 
     // Not attached, not failed, has no shell, and contributes no output generation.
     assert!(!terminals.is_attached(&key.surface_id()));

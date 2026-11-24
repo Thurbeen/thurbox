@@ -21,6 +21,7 @@ use std::path::{Path, PathBuf};
 use crate::session::plugin_spec::{
     self, LockEntry, PluginEntry, PluginLock, PluginSpec, LOCK_FILE, SPEC_FILE,
 };
+use crate::session::PackageManifest;
 
 use super::bundled::{decide, digest, Action, Delivered};
 
@@ -438,11 +439,13 @@ pub fn resolve_source(src: &str, pin: Option<&str>) -> Resolved {
 pub struct Fetched {
     pub manifest: Option<crate::session::PackageManifest>,
     pub payloads: Vec<Payload>,
+    /// The manifest was read from [`PackageManifest::LEGACY_FILE`].
+    pub legacy_manifest: bool,
 }
 
 /// Read a package from wherever it resolved to.
 ///
-/// Two shapes. A **package** is a directory with a `plugin.toml` naming a pane and
+/// Two shapes. A **package** is a directory with a `mod.toml` (or, from before mods were mods, a `plugin.toml`) naming a pane and
 /// any modules it brings. A bare `.lua` at the end of a URL or path is the
 /// **degenerate** case — one file, no modules, no declared compatibility — which
 /// is what makes "install this single file somebody published" a supported thing
@@ -452,10 +455,12 @@ pub struct Fetched {
 /// pane a package declares or selects among several. It is required for the
 /// degenerate shape, which proposes no destination at all.
 pub fn fetch(src: &str, resolved: &Resolved, as_file: Option<&str>) -> Result<Fetched, String> {
+    let as_file = as_file.map(plugin_spec::mod_destination);
+    let as_file = as_file.as_deref();
     if src.trim().ends_with(".lua") {
         let file = as_file
             .ok_or_else(|| {
-                format!("{src} is a single file, so it needs a destination: --as plugins/90_x.lua")
+                format!("{src} is a single file, so it needs a destination: --as mods/90_x.lua")
             })?
             .to_string();
         plugin_spec::validate_destination(&file)?;
@@ -474,20 +479,32 @@ pub fn fetch(src: &str, resolved: &Resolved, as_file: Option<&str>) -> Result<Fe
         return Ok(Fetched {
             manifest: None,
             payloads: vec![Payload { file, contents }],
+            legacy_manifest: false,
         });
     }
 
-    let manifest_text =
-        crate::agent::fetch::fetch_file(&resolved.source, crate::session::PackageManifest::FILE)
-            .map_err(|e| {
-                format!(
-                    "{src}: no {} at {} ({e})",
-                    crate::session::PackageManifest::FILE,
-                    resolved.at
-                )
-            })?;
-    let manifest = crate::session::PackageManifest::parse(&manifest_text)
-        .map_err(|e| format!("{src}: {e}"))?;
+    let (manifest_text, legacy_manifest) =
+        match crate::agent::fetch::fetch_file(&resolved.source, PackageManifest::FILE) {
+            Ok(text) => (text, false),
+            Err(e) => {
+                crate::agent::fetch::fetch_file(&resolved.source, PackageManifest::LEGACY_FILE)
+                    .map(|text| (text, true))
+                    .map_err(|_| {
+                        format!(
+                            "{src}: no {} or {} at {} ({e})",
+                            PackageManifest::FILE,
+                            PackageManifest::LEGACY_FILE,
+                            resolved.at
+                        )
+                    })?
+            }
+        };
+    let manifest_file = match legacy_manifest {
+        true => PackageManifest::LEGACY_FILE,
+        false => PackageManifest::FILE,
+    };
+    let manifest = PackageManifest::parse(&manifest_text)
+        .map_err(|e| format!("{src}: {manifest_file}: {e}"))?;
 
     let mut payloads = Vec::new();
     for (destination, file) in deliveries(&manifest, as_file)? {
@@ -500,6 +517,7 @@ pub fn fetch(src: &str, resolved: &Resolved, as_file: Option<&str>) -> Result<Fe
     Ok(Fetched {
         manifest: Some(manifest),
         payloads,
+        legacy_manifest,
     })
 }
 
@@ -562,9 +580,8 @@ fn deliveries<'a>(
 /// the same thing — the list, since nothing in front of them holds the manifest.
 fn pick_a_pane(given: &str, panes: &[crate::session::PackageFile]) -> String {
     format!(
-        "{} carries {} panes and none of them is {given} — an entry is keyed on one \
-         of {}, which --as selects rather than moves",
-        crate::session::PackageManifest::FILE,
+        "the package carries {} panes and none of them is {given} — an entry is keyed \
+         on one of {}, which --as selects rather than moves",
         panes.len(),
         panes
             .iter()
@@ -656,6 +673,8 @@ pub struct EntryReport {
     pub version: String,
     /// The version this moved from, when it moved.
     pub from: Option<String>,
+    /// The package was read through its `plugin.toml`, having no `mod.toml`.
+    pub legacy_manifest: bool,
     pub outcome: Outcome,
 }
 
@@ -719,34 +738,40 @@ fn last_segment(source: &str, windows: bool) -> &str {
 /// Three answers in order, and the order is the point:
 ///
 /// 1. **`--as`**, because an explicit request wins over anything inferred.
-/// 2. **The repository's own `plugin.toml`**, if it has one and it names a single
+/// 2. **The repository's own `mod.toml` or `plugin.toml`**, if it has one and it names a single
 ///    pane. A manifest is therefore *not* irrelevant to a cloned plugin, and it
 ///    means one repository serves both install mechanisms rather than presenting two
 ///    doors that behave differently. Read leniently (`pane_sources_of`) — the
 ///    copy-model rules do not apply to a tree that keeps its own layout. A manifest
 ///    declaring several is an ambiguity like step 3's, not an answer: a nested pane
 ///    loads only because the spec names it, and a spec entry names one.
-/// 3. **The single `.lua` under `plugins/`**, which is what a one-pane repository
+/// 3. **The single `.lua` under `mods/` (or `plugins/`)**, which is what a one-pane repository
 ///    looks like and makes "clone it and it works" true with no manifest at all.
 ///
 /// Anything else is ambiguous and says so, listing what it found: guessing which of
 /// several panes is the entry point would be a silent wrong answer.
-fn pane_in_working_copy(root: &Path, name: &str, as_file: Option<&str>) -> Result<String, String> {
+fn pane_in_working_copy(
+    root: &Path,
+    name: &str,
+    as_file: Option<&str>,
+) -> Result<(String, bool), String> {
     if let Some(rel) = as_file {
         let rel = rel.trim_start_matches('/');
-        // Accept either `plugins/40_x.lua` (inside the repo) or the full
-        // `<name>/plugins/40_x.lua`, since both readings are natural.
+        // Accept either `mods/40_x.lua` (inside the repo) or the full
+        // `<name>/mods/40_x.lua`, since both readings are natural.
         let rel = rel.strip_prefix(&format!("{name}/")).unwrap_or(rel);
         let file = format!("{name}/{rel}");
         plugin_spec::validate_destination(&file)?;
         if !root.join(rel).is_file() {
             return Err(format!("{rel} is not in the repository"));
         }
-        return Ok(file);
+        return Ok((file, false));
     }
 
-    // The repository's own manifest, when it has one.
-    if let Ok(text) = std::fs::read_to_string(root.join(crate::session::PackageManifest::FILE)) {
+    let manifest = [PackageManifest::FILE, PackageManifest::LEGACY_FILE]
+        .into_iter()
+        .find_map(|file| Some((file, std::fs::read_to_string(root.join(file)).ok()?)));
+    if let Some((manifest_file, text)) = manifest {
         let sources = plugin_spec::pane_sources_of(&text);
         if sources.len() > 1 {
             let named: Vec<&str> = sources
@@ -754,8 +779,7 @@ fn pane_in_working_copy(root: &Path, name: &str, as_file: Option<&str>) -> Resul
                 .map(|source| source.as_deref().unwrap_or("one with no source"))
                 .collect();
             return Err(format!(
-                "{} names {} panes ({}) — name the one to load: --as plugins/<file>",
-                crate::session::PackageManifest::FILE,
+                "{manifest_file} names {} panes ({}) — name the one to load: --as <dir>/<file>",
                 sources.len(),
                 named.join(", ")
             ));
@@ -765,32 +789,37 @@ fn pane_in_working_copy(root: &Path, name: &str, as_file: Option<&str>) -> Resul
             plugin_spec::validate_destination(&file)?;
             if !root.join(source).is_file() {
                 return Err(format!(
-                    "{} names {source} as its pane, which is not in the repository",
-                    crate::session::PackageManifest::FILE
+                    "{manifest_file} names {source} as its pane, which is not in the repository"
                 ));
             }
-            return Ok(file);
+            return Ok((file, manifest_file == PackageManifest::LEGACY_FILE));
         }
     }
 
-    let plugins = root.join("plugins");
-    let mut found: Vec<String> = std::fs::read_dir(&plugins)
-        .map_err(|_| {
-            "the repository has no plugins/ directory, so name its pane: \
-             --as plugins/NN_name.lua"
-                .to_string()
-        })?
+    let Some((panes_dir, entries)) = [plugin_spec::MODS_DIR, plugin_spec::LEGACY_MODS_DIR]
+        .into_iter()
+        .find_map(|dir| Some((dir, std::fs::read_dir(root.join(dir)).ok()?)))
+    else {
+        return Err(
+            "the repository has no mods/ or plugins/ directory, so name its pane: \
+             --as mods/NN_name.lua"
+                .to_string(),
+        );
+    };
+    let mut found: Vec<String> = entries
         .filter_map(Result::ok)
         .map(|entry| entry.file_name().to_string_lossy().into_owned())
         .filter(|name| name.ends_with(".lua"))
         .collect();
     found.sort();
     match found.len() {
-        1 => Ok(format!("{name}/plugins/{}", found[0])),
-        0 => Err("the repository's plugins/ directory holds no Lua".to_string()),
+        1 => Ok((format!("{name}/{panes_dir}/{}", found[0]), false)),
+        0 => Err(format!(
+            "the repository's {panes_dir}/ directory holds no Lua"
+        )),
         _ => Err(format!(
             "the repository has more than one pane ({}) — name the one to load: \
-             --as plugins/<file>",
+             --as {panes_dir}/<file>",
             found.join(", ")
         )),
     }
@@ -832,11 +861,12 @@ fn install_repository(
     crate::git::clone_plugin(url, &root, pin).map_err(|e| format!("{e:#}"))?;
     let commit = crate::git::head_commit(&root).map_err(|e| format!("{e:#}"))?;
 
-    let file = pane_in_working_copy(&root, &name, as_file).inspect_err(|_| {
-        // A clone whose pane cannot be identified is not an install: take it back so
-        // a second attempt with `--as` starts clean.
-        let _ = std::fs::remove_dir_all(&root);
-    })?;
+    let (file, legacy_manifest) =
+        pane_in_working_copy(&root, &name, as_file).inspect_err(|_| {
+            // A clone whose pane cannot be identified is not an install: take it back so
+            // a second attempt with `--as` starts clean.
+            let _ = std::fs::remove_dir_all(&root);
+        })?;
 
     let entry = PluginEntry {
         src: src.to_string(),
@@ -867,6 +897,7 @@ fn install_repository(
         src: src.to_string(),
         version: commit,
         from: None,
+        legacy_manifest,
         outcome: Outcome::Installed,
     })
 }
@@ -933,6 +964,7 @@ pub fn install(
         src: src.to_string(),
         version,
         from: None,
+        legacy_manifest: fetched.legacy_manifest,
         outcome,
     })
 }
@@ -1061,6 +1093,7 @@ pub fn sync(dir: &Path) -> Result<Vec<EntryReport>, String> {
                 src: entry.src.clone(),
                 version: commit,
                 from,
+                legacy_manifest: false,
                 outcome,
             });
             continue;
@@ -1085,6 +1118,7 @@ pub fn sync(dir: &Path) -> Result<Vec<EntryReport>, String> {
             src: entry.src.clone(),
             version,
             from: None,
+            legacy_manifest: false,
             outcome,
         });
     }
@@ -1122,6 +1156,7 @@ fn withdraw_stale(
             src: stale.src.clone(),
             version: stale.version.clone(),
             from: None,
+            legacy_manifest: false,
             outcome: Outcome::Removed,
         });
     }
@@ -1176,6 +1211,7 @@ pub fn update(dir: &Path, key: Option<&str>) -> Result<Vec<EntryReport>, String>
                 src: entry.src.clone(),
                 version: commit,
                 from,
+                legacy_manifest: false,
                 outcome,
             });
             continue;
@@ -1200,6 +1236,7 @@ pub fn update(dir: &Path, key: Option<&str>) -> Result<Vec<EntryReport>, String>
             file: entry.file.clone(),
             src: entry.src.clone(),
             from: was.filter(|was| *was != version),
+            legacy_manifest: false,
             version,
             outcome,
         });
@@ -1234,6 +1271,7 @@ pub fn remove(dir: &Path, key: &str) -> Result<EntryReport, String> {
             src: removed.src.clone(),
             version: record.map(|record| record.version).unwrap_or_default(),
             from: None,
+            legacy_manifest: false,
             outcome: Outcome::Removed,
         });
     }
@@ -1256,6 +1294,7 @@ pub fn remove(dir: &Path, key: &str) -> Result<EntryReport, String> {
         src: removed.src.clone(),
         version: record.map(|record| record.version).unwrap_or_default(),
         from: None,
+        legacy_manifest: false,
         outcome: Outcome::Removed,
     })
 }
@@ -1404,7 +1443,7 @@ mod tests {
     #[test]
     fn a_malformed_spec_names_the_file_and_the_place() {
         let dir = tempfile::tempdir().expect("tempdir");
-        std::fs::write(spec_path(dir.path()), "[[plugin]]\nsrc =\n").expect("write");
+        std::fs::write(spec_path(dir.path()), "[[mod]]\nsrc =\n").expect("write");
         let error = read_spec(dir.path()).expect_err("should fail");
         assert!(error.contains(SPEC_FILE), "names the file: {error}");
         assert!(error.contains("line"), "and the place: {error}");
@@ -1413,13 +1452,13 @@ mod tests {
     #[test]
     fn the_spec_round_trips_through_the_directory() {
         let dir = tempfile::tempdir().expect("tempdir");
-        add_to_spec(dir.path(), &entry("plugins/75_atlas.lua")).expect("add");
+        add_to_spec(dir.path(), &entry("mods/75_atlas.lua")).expect("add");
         assert!(read_spec(dir.path())
             .expect("read")
-            .manages("plugins/75_atlas.lua"));
+            .manages("mods/75_atlas.lua"));
 
         let removed = remove_from_spec(dir.path(), "atlas").expect("remove");
-        assert_eq!(removed.file, "plugins/75_atlas.lua");
+        assert_eq!(removed.file, "mods/75_atlas.lua");
         assert!(read_spec(dir.path()).expect("read").plugins.is_empty());
     }
 
@@ -1435,17 +1474,17 @@ mod tests {
         let mut lock = PluginLock::default();
         deliver(
             dir.path(),
-            &entry("plugins/a.lua"),
+            &entry("mods/a.lua"),
             "https://example.com/atlas",
             "v1",
-            &[payload("plugins/a.lua", "-- one\n")],
+            &[payload("mods/a.lua", "-- one\n")],
             &mut lock,
         )
         .expect("deliver");
         write_lock(dir.path(), &lock).expect("write");
         assert!(lock_path(dir.path()).is_file());
 
-        lock.forget("plugins/a.lua");
+        lock.forget("mods/a.lua");
         write_lock(dir.path(), &lock).expect("write");
         assert!(
             !lock_path(dir.path()).exists(),
@@ -1456,7 +1495,7 @@ mod tests {
     #[test]
     fn delivering_writes_then_settles_then_updates() {
         let dir = tempfile::tempdir().expect("tempdir");
-        let file = "plugins/75_atlas.lua";
+        let file = "mods/75_atlas.lua";
         let mut lock = PluginLock::default();
 
         let first = deliver(
@@ -1502,7 +1541,7 @@ mod tests {
     #[test]
     fn an_edit_survives_an_update_and_is_reported() {
         let dir = tempfile::tempdir().expect("tempdir");
-        let file = "plugins/75_atlas.lua";
+        let file = "mods/75_atlas.lua";
         let mut lock = PluginLock::default();
         deliver(
             dir.path(),
@@ -1552,7 +1591,7 @@ mod tests {
     #[test]
     fn a_deletion_is_remembered_rather_than_undone() {
         let dir = tempfile::tempdir().expect("tempdir");
-        let file = "plugins/75_atlas.lua";
+        let file = "mods/75_atlas.lua";
         let mut lock = PluginLock::default();
         deliver(
             dir.path(),
@@ -1589,11 +1628,11 @@ mod tests {
         let mut lock = PluginLock::default();
         deliver(
             dir.path(),
-            &entry("plugins/75_atlas.lua"),
+            &entry("mods/75_atlas.lua"),
             "src",
             "v1",
             &[
-                payload("plugins/75_atlas.lua", "-- pane\n"),
+                payload("mods/75_atlas.lua", "-- pane\n"),
                 payload("lib/atlas/util.lua", "-- helper\n"),
             ],
             &mut lock,
@@ -1615,11 +1654,11 @@ mod tests {
         let mut lock = PluginLock::default();
         deliver(
             dir.path(),
-            &entry("plugins/75_atlas.lua"),
+            &entry("mods/75_atlas.lua"),
             "src",
             "v1",
             &[
-                payload("plugins/75_atlas.lua", "-- pane\n"),
+                payload("mods/75_atlas.lua", "-- pane\n"),
                 payload("lib/atlas/util.lua", "-- helper\n"),
             ],
             &mut lock,
@@ -1627,9 +1666,9 @@ mod tests {
         .expect("deliver");
         std::fs::write(dir.path().join("lib/atlas/util.lua"), "-- mine\n").expect("edit");
 
-        let record = lock.forget("plugins/75_atlas.lua").expect("record");
+        let record = lock.forget("mods/75_atlas.lua").expect("record");
         let report = withdraw(dir.path(), &record).expect("withdraw");
-        assert!(!dir.path().join("plugins/75_atlas.lua").exists());
+        assert!(!dir.path().join("mods/75_atlas.lua").exists());
         assert!(
             dir.path().join("lib/atlas/util.lua").is_file(),
             "a file the user changed outlives the entry that delivered it"
@@ -1651,8 +1690,8 @@ mod tests {
         let home = tempfile::tempdir().expect("tempdir");
         std::env::set_var("THURBOX_CONFIG_DIR", home.path());
         let dir = home.path().join("ui");
-        std::fs::create_dir_all(dir.join("plugins")).expect("mkdir");
-        let file = "plugins/75_atlas.lua";
+        std::fs::create_dir_all(dir.join("mods")).expect("mkdir");
+        let file = "mods/75_atlas.lua";
         let absolute = dir.join(file).to_string_lossy().into_owned();
 
         let mut lock = PluginLock::default();
@@ -1721,7 +1760,7 @@ mod tests {
 
         // An UNMANAGED file stays on the contents-only rule, untouched by any of
         // this: the user wrote it, and its version is not a thing.
-        let mine = "plugins/90_mine.lua";
+        let mine = "mods/90_mine.lua";
         std::fs::write(dir.join(mine), "-- mine\n").expect("write");
         let mine_absolute = dir.join(mine).to_string_lossy().into_owned();
         registry.trust(&mine_absolute, "-- mine\n").expect("trust");
@@ -1751,7 +1790,7 @@ mod tests {
         // And a payload cannot smuggle one past a legitimate entry.
         assert!(deliver(
             dir.path(),
-            &entry("plugins/a.lua"),
+            &entry("mods/a.lua"),
             "src",
             "v1",
             &[payload("../escape.lua", "-- no\n")],

@@ -40,7 +40,7 @@ registry. If someone asks you to install one:
 thurbox-cli mod available          # what installs by bare name
 thurbox-cli mod install <name>     # or a URL, or a path
 thurbox-cli mod install git+<url>  # a repository: cloned, payload and all
-thurbox-cli mod sync               # after editing plugins.toml by hand
+thurbox-cli mod sync               # after editing mods.toml by hand
 ```
 
 A mod that carries a program or a data file is a **repository**, and `git+<url>`
@@ -74,7 +74,7 @@ the session-list/path-picker/repo-picker models — which are already here and a
 reached with `require("lib.ui")`. If you find yourself about to run a
 package manager, you have misread the request.
 
-`plugins.toml` records what this interface is composed of and `plugins.lock` what
+`mods.toml` records what this interface is composed of and `mods.lock` what
 each entry resolved to. You may edit the first by hand; never hand-edit the second.
 
 ## Check your work after every edit
@@ -194,7 +194,7 @@ whose call took the time.
   into or create a session (`sessions`) or read a session's files (`files`) says so
   with `capabilities = { … }`, and the *user* grants it in settings
   (`Ctrl+,` → `]` → `t`, confirmed with a second `t`). You cannot do that step
-  for them, and you should not edit `plugin-state.json` to fake it. Draw the
+  for them, and you should not edit `mod-state.json` to fake it. Draw the
   untrusted state honestly instead.
 
 ## What `lib/` promises a file that calls it

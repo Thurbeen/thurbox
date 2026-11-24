@@ -154,7 +154,7 @@ lists every key, the WSL form included.
 
 ## Make it yours
 
-Panes live in `ui/plugins/*.lua`, the arrangement in `ui/layout.lua`, and `F10`
+Panes live in `ui/mods/*.lua`, the arrangement in `ui/layout.lua`, and `F10`
 reloads both from disk. The interface directory ships an `AGENTS.md`, so from a
 session opened there you can just ask your agent:
 

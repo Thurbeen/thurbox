@@ -13,7 +13,7 @@ fn probe(lua: &str) -> String {
     let report = thurbox::kernel::bundled::materialize(dir.path());
     assert!(report.errors.is_empty(), "{:?}", report.errors);
     std::fs::write(
-        dir.path().join("plugins").join("95_probe.lua"),
+        dir.path().join("mods").join("95_probe.lua"),
         format!(
             r#"local repo_picker = require("lib.repo_picker")
 {lua}

@@ -887,7 +887,7 @@ mod tests {
             .load(format!("return {source}"))
             .eval()
             .expect("source evaluates");
-        let node = to_node(&value, "plugins/90_test.lua").expect("tree converts");
+        let node = to_node(&value, "mods/90_test.lua").expect("tree converts");
 
         let mut terminal =
             Terminal::new(TestBackend::new(width, height)).expect("test terminal builds");

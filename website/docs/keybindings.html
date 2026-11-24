@@ -51,7 +51,7 @@ breadcrumb: 'Keybindings'
   <a href="#sessions" class="heading-anchor">#</a>
 </h2>
 <p>
-  Declared by <code>ui/plugins/10_sessions.lua</code>. The single-letter keys apply while the list is
+  Declared by <code>ui/mods/10_sessions.lua</code>. The single-letter keys apply while the list is
   focused; the <kbd>Ctrl</kbd> forms work from anywhere, which is what lets you act on a
   session without leaving the terminal you are typing in.
 </p>
@@ -88,7 +88,7 @@ breadcrumb: 'Keybindings'
   <a href="#agent" class="heading-anchor">#</a>
 </h2>
 <p>
-  <code>ui/plugins/20_agent.lua</code>. Everything else you type here goes to the agent &mdash; that is
+  <code>ui/mods/20_agent.lua</code>. Everything else you type here goes to the agent &mdash; that is
   the point of it.
 </p>
 <table>
@@ -109,7 +109,7 @@ breadcrumb: 'Keybindings'
   <a href="#new-session" class="heading-anchor">#</a>
 </h2>
 <p>
-  <kbd>Ctrl</kbd>+<kbd>N</kbd> opens the flow (<code>ui/plugins/70_new_session.lua</code>) &mdash; one
+  <kbd>Ctrl</kbd>+<kbd>N</kbd> opens the flow (<code>ui/mods/70_new_session.lua</code>) &mdash; one
   float rather than a chain of modals. It walks Fleet &rarr; place &rarr; repositories &rarr; base
   branch &rarr; name &rarr; branch name &rarr; agent. The Fleet step is skipped when only one Fleet
   is listed. The place step offers the Fleet's <code>local</code> at once and adds the places that
@@ -148,7 +148,7 @@ breadcrumb: 'Keybindings'
 </h2>
 <p>
   <kbd>Ctrl</kbd>+<kbd>/</kbd> opens a strip above the status bar
-  (<code>ui/plugins/65_search.lua</code>). It matches session names, agents, branches and repositories
+  (<code>ui/mods/65_search.lua</code>). It matches session names, agents, branches and repositories
   &mdash; and <strong>the text on each agent's screen</strong>, which is the half that finds a session
   by the error in it. Matches highlight <em>in the panes themselves</em>; moving the selection previews
   it, and <kbd>Esc</kbd> puts back what you were looking at.
@@ -185,7 +185,7 @@ breadcrumb: 'Keybindings'
 <p>
   From <kbd>F1</kbd>: select an action and press the chord you want. It takes effect on the next
   keystroke and persists to <code>ui.json</code>. The mods you have turned off and the ones you
-  trust live beside it, in <code>plugin-state.json</code>.
+  trust live beside it, in <code>mod-state.json</code>.
 </p>
 <p>
   Two rules the registry enforces. A chord already claimed by an action whose scope overlaps is

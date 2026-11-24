@@ -1151,7 +1151,7 @@ mod tests {
             .load(format!("return {source}"))
             .eval()
             .expect("test source should evaluate");
-        to_node(&value, "plugins/90_test.lua")
+        to_node(&value, "mods/90_test.lua")
     }
 
     #[test]
@@ -1371,7 +1371,7 @@ mod tests {
             )
             .eval()
             .expect("deep tree builds");
-        let error = to_node(&value, "plugins/90_test.lua").unwrap_err();
+        let error = to_node(&value, "mods/90_test.lua").unwrap_err();
         assert!(error.contains("nested deeper"), "{error}");
     }
 
@@ -1387,7 +1387,7 @@ mod tests {
             "local t = {}; t[1] = t; return { type = \"surface\", cells = t }",
         ] {
             let value: Value = lua.load(source).eval().expect("cyclic table builds");
-            let error = to_node(&value, "plugins/90_test.lua").unwrap_err();
+            let error = to_node(&value, "mods/90_test.lua").unwrap_err();
             assert!(error.contains("nested deeper"), "{source}: {error}");
         }
     }

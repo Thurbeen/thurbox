@@ -443,10 +443,10 @@ mod tests {
         assert!(Event::new("program.exited").only.is_none());
         assert_eq!(
             Event::new("program.exited")
-                .to("plugins/50_editor.lua")
+                .to("mods/50_editor.lua")
                 .only
                 .as_deref(),
-            Some("plugins/50_editor.lua")
+            Some("mods/50_editor.lua")
         );
     }
 

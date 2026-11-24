@@ -941,7 +941,7 @@ mod tests {
             identity: Identity::default(),
         };
         let program = Node::Surface {
-            source: SurfaceSource::Program("program:plugins/90_watch.lua#watch".into()),
+            source: SurfaceSource::Program("program:mods/90_watch.lua#watch".into()),
             scroll: 0,
             mark: None,
             frame: None,
@@ -962,7 +962,7 @@ mod tests {
 
         assert_eq!(
             program.first_live_surface(),
-            Some("program:plugins/90_watch.lua#watch")
+            Some("program:mods/90_watch.lua#watch")
         );
         assert_eq!(
             program.first_session_surface(),
@@ -984,7 +984,7 @@ mod tests {
         };
         assert_eq!(
             wrapped.first_live_surface(),
-            Some("program:plugins/90_watch.lua#watch"),
+            Some("program:mods/90_watch.lua#watch"),
             "the mod-drawn cells are skipped rather than claiming the keys"
         );
     }

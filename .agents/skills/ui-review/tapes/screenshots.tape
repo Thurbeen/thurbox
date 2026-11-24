@@ -117,7 +117,7 @@ Screenshot "__SHOT_DIR__/10-interface-tab.png"
 
 # 11 — turn a pane off and watch the arrangement close up around it. Row 0 is
 # `65_search.lua`, whose slot is empty while search is closed, so toggling that
-# would show no reflow at all — one `j` first, onto `plugins/10_sessions.lua`.
+# would show no reflow at all — one `j` first, onto `mods/10_sessions.lua`.
 # Movement here is j/k as the modal's own hint says; arrows are not bound for up.
 Type "j"
 Sleep 700ms

@@ -698,7 +698,7 @@ struct App {
     /// was resolved against.
     ///
     /// Answering it reads and digests every file in the interface directory and
-    /// parses `plugins.lock`, which is the wrong price to pay per keystroke: the
+    /// parses `mods.lock`, which is the wrong price to pay per keystroke: the
     /// answer changes only when the directory or a grant does, and both say so.
     /// The rows themselves are still assembled every publish — those depend on
     /// what is on screen this frame, which is cheap and does change.

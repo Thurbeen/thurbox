@@ -1038,11 +1038,11 @@ mod tests {
                 "emit",
                 Args {
                     text: text("deploy"),
-                    owner: "plugins/x.lua".into(),
+                    owner: "mods/x.lua".into(),
                     ..Args::default()
                 },
                 Ok(Command::Emit {
-                    owner: "plugins/x.lua".into(),
+                    owner: "mods/x.lua".into(),
                     name: "user.deploy".into(),
                     payload: Vec::new(),
                 }),
@@ -1066,24 +1066,24 @@ mod tests {
             (
                 "mod",
                 Args {
-                    file: text("plugins/a.lua"),
+                    file: text("mods/a.lua"),
                     action: text("restore"),
                     ..Args::default()
                 },
                 Ok(Command::Plugin {
-                    file: "plugins/a.lua".into(),
+                    file: "mods/a.lua".into(),
                     edit: PluginEdit::Restore,
                 }),
             ),
             (
                 "plugin",
                 Args {
-                    file: text("plugins/a.lua"),
+                    file: text("mods/a.lua"),
                     action: text("remove"),
                     ..Args::default()
                 },
                 Ok(Command::Plugin {
-                    file: "plugins/a.lua".into(),
+                    file: "mods/a.lua".into(),
                     edit: PluginEdit::Remove,
                 }),
             ),
@@ -1099,7 +1099,7 @@ mod tests {
             (
                 "mod",
                 Args {
-                    file: text("plugins/a.lua"),
+                    file: text("mods/a.lua"),
                     ..Args::default()
                 },
                 err("command \"mod\" needs action = \"restore\" or \"remove\""),
@@ -1328,11 +1328,11 @@ mod tests {
                     repo: text("cargo"),
                     argv: vec!["test".into()],
                     keys: Some(Vec::new()),
-                    owner: "plugins/x.lua".into(),
+                    owner: "mods/x.lua".into(),
                     ..Args::default()
                 },
                 Ok(Command::Program {
-                    owner: "plugins/x.lua".into(),
+                    owner: "mods/x.lua".into(),
                     name: "watch".into(),
                     program: "cargo".into(),
                     argv: vec!["test".into()],
@@ -1431,7 +1431,7 @@ mod tests {
         use super::super::host::Capability::{Program, Run, Sessions};
         let with = |args: Args| Args {
             session: "s1".into(),
-            owner: "plugins/30_x.lua".into(),
+            owner: "mods/30_x.lua".into(),
             ..args
         };
         let verbs: Vec<(&str, Args, Option<super::super::host::Capability>)> = vec![
@@ -1466,7 +1466,7 @@ mod tests {
             (
                 "mod",
                 with(Args {
-                    file: Some("plugins/x.lua".into()),
+                    file: Some("mods/x.lua".into()),
                     action: Some("remove".into()),
                     ..Args::default()
                 }),
@@ -1583,12 +1583,12 @@ mod tests {
                 "action",
                 Args {
                     text: Some("help.open".into()),
-                    owner: "plugins/10_sessions.lua".into(),
+                    owner: "mods/10_sessions.lua".into(),
                     ..Args::default()
                 }
             ),
             Ok(Command::Action {
-                fallback: "plugins/10_sessions.lua".into(),
+                fallback: "mods/10_sessions.lua".into(),
                 action: "help.open".into(),
             })
         );
@@ -1718,7 +1718,7 @@ mod tests {
             let command = Command::parse(
                 verb,
                 Args {
-                    file: Some("plugins/a.lua".into()),
+                    file: Some("mods/a.lua".into()),
                     action: Some("remove".into()),
                     ..Args::default()
                 },
@@ -1979,7 +1979,7 @@ mod tests {
     #[test]
     fn a_program_command_names_no_session() {
         let program = Command::Program {
-            owner: "plugins/90_watch.lua".into(),
+            owner: "mods/90_watch.lua".into(),
             name: "watch".into(),
             program: "watch".into(),
             argv: Vec::new(),
@@ -1999,7 +1999,7 @@ mod tests {
             Command::parse(
                 "program",
                 Args {
-                    owner: "plugins/90_watch.lua".into(),
+                    owner: "mods/90_watch.lua".into(),
                     text: Some("watch".into()),
                     repo: (!program.is_empty()).then(|| program.to_string()),
                     action: action.map(str::to_string),
@@ -2024,7 +2024,7 @@ mod tests {
             Command::parse(
                 "program",
                 Args {
-                    owner: "plugins/50_editor.lua".into(),
+                    owner: "mods/50_editor.lua".into(),
                     text: Some("editor".into()),
                     repo: (!program.is_empty()).then(|| program.to_string()),
                     keys: keys.map(<[u8]>::to_vec),
@@ -2079,7 +2079,7 @@ mod tests {
             let refused = Command::parse(
                 "program",
                 Args {
-                    owner: "plugins/90_watch.lua".into(),
+                    owner: "mods/90_watch.lua".into(),
                     text: Some(bad.to_string()),
                     repo: Some("watch".into()),
                     ..Args::default()

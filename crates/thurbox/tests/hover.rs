@@ -408,8 +408,8 @@ return {
         )
         .expect("copy");
     }
-    std::fs::create_dir_all(home.path().join("plugins")).expect("mkdir");
-    std::fs::write(home.path().join("plugins/10_chips.lua"), PANE).expect("write pane");
+    std::fs::create_dir_all(home.path().join("mods")).expect("mkdir");
+    std::fs::write(home.path().join("mods/10_chips.lua"), PANE).expect("write pane");
     let host = LuaHost::new(home.path().to_path_buf());
     assert!(host.error.is_none(), "{:?}", host.error);
 

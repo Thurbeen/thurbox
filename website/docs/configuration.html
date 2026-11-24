@@ -82,7 +82,7 @@ breadcrumb: 'Configuration'
                 </td>
               </tr>
               <tr>
-                <td><code>~/.config/thurbox/ui/plugins.toml</code></td>
+                <td><code>~/.config/thurbox/ui/mods.toml</code></td>
                 <td>TOML</td>
                 <td>you (or <code>thurbox-cli mod</code>)</td>
                 <td>on each <code>mod</code> command</td>
@@ -92,7 +92,7 @@ breadcrumb: 'Configuration'
                 </td>
               </tr>
               <tr>
-                <td><code>~/.config/thurbox/ui/plugins.lock</code></td>
+                <td><code>~/.config/thurbox/ui/mods.lock</code></td>
                 <td>TOML</td>
                 <td><code>thurbox-cli mod</code></td>
                 <td>on each <code>mod</code> command</td>
@@ -113,7 +113,7 @@ breadcrumb: 'Configuration'
                 </td>
               </tr>
               <tr>
-                <td><code>~/.config/thurbox/plugin-state.json</code></td>
+                <td><code>~/.config/thurbox/mod-state.json</code></td>
                 <td>JSON</td>
                 <td>Interface tab (or <code>thurbox-cli mod</code>)</td>
                 <td>startup</td>
@@ -521,7 +521,7 @@ copy_on_select = true          # releasing a drag copies; false = Ctrl+C copies 
               <strong>A pane is not switched off here.</strong>
               Panes are files, so turning one off is <code>space</code> on its row in the Interface
               tab (<code>Ctrl+,</code> then <code>]</code>), recorded in
-              <code>plugin-state.json</code>.
+              <code>mod-state.json</code>.
             </p>
           </div>
           <table>
@@ -716,7 +716,7 @@ app_bg = "reset"             # keep the terminal's native background</code></pre
           <p>
             Rebindings live in
             <code>~/.config/thurbox/ui.json</code>. The panes you have turned off and the files
-            you trust live beside it, in <code>plugin-state.json</code>. Its
+            you trust live beside it, in <code>mod-state.json</code>. Its
             <code>bindings</code>
             object maps an action id to the one chord string that action answers to. Action ids are
             dotted and lowercase &mdash; the kernel's own are

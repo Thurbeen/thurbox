@@ -29,7 +29,7 @@ mod tmux_server;
 use tmux_server::TmuxServer;
 
 const SOCKET: &str = "thurbox-program-corpse-e2e";
-const OWNER: &str = "plugins/90_files.lua";
+const OWNER: &str = "mods/90_files.lua";
 const PANE: &str = "editor_corpse";
 const DEADLINE: Duration = Duration::from_secs(10);
 

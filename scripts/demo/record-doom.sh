@@ -108,7 +108,7 @@ for bin in thurbox thurbox-cli fleet runtime-mux node python3 asciinema agg ffmp
         exit 1
     }
 done
-# The trust seed reads plugins.lock, so the TOML parser has to be there. Checked
+# The trust seed reads mods.lock, so the TOML parser has to be there. Checked
 # up front rather than at the point of use, where it would fail after the clone.
 python3 -c 'import tomllib' 2>/dev/null || {
     echo "error: python3 has no tomllib (needs >= 3.11)" >&2
@@ -195,7 +195,7 @@ trap cleanup EXIT
 paths=$(thurbox-cli config show --json 2>/dev/null | python3 -c '
 import json, sys
 paths = json.load(sys.stdin)["paths"]
-print(paths["ui_dir"]); print(paths["plugin_state_json"]); print(paths["interface_json"])
+print(paths["ui_dir"]); print(paths["mod_state_json"]); print(paths["interface_json"])
 ')
 [ -n "$paths" ] || {
     echo "error: could not read the resolved paths from thurbox-cli config show" >&2
@@ -238,15 +238,15 @@ echo "==> granting the program capability"
 # something that is not it. So the sandbox writes the grant the modal writes —
 # `{pin, digest}` for an installed file, keyed by absolute path (two interface
 # directories must not share a grant), which is what `App::apply_trust` does.
-# Both halves come out of plugins.lock rather than being recomputed: the digest
+# Both halves come out of mods.lock rather than being recomputed: the digest
 # recorded there is the one the delivered file has, so the row reads `trusted`
 # and not `trusted · modified`.
 python3 - "$UI_DIR" "$PLUGIN_STATE" <<'PYTRUST' || exit 1
 import json, pathlib, sys, tomllib
 
 ui_dir, out = pathlib.Path(sys.argv[1]), pathlib.Path(sys.argv[2])
-lock = tomllib.loads((ui_dir / "plugins.lock").read_text())
-entries = lock.get("plugin", [])
+lock = tomllib.loads((ui_dir / "mods.lock").read_text())
+entries = lock.get("mod", [])
 if len(entries) != 1:
     sys.exit(f"expected one installed plugin, found {len(entries)}")
 entry = entries[0]

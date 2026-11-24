@@ -18,7 +18,7 @@ use super::host::{Capability, Plugin};
 /// What a file of the interface is.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Kind {
-    /// A file in `plugins/`: something that draws, or decorates what does.
+    /// A file in `mods/`: something that draws, or decorates what does.
     Pane,
     /// A file in `lib/`: loaded only when a pane requires it.
     Module,
@@ -26,7 +26,7 @@ pub enum Kind {
     Arrangement,
     /// Prose, not code: shipped guidance for whoever edits this directory.
     Doc,
-    /// `plugins.toml`: what the interface is composed of.
+    /// `mods.toml`: what the interface is composed of.
     Manifest,
 }
 
@@ -45,9 +45,9 @@ impl Kind {
         if relative == "layout.lua" {
             Kind::Arrangement
         } else if relative == crate::session::plugin_spec::SPEC_FILE {
-            // Before the `plugins/` fallthrough, for the same reason `Doc` is: a
+            // Before the `mods/` fallthrough, for the same reason `Doc` is: a
             // manifest reported as a pane that failed to load is a false alarm,
-            // and the loader never offers it one (it reads `plugins/*.lua`).
+            // and the loader never offers it one (it reads `mods/*.lua`).
             Kind::Manifest
         } else if relative.ends_with(".md") {
             Kind::Doc
@@ -354,7 +354,7 @@ mod tests {
     fn a_pane_on_disk_that_did_not_load_is_a_failure_with_its_error() {
         let rows = rows(
             &[],
-            &sources(&[("plugins/50_mine.lua", Source::User)]),
+            &sources(&[("mods/50_mine.lua", Source::User)]),
             &HashSet::new(),
             &HashSet::new(),
             Some("50_mine: attempt to index a nil value"),
@@ -384,7 +384,7 @@ mod tests {
     fn a_removed_file_is_listed_though_nothing_loaded_it() {
         let rows = rows(
             &[],
-            &sources(&[("plugins/10_sessions.lua", Source::Removed)]),
+            &sources(&[("mods/10_sessions.lua", Source::Removed)]),
             &HashSet::new(),
             &HashSet::new(),
             None,

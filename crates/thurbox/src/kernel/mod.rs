@@ -22,6 +22,7 @@ pub mod layout;
 pub mod lua_api;
 pub mod messages;
 pub mod metrics;
+pub mod mod_migration;
 pub mod modals;
 pub mod node;
 pub mod notify;

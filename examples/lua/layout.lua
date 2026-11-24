@@ -4,8 +4,8 @@
 -- or just delete yours afterwards and the Interface tab will restore it:
 --
 --     cp examples/lua/layout.lua   ~/.config/thurbox/ui/layout.lua
---     cp examples/panes/tasks/tasks.lua ~/.config/thurbox/ui/plugins/80_tasks.lua
---     cp examples/panes/top/top.lua     ~/.config/thurbox/ui/plugins/85_top.lua
+--     cp examples/panes/tasks/tasks.lua ~/.config/thurbox/ui/mods/80_tasks.lua
+--     cp examples/panes/top/top.lua     ~/.config/thurbox/ui/mods/85_top.lua
 --
 -- Then `F10`, and trust the `top` mod (settings → Interface → `t`) so it may run
 -- a program.

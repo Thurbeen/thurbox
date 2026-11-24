@@ -109,13 +109,13 @@ mod tests {
 
     #[test]
     fn a_plugin_edit_is_not_noise() {
-        assert!(!is_noise(&event(&["/ui/plugins/session_list.lua"])));
+        assert!(!is_noise(&event(&["/ui/mods/session_list.lua"])));
     }
 
     #[test]
     fn editor_scratch_files_are_noise() {
-        assert!(is_noise(&event(&["/ui/plugins/session_list.lua~"])));
-        assert!(is_noise(&event(&["/ui/plugins/.#session_list.lua"])));
+        assert!(is_noise(&event(&["/ui/mods/session_list.lua~"])));
+        assert!(is_noise(&event(&["/ui/mods/.#session_list.lua"])));
     }
 
     /// Version-control bookkeeping is not an interface edit.
@@ -141,8 +141,8 @@ mod tests {
     fn a_file_merely_named_like_git_is_not_noise() {
         // The test is a path COMPONENT, not a substring: a pane may legitimately be
         // called `.gitignore.lua`, and a directory `mygit/` is not `.git/`.
-        assert!(!is_noise(&event(&["/ui/plugins/.gitignore.lua"])));
-        assert!(!is_noise(&event(&["/ui/mygit/plugins/a.lua"])));
+        assert!(!is_noise(&event(&["/ui/mods/.gitignore.lua"])));
+        assert!(!is_noise(&event(&["/ui/mygit/mods/a.lua"])));
         assert!(!is_noise(&event(&["/ui/lib/.gitkeep.lua"])));
     }
 
@@ -152,7 +152,7 @@ mod tests {
         // swallowed because most of its paths were bookkeeping.
         assert!(!is_noise(&event(&[
             "/ui/.git/index",
-            "/ui/plugins/session_list.lua",
+            "/ui/mods/session_list.lua",
         ])));
     }
 
@@ -172,10 +172,7 @@ mod tests {
     #[test]
     fn a_mixed_batch_is_not_noise() {
         // One real edit among scratch files still has to trigger a reload.
-        assert!(!is_noise(&event(&[
-            "/ui/plugins/a.lua~",
-            "/ui/plugins/a.lua"
-        ])));
+        assert!(!is_noise(&event(&["/ui/mods/a.lua~", "/ui/mods/a.lua"])));
     }
 
     #[test]

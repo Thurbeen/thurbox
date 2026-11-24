@@ -7,7 +7,7 @@
 > moves that integer. Declare `requires_api = N` in your mod's table for the
 > contract you wrote against, and a thurbox serving an older one refuses to load
 > it with that reason instead of drawing against a field that is not there.
-> `plugins.lock` records the commit each installed pane resolved to, so pin what
+> `mods.lock` records the commit each installed pane resolved to, so pin what
 > you install and re-run `thurbox-cli mod check` after an upgrade.
 >
 > **Mods are trusted code.** They run in-process with whatever capabilities
@@ -67,7 +67,7 @@ local controller needs, never terminal text, credentials, or the whole `store`.
 <the directory mod dir reports>/
   layout.lua                   how the screen is arranged
   lib/                         shared modules, via require("lib.theme")
-  plugins/*.lua                one file per pane
+  mods/*.lua                   one file per pane
 ```
 
 Inside a running interface, the **settings modal's Interface tab** shows the same
@@ -273,7 +273,7 @@ interface you edit — there is no second, privileged copy running underneath.
 | You want to | Do this |
 |---|---|
 | change a bundled pane | edit the file; it reloads on save and is never overwritten again |
-| add one | drop a `.lua` file in `plugins/` |
+| add one | drop a `.lua` file in `mods/` |
 | replace one | write your own and **delete** the bundled file |
 | remove one | delete the file |
 | undo either | settings → Interface, select it, `r` |
@@ -1548,7 +1548,7 @@ therefore words what `y` does itself, from the command and the session's name,
 and names the pane that asked. It learns which
 pane that was from `store_writer("confirm")`, which returns the path of the
 mod that last wrote a `store` key — or, written for another mod's request,
-that request's chain (`plugins/a.lua via plugins/b.lua`). That record is made by the writer's own
+that request's chain (`mods/a.lua via mods/b.lua`). That record is made by the writer's own
 view of `store`, so no pane can claim another's. On `y` it issues exactly the
 request it drew, never `store.confirm` read again at the keypress, which a later
 float could have replaced.
@@ -1753,7 +1753,7 @@ details), then one word of state, then — for a file that declares capabilities
 what it asks for and whether it holds it (`run not granted`, `run+program granted`,
 `run granted, changed`), then `edited` for a shipped or installed file changed here.
 
-The modules, docs, `layout.lua` and `plugins.toml` are **support files**: listed
+The modules, docs, `layout.lua` and `mods.toml` are **support files**: listed
 under `SUPPORT FILES` when you press `a` (again to fold them), and always when one
 needs attention — failed, deleted, or edited and so restorable.
 
@@ -1835,7 +1835,7 @@ agent, a CI check, or a terminal you cannot currently trust.
   forgetting which ones you had removed. Your own files are untouched.
 - **Delete the whole directory** for the shipped interface exactly as it ships.
 
-Neither touches `plugin-state.json`, which lives beside the directory rather than
+Neither touches `mod-state.json`, which lives beside the directory rather than
 in it: a pane you turned off is still off after both, and a trust you granted is
 still recorded. If a decision is what you want to undo, undo it in the Interface tab.
 
@@ -1895,7 +1895,7 @@ prints the line to add, so it is caught rather than puzzled over:
 ```console
 $ thurbox-cli mod check
   ✓ loads — sessions, agent, confirm, search, new_session, tasks
-  ✗ plugins/80_tasks.lua — loaded, but nothing places slot "tasks"
+  ✗ mods/80_tasks.lua — loaded, but nothing places slot "tasks"
       add it to layout.lua's children: { slot = "tasks" }
   (checked at 200x50)
 ```
@@ -1952,8 +1952,8 @@ misspelt one look identical from the outside.
 ```console
 $ thurbox-cli mod check
   ✓ loads — …, notes
-  ! plugins/90_notes.lua — pill "Notes" is not drawn: "notes.open" is a command with no key, …
-  ! plugins/90_notes.lua — pill "Memory" is not drawn: nothing loaded declares "notes.opne" — …
+  ! mods/90_notes.lua — pill "Notes" is not drawn: "notes.open" is a command with no key, …
+  ! mods/90_notes.lua — pill "Memory" is not drawn: nothing loaded declares "notes.opne" — …
 ```
 
 A warning rather than a failure, like the switch-slot case above: the pane still loads
@@ -1970,7 +1970,7 @@ are free in the interface thurbox ships, which says nothing about yours. So
 ```console
 $ thurbox-cli mod check
   ✓ loads — sessions, agent, confirm, search, new_session, notes, scratch
-  ! plugins/91_scratch.lua — f7 is claimed by both notes.toggle and scratch.toggle; notes.toggle wins (declared in plugins/90_notes.lua)
+  ! mods/91_scratch.lua — f7 is claimed by both notes.toggle and scratch.toggle; notes.toggle wins (declared in mods/90_notes.lua)
 ```
 
 A warning, like the missing pill and for the same reason — two authors wanting one
@@ -2019,13 +2019,13 @@ published, rooted at a session's directory, to a pane granted `files`.
 
 ## Managing panes
 
-Composition is written down, in `plugins.toml` beside your panes:
+Composition is written down, in `mods.toml` beside your panes:
 
 ```toml
 # what this interface is made of
-[[plugin]]
+[[mod]]
 src  = "top"                    # a bare name, a URL, or a path
-file = "plugins/85_top.lua"     # load order lives in the filename
+file = "mods/85_top.lua"        # load order lives in the filename
 pin  = "v2.1.0"                 # omit to take the newest at install time
 ```
 
@@ -2037,11 +2037,11 @@ what a bare name fetches matches the binary asking for it. Bare names reach the
 *examples*; anything you actually depend on is better named by a URL, a path, or a repository you control.
 
 That tag is also why a bare name can stop resolving: the examples lived under
-`ui-plugins/` before they moved to `examples/panes/`, so a `plugins.lock` written
+`ui-plugins/` before they moved to `examples/panes/`, so a `mods.lock` written
 by a binary from before the move records a tag whose tree has no `examples/panes/`
 and `mod sync` reports the pane as not found. Re-run `thurbox-cli mod install
 <name>` to re-lock it at the current tag, or name a URL or a path in
-`plugins.toml` instead — which is the same advice as the paragraph above, for the
+`mods.toml` instead — which is the same advice as the paragraph above, for the
 same reason.
 
 ### A mod that carries more than Lua
@@ -2084,14 +2084,16 @@ for.
 The spec entry names the pane inside the working copy:
 
 ```toml
-[[plugin]]
+[[mod]]
 src  = "git+https://github.com/you/thurbox-widget"
-file = "thurbox-widget/plugins/40_widget.lua"
+file = "thurbox-widget/mods/40_widget.lua"
 ```
 
-You rarely write that by hand — `install` finds it, taking the single `.lua` in the
-repository's `plugins/` directory, and asks for `--as plugins/<file>` when there is
-more than one. Its place in the load order still comes from the `40_` prefix, so
+You rarely write that by hand — `install` finds it. It reads the pane a
+`mod.toml` (or `plugin.toml`) at the repository's root names. Without one, it
+takes the single `.lua` in the repository's `mods/` directory, or in its
+`plugins/` directory when there is no `mods/`. It asks for `--as mods/<file>`
+when there is more than one. Its place in the load order still comes from the `40_` prefix, so
 where a mod came from does not change where it sits. Its own modules are
 requirable by path: `require("thurbox-widget.lib.util")`.
 
@@ -2165,7 +2167,7 @@ thurbox's, but the mechanism invites it. URLs and filesystem paths work too,
 and a URL ending in `.lua` installs that single file (with `--as` naming where it
 lands).
 
-Beside it, `plugins.lock` records what each entry resolved to and the digest of
+Beside it, `mods.lock` records what each entry resolved to and the digest of
 every file delivered. You hand-edit the spec; nothing hand-edits the lock. Commit
 both and the same interface reproduces elsewhere.
 
@@ -2199,6 +2201,59 @@ explicitly, which reports what moved and from where. An entry the spec *pins* is
 already where you said it should be, so `update` leaves it and says `already
 current`; moving that one means editing the pin and running `sync`.
 
+### Before mods were mods
+
+Earlier releases used `plugin` names on disk. thurbox moves them once, before it
+reads them:
+
+| old name | new name |
+|---|---|
+| `<ui>/plugins/` | `<ui>/mods/` |
+| `<ui>/plugins.toml`, with `[[plugin]]` entries | `<ui>/mods.toml`, with `[[mod]]` entries |
+| `<ui>/plugins.lock` | `<ui>/mods.lock` |
+| `<config>/plugin-state.json` | `<config>/mod-state.json` |
+| a package's `plugin.toml` | a package's `mod.toml` |
+
+- The interface runs the move when it starts. Every `thurbox-cli mod` and
+  `thurbox-cli config` command runs it too, and so does the deprecated verb.
+- The move rewrites each `plugins/` path in the spec, the lock, `.bundled.json`
+  and the trust and disabled keys. A shipped pane you edited stays edited. A
+  shipped pane you deleted stays deleted. A grant and a disabled pane stay as
+  they were.
+- When `mods/` already exists, the move takes only the files `mods/` does not
+  have. It leaves each clash in `plugins/` and names it. Delivery does not
+  touch a clash that the move left in `plugins/`.
+- The move works in two steps. First it writes each rewritten file under its
+  new name and leaves the old files in place. When `plugin-state.json` is a
+  symlink, it writes through the link instead. Then it renames: the link to
+  `mod-state.json`, then `plugins/` (or each file that `mods/` lacks) to
+  `mods/`. A symlinked store stays a link.
+- The move records each write and each rename. When one fails, for example on
+  a read-only file or directory, the move takes every recorded step back. The
+  old layout then stays as it was, and the next attempt starts from the old
+  files again.
+- The old files go only after every step succeeded.
+- After a failed move, the interface starts on the embedded panes only, in a
+  throwaway directory. It saves no grant, turned-off pane, mod setting or
+  rebound key you change there. thurbox's own settings and the theme still
+  save as usual. The `thurbox-cli` command fails instead.
+  Both name the file. Fix it and run again.
+- The move keeps the comments in the spec. It deletes no file you wrote. It
+  prints one notice that starts `plugins are mods now`, and nothing on a later
+  run.
+- `thurbox-cli doctor` warns `mod-leftovers` while an old path is still there,
+  and gives the fix.
+- An older thurbox does not move the files back. It reads `plugins/` again,
+  finds nothing, and delivers a fresh interface there.
+
+A package with only a `plugin.toml` still installs, and `install` says that it
+read that file. A destination under `plugins/`, in a manifest or in `--as`,
+lands under `mods/`. A spec entry written as `[[plugin]]` still reads, and the
+next `install` or `remove` rewrites it as `[[mod]]`.
+`thurbox-cli config validate --json` and `config show --json` name the state
+store `mod_state_json`. They also keep `plugin_state_json`, with the same value,
+for scripts written before the rename.
+
 ### Trust for a pane you did not write
 
 `run` is granted per file, so where a file came from is the question to answer
@@ -2226,7 +2281,7 @@ file again. A file you wrote yourself is different: editing it reads
 
 What the Interface tab says is what the mod holds: the grant the kernel enforces
 and the row you read come from one decision (`packages::trust_of`). A grant made to a
-version needs `plugins.lock` to list the file: if the lock is missing, unreadable or
+version needs `mods.lock` to list the file: if the lock is missing, unreadable or
 has no entry for it, the grant is withdrawn rather than judged as if the file were
 your own.
 

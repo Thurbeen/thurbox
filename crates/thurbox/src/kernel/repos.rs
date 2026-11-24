@@ -1487,7 +1487,7 @@ mod tests {
         // it was the one directory the list never offered.
         let home = tempfile::TempDir::new().expect("tempdir");
         let ui = home.path().join("ui");
-        std::fs::create_dir_all(ui.join("plugins")).expect("mkdir");
+        std::fs::create_dir_all(ui.join("mods")).expect("mkdir");
         std::env::set_var("THURBOX_UI_DIR", &ui);
 
         let mut rows = Vec::new();
@@ -1521,7 +1521,7 @@ mod tests {
         // it does not have.
         let home = tempfile::TempDir::new().expect("tempdir");
         let ui = home.path().join("ui");
-        std::fs::create_dir_all(ui.join("plugins")).expect("mkdir");
+        std::fs::create_dir_all(ui.join("mods")).expect("mkdir");
         std::env::set_var("THURBOX_UI_DIR", &ui);
         assert!(read_bookmarks("").iter().any(|row| row.offered));
         assert!(

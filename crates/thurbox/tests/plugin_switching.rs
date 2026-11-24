@@ -39,7 +39,7 @@ fn interface(files: &[(&str, String)]) -> (tempfile::TempDir, std::path::PathBuf
     let ui = home.path().join("ui");
     bundled::materialize(&ui);
     for (name, source) in files {
-        std::fs::write(ui.join("plugins").join(name), source).expect("write");
+        std::fs::write(ui.join("mods").join(name), source).expect("write");
     }
     (home, ui)
 }
@@ -55,10 +55,10 @@ fn loaded(ui: &std::path::Path, disabled: &[&str]) -> LuaHost {
 #[test]
 fn a_disabled_plugin_is_not_loaded_and_its_file_is_untouched() {
     let (_home, ui) = interface(&[("90_mine.lua", pane("mine"))]);
-    let path = ui.join("plugins").join("90_mine.lua");
+    let path = ui.join("mods").join("90_mine.lua");
     let before = std::fs::read_to_string(&path).expect("read");
 
-    let host = loaded(&ui, &["plugins/90_mine.lua"]);
+    let host = loaded(&ui, &["mods/90_mine.lua"]);
     assert!(
         !host.plugins.iter().any(|p| p.name == "mine"),
         "a disabled plugin must not be loaded"
@@ -73,7 +73,7 @@ fn a_disabled_plugin_is_not_loaded_and_its_file_is_untouched() {
 #[test]
 fn turning_it_back_on_needs_nothing_restored() {
     let (_home, ui) = interface(&[("90_mine.lua", pane("mine"))]);
-    assert!(!loaded(&ui, &["plugins/90_mine.lua"])
+    assert!(!loaded(&ui, &["mods/90_mine.lua"])
         .plugins
         .iter()
         .any(|p| p.name == "mine"));
@@ -95,7 +95,7 @@ fn a_disabled_plugin_declares_nothing() {
     assert!(settings.iter().any(|s| s.plugin == "mine"));
     assert_eq!(on.in_slot("sessions").len(), 2, "it shares the column");
 
-    let off = loaded(&ui, &["plugins/90_mine.lua"]);
+    let off = loaded(&ui, &["mods/90_mine.lua"]);
     let (bindings, settings) = off.declarations();
     assert!(
         !bindings.iter().any(|b| b.chord == "ctrl+alt+z"),
@@ -126,7 +126,7 @@ fn a_freed_key_can_be_claimed_without_a_conflict() {
         "two plugins claiming one global chord is a conflict while both run"
     );
 
-    let one = loaded(&ui, &["plugins/90_mine.lua"]);
+    let one = loaded(&ui, &["mods/90_mine.lua"]);
     let mut registry = Registry::default();
     let (bindings, settings) = one.declarations();
     registry.declare(bindings, settings);
@@ -148,7 +148,7 @@ fn a_plugin_that_would_fail_to_load_does_not_while_it_is_off() {
         "the broken file fails the load while it is on"
     );
     assert!(
-        loaded(&ui, &["plugins/90_broken.lua"]).error.is_none(),
+        loaded(&ui, &["mods/90_broken.lua"]).error.is_none(),
         "turning it off must be enough to get a working interface back"
     );
 }
@@ -159,7 +159,7 @@ fn a_disabled_file_reads_as_disabled_rather_than_failed() {
     // a fault — `failed` is the reading that turns "I turned this off" into an
     // alarm.
     let (_home, ui) = interface(&[("90_mine.lua", pane("mine"))]);
-    let host = loaded(&ui, &["plugins/90_mine.lua"]);
+    let host = loaded(&ui, &["mods/90_mine.lua"]);
 
     let rows = inventory::rows(
         &host.plugins,
@@ -168,11 +168,11 @@ fn a_disabled_file_reads_as_disabled_rather_than_failed() {
         &HashSet::new(),
         host.error.as_deref(),
         &|_| Trust::NotAsked,
-        &|path| path == "plugins/90_mine.lua",
+        &|path| path == "mods/90_mine.lua",
     );
     let mine = rows
         .iter()
-        .find(|row| row.path == "plugins/90_mine.lua")
+        .find(|row| row.path == "mods/90_mine.lua")
         .expect("listed");
     assert_eq!(mine.state, State::Disabled, "{:?}", mine.state);
     assert_eq!(State::Disabled.as_str(), "disabled");
@@ -188,26 +188,26 @@ fn the_decision_is_per_file_and_survives_a_restart() {
     // (`registry::Origin`). The loop's registry is a loaded one.
     let mut registry = Registry::load();
     registry
-        .set_disabled("/ui/plugins/mine.lua", true)
+        .set_disabled("/ui/mods/mine.lua", true)
         .expect("disable");
-    assert!(registry.is_disabled("/ui/plugins/mine.lua"));
+    assert!(registry.is_disabled("/ui/mods/mine.lua"));
     assert!(
-        !registry.is_disabled("/ui/plugins/other.lua"),
+        !registry.is_disabled("/ui/mods/other.lua"),
         "turning one off says nothing about another"
     );
 
     assert!(
-        Registry::load().is_disabled("/ui/plugins/mine.lua"),
+        Registry::load().is_disabled("/ui/mods/mine.lua"),
         "a choice that does not survive a restart is not a choice"
     );
 
     registry
-        .set_disabled("/ui/plugins/mine.lua", false)
+        .set_disabled("/ui/mods/mine.lua", false)
         .expect("enable");
-    assert!(!registry.is_disabled("/ui/plugins/mine.lua"));
+    assert!(!registry.is_disabled("/ui/mods/mine.lua"));
     // Asking for a state it is already in is not an error.
     registry
-        .set_disabled("/ui/plugins/mine.lua", false)
+        .set_disabled("/ui/mods/mine.lua", false)
         .expect("idempotent");
 
     std::env::remove_var("THURBOX_CONFIG_DIR");
@@ -222,7 +222,7 @@ fn a_failed_decision_save_leaves_every_existing_decision_intact() {
     if std::env::var_os(CHILD).is_some() {
         let root = std::path::PathBuf::from(std::env::var_os(ROOT).expect("test root"));
         let _guard = thurbox::paths::TestPathGuard::new(&root);
-        let path = root.join("plugin-state.json");
+        let path = root.join("mod-state.json");
         let limit = std::fs::metadata(&path).expect("seed metadata").len();
         let limits = libc::rlimit {
             rlim_cur: limit as libc::rlim_t,
@@ -249,13 +249,13 @@ fn a_failed_decision_save_leaves_every_existing_decision_intact() {
 }
 "#;
     std::fs::write(&ui_json, overrides).expect("seed ui.json");
-    let store = root.path().join("plugin-state.json");
+    let store = root.path().join("mod-state.json");
     let decisions = r#"{
-  "trusted": {"/ui/plugins/mine.lua": "sha256:kept"},
-  "disabled": ["/ui/plugins/off.lua"]
+  "trusted": {"/ui/mods/mine.lua": "sha256:kept"},
+  "disabled": ["/ui/mods/off.lua"]
 }
 "#;
-    std::fs::write(&store, decisions).expect("seed plugin-state.json");
+    std::fs::write(&store, decisions).expect("seed mod-state.json");
 
     let output = Command::new(std::env::current_exe().expect("test binary"))
         .args([
@@ -290,7 +290,7 @@ fn a_failed_decision_save_leaves_every_existing_decision_intact() {
     assert_eq!(
         names,
         vec![
-            std::ffi::OsString::from("plugin-state.json"),
+            std::ffi::OsString::from("mod-state.json"),
             std::ffi::OsString::from("ui.json")
         ],
         "no staged file is left behind"
@@ -307,18 +307,18 @@ fn a_store_symlink_survives_saving_a_decision() {
     let managed = root.path().join("managed");
     std::fs::create_dir_all(&config).expect("config dir");
     std::fs::create_dir_all(&managed).expect("managed dir");
-    let target = managed.join("plugin-state.json");
+    let target = managed.join("mod-state.json");
     std::fs::write(&target, "{}\n").expect("seed managed store");
-    symlink(&target, config.join("plugin-state.json")).expect("link the store");
+    symlink(&target, config.join("mod-state.json")).expect("link the store");
     std::env::set_var("THURBOX_CONFIG_DIR", &config);
 
     let mut registry = Registry::load();
     registry
-        .set_disabled("/ui/plugins/off.lua", true)
+        .set_disabled("/ui/mods/off.lua", true)
         .expect("save through link");
 
     assert!(
-        std::fs::symlink_metadata(config.join("plugin-state.json"))
+        std::fs::symlink_metadata(config.join("mod-state.json"))
             .expect("linked store metadata")
             .file_type()
             .is_symlink(),
@@ -327,7 +327,7 @@ fn a_store_symlink_survives_saving_a_decision() {
     assert!(
         std::fs::read_to_string(target)
             .expect("managed store")
-            .contains("/ui/plugins/off.lua"),
+            .contains("/ui/mods/off.lua"),
         "the linked target must receive the new decision"
     );
     std::env::remove_var("THURBOX_CONFIG_DIR");
@@ -348,9 +348,9 @@ fn decisions_save_beyond_windows_max_path() {
 
     let mut registry = Registry::load();
     registry
-        .set_disabled("/ui/plugins/off.lua", true)
+        .set_disabled("/ui/mods/off.lua", true)
         .expect("save the store beyond MAX_PATH");
-    assert!(Registry::load().is_disabled("/ui/plugins/off.lua"));
+    assert!(Registry::load().is_disabled("/ui/mods/off.lua"));
 
     std::env::remove_var("THURBOX_CONFIG_DIR");
 }
@@ -364,7 +364,7 @@ fn disabling_is_not_recorded_as_a_removal() {
     let ui = home.path().join("ui");
     bundled::materialize(&ui);
 
-    let target = ui.join("plugins").join("10_sessions.lua");
+    let target = ui.join("mods").join("10_sessions.lua");
     let mut registry = Registry::default();
     registry
         .set_disabled(&target.to_string_lossy(), true)
@@ -372,7 +372,7 @@ fn disabling_is_not_recorded_as_a_removal() {
 
     let sources = bundled::sources(&ui);
     assert_eq!(
-        sources.get("plugins/10_sessions.lua"),
+        sources.get("mods/10_sessions.lua"),
         Some(&bundled::Source::Bundled),
         "delivery must still see it as a file it ships, not as removed"
     );

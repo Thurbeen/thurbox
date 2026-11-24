@@ -127,7 +127,7 @@ async fn an_agent_window_keeps_its_corpse_and_a_program_window_does_not() {
     };
 
     // The plugin's program, through the control-mode path.
-    let key = ProgramKey::new("plugins/90_files.lua", "editor_opts");
+    let key = ProgramKey::new("mods/90_files.lua", "editor_opts");
     let mut terminals = Terminals::with_registry(
         std::sync::Arc::new(thurbox::backend::wiring::local_only(&Default::default())),
         &Default::default(),
@@ -183,7 +183,7 @@ async fn adopting_a_program_window_normalises_what_it_finds() {
     let _server = TmuxServer::pin(SOCKET);
     thurbox::paths::set_test_dir(dir.path());
 
-    let key = ProgramKey::new("plugins/90_files.lua", "editor_opts");
+    let key = ProgramKey::new("mods/90_files.lua", "editor_opts");
     let args = ["-c".to_string(), "sleep 300".to_string()];
     let mut first = Terminals::with_registry(
         std::sync::Arc::new(thurbox::backend::wiring::local_only(&Default::default())),

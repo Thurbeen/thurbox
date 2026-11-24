@@ -1,7 +1,7 @@
 //! Reloading the interface, and the user's decisions about it.
 //!
 //! Trust, the disabled set and a switch slot's selection are all *user*
-//! decisions (`plugin-state.json` and `ui.json`), distinct from the delivery
+//! decisions (`mod-state.json` and `ui.json`), distinct from the delivery
 //! facts in `.bundled.json`.
 //! Each of the four Interface-tab keys reloads, because a plugin's capabilities
 //! are installed when its environment is built: revoking has to rebuild it, so

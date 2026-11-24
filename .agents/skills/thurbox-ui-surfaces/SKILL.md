@@ -34,7 +34,7 @@ chords the bundled panes declare — `Ctrl+N` is `70_new_session`'s and
 
 Everything else belongs to a mod and is listed in `F1`. Rebindings persist to
 `ui.json` — a *user decision*, distinct from the delivery facts in `.bundled.json`;
-trust and the disabled set live in `plugin-state.json` beside it.
+trust and the disabled set live in `mod-state.json` beside it.
 
 **Reserved is not the same as kernel-owned.** Five chords are handled before the
 registry is consulted and cannot be rebound at all (`registry::RESERVED`: quit,
@@ -176,7 +176,7 @@ would propose reverting every such change already saved on the next save.
 
 `]` switches to the **Interface tab** (`kernel::modals::interface`). Panes are
 grouped by where they came from — `YOURS` / `PACKAGE · <name>` / `SHIPPED` — and the
-rest (modules, docs, `layout.lua`, `plugins.toml`) under `SUPPORT FILES`, listed on
+rest (modules, docs, `layout.lua`, `mods.toml`) under `SUPPORT FILES`, listed on
 `a` or when one needs attention (failed, deleted, edited). A row names the file, one
 state word (`failed`, `not loaded`, `deleted`, `not placed`, `off`, `on screen`,
 `on demand`, `hidden`; no word shared with a source or a key), what it asks for and
@@ -222,7 +222,7 @@ live half and toasts, noting a restart when `restart_only_differs` says so.
 
 ## Global search
 
-`ui/plugins/65_search.lua` — a full-width strip above the chrome bands. Two
+`ui/mods/65_search.lua` — a full-width strip above the chrome bands. Two
 result sections: **sessions** (name, agent, branch, repo — matched in Lua
 every frame) and **text** (every line each session's agent pane and shell still
 hold, **scrollback included**, matched by the kernel on a worker).

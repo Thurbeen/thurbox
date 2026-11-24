@@ -55,7 +55,7 @@ fn the_directory_report_names_the_rule_that_chose_it() {
     assert_eq!(report["chosen"], "override");
     assert_eq!(
         report["plugins_dir"],
-        ui.join("plugins").display().to_string(),
+        ui.join("mods").display().to_string(),
         "the directory a plugin file actually goes in is spelled out"
     );
     assert!(
@@ -275,7 +275,7 @@ fn a_pane_nothing_places_is_a_failure_that_says_what_to_add() {
 
     // The starter takes `center`, which the arrangement always places. Moving it
     // to a slot nothing names is the whole difference between drawing and not.
-    let file = ui.join("plugins").join("90_notes.lua");
+    let file = ui.join("mods").join("90_notes.lua");
     let body = std::fs::read_to_string(&file).expect("read");
     std::fs::write(&file, body.replace("slot = \"center\"", "slot = \"notes\"")).expect("write");
 
@@ -339,7 +339,7 @@ fn the_listing_does_not_report_working_panes_as_unplaced() {
         name: "nowhere".into(),
     })
     .expect("new");
-    let file = ui.join("plugins").join("90_nowhere.lua");
+    let file = ui.join("mods").join("90_nowhere.lua");
     let body = std::fs::read_to_string(&file).expect("read");
     std::fs::write(
         &file,
@@ -363,15 +363,15 @@ fn the_listing_reports_the_name_that_commands_accept() {
 
     // A managed pane whose file stem differs from its directory and from its
     // declared name — the shape that made the two disagree.
-    std::fs::create_dir_all(ui.join("vendor-tree/plugins")).expect("mkdir");
+    std::fs::create_dir_all(ui.join("vendor-tree/mods")).expect("mkdir");
     std::fs::write(
-        ui.join("vendor-tree/plugins/40_thing.lua"),
+        ui.join("vendor-tree/mods/40_thing.lua"),
         "return { name = \"thing\", slot = \"center\",          render = function() return { type = \"text\", text = \"x\" } end }\n",
     )
     .expect("pane");
     let entry = thurbox::session::PluginEntry {
         src: "git+https://example.com/vendor-tree".into(),
-        file: "vendor-tree/plugins/40_thing.lua".into(),
+        file: "vendor-tree/mods/40_thing.lua".into(),
         pin: None,
     };
     thurbox::kernel::packages::add_to_spec(&ui, &entry).expect("spec");
@@ -381,7 +381,7 @@ fn the_listing_reports_the_name_that_commands_accept() {
         .as_array()
         .expect("files")
         .iter()
-        .find(|row| row["file"] == "vendor-tree/plugins/40_thing.lua")
+        .find(|row| row["file"] == "vendor-tree/mods/40_thing.lua")
         .cloned()
         .unwrap_or_else(|| panic!("missing from {listing}"));
 
@@ -394,7 +394,7 @@ fn the_listing_reports_the_name_that_commands_accept() {
         .as_array()
         .expect("files")
         .iter()
-        .find(|row| row["file"] == "plugins/10_sessions.lua")
+        .find(|row| row["file"] == "mods/10_sessions.lua")
         .cloned()
         .expect("bundled pane listed");
     assert!(
@@ -414,7 +414,7 @@ fn a_pane_that_floats_is_not_reported_as_unplaced() {
     })
     .expect("new");
 
-    let file = ui.join("plugins").join("90_notes.lua");
+    let file = ui.join("mods").join("90_notes.lua");
     let body = std::fs::read_to_string(&file).expect("read");
     std::fs::write(
         &file,
@@ -440,7 +440,7 @@ fn a_pane_the_user_turned_off_is_not_reported_as_unplaced() {
     })
     .expect("new");
 
-    let file = ui.join("plugins").join("90_notes.lua");
+    let file = ui.join("mods").join("90_notes.lua");
     let body = std::fs::read_to_string(&file).expect("read");
     std::fs::write(&file, body.replace("slot = \"center\"", "slot = \"notes\"")).expect("write");
 
@@ -472,7 +472,7 @@ fn a_broken_plugin_is_named_with_its_reason_and_fails_the_exit() {
         name: "notes".into(),
     })
     .expect("new");
-    std::fs::write(ui.join("plugins").join("90_notes.lua"), "return { name =").expect("break it");
+    std::fs::write(ui.join("mods").join("90_notes.lua"), "return { name =").expect("break it");
 
     let output = run(Action::Check).expect("check runs");
     assert!(
@@ -493,10 +493,10 @@ fn an_interface_with_no_panes_is_reported_not_failed() {
     // v2 supports that deliberately, so the check must not call it broken.
     let home = tempfile::tempdir().expect("tempdir");
     let ui = at(home.path());
-    std::fs::create_dir_all(ui.join("plugins")).expect("mkdir");
+    std::fs::create_dir_all(ui.join("mods")).expect("mkdir");
     // `layout.lua` and `lib/` are what the host needs; no plugins at all.
     thurbox::kernel::bundled::materialize(&ui);
-    for entry in std::fs::read_dir(ui.join("plugins")).expect("read plugins") {
+    for entry in std::fs::read_dir(ui.join("mods")).expect("read plugins") {
         std::fs::remove_file(entry.expect("entry").path()).expect("remove");
     }
 
@@ -522,11 +522,11 @@ fn the_listing_tells_a_file_you_installed_from_one_you_wrote() {
     let home = tempfile::tempdir().expect("tempdir");
     let ui = at(home.path());
     thurbox::kernel::bundled::materialize(&ui);
-    std::fs::write(ui.join("plugins").join("90_mine.lua"), "return {}\n").expect("write");
+    std::fs::write(ui.join("mods").join("90_mine.lua"), "return {}\n").expect("write");
 
     let entry = thurbox::session::PluginEntry {
         src: "atlas".into(),
-        file: "plugins/75_atlas.lua".into(),
+        file: "mods/75_atlas.lua".into(),
         pin: Some("v0.3.1".into()),
     };
     let mut lock = thurbox::session::PluginLock::default();
@@ -536,7 +536,7 @@ fn the_listing_tells_a_file_you_installed_from_one_you_wrote() {
         "https://example.com/atlas",
         "v0.3.1",
         &[thurbox::kernel::packages::Payload {
-            file: "plugins/75_atlas.lua".into(),
+            file: "mods/75_atlas.lua".into(),
             contents: "return {}\n".into(),
         }],
         &mut lock,
@@ -556,28 +556,28 @@ fn the_listing_tells_a_file_you_installed_from_one_you_wrote() {
             .unwrap_or_else(|| panic!("{file} missing from {listing}"))
     };
 
-    let installed = row("plugins/75_atlas.lua");
+    let installed = row("mods/75_atlas.lua");
     assert_eq!(installed["source"], "installed", "{installed}");
     assert_eq!(installed["installed_from"], "atlas", "{installed}");
-    let mine = row("plugins/90_mine.lua");
+    let mine = row("mods/90_mine.lua");
     assert_eq!(mine["source"], "user", "{mine}");
     assert!(mine["installed_from"].is_null(), "{mine}");
 
     // The spec is part of what the interface is made of, and it is not a pane that
     // failed to load — which is what it would read as without its own kind.
-    let spec = row("plugins.toml");
+    let spec = row("mods.toml");
     assert_eq!(spec["kind"], "manifest", "{spec}");
     assert_ne!(spec["state"], "failed", "{spec}");
 
     // Edited locally, or re-tagged upstream under the same pin. Either way the
     // contents are no longer the ones the grant was made against.
-    std::fs::write(ui.join("plugins").join("75_atlas.lua"), "-- mine\n").expect("edit");
+    std::fs::write(ui.join("mods").join("75_atlas.lua"), "-- mine\n").expect("edit");
     let after = json(Action::List);
     let edited = after["files"]
         .as_array()
         .expect("files")
         .iter()
-        .find(|row| row["file"] == "plugins/75_atlas.lua")
+        .find(|row| row["file"] == "mods/75_atlas.lua")
         .cloned()
         .expect("row");
     assert_eq!(edited["source"], "installed · modified", "{edited}");
@@ -592,12 +592,12 @@ fn the_listing_tells_a_shipped_file_from_an_edited_one() {
 
     let before = json(Action::List);
     let files = before["files"].to_string();
-    assert!(files.contains("plugins/10_sessions.lua"), "{files}");
+    assert!(files.contains("mods/10_sessions.lua"), "{files}");
     assert!(files.contains("\"source\":\"bundled\""), "{files}");
 
     // Editing a shipped file changes where it is reported as coming from, which
     // is what makes "my change did nothing" diagnosable.
-    let sessions = ui.join("plugins").join("10_sessions.lua");
+    let sessions = ui.join("mods").join("10_sessions.lua");
     let body = std::fs::read_to_string(&sessions).expect("read");
     std::fs::write(&sessions, format!("-- mine\n{body}")).expect("write");
 
@@ -606,7 +606,7 @@ fn the_listing_tells_a_shipped_file_from_an_edited_one() {
         .as_array()
         .expect("files")
         .iter()
-        .find(|row| row["file"] == "plugins/10_sessions.lua")
+        .find(|row| row["file"] == "mods/10_sessions.lua")
         .expect("the edited file")
         .clone();
     assert_eq!(row["source"], "edited", "{row}");
@@ -625,7 +625,7 @@ fn the_documented_example_is_a_plugin_that_loads() {
         .join("../../examples")
         .join("lua")
         .join("plugin.lua");
-    std::fs::copy(&example, ui.join("plugins").join("90_example.lua")).expect("copy");
+    std::fs::copy(&example, ui.join("mods").join("90_example.lua")).expect("copy");
 
     let host = thurbox::kernel::host::LuaHost::new(&ui);
     assert!(host.error.is_none(), "{:?}", host.error);
@@ -662,7 +662,7 @@ fn the_composite_example_loads_and_declares_what_it_needs() {
         .join("../../examples")
         .join("lua")
         .join("composite.lua");
-    std::fs::copy(&example, ui.join("plugins").join("95_composite.lua")).expect("copy");
+    std::fs::copy(&example, ui.join("mods").join("95_composite.lua")).expect("copy");
 
     let host = thurbox::kernel::host::LuaHost::new(&ui);
     assert!(host.error.is_none(), "{:?}", host.error);
@@ -687,7 +687,7 @@ fn an_untrusted_composite_draws_how_to_trust_it_rather_than_failing() {
         .join("../../examples")
         .join("lua")
         .join("composite.lua");
-    std::fs::copy(&example, ui.join("plugins").join("95_composite.lua")).expect("copy");
+    std::fs::copy(&example, ui.join("mods").join("95_composite.lua")).expect("copy");
 
     let host = thurbox::kernel::host::LuaHost::new(&ui);
     // Nothing trusted, which is the default: `run` is absent, not refusing.
@@ -729,7 +729,7 @@ fn a_pane_sharing_a_switch_slot_with_no_pill_is_warned_about() {
     // `20_agent` already occupies `center` in switch mode and sorts first, so this
     // one is the alternate.
     std::fs::write(
-        ui.join("plugins").join("90_hidden.lua"),
+        ui.join("mods").join("90_hidden.lua"),
         "return {\n\
            name = \"hidden\",\n\
            slot = \"center\",\n\
@@ -762,7 +762,7 @@ fn declaring_a_pill_is_enough_to_be_findable() {
     let ui = at(home.path());
     thurbox::kernel::bundled::materialize(&ui);
     std::fs::write(
-        ui.join("plugins").join("90_hidden.lua"),
+        ui.join("mods").join("90_hidden.lua"),
         "return {\n\
            name = \"hidden\",\n\
            slot = \"center\",\n\
@@ -816,7 +816,7 @@ fn a_dropped_pill_says_whether_the_palette_has_its_action_or_nothing_does() {
 
     // Two pills, neither of which the band can draw: one names a chord-less
     // `commands` entry, the other is a typo for it.
-    let file = ui.join("plugins").join("90_notes.lua");
+    let file = ui.join("mods").join("90_notes.lua");
     let body = std::fs::read_to_string(&file).expect("read");
     std::fs::write(
         &file,
@@ -852,7 +852,7 @@ fn a_dropped_pill_says_whether_the_palette_has_its_action_or_nothing_does() {
 
     let palette_only = of("Notes");
     assert_eq!(palette_only["action"], "notes.open");
-    assert_eq!(palette_only["file"], "plugins/90_notes.lua");
+    assert_eq!(palette_only["file"], "mods/90_notes.lua");
     assert_eq!(
         palette_only["reason"], "palette-only",
         "an action the palette can reach is a reasonable thing to have written: \
@@ -903,7 +903,7 @@ fn two_plugins_claiming_one_global_chord_are_both_named() {
     // switch slot, and an alternate with no pill earns a warning of its own.
     for (file, name) in [("90_notes.lua", "notes"), ("91_scratch.lua", "scratch")] {
         std::fs::write(
-            ui.join("plugins").join(file),
+            ui.join("mods").join(file),
             format!(
                 "return {{\n  \
                    name = {name:?},\n  \
@@ -967,7 +967,7 @@ fn the_same_chord_in_two_plugin_scopes_is_not_reported() {
 
     for (file, name) in [("90_notes.lua", "notes"), ("91_scratch.lua", "scratch")] {
         std::fs::write(
-            ui.join("plugins").join(file),
+            ui.join("mods").join(file),
             format!(
                 "return {{\n  \
                    name = {name:?},\n  \
@@ -1007,7 +1007,7 @@ fn a_plugin_taking_a_kernel_chord_is_reported_against_the_kernel() {
     thurbox::kernel::bundled::materialize(&ui);
 
     std::fs::write(
-        ui.join("plugins").join("90_notes.lua"),
+        ui.join("mods").join("90_notes.lua"),
         "return {\n  \
            name = \"notes\",\n  \
            slot = \"center\",\n  \
@@ -1040,7 +1040,7 @@ fn raw_gestures_are_reported_and_kernel_action_names_are_rejected() {
     let ui = at(home.path());
     thurbox::kernel::bundled::materialize(&ui);
     std::fs::write(
-        ui.join("plugins/90_notes.lua"),
+        ui.join("mods/90_notes.lua"),
         "return { name = 'notes', slot = 'center',\n\
          keys = { { key = 'f7', action = 'kernel.quit', desc = 'spoof' } },\n\
          on_key = function() return true end,\n\
@@ -1069,7 +1069,7 @@ fn constructed_click_actions_are_checked_against_the_catalog() {
     let ui = at(home.path());
     thurbox::kernel::bundled::materialize(&ui);
     std::fs::write(
-        ui.join("plugins/90_notes.lua"),
+        ui.join("mods/90_notes.lua"),
         "local MISSING = 'notes.unknown'\n\
          return { name = 'notes', slot = 'center',\n\
          render = function() return { type = 'text', text = 'notes', role = 'action:' .. MISSING } end }",
@@ -1089,7 +1089,7 @@ fn expression_built_clicks_do_not_report_a_partial_action_name() {
     let ui = at(home.path());
     thurbox::kernel::bundled::materialize(&ui);
     std::fs::write(
-        ui.join("plugins/90_notes.lua"),
+        ui.join("mods/90_notes.lua"),
         "local SUFFIX = 'open'\n\
          local ACTION = 'notes.' .. SUFFIX\n\
          return { name = 'notes', slot = 'center',\n\
@@ -1113,7 +1113,7 @@ fn commented_literal_click_actions_are_recognized() {
     let ui = at(home.path());
     thurbox::kernel::bundled::materialize(&ui);
     std::fs::write(
-        ui.join("plugins/90_notes.lua"),
+        ui.join("mods/90_notes.lua"),
         "local ACTION = 'notes.open' -- button action\n\
          return { name = 'notes', slot = 'center',\n\
          keys = { { key = 'f7', action = 'notes.open', desc = 'open' } },\n\
@@ -1135,7 +1135,7 @@ fn a_plugin_cannot_claim_the_kernel_owner_name() {
     let ui = at(home.path());
     thurbox::kernel::bundled::materialize(&ui);
     std::fs::write(
-        ui.join("plugins/90_kernel.lua"),
+        ui.join("mods/90_kernel.lua"),
         "return { name = 'kernel', slot = 'center',\n\
          keys = { { key = 'f7', action = 'mine.open', desc = 'open' } },\n\
          on_action = function() return true end,\n\
@@ -1168,7 +1168,7 @@ fn a_name_two_files_answer_to_names_both_of_them() {
     // with two of them without ever typing the name at all.
     for file in ["90_notes.lua", "91_notes.lua"] {
         std::fs::write(
-            ui.join("plugins").join(file),
+            ui.join("mods").join(file),
             "return {\n  \
                slot = \"center\",\n  \
                keys = { { key = \"f7\", action = \"notes.toggle\", scope = \"global\", \
@@ -1201,7 +1201,7 @@ fn a_strip_checks_out_under_the_shipped_layout_with_no_edit() {
         name: "ticker".into(),
     })
     .expect("new");
-    let file = ui.join("plugins").join("90_ticker.lua");
+    let file = ui.join("mods").join("90_ticker.lua");
     let body = std::fs::read_to_string(&file).expect("read");
     std::fs::write(
         &file,
@@ -1231,7 +1231,7 @@ fn a_strip_under_a_layout_without_the_loop_is_told_to_add_the_loop() {
         name: "ticker".into(),
     })
     .expect("new");
-    let file = ui.join("plugins").join("90_ticker.lua");
+    let file = ui.join("mods").join("90_ticker.lua");
     let body = std::fs::read_to_string(&file).expect("read");
     std::fs::write(
         &file,

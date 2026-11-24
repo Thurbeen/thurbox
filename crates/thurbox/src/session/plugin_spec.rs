@@ -8,10 +8,10 @@
 //! dirty the half a person maintains.
 //!
 //! ```toml
-//! # ui/plugins.toml
-//! [[plugin]]
+//! # ui/mods.toml
+//! [[mod]]
 //! src  = "atlas"                  # bare name, URL, or path
-//! file = "plugins/75_atlas.lua"   # load order lives in the filename
+//! file = "mods/75_atlas.lua"      # load order lives in the filename
 //! pin  = "v0.3.1"                 # omit to take the newest at install time
 //! ```
 //!
@@ -27,10 +27,90 @@ use std::collections::{BTreeMap, BTreeSet};
 use serde::{Deserialize, Serialize};
 
 /// The hand-edited spec, in the interface directory.
-pub const SPEC_FILE: &str = "plugins.toml";
+pub const SPEC_FILE: &str = "mods.toml";
 
 /// The machine-written record, beside it.
-pub const LOCK_FILE: &str = "plugins.lock";
+pub const LOCK_FILE: &str = "mods.lock";
+
+/// The directory of the interface the loader reads panes from.
+pub const MODS_DIR: &str = "mods";
+
+/// The name [`MODS_DIR`] had before mods were mods.
+pub const LEGACY_MODS_DIR: &str = "plugins";
+
+/// A destination under `plugins/` moved under `mods/`; any other unchanged.
+///
+/// Package manifests we do not control still name `plugins/…` destinations, and
+/// so do `--as` arguments written before the rename.
+pub fn mod_destination(file: &str) -> String {
+    match file
+        .strip_prefix("plugins/")
+        .or_else(|| file.strip_prefix("plugins\\"))
+    {
+        Some(rest) => format!("{MODS_DIR}/{rest}"),
+        None => file.to_string(),
+    }
+}
+
+/// Rename a spec or lock document's `plugin` array of tables to `mod`, keeping
+/// each table and its comments.
+pub fn rename_entries_key(doc: &mut toml_edit::DocumentMut) {
+    if doc.contains_key(ENTRIES_KEY) {
+        return;
+    }
+    if let Some(entries) = doc.remove(LEGACY_ENTRIES_KEY) {
+        doc.insert(ENTRIES_KEY, entries);
+    }
+}
+
+/// Visit each entry's `file` value in a spec document, in either TOML form:
+/// `[[mod]]` tables, or an inline `mod = [{ … }]` array.
+pub fn for_each_entry_file(
+    doc: &mut toml_edit::DocumentMut,
+    mut visit: impl FnMut(&mut toml_edit::Value),
+) {
+    match doc.get_mut(ENTRIES_KEY) {
+        Some(toml_edit::Item::ArrayOfTables(tables)) => {
+            for table in tables.iter_mut() {
+                if let Some(file) = table
+                    .get_mut("file")
+                    .and_then(toml_edit::Item::as_value_mut)
+                {
+                    visit(file);
+                }
+            }
+        }
+        Some(toml_edit::Item::Value(toml_edit::Value::Array(entries))) => {
+            for entry in entries.iter_mut() {
+                if let Some(file) = entry
+                    .as_inline_table_mut()
+                    .and_then(|table| table.get_mut("file"))
+                {
+                    visit(file);
+                }
+            }
+        }
+        _ => {}
+    }
+}
+
+fn entries_as_tables(doc: &mut toml_edit::DocumentMut) {
+    let Some(toml_edit::Item::Value(toml_edit::Value::Array(entries))) = doc.get(ENTRIES_KEY)
+    else {
+        return;
+    };
+    let mut tables = toml_edit::ArrayOfTables::new();
+    for entry in entries.iter() {
+        let Some(table) = entry.as_inline_table() else {
+            return;
+        };
+        tables.push(table.clone().into_table());
+    }
+    doc.insert(ENTRIES_KEY, toml_edit::Item::ArrayOfTables(tables));
+}
+
+const ENTRIES_KEY: &str = "mod";
+const LEGACY_ENTRIES_KEY: &str = "plugin";
 
 /// One plugin the interface is composed of.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -150,13 +230,13 @@ pub fn pane_sources_of(text: &str) -> Vec<Option<String>> {
 }
 
 /// Is this destination inside an installed plugin's own directory rather than the
-/// interface's shared `plugins/`?
+/// interface's shared `mods/`?
 ///
 /// A plugin obtained as a repository keeps the layout its author chose, so its pane
 /// lives at `<name>/…` — which the loader has to be told about, because it otherwise
-/// reads only the top level of `plugins/`.
+/// reads only the top level of `mods/`.
 pub fn is_nested_pane(file: &str) -> bool {
-    !file.starts_with("plugins/") && !file.starts_with("lib/") && file.contains('/')
+    !file.starts_with("mods/") && !file.starts_with("lib/") && file.contains('/')
 }
 
 /// Whether a source is a bare name rather than a URL or a path.
@@ -193,8 +273,9 @@ fn strip_order(stem: &str) -> &str {
 /// The interface's composition, as the spec states it.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PluginSpec {
-    /// `[[plugin]]` entries, in the order they appear.
-    #[serde(default, rename = "plugin")]
+    /// `[[mod]]` entries, in the order they appear. `[[plugin]]` is read as the
+    /// same thing.
+    #[serde(default, rename = "mod", alias = "plugin")]
     pub plugins: Vec<PluginEntry>,
 }
 
@@ -238,7 +319,7 @@ impl PluginSpec {
     ///
     /// Accepts the entry's name, the path it delivers to, its source, or the bare
     /// filename — so `plugin remove atlas`, `plugin remove 75_atlas` and `plugin
-    /// remove plugins/75_atlas.lua` all work. What the user has in front of them
+    /// remove mods/75_atlas.lua` all work. What the user has in front of them
     /// is a listing that shows the path, and a message that names it either way.
     pub fn find(&self, key: &str) -> Option<&PluginEntry> {
         self.index_of(key).map(|index| &self.plugins[index])
@@ -264,7 +345,8 @@ impl PluginSpec {
     }
 }
 
-/// A package's own manifest, `plugin.toml`, shipped beside its Lua.
+/// A package's own manifest, `mod.toml` (or `plugin.toml`), shipped beside its
+/// Lua.
 ///
 /// ```toml
 /// name = "atlas"
@@ -275,7 +357,7 @@ impl PluginSpec {
 /// # a pane, and where it lands. Repeated for each one the package carries.
 /// [[pane]]
 /// source = "atlas.lua"
-/// path = "plugins/75_atlas.lua"
+/// path = "mods/75_atlas.lua"
 ///
 /// # shared modules, which must live under lib/<name>/
 /// [[module]]
@@ -353,10 +435,18 @@ pub struct PackageFile {
 
 impl PackageManifest {
     /// The file name a package manifest goes by.
-    pub const FILE: &str = "plugin.toml";
+    pub const FILE: &str = "mod.toml";
 
+    /// The name a package manifest went by before mods were mods, read when a
+    /// package has no [`Self::FILE`].
+    pub const LEGACY_FILE: &str = "plugin.toml";
+
+    /// Read a manifest, with every `plugins/…` pane destination under `mods/`.
     pub fn parse(text: &str) -> Result<Self, String> {
-        let manifest: Self = toml::from_str(text).map_err(|e| e.to_string())?;
+        let mut manifest: Self = toml::from_str(text).map_err(|e| e.to_string())?;
+        for pane in &mut manifest.panes {
+            pane.path = mod_destination(&pane.path);
+        }
         manifest.validate()?;
         Ok(manifest)
     }
@@ -376,17 +466,16 @@ impl PackageManifest {
     /// about packages.
     pub fn validate(&self) -> Result<(), String> {
         if self.name.trim().is_empty() {
-            return Err(format!("{}: name is empty", Self::FILE));
+            return Err("name is empty".to_string());
         }
         if !is_bare_name(&self.name) {
             return Err(format!(
-                "{}: name {:?} must be one plain segment, since it is also a namespace",
-                Self::FILE,
+                "name {:?} must be one plain segment, since it is also a namespace",
                 self.name
             ));
         }
         if self.panes.is_empty() {
-            return Err(format!("{}: declares no pane", Self::FILE));
+            return Err("declares no pane".to_string());
         }
         for file in self.files() {
             validate_destination(&file.path)?;
@@ -396,20 +485,15 @@ impl PackageManifest {
         for module in &self.modules {
             if !module.path.starts_with(&namespace) {
                 return Err(format!(
-                    "{}: module {} must be delivered under {namespace} — a package \
+                    "module {} must be delivered under {namespace} — a package \
                      may not replace a shared module",
-                    Self::FILE,
                     module.path
                 ));
             }
         }
         for pane in &self.panes {
             if pane.path.starts_with("lib/") {
-                return Err(format!(
-                    "{}: the pane {} belongs in plugins/",
-                    Self::FILE,
-                    pane.path
-                ));
+                return Err(format!("the pane {} belongs in mods/", pane.path));
             }
         }
         // Two files landing on one path cannot both be honoured, and letting the
@@ -419,7 +503,7 @@ impl PackageManifest {
         let mut seen = BTreeSet::new();
         for file in self.files() {
             if !seen.insert(file.path.as_str()) {
-                return Err(format!("{}: {} is delivered twice", Self::FILE, file.path));
+                return Err(format!("{} is delivered twice", file.path));
             }
         }
         Ok(())
@@ -474,7 +558,7 @@ impl LockEntry {
 /// What each entry resolved to, so the same spec produces the same interface.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PluginLock {
-    #[serde(default, rename = "plugin")]
+    #[serde(default, rename = "mod", alias = "plugin")]
     pub plugins: Vec<LockEntry>,
 }
 
@@ -553,13 +637,15 @@ pub fn insert_entry(text: &str, entry: &PluginEntry) -> Result<String, String> {
             .map_err(|e: toml_edit::TomlError| e.to_string())?
     };
 
+    rename_entries_key(&mut doc);
+    entries_as_tables(&mut doc);
     let array = doc
-        .entry("plugin")
+        .entry(ENTRIES_KEY)
         .or_insert(toml_edit::Item::ArrayOfTables(
             toml_edit::ArrayOfTables::new(),
         ))
         .as_array_of_tables_mut()
-        .ok_or_else(|| format!("{SPEC_FILE}: `plugin` is not a list of entries"))?;
+        .ok_or_else(|| format!("{SPEC_FILE}: `{ENTRIES_KEY}` is not a list of entries"))?;
 
     // An install over an existing entry is an update to it, not a second copy —
     // otherwise `install` twice leaves a spec that cannot be parsed.
@@ -596,9 +682,11 @@ pub fn remove_entry(text: &str, key: &str) -> Result<(String, PluginEntry), Stri
     let mut doc: toml_edit::DocumentMut = text
         .parse()
         .map_err(|e: toml_edit::TomlError| e.to_string())?;
+    rename_entries_key(&mut doc);
+    entries_as_tables(&mut doc);
     let mut orphaned_header = None;
     if let Some(array) = doc
-        .get_mut("plugin")
+        .get_mut(ENTRIES_KEY)
         .and_then(|item| item.as_array_of_tables_mut())
     {
         // By destination rather than by the parsed index: `toml_edit` and `toml`
@@ -662,19 +750,79 @@ fn header_of(table: Option<&toml_edit::Table>) -> Option<String> {
 mod tests {
     use super::*;
 
+    #[test]
+    fn a_plugins_destination_lands_under_mods() {
+        assert_eq!(mod_destination("plugins/88_x.lua"), "mods/88_x.lua");
+        assert_eq!(mod_destination("plugins\\88_x.lua"), "mods/88_x.lua");
+        assert_eq!(mod_destination("mods/88_x.lua"), "mods/88_x.lua");
+        assert_eq!(
+            mod_destination("lib/x/plugins/u.lua"),
+            "lib/x/plugins/u.lua"
+        );
+        assert_eq!(mod_destination("x/plugins/40_x.lua"), "x/plugins/40_x.lua");
+    }
+
+    #[test]
+    fn a_legacy_manifest_delivers_its_panes_under_mods() {
+        let manifest = PackageManifest::parse(
+            "name = \"legacy\"\n[[pane]]\nsource = \"a.lua\"\npath = \"plugins/88_a.lua\"\n\
+             [[module]]\nsource = \"u.lua\"\npath = \"lib/legacy/u.lua\"\n",
+        )
+        .expect("parse");
+        assert_eq!(manifest.panes[0].path, "mods/88_a.lua");
+        assert_eq!(manifest.modules[0].path, "lib/legacy/u.lua");
+    }
+
+    #[test]
+    fn an_inline_spec_is_edited_like_a_list_of_tables() {
+        let inline = "mod = [{ src = \"a\", file = \"mods/50_a.lua\" }]\n";
+        let entry = PluginEntry {
+            src: "b".into(),
+            file: "mods/60_b.lua".into(),
+            pin: None,
+        };
+        let added = insert_entry(inline, &entry).expect("insert");
+        assert_eq!(PluginSpec::parse(&added).expect("parse").plugins.len(), 2);
+
+        let (removed, entry) = remove_entry(inline, "a").expect("remove");
+        assert_eq!(entry.file, "mods/50_a.lua");
+        assert!(
+            PluginSpec::parse(&removed)
+                .expect("parse")
+                .plugins
+                .is_empty(),
+            "{removed}"
+        );
+    }
+
+    #[test]
+    fn a_plugin_table_reads_as_a_mod_and_an_edit_renames_it() {
+        let old = "# mine\n[[plugin]]\nsrc = \"a\"\nfile = \"mods/50_a.lua\"\n";
+        assert_eq!(PluginSpec::parse(old).expect("parse").plugins.len(), 1);
+        let entry = PluginEntry {
+            src: "b".into(),
+            file: "mods/60_b.lua".into(),
+            pin: None,
+        };
+        let edited = insert_entry(old, &entry).expect("insert");
+        assert!(edited.starts_with("# mine\n[[mod]]\n"), "{edited}");
+        assert!(!edited.contains("[[plugin]]"), "{edited}");
+        assert_eq!(PluginSpec::parse(&edited).expect("parse").plugins.len(), 2);
+    }
+
     /// A file header, then an entry with a comment of its own — the two kinds of
     /// comment that have to be told apart when an entry is removed.
     const SPEC: &str = r#"# what this interface is made of
 
 # the map pane
-[[plugin]]
+[[mod]]
 src = "atlas"
-file = "plugins/75_atlas.lua"
+file = "mods/75_atlas.lua"
 pin = "v0.3.1"
 
-[[plugin]]
+[[mod]]
 src = "https://example.com/notes.lua"
-file = "plugins/80_notes.lua"
+file = "mods/80_notes.lua"
 "#;
 
     #[test]
@@ -693,12 +841,12 @@ file = "plugins/80_notes.lua"
     fn an_empty_spec_is_an_interface_with_nothing_installed() {
         let spec = PluginSpec::parse("").expect("an empty spec is valid");
         assert!(spec.plugins.is_empty());
-        assert!(!spec.manages("plugins/10_sessions.lua"));
+        assert!(!spec.manages("mods/10_sessions.lua"));
     }
 
     #[test]
     fn a_malformed_spec_is_reported_with_its_location() {
-        let error = PluginSpec::parse("[[plugin]]\nsrc = \n").expect_err("should fail");
+        let error = PluginSpec::parse("[[mod]]\nsrc = \n").expect_err("should fail");
         assert!(
             error.contains("line") || error.contains("TOML"),
             "the reader needs to know WHERE: {error}"
@@ -710,9 +858,9 @@ file = "plugins/80_notes.lua"
         for bad in [
             "../outside.lua",
             "/etc/passwd.lua",
-            "plugins/../../x.lua",
+            "mods/../../x.lua",
             "plugins\\..\\x.lua",
-            "plugins/notes.txt",
+            "mods/notes.txt",
             "",
         ] {
             let entry = PluginEntry {
@@ -724,7 +872,7 @@ file = "plugins/80_notes.lua"
         }
         assert!(PluginEntry {
             src: "atlas".into(),
-            file: "plugins/75_atlas.lua".into(),
+            file: "mods/75_atlas.lua".into(),
             pin: None,
         }
         .validate()
@@ -734,17 +882,17 @@ file = "plugins/80_notes.lua"
     #[test]
     fn two_entries_cannot_deliver_to_one_path() {
         let error = PluginSpec::parse(
-            "[[plugin]]\nsrc = \"a\"\nfile = \"plugins/x.lua\"\n\
-             [[plugin]]\nsrc = \"b\"\nfile = \"plugins/x.lua\"\n",
+            "[[mod]]\nsrc = \"a\"\nfile = \"mods/x.lua\"\n\
+             [[mod]]\nsrc = \"b\"\nfile = \"mods/x.lua\"\n",
         )
         .expect_err("should fail");
-        assert!(error.contains("plugins/x.lua"), "{error}");
+        assert!(error.contains("mods/x.lua"), "{error}");
     }
 
     #[test]
     fn an_entry_is_addressable_by_name_path_or_source() {
         let spec = PluginSpec::parse(SPEC).expect("parses");
-        for key in ["atlas", "plugins/75_atlas.lua"] {
+        for key in ["atlas", "mods/75_atlas.lua"] {
             assert_eq!(
                 spec.find(key).map(|e| e.src.as_str()),
                 Some("atlas"),
@@ -753,10 +901,10 @@ file = "plugins/80_notes.lua"
         }
         // A URL source is named by the file it delivers, since nobody retypes a URL
         // — minus the load-order prefix, which is a position and not a name.
-        for key in ["notes", "80_notes", "plugins/80_notes.lua"] {
+        for key in ["notes", "80_notes", "mods/80_notes.lua"] {
             assert_eq!(
                 spec.find(key).map(|e| e.file.as_str()),
-                Some("plugins/80_notes.lua"),
+                Some("mods/80_notes.lua"),
                 "{key}"
             );
         }
@@ -769,7 +917,7 @@ file = "plugins/80_notes.lua"
             SPEC,
             &PluginEntry {
                 src: "top".into(),
-                file: "plugins/85_top.lua".into(),
+                file: "mods/85_top.lua".into(),
                 pin: Some("v1".into()),
             },
         )
@@ -784,7 +932,7 @@ file = "plugins/80_notes.lua"
         );
         let spec = PluginSpec::parse(&text).expect("still parses");
         assert_eq!(spec.plugins.len(), 3);
-        assert!(spec.manages("plugins/85_top.lua"));
+        assert!(spec.manages("mods/85_top.lua"));
     }
 
     #[test]
@@ -794,7 +942,7 @@ file = "plugins/80_notes.lua"
             SPEC,
             &PluginEntry {
                 src: "atlas".into(),
-                file: "plugins/75_atlas.lua".into(),
+                file: "mods/75_atlas.lua".into(),
                 pin: Some("v0.4.0".into()),
             },
         )
@@ -813,7 +961,7 @@ file = "plugins/80_notes.lua"
             "",
             &PluginEntry {
                 src: "atlas".into(),
-                file: "plugins/75_atlas.lua".into(),
+                file: "mods/75_atlas.lua".into(),
                 pin: None,
             },
         )
@@ -828,7 +976,7 @@ file = "plugins/80_notes.lua"
         // concerned — so without carrying the header down, one `plugin remove`
         // would delete the file's documentation.
         let (text, removed) = remove_entry(SPEC, "atlas").expect("remove");
-        assert_eq!(removed.file, "plugins/75_atlas.lua");
+        assert_eq!(removed.file, "mods/75_atlas.lua");
         assert!(
             text.contains("# what this interface is made of"),
             "the file's header is not the entry's to take:\n{text}"
@@ -839,8 +987,8 @@ file = "plugins/80_notes.lua"
         );
         let spec = PluginSpec::parse(&text).expect("parses");
         assert_eq!(spec.plugins.len(), 1);
-        assert!(!spec.manages("plugins/75_atlas.lua"));
-        assert!(spec.manages("plugins/80_notes.lua"));
+        assert!(!spec.manages("mods/75_atlas.lua"));
+        assert!(spec.manages("mods/80_notes.lua"));
     }
 
     #[test]
@@ -855,7 +1003,7 @@ file = "plugins/80_notes.lua"
     fn removing_the_only_entry_is_not_a_lost_header() {
         // Nothing to carry the header down to. It stays where it is, because the
         // document keeps its own trailing trivia.
-        let one = "# mine\n\n[[plugin]]\nsrc = \"atlas\"\nfile = \"plugins/a.lua\"\n";
+        let one = "# mine\n\n[[mod]]\nsrc = \"atlas\"\nfile = \"mods/a.lua\"\n";
         let (text, _) = remove_entry(one, "atlas").expect("remove");
         assert!(text.contains("# mine"), "{text}");
         assert!(PluginSpec::parse(&text).expect("parses").plugins.is_empty());
@@ -871,11 +1019,11 @@ file = "plugins/80_notes.lua"
     fn a_lock_records_every_file_an_entry_delivered() {
         let mut lock = PluginLock::default();
         let mut files = BTreeMap::new();
-        files.insert("plugins/75_atlas.lua".to_string(), "aaaa".to_string());
+        files.insert("mods/75_atlas.lua".to_string(), "aaaa".to_string());
         files.insert("lib/atlas/util.lua".to_string(), "bbbb".to_string());
         lock.record(LockEntry {
             src: "atlas".into(),
-            file: "plugins/75_atlas.lua".into(),
+            file: "mods/75_atlas.lua".into(),
             resolved: "https://example.com/atlas".into(),
             version: "v0.3.1".into(),
             files,
@@ -884,8 +1032,8 @@ file = "plugins/80_notes.lua"
 
         let again = PluginLock::parse(&lock.to_toml().expect("render")).expect("reparses");
         assert_eq!(again, lock);
-        let entry = again.entry("plugins/75_atlas.lua").expect("entry");
-        assert_eq!(entry.digest("plugins/75_atlas.lua"), Some("aaaa"));
+        let entry = again.entry("mods/75_atlas.lua").expect("entry");
+        assert_eq!(entry.digest("mods/75_atlas.lua"), Some("aaaa"));
         assert_eq!(entry.pin_key(), "atlas@v0.3.1");
         // A module the package brought is traceable to the entry that brought it,
         // which is what stops it being reported as the user's own file.
@@ -901,7 +1049,7 @@ file = "plugins/80_notes.lua"
         for version in ["v1", "v2"] {
             lock.record(LockEntry {
                 src: "atlas".into(),
-                file: "plugins/75_atlas.lua".into(),
+                file: "mods/75_atlas.lua".into(),
                 resolved: "https://example.com/atlas".into(),
                 version: version.into(),
                 files: BTreeMap::new(),
@@ -916,7 +1064,7 @@ file = "plugins/80_notes.lua"
     fn a_record_the_spec_no_longer_lists_is_what_convergence_takes_back() {
         let spec = PluginSpec::parse(SPEC).expect("parses");
         let mut lock = PluginLock::default();
-        for file in ["plugins/75_atlas.lua", "plugins/99_gone.lua"] {
+        for file in ["mods/75_atlas.lua", "mods/99_gone.lua"] {
             lock.record(LockEntry {
                 src: "atlas".into(),
                 file: file.into(),
@@ -927,9 +1075,9 @@ file = "plugins/80_notes.lua"
             });
         }
         let beyond: Vec<&str> = lock.beyond(&spec).iter().map(|e| e.file.as_str()).collect();
-        assert_eq!(beyond, ["plugins/99_gone.lua"]);
+        assert_eq!(beyond, ["mods/99_gone.lua"]);
 
-        assert!(lock.forget("plugins/99_gone.lua").is_some());
+        assert!(lock.forget("mods/99_gone.lua").is_some());
         assert!(lock.beyond(&spec).is_empty());
     }
 
@@ -952,11 +1100,11 @@ file = "plugins/80_notes.lua"
     #[test]
     fn both_spellings_of_a_pane_parse_to_the_same_list() {
         let singular = PackageManifest::parse(
-            "name = \"atlas\"\npane = { source = \"a.lua\", path = \"plugins/75_atlas.lua\" }\n",
+            "name = \"atlas\"\npane = { source = \"a.lua\", path = \"mods/75_atlas.lua\" }\n",
         )
         .expect("singular");
         let listed = PackageManifest::parse(
-            "name = \"atlas\"\n[[pane]]\nsource = \"a.lua\"\npath = \"plugins/75_atlas.lua\"\n",
+            "name = \"atlas\"\n[[pane]]\nsource = \"a.lua\"\npath = \"mods/75_atlas.lua\"\n",
         )
         .expect("listed");
         assert_eq!(singular, listed);
@@ -982,8 +1130,8 @@ file = "plugins/80_notes.lua"
     fn two_files_of_one_package_may_not_share_a_destination() {
         let error = PackageManifest::parse(
             "name = \"atlas\"\n\
-             [[pane]]\nsource = \"a.lua\"\npath = \"plugins/75_atlas.lua\"\n\
-             [[pane]]\nsource = \"b.lua\"\npath = \"plugins/75_atlas.lua\"\n",
+             [[pane]]\nsource = \"a.lua\"\npath = \"mods/75_atlas.lua\"\n\
+             [[pane]]\nsource = \"b.lua\"\npath = \"mods/75_atlas.lua\"\n",
         )
         .expect_err("duplicate");
         assert!(error.contains("delivered twice"), "{error}");
@@ -993,32 +1141,32 @@ file = "plugins/80_notes.lua"
     fn every_pane_is_held_to_the_plugins_rule() {
         let error = PackageManifest::parse(
             "name = \"atlas\"\n\
-             [[pane]]\nsource = \"a.lua\"\npath = \"plugins/75_atlas.lua\"\n\
+             [[pane]]\nsource = \"a.lua\"\npath = \"mods/75_atlas.lua\"\n\
              [[pane]]\nsource = \"b.lua\"\npath = \"lib/atlas/b.lua\"\n",
         )
         .expect_err("second pane in lib/");
-        assert!(error.contains("belongs in plugins/"), "{error}");
+        assert!(error.contains("belongs in mods/"), "{error}");
     }
 
     #[test]
     fn pane_sources_are_read_in_either_spelling() {
         let some = |s: &str| Some(s.to_string());
         assert_eq!(
-            pane_sources_of("pane = { source = \"plugins/40_a.lua\" }\n"),
-            vec![some("plugins/40_a.lua")]
+            pane_sources_of("pane = { source = \"mods/40_a.lua\" }\n"),
+            vec![some("mods/40_a.lua")]
         );
         assert_eq!(
             pane_sources_of(
-                "[[pane]]\nsource = \"plugins/40_a.lua\"\n[[pane]]\nsource = \"plugins/41_b.lua\"\n"
+                "[[pane]]\nsource = \"mods/40_a.lua\"\n[[pane]]\nsource = \"mods/41_b.lua\"\n"
             ),
-            vec![some("plugins/40_a.lua"), some("plugins/41_b.lua")]
+            vec![some("mods/40_a.lua"), some("mods/41_b.lua")]
         );
         // A declaration with no usable source still counts.
         assert_eq!(
             pane_sources_of(
-                "[[pane]]\nsource = \"plugins/40_a.lua\"\n[[pane]]\nsource = \"\"\n[[pane]]\n"
+                "[[pane]]\nsource = \"mods/40_a.lua\"\n[[pane]]\nsource = \"\"\n[[pane]]\n"
             ),
-            vec![some("plugins/40_a.lua"), None, None]
+            vec![some("mods/40_a.lua"), None, None]
         );
         assert!(pane_sources_of("name = \"x\"\n").is_empty());
         assert!(pane_sources_of("not toml [").is_empty());

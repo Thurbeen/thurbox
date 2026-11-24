@@ -99,7 +99,7 @@ fn interface() -> (tempfile::TempDir, LuaHost) {
     // A pane that reports what it can see of the published tables, so a stale
     // group is visible as a rendered string rather than only as a counter.
     let dir = tempfile::tempdir().expect("tempdir");
-    let plugins = dir.path().join("plugins");
+    let plugins = dir.path().join("mods");
     std::fs::create_dir_all(&plugins).expect("mkdir");
     std::fs::write(
         plugins.join("10_probe.lua"),
@@ -373,7 +373,7 @@ fn a_theme_change_reaches_lua_through_its_own_version() {
 /// which is the point: a skip is meant to be invisible when the epoch is honest.
 fn two_panes() -> (tempfile::TempDir, LuaHost) {
     let dir = tempfile::tempdir().expect("tempdir");
-    let plugins = dir.path().join("plugins");
+    let plugins = dir.path().join("mods");
     std::fs::create_dir_all(&plugins).expect("mkdir");
     let body = r#"render = function()
              local names = {}
@@ -633,7 +633,7 @@ fn a_reload_drops_every_cached_tree() {
     assert!(tree_of(&host, "pure").contains("alpha"));
 
     std::fs::write(
-        dir.path().join("plugins").join("10_pure.lua"),
+        dir.path().join("mods").join("10_pure.lua"),
         r#"return { name = "pure", slot = "left", pure = true,
              render = function() return { text = "rewritten" } end }"#,
     )
@@ -663,7 +663,7 @@ fn writing_the_same_value_to_the_store_is_not_a_change() {
     // invalidate every cached tree ~40 times a second, and the measured saving
     // went from 27% to nothing.
     let dir = tempfile::tempdir().expect("tempdir");
-    let plugins = dir.path().join("plugins");
+    let plugins = dir.path().join("mods");
     std::fs::create_dir_all(&plugins).expect("mkdir");
     std::fs::write(
         plugins.join("10_pure.lua"),
@@ -846,7 +846,7 @@ fn declaring_and_setting_move_the_registrys_version_and_reading_does_not() {
 
     let settled = registry.version();
     for _ in 0..50 {
-        let _ = registry.is_disabled("ui/plugins/10_sessions.lua");
+        let _ = registry.is_disabled("ui/mods/10_sessions.lua");
     }
     assert_eq!(
         registry.version(),
@@ -931,7 +931,7 @@ fn reading_attach_failures_is_not_itself_a_change() {
 /// widget is the one that asks to be redrawn.
 fn clock_panes() -> (tempfile::TempDir, LuaHost) {
     let dir = tempfile::tempdir().expect("tempdir");
-    let plugins = dir.path().join("plugins");
+    let plugins = dir.path().join("mods");
     std::fs::create_dir_all(&plugins).expect("mkdir");
     std::fs::write(
         plugins.join("10_spinner.lua"),
@@ -1018,7 +1018,7 @@ fn a_non_string_index_on_the_render_context_is_nil_rather_than_an_error() {
     // evaluated to nil; a key typed as `String` would coerce and raise instead,
     // failing the whole render over an expression the language allows.
     let dir = tempfile::tempdir().expect("tempdir");
-    let plugins = dir.path().join("plugins");
+    let plugins = dir.path().join("mods");
     std::fs::create_dir_all(&plugins).expect("mkdir");
     std::fs::write(
         plugins.join("10_odd.lua"),
@@ -1050,7 +1050,7 @@ fn a_plugin_cannot_reach_or_replace_the_render_context_metatable() {
     // everywhere. `__metatable` is what makes it neither readable nor settable
     // from Lua, the same boundary `RUN_IMPL` gets from the registry.
     let dir = tempfile::tempdir().expect("tempdir");
-    let plugins = dir.path().join("plugins");
+    let plugins = dir.path().join("mods");
     std::fs::create_dir_all(&plugins).expect("mkdir");
     std::fs::write(
         plugins.join("10_prober.lua"),
@@ -1096,7 +1096,7 @@ fn a_pane_that_starts_reading_the_clock_is_keyed_on_it_from_then_on() {
     // clock is itself the one that re-keys the entry; there is no frame in
     // between on which a stale tree could be served.
     let dir = tempfile::tempdir().expect("tempdir");
-    let plugins = dir.path().join("plugins");
+    let plugins = dir.path().join("mods");
     std::fs::create_dir_all(&plugins).expect("mkdir");
     std::fs::write(
         plugins.join("10_maybe.lua"),
@@ -1195,9 +1195,9 @@ fn the_bundled_centre_pane_is_not_re_rendered_by_the_clock() {
 #[test]
 fn an_unrelated_worker_result_keeps_the_diff_table() {
     let dir = tempfile::tempdir().unwrap();
-    std::fs::create_dir(dir.path().join("plugins")).unwrap();
+    std::fs::create_dir(dir.path().join("mods")).unwrap();
     std::fs::write(
-        dir.path().join("plugins/10_probe.lua"),
+        dir.path().join("mods/10_probe.lua"),
         r#"local last
     return { name = "probe", slot = "center", render = function()
         local same = last == nil or rawequal(last, thurbox.diffs)
@@ -1222,13 +1222,13 @@ fn an_unrelated_worker_result_keeps_the_diff_table() {
 #[test]
 fn idle_samples_only_rebuild_their_readers() {
     let dir = tempfile::tempdir().unwrap();
-    std::fs::create_dir(dir.path().join("plugins")).unwrap();
+    std::fs::create_dir(dir.path().join("mods")).unwrap();
     for (name, expression) in [
         ("static", "'unchanged'"),
         ("clock", "tostring(thurbox.taken_at_ms)"),
         ("metrics", "tostring(thurbox.metrics.system.cpu_percent)"),
     ] {
-        std::fs::write(dir.path().join(format!("plugins/{name}.lua")), format!(
+        std::fs::write(dir.path().join(format!("mods/{name}.lua")), format!(
             "local calls = 0; return {{name = '{name}', slot = '{name}', pure = true, render = function() calls = calls + 1; return {{text = tostring(calls) .. ':' .. {expression}}} end}}"
         )).unwrap();
     }
@@ -1284,8 +1284,8 @@ fn selecting_another_session_releases_the_previous_diff() {
 #[test]
 fn observed_publication_preserves_raw_reads_and_iteration() {
     let dir = tempfile::tempdir().unwrap();
-    std::fs::create_dir(dir.path().join("plugins")).unwrap();
-    std::fs::write(dir.path().join("plugins/10_probe.lua"), r#"return {name = "probe", slot = "center", render = function()
+    std::fs::create_dir(dir.path().join("mods")).unwrap();
+    std::fs::write(dir.path().join("mods/10_probe.lua"), r#"return {name = "probe", slot = "center", render = function()
         local fields = {}
         for key, value in pairs(thurbox) do fields[key] = value end
         local next_fields = {}

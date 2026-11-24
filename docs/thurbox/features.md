@@ -65,7 +65,7 @@ the cursor moved. The contract is *Adding entries to the sessions menu* in
 **Why opened at the pointer, and closed by a click elsewhere?** That is what a
 context menu is. The kernel supplies only the mechanism — the pressed cell on
 `hit`, `float.at`, and `on_outside` for the float holding the pointer — so the
-menu itself stays a plain Lua float (`ui/plugins/64_menu.lua`) that any pane can
+menu itself stays a plain Lua float (`ui/mods/64_menu.lua`) that any pane can
 fill. A terminal that keeps the right button for itself never sends the press;
 see *The right button* in `docs/thurbox/mods.md`.
 
@@ -884,7 +884,7 @@ systemd unit. Both keep running a command that no longer exists, and
 
 ## Global Search
 
-The strip is `ui/plugins/65_search.lua`: a full-width slot the arrangement
+The strip is `ui/mods/65_search.lua`: a full-width slot the arrangement
 carves above the chrome bands, because it highlights matches *inside* the panes
 it is searching and a modal would cover the thing it is pointing at. Sessions
 is the only scope.
@@ -1190,7 +1190,7 @@ the offset is 0, new output naturally stays at the bottom.
 ### Scroll keybindings
 
 `PageUp`/`PageDown` scroll the agent tab ten rows a press
-(`terminal.scroll_up`/`terminal.scroll_down` in `ui/plugins/20_agent.lua`,
+(`terminal.scroll_up`/`terminal.scroll_down` in `ui/mods/20_agent.lua`,
 pane-scoped so the shell tab leaves them to the pty), and the mouse wheel
 scrolls a line per report — three per notch on most terminals.
 Any other keypress while scrolled up snaps back to the bottom

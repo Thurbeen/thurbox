@@ -179,7 +179,7 @@ pub(crate) async fn run() -> Result<(), Box<dyn Error>> {
         startup_notices.push(V2_STATE_NOTICE.to_string());
     }
 
-    let (ui_dir, ui_notices) = resolve_ui_dir()?;
+    let (ui_dir, ui_notices, recovering) = resolve_ui_dir()?;
     startup_notices.extend(ui_notices);
 
     // A user copy that will not load must not cost the interface, but the falling
@@ -297,7 +297,10 @@ pub(crate) async fn run() -> Result<(), Box<dyn Error>> {
         paste_burst: crate::coordinator::paste::PasteBurst::for_platform(),
         holds: Default::default(),
         config,
-        registry: Registry::load(),
+        registry: match recovering {
+            true => Registry::default(),
+            false => Registry::load(),
+        },
         modals: Modals::default(),
         // v1 boots with the TERMINAL focused, not the session list: the point
         // of the app is the agent, and you should be able to type at it without
@@ -483,16 +486,32 @@ fn focus_index_of(host: &LuaHost, name: &str) -> usize {
 /// they edited. A missing or unwritable config directory is not fatal: the
 /// embedded copies are written somewhere throwaway and used from there, because
 /// no interface at all is the one outcome worth avoiding.
-fn resolve_ui_dir() -> Result<(PathBuf, Vec<String>), Box<dyn Error>> {
+fn resolve_ui_dir() -> Result<(PathBuf, Vec<String>, bool), Box<dyn Error>> {
     // The resolution itself lives in the library, so `thurbox-cli mod dir`
     // reports the directory this will actually load. Writing the user's copy is
     // the interface's business, which is why it asks for it.
+    let migration = thurbox::kernel::mod_migration::migrate_in_force();
+    if !migration.errors.is_empty() {
+        let dir = thurbox::kernel::bundled::fallback_dir()?;
+        let mut notices = Vec::new();
+        notices.extend(migration.notice());
+        notices.extend(directory_notice(
+            &dir,
+            thurbox::kernel::bundled::Chosen::Fallback,
+        ));
+        notices.push(RECOVERY_NOTICE.to_string());
+        return Ok((dir, notices, true));
+    }
     let (dir, chosen, report) = thurbox::kernel::bundled::resolve(true)?;
     let mut notices = Vec::new();
+    notices.extend(migration.notice());
     notices.extend(directory_notice(&dir, chosen));
     notices.extend(delivery_notice(&report));
-    Ok((dir, notices))
+    Ok((dir, notices, false))
 }
+
+const RECOVERY_NOTICE: &str =
+    "until the move to mods succeeds, trust, turned-off panes, mod settings and rebound keys changed here are not saved";
 
 /// Which interface just loaded — said only when there is a question.
 ///

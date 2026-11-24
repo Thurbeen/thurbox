@@ -16,7 +16,7 @@ fn interface(plugins: &[(&str, &str)]) -> (tempfile::TempDir, std::path::PathBuf
     let ui = home.path().join("ui");
     thurbox::kernel::bundled::materialize(&ui);
     for (name, source) in plugins {
-        std::fs::write(ui.join("plugins").join(name), source).expect("write");
+        std::fs::write(ui.join("mods").join(name), source).expect("write");
     }
     (home, ui)
 }
@@ -182,12 +182,12 @@ fn an_untrusted_plugin_cannot_reach_run_under_another_name() {
 fn a_trusted_plugin_may_run_and_the_ask_is_attributed_to_it() {
     let (_home, ui) = interface(&[("91_asks.lua", &asker("asks", "k", true))]);
     let host = LuaHost::new(&ui);
-    host.set_trusted(vec!["plugins/91_asks.lua".to_string()]);
+    host.set_trusted(vec!["mods/91_asks.lua".to_string()]);
     render(&host, "asks");
 
     let asked = host.drain_runs();
     assert_eq!(asked.len(), 1, "{asked:?}");
-    assert_eq!(asked[0].0, "plugins/91_asks.lua", "attributed to the asker");
+    assert_eq!(asked[0].0, "mods/91_asks.lua", "attributed to the asker");
     assert_eq!(asked[0].1.key, "k");
     assert_eq!(asked[0].1.program, "echo hi");
 }
@@ -200,20 +200,20 @@ fn trusting_one_plugin_does_not_trust_another() {
         ("92_no.lua", &asker("no", "k", true)),
     ]);
     let host = LuaHost::new(&ui);
-    host.set_trusted(vec!["plugins/91_yes.lua".to_string()]);
+    host.set_trusted(vec!["mods/91_yes.lua".to_string()]);
     render(&host, "yes");
     render(&host, "no");
 
     let asked = host.drain_runs();
     assert_eq!(asked.len(), 1, "only the trusted one may run: {asked:?}");
-    assert_eq!(asked[0].0, "plugins/91_yes.lua");
+    assert_eq!(asked[0].0, "mods/91_yes.lua");
 }
 
 #[test]
 fn revoking_takes_the_capability_away_again() {
     let (_home, ui) = interface(&[("91_asks.lua", &asker("asks", "k", true))]);
     let host = LuaHost::new(&ui);
-    host.set_trusted(vec!["plugins/91_asks.lua".to_string()]);
+    host.set_trusted(vec!["mods/91_asks.lua".to_string()]);
     render(&host, "asks");
     assert_eq!(host.drain_runs().len(), 1);
 
@@ -243,7 +243,7 @@ fn forgetting_run_answers_requires_the_same_owner_grant_as_running() {
     let (_home, ui) = interface(&[("91_forget.lua", source)]);
     let host = LuaHost::new(&ui);
     render(&host, "forget-grant");
-    host.set_trusted(vec!["plugins/91_forget.lua".to_string()]);
+    host.set_trusted(vec!["mods/91_forget.lua".to_string()]);
     render(&host, "forget-grant");
     host.set_trusted(Vec::new());
     render(&host, "forget-grant");
@@ -272,7 +272,7 @@ fn a_plugin_reads_its_own_answers_and_no_one_elses() {
     let host = LuaHost::new(&ui);
     let mut answers = std::collections::HashMap::new();
     answers.insert(
-        "plugins/91_a.lua".to_string(),
+        "mods/91_a.lua".to_string(),
         vec![(
             "mine".to_string(),
             Run::Done(thurbox::kernel::runs::Output {
@@ -355,7 +355,7 @@ fn a_plugin_may_be_written_as_several_modules() {
     )
     .expect("write module");
     std::fs::write(
-        ui.join("plugins").join("91_multi.lua"),
+        ui.join("mods").join("91_multi.lua"),
         r#"local parse = require("mine.parse")
 return { name = "multi", slot = "sessions",
          render = function() return { type = "text", text = parse.greet() } end }"#,
@@ -428,7 +428,7 @@ fn asking_with(name: &str, opts: &str) -> String {
 fn the_one_ask(opts: &str) -> Ask {
     let (_home, ui) = interface(&[("91_where.lua", &asking_with("where", opts))]);
     let host = LuaHost::new(&ui);
-    host.set_trusted(vec!["plugins/91_where.lua".to_string()]);
+    host.set_trusted(vec!["mods/91_where.lua".to_string()]);
     render(&host, "where");
     let mut asked = host.drain_runs();
     assert_eq!(asked.len(), 1, "{asked:?}");
@@ -486,13 +486,13 @@ fn forget_preserves_order_and_binds_the_issuing_owner() {
     }"#;
     let (_home, ui) = interface(&[("91_ordered.lua", source)]);
     let host = LuaHost::new(&ui);
-    host.set_trusted(vec!["plugins/91_ordered.lua".to_string()]);
+    host.set_trusted(vec!["mods/91_ordered.lua".to_string()]);
     render(&host, "ordered");
     let requests = host.drain_run_requests();
     assert_eq!(requests.len(), 3);
     assert!(requests
         .iter()
-        .all(|(owner, _)| owner == "plugins/91_ordered.lua"));
+        .all(|(owner, _)| owner == "mods/91_ordered.lua"));
     assert!(
         matches!(&requests[0].1, thurbox::kernel::runs::Request::Ask(ask) if ask.program == "true")
     );
@@ -515,13 +515,10 @@ fn reload_discards_unserved_host_requests_from_retired_owners_and_keeps_live_one
         ),
     ]);
     let mut host = LuaHost::new(&ui);
-    host.set_trusted(vec![
-        "plugins/91_gone.lua".into(),
-        "plugins/92_keeper.lua".into(),
-    ]);
+    host.set_trusted(vec!["mods/91_gone.lua".into(), "mods/92_keeper.lua".into()]);
     render(&host, "gone");
     render(&host, "keeper");
-    std::fs::remove_file(ui.join("plugins/91_gone.lua")).expect("remove owner");
+    std::fs::remove_file(ui.join("mods/91_gone.lua")).expect("remove owner");
     host.reload();
     assert!(host.error.is_none(), "{:?}", host.error);
     assert!(host.index_of("gone").is_none());
@@ -531,7 +528,7 @@ fn reload_discards_unserved_host_requests_from_retired_owners_and_keeps_live_one
         1,
         "retired owner reached execution: {requests:?}"
     );
-    assert_eq!(requests[0].0, "plugins/92_keeper.lua");
+    assert_eq!(requests[0].0, "mods/92_keeper.lua");
     assert!(
         matches!(&requests[0].1, thurbox::kernel::runs::Request::Ask(ask) if ask.target == Target::Local)
     );
@@ -552,7 +549,7 @@ fn session_routing_requires_a_nonempty_string_before_queueing() {
     ] {
         let (_home, ui) = interface(&[("91_where.lua", &asking_with("where", opts))]);
         let host = LuaHost::new(&ui);
-        host.set_trusted(vec!["plugins/91_where.lua".to_string()]);
+        host.set_trusted(vec!["mods/91_where.lua".to_string()]);
         let err = host
             .render(
                 host.index_of("where").expect("loaded"),
@@ -588,7 +585,7 @@ fn a_machine_nobody_knows_is_refused_not_guessed() {
     ] {
         let (_home, ui) = interface(&[("91_where.lua", &asking_with("where", opts))]);
         let host = LuaHost::new(&ui);
-        host.set_trusted(vec!["plugins/91_where.lua".to_string()]);
+        host.set_trusted(vec!["mods/91_where.lua".to_string()]);
         let err = host.render(
             host.index_of("where").expect("loaded"),
             RenderContext {
@@ -672,8 +669,8 @@ fn trusting_a_file_for_one_capability_does_not_grant_the_other() {
     ]);
     let host = LuaHost::new(&ui);
     host.set_trusted(vec![
-        "plugins/91_runner.lua".to_string(),
-        "plugins/92_watcher.lua".to_string(),
+        "mods/91_runner.lua".to_string(),
+        "mods/92_watcher.lua".to_string(),
     ]);
 
     let runner = &host.plugins[host.index_of("runner").expect("loaded")];
@@ -701,11 +698,11 @@ fn declaring_a_capability_is_not_being_granted_it() {
         "declaring is asking, not being granted"
     );
     // And the path-keyed form agrees, since that is what a queued command carries.
-    assert!(!host.may_path("plugins/91_watch.lua", Capability::Program));
-    host.set_trusted(vec!["plugins/91_watch.lua".to_string()]);
-    assert!(host.may_path("plugins/91_watch.lua", Capability::Program));
+    assert!(!host.may_path("mods/91_watch.lua", Capability::Program));
+    host.set_trusted(vec!["mods/91_watch.lua".to_string()]);
+    assert!(host.may_path("mods/91_watch.lua", Capability::Program));
     assert!(
-        !host.may_path("plugins/99_nobody.lua", Capability::Program),
+        !host.may_path("mods/99_nobody.lua", Capability::Program),
         "a path that names no loaded plugin may nothing"
     );
 }
@@ -775,7 +772,7 @@ fn enforce(host: &LuaHost, ui: &std::path::Path) {
 fn an_update_that_moves_the_pin_takes_run_away() {
     let (home, ui) = interface(&[]);
     let _config = configure(home.path());
-    let file = "plugins/91_asks.lua";
+    let file = "mods/91_asks.lua";
     let pin = deliver_package(&ui, file, "v1", &asker("asks", "k", true));
     thurbox::kernel::registry::Registry::load()
         .trust_installed(
@@ -807,7 +804,7 @@ fn an_installed_file_whose_contents_changed_under_its_pin_loses_run() {
     // the grant was made to other contents and must not ride along.
     let (home, ui) = interface(&[]);
     let _config = configure(home.path());
-    let file = "plugins/91_asks.lua";
+    let file = "mods/91_asks.lua";
     let pin = deliver_package(&ui, file, "v1", &asker("asks", "k", true));
     thurbox::kernel::registry::Registry::load()
         .trust_installed(
@@ -830,7 +827,7 @@ fn editing_your_own_trusted_file_keeps_run() {
     // and the grant stands, which is what the row says.
     let (home, ui) = interface(&[("91_asks.lua", &asker("asks", "k", true))]);
     let _config = configure(home.path());
-    let file = "plugins/91_asks.lua";
+    let file = "mods/91_asks.lua";
     thurbox::kernel::registry::Registry::load()
         .trust(&ui.join(file).to_string_lossy(), &asker("asks", "k", true))
         .expect("trust");
@@ -849,7 +846,7 @@ fn editing_your_own_trusted_file_keeps_run() {
 fn changed_installed_file_without_its_lock_entry(damage: impl FnOnce(&std::path::Path)) {
     let (home, ui) = interface(&[]);
     let _config = configure(home.path());
-    let file = "plugins/91_asks.lua";
+    let file = "mods/91_asks.lua";
     let pin = deliver_package(&ui, file, "v1", &asker("asks", "k", true));
     thurbox::kernel::registry::Registry::load()
         .trust_installed(
@@ -913,7 +910,7 @@ fn lured() -> (tempfile::TempDir, LuaHost) {
     let (home, ui) = interface(&[("91_lure.lua", LURE), ("92_victim.lua", VICTIM)]);
     let _config = configure(home.path());
     thurbox::kernel::registry::Registry::load()
-        .trust(&ui.join("plugins/92_victim.lua").to_string_lossy(), VICTIM)
+        .trust(&ui.join("mods/92_victim.lua").to_string_lossy(), VICTIM)
         .expect("trust");
     let host = LuaHost::new(&ui);
     assert!(host.error.is_none(), "{:?}", host.error);
@@ -937,7 +934,7 @@ fn a_pane_cannot_run_a_program_through_a_global_another_pane_calls() {
 fn a_pane_cannot_write_a_command_as_another_pane() {
     let (_home, host) = lured();
     for (owner, command) in host.drain_issued() {
-        assert_ne!(owner, "plugins/92_victim.lua", "{command:?}");
+        assert_ne!(owner, "mods/92_victim.lua", "{command:?}");
     }
 }
 
@@ -1003,7 +1000,7 @@ fn a_trusted_pane_holding_sessions_may_drive_them() {
     let (home, ui) = interface(&[("91_driver.lua", &source)]);
     let _config = configure(home.path());
     thurbox::kernel::registry::Registry::load()
-        .trust(&ui.join("plugins/91_driver.lua").to_string_lossy(), &source)
+        .trust(&ui.join("mods/91_driver.lua").to_string_lossy(), &source)
         .expect("trust");
     let host = LuaHost::new(&ui);
     enforce(&host, &ui);
@@ -1021,7 +1018,7 @@ fn trusting_a_pane_for_run_does_not_let_it_drive_sessions() {
     let (home, ui) = interface(&[("91_driver.lua", &source)]);
     let _config = configure(home.path());
     thurbox::kernel::registry::Registry::load()
-        .trust(&ui.join("plugins/91_driver.lua").to_string_lossy(), &source)
+        .trust(&ui.join("mods/91_driver.lua").to_string_lossy(), &source)
         .expect("trust");
     let host = LuaHost::new(&ui);
     enforce(&host, &ui);
@@ -1098,7 +1095,7 @@ fn a_pane_trusted_with_files_may_read_them_and_the_next_pane_may_not() {
     let (home, ui) = interface(&[("91_reader.lua", &source), ("92_other.lua", &other)]);
     let _config = configure(home.path());
     thurbox::kernel::registry::Registry::load()
-        .trust(&ui.join("plugins/91_reader.lua").to_string_lossy(), &source)
+        .trust(&ui.join("mods/91_reader.lua").to_string_lossy(), &source)
         .expect("trust");
     let host = LuaHost::new(&ui);
     enforce(&host, &ui);
@@ -1122,7 +1119,7 @@ fn the_shipped_confirmation_and_creation_flow_hold_sessions_untouched() {
     let _config = configure(home.path());
     let host = LuaHost::new(&ui);
     enforce(&host, &ui);
-    for pane in ["plugins/60_confirm.lua", "plugins/70_new_session.lua"] {
+    for pane in ["mods/60_confirm.lua", "mods/70_new_session.lua"] {
         assert!(host.may_path(pane, Capability::Sessions), "{pane}");
     }
 }
@@ -1168,10 +1165,7 @@ fn victim_program_after(lure: &str) -> String {
     let (home, ui) = interface(&[("91_lure.lua", &source), ("92_victim.lua", FORMATTER)]);
     let _config = configure(home.path());
     thurbox::kernel::registry::Registry::load()
-        .trust(
-            &ui.join("plugins/92_victim.lua").to_string_lossy(),
-            FORMATTER,
-        )
+        .trust(&ui.join("mods/92_victim.lua").to_string_lossy(), FORMATTER)
         .expect("trust");
     let host = LuaHost::new(&ui);
     assert!(host.error.is_none(), "{lure}: {:?}", host.error);
@@ -1180,7 +1174,7 @@ fn victim_program_after(lure: &str) -> String {
     render(&host, "victim");
     let runs = host.drain_runs();
     match runs.as_slice() {
-        [(owner, ask)] if owner == "plugins/92_victim.lua" => ask.program.clone(),
+        [(owner, ask)] if owner == "mods/92_victim.lua" => ask.program.clone(),
         other => panic!("{lure}: {other:?}"),
     }
 }
@@ -1265,20 +1259,20 @@ fn an_edited_shipped_pane_loses_sessions_until_it_is_trusted() {
     // is decided like any other file.
     let (home, ui) = interface(&[]);
     let _config = configure(home.path());
-    let file = ui.join("plugins/60_confirm.lua");
+    let file = ui.join("mods/60_confirm.lua");
     let edited = std::fs::read_to_string(&file).expect("read") + "\n-- mine\n";
     std::fs::write(&file, &edited).expect("edit");
 
     let host = LuaHost::new(&ui);
     enforce(&host, &ui);
-    assert!(!host.may_path("plugins/60_confirm.lua", Capability::Sessions));
+    assert!(!host.may_path("mods/60_confirm.lua", Capability::Sessions));
 
     thurbox::kernel::registry::Registry::load()
         .trust(&file.to_string_lossy(), &edited)
         .expect("trust");
     let host = LuaHost::new(&ui);
     enforce(&host, &ui);
-    assert!(host.may_path("plugins/60_confirm.lua", Capability::Sessions));
+    assert!(host.may_path("mods/60_confirm.lua", Capability::Sessions));
 }
 
 /// A pane holding no grant that leaves the shipped confirmation a question
@@ -1328,7 +1322,7 @@ fn the_shipped_confirmation_does_not_launder_send_or_create() {
         matches!(
             delete.as_slice(),
             [(owner, thurbox::kernel::command::Command::Delete { .. })]
-                if owner == "plugins/60_confirm.lua"
+                if owner == "mods/60_confirm.lua"
         ),
         "the change the shipped panes ask about still passes: {delete:?}"
     );
@@ -1350,7 +1344,7 @@ end }"#;
     publish(&host);
     let mut answers = std::collections::HashMap::new();
     answers.insert(
-        "plugins/91_a.lua".to_string(),
+        "mods/91_a.lua".to_string(),
         vec![(
             "mine".to_string(),
             Run::Done(thurbox::kernel::runs::Output {
@@ -1419,7 +1413,7 @@ end }"#;
     publish(&host);
     let mut answers = std::collections::HashMap::new();
     answers.insert(
-        "plugins/91_a.lua".to_string(),
+        "mods/91_a.lua".to_string(),
         vec![(
             "mine".to_string(),
             Run::Done(thurbox::kernel::runs::Output {
@@ -1526,7 +1520,7 @@ fn saving_a_panes_whole_thurbox_keeps_what_it_reads() {
     publish(&host);
     let mut answers = std::collections::HashMap::new();
     answers.insert(
-        "plugins/91_saver.lua".to_string(),
+        "mods/91_saver.lua".to_string(),
         vec![(
             "mine".to_string(),
             Run::Done(thurbox::kernel::runs::Output {
@@ -1591,7 +1585,7 @@ fn an_untrusted_pane_may_not_reach_an_agent_through_another_verb() {
     // something or reach out too: `plugin` rewrites or deletes a file of the
     // interface, and `open` sends whatever the URL carries to the network.
     let source = r#"return { name = "driver", slot = "sessions", render = function()
-  command("plugin", { file = "plugins/10_sessions.lua", action = "remove" })
+  command("plugin", { file = "mods/10_sessions.lua", action = "remove" })
   command("open", { text = "https://example.invalid/?q=secret" })
   return { type = "text", text = "" }
 end }"#;
@@ -1644,7 +1638,7 @@ end }"#;
         .expect("render");
     let text = format!("{:?}", drawn.node);
     assert!(text.contains("for good"), "the change itself: {text}");
-    assert!(text.contains("plugins/91_lure.lua"), "who asked: {text}");
+    assert!(text.contains("mods/91_lure.lua"), "who asked: {text}");
     assert!(
         !text.contains("Refresh?"),
         "not the asker's own words: {text}"
@@ -1671,10 +1665,7 @@ fn an_action_another_pane_asked_for_acts_with_that_panes_grant() {
     let (home, ui) = interface(&[("91_grantee.lua", GRANTEE)]);
     let _config = configure(home.path());
     thurbox::kernel::registry::Registry::load()
-        .trust(
-            &ui.join("plugins/91_grantee.lua").to_string_lossy(),
-            GRANTEE,
-        )
+        .trust(&ui.join("mods/91_grantee.lua").to_string_lossy(), GRANTEE)
         .expect("trust");
     let host = LuaHost::new(&ui);
     assert!(host.error.is_none(), "{:?}", host.error);
@@ -1694,7 +1685,7 @@ fn an_action_another_pane_asked_for_acts_with_that_panes_grant() {
     host.on_action(grantee, "g.send").expect("own key");
     assert_eq!(refused(&host), vec![false], "the grantee's own key sends");
 
-    host.on_behalf_of("plugins/90_lure.lua", || host.on_action(grantee, "g.send"))
+    host.on_behalf_of("mods/90_lure.lua", || host.on_action(grantee, "g.send"))
         .expect("asked by another pane");
     assert_eq!(
         refused(&host),
@@ -1766,10 +1757,7 @@ end }"#;
     ]);
     let _config = configure(home.path());
     thurbox::kernel::registry::Registry::load()
-        .trust(
-            &ui.join("plugins/91_grantee.lua").to_string_lossy(),
-            GRANTEE,
-        )
+        .trust(&ui.join("mods/91_grantee.lua").to_string_lossy(), GRANTEE)
         .expect("trust");
     let host = LuaHost::new(&ui);
     assert!(host.error.is_none(), "{:?}", host.error);
@@ -1777,10 +1765,8 @@ end }"#;
     let churner = host.index_of("churner").expect("churner");
     for _ in 0..40 {
         render(&host, "litter");
-        host.on_behalf_of("plugins/91_grantee.lua", || {
-            host.on_action(churner, "c.churn")
-        })
-        .expect("churn");
+        host.on_behalf_of("mods/91_grantee.lua", || host.on_action(churner, "c.churn"))
+            .expect("churn");
     }
     let passed: Vec<_> = host
         .drain_issued()
@@ -1813,8 +1799,8 @@ fn a_chained_action_still_runs_for_the_pane_that_first_asked() {
     let _config = configure(home.path());
     let mut registry = thurbox::kernel::registry::Registry::load();
     for (file, source) in [
-        ("plugins/91_grantee.lua", GRANTEE),
-        ("plugins/92_forwarder.lua", forwarder),
+        ("mods/91_grantee.lua", GRANTEE),
+        ("mods/92_forwarder.lua", forwarder),
     ] {
         registry
             .trust(&ui.join(file).to_string_lossy(), source)
@@ -1826,7 +1812,7 @@ fn a_chained_action_still_runs_for_the_pane_that_first_asked() {
 
     // The coordinator's two hops: the lure asks for `f.forward`, and the
     // action that handler queues runs for the chain `runs_for` names.
-    host.on_behalf_of("plugins/90_lure.lua", || {
+    host.on_behalf_of("mods/90_lure.lua", || {
         host.on_action(host.index_of("forwarder").expect("forwarder"), "f.forward")
     })
     .expect("first hop");
@@ -1838,8 +1824,8 @@ fn a_chained_action_still_runs_for_the_pane_that_first_asked() {
     assert_eq!(
         asking,
         vec![
-            "plugins/90_lure.lua".to_string(),
-            "plugins/92_forwarder.lua".to_string()
+            "mods/90_lure.lua".to_string(),
+            "mods/92_forwarder.lua".to_string()
         ],
         "the pane that first asked, then the one that forwarded"
     );
@@ -1871,15 +1857,12 @@ fn a_trusted_pane_cannot_lend_its_grant_to_a_handler_it_asks() {
     ]);
     let _config = configure(home.path());
     thurbox::kernel::registry::Registry::load()
-        .trust(
-            &ui.join("plugins/91_grantee.lua").to_string_lossy(),
-            GRANTEE,
-        )
+        .trust(&ui.join("mods/91_grantee.lua").to_string_lossy(), GRANTEE)
         .expect("trust");
     let host = LuaHost::new(&ui);
     assert!(host.error.is_none(), "{:?}", host.error);
     enforce(&host, &ui);
-    host.on_behalf_of("plugins/91_grantee.lua", || {
+    host.on_behalf_of("mods/91_grantee.lua", || {
         host.on_action(host.index_of("untrusted").expect("untrusted"), "u.send")
     })
     .expect("asked by the trusted pane");
@@ -1916,7 +1899,7 @@ fn the_confirmation_names_the_pane_a_request_was_made_for() {
     let host = LuaHost::new(&ui);
     assert!(host.error.is_none(), "{:?}", host.error);
     publish(&host);
-    host.on_behalf_of("plugins/90_lure.lua", || {
+    host.on_behalf_of("mods/90_lure.lua", || {
         host.on_action(host.index_of("asker").expect("asker"), "h.ask")
     })
     .expect("asked for the lure");
@@ -1934,7 +1917,7 @@ fn the_confirmation_names_the_pane_a_request_was_made_for() {
         .expect("render");
     let text = format!("{:?}", drawn.node);
     assert!(
-        text.contains("asked by plugins/90_lure.lua via plugins/91_asker.lua"),
+        text.contains("asked by mods/90_lure.lua via mods/91_asker.lua"),
         "{text}"
     );
 }
@@ -1963,7 +1946,7 @@ fn a_blocked_file_read_does_not_stop_other_plugins_painting() {
         .unwrap()
         .success());
     let host = LuaHost::new(&ui);
-    host.set_trusted(vec!["plugins/91_reader.lua".into()]);
+    host.set_trusted(vec!["mods/91_reader.lua".into()]);
     let snapshot = file_snapshot(home.path());
     publish_snapshot(&host, &snapshot);
     let writer_delay_bounding_a_read_that_blocks = Duration::from_secs(1);
@@ -2050,7 +2033,7 @@ fn a_fleet_session_on_another_machine_has_no_files_here() {
     let (home, ui) = interface(&[("91_reader.lua", source)]);
     std::fs::write(home.path().join("notes"), "this machine's").unwrap();
     let host = LuaHost::new(&ui);
-    host.set_trusted(vec!["plugins/91_reader.lua".into()]);
+    host.set_trusted(vec!["mods/91_reader.lua".into()]);
     let mut snapshot = file_snapshot(home.path());
     snapshot.sessions[0].backend = "fleet".into();
     snapshot.sessions[0].remote_host = Some("devbox".into());
@@ -2086,7 +2069,7 @@ fn file_read_answers_refresh_report_errors_and_follow_the_session_root() {
     std::fs::write(home.path().join("notes"), "first").unwrap();
     std::fs::write(other.path().join("notes"), "second").unwrap();
     let host = LuaHost::new(&ui);
-    host.set_trusted(vec!["plugins/91_reader.lua".into()]);
+    host.set_trusted(vec!["mods/91_reader.lua".into()]);
     publish_snapshot(&host, &file_snapshot(home.path()));
     render(&host, "reader");
     assert_eq!(files_seen(&host), "pending");
@@ -2131,7 +2114,7 @@ fn revoking_files_stops_refreshing_the_plugins_old_reads() {
     let (home, ui) = interface(&[("91_reader.lua", source)]);
     std::fs::write(home.path().join("notes"), "first").unwrap();
     let host = LuaHost::new(&ui);
-    host.set_trusted(vec!["plugins/91_reader.lua".into()]);
+    host.set_trusted(vec!["mods/91_reader.lua".into()]);
     publish_snapshot(&host, &file_snapshot(home.path()));
     render(&host, "reader");
     let deadline = Instant::now() + Duration::from_secs(2);
@@ -2164,7 +2147,7 @@ fn file_read_demand_metadata_has_a_per_plugin_bound() {
       end }"#;
     let (home, ui) = interface(&[("91_reader.lua", source)]);
     let host = LuaHost::new(&ui);
-    host.set_trusted(vec!["plugins/91_reader.lua".into()]);
+    host.set_trusted(vec!["mods/91_reader.lua".into()]);
     publish_snapshot(&host, &file_snapshot(home.path()));
     render(&host, "reader");
     assert!(files_seen(&host).contains("16 distinct paths"));
@@ -2181,7 +2164,7 @@ fn a_pure_file_reader_keeps_demand_on_cache_hits_and_retires_it_when_hidden() {
     let path = home.path().join("notes");
     std::fs::write(&path, "first").unwrap();
     let host = LuaHost::new(&ui);
-    host.set_trusted(vec!["plugins/91_reader.lua".into()]);
+    host.set_trusted(vec!["mods/91_reader.lua".into()]);
     let snapshot = file_snapshot(home.path());
     publish_snapshot(&host, &snapshot);
     let draw = || {

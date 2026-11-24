@@ -1121,7 +1121,7 @@ impl LuaHost {
             entered: self.current_path.clone(),
         };
 
-        let dir = self.ui_dir.join("plugins");
+        let dir = self.ui_dir.join(crate::session::plugin_spec::MODS_DIR);
         let mut files: Vec<PathBuf> = fs::read_dir(&dir)
             .map_err(|e| format!("{}: {e}", dir.display()))?
             .filter_map(|entry| entry.ok().map(|entry| entry.path()))
@@ -1130,9 +1130,9 @@ impl LuaHost {
         // Sorted so `order` ties break by filename, deterministically.
         files.sort();
 
-        // Panes the spec names outside `plugins/`. A plugin obtained as a repository
+        // Panes the spec names outside `mods/`. A plugin obtained as a repository
         // keeps its author's layout, so its pane sits at `<name>/…` — invisible to
-        // the scan above, which reads only the top level of `plugins/`.
+        // the scan above, which reads only the top level of `mods/`.
         //
         // Its place in the load order is unaffected: `order` comes from the
         // *basename*'s numeric prefix, so `40_x.lua` sorts as `40_x.lua` wherever it
@@ -1146,7 +1146,7 @@ impl LuaHost {
                     .collect()
             })
             // A malformed spec must not cost the whole interface: the panes in
-            // `plugins/` still load, and `plugin check` reports the spec separately.
+            // `mods/` still load, and `plugin check` reports the spec separately.
             .unwrap_or_default();
 
         let mut plugins = Vec::new();
@@ -1163,7 +1163,7 @@ impl LuaHost {
                 .file_name()
                 .map(std::ffi::OsStr::to_string_lossy)
                 .unwrap_or_default();
-            let relative = format!("plugins/{name}");
+            let relative = format!("{}/{name}", crate::session::plugin_spec::MODS_DIR);
             // A plugin the user turned off is simply not read. That is the
             // entire implementation: it is absent from `plugins`, so it declares
             // no key, occupies no slot, is granted no capability and cannot fail

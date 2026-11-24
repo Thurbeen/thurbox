@@ -1262,9 +1262,9 @@ mod tests {
         use crate::kernel::host::{Epoch, LuaHost, Published, RenderContext};
 
         let dir = tempfile::tempdir().unwrap();
-        std::fs::create_dir(dir.path().join("plugins")).unwrap();
+        std::fs::create_dir(dir.path().join("mods")).unwrap();
         std::fs::write(
-            dir.path().join("plugins/probe.lua"),
+            dir.path().join("mods/probe.lua"),
             r#"return { name = "probe", slot = "center", pure = true,
                 render = function()
                     return { text = thurbox.sessions[1].attach_error or "connected" }

@@ -67,7 +67,7 @@ pub(crate) const PROGRAM_WINDOW_PREFIX: &str = "tbp-";
 /// `owner` is a short **digest** of the owning plugin's path, computed by the
 /// caller, not the path itself. Two reasons, and the first is a correctness one:
 /// [`sanitize_window_name`] maps every character outside `[A-Za-z0-9_-]` to `_`,
-/// so `plugins/90_watch.lua` and `plugins.90.watch.lua` would sanitize to the same
+/// so `mods/90_watch.lua` and `mods.90.watch.lua` would sanitize to the same
 /// window and two plugins would share one program. The second is that a path is
 /// long enough to make the window list unreadable.
 ///
@@ -548,8 +548,8 @@ pub(crate) mod tests {
     #[test]
     fn sanitizing_a_path_would_collide_which_is_why_the_owner_is_digested() {
         assert_eq!(
-            sanitize_window_name("plugins/90_watch.lua"),
-            sanitize_window_name("plugins.90.watch.lua"),
+            sanitize_window_name("mods/90_watch.lua"),
+            sanitize_window_name("mods.90.watch.lua"),
             "two distinct paths, one window name — the collision a digest avoids"
         );
         // Digested owners of different paths do not collide.

@@ -82,16 +82,29 @@ failing check.
 | `~/.config/thurbox/settings.toml` | TOML | you + `Ctrl+,` panel | **live** (feature flags) / startup (rest) | tuning knobs + feature flags |
 | `~/.config/thurbox/themes.toml` | TOML | you | startup | custom theme palettes |
 | `~/.config/thurbox/ui/` | Lua | you | **live** (watched, 120 ms debounce; `F10` forces) | **the interface itself** — one file per pane, plus `layout.lua`, `lib/`, `AGENTS.md`/`README.md` for whoever edits it, and a directory per mod installed from a repository (its own working copy, `.git` included) |
-| `~/.config/thurbox/ui/plugins.toml` | TOML | you (or `thurbox-cli mod`) | on each `mod` command | **what the interface is composed of**: a source, a destination file and an optional pin, per installed pane |
-| `~/.config/thurbox/ui/plugins.lock` | TOML | `thurbox-cli mod` | on each `mod` command | what each entry resolved to, and the digest of every file delivered. Machine-written — commit it beside the spec and the same interface reproduces elsewhere |
+| `~/.config/thurbox/ui/mods.toml` | TOML | you (or `thurbox-cli mod`) | on each `mod` command | **what the interface is composed of**: a source, a destination file and an optional pin, per installed pane |
+| `~/.config/thurbox/ui/mods.lock` | TOML | `thurbox-cli mod` | on each `mod` command | what each entry resolved to, and the digest of every file delivered. Machine-written — commit it beside the spec and the same interface reproduces elsewhere |
 | `~/.config/thurbox/ui.json` | JSON | `F1` / Interface tab (or you) | startup | your decisions *about* the interface: rebound chords, mod settings, and the action band's order (`"pills": { "<action>": <priority> }`, replacing what the declaring mod chose — an entry naming an action nothing declares is ignored, not drawn). Written back only by a registry that **read** it (`registry::Origin`), so a process holding no decisions cannot empty it |
-| `~/.config/thurbox/plugin-state.json` | JSON | Interface tab (or `thurbox-cli mod`) | startup | **what a mod may do**: `trusted` (absolute path → the grant, a digest or `{pin, digest}` for an installed pane) and `disabled` (absolute paths turned off). Kept apart from `ui.json` so the file capabilities are granted from is written only when a grant or the disabled set changes. One that exists but cannot be read or parsed is never replaced, and `config validate` names it. Same `registry::Origin` rule as `ui.json` |
+| `~/.config/thurbox/mod-state.json` | JSON | Interface tab (or `thurbox-cli mod`) | startup | **what a mod may do**: `trusted` (absolute path → the grant, a digest or `{pin, digest}` for an installed pane) and `disabled` (absolute paths turned off). Kept apart from `ui.json` so the file capabilities are granted from is written only when a grant or the disabled set changes. One that exists but cannot be read or parsed is never replaced, and `config validate` names it. Same `registry::Origin` rule as `ui.json` |
 | `~/.config/thurbox/interface.json` | JSON | thurbox (theme picker, `thurbox-cli editor`, the session list's order) | startup, and again after each change | the theme last chosen, the editor `Ctrl+O` opens and the manual session order. Rewritten whole under a lock every process takes (`interface.json.lock`). Missing or unreadable is the defaults |
 | `~/.local/share/thurbox/bookmarks.json` | JSON | the creation flow | each read of the repository list | the repositories and folders the creation flow remembers, per host. Rewritten whole under a lock every process takes (`bookmarks.json.lock`) |
 | `~/.local/share/thurbox/notify-dedupe.json` | JSON | `thurbox-cli notify send --key` | each keyed send | each dedupe key and when its hold ends; expired holds are dropped on the next keyed send. Rewritten whole under a lock (`notify-dedupe.json.lock`) |
 | `~/.local/share/thurbox/perf.json` | JSON | thurbox, while perf timing is on | each perf window | the perf snapshot `thurbox-cli perf` prints |
 | `~/.local/share/thurbox/thurbox.db.migrated` | text | `thurbox-cli migrate` | startup | marks that a run imported each session and automation of the 2.x `thurbox.db` that it can import; while `thurbox.db` exists without it, thurbox names `thurbox-cli migrate` at startup ([Migrating to v3](../migrating-to-v3.md#3-start-your-work-again-as-tasks)) |
 | `~/.local/share/thurbox/thurbox.log` | text | thurbox | — | logs (incl. config warnings). Rotated daily into `thurbox.log.<date>`; the 30 most recent are kept and older ones deleted at startup |
+
+Before mods were mods, these files had other names: `ui/plugins/`,
+`ui/plugins.toml`, `ui/plugins.lock` and `plugin-state.json`. thurbox moves
+each one to its new name once, at startup and before each `thurbox-cli mod`
+or `thurbox-cli config` command. The move keeps every trust grant, the
+disabled set and each edited or deleted shipped pane. An older thurbox does not
+move them back. A move that cannot save a file leaves the old names in place.
+thurbox then starts on the embedded interface and names the file. It saves no
+grant, turned-off pane, mod setting or rebound key made there; thurbox's own
+settings and the theme still save as usual. `thurbox-cli doctor` warns about an old name that is still
+there.
+[mods.md → Before mods were mods](mods.md#before-mods-were-mods) has the
+detail.
 
 `settings.toml` reloads **live**: the TUI checks its mtime about once per
 second and applies edits without a restart. A successful edit shows a toast;
@@ -118,7 +131,7 @@ the file (or the panel in another instance) is picked up the same way,
 via the live mtime poll.
 
 Every file thurbox writes that a user edits or thurbox reads back — `settings.toml`,
-`ui.json`, `plugin-state.json` (and the other seeded config files),
+`ui.json`, `mod-state.json` (and the other seeded config files),
 the interface's mod
 lock, spec and bundled files — is written through
 one writer, `paths::write_atomically`. It stages a complete file beside the
@@ -421,7 +434,7 @@ the next launch. Data is never touched, so re-enabling a flag is lossless.
 
 **A pane is not switched off here.** Panes are files, so turning one off
 is `space` on its row in the Interface tab (`Ctrl+,` then `]`), recorded
-in `plugin-state.json`. That does strictly more than a flag could: it works for a
+in `mod-state.json`. That does strictly more than a flag could: it works for a
 mod *you* wrote, which no compiled-in flag could know about.
 
 The panes for code review and the info panel are mods
@@ -763,7 +776,9 @@ a place.
   multiplexer is checked only when a listed Fleet runs on this machine. A
   `hosts.toml` an earlier thurbox left in the config directory is a warning
   (`hosts-toml`): nothing reads it, and its fix is to list each machine's
-  Fleet under `[fleets]`.
+  Fleet under `[fleets]`. An old `ui/plugins/`, `ui/plugins.toml`,
+  `ui/plugins.lock` or `plugin-state.json` still present is a warning
+  (`mod-leftovers`), with the step that moves or removes it.
   `thurbox-cli config show` and `thurbox-cli version --json` report the Fleet
   in use under `fleet`, with Fleet's data directory.
 - A session row's status is the Task's `agentState` (`working`, `attention`

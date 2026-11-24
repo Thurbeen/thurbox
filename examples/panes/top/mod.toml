@@ -8,4 +8,4 @@ name = "top"
 description = "CPU, memory and load as gauges, parsed from `top`"
 requires_thurbox = ">=2.0"
 
-pane = { source = "top.lua", path = "plugins/85_top.lua" }
+pane = { source = "top.lua", path = "mods/85_top.lua" }
