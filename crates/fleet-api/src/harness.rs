@@ -625,8 +625,6 @@ impl Profile {
         AgentTelemetry { args, env }
     }
 
-    /// Whether Fleet can start the agent again on its conversation: a stop
-    /// of one it cannot ends the conversation.
     /// The argv that hands `text` to the agent's inbox, when the profile
     /// has one and every value it names was reported.
     pub fn inbox(
@@ -651,6 +649,8 @@ impl Profile {
             .collect()
     }
 
+    /// Whether Fleet can start the agent again on its conversation: a stop
+    /// of one it cannot ends the conversation.
     pub fn resumes(&self) -> bool {
         !self.resume.args.is_empty()
     }

@@ -3192,6 +3192,52 @@ fn a_message_reaches_claude_code_through_its_messaging_socket_not_its_composer()
     assert_ne!(receipt["mayHold"], true, "{status:#}");
 }
 
+/// Claude Code naming a messaging socket nobody listens on, as one that
+/// exited and left its path behind: a post to it fails.
+const DEAF_CLAUDE: &str = r#"#!/bin/bash
+export CLAUDE_CODE_MESSAGING_SOCKET="/tmp/fleet-inbox-gone-$$.sock"
+fleet signal idle
+while IFS= read -r line; do
+  text=$(printf '%s' "$line" | tr -d '\033' | sed 's/\[20[01]~//g')
+  printf '%s\n' "$text" >> "$PWD/typed.log"
+  fleet signal prompt "{\"prompt\":\"$text\",\"session_id\":\"conv-1\"}"
+  fleet signal idle
+done
+"#;
+
+#[test]
+fn a_message_claude_codes_socket_refuses_is_typed_instead() {
+    let (Some(program), Some(_)) = (runtime_mux(), tmux()) else {
+        return;
+    };
+    let sockets = Sockets::new("deaf");
+    let mut env = mux_env("runtime-mux-deaf", &program, &sockets);
+    stand_in(&mut env, "claude", "claude", DEAF_CLAUDE);
+    let work = env.root.join("work").join("t1");
+    fs::create_dir_all(&work).expect("workspace");
+    let mut task = support::task("t1", true);
+    task["spec"]["brief"] = json!("Find the cause.");
+    task["spec"]["workspace"] = json!([format!("file://{}", work.display())]);
+    env.apply(json!([task])).ok();
+    reconcile_until(&env, "briefed", |env| {
+        env.get("t1")["status"]["phase"] == "Briefed"
+    });
+
+    env.fleet(&["send", "t1", "are you there?"]).ok();
+    reconcile_until(&env, "the message delivered", |env| {
+        env.get("t1")["status"]["deliveries"]["receipts"]
+            .as_array()
+            .is_some_and(|r| !r.is_empty())
+    });
+    let typed = fs::read_to_string(work.join("typed.log")).unwrap_or_default();
+    assert_eq!(typed, "Find the cause.\nare you there?\n");
+    let status = env.get("t1")["status"].clone();
+    assert_eq!(
+        status["deliveries"]["receipts"][0]["deliveredVia"], "input",
+        "{status:#}"
+    );
+}
+
 /// A coding agent's CLI on the PATH this test runs with, when
 /// `FLEET_REAL_AGENTS=1` asks for the tests that drive a real agent. Each such
 /// test depends on the installed CLI's version, and pi, opencode, kilo and omp
