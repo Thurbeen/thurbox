@@ -363,9 +363,9 @@ request.place ──▶ local ─────────▶ this machine's mult
 ```
 
 - `runtime-mux` refuses a place with an unknown key, a missing `kind`, an
-  `ssh` place without a `destination`, or a config for `local`. It answers
-  Unknown and names what is wrong, and `manifest` reports the place not
-  ready.
+  `ssh` place without a `destination`, a config for `local`, or a name longer
+  than 64 characters. It answers Unknown and names what is wrong, and
+  `manifest` reports the place not ready.
 - `local` is ready when the multiplexer answers. A remote place is ready
   when its launcher reaches it without a prompt, `fleet` is on its `PATH`,
   and its multiplexer answers at tmux 3.2 or newer, or psmux 3.3.8 or

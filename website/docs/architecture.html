@@ -339,8 +339,8 @@ coordinator &larr; main's body: the loop, the workers, the chrome</pre>
           <p>
             Every session is a Fleet Task, so Fleet's store holds the sessions, and every Thurbox
             instance follows it through <code>fleet watch</code>. Thurbox keeps no database. Its own
-            state is plain files: <code>interface.json</code> (theme, editor, the session order, each
-            companion shell's pane), <code>bookmarks.json</code> and
+            state is plain files: <code>interface.json</code> (theme, editor, the session order),
+            <code>bookmarks.json</code> and
             <code>settings.toml</code>. A write that two instances can race takes a file lock.
           </p>
 

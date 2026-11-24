@@ -331,14 +331,12 @@ transport = { wsl = "Ubuntu" }</code></pre>
             <a href="#os-notifications" class="heading-anchor">#</a>
           </h2>
           <p>
-            When a session crosses into a
-            <strong>needs-you</strong>
-            state &mdash; the agent rang the terminal bell or emitted an OSC 9 / OSC 777
-            notification (usually because it is waiting on an answer or has finished a task)
-            &mdash; Thurbox fires an OS desktop notification, so you can react without watching
-            the TUI. The notification body is the agent's last OSC message, or
-            <code>Waiting for input</code>
-            otherwise.
+            When a session goes into
+            <strong>blocked</strong>
+            &mdash; its Task's <code>agentState</code> is <code>attention</code>, usually because
+            the agent is waiting on an answer &mdash; Thurbox fires an OS desktop notification
+            (<code>&lt;name&gt; needs you</code>), so you can react without watching the TUI.
+            Fleet reports no finished state, so a finished turn raises nothing.
           </p>
           <ul>
             <li>
@@ -347,13 +345,13 @@ transport = { wsl = "Ubuntu" }</code></pre>
               <strong>click-to-focus</strong>
               : clicking the banner switches the TUI to that session on its next tick.
               <strong>macOS</strong>
-              shows the banner but ignores clicks (the modern notification API requires a signed
-              app bundle, which Thurbox is not).
+              focuses the session on a click when <code>terminal-notifier</code> is on
+              <code>PATH</code>; the <code>osascript</code> fallback ignores clicks.
             </li>
             <li>
               It fires
               <strong>only while the TUI is open</strong>
-              &mdash; the terminal parser that watches for the bell does not run headless &mdash;
+              &mdash; the dispatcher runs only inside the TUI &mdash;
               and is deduplicated per session, with the session you are currently viewing skipped
               by default.
             </li>
@@ -364,9 +362,7 @@ transport = { wsl = "Ubuntu" }</code></pre>
               <code>settings.toml</code>
               (
               <a href="configuration.html#notifications">see Configuration</a>
-              ): opt into the timing-only
-              <code>Busy &rarr; Waiting</code>
-              edge for agents that never ring a bell, toggle the sound, or change the dedup floor.
+              ): pick the delivery backend, toggle the sound, or change the dedup floor.
               Turn the whole feature off with
               <code>[features] notifications = false</code>
               .
