@@ -6926,10 +6926,9 @@ fn runtime_herdr_types_into_a_key_and_reads_its_screen() {
     }
 }
 
-/// `attach` names herdr-core's own client on the key's terminal, which
-/// `fleet attach` bridges into a stream.
+/// `attach` names runtime-herdr's own stream on the key's terminal.
 #[test]
-fn runtime_herdr_attaches_through_herdr_core_s_client() {
+fn runtime_herdr_attaches_through_its_own_stream() {
     let (Some(program), Some(_)) = (runtime_herdr(), herdr_core()) else {
         return;
     };
@@ -6937,14 +6936,11 @@ fn runtime_herdr_attaches_through_herdr_core_s_client() {
     let started = herdr_start(&program, &home, "k-attach", &["sleep", "300"]);
     let id = started["known"]["started"]["id"].clone();
     let attach = herdr_call(&program, &home, "attach", json!({"key": "k-attach"}));
-    let argv = attach["known"]["tty"]["argv"]
+    let argv = attach["known"]["stream"]["argv"]
         .as_array()
         .unwrap_or_else(|| panic!("{attach}"))
         .clone();
-    assert_eq!(
-        argv[argv.len() - 3..],
-        [json!("herdr-core"), json!("attach"), id]
-    );
+    assert_eq!(argv[argv.len() - 1], id, "{attach}");
     let absent = herdr_call(&program, &home, "attach", json!({"key": "k-absent"}));
     assert_eq!(absent["known"], "none", "{absent}");
 }
@@ -7117,4 +7113,67 @@ fn runtime_herdr_pause_again_closes_a_shell_left_open() {
     let paused = herdr_call(&program, &home, "pause", json!({"key": "k-cut"}));
     assert_eq!(paused["known"], "paused", "{paused}");
     assert_eq!(live_shells(), 0, "the second pause closed the shell");
+}
+
+/// The stream `attach` names, opened with `home`'s herdr-core.
+fn herdr_view(home: &HerdrHome, attach: &Value) -> support::view::View {
+    let argv: Vec<String> = attach["known"]["stream"]["argv"]
+        .as_array()
+        .unwrap_or_else(|| panic!("{attach}"))
+        .iter()
+        .map(|w| w.as_str().expect("a word").to_string())
+        .collect();
+    let mut cmd = Command::new(&argv[0]);
+    cmd.args(&argv[1..])
+        .env_remove("HC_SESSION")
+        .env_remove("HC_SOCKET")
+        .envs(home.vars());
+    support::view::View::open(cmd)
+}
+
+/// The stream says hello before it reads anything, as thurbox's stream pane
+/// waits for it before sending its size; it relays the key's screen and
+/// output after the view's first resize, types what the view sends, and
+/// leaves the process running on a detach.
+#[test]
+fn runtime_herdr_streams_a_key_s_terminal() {
+    use term_stream::{Capability, Down, Size, Up};
+    let (Some(program), Some(_)) = (runtime_herdr(), herdr_core()) else {
+        return;
+    };
+    let home = HerdrHome::new("stream");
+    let echo = "printf 'ready\\n'; while IFS= read -r l; do printf 'got[%s]\\n' \"$l\"; done";
+    herdr_start(&program, &home, "k-stream", &["sh", "-c", echo]);
+    let attach = herdr_call(&program, &home, "attach", json!({"key": "k-stream"}));
+    let mut view = herdr_view(&home, &attach);
+    let Down::Hello(hello) = view.next() else {
+        panic!("the stream did not start with hello")
+    };
+    assert!(!hello.has(Capability::Snapshot), "{hello:?}");
+    view.send(&Up::Resize(Size { rows: 24, cols: 80 }));
+    view.until_text("ready");
+    view.send(&Up::Input(b"ping\r".to_vec()));
+    view.until_text("got[ping]");
+    view.send(&Up::Detach);
+    let status = view.child.wait().expect("the stream ends");
+    assert!(status.success(), "{status:?}");
+    let still = herdr_call(&program, &home, "inspect", json!({"key": "k-stream"}));
+    assert!(still["known"]["running"].is_object(), "{still}");
+}
+
+/// The stream ends with the program's exit code when the program ends.
+#[test]
+fn runtime_herdr_stream_reports_the_program_s_exit() {
+    use term_stream::{Down, Exit, Size, Up};
+    let (Some(program), Some(_)) = (runtime_herdr(), herdr_core()) else {
+        return;
+    };
+    let home = HerdrHome::new("streamexit");
+    herdr_start(&program, &home, "k-end", &["sh", "-c", "read x; exit 5"]);
+    let attach = herdr_call(&program, &home, "attach", json!({"key": "k-end"}));
+    let mut view = herdr_view(&home, &attach);
+    view.send(&Up::Resize(Size { rows: 24, cols: 80 }));
+    view.send(&Up::Input(b"go\r".to_vec()));
+    let exit = view.until("the program's exit", |f| matches!(f, Down::Exit(_)));
+    assert_eq!(exit, Down::Exit(Exit::Known { code: Some(5) }));
 }

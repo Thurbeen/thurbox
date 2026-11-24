@@ -47,12 +47,39 @@ Fleet ── runtime-herdr <verb> ──▶ herdr-core connect      JSON-RPC 2.0
 | `input` | `terminal.send` with the text and `force`, which pastes it and presses Enter even when herdr-core reads the program as blocked: Fleet decides when to send. Fleet always sends `submit: true`; `submit: false` answers Unknown, because herdr-core cannot paste without Enter. |
 | `capture` | `terminal.read` and the terminal's title. herdr-core reports no cursor and no foreground process, so both are `null`. |
 | `exec` | Runs the command on this machine, `in: host` only, bounded by `timeoutMs` and `outputCap`. When the command ends, or at the deadline, it kills the command's process group, so nothing it started outlives the answer. Its output readers get up to 500 ms more to drain the pipes. |
-| `attach` | A `tty` answer: `herdr-core attach <terminal>`, with `HC_SESSION` for a place's session. `fleet attach` bridges it. The view starts on a blank screen until the program redraws. |
-| `shell` | A shell terminal beside the key's, in the directory the key's terminal is in, labelled `fleet.role=shell`. A second call opens the same shell. The answer has the shape of `attach`'s. |
+| `attach` | A `stream` answer: `runtime-herdr view [--session <session>] <terminal>` ([the stream](#the-stream)). |
+| `shell` | A shell terminal beside the key's, in the directory the key's terminal is in, labelled `fleet.role=shell`. A second call opens the same shell. The answer is a `stream` on it, as for `attach`. |
 | `list` | Every key with a start record at the place, and every key that holds a workspace. |
 | `workspace` | Runs `workspace-git`, as `runtime-mux` does, under a root of the place's own. |
 
 The environment goes over the API. It is in no process's argv.
+
+## The stream
+
+`runtime-herdr view` speaks [the terminal stream](README.md#the-terminal-stream)
+on its stdin and stdout. It relays herdr-core's framed `terminal.attach`
+(`herdr-core connect`, `hello` with `framed: true`):
+
+| The view sends | runtime-herdr sends herdr-core |
+| --- | --- |
+| its first `resize` | `terminal.attach` with that size and 2000 lines of history |
+| `input` | the bytes as `DATA` on the stream's channel |
+| `paste` | the text as `DATA`, bracketed when the program last asked for bracketed paste |
+| `resize` | `RESIZE` |
+| `detach`, or the end of its stdin | `CLOSE`: the process keeps running |
+
+| herdr-core sends | runtime-herdr sends the view |
+| --- | --- |
+| the first paint (screen, history, title), then the program's output | `output`, and `CREDIT` back for each byte written |
+| `RESIZE` | `resized` |
+| `CLOSE` with the program's exit | `exit` with its code |
+
+- `hello` comes first, before the stream reads anything: thurbox's stream
+  pane waits for it before it sends its size, as runtime-mux's view
+  answers it.
+- `hello` lists `resize` only. herdr-core sends its first paint as bytes,
+  so the view builds its grid from `output`, as on psmux.
+- A view that cannot reach herdr-core gets `exit` with Unknown and why.
 
 ## Persistence
 
@@ -121,8 +148,11 @@ private runtime directory (`XDG_RUNTIME_DIR`):
 - a start cut short before it recorded the terminal is adopted;
 - a key that holds only a workspace is listed;
 - `input` types into a key's terminal and `capture` reads it back;
-- `attach` names `herdr-core attach` on the key's terminal;
+- `attach` names `runtime-herdr view` on the key's terminal;
 - `exec` answers a command's code and output, or its deadline;
+- the stream shows the first paint after the view's first resize, types
+  what the view sends, leaves the process running on a detach, and ends
+  with the program's exit code;
 - `shell` and `pause` pass the conformance suite's cases;
 - a Task is briefed through `input`, reports idle through its hooks, and is
   revived on its conversation under the same session after its process

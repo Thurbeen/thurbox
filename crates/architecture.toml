@@ -21,7 +21,7 @@
 #   term-stream          the terminal stream's frames: a wire format
 #   otel-env             OTLP export from the OTEL_* variables, off unless they ask
 #   runtime-mux          component the multiplexer runtime: tmux, psmux, rmux -> term-stream, otel-env
-#   runtime-herdr        component the herdr runtime: each session a herdr-core terminal
+#   runtime-herdr        component the herdr runtime: each session a herdr-core terminal -> term-stream
 #   workspace-git        component makes workspaces from git URLs; runtimes run its program -> otel-env
 #   thurbox              component the interface; reaches Fleet only by
 #                                  running its CLI   -> term-stream, otel-env, and
@@ -254,7 +254,7 @@ why = "the route and the contract know no launcher, adapter or build OS"
 # `workspace-git` for its workspaces; links no other runtime.
 [crates.runtime-herdr]
 role = "component"
-deps = []
+deps = ["term-stream"]
 
 # Makes a runtime's workspaces from git URLs: a worktree per URL, work
 # preserved on release (docs/runtime/README.md, "workspace-git"). A runtime

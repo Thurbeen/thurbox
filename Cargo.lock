@@ -3025,6 +3025,7 @@ version = "0.0.0-dev"
 dependencies = [
  "serde",
  "serde_json",
+ "term-stream",
 ]
 
 [[package]]
