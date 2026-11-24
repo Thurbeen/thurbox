@@ -1257,6 +1257,43 @@ fn github_model() -> Value {
 }
 
 #[test]
+fn a_github_check_reads_its_latest_run_so_a_superseded_cancellation_is_not_a_failure() {
+    let env = Env::forge_stubs("github");
+    let runs = |title_rerun: bool| {
+        let mut checks = vec![
+            json!({"name": "CI", "state": "cancelled", "url": "https://github.test/acme/widgets/runs/1"}),
+            json!({"name": "CI", "state": "success"}),
+            json!({"name": "PR Title", "state": "cancelled", "url": "https://github.test/acme/widgets/runs/2"}),
+        ];
+        if title_rerun {
+            checks.push(json!({"name": "PR Title", "state": "success"}));
+        }
+        json!({"acme/widgets#7": {"state": "open", "head": "h1", "checks": checks, "reviewDecision": null, "mergeable": "mergeable"}})
+    };
+    env.edit_stub(|s| s["changes"] = runs(false));
+    let cr = derived_name("github", GITHUB_HOST, PROJECT, "7");
+    env.apply(change_request(
+        "https://github.test/acme/widgets/pull/7",
+        json!({}),
+    ))
+    .ok();
+    env.reconcile().ok();
+    let st = env.change_request_status(&cr);
+    assert_eq!(st["head"]["checks"], "failed", "{st:#}");
+    assert_eq!(
+        st["head"]["failing"],
+        json!([{"name": "PR Title", "url": "https://github.test/acme/widgets/runs/2"}]),
+        "an unsuperseded cancellation still fails; a superseded one does not"
+    );
+    env.edit_stub(|s| s["changes"] = runs(true));
+    env.expire_wait_of("ChangeRequest", &cr);
+    env.reconcile().ok();
+    let st = env.change_request_status(&cr);
+    assert_eq!(st["head"]["checks"], "passed", "{st:#}");
+    assert_eq!(st["head"]["failing"], Value::Null, "{st:#}");
+}
+
+#[test]
 fn github_pull_requests_are_read_through_gh_with_pagination_and_bounded_calls() {
     let env = Env::forge_stubs("github");
     env.edit_stub(|s| {

@@ -412,7 +412,7 @@ mod forge {
                 "mergeable" => ("MERGEABLE", "CLEAN".to_string()),
                 other => ("MERGEABLE", other.to_ascii_uppercase()),
             };
-            let contexts: Vec<Value> = c["checks"].as_array().cloned().unwrap_or_default().iter().map(|k| {
+            let contexts: Vec<Value> = c["checks"].as_array().cloned().unwrap_or_default().iter().zip(1_u64..).map(|(k, database_id)| {
                 let st = k["state"].as_str().unwrap_or("success");
                 if k["kind"] == "status" {
                     json!({"__typename": "StatusContext", "context": k["name"], "state": st.to_ascii_uppercase(), "targetUrl": k["url"]})
@@ -420,10 +420,11 @@ mod forge {
                     let (status, conclusion) = match st {
                         "success" => ("COMPLETED", json!("SUCCESS")),
                         "failure" => ("COMPLETED", json!("FAILURE")),
+                        "cancelled" => ("COMPLETED", json!("CANCELLED")),
                         "skipped" => ("COMPLETED", json!("SKIPPED")),
                         _ => ("IN_PROGRESS", Value::Null),
                     };
-                    json!({"__typename": "CheckRun", "name": k["name"], "status": status, "conclusion": conclusion, "detailsUrl": k["url"]})
+                    json!({"__typename": "CheckRun", "name": k["name"], "status": status, "conclusion": conclusion, "detailsUrl": k["url"], "databaseId": database_id})
                 }
             }).collect();
             pr = json!({
