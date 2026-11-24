@@ -18,6 +18,7 @@ Fleet ── runtime-herdr <verb> ──▶ herdr-core connect      JSON-RPC 2.0
                                     ▼
                                   herdr-core ── holder ── terminal t7
                                                            labels: fleet.key=<key>
+                                                                   fleet.place=<place>
                                                                    herdr.space=<space>
                                                                    herdr.tab=<key>
 ```
@@ -40,9 +41,9 @@ Fleet ── runtime-herdr <verb> ──▶ herdr-core connect      JSON-RPC 2.0
 | `manifest` | Reports each place asked about. A place is ready when its core answers `hello`. As every verb does, it starts the core when the core does not run. |
 | `start` | Writes the key's start record, then `terminal.run` with the argv, `env` and `dir`, and the labels above, then records the terminal's address and pid. A live terminal of the key, with the process `start` started, is adopted. So is the live terminal of a start cut short before it recorded the address. |
 | `inspect` | `running` while the key's terminal is live and holds the process `start` started. `exited` with the terminal's exit code once it has finished, or with no code when the core no longer has it. `none` when the key has no start record. |
-| `stop` | `terminal.kill`, then `terminal.rm`, for each terminal of the key. `release: true` also releases the key's workspace. |
+| `stop` | `terminal.kill`, then `terminal.rm`, for each terminal of the key at the place. `release: true` also releases the key's workspace at the place. |
 | `list` | Every key with a start record at the place, and every key that holds a workspace. |
-| `workspace` | Runs `workspace-git`, as `runtime-mux` does. |
+| `workspace` | Runs `workspace-git`, as `runtime-mux` does, under a root of the place's own. |
 
 The environment goes over the API. It is in no process's argv.
 
@@ -76,11 +77,13 @@ the labels.
 | --- | --- |
 | `${XDG_STATE_HOME:-~/.local/state}/runtime-herdr/<core>/<place>/<key>.start` | The start record: the key's terminal address and its process's pid. Before `terminal.run`, it holds neither. |
 | `${XDG_STATE_HOME:-~/.local/state}/runtime-herdr/<core>/<place>/lock` | Starts and stops at one place hold this lock, one at a time. |
-| `${XDG_DATA_HOME:-~/.local/share}/runtime-herdr/workspaces/` | The workspaces that `workspace-git` makes. |
+| `${XDG_DATA_HOME:-~/.local/share}/runtime-herdr/workspaces/<place>/` | The workspaces that `workspace-git` makes for the place. |
 
 `<core>` is the core's id from `hello`, so two herdr-core sessions keep
-separate records. `<place>` is the place's name, so two places on one session
-list only their own keys. The directory is `0700`.
+separate records. `<place>` is the place's name. With it and the
+`fleet.place` label, two places on one session each start, stop, list and
+release only their own terminals and workspaces. The state directory is
+`0700`.
 
 ## Limits
 
@@ -102,6 +105,7 @@ private runtime directory (`XDG_RUNTIME_DIR`):
 - a key lost to a core stop answers `exited`, and the next `start` runs it
   again;
 - a key's terminal has its environment and the labels herdr's app reads;
-- two places on one session list only their own keys;
+- two places on one session list only their own keys, and each keeps its
+  own terminal and workspace for a key;
 - a start cut short before it recorded the terminal is adopted;
 - a key that holds only a workspace is listed.

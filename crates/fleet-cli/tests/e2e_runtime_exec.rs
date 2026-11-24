@@ -6461,12 +6461,13 @@ impl HerdrHome {
         HerdrHome(short_private_dir(&format!("hc-{name}")))
     }
 
-    fn vars(&self) -> [(&'static str, PathBuf); 4] {
+    fn vars(&self) -> [(&'static str, PathBuf); 5] {
         [
             ("HOME", self.0.clone()),
             ("XDG_RUNTIME_DIR", self.0.clone()),
             ("XDG_STATE_HOME", self.0.join("state")),
             ("XDG_CONFIG_HOME", self.0.join("config")),
+            ("XDG_DATA_HOME", self.0.join("data")),
         ]
     }
 
@@ -6675,7 +6676,12 @@ fn runtime_herdr_labels_a_key_s_terminal_for_herdr_s_app() {
     let terminal: Value = serde_json::from_slice(&got.stdout).expect("a JSON terminal");
     assert_eq!(
         terminal["labels"],
-        json!({"fleet.key": "k-labels", "herdr.space": "fleet", "herdr.tab": "k-labels"}),
+        json!({
+            "fleet.key": "k-labels",
+            "fleet.place": "local",
+            "herdr.space": "fleet",
+            "herdr.tab": "k-labels"
+        }),
         "{terminal}"
     );
     let deadline = Instant::now() + Duration::from_secs(10);
@@ -6745,6 +6751,8 @@ fn runtime_herdr_adopts_the_terminal_of_an_interrupted_start() {
         "--json",
         "--label",
         "fleet.key=k-cut",
+        "--label",
+        "fleet.place=local",
         "--",
         "sleep",
         "300",
@@ -6778,4 +6786,92 @@ fn runtime_herdr_lists_a_key_that_holds_only_a_workspace() {
     );
     assert!(made["known"]["made"].is_object(), "{made}");
     assert_eq!(herdr_keys(&program, &home, "local"), json!(["k-ws"]));
+}
+
+/// Two places on one herdr-core session each hold their own terminal for a
+/// key: a start at one adopts nothing of the other's, and a stop at one
+/// leaves the other's running.
+#[test]
+fn runtime_herdr_keeps_each_place_s_terminals_apart() {
+    let (Some(program), Some(_)) = (runtime_herdr(), herdr_core()) else {
+        return;
+    };
+    let home = HerdrHome::new("apart");
+    let start_at = |place: &str| {
+        herdr_call_at(
+            &program,
+            &home,
+            place,
+            "start",
+            json!({"key": "k-both", "argv": ["sleep", "300"], "env": {}}),
+        )
+    };
+    let here = start_at("here");
+    let there = start_at("there");
+    assert_eq!(there["known"]["started"]["adopted"], false, "{there}");
+    assert_ne!(
+        here["known"]["started"]["id"], there["known"]["started"]["id"],
+        "{here} {there}"
+    );
+    let stopped = herdr_call_at(&program, &home, "there", "stop", json!({"key": "k-both"}));
+    assert_eq!(stopped["known"], "stopped", "{stopped}");
+    let still = herdr_call_at(&program, &home, "here", "inspect", json!({"key": "k-both"}));
+    assert_eq!(
+        still["known"]["running"]["id"], here["known"]["started"]["id"],
+        "{still}"
+    );
+}
+
+/// A workspace belongs to its place: another place neither lists it nor
+/// releases it.
+#[test]
+fn runtime_herdr_keeps_each_place_s_workspaces_apart() {
+    let (Some(program), Some(_)) = (runtime_herdr(), herdr_core()) else {
+        return;
+    };
+    let home = HerdrHome::new("wsapart");
+    let repo = home.0.join("repo");
+    fs::create_dir_all(&repo).expect("repo");
+    let git = |args: &[&str]| {
+        let mut cmd = Command::new("git");
+        for var in GIT_LOCATION {
+            cmd.env_remove(var);
+        }
+        let out = cmd.arg("-C").arg(&repo).args(args).output().expect("git");
+        assert!(out.status.success(), "git {args:?}: {out:?}");
+    };
+    git(&["init", "-q", "-b", "main"]);
+    git(&[
+        "-c",
+        "user.name=t",
+        "-c",
+        "user.email=t@t",
+        "commit",
+        "-q",
+        "--allow-empty",
+        "-m",
+        "first",
+    ]);
+    let made = herdr_call_at(
+        &program,
+        &home,
+        "here",
+        "workspace",
+        json!({"key": "k-ws", "urls": [format!("git+file://{}", repo.display())]}),
+    );
+    let dir = made["known"]["made"]["dirs"][0]
+        .as_str()
+        .unwrap_or_else(|| panic!("{made}"))
+        .to_string();
+    assert_eq!(herdr_keys(&program, &home, "here"), json!(["k-ws"]));
+    assert_eq!(herdr_keys(&program, &home, "there"), json!([]));
+    let released = herdr_call_at(
+        &program,
+        &home,
+        "there",
+        "stop",
+        json!({"key": "k-ws", "release": true}),
+    );
+    assert_eq!(released["known"], "stopped", "{released}");
+    assert!(Path::new(&dir).is_dir(), "another place released {dir}");
 }

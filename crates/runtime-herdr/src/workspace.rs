@@ -10,9 +10,9 @@ const WORKSPACE_RECORD: &str = ".fleet-workspace.json";
 
 pub const SCHEMES: &[&str] = &["git+https", "git+ssh", "git+file", "file"];
 
-fn root() -> Result<PathBuf, String> {
+fn root(place: &str) -> Result<PathBuf, String> {
     data_home()
-        .map(|d| d.join("runtime-herdr").join("workspaces"))
+        .map(|d| d.join("runtime-herdr").join("workspaces").join(place))
         .ok_or_else(|| "neither XDG_DATA_HOME nor HOME is set".to_string())
 }
 
@@ -54,8 +54,8 @@ fn call(verb: &str, request: &Value) -> Result<Value, String> {
     })
 }
 
-pub fn keys() -> Result<Vec<String>, String> {
-    let root = root()?;
+pub fn keys(place: &str) -> Result<Vec<String>, String> {
+    let root = root(place)?;
     let entries = match std::fs::read_dir(&root) {
         Ok(entries) => entries,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
@@ -67,15 +67,15 @@ pub fn keys() -> Result<Vec<String>, String> {
         .collect())
 }
 
-pub fn make(key: &str, urls: &[String]) -> Result<Value, String> {
+pub fn make(place: &str, key: &str, urls: &[String]) -> Result<Value, String> {
     call(
         "make",
-        &json!({ "root": root()?, "key": key, "urls": urls }),
+        &json!({ "root": root(place)?, "key": key, "urls": urls }),
     )
 }
 
-pub fn release(key: &str) -> Result<(), String> {
-    match call("release", &json!({ "root": root()?, "key": key }))? {
+pub fn release(place: &str, key: &str) -> Result<(), String> {
+    match call("release", &json!({ "root": root(place)?, "key": key }))? {
         answer if answer == "released" => Ok(()),
         answer => Err(format!("workspace-git release answered {answer}")),
     }

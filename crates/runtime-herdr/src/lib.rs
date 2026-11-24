@@ -14,6 +14,7 @@ use records::{Records, Started};
 
 const PROTOCOL: u64 = 2;
 const KEY_LABEL: &str = "fleet.key";
+const PLACE_LABEL: &str = "fleet.place";
 const DEFAULT_SPACE: &str = "fleet";
 const VERBS: &[&str] = &["manifest", "start", "inspect", "stop", "list", "workspace"];
 
@@ -43,7 +44,7 @@ pub fn answer(verb: &str, request: &[u8]) -> Value {
     };
     let answered = match verb {
         "list" => list(&place),
-        "workspace" => key_of(&request).and_then(|key| make_workspace(&key, &request)),
+        "workspace" => key_of(&request).and_then(|key| make_workspace(&place, &key, &request)),
         _ => key_of(&request).and_then(|key| match verb {
             "start" => start(&place, &key, &request),
             "inspect" => inspect(&place, &key),
@@ -186,8 +187,8 @@ fn key_of(request: &Value) -> Result<String, String> {
     }
 }
 
-fn key_labels(key: &str) -> Value {
-    json!({ KEY_LABEL: key })
+fn key_labels(place: &Place, key: &str) -> Value {
+    json!({ KEY_LABEL: key, PLACE_LABEL: place.name })
 }
 
 enum Holder {
@@ -196,11 +197,12 @@ enum Holder {
     None,
 }
 
-fn holder(core: &mut Core, records: &Records, key: &str) -> Result<Holder, String> {
+fn holder(core: &mut Core, place: &Place, key: &str) -> Result<Holder, String> {
+    let records = place.records(core)?;
     let Some(started) = records.started(key)? else {
         return Ok(Holder::None);
     };
-    let terminals = core.terminals_labelled(&key_labels(key))?;
+    let terminals = core.terminals_labelled(&key_labels(place, key))?;
     let ours = match &started.terminal {
         Some(address) => terminals.into_iter().find(|t| &t.address == address),
         None => terminals.into_iter().rev().find(Terminal::is_live),
@@ -244,11 +246,11 @@ fn start(place: &Place, key: &str, request: &Value) -> Result<Value, String> {
     };
     let records = place.records(&core)?;
     let _lock = records.lock()?;
-    if let Holder::Running(terminal) = holder(&mut core, &records, key)? {
+    if let Holder::Running(terminal) = holder(&mut core, place, key)? {
         record_terminal(&records, key, &terminal)?;
         return Ok(json!({ "started": { "id": terminal.address, "adopted": true } }));
     }
-    for stale in core.terminals_labelled(&key_labels(key))? {
+    for stale in core.terminals_labelled(&key_labels(place, key))? {
         core.end(&stale)?;
     }
     records.record_start(key, &Started::intended())?;
@@ -256,7 +258,12 @@ fn start(place: &Place, key: &str, request: &Value) -> Result<Value, String> {
         "argv": argv,
         "cwd": dir,
         "env": env,
-        "labels": { KEY_LABEL: key, "herdr.space": place.space(), "herdr.tab": key },
+        "labels": {
+            KEY_LABEL: key,
+            PLACE_LABEL: place.name,
+            "herdr.space": place.space(),
+            "herdr.tab": key,
+        },
         "no_parent": true,
         "no_notify": true,
     }))?;
@@ -276,8 +283,7 @@ fn record_terminal(records: &Records, key: &str, terminal: &Terminal) -> Result<
 
 fn inspect(place: &Place, key: &str) -> Result<Value, String> {
     let mut core = place.connect()?;
-    let records = place.records(&core)?;
-    Ok(match holder(&mut core, &records, key)? {
+    Ok(match holder(&mut core, place, key)? {
         Holder::Running(terminal) => json!({ "running": { "id": terminal.address } }),
         Holder::Exited(started, code) => {
             json!({ "exited": { "id": started.terminal.unwrap_or_else(|| key.to_string()), "code": code } })
@@ -290,13 +296,13 @@ fn stop(place: &Place, key: &str, release: bool) -> Result<Value, String> {
     let mut core = place.connect()?;
     let records = place.records(&core)?;
     let lock = records.lock()?;
-    for terminal in core.terminals_labelled(&key_labels(key))? {
+    for terminal in core.terminals_labelled(&key_labels(place, key))? {
         core.end(&terminal)?;
     }
     records.forget(key)?;
     drop(lock);
     if release {
-        workspace::release(key)?;
+        workspace::release(&place.name, key)?;
     }
     Ok(json!("stopped"))
 }
@@ -304,13 +310,13 @@ fn stop(place: &Place, key: &str, release: bool) -> Result<Value, String> {
 fn list(place: &Place) -> Result<Value, String> {
     let core = place.connect()?;
     let mut keys = place.records(&core)?.keys()?;
-    keys.extend(workspace::keys()?);
+    keys.extend(workspace::keys(&place.name)?);
     keys.sort();
     keys.dedup();
     Ok(json!({ "keys": keys }))
 }
 
-fn make_workspace(key: &str, request: &Value) -> Result<Value, String> {
+fn make_workspace(place: &Place, key: &str, request: &Value) -> Result<Value, String> {
     let urls: Vec<String> = request["urls"]
         .as_array()
         .into_iter()
@@ -318,7 +324,7 @@ fn make_workspace(key: &str, request: &Value) -> Result<Value, String> {
         .map(|url| url.as_str().map(String::from))
         .collect::<Option<_>>()
         .ok_or("urls: a list of strings")?;
-    let made = workspace::make(key, &urls)?;
+    let made = workspace::make(&place.name, key, &urls)?;
     match made.get("unknown") {
         Some(why) => Err(why["why"].as_str().unwrap_or("workspace-git").to_string()),
         None => Ok(made),
