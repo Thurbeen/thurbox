@@ -143,7 +143,7 @@ mod tests {
     #[test]
     fn the_declarations_are_global_and_owned_by_the_kernel() {
         for binding in bindings_for(true) {
-            assert_eq!(binding.r#mod, OWNER);
+            assert_eq!(binding.owner, OWNER);
             assert_eq!(binding.scope, Scope::Global);
             assert!(!binding.passthrough, "{}", binding.chord);
             assert_eq!(binding.group, GROUP);

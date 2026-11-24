@@ -309,7 +309,7 @@ fn core_rows(draft: &Settings) -> Vec<Setting> {
     CORE_FIELDS
         .iter()
         .map(|field| Setting {
-            r#mod: CORE_OWNER.to_string(),
+            owner: CORE_OWNER.to_string(),
             id: field.id.to_string(),
             // The marker rides in the description because a row is one line and
             // this is the same information v1 puts in its own column.
@@ -552,7 +552,7 @@ impl SettingsModal {
                 // An enum is stepped, not typed: there are four spellings and a
                 // fifth would be silently ignored. A mod's declared choices
                 // are one for the same reason.
-                if setting.r#mod == CORE_OWNER || !setting.choices.is_empty() {
+                if setting.owner == CORE_OWNER || !setting.choices.is_empty() {
                     return self.step(registry, on_disk, NUMBER_STEP);
                 }
                 self.editing = Some(text.clone());
@@ -570,7 +570,7 @@ impl SettingsModal {
             Value::Bool(on) => self.put(registry, on_disk, &setting, Value::Bool(!on)),
             // A core text value is an enum, and it cycles; a mod's is free
             // text, which only typing changes.
-            Value::Text(name) if setting.r#mod == CORE_OWNER => {
+            Value::Text(name) if setting.owner == CORE_OWNER => {
                 let next = next_backend(name, by >= 0.0);
                 self.put(registry, on_disk, &setting, Value::Text(next))
             }
@@ -584,15 +584,15 @@ impl SettingsModal {
 
     fn reset(&mut self, registry: &mut Registry, on_disk: &Settings) -> Option<String> {
         let setting = self.current(registry, on_disk)?;
-        if setting.r#mod == CORE_OWNER {
+        if setting.owner == CORE_OWNER {
             // Back to what an untouched file would hold — still a draft, so the
             // file is not written until save.
             let value = setting.default.clone();
             return self.write_core(on_disk, &setting.id, value);
         }
         Some(
-            match registry.set_setting(&setting.r#mod, &setting.id, None) {
-                Ok(()) => format!("{}.{} reset to its default", setting.r#mod, setting.id),
+            match registry.set_setting(&setting.owner, &setting.id, None) {
+                Ok(()) => format!("{}.{} reset to its default", setting.owner, setting.id),
                 Err(e) => e,
             },
         )
@@ -608,7 +608,7 @@ impl SettingsModal {
         setting: &Setting,
         value: Value,
     ) -> Option<String> {
-        if setting.r#mod == CORE_OWNER {
+        if setting.owner == CORE_OWNER {
             return self.write_core(on_disk, &setting.id, value);
         }
         Some(write(registry, setting, value))
@@ -882,17 +882,17 @@ impl SettingsModal {
         let mut rows = Vec::new();
         let mut section: Option<&str> = None;
         for (index, setting) in settings.iter().enumerate() {
-            if section != Some(setting.r#mod.as_str()) {
+            if section != Some(setting.owner.as_str()) {
                 if section.is_some() {
                     lines.push(Line::default());
                     rows.push(None);
                 }
                 lines.push(Line::from(Span::styled(
-                    format!("  {}", setting.r#mod.to_uppercase()),
+                    format!("  {}", setting.owner.to_uppercase()),
                     chrome.section_header(),
                 )));
                 rows.push(None);
-                section = Some(setting.r#mod.as_str());
+                section = Some(setting.owner.as_str());
             }
             let editing = self.editing.as_deref().filter(|_| index == self.selected);
             lines.push(setting_line(
@@ -921,7 +921,7 @@ impl SettingsModal {
         match settings.get(self.selected) {
             // A core row is named by its path in the file, which is where the
             // change will land; a mod's by `mod.id`.
-            Some(setting) if setting.r#mod == CORE_OWNER => footer.push(Line::from(vec![
+            Some(setting) if setting.owner == CORE_OWNER => footer.push(Line::from(vec![
                 Span::styled("  settings.toml  ", chrome.muted()),
                 Span::styled(setting.id.clone(), chrome.muted()),
                 // Said here rather than left to be inferred: the mark is the only
@@ -930,7 +930,7 @@ impl SettingsModal {
                 Span::styled(format!("   {RESTART_MARK} needs restart"), chrome.muted()),
             ])),
             Some(setting) => {
-                let key = format!("  key  {}.{}", setting.r#mod, setting.id);
+                let key = format!("  key  {}.{}", setting.owner, setting.id);
                 let used = key.chars().count();
                 let mut line = vec![Span::styled(key, chrome.muted())];
                 // A pick says what it picks among, since the row shows one.
@@ -993,9 +993,9 @@ impl SettingsModal {
 /// Write a value back through the registry, which validates the type and
 /// persists. The message is what the loop reports.
 fn write(registry: &mut Registry, setting: &Setting, value: Value) -> String {
-    let key = format!("{}.{}", setting.r#mod, setting.id);
+    let key = format!("{}.{}", setting.owner, setting.id);
     let shown = display(&value);
-    match registry.set_setting(&setting.r#mod, &setting.id, Some(value)) {
+    match registry.set_setting(&setting.owner, &setting.id, Some(value)) {
         Ok(()) => format!("{key} = {shown}"),
         Err(e) => e,
     }
@@ -1196,9 +1196,9 @@ fn setting_line<'a>(
 mod tests {
     use super::*;
 
-    fn setting(r#mod: &str, id: &str, default: Value) -> Setting {
+    fn setting(mod_name: &str, id: &str, default: Value) -> Setting {
         Setting {
-            r#mod: r#mod.to_string(),
+            owner: mod_name.to_string(),
             id: id.to_string(),
             description: format!("what {id} does"),
             value: default.clone(),
@@ -1358,7 +1358,7 @@ mod tests {
         assert_eq!(rows.len(), CORE_FIELDS.len() + 1);
         assert!(rows.iter().any(|row| row.id == "features.shell_pane"));
         assert!(
-            rows.last().is_some_and(|row| row.r#mod == "a"),
+            rows.last().is_some_and(|row| row.owner == "a"),
             "a mod's rows follow the core ones"
         );
     }

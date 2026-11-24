@@ -217,20 +217,20 @@ fn index_of(host: &LuaHost, name: &str) -> usize {
 
 /// Press a key the way the loop does: a declared chord resolves through the
 /// registry to `on_action`, anything else goes to `on_key`.
-fn press(host: &LuaHost, r#mod: &str, ch: char) {
+fn press(host: &LuaHost, mod_name: &str, ch: char) {
     let key = KeyPress {
         name: ch.to_lowercase().to_string(),
         ch: Some(ch),
         ..KeyPress::default()
     };
-    if let Some(binding) = registry(host).resolve(&key, Some(r#mod)) {
-        if let Some(index) = host.index_of(&binding.r#mod) {
+    if let Some(binding) = registry(host).resolve(&key, Some(mod_name)) {
+        if let Some(index) = host.index_of(&binding.owner) {
             if host.on_action(index, &binding.action).expect("action") {
                 return;
             }
         }
     }
-    host.on_key(index_of(host, r#mod), &key).expect("key");
+    host.on_key(index_of(host, mod_name), &key).expect("key");
 }
 
 // --- painting ---------------------------------------------------------------

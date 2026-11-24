@@ -261,10 +261,10 @@ fn placed_panes(host: &LuaHost) -> Vec<(usize, String, ratatui::layout::Rect)> {
     let mut out = Vec::new();
     for slot in thurbox::kernel::layout::resolve(&region, area) {
         for &index in host.in_slot(&slot.slot) {
-            let Some(r#mod) = host.mods.get(index) else {
+            let Some(loaded) = host.mods.get(index) else {
                 continue;
             };
-            out.push((index, r#mod.name.clone(), slot.rect));
+            out.push((index, loaded.name.clone(), slot.rect));
             // A switch slot shows one occupant; a stack shows them all. The
             // bundled interface has one occupant per slot either way, so the
             // distinction costs nothing to ignore here — but say so, because an

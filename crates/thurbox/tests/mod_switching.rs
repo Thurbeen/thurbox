@@ -92,7 +92,7 @@ fn a_disabled_mod_declares_nothing() {
     let on = loaded(&ui, &[]);
     let (bindings, settings) = on.declarations();
     assert!(bindings.iter().any(|b| b.chord == "ctrl+alt+z"));
-    assert!(settings.iter().any(|s| s.r#mod == "mine"));
+    assert!(settings.iter().any(|s| s.owner == "mine"));
     assert_eq!(on.in_slot("sessions").len(), 2, "it shares the column");
 
     let off = loaded(&ui, &["mods/90_mine.lua"]);
@@ -102,7 +102,7 @@ fn a_disabled_mod_declares_nothing() {
         "its key must be free while it is off"
     );
     assert!(
-        !settings.iter().any(|s| s.r#mod == "mine"),
+        !settings.iter().any(|s| s.owner == "mine"),
         "its setting must not be offered"
     );
     assert_eq!(off.in_slot("sessions").len(), 1, "its slot is released");

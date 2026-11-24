@@ -129,7 +129,7 @@ pub struct Output {
 
 /// One finished run, on its way back to the loop.
 struct Finished {
-    r#mod: String,
+    owner: String,
     key: String,
     run: Run,
     at: Instant,
@@ -145,7 +145,7 @@ struct Finished {
 /// is owed even when its answer was forgotten, on every exit path.
 struct Report {
     tx: Sender<Finished>,
-    r#mod: String,
+    owner: String,
     key: String,
     run: Option<Run>,
     started: Instant,
@@ -155,7 +155,7 @@ struct Report {
 impl Drop for Report {
     fn drop(&mut self) {
         let _ = self.tx.send(Finished {
-            r#mod: std::mem::take(&mut self.r#mod),
+            owner: std::mem::take(&mut self.owner),
             key: std::mem::take(&mut self.key),
             run: self.run.take().unwrap_or(Run::Pending),
             at: Instant::now(),
@@ -208,11 +208,11 @@ pub type Runner = dyn Fn(&Ask) -> Run + Send + Sync;
 #[derive(Debug, Clone)]
 pub enum RunEvent {
     Started {
-        r#mod: String,
+        owner: String,
         at: Instant,
     },
     Finished {
-        r#mod: String,
+        owner: String,
         started: Instant,
         took: Duration,
     },
@@ -243,9 +243,9 @@ impl RunStore {
     ///
     /// Returns whether anything was started or queued, which the caller uses to
     /// decide nothing more than whether to repaint.
-    pub fn request(&mut self, r#mod: &str, ask: Ask, runner: &std::sync::Arc<Runner>) -> bool {
+    pub fn request(&mut self, mod_name: &str, ask: Ask, runner: &std::sync::Arc<Runner>) -> bool {
         let ask = ask.clamped();
-        let id = (r#mod.to_string(), ask.key.clone());
+        let id = (mod_name.to_string(), ask.key.clone());
         let now = Instant::now();
 
         if let Some(answer) = self.answers.get(&id) {
@@ -274,7 +274,7 @@ impl RunStore {
         entry.inflight = true;
         entry.identity = identity.clone();
 
-        self.queued.push_back((r#mod.to_string(), ask, identity));
+        self.queued.push_back((mod_name.to_string(), ask, identity));
         self.drain_queue(runner);
         true
     }
@@ -282,13 +282,13 @@ impl RunStore {
     /// Start whatever the concurrency bound allows.
     fn drain_queue(&mut self, runner: &std::sync::Arc<Runner>) {
         while self.running < MAX_CONCURRENT {
-            let Some((r#mod, ask, identity)) = self.queued.pop_front() else {
+            let Some((owner, ask, identity)) = self.queued.pop_front() else {
                 return;
             };
             self.running += 1;
             let started = Instant::now();
             self.events.push(RunEvent::Started {
-                r#mod: r#mod.clone(),
+                owner: owner.clone(),
                 at: started,
             });
             let tx = self.ensure_channel();
@@ -301,7 +301,7 @@ impl RunStore {
                 // the interface.
                 let mut report = Report {
                     tx,
-                    r#mod,
+                    owner,
                     key: ask.key.clone(),
                     run: Some(Run::Failed(format!("{}: the run panicked", ask.program))),
                     started,
@@ -330,11 +330,11 @@ impl RunStore {
         for done in finished {
             self.running = self.running.saturating_sub(1);
             self.events.push(RunEvent::Finished {
-                r#mod: done.r#mod.clone(),
+                owner: done.owner.clone(),
                 started: done.started,
                 took: done.at.saturating_duration_since(done.started),
             });
-            let id = (done.r#mod, done.key);
+            let id = (done.owner, done.key);
             if let Some(answer) = self.answers.get_mut(&id) {
                 if Arc::ptr_eq(&answer.identity, &done.identity) {
                     answer.run = done.run;
@@ -358,27 +358,29 @@ impl RunStore {
         self.answers.is_empty() && self.queued.is_empty() && self.running == 0
     }
 
-    pub fn get(&self, r#mod: &str, key: &str) -> Option<&Run> {
+    pub fn get(&self, mod_name: &str, key: &str) -> Option<&Run> {
         self.answers
-            .get(&(r#mod.to_string(), key.to_string()))
+            .get(&(mod_name.to_string(), key.to_string()))
             .map(|answer| &answer.run)
     }
 
     /// Every answer belonging to one mod, for publishing.
-    pub fn for_mod<'a>(&'a self, r#mod: &str) -> Vec<(&'a str, &'a Run)> {
+    pub fn for_mod<'a>(&'a self, mod_name: &str) -> Vec<(&'a str, &'a Run)> {
         self.answers
             .iter()
-            .filter(|((owner, _), _)| owner == r#mod)
+            .filter(|((owner, _), _)| owner == mod_name)
             .map(|((_, key), answer)| (key.as_str(), &answer.run))
             .collect()
     }
 
     /// Forget this owner's answer and queued ask. Active work keeps its slot
     /// until it finishes, but no longer owns an answer it could publish into.
-    pub fn forget(&mut self, r#mod: &str, key: &str) -> bool {
-        let removed = self.answers.remove(&(r#mod.to_string(), key.to_string()));
+    pub fn forget(&mut self, mod_name: &str, key: &str) -> bool {
+        let removed = self
+            .answers
+            .remove(&(mod_name.to_string(), key.to_string()));
         self.queued
-            .retain(|(owner, ask, _)| owner != r#mod || ask.key != key);
+            .retain(|(owner, ask, _)| owner != mod_name || ask.key != key);
         removed.is_some()
     }
 
@@ -387,8 +389,8 @@ impl RunStore {
     /// Called after a reload: a mod that was edited away, renamed or removed
     /// must not leave its answers behind to accumulate across reloads.
     pub fn retain_mods(&mut self, live: &[String]) {
-        self.answers.retain(|(r#mod, _), _| live.contains(r#mod));
-        self.queued.retain(|(r#mod, _, _)| live.contains(r#mod));
+        self.answers.retain(|(owner, _), _| live.contains(owner));
+        self.queued.retain(|(owner, _, _)| live.contains(owner));
     }
 
     /// Take the runs started and finished since the last call.

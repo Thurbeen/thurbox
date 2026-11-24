@@ -25,7 +25,7 @@
 local fuzzy = require("lib.fuzzy")
 local order = require("lib.order")
 local panels = require("lib.panels")
-local plugin_settings = require("lib.settings")
+local mod_settings = require("lib.settings")
 local session_model = require("lib.session_model")
 local theme = require("lib.theme")
 local ui = require("lib.ui")
@@ -240,7 +240,7 @@ local WIDE = 100
 --- the title is whatever the agent last set. A row whose agent set none keeps
 --- its name.
 local function show_window_title()
-  return plugin_settings.enabled("sessions", "show_window_title", false)
+  return mod_settings.enabled("sessions", "show_window_title", false)
 end
 
 --- The text a session row is anchored on, and whether it is the agent's title
@@ -597,7 +597,7 @@ end
 --- hunting for the row you just asked for — which is the whole of the trade,
 --- so it is yours to make rather than ours.
 local function focus_new_session()
-  return plugin_settings.enabled("sessions", "focus_new_session", false)
+  return mod_settings.enabled("sessions", "focus_new_session", false)
 end
 
 --- What deleting this session would destroy, itemised — or nil when it would
@@ -718,7 +718,7 @@ local CURSOR_OPTS_WITH_REQUEST = {
 }
 
 local function folds(setting)
-  local saved = plugin_settings.get("sessions", setting, "")
+  local saved = mod_settings.get("sessions", setting, "")
   if type(saved) ~= "string" then
     saved = ""
   end
@@ -752,7 +752,7 @@ local function is_folded(setting, name)
 end
 
 local function save_folds(setting, value)
-  state[setting .. "_base"] = plugin_settings.get("sessions", setting, "")
+  state[setting .. "_base"] = mod_settings.get("sessions", setting, "")
   state[setting] = value
   command("set", { text = "sessions." .. setting, value = value })
 end

@@ -51,7 +51,7 @@ fn a_float_focus_hook_that_never_returns_is_interrupted_and_reported() {
     let result = spinner.on_focus_cycle(0, "next");
     host::set_instruction_budget(0);
     let failure = result.expect_err("cycle must be interrupted");
-    assert_eq!(failure.r#mod, "spinner");
+    assert_eq!(failure.owner, "spinner");
     assert_eq!(failure.phase, host::Phase::Key);
     assert!(failure.message.contains("instruction budget"), "{failure}");
     spinner.render(0, ctx()).expect("budget removed after hook");
@@ -76,7 +76,7 @@ fn an_event_handler_that_never_returns_is_interrupted_and_reported() {
     );
     host::set_instruction_budget(0);
     assert_eq!(failures.len(), 1, "{failures:?}");
-    assert_eq!(failures[0].r#mod, "spinner");
+    assert_eq!(failures[0].owner, "spinner");
     assert_eq!(failures[0].phase, host::Phase::Event);
     assert!(
         failures[0].message.contains("instruction budget"),
@@ -153,7 +153,7 @@ fn a_call_whose_instruction_budget_cannot_be_armed_is_not_run() {
     let failures =
         failures.expect("the spinner ran without an instruction budget and never returned");
     assert_eq!(failures.len(), 1, "{failures:?}");
-    assert_eq!(failures[0].r#mod, "spinner");
+    assert_eq!(failures[0].owner, "spinner");
     assert_eq!(failures[0].phase, host::Phase::Event);
     assert!(
         failures[0].message.contains("could not be armed"),
@@ -344,7 +344,7 @@ fn the_limits_are_settable_and_enforced() {
     let error = hog
         .render(0, ctx())
         .expect_err("exhausting memory must fail the plugin");
-    assert_eq!(error.r#mod, "hog");
+    assert_eq!(error.owner, "hog");
     assert!(
         error.message.contains("memory"),
         "the message should name the limit: {}",
@@ -378,7 +378,7 @@ fn the_limits_are_settable_and_enforced() {
         .expect_err("an unterminated render must be interrupted");
     let elapsed = started.elapsed();
 
-    assert_eq!(error.r#mod, "spin");
+    assert_eq!(error.owner, "spin");
     assert!(
         error.message.contains("instruction budget"),
         "{}",

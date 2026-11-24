@@ -128,7 +128,7 @@ fn shipped_operator_actions_have_catalog_descriptors_and_handlers() {
         let descriptor = by_name(&binding.action)
             .unwrap_or_else(|| panic!("missing key action {}", binding.action));
         assert_eq!(
-            descriptor.owner, binding.r#mod,
+            descriptor.owner, binding.owner,
             "{} changed owner",
             binding.action
         );
@@ -136,7 +136,7 @@ fn shipped_operator_actions_have_catalog_descriptors_and_handlers() {
     for command in registry.commands() {
         let descriptor = by_name(&command.action)
             .unwrap_or_else(|| panic!("missing palette action {}", command.action));
-        assert_eq!(descriptor.owner, command.r#mod);
+        assert_eq!(descriptor.owner, command.owner);
     }
     for pill in registry.pills() {
         assert!(
@@ -163,7 +163,7 @@ fn shipped_operator_actions_have_catalog_descriptors_and_handlers() {
     for declaration in host.action_declarations() {
         let descriptor = by_name(&declaration.name)
             .unwrap_or_else(|| panic!("missing declared action {}", declaration.name));
-        assert_eq!(descriptor.owner, declaration.r#mod);
+        assert_eq!(descriptor.owner, declaration.owner);
         assert_eq!(descriptor.arguments, declaration.arguments);
     }
 }
@@ -291,7 +291,7 @@ fn paint_node(node: &Node, width: u16, height: u16) -> Vec<String> {
 fn index_of(host: &LuaHost, name: &str) -> usize {
     host.mods
         .iter()
-        .position(|r#mod| r#mod.name == name)
+        .position(|loaded| loaded.name == name)
         .unwrap_or_else(|| panic!("no plugin named {name}"))
 }
 
@@ -831,7 +831,7 @@ fn a_broken_mod_costs_only_its_own_pane() {
     let bad = host
         .render(index_of(&host, "bad"), ctx(20, 3, false))
         .expect_err("the throwing plugin must fail");
-    assert_eq!(bad.r#mod, "bad", "the failure must name its plugin");
+    assert_eq!(bad.owner, "bad", "the failure must name its plugin");
     assert!(bad.message.contains("boom"), "{}", bad.message);
 }
 
@@ -888,7 +888,7 @@ fn an_unterminated_mod_is_interrupted_rather_than_hanging() {
     let error = host
         .render(index_of(&host, "spin"), ctx(20, 3, false))
         .expect_err("an unterminated render must be interrupted");
-    assert_eq!(error.r#mod, "spin");
+    assert_eq!(error.owner, "spin");
     assert!(
         error.message.contains("instruction budget"),
         "{}",
@@ -1085,16 +1085,16 @@ use thurbox::session::SessionState;
 
 /// Press a key and route it exactly as the binary does: registry first
 /// (declared actions), then raw `on_key`. Returns whatever commands it issued.
-fn press_key(host: &LuaHost, r#mod: &str, ch: char) {
-    press_chord(host, r#mod, ch, false);
+fn press_key(host: &LuaHost, mod_name: &str, ch: char) {
+    press_chord(host, mod_name, ch, false);
 }
 
 /// The same, with Ctrl held.
-fn press_ctrl_key(host: &LuaHost, r#mod: &str, ch: char) {
-    press_chord(host, r#mod, ch, true);
+fn press_ctrl_key(host: &LuaHost, mod_name: &str, ch: char) {
+    press_chord(host, mod_name, ch, true);
 }
 
-fn press_chord(host: &LuaHost, r#mod: &str, ch: char, ctrl: bool) {
+fn press_chord(host: &LuaHost, mod_name: &str, ch: char, ctrl: bool) {
     let registry = registry(host);
     let key = KeyPress {
         name: ch.to_lowercase().to_string(),
@@ -1102,23 +1102,23 @@ fn press_chord(host: &LuaHost, r#mod: &str, ch: char, ctrl: bool) {
         ctrl,
         ..KeyPress::default()
     };
-    if let Some(binding) = registry.resolve(&key, Some(r#mod)) {
-        if let Some(index) = host.index_of(&binding.r#mod) {
+    if let Some(binding) = registry.resolve(&key, Some(mod_name)) {
+        if let Some(index) = host.index_of(&binding.owner) {
             if host.on_action(index, &binding.action).expect("action") {
                 return;
             }
         }
     }
-    host.on_key(index_of(host, r#mod), &key).expect("key");
+    host.on_key(index_of(host, mod_name), &key).expect("key");
 }
 
-fn keys_to_commands(host: &LuaHost, r#mod: &str, ch: char) -> Vec<Command> {
-    press_key(host, r#mod, ch);
+fn keys_to_commands(host: &LuaHost, mod_name: &str, ch: char) -> Vec<Command> {
+    press_key(host, mod_name, ch);
     host.drain_commands()
 }
 
-fn ctrl_keys_to_commands(host: &LuaHost, r#mod: &str, ch: char) -> Vec<Command> {
-    press_ctrl_key(host, r#mod, ch);
+fn ctrl_keys_to_commands(host: &LuaHost, mod_name: &str, ch: char) -> Vec<Command> {
+    press_ctrl_key(host, mod_name, ch);
     host.drain_commands()
 }
 
@@ -1511,10 +1511,10 @@ fn every_bundled_mod_declares_its_keys_as_data() {
     let registry = registry(&host);
     assert!(!registry.bindings().is_empty());
 
-    for r#mod in ["sessions", "agent"] {
+    for mod_name in ["sessions", "agent"] {
         assert!(
-            registry.bindings().iter().any(|b| b.r#mod == r#mod),
-            "{mod} declares no keys"
+            registry.bindings().iter().any(|b| b.owner == mod_name),
+            "{mod_name} declares no keys"
         );
     }
     for binding in registry.bindings() {
@@ -2148,7 +2148,7 @@ fn a_failing_decorator_leaves_the_pane_drawn() {
     let error = host
         .decorate(decorator, &node, ctx(20, 3, false))
         .expect_err("the decorator must fail");
-    assert_eq!(error.r#mod, "bad");
+    assert_eq!(error.owner, "bad");
     // And the caller still has the original to draw.
     assert!(paint_node(&node, 20, 3).join("").contains("content"));
 }
@@ -2447,7 +2447,7 @@ fn a_mod_earns_a_band_entry_by_declaring_one() {
     let host = LuaHost::new(dir.path());
     let (bindings, settings, pills) = host.all_declarations();
     assert_eq!(pills.len(), 1, "{pills:?}");
-    assert_eq!(pills[0].r#mod, "contributor", "stamped with its author");
+    assert_eq!(pills[0].owner, "contributor", "stamped with its author");
 
     let mut registry = Registry::default();
     registry.declare_all(bindings, settings, pills);

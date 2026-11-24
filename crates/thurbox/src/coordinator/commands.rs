@@ -85,7 +85,7 @@ impl App {
             // worker would only add a race.
             Command::Mod { file, edit } => self.apply_mod_edit(file, *edit),
             // Focus is the loop's own state, so it is applied here.
-            Command::Focus { r#mod, toggle } => self.apply_focus_command(r#mod, *toggle),
+            Command::Focus { mod_name, toggle } => self.apply_focus_command(mod_name, *toggle),
             Command::Shell { session } => self.apply_shell_command(session),
             Command::Program {
                 owner,
@@ -109,8 +109,8 @@ impl App {
             Command::Copy { session } => self.apply_copy_command(session),
             // Settings live in the registry, which is in-process too.
             Command::Setting { key, value } => {
-                let (r#mod, id) = key.split_once('.').unwrap_or((key.as_str(), ""));
-                if let Err(e) = self.registry.set_setting(r#mod, id, value.clone()) {
+                let (mod_name, id) = key.split_once('.').unwrap_or((key.as_str(), ""));
+                if let Err(e) = self.registry.set_setting(mod_name, id, value.clone()) {
                     self.report(e, Level::Error);
                 }
             }
@@ -183,8 +183,8 @@ impl App {
     }
 
     /// `Command::Focus`: move focus, or return whence it came.
-    pub(crate) fn apply_focus_command(&mut self, r#mod: &str, toggle: bool) {
-        let Some(index) = self.host.index_of(r#mod) else {
+    pub(crate) fn apply_focus_command(&mut self, mod_name: &str, toggle: bool) {
+        let Some(index) = self.host.index_of(mod_name) else {
             return;
         };
         let position = self

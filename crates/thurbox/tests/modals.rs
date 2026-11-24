@@ -824,7 +824,7 @@ fn settings_renders_what_the_bundled_mods_declare() {
     assert!(screen.contains("features.shell_pane"), "{screen}");
     // Grouped by the declaring mod, which is the only grouping the registry
     // knows about.
-    assert!(screen.contains(&first.r#mod.to_uppercase()), "{screen}");
+    assert!(screen.contains(&first.owner.to_uppercase()), "{screen}");
     assert!(screen.contains(&first.id), "{screen}");
 }
 
@@ -1047,7 +1047,7 @@ fn a_setting_declared_by_an_unknown_mod_is_editable_without_touching_settings() 
     registry.declare(
         Vec::new(),
         vec![Setting {
-            r#mod: "weather".into(),
+            owner: "weather".into(),
             id: "units".into(),
             description: "metric or imperial".into(),
             default: Value::Bool(false),
@@ -1537,7 +1537,7 @@ fn help_and_settings_page_and_jump_through_their_rows() {
     // the modal's job is to page whatever it is given, not to have a long list.
     let extra: Vec<thurbox::kernel::registry::Setting> = (0..40)
         .map(|n| thurbox::kernel::registry::Setting {
-            r#mod: "probe".to_string(),
+            owner: "probe".to_string(),
             id: format!("flag_{n:02}"),
             description: format!("a stand-in setting ({n})"),
             default: thurbox::kernel::registry::Value::Bool(true),
@@ -1671,7 +1671,7 @@ fn a_setting_with_choices_steps_through_them_and_is_never_typed_into() {
     registry.declare(
         Vec::new(),
         vec![Setting {
-            r#mod: "voice".into(),
+            owner: "voice".into(),
             id: "engine".into(),
             description: "speech model".into(),
             default: declared.clone(),

@@ -143,7 +143,7 @@ pub enum Command {
     /// UI-thread applied: focus is the loop's state, and there is nothing to
     /// wait for.
     Focus {
-        r#mod: String,
+        mod_name: String,
         /// Focus this pane, or — when it already holds focus — return to whatever
         /// was focused before it.
         ///
@@ -610,8 +610,8 @@ impl Command {
             "bookmark" => Self::parse_bookmark(args),
             // Focus names a pane, not a session.
             "focus" => match args.text.filter(|t| !t.is_empty()) {
-                Some(r#mod) => Ok(Command::Focus {
-                    r#mod,
+                Some(mod_name) => Ok(Command::Focus {
+                    mod_name,
                     toggle: args.toggle,
                 }),
                 None => Err("command \"focus\" needs a mod name".to_string()),
@@ -1684,8 +1684,8 @@ mod tests {
         )
         .expect("focus parses");
         match toggling {
-            Command::Focus { r#mod, toggle } => {
-                assert_eq!(r#mod, "review");
+            Command::Focus { mod_name, toggle } => {
+                assert_eq!(mod_name, "review");
                 assert!(toggle);
             }
             other => panic!("{other:?}"),
@@ -1936,7 +1936,7 @@ mod tests {
         let mut bus =
             CommandBus::fleet(crate::fleet_link::FleetLink::local("thurbox-test-no-fleet"));
         let id = bus.dispatch(Command::Focus {
-            r#mod: "agent".into(),
+            mod_name: "agent".into(),
             toggle: false,
         });
         assert!(
@@ -1959,7 +1959,7 @@ mod tests {
         let mut bus =
             CommandBus::fleet(crate::fleet_link::FleetLink::local("thurbox-test-no-fleet"));
         let id = bus.dispatch(Command::Focus {
-            r#mod: "agent".into(),
+            mod_name: "agent".into(),
             toggle: false,
         });
         bus.finish_for_test(id, Some("no such pane".to_string()));

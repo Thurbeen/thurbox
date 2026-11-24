@@ -199,7 +199,7 @@ pub struct SlowOp {
     /// The mod whose single call was the longest inside the op, when the op
     /// called any. Without it `input_dispatch 120ms` names the symptom and not
     /// the pane.
-    pub r#mod: Option<String>,
+    pub owner: Option<String>,
 }
 
 /// A sample lands in the ring at this threshold.
@@ -272,11 +272,15 @@ impl Timings {
         &mut self,
         name: &'static str,
         elapsed: Duration,
-        r#mod: Option<String>,
+        mod_name: Option<String>,
     ) -> bool {
         let ms = u64::try_from(elapsed.as_millis()).unwrap_or(u64::MAX);
         if ms >= SLOW_OP_RING_MS {
-            self.slow_ops.push(SlowOp { name, ms, r#mod });
+            self.slow_ops.push(SlowOp {
+                name,
+                ms,
+                owner: mod_name,
+            });
         }
         ms >= SLOW_OP_WARN_MS
     }
@@ -539,15 +543,15 @@ impl ModTable {
         let opened = self.opened_at;
         let inside = |at: Instant| opened.is_none_or(|opened| at >= opened);
         match event {
-            RunEvent::Started { r#mod, at } if inside(*at) => {
-                self.stats_mut(r#mod).runs.started += 1;
+            RunEvent::Started { owner, at } if inside(*at) => {
+                self.stats_mut(owner).runs.started += 1;
             }
             RunEvent::Finished {
-                r#mod,
+                owner,
                 started,
                 took,
             } if inside(*started) => {
-                self.stats_mut(r#mod).runs.record(*took);
+                self.stats_mut(owner).runs.record(*took);
             }
             _ => {}
         }
@@ -815,7 +819,7 @@ pub fn snapshot_json(
         "slow_ops": timings
             .slow_ops
             .iter_recent()
-            .map(|op| json!({ "op": op.name, "ms": op.ms, "plugin": op.r#mod }))
+            .map(|op| json!({ "op": op.name, "ms": op.ms, "plugin": op.owner }))
             .collect::<Vec<_>>(),
         "startup": startup.to_json(),
         "plugin_window": { "frames": mods.frames, "frame_total_us": mods.frame_total_us },
@@ -877,7 +881,7 @@ mod tests {
             ops.push(SlowOp {
                 name: "op",
                 ms: i,
-                r#mod: None,
+                owner: None,
             });
         }
         let seen: Vec<u64> = ops.iter_recent().map(|op| op.ms).collect();

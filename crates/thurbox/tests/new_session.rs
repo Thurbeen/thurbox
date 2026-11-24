@@ -3541,10 +3541,10 @@ fn what_the_flow_asks_for_is_what_the_loop_reads() {
 fn the_flow_is_a_float_that_never_joins_the_focus_ring() {
     let host = host();
     let index = index_of(&host, MOD);
-    let r#mod = &host.mods[index];
-    assert!(r#mod.floats, "the flow overlays rather than taking a slot");
+    let loaded = &host.mods[index];
+    assert!(loaded.floats, "the flow overlays rather than taking a slot");
     assert!(
-        !r#mod.focusable,
+        !loaded.focusable,
         "a closed modal must not be a tab stop, as v1's pickers are not"
     );
 }

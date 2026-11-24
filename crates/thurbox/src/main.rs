@@ -234,7 +234,7 @@ fn require_terminal() {
 /// recorded before the tree so anything inside it wins.
 #[derive(Debug, Clone)]
 struct ClickTarget {
-    r#mod: usize,
+    mod_index: usize,
     rect: Rect,
     identity: Identity,
 }
@@ -247,7 +247,7 @@ struct ClickTarget {
 /// survives the press that made it.
 #[derive(Debug, Clone)]
 struct PointerGrab {
-    r#mod: usize,
+    mod_index: usize,
     rect: Rect,
     identity: Identity,
 }

@@ -215,9 +215,9 @@ impl App {
         // nothing: no publish, and no activity that would repaint.
         if let Input::Key(key) = &input {
             if key.kind == KeyEventKind::Release {
-                if let Some((r#mod, action)) = self.holds.release_target(key) {
+                if let Some((mod_name, action)) = self.holds.release_target(key) {
                     self.publish_for_batch(published);
-                    self.deliver_release(&r#mod, &action);
+                    self.deliver_release(&mod_name, &action);
                     self.note_input();
                 }
                 return;
@@ -369,7 +369,7 @@ impl App {
     /// outrank a global one.
     pub(crate) fn kernel_action(&self, press: &KeyPress) -> Option<String> {
         let binding = self.registry.resolve(press, None)?;
-        (binding.r#mod == thurbox::kernel::modals::OWNER).then(|| binding.action.clone())
+        (binding.owner == thurbox::kernel::modals::OWNER).then(|| binding.action.clone())
     }
 
     /// Copy and paste, run ahead of a float's exclusive grab and of every mod
@@ -447,17 +447,17 @@ impl App {
     ///
     /// The reserved chords still work, so a modal can never trap you.
     pub(crate) fn dispatch_grabbed(&mut self, press: &KeyPress) -> bool {
-        let Some(r#mod) = self
+        let Some(mod_name) = self
             .grabbed
             .and_then(|index| self.host.mods.get(index))
-            .map(|r#mod| r#mod.name.clone())
+            .map(|loaded| loaded.name.clone())
         else {
             return false;
         };
         let index = self.grabbed.expect("just resolved through it");
         if let Some(action) = self
             .registry
-            .resolve(press, Some(&r#mod))
+            .resolve(press, Some(&mod_name))
             .map(|b| b.action.clone())
         {
             match self.host.on_action(index, &action) {
@@ -489,13 +489,13 @@ impl App {
             .focusable()
             .get(self.focus)
             .and_then(|index| self.host.mods.get(*index))
-            .map(|r#mod| r#mod.name.clone());
-        let Some((r#mod, action, passthrough, release)) = self
+            .map(|loaded| loaded.name.clone());
+        let Some((owner, action, passthrough, release)) = self
             .registry
             .resolve(press, focused_name.as_deref())
             .map(|binding| {
                 (
-                    binding.r#mod.clone(),
+                    binding.owner.clone(),
                     binding.action.clone(),
                     binding.passthrough,
                     binding.release,
@@ -526,13 +526,13 @@ impl App {
         // A chord the kernel declared for itself opens a system modal; there is
         // no mod to hand it to. (The kernel's other declarations — copy and
         // paste — are resolved before a float can grab them, above.)
-        if r#mod == thurbox::kernel::modals::OWNER {
+        if owner == thurbox::kernel::modals::OWNER {
             if let Some(kind) = ModalKind::from_action(&action) {
                 self.toggle_modal(kind);
                 return true;
             }
         }
-        let Some(index) = self.host.index_of(&r#mod) else {
+        let Some(index) = self.host.index_of(&owner) else {
             return false;
         };
         // A binding that asked for its release is told which half this is, and
@@ -547,7 +547,7 @@ impl App {
         match handled {
             Ok(true) => {
                 if release {
-                    self.holds.hold(code, modifiers, r#mod, action);
+                    self.holds.hold(code, modifiers, owner, action);
                 }
                 true
             }
@@ -561,9 +561,9 @@ impl App {
 
     /// The second half of a hold: the mod that took the press is told the
     /// key went up, wherever focus moved meanwhile and whatever is open.
-    fn deliver_release(&mut self, r#mod: &str, action: &str) {
+    fn deliver_release(&mut self, mod_name: &str, action: &str) {
         self.dirty = true;
-        let Some(index) = self.host.index_of(r#mod) else {
+        let Some(index) = self.host.index_of(mod_name) else {
             return;
         };
         if let Err(e) = self
@@ -680,21 +680,21 @@ impl App {
     /// `host.on_action` whether or not that mod is focused, which is what a
     /// global chord already does. The modal has closed by the time this runs, so
     /// the action sees the focus state a key press would have seen.
-    pub(crate) fn run_action(&mut self, r#mod: &str, action: &str) {
+    pub(crate) fn run_action(&mut self, mod_name: &str, action: &str) {
         self.dirty = true;
         if !self
             .registry
             .action_catalog()
             .iter()
-            .any(|descriptor| descriptor.name == action && descriptor.owner == r#mod)
+            .any(|descriptor| descriptor.name == action && descriptor.owner == mod_name)
         {
             self.report(
-                format!("no catalog action named {action:?} for {mod:?}"),
+                format!("no catalog action named {action:?} for {mod_name:?}"),
                 Level::Error,
             );
             return;
         }
-        if r#mod == thurbox::kernel::modals::OWNER {
+        if mod_name == thurbox::kernel::modals::OWNER {
             if let Some(kind) = ModalKind::from_action(action) {
                 self.toggle_modal(kind);
                 return;
@@ -722,8 +722,8 @@ impl App {
             }
             return;
         }
-        let Some(index) = self.host.index_of(r#mod) else {
-            self.report(format!("no mod named {mod:?}"), Level::Error);
+        let Some(index) = self.host.index_of(mod_name) else {
+            self.report(format!("no mod named {mod_name:?}"), Level::Error);
             return;
         };
         if let Err(e) = self.host.on_action(index, action) {
@@ -738,12 +738,12 @@ impl App {
     /// decided who should get it (the pane under the pointer, or a float).
     pub(crate) fn dispatch_key_to(&mut self, index: usize, key: &KeyEvent) {
         let press = to_press(key);
-        let Some(r#mod) = self.host.mods.get(index).map(|p| p.name.clone()) else {
+        let Some(mod_name) = self.host.mods.get(index).map(|p| p.name.clone()) else {
             return;
         };
         if let Some(action) = self
             .registry
-            .resolve(&press, Some(&r#mod))
+            .resolve(&press, Some(&mod_name))
             .map(|binding| binding.action.clone())
         {
             match self.host.on_action(index, &action) {
@@ -1287,8 +1287,8 @@ pub(crate) fn sort_key(
 pub(crate) enum Route {
     /// Dispatch it as a press, through the coalescer and `on_key`.
     Press(KeyEvent),
-    /// Tell `mod` that `action`'s key was let go.
-    Release { r#mod: String, action: String },
+    /// Tell `owner` that `action`'s key was let go.
+    Release { owner: String, action: String },
     /// Nothing receives it.
     Drop,
 }
@@ -1315,8 +1315,8 @@ impl Holds {
                 self.releases = KeyReleases::Reported;
                 match held {
                     Some(at) => {
-                        let (_, _, r#mod, action) = self.held.remove(at);
-                        Route::Release { r#mod, action }
+                        let (_, _, owner, action) = self.held.remove(at);
+                        Route::Release { owner, action }
                     }
                     None => Route::Drop,
                 }
@@ -1334,18 +1334,18 @@ impl Holds {
     /// `None` for a release nobody holds, which then goes nowhere.
     pub(crate) fn release_target(&mut self, key: &KeyEvent) -> Option<(String, String)> {
         match self.route(key, false) {
-            Route::Release { r#mod, action } => Some((r#mod, action)),
+            Route::Release { owner, action } => Some((owner, action)),
             Route::Press(_) | Route::Drop => None,
         }
     }
 
-    /// Remember that `mod` took the press of `code` with `modifiers` for
+    /// Remember that `owner` took the press of `code` with `modifiers` for
     /// `action`. Only where a release can come: elsewhere a hold would never end.
     pub(crate) fn hold(
         &mut self,
         code: KeyCode,
         modifiers: KeyModifiers,
-        r#mod: String,
+        owner: String,
         action: String,
     ) {
         if self.releases == KeyReleases::Unsupported {
@@ -1353,7 +1353,7 @@ impl Holds {
         }
         let code = hold_key(code);
         self.held.retain(|(held, ..)| *held != code);
-        self.held.push((code, modifiers, r#mod, action));
+        self.held.push((code, modifiers, owner, action));
     }
 
     /// Forget every hold: the mods that took the presses were rebuilt.
@@ -1595,7 +1595,7 @@ mod tests {
                 false
             ),
             Route::Release {
-                r#mod: "voice".into(),
+                owner: "voice".into(),
                 action: "voice.toggle".into()
             }
         );

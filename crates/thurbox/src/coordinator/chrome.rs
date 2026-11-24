@@ -580,8 +580,8 @@ pub(crate) fn render_hud(
     // The pane when there is one: it is what the reader goes to fix, and the
     // op name alone does not fit beside it.
     match timings.slow_ops.iter_recent().next() {
-        Some(op) => match &op.r#mod {
-            Some(r#mod) => text.push_str(&format!("slow   {}ms {mod}", op.ms)),
+        Some(op) => match &op.owner {
+            Some(owner) => text.push_str(&format!("slow   {}ms {owner}", op.ms)),
             None => text.push_str(&format!("slow   {}:{}ms", op.name, op.ms)),
         },
         None => text.push_str("slow   none"),

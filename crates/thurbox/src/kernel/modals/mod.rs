@@ -140,7 +140,7 @@ pub fn pills() -> Vec<Pill> {
     ]
     .into_iter()
     .map(|(kind, label, priority)| Pill {
-        r#mod: OWNER.to_string(),
+        owner: OWNER.to_string(),
         action: kind.action().to_string(),
         label: label.to_string(),
         priority,

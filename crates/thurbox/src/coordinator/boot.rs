@@ -474,7 +474,7 @@ fn focus_index_of(host: &LuaHost, name: &str) -> usize {
         .position(|index| {
             host.mods
                 .get(*index)
-                .is_some_and(|r#mod| r#mod.name == name)
+                .is_some_and(|loaded| loaded.name == name)
         })
         .unwrap_or(0)
 }

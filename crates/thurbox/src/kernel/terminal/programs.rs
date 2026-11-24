@@ -25,15 +25,15 @@ use super::Terminals;
 #[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct ProgramKey {
     /// The owning mod's path, relative to the interface directory.
-    pub r#mod: String,
+    pub owner: String,
     /// The name the mod gave this pane.
     pub name: String,
 }
 
 impl ProgramKey {
-    pub fn new(r#mod: &str, name: &str) -> Self {
+    pub fn new(mod_name: &str, name: &str) -> Self {
         Self {
-            r#mod: r#mod.to_string(),
+            owner: mod_name.to_string(),
             name: name.to_string(),
         }
     }
@@ -43,7 +43,7 @@ impl ProgramKey {
     /// Prefixed so it cannot be confused with a session id, which is a UUID, and
     /// so a paint can tell the two apart by inspection.
     pub fn surface_id(&self) -> String {
-        format!("{PROGRAM_SURFACE_PREFIX}{}#{}", self.r#mod, self.name)
+        format!("{PROGRAM_SURFACE_PREFIX}{}#{}", self.owner, self.name)
     }
 }
 
@@ -117,7 +117,7 @@ fn stale_program_keys<'a>(
     keys: impl Iterator<Item = &'a ProgramKey>,
     live: &[String],
 ) -> Vec<ProgramKey> {
-    keys.filter(|key| !live.contains(&key.r#mod))
+    keys.filter(|key| !live.contains(&key.owner))
         .cloned()
         .collect()
 }
@@ -131,13 +131,13 @@ fn stale_program_keys<'a>(
 /// The refusal is a message rather than a silent no, because the mod surfaces
 /// it — a pane that says why it is empty is the difference between a bound and a
 /// bug.
-fn admit_program(r#mod: &str, held: usize, program: &str) -> Result<(), String> {
+fn admit_program(mod_name: &str, held: usize, program: &str) -> Result<(), String> {
     if program.trim().is_empty() {
         return Err("a program pane needs a program to run".to_string());
     }
     if held >= MAX_PROGRAMS_PER_MOD {
         return Err(format!(
-            "{mod} already holds {held} program panes (the limit is \
+            "{mod_name} already holds {held} program panes (the limit is \
              {MAX_PROGRAMS_PER_MOD})"
         ));
     }
@@ -163,13 +163,13 @@ pub enum KeysPlan {
 /// as "not running", that refusal was reported as a missing program, or handed
 /// to the start — which answers `Ok` for the pane already there, so the keys
 /// were lost with nothing said. Pure for the reason `admit_program` is.
-pub fn plan_keys(r#mod: &str, name: &str, running: bool, program: &str) -> KeysPlan {
+pub fn plan_keys(mod_name: &str, name: &str, running: bool, program: &str) -> KeysPlan {
     if running {
         return KeysPlan::Send;
     }
     if program.trim().is_empty() {
         return KeysPlan::Refuse(format!(
-            "{mod} has no running program named {name:?} to type into"
+            "{mod_name} has no running program named {name:?} to type into"
         ));
     }
     KeysPlan::Start
@@ -188,7 +188,7 @@ pub(super) struct ProgramSlot {
 }
 
 impl Terminals {
-    /// Start `program` in a pane belonging to `key.mod`, or keep the one it
+    /// Start `program` in a pane belonging to `key.owner`, or keep the one it
     /// already has.
     ///
     /// **Idempotent**, deliberately: a mod asks on every frame — the pattern
@@ -225,7 +225,7 @@ impl Terminals {
             ));
             self.release_program(key);
         }
-        admit_program(&key.r#mod, self.program_count(&key.r#mod), program)?;
+        admit_program(&key.owner, self.program_count(&key.owner), program)?;
 
         // Local only, by design: a mod-owned pane has no session and therefore
         // no host, so there is nothing to resolve one from. Recorded as an open
@@ -238,7 +238,7 @@ impl Terminals {
         }
 
         let window = crate::backend::identity::program_window_name(
-            &crate::kernel::bundled::digest(&key.r#mod),
+            &crate::kernel::bundled::digest(&key.owner),
             &key.name,
         );
         let env: HashMap<String, String> = HashMap::new();
@@ -365,10 +365,10 @@ impl Terminals {
     }
 
     /// How many panes a mod is holding.
-    pub fn program_count(&self, r#mod: &str) -> usize {
+    pub fn program_count(&self, mod_name: &str) -> usize {
         self.programs
             .keys()
-            .filter(|key| key.r#mod == r#mod)
+            .filter(|key| key.owner == mod_name)
             .count()
     }
 

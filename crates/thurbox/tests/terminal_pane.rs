@@ -124,7 +124,7 @@ fn ctx(width: u16, height: u16) -> RenderContext {
 fn index_of(host: &LuaHost, name: &str) -> usize {
     host.mods
         .iter()
-        .position(|r#mod| r#mod.name == name)
+        .position(|loaded| loaded.name == name)
         .unwrap_or_else(|| panic!("no plugin named {name}"))
 }
 
@@ -227,8 +227,8 @@ fn the_centre_holds_one_terminal_mod_rather_than_two() {
     let raw: Vec<&str> = host
         .mods
         .iter()
-        .filter(|r#mod| r#mod.session_input)
-        .map(|r#mod| r#mod.name.as_str())
+        .filter(|loaded| loaded.session_input)
+        .map(|loaded| loaded.name.as_str())
         .collect();
     assert_eq!(raw, vec![TERMINAL], "one pane owns the pty");
 
@@ -305,7 +305,7 @@ fn the_shell_chord_survived_the_merge() {
             .resolve(&press, Some(TERMINAL))
             .unwrap_or_else(|| panic!("{} is not bound", press.name));
         assert_eq!(binding.action, "shell.open");
-        assert_eq!(binding.r#mod, TERMINAL, "declared by the pane that acts");
+        assert_eq!(binding.owner, TERMINAL, "declared by the pane that acts");
     }
 }
 

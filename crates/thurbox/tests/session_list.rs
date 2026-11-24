@@ -865,7 +865,7 @@ fn enter_opens_the_selected_session() {
     assert_eq!(
         host.drain_commands(),
         vec![Command::Focus {
-            r#mod: "agent".into(),
+            mod_name: "agent".into(),
             toggle: false,
         }]
     );
@@ -978,11 +978,11 @@ fn without(world: &Snapshot, id: &str) -> Snapshot {
 /// bug: the list published the right `store.selected` after a steer and after a
 /// create all along, so a test reading that value alone stays green whether or
 /// not a plain rebuild keeps the cursor where it was.
-fn paint(host: &LuaHost, r#mod: &str, width: u16, height: u16) -> Buffer {
+fn paint(host: &LuaHost, mod_name: &str, width: u16, height: u16) -> Buffer {
     let node = host
         .render(
-            host.index_of(r#mod)
-                .unwrap_or_else(|| panic!("no mod named {mod}")),
+            host.index_of(mod_name)
+                .unwrap_or_else(|| panic!("no mod named {mod_name}")),
             RenderContext {
                 width,
                 height,
@@ -991,7 +991,7 @@ fn paint(host: &LuaHost, r#mod: &str, width: u16, height: u16) -> Buffer {
                 frame: 0,
             },
         )
-        .unwrap_or_else(|e| panic!("{mod} should render: {e}"))
+        .unwrap_or_else(|e| panic!("{mod_name} should render: {e}"))
         .node;
     let mut terminal = Terminal::new(TestBackend::new(width, height)).expect("terminal");
     terminal
@@ -1216,7 +1216,7 @@ fn with_the_setting_on_a_created_session_is_selected_and_opened() {
     assert_eq!(
         host.drain_commands(),
         vec![Command::Focus {
-            r#mod: "agent".into(),
+            mod_name: "agent".into(),
             toggle: false,
         }],
         "the agent pane is what shows a session, so opening one focuses it"

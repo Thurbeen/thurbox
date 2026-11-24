@@ -204,7 +204,7 @@ fn one_subscriber_throwing_costs_neither_the_others_nor_its_own_pane() {
     ]);
     let failures = host.dispatch_event(&status_event("s1", "idle", "blocked"));
     assert_eq!(failures.len(), 1, "{failures:?}");
-    assert_eq!(failures[0].r#mod, "thrower");
+    assert_eq!(failures[0].owner, "thrower");
     assert_eq!(failures[0].phase, Phase::Event);
     assert!(
         failures[0].message.contains("session.status") && failures[0].message.contains("no thanks"),
@@ -425,8 +425,8 @@ fn what_the_deriver_says_changed_is_what_a_subscriber_hears() {
 #[test]
 fn a_subscription_is_listed_as_data() {
     let (_dir, host) = host_of(&[("10_recorder.lua", RECORDER)]);
-    let r#mod = &host.mods[host.index_of("recorder").expect("loaded")];
-    assert_eq!(r#mod.events, vec!["session.status".to_string()]);
+    let loaded = &host.mods[host.index_of("recorder").expect("loaded")];
+    assert_eq!(loaded.events, vec!["session.status".to_string()]);
     assert_eq!(host.subscribers("session.status"), vec![0]);
     assert!(host.subscribers("session.created").is_empty());
 }

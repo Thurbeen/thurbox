@@ -117,20 +117,20 @@ fn publish_with(
     .expect("publish");
 }
 
-fn index_of(host: &LuaHost, r#mod: &str) -> usize {
+fn index_of(host: &LuaHost, mod_name: &str) -> usize {
     host.mods
         .iter()
-        .position(|p| p.name == r#mod)
-        .unwrap_or_else(|| panic!("no mod {mod}"))
+        .position(|p| p.name == mod_name)
+        .unwrap_or_else(|| panic!("no mod {mod_name}"))
 }
 
 /// A pane rendered but not painted, purely so it publishes into `store` — the
 /// bus a neighbour reads to learn which session is selected.
 /// Given a column of its own, because a pane too small to draw returns early
 /// before it publishes anything.
-fn prime(host: &LuaHost, r#mod: &str) {
+fn prime(host: &LuaHost, mod_name: &str) {
     host.render(
-        index_of(host, r#mod),
+        index_of(host, mod_name),
         RenderContext {
             width: 40,
             height: 20,
@@ -142,12 +142,12 @@ fn prime(host: &LuaHost, r#mod: &str) {
     .expect("render");
 }
 
-/// Paint `mod` into a `width` x `height` buffer, after priming `first`.
+/// Paint `mod_name` into a `width` x `height` buffer, after priming `first`.
 fn screen(
     host: &LuaHost,
     snapshot: &Snapshot,
     first: &[&str],
-    r#mod: &str,
+    mod_name: &str,
     width: u16,
     height: u16,
 ) -> String {
@@ -158,7 +158,7 @@ fn screen(
 
     let node = host
         .render(
-            index_of(host, r#mod),
+            index_of(host, mod_name),
             RenderContext {
                 width,
                 height,

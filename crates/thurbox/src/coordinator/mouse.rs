@@ -217,7 +217,7 @@ impl App {
                 x: x.saturating_sub(target.rect.x),
                 y: y.saturating_sub(target.rect.y),
             };
-            match self.host.on_scroll(target.r#mod, &scroll) {
+            match self.host.on_scroll(target.mod_index, &scroll) {
                 Ok(true) => {
                     self.dirty = true;
                     return;
@@ -226,7 +226,7 @@ impl App {
                 Err(e) => self.errors.push(e),
             }
             if self.wheel_notch.opens(Instant::now(), up) {
-                self.dispatch_key_to(target.r#mod, &key);
+                self.dispatch_key_to(target.mod_index, &key);
                 self.dirty = true;
             }
         }
@@ -397,7 +397,7 @@ impl App {
     /// Offer a right press to the mod that painted the node under it.
     fn dispatch_context(&mut self, target: ClickTarget, x: u16, y: u16) {
         let click = self.click_at(&target, x, y, false, 1);
-        match self.host.on_context(target.r#mod, &click) {
+        match self.host.on_context(target.mod_index, &click) {
             Ok(handled) => {
                 if handled {
                     self.dirty = true;
@@ -436,11 +436,11 @@ impl App {
         // Every click focuses the pane it landed in, before the target acts. In
         // a `switch` slot that is also how a view is selected, so a tab pill
         // and a Tab press bring the same pane forward.
-        self.focus_mod(target.r#mod);
+        self.focus_mod(target.mod_index);
 
         match target.identity.click_verb() {
             Some(ClickVerb::Action(action)) => {
-                self.run_clicked_action(&action, target.r#mod);
+                self.run_clicked_action(&action, target.mod_index);
                 true
             }
             // Replayed as a real keystroke, through the very handler the
@@ -452,8 +452,8 @@ impl App {
                 }
                 true
             }
-            Some(ClickVerb::Focus(r#mod)) => {
-                if let Some(index) = self.host.index_of(&r#mod) {
+            Some(ClickVerb::Focus(mod_name)) => {
+                if let Some(index) = self.host.index_of(&mod_name) {
                     self.focus_mod(index);
                 }
                 true
@@ -477,16 +477,16 @@ impl App {
                 if target.identity.is_drag_handle() {
                     self.selection = None;
                     self.pointer_grab = Some(PointerGrab {
-                        r#mod: target.r#mod,
+                        mod_index: target.mod_index,
                         rect: target.rect,
                         identity: target.identity.clone(),
                     });
                 }
-                let clicks = self
-                    .click_train
-                    .count(Instant::now(), target.r#mod, &target.identity);
+                let clicks =
+                    self.click_train
+                        .count(Instant::now(), target.mod_index, &target.identity);
                 let click = self.click_at(&target, x, y, false, clicks);
-                match self.host.on_click(target.r#mod, &click) {
+                match self.host.on_click(target.mod_index, &click) {
                     Ok(handled) => handled,
                     Err(e) => {
                         self.errors.push(e);
@@ -628,7 +628,7 @@ impl App {
             return false;
         };
         let target = ClickTarget {
-            r#mod: grab.r#mod,
+            mod_index: grab.mod_index,
             rect: grab.rect,
             identity: grab.identity,
         };
@@ -636,7 +636,7 @@ impl App {
         let (x, y) = bounds.clamp(x, y);
         // A move under a press is not another press.
         let click = self.click_at(&target, x, y, true, 1);
-        match self.host.on_click(grab.r#mod, &click) {
+        match self.host.on_click(grab.mod_index, &click) {
             Ok(_) => {}
             Err(e) => self.errors.push(e),
         }
@@ -870,16 +870,16 @@ impl App {
         let panes = self
             .click_targets
             .iter()
-            .map(|target| (Some(target.r#mod), target.rect, &target.identity));
+            .map(|target| (Some(target.mod_index), target.rect, &target.identity));
         let bands = self
             .band_targets
             .iter()
             .map(|hit| (None, hit.rect, &hit.identity));
-        for (r#mod, rect, identity) in panes.chain(bands) {
+        for (mod_index, rect, identity) in panes.chain(bands) {
             let Some(ClickVerb::Url(url)) = identity.click_verb() else {
                 continue;
             };
-            if self.link_paint_obscured(r#mod, rect) {
+            if self.link_paint_obscured(mod_index, rect) {
                 continue;
             }
             paints.extend(thurbox::kernel::terminal::drawn_link_paints(
@@ -910,12 +910,12 @@ impl App {
     /// directly instead: a modal owns the whole screen while it is up, and a
     /// float owns its rect. Without this a modal over a `url:` node would make
     /// the modal's own text `Ctrl+Click` to that url.
-    pub(crate) fn link_paint_obscured(&self, r#mod: Option<usize>, rect: Rect) -> bool {
+    pub(crate) fn link_paint_obscured(&self, mod_index: Option<usize>, rect: Rect) -> bool {
         if self.modals.is_open() {
             return true;
         }
         self.drawn_floats.iter().any(|index| {
-            Some(*index) != r#mod
+            Some(*index) != mod_index
                 && self
                     .last_floats
                     .get(index)
@@ -944,7 +944,7 @@ enum Grab {
 fn float_grab(grabbed: Option<usize>, target: Option<ClickTarget>) -> Grab {
     match grabbed {
         None => Grab::Free(target),
-        Some(float) => match target.filter(|target| target.r#mod == float) {
+        Some(float) => match target.filter(|target| target.mod_index == float) {
             Some(target) => Grab::Held(target),
             None => Grab::Outside(float),
         },
@@ -998,7 +998,7 @@ const DOUBLE_CLICK: Duration = Duration::from_millis(400);
 /// many it made.
 struct Press {
     at: Instant,
-    r#mod: usize,
+    mod_index: usize,
     id: String,
     clicks: u8,
 }
@@ -1037,20 +1037,20 @@ impl ClickTrain {
     /// A third quick press starts over at 1 rather than counting to 3, so a
     /// pane that opens on 2 opens once. A node with no id has nothing to be
     /// the same as, and every press on it is a first.
-    fn count(&mut self, now: Instant, r#mod: usize, identity: &Identity) -> u8 {
+    fn count(&mut self, now: Instant, mod_index: usize, identity: &Identity) -> u8 {
         let Some(id) = identity.id.clone() else {
             return 1;
         };
         let repeats = self.previous.as_ref().is_some_and(|press| {
             press.clicks == 1
-                && press.r#mod == r#mod
+                && press.mod_index == mod_index
                 && press.id == id
                 && now.duration_since(press.at) < DOUBLE_CLICK
         });
         let clicks = if repeats { 2 } else { 1 };
         self.last = Some(Press {
             at: now,
-            r#mod,
+            mod_index,
             id,
             clicks,
         });
@@ -1077,16 +1077,16 @@ fn copy_message(
 mod tests {
     use super::*;
 
-    fn painted_by(r#mod: usize) -> Option<ClickTarget> {
+    fn painted_by(mod_index: usize) -> Option<ClickTarget> {
         Some(ClickTarget {
-            r#mod,
+            mod_index,
             rect: Rect::new(0, 0, 10, 1),
             identity: Identity::default(),
         })
     }
 
     fn mod_of(target: &Option<ClickTarget>) -> Option<usize> {
-        target.as_ref().map(|target| target.r#mod)
+        target.as_ref().map(|target| target.mod_index)
     }
 
     /// Both presses answer to this one rule, so a left and a right press can
@@ -1099,7 +1099,7 @@ mod tests {
             _ => panic!("no float is up, so nothing holds the press"),
         }
         match float_grab(Some(7), painted_by(7)) {
-            Grab::Held(target) => assert_eq!(target.r#mod, 7),
+            Grab::Held(target) => assert_eq!(target.mod_index, 7),
             _ => panic!("a press on the float is the float's"),
         }
         match float_grab(Some(7), painted_by(3)) {
@@ -1172,9 +1172,9 @@ mod tests {
 
     /// One press, start to finish: it begins wherever it lands and is counted
     /// on the node it reached.
-    fn press(train: &mut ClickTrain, at: Instant, r#mod: usize, identity: &Identity) -> u8 {
+    fn press(train: &mut ClickTrain, at: Instant, mod_index: usize, identity: &Identity) -> u8 {
         train.begin();
-        train.count(at, r#mod, identity)
+        train.count(at, mod_index, identity)
     }
 
     /// The gesture every desktop teaches: press twice on the same thing, fast,

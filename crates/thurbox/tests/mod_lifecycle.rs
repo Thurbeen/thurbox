@@ -149,7 +149,7 @@ fn a_pane_is_added_by_adding_a_file() {
     let mine = host
         .mods
         .iter()
-        .find(|r#mod| r#mod.name == "mine")
+        .find(|loaded| loaded.name == "mine")
         .expect("the added pane loads");
     assert_eq!(mine.path, "mods/50_mine.lua");
     assert!(host
@@ -183,7 +183,7 @@ fn a_decorator_and_a_module_are_added_the_same_way() {
     let decor = host
         .mods
         .iter()
-        .find(|r#mod| r#mod.name == "decor")
+        .find(|loaded| loaded.name == "decor")
         .expect("the decorator loads");
     assert_eq!(decor.decorates.as_deref(), Some("sessions"));
     // It draws into another pane's tree, so it is nobody's slot occupant — the
@@ -215,8 +215,8 @@ fn a_bundled_pane_is_replaced_by_a_differently_named_file() {
     let occupants: Vec<&str> = host
         .mods
         .iter()
-        .filter(|r#mod| r#mod.slot == "sessions")
-        .map(|r#mod| r#mod.path.as_str())
+        .filter(|loaded| loaded.slot == "sessions")
+        .map(|loaded| loaded.path.as_str())
         .collect();
     assert_eq!(occupants, vec!["mods/15_my_sessions.lua"]);
 }
@@ -229,7 +229,7 @@ fn the_arrangement_decides_which_panes_have_a_rect() {
     // The stock arrangement has no `notes` region, so the pane loads and is
     // simply not placed — the silent drop this inventory exists to name.
     let host = loaded(dir.path());
-    assert!(host.mods.iter().any(|r#mod| r#mod.slot == "notes"));
+    assert!(host.mods.iter().any(|loaded| loaded.slot == "notes"));
     assert!(!placed(&host, 120, 40).contains("notes"));
 
     let rows = inventory::rows(
@@ -300,7 +300,7 @@ fn the_view_that_lists_the_files_is_not_one_of_them() {
     let dir = interface();
     let host = loaded(dir.path());
     assert!(
-        !host.mods.iter().any(|r#mod| r#mod.name == "plugins"),
+        !host.mods.iter().any(|loaded| loaded.name == "plugins"),
         "the file list is a settings tab, not a plugin"
     );
 
@@ -322,14 +322,14 @@ fn restoring_brings_a_removed_pane_back() {
     assert!(!loaded(dir.path())
         .mods
         .iter()
-        .any(|r#mod| r#mod.path == "mods/20_agent.lua"));
+        .any(|loaded| loaded.path == "mods/20_agent.lua"));
 
     bundled::restore(dir.path(), "mods/20_agent.lua").expect("restore");
     let host = loaded(dir.path());
     assert!(host
         .mods
         .iter()
-        .any(|r#mod| r#mod.path == "mods/20_agent.lua"));
+        .any(|loaded| loaded.path == "mods/20_agent.lua"));
     assert_eq!(
         sources(dir.path())["mods/20_agent.lua"],
         Source::Bundled,

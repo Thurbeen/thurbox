@@ -71,10 +71,10 @@ impl App {
         let ring: Vec<_> = focusable
             .iter()
             .map(|&index| {
-                let r#mod = &self.host.mods[index];
-                let switch_slot = (!r#mod.floats
-                    && matches!(self.host.slot_mode(&r#mod.slot), SlotMode::Switch))
-                .then_some(r#mod.slot.as_str());
+                let loaded = &self.host.mods[index];
+                let switch_slot = (!loaded.floats
+                    && matches!(self.host.slot_mode(&loaded.slot), SlotMode::Switch))
+                .then_some(loaded.slot.as_str());
                 let default_in_slot =
                     switch_slot.is_some_and(|slot| self.host.switch_default(slot) == Some(index));
                 thurbox::kernel::focus::CycleEntry {
@@ -111,7 +111,7 @@ impl App {
 
     /// Where a mod sits, as the two focus rules need to see it.
     pub(crate) fn placement(&self, index: usize) -> thurbox::kernel::focus::Placement {
-        let Some(r#mod) = self.host.mods.get(index) else {
+        let Some(loaded) = self.host.mods.get(index) else {
             return thurbox::kernel::focus::Placement {
                 floats: false,
                 float_open: false,
@@ -121,18 +121,18 @@ impl App {
         };
         // A `switch` slot draws ONE of its occupants; the rest are alternatives.
         let chosen_in_switch =
-            matches!(self.host.slot_mode(&r#mod.slot), SlotMode::Switch).then(|| {
+            matches!(self.host.slot_mode(&loaded.slot), SlotMode::Switch).then(|| {
                 // `slot_selection` stores a position WITHIN the slot's members,
                 // not a mod index — comparing it to one made the terminal
                 // look unselected and cycled focus off it at startup. Resolve it.
-                let members = self.host.in_slot(&r#mod.slot);
-                let chosen = self.slot_selection.get(&r#mod.slot).copied().unwrap_or(0);
+                let members = self.host.in_slot(&loaded.slot);
+                let chosen = self.slot_selection.get(&loaded.slot).copied().unwrap_or(0);
                 members.get(chosen) == Some(&index)
             });
         thurbox::kernel::focus::Placement {
-            floats: r#mod.floats,
+            floats: loaded.floats,
             float_open: self.drawn_floats.contains(&index),
-            slot_placed: self.visible_slots.contains(&r#mod.slot),
+            slot_placed: self.visible_slots.contains(&loaded.slot),
             chosen_in_switch,
         }
     }
@@ -166,7 +166,7 @@ impl App {
             .focusable()
             .get(self.focus)
             .and_then(|index| self.host.mods.get(*index))
-            .is_some_and(|r#mod| r#mod.session_input)
+            .is_some_and(|loaded| loaded.session_input)
     }
 
     /// Whether the terminal the focused pane is showing has a dead pane.

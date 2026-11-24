@@ -75,9 +75,9 @@ fn an_undeclared_mod_asking_for_a_program_is_queued_but_may_not_run_it() {
     assert!(host.error.is_none(), "{:?}", host.error);
     render(&host, "watch");
 
-    let r#mod = &host.mods[host.index_of("watch").expect("loaded")];
+    let loaded = &host.mods[host.index_of("watch").expect("loaded")];
     assert!(
-        !host.may(r#mod, Capability::Program),
+        !host.may(loaded, Capability::Program),
         "declared nothing, so it may not run a program"
     );
 }
@@ -86,16 +86,16 @@ fn an_undeclared_mod_asking_for_a_program_is_queued_but_may_not_run_it() {
 fn a_declared_but_untrusted_mod_still_may_not_run_a_program() {
     let (_home, ui) = interface(&[("91_watch.lua", &watch_pane("watch", "watch", true))]);
     let host = LuaHost::new(&ui);
-    let r#mod = &host.mods[host.index_of("watch").expect("loaded")];
-    assert_eq!(r#mod.capabilities, vec![Capability::Program]);
+    let loaded = &host.mods[host.index_of("watch").expect("loaded")];
+    assert_eq!(loaded.capabilities, vec![Capability::Program]);
     assert!(
-        !host.may(r#mod, Capability::Program),
+        !host.may(loaded, Capability::Program),
         "declaring is asking, not being granted"
     );
 
     host.set_trusted(vec!["mods/91_watch.lua".to_string()]);
-    let r#mod = &host.mods[host.index_of("watch").expect("loaded")];
-    assert!(host.may(r#mod, Capability::Program));
+    let loaded = &host.mods[host.index_of("watch").expect("loaded")];
+    assert!(host.may(loaded, Capability::Program));
 }
 
 // ── whose pane is it ───────────────────────────────────────────────────────

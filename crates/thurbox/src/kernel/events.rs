@@ -79,8 +79,8 @@ impl Event {
     }
 
     /// Address this event to one mod, by path.
-    pub fn to(mut self, r#mod: impl Into<String>) -> Self {
-        self.only = Some(r#mod.into());
+    pub fn to(mut self, mod_name: impl Into<String>) -> Self {
+        self.only = Some(mod_name.into());
         self
     }
 

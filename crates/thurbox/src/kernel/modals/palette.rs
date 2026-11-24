@@ -38,7 +38,7 @@ pub const QUIT_ACTION: &str = "kernel.quit";
 /// carries them.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Dispatch {
-    pub r#mod: String,
+    pub owner: String,
     pub action: String,
 }
 
@@ -79,7 +79,7 @@ pub fn rows(registry: &Registry) -> Vec<PaletteRow> {
     actions
         .into_iter()
         .map(|action| PaletteRow {
-            r#mod: action.owner,
+            owner: action.owner,
             action: action.name,
             description: action.description,
             chords: (!action.chords.is_empty()).then(|| action.chords.join(" / ")),
@@ -115,7 +115,7 @@ pub fn matches(rows: &[PaletteRow], query: &str) -> Vec<usize> {
         .filter(|(_, row)| {
             subsequence(&needle, &row.description)
                 || subsequence(&needle, &row.action)
-                || subsequence(&needle, &row.r#mod)
+                || subsequence(&needle, &row.owner)
         })
         .map(|(index, _)| index)
         .collect()
@@ -174,7 +174,7 @@ impl PaletteModal {
                     return Outcome::Stay(None);
                 };
                 return Outcome::Run(Dispatch {
-                    r#mod: row.r#mod.clone(),
+                    owner: row.owner.clone(),
                     action: row.action.clone(),
                 });
             }
@@ -333,7 +333,7 @@ impl PaletteModal {
         let owner_width = matched
             .iter()
             .filter_map(|index| rows.get(*index))
-            .map(|row| row.r#mod.chars().count())
+            .map(|row| row.owner.chars().count())
             .max()
             .unwrap_or(0);
 
@@ -351,7 +351,7 @@ impl PaletteModal {
                 match_index,
             ));
             let marker = if selected { " ▸ " } else { "   " };
-            let owner = chrome::pad(&row.r#mod, owner_width + 1);
+            let owner = chrome::pad(&row.owner, owner_width + 1);
             let chord = row.chords.clone().unwrap_or_default();
             let description = if row.description.is_empty() {
                 row.action.clone()
@@ -425,7 +425,7 @@ mod tests {
             Vec::<Setting>::new(),
         );
         registry.declare_commands(vec![CommandDecl {
-            r#mod: "mine".into(),
+            owner: "mine".into(),
             action: "mine.export".into(),
             description: "export the list".into(),
         }]);
@@ -457,7 +457,7 @@ mod tests {
         }
         match modal.on_key(&press(KeyCode::Enter), &registry) {
             Outcome::Run(dispatch) => {
-                assert_eq!(dispatch.r#mod, "mine");
+                assert_eq!(dispatch.owner, "mine");
                 assert_eq!(dispatch.action, "mine.export");
             }
             Outcome::Stay(_) => panic!("Enter must run the selection"),

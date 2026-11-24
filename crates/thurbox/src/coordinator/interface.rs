@@ -127,7 +127,7 @@ impl App {
             .host
             .mods
             .iter()
-            .map(|r#mod| r#mod.path.clone())
+            .map(|loaded| loaded.path.clone())
             .collect();
         self.runs.retain_mods(&live);
         // The same rule for a program it was holding, and here it matters more: an
@@ -303,7 +303,7 @@ impl App {
         }
         // The palette's choice, run after the modal has closed itself.
         if let Some(dispatch) = run {
-            self.run_action(&dispatch.r#mod, &dispatch.action);
+            self.run_action(&dispatch.owner, &dispatch.action);
         }
         match edit {
             Some(thurbox::kernel::modals::interface::Edit::File { file, kind }) => {

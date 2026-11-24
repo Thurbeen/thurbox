@@ -165,7 +165,7 @@ impl App {
             .focusable()
             .get(self.focus)
             .and_then(|index| self.host.mods.get(*index))
-            .map(|r#mod| r#mod.name.clone());
+            .map(|loaded| loaded.name.clone());
         match &self.events.focus {
             None => self.events.focus = Some((selected, pane)),
             Some((last_selected, last_pane)) => {
@@ -210,7 +210,7 @@ impl App {
         for (key, program) in ended {
             self.enqueue_event(
                 Event::new("program.exited")
-                    .to(key.r#mod)
+                    .to(key.owner)
                     .with("name", Some(key.name))
                     .with("program", Some(program)),
             );
@@ -311,7 +311,7 @@ impl App {
     }
 
     fn report_event_failure(&mut self, failure: ModError, event: &str) {
-        let key = (failure.r#mod.clone(), event.to_string());
+        let key = (failure.owner.clone(), event.to_string());
         if !self.events.reported.insert(key) {
             return;
         }
@@ -531,7 +531,7 @@ mod tests {
         assert_eq!(
             ended
                 .iter()
-                .map(|(k, _)| k.r#mod.as_str())
+                .map(|(k, _)| k.owner.as_str())
                 .collect::<Vec<_>>(),
             ["mods/90_files.lua"],
             "two mods' panes share a name, and the wrong one was told"

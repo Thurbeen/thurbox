@@ -393,7 +393,7 @@ fn picker(registry: &Registry) -> &thurbox::kernel::registry::Setting {
     registry
         .settings()
         .iter()
-        .find(|s| s.r#mod == "picker" && s.id == "engine")
+        .find(|s| s.owner == "picker" && s.id == "engine")
         .expect("declared")
 }
 
@@ -405,7 +405,7 @@ fn declared_choices_are_collected_and_a_value_outside_them_is_refused() {
     let free = registry
         .settings()
         .iter()
-        .find(|s| s.r#mod == "picker" && s.id == "free")
+        .find(|s| s.owner == "picker" && s.id == "free")
         .expect("declared");
     assert!(free.choices.is_empty(), "no choices means free text");
 

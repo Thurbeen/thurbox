@@ -52,7 +52,7 @@ impl App {
             .focusable()
             .get(self.focus)
             .and_then(|index| self.host.mods.get(*index))
-            .map(|r#mod| r#mod.name.to_string());
+            .map(|loaded| loaded.name.to_string());
         // What is on screen is known from the frame just painted, which is what
         // makes "its slot is not in the arrangement" an observation rather than
         // a guess: placement depends on the terminal's current size.
@@ -312,7 +312,7 @@ impl App {
     pub(crate) fn publish_trust(&self) {
         self.host.set_trusted(thurbox::kernel::packages::granted(
             &self.ui_dir,
-            self.host.mods.iter().map(|r#mod| r#mod.path.as_str()),
+            self.host.mods.iter().map(|loaded| loaded.path.as_str()),
             &self.registry,
         ));
     }

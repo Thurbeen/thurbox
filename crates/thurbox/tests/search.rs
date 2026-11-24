@@ -135,9 +135,11 @@ fn publish_hovered(
     .expect("publish");
 }
 
-fn render(host: &LuaHost, r#mod: &str) {
+fn render(host: &LuaHost, mod_name: &str) {
     publish(host);
-    let index = host.index_of(r#mod).unwrap_or_else(|| panic!("no {mod}"));
+    let index = host
+        .index_of(mod_name)
+        .unwrap_or_else(|| panic!("no {mod_name}"));
     host.render(
         index,
         RenderContext {
@@ -211,7 +213,7 @@ fn the_strip_opens_closed_and_takes_focus() {
     assert_eq!(
         host.drain_commands(),
         vec![Command::Focus {
-            r#mod: "search".into(),
+            mod_name: "search".into(),
             toggle: false,
         }],
         "an open strip that does not take focus cannot be typed into"
@@ -312,7 +314,7 @@ fn enter_keeps_the_jump_and_lands_in_the_session() {
     assert_eq!(
         host.drain_commands(),
         vec![Command::Focus {
-            r#mod: "agent".into(),
+            mod_name: "agent".into(),
             toggle: false,
         }]
     );
@@ -615,7 +617,7 @@ fn opening_a_text_hit_lands_the_agent_pane_on_the_line() {
     let commands = host.drain_commands();
     assert!(
         commands.contains(&Command::Focus {
-            r#mod: "agent".into(),
+            mod_name: "agent".into(),
             toggle: false,
         }),
         "{commands:?}"

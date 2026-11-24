@@ -382,8 +382,8 @@ impl App {
                 .timings
                 .slow_ops
                 .iter_recent()
-                .map(|op| match &op.r#mod {
-                    Some(r#mod) => format!("{}:{}ms@{mod}", op.name, op.ms),
+                .map(|op| match &op.owner {
+                    Some(owner) => format!("{}:{}ms@{owner}", op.name, op.ms),
                     None => format!("{}:{}ms", op.name, op.ms),
                 })
                 .collect();
@@ -448,13 +448,13 @@ impl App {
         let start = Instant::now();
         let out = f(self);
         let elapsed = start.elapsed();
-        let r#mod = self.host.end_op();
-        let log_mod = r#mod.clone().unwrap_or_default();
-        if self.timings.record_op(name, elapsed, r#mod) {
+        let owner = self.host.end_op();
+        let log_mod = owner.clone().unwrap_or_default();
+        if self.timings.record_op(name, elapsed, owner) {
             tracing::warn!(
                 op = name,
                 ms = elapsed.as_millis() as u64,
-                r#mod = log_mod,
+                plugin = log_mod,
                 "slow op"
             );
         }
@@ -678,13 +678,13 @@ impl App {
         }
         if !asked.is_empty() {
             let runner = self.runner();
-            for (r#mod, request) in asked {
+            for (owner, request) in asked {
                 match request {
                     thurbox::kernel::runs::Request::Ask(ask) => {
-                        self.runs.request(&r#mod, ask, &runner);
+                        self.runs.request(&owner, ask, &runner);
                     }
                     thurbox::kernel::runs::Request::Forget(key) => {
-                        self.runs.forget(&r#mod, &key);
+                        self.runs.forget(&owner, &key);
                     }
                 }
             }
@@ -696,14 +696,14 @@ impl App {
         }
         // Answers, per mod, for the next render to read.
         let mut answers = thurbox::kernel::host::RunAnswers::new();
-        for r#mod in &self.host.mods {
-            if r#mod.capabilities.is_empty() {
+        for loaded in &self.host.mods {
+            if loaded.capabilities.is_empty() {
                 continue;
             }
-            let mine = self.runs.for_mod(&r#mod.path);
+            let mine = self.runs.for_mod(&loaded.path);
             if !mine.is_empty() {
                 answers.insert(
-                    r#mod.path.clone(),
+                    loaded.path.clone(),
                     mine.into_iter()
                         .map(|(key, run)| (key.to_string(), run.clone()))
                         .collect(),

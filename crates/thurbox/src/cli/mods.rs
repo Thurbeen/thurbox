@@ -256,15 +256,15 @@ fn host_at(dir: &std::path::Path) -> crate::kernel::host::LuaHost {
 /// clashed with itself, with the other author's file absent. Every file that answers
 /// to the name is named instead: less precise than a lie, and the reader can see
 /// which two to open.
-fn file_of(host: &crate::kernel::host::LuaHost, r#mod: &str) -> String {
+fn file_of(host: &crate::kernel::host::LuaHost, mod_name: &str) -> String {
     let files: Vec<&str> = host
         .mods
         .iter()
-        .filter(|loaded| loaded.name == r#mod)
+        .filter(|loaded| loaded.name == mod_name)
         .map(|loaded| loaded.path.as_str())
         .collect();
     match files.is_empty() {
-        true => r#mod.to_string(),
+        true => mod_name.to_string(),
         false => files.join(", "),
     }
 }
@@ -279,7 +279,7 @@ fn check() -> Result<CommandOutput, String> {
         ));
     }
     let host = host_at(&dir);
-    let loaded: Vec<String> = host.mods.iter().map(|r#mod| r#mod.name.clone()).collect();
+    let loaded_names: Vec<String> = host.mods.iter().map(|loaded| loaded.name.clone()).collect();
 
     // One error means the whole directory failed to load: the host reports the
     // first file that would not compile and stops, because a half-loaded
@@ -291,7 +291,7 @@ fn check() -> Result<CommandOutput, String> {
                 "dir": dir.display().to_string(),
                 "ok": false,
                 "error": error,
-                "loaded": loaded,
+                "loaded": loaded_names,
             }),
             human,
             "the interface did not load",
@@ -300,10 +300,10 @@ fn check() -> Result<CommandOutput, String> {
 
     // No panes is a real state — a user who removed them all — and the interface
     // runs perfectly well like that, so it is reported rather than failed.
-    let loads = if loaded.is_empty() {
+    let loads = if loaded_names.is_empty() {
         format!("{}\n  ✓ loads — no panes", dir.display())
     } else {
-        format!("{}\n  ✓ loads — {}", dir.display(), loaded.join(", "))
+        format!("{}\n  ✓ loads — {}", dir.display(), loaded_names.join(", "))
     };
 
     // Loading is not the same as drawing. A mod whose slot the arrangement
@@ -326,7 +326,7 @@ fn check() -> Result<CommandOutput, String> {
                     "dir": dir.display().to_string(),
                     "ok": false,
                     "error": error,
-                    "loaded": loaded,
+                    "loaded": loaded_names,
                     "checked_at": size,
                 }),
                 human,
@@ -342,8 +342,8 @@ fn check() -> Result<CommandOutput, String> {
             let files: Vec<&str> = host
                 .mods
                 .iter()
-                .filter(|r#mod| &r#mod.slot == slot)
-                .map(|r#mod| r#mod.path.as_str())
+                .filter(|loaded| &loaded.slot == slot)
+                .map(|loaded| loaded.path.as_str())
                 .collect();
             lines.push(format!(
                 "  ✗ {} — loaded, but nothing places slot {slot:?}\n      {}",
@@ -357,7 +357,7 @@ fn check() -> Result<CommandOutput, String> {
             json!({
                 "dir": dir.display().to_string(),
                 "ok": false,
-                "loaded": loaded,
+                "loaded": loaded_names,
                 "unplaced": rows,
                 "checked_at": size,
             }),
@@ -373,21 +373,21 @@ fn check() -> Result<CommandOutput, String> {
     // cannot demonstrate itself completely silent.
     let mut warnings = Vec::new();
     let sources = crate::kernel::bundled::sources(&dir);
-    for (index, r#mod) in host.mods.iter().enumerate() {
+    for (index, loaded) in host.mods.iter().enumerate() {
         if let Some(reason) = host.undiscoverable(index) {
-            warnings.push(json!({ "file": r#mod.path, "warning": reason }));
+            warnings.push(json!({ "file": loaded.path, "warning": reason }));
         }
-        for binding in &r#mod.bindings {
+        for binding in &loaded.bindings {
             if crate::kernel::registry::protected_action(&binding.action) {
                 warnings.push(json!({
-                    "file": r#mod.path,
+                    "file": loaded.path,
                     "warning": format!("{} is reserved for the kernel", binding.action),
                     "action": binding.action,
                 }));
             }
         }
         if matches!(
-            sources.get(&r#mod.path),
+            sources.get(&loaded.path),
             Some(crate::kernel::bundled::Source::Bundled)
         ) {
             continue;
@@ -398,7 +398,7 @@ fn check() -> Result<CommandOutput, String> {
                 continue;
             }
             warnings.push(json!({
-                "file": r#mod.path,
+                "file": loaded.path,
                 "warning": format!("{handler} handles gestures that are not advertised as catalog actions; declare semantic actions or addressed input equivalents"),
                 "handler": handler,
             }));
@@ -412,21 +412,21 @@ fn check() -> Result<CommandOutput, String> {
     // is missing is one button.
     let registry = declared(&host);
     let catalog = registry.action_catalog();
-    for r#mod in &host.mods {
-        for action in r#mod
+    for loaded in &host.mods {
+        for action in loaded
             .bindings
             .iter()
             .map(|entry| entry.action.as_str())
-            .chain(r#mod.commands.iter().map(|entry| entry.action.as_str()))
+            .chain(loaded.commands.iter().map(|entry| entry.action.as_str()))
         {
             if let Some(owner) = catalog
                 .iter()
                 .find(|entry| entry.name == action)
                 .map(|entry| entry.owner.as_str())
             {
-                if owner != r#mod.name {
+                if owner != loaded.name {
                     warnings.push(json!({
-                        "file": r#mod.path,
+                        "file": loaded.path,
                         "warning": format!("{action} is owned by {owner}; this declaration cannot be advertised"),
                         "action": action,
                     }));
@@ -446,8 +446,8 @@ fn check() -> Result<CommandOutput, String> {
     let literal_values =
         regex::Regex::new(r#"^\s*['"][^'"]+['"](?:\s*,\s*['"][^'"]+['"])*\s*(?:--.*)?$"#)
             .expect("literal assignments");
-    for r#mod in &host.mods {
-        let Ok(source) = std::fs::read_to_string(dir.join(&r#mod.path)) else {
+    for loaded in &host.mods {
+        let Ok(source) = std::fs::read_to_string(dir.join(&loaded.path)) else {
             continue;
         };
         let mut constants = std::collections::BTreeMap::new();
@@ -482,7 +482,7 @@ fn check() -> Result<CommandOutput, String> {
                 used.push(name.clone());
             } else {
                 warnings.push(json!({
-                    "file": r#mod.path,
+                    "file": loaded.path,
                     "warning": format!("constructed click action {variable} cannot be advertised; declare a constant action name"),
                 }));
             }
@@ -490,7 +490,7 @@ fn check() -> Result<CommandOutput, String> {
         for name in used {
             if name.contains('.') && !advertised.contains(name.as_str()) {
                 warnings.push(json!({
-                    "file": r#mod.path,
+                    "file": loaded.path,
                     "warning": format!("{name} is used by a menu or clickable node but has no catalog action"),
                     "action": name,
                 }));
@@ -498,10 +498,10 @@ fn check() -> Result<CommandOutput, String> {
         }
     }
     let mut dropped = Vec::new();
-    for r#mod in &host.mods {
-        for (pill, reason) in crate::kernel::bands::dropped(&r#mod.pills, &registry) {
+    for loaded in &host.mods {
+        for (pill, reason) in crate::kernel::bands::dropped(&loaded.pills, &registry) {
             dropped.push(json!({
-                "file": r#mod.path,
+                "file": loaded.path,
                 "label": pill.label,
                 "action": pill.action,
                 "reason": reason.as_str(),
@@ -552,7 +552,7 @@ fn check() -> Result<CommandOutput, String> {
         json!({
             "dir": dir.display().to_string(),
             "ok": true,
-            "loaded": loaded,
+            "loaded": loaded_names,
             "warnings": warnings,
             "dropped_pills": dropped,
             "checked_at": size,
@@ -694,7 +694,7 @@ fn layout_fix(host: &crate::kernel::host::LuaHost, slot: &str) -> String {
     let is_strip = host
         .mods
         .iter()
-        .any(|r#mod| r#mod.slot == slot && r#mod.strip);
+        .any(|loaded| loaded.slot == slot && loaded.strip);
     if is_strip {
         "it is a strip, and this layout.lua has no strips loop — add it before the message \
          band: for _, strip in ipairs(ctx.strips or {}) do children[#children + 1] = \
@@ -712,19 +712,19 @@ fn layout_fix(host: &crate::kernel::host::LuaHost, slot: &str) -> String {
 /// instruction should arrive before anybody has to go looking for it.
 fn placement_hint(dir: &Path, file: &str) -> Option<String> {
     let host = host_at(dir);
-    let index = host.mods.iter().position(|r#mod| r#mod.path == file)?;
-    let r#mod = &host.mods[index];
-    if r#mod.floats || r#mod.decorates.is_some() {
+    let index = host.mods.iter().position(|loaded| loaded.path == file)?;
+    let loaded = &host.mods[index];
+    if loaded.floats || loaded.decorates.is_some() {
         return None;
     }
     let unplaced = host
         .unplaced_slots(crate::kernel::layout::REFERENCE)
         .unwrap_or_default();
-    if unplaced.contains(&r#mod.slot) {
+    if unplaced.contains(&loaded.slot) {
         return Some(format!(
             "nothing places slot {slot:?} yet — {}",
-            layout_fix(&host, &r#mod.slot),
-            slot = r#mod.slot
+            layout_fix(&host, &loaded.slot),
+            slot = loaded.slot
         ));
     }
     // Placed, loaded, and still invisible: the alternate occupant of a switch slot.
@@ -735,7 +735,7 @@ fn placement_hint(dir: &Path, file: &str) -> Option<String> {
             "it shares the {slot:?} slot, so it is not shown by default, and ctrl+h/ctrl+l \
              pass it over — give it a key of its own, or declare a pill so the action \
              band offers it",
-            slot = r#mod.slot
+            slot = loaded.slot
         ));
     }
     None

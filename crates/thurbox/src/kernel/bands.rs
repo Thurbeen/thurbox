@@ -469,12 +469,12 @@ fn fit_to_budget(mut spans: Vec<Span<'static>>, budget: usize) -> Vec<Span<'stat
 /// already resolves from its tree. A surface named `<id>#<view>` is a sub-view,
 /// and the part after the `#` is what it is called — so a pane that adds a view
 /// gets a correct badge with no change here.
-pub fn focus_label(surface: Option<&str>, r#mod: &str) -> String {
+pub fn focus_label(surface: Option<&str>, mod_name: &str) -> String {
     let view = surface
         .and_then(|surface| surface.split_once('#'))
         .map(|(_, view)| view)
         .filter(|view| !view.is_empty());
-    capitalise(view.unwrap_or(r#mod))
+    capitalise(view.unwrap_or(mod_name))
 }
 
 /// A pane's own name, title-cased for the badge.
@@ -759,7 +759,7 @@ mod tests {
 
     fn binding(action: &str, chord: &str) -> Binding {
         Binding {
-            r#mod: "p".into(),
+            owner: "p".into(),
             action: action.into(),
             default_chord: chord.into(),
             chord: chord.into(),
@@ -774,7 +774,7 @@ mod tests {
 
     fn pill(action: &str, label: &str, priority: i64) -> Pill {
         Pill {
-            r#mod: "p".into(),
+            owner: "p".into(),
             action: action.into(),
             label: label.into(),
             priority,
@@ -868,7 +868,7 @@ mod tests {
             ],
         );
         registry.declare_commands(vec![CommandDecl {
-            r#mod: "p".into(),
+            owner: "p".into(),
             action: "notes.open".into(),
             description: "open the notes".into(),
         }]);
@@ -901,7 +901,7 @@ mod tests {
     fn a_command_the_user_bound_a_chord_to_is_no_longer_a_dropped_pill() {
         let mut registry = registry_with(Vec::new(), vec![pill("notes.open", "Notes", 9)]);
         registry.declare_commands(vec![CommandDecl {
-            r#mod: "p".into(),
+            owner: "p".into(),
             action: "notes.open".into(),
             description: "open the notes".into(),
         }]);

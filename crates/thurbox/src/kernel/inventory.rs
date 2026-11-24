@@ -261,7 +261,7 @@ pub fn rows(
         let loaded = mods
             .iter()
             .enumerate()
-            .find(|(_, r#mod)| r#mod.path == *path);
+            .find(|(_, found)| found.path == *path);
 
         let state = match (source, loaded) {
             (Source::Removed, _) => State::Removed,
@@ -272,15 +272,15 @@ pub fn rows(
             // A decorator occupies no slot by design, so asking whether it is
             // on screen is the wrong question — it draws into someone else's
             // tree, and reporting it as hidden would read as a fault.
-            (_, Some((_, r#mod))) if r#mod.decorates.is_some() => State::Present,
-            (_, Some((index, r#mod))) => {
+            (_, Some((_, found))) if found.decorates.is_some() => State::Present,
+            (_, Some((index, found))) => {
                 if visible.contains(&index) {
                     State::Visible
-                } else if r#mod.floats {
+                } else if found.floats {
                     // Asked before the slot question, because a float's slot is
                     // beside the point — it is not waiting for a column to open.
                     State::OnDemand
-                } else if placed.contains(&r#mod.slot) {
+                } else if placed.contains(&found.slot) {
                     State::Hidden
                 } else {
                     State::Unplaced
@@ -301,22 +301,22 @@ pub fn rows(
 
         out.push(Row {
             name: loaded
-                .map(|(_, r#mod)| r#mod.name.clone())
+                .map(|(_, found)| found.name.clone())
                 .unwrap_or_else(|| file_name(path).to_string()),
             path: path.clone(),
             kind,
             slot: loaded
-                .map(|(_, r#mod)| r#mod.slot.clone())
+                .map(|(_, found)| found.slot.clone())
                 .filter(|_| kind == Kind::Pane)
                 .unwrap_or_default(),
             source: source.clone(),
             state,
             error,
             capabilities: loaded
-                .map(|(_, r#mod)| r#mod.capabilities.clone())
+                .map(|(_, found)| found.capabilities.clone())
                 .unwrap_or_default(),
             trust: match loaded {
-                Some((_, r#mod)) if !r#mod.capabilities.is_empty() => trust(path),
+                Some((_, found)) if !found.capabilities.is_empty() => trust(path),
                 _ => Trust::NotAsked,
             },
         });

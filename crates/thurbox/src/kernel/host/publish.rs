@@ -908,8 +908,8 @@ fn build_registry(lua: &Lua, registry: &Registry) -> Result<Value, String> {
     let keys = lua.create_table().map_err(|e| e.to_string())?;
     for (index, binding) in registry.bindings().iter().enumerate() {
         let item = lua.create_table().map_err(|e| e.to_string())?;
-        set(&item, "mod", binding.r#mod.clone())?;
-        set(&item, "plugin", binding.r#mod.clone())?;
+        set(&item, "mod", binding.owner.clone())?;
+        set(&item, "plugin", binding.owner.clone())?;
         set(&item, "action", binding.action.clone())?;
         set(&item, "key", binding.chord.clone())?;
         set(&item, "default_key", binding.default_chord.clone())?;
@@ -922,8 +922,8 @@ fn build_registry(lua: &Lua, registry: &Registry) -> Result<Value, String> {
     let settings = lua.create_table().map_err(|e| e.to_string())?;
     for (index, setting) in registry.settings().iter().enumerate() {
         let item = lua.create_table().map_err(|e| e.to_string())?;
-        set(&item, "mod", setting.r#mod.clone())?;
-        set(&item, "plugin", setting.r#mod.clone())?;
+        set(&item, "mod", setting.owner.clone())?;
+        set(&item, "plugin", setting.owner.clone())?;
         set(&item, "id", setting.id.clone())?;
         set(&item, "desc", setting.description.clone())?;
         set(&item, "type", setting.value.type_name())?;
@@ -948,8 +948,8 @@ fn build_registry(lua: &Lua, registry: &Registry) -> Result<Value, String> {
     let commands = lua.create_table().map_err(|e| e.to_string())?;
     for (index, command) in registry.commands().iter().enumerate() {
         let item = lua.create_table().map_err(|e| e.to_string())?;
-        set(&item, "mod", command.r#mod.clone())?;
-        set(&item, "plugin", command.r#mod.clone())?;
+        set(&item, "mod", command.owner.clone())?;
+        set(&item, "plugin", command.owner.clone())?;
         set(&item, "action", command.action.clone())?;
         set(&item, "desc", command.description.clone())?;
         commands

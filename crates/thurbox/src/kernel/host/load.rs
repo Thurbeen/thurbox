@@ -263,25 +263,25 @@ pub(super) fn load_mod(
     })
 }
 
-fn read_actions(def: &Table, r#mod: &str) -> Result<Vec<ActionDecl>, String> {
+fn read_actions(def: &Table, mod_name: &str) -> Result<Vec<ActionDecl>, String> {
     let raw: Option<Table> = def
         .get("actions")
-        .map_err(|e| format!("{mod}.actions: {e}"))?;
+        .map_err(|e| format!("{mod_name}.actions: {e}"))?;
     let Some(list) = raw else {
         return Ok(Vec::new());
     };
     let mut out = Vec::new();
     for (index, row) in list.sequence_values::<Table>().enumerate() {
-        let row = row.map_err(|e| format!("{mod}.actions[{}]: {e}", index + 1))?;
+        let row = row.map_err(|e| format!("{mod_name}.actions[{}]: {e}", index + 1))?;
         let name: String = row
             .get("name")
-            .map_err(|e| format!("{mod}.actions[{}].name: {e}", index + 1))?;
+            .map_err(|e| format!("{mod_name}.actions[{}].name: {e}", index + 1))?;
         if name.is_empty()
             || crate::kernel::registry::protected_action(&name)
             || out.iter().any(|entry: &ActionDecl| entry.name == name)
         {
             return Err(format!(
-                "{mod}.actions[{}]: invalid or kernel-owned name",
+                "{mod_name}.actions[{}]: invalid or kernel-owned name",
                 index + 1
             ));
         }
@@ -291,7 +291,7 @@ fn read_actions(def: &Table, r#mod: &str) -> Result<Vec<ActionDecl>, String> {
             .unwrap_or_else(|| "ui-write".into());
         if !matches!(effect.as_str(), "read" | "ui-write" | "kernel-write") {
             return Err(format!(
-                "{mod}.actions[{}]: unknown effect {effect}",
+                "{mod_name}.actions[{}]: unknown effect {effect}",
                 index + 1
             ));
         }
@@ -304,7 +304,7 @@ fn read_actions(def: &Table, r#mod: &str) -> Result<Vec<ActionDecl>, String> {
             Some("mod" | "plugin") | None => Scope::Mod,
             Some(other) => {
                 return Err(format!(
-                    "{mod}.actions[{}]: unknown scope {other}",
+                    "{mod_name}.actions[{}]: unknown scope {other}",
                     index + 1
                 ))
             }
@@ -325,7 +325,7 @@ fn read_actions(def: &Table, r#mod: &str) -> Result<Vec<ActionDecl>, String> {
                         .any(|arg: &ActionArgument| arg.name == arg_name)
                 {
                     return Err(format!(
-                        "{mod}.actions[{}].args[{}]: invalid argument",
+                        "{mod_name}.actions[{}].args[{}]: invalid argument",
                         index + 1,
                         position + 1
                     ));
@@ -341,7 +341,7 @@ fn read_actions(def: &Table, r#mod: &str) -> Result<Vec<ActionDecl>, String> {
             }
         }
         out.push(ActionDecl {
-            r#mod: r#mod.into(),
+            owner: mod_name.into(),
             name,
             description: row
                 .get::<Option<String>>("desc")
@@ -385,17 +385,17 @@ fn read_events(def: &Table, file: &str) -> Result<Vec<String>, String> {
 /// Same shape as a key without the chord: the action id is the one `on_action`
 /// is called back with, so a command and a key for one action are one thing
 /// reached two ways.
-fn read_commands(def: &Table, r#mod: &str) -> Result<Vec<CommandDecl>, String> {
+fn read_commands(def: &Table, mod_name: &str) -> Result<Vec<CommandDecl>, String> {
     let raw: Value = def
         .get("commands")
-        .map_err(|e| format!("{mod}.commands: {e}"))?;
+        .map_err(|e| format!("{mod_name}.commands: {e}"))?;
     let Value::Table(list) = raw else {
         return Ok(Vec::new());
     };
     let mut commands = Vec::new();
     for (index, entry) in list.sequence_values::<Table>().enumerate() {
-        let entry = entry.map_err(|e| format!("{mod}.commands[{}]: {e}", index + 1))?;
-        let where_ = format!("{mod}.commands[{}]", index + 1);
+        let entry = entry.map_err(|e| format!("{mod_name}.commands[{}]: {e}", index + 1))?;
+        let where_ = format!("{mod_name}.commands[{}]", index + 1);
         let action: String = entry
             .get::<Option<String>>("action")
             .map_err(|e| format!("{where_}.action: {e}"))?
@@ -405,7 +405,7 @@ fn read_commands(def: &Table, r#mod: &str) -> Result<Vec<CommandDecl>, String> {
             .map_err(|e| format!("{where_}.desc: {e}"))?
             .unwrap_or_default();
         commands.push(CommandDecl {
-            r#mod: r#mod.to_string(),
+            owner: mod_name.to_string(),
             action,
             description,
         });
@@ -493,15 +493,17 @@ pub(super) fn read_float(value: &Value) -> Result<Option<Float>, String> {
 ///
 /// Declared as data rather than handled imperatively so the registry can
 /// enumerate, conflict-check and rebind them without ever calling the mod.
-fn read_bindings(def: &Table, r#mod: &str) -> Result<Vec<Binding>, String> {
-    let raw: Value = def.get("keys").map_err(|e| format!("{mod}.keys: {e}"))?;
+fn read_bindings(def: &Table, mod_name: &str) -> Result<Vec<Binding>, String> {
+    let raw: Value = def
+        .get("keys")
+        .map_err(|e| format!("{mod_name}.keys: {e}"))?;
     let Value::Table(list) = raw else {
         return Ok(Vec::new());
     };
     let mut bindings = Vec::new();
     for (index, entry) in list.sequence_values::<Table>().enumerate() {
-        let entry = entry.map_err(|e| format!("{mod}.keys[{}]: {e}", index + 1))?;
-        let where_ = format!("{mod}.keys[{}]", index + 1);
+        let entry = entry.map_err(|e| format!("{mod_name}.keys[{}]: {e}", index + 1))?;
+        let where_ = format!("{mod_name}.keys[{}]", index + 1);
         let chord: String = entry
             .get::<Option<String>>("key")
             .map_err(|e| format!("{where_}.key: {e}"))?
@@ -538,7 +540,7 @@ fn read_bindings(def: &Table, r#mod: &str) -> Result<Vec<Binding>, String> {
             .map_err(|e| format!("{where_}.release: {e}"))?
             .unwrap_or(false);
         let mut binding = binding_from(
-            r#mod,
+            mod_name,
             &chord,
             &action,
             &description,
@@ -553,17 +555,17 @@ fn read_bindings(def: &Table, r#mod: &str) -> Result<Vec<Binding>, String> {
 }
 
 /// Read a mod's `settings` declaration.
-fn read_settings(def: &Table, r#mod: &str) -> Result<Vec<Setting>, String> {
+fn read_settings(def: &Table, mod_name: &str) -> Result<Vec<Setting>, String> {
     let raw: Value = def
         .get("settings")
-        .map_err(|e| format!("{mod}.settings: {e}"))?;
+        .map_err(|e| format!("{mod_name}.settings: {e}"))?;
     let Value::Table(list) = raw else {
         return Ok(Vec::new());
     };
     let mut settings = Vec::new();
     for (index, entry) in list.sequence_values::<Table>().enumerate() {
-        let entry = entry.map_err(|e| format!("{mod}.settings[{}]: {e}", index + 1))?;
-        let where_ = format!("{mod}.settings[{}]", index + 1);
+        let entry = entry.map_err(|e| format!("{mod_name}.settings[{}]: {e}", index + 1))?;
+        let where_ = format!("{mod_name}.settings[{}]", index + 1);
         let id: String = entry
             .get::<Option<String>>("id")
             .map_err(|e| format!("{where_}.id: {e}"))?
@@ -622,7 +624,7 @@ fn read_settings(def: &Table, r#mod: &str) -> Result<Vec<Setting>, String> {
             return Err(format!("{where_}: choices must not be empty"));
         }
         settings.push(Setting {
-            r#mod: r#mod.to_string(),
+            owner: mod_name.to_string(),
             id,
             description,
             default: default.clone(),
@@ -639,15 +641,17 @@ fn read_settings(def: &Table, r#mod: &str) -> Result<Vec<Setting>, String> {
 /// Data, like `keys` and `settings`, for the same reason: the band must be able
 /// to enumerate every entry without invoking any mod, because drawing chrome
 /// that can call into Lua is chrome a mod can break.
-fn read_pills(def: &Table, r#mod: &str) -> Result<Vec<Pill>, String> {
-    let raw: Value = def.get("pills").map_err(|e| format!("{mod}.pills: {e}"))?;
+fn read_pills(def: &Table, mod_name: &str) -> Result<Vec<Pill>, String> {
+    let raw: Value = def
+        .get("pills")
+        .map_err(|e| format!("{mod_name}.pills: {e}"))?;
     let Value::Table(list) = raw else {
         return Ok(Vec::new());
     };
     let mut pills = Vec::new();
     for (index, entry) in list.sequence_values::<Table>().enumerate() {
-        let entry = entry.map_err(|e| format!("{mod}.pills[{}]: {e}", index + 1))?;
-        let where_ = format!("{mod}.pills[{}]", index + 1);
+        let entry = entry.map_err(|e| format!("{mod_name}.pills[{}]: {e}", index + 1))?;
+        let where_ = format!("{mod_name}.pills[{}]", index + 1);
         let action: String = entry
             .get::<Option<String>>("action")
             .map_err(|e| format!("{where_}.action: {e}"))?
@@ -663,7 +667,7 @@ fn read_pills(def: &Table, r#mod: &str) -> Result<Vec<Pill>, String> {
             .map_err(|e| format!("{where_}.priority: {e}"))?
             .unwrap_or(0);
         pills.push(Pill {
-            r#mod: r#mod.to_string(),
+            owner: mod_name.to_string(),
             action,
             label,
             priority,

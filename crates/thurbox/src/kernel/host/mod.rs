@@ -179,7 +179,7 @@ impl Phase {
 /// A failure attributed to a mod and a phase.
 #[derive(Debug, Clone, PartialEq)]
 pub struct ModError {
-    pub r#mod: String,
+    pub owner: String,
     pub phase: Phase,
     pub message: String,
 }
@@ -189,7 +189,7 @@ impl std::fmt::Display for ModError {
         write!(
             f,
             "{} ({}): {}",
-            self.r#mod,
+            self.owner,
             self.phase.as_str(),
             self.message
         )
@@ -962,22 +962,22 @@ struct ModIndex {
 impl ModIndex {
     fn build(mods: &[Mod]) -> Self {
         let mut index = Self::default();
-        for (i, r#mod) in mods.iter().enumerate() {
-            if r#mod.focusable {
+        for (i, loaded) in mods.iter().enumerate() {
+            if loaded.focusable {
                 index.focusable.push(i);
             }
-            if r#mod.floats {
+            if loaded.floats {
                 index.floating.push(i);
             }
-            match &r#mod.decorates {
+            match &loaded.decorates {
                 Some(slot) => index.decorators.entry(slot.clone()).or_default().push(i),
-                None => index.slots.entry(r#mod.slot.clone()).or_default().push(i),
+                None => index.slots.entry(loaded.slot.clone()).or_default().push(i),
             }
             // `slot_mode` is a static declaration, read once here instead of
             // through the Lua table on every placement query.
-            if let Ok(Value::String(mode)) = r#mod.def.get::<Value>("slot_mode") {
+            if let Ok(Value::String(mode)) = loaded.def.get::<Value>("slot_mode") {
                 if mode.to_string_lossy() == "switch" {
-                    index.modes.insert(r#mod.slot.clone(), SlotMode::Switch);
+                    index.modes.insert(loaded.slot.clone(), SlotMode::Switch);
                 }
             }
         }
@@ -1183,19 +1183,19 @@ impl LuaHost {
         // means the interface directory is not one.
         mods.sort_by(|a, b| a.order.total_cmp(&b.order));
         let mut actions = std::collections::HashMap::<String, (String, String)>::new();
-        for r#mod in &mods {
-            for action in r#mod
+        for loaded in &mods {
+            for action in loaded
                 .bindings
                 .iter()
                 .map(|row| &row.action)
-                .chain(r#mod.commands.iter().map(|row| &row.action))
-                .chain(r#mod.actions.iter().map(|row| &row.name))
+                .chain(loaded.commands.iter().map(|row| &row.action))
+                .chain(loaded.actions.iter().map(|row| &row.name))
             {
                 if let Some((owner, path)) =
-                    actions.insert(action.clone(), (r#mod.name.clone(), r#mod.path.clone()))
+                    actions.insert(action.clone(), (loaded.name.clone(), loaded.path.clone()))
                 {
-                    if owner != r#mod.name
-                        || (path != r#mod.path
+                    if owner != loaded.name
+                        || (path != loaded.path
                             && matches!(
                                 action.as_str(),
                                 "sessions.delete"
@@ -1206,7 +1206,7 @@ impl LuaHost {
                     {
                         return Err(format!(
                             "action {action} is declared by both {owner} and {}",
-                            r#mod.name
+                            loaded.name
                         ));
                     }
                 }
@@ -1232,10 +1232,10 @@ impl LuaHost {
         let mut bindings = Vec::new();
         let mut settings = Vec::new();
         let mut pills = Vec::new();
-        for r#mod in &self.mods {
-            bindings.extend(r#mod.bindings.iter().cloned());
-            settings.extend(r#mod.settings.iter().cloned());
-            pills.extend(r#mod.pills.iter().cloned());
+        for loaded in &self.mods {
+            bindings.extend(loaded.bindings.iter().cloned());
+            settings.extend(loaded.settings.iter().cloned());
+            pills.extend(loaded.pills.iter().cloned());
         }
         (bindings, settings, pills)
     }
@@ -1277,18 +1277,18 @@ impl LuaHost {
     /// Handler presence is checked without invoking user code. A gesture with
     /// no action handler cannot be promised through the external catalog.
     pub fn action_handler_present(&self, index: usize) -> bool {
-        self.mods.get(index).is_some_and(|r#mod| {
-            matches!(r#mod.def.get::<Value>("on_action"), Ok(Value::Function(_)))
+        self.mods.get(index).is_some_and(|loaded| {
+            matches!(loaded.def.get::<Value>("on_action"), Ok(Value::Function(_)))
         })
     }
 
     pub fn raw_gesture_handlers(&self, index: usize) -> Vec<&'static str> {
-        let Some(r#mod) = self.mods.get(index) else {
+        let Some(loaded) = self.mods.get(index) else {
             return Vec::new();
         };
         ["on_key", "on_click", "on_scroll"]
             .into_iter()
-            .filter(|name| matches!(r#mod.def.get::<Value>(*name), Ok(Value::Function(_))))
+            .filter(|name| matches!(loaded.def.get::<Value>(*name), Ok(Value::Function(_))))
             .collect()
     }
 
@@ -1300,15 +1300,15 @@ impl LuaHost {
         action: &str,
         args: &[(&str, &str)],
     ) -> Result<bool, ModError> {
-        let Some(r#mod) = self.mods.get(index) else {
+        let Some(loaded) = self.mods.get(index) else {
             return Ok(false);
         };
         let fail = |message: String| ModError {
-            r#mod: r#mod.name.clone(),
+            owner: loaded.name.clone(),
             phase: Phase::Key,
             message,
         };
-        let handler: Value = r#mod
+        let handler: Value = loaded
             .def
             .get("on_action")
             .map_err(|e| fail(e.to_string()))?;
@@ -1317,7 +1317,7 @@ impl LuaHost {
         };
 
         let start = self.call_started();
-        self.enter(r#mod);
+        self.enter(loaded);
         let guard = Budget::arm(&self.lua);
         let handled: Result<bool, mlua::Error> = if let Err(e) = &guard {
             Err(e.clone())
@@ -1353,7 +1353,7 @@ impl LuaHost {
             handler.call((action.to_string(), arguments))
         };
         drop(guard);
-        self.hook_finished(r#mod, start, Hook::Action, handled.is_err());
+        self.hook_finished(loaded, start, Hook::Action, handled.is_err());
         handled.map_err(|e| fail(clean_error(&e)))
     }
 
@@ -1366,22 +1366,22 @@ impl LuaHost {
     pub fn name_of_path(&self, path: &str) -> Option<&str> {
         self.mods
             .iter()
-            .find(|r#mod| r#mod.path == path)
-            .map(|r#mod| r#mod.name.as_str())
+            .find(|loaded| loaded.path == path)
+            .map(|loaded| loaded.name.as_str())
     }
 
     /// Every chord-less command every loaded mod declared.
     pub fn commands(&self) -> Vec<CommandDecl> {
         self.mods
             .iter()
-            .flat_map(|r#mod| r#mod.commands.iter().cloned())
+            .flat_map(|loaded| loaded.commands.iter().cloned())
             .collect()
     }
 
     pub fn action_declarations(&self) -> Vec<ActionDecl> {
         self.mods
             .iter()
-            .flat_map(|r#mod| r#mod.actions.iter().cloned())
+            .flat_map(|loaded| loaded.actions.iter().cloned())
             .collect()
     }
 
@@ -1390,7 +1390,7 @@ impl LuaHost {
         self.mods
             .iter()
             .enumerate()
-            .filter(|(_, r#mod)| r#mod.events.iter().any(|name| name == event))
+            .filter(|(_, loaded)| loaded.events.iter().any(|name| name == event))
             .map(|(index, _)| index)
             .collect()
     }
@@ -1419,7 +1419,7 @@ impl LuaHost {
                 .filter(|index| {
                     self.mods
                         .get(*index)
-                        .is_some_and(|r#mod| r#mod.path == *path)
+                        .is_some_and(|loaded| loaded.path == *path)
                 })
                 .collect(),
         };
@@ -1431,7 +1431,7 @@ impl LuaHost {
             Ok(table) => table,
             Err(message) => {
                 failures.push(ModError {
-                    r#mod: "kernel".to_string(),
+                    owner: "kernel".to_string(),
                     phase: Phase::Event,
                     message: format!("{}: {message}", event.name),
                 });
@@ -1448,24 +1448,27 @@ impl LuaHost {
 
     /// Call one mod's `on_event` with a name and a payload table.
     fn on_event(&self, index: usize, name: &str, payload: &Table) -> Result<(), ModError> {
-        let Some(r#mod) = self.mods.get(index) else {
+        let Some(loaded) = self.mods.get(index) else {
             return Ok(());
         };
         let fail = |message: String| ModError {
-            r#mod: r#mod.name.clone(),
+            owner: loaded.name.clone(),
             phase: Phase::Event,
             message: format!("{name}: {message}"),
         };
-        let handler: Value = r#mod.def.get("on_event").map_err(|e| fail(e.to_string()))?;
+        let handler: Value = loaded
+            .def
+            .get("on_event")
+            .map_err(|e| fail(e.to_string()))?;
         let Value::Function(handler) = handler else {
             return Ok(());
         };
 
         let start = self.call_started();
-        self.enter(r#mod);
+        self.enter(loaded);
         let outcome: Result<Value, mlua::Error> = Budget::arm(&self.lua)
             .and_then(|_budget| handler.call((name.to_string(), payload.clone())));
-        self.hook_finished(r#mod, start, Hook::Event, outcome.is_err());
+        self.hook_finished(loaded, start, Hook::Event, outcome.is_err());
         outcome.map(|_| ()).map_err(|e| fail(clean_error(&e)))
     }
 
@@ -1529,15 +1532,18 @@ impl LuaHost {
         node: &Node,
         ctx: RenderContext,
     ) -> Result<Node, ModError> {
-        let Some(r#mod) = self.mods.get(index) else {
+        let Some(loaded) = self.mods.get(index) else {
             return Ok(node.clone());
         };
         let fail = |message: String| ModError {
-            r#mod: r#mod.name.clone(),
+            owner: loaded.name.clone(),
             phase: Phase::Render,
             message,
         };
-        let handler: Value = r#mod.def.get("decorate").map_err(|e| fail(e.to_string()))?;
+        let handler: Value = loaded
+            .def
+            .get("decorate")
+            .map_err(|e| fail(e.to_string()))?;
         let Value::Function(handler) = handler else {
             return Ok(node.clone());
         };
@@ -1553,15 +1559,15 @@ impl LuaHost {
         let tree = convert::to_lua(&self.lua, node).map_err(fail)?;
 
         let start = self.call_started();
-        self.enter(r#mod);
+        self.enter(loaded);
         let result: Result<Value, mlua::Error> =
             Budget::arm(&self.lua).and_then(|_budget| handler.call((tree, table)));
-        self.hook_finished(r#mod, start, Hook::Decorate, result.is_err());
+        self.hook_finished(loaded, start, Hook::Decorate, result.is_err());
 
         let value = result.map_err(|e| fail(clean_error(&e)))?;
         // The DECORATOR owns what it returns: a program surface it names is one of
         // its own panes, not one belonging to the mod whose tree it decorated.
-        convert::to_node(&value, &r#mod.path).map_err(fail)
+        convert::to_node(&value, &loaded.path).map_err(fail)
     }
 
     /// A string a mod left in the shared `store`, if it put one there.
@@ -1579,11 +1585,11 @@ impl LuaHost {
     /// Small, explicitly declared UI projections; no shared or private store is exposed.
     pub fn ui_states(&self) -> std::collections::BTreeMap<String, serde_json::Value> {
         let mut states = std::collections::BTreeMap::new();
-        for r#mod in &self.mods {
-            let Ok(Some(project)) = r#mod.def.get::<Option<Function>>("ui_state") else {
+        for loaded in &self.mods {
+            let Ok(Some(project)) = loaded.def.get::<Option<Function>>("ui_state") else {
                 continue;
             };
-            self.enter(r#mod);
+            self.enter(loaded);
             let result: mlua::Result<Table> =
                 load::Budget::arm(&self.lua).and_then(|_budget| project.call(()));
             self.enter_nothing();
@@ -1605,7 +1611,7 @@ impl LuaHost {
                 };
                 fields.insert(key, value);
             }
-            states.insert(r#mod.path.clone(), serde_json::Value::Object(fields));
+            states.insert(loaded.path.clone(), serde_json::Value::Object(fields));
         }
         states
     }
@@ -1731,8 +1737,8 @@ impl LuaHost {
                 }
             }
         };
-        if let Some(r#mod) = self.mods.get(index) {
-            collect(r#mod.env.table.clone());
+        if let Some(loaded) = self.mods.get(index) {
+            collect(loaded.env.table.clone());
         }
         collect(self.lua.globals());
         names.into_iter().collect()
@@ -1746,8 +1752,8 @@ impl LuaHost {
     /// grant for one is not a grant for the other, and the way that breaks is a
     /// second site that checks trust and forgets to check which capability was
     /// asked for.
-    pub fn may(&self, r#mod: &Mod, capability: Capability) -> bool {
-        r#mod.capabilities.contains(&capability) && self.trusted.borrow().contains(&r#mod.path)
+    pub fn may(&self, loaded: &Mod, capability: Capability) -> bool {
+        loaded.capabilities.contains(&capability) && self.trusted.borrow().contains(&loaded.path)
     }
 
     /// [`Self::may`], for a mod named by its path — the identity a queued
@@ -1755,64 +1761,64 @@ impl LuaHost {
     pub fn may_path(&self, path: &str, capability: Capability) -> bool {
         self.mods
             .iter()
-            .find(|r#mod| r#mod.path == path)
-            .is_some_and(|r#mod| self.may(r#mod, capability))
+            .find(|loaded| loaded.path == path)
+            .is_some_and(|loaded| self.may(loaded, capability))
     }
 
-    /// Make `mod` the current one, and give it exactly the capabilities it
+    /// Make `loaded` the current one, and give it exactly the capabilities it
     /// has been granted.
     ///
     /// Installed **per call** rather than once at load so a grant revoked on
     /// the Interface tab is gone on the next call. `run` and `files` go into
     /// the mod's own environment or are taken out of it: not a function that
     /// refuses, but no function at all (design D7).
-    fn enter(&self, r#mod: &Mod) {
-        *self.current.borrow_mut() = r#mod.file.clone();
-        *self.current_path.borrow_mut() = r#mod.path.clone();
+    fn enter(&self, loaded: &Mod) {
+        *self.current.borrow_mut() = loaded.file.clone();
+        *self.current_path.borrow_mut() = loaded.path.clone();
         // Only a mod that asked for a capability can have answers, so every
         // other one skips the rest. Worth the check: `enter` runs on every call
         // to every mod, and building a table per call for the panes that can
         // never have runs would be a per-frame allocation for nothing.
-        if r#mod.capabilities.is_empty() {
+        if loaded.capabilities.is_empty() {
             return;
         }
-        self.publish_runs(r#mod);
-        self.publish_granted(r#mod);
-        let run = if self.may(r#mod, Capability::Run) {
-            Value::Function(r#mod.env.run.clone())
+        self.publish_runs(loaded);
+        self.publish_granted(loaded);
+        let run = if self.may(loaded, Capability::Run) {
+            Value::Function(loaded.env.run.clone())
         } else {
             Value::Nil
         };
-        let _ = r#mod.env.table.raw_set("run", run);
-        let forget = if self.may(r#mod, Capability::Run) {
-            Value::Function(r#mod.env.run_forget.clone())
+        let _ = loaded.env.table.raw_set("run", run);
+        let forget = if self.may(loaded, Capability::Run) {
+            Value::Function(loaded.env.run_forget.clone())
         } else {
             Value::Nil
         };
-        let _ = r#mod.env.table.raw_set("run_forget", forget);
-        let files = if self.may(r#mod, Capability::Files) {
-            Value::Table(r#mod.env.files.clone())
+        let _ = loaded.env.table.raw_set("run_forget", forget);
+        let files = if self.may(loaded, Capability::Files) {
+            Value::Table(loaded.env.files.clone())
         } else {
             Value::Nil
         };
-        let _ = r#mod.env.table.raw_set("files", files);
+        let _ = loaded.env.table.raw_set("files", files);
     }
 
     /// This mod's own answers, and nothing else's, as `thurbox.runs` — in
     /// its own `thurbox` view (`api::Env::thurbox`), which no other mod's
     /// code can reach, whenever it runs.
-    fn publish_runs(&self, r#mod: &Mod) {
+    fn publish_runs(&self, loaded: &Mod) {
         let Ok(table) = self.lua.create_table() else {
             return;
         };
-        if let Some(answers) = self.run_answers.borrow().get(&r#mod.path) {
+        if let Some(answers) = self.run_answers.borrow().get(&loaded.path) {
             for (key, run) in answers {
                 if let Ok(entry) = run_to_lua(&self.lua, run) {
                     let _ = table.set(key.clone(), entry);
                 }
             }
         }
-        let _ = r#mod.env.thurbox.raw_set("runs", table);
+        let _ = loaded.env.thurbox.raw_set("runs", table);
     }
 
     /// What this mod has actually been granted, as `thurbox.granted.<name>`,
@@ -1824,16 +1830,16 @@ impl LuaHost {
     /// every mod has, so absence cannot express it and a pane would have no
     /// way to tell "not trusted" from "still starting". This is that answer, and
     /// it grants nothing: it is a boolean about a decision the user already made.
-    fn publish_granted(&self, r#mod: &Mod) {
+    fn publish_granted(&self, loaded: &Mod) {
         let Ok(table) = self.lua.create_table() else {
             return;
         };
         for capability in Capability::ALL {
-            if self.may(r#mod, capability) {
+            if self.may(loaded, capability) {
                 let _ = table.set(capability.as_str(), true);
             }
         }
-        let _ = r#mod.env.thurbox.raw_set("granted", table);
+        let _ = loaded.env.thurbox.raw_set("granted", table);
     }
 
     /// Hand over the retained run answers.
@@ -1903,7 +1909,7 @@ impl LuaHost {
         let mut asked = std::mem::take(&mut *self.runs.borrow_mut());
         // Edit reloads keep this queue while replacing the mods. Delivering
         // a retired owner's ask would recreate state already pruned by reload.
-        asked.retain(|(owner, _)| self.mods.iter().any(|r#mod| r#mod.path == *owner));
+        asked.retain(|(owner, _)| self.mods.iter().any(|loaded| loaded.path == *owner));
         if self.perf_timing.get() {
             let mut table = self.mod_perf.borrow_mut();
             for (path, request) in &asked {
@@ -2113,11 +2119,11 @@ impl LuaHost {
     pub fn mod_report(&self) -> super::perf::ModReport {
         super::perf::mod_report(
             &self.mod_perf.borrow(),
-            self.mods.iter().map(|r#mod| super::perf::ModMeta {
-                name: &r#mod.name,
-                path: &r#mod.path,
-                pure: r#mod.pure,
-                floats: r#mod.floats,
+            self.mods.iter().map(|loaded| super::perf::ModMeta {
+                name: &loaded.name,
+                path: &loaded.path,
+                pure: loaded.pure,
+                floats: loaded.floats,
             }),
         )
     }
@@ -2138,14 +2144,14 @@ impl LuaHost {
     /// Feed a finished call to an open op; its duration when timing is on.
     fn call_finished(
         &self,
-        r#mod: &Mod,
+        loaded: &Mod,
         start: Option<std::time::Instant>,
     ) -> Option<std::time::Duration> {
         let took = start?.elapsed();
         if self.op_open.get() {
             let mut heaviest = self.op_heaviest.borrow_mut();
             if heaviest.as_ref().is_none_or(|(_, longest)| took > *longest) {
-                *heaviest = Some((r#mod.name.clone(), took));
+                *heaviest = Some((loaded.name.clone(), took));
             }
         }
         self.perf_timing.get().then_some(took)
@@ -2154,16 +2160,16 @@ impl LuaHost {
     /// Charge one handler call to its mod.
     fn hook_finished(
         &self,
-        r#mod: &Mod,
+        loaded: &Mod,
         start: Option<std::time::Instant>,
         hook: Hook,
         failed: bool,
     ) {
-        let Some(took) = self.call_finished(r#mod, start) else {
+        let Some(took) = self.call_finished(loaded, start) else {
             return;
         };
         let mut table = self.mod_perf.borrow_mut();
-        let stats = table.stats_mut(&r#mod.path);
+        let stats = table.stats_mut(&loaded.path);
         stats.hooks.stat_mut(hook).record(took);
         stats.failures += u64::from(failed);
     }
@@ -2188,14 +2194,14 @@ impl LuaHost {
     /// Failures are returned rather than propagated, so the caller can paint an
     /// error panel in this mod's rect and carry on with the others.
     pub fn render(&self, index: usize, ctx: RenderContext) -> Result<Rendered, ModError> {
-        let r#mod = self.mods.get(index).ok_or_else(|| ModError {
-            r#mod: format!("#{index}"),
+        let loaded = self.mods.get(index).ok_or_else(|| ModError {
+            owner: format!("#{index}"),
             phase: Phase::Render,
             message: "mod index out of range".to_string(),
         })?;
 
-        if r#mod.capabilities.contains(&Capability::Files) {
-            self.file_rendered.borrow_mut().insert(r#mod.path.clone());
+        if loaded.capabilities.contains(&Capability::Files) {
+            self.file_rendered.borrow_mut().insert(loaded.path.clone());
         }
 
         // A pure pane asked at the same epoch, in the same rect, with the same
@@ -2212,7 +2218,7 @@ impl LuaHost {
                 self.state_version.get(),
             )
         });
-        if r#mod.pure {
+        if loaded.pure {
             if let Some(key) = key {
                 if let Some(cached) = self.trees.borrow().get(&index) {
                     if cached.answers(&key) {
@@ -2220,7 +2226,7 @@ impl LuaHost {
                             .set(self.rendered_reads.get() | cached.reads_sample);
                         self.skipped_renders.set(self.skipped_renders.get() + 1);
                         if self.perf_timing.get() {
-                            self.mod_perf.borrow_mut().stats_mut(&r#mod.path).reused += 1;
+                            self.mod_perf.borrow_mut().stats_mut(&loaded.path).reused += 1;
                         }
                         return Ok(cached.rendered.clone());
                     }
@@ -2230,13 +2236,13 @@ impl LuaHost {
 
         let start = self.call_started();
         let writes = self.store_writes.get();
-        let result = self.render_lua(index, r#mod, ctx, key);
+        let result = self.render_lua(index, loaded, ctx, key);
         self.rendered_reads
             .set(self.rendered_reads.get() | self.sample_read.get());
-        if let Some(took) = self.call_finished(r#mod, start) {
+        if let Some(took) = self.call_finished(loaded, start) {
             let (all, tables) = self.store_writes.get();
             let mut table = self.mod_perf.borrow_mut();
-            let stats = table.stats_mut(&r#mod.path);
+            let stats = table.stats_mut(&loaded.path);
             stats.renders += 1;
             stats.render.record(took);
             stats.idle_renders += u64::from(self.idle.get());
@@ -2245,7 +2251,7 @@ impl LuaHost {
             match &result {
                 Ok(rendered) => {
                     stats.note_tree(&rendered.node);
-                    stats.closed_renders += u64::from(r#mod.floats && rendered.float.is_none());
+                    stats.closed_renders += u64::from(loaded.floats && rendered.float.is_none());
                 }
                 Err(_) => stats.failures += 1,
             }
@@ -2258,17 +2264,17 @@ impl LuaHost {
     fn render_lua(
         &self,
         index: usize,
-        r#mod: &Mod,
+        loaded: &Mod,
         ctx: RenderContext,
         key: Option<TreeKey>,
     ) -> Result<Rendered, ModError> {
         let fail = |message: String| ModError {
-            r#mod: r#mod.name.clone(),
+            owner: loaded.name.clone(),
             phase: Phase::Render,
             message,
         };
 
-        let render: Function = r#mod
+        let render: Function = loaded
             .def
             .get("render")
             .map_err(|e| fail(format!("no render function: {e}")))?;
@@ -2293,29 +2299,29 @@ impl LuaHost {
             .set("frame", ctx.frame)
             .map_err(|e| fail(e.to_string()))?;
         table
-            .set("name", r#mod.name.clone())
+            .set("name", loaded.name.clone())
             .map_err(|e| fail(e.to_string()))?;
         table
-            .set("slot", r#mod.slot.clone())
+            .set("slot", loaded.slot.clone())
             .map_err(|e| fail(e.to_string()))?;
 
-        if r#mod.capabilities.contains(&Capability::Files) {
-            self.file_wants.borrow_mut().remove(&r#mod.path);
+        if loaded.capabilities.contains(&Capability::Files) {
+            self.file_wants.borrow_mut().remove(&loaded.path);
         }
-        self.enter(r#mod);
+        self.enter(loaded);
         let result: Result<Value, mlua::Error> =
             Budget::arm(&self.lua).and_then(|_budget| render.call(table));
 
         let value = result.map_err(|e| fail(clean_error(&e)))?;
         let float = read_float(&value).map_err(fail)?;
-        let node = convert::to_node(&value, &r#mod.path).map_err(fail)?;
+        let node = convert::to_node(&value, &loaded.path).map_err(fail)?;
         // Behind the `Rc` from birth, so caching it and every later hand-out
         // is a refcount bump — see [`Rendered`].
         let rendered = Rendered {
             node: std::rc::Rc::new(node),
             float,
         };
-        if r#mod.pure {
+        if loaded.pure {
             if let Some(key) = key {
                 self.trees.borrow_mut().insert(
                     index,
@@ -2337,7 +2343,7 @@ impl LuaHost {
     /// Offer the native cycle to a floating mod. A missing hook or `false`
     /// leaves the ordinary pane cycle in charge. Uses the key hook's budget.
     pub fn on_focus_cycle(&self, index: usize, direction: &str) -> Result<bool, ModError> {
-        if !self.mods.get(index).is_some_and(|r#mod| r#mod.floats) {
+        if !self.mods.get(index).is_some_and(|loaded| loaded.floats) {
             return Ok(false);
         }
         self.boolean_key_hook(index, "on_focus_cycle", |_| Ok(direction))
@@ -2363,24 +2369,24 @@ impl LuaHost {
         name: &str,
         arguments: impl FnOnce(&Lua) -> mlua::Result<A>,
     ) -> Result<bool, ModError> {
-        let Some(r#mod) = self.mods.get(index) else {
+        let Some(loaded) = self.mods.get(index) else {
             return Ok(false);
         };
         let fail = |message: String| ModError {
-            r#mod: r#mod.name.clone(),
+            owner: loaded.name.clone(),
             phase: Phase::Key,
             message,
         };
-        let handler: Value = r#mod.def.get(name).map_err(|e| fail(e.to_string()))?;
+        let handler: Value = loaded.def.get(name).map_err(|e| fail(e.to_string()))?;
         let Value::Function(handler) = handler else {
             return Ok(false);
         };
         let args = arguments(&self.lua).map_err(|e| fail(clean_error(&e)))?;
         let start = self.call_started();
-        self.enter(r#mod);
+        self.enter(loaded);
         let handled: Result<bool, mlua::Error> =
             Budget::arm(&self.lua).and_then(|_budget| handler.call(args));
-        self.hook_finished(r#mod, start, Hook::Key, handled.is_err());
+        self.hook_finished(loaded, start, Hook::Key, handled.is_err());
         handled.map_err(|e| fail(clean_error(&e)))
     }
 
@@ -2424,16 +2430,16 @@ impl LuaHost {
 
     /// The body every pointer hook shares: same payload, different name.
     fn pointer_hook(&self, index: usize, click: &Click, hook: &str) -> Result<bool, ModError> {
-        let Some(r#mod) = self.mods.get(index) else {
+        let Some(loaded) = self.mods.get(index) else {
             return Ok(false);
         };
         let fail = |message: String| ModError {
-            r#mod: r#mod.name.clone(),
+            owner: loaded.name.clone(),
             phase: Phase::Key,
             message,
         };
 
-        let handler: Value = r#mod.def.get(hook).map_err(|e| fail(e.to_string()))?;
+        let handler: Value = loaded.def.get(hook).map_err(|e| fail(e.to_string()))?;
         let Value::Function(handler) = handler else {
             return Ok(false);
         };
@@ -2466,10 +2472,10 @@ impl LuaHost {
             .map_err(|e| fail(e.to_string()))?;
 
         let start = self.call_started();
-        self.enter(r#mod);
+        self.enter(loaded);
         let handled: Result<bool, mlua::Error> =
             Budget::arm(&self.lua).and_then(|_budget| handler.call(table));
-        self.hook_finished(r#mod, start, Hook::Click, handled.is_err());
+        self.hook_finished(loaded, start, Hook::Click, handled.is_err());
 
         handled.map_err(|e| fail(clean_error(&e)))
     }
@@ -2480,16 +2486,16 @@ impl LuaHost {
     /// tick back on the keystroke path, so a pane that already scrolls by
     /// `up`/`down` needs nothing here. See [`Scroll`].
     pub fn on_scroll(&self, index: usize, scroll: &Scroll) -> Result<bool, ModError> {
-        let Some(r#mod) = self.mods.get(index) else {
+        let Some(loaded) = self.mods.get(index) else {
             return Ok(false);
         };
         let fail = |message: String| ModError {
-            r#mod: r#mod.name.clone(),
+            owner: loaded.name.clone(),
             phase: Phase::Key,
             message,
         };
 
-        let handler: Value = r#mod
+        let handler: Value = loaded
             .def
             .get("on_scroll")
             .map_err(|e| fail(e.to_string()))?;
@@ -2505,10 +2511,10 @@ impl LuaHost {
         table.set("y", scroll.y).map_err(|e| fail(e.to_string()))?;
 
         let start = self.call_started();
-        self.enter(r#mod);
+        self.enter(loaded);
         let handled: Result<bool, mlua::Error> =
             Budget::arm(&self.lua).and_then(|_budget| handler.call(table));
-        self.hook_finished(r#mod, start, Hook::Scroll, handled.is_err());
+        self.hook_finished(loaded, start, Hook::Scroll, handled.is_err());
 
         handled.map_err(|e| fail(clean_error(&e)))
     }
@@ -2605,8 +2611,8 @@ impl LuaHost {
     pub fn occupied_slots(&self) -> BTreeSet<&str> {
         self.mods
             .iter()
-            .filter(|r#mod| r#mod.decorates.is_none() && !r#mod.floats)
-            .map(|r#mod| r#mod.slot.as_str())
+            .filter(|loaded| loaded.decorates.is_none() && !loaded.floats)
+            .map(|loaded| loaded.slot.as_str())
             .collect()
     }
 
@@ -2677,11 +2683,11 @@ impl LuaHost {
     /// switch, which shows one at a time.
     pub fn strips(&self) -> Vec<(&str, u16)> {
         let mut strips: Vec<(&str, u16)> = Vec::new();
-        for r#mod in &self.mods {
-            let slot = r#mod.slot.as_str();
-            if !r#mod.strip
-                || r#mod.decorates.is_some()
-                || r#mod.floats
+        for loaded in &self.mods {
+            let slot = loaded.slot.as_str();
+            if !loaded.strip
+                || loaded.decorates.is_some()
+                || loaded.floats
                 || strips.iter().any(|(placed, _)| *placed == slot)
             {
                 continue;
@@ -2741,18 +2747,18 @@ impl LuaHost {
     /// `None` when the pane draws by default, or when it declares a pill and is
     /// therefore advertised.
     pub fn undiscoverable(&self, index: usize) -> Option<String> {
-        let r#mod = self.mods.get(index)?;
-        if r#mod.floats || r#mod.decorates.is_some() {
+        let loaded = self.mods.get(index)?;
+        if loaded.floats || loaded.decorates.is_some() {
             return None;
         }
-        if self.slot_mode(&r#mod.slot) != SlotMode::Switch {
+        if self.slot_mode(&loaded.slot) != SlotMode::Switch {
             return None;
         }
         // The first occupant of a switch slot is the one that draws.
-        if self.in_slot(&r#mod.slot).first() == Some(&index) {
+        if self.in_slot(&loaded.slot).first() == Some(&index) {
             return None;
         }
-        if !r#mod.pills.is_empty() {
+        if !loaded.pills.is_empty() {
             return None;
         }
         Some(format!(
@@ -2760,7 +2766,7 @@ impl LuaHost {
              pill — so nothing on screen offers it. Declare one \
              (`pills = {{ {{ action = \"…\", label = \"…\" }} }}`) or only a key of its \
              own reaches it — Ctrl+H/Ctrl+L never stop on it.",
-            r#mod.slot
+            loaded.slot
         ))
     }
 
@@ -2770,8 +2776,8 @@ impl LuaHost {
     /// and letting it win took the slot's real pane out of the cycle.
     pub fn switch_default(&self, slot: &str) -> Option<usize> {
         self.in_slot(slot).iter().copied().find(|index| {
-            let r#mod = &self.mods[*index];
-            r#mod.focusable && !r#mod.floats
+            let loaded = &self.mods[*index];
+            loaded.focusable && !loaded.floats
         })
     }
 

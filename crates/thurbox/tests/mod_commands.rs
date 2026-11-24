@@ -763,7 +763,7 @@ fn enforce(host: &LuaHost, ui: &std::path::Path) {
     let registry = thurbox::kernel::registry::Registry::load();
     host.set_trusted(thurbox::kernel::packages::granted(
         ui,
-        host.mods.iter().map(|r#mod| r#mod.path.as_str()),
+        host.mods.iter().map(|loaded| loaded.path.as_str()),
         &registry,
     ));
 }
@@ -1047,7 +1047,7 @@ fn file_reader(declares: &str) -> String {
 
 fn files_seen(host: &LuaHost) -> String {
     match host.drain_commands().as_slice() {
-        [thurbox::kernel::command::Command::Focus { r#mod, .. }] => r#mod.clone(),
+        [thurbox::kernel::command::Command::Focus { mod_name, .. }] => mod_name.clone(),
         other => panic!("{other:?}"),
     }
 }
@@ -1142,7 +1142,7 @@ end }"#;
     assert!(
         matches!(
             host.drain_commands().as_slice(),
-            [thurbox::kernel::command::Command::Focus { r#mod, .. }] if r#mod == "nil/QUIET"
+            [thurbox::kernel::command::Command::Focus { mod_name, .. }] if mod_name == "nil/QUIET"
         ),
         "another pane's global is not visible, and the shared library still works"
     );
@@ -1217,7 +1217,7 @@ end }"#;
     assert!(
         matches!(
             host.drain_commands().as_slice(),
-            [thurbox::kernel::command::Command::Focus { r#mod, .. }] if r#mod == "true/0"
+            [thurbox::kernel::command::Command::Focus { mod_name, .. }] if mod_name == "true/0"
         ),
         "pairs over a sealed table still walks the library"
     );
@@ -1247,7 +1247,7 @@ end }"#;
     assert!(
         matches!(
             host.drain_commands().as_slice(),
-            [thurbox::kernel::command::Command::Focus { r#mod, .. }] if r#mod == "hi/nil/nil/nil"
+            [thurbox::kernel::command::Command::Focus { mod_name, .. }] if mod_name == "hi/nil/nil/nil"
         ),
         "the reader gets the data and nothing that runs"
     );
@@ -1467,7 +1467,7 @@ fn published_data_is_read_only_to_every_pane() {
     assert!(
         matches!(
             issued.as_slice(),
-            [thurbox::kernel::command::Command::Focus { r#mod, .. }] if r#mod == "wrote:"
+            [thurbox::kernel::command::Command::Focus { mod_name, .. }] if mod_name == "wrote:"
         ),
         "the probes that wrote, by number: {issued:?}"
     );
@@ -1494,7 +1494,7 @@ end }"#;
     assert!(
         matches!(
             issued.as_slice(),
-            [thurbox::kernel::command::Command::Focus { r#mod, .. }] if r#mod == "true/true"
+            [thurbox::kernel::command::Command::Focus { mod_name, .. }] if mod_name == "true/true"
         ),
         "{issued:?}"
     );
@@ -1539,7 +1539,7 @@ fn saving_a_panes_whole_thurbox_keeps_what_it_reads() {
     assert!(
         matches!(
             issued.as_slice(),
-            [thurbox::kernel::command::Command::Focus { r#mod, .. }] if r#mod == "own/true"
+            [thurbox::kernel::command::Command::Focus { mod_name, .. }] if mod_name == "own/true"
         ),
         "{issued:?}"
     );

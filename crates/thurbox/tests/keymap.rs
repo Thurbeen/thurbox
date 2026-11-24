@@ -115,9 +115,9 @@ fn publish(host: &LuaHost, snapshot: &Snapshot) {
     .expect("publish");
 }
 
-fn index_of(host: &LuaHost, r#mod: &str) -> usize {
-    host.index_of(r#mod)
-        .unwrap_or_else(|| panic!("no mod named {mod}"))
+fn index_of(host: &LuaHost, mod_name: &str) -> usize {
+    host.index_of(mod_name)
+        .unwrap_or_else(|| panic!("no mod named {mod_name}"))
 }
 
 /// Build the keypress a terminal would deliver for a canonical chord.
@@ -167,7 +167,7 @@ fn fire(host: &LuaHost, chord: &str) {
     let binding = registry
         .resolve(&press(chord), None)
         .unwrap_or_else(|| panic!("{chord} resolves to nothing"));
-    let index = index_of(host, &binding.r#mod);
+    let index = index_of(host, &binding.owner);
     host.on_action(index, &binding.action)
         .unwrap_or_else(|e| panic!("{chord}: {e}"));
 }

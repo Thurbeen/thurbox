@@ -166,7 +166,7 @@ fn no_interface_file_declares_a_chord_for_it() {
         );
     }
     assert!(
-        !host.mods.iter().any(|r#mod| r#mod.name == "plugins"),
+        !host.mods.iter().any(|loaded| loaded.name == "plugins"),
         "the file list is chrome, not a plugin"
     );
 }

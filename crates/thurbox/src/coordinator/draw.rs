@@ -664,7 +664,7 @@ impl App {
         let rendered = match self.hold_failure(index, rendered) {
             Ok(rendered) => rendered,
             Err(e) => {
-                paint::render_error(frame, rect, &e.r#mod, &e.message);
+                paint::render_error(frame, rect, &e.owner, &e.message);
                 self.errors.push(e);
                 // The pane's own rect, though it drew no rows to record. A
                 // press matching no target at all falls through to
@@ -760,9 +760,14 @@ impl App {
                     .is_none();
                 if started {
                     self.changed_this_frame = true;
-                    if self.host.mods.get(index).is_some_and(|r#mod| r#mod.floats) {
+                    if self
+                        .host
+                        .mods
+                        .get(index)
+                        .is_some_and(|loaded| loaded.floats)
+                    {
                         let first = e.message.lines().next().unwrap_or_default().trim();
-                        self.report(format!("{} failed: {first}", e.r#mod), Level::Error);
+                        self.report(format!("{} failed: {first}", e.owner), Level::Error);
                     }
                 }
                 Err(e)
@@ -905,7 +910,7 @@ impl App {
             .focusable()
             .get(self.focus)
             .and_then(|index| self.host.mods.get(*index))
-            .map(|r#mod| r#mod.name.clone())
+            .map(|loaded| loaded.name.clone())
             .unwrap_or_default();
         let focus_label = bands::focus_label(self.focused_session.as_deref(), &focused_mod);
         // Work in flight outranks a toast while it runs: creation phases
@@ -1053,17 +1058,22 @@ impl App {
     /// so that scanning in reverse finds an identified node first and the
     /// fallback only when nothing inside matched. v1 spells the same rule the
     /// other way round — specific targets recorded first, first match wins.
-    pub(crate) fn push_targets(&mut self, r#mod: usize, pane: Option<Rect>, hits: Vec<paint::Hit>) {
+    pub(crate) fn push_targets(
+        &mut self,
+        mod_index: usize,
+        pane: Option<Rect>,
+        hits: Vec<paint::Hit>,
+    ) {
         if let Some(rect) = pane {
             self.click_targets.push(ClickTarget {
-                r#mod,
+                mod_index,
                 rect,
                 identity: Identity::default(),
             });
         }
         self.click_targets
             .extend(hits.into_iter().map(|hit| ClickTarget {
-                r#mod,
+                mod_index,
                 rect: hit.rect,
                 identity: hit.identity,
             }));

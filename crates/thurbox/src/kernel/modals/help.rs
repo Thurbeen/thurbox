@@ -592,9 +592,9 @@ mod tests {
         registry
     }
 
-    fn binding(r#mod: &str, chord: &str, action: &str, group: &str) -> Binding {
+    fn binding(mod_name: &str, chord: &str, action: &str, group: &str) -> Binding {
         binding_from(
-            r#mod,
+            mod_name,
             chord,
             action,
             "does a thing",

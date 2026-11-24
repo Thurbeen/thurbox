@@ -523,11 +523,11 @@ fn a_run_is_counted_only_in_the_window_it_started_in() {
         .path
         .clone();
     let started = |at| RunEvent::Started {
-        r#mod: path.clone(),
+        owner: path.clone(),
         at,
     };
     let finished = |started, ms| RunEvent::Finished {
-        r#mod: path.clone(),
+        owner: path.clone(),
         started,
         took: Duration::from_millis(ms),
     };
@@ -587,11 +587,11 @@ fn the_cli_prints_the_mod_table_sorted_with_a_stable_json_shape() {
     for ms in [10, 20] {
         let at = Instant::now();
         host.note_run(&RunEvent::Started {
-            r#mod: heavy.clone(),
+            owner: heavy.clone(),
             at,
         });
         host.note_run(&RunEvent::Finished {
-            r#mod: heavy.clone(),
+            owner: heavy.clone(),
             started: at,
             took: Duration::from_millis(ms),
         });

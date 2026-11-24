@@ -263,7 +263,7 @@ fn press(
 ) -> Result<(), String> {
     let name = host.mods[focused].name.clone();
     if let Some(binding) = registry.resolve(key, Some(&name)) {
-        if let Some(index) = host.index_of(&binding.r#mod) {
+        if let Some(index) = host.index_of(&binding.owner) {
             if host
                 .on_action(index, &binding.action)
                 .map_err(|e| format!("{}: {e}", binding.action))?

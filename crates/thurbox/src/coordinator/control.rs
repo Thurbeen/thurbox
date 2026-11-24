@@ -50,8 +50,8 @@ impl App {
             .focusable()
             .get(self.focus)
             .and_then(|index| self.host.mods.get(*index));
-        let focused = focused_mod.map(|r#mod| r#mod.name.clone());
-        let focused_id = focused_mod.map(|r#mod| r#mod.path.clone());
+        let focused = focused_mod.map(|loaded| loaded.name.clone());
+        let focused_id = focused_mod.map(|loaded| loaded.path.clone());
         let mod_states = self.host.ui_states();
         let slots: Vec<Value> = self
             .last_placed
@@ -118,11 +118,11 @@ impl App {
             .drawn_floats
             .iter()
             .filter_map(|index| {
-                self.host.mods.get(*index).map(|r#mod| {
+                self.host.mods.get(*index).map(|loaded| {
                     json!({
-                        "name": r#mod.name,
-                        "id": r#mod.path,
-                        "state": mod_states.get(&r#mod.path),
+                        "name": loaded.name,
+                        "id": loaded.path,
+                        "state": mod_states.get(&loaded.path),
                     })
                 })
             })
@@ -133,8 +133,8 @@ impl App {
             .host
             .mods
             .iter()
-            .find(|r#mod| r#mod.name == "search")
-            .and_then(|r#mod| mod_states.get(&r#mod.path));
+            .find(|loaded| loaded.name == "search")
+            .and_then(|loaded| mod_states.get(&loaded.path));
         let search = json!({
             "query": search_query,
             "selected_result": search_state.and_then(|s| s.get("selected_result")),

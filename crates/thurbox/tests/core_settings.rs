@@ -333,8 +333,10 @@ fn publish_with(host: &thurbox::kernel::host::LuaHost, settings: &Settings) {
 }
 
 /// Send a chord to a mod the way the loop does.
-fn press(host: &thurbox::kernel::host::LuaHost, r#mod: &str, chord: &str) {
-    let index = host.index_of(r#mod).unwrap_or_else(|| panic!("no {mod}"));
+fn press(host: &thurbox::kernel::host::LuaHost, mod_name: &str, chord: &str) {
+    let index = host
+        .index_of(mod_name)
+        .unwrap_or_else(|| panic!("no {mod_name}"));
     let mut key = thurbox::kernel::host::KeyPress {
         name: chord.to_string(),
         ..Default::default()
@@ -345,7 +347,7 @@ fn press(host: &thurbox::kernel::host::LuaHost, r#mod: &str, chord: &str) {
     let mut registry = thurbox::kernel::registry::Registry::default();
     let (bindings, declared) = host.declarations();
     registry.declare(bindings, declared);
-    if let Some(binding) = registry.resolve(&key, Some(r#mod)) {
+    if let Some(binding) = registry.resolve(&key, Some(mod_name)) {
         let action = binding.action.clone();
         if host.on_action(index, &action).expect("on_action") {
             return;

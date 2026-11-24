@@ -70,7 +70,7 @@ fn sample() -> Snapshot {
 }
 
 /// Render one bundled mod and return every hitbox it declared.
-fn hits_of(r#mod: &str, width: u16, height: u16) -> Vec<Hit> {
+fn hits_of(mod_name: &str, width: u16, height: u16) -> Vec<Hit> {
     let host = host();
     let themes = Themes::load(None);
     let mut registry = Registry::default();
@@ -109,7 +109,7 @@ fn hits_of(r#mod: &str, width: u16, height: u16) -> Vec<Hit> {
     // knows it has a session to show — without it that pane draws its empty
     // state, whose border carries no tab strip and no collapse toggle. The loop
     // paints the list first for the same reason.
-    if r#mod != "sessions" {
+    if mod_name != "sessions" {
         let sessions = host
             .mods
             .iter()
@@ -131,8 +131,8 @@ fn hits_of(r#mod: &str, width: u16, height: u16) -> Vec<Hit> {
     let index = host
         .mods
         .iter()
-        .position(|p| p.name == r#mod)
-        .unwrap_or_else(|| panic!("no mod {mod}"));
+        .position(|p| p.name == mod_name)
+        .unwrap_or_else(|| panic!("no mod {mod_name}"));
     let node = host
         .render(
             index,

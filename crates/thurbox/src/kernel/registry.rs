@@ -46,7 +46,7 @@ impl Scope {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Binding {
     /// Mod that declared it.
-    pub r#mod: String,
+    pub owner: String,
     /// Stable identifier the mod is called back with.
     pub action: String,
     /// Chord as declared, canonicalised.
@@ -96,7 +96,7 @@ pub struct Binding {
 /// A setting a mod accepts.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Setting {
-    pub r#mod: String,
+    pub owner: String,
     pub id: String,
     pub description: String,
     pub default: Value,
@@ -138,7 +138,7 @@ impl Setting {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Pill {
     /// Mod that declared it.
-    pub r#mod: String,
+    pub owner: String,
     /// The action pressing it runs — the same identifier a key binds to.
     pub action: String,
     pub label: String,
@@ -156,7 +156,7 @@ pub struct Pill {
 /// rebinding surface, at which point it is a [`Binding`] like any other.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CommandDecl {
-    pub r#mod: String,
+    pub owner: String,
     pub action: String,
     pub description: String,
 }
@@ -165,7 +165,7 @@ pub struct CommandDecl {
 /// has one.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PaletteRow {
-    pub r#mod: String,
+    pub owner: String,
     pub action: String,
     pub description: String,
     /// Every chord bound to the action, joined as help joins them.
@@ -197,7 +197,7 @@ pub struct Conflict {
     pub kept: String,
     pub shadowed: String,
     /// Who declared the claim that fires, and who declared the one that does not
-    /// — the names a [`Binding`] carries in `mod`.
+    /// — the names [`Binding::owner`] carries.
     ///
     /// The action ids do not identify a claimant on their own: nothing stops two
     /// mods both declaring `toggle`, and a report naming only the actions
@@ -315,7 +315,7 @@ impl ActionDescriptor {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ActionDecl {
-    pub r#mod: String,
+    pub owner: String,
     pub name: String,
     pub description: String,
     pub scope: Scope,
@@ -525,7 +525,7 @@ impl Registry {
             }
         }
         for setting in &mut self.settings {
-            let key = format!("{}.{}", setting.r#mod, setting.id);
+            let key = format!("{}.{}", setting.owner, setting.id);
             if let Some(value) = self.setting_overrides.get(&key) {
                 // A stored value of the wrong shape is ignored rather than
                 // coerced: a mod that declared a number should never be
@@ -577,7 +577,7 @@ impl Registry {
             }
             if let Some(chord) = self.binding_overrides.get(&command.action) {
                 self.bindings.push(Binding {
-                    r#mod: command.r#mod.clone(),
+                    owner: command.owner.clone(),
                     action: command.action.clone(),
                     default_chord: String::new(),
                     chord: chord.clone(),
@@ -586,7 +586,7 @@ impl Registry {
                     scope: Scope::Mod,
                     passthrough: false,
                     release: false,
-                    group: command.r#mod.clone(),
+                    group: command.owner.clone(),
                 });
             }
         }
@@ -614,8 +614,8 @@ impl Registry {
                     chord: binding.chord.clone(),
                     kept: kept.action.clone(),
                     shadowed: shadowed.action.clone(),
-                    kept_mod: kept.r#mod.clone(),
-                    shadowed_mod: shadowed.r#mod.clone(),
+                    kept_mod: kept.owner.clone(),
+                    shadowed_mod: shadowed.owner.clone(),
                 });
                 continue;
             }
@@ -649,7 +649,7 @@ impl Registry {
             binding.chord == chord
                 && match binding.scope {
                     Scope::Global => true,
-                    Scope::Mod => focused_mod == Some(binding.r#mod.as_str()),
+                    Scope::Mod => focused_mod == Some(binding.owner.as_str()),
                 }
         };
         self.bindings
@@ -794,21 +794,21 @@ impl Registry {
             chords: vec![QUIT_CHORD.into()],
         });
         for binding in &self.bindings {
-            if binding.r#mod != "kernel" && binding.action.starts_with("kernel.") {
+            if binding.owner != "kernel" && binding.action.starts_with("kernel.") {
                 continue;
             }
             if let Some(existing) = actions
                 .iter_mut()
                 .find(|entry| entry.name == binding.action)
             {
-                if existing.owner == binding.r#mod {
+                if existing.owner == binding.owner {
                     existing.chords.push(binding.chord.clone());
                 }
                 continue;
             }
             actions.push(ActionDescriptor {
                 name: binding.action.clone(),
-                owner: binding.r#mod.clone(),
+                owner: binding.owner.clone(),
                 description: binding.description.clone(),
                 scope: binding.scope.as_str().into(),
                 arguments: Vec::new(),
@@ -825,21 +825,21 @@ impl Registry {
             });
         }
         for command in &self.commands {
-            if command.r#mod != "kernel" && command.action.starts_with("kernel.") {
+            if command.owner != "kernel" && command.action.starts_with("kernel.") {
                 continue;
             }
             if let Some(existing) = actions
                 .iter_mut()
                 .find(|entry| entry.name == command.action)
             {
-                if existing.owner == command.r#mod && existing.description.is_empty() {
+                if existing.owner == command.owner && existing.description.is_empty() {
                     existing.description = command.description.clone();
                 }
                 continue;
             }
             actions.push(ActionDescriptor {
                 name: command.action.clone(),
-                owner: command.r#mod.clone(),
+                owner: command.owner.clone(),
                 description: command.description.clone(),
                 scope: "global".into(),
                 arguments: Vec::new(),
@@ -886,7 +886,7 @@ impl Registry {
                 .iter_mut()
                 .find(|entry| entry.name == declaration.name)
             {
-                if existing.owner != declaration.r#mod {
+                if existing.owner != declaration.owner {
                     continue;
                 }
                 existing.arguments = declaration.arguments.clone();
@@ -898,7 +898,7 @@ impl Registry {
             } else {
                 actions.push(ActionDescriptor {
                     name: declaration.name.clone(),
-                    owner: declaration.r#mod.clone(),
+                    owner: declaration.owner.clone(),
                     description: declaration.description.clone(),
                     scope: declaration.scope.as_str().into(),
                     arguments: declaration.arguments.clone(),
@@ -951,11 +951,11 @@ impl Registry {
         for binding in &self.bindings {
             let existing = rows
                 .iter_mut()
-                .find(|row| row.r#mod == binding.r#mod && row.action == binding.action);
+                .find(|row| row.owner == binding.owner && row.action == binding.action);
             match existing {
                 Some(row) => add_chord(row.chords.get_or_insert_with(String::new), &binding.chord),
                 None => rows.push(PaletteRow {
-                    r#mod: binding.r#mod.clone(),
+                    owner: binding.owner.clone(),
                     action: binding.action.clone(),
                     description: binding.description.clone(),
                     chords: Some(binding.chord.clone()),
@@ -965,7 +965,7 @@ impl Registry {
         for command in &self.commands {
             let bound = rows
                 .iter_mut()
-                .find(|row| row.r#mod == command.r#mod && row.action == command.action);
+                .find(|row| row.owner == command.owner && row.action == command.action);
             match bound {
                 // The key's row already exists; a command's description wins
                 // when the key declared none.
@@ -974,7 +974,7 @@ impl Registry {
                 }
                 Some(_) => {}
                 None => rows.push(PaletteRow {
-                    r#mod: command.r#mod.clone(),
+                    owner: command.owner.clone(),
                     action: command.action.clone(),
                     description: command.description.clone(),
                     chords: None,
@@ -989,10 +989,10 @@ impl Registry {
     }
 
     /// Settings belonging to one mod, as `id → value`.
-    pub fn settings_for(&self, r#mod: &str) -> BTreeMap<&str, &Value> {
+    pub fn settings_for(&self, mod_name: &str) -> BTreeMap<&str, &Value> {
         self.settings
             .iter()
-            .filter(|setting| setting.r#mod == r#mod)
+            .filter(|setting| setting.owner == mod_name)
             .map(|setting| (setting.id.as_str(), &setting.value))
             .collect()
     }
@@ -1028,16 +1028,16 @@ impl Registry {
     /// Set a setting's value, or clear the override when `value` is `None`.
     pub fn set_setting(
         &mut self,
-        r#mod: &str,
+        mod_name: &str,
         id: &str,
         value: Option<Value>,
     ) -> Result<(), String> {
         self.mark_changed();
-        let key = format!("{mod}.{id}");
+        let key = format!("{mod_name}.{id}");
         let Some(declared) = self
             .settings
             .iter()
-            .find(|s| s.r#mod == r#mod && s.id == id)
+            .find(|s| s.owner == mod_name && s.id == id)
         else {
             return Err(format!("no setting named {key:?}"));
         };
@@ -1149,7 +1149,7 @@ fn add_chord(chords: &mut String, chord: &str) {
 fn scopes_overlap(a: &Binding, b: &Binding) -> bool {
     match (a.scope, b.scope) {
         // Two mod-scoped claims only collide when the same mod makes both.
-        (Scope::Mod, Scope::Mod) => a.r#mod == b.r#mod,
+        (Scope::Mod, Scope::Mod) => a.owner == b.owner,
         _ => true,
     }
 }
@@ -1528,7 +1528,7 @@ fn json_to_value(value: &serde_json::Value) -> Option<Value> {
 
 /// Build a binding from a mod's declaration table.
 pub fn binding_from(
-    r#mod: &str,
+    mod_name: &str,
     chord: &str,
     action: &str,
     description: &str,
@@ -1538,7 +1538,7 @@ pub fn binding_from(
 ) -> Binding {
     let chord = normalise_chord(chord);
     Binding {
-        r#mod: r#mod.to_string(),
+        owner: mod_name.to_string(),
         action: action.to_string(),
         default_chord: chord.clone(),
         chord,
@@ -1547,7 +1547,7 @@ pub fn binding_from(
         scope: Scope::parse(scope),
         passthrough,
         release: false,
-        group: group.unwrap_or(r#mod).to_string(),
+        group: group.unwrap_or(mod_name).to_string(),
     }
 }
 
@@ -1585,9 +1585,9 @@ mod tests {
         }
     }
 
-    fn binding(r#mod: &str, chord: &str, action: &str, scope: Scope) -> Binding {
+    fn binding(mod_name: &str, chord: &str, action: &str, scope: Scope) -> Binding {
         Binding {
-            r#mod: r#mod.into(),
+            owner: mod_name.into(),
             action: action.into(),
             default_chord: normalise_chord(chord),
             chord: normalise_chord(chord),
@@ -1596,7 +1596,7 @@ mod tests {
             scope,
             passthrough: false,
             release: false,
-            group: r#mod.into(),
+            group: mod_name.into(),
         }
     }
 
@@ -1615,7 +1615,7 @@ mod tests {
         let theirs = binding("theirs", "k", "mine.next", Scope::Mod);
         registry.declare(vec![next, next_again, repeated, export, theirs], Vec::new());
         let command = |action: &str, description: &str| CommandDecl {
-            r#mod: "mine".into(),
+            owner: "mine".into(),
             action: action.into(),
             description: description.into(),
         };
@@ -1625,8 +1625,8 @@ mod tests {
             command("mine.fresh", "chord-less"),
         ]);
         let row =
-            |r#mod: &str, action: &str, description: &str, chords: Option<String>| PaletteRow {
-                r#mod: r#mod.into(),
+            |loaded: &str, action: &str, description: &str, chords: Option<String>| PaletteRow {
+                owner: loaded.into(),
                 action: action.into(),
                 description: description.into(),
                 chords,
@@ -1791,7 +1791,7 @@ mod tests {
         registry.declare(
             Vec::new(),
             vec![Setting {
-                r#mod: "sessions".into(),
+                owner: "sessions".into(),
                 id: "compact".into(),
                 description: String::new(),
                 default: Value::Bool(false),
@@ -1818,7 +1818,7 @@ mod tests {
         registry.declare(
             Vec::new(),
             vec![Setting {
-                r#mod: "sessions".into(),
+                owner: "sessions".into(),
                 id: "compact".into(),
                 description: String::new(),
                 default: Value::Bool(false),
@@ -1881,7 +1881,7 @@ mod tests {
         registry.declare(
             Vec::new(),
             vec![Setting {
-                r#mod: "sessions".into(),
+                owner: "sessions".into(),
                 id: "width".into(),
                 description: String::new(),
                 default: Value::Number(30.0),
@@ -2045,9 +2045,9 @@ mod tests {
         assert!(reloaded.is_disabled("/ui/mods/65_search.lua"));
     }
 
-    fn pill(r#mod: &str, action: &str, label: &str, priority: i64) -> Pill {
+    fn pill(mod_name: &str, action: &str, label: &str, priority: i64) -> Pill {
         Pill {
-            r#mod: r#mod.into(),
+            owner: mod_name.into(),
             action: action.into(),
             label: label.into(),
             priority,
