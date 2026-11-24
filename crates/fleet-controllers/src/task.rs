@@ -1445,8 +1445,9 @@ impl Pass<'_, '_> {
         self.st.delivery_attempts.remove(&key);
         self.st.intents.remove(&key);
         self.st.receipts.remove(&key);
+        self.st.prompts.remove(&key);
+        self.st.loose_prompts.remove(&key);
         self.st.not_before = None;
-        // A given-up entry keeps its attention while it stays queued.
         if !self.st.delivery_attempts.values().any(|a| a.failed) {
             self.settle_attention("DeliveryUnconfirmed");
         }

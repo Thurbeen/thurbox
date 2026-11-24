@@ -725,6 +725,46 @@ fn a_childs_question_answered_while_its_relay_waits_is_receipted_without_a_send(
 }
 
 #[test]
+fn a_childs_question_answered_while_its_relay_awaits_its_prompt_report_keeps_no_digest() {
+    let mut env = Env::new("child-answered-typed");
+    env.set_var("USER", "tester");
+    env.apply(support::task("p", true)).ok();
+    env.reconcile().ok();
+    let p_uid = uid_of(&env, "task", "p");
+    env.apply(child_of("c", "p", &p_uid, true)).ok();
+    env.reconcile().ok();
+    let c_uid = uid_of(&env, "task", "c");
+    env.host().set_prompt_hook_silent(true).unwrap();
+    env.fleet(&[
+        "declare",
+        "c",
+        "--json",
+        r#"{"kind":"Question","id":"q1","text":"May I restart the exporter?"}"#,
+    ])
+    .ok();
+    env.reconcile().ok();
+    let relay = format!("task/p/{p_uid}/gateway/child/{c_uid}/0");
+    let st = env.get("p")["status"].clone();
+    assert!(
+        st["prompts"].get(&relay).is_some(),
+        "typed, unproven: {st:#}"
+    );
+
+    env.fleet(&["send", "c", "--answers", "q1", "Yes, go ahead."])
+        .ok();
+    env.reconcile().ok();
+    let keys: Vec<Value> = receipts(&env, "p")
+        .iter()
+        .map(|r| r["key"].clone())
+        .collect();
+    assert_eq!(keys, [json!(relay)]);
+    let st = env.get("p")["status"].clone();
+    assert!(st["prompts"].get(&relay).is_none(), "{st:#}");
+    assert!(st["loosePrompts"].get(&relay).is_none(), "{st:#}");
+    env.assert_no_temp();
+}
+
+#[test]
 fn a_childs_declared_change_request_stays_out_of_its_parents_inbox() {
     let mut env = Env::forge("child-change-request");
     env.set_var("USER", "tester");
