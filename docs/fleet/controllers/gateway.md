@@ -762,8 +762,10 @@ ChangeRequest becomes no entry: it wakes the parent with nothing to do, and
 the child's `status.declared` already holds it. A child logs its
 Drafts, result and change news as every Task does. The parent
 answers with `fleet send CHILD --answers ID TEXT`, which records the child's
-`status.answered`. A summary or declaration text over 4 000 bytes is not
-quoted. The entry gives its size and `fleet get task CHILD` to read it, so
+`status.answered`. An answer to a Concluded child re-opens it as an
+amendment, so the child's next result reaches the parent. A summary or
+declaration text over 4 000 bytes is not quoted. The entry gives its size
+and `fleet get task CHILD` to read it, so
 that the entry stays short enough to type. Only the parent speaks in the
 thread. A child whose
 parent is gone acts as an untied Task, and its earlier declarations are not

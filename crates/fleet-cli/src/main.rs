@@ -25,9 +25,10 @@ use fleet_api::{API_VERSION, Object, Observation, Store, StoreError};
 use fleet_forge::{ForgeHosts, HostConfig, HostKind};
 use fleet_gateway::{GatewayAccounts, Platform, account_digest, listener_account};
 use fleet_manager::{
-    AmendRequest, DeclareOutcome, GatewaySide, Manager, Resolution, RunOptions, amend, apply,
-    apply_change_request, apply_conversation, beat, declare, declare_change_request, delete, label,
-    list_events, pause, publish_event, receive, record_result, resolve_inbox, send, wake,
+    AmendRequest, Amended, DeclareOutcome, GatewaySide, Manager, Resolution, RunOptions, Sent,
+    amend, apply, apply_change_request, apply_conversation, beat, declare, declare_change_request,
+    delete, label, list_events, pause, publish_event, receive, record_result, resolve_inbox, send,
+    wake,
 };
 use fleet_runtime::{ExecProgram, ExecRuntime, FakeHost, FakeRuntime, FileSignals};
 use fleet_store::manager::{ManagerLock, ManagerRecord, ManagerState};
@@ -148,9 +149,10 @@ enum Command {
         drop: Option<String>,
         /// A declared Question this message answers, by id; repeatable.
         /// Recorded in the Task's status.answered, first answer wins.
+        /// On a Concluded Task the message is an amendment that re-opens it.
         #[arg(long = "answers", value_name = "ID")]
         answers: Vec<String>,
-        /// Print the appended inbox entry as JSON.
+        /// Print the appended inbox entry, or the amendment an answer became, as JSON.
         #[arg(long)]
         json: bool,
     },
@@ -1286,16 +1288,15 @@ fn run(cli: Cli) -> Result<(), Failure> {
             answers,
             json,
         } => {
-            let entry = match (text, retry, drop) {
-                (_, Some(key), _) => {
-                    resolve_inbox(store, &SystemClock, &task, &key, Resolution::Retry)?.ok_or_else(
-                        || {
+            let sent = match (text, retry, drop) {
+                (_, Some(key), _) => Sent::Queued(
+                    resolve_inbox(store, &SystemClock, &task, &key, Resolution::Retry)?
+                        .ok_or_else(|| {
                             fail(format!(
                                 "Task/{task}: the retried copy of {key} is not in the inbox"
                             ))
-                        },
-                    )?
-                }
+                        })?,
+                ),
                 (_, _, Some(key)) => {
                     resolve_inbox(store, &SystemClock, &task, &key, Resolution::Drop)?;
                     println!("Task/{task} inbox {key} dropped");
@@ -1306,10 +1307,17 @@ fn run(cli: Cli) -> Result<(), Failure> {
                 }
                 (None, None, None) => return Err(fail("give a message, --retry or --drop")),
             };
-            if json {
-                print_json(&serde_json::to_value(&entry).map_err(|e| fail(e.to_string()))?);
-            } else {
-                println!("Task/{task} inbox {} queued from {}", entry.key, entry.from);
+            match sent {
+                Sent::Queued(entry) if json => {
+                    print_json(&serde_json::to_value(&entry).map_err(|e| fail(e.to_string()))?)
+                }
+                Sent::Queued(entry) => {
+                    println!("Task/{task} inbox {} queued from {}", entry.key, entry.from)
+                }
+                Sent::Amended(done) if json => {
+                    print_json(&serde_json::to_value(&done).map_err(|e| fail(e.to_string()))?)
+                }
+                Sent::Amended(done) => print_amended(&task, &done),
             }
             Ok(())
         }
@@ -1348,15 +1356,13 @@ fn run(cli: Cli) -> Result<(), Failure> {
                     .map(|(i, o)| parse_output_decl(i + 1, o))
                     .collect::<Result<_, _>>()?,
                 if_generation,
+                ..AmendRequest::default()
             };
             let done = amend(store, &SystemClock, &task, &current_user(), &request)?;
             if json {
                 print_json(&serde_json::to_value(&done).map_err(|e| fail(e.to_string()))?);
             } else {
-                println!(
-                    "Task/{task} amended: amendment {} appended, generation {} → {}",
-                    done.amendment, done.previous_generation, done.generation
-                );
+                print_amended(&task, &done);
             }
             Ok(())
         }
@@ -3699,6 +3705,13 @@ fn cmd_apply(
         print_json(&Value::Array(out));
     }
     Ok(())
+}
+
+fn print_amended(task: &str, done: &Amended) {
+    println!(
+        "Task/{task} amended: amendment {} appended, generation {} → {}",
+        done.amendment, done.previous_generation, done.generation
+    );
 }
 
 /// What a stream that [`cmd_open`] answers opens.

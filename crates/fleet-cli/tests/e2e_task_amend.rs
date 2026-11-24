@@ -237,6 +237,53 @@ fn an_amendment_reopens_a_concluded_task() {
 }
 
 #[test]
+fn an_answer_to_a_concluded_task_reopens_it_as_an_amendment() {
+    let env = concluded("answer-concluded");
+    let uid = uid(&env);
+    env.fleet(&[
+        "declare",
+        "t1",
+        "--json",
+        r#"{"kind":"Question","id":"q1","text":"Ship it?"}"#,
+    ])
+    .ok();
+    env.fleet(&["send", "t1", "--answers", "q1", "Yes, ship it."])
+        .ok()
+        .stdout_has("Task/t1 amended: amendment 1 appended, generation 1 → 2");
+    let obj = full(&env);
+    assert_eq!(obj["metadata"]["generation"], 2);
+    let amendment = &obj["spec"]["amendments"][0];
+    assert_eq!(amendment["text"], "Yes, ship it.");
+    assert_eq!(amendment["from"], "cli/tester");
+    assert_eq!(amendment["generation"], 2);
+    let inbox = &obj["status"]["inbox"];
+    assert_eq!(keys(inbox), vec![format!("task/t1/{uid}/amend/2")]);
+    assert_eq!(inbox[0]["amends"], 2);
+    assert_eq!(inbox[0]["answers"], json!(["q1"]));
+    assert!(obj["status"]["answered"]["q1"].is_object(), "{obj:#}");
+
+    env.reconcile().ok();
+    let st = env.status("t1");
+    assert_eq!(st["phase"], "Briefed", "{st:#}");
+    assert_condition(&st, "Concluded", "False", "Amended");
+    let text = session(&env).texts.last().unwrap().clone();
+    assert!(text.contains("fleet result t1 --generation 2"), "{text}");
+    assert!(text.contains("Yes, ship it."), "{text}");
+    env.fleet(&result_args("2")).ok();
+    env.reconcile().ok();
+    assert_condition(&env.status("t1"), "Concluded", "True", "ResultRecorded");
+}
+
+#[test]
+fn a_plain_message_leaves_a_concluded_task_concluded() {
+    let env = concluded("send-concluded");
+    env.fleet(&["send", "t1", "Thanks."]).ok();
+    env.reconcile().ok();
+    assert_eq!(full(&env)["metadata"]["generation"], 1);
+    assert_eq!(env.status("t1")["phase"], "Concluded");
+}
+
+#[test]
 fn if_generation_is_an_optional_precondition() {
     let env = briefed("amend-precondition");
     env.fleet(&["amend", "t1", "--text", "first", "--if-generation", "1"])

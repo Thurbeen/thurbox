@@ -113,6 +113,7 @@ repositories.
 - `Briefed`: the agent's prompt hook proved that the brief arrived.
 - `Concluded`: a result for the current generation arrived. The session
   stays, and inbox entries still reach it. An amendment re-opens the Task.
+  `fleet send --answers` to it is an amendment there.
 - `Stalled`: spawn or brief attempts are exhausted.
 - `Releasing`: the Task is deleting. TaskController releases the session
   and cleans the workspace. Then the finalizer goes.
@@ -216,7 +217,12 @@ TaskController delivers an amendment as an inbox entry:
   worker records a result for the new generation.
 
 `fleet send` is a conversational message. It changes no contract, leaves no
-trace in the spec and does not re-open a Concluded Task. A different
+trace in the spec and does not re-open a Concluded Task. The exception is
+`fleet send --answers` to a Concluded Task: the answer starts work, so
+`fleet send` appends it as an amendment, as `fleet amend` does. The
+amendment's reason is `answers ID`. Its inbox entry carries the `answers`.
+The worker's next result names the new generation, and the parent receives
+it. A different
 deliverable, repository, harness or host, or a brief that is wrong, needs a
 new Task.
 
@@ -382,7 +388,7 @@ declares, and Fleet relays.
 | `gateway.fleet.dev/conversation`, `gateway.fleet.dev/conversation-uid` labels | the Conversation's controller, at creation; `apply` refuses both | The Conversation a conversation Task was created for, by name and `uid`. |
 | `gateway.fleet.dev/parent`, `gateway.fleet.dev/parent-uid` labels | whoever creates a child and may already append to the parent's inbox (a person, or a plugin whose Task scope covers the parent), at creation only | The parent Task's name and `uid`. A child never talks in a thread; its parent relays its Questions, Comments, Drafts and results into its own inbox, so naming a parent is writing to it. A verified tie wins over them. |
 | `gateway.fleet.dev/route` label | whoever creates the Task | The route whose channel a Question from this untied Task opens a thread in, instead of `gateway.questions`. |
-| `fleet send TASK --answers ID TEXT` | `cli` | Answer a declared Question from the command line, or as a parent answering a child, recording `status.answered`. |
+| `fleet send TASK --answers ID TEXT` | `cli` | Answer a declared Question from the command line, or as a parent answering a child, recording `status.answered`. On a Concluded Task, the answer is an amendment that re-opens it. |
 | `fleet send TASK --retry KEY`, `fleet send TASK --drop KEY` | `cli` | Send an inbox entry given up on again under a new key, or remove it. See [delivery](#inbox). |
 
 Inbox entries from the Gateway come from `gateway/<conversation>` or

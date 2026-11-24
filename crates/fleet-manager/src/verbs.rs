@@ -524,6 +524,8 @@ fn parse_url(forge: &dyn Forge, url: &str, name: &str) -> Result<ChangeRef, Stor
 /// store records each in `status.answered` in the same write, first answer
 /// wins, and refuses an id that names no declared Question. The entry is
 /// returned as appended; delivery is the controller's, on its next pass.
+/// An answer to a Concluded Task is an amendment instead, as `fleet amend`
+/// appends it: the work it starts re-opens the Task and can end in a result.
 pub fn send(
     store: &dyn Store,
     clock: &dyn Clock,
@@ -531,7 +533,7 @@ pub fn send(
     user: &str,
     text: &str,
     answers: &[String],
-) -> Result<InboxEntry, StoreError> {
+) -> Result<Sent, StoreError> {
     let user = user.trim();
     if user.is_empty() || user.contains(['/', '\0']) {
         return Err(StoreError::Invalid(format!(
@@ -543,6 +545,7 @@ pub fn send(
             "nothing to send: the text is empty".into(),
         ));
     }
+    let answers: Vec<String> = answers.iter().map(|a| a.trim().to_string()).collect();
     for _ in 0..CAS_TRIES {
         let obj = match store.get(task::KIND, name) {
             Observation::Known(Some(o)) => o,
@@ -558,12 +561,26 @@ pub fn send(
             )));
         }
         let m = &obj.metadata;
+        if !answers.is_empty() && concluded(&obj)? {
+            let request = AmendRequest {
+                text: text.to_string(),
+                reason: Some(format!("answers {}", answers.join(", "))),
+                answers: answers.clone(),
+                if_generation: Some(m.generation),
+                ..AmendRequest::default()
+            };
+            match amend(store, clock, name, user, &request) {
+                Ok(done) => return Ok(Sent::Amended(done)),
+                Err(StoreError::Precondition(_)) => continue,
+                Err(e) => return Err(e),
+            }
+        }
         let entry = InboxEntry {
             key: send_key(&m.name, &m.uid, m.resource_version),
             from: format!("{CLI_SOURCE_PREFIX}{user}"),
             text: text.to_string(),
             about: None,
-            answers: answers.iter().map(|a| a.trim().to_string()).collect(),
+            answers: answers.clone(),
             amends: None,
             notice: None,
             queued_at: clock.now(),
@@ -575,7 +592,7 @@ pub fn send(
             FieldManager::Cli,
             None,
         ) {
-            Ok(_) => return Ok(entry),
+            Ok(_) => return Ok(Sent::Queued(entry)),
             Err(StoreError::Conflict { .. }) => continue,
             Err(e) => return Err(e),
         }
@@ -584,6 +601,22 @@ pub fn send(
         "{}/{name}: kept conflicting with other writers",
         task::KIND
     )))
+}
+
+/// What `fleet send` did.
+#[derive(Debug, Clone, PartialEq)]
+pub enum Sent {
+    Queued(InboxEntry),
+    /// An answer to a Concluded Task, appended as an amendment.
+    Amended(Amended),
+}
+
+fn concluded(obj: &Object) -> Result<bool, StoreError> {
+    if obj.status.is_null() {
+        return Ok(false);
+    }
+    let st: TaskStatus = typed(task::KIND, &obj.status)?;
+    Ok(st.phase == Phase::Concluded)
 }
 
 /// What a person does with an inbox entry TaskController gave up on.
@@ -1225,6 +1258,8 @@ pub struct AmendRequest {
     pub text: String,
     pub reason: Option<String>,
     pub outputs: std::collections::BTreeMap<String, OutputDecl>,
+    /// The declared Questions the amendment answers.
+    pub answers: Vec<String>,
     /// Refuse unless the Task is at this generation.
     pub if_generation: Option<u64>,
 }
@@ -1351,7 +1386,7 @@ fn amend_once(
             from: from.clone(),
             text: request.text.clone(),
             about: None,
-            answers: Vec::new(),
+            answers: request.answers.clone(),
             amends: Some(generation),
             notice: None,
             queued_at: at,

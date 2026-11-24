@@ -277,7 +277,8 @@ Guarantees, each with its test:
   queued behind an unsent one carries both, and the older is recorded
   without a send. Its receipt sets `status.brief` to its key and
   generation. A delivered amendment re-opens a Concluded Task to Briefed,
-  with `Concluded=False/Amended`, and keeps the old result. A plugin's
+  with `Concluded=False/Amended`, and keeps the old result. `fleet send
+  --answers` to a Concluded Task appends an amendment, not a message. A plugin's
   `amends[]` verb applies the same mutation and checks as
   `plugin/<name>`, with a required `ifGeneration`: on any other generation
   the store refuses it, and `host.verbs` records the refusal.
