@@ -15,8 +15,9 @@ label and the time. The manager performs each create and each delete.
 
 1. You apply a CronTask. Its first reconcile writes `nextScheduleTime` and
    `notBefore`. It creates no Task for a time before the CronTask existed.
-2. The manager reconciles the CronTask again at `notBefore`, or at once
-   when its spec changes.
+2. The manager reconciles the CronTask again at `notBefore`. It also
+   reconciles it at once when its spec changes, and when a Task that
+   `active` names is Concluded or is being deleted.
 3. The controller finds the latest scheduled time at or before now. If the
    controller already decided about that time, it does nothing.
 4. Otherwise it decides about that time. It creates the Task, or it skips
@@ -115,7 +116,7 @@ is pure.
 | Item | Meaning |
 | --- | --- |
 | `CronTaskInput` | The CronTask, the Tasks whose `crontask.fleet.dev/uid` label is its uid, and `now`. |
-| `CronTaskController::due(obj, now)` | True when the CronTask has no status, its spec changed, or `notBefore` came. |
+| `CronTaskController::due(obj, tasks, now)` | True when the CronTask has no status, its spec changed, `notBefore` came, or a Task in `tasks` that `active` names is Concluded or is being deleted. `tasks` are the Tasks whose `crontask.fleet.dev/uid` label is its uid. |
 | `CronTaskController::reconcile(input)` | Returns a `Plan`: the status, a `Create` for a new Task, and a `RetireScheduled` effect for each Task to delete. |
 
 The schedule math is in
@@ -125,7 +126,8 @@ uses the `croner` crate, and it never reads the clock.
 ### Manager execution protocol
 
 The manager reconciles the due CronTasks after the Tasks in each sweep. It
-lists the Tasks once for all of them. When it cannot list the Tasks, it
+lists the Tasks once for all of them, before it decides which CronTasks are
+due. When it cannot list the Tasks, it
 reconciles no CronTask: an Unknown listing is never read as no Task.
 
 For each due CronTask the manager does these steps:

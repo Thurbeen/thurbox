@@ -57,13 +57,16 @@ impl CronTaskController {
     pub const MANAGER: FieldManager = FieldManager::CronTaskController;
 
     /// Whether the manager should reconcile `obj` at `now`: never seen, its
-    /// spec changed, or its next time came.
-    pub fn due(obj: &Object, now: Millis) -> bool {
+    /// spec changed, its next time came, or a Task its `active` names
+    /// concluded or is being deleted.
+    pub fn due(obj: &Object, tasks: &[&Object], now: Millis) -> bool {
         if obj.status.is_null() {
             return true;
         }
         let seen = obj.status["observedGeneration"].as_u64().unwrap_or(0);
-        seen != obj.metadata.generation || obj.status["notBefore"].as_u64().is_none_or(|t| t <= now)
+        seen != obj.metadata.generation
+            || obj.status["notBefore"].as_u64().is_none_or(|t| t <= now)
+            || left_active(obj, tasks)
     }
 
     pub fn reconcile(&self, input: &CronTaskInput<'_>) -> Result<Plan, StoreError> {
@@ -629,6 +632,16 @@ impl Pass<'_, '_> {
             .collect();
         self.st.effects.retain(|k, _| !drop.contains_key(k));
     }
+}
+
+fn left_active(obj: &Object, tasks: &[&Object]) -> bool {
+    let Some(active) = obj.status["active"].as_array() else {
+        return false;
+    };
+    tasks
+        .iter()
+        .filter(|t| concluded(t) || t.is_deleting())
+        .any(|t| active.iter().any(|name| *name == *t.metadata.name))
 }
 
 fn concluded(task: &Object) -> bool {
