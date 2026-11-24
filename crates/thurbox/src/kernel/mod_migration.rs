@@ -79,12 +79,18 @@ pub fn migrate(ui_dir: Option<&Path>, config_dir: Option<&Path>) -> Migration {
     let mut staged = Staged::default();
     let ui_dir = ui_dir.filter(|dir| dir.is_dir());
     if let Some(ui_dir) = ui_dir {
-        if let Err(e) = super::bundled::rename_records(
+        let manifest = ui_dir.join(super::bundled::MANIFEST);
+        let before = std::fs::read(&manifest).ok();
+        match super::bundled::rename_records(
             ui_dir,
             |relative| planned_destination(ui_dir, relative),
             |relative| stays_in_plugins(ui_dir, relative),
         ) {
-            migration.errors.push(e);
+            Ok(()) if std::fs::read(&manifest).ok() != before => {
+                staged.undo.push((manifest, before));
+            }
+            Ok(()) => {}
+            Err(e) => migration.errors.push(e),
         }
         stage_text(
             ui_dir,
@@ -105,6 +111,7 @@ pub fn migrate(ui_dir: Option<&Path>, config_dir: Option<&Path>) -> Migration {
         stage_state(config_dir, ui_dir, &mut migration, &mut staged);
     }
     if !migration.errors.is_empty() {
+        staged.take_back(&mut migration);
         return migration;
     }
     if let Some(ui_dir) = ui_dir {
@@ -121,6 +128,13 @@ pub fn migrate(ui_dir: Option<&Path>, config_dir: Option<&Path>) -> Migration {
                 .push(format!("{} (could not delete it: {e})", old.display()));
         }
     }
+    for (link, to) in staged.relinked {
+        if let Err(e) = std::fs::rename(&link, &to) {
+            migration
+                .kept
+                .push(format!("{} (could not rename it: {e})", link.display()));
+        }
+    }
     migration
 }
 
@@ -128,6 +142,31 @@ pub fn migrate(ui_dir: Option<&Path>, config_dir: Option<&Path>) -> Migration {
 struct Staged {
     moved: Vec<String>,
     replaced: Vec<PathBuf>,
+    relinked: Vec<(PathBuf, PathBuf)>,
+    undo: Vec<(PathBuf, Option<Vec<u8>>)>,
+}
+
+impl Staged {
+    fn write(&mut self, path: &Path, text: &str) -> std::io::Result<()> {
+        let before = std::fs::read(path).ok();
+        crate::paths::write_atomically(path, text)?;
+        self.undo.push((path.to_path_buf(), before));
+        Ok(())
+    }
+
+    fn take_back(self, migration: &mut Migration) {
+        for (path, before) in self.undo.into_iter().rev() {
+            let undone = match before {
+                Some(bytes) => crate::paths::write_atomically(&path, bytes),
+                None => std::fs::remove_file(&path),
+            };
+            if let Err(e) = undone {
+                migration
+                    .errors
+                    .push(format!("{}: could not take it back: {e}", path.display()));
+            }
+        }
+    }
 }
 
 /// Old paths still present, each with the new path it should have become.
@@ -238,7 +277,7 @@ fn stage_text(
         }
         return;
     }
-    if let Err(e) = crate::paths::write_atomically(&current, &rewritten) {
+    if let Err(e) = staged.write(&current, &rewritten) {
         migration.errors.push(format!("{}: {e}", current.display()));
         return;
     }
@@ -305,12 +344,21 @@ fn stage_state(
     if legacy.is_file() {
         match state_rewritten(&legacy, ui_dir) {
             Ok((text, _)) if !current.exists() => {
-                match crate::paths::write_atomically(&current, &text) {
+                let linked = std::fs::symlink_metadata(&legacy)
+                    .is_ok_and(|metadata| metadata.file_type().is_symlink());
+                let written = match linked {
+                    true => staged.write(&legacy, &text),
+                    false => staged.write(&current, &text),
+                };
+                match written {
                     Ok(()) => {
                         staged
                             .moved
                             .push(format!("{LEGACY_STATE_FILE} → {STATE_FILE}"));
-                        staged.replaced.push(legacy);
+                        match linked {
+                            true => staged.relinked.push((legacy, current)),
+                            false => staged.replaced.push(legacy),
+                        }
                     }
                     Err(e) => migration.errors.push(format!("{}: {e}", current.display())),
                 }
@@ -334,7 +382,7 @@ fn stage_state(
     }
     match state_rewritten(&current, ui_dir) {
         Ok((text, true)) => {
-            if let Err(e) = crate::paths::write_atomically(&current, text) {
+            if let Err(e) = staged.write(&current, &text) {
                 migration.errors.push(format!("{}: {e}", current.display()));
             }
         }
@@ -449,6 +497,105 @@ mod tests {
         assert!(ui.join("plugins/10_sessions.lua").is_file());
         assert!(!ui.join("mods").exists());
         assert!(ui.join(LEGACY_SPEC_FILE).is_file());
+    }
+
+    fn disabling(ui: &Path, relative: &str) -> String {
+        serde_json::json!({ "trusted": {}, "disabled": [ui.join(relative).to_string_lossy()] })
+            .to_string()
+    }
+
+    #[test]
+    fn a_failed_attempt_leaves_nothing_a_retry_would_keep() {
+        let root = tempfile::tempdir().expect("tempdir");
+        let ui = root.path().join("ui");
+        delivered_by_an_old_release(&ui);
+        write(
+            &ui.join(LEGACY_SPEC_FILE),
+            "[[plugin]]\nsrc = \"x\"\nfile = \"plugins/50_x.lua\"\n",
+        );
+        let state = root.path().join(LEGACY_STATE_FILE);
+        write(&state, &disabling(&ui, "plugins/10_sessions.lua"));
+        let manifest = ui.join(".bundled.json");
+        set_read_only(&manifest);
+
+        let failed = migrate(Some(&ui), Some(root.path()));
+        assert!(!failed.errors.is_empty(), "{failed:?}");
+        assert!(!root.path().join(STATE_FILE).exists(), "{failed:?}");
+        assert!(!ui.join(SPEC_FILE).exists(), "{failed:?}");
+
+        write(&state, &disabling(&ui, "plugins/20_agent.lua"));
+        let mut permissions = std::fs::metadata(&manifest)
+            .expect("metadata")
+            .permissions();
+        #[allow(clippy::permissions_set_readonly_false)]
+        permissions.set_readonly(false);
+        std::fs::set_permissions(&manifest, permissions).expect("writable");
+
+        let retried = migrate(Some(&ui), Some(root.path()));
+        assert!(retried.errors.is_empty(), "{retried:?}");
+        assert_eq!(
+            read_json(&root.path().join(STATE_FILE))["disabled"],
+            serde_json::json!([ui.join("mods/20_agent.lua").to_string_lossy()])
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_failed_state_write_takes_back_the_delivery_records_it_added() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let root = tempfile::tempdir().expect("tempdir");
+        let ui = root.path().join("ui");
+        delivered_by_an_old_release(&ui);
+        let config = root.path().join("config");
+        write(
+            &config.join(LEGACY_STATE_FILE),
+            &disabling(&ui, "plugins/10_sessions.lua"),
+        );
+        let before = std::fs::read_to_string(ui.join(".bundled.json")).expect("manifest");
+        std::fs::set_permissions(&config, std::fs::Permissions::from_mode(0o555))
+            .expect("read-only dir");
+
+        let failed = migrate(Some(&ui), Some(&config));
+        std::fs::set_permissions(&config, std::fs::Permissions::from_mode(0o755))
+            .expect("writable dir");
+        assert!(!failed.errors.is_empty(), "{failed:?}");
+        assert_eq!(
+            std::fs::read_to_string(ui.join(".bundled.json")).expect("manifest"),
+            before
+        );
+        assert!(ui.join("plugins/10_sessions.lua").is_file());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_linked_state_store_stays_a_link() {
+        let root = tempfile::tempdir().expect("tempdir");
+        let ui = root.path().join("ui");
+        write(&ui.join("plugins/10_a.lua"), "-- a\n");
+        let managed = root.path().join("managed/state.json");
+        write(&managed, &disabling(&ui, "plugins/10_a.lua"));
+        std::os::unix::fs::symlink(&managed, root.path().join(LEGACY_STATE_FILE)).expect("link");
+
+        let migration = migrate(Some(&ui), Some(root.path()));
+        assert!(migration.errors.is_empty(), "{migration:?}");
+        let current = root.path().join(STATE_FILE);
+        let is_link = |path: &Path| {
+            std::fs::symlink_metadata(path)
+                .expect("metadata")
+                .file_type()
+                .is_symlink()
+        };
+        assert!(is_link(&current), "mod-state.json is no longer a link");
+        assert!(!root.path().join(LEGACY_STATE_FILE).exists());
+        assert_eq!(
+            read_json(&managed)["disabled"],
+            serde_json::json!([ui.join("mods/10_a.lua").to_string_lossy()])
+        );
+
+        crate::paths::write_atomically(&current, "{}").expect("save");
+        assert!(is_link(&current));
+        assert_eq!(std::fs::read_to_string(&managed).expect("managed"), "{}");
     }
 
     #[test]

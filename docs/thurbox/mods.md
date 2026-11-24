@@ -2226,9 +2226,12 @@ reads them:
 - The move writes each rewritten file under its new name first. The directory
   moves, and the old files go, only after every one of those writes succeeded.
 - When a write fails, for example on a read-only file, the old layout stays as
-  it was. The interface then starts on the embedded panes only, in a
-  throwaway directory, and the `thurbox-cli` command fails. Both name the
-  file. Fix it and run again.
+  it was. The move takes back each file it already wrote, so the next attempt
+  starts from the old files again. The interface then starts on the embedded
+  panes only, in a throwaway directory, and the `thurbox-cli` command fails.
+  Both name the file. Fix it and run again.
+- When `plugin-state.json` is a symlink, the move rewrites the file it points
+  to and renames the link to `mod-state.json`, so the link stays a link.
 - The move keeps the comments in the spec. It deletes no file you wrote. It
   prints one notice that starts `plugins are mods now`, and nothing on a later
   run.

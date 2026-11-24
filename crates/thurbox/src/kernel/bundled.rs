@@ -145,7 +145,7 @@ pub const BUNDLED: &[(&str, &str)] = &[
 /// Records which version of each bundled file was last written, so a user's
 /// edits can be told from a stale copy — and, once written, so its absence can
 /// be told from never having delivered it at all.
-const MANIFEST: &str = ".bundled.json";
+pub const MANIFEST: &str = ".bundled.json";
 
 /// What the manifest remembers about one shipped file.
 ///
