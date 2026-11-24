@@ -170,6 +170,7 @@ concludes nothing.
 | Spawned, Briefed or Concluded | Known Delivered receipt for an entry or a catch-up note; the agent's prompt hook has reported a new prompt since the send was planned, and not this one | unchanged | Raise `NeedsAttention/DeliveryUnconfirmed` naming it. It stays, marked failed, and is never sent again. Later entries are still delivered. |
 | Spawned, Briefed or Concluded | Known Queued receipt for an entry or a catch-up note | unchanged | Mark it failed and raise `NeedsAttention/DeliveryQueued` with the runtime's note. Never send it again. The entry stays in `status.inbox`, and later entries are still delivered. |
 | Spawned, Briefed or Concluded | Oldest entry is an amendment at or below `status.brief.generation`, or one never sent with a newer amendment queued behind it | unchanged | Record its receipt without a send. The worker has it already, or the newer message carries it. |
+| Spawned, Briefed or Concluded | Oldest entry is a child's Question that `status.gateway.children.<child>.answered` names | unchanged | Record its receipt without a send. The Question has its answer. |
 | Briefed | Amendment entry delivered | Briefed | Set `status.brief` to the entry's key and generation. |
 | Concluded | Amendment entry delivered | Briefed | Set `status.brief` to the entry's key and generation, and `Concluded=False/Amended`. Keep the old result. |
 | Spawned, Briefed or Concluded | Entry send refused (Known failure) | unchanged | Wait, then send again under the same key to a session observed ready; at most 3 sends. |

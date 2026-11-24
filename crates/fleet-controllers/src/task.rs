@@ -1136,6 +1136,10 @@ impl Pass<'_, '_> {
         let Some(entry) = next_entry(&self.st).cloned() else {
             return;
         };
+        if answered_relay(&self.st, &entry.key) {
+            self.record_delivery(&entry, false, None, false);
+            return;
+        }
         let what = format!("inbox entry {} from {}", entry.key, entry.from);
         let Some(generation) = entry.amends else {
             if let Sent::Delivered {
@@ -1441,8 +1445,9 @@ impl Pass<'_, '_> {
         self.st.delivery_attempts.remove(&key);
         self.st.intents.remove(&key);
         self.st.receipts.remove(&key);
+        self.st.prompts.remove(&key);
+        self.st.loose_prompts.remove(&key);
         self.st.not_before = None;
-        // A given-up entry keeps its attention while it stays queued.
         if !self.st.delivery_attempts.values().any(|a| a.failed) {
             self.settle_attention("DeliveryUnconfirmed");
         }
@@ -2579,6 +2584,14 @@ fn pause_request_since_last_transition(st: &TaskStatus, asked: Option<Millis>) -
     let transition = condition(&st.conditions, PAUSED).map(|c| c.last_transition_time);
     asked.is_some_and(|asked| {
         transition.is_none_or(|t| asked > t) && st.wake_requested_at.is_none_or(|w| asked > w)
+    })
+}
+
+fn answered_relay(st: &TaskStatus, key: &str) -> bool {
+    st.gateway.as_ref().is_some_and(|gw| {
+        gw.children
+            .values()
+            .any(|c| c.answered.iter().any(|k| k == key))
     })
 }
 
