@@ -53,6 +53,8 @@ pub const SESSION_RECHECK_MS: Millis = 300_000;
 
 const OUTBOX_UNREAD: &str = "OutboxUnread";
 
+const HELD_BY_AN_IDLE_AGENT: &str = "the agent stayed idle and its prompt hook never reported it, so it may sit unsent in its composer";
+
 /// How long a deleted Task waits, from its `deletionTimestamp`, for its
 /// session to be proven at rest. Past it the session is released even if
 /// the agent's last report said it was busy or nothing tells.
@@ -1215,6 +1217,8 @@ impl Pass<'_, '_> {
                         self.record_prompt_boundary(key);
                         if self.another_prompt_reported_since(key) {
                             self.give_up_unconfirmed(key, what, &why)
+                        } else if self.held_by_an_idle_agent(key) {
+                            self.give_up_unconfirmed(key, what, HELD_BY_AN_IDLE_AGENT)
                         } else {
                             Sent::Pending
                         }
@@ -1324,6 +1328,28 @@ impl Pass<'_, '_> {
         }
     }
 
+    fn held_by_an_idle_agent(&mut self, key: &str) -> bool {
+        let reports_every_turn = fleet_api::harness::profile(&self.spec.harness).authority
+            == fleet_api::harness::Authority::Full;
+        let idle = reports_every_turn
+            && matches!(
+                &self.input.observations.signals,
+                Some(Observation::Known(r)) if r.activity() == Some(Activity::Idle)
+            );
+        let now = self.now();
+        let attempt = self
+            .st
+            .delivery_attempts
+            .entry(key.to_string())
+            .or_default();
+        if !idle {
+            attempt.idle_since = None;
+            return false;
+        }
+        let since = *attempt.idle_since.get_or_insert(now);
+        !self.wait_from(since)
+    }
+
     fn give_up_unconfirmed(&mut self, key: &str, what: &str, why: &str) -> Sent {
         self.st
             .delivery_attempts
@@ -1382,6 +1408,7 @@ impl Pass<'_, '_> {
         attempt.sends += 1;
         attempt.probe_failures = 0;
         attempt.other_prompt_seq = other_prompt_seq;
+        attempt.idle_since = None;
         self.st.not_before = None;
         self.st.receipts.remove(key);
         let inbox =

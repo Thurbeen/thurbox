@@ -519,6 +519,18 @@ in `status.loosePrompts`. A report of either digest proves the send. Then:
   agent took in another form, as when it wraps or reflows it, holds back no
   later entry. A hook that reports nothing yet, as Codex's until its turn
   ends, keeps the entry waiting.
+- An entry or a catch-up note whose agent stays idle for 30 s while the
+  hook does not report it is also given up on with
+  `NeedsAttention/DeliveryUnconfirmed`. This applies only to a profile with
+  `authority = "full"`, whose hooks report each turn's start. Such an idle
+  agent reports a submitted prompt at once, so the text sits unsent in its
+  composer, as when Enter reached an agent that was still starting after a
+  resume. Codex (`partial`) reports idle only when a turn ends, so its entry
+  waits. The first pass
+  that reads the agent idle records `idleSince` in
+  `status.deliveryAttempts`, by Fleet's clock. A pass that reads another
+  state clears it. A running turn keeps the entry waiting, however long it
+  runs.
 - A lost answer is settled by the hook's report alone, as a recovered
   delivery. It is never sent again, whatever the runtime's journal says.
 - A proven key's digest is dropped; its receipt stands.

@@ -170,6 +170,10 @@ pub struct DeliveryAttempt {
     /// clock is compared: a host's clock may differ from Fleet's or step.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub other_prompt_seq: Option<u64>,
+    /// When TaskController first saw the agent idle with this entry typed
+    /// and unproven, by Fleet's clock. A state other than idle clears it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub idle_since: Option<Millis>,
 }
 
 /// The entries still to deliver: every entry but those given up on.

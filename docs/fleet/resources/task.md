@@ -90,7 +90,7 @@ repositories.
 | `spawnAttempts`, `briefSends`, `materializeAttempts`, `cleanAttempts`, `releaseAttempts`, `briefProbeFailures`, `revivals`, `reviveAttempts`, `pauses`, `resumes`, `resumeAttempts`, `catchUps`, `catchUp` | TaskController | Counters and keys of bounded retries. Three failures raise `NeedsAttention`. |
 | `idleSince`, `notBefore`, `sessionCheckedAt` | TaskController | When the agent became idle, the earliest next reconcile after a failure (30 s later), and the last session lookup of a Concluded Task (repeated every 5 minutes). |
 | `pauseRequestAnswered` | TaskController | The `pauseRequestedAt` it last planned a pause for. A request is acted on once. |
-| `deliveries`, `deliveryAttempts` | TaskController | Receipts of delivered inbox entries, and sends and probes per entry in delivery. `otherPromptSeq` is the latest place in the agent's signal file of a report of another prompt when the entry's send was planned. |
+| `deliveries`, `deliveryAttempts` | TaskController | Receipts of delivered inbox entries, and sends and probes per entry in delivery. `otherPromptSeq` is the latest place in the agent's signal file of a report of another prompt when the entry's send was planned. `idleSince` is when TaskController first read the agent idle with the entry typed and unreported. |
 | `outbox` | TaskController | `{offset, generation, skipped, lastSkipped, closed, discarding}`: how far the session's event outbox is ingested into the Boards. See [Board](board.md#publishing-from-a-session). |
 | `subscriptions` | TaskController | `{notices, cursors}`: the count of notices queued, and per subscription its Board, filter, `boardUid`, cursor (`after`) and the key of its last notice. See [Subscriptions](#subscriptions). |
 | `fleetEvents` | TaskController | `{started, pending, phases, declared, result, skipped, lastSkipped}`: the `fleet.task.*` events on Board `fleet`. `started` is set once the record follows the Task. `pending` holds the phase events not appended yet. `phases` counts the phase changes. `declared` counts the declarations with an event. `result` is the generation of the last result with an event. See [Board](board.md#board-fleet). |
@@ -265,7 +265,9 @@ An entry that exhausts its sends raises
 `NeedsAttention/DeliveryFailed` naming it and stays queued behind nothing: later
 entries are still delivered. An entry whose journal stays unreadable for 3 reads,
 or whose prompt hook reported another prompt since the send and not this
-one, raises `NeedsAttention/DeliveryUnconfirmed` naming it. That entry is never sent
+one, or whose agent stayed idle for 30 s with the entry unreported (a
+profile with `authority = "full"` only), raises
+`NeedsAttention/DeliveryUnconfirmed` naming it. That entry is never sent
 again, stays in `status.inbox`, and holds back no later entry. An entry the
 runtime only queued, where the agent does not read it, raises
 `NeedsAttention/DeliveryQueued` naming it, with the same outcome. More than
