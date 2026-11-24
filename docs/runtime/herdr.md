@@ -37,7 +37,7 @@ Fleet ── runtime-herdr <verb> ──▶ herdr-core connect      JSON-RPC 2.0
 
 | Verb | What it does in herdr-core |
 | --- | --- |
-| `manifest` | Reports each place asked about. A place is ready when its core answers `hello`. |
+| `manifest` | Reports each place asked about. A place is ready when its core answers `hello`. As every verb does, it starts the core when the core does not run. |
 | `start` | `terminal.run` with the argv, `env` and `dir`, and the labels above. A live terminal of the key, with the process `start` started, is adopted. |
 | `inspect` | `running` while the key's terminal is live and holds the process `start` started. `exited` with the terminal's exit code once it has finished, or with no code when the core no longer has it. `none` when the key has no start record. |
 | `stop` | `terminal.kill`, then `terminal.rm`, for each terminal of the key. `release: true` also releases the key's workspace. |
