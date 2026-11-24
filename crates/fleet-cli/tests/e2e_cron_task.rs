@@ -495,6 +495,28 @@ fn a_task_that_concludes_leaves_active_and_history_at_once() {
 }
 
 #[test]
+fn a_task_deleted_before_it_dispatches_leaves_active_at_once() {
+    let w = World::new("cron-deleted", MONDAY_3AM - MINUTE);
+    let mut doc = nightly(json!({}));
+    doc["spec"]["template"]["spec"]["dispatch"] = json!(false);
+    w.apply(doc);
+    w.at(MONDAY_3AM);
+    w.reconcile();
+    w.at(MONDAY_3AM + 10 * MINUTE);
+    w.reconcile();
+    let st = w.cron_task("nightly")["status"].clone();
+    assert_eq!(st["active"], json!(["nightly-29913300"]));
+    assert_eq!(st["notBefore"], st["nextScheduleTime"]);
+    fleet_manager::delete(&w.store, "Task", "nightly-29913300").expect("deleted");
+
+    w.at(MONDAY_3AM + 60 * MINUTE);
+    w.reconcile();
+    assert!(names_of_all(&w).is_empty(), "{:?}", names_of_all(&w));
+    let st = w.cron_task("nightly")["status"].clone();
+    assert_eq!(st["active"], Value::Null, "{st:#}");
+}
+
+#[test]
 fn an_intent_without_a_receipt_adopts_the_task_and_never_makes_a_second() {
     let w = World::new("cron-crash", MONDAY_3AM - MINUTE);
     w.apply(nightly(json!({})));

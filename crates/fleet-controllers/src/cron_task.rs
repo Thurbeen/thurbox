@@ -58,7 +58,7 @@ impl CronTaskController {
 
     /// Whether the manager should reconcile `obj` at `now`: never seen, its
     /// spec changed, its next time came, or a Task its `active` names
-    /// concluded or is being deleted.
+    /// concluded, is being deleted, or is gone with no create in flight.
     pub fn due(obj: &Object, tasks: &[&Object], now: Millis) -> bool {
         if obj.status.is_null() {
             return true;
@@ -635,13 +635,26 @@ impl Pass<'_, '_> {
 }
 
 fn left_active(obj: &Object, tasks: &[&Object]) -> bool {
-    let Some(active) = obj.status["active"].as_array() else {
+    let Ok(st) = serde_json::from_value::<CronTaskStatus>(obj.status.clone()) else {
         return false;
     };
-    tasks
-        .iter()
-        .filter(|t| concluded(t) || t.is_deleting())
-        .any(|t| active.iter().any(|name| *name == *t.metadata.name))
+    st.active.iter().any(
+        |name| match tasks.iter().find(|t| t.metadata.name == *name) {
+            Some(task) => concluded(task) || task.is_deleting(),
+            None => !creating(&st, name),
+        },
+    )
+}
+
+fn creating(st: &CronTaskStatus, name: &str) -> bool {
+    st.effects.values().any(|r| {
+        r.intent.action == CREATE_ACTION
+            && r.task == name
+            && !matches!(
+                r.receipt.as_ref().map(|x| &x.outcome),
+                Some(Observation::Known(EffectOutcome::Created { .. }))
+            )
+    })
 }
 
 fn concluded(task: &Object) -> bool {
