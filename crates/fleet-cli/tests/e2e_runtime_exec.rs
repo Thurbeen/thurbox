@@ -6926,7 +6926,6 @@ fn runtime_herdr_types_into_a_key_and_reads_its_screen() {
     }
 }
 
-/// `attach` names herdr-core's own client on the key's terminal, which
 /// `attach` names runtime-herdr's own stream on the key's terminal.
 #[test]
 fn runtime_herdr_attaches_through_its_own_stream() {
