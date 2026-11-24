@@ -1,7 +1,7 @@
 # thurbox
 
 This directory holds the **rationale** behind thurbox's design decisions:
-the interface, its kernel and plugins, and how sessions map to Fleet
+the interface, its kernel and mods, and how sessions map to Fleet
 Tasks. The whole system, Fleet and the runtimes included, is in
 [the overview](../README.md). For
 operational guidance (build commands, module layout, event loop), see
@@ -15,8 +15,8 @@ operational guidance (build commands, module layout, event loop), see
 | [architecture.md](architecture.md) | Architecture decisions | Changing a technology or structural pattern |
 | [features.md](features.md) | Feature-level design | Altering keybindings, lifecycle, layout, or UX |
 | [performance.md](performance.md) | Render/tick performance decisions | Changing the render loop, a cache, or a worker cadence |
-| [kernel.md](kernel.md) | The plugin kernel: its shape, rules and traps | Changing the kernel's contract with Lua |
-| [plugins.md](plugins.md) | Writing an interface plugin | Changing the plugin API or the `thurbox.*` shape |
+| [kernel.md](kernel.md) | The mod kernel: its shape, rules and traps | Changing the kernel's contract with Lua |
+| [mods.md](mods.md) | Writing an interface mod | Changing the mod API or the `thurbox.*` shape |
 | [orchestration.md](orchestration.md) | What thurbox adds to Fleet's orchestration: Tasks as sessions, the `fleet` verbs | Changing how sessions map to Fleet Tasks |
 | [agents.md](agents.md) | Which agents a session can run: Fleet's harnesses | Adding or changing an agent |
 | [Where sessions run](../where-sessions-run.md) | Fleets and places: which Fleet manages a session, and where it runs | Changing how a session picks its Fleet or its place |

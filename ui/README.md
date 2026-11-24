@@ -6,7 +6,7 @@ finds.
 
 You are probably reading this because an agent was pointed at this directory to
 change or add a pane. Read the rules below before editing — most of them are not
-guessable from the code, and two of them are the difference between a plugin that
+guessable from the code, and two of them are the difference between a mod that
 works and one that fails at runtime with nothing on screen to say why.
 
 ```text
@@ -27,25 +27,25 @@ exits non-zero on failure, so it catches the mistakes that are otherwise
 invisible until something is missing from the screen.
 
 ```bash
-thurbox-cli plugin check     # load it the way thurbox does
-thurbox-cli plugin list      # every file, where it came from, whether it is drawing
-thurbox-cli plugin dir       # which directory is live, and which rule chose it
+thurbox-cli mod check     # load it the way thurbox does
+thurbox-cli mod list      # every file, where it came from, whether it is drawing
+thurbox-cli mod dir       # which directory is live, and which rule chose it
 ```
 
 `check` fails on two things, and the second is the one worth knowing about. A file
 that will not load is obvious. A pane that **loads and draws nothing** — because no
 arrangement places its slot — is not: it compiles, declares its keys, appears in
-`plugin list`, and is absent from the screen. `check` reports it with the
+`mod list`, and is absent from the screen. `check` reports it with the
 `layout.lua` line to add, and exits non-zero, so it is caught rather than puzzled
 over.
 
 In a running thurbox, `F10` reloads from disk and `Ctrl+,` → `]` shows the same
-inventory `plugin list` prints.
+inventory `mod list` prints.
 
 Two rules pick the directory: `THURBOX_UI_DIR` if set, otherwise your own copy —
 `~/.config/thurbox/ui`, or `~/.config/thurbox-dev/ui` for a dev build, which sits
 beside that build's own `settings.toml` exactly as every other config path does.
-`plugin dir` says which rule won, and `thurbox-cli config show` prints the resolved
+`mod dir` says which rule won, and `thurbox-cli config show` prints the resolved
 `ui_dir` beside the rest of the config: worth checking before concluding an edit did
 nothing.
 
@@ -68,7 +68,7 @@ said out loud.
    span, and a span that names its own colour keeps it. `widgets.list` takes
    `selected_style` / `hover_style` and puts them there for you.
 2. **Layout resolves before render.** Size is declared *statically* in the
-   plugin's table, never returned from `render`. That is what lets the kernel
+   mod's table, never returned from `render`. That is what lets the kernel
    tell your `render` the rect it is drawing into.
 3. **Snapshot-read, command-write.** Reads come from an in-memory snapshot and
    return instantly. Writes are commands, accepted now and applied later. Lua
@@ -79,7 +79,7 @@ said out loud.
 5. **Anything touching the world runs on a worker.** You ask; an answer appears
    on a later frame.
 
-## A whole plugin
+## A whole mod
 
 ```lua
 local theme = require("lib.theme")
@@ -105,7 +105,7 @@ return {
     { action = "example.open", desc = "show the example" },
   },
 
-  -- Told once per change, off the render path: `thurbox-cli plugin events`.
+  -- Told once per change, off the render path: `thurbox-cli mod events`.
   events = { "session.status" },
   on_event = function(name, payload)
     if payload.to == "blocked" then
@@ -146,7 +146,7 @@ return {
 }
 ```
 
-Save it as `plugins/90_example.lua` and it is a pane. `thurbox-cli plugin new
+Save it as `plugins/90_example.lua` and it is a pane. `thurbox-cli mod new
 <name>` writes a starter that already loads.
 
 ## The component layer (`lib/ui.lua`)
@@ -258,18 +258,18 @@ the base functions (`pairs`, `ipairs`, `type`, `tostring`, `tonumber`, `select`,
 
 | Global | What it is |
 |---|---|
-| `thurbox` | the read side — the snapshot. `thurbox.sessions`, `.settings`, `.theme`, `.repos`, `.runs`, `.diffs`, `.metrics`, `.chrome`, `.ui_dir`, … and `.api`, the contract number a plugin's `requires_api` is checked against |
+| `thurbox` | the read side — the snapshot. `thurbox.sessions`, `.settings`, `.theme`, `.repos`, `.runs`, `.diffs`, `.metrics`, `.chrome`, `.ui_dir`, … and `.api`, the contract number a mod's `requires_api` is checked against |
 | `command(name, args)` | the write side. Accepted now, applied by the kernel later. |
 | `text` | display width in COLUMNS: `text.width`, `text.truncate`, `text.pad` |
 | `store` | scratch state that survives a frame, and how you *ask* for things (`store.want_branches`, `store.want_worktrees`, `store.want_content`, …) |
-| `state` | your plugin's own scratch state — survives a reload, **not** a restart |
+| `state` | your mod's own scratch state — survives a reload, **not** a restart |
 | `require` | `lib/` modules only |
 | `run(key, cmd, opts)` | run a program and read its output — **only if trusted**, see below |
 | `files` | bounded reads the kernel performs for you |
-| `thurbox.platform` | `os` and `arch`, so a plugin shipping several builds can pick one |
+| `thurbox.platform` | `os` and `arch`, so a mod shipping several builds can pick one |
 
-Each plugin has globals of its own: one you assign is invisible to the next
-plugin, `require` hands you your own copy of a module, and `string`, `table`,
+Each mod has globals of its own: one you assign is invisible to the next
+mod, `require` hands you your own copy of a module, and `string`, `table`,
 `math`, `coroutine`, `utf8`, `text` and everything under `thurbox` are
 read-only — copy a published list before you sort it. Share through `store`.
 
@@ -311,22 +311,22 @@ binding, rather than spending a row of its own on a message line.
 chord or a click on it would, which is how a **key handler** reaches help,
 settings, themes or the palette. Before these two, both were reachable only by
 painting a node with `role = "action:…"` and waiting for a click. It reaches the
-plugin that declared the action — as a key or as a palette row in `commands` — so
+mod that declared the action — as a key or as a palette row in `commands` — so
 it is also how one pane asks another to act, with any argument left in `store`
 first (the search strip scrolls the terminal pane this way, via `terminal.reveal`).
 
 **Events**: declare `events = { "session.status", … }` and an `on_event(name,
 payload)` and the kernel calls you once per change, with the same environment a
-render has. `command("emit", { text = "x", … })` reaches every plugin subscribed
+render has. `command("emit", { text = "x", … })` reaches every mod subscribed
 to `user.x`. `commands = { { action, desc } }` puts an action in the `Ctrl+P`
-palette with no chord. The list of events is `thurbox-cli plugin events`.
+palette with no chord. The list of events is `thurbox-cli mod events`.
 
 **Interactive hooks**: `on_key`, `on_action`, `on_click`, `on_context`,
 `on_outside` (a float's, for a press that missed it), `on_scroll`,
 `on_focus_cycle` (the topmost open float's native Ctrl+H/Ctrl+L cycle), and
 `on_event`. Return `true` from `on_focus_cycle("next"|"previous")` after moving
 your selected item; return `false` to keep the pane cycle. See
-[the plugin reference](../docs/thurbox/plugins.md#floating-views-and-the-native-focus-cycle).
+[the mod reference](../docs/thurbox/mods.md#floating-views-and-the-native-focus-cycle).
 
 **A menu at the pointer**: from `on_context`, leave `store.menu` holding
 `at = { x = hit.screen_x, y = hit.screen_y }` and
@@ -343,16 +343,16 @@ store["sessions.menu_extra"] = extra
 ```
 
 The sessions column appends them to a row's menu. An entry whose action no
-plugin declares (in `keys` or `commands`) is dropped. Your `on_action` reads the
+mod declares (in `keys` or `commands`) is dropped. Your `on_action` reads the
 pressed row from the action's `args.session_id`. The full contract is in
-`docs/thurbox/plugins.md` → *The right button*.
+`docs/thurbox/mods.md` → *The right button*.
 
 `thurbox.granted` tells you which capabilities *this* file has been granted
 (`granted.run`, `granted.program`, `granted.sessions`, `granted.files`). It exists
 because not every capability can be withheld by absence: `run` and `files` are
 globals, so `if not run then` is the check, but an interactive program pane, and
 the verbs that drive an agent or lose something for good (`sessions`), are asked for
-through `command`, which every plugin has.
+through `command`, which every mod has.
 
 **Deliberately absent**: `os`, `io`, `debug`, `package`, `print`, `dofile`,
 `load`, `loadstring`, `rawset`, `require` of anything outside `lib/`. They are not blocked,
@@ -404,7 +404,7 @@ These are the ones that cost real time.
   Invalid session options fail the call before queueing. Use stable per-target
   keys and `run_forget(key)` for retired keys; forgetting discards queued work
   and late answers, but does not cancel active commands. See
-  [Running a program](../docs/thurbox/plugins.md#running-a-program).
+  [Running a program](../docs/thurbox/mods.md#running-a-program).
 - **Asking every frame is correct.** `run(...)` and the `store.want_*` reads are
   designed to be called on every render: a fresh answer is a table lookup, not a
   process. Do not try to call them "only once" — you will get a pane that never
@@ -428,24 +428,24 @@ These are the ones that cost real time.
   offering a key that would only be refused.
 - **A program pane needs `focusable = true`.** `capabilities = { "program" }` plus
   `input = "session"` gets you a terminal you can never type at, because raw input
-  only reaches the plugin that *has* focus. It draws perfectly and ignores the
+  only reaches the mod that *has* focus. It draws perfectly and ignores the
   keyboard, which is a confusing thing to debug — and check
   `thurbox.granted.program`, since `command` is present whether or not you may.
-- **Declaring a key does not outrank a global one.** A plugin-scoped chord loses
+- **Declaring a key does not outrank a global one.** A mod-scoped chord loses
   to a kernel chord. Check `F1` after adding a key: if it is not listed, it did
   not bind.
-- **A slot needs a home in `layout.lua`.** A plugin whose slot appears nowhere in
+- **A slot needs a home in `layout.lua`.** A mod whose slot appears nowhere in
   the arrangement loads fine and never draws. **Adding a pane is two edits** — the
-  plugin and the slot — and `plugin check` fails on the missing second one and
+  mod and the slot — and `mod check` fails on the missing second one and
   prints the line to add.
 - **A pane sharing a `switch` slot draws nothing until it is focused.** The quieter
   sibling of the above: the slot's first occupant is shown and yours waits, and
   `ctrl+h`/`ctrl+l` pass it over — the cycle stops once per slot. Nothing
   fails, so declare a `pills = { … }` entry and the action band will offer it —
-  `plugin check` warns when you have not. Give that `action` a key as well: the band
+  `mod check` warns when you have not. Give that `action` a key as well: the band
   draws a pill only when a chord resolves for it, so a pill over a palette-only
   `commands` entry is dropped as silently as one naming nothing. Its `priority` is
-  where the band puts it, highest first; **do not edit another plugin's number to
+  where the band puts it, highest first; **do not edit another mod's number to
   make room.** The `pills` section of `ui.json` beside this directory is where a
   different order goes:
 
@@ -454,10 +454,10 @@ These are the ones that cost real time.
   ```
 
   Keyed by action, so only the buttons you moved are listed and deleting an entry
-  gives the plugin's own number back. It is read at startup, and it moves a pill
+  gives the mod's own number back. It is read at startup, and it moves a pill
   rather than making one: an entry naming an action no pill declares is ignored. A
   value that is not a whole number is refused — that pill keeps the number its
-  plugin declared — but the line stays in your file, and
+  mod declared — but the line stays in your file, and
   `thurbox-cli config validate` names it.
 - **Give that pane one key that both enters and leaves it**, with `toggle`:
 
@@ -481,7 +481,7 @@ These are the ones that cost real time.
   role over the palette's own background, and answers nil where the palette has
   no `#rrggbb` to mix — have a fallback.
 - **Instructions and memory are bounded.** An accidental infinite loop is killed,
-  not hung — if a pane vanishes after an edit, check `plugin check`.
+  not hung — if a pane vanishes after an edit, check `mod check`.
 
 ## Panes somebody else wrote
 
@@ -489,10 +489,10 @@ You do not have to write one from scratch. `plugins.toml` here lists what this
 interface is composed of, and the manager keeps the directory in step with it:
 
 ```bash
-thurbox-cli plugin available          # what installs by bare name
-thurbox-cli plugin install top        # fetch it, and record it in plugins.toml
-thurbox-cli plugin sync               # make the directory match the spec
-thurbox-cli plugin remove top         # file, spec entry and record
+thurbox-cli mod available          # what installs by bare name
+thurbox-cli mod install top        # fetch it, and record it in plugins.toml
+thurbox-cli mod sync               # make the directory match the spec
+thurbox-cli mod remove top         # file, spec entry and record
 ```
 
 `install` prints the `layout.lua` line the new pane needs, since that is the edit
@@ -523,11 +523,11 @@ of it to put back, and it says so instead. The way back there is `space` on its
 row: the file stays exactly where it is and is simply not loaded, which is enough
 to get a working interface while you fix it. An installed pane
 (the row reads `from <src>`) is put back by the manager that placed it,
-`thurbox-cli plugin sync`. The tab sorts failures to the top and shows the load
+`thurbox-cli mod sync`. The tab sorts failures to the top and shows the load
 error of the selected row, so the broken file is the first thing on the list.
 
 ## Full documentation
 
-- `docs/thurbox/plugins.md` in the thurbox repository — writing a plugin, start to finish
+- `docs/thurbox/mods.md` in the thurbox repository — writing a mod, start to finish
 - `docs/thurbox/kernel.md` — the kernel's shape and why it refuses things
 - `examples/lua/composite.lua` — a worked example that runs programs

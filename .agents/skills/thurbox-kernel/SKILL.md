@@ -1,16 +1,16 @@
 ---
 name: thurbox-kernel
-description: The thurbox plugin kernel: the five rules, where the module dependency rules live (crates/architecture.toml), module responsibilities, the event loop, and writing an interface plugin - the bundled panes, delivery vs decision vs composition, installable panes and plugins.toml, capabilities (run, program, events, commands) and trust. Use when working on src/kernel, src/coordinator, module boundaries, or the plugin API and its capabilities.
+description: The thurbox mod kernel: the five rules, where the module dependency rules live (crates/architecture.toml), module responsibilities, the event loop, and writing an interface mod - the bundled panes, delivery vs decision vs composition, installable panes and plugins.toml, capabilities (run, program, events, commands) and trust. Use when working on src/kernel, src/coordinator, module boundaries, or the mod API and its capabilities.
 ---
 
-# Thurbox plugin kernel and plugin authoring
+# Thurbox mod kernel and mod authoring
 
 *Working reference indexed by `AGENTS.md`. The rationale behind these decisions is owned by the docs under `docs/`; a change that invalidates what this says updates it in the same PR.*
 
-## Architecture (plugin kernel)
+## Architecture (mod kernel)
 
 The interface is **Lua running on a Rust kernel**. `thurbox` boots the kernel,
-which reads `ui/` and renders whatever plugins it finds; there is no built-in
+which reads `ui/` and renders whatever mods it finds; there is no built-in
 pane.
 
 ### The five rules
@@ -31,21 +31,21 @@ pane.
    target over its own columns without becoming a node; adjacent runs sharing an
    identity coalesce into one hitbox, which is what makes ` ◀ F9 ` — an accent
    chevron and a muted hint — a single button.
-2. **Layout resolves before render** — rects are computed first, then each plugin
-   is called with its own. Plugins declare size *statically*, in their declaration
+2. **Layout resolves before render** — rects are computed first, then each mod
+   is called with its own. Mods declare size *statically*, in their declaration
    table, which is what breaks the circularity.
 3. **Snapshot-read, command-write** — reads come from an in-memory snapshot and
    return instantly; writes are commands accepted now and surfaced later. Lua never
-   blocks, so no plugin can stall the loop on Fleet, git or an unreachable host.
+   blocks, so no mod can stall the loop on Fleet, git or an unreachable host.
 4. **Capabilities by absence** — an ungranted capability is *not in the
    environment*. `io`, `os`, `debug`, `package` and the loaders are withheld, and
    `thurbox.yml` makes selene enforce that statically. One capability cannot be
    expressed that way: a program pane is asked for through `command`, which every
-   plugin has, so `thurbox.granted` reports the grant instead — a boolean about a
+   mod has, so `thurbox.granted` reports the grant instead — a boolean about a
    decision already made, which withholds nothing.
 5. **Anything touching the world runs on a worker** — terminal attach, commands,
    the `fleet watch` that feeds the snapshot (`kernel::snapshot::fleet`), diffs,
-   metrics, git stats, repository reads, update checks, and programs a plugin
+   metrics, git stats, repository reads, update checks, and programs a mod
    asked for. In `kernel::snapshot` (`fleet`, `git`) and `kernel::terminal`
    (`attach`, `shells`, `stream_pane`) each worker is a file of
    its own, and thurbox's restrictions in `crates/architecture.toml` fail when the
@@ -90,25 +90,25 @@ crate graph and `runtime-mux`'s module rules.
 
 - **`kernel/`** — the interface. `node` (four primitives), `layout` (rects before
   render), `convert` (Lua table ↔ node), `paint` (node → ratatui), `host` (the VM,
-  reload, isolation, capability grants), `registry` (keys + settings plugins
+  reload, isolation, capability grants), `registry` (keys + settings mods
   declare, plus the chord-less commands the palette lists), `events` (the
-  closed set a plugin may subscribe to, and the deriver that diffs a snapshot
+  closed set a mod may subscribe to, and the deriver that diffs a snapshot
   into them), `modals/` (help, settings, theme picker, the command palette —
   chrome about thurbox itself,
-  which plugins contribute *data* to rather than replace), `bands` (the top/bottom
+  which mods contribute *data* to rather than replace), `bands` (the top/bottom
   bars), `snapshot` (the read side: a `SnapshotSource`, `fleet::FleetWatches`, one
   `fleet::FleetWatch` per listed Fleet, rows `<fleet>:<task>`),
   `command` (the write side: the `Executor`, `command::fleet`; ADR-41),
   `bookmarks` (the creation flow's repository memory, `bookmarks.json`),
   `terminal/` (live
-  PTY surfaces: the attach machinery, plugin program panes, link detection +
+  PTY surfaces: the attach machinery, mod program panes, link detection +
   OSC 8 painting — every surface owns its own rect and size memo, and a
   session's agent and its `#shell` companion are two of them, never one),
   `selection` (mouse text selection over a pane), plus the worker-backed
   stores: `diff`, `metrics`, `repos`, `runs`, `updates`, `files`, `notify`,
   `theme`, `perf`, `bundled`, `inventory`, `packages` (the spec, the lock, and the
   install/converge/withdraw operations — sharing `bundled`'s decision matrix).
-- **`agent/`** — `fetch` downloads what the plugin installer and the updater
+- **`agent/`** — `fetch` downloads what the mod installer and the updater
   need, and `input` encodes keys for an agent's terminal. The agents
   themselves are Fleet's harness profiles.
 - **`config/`** — thurbox's own config files beside `config.toml`
@@ -134,7 +134,7 @@ crate graph and `runtime-mux`'s module rules.
   colours: `session` cannot name a rendering crate, so the palettes live here.
 - **`git/`** — every `git` invocation, all on this machine, split by concern:
   `command` (the one place a `git` process is built, and where the inherited
-  `GIT_*` scrub lives), `plugin` (clone/checkout of a plugin working copy),
+  `GIT_*` scrub lives), `plugin` (clone/checkout of a mod working copy),
   `stderr` (OpenSSH's advisory kept out of a reported error), `discovery`
   (listings, path classification, child-repo scans), `newrepo` (a directory for
   a repository that does not exist yet) and `diff` (diffs and worktree stats).
@@ -175,9 +175,9 @@ crate graph and `runtime-mux`'s module rules.
 tokio::main → load config + settings
   → resolve ui/ → build the Lua host → follow `fleet watch` (and keep a
   `fleet up`) → init terminal → loop {
-    resolve layout → call each plugin with its rect → paint
+    resolve layout → call each mod with its rect → paint
     → poll workers (terminals, commands, diffs, metrics, repos, runs, updates)
-    → dispatch events to the plugins subscribed to them (kernel::events)
+    → dispatch events to the mods subscribed to them (kernel::events)
     → drain Lua's command queue → dispatch keys through the registry
 } → restore terminal
 ```
@@ -198,7 +198,7 @@ tokio::main → load config + settings
   keeps reporting — `reset` there, or run the ssh session inside a local tmux.
   `tests/tui_e2e.rs` pins both exits' escapes.
 
-## Writing an interface plugin
+## Writing an interface mod
 
 The bundled set is deliberately small: `10_sessions`, `20_agent`, `65_search`, plus
 four floats that occupy no slot — the creation flow (`70_new_session`), the
@@ -206,12 +206,12 @@ confirmation (`60_confirm`), the rename field (`62_rename`, `Ctrl+E`) and the
 context menu (`64_menu`, opened at the pointer by a right press on a session).
 
 ```bash
-thurbox-cli plugin dir            # which directory is live, and which rule chose it
-thurbox-cli plugin new notes      # a starter that already loads
-thurbox-cli plugin check          # load it the way thurbox does; non-zero on failure
-thurbox-cli plugin list           # the inventory the Interface tab shows
-thurbox-cli plugin install top    # a distributed pane, recorded in plugins.toml
-thurbox-cli plugin sync           # make the directory match the spec
+thurbox-cli mod dir            # which directory is live, and which rule chose it
+thurbox-cli mod new notes      # a starter that already loads
+thurbox-cli mod check          # load it the way thurbox does; non-zero on failure
+thurbox-cli mod list           # the inventory the Interface tab shows
+thurbox-cli mod install top    # a distributed pane, recorded in plugins.toml
+thurbox-cli mod sync           # make the directory match the spec
 ```
 
 Two panes are maintained **out of tree**, each its own repository, installed
@@ -246,17 +246,17 @@ the primitive kit underneath it. `10_sessions` is the worked consumer;
 
 **Two commands reach outside a pane's own rect.** `command("message", { text,
 level })` puts a sentence in the message band — kernel chrome stays kernel-drawn
-and a plugin contributes to it, as it contributes a pill or a binding, instead of
+and a mod contributes to it, as it contributes a pill or a binding, instead of
 spending a row of its own on a message line. `command("action", { text =
 "help.open" })` runs a declared action through the very handler a click on an
 `action:` node runs, so a **key handler** can open help, settings, themes or the
-palette; the issuing plugin is the fallback owner, stamped by the kernel. Both
+palette; the issuing mod is the fallback owner, stamped by the kernel. Both
 are applied on the UI thread (the action registry, the modals and the band are
 the loop's), and both refuse rather than guess — a message with no `text`, or a
 `level` no band badges, is an error at parse time and not a silent no-op.
 
 **Measuring text is the kernel's job** (`host::api::install_text`). The `text`
-global gives a plugin `text.width(s)`, `text.truncate(s, cols, opts)` and
+global gives a mod `text.width(s)`, `text.truncate(s, cols, opts)` and
 `text.pad(s, cols, align)`, all in terminal COLUMNS and all backed by the same
 `unicode-width` the painter measures with. Lua cannot compute this: `#` counts
 bytes, `utf8.len` counts codepoints, and a CJK glyph is one codepoint over two
@@ -276,7 +276,7 @@ theme roles are generated from `src/kernel/lua_api.rs`, as are `thurbox.yml`'s
 `thurbox.*` entries and `tests/fixtures/lua_std/reads.lua`: add a published field
 there, run `just lua-api`, and `tests/lua_api.rs` holds the files and every key a
 real publish serves to it. Removing a field or changing its meaning bumps
-`lua_api::API` (`thurbox.api`; a plugin's `requires_api` is checked against it at
+`lua_api::API` (`thurbox.api`; a mod's `requires_api` is checked against it at
 load). Keep the rest in step with `node.rs`/`convert.rs`, `host/load.rs` and
 `command/mod.rs`.
 
@@ -295,14 +295,14 @@ pane reads one by name to notice.
 The two files split by LIFETIME. A global, or a field of a published table, is a
 name selene can see, and it belongs in `thurbox.yml` — generated from
 `lua_api.rs`, which covers `LuaHost::publish` *and* `LuaHost::enter`, which sets
-`thurbox.runs` and `thurbox.granted` per plugin. The shape of a value that exists only while a call
+`thurbox.runs` and `thurbox.granted` per mod. The shape of a value that exists only while a call
 is running — a `hit`, a `key`, a `wheel`, a row out of a list — is unreachable
 from there and is `thurbox.d.lua`'s. Neither file can do the other's half.
 
 The directory ships its own guidance for whoever edits it: `README.md` is the
 reference, and **`AGENTS.md`** is the operational half a coding CLI loads as context
-without being asked — which is what stops "install this plugin" being read as a
-package-manager request rather than `thurbox-cli plugin install`. `CLAUDE.md` and
+without being asked — which is what stops "install this mod" being read as a
+package-manager request rather than `thurbox-cli mod install`. `CLAUDE.md` and
 `GEMINI.md` beside it are one-line pointers, not copies, so there is one file to
 keep true.
 
@@ -325,7 +325,7 @@ macOS, and this path is shown to people.
 **Delivery vs. decision vs. composition.** `.bundled.json` records what delivery did
 (bundled / edited / yours / removed / installed); `ui.json` records what the *user*
 decided about the interface (rebindings, settings, pill order) and `plugin-state.json`
-what a plugin may do (trust, the disabled set); `plugins.toml` records what the interface is
+what a mod may do (trust, the disabled set); `plugins.toml` records what the interface is
 **composed of** and `plugins.lock` what each entry resolved to.
 `ui.json` and `plugin-state.json` share the atomic config writer with
 `settings.toml`: each stages the whole file beside the destination before a native
@@ -339,10 +339,10 @@ Deleting a bundled file is how you remove it — delivery records
 the removal and never writes it back, which is what makes a differently-named
 replacement possible on equal terms. Turning one **off** is a third thing: present on
 disk, intact, not loaded — implemented by `build` not reading the file, so a disabled
-plugin declares no keys, occupies no slot and is granted no capability. A broken one
+mod declares no keys, occupies no slot and is granted no capability. A broken one
 can be switched off to get a working interface back.
 
-**A plugin that carries more than Lua is a repository** (`fetch::Source::Git`,
+**A mod that carries more than Lua is a repository** (`fetch::Source::Git`,
 `git::clone_plugin`). The fetch path returns a `String` and decodes remote output
 lossily, so a binary through it is *corrupted rather than refused* — which is why
 payload arrives only by clone and that path stays Lua-only. Recognition is
@@ -357,7 +357,7 @@ numeric prefix) and `sources()` inventories those panes but deliberately does **
 walk the rest of a working copy. `.git` is watcher noise (`watch::is_noise`) — a fix
 in its own right, since it already affected anyone versioning their own panes, and the
 symptom is not "reloads too often" but "stops reloading while git is busy".
-`thurbox.platform` is published so a plugin shipping several binaries picks one
+`thurbox.platform` is published so a mod shipping several binaries picks one
 itself; platform selection is deliberately not a manifest field.
 
 **Agents are Fleet's.** `thurbox.agents` is the harnesses Fleet has profiles
@@ -370,7 +370,7 @@ in the interface directory lists a `src` (a bare name resolving to `examples/pan
 at the binary's release tag, a URL, or a path — `fetch::resolve_source_in`,
 one resolver), a destination `file`, and an optional `pin`;
 `plugins.lock` records what each resolved to plus the digest of every file delivered.
-`plugin sync` converges the directory to the spec, which reduces an agent's job to
+`mod sync` converges the directory to the spec, which reduces an agent's job to
 *edit one file, run one command, read the exit status*. Delivery semantics are
 **shared with the bundled path, not reimplemented**: both call `bundled::decide`, so an
 edit is preserved and a deletion is remembered for a package exactly as for a shipped
@@ -386,14 +386,14 @@ would report every ordinary release as tampering; `(src, pin)` alone would let a
 upstream re-tag of the same version inherit a grant made to what that version used to
 be. Both are checked.
 
-**A plugin can run a program you interact with** (`Capability::Program`,
+**A mod can run a program you interact with** (`Capability::Program`,
 `kernel::terminal`'s `programs` map). `run` captures output once with no stdin and
 no tty, so it cannot give you `htop`, `lazygit` or a REPL; a *program pane* holds a
 real terminal — keystrokes go to it, it is resized to its rect, it survives an
-`F10` reload. The pane belongs to the **plugin**, not a session: the plugin writes
+`F10` reload. The pane belongs to the **mod**, not a session: the mod writes
 `command("program", { text = "watch", repo = "htop" })` and draws
 `{ type = "surface", program = "watch" }`, and the kernel stamps the owner from the
-plugin being rendered, so naming another plugin's pane is impossible by
+mod being rendered, so naming another mod's pane is impossible by
 construction. Reuses the companion-shell machinery whole (`ProgramPane` mirrors
 `ShellPane` over the same `Session::wire_up`); the differences are a third window
 prefix (`tbp-`; `discover` lists it, but it is stamped `@thurbox_role=program`
@@ -402,10 +402,10 @@ that **nothing is persisted**: the window name is deterministic, so re-adoption
 after a restart is a lookup (`find_program_window`) and there is no stored id to go stale. Gated by its own
 capability, **not** `run`'s — `run` is bounded (256 KB, 600 s, 4 at a time) and an
 interactive program is none of those, so an existing grant must not silently widen.
-Four panes per plugin. `thurbox.granted.<name>` is how a pane knows, since
+Four panes per mod. `thurbox.granted.<name>` is how a pane knows, since
 `command` is present whether or not it may.
 
-**A plugin can run a program** (`kernel::runs`) — `git status`, `docker compose ps` —
+**A mod can run a program** (`kernel::runs`) — `git status`, `docker compose ps` —
 in the session's working directory, and on that session's own host for a remote
 session — or, with `machine = "local"`, on the machine running thurbox, in the home
 directory, with no session (`runs::Target::Local`; for programs that need this
@@ -420,7 +420,7 @@ key is in flight). Bounds are the kernel's: output capped with truncation flagge
 timeout, four at a time with the rest queued.
 
 This is the first capability that reaches outside thurbox, so it is granted **per
-plugin**: declare `capabilities = { "run" }` and get nothing until the user trusts
+mod**: declare `capabilities = { "run" }` and get nothing until the user trusts
 the file (settings → Interface → `t`). Trust is keyed by absolute path with the
 digest recorded, so a changed trusted file reads `trusted · modified` and keeps the
 grant — unless it is installed, where the same change reads `untrusted · modified`
@@ -437,34 +437,34 @@ Hosts config is process-cached; restart to refresh it. The existing `run` grant
 covers this selector. `run_forget(key)` has the same owner/grant and removes an
 answer and queued request in call order, discarding old active completions even
 if the key is reused. Active captures keep their slots until finish/timeout;
-there is no remote cancellation promise. Plugins must bound desired keys and
+there is no remote cancellation promise. Mods must bound desired keys and
 forget retired ones: queue/answer counts have no automatic cap. Request identity
 lives only with retained entries and active work, with no tombstone map. Full
-result and lifetime semantics are owned by `docs/thurbox/plugins.md`.
+result and lifetime semantics are owned by `docs/thurbox/mods.md`.
 
-**Every plugin runs in its own `_ENV`** (`host::api::plugin_env`): one Lua state
+**Every mod runs in its own `_ENV`** (`host::api::plugin_env`): one Lua state
 is shared, so identity is bound where a function is made, never read from who is
 running, so a pane that wraps `type` never runs inside a trusted pane's call
 with its `run` and its path. `command`, `run`, `run_forget`, `files`, `state` and `require` (with a
-per-plugin module cache, modules run in the requirer's env) are created per plugin;
-reads fall through to the sealed shared globals, writes stay in the plugin's table.
-`string`/`table`/`math`/`coroutine`/`utf8`/`text`/`store` are per-plugin empty
-views over a sealed metatable (per plugin, because `rawset` writes into the view;
+per-mod module cache, modules run in the requirer's env) are created per mod;
+reads fall through to the sealed shared globals, writes stay in the mod's table.
+`string`/`table`/`math`/`coroutine`/`utf8`/`text`/`store` are per-mod empty
+views over a sealed metatable (per mod, because `rawset` writes into the view;
 `__pairs` never returns the backing table), and the string metatable is sealed.
-`LuaHost::enter` puts the plugin's own `run` and `files` into its env, or takes
+`LuaHost::enter` puts the mod's own `run` and `files` into its env, or takes
 them out, per call; `layout.lua` has an env that never holds either.
 `LuaHost::reachable_globals` is what the environment tripwire reads.
 
 **Driving sessions needs `sessions`.** `Command::requires` is an exhaustive match
 with no catch-all (a new verb must decide; `every_verb_states_what_it_requires`
-pins each): `send`, `create`, `plugin` and `delete` (Fleet has no undo
+pins each): `send`, `create`, `mod` and `delete` (Fleet has no undo
 window, so every delete is for good) need `sessions`; `open` needs
 `run`; `program` needs `program`; an `action` naming `kernel.paste` needs
-`sessions`, and every request carries the chain of plugins it came through
+`sessions`, and every request carries the chain of mods it came through
 (`LuaHost::acting_for`, `drain_requests`), allowed only with what every member
 holds (`Command::refusal_by`). Refused in
 `coordinator::commands::refuse_ungranted` against the owner bound into the issuing
-plugin's own `command` (`LuaHost::drain_issued`). A bundled file byte for byte as
+mod's own `command` (`LuaHost::drain_issued`). A bundled file byte for byte as
 shipped is `Trust::Shipped` and holds what it declares untrusted — `60_confirm`
 and `70_new_session` need it — and
 `60_confirm` forwards only the verbs its `FORWARDS` table names, since any pane can
@@ -472,7 +472,7 @@ write `store.confirm`; it words the change itself from the command, names the
 asker via `store_writer` (the writer's chain, recorded by its own `store` view), and on `y`
 issues the request it last drew, not `store.confirm` re-read.
 
-**A plugin can react to events** (`kernel::events`, `coordinator::events`).
+**A mod can react to events** (`kernel::events`, `coordinator::events`).
 Declare `events = { "session.status", … }` and an `on_event(name, payload)`, and
 the loop calls it once per change, off the render path, under the render's
 budget. The kernel's events are **derived by diffing the snapshot** — a row
@@ -482,8 +482,8 @@ operations *this* interface performed) and
 `interface.reloaded`; never raised by whatever changed the session, so a
 session another process made fires the same event. The set is closed (`KERNEL_EVENTS`): a
 subscription to an unknown name refuses to load, and the same table renders in
-`F1` and `thurbox-cli plugin events`. `command("emit", { text = name, … })`
-delivers `user.<name>` to other plugins with `source` stamped by the kernel;
+`F1` and `thurbox-cli mod events`. `command("emit", { text = name, … })`
+delivers `user.<name>` to other mods with `source` stamped by the kernel;
 cascades stop at `MAX_DEPTH`. Dispatch never marks the frame dirty itself
 (`frame-cost`); a reload drops the queue and delivers `interface.reloaded` first.
 Memory recovery (`LuaHost::memory_pressure`, live heap after a collection)
@@ -493,19 +493,19 @@ large; pressure again within 10 s of a rebuild is accepted (`Grown`) or sent to
 the bundled interface (`Exhausted`), so no loop iteration rebuilds twice in a row.
 It replaces the host even when neither interface builds: the empty
 replacement reports the error through kernel chrome without a successful reload
-event. Disabled plugins are applied before building either replacement, and
-programs and run answers are retired against its final plugin list.
+event. Disabled mods are applied before building either replacement, and
+programs and run answers are retired against its final mod list.
 `examples/lua/events.lua` is the worked example.
 
-**A plugin can ask for a strip** — `strip = true` with `size = { len = n }`: a
+**A mod can ask for a strip** — `strip = true` with `size = { len = n }`: a
 full-width row the shipped `layout.lua` places above the bars by iterating
 `ctx.strips` (`{ slot, len }`, load order, one entry per slot — `len` sums a
 stack's panes and takes a switch's tallest; `LuaHost::strips`), so a pane in a slot
-of its own needs no `layout.lua` edit — which `plugin install` never makes.
+of its own needs no `layout.lua` edit — which `mod install` never makes.
 Floats and decorators are never strips. Under an arrangement without the loop,
-`plugin check`'s unplaced failure names the loop as the fix (`cli::plugins::layout_fix`).
+`mod check`'s unplaced failure names the loop as the fix (`cli::mods::layout_fix`).
 
-**A plugin can declare chord-less commands** — `commands = { { action, desc } }`
+**A mod can declare chord-less commands** — `commands = { { action, desc } }`
 — which the **command palette** (`Ctrl+P`, `kernel::modals::palette`) lists
 beside every declared key and the kernel's own actions, filtered by subsequence
 as you type; `Enter` runs the row through the same `on_action` a key takes,
@@ -522,8 +522,8 @@ event loop. The local transport lives in `ui_control`, outside the session
 backend, and `thurbox-cli ui` selects the target interface explicitly when
 more than one is reachable. A key declared `release = true` passes
 `{ event = "press" }` and later `{ event = "release" }` through the same
-table (`coordinator::input::Holds`; `docs/thurbox/plugins.md` → **Keys**).
+table (`coordinator::input::Holds`; `docs/thurbox/mods.md` → **Keys**).
 
 - `docs/thurbox/kernel.md` — the kernel's shape, its five rules, and the traps
-- `docs/thurbox/plugins.md` — writing a plugin; **Start here** needs no TTY, and **Traps**
+- `docs/thurbox/mods.md` — writing a mod; **Start here** needs no TTY, and **Traps**
   lists the mistakes that are invisible until runtime

@@ -47,7 +47,7 @@ local SCOPE = "search.scope"
 
 --- The live query, in `store` rather than in `state`.
 ---
---- It has to be readable from OUTSIDE this plugin: the session list highlights
+--- It has to be readable from OUTSIDE this mod: the session list highlights
 --- its own rows against it, and `store` is the documented bus between panes.
 --- Cleared on close, so a pane can treat "there is a query" and "search is
 --- open" as the same question.

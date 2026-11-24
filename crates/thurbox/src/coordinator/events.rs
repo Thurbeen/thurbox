@@ -315,7 +315,7 @@ impl App {
         if !self.events.reported.insert(key) {
             return;
         }
-        tracing::warn!("plugin event handler failed: {failure}");
+        tracing::warn!("mod event handler failed: {failure}");
         self.report(failure.to_string(), Level::Error);
     }
 }
@@ -534,7 +534,7 @@ mod tests {
                 .map(|(k, _)| k.plugin.as_str())
                 .collect::<Vec<_>>(),
             ["plugins/90_files.lua"],
-            "two plugins' panes share a name, and the wrong one was told"
+            "two mods' panes share a name, and the wrong one was told"
         );
     }
 

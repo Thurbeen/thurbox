@@ -431,7 +431,7 @@ fn install_frozen_meta(lua: &Lua) -> mlua::Result<()> {
         "__newindex",
         lua.create_function(|_, (_, key): (Value, Value)| -> mlua::Result<()> {
             Err(mlua::Error::runtime(format!(
-                "thurbox is shared by every plugin and cannot be changed (assigning {})",
+                "thurbox is shared by every mod and cannot be changed (assigning {})",
                 key.to_string().unwrap_or_default()
             )))
         })?,
@@ -479,7 +479,7 @@ fn read_only_meta(lua: &Lua, inner: Table, what: &str) -> mlua::Result<Table> {
         "__newindex",
         lua.create_function(move |_, (_, key): (Value, Value)| -> mlua::Result<()> {
             Err(mlua::Error::runtime(format!(
-                "{what} is shared by every plugin and cannot be changed (assigning {})",
+                "{what} is shared by every mod and cannot be changed (assigning {})",
                 key.to_string().unwrap_or_default()
             )))
         })?,
@@ -814,7 +814,7 @@ fn files_for(
                 let keys = wants.entry(owner.clone()).or_default();
                 if keys.len() >= crate::kernel::files::MAX_READ_KEYS && !keys.contains(&key) {
                     return Err(mlua::Error::runtime(
-                        "files.read accepts at most 16 distinct paths per plugin render",
+                        "files.read accepts at most 16 distinct paths per mod render",
                     ));
                 }
                 keys.insert(key.clone());
@@ -1030,7 +1030,7 @@ fn require_for(lua: &Lua, ui_dir: &Path, env: Table) -> mlua::Result<mlua::Funct
         // `lib.theme` → `lib/theme.lua`, and nothing may escape the root.
         if name.contains("..") || name.starts_with('/') {
             return Err(mlua::Error::runtime(format!(
-                "require({name:?}): only modules inside the plugin directory can be required"
+                "require({name:?}): only modules inside the mod directory can be required"
             )));
         }
         let relative: PathBuf = name.split('.').collect::<Vec<_>>().join("/").into();
@@ -1319,10 +1319,7 @@ pub(super) fn clean_error(error: &mlua::Error) -> String {
         );
     }
     if text.contains("not enough memory") {
-        return format!(
-            "exceeded the plugin memory limit ({} bytes)",
-            memory_limit()
-        );
+        return format!("exceeded the mod memory limit ({} bytes)", memory_limit());
     }
     text.lines()
         .find(|line| !line.trim().is_empty())

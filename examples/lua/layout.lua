@@ -7,7 +7,7 @@
 --     cp examples/panes/tasks/tasks.lua ~/.config/thurbox/ui/plugins/80_tasks.lua
 --     cp examples/panes/top/top.lua     ~/.config/thurbox/ui/plugins/85_top.lua
 --
--- Then `F10`, and trust the `top` plugin (settings → Interface → `t`) so it may run
+-- Then `F10`, and trust the `top` mod (settings → Interface → `t`) so it may run
 -- a program.
 --
 --     ┌──────────────────────────────────────────────────┐ header
@@ -26,10 +26,10 @@
 -- The point of the file: the right column is a nested `axis = "vertical"` box
 -- inside the horizontal row, which is all "stacked" means here. Nothing about the
 -- two panes decided this — they name a slot and the arrangement decides where a
--- slot goes, which is why the same plugin can be a side column here and the whole
+-- slot goes, which is why the same mod can be a side column here and the whole
 -- centre somewhere else.
 --
--- It only ARRANGES. It never calls a plugin, so a mistake here cannot break one.
+-- It only ARRANGES. It never calls a mod, so a mistake here cannot break one.
 
 local panels = require("lib.panels")
 
@@ -49,11 +49,11 @@ local function status_rows()
   return (thurbox and thurbox.chrome and thurbox.chrome.status_rows) or 0
 end
 
---- Will a loaded plugin actually paint into `slot`?
+--- Will a loaded mod actually paint into `slot`?
 ---
 --- Same guard the shipped arrangement uses, and the reason it matters more here:
 --- these two panes are examples, so the likeliest state of this file is one where
---- you have copied it and not (yet) both plugins. A slot no plugin can fill is a
+--- you have copied it and not (yet) both mods. A slot no mod can fill is a
 --- rect reserved for nothing — an empty column, which reads as breakage.
 ---
 --- Unknown answers count as filled: the arrangement runs before anything else and
@@ -86,7 +86,7 @@ return function(ctx)
     -- The centre is never dropped and takes whatever the columns leave.
     columns[#columns + 1] = { slot = "center" }
 
-    -- The right stack. Built as a list first so a missing plugin costs its own
+    -- The right stack. Built as a list first so a missing mod costs its own
     -- row rather than the whole column: with only `tasks` copied you get tasks
     -- full height, and with neither you get no column at all.
     local stack = {}

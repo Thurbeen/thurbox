@@ -5,12 +5,12 @@
 -- thresholds below are yours to change — edit, save, and the next frame uses
 -- them.
 --
--- It only ARRANGES. It never calls a plugin, so a mistake here cannot break one
--- (and a broken plugin cannot break this).
+-- It only ARRANGES. It never calls a mod, so a mistake here cannot break one
+-- (and a broken mod cannot break this).
 --
--- It runs BEFORE any plugin renders, which is what lets the kernel tell each
--- plugin the rect it is drawing into — and why the open/closed state of a
--- column lives in `lib.panels` rather than inside the plugin that fills it.
+-- It runs BEFORE any mod renders, which is what lets the kernel tell each
+-- mod the rect it is drawing into — and why the open/closed state of a
+-- column lives in `lib.panels` rather than inside the mod that fills it.
 --
 -- The interface is two panes between three chrome bands:
 --
@@ -30,7 +30,7 @@
 -- not arrangement, so it is not decided here.
 --
 -- v1's other columns (info, tasks, files) were removed along with their
--- plugins; their slots went too, because a slot no plugin can fill is a rect
+-- mods; their slots went too, because a slot no mod can fill is a rect
 -- reserved for nothing. Re-adding a pane means adding its slot back here — which
 -- is the whole reason the arrangement is a file you can edit rather than a
 -- layout compiled into the binary. `search` is the first one back.
@@ -77,18 +77,18 @@ local function status_rows()
   return (thurbox and thurbox.chrome and thurbox.chrome.status_rows) or 0
 end
 
---- Will a loaded plugin actually paint into `slot`?
+--- Will a loaded mod actually paint into `slot`?
 ---
 --- Removing a pane takes two switches and they are not the same kind of thing:
 --- the panel toggle below is ARRANGEMENT state (F9, mine to decide), while the
 --- disabled set is DELIVERY state (settings → Interface → space, the kernel's).
---- Reserving a rect needs both to agree, because a slot no plugin can fill is a
+--- Reserving a rect needs both to agree, because a slot no mod can fill is a
 --- rect reserved for nothing — the same reason v1's info/tasks/files slots left
---- with their plugins. Consulting only the toggle is what left a turned-off
+--- with their mods. Consulting only the toggle is what left a turned-off
 --- session list as an empty quarter-width column.
 ---
 --- Only optional PLUGIN columns are gated on this. The chrome bands are drawn by
---- the kernel and belong to no plugin, and `center` is never dropped, so neither
+--- the kernel and belong to no mod, and `center` is never dropped, so neither
 --- appears in `ctx.slots` and neither may ask.
 ---
 --- Unknown answers count as filled. The arrangement runs before anything else

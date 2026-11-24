@@ -31,40 +31,40 @@ content cell. And a run inside a line carries its own `id`/`role`, so a chip is 
 click target without becoming a sized node; adjacent runs sharing an identity are
 one hitbox.
 
-## "Install a plugin" means `thurbox-cli plugin install`
+## "Install a plugin" means `thurbox-cli mod install`
 
-A *plugin* here is a thurbox interface pane, not a package from a language
+A *mod* here is a thurbox interface pane, not a package from a language
 registry. If someone asks you to install one:
 
 ```bash
-thurbox-cli plugin available          # what installs by bare name
-thurbox-cli plugin install <name>     # or a URL, or a path
-thurbox-cli plugin install git+<url>  # a repository: cloned, payload and all
-thurbox-cli plugin sync               # after editing plugins.toml by hand
+thurbox-cli mod available          # what installs by bare name
+thurbox-cli mod install <name>     # or a URL, or a path
+thurbox-cli mod install git+<url>  # a repository: cloned, payload and all
+thurbox-cli mod sync               # after editing plugins.toml by hand
 ```
 
-A plugin that carries a program or a data file is a **repository**, and `git+<url>`
+A mod that carries a program or a data file is a **repository**, and `git+<url>`
 (or a `.git` suffix, or `git@host:path`) clones it into `<interface dir>/<name>/`,
 keeping its `.git`. Say plainly what that does before running it: **it puts that
 repository's files on the user's disk, executables included.** Nothing is executed by
 installing, and a program still needs the `program` capability the user grants — but
 the files are theirs now, so do not install a repository the user did not name.
 
-`thurbox.platform` gives a pane `os` and `arch`, which is how a plugin shipping
+`thurbox.platform` gives a pane `os` and `arch`, which is how a mod shipping
 several binaries picks one. The manifest does not do it for you.
 
-**Never build under this directory, and never write inside an installed plugin's
+**Never build under this directory, and never write inside an installed mod's
 working copy.** Two different reasons, both easy to trip over if you make a pane fetch
 or compile something:
 
 - This directory is watched *recursively*, so an `npm install` here fires thousands of
   events. The symptom is not "reloads too often" — a burst keeps the debounce rolling
   forward, so it **stops reloading at all** while you are busy.
-- Anything you generate inside a cloned plugin's own directory makes its git tree
-  dirty, and a dirty tree is what makes `plugin update` refuse to move it. You would
-  be making the plugin un-updatable to save a path.
+- Anything you generate inside a cloned mod's own directory makes its git tree
+  dirty, and a dirty tree is what makes `mod update` refuse to move it. You would
+  be making the mod un-updatable to save a path.
 
-Put generated files in `$XDG_CACHE_HOME/<plugin>/` (or `~/.cache/<plugin>/`).
+Put generated files in `$XDG_CACHE_HOME/<mod>/` (or `~/.cache/<mod>/`).
 
 **There is no `npm`, `cargo`, `pip` or `go get` in this directory, and nothing to
 run one on.** No `package.json`, no lockfile of that kind, no `node_modules`. The
@@ -80,7 +80,7 @@ each entry resolved to. You may edit the first by hand; never hand-edit the seco
 ## Check your work after every edit
 
 ```bash
-thurbox-cli plugin check
+thurbox-cli mod check
 ```
 
 It loads the interface exactly as thurbox does and **exits non-zero** on failure.
@@ -127,9 +127,9 @@ offset — `widgets.chars` is that.
 
 ## Adding a pane is two edits
 
-The plugin file, **and** its slot in `layout.lua`. A pane names a slot; the
+The mod file, **and** its slot in `layout.lua`. A pane names a slot; the
 arrangement decides where that slot goes. Miss the second and you get the
-silent-but-loading failure above. `thurbox-cli plugin install` prints the line for
+silent-but-loading failure above. `thurbox-cli mod install` prints the line for
 you.
 
 There is a quieter version of the same failure: a slot in **`switch`** mode shows one
@@ -141,7 +141,7 @@ change. **Declare a pill** and the action band offers it:
 pills = { { action = "mine.open", label = "Mine", priority = 10 } },
 ```
 
-`plugin check` warns about a pane in that state and `plugin install` says it when you
+`mod check` warns about a pane in that state and `mod install` says it when you
 install one — neither fails, because you may have meant it.
 
 ## Make the pane cost what changed, not what exists
@@ -171,7 +171,7 @@ of a fresh table (writing the same *value* is free; a new table never is).
 
 **Finding the slow pane:** `F12`, then read the `panes` table under the
 counters — most expensive first, the worst in red, `!` where a hint applies.
-Then `thurbox-cli perf --plugins` prints every column for every pane, with the
+Then `thurbox-cli perf --mods` prints every column for every pane, with the
 hint spelled out (not pure but rendering every frame, a float rendering while
 closed, fresh tables written to `store` from a render, a pure pane re-rendering
 while idle); add `--json` to script it. A `slow op` in the output names the pane
@@ -181,7 +181,7 @@ whose call took the time.
 
 - **No `os`, `io`, `debug`, `package`, `print`, `dofile`, `load`.** They are not
   blocked, they are *missing*: `os.time()` is `attempt to index a nil value`, not a
-  permission error. The VM enforces it, so `plugin check` is what catches it here —
+  permission error. The VM enforces it, so `mod check` is what catches it here —
   the static lint that also enforces it needs the thurbox checkout's own config.
 - **No blocking.** Reads come from a snapshot and return instantly; writes are
   `command(...)` calls the kernel applies later. There is nothing to await. Two of
@@ -223,7 +223,7 @@ exact styles and text it draws, or writes into a module's tables.
 This is a compatibility promise rather than a version number. A preserved file is
 frozen at whichever release it was edited in. A version could only tell that file
 it no longer fits; it could not make it work. Side-by-side copies of `lib/` would
-mean landing every fix once per copy, and a published plugin declares at most the
+mean landing every fix once per copy, and a published mod declares at most the
 `thurbox.*` contract it needs (`requires_api`, against `thurbox.api`), never a
 `lib/` version to pin to. The thurbox repository's test suite holds `lib/` to this promise. It
 loads edited files frozen from an old release, and it pins a list of every
@@ -243,5 +243,5 @@ copy as `layout.lua.bak` (then `.bak.2`, never over an earlier one).
 
 A file **you** added has no shipped copy to restore, so the way back for it is
 `space` on its row in that same tab: turned off, untouched on disk, and the
-interface loads without it. `thurbox-cli plugin check` reports the failure with no
+interface loads without it. `thurbox-cli mod check` reports the failure with no
 TTY, which is the one you can run yourself.

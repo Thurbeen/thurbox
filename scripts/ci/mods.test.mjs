@@ -15,7 +15,7 @@ const fixture = [
     kind: 'pane',
     platforms: ['Linux'],
     updated: '2026-09-01',
-    install: 'thurbox-cli plugin install git+https://github.com/Thurbeen/thurbox-fixture',
+    install: 'thurbox-cli mod install git+https://github.com/Thurbeen/thurbox-fixture',
     notes: 'Place its slot in layout.lua.',
   },
   {
@@ -36,18 +36,18 @@ const fixture = [
 // The fixture goes through the same template and transforms as the production catalog.
 test('site builds every fixture entry, badges, controls and escaped text', async () => {
   await mkdir('tmp', { recursive: true });
-  const scratch = await mkdtemp('tmp/plugins-site-');
+  const scratch = await mkdtemp('tmp/mods-site-');
   const output = `${scratch}/output`;
   try {
     await cp('website', `${scratch}/website`, { recursive: true });
-    await writeFile(`${scratch}/website/_data/plugins.json`, JSON.stringify(fixture));
+    await writeFile(`${scratch}/website/_data/mods.json`, JSON.stringify(fixture));
     const site = new Eleventy(`${scratch}/website`, output, {
       source: 'cli',
       configPath: 'eleventy.config.js',
       config: (config) => config.setUseGitIgnore(false),
     });
     await site.write();
-    const root = parse(await readFile(`${output}/plugins.html`, 'utf8'));
+    const root = parse(await readFile(`${output}/mods.html`, 'utf8'));
     const cards = root.querySelectorAll('[data-plugin]');
     assert.equal(cards.length, fixture.length);
     fixture.forEach((entry, i) => {
@@ -81,7 +81,7 @@ test('site builds every fixture entry, badges, controls and escaped text', async
     assert.equal(root.querySelector('#plugin-count').getAttribute('aria-live'), 'polite');
     assert.ok(root.querySelector('a[aria-current="page"]'));
     assert.equal(root.querySelector('img[alt="Extension demo"]').getAttribute('loading'), 'lazy');
-    assert.ok(root.querySelector('script[src="./js/plugins.js"]'));
+    assert.ok(root.querySelector('script[src="./js/mods.js"]'));
     const events = {};
     const form = root.querySelector('#plugin-filters');
     form.addEventListener = (event, handler) => {
@@ -91,7 +91,7 @@ test('site builds every fixture entry, badges, controls and escaped text', async
     const kind = root.querySelector('#plugin-kind');
     const badge = root.querySelector('#plugin-badge');
     search.value = kind.value = badge.value = '';
-    runInNewContext(await readFile('website/js/plugins.js', 'utf8'), {
+    runInNewContext(await readFile('website/js/mods.js', 'utf8'), {
       document: {
         getElementById: (id) => root.querySelector(`#${id}`),
         querySelectorAll: (selector) => root.querySelectorAll(selector),
@@ -120,7 +120,7 @@ test('site builds every fixture entry, badges, controls and escaped text', async
     search.value = kind.value = badge.value = '';
     events.reset();
     assert.ok(cards.every((card) => !card.hidden));
-    assert.equal(root.querySelector('#plugin-count').textContent, '2 of 2 plugins');
+    assert.equal(root.querySelector('#plugin-count').textContent, '2 of 2 mods');
     assert.equal(root.querySelector('#plugin-empty').hidden, true);
   } finally {
     await rm(scratch, { recursive: true, force: true });
@@ -128,10 +128,10 @@ test('site builds every fixture entry, badges, controls and escaped text', async
 });
 
 test('catalog schema rejects missing fields, unsafe URLs, invalid values and duplicates', async () => {
-  const { validatePlugins } = await import('./validate-plugins.mjs');
-  assert.deepEqual(validatePlugins(fixture), []);
+  const { validateMods } = await import('./validate-mods.mjs');
+  assert.deepEqual(validateMods(fixture), []);
   assert.deepEqual(
-    validatePlugins([{ ...fixture[0], repo: 'https://github.com/Thurbeen/fleet' }]),
+    validateMods([{ ...fixture[0], repo: 'https://github.com/Thurbeen/fleet' }]),
     [],
   );
   for (const field of [
@@ -148,7 +148,7 @@ test('catalog schema rejects missing fields, unsafe URLs, invalid values and dup
   ]) {
     const entry = { ...fixture[0] };
     delete entry[field];
-    assert.ok(validatePlugins([entry]).length, field);
+    assert.ok(validateMods([entry]).length, field);
   }
   for (const patch of [
     { repo: 'https://github.com/Thurbeen-other/fleet' },
@@ -163,21 +163,21 @@ test('catalog schema rejects missing fields, unsafe URLs, invalid values and dup
     { updated: '2026-02-30' },
     { media: { url: 'http://example.com/x.gif', alt: '' } },
   ]) {
-    assert.ok(validatePlugins([{ ...fixture[0], ...patch }]).length, JSON.stringify(patch));
+    assert.ok(validateMods([{ ...fixture[0], ...patch }]).length, JSON.stringify(patch));
   }
   assert.ok(
-    validatePlugins([
+    validateMods([
       fixture[0],
       { ...fixture[0], name: 'Another', repo: fixture[0].repo.toUpperCase() },
     ]).length,
   );
-  assert.ok(validatePlugins([fixture[0], { ...fixture[1], name: fixture[0].name }]).length);
-  assert.ok(validatePlugins({}).length);
-  assert.ok(validatePlugins([null]).length);
+  assert.ok(validateMods([fixture[0], { ...fixture[1], name: fixture[0].name }]).length);
+  assert.ok(validateMods({}).length);
+  assert.ok(validateMods([null]).length);
 });
 
 test('link validation rejects a missing repository and unreachable media', async () => {
-  const { checkLinks } = await import('./validate-plugins.mjs');
+  const { checkLinks } = await import('./validate-mods.mjs');
   const seen = [];
   const errors = await checkLinks(fixture, async (url) => {
     seen.push(url);
@@ -201,6 +201,6 @@ test('link validation rejects a missing repository and unreachable media', async
 });
 
 test('catalog inherits the website single theme', async () => {
-  const css = await readFile('website/css/plugins.css', 'utf8');
+  const css = await readFile('website/css/mods.css', 'utf8');
   assert.doesNotMatch(css, /prefers-color-scheme|:root/);
 });

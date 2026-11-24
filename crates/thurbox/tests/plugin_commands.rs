@@ -390,7 +390,7 @@ return { name = "escape", slot = "sessions",
     let host = LuaHost::new(&ui);
     let error = host.error.clone().unwrap_or_default();
     assert!(
-        error.contains("plugin directory"),
+        error.contains("mod directory"),
         "it must refuse and say why: {error}"
     );
 }

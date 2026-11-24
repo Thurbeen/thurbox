@@ -81,11 +81,11 @@ failing check.
 |------|--------|-----------|------|---------|
 | `~/.config/thurbox/settings.toml` | TOML | you + `Ctrl+,` panel | **live** (feature flags) / startup (rest) | tuning knobs + feature flags |
 | `~/.config/thurbox/themes.toml` | TOML | you | startup | custom theme palettes |
-| `~/.config/thurbox/ui/` | Lua | you | **live** (watched, 120 ms debounce; `F10` forces) | **the interface itself** — one file per pane, plus `layout.lua`, `lib/`, `AGENTS.md`/`README.md` for whoever edits it, and a directory per plugin installed from a repository (its own working copy, `.git` included) |
-| `~/.config/thurbox/ui/plugins.toml` | TOML | you (or `thurbox-cli plugin`) | on each `plugin` command | **what the interface is composed of**: a source, a destination file and an optional pin, per installed pane |
-| `~/.config/thurbox/ui/plugins.lock` | TOML | `thurbox-cli plugin` | on each `plugin` command | what each entry resolved to, and the digest of every file delivered. Machine-written — commit it beside the spec and the same interface reproduces elsewhere |
-| `~/.config/thurbox/ui.json` | JSON | `F1` / Interface tab (or you) | startup | your decisions *about* the interface: rebound chords, plugin settings, and the action band's order (`"pills": { "<action>": <priority> }`, replacing what the declaring plugin chose — an entry naming an action nothing declares is ignored, not drawn). Written back only by a registry that **read** it (`registry::Origin`), so a process holding no decisions cannot empty it |
-| `~/.config/thurbox/plugin-state.json` | JSON | Interface tab (or `thurbox-cli plugin`) | startup | **what a plugin may do**: `trusted` (absolute path → the grant, a digest or `{pin, digest}` for an installed pane) and `disabled` (absolute paths turned off). Kept apart from `ui.json` so the file capabilities are granted from is written only when a grant or the disabled set changes. One that exists but cannot be read or parsed is never replaced, and `config validate` names it. Same `registry::Origin` rule as `ui.json` |
+| `~/.config/thurbox/ui/` | Lua | you | **live** (watched, 120 ms debounce; `F10` forces) | **the interface itself** — one file per pane, plus `layout.lua`, `lib/`, `AGENTS.md`/`README.md` for whoever edits it, and a directory per mod installed from a repository (its own working copy, `.git` included) |
+| `~/.config/thurbox/ui/plugins.toml` | TOML | you (or `thurbox-cli mod`) | on each `mod` command | **what the interface is composed of**: a source, a destination file and an optional pin, per installed pane |
+| `~/.config/thurbox/ui/plugins.lock` | TOML | `thurbox-cli mod` | on each `mod` command | what each entry resolved to, and the digest of every file delivered. Machine-written — commit it beside the spec and the same interface reproduces elsewhere |
+| `~/.config/thurbox/ui.json` | JSON | `F1` / Interface tab (or you) | startup | your decisions *about* the interface: rebound chords, mod settings, and the action band's order (`"pills": { "<action>": <priority> }`, replacing what the declaring mod chose — an entry naming an action nothing declares is ignored, not drawn). Written back only by a registry that **read** it (`registry::Origin`), so a process holding no decisions cannot empty it |
+| `~/.config/thurbox/plugin-state.json` | JSON | Interface tab (or `thurbox-cli mod`) | startup | **what a mod may do**: `trusted` (absolute path → the grant, a digest or `{pin, digest}` for an installed pane) and `disabled` (absolute paths turned off). Kept apart from `ui.json` so the file capabilities are granted from is written only when a grant or the disabled set changes. One that exists but cannot be read or parsed is never replaced, and `config validate` names it. Same `registry::Origin` rule as `ui.json` |
 | `~/.config/thurbox/interface.json` | JSON | thurbox (theme picker, `thurbox-cli editor`, the session list's order) | startup, and again after each change | the theme last chosen, the editor `Ctrl+O` opens and the manual session order. Rewritten whole under a lock every process takes (`interface.json.lock`). Missing or unreadable is the defaults |
 | `~/.local/share/thurbox/bookmarks.json` | JSON | the creation flow | each read of the repository list | the repositories and folders the creation flow remembers, per host. Rewritten whole under a lock every process takes (`bookmarks.json.lock`) |
 | `~/.local/share/thurbox/notify-dedupe.json` | JSON | `thurbox-cli notify send --key` | each keyed send | each dedupe key and when its hold ends; expired holds are dropped on the next keyed send. Rewritten whole under a lock (`notify-dedupe.json.lock`) |
@@ -119,7 +119,7 @@ via the live mtime poll.
 
 Every file thurbox writes that a user edits or thurbox reads back — `settings.toml`,
 `ui.json`, `plugin-state.json` (and the other seeded config files),
-the interface's plugin
+the interface's mod
 lock, spec and bundled files — is written through
 one writer, `paths::write_atomically`. It stages a complete file beside the
 destination and replaces it with one native same-directory rename, so a reader
@@ -295,7 +295,7 @@ are read this way, and what it costs, is ADR-28 in `docs/thurbox/architecture.md
 ## settings.toml
 
 > The `F6` / `Ctrl+,` panel edits this file: core settings are listed above
-> whatever plugins declared, `⟳` marks the ones that wait for the next
+> whatever mods declared, `⟳` marks the ones that wait for the next
 > launch, and `Ctrl+S` saves — written back through `toml_edit`, so the
 > comments below survive.
 
@@ -422,9 +422,9 @@ the next launch. Data is never touched, so re-enabling a flag is lossless.
 **A pane is not switched off here.** Panes are files, so turning one off
 is `space` on its row in the Interface tab (`Ctrl+,` then `]`), recorded
 in `plugin-state.json`. That does strictly more than a flag could: it works for a
-plugin *you* wrote, which no compiled-in flag could know about.
+mod *you* wrote, which no compiled-in flag could know about.
 
-The panes for code review and the info panel are plugins
+The panes for code review and the info panel are mods
 ([`thurbox-code-review`](https://github.com/Thurbeen/thurbox-code-review),
 [`thurbox-info-panel`](https://github.com/Thurbeen/thurbox-info-panel)),
 switched on and off from the Interface tab like any other pane.
@@ -446,7 +446,7 @@ longer read, and a save from the settings panel removes it.
 | `features.soft_delete` | Fleet deletes a session at once. |
 | `three_panel_min_cols` | The interface has no third column. |
 | `features.file_viewer` | The interface has no file viewer. |
-| `features.info_panel`, `features.code_review` | A plugin's own pane is switched off in the Interface tab. |
+| `features.info_panel`, `features.code_review` | A mod's own pane is switched off in the Interface tab. |
 | `features.global_search` | The search pane is switched off in the Interface tab. |
 | `notifications.also_on_waiting` | Fleet reports no finished state. |
 
@@ -1053,7 +1053,7 @@ User-set (read by thurbox):
 | `THURBOX_SOCKET` | overrides the **local** multiplexer socket name, winning over the data-dir derivation below. For test/sandbox tooling: Unix scoping uses `TMUX_TMPDIR`, but psmux (Windows) resolves every `-L <name>` machine-wide, so this is the only way to fully scope an instance there. Empty = unset. |
 | `TMUX_TMPDIR` | tmux's own: the directory its `tmux-<uid>/<socket>` goes under. When set, thurbox leaves it alone (test and sandbox tooling scope their servers with it); unset, thurbox sets it to `<data dir>/tmux` for every tmux command it runs — see [Where the tmux socket lives](#where-the-tmux-socket-lives). Empty = unset. |
 | `THURBOX_CONFIG_DIR`, `THURBOX_DATA_DIR` | move thurbox's config and data dirs — see [Relocating an instance](#relocating-an-instance-thurbox_data_dir) |
-| `THURBOX_UI_DIR` | the interface directory to load instead of `<config dir>/ui`, e.g. a checkout's `ui/` ([plugins.md](plugins.md)) |
+| `THURBOX_UI_DIR` | the interface directory to load instead of `<config dir>/ui`, e.g. a checkout's `ui/` ([mods.md](mods.md)) |
 | `THURBOX_UI_INSTANCE` | selects a running TUI for `thurbox-cli ui state` and `ui action` when `--instance` is omitted. |
 | `WSL_DISTRO_NAME` | set by WSL itself, not by you: it is how thurbox knows which distro it is running inside, which decides how a copy reaches the Windows clipboard |
 
@@ -1192,11 +1192,11 @@ named after the data profile. The record names it, and a reader refuses a
 record that names any other place.
 `thurbox-cli ui --instance <id> state --json` reports the focused pane,
 selected session ID, arranged slots with rects and visible panes, panel state, kernel modal and its
-selection, open plugin floats, active search query and result selection, and
-the action catalog revision. Plugin-owned details are limited to each plugin's
+selection, open mod floats, active search query and result selection, and
+the action catalog revision. Mod-owned details are limited to each mod's
 optional `ui_state()` projection of small scalar values; the Lua store and
 terminal contents are never copied into this snapshot. `plugin_state` keys
-projections by plugin file path, so two panes with the same display name remain
+projections by mod file path, so two panes with the same display name remain
 distinct. If a combined snapshot exceeds the local reply limit, the command
 returns an explicit `state_too_large` error. A command
 without `--instance` uses the sole reachable screen, or refuses with an
@@ -1216,7 +1216,7 @@ List the target's live actions and their argument types, ownership, effect,
 destructive classification, availability and current chords with
 `thurbox-cli ui --instance <id> actions --json`. `thurbox-cli schema --instance
 <id> --json` includes those same descriptors beside the CLI command tree.
-Both read the running interface, so reloading a plugin updates them together.
+Both read the running interface, so reloading a mod updates them together.
 When no TUI is running, `schema` marks its UI portion `no_running_ui` and still
 lists headless CLI commands. With several running TUIs, select one explicitly.
 The two initial typed actions are:
@@ -1244,7 +1244,7 @@ seconds, works once for the same local peer and instance, and is refused if
 the action catalog or target changes. A confirmation queues the normal session
 operation; its later success or failure is reported through the ordinary TUI
 command status. An addressed destructive key cannot bypass this step.
-For input owned by an active modal or plugin, use addressed operations such as
+For input owned by an active modal or mod, use addressed operations such as
 `thurbox-cli ui --instance <id> input modal --key esc`,
 `input search --input-text 'term'`, or `input agent --scroll down`. These operations
 refuse an inactive target. Keys and text are refused for session terminals;
@@ -1263,8 +1263,8 @@ The `ui actions` descriptor schema is versioned separately from the CLI. For
 schema version 1, bundled action names, argument names and meanings remain
 stable; new optional fields and new actions can appear. Clients should ignore
 unknown fields and rediscover the live catalog after `catalog_revision` moves.
-Plugin-owned actions and `plugin_state` projections are governed by their
-plugins and may disappear on reload. `ui state` exposes the active search query,
+Mod-owned actions and `plugin_state` projections are governed by their
+mods and may disappear on reload. `ui state` exposes the active search query,
 so scripts should treat its output and the event stream as private even though
 terminal contents are omitted. No `ui capture` command is provided: visible
 terminal cells can contain credentials or private prompts, and bounded output

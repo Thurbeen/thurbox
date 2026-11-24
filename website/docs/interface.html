@@ -1,7 +1,7 @@
 ---
 layout: docs.njk
 title: 'The Interface — Thurbox Docs'
-description: 'Every thurbox pane is a Lua plugin you can edit, move, turn off, delete or replace. What the kernel guarantees, and what it will not let a plugin do.'
+description: 'Every thurbox pane is a Lua mod you can edit, move, turn off, delete or replace. What the kernel guarantees, and what it will not let a mod do.'
 currentPage: 'interface'
 breadcrumb: 'Interface'
 ---
@@ -9,7 +9,7 @@ breadcrumb: 'Interface'
 <p>
   There is no built-in UI compiled into
   <code>thurbox</code>. The binary boots a kernel, reads a directory of Lua files, and draws
-  whatever it finds &mdash; so every pane, the session list included, is a plugin under
+  whatever it finds &mdash; so every pane, the session list included, is a mod under
   <code>ui/</code>. You can edit one, replace one with a file of your own, turn one off, or delete
   it.
 </p>
@@ -31,7 +31,7 @@ breadcrumb: 'Interface'
 </h2>
 <p>
   You do not have to learn Lua to change the interface. Open a session in the interface directory
-  (<code>thurbox-cli plugin dir</code> prints it) and, in whichever coding CLI you run, ask in
+  (<code>thurbox-cli mod dir</code> prints it) and, in whichever coding CLI you run, ask in
   English:
 </p>
 <ul class="prompts">
@@ -39,27 +39,27 @@ breadcrumb: 'Interface'
   <li>
     Add a pane on the left with CPU and RAM usage. There is a
     <code>top</code>
-    example plugin &mdash; install it and give it a slot in the layout.
+    example mod &mdash; install it and give it a slot in the layout.
   </li>
   <li>Move the search strip to the bottom, and make the session column 30% wide.</li>
   <li>
     The session list is too noisy &mdash; drop the repo group headers and show the branch instead of
     the agent name.
   </li>
-  <li>Install the info panel plugin.</li>
+  <li>Install the info panel mod.</li>
 </ul>
 <p>
   That works because the directory ships an
   <code>AGENTS.md</code>
   that any coding CLI loads as context without being asked. It tells the agent that
-  <code>thurbox-cli plugin check</code>
+  <code>thurbox-cli mod check</code>
   is how it verifies its own work, and warns it off the mistakes that are invisible until runtime
-  &mdash; building under a recursively watched directory, or writing inside a cloned plugin's own
+  &mdash; building under a recursively watched directory, or writing inside a cloned mod's own
   working copy. Press
   <kbd>F10</kbd>
   and the change is on your screen.
 </p>
-<pre data-wrap><code class="language-bash">thurbox-cli plugin dir          # prints the directory</code></pre>
+<pre data-wrap><code class="language-bash">thurbox-cli mod dir          # prints the directory</code></pre>
 
 <h3 id="ask-the-agent-worked">
   What a prompt like &ldquo;add a CPU/RAM pane on the left&rdquo; actually does
@@ -72,7 +72,7 @@ breadcrumb: 'Interface'
 </p>
 <p>
   <strong>1. The pane.</strong>
-  <code>thurbox-cli plugin install top</code>
+  <code>thurbox-cli mod install top</code>
   delivers
   <code>plugins/85_top.lua</code>
   and records the entry in
@@ -101,24 +101,24 @@ columns[#columns + 1] = { slot = "center" }</code></pre>
   &mdash; and trust it (settings &rarr; Interface &rarr;
   <kbd>t</kbd>), because it shells out to
   <code>top</code>
-  and an untrusted plugin does not get
+  and an untrusted mod does not get
   <code>run</code>
   <strong>at all</strong>. Until you do, it draws the reason rather than a blank pane.
 </p>
 <div class="info-box">
   <p>
-    Two things follow from that split and are easy to miss. The plugin manager
+    Two things follow from that split and are easy to miss. The mod manager
     <strong>never writes</strong>
     <code>layout.lua</code>
     &mdash; placement stays yours, which is why step 2 is a separate edit. And a pane that loads but
     which no arrangement places draws nothing while looking perfectly healthy:
-    <code>thurbox-cli plugin check</code>
+    <code>thurbox-cli mod check</code>
     is what fails on that, and prints the line to add.
   </p>
 </div>
 
 <h2 id="every-pane-is-a-plugin">
-  Every pane is a plugin
+  Every pane is a mod
   <a href="#every-pane-is-a-plugin" class="heading-anchor">#</a>
 </h2>
 <p>
@@ -151,13 +151,13 @@ columns[#columns + 1] = { slot = "center" }</code></pre>
   present on disk, intact, and not loaded.
 </p>
 <p>
-  The one thing a plugin cannot do is surprise you. It gets no filesystem, no network, and no
+  The one thing a mod cannot do is surprise you. It gets no filesystem, no network, and no
   process &mdash;
   <code>io</code>,
   <code>os</code>,
   <code>debug</code>
   and the loaders are not in its world at all, and a lint enforces their absence. Reads are served
-  from a snapshot and return instantly; writes are commands the kernel performs. So no plugin,
+  from a snapshot and return instantly; writes are commands the kernel performs. So no mod,
   including one nobody has written yet, can freeze the interface on a slow git fetch or an
   unreachable Fleet.
 </p>
@@ -172,7 +172,7 @@ columns[#columns + 1] = { slot = "center" }</code></pre>
 </p>
 <p>
   <strong>Reading a program's output.</strong>
-  A plugin can run
+  A mod can run
   <code>git status</code>,
   <code>docker compose ps</code>
   or
@@ -186,7 +186,7 @@ columns[#columns + 1] = { slot = "center" }</code></pre>
   <em>real terminal</em>
   for a program it names &mdash;
   <code>htop</code>, a REPL, or a log you page through. Keystrokes reach it, it is resized to the
-  pane's rect, and it keeps running while you work elsewhere. The pane belongs to the plugin rather than to a session, and survives
+  pane's rect, and it keeps running while you work elsewhere. The pane belongs to the mod rather than to a session, and survives
   reloading the interface.
 </p>
 <p>
@@ -199,7 +199,7 @@ columns[#columns + 1] = { slot = "center" }</code></pre>
   says which of the two a file wants before you decide.
 </p>
 <p>
-  It is granted per plugin, and only after you trust that plugin: settings
+  It is granted per mod, and only after you trust that mod: settings
   (<code>Ctrl+,</code>) &rarr;
   <code>]</code>
   &rarr; select it &rarr;
@@ -210,7 +210,7 @@ columns[#columns + 1] = { slot = "center" }</code></pre>
 <p>
   This is not a sandbox and does not pretend to be one. A program thurbox runs for you has your
   authority, and no gate here changes that. What trust buys is that nothing runs
-  <em>unasked</em>. Treat a plugin you did not write the way you would treat a shell profile
+  <em>unasked</em>. Treat a mod you did not write the way you would treat a shell profile
   someone sent you.
 </p>
 
@@ -230,38 +230,38 @@ columns[#columns + 1] = { slot = "center" }</code></pre>
   </thead>
   <tbody>
     <tr>
-      <td><code>thurbox-cli plugin dir</code></td>
+      <td><code>thurbox-cli mod dir</code></td>
       <td>Which interface directory is live, and which rule chose it</td>
     </tr>
     <tr>
-      <td><code>thurbox-cli plugin new &lt;name&gt;</code></td>
+      <td><code>thurbox-cli mod new &lt;name&gt;</code></td>
       <td>Writes a starter that already loads</td>
     </tr>
     <tr>
-      <td><code>thurbox-cli plugin check</code></td>
+      <td><code>thurbox-cli mod check</code></td>
       <td>
         Loads the interface the way <code>thurbox</code> does; non-zero on a failure &mdash;
         including on a pane that loaded but which no arrangement places
       </td>
     </tr>
     <tr>
-      <td><code>thurbox-cli plugin list</code></td>
+      <td><code>thurbox-cli mod list</code></td>
       <td>The same inventory the settings Interface tab shows, with each file's origin</td>
     </tr>
     <tr>
-      <td><code>thurbox-cli plugin events</code></td>
-      <td>Every event a plugin may subscribe to (<code>events = { &hellip; }</code> + <code>on_event</code>), with its payload</td>
+      <td><code>thurbox-cli mod events</code></td>
+      <td>Every event a mod may subscribe to (<code>events = { &hellip; }</code> + <code>on_event</code>), with its payload</td>
     </tr>
     <tr>
-      <td><code>thurbox-cli plugin install &lt;src&gt;</code></td>
+      <td><code>thurbox-cli mod install &lt;src&gt;</code></td>
       <td>Fetches a pane and records it in <code>plugins.toml</code></td>
     </tr>
     <tr>
-      <td><code>thurbox-cli plugin sync</code></td>
+      <td><code>thurbox-cli mod sync</code></td>
       <td>Brings the directory into agreement with <code>plugins.toml</code></td>
     </tr>
     <tr>
-      <td><code>thurbox-cli plugin update</code> / <code>remove</code></td>
+      <td><code>thurbox-cli mod update</code> / <code>remove</code></td>
       <td>Advances a pin when you ask; removes a pane, its entry and its record</td>
     </tr>
   </tbody>
@@ -273,10 +273,10 @@ columns[#columns + 1] = { slot = "center" }</code></pre>
   optional pin &mdash; and
   <code>plugins.lock</code>
   beside it records what each entry resolved to, so the same spec reproduces the same interface on
-  another machine. A plugin that carries a program or a data file is itself a
+  another machine. A mod that carries a program or a data file is itself a
   <strong>repository</strong>
   &mdash;
-  <code>plugin install git+&lt;url&gt;</code>
+  <code>mod install git+&lt;url&gt;</code>
   clones it, payload and all, keeping its
   <code>.git</code>
   so updates are a fetch and your edits are protected by git rather than by us. The
@@ -295,7 +295,7 @@ columns[#columns + 1] = { slot = "center" }</code></pre>
   Two deliberate limits. The manager
   <strong>never writes your arrangement</strong>
   &mdash; adding a pane is two edits, and
-  <code>plugin check</code>
+  <code>mod check</code>
   fails loudly on the missing second one instead of guessing at it. And installing grants nothing:
   a pane that asks to run programs still draws how to trust it until you do. Trust for an installed
   pane is recorded against the source and version it was granted for, so an ordinary release asks
@@ -305,7 +305,7 @@ columns[#columns + 1] = { slot = "center" }</code></pre>
   same thing.
 </p>
 <p>
-  <strong>A plugin can react as well as draw.</strong>
+  <strong>A mod can react as well as draw.</strong>
   Declare
   <code>events = { "session.status", &hellip; }</code>
   and an
@@ -316,8 +316,8 @@ columns[#columns + 1] = { slot = "center" }</code></pre>
   <code>thurbox-cli</code>
   or a cron tick fires the same one the creation flow does; a subscription to a name nothing
   emits refuses to load, and
-  <code>thurbox-cli plugin events</code>
-  lists them all. Plugins reach each other with
+  <code>thurbox-cli mod events</code>
+  lists them all. Mods reach each other with
   <code>command("emit", &hellip;)</code>. And an action need not spend a chord to exist:
   <code>commands = { { action, desc } }</code>
   puts it in the
@@ -325,9 +325,9 @@ columns[#columns + 1] = { slot = "center" }</code></pre>
   command palette beside every declared key, run through the same handler a key press takes.
 </p>
 <p>
-  A broken plugin does not cost you the interface: the error is reported in place, and the bundled
+  A broken mod does not cost you the interface: the error is reported in place, and the bundled
   copy stands in until the file loads again. The full author's guide, including the mistakes that
-  are invisible until runtime, is <a href="thurbox/plugins.html">Writing a pane</a>; the kernel's
+  are invisible until runtime, is <a href="thurbox/mods.html">Writing a pane</a>; the kernel's
   own shape and constraints are in <a href="thurbox/kernel.html">The kernel</a>.
 </p>
 
@@ -363,7 +363,7 @@ columns[#columns + 1] = { slot = "center" }</code></pre>
     </tr>
     <tr>
       <td>an installed pane (<code>from &lt;src&gt;</code>)</td>
-      <td><code>thurbox-cli plugin sync</code></td>
+      <td><code>thurbox-cli mod sync</code></td>
     </tr>
     <tr>
       <td>the whole directory</td>
@@ -379,9 +379,9 @@ columns[#columns + 1] = { slot = "center" }</code></pre>
   <kbd>space</kbd>
   is also the key for bisecting which of several files is at fault. Both reload immediately. With
   no terminal to trust,
-  <code>thurbox-cli plugin check</code>
+  <code>thurbox-cli mod check</code>
   reports the same failure and exits non-zero. Full detail: the repository's
-  <a href="thurbox/plugins.html#when-something-goes-wrong">Writing a pane, &ldquo;When something goes wrong&rdquo;</a>.
+  <a href="thurbox/mods.html#when-something-goes-wrong">Writing a pane, &ldquo;When something goes wrong&rdquo;</a>.
 </p>
 
 <h2 id="installable-panes">
@@ -432,8 +432,8 @@ columns[#columns + 1] = { slot = "center" }</code></pre>
 <p>
   Both carry more than a single Lua file, so both install by cloning:
 </p>
-<pre data-wrap><code class="language-bash">thurbox-cli plugin install git+https://github.com/Thurbeen/thurbox-code-review
-thurbox-cli plugin install git+https://github.com/Thurbeen/thurbox-info-panel</code></pre>
+<pre data-wrap><code class="language-bash">thurbox-cli mod install git+https://github.com/Thurbeen/thurbox-code-review
+thurbox-cli mod install git+https://github.com/Thurbeen/thurbox-info-panel</code></pre>
 <p>
   Neither is bundled and neither is vendored into thurbox, which is the point: they are ordinary
   panes on the same terms as one you write, recorded in your

@@ -303,16 +303,16 @@ tree is 39 MiB. Deleting a file later does not give that space back.
 By contributing, you agree that your contributions will be licensed under the
 [MIT License](LICENSE), the same license that covers the project.
 
-## Plugin catalog
+## Mod catalog
 
-The [Plugins page](https://thurbox.thurbeen.eu/plugins.html) reads only
-`website/_data/plugins.json`. To submit an add-on:
+The [Mods page](https://thurbox.thurbeen.eu/mods.html) reads only
+`website/_data/mods.json`. To submit an add-on:
 
 1. Add the `thurbox-plugin` topic to your public GitHub repository.
 2. Open a PR adding one object to the catalog, using the template below.
 3. Link setup instructions in your README, including required Thurbox versions,
    capability grants, dependencies, platform limits and conflicts with other panes.
-4. Run `npm ci`, `npm run lint:website` and `npm run check:plugins:links`.
+4. Run `npm ci`, `npm run lint:website` and `npm run check:mods:links`.
 
 Maintainers review every listing before publishing. The topic helps discovery;
 it never adds entries automatically. An official badge is reserved for
@@ -328,7 +328,7 @@ Thurbeen-maintained add-ons. Use `community` for submissions.
   "kind": "pane",
   "platforms": ["Linux", "macOS"],
   "updated": "2026-10-01",
-  "install": "thurbox-cli plugin install git+https://github.com/your-account/thurbox-example",
+  "install": "thurbox-cli mod install git+https://github.com/your-account/thurbox-example",
   "notes": "Required version, layout changes, capability grants and conflicts.",
   "media": {
     "url": "https://raw.githubusercontent.com/your-account/thurbox-example/main/media/demo.gif",
@@ -337,7 +337,7 @@ Thurbeen-maintained add-ons. Use `community` for submissions.
 }
 ```
 
-[`website/plugins.schema.json`](website/plugins.schema.json) defines the schema.
+[`website/mods.schema.json`](website/mods.schema.json) defines the schema.
 All template fields are required except `media`. `release` is an optional
 stable release tag; `updated` is the repository's last push date, recorded as
 `YYYY-MM-DD`. Kinds are `pane`, `extension`, `agent`, `theme` and `other`:
@@ -347,7 +347,7 @@ steps when needed. Catalog commands are displayed, never executed by the site.
 
 Names and repository URLs must be unique (case-insensitive). Repository URLs
 must be canonical HTTPS GitHub URLs. Media URLs must use HTTPS; link to the
-repository's own screenshot or GIF instead of copying it. `check:plugins:links`
+repository's own screenshot or GIF instead of copying it. `check:mods:links`
 fails an entry without `media` whose repository has a `media/demo.gif`, so a GIF
 added after the listing reaches the page. Include descriptive alt text. State
 which platforms are supported and qualify anything unverified.
@@ -359,4 +359,4 @@ using this checked-in snapshot even when GitHub is unavailable. A dead link
 fails the submission check rather than silently publishing a broken entry.
 Catalog updates follow the same reviewed PR process as new entries; archived
 or superseded add-ons should be removed or clearly explained. Build and filter
-regressions are exercised with fixture entries by `npm run test:plugins`.
+regressions are exercised with fixture entries by `npm run test:mods`.

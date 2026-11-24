@@ -725,7 +725,7 @@ impl App {
             return;
         }
         let Some(index) = self.host.index_of(plugin) else {
-            self.report(format!("no plugin named {plugin:?}"), Level::Error);
+            self.report(format!("no mod named {plugin:?}"), Level::Error);
             return;
         };
         if let Err(e) = self.host.on_action(index, action) {

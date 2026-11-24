@@ -2,10 +2,10 @@
 --
 -- NOT bundled. Install it into your interface with:
 --
---     thurbox-cli plugin install top
+--     thurbox-cli mod install top
 --
 -- Then trust it: settings (`Ctrl+,`) → Interface (`]`) → the row → `t`. Until you
--- do, `run` is **not in this plugin's environment** — not a function that returns
+-- do, `run` is **not in this mod's environment** — not a function that returns
 -- an error, absent — so `render` checks for it rather than assuming, and draws the
 -- reason instead of a blank pane.
 --
@@ -210,7 +210,7 @@ end
 return {
   name = "top",
   -- Its own slot, placed by `examples/lua/layout.lua` — copy that too, or this
-  -- pane loads and never draws (`plugin list` says `no slot`, which is the fastest
+  -- pane loads and never draws (`mod list` says `no slot`, which is the fastest
   -- way to spot it). To use it with the SHIPPED arrangement instead, set
   -- `slot = "center"` and `slot_mode = "switch"`: it then shares the centre with
   -- the agent and F7 brings it forward.

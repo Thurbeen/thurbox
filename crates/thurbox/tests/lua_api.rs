@@ -501,3 +501,36 @@ fn a_plugin_needing_a_newer_api_is_refused_and_says_why() {
     publish(&host, &full());
     assert_eq!(render_text(&host), "current");
 }
+
+#[test]
+fn mods_is_the_inventory_and_plugins_is_the_same_table() {
+    let (_dir, host) = host_with(
+        r#"return {
+          name = "walk", slot = "a",
+          render = function()
+            local same = rawequal(thurbox.mods, thurbox.plugins)
+            return { text = tostring(same) .. " " .. thurbox.mods[1].path }
+          end,
+        }"#,
+    );
+    publish(&host, &full());
+    assert_eq!(render_text(&host), "true plugins/10_x.lua");
+}
+
+#[test]
+fn registry_rows_name_their_mod_and_keep_plugin() {
+    let (_dir, host) = host_with(
+        r#"return {
+          name = "walk", slot = "a",
+          keys = { { key = "ctrl+y", action = "go", desc = "go", scope = "mod" } },
+          settings = { { id = "on", desc = "on", default = true } },
+          render = function()
+            local key = thurbox.registry.keys[1]
+            local setting = thurbox.registry.settings[1]
+            return { text = key.mod .. key.plugin .. setting.mod .. setting.plugin .. key.scope }
+          end,
+        }"#,
+    );
+    publish(&host, &full());
+    assert_eq!(render_text(&host), "walkwalkwalkwalkplugin");
+}

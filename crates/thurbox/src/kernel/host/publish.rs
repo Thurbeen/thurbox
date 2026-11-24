@@ -311,6 +311,7 @@ impl LuaHost {
         let inventory_value = self.group("plugins", [inventory_key, 0, 0, 0], || {
             build_inventory(&self.lua, inventory)
         })?;
+        set(&table, "mods", inventory_value.clone())?;
         set(&table, "plugins", inventory_value)?;
         set(&table, "ui_dir", to_lua_string(&self.lua, ui_dir)?)?;
 
@@ -907,6 +908,7 @@ fn build_registry(lua: &Lua, registry: &Registry) -> Result<Value, String> {
     let keys = lua.create_table().map_err(|e| e.to_string())?;
     for (index, binding) in registry.bindings().iter().enumerate() {
         let item = lua.create_table().map_err(|e| e.to_string())?;
+        set(&item, "mod", binding.plugin.clone())?;
         set(&item, "plugin", binding.plugin.clone())?;
         set(&item, "action", binding.action.clone())?;
         set(&item, "key", binding.chord.clone())?;
@@ -920,6 +922,7 @@ fn build_registry(lua: &Lua, registry: &Registry) -> Result<Value, String> {
     let settings = lua.create_table().map_err(|e| e.to_string())?;
     for (index, setting) in registry.settings().iter().enumerate() {
         let item = lua.create_table().map_err(|e| e.to_string())?;
+        set(&item, "mod", setting.plugin.clone())?;
         set(&item, "plugin", setting.plugin.clone())?;
         set(&item, "id", setting.id.clone())?;
         set(&item, "desc", setting.description.clone())?;
@@ -945,6 +948,7 @@ fn build_registry(lua: &Lua, registry: &Registry) -> Result<Value, String> {
     let commands = lua.create_table().map_err(|e| e.to_string())?;
     for (index, command) in registry.commands().iter().enumerate() {
         let item = lua.create_table().map_err(|e| e.to_string())?;
+        set(&item, "mod", command.plugin.clone())?;
         set(&item, "plugin", command.plugin.clone())?;
         set(&item, "action", command.action.clone())?;
         set(&item, "desc", command.description.clone())?;

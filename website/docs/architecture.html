@@ -1,7 +1,7 @@
 ---
 layout: docs.njk
 title: 'Architecture — Thurbox Docs'
-description: 'Thurbox architecture: three components (thurbox, Fleet, the runtimes), Fleets and places, the Lua plugin kernel, module isolation, and design principles.'
+description: 'Thurbox architecture: three components (thurbox, Fleet, the runtimes), Fleets and places, the Lua mod kernel, module isolation, and design principles.'
 currentPage: 'architecture'
 breadcrumb: 'Architecture'
 ---
@@ -132,11 +132,11 @@ agent   &mdash;fleet signal / fleet result&rarr;                   Fleet</pre>
           </p>
 
           <h2 id="kernel">
-            The interface is a Lua plugin kernel
+            The interface is a Lua mod kernel
             <a href="#kernel" class="heading-anchor">#</a>
           </h2>
           <p>
-            thurbox boots a Rust kernel that renders whatever Lua plugins it finds under
+            thurbox boots a Rust kernel that renders whatever Lua mods it finds under
             <code>ui/</code>. It owns no pane of its own: the session list, the agent terminal and the
             search strip are files you can edit, move, turn off or replace. See
             <a href="interface.html">the interface</a> for what that means in practice.
@@ -149,7 +149,7 @@ agent   &mdash;fleet signal / fleet result&rarr;                   Fleet</pre>
               <span class="terminal-title">one frame</span>
             </div>
             <div class="terminal-body">
-              <pre>resolve layout &rarr; call each plugin with its rect &rarr; table &rarr; nodes &rarr; paint</pre>
+              <pre>resolve layout &rarr; call each mod with its rect &rarr; table &rarr; nodes &rarr; paint</pre>
             </div>
           </div>
           <p>Five constraints keep it small, and each one is load-bearing:</p>
@@ -160,12 +160,12 @@ agent   &mdash;fleet signal / fleet result&rarr;                   Fleet</pre>
               else (lists, gauges, panels) composes in Lua.
             </li>
             <li>
-              <strong>Layout resolves before render</strong>, so a plugin is told its own rect and can
+              <strong>Layout resolves before render</strong>, so a mod is told its own rect and can
               wrap, truncate and window against it.
             </li>
             <li>
               <strong>Reads are snapshots, writes are commands.</strong> Lua never blocks or awaits, so
-              no plugin &mdash; including one nobody has written yet &mdash; can freeze the interface on
+              no mod &mdash; including one nobody has written yet &mdash; can freeze the interface on
               a slow git fetch or an unreachable Fleet.
             </li>
             <li>
@@ -176,13 +176,13 @@ agent   &mdash;fleet signal / fleet result&rarr;                   Fleet</pre>
             <li>
               <strong>Anything touching the world runs on a worker</strong> &mdash; terminal attach,
               commands, diffs, metrics, git stats, repository reads, update checks, and programs a
-              plugin asked for.
+              mod asked for.
             </li>
           </ul>
           <p>
             <strong>System chrome is not a pane.</strong> Help, settings and the theme picker are
             kernel-owned: they overlay the arrangement, capture input, and stay out of the focus ring.
-            Plugins contribute <em>data</em> to them &mdash; declare a key and it appears in help;
+            Mods contribute <em>data</em> to them &mdash; declare a key and it appears in help;
             declare a setting and the settings modal grows a row.
           </p>
 
@@ -208,9 +208,9 @@ agent   &mdash;fleet signal / fleet result&rarr;                   Fleet</pre>
   &rarr; resolve ui/ &rarr; build the Lua host
   &rarr; init terminal
   &rarr; loop {
-    resolve layout &rarr; call each plugin with its rect &rarr; paint
+    resolve layout &rarr; call each mod with its rect &rarr; paint
     &rarr; poll workers (terminals, commands, diffs, metrics, repos, runs)
-    &rarr; dispatch events to subscribed plugins
+    &rarr; dispatch events to subscribed mods
     &rarr; drain Lua's command queue
     &rarr; dispatch keys through the registry
   }
@@ -271,7 +271,7 @@ coordinator &larr; main's body: the loop, the workers, the chrome</pre>
               <tr>
                 <td><code>agent/</code></td>
                 <td>
-                  <code>fetch</code> downloads what a plugin install or the updater needs, and
+                  <code>fetch</code> downloads what a mod install or the updater needs, and
                   <code>input</code> encodes keys for an agent's terminal. The agents themselves are
                   Fleet's harness profiles.
                 </td>
@@ -280,7 +280,7 @@ coordinator &larr; main's body: the loop, the workers, the chrome</pre>
                 <td><code>session/</code></td>
                 <td>
                   Plain data types: <code>SessionState</code>, the settings,
-                  diffs and plugin specs. No logic beyond pure helpers.
+                  diffs and mod specs. No logic beyond pure helpers.
                 </td>
               </tr>
               <tr>
@@ -308,7 +308,7 @@ coordinator &larr; main's body: the loop, the workers, the chrome</pre>
                 <td>
                   The headless
                   <code>thurbox-cli</code>
-                  binary. The interface's own files: config, plugins, the editor,
+                  binary. The interface's own files: config, mods, the editor,
                   notifications. Sessions are driven by Fleet's <code>fleet</code>.
                 </td>
               </tr>

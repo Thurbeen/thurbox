@@ -11,9 +11,9 @@ import { RENDERED_DOCS } from '../../eleventy.config.js';
 const built = (path) => parse(readFileSync(`_site/${path}`, 'utf8'));
 const text = (node) => node.textContent.replace(/\s+/g, ' ');
 
-test('plugin catalog lists Voice with its repository, install steps and data flow', () => {
+test('mod catalog lists Voice with its repository, install steps and data flow', () => {
   const repo = 'https://github.com/TMSCH/thurbox-voice';
-  const card = built('plugins.html')
+  const card = built('mods.html')
     .querySelectorAll('[data-plugin]')
     .find((c) => c.querySelector('h2 a')?.getAttribute('href') === repo);
   assert.ok(card, 'a catalog card links to the thurbox-voice repository');
@@ -22,7 +22,7 @@ test('plugin catalog lists Voice with its repository, install steps and data flo
   assert.ok(card.querySelector(`a[href="${repo}#readme"]`), 'setup link goes to the README');
   const install = text(parse(card.querySelector('pre').innerHTML));
   assert.match(install, /git clone https:\/\/github\.com\/TMSCH\/thurbox-voice/);
-  assert.match(install, /thurbox-cli plugin install git\+https:\/\/github\.com\/TMSCH\/thurbox-voice/);
+  assert.match(install, /thurbox-cli mod install git\+https:\/\/github\.com\/TMSCH\/thurbox-voice/);
   const copy = text(card);
   assert.match(copy, /transcribed on your machine/i);
   assert.match(copy, /cleanup/i, 'the optional text cleanup pass is disclosed');
@@ -62,7 +62,7 @@ test('orchestration page leads with Fleet, its reference on this site and Fleet 
   const copy = text(page);
   const code = page.querySelectorAll('pre').map((pre) => text(parse(pre.innerHTML))).join('\n');
   assert.match(code, /curl -fsSL https:\/\/raw\.githubusercontent\.com\/Thurbeen\/thurbox\/main\/scripts\/install\.sh \| sh/);
-  assert.match(code, /thurbox-cli plugin install git\+https:\/\/github\.com\/Thurbeen\/thurbox-fleetlens/);
+  assert.match(code, /thurbox-cli mod install git\+https:\/\/github\.com\/Thurbeen\/thurbox-fleetlens/);
   assert.match(copy, /fleet result/, 'the worker reports its own result');
   for (const stale of [...retiredFleet, ...fleetV1]) assert.doesNotMatch(copy, stale);
   assert.doesNotMatch(page.innerHTML, /github\.com\/Thurbeen\/fleet\b|install-release\.sh/, 'no link to the old Fleet repository');
@@ -101,23 +101,23 @@ test('the site describes only what exists', () => {
   }
 });
 
-test('plugin catalog lists Fleet Lens in place of the Fleet v1 extension', () => {
-  const cards = built('plugins.html').querySelectorAll('[data-plugin]');
+test('mod catalog lists Fleet Lens in place of the Fleet v1 extension', () => {
+  const cards = built('mods.html').querySelectorAll('[data-plugin]');
   const repos = cards.map((c) => c.querySelector('h2 a').getAttribute('href'));
-  assert.ok(!repos.includes('https://github.com/Thurbeen/fleet'), 'Fleet v1 is not a plugin');
+  assert.ok(!repos.includes('https://github.com/Thurbeen/fleet'), 'Fleet v1 is not a mod');
   const repo = 'https://github.com/Thurbeen/thurbox-fleetlens';
   const card = cards.find((c) => c.querySelector('h2 a').getAttribute('href') === repo);
   assert.ok(card, 'a catalog card links to thurbox-fleetlens');
   assert.equal(card.getAttribute('data-kind'), 'pane');
   assert.equal(card.getAttribute('data-badge'), 'official');
-  assert.match(text(parse(card.querySelector('pre').innerHTML)), /thurbox-cli plugin install git\+https:\/\/github\.com\/Thurbeen\/thurbox-fleetlens/);
+  assert.match(text(parse(card.querySelector('pre').innerHTML)), /thurbox-cli mod install git\+https:\/\/github\.com\/Thurbeen\/thurbox-fleetlens/);
   assert.equal(
     card.querySelector('img').getAttribute('src'),
     'https://raw.githubusercontent.com/Thurbeen/thurbox-fleetlens/main/media/demo.gif',
   );
 });
 
-test('homepage presents Fleet and thurbox apart, links each official plugin, and stays light on commands', () => {
+test('homepage presents Fleet and thurbox apart, links each official mod, and stays light on commands', () => {
   const home = built('index.html');
   const install = 'curl -fsSL https://raw.githubusercontent.com/Thurbeen/thurbox/main/scripts/install.sh | sh';
   // One string per code block, one line per command.
@@ -151,20 +151,20 @@ test('homepage presents Fleet and thurbox apart, links each official plugin, and
   assert.ok(home.querySelector('#thurbox video'), 'the demo is in the thurbox band');
 
   const section = home.querySelector('#plugins');
-  const plugins = ['info-panel', 'code-review', 'auto-continue', 'fleetlens', 'doom'];
-  for (const name of plugins) {
+  const mods = ['info-panel', 'code-review', 'auto-continue', 'fleetlens', 'doom'];
+  for (const name of mods) {
     const repo = `https://github.com/Thurbeen/thurbox-${name}`;
     const link = section.querySelector(`a[href="${repo}"]`);
     assert.ok(link, `links ${repo}`);
     assert.ok(text(link.parentNode).trim().length > `thurbox-${name}`.length, `${name} says what it does`);
   }
-  assert.ok(section.querySelector('a[href="plugins.html"]'), 'points at the full catalog');
-  assert.ok(home.querySelector('#thurbox #plugins'), 'the plugins sit under thurbox');
+  assert.ok(section.querySelector('a[href="mods.html"]'), 'points at the full catalog');
+  assert.ok(home.querySelector('#thurbox #plugins'), 'the mods sit under thurbox');
   assert.doesNotMatch(home.innerHTML, /thurbox-discord|thurbox-plugin-orchestrator|thurbox-ask/);
   // The first steps and one short Fleet example are the only code blocks.
   const codeBlocks = home.querySelectorAll('pre').filter((pre) => /language-/.test(pre.innerHTML));
   assert.equal(codeBlocks.length, 3, 'two install blocks and the Fleet example');
-  assert.doesNotMatch(text(home), /thurbox-cli (plugin|session) /);
+  assert.doesNotMatch(text(home), /thurbox-cli (mod|plugin|session) /);
   assert.ok(home.querySelector('a[href="docs/installation.html"]'), 'other install routes are linked');
   assert.ok(home.querySelector('a[href="docs/fleet-install.html"]'), 'installing Fleet alone is linked');
   const fit = home.querySelector('#how-they-fit');
@@ -307,7 +307,7 @@ test('the docs sidebar gives Fleet and thurbox a group each', () => {
 
 // The Markdown pages rendered from the repository (repo-docs.njk), as
 // [source, built path]: a README is its directory's index.html.
-const repoDocs = ['docs/fleet', 'docs/runtime', 'docs/thurbox/plugins.md', 'docs/thurbox/kernel.md'].flatMap((entry) =>
+const repoDocs = ['docs/fleet', 'docs/runtime', 'docs/thurbox/mods.md', 'docs/thurbox/kernel.md'].flatMap((entry) =>
   (entry.endsWith('.md') ? [entry.split('/').pop()] : readdirSync(entry, { recursive: true }))
     .map((file) => (entry.endsWith('.md') ? [entry.replace(/\/[^/]+$/, ''), file] : [entry, file]))
     .filter(([, file]) => file.endsWith('.md'))
@@ -436,4 +436,31 @@ test('every page shows the overview in the theme of its reader', () => {
     );
     assert.equal(picture.querySelector('img').getAttribute('src'), '../assets/overview-light.svg', `${page} falls back to the light overview`);
   }
+});
+
+test('the old plugin URLs redirect to the mod pages', () => {
+  for (const [old, target] of [
+    ['plugins.html', 'mods.html'],
+    ['docs/thurbox/plugins.html', 'mods.html'],
+  ]) {
+    const page = built(old);
+    assert.match(page.querySelector('meta[http-equiv="refresh"]')?.getAttribute('content') ?? '', new RegExp(`^0; url=${target}$`), `${old} refreshes to ${target}`);
+    assert.ok(page.querySelector(`link[rel="canonical"][href$="${target}"]`), `${old} names its canonical page`);
+    assert.ok(page.querySelector(`a[href="${target}"]`), `${old} links ${target}`);
+    const dir = old.split('/').slice(0, -1).join('/');
+    assert.ok(existsSync(`_site/${posix.join(dir, target)}`), `${old} points at a built page`);
+  }
+  const sitemap = readFileSync('_site/sitemap.xml', 'utf8');
+  assert.doesNotMatch(sitemap, /\.eu\/plugins\.html|thurbox\/plugins\.html/, 'the sitemap lists only the mod pages');
+});
+
+test("the site calls thurbox's interface add-ons mods", () => {
+  for (const path of pages()) {
+    const copy = text(built(path));
+    assert.doesNotMatch(copy, /thurbox-cli plugin\b|perf --plugins/, `${path} shows a plugin command`);
+  }
+  assert.doesNotMatch(readFileSync('_site/llms.txt', 'utf8'), /Lua plugin|plugin kernel|thurbox-cli plugin\b/);
+  const nav = built('index.html').querySelectorAll('nav a').map((a) => text(a).trim());
+  assert.ok(nav.includes('Mods'), 'the top nav names Mods');
+  assert.ok(!nav.includes('Plugins'), 'the top nav names no Plugins');
 });

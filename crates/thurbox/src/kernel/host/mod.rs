@@ -2197,7 +2197,7 @@ impl LuaHost {
         let plugin = self.plugins.get(index).ok_or_else(|| PluginError {
             plugin: format!("#{index}"),
             phase: Phase::Render,
-            message: "plugin index out of range".to_string(),
+            message: "mod index out of range".to_string(),
         })?;
 
         if plugin.capabilities.contains(&Capability::Files) {

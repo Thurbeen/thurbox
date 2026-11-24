@@ -274,13 +274,13 @@ fleet delete task docs
 
 `thurbox-cli` keeps what is the interface's own: `thurbox-cli doctor` checks
 the setup, `thurbox-cli config show` prints every resolved path,
-`thurbox-cli plugin dir` prints the interface directory, and
+`thurbox-cli mod dir` prints the interface directory, and
 `thurbox-cli --help` lists the rest.
 
 ## Where to go next
 
 - **Make it yours**: every pane is a Lua file in a directory you own. Ask an
-  agent in any session to change it, or read [plugins.md](plugins.md).
+  agent in any session to change it, or read [mods.md](mods.md).
   `Ctrl+,` then `]` lists every pane and turns one off; `F10` reloads.
 - **Run several agents on one job**: [orchestration.md](orchestration.md).
 - **Run sessions on another machine**: give your Fleet an ssh or wsl place,

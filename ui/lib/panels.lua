@@ -2,11 +2,11 @@
 --
 -- This exists because of the kernel's second rule: LAYOUT RESOLVES BEFORE
 -- RENDER. `layout.lua` has to decide whether the info column gets a column of
--- its own *before* the info plugin runs, so the answer cannot live inside that
--- plugin's render function — it has to be readable from outside it.
+-- its own *before* the info mod runs, so the answer cannot live inside that
+-- mod's render function — it has to be readable from outside it.
 --
 -- It is kept in `store` rather than in a local table because `store` is the
--- documented bus between plugins AND it survives a hot reload: editing a plugin
+-- documented bus between mods AND it survives a hot reload: editing a mod
 -- while the file viewer is open must not slam the column shut. A plain module
 -- upvalue would be re-initialised by the reload.
 --

@@ -1,6 +1,6 @@
 -- A starting point. Rename it, change what it draws, keep what it shows you.
 --
--- This is what `thurbox-cli plugin new <name>` writes, and what the guide shows,
+-- This is what `thurbox-cli mod new <name>` writes, and what the guide shows,
 -- so what you read is what you get. Everything below is the shape of a pane:
 -- declare what you are, return what to draw, handle what you declared.
 
@@ -22,7 +22,7 @@ return {
 
   -- Keys are DATA, not just handled: declaring them is what puts them in the F1
   -- help, lets a user rebind them, and lets the kernel catch a clash with
-  -- another plugin. `scope = "global"` fires from any pane.
+  -- another mod. `scope = "global"` fires from any pane.
   keys = {
     { key = "r", action = "example.refresh", desc = "count again", group = "Example" },
   },

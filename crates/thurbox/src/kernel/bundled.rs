@@ -1127,8 +1127,8 @@ mod tests {
 
         let agents = file("AGENTS.md");
         assert!(
-            agents.contains("thurbox-cli plugin install"),
-            "the command an agent needs when told to install a plugin"
+            agents.contains("thurbox-cli mod install"),
+            "the command an agent needs when told to install a mod"
         );
         assert!(
             agents.contains("npm") && agents.contains("cargo"),
@@ -1136,7 +1136,7 @@ mod tests {
              instruction is unmissable"
         );
         assert!(
-            agents.contains("thurbox-cli plugin check"),
+            agents.contains("thurbox-cli mod check"),
             "and the gate for every edit"
         );
 

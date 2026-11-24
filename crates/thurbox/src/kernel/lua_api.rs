@@ -260,7 +260,7 @@ pub static GIT_STATS: Class = Class {
     name: "thurbox.GitStats",
     doc: &[
         "Uncommitted work in a session's tree. Absent until it has been measured,",
-        "which a plugin must be able to tell apart from a clean tree.",
+        "which a mod must be able to tell apart from a clean tree.",
     ],
     exact: true,
     fields: &[
@@ -518,7 +518,7 @@ pub static LINK: Class = Class {
 pub static RUN: Class = Class {
     name: "thurbox.Run",
     doc: &[
-        "An answer to a program this plugin asked to run. Branch on `state`: a",
+        "An answer to a program this mod asked to run. Branch on `state`: a",
         "program that has not answered is not one that answered with nothing.",
     ],
     exact: true,
@@ -770,7 +770,8 @@ pub static REGISTRY_KEY: Class = Class {
     doc: &[],
     exact: true,
     fields: &[
-        leaf("plugin", "string"),
+        leaf("mod", "string"),
+        leaf("plugin", "string").doc("Deprecated: the same name as `mod`."),
         leaf("action", "string"),
         leaf("key", "string"),
         leaf("default_key", "string"),
@@ -783,10 +784,11 @@ pub static REGISTRY_KEY: Class = Class {
 
 pub static REGISTRY_COMMAND: Class = Class {
     name: "thurbox.RegistryCommand",
-    doc: &["A chord-less action a plugin declares in `commands`, for the palette."],
+    doc: &["A chord-less action a mod declares in `commands`, for the palette."],
     exact: true,
     fields: &[
-        leaf("plugin", "string"),
+        leaf("mod", "string"),
+        leaf("plugin", "string").doc("Deprecated: the same name as `mod`."),
         leaf("action", "string"),
         leaf("desc", "string"),
     ],
@@ -797,7 +799,8 @@ pub static REGISTRY_SETTING: Class = Class {
     doc: &[],
     exact: true,
     fields: &[
-        leaf("plugin", "string"),
+        leaf("mod", "string"),
+        leaf("plugin", "string").doc("Deprecated: the same name as `mod`."),
         leaf("id", "string"),
         leaf("desc", "string"),
         leaf("type", "string"),
@@ -811,7 +814,7 @@ pub static REGISTRY_SETTING: Class = Class {
 
 pub static REGISTRY_SNAPSHOT: Class = Class {
     name: "thurbox.RegistrySnapshot",
-    doc: &["What every plugin declared, so help and settings render from it."],
+    doc: &["What every mod declared, so help and settings render from it."],
     exact: true,
     fields: &[
         field("keys", Ty::List(&REGISTRY_KEY)),
@@ -822,7 +825,7 @@ pub static REGISTRY_SNAPSHOT: Class = Class {
 };
 
 pub static PLUGIN_ROW: Class = Class {
-    name: "thurbox.PluginRow",
+    name: "thurbox.ModRow",
     doc: &["One of the interface's own files: where it came from, and whether it runs."],
     exact: true,
     fields: &[
@@ -847,16 +850,16 @@ pub static CHROME: Class = Class {
 pub static GRANTED: Class = Class {
     name: "thurbox.Granted",
     doc: &[
-        "Capabilities THIS plugin has been granted. A boolean about a decision the",
+        "Capabilities THIS mod has been granted. A boolean about a decision the",
         "user already made; it grants nothing. Absent, like `thurbox.runs`, for a",
-        "plugin that declares no capability.",
+        "mod that declares no capability.",
     ],
     exact: true,
     fields: &[
         leaf("run", "boolean").opt(),
         leaf("program", "boolean").opt(),
         leaf("sessions", "boolean").opt().doc(
-            "Verbs that drive an agent or lose something for good are applied (docs/thurbox/plugins.md).",
+            "Verbs that drive an agent or lose something for good are applied (docs/thurbox/mods.md).",
         ),
         leaf("files", "boolean").opt().doc("`files` is present."),
     ],
@@ -873,7 +876,7 @@ pub static API_ROOT: Class = Class {
     exact: true,
     fields: &[
         leaf("api", "integer").doc(
-            "The plugin API contract number. It moves only when a field is removed or changes meaning; declare `requires_api` to need a newer one.",
+            "The mod API contract number. It moves only when a field is removed or changes meaning; declare `requires_api` to need a newer one.",
         ),
         field("sessions", Ty::List(&SESSION)),
         field("repos", Ty::List(&REPO)),
@@ -901,7 +904,7 @@ pub static API_ROOT: Class = Class {
         leaf("printing", "table<string, boolean>").doc(
             "Sessions whose pane is producing output right now, keyed by id. The evidence `running` animates on — see `ui.status`.",
         ),
-        field("runs", Ty::OwnKeys(&RUN)).doc("Answers to THIS plugin's runs."),
+        field("runs", Ty::OwnKeys(&RUN)).doc("Answers to THIS mod's runs."),
         field("granted", Ty::Record(&GRANTED)),
         field("metrics", Ty::Record(&METRICS)),
         field("platform", Ty::Record(&PLATFORM)),
@@ -915,7 +918,8 @@ pub static API_ROOT: Class = Class {
         leaf("selection", "string")
             .doc("The mouse text selection, empty when nothing is selected."),
         field("hover", Ty::Record(&HOVER)),
-        field("plugins", Ty::List(&PLUGIN_ROW)),
+        field("mods", Ty::List(&PLUGIN_ROW)),
+        field("plugins", Ty::List(&PLUGIN_ROW)).doc("Deprecated: the same list as `mods`."),
         leaf("ui_dir", "string"),
         field("chrome", Ty::Record(&CHROME)),
         field("theme", Ty::Record(&THEME_SNAPSHOT)),
@@ -1093,7 +1097,7 @@ pub fn std_probe() -> String {
         "--\n\
          -- A pane that reads EVERY path `thurbox.yml` declares on `thurbox`, each as a\n\
          -- plain dotted path, and must lint CLEAN: a table declared as a bare property\n\
-         -- rejects exactly the expression `docs/thurbox/plugins.md` tells an author to write,\n\
+         -- rejects exactly the expression `docs/thurbox/mods.md` tells an author to write,\n\
          -- and nothing in `ui/` would notice (issue #1133). `typos/` holds the other\n\
          -- direction. It ends with the stdlib names no bundled pane happens to name.\n\
          return {\n  name = \"std_reads\",\n  render = function()\n    local read = {\n",

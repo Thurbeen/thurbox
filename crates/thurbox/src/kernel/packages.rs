@@ -677,7 +677,7 @@ pub fn is_repository(src: &str) -> bool {
 pub fn repository_name(url: &str) -> Result<String, String> {
     let last = last_segment(url, cfg!(windows));
     if last.is_empty() {
-        return Err(format!("could not read a plugin name out of {url}"));
+        return Err(format!("could not read a mod name out of {url}"));
     }
     crate::paths::validate_safe_name(last)
         .map_err(|e| format!("{url} names {last:?}, which is not usable as a directory: {e}"))?;
@@ -1286,7 +1286,7 @@ fn not_found_help(src: &str, error: String) -> String {
     // The fetcher's own message is two downloaders' stderr and a raw URL, which
     // buries the one thing a mistyped name needs. It is REPLACED rather than
     // appended to: this is the common failure, and the answer to it is short.
-    let mut message = format!("no example plugin named {src:?}");
+    let mut message = format!("no example mod named {src:?}");
     if let Some(suggestion) = suggest_plugin(src) {
         message.push_str(&format!(" — did you mean {suggestion:?}?"));
     }

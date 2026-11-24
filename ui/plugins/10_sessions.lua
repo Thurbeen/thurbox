@@ -3,7 +3,7 @@
 -- In v1 this was `ui::project_list` — 2,212 lines of Rust, welded to a 616-method
 -- `App` struct. Here it is a file you can edit while thurbox is running.
 --
--- It is an ORDINARY plugin. The kernel has no session-list concept: it hands
+-- It is an ORDINARY mod. The kernel has no session-list concept: it hands
 -- over a snapshot and this decides everything about how the list looks.
 --
 -- Session rows retain v1's nesting marks, selection bar, status strip and
@@ -669,7 +669,7 @@ end
 --- The risk lines still distinguish known-clean work from work that cannot
 --- be recovered; the policy requires an intentional second step in both cases.
 ---
---- The question travels through `store`, so the confirm plugin needs to know
+--- The question travels through `store`, so the confirm mod needs to know
 --- nothing about sessions.
 local function delete_for_good(session, question)
   local lines = at_risk(session)
@@ -959,7 +959,7 @@ local SESSION_MENU = {
   { label = "Delete", action = "sessions.delete" },
 }
 
---- Whether some plugin declares `action`, in `keys` or in `commands`. An
+--- Whether some mod declares `action`, in `keys` or in `commands`. An
 --- undeclared one would reach no `on_action` and close the menu doing nothing,
 --- and an entry that does nothing is worse than no entry.
 local function declared(action)
@@ -996,12 +996,12 @@ local function fold_menu_entries()
   return entries
 end
 
---- A row's menu: session and fold actions, then what other plugins left in
+--- A row's menu: session and fold actions, then what other mods left in
 --- `store["sessions.menu_extra"]` -- a table from each contributor's own name
 --- to its list of entries and "sep" rules, so two contributors never overwrite
 --- each other. Contributors are taken in name order, each after a rule; an
 --- entry whose action nothing declares is dropped, and so is a rule it leaves
---- with nothing to separate. A label that is not a string is dropped. Built when the menu opens, so it follows a plugin
+--- with nothing to separate. A label that is not a string is dropped. Built when the menu opens, so it follows a mod
 --- that was added, removed or rebound since.
 local function row_menu()
   ---@type (table|string)[]
@@ -1152,7 +1152,7 @@ pane = {
   },
 
   -- Declared as DATA, not just handled. That is what lets the kernel list these
-  -- in help, detect a clash with another plugin, and let you rebind them —
+  -- in help, detect a clash with another mod, and let you rebind them —
   -- none of which it could do if they only existed inside on_key.
   --- Declared as data, so the settings modal renders a row for each without
   --- knowing what a repo group is or what creating a session does. Read back
@@ -1519,7 +1519,7 @@ pane = {
   -- menu where the press was. Selecting is what aims the entries: each runs an
   -- action on the selected session. Focus stays put -- the kernel's rule for a
   -- right press -- and the menu takes every key while it is up anyway. Entries
-  -- other plugins contribute (`row_menu`) come last, and read the row from
+  -- other mods contribute (`row_menu`) come last, and read the row from
   -- the action's session_id argument, not the selection. On empty space the
   -- press opens the pane's general menu. Host and repo rows are fold handles
   -- for either mouse button.

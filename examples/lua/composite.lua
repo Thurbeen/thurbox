@@ -6,10 +6,10 @@
 -- verbatim is a worse terminal, and thurbox already has a real one (`Ctrl+T`).
 -- What a pane is *for* is deriving something you can read at a glance.
 --
--- To use it, copy it into your interface directory (`thurbox-cli plugin dir`),
+-- To use it, copy it into your interface directory (`thurbox-cli mod dir`),
 -- then trust it: settings (`Ctrl+,`) → `]` → find it → `t`. Until you do, `run`
 -- is not a function here and the pane says so. That is not an error state; it is
--- the state every plugin starts in, and drawing it well is part of the job.
+-- the state every mod starts in, and drawing it well is part of the job.
 --
 -- THE ONE RULE THAT MATTERS. Ask on every frame. `run` does nothing while the
 -- answer is fresh, so asking is a map lookup, not a process — and the alternative
@@ -77,8 +77,8 @@ end
 --- What to draw when the pane has not been trusted.
 ---
 --- Deliberately not blank and not an error: it is the first thing every user of
---- this plugin sees, and a pane that looks broken before you have done anything
---- is a plugin nobody keeps.
+--- this mod sees, and a pane that looks broken before you have done anything
+--- is a mod nobody keeps.
 local function untrusted(ctx)
   return {
     type = "box",

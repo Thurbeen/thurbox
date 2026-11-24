@@ -1,9 +1,9 @@
 # CPU and memory, read from `top`. Install it with:
 #
-#     thurbox-cli plugin install top
+#     thurbox-cli mod install top
 #
 # It declares the `run` capability, so it draws how to trust it until you do
-# (settings -> Interface -> `t`). Installing a plugin does not grant anything.
+# (settings -> Interface -> `t`). Installing a mod does not grant anything.
 name = "top"
 description = "CPU, memory and load as gauges, parsed from `top`"
 requires_thurbox = ">=2.0"

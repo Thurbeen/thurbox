@@ -1,7 +1,7 @@
 ---
 layout: docs.njk
 title: 'thurbox features — thurbox Docs'
-description: 'thurbox features: a Lua-plugin interface you can rearrange, one session list across Fleets, global search, the responsive layout, themes, OS notifications, mouse navigation and settings.'
+description: 'thurbox features: a Lua-mod interface you can rearrange, one session list across Fleets, global search, the responsive layout, themes, OS notifications, mouse navigation and settings.'
 currentPage: 'thurbox-features'
 breadcrumb: 'thurbox features'
 ---
@@ -81,7 +81,7 @@ breadcrumb: 'thurbox features'
               <tr>
                 <td>CPU / RAM gauges</td>
                 <td>installable</td>
-                <td><code>thurbox-cli plugin install top</code></td>
+                <td><code>thurbox-cli mod install top</code></td>
               </tr>
               <tr>
                 <td>Panes anyone else wrote</td>
@@ -310,9 +310,9 @@ transport = { wsl = "Ubuntu" }</code></pre>
             Everything else is yours: change a percentage, reorder the bands, or delete a line to drop
             one. The function only
             <em>arranges</em>
-            , so it never calls a plugin and a mistake in it cannot break one. See
+            , so it never calls a mod and a mistake in it cannot break one. See
             <a href="interface.html">the interface</a>
-            for how it is resolved before any plugin draws.
+            for how it is resolved before any mod draws.
           </p>
           <h2 id="themes">
             Themes
@@ -381,7 +381,7 @@ transport = { wsl = "Ubuntu" }</code></pre>
           <ul>
             <li>
               <strong>Click a row</strong>
-              in any pane to select it and focus that pane. A plugin gets the hit for free: it
+              in any pane to select it and focus that pane. A mod gets the hit for free: it
               returns the rects it drew, and the kernel matches the click against them.
             </li>
             <li>
@@ -433,7 +433,7 @@ transport = { wsl = "Ubuntu" }</code></pre>
               on its row in the Interface tab &mdash; a decision recorded in
               <code>plugin-state.json</code>
               beside your trust grants. That is strictly more than a flag could do: it works for a
-              plugin you wrote, which no compiled-in flag could ever have known about.
+              mod you wrote, which no compiled-in flag could ever have known about.
             </p>
           </div>
           <pre data-title="settings.toml"><code class="language-toml">[features]

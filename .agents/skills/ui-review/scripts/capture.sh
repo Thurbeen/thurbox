@@ -279,8 +279,8 @@ emit() { # file label screen keys
 06-new-session-repo.png|New session: repo picker|new-session|Ctrl+N
 07-new-session-name.png|New session: naming step|new-session|Ctrl+N then Enter
 08-help.png|Keybindings help, rendered from the registry|keybindings|Ctrl+G
-09-settings.png|Settings: core + plugin settings|settings|Ctrl+,
-10-interface-tab.png|Settings: the Interface tab (plugin inventory)|interface|Ctrl+, then ]
+09-settings.png|Settings: core + mod settings|settings|Ctrl+,
+10-interface-tab.png|Settings: the Interface tab (mod inventory)|interface|Ctrl+, then ]
 11-plugin-off.png|The arrangement after a pane is turned off|interface|space then Esc
 12-shell-pane.png|Per-session shell pane|shell|Ctrl+T
 MANIFEST

@@ -1,7 +1,7 @@
-//! `thurbox-cli plugin` — the headless half of what `F11` shows.
+//! `thurbox-cli mod` — the headless half of what `F11` shows.
 //!
-//! Writing a plugin needs three answers the interface only gives to a keyboard:
-//! which directory is actually being read, what a valid plugin looks like, and
+//! Writing a mod needs three answers the interface only gives to a keyboard:
+//! which directory is actually being read, what a valid mod looks like, and
 //! whether the one you just wrote will load. A session driving thurbox through a
 //! pipe — increasingly, an agent — cannot press `F11`, so it guesses, and the
 //! usual outcome is a file edited in a directory nothing reads.
@@ -12,7 +12,7 @@
 //! fully-qualified path (the rule `agent` already follows here): both drive the
 //! *interface's* own files, which is kernel-owned. `check` in particular has to
 //! load the real host, because the failures worth reporting are
-//! declaration-shaped — a plugin with no `render`, a slot nothing places, a key
+//! declaration-shaped — a mod with no `render`, a slot nothing places, a key
 //! that clashes — and a syntax check passes all of them.
 
 use std::path::{Path, PathBuf};
@@ -27,23 +27,23 @@ use super::output::CommandOutput;
 const STARTER: &str = include_str!("../../../../examples/lua/plugin.lua");
 
 /// Where a starter lands in the load order. Above every bundled pane (10–70), so
-/// a new plugin never renders between two that expect to be neighbours.
+/// a new mod never renders between two that expect to be neighbours.
 const STARTER_ORDER: &str = "90";
 
 #[derive(Subcommand, Debug)]
 pub enum Action {
     /// Print the interface directory in force, and which rule chose it.
     Dir,
-    /// Write a starter plugin into that directory.
+    /// Write a starter mod into that directory.
     New {
-        /// Plugin name — one path segment, no separators (e.g. `notes`).
+        /// Mod name — one path segment, no separators (e.g. `notes`).
         name: String,
     },
     /// Load the interface the way the TUI does and report what failed.
     Check,
     /// List every file of the interface: where it came from, and whether it draws.
     List,
-    /// Install a plugin from a source, recording it in `plugins.toml`.
+    /// Install a mod from a source, recording it in `plugins.toml`.
     Install {
         /// A bare name from the examples in the repo, a URL, or a filesystem path.
         src: String,
@@ -64,14 +64,14 @@ pub enum Action {
         /// The entry to advance. Omit for all of them.
         name: Option<String>,
     },
-    /// Remove an installed plugin, its spec entry and its record.
+    /// Remove an installed mod, its spec entry and its record.
     Remove {
         /// The entry's name, or the file it delivered.
         name: String,
     },
-    /// List the example plugins a bare name resolves to.
+    /// List the example mods a bare name resolves to.
     Available,
-    /// List every event a plugin can subscribe to, with its payload fields.
+    /// List every event a mod can subscribe to, with its payload fields.
     Events,
 }
 
@@ -92,7 +92,7 @@ pub fn run(action: Action) -> Result<CommandOutput, String> {
 
 /// The events the kernel emits — the same table the loader validates a
 /// subscription against and the help modal renders, so what this prints is
-/// exactly what a plugin may declare in `events = { … }`.
+/// exactly what a mod may declare in `events = { … }`.
 fn events() -> Result<CommandOutput, String> {
     let specs = crate::kernel::events::KERNEL_EVENTS;
     let mut rows: Vec<Vec<String>> = specs
@@ -108,7 +108,7 @@ fn events() -> Result<CommandOutput, String> {
     rows.push(vec![
         format!("{}<name>", crate::kernel::events::USER_PREFIX),
         "source, plus whatever the emitter passed".to_string(),
-        "a plugin ran command(\"emit\", { text = \"<name>\", … })".to_string(),
+        "a mod ran command(\"emit\", { text = \"<name>\", … })".to_string(),
     ]);
     let table = super::output::table(&["event", "payload", "fires when"], &rows);
     Ok(CommandOutput::new(
@@ -126,7 +126,7 @@ fn events() -> Result<CommandOutput, String> {
 /// The directory the interface would load, without creating one.
 ///
 /// `resolve(false)` deliberately does not materialize the user's copy: being
-/// *asked* where plugins live must not write a profile as a side effect.
+/// *asked* where mods live must not write a profile as a side effect.
 fn resolve() -> Result<(PathBuf, crate::kernel::bundled::Chosen), String> {
     let (dir, chosen, _report) = crate::kernel::bundled::resolve(false)?;
     Ok((dir, chosen))
@@ -136,7 +136,7 @@ fn dir() -> Result<CommandOutput, String> {
     let (dir, chosen) = resolve()?;
     let plugins = dir.join("plugins");
     let human = format!(
-        "{}\n  plugins  {}\n  chosen   {} ({})",
+        "{}\n  mods  {}\n  chosen   {} ({})",
         dir.display(),
         plugins.display(),
         chosen.as_str(),
@@ -161,7 +161,7 @@ fn dir() -> Result<CommandOutput, String> {
 /// `paths::validate_safe_name` applies to anything that becomes a path.
 fn check_name(name: &str) -> Result<(), String> {
     crate::paths::validate_safe_name(name)
-        .map_err(|e| format!("{e} — a plugin name is one segment, like `notes`"))
+        .map_err(|e| format!("{e} — a mod name is one segment, like `notes`"))
 }
 
 fn new(name: &str) -> Result<CommandOutput, String> {
@@ -199,7 +199,7 @@ fn new(name: &str) -> Result<CommandOutput, String> {
     crate::paths::write_atomically(&file, body).map_err(|e| format!("{}: {e}", file.display()))?;
 
     let mut human = format!(
-        "wrote {}\n  edit it, then `thurbox-cli plugin check`\n  ({} — {})",
+        "wrote {}\n  edit it, then `thurbox-cli mod check`\n  ({} — {})",
         file.display(),
         chosen.as_str(),
         chosen.reason()
@@ -223,7 +223,7 @@ fn new(name: &str) -> Result<CommandOutput, String> {
 /// files the user turned off.
 ///
 /// Loading everything on disk is not what the interface does, and the difference
-/// is the whole point of the switch: a plugin turned off declares no key,
+/// is the whole point of the switch: a mod turned off declares no key,
 /// occupies no slot and cannot fail to load, which is what makes turning one off
 /// the way back from a broken pane. A check that read it anyway would report a
 /// failure the interface does not have — and, once the arrangement is consulted,
@@ -365,7 +365,7 @@ fn check() -> Result<CommandOutput, String> {
                 "checked_at": size,
             }),
             lines.join("\n"),
-            "a plugin loaded but nothing places it",
+            "a mod loaded but nothing places it",
         ));
     }
 
@@ -643,7 +643,7 @@ fn list() -> Result<CommandOutput, String> {
                 // kind of file it is, and this is who it came from.
                 "installed_from": row.source.installed_from(),
                 // Present only for a file the spec manages: the name to pass to
-                // `plugin remove` / `plugin update`.
+                // `mod remove` / `mod update`.
                 "entry": managed.get(&row.path),
                 "state": row.state.as_str(),
                 // What the file asks to be able to do. Reported because a
@@ -667,7 +667,7 @@ fn list() -> Result<CommandOutput, String> {
 
 /// The interface directory an install writes into.
 ///
-/// `resolve(true)` here, unlike everywhere else in this file: installing a plugin
+/// `resolve(true)` here, unlike everywhere else in this file: installing a mod
 /// into a directory that is not an interface yet would deliver a pane with no
 /// `lib/` to require, which fails to load before it is ever looked at — the same
 /// reasoning `new` follows.
@@ -809,7 +809,7 @@ fn install(src: &str, as_file: Option<&str>, pin: Option<&str>) -> Result<Comman
     for hint in &hints {
         human.push_str(&format!("\n  {hint}"));
     }
-    human.push_str("\n  `thurbox-cli plugin check` to confirm it loads and draws");
+    human.push_str("\n  `thurbox-cli mod check` to confirm it loads and draws");
     Ok(CommandOutput::new(
         json!({
             "dir": dir.display().to_string(),
@@ -973,7 +973,7 @@ mod tests {
         assert!(error.contains("session.status"), "{error}");
     }
 
-    /// The starter has to be a plugin, not a snippet: the whole point is that a
+    /// The starter has to be a mod, not a snippet: the whole point is that a
     /// new file loads before it is edited.
     #[test]
     fn the_starter_declares_what_a_plugin_needs() {

@@ -131,7 +131,7 @@ jobs:
             website:
               - 'website/**'
               - 'eleventy.config.js'
-              - 'scripts/ci/*plugins*.mjs'
+              - 'scripts/ci/*mods*.mjs'
               - 'scripts/ci/website.test.mjs'
               - 'scripts/docs/*.mjs'
               # website.test.mjs checks the agent list against Fleet's harnesses.
@@ -828,8 +828,8 @@ jobs:
       # the site first, then runs every linter.
       - name: Lint website
         run: npm run lint:website
-      - name: Validate plugin repository and media URLs
-        run: npm run check:plugins:links
+      - name: Validate mod repository and media URLs
+        run: npm run check:mods:links
 
   sonarqube:
     name: SonarQube

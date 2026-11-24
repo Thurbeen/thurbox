@@ -363,7 +363,7 @@ end
 --- wants one manually ordered list can turn this axis off.
 ---
 --- A second boolean rather than one `none / repo / host / host then repo` row
---- because the settings modal has no choice type: a plugin's `Text` value is
+--- because the settings modal has no choice type: a mod's `Text` value is
 --- free text you type into, and a misspelt word there would silently mean
 --- "none". The two are independent anyway — all four combinations render, from
 --- one flat list to repo groups within host rows.

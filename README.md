@@ -162,8 +162,8 @@ session opened there you can just ask your agent:
 > bottom and make the session column 30% wide.*
 
 [The interface](https://thurbox.thurbeen.eu/docs/interface.html) ·
-[Writing a pane](docs/thurbox/plugins.md) ·
-[Plugins](https://thurbox.thurbeen.eu/plugins.html)
+[Writing a pane](docs/thurbox/mods.md) ·
+[Mods](https://thurbox.thurbeen.eu/mods.html)
 
 ## Documentation
 

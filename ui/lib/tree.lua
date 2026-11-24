@@ -1,6 +1,6 @@
 -- Walking a view tree.
 --
--- The userland half of decoration: a decorator receives another plugin's tree
+-- The userland half of decoration: a decorator receives another mod's tree
 -- and returns a modified one, so it needs to find the nodes it cares about. It
 -- does that by the identity nodes already carry — no selector engine, because
 -- the consumer wants "rows whose text contains the query" and a matching

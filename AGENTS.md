@@ -126,7 +126,7 @@ opencode read the one copy. Read the one your change touches:
 | `thurbox-release` | Release Process · Distribution Packages · Installation Script |
 | `thurbox-cli` | thurbox-cli and its subcommands |
 | `thurbox-session-status` | Session status (from Fleet) · OS notifications |
-| `thurbox-kernel` | Architecture (plugin kernel) · Writing an interface plugin |
+| `thurbox-kernel` | Architecture (mod kernel) · Writing an interface mod |
 | `thurbox-ui-surfaces` | Keybindings · Themes · Settings panel · Global search · Code review |
 | `thurbox-demo-media` | Demo Video |
 | `no-comments` | Write no comments in code; the exceptions; the MUST KILL marker |
@@ -176,7 +176,7 @@ to check names against: node props and their allowed values, `ctx`, the
 `hit`/`key`/`wheel` payloads, the declaration table, every published `thurbox.*`
 row, every `command` verb's options, and the theme roles. Declarations only —
 nothing loads it into the VM, which is why `selene.toml` excludes it (describing a
-global means assigning one, the single thing the sandbox forbids a plugin).
+global means assigning one, the single thing the sandbox forbids a mod).
 
 `.luarc.json` names it in `workspace.library` for an editor opened at the
 repository root. `--check ui` does not need that entry — luals loads a `---@meta`
@@ -193,12 +193,12 @@ fixed set is spelled as that set, so a misspelt value is `assign-type-mismatch`.
 that each make one of those mistakes and fails if any stops being reported —
 `--check ui` alone would also pass against a file describing nothing.
 
-**`thurbox.yml` is the plugin sandbox, checked statically.** It is selene's
+**`thurbox.yml` is the mod sandbox, checked statically.** It is selene's
 standard library for `ui/`, and it deliberately declares **no `base:`** — it lists
 only what `kernel::host::plugin_stdlib` grants (`string`, `table`, `math`,
 `coroutine`, `utf8`) plus the six globals `install_api` injects. So `os`, `io`,
 `debug`, `package`, `print` and the loaders are *absent* rather than marked
-removed, which is the same shape the VM enforces and means a plugin
+removed, which is the same shape the VM enforces and means a mod
 reaching for one fails lint instead of failing at runtime. Inheriting a base and
 marking things `removed` does **not** work: selene applies that to plain functions
 but not to a table's fields, so `os.time()` passed review while `dofile` was
@@ -207,12 +207,12 @@ caught.
 It also declares the published shape of `thurbox`, so `thurbox.sesions` is a lint
 error rather than a silently-nil pane. That shape is **generated**: `src/kernel/lua_api.rs`
 declares every published `thurbox.*` field once (both publish paths, `LuaHost::publish`
-and `LuaHost::enter`, which sets `thurbox.runs` and `thurbox.granted` per plugin), and
+and `LuaHost::enter`, which sets `thurbox.runs` and `thurbox.granted` per mod), and
 `just lua-api` renders it into the generated regions of `thurbox.yml` and
 `ui/lib/thurbox.d.lua` and into `tests/fixtures/lua_std/reads.lua`. `tests/lua_api.rs`
 fails when a file drifts from it and when a real publish serves a key it does not
 declare, so a new field is an edit to `lua_api.rs` plus `just lua-api`. Removing a field
-or changing its meaning bumps `lua_api::API` (`thurbox.api`), which a plugin's
+or changing its meaning bumps `lua_api::API` (`thurbox.api`), which a mod's
 `requires_api` is checked against at load. selene
 checks a **dotted** path one segment at a time and stops at the first `[…]`, so a
 table read as `thurbox.platform.os` needs an entry per field while a list read as

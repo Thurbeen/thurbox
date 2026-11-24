@@ -84,8 +84,8 @@ breadcrumb: 'Configuration'
               <tr>
                 <td><code>~/.config/thurbox/ui/plugins.toml</code></td>
                 <td>TOML</td>
-                <td>you (or <code>thurbox-cli plugin</code>)</td>
-                <td>on each <code>plugin</code> command</td>
+                <td>you (or <code>thurbox-cli mod</code>)</td>
+                <td>on each <code>mod</code> command</td>
                 <td>
                   <strong>what the interface is composed of</strong>
                   &mdash; a source, a destination file and an optional pin, per installed pane
@@ -94,8 +94,8 @@ breadcrumb: 'Configuration'
               <tr>
                 <td><code>~/.config/thurbox/ui/plugins.lock</code></td>
                 <td>TOML</td>
-                <td><code>thurbox-cli plugin</code></td>
-                <td>on each <code>plugin</code> command</td>
+                <td><code>thurbox-cli mod</code></td>
+                <td>on each <code>mod</code> command</td>
                 <td>
                   what each entry resolved to, and the digest of every file delivered.
                   Machine-written &mdash; commit it beside the spec and the same interface
@@ -108,17 +108,17 @@ breadcrumb: 'Configuration'
                 <td><code>F1</code> / Interface tab (or you)</td>
                 <td>startup</td>
                 <td>
-                  your decisions <em>about</em> the interface: rebound chords, plugin settings,
+                  your decisions <em>about</em> the interface: rebound chords, mod settings,
                   the action band's order
                 </td>
               </tr>
               <tr>
                 <td><code>~/.config/thurbox/plugin-state.json</code></td>
                 <td>JSON</td>
-                <td>Interface tab (or <code>thurbox-cli plugin</code>)</td>
+                <td>Interface tab (or <code>thurbox-cli mod</code>)</td>
                 <td>startup</td>
                 <td>
-                  what a plugin may do: files trusted and plugins turned off
+                  what a mod may do: files trusted and mods turned off
                 </td>
               </tr>
               <tr>
@@ -782,7 +782,7 @@ app_bg = "reset"             # keep the terminal's native background</code></pre
             </li>
             <li>
               Binding a chord another action already claims <em>in the same context</em> takes it:
-              your override is the one that fires. An entry naming an action no plugin declares is
+              your override is the one that fires. An entry naming an action no mod declares is
               <strong>dropped silently</strong>
               &mdash; a typo just does nothing, which is why the F1 editor, which refuses an unknown
               action outright, is the safer path.

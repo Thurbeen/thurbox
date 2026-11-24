@@ -196,10 +196,15 @@ pub enum Command {
     /// Diagnose OS desktop notifications; `--test` fires a sample.
     Notify(notify::NotifyArgs),
     /// Print the perf snapshot a running TUI publishes (THURBOX_PERF_LOG or
-    /// the perf HUD must be active in that TUI); `--plugins` for the per-pane
+    /// the perf HUD must be active in that TUI); `--mods` for the per-pane
     /// table.
     Perf(perf::PerfArgs),
-    /// Interface plugins: where they live, start one, check it loads.
+    /// Interface mods: where they live, start one, check it loads.
+    Mod {
+        #[command(subcommand)]
+        action: plugins::Action,
+    },
+    #[command(hide = true)]
     Plugin {
         #[command(subcommand)]
         action: plugins::Action,
@@ -306,6 +311,9 @@ fn parse_fields(spec: &str) -> Vec<String> {
         .collect()
 }
 
+const DEPRECATED_PLUGIN_VERB: &str =
+    "thurbox-cli: `thurbox-cli plugin` is deprecated; use `thurbox-cli mod`";
+
 /// Route one subcommand to the module that owns it.
 fn dispatch(command: Command, settings: &Settings) -> Result<CommandOutput, CommandError> {
     Ok(match command {
@@ -322,8 +330,17 @@ fn dispatch(command: Command, settings: &Settings) -> Result<CommandOutput, Comm
             crate::fleet_link::Fleets::of(settings).all(),
         ),
         Command::Notify(args) => notify::run(args, settings)?,
-        Command::Perf(args) => perf::run(args.plugins)?,
-        Command::Plugin { action } => plugins::run(action)?,
+        Command::Perf(args) => {
+            if args.plugins {
+                eprintln!("{}", perf::DEPRECATED_PLUGINS_FLAG);
+            }
+            perf::run(args.mods || args.plugins)?
+        }
+        Command::Mod { action } => plugins::run(action)?,
+        Command::Plugin { action } => {
+            eprintln!("{DEPRECATED_PLUGIN_VERB}");
+            plugins::run(action)?
+        }
         Command::Ui { instance, action } => ui::run(instance, action)?,
         Command::Schema { instance } => ui::schema(instance)?,
         // Reads the machine: what is installed is not something thurbox

@@ -13,9 +13,9 @@
 -- "attend") flips the declared setting, which the settings modal then shows
 -- correctly, because the value has exactly one home.
 --
--- To use it, copy it into your interface directory (`thurbox-cli plugin dir`).
+-- To use it, copy it into your interface directory (`thurbox-cli mod dir`).
 -- It needs no trust: it reads the snapshot and issues commands, like every
--- other plugin. `thurbox-cli plugin events` lists what else it could listen for.
+-- other mod. `thurbox-cli mod events` lists what else it could listen for.
 
 local settings = require("lib.settings")
 
@@ -30,9 +30,9 @@ end
 
 return {
   name = NAME,
-  -- Declared floating and never returning a float node: a plugin that draws
+  -- Declared floating and never returning a float node: a mod that draws
   -- nothing still has to say where it would draw, and a float occupies no slot —
-  -- so `plugin check` does not ask the arrangement to place it.
+  -- so `mod check` does not ask the arrangement to place it.
   floats = true,
   events = { "session.status", "focus.session" },
   settings = {
@@ -43,11 +43,11 @@ return {
   },
 
   on_event = function(name, payload)
-    -- A plugin has no clock; the snapshot's own instant is the nearest thing,
+    -- A mod has no clock; the snapshot's own instant is the nearest thing,
     -- and it is current to within one refresh.
     local now = (thurbox and thurbox.taken_at_ms) or 0
     if name == "focus.session" then
-      -- The selection this plugin just asked for arrives back as an event too;
+      -- The selection this mod just asked for arrives back as an event too;
       -- only a move it did not make counts as the person's.
       if state.asked == payload.to then
         state.asked = nil

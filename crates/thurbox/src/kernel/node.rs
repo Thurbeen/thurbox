@@ -985,7 +985,7 @@ mod tests {
         assert_eq!(
             wrapped.first_live_surface(),
             Some("program:plugins/90_watch.lua#watch"),
-            "the plugin-drawn cells are skipped rather than claiming the keys"
+            "the mod-drawn cells are skipped rather than claiming the keys"
         );
     }
 }

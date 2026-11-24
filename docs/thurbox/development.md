@@ -310,7 +310,7 @@ Or via `just`: `just sandbox`, `just sandbox-fresh`, `just sandbox-demo`,
 The sandbox points `THURBOX_CONFIG_DIR` at its own root, so the interface
 materialises at `<sandbox>/thurbox-config/ui/` along with its settings and
 state. `--fresh` is therefore a clean first-run interface every time — which is
-how the plugin lifecycle (delivery, removal, restore) is exercised without touching
+how the mod lifecycle (delivery, removal, restore) is exercised without touching
 your real one.
 
 The TUI is launched **from the sandbox root rather than the repo**.

@@ -1095,7 +1095,7 @@ fn the_wheel_scrolls_the_help_overlay_by_lines() {
     tui.wheel(over_help, false, 30);
     tui.wait_gone("Navigation");
     tui.wheel(over_help, false, 300);
-    tui.wait_for("a plugin ran");
+    tui.wait_for("a mod ran");
 
     tui.wheel(over_help, true, 300);
     tui.wait_for("Navigation");
@@ -1124,12 +1124,12 @@ fn the_help_overlay_scrollbar_can_be_pressed_and_dragged() {
     let (x, _) = tui.find("▲");
     let (top, bottom) = tui.track_extent(x);
     tui.press(0, (x, bottom));
-    tui.wait_for("a plugin ran");
+    tui.wait_for("a mod ran");
     tui.press(0, (x, top));
     tui.wait_for("Navigation");
 
     tui.drag_down((x, top), bottom);
-    tui.wait_for("a plugin ran");
+    tui.wait_for("a mod ran");
 
     tui.send(ESC);
     tui.wait_gone("Keybindings");
@@ -5547,11 +5547,11 @@ fn an_interface_that_refills_a_fresh_vm_is_retired_when_no_fallback_can_load() {
         cmd.env("TMPDIR", &blocked_temp);
         cmd.env("THURBOX_UI_DIR", interface.path());
     });
-    tui.wait_for("plugin VM replaced; interface failed to load");
+    tui.wait_for("mod VM replaced; interface failed to load");
     std::thread::sleep(Duration::from_secs(2));
     let log = tui.log_tail();
     assert_eq!(
-        log.matches("plugin VM held").count(),
+        log.matches("mod VM held").count(),
         2,
         "one rebuild, then one replacement, and no more\n{log}"
     );
@@ -5748,9 +5748,9 @@ fn full_vm_with_unbuildable_interface(explicit: bool) {
         tui.wait_for("hog-idle");
         tui.send(b"\x07");
         tui.wait_until("memory recovery to run", |_| {
-            tui.log_tail().matches("plugin VM held").count() > cycle
+            tui.log_tail().matches("mod VM held").count() > cycle
         });
-        tui.wait_for("plugin VM replaced; interface failed to load");
+        tui.wait_for("mod VM replaced; interface failed to load");
         tui.wait_gone("hog-idle");
         tui.wait_gone("hog-full");
 
@@ -5767,7 +5767,7 @@ fn full_vm_with_unbuildable_interface(explicit: bool) {
         );
         let log = tui.log_tail();
         assert_eq!(
-            log.matches("plugin VM replaced; interface failed to load")
+            log.matches("mod VM replaced; interface failed to load")
                 .count(),
             cycle + 1,
             "{log}"

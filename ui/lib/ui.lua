@@ -130,7 +130,7 @@ end
 -- Memoized on the published table's identity: `thurbox.registry` is a gated
 -- group, so seeing the same table object again means the same bindings — and a
 -- footer resolves several actions per render, each of which would otherwise
--- walk every plugin's bindings.
+-- walk every mod's bindings.
 local chord_cache = { src = nil, by_action = {} }
 
 --- The chord bound to `action`, or nil when nothing is.
@@ -366,7 +366,7 @@ end
 ---             notification, `thurbox-cli session focus`). Consumed here,
 ---             because a plain `store` write would be overwritten by the next
 ---             publish.
----@param key string A name for this list's state, unique within the plugin.
+---@param key string A name for this list's state, unique within the mod.
 ---@param items table[]
 ---@param opts table?
 function ui.cursor(key, items, opts)
@@ -660,7 +660,7 @@ end
 --- The returned box carries `above` and `below` — the counts of rows hidden at
 --- each end. `ui.panel` reads them off the node, which is what puts a `▲ N` on
 --- the border instead of costing a content row. (An extra key on a node table
---- is how a plugin carries its own bookkeeping; the kernel ignores it.)
+--- is how a mod carries its own bookkeeping; the kernel ignores it.)
 ---
 --- opts:
 ---   items       — the model rows, in render order

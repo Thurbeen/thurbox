@@ -55,7 +55,7 @@ const KEY_WIDTH: usize = 16;
 /// Mac, where `Ctrl+C` is spent on interrupt.
 const RESERVED_ROWS: [(&str, &str); 5] = [
     (QUIT_CHORD, "Quit"),
-    ("f10", "Reload plugins"),
+    ("f10", "Reload mods"),
     ("ctrl+h / ctrl+l", "Focus previous / next pane"),
     ("f12", "Perf counters"),
     ("[ / ]", "Previous / next tab, in settings"),
@@ -445,7 +445,7 @@ fn push_reference_lines(lines: &mut Vec<Line<'_>>, key_width: usize, chrome: Chr
     // name, and a plugin author need not leave the interface to find out.
     lines.push(Line::default());
     lines.push(Line::from(Span::styled(
-        "Events (for plugins: events = { … } + on_event)",
+        "Events (for mods: events = { … } + on_event)",
         chrome.section_header(),
     )));
     let event_width = crate::kernel::events::KERNEL_EVENTS
@@ -467,7 +467,7 @@ fn push_reference_lines(lines: &mut Vec<Line<'_>>, key_width: usize, chrome: Chr
     lines.push(entry_line(
         event_width,
         &format!("{}<name>", crate::kernel::events::USER_PREFIX),
-        "source, … — a plugin ran command(\"emit\", { text = \"<name>\", … })",
+        "source, … — a mod ran command(\"emit\", { text = \"<name>\", … })",
         None,
         false,
         chrome,

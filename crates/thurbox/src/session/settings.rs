@@ -103,11 +103,11 @@ pub const RETIRED_KEYS: &[(&str, &str)] = &[
     ("features.file_viewer", "the interface has no file viewer"),
     (
         "features.info_panel",
-        "a plugin's own pane is switched off in the Interface tab",
+        "a mod's own pane is switched off in the Interface tab",
     ),
     (
         "features.code_review",
-        "a plugin's own pane is switched off in the Interface tab",
+        "a mod's own pane is switched off in the Interface tab",
     ),
     (
         "features.global_search",
