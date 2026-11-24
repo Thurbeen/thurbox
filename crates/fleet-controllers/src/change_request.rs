@@ -293,6 +293,12 @@ impl Pass<'_, '_> {
             .as_ref()
             .is_none_or(|d| d.value != snapshot.review_decision);
         let mergeable_changed = st.mergeable.as_ref() != Some(&snapshot.mergeable);
+        let conflicts = snapshot.mergeable.conflicts();
+        let conflicts_changed = match (&st.conflicts, conflicts) {
+            (_, None) | (None, Some(false)) => false,
+            (None, Some(true)) => true,
+            (Some(c), Some(now)) => c.value != now,
+        };
         let threads_changed = st.threads.as_ref() != Some(&snapshot.threads);
         let reviews_changed = st.reviews != snapshot.reviews;
         let (notes, dropped_before, notes_changed) =
@@ -301,6 +307,7 @@ impl Pass<'_, '_> {
             || head_changed
             || decision_changed
             || mergeable_changed
+            || conflicts_changed
             || threads_changed
             || reviews_changed
             || notes_changed)
@@ -337,6 +344,9 @@ impl Pass<'_, '_> {
                 value: snapshot.review_decision,
                 seq: next,
             });
+        }
+        if let (true, Some(value)) = (conflicts_changed, conflicts) {
+            st.conflicts = Some(Sequenced { value, seq: next });
         }
         st.mergeable = Some(snapshot.mergeable);
         st.threads = Some(snapshot.threads);

@@ -4139,6 +4139,7 @@ fn status_summary(obj: &Object) -> Value {
             "head",
             "reviewDecision",
             "mergeable",
+            "conflicts",
             "threads",
             "reviews",
             "notes",

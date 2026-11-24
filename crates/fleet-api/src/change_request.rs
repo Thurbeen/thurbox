@@ -208,6 +208,10 @@ pub struct ChangeRequestStatus {
     pub review_decision: Option<Sequenced<ReviewDecision>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub mergeable: Option<Mergeable>,
+    /// Whether the forge says the change conflicts with its base. Absent
+    /// until it first does; then moved each time a known answer flips it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub conflicts: Option<Sequenced<bool>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub threads: Option<Threads>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]

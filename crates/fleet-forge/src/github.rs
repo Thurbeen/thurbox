@@ -9,9 +9,9 @@ use std::ffi::OsString;
 use std::time::Duration;
 
 use fleet_api::forge::{
-    ChangeObservation, ChangeRef, ChangeSnapshot, ChangeState, Checks, Expected, FailingCheck,
-    Forge, HeadSeen, Mergeable, Note, NoteKind, Review, ReviewDecision, ReviewState, Threads,
-    Uncertainty,
+    CONFLICTS, ChangeObservation, ChangeRef, ChangeSnapshot, ChangeState, Checks, Expected,
+    FailingCheck, Forge, HeadSeen, Mergeable, Note, NoteKind, Review, ReviewDecision, ReviewState,
+    Threads, Uncertainty,
 };
 use fleet_api::plan::EffectOutcome;
 use fleet_api::{Millis, Observation};
@@ -552,7 +552,7 @@ pub fn snapshot(
     let mergeable = match core["mergeable"].as_str() {
         Some("CONFLICTING") => Mergeable {
             value: Some(false),
-            reason: Some("conflicts".into()),
+            reason: Some(CONFLICTS.into()),
         },
         Some("UNKNOWN") | None => Mergeable {
             value: None,
@@ -565,7 +565,7 @@ pub fn snapshot(
             },
             Some("DIRTY") => Mergeable {
                 value: Some(false),
-                reason: Some("conflicts".into()),
+                reason: Some(CONFLICTS.into()),
             },
             _ => Mergeable {
                 value: Some(true),
@@ -784,9 +784,11 @@ mod tests {
             m("CONFLICTING", "DIRTY"),
             Mergeable {
                 value: Some(false),
-                reason: Some("conflicts".into())
+                reason: Some(CONFLICTS.into())
             }
         );
+        assert_eq!(m("MERGEABLE", "DIRTY").conflicts(), Some(true));
+        assert_eq!(m("MERGEABLE", "UNSTABLE").conflicts(), Some(false));
         assert_eq!(
             m("UNKNOWN", "UNKNOWN"),
             Mergeable {

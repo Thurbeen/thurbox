@@ -101,6 +101,19 @@ pub struct Mergeable {
     pub reason: Option<String>,
 }
 
+/// The one reason every adapter gives when the change conflicts with its
+/// base.
+pub const CONFLICTS: &str = "conflicts";
+
+impl Mergeable {
+    /// Whether the forge says the change conflicts with its base; `None`
+    /// while it is still computing.
+    pub fn conflicts(&self) -> Option<bool> {
+        self.value
+            .map(|v| !v && self.reason.as_deref() == Some(CONFLICTS))
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct Threads {
