@@ -1,7 +1,3 @@
-//! Interface plugins are mods. `thurbox-cli mod` is the verb; `thurbox-cli
-//! plugin` and `perf --plugins` keep working for scripts written before the
-//! rename, and say once on stderr what replaced them.
-
 use std::path::Path;
 use std::process::{Command, Output};
 

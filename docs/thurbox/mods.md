@@ -1475,7 +1475,8 @@ for good, and those need the `sessions` capability:
 - `send` types into an agent.
 - `create` launches an agent.
 - `delete` with `force = true`.
-- `mod` restores or removes a file of the interface.
+- `mod` restores or removes a file of the interface. `plugin` is its deprecated
+  spelling; `command.failed` still names either one `plugin`.
 - `action` naming `kernel.paste` types the clipboard into the focused agent.
 
 Any other `action` runs the handler of the mod that declared it — but as your

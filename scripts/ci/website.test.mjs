@@ -226,7 +226,7 @@ test('homepage presents Fleet and thurbox apart, links each official mod, and st
   for (const word of ['plugin', 'kind', 'controller', 'CRD', 'harness', 'runtime protocol', 'Lua']) {
     assert.match(text(extend), new RegExp(word), `the extension part reads "${word}"`);
   }
-  for (const href of ['docs/fleet/plugins.html', 'plugins.html', 'docs/runtime/index.html', 'docs/agents.html']) {
+  for (const href of ['docs/fleet/plugins.html', 'mods.html', 'docs/runtime/index.html', 'docs/agents.html']) {
     assert.ok(extend.querySelector(`a[href="${href}"]`), `the extension part links ${href}`);
   }
   assert.ok(existsSync('examples/fleet/plugin/files.py'), 'the example Fleet plugin exists');

@@ -354,7 +354,7 @@ impl Command {
             Command::Focus { .. } => "focus",
             Command::OpenLink { .. } => "open",
             Command::Theme { .. } => "theme",
-            Command::Plugin { .. } => "mod",
+            Command::Plugin { .. } => "plugin",
             Command::Bookmark { .. } => "bookmark",
             Command::Configure { .. } => "configure",
             Command::Order { .. } => "order",
@@ -533,7 +533,7 @@ impl Command {
         let doing = match self.kind() {
             "send" => "type into a session",
             "create" => "create a session",
-            "mod" => "change a file of the interface",
+            "plugin" => "change a file of the interface",
             "open" => "open a link",
             "program" => "run a program in a pane",
             "action" => "paste into a session",
@@ -1710,6 +1710,22 @@ mod tests {
         assert!(matches!(command, Command::Diff { .. }));
         // And it is refused without one, like every session-scoped command.
         assert!(Command::parse("diff", Args::default()).is_err());
+    }
+
+    #[test]
+    fn mod_and_its_deprecated_spelling_publish_the_same_kind() {
+        for verb in ["mod", "plugin"] {
+            let command = Command::parse(
+                verb,
+                Args {
+                    file: Some("plugins/a.lua".into()),
+                    action: Some("remove".into()),
+                    ..Args::default()
+                },
+            )
+            .expect("parses");
+            assert_eq!(command.kind(), "plugin", "{verb}");
+        }
     }
 
     #[test]
