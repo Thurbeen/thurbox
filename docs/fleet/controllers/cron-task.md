@@ -15,9 +15,9 @@ label and the time. The manager performs each create and each delete.
 
 1. You apply a CronTask. Its first reconcile writes `nextScheduleTime` and
    `notBefore`. It creates no Task for a time before the CronTask existed.
-2. The manager reconciles the CronTask again at `notBefore`. It also
-   reconciles it at once when its spec changes, and when a Task that
-   `active` names is Concluded or is being deleted.
+2. The manager reconciles the CronTask again at `notBefore`. It
+   reconciles it at once when its spec changes. It also reconciles it at
+   once when a Task that `active` names is Concluded or is being deleted.
 3. The controller finds the latest scheduled time at or before now. If the
    controller already decided about that time, it does nothing.
 4. Otherwise it decides about that time. It creates the Task, or it skips
