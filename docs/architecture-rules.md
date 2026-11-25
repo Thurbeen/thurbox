@@ -99,7 +99,7 @@ grant names exactly one module and never its children.
 
 | Key | Meaning |
 | --- | --- |
-| `uses` | The modules it can reference. |
+| `use` | The modules it can reference. |
 | `path_only` | The modules it can reach through a fully-qualified path, but never import. Each crossing stays visible at its site. |
 | `external` | When present, the external crates the module can name itself. `std`, `core` and `alloc` are always allowed. |
 
@@ -115,5 +115,5 @@ reference.
 | `allowed_files` | Files, relative to `src/`, that the rule leaves free. |
 | `direct` | Judge what a module names itself: a path through the crate's own module that re-exports another crate's item belongs to that module. |
 | `production_only` | Judge production code only, so a test can name what it pins. |
-| `exceptions` | Files, relative to `src/`, each allowed exactly `sites` reaches, with a `why`. |
+| `exceptions` | Entries of `file` (relative to `src/`), `sites` and `why`: the file is allowed exactly `sites` reaches. |
 | `why` | The reason, in one sentence. |

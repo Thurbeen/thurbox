@@ -123,7 +123,7 @@ end
 
 -- A line several hundred characters long, for soft-wrap and horizontal scroll —
 -- a pane that truncates and a pane that wraps look identical without one.
-local long = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+local long = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
 
 -- Non-ASCII in a changed line. Lua's `#` counts BYTES, so every column computed
 -- from it is short here: "Rosé Pine" measures 10 and pads one column narrow.

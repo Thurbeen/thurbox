@@ -31,16 +31,13 @@ if [ "$major" != "$line" ]; then
   exit 1
 fi
 
-is_newest_tag_of_its_major() {
-  local highest
-  highest="$(git tag --list "v${major}.*" | sort -V | tail -1)"
-  [ -z "$highest" ] \
-    || [ "$(printf '%s\n%s\n' "$highest" "v$bare" | sort -V | tail -1)" = "v$bare" ]
-}
-
 channels=false
-if [ "$major" = "$channels_major" ] && is_newest_tag_of_its_major; then
-  channels=true
+if [ "$major" = "$channels_major" ]; then
+  highest="$(git tag --list "v${major}.*" | sort -V | tail -1)"
+  if [ -z "$highest" ] \
+    || [ "$(printf '%s\n%s\n' "$highest" "v$bare" | sort -V | tail -1)" = "v$bare" ]; then
+    channels=true
+  fi
 fi
 
 echo "held=false"
