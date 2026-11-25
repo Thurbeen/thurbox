@@ -1117,14 +1117,21 @@ fn cell(c: &Value) -> String {
     text.replace('|', "\\|").replace('\n', " ")
 }
 
-/// One `rich_text` element as text. A `rich_text_list` is a line per item.
-/// A section, quote or preformatted run joins its inline elements. Mentions
+/// One `rich_text` element as text. A `rich_text_list` is a line per item,
+/// indented two spaces per `indent` level: a `bullet` item as `- `, an
+/// `ordered` item numbered from `offset` + 1. A section, quote or preformatted run joins its inline elements. Mentions
 /// and broadcasts read in Slack's `text` syntax. A date reads as its
 /// `fallback`, or as its Unix `timestamp` without one.
 fn rich_text(e: &Value) -> String {
     match e["type"].as_str() {
         Some("rich_text_list") => {
-            lines(each(&e["elements"]).map(|i| format!("- {}", rich_text(i))))
+            let indent = "  ".repeat(e["indent"].as_u64().unwrap_or(0) as usize);
+            let offset = e["offset"].as_u64().unwrap_or(0);
+            let ordered = e["style"] == "ordered";
+            lines(each(&e["elements"]).zip(offset + 1..).map(|(i, n)| {
+                let marker = if ordered { format!("{n}.") } else { "-".into() };
+                format!("{indent}{marker} {}", rich_text(i))
+            }))
         }
         Some("text") => text_of(e),
         Some("link") => match (text_at(e, "text"), text_at(e, "url")) {
@@ -2101,6 +2108,19 @@ mod tests {
         assert_eq!(
             message(&delivery(&both)).1.text,
             "since 1730000000\nMonitor triggered\nmonitor\napi latency"
+        );
+        // A numbered list keeps its numbers across a nested list, which
+        // Slack sends as a sibling list with a deeper `indent`.
+        let item = |t: &str| json!({"type": "rich_text_section", "elements": [{"type": "text", "text": t}]});
+        let runbook = edited(BOT_MESSAGE, false, |e| {
+            e["blocks"] = json!([{"type": "rich_text", "elements": [
+                {"type": "rich_text_list", "style": "ordered", "elements": [item("drain"), item("restart")]},
+                {"type": "rich_text_list", "style": "bullet", "indent": 1, "elements": [item("api"), item("worker")]},
+                {"type": "rich_text_list", "style": "ordered", "offset": 2, "elements": [item("verify")]}]}]);
+        });
+        assert_eq!(
+            message(&delivery(&runbook)).1.text,
+            "1. drain\n2. restart\n  - api\n  - worker\n3. verify"
         );
         // An attachment that shows nothing else reads as its fallback.
         let bare = edited(BOT_MESSAGE, false, |e| {
