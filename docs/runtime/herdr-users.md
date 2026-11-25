@@ -33,7 +33,7 @@ terminal with the labels herdr's app reads. Fleet's other runtime,
 
 ## Quick setup
 
-On Linux or macOS, with Rust and git installed, these commands install
+On Linux or macOS, with rustup installed, these commands install
 herdr-core, Fleet and `runtime-herdr`, and make herdr Fleet's default
 runtime. The steps below explain each one.
 
@@ -43,8 +43,8 @@ curl -fsSL https://raw.githubusercontent.com/Thurbeen/thurbox/main/scripts/insta
 export PATH="$HOME/.local/bin:$PATH"
 fleet init
 
-git clone https://github.com/Thurbeen/thurbox
-cargo install --locked --path thurbox/crates/runtime-herdr
+rustup update stable
+cargo +stable install --locked --git https://github.com/Thurbeen/thurbox runtime-herdr
 
 cat >> "${XDG_CONFIG_HOME:-$HOME/.config}/fleet/config.toml" <<'EOF'
 
@@ -106,21 +106,22 @@ existing Task. Tell me what you changed and what each check printed.
 - Fleet, with `fleet init` done: [Get started with
   Fleet](https://thurbox.thurbeen.eu/docs/fleet-get-started.html).
 - A coding-agent CLI, installed and logged in.
-- Rust 1.99 or newer and git, to build `runtime-herdr`.
+- rustup with a stable Rust of 1.99 or newer, to build `runtime-herdr`.
 
 ## 1. Install runtime-herdr
 
-`runtime-herdr` is not in the release archive or the installers yet. Build
-it from source:
+`runtime-herdr` is not in the release archive or the installers yet. Cargo
+builds it from the repository, with no clone to keep:
 
 ```bash
-git clone https://github.com/Thurbeen/thurbox
-cd thurbox
-cargo install --locked --path crates/runtime-herdr
+rustup update stable
+cargo +stable install --locked --git https://github.com/Thurbeen/thurbox runtime-herdr
 ```
 
-Cargo puts `runtime-herdr` in `~/.cargo/bin`. rustup reads the toolchain the
-clone pins. To update, pull and run `cargo install` again.
+Cargo puts `runtime-herdr` in `~/.cargo/bin`. `+stable` matters: an install
+from a URL does not read the toolchain the repository pins, and
+`runtime-herdr` needs Rust 1.99 or newer. To update, run the same command
+with `--force`.
 
 `runtime-herdr` makes worktrees with `workspace-git`, which the Fleet
 installer puts in `~/.local/bin`. It looks for it beside its own executable
