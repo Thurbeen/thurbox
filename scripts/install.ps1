@@ -189,7 +189,7 @@ function Install-Archive {
         $files = @(Get-ChildItem -LiteralPath $staging -File)
         if ($Only) {
             $files = @($files | Where-Object { $Only -contains $_.BaseName -and $_.Extension -eq '.exe' })
-            if ($files.Count -ne $Only.Count) {
+            if (-not ($files | Where-Object { $_.BaseName -eq 'fleet' })) {
                 throw 'This release has no Fleet. Install a 3.x release: $env:THURBOX_VERSION = "v3.x.y"'
             }
         }
