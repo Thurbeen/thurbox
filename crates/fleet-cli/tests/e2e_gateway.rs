@@ -1530,11 +1530,6 @@ fn the_slack_adapter_reads_identity_capabilities_and_a_thread_through_the_stub_c
 
 #[test]
 fn the_slack_adapter_reads_a_bots_attachments_and_blocks_as_its_text() {
-    // An alert bot posts with no `text`, its body in a legacy attachment.
-    // Another bot replies in blocks, with `text` as the notification
-    // fallback. A person then mentions Fleet and shares a message: what
-    // they shared is not their words, so their text alone is read. A bot
-    // and then a person post tables, which no `text` carries.
     const ALERT_TS: &str = "1730000200.000100";
     const ISSUE_TS: &str = "1730000230.000200";
     const ASK_TS: &str = "1730000260.000300";

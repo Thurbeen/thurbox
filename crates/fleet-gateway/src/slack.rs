@@ -959,9 +959,6 @@ pub fn check_download(
     Ok(())
 }
 
-/// Who wrote a message: Fleet when its `user` is the account's `bot`,
-/// another bot when it has a `bot_id` or is of subtype `bot_message`, and
-/// a person otherwise.
 fn kind_of(bot: &str, item: &Value) -> AuthorKind {
     let user = item["user"].as_str().filter(|u| !u.is_empty());
     let bot_id = item["bot_id"].as_str().filter(|b| !b.is_empty());
@@ -974,17 +971,9 @@ fn kind_of(bot: &str, item: &Value) -> AuthorKind {
     }
 }
 
-/// A message's text as Slack shows it.
-///
-/// - Fleet's own post is its `text`.
-/// - A person's message is its `text`, unless it holds a table: `text` does
-///   not carry a table block, so the message reads as its blocks, whose
-///   `rich_text` repeats the rest. A person's attachments are left out:
-///   link unfurls and shared messages carry words the person did not write.
-/// - Another bot's body is its `blocks` when it has any, else its `text`.
-///   With blocks, `text` is only the notification fallback. Each legacy
-///   attachment follows: alert bots often leave `text` empty and post their
-///   whole body as an attachment.
+// Slack: with `blocks`, `text` is only the notification fallback; alert
+// bots leave `text` empty and post their body as attachments; a table block
+// is not in `text`; a person's attachments are unfurls and shared messages.
 fn shown(bot: &str, item: &Value) -> String {
     let kind = kind_of(bot, item);
     let tabled = each(&item["blocks"]).any(|b| table_rows(b).is_some());
@@ -1003,12 +992,10 @@ fn shown(bot: &str, item: &Value) -> String {
     lines(std::iter::once(body).chain(each(&item["attachments"]).map(attachment_text)))
 }
 
-/// The elements of a JSON array; none for anything else.
 fn each(v: &Value) -> impl Iterator<Item = &Value> {
     v.as_array().into_iter().flatten()
 }
 
-/// The non-empty parts, one per line.
 fn lines(parts: impl Iterator<Item = String>) -> String {
     parts
         .filter(|p| !p.is_empty())
@@ -1016,9 +1003,6 @@ fn lines(parts: impl Iterator<Item = String>) -> String {
         .join("\n")
 }
 
-/// A legacy attachment's shown fields in display order, or its `fallback`
-/// summary when it shows none of them. A table block sent as an attachment
-/// reads as its table.
 fn attachment_text(a: &Value) -> String {
     if let Some(rows) = table_rows(a) {
         return table(a, rows);
@@ -1049,10 +1033,6 @@ fn attachment_text(a: &Value) -> String {
     }
 }
 
-/// The text of Block Kit blocks, one line per block: `header`, `section`
-/// (its text, then its fields), `context`, `markdown`, `rich_text`, and
-/// `table` and `data_table` as Markdown tables. Other blocks, such as
-/// `divider`, `image` and `actions`, show no text.
 fn blocks_text(blocks: &Value) -> String {
     lines(each(blocks).map(|b| {
         match b["type"].as_str() {
@@ -1072,15 +1052,12 @@ fn blocks_text(blocks: &Value) -> String {
     }))
 }
 
-/// The rows of a `table` or `data_table` block; `None` for any other block.
 fn table_rows(b: &Value) -> Option<&Vec<Value>> {
     matches!(b["type"].as_str(), Some("table" | "data_table"))
         .then(|| b["rows"].as_array())
         .flatten()
 }
 
-/// A table block as a Markdown table under its `caption`: the first row is
-/// the header, and a short row is padded to the widest.
 fn table(b: &Value, rows: &[Value]) -> String {
     let cells: Vec<Vec<String>> = rows.iter().map(|r| each(r).map(cell).collect()).collect();
     let width = cells.iter().map(Vec::len).max().unwrap_or(0);
@@ -1100,10 +1077,6 @@ fn table(b: &Value, rows: &[Value]) -> String {
     )
 }
 
-/// A table cell on one line, its `|` escaped. A `rich_text` cell reads as
-/// rich text, and a `raw_text` or `raw_number` cell as its shown `text`; a
-/// `raw_number` without one reads as its `value`. An `action_cell` reads as
-/// its `fallback` cell.
 fn cell(c: &Value) -> String {
     let text = match c["type"].as_str() {
         Some("rich_text") => lines(each(&c["elements"]).map(rich_text)),
@@ -1117,11 +1090,6 @@ fn cell(c: &Value) -> String {
     text.replace('|', "\\|").replace('\n', " ")
 }
 
-/// One `rich_text` element as text. A `rich_text_list` is a line per item,
-/// indented two spaces per `indent` level: a `bullet` item as `- `, an
-/// `ordered` item numbered from `offset` + 1. A section, quote or preformatted run joins its inline elements. Mentions
-/// and broadcasts read in Slack's `text` syntax. A date reads as its
-/// `fallback`, or as its Unix `timestamp` without one.
 fn rich_text(e: &Value) -> String {
     match e["type"].as_str() {
         Some("rich_text_list") => {
@@ -1152,7 +1120,6 @@ fn rich_text(e: &Value) -> String {
     }
 }
 
-/// The string at `key`; empty when it is absent or not a string.
 fn text_at(v: &Value, key: &str) -> String {
     v[key].as_str().unwrap_or("").to_string()
 }
@@ -1331,8 +1298,6 @@ pub fn read_event(account: &AccountConfig, envelope: &Envelope) -> Observation<O
                 Event::Edited {
                     conversation: conversation(thread),
                     id: id.into(),
-                    // Read as a new message is, so a bot's edit keeps its
-                    // blocks and attachments.
                     text: shown(&account.bot, &Value::Object(m.clone())),
                     edited_at,
                 }
@@ -2071,8 +2036,6 @@ mod tests {
         }
     }
 
-    /// `payload` with its event (or, with `inner`, the changed message)
-    /// edited by `f`.
     fn edited(payload: &str, inner: bool, f: impl FnOnce(&mut Value)) -> String {
         let mut v: Value = serde_json::from_str(payload).unwrap();
         let event = &mut v["payload"]["event"];
@@ -2082,7 +2045,6 @@ mod tests {
 
     #[test]
     fn a_bots_event_and_its_edit_read_its_attachments_and_blocks() {
-        // An alert with an empty `text` and its body in an attachment.
         let alert = edited(BOT_MESSAGE, false, |e| {
             e["text"] = json!("");
             e["attachments"] = json!([{"fallback": "Triggered: api latency",
@@ -2096,7 +2058,6 @@ mod tests {
             m.text,
             "[FIRING] api latency above 2s\np99 2.4s\nenv: production"
         );
-        // Slack shows `pretext` above the attachment, and `author_name` inside it.
         let both = edited(BOT_MESSAGE, false, |e| {
             e["text"] = json!("");
             e["attachments"] = json!([{"author_name": "monitor", "pretext": "Monitor triggered",
@@ -2109,8 +2070,6 @@ mod tests {
             message(&delivery(&both)).1.text,
             "since 1730000000\nMonitor triggered\nmonitor\napi latency"
         );
-        // A numbered list keeps its numbers across a nested list, which
-        // Slack sends as a sibling list with a deeper `indent`.
         let item = |t: &str| json!({"type": "rich_text_section", "elements": [{"type": "text", "text": t}]});
         let runbook = edited(BOT_MESSAGE, false, |e| {
             e["blocks"] = json!([{"type": "rich_text", "elements": [
@@ -2122,13 +2081,11 @@ mod tests {
             message(&delivery(&runbook)).1.text,
             "1. drain\n2. restart\n  - api\n  - worker\n3. verify"
         );
-        // An attachment that shows nothing else reads as its fallback.
         let bare = edited(BOT_MESSAGE, false, |e| {
             e["text"] = json!("");
             e["attachments"] = json!([{"fallback": "Triggered: api latency", "color": "danger"}]);
         });
         assert_eq!(message(&delivery(&bare)).1.text, "Triggered: api latency");
-        // A bot edits its message: the edit reads its blocks, not the fallback `text`.
         let edit = edited(EDIT, true, |m| {
             m.as_object_mut().unwrap().remove("user");
             m["subtype"] = json!("bot_message");
@@ -2140,7 +2097,6 @@ mod tests {
             Event::Edited { text, .. } => assert_eq!(text, "*Resolved:* api latency"),
             other => panic!("{other:?}"),
         }
-        // A person's edit is its `text`: an unfurl's attachment is not their words.
         let person = edited(EDIT, true, |m| {
             m["attachments"] =
                 json!([{"title": "an unfurled page", "from_url": "https://example.com/"}]);
