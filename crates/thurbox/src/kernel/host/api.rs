@@ -710,6 +710,7 @@ fn command_for(
             text: get_string("text"),
             value: get_string("value"),
             force: get_bool("force").unwrap_or(false),
+            fresh: get_bool("fresh").unwrap_or(false),
             toggle: get_bool("toggle").unwrap_or(false),
             flag: get_bool("flag"),
             number: opts

@@ -149,6 +149,14 @@ agent runs; on `y` thurbox runs `fleet pause <task>`, which asks the Task's cont
 the agent and keep its conversation. The row then reads `paused · on
 request`, and `s` resumes it like any paused session.
 
+`R` on the session list, or Restart in its menu, asks to restart the agent
+of a session that runs or is paused; on `y` thurbox runs `fleet restart
+<task>`, which stops the agent and starts it again on its conversation.
+Restart fresh in the menu runs `fleet restart --fresh <task>`, which starts
+the agent on a new conversation. A restart cuts a turn in progress. Fleet
+refuses a held or deleting Task, and one with no session to restart yet; the
+message band then says `could not restart <name>:` and Fleet's error.
+
 The interface does not attach a row whose Task is being deleted, or whose
 session is `Gone`. When `fleet attach` refuses a row with exit code 3, for
 example because the Task is paused, the interface does not ask again until

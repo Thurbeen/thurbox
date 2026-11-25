@@ -147,6 +147,15 @@ impl super::Executor for Fleet {
                 let (link, task) = self.fleets.route(session)?;
                 link.run(&["pause", task], None)?;
             }
+            Command::Restart { session, fresh } => {
+                let (link, task) = self.fleets.route(session)?;
+                let argv: &[&str] = if *fresh {
+                    &["restart", "--fresh", task]
+                } else {
+                    &["restart", task]
+                };
+                link.run(argv, None)?;
+            }
             Command::Rename { session, name } => {
                 let (link, task) = self.fleets.route(session)?;
                 rename(link, task, name)?

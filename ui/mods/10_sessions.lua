@@ -952,6 +952,8 @@ local SESSION_MENU = {
   { label = "Open in editor", action = "sessions.editor" },
   { label = "Start", action = "sessions.start" },
   { label = "Pause", action = "sessions.pause" },
+  { label = "Restart", action = "sessions.restart" },
+  { label = "Restart fresh", action = "sessions.restart_fresh" },
   "sep",
   { label = "Move up", action = "sessions.move_up" },
   { label = "Move down", action = "sessions.move_down" },
@@ -1259,6 +1261,12 @@ pane = {
     { key = "S", action = "sessions.sort", desc = "sort sessions by name", group = "Sessions" },
     { key = "s", action = "sessions.start", desc = "start a stopped session", group = "Sessions" },
     { key = "p", action = "sessions.pause", desc = "pause a running session", group = "Sessions" },
+    {
+      key = "R",
+      action = "sessions.restart",
+      desc = "restart a session on its conversation",
+      group = "Sessions",
+    },
 
     -- v1's global session chords, which fire from any pane. Every one of them
     -- is in v1's `Action::terminal_passthrough` set — they are readline's
@@ -1318,6 +1326,10 @@ pane = {
       scope = "global",
       group = "Panels",
     },
+  },
+
+  commands = {
+    { action = "sessions.restart_fresh", desc = "restart a session on a new conversation" },
   },
 
   render = function(ctx)
@@ -1809,6 +1821,28 @@ pane = {
         }
       else
         command("message", { text = name .. " is not running" })
+      end
+    elseif (action == "sessions.restart" or action == "sessions.restart_fresh") and id then
+      local session = items[at].session
+      local name = session.name or "this session"
+      local fresh = action == "sessions.restart_fresh"
+      if session.starting then
+        command("message", { text = name .. " is starting" })
+      elseif
+        session.status == "stopped"
+        or (RUNNING[session.status] and not session_model.revival(session))
+      then
+        store.confirm = {
+          question = "Restart " .. name .. "?",
+          lines = {
+            fresh and "Its agent stops and starts on a new conversation."
+              or "Its agent stops and resumes its conversation.",
+          },
+          command = "restart",
+          options = { session = id, fresh = fresh },
+        }
+      else
+        command("message", { text = name .. " has no agent to restart" })
       end
     elseif action == "sessions.editor" and id then
       command("editor", { session = id })
