@@ -439,6 +439,12 @@ fn shell(place: &Place, key: &str) -> Result<Value, String> {
         .terminals_labelled(&key_labels(place, key))?
         .into_iter()
         .find(|t| t.is_live() && t.has_label(ROLE_LABEL, SHELL_ROLE));
+    let space = agent
+        .labels
+        .get("herdr.space")
+        .and_then(Value::as_str)
+        .unwrap_or_else(|| place.space(key))
+        .to_string();
     let shell = match open {
         Some(shell) => shell,
         None => core.run(json!({
@@ -448,7 +454,7 @@ fn shell(place: &Place, key: &str) -> Result<Value, String> {
                 KEY_LABEL: key,
                 PLACE_LABEL: place.name,
                 ROLE_LABEL: SHELL_ROLE,
-                "herdr.space": place.space(key),
+                "herdr.space": space,
                 "herdr.tab": key,
             },
             "no_parent": true,
