@@ -4,7 +4,9 @@ set -euo pipefail
 ROOT="$(git rev-parse --show-toplevel)"
 OUT="${OUT:-$ROOT/media}"
 NAME=herdr-fleet-vega
-SESSION=fleet-demo
+RUN=$$
+SESSION="fleet-demo-$RUN"
+PREFIX="herdrdemo$RUN"
 SCREEN_W=1280
 SCREEN_H=820
 DISPLAY_NUM="${DISPLAY_NUM:-:97}"
@@ -42,8 +44,8 @@ cleanup() {
   for pid in "${pids[@]}"; do kill "$pid" 2>/dev/null || true; done
   reset_session
   hc server stop >/dev/null 2>&1 || true
-  rm -rf "${XDG_DATA_HOME:-$HOME/.local/share}/runtime-herdr/workspaces/local/herdrdemo."*
-  find "${XDG_STATE_HOME:-$HOME/.local/state}/runtime-herdr" -name 'herdrdemo.*.start' -delete 2>/dev/null || true
+  rm -rf "${XDG_DATA_HOME:-$HOME/.local/share}/runtime-herdr/workspaces/local/$PREFIX."*
+  find "${XDG_STATE_HOME:-$HOME/.local/state}/runtime-herdr" -name "$PREFIX.*.start" -delete 2>/dev/null || true
   if [ -z "${KEEP:-}" ]; then rm -rf "$DEMO"; else echo "kept $DEMO" >&2; fi
 }
 trap cleanup EXIT
@@ -65,7 +67,7 @@ dir = "$DEMO/store"
 
 [runtimes.herdr]
 program = "runtime-herdr"
-keyPrefix = "herdrdemo"
+keyPrefix = "$PREFIX"
 
 [runtimes.herdr.places.local]
 session = "$SESSION"
@@ -154,6 +156,7 @@ mark work-start
 app agent.focus --terminal "$(terminal_of "$vega_key")"
 
 workers=()
+finished=
 deadline=$(($(date +%s) + WORK_TIMEOUT))
 while [ "$(date +%s)" -lt "$deadline" ]; do
   mapfile -t workers < <(fleet list task --json 2>/dev/null | jq -r '.[] | select(.metadata.name != "vega" and .spec.dispatch) | .metadata.name')
@@ -170,10 +173,15 @@ while [ "$(date +%s)" -lt "$deadline" ]; do
   done
   if [ "${#workers[@]}" -ge 2 ]; then
     done_count=$(fleet list task --json | jq '[.[] | select(.metadata.name != "vega" and .spec.dispatch and .status.result != null)] | length')
-    [ "$done_count" -ge "${#workers[@]}" ] && break
+    if [ "$done_count" -ge "${#workers[@]}" ]; then finished=1; break; fi
   fi
   [ "$shown" = 1 ] || pause 5
 done
+if [ -z "$finished" ]; then
+  KEEP=1
+  step "the workers did not all report a result in ${WORK_TIMEOUT}s: no clip written"
+  exit 1
+fi
 mark work-end
 for w in "${workers[@]}"; do
   k="$(key_of "$w" || true)"; t="$( [ -n "$k" ] && terminal_of "$k" || true)"
