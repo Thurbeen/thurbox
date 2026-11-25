@@ -13,7 +13,7 @@
 > `curl -fsSL https://raw.githubusercontent.com/Thurbeen/thurbox/main/scripts/install.sh | sh`
 > on Linux/macOS, or
 > `irm https://raw.githubusercontent.com/Thurbeen/thurbox/main/scripts/install.ps1 | iex`
-> on Windows. Both scripts also install `fleet`, `runtime-mux` and `workspace-git`.
+> on Windows. Both scripts also install `fleet`, `runtime-mux`, `runtime-herdr` and `workspace-git`.
 > Nix (`nix profile install github:Thurbeen/thurbox`) ships `thurbox` and
 > `thurbox-cli` only. Then run `fleet init` and `fleet service install --now`,
 > then `thurbox`; with no Fleet config, its status line says to run `fleet init`. Config, themes and the interface itself are seeded on
@@ -44,6 +44,7 @@
 - [Get started with Fleet](https://thurbox.thurbeen.eu/docs/fleet-get-started.html): install Fleet alone, a first Task, following it and reading its result.
 - [Get started with Thurbox](https://thurbox.thurbeen.eu/docs/thurbox-get-started.html): install, first launch, a first session and the essential keys.
 - [Fleet reference](https://thurbox.thurbeen.eu/docs/fleet/index.html): Fleet's architecture, contracts and configuration, one page per resource (Task, Session, TaskConfig, EnvProvider, ChangeRequest, Conversation, Listener, plugin kinds) and per controller (Task, ChangeRequest, Forge, Plugin, Gateway); the runtimes are at https://thurbox.thurbeen.eu/docs/runtime/index.html.
+- [Fleet in herdr](https://thurbox.thurbeen.eu/docs/runtime/herdr-users.html): for herdr users — a quick setup and a prompt for an agent, install Fleet (its installer ships runtime-herdr), add it to Fleet's config beside or instead of runtime-mux, run Tasks as herdr-core terminals that herdr's desktop app shows, find them with hc, run VEGA and its workers in herdr, and its limits.
 - [Fleet features](https://thurbox.thurbeen.eu/docs/fleet-features.html): sessions as Tasks, harness profiles, worktrees made by the runtime, places, messages between agents, the headless CLI.
 - [What is thurbox](https://thurbox.thurbeen.eu/docs/thurbox.html): thurbox, the terminal interface on top of one or more Fleets.
 - [thurbox features](https://thurbox.thurbeen.eu/docs/thurbox-features.html): the customizable interface, the session list, several Fleets, global search, layout, themes, notifications, settings.

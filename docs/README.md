@@ -121,7 +121,8 @@ docs/
 └── runtime/                   the runtimes
     ├── README.md              protocol, terminal stream, workspaces (+ .svg)
     ├── runtime-mux.md         hosts, psmux, the status channel
-    └── herdr.md               runtime-herdr: Tasks as herdr-core terminals
+    ├── herdr.md               runtime-herdr: Tasks as herdr-core terminals
+    └── herdr-users.md         a guide: Fleet's Tasks in herdr, set up and used
 ```
 
 Naming: one directory per component, each with a `README.md` index. Pages are

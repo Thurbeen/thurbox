@@ -523,7 +523,7 @@ dependency), verifies the SHA256 **in process** (`sha2`, so the check does not
 depend on the local `PATH`), extracts it
 (`tar`, or PowerShell's `Expand-Archive` for Windows' zip), and installs every
 program the release ships (`thurbox`, `thurbox-cli`, `fleet`, `runtime-mux`,
-`workspace-git`) as one release, with the layout `scripts/install.sh` writes.
+`runtime-herdr`, `workspace-git`) as one release, with the layout `scripts/install.sh` writes.
 The download is verified
 **before** any installed file is touched, so a failed/corrupt download leaves
 the current binaries untouched; the whole step runs before the TUI takes the
@@ -542,7 +542,7 @@ default) holds links. The releases live beside it, under `<prefix>/lib/thurbox`
   current -> releases/3.4.0
   previous -> releases/3.3.0
   install-dir -> ~/.local/bin
-  releases/3.4.0/bin/   thurbox thurbox-cli fleet runtime-mux workspace-git
+  releases/3.4.0/bin/   thurbox thurbox-cli fleet runtime-mux runtime-herdr workspace-git
   releases/3.3.0/bin/
 ```
 

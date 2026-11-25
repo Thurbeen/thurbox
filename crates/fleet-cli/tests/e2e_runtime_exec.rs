@@ -6637,6 +6637,58 @@ fn runtime_herdr_keeps_a_key_running_across_a_core_restart() {
     assert_eq!(again["known"]["started"]["id"], id, "{again}");
 }
 
+#[test]
+fn runtime_herdr_opens_a_key_s_shell_in_its_agent_s_space() {
+    let (Some(program), Some(_)) = (runtime_herdr(), herdr_core()) else {
+        return;
+    };
+    let home = HerdrHome::new("shellspace");
+    let started = herdr_start(&program, &home, "k-shellspace", &["sleep", "300"]);
+    let agent = started["known"]["started"]["id"]
+        .as_str()
+        .unwrap_or_else(|| panic!("{started}"))
+        .to_string();
+    let relabelled = home.hc(&["label", &agent, "herdr.space=fleet"]);
+    assert!(relabelled.status.success(), "{relabelled:?}");
+    let shell = herdr_call(&program, &home, "shell", json!({"key": "k-shellspace"}));
+    let address = shell["known"]["stream"]["argv"]
+        .as_array()
+        .and_then(|argv| argv.last())
+        .and_then(Value::as_str)
+        .unwrap_or_else(|| panic!("{shell}"))
+        .to_string();
+    let got = home.hc(&["get", &address, "--json"]);
+    let terminal: Value = serde_json::from_slice(&got.stdout).expect("a JSON terminal");
+    assert_eq!(terminal["labels"]["fleet.role"], "shell", "{terminal}");
+    assert_eq!(terminal["labels"]["herdr.space"], "fleet", "{terminal}");
+}
+
+#[test]
+fn runtime_herdr_groups_a_place_s_keys_in_the_space_it_names() {
+    let (Some(program), Some(_)) = (runtime_herdr(), herdr_core()) else {
+        return;
+    };
+    let home = HerdrHome::new("grouped");
+    let started = herdr_call(
+        &program,
+        &home,
+        "start",
+        json!({
+            "place": {"name": "local", "config": {"space": "agents"}},
+            "key": "k-grouped",
+            "argv": ["sleep", "300"],
+        }),
+    );
+    let id = started["known"]["started"]["id"]
+        .as_str()
+        .unwrap_or_else(|| panic!("{started}"))
+        .to_string();
+    let got = home.hc(&["get", &id, "--json"]);
+    let terminal: Value = serde_json::from_slice(&got.stdout).expect("a JSON terminal");
+    assert_eq!(terminal["labels"]["herdr.space"], "agents", "{terminal}");
+    assert_eq!(terminal["labels"]["herdr.tab"], "k-grouped", "{terminal}");
+}
+
 /// A process the core lost reads as exited, never as none: Fleet revives
 /// an exited key, and the next start runs it again.
 #[test]
@@ -6684,7 +6736,7 @@ fn runtime_herdr_labels_a_key_s_terminal_for_herdr_s_app() {
         json!({
             "fleet.key": "k-labels",
             "fleet.place": "local",
-            "herdr.space": "fleet",
+            "herdr.space": "k-labels",
             "herdr.tab": "k-labels"
         }),
         "{terminal}"

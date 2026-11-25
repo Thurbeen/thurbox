@@ -10,10 +10,8 @@ INSTALL_DIR="${INSTALL_DIR:-$HOME/.local/bin}"
 VERSION="${VERSION:-}"
 # Where the release assets are fetched from; a mirror, or a local copy in tests.
 DOWNLOAD_URL="${DOWNLOAD_URL:-https://github.com/${REPO}/releases/download}"
-# Every program a v3 install runs by name, and the part Fleet runs without
-# thurbox: BINARIES and FLEET_BINARIES in scripts/ci/release-archive.sh.
-BINARIES="thurbox thurbox-cli fleet runtime-mux workspace-git"
-FLEET_BINARIES="fleet runtime-mux workspace-git"
+BINARIES="thurbox thurbox-cli fleet runtime-mux runtime-herdr workspace-git"
+FLEET_BINARIES="fleet runtime-mux runtime-herdr workspace-git"
 FLEET_ONLY="${THURBOX_FLEET_ONLY:-}"
 TEMP_DIR=""
 
@@ -185,8 +183,9 @@ get_binary() {
   echo "$tmpdir/binary.tar.gz"
 }
 
+# shellcheck disable=SC2086 # one program per word
 do_install() {
-  local tarball="$1" dir="$2" home v="${3:-unversioned}" rel old
+  local tarball="$1" dir="$2" home v="${3:-unversioned}" rel old members
 
   info "Installing..."
   mkdir -p "$dir"
@@ -194,8 +193,9 @@ do_install() {
   old="$(readlink "$home/current" 2>/dev/null || true)"
   mkdir -p "$home/$rel/bin"
   if [ -n "$FLEET_ONLY" ]; then
-    # shellcheck disable=SC2086 # one archive member per word
-    tar -xzf "$tarball" -C "$home/$rel/bin" $BINARIES || { error "This release has no Fleet: VERSION=v3.x.y"; return 1; }
+    members="$(tar -tzf "$tarball" | grep -Fx "$(printf '%s\n' $BINARIES)" || true)"
+    printf '%s\n' "$members" | grep -qx fleet || { error "This release has no Fleet: VERSION=v3.x.y"; return 1; }
+    tar -xzf "$tarball" -C "$home/$rel/bin" $members
   else
     tar -xzf "$tarball" -C "$home/$rel/bin"
   fi

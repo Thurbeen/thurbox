@@ -133,14 +133,11 @@ fi
 fleet version || fail "fleet version exited $?"
 pass "fleet version answers"
 
-# The two programs Fleet and runtime-mux run speak JSON on stdin: an unknown
-# request comes back as an `unknown` answer, which only a program that runs
-# here can give.
-for b in runtime-mux workspace-git; do
+for b in runtime-mux runtime-herdr workspace-git; do
   answer="$("$b" x </dev/null)" || fail "$b exited $?"
   echo "$answer" | jq -e '.unknown' >/dev/null || fail "$b answered: $answer"
 done
-pass "runtime-mux and workspace-git answer"
+pass "runtime-mux, runtime-herdr and workspace-git answer"
 
 fleet init || fail "fleet init exited $?"
 pass "fleet init wrote a config"

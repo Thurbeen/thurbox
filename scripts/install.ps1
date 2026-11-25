@@ -6,11 +6,11 @@
 .DESCRIPTION
     Downloads the latest thurbox release for Windows, verifies its SHA256
     checksum, extracts its programs (thurbox, thurbox-cli, fleet, runtime-mux,
-    workspace-git) into an install directory, and adds that directory to the
-    user PATH.
+    runtime-herdr, workspace-git) into an install directory, and adds that
+    directory to the user PATH.
 
-    -FleetOnly installs Fleet alone, headless: fleet, runtime-mux and
-    workspace-git, without thurbox or thurbox-cli.
+    -FleetOnly installs Fleet alone, headless: fleet, runtime-mux,
+    runtime-herdr and workspace-git, without thurbox or thurbox-cli.
 
     Mirrors scripts/install.sh (Linux/macOS). Windows uses psmux as the terminal
     multiplexer (a native, drop-in tmux replacement) instead of tmux.
@@ -53,10 +53,8 @@ if (-not $Repo)    { $Repo    = if ($env:THURBOX_REPO)    { $env:THURBOX_REPO } 
 if (-not $Version) { $Version = if ($env:THURBOX_VERSION) { $env:THURBOX_VERSION } else { '' } }
 # Where the release assets are fetched from; a mirror, or a local copy in tests.
 $DownloadUrl = if ($env:THURBOX_DOWNLOAD_URL) { $env:THURBOX_DOWNLOAD_URL } else { "https://github.com/$Repo/releases/download" }
-# Every program a v3 install runs by name, and the part Fleet runs without
-# thurbox: BINARIES and FLEET_BINARIES in scripts/ci/release-archive.sh.
-$Binaries = @('thurbox', 'thurbox-cli', 'fleet', 'runtime-mux', 'workspace-git')
-$FleetBinaries = @('fleet', 'runtime-mux', 'workspace-git')
+$Binaries = @('thurbox', 'thurbox-cli', 'fleet', 'runtime-mux', 'runtime-herdr', 'workspace-git')
+$FleetBinaries = @('fleet', 'runtime-mux', 'runtime-herdr', 'workspace-git')
 # The env var is a default: an explicit -FleetOnly or -FleetOnly:$false wins.
 $FleetOnlyFromEnv = $false
 if (-not $PSBoundParameters.ContainsKey('FleetOnly') -and $env:THURBOX_FLEET_ONLY -and $env:THURBOX_FLEET_ONLY -ne '0') {
@@ -191,7 +189,7 @@ function Install-Archive {
         $files = @(Get-ChildItem -LiteralPath $staging -File)
         if ($Only) {
             $files = @($files | Where-Object { $Only -contains $_.BaseName -and $_.Extension -eq '.exe' })
-            if ($files.Count -ne $Only.Count) {
+            if (-not ($files | Where-Object { $_.BaseName -eq 'fleet' })) {
                 throw 'This release has no Fleet. Install a 3.x release: $env:THURBOX_VERSION = "v3.x.y"'
             }
         }

@@ -9,6 +9,8 @@ that herdr's desktop app is a client of. Fleet drives it through
 
 Its configuration is in
 [Fleet's configuration](../fleet/configuration.md#places-on-runtime-herdr).
+To set it up and run a first Task, follow
+[Fleet for herdr users](herdr-users.md).
 
 ## How it reaches herdr-core
 
@@ -19,7 +21,7 @@ Fleet ── runtime-herdr <verb> ──▶ herdr-core connect      JSON-RPC 2.0
                                   herdr-core ── holder ── terminal t7
                                                            labels: fleet.key=<key>
                                                                    fleet.place=<place>
-                                                                   herdr.space=<space>
+                                                                   herdr.space=<key>, or the place's space
                                                                    herdr.tab=<key>
                                                                    fleet.role=shell (the shell only)
 ```
@@ -100,10 +102,12 @@ not stop: Fleet reads `none` as a gone worker and does not revive it.
 
 herdr's app shows each terminal that has the labels `herdr.space` and
 `herdr.tab`, and makes a space or a tab for an id it does not know
-(herdr-app's `defaults/AGENTS.md`). So a Task appears in the app, in the
-space that the place's `space` names, in a tab named after its key. This
-was not checked with the app in this repository's tests: they check only
-the labels.
+(herdr-app's `defaults/AGENTS.md`). So each Task appears in the app as a
+space of its own, which the app names after the folder its terminal runs
+in, with the Task's agent and its shell inside. A place that sets `space`
+puts all its Tasks in that one space instead, each in a tab named after its
+key. The tests check the labels; the clip in
+[Fleet for herdr users](herdr-users.md) shows the app.
 
 ## Files
 

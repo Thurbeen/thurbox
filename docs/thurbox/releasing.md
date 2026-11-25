@@ -14,8 +14,8 @@ The updater in the *already installed* binary decides what to install, and it
 hard-fails on a known binary that is missing from the tarball:
 
     // src/update/self_update.rs
-    const BINARIES: [&str; 5] =
-        ["thurbox", "thurbox-cli", "fleet", "runtime-mux", "workspace-git"];
+    const BINARIES: [&str; 6] = ["thurbox", "thurbox-cli", "fleet",
+        "runtime-mux", "runtime-herdr", "workspace-git"];
     // …
     if !src.exists() {
         return Err(format!("release archive is missing `{name}`"));
