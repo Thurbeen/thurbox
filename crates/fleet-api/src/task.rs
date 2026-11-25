@@ -462,8 +462,6 @@ impl TaskStatus {
     }
 }
 
-/// One `fleet restart`: when it asked, Unix milliseconds, and whether the
-/// agent starts on a new conversation instead of resuming its own.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct RestartRequest {

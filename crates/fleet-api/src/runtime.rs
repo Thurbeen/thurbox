@@ -190,12 +190,6 @@ pub trait Runtime {
             why: "this runtime cannot resume a session".into(),
         })
     }
-    /// Stop the agent of `session`, running or stopped, and start it again
-    /// in its own workspace under the same identity: on `conversation`, as
-    /// for `resume`, or on its launch argv when `None`. `Restarted` once it
-    /// started; `RestartUnsupported` on a runtime that cannot pause, with
-    /// nothing stopped. Each call cuts the agent's turn, so Fleet makes it
-    /// once per key.
     fn restart(
         &self,
         _session: &SessionRef,

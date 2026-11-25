@@ -122,7 +122,6 @@ pub struct FakeState {
     pub spawn_not_ready: bool,
     pub spawn_untrusted: bool,
     pub prompt_hook_silent: bool,
-    /// Whether the runtime declares no `pause`, so it restarts nothing.
     pub pause_unsupported: bool,
     pub next_id: u64,
     pub log: Vec<String>,

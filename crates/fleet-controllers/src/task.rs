@@ -1,4 +1,3 @@
-
 use fleet_api::condition::{
     Condition, ConditionStatus, condition, is_true, set_condition, settle_transitions,
 };
