@@ -213,6 +213,7 @@ fn box_place() -> HostRow {
         backend: "ssh:box".into(),
         ready: Some(false),
         why: Some("no tmux".into()),
+        here: false,
     }
 }
 

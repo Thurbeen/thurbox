@@ -2856,3 +2856,53 @@ mod an_update {
         assert!(!stdout.contains("systemctl --user restart"), "{stdout}");
     }
 }
+
+#[test]
+fn each_runtimes_local_place_is_this_machine() {
+    let Some(bin) = fleet_bin() else { return };
+    let fleet = Fleet::with(
+        bin,
+        "[runtimes.mux]\nprogram = 'runtime-absent'\ndefault = true\n\n\
+         [runtimes.mux.places.local]\n\n\
+         [runtimes.herdr]\nprogram = 'runtime-absent'\n\n\
+         [runtimes.herdr.places.local]\n",
+        "",
+    );
+    let mut on_herdr = task("on-herdr");
+    on_herdr["spec"]["host"] = json!("herdr/local");
+    fleet.apply(on_herdr);
+    let mut store = store_over(&fleet);
+    let mut shown = Vec::new();
+    until("Fleet's places reach the snapshot", || {
+        store.refresh_if_due();
+        shown = store
+            .current()
+            .hosts
+            .iter()
+            .flatten()
+            .map(|row| (row.name.clone(), row.detail.clone()))
+            .collect::<Vec<_>>();
+        shown.len() == 2
+    });
+    assert_eq!(
+        shown,
+        [
+            ("local".to_string(), "this machine (mux)".to_string()),
+            (
+                "herdr/local".to_string(),
+                "this machine (herdr)".to_string()
+            ),
+        ]
+    );
+    until("the Task on herdr/local is a row", || {
+        !names(&mut store).is_empty()
+    });
+    assert_eq!(
+        store
+            .current()
+            .session("local:on-herdr")
+            .expect("the row")
+            .remote_host,
+        None
+    );
+}

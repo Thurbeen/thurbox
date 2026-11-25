@@ -540,7 +540,7 @@ fn machine(link: &FleetLink) -> String {
 /// the one Fleet calls `local` first, with an empty backend (a Task names
 /// it `local`), then each other place by its `<runtime>/<place>`. `null`
 /// (one runtime serves any place) offers `local` alone. `machine` is how
-/// the Fleet's own machine reads.
+/// the Fleet's own machine reads, beside the runtime of each `local` place.
 pub(crate) fn places_from(answer: &Value, machine: &str) -> Vec<HostRow> {
     let Some(places) = answer["places"].as_array() else {
         return vec![HostRow::local(machine)];
@@ -563,7 +563,10 @@ pub(crate) fn places_from(answer: &Value, machine: &str) -> Vec<HostRow> {
             continue;
         }
         let id = place["place"].as_str().unwrap_or_default().to_string();
-        let detail = if place["dynamic"].as_bool() == Some(true) {
+        let here = is_fleets_machine(&id);
+        let detail = if here {
+            format!("{machine} ({runtime})")
+        } else if place["dynamic"].as_bool() == Some(true) {
             format!("a new machine per session ({runtime})")
         } else {
             format!("a {runtime} place")
@@ -574,6 +577,7 @@ pub(crate) fn places_from(answer: &Value, machine: &str) -> Vec<HostRow> {
             backend: id,
             ready,
             why,
+            here,
         });
     }
     rows
@@ -973,6 +977,15 @@ fn percent_decoded(path: &str) -> Vec<u8> {
     bytes
 }
 
+/// Whether a Task's `place` is the machine its Fleet runs on: `local`, or
+/// any runtime's `local` place (`<runtime>/local`).
+pub(crate) fn is_fleets_machine(place: &str) -> bool {
+    place == "local"
+        || place
+            .split_once('/')
+            .is_some_and(|(_, name)| name == "local")
+}
+
 /// The row of a Task of the Fleet `link` reaches. Its id is
 /// `<fleet>:<task>` (M1): two Fleets can each hold a Task of one name, and
 /// every command addresses a Task by its name in its Fleet
@@ -981,8 +994,8 @@ fn percent_decoded(path: &str) -> Vec<u8> {
 ///
 /// `remote_host` says where the session is when that is not this machine:
 /// for a Fleet on another machine, that Fleet's name, with the place when it
-/// is not the Fleet's `local` (`box · vm/sandbox`); for a Fleet here, a place
-/// other than `local`. What a row says of git, panes and hook
+/// is not a `local` one (`box · vm/sandbox`); for a Fleet here, a place
+/// other than a `local` one. What a row says of git, panes and hook
 /// columns is thurbox's own engine's and stays empty here; the status is
 /// Fleet's `agentState` (the agent's hooks, else its screen) over its
 /// `sessionState`, and `status.activity` says which source decided it.
@@ -992,7 +1005,7 @@ pub fn row_of(link: &FleetLink, task: &Value) -> SessionRow {
     let task_name = text(&task["metadata"]["name"]).unwrap_or_default();
     let name = text(&task["metadata"]["labels"][NAME_LABEL]).unwrap_or_else(|| task_name.clone());
     let id = super::row_id(link.name(), &task_name);
-    let place = text(&spec["host"]).filter(|place| place != "local");
+    let place = text(&spec["host"]).filter(|place| !is_fleets_machine(place));
     let remote_host = match (link.is_local(), place) {
         (true, place) => place,
         (false, None) => Some(link.name().to_string()),
@@ -1246,6 +1259,7 @@ mod tests {
             {"place": "mux/wsl-dev", "runtime": "mux", "alias": null, "ready": false, "why": "no distro"},
             {"place": "mux/local", "runtime": "mux", "alias": "local", "ready": true},
             {"place": "vm/sandbox", "runtime": "vm", "dynamic": true, "ready": null},
+            {"place": "herdr/local", "runtime": "herdr", "name": "local", "alias": null, "ready": true},
         ]});
         let rows = places_from(&answer, "box itself");
         let shown: Vec<(&str, &str, &str, Option<bool>)> = rows
@@ -1269,6 +1283,12 @@ mod tests {
                     "a new machine per session (vm)",
                     "vm/sandbox",
                     None
+                ),
+                (
+                    "herdr/local",
+                    "box itself (herdr)",
+                    "herdr/local",
+                    Some(true)
                 ),
             ]
         );

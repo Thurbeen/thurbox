@@ -466,6 +466,7 @@ fn three_fleets() -> Vec<FleetRow> {
         backend: "mux/wsl-dev".into(),
         ready: Some(true),
         why: None,
+        here: false,
     };
     let mut gpu = fleet("gpu", "ssh gpu", FleetState::Unreachable, Vec::new(), &[]);
     gpu.why = Some("ssh: connect to host gpu port 22: Connection refused".into());
@@ -900,6 +901,7 @@ fn places_of_two_lengths() -> Vec<HostRow> {
             backend: "mux/gpu-box".into(),
             ready: Some(false),
             why: Some(NOT_READY_WHY.into()),
+            here: false,
         },
     ]
 }
@@ -1045,6 +1047,7 @@ fn a_not_ready_place_is_dimmed() {
             backend: "mux/other".into(),
             ready: Some(true),
             why: None,
+            here: false,
         },
     );
     world.snapshot.hosts = Some(places);
@@ -1199,6 +1202,7 @@ fn a_long_place_list_scrolls_inside_a_short_screen() {
             backend: format!("mux/place-{n:02}"),
             ready: Some(false),
             why: Some(NOT_READY_WHY.into()),
+            here: false,
         });
     }
     world.snapshot.hosts = Some(places);
@@ -1278,6 +1282,151 @@ fn opening_with_hosts_asks_where_to_run_first() {
     assert!(
         screen.contains("devbox") && screen.contains("me@devbox"),
         "a host is shown with the detail that tells two apart: {screen}"
+    );
+}
+
+/// A Fleet whose `herdr` runtime has a `local` place beside the default
+/// runtime's.
+fn with_herdr_local() -> World {
+    let mut world = World::default();
+    let herdr_local = HostRow {
+        name: "herdr/local".into(),
+        detail: "this machine (herdr)".into(),
+        backend: "herdr/local".into(),
+        here: true,
+        ..HostRow::default()
+    };
+    world.snapshot.fleets = vec![fleet(
+        "laptop",
+        "local Fleet",
+        FleetState::Up,
+        vec![local_host(), herdr_local],
+        &["claude"],
+    )];
+    world
+}
+
+/// Another runtime's `local` place is this machine, as the default one is:
+/// it offers this machine's repositories, read on this disk, and the Task
+/// names the place.
+#[test]
+fn another_runtimes_local_place_is_this_machine() {
+    let host = host();
+    let world = with_herdr_local();
+    press(&host, &world, "ctrl+n");
+    press(&host, &world, "down");
+    press(&host, &world, "enter");
+    let screen = drawn(&host, &world);
+    assert_eq!(host.shared_string("want_bookmarks").as_deref(), Some(""));
+    assert!(screen.contains("/src/notes"), "{screen}");
+    assert!(!screen.contains("Clone URL"), "{screen}");
+    press(&host, &world, "down");
+    press(&host, &world, "enter");
+    type_text(&host, &world, "notes");
+    press(&host, &world, "enter");
+    let commands = host.drain_commands();
+    assert!(
+        matches!(
+            &commands[..],
+            [Command::Create { repo, host: Some(h), .. }]
+                if repo == "/src/notes" && h == "herdr/local"
+        ),
+        "{commands:?}"
+    );
+}
+
+/// Another runtime's `local` place is browsed on this disk, never through
+/// its runtime.
+#[test]
+fn another_runtimes_local_place_is_browsed_here() {
+    let host = host();
+    let world = with_herdr_local();
+    press(&host, &world, "ctrl+n");
+    press(&host, &world, "down");
+    press(&host, &world, "enter");
+    press(&host, &world, "tab");
+    press(&host, &world, "tab");
+    drawn(&host, &world);
+    let browse = host.shared_string("want_browse").expect("a listing");
+    assert!(browse.starts_with('\0'), "{browse:?}");
+}
+
+/// On a remote Fleet whose default runtime has no `local` place, another
+/// runtime's `local` is read through that place itself, never through a
+/// `local` the Fleet would refuse. Its repositories stay the machine's.
+#[test]
+fn a_remote_fleets_runtime_local_place_is_read_through_itself() {
+    let host = host();
+    let mut world = World::default();
+    let herdr_local = HostRow {
+        name: "herdr/local".into(),
+        detail: "box itself (herdr)".into(),
+        backend: "herdr/local".into(),
+        here: true,
+        ..HostRow::default()
+    };
+    world.snapshot.fleets = vec![fleet(
+        "box",
+        "ssh box",
+        FleetState::Up,
+        vec![herdr_local],
+        &["claude"],
+    )];
+    press(&host, &world, "ctrl+n");
+    press(&host, &world, "enter");
+    press(&host, &world, "tab");
+    press(&host, &world, "tab");
+    drawn(&host, &world);
+    assert_eq!(
+        host.shared_string("want_bookmarks").as_deref(),
+        Some("box/local")
+    );
+    assert_eq!(
+        host.shared_string("want_browse").as_deref(),
+        Some("box/herdr/local\0~")
+    );
+}
+
+/// A remote Fleet's `local` that is not ready reads nothing: another
+/// runtime's ready `local` is read through itself, and its repositories
+/// stay the machine's whichever place reads them.
+#[test]
+fn a_remote_fleets_runtime_local_place_skips_a_local_that_is_not_ready() {
+    let host = host();
+    let mut world = World::default();
+    let down = HostRow {
+        detail: "box itself (mux)".into(),
+        ready: Some(false),
+        why: Some("tmux is not running".into()),
+        ..HostRow::local("box itself")
+    };
+    let herdr_local = HostRow {
+        name: "herdr/local".into(),
+        detail: "box itself (herdr)".into(),
+        backend: "herdr/local".into(),
+        ready: Some(true),
+        here: true,
+        ..HostRow::default()
+    };
+    world.snapshot.fleets = vec![fleet(
+        "box",
+        "ssh box",
+        FleetState::Up,
+        vec![down, herdr_local],
+        &["claude"],
+    )];
+    press(&host, &world, "ctrl+n");
+    press(&host, &world, "enter");
+    press(&host, &world, "tab");
+    press(&host, &world, "tab");
+    drawn(&host, &world);
+    assert_eq!(
+        host.shared_string("want_bookmarks").as_deref(),
+        Some("box/local")
+    );
+    assert_eq!(
+        host.shared_string("want_browse").as_deref(),
+        Some("box/herdr/local\0~")
     );
 }
 
@@ -2844,6 +2993,7 @@ fn a_place_on_another_machine_is_browsed_and_given_a_worktree_there() {
         backend: "mux/box".into(),
         ready: Some(true),
         why: None,
+        here: false,
     };
     world.snapshot.fleets = vec![fleet(
         "local",
@@ -2952,6 +3102,7 @@ fn a_typed_home_on_a_place_elsewhere_is_that_places_home() {
         backend: "mux/box".into(),
         ready: Some(true),
         why: None,
+        here: false,
     };
     world.snapshot.fleets = vec![fleet(
         "local",
@@ -3013,6 +3164,7 @@ fn another_logins_home_on_a_place_elsewhere_is_refused() {
         backend: "mux/box".into(),
         ready: Some(true),
         why: None,
+        here: false,
     };
     world.snapshot.fleets = vec![fleet(
         "local",
@@ -3084,6 +3236,7 @@ fn a_places_refusal_to_list_branches_is_shown() {
         backend: "mux/box".into(),
         ready: Some(true),
         why: None,
+        here: false,
     };
     world.snapshot.fleets = vec![fleet(
         "local",

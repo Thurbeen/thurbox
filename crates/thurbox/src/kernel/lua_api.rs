@@ -383,6 +383,8 @@ pub static HOST: Class = Class {
         leaf("why", "string")
             .opt()
             .doc("Why the place is not ready."),
+        leaf("here", "boolean")
+            .doc("Whether the place is the machine its Fleet runs on: a runtime's `local` place."),
     ],
 };
 
