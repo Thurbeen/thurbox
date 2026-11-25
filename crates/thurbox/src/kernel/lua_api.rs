@@ -325,7 +325,7 @@ pub static SESSION: Class = Class {
             .doc("What a diff is taken against."),
         leaf("host", "string").opt(),
         leaf("place", "string").opt().doc(
-            "The place the session's Task names, as its Fleet names it: `local` or `<runtime>/<place>`. Nil for a Task that names none.",
+            "The place the session's Task runs on, as its Fleet names it: `local` or `<runtime>/<place>`, the Task's own or its TaskConfig's. Nil until Fleet has resolved a Task that names none.",
         ),
         leaf("parent", "string").opt(),
         leaf("cwd", "string").opt(),

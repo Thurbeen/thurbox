@@ -96,9 +96,11 @@ pub struct SessionRow {
     pub backend_id: Option<String>,
     /// Bare host name for a remote session; `None` when local.
     pub remote_host: Option<String>,
-    /// The place a Fleet session's Task names (`spec.host`), as its Fleet
-    /// names it: `local` or `<runtime>/<place>`. `None` for a row of
-    /// thurbox's own engine, or a Task that names none.
+    /// The place a Fleet session's Task runs on, as its Fleet names it:
+    /// `local` or `<runtime>/<place>`. Fleet's resolved `status.execution.host`
+    /// (the Task's own, else its TaskConfig's), else the Task's `spec.host`.
+    /// `None` for a row of thurbox's own engine, or a Task not yet resolved
+    /// that names none.
     pub place: Option<String>,
     /// The agent's own session id, which names its statusline metrics file.
     pub agent_session_id: Option<String>,

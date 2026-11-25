@@ -1005,7 +1005,7 @@ pub fn row_of(link: &FleetLink, task: &Value) -> SessionRow {
     let task_name = text(&task["metadata"]["name"]).unwrap_or_default();
     let name = text(&task["metadata"]["labels"][NAME_LABEL]).unwrap_or_else(|| task_name.clone());
     let id = super::row_id(link.name(), &task_name);
-    let place = text(&spec["host"]);
+    let place = text(&status["execution"]["host"]).or_else(|| text(&spec["host"]));
     let elsewhere = place.clone().filter(|place| !is_fleets_machine(place));
     let remote_host = match (link.is_local(), elsewhere) {
         (true, place) => place,
