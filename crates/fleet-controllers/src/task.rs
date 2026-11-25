@@ -813,9 +813,6 @@ impl Pass<'_, '_> {
             return self.pause_step(session);
         }
         self.brief_step(session.clone());
-        // The brief comes first: an entry goes out only once it was sent, in
-        // a pass that sent nothing and has no brief send unconfirmed. A brief
-        // held for trust or readiness holds the inbox with it.
         let sent = self.st.intents.contains_key(&brief_key(self.input.task));
         if matches!(self.st.phase, Phase::Spawned | Phase::Briefed)
             && sent
@@ -2399,7 +2396,7 @@ fn pause_candidate(spec: &TaskSpec, st: &TaskStatus) -> bool {
 }
 
 fn pausable(spec: &TaskSpec, st: &TaskStatus) -> bool {
-    let phase = if spec.is_interactive() {
+    let in_pausable_phase = if spec.is_interactive() {
         st.phase == Phase::Spawned
     } else {
         st.brief.is_some()
@@ -2408,7 +2405,7 @@ fn pausable(spec: &TaskSpec, st: &TaskStatus) -> bool {
     st.conversation.is_some()
         && fleet_api::harness::profile(&spec.harness).resumes()
         && spec.dispatch
-        && phase
+        && in_pausable_phase
         && st.session.is_some()
         && next_entry(st).is_none()
         && st.catch_up.is_none()
