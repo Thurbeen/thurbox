@@ -7641,6 +7641,16 @@ fn a_confirmed_ui_action_restarts_a_session_on_its_conversation_or_a_fresh_one()
         ("sessions.restart", "restart napping"),
         ("sessions.restart_fresh", "restart --fresh napping"),
     ] {
+        let catalog = cli(&["actions"]);
+        let entry = catalog["actions"]
+            .as_array()
+            .and_then(|actions| actions.iter().find(|entry| entry["name"] == action))
+            .unwrap_or_else(|| panic!("{action} is not in {catalog}"));
+        assert_eq!(
+            entry["arguments"],
+            serde_json::json!([{"name": "session_id", "kind": "string", "required": true}]),
+            "{action}: {entry}"
+        );
         let asked = cli(&["action", action, "--session", "napping"]);
         assert_eq!(
             asked["result"]["error"]["code"], "confirmation_required",

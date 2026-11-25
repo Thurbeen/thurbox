@@ -392,14 +392,7 @@ impl App {
             .into_iter()
             .find(|entry| entry.name == name)
             .ok_or(("unknown_action", "unknown UI action".into()))?;
-        if !matches!(
-            name,
-            "sessions.delete"
-                | "sessions.force_delete"
-                | "sessions.restart"
-                | "sessions.restart_fresh"
-                | "sessions.sync"
-        ) {
+        if !thurbox::kernel::registry::is_guarded_session_action(name) {
             return Err((
                 "unavailable",
                 "this destructive action has no guarded external executor".into(),
@@ -730,14 +723,7 @@ impl App {
                         .is_some_and(|index| self.host.action_handler_present(index)),
                 };
                 if descriptor.destructive
-                    && !matches!(
-                        descriptor.name.as_str(),
-                        "sessions.delete"
-                            | "sessions.force_delete"
-                            | "sessions.restart"
-                            | "sessions.restart_fresh"
-                            | "sessions.sync"
-                    )
+                    && !thurbox::kernel::registry::is_guarded_session_action(&descriptor.name)
                 {
                     descriptor.available = false;
                 }

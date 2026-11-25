@@ -1097,14 +1097,7 @@ impl LuaHost {
                 {
                     if owner != loaded.name
                         || (path != loaded.path
-                            && matches!(
-                                action.as_str(),
-                                "sessions.delete"
-                                    | "sessions.force_delete"
-                                    | "sessions.restart"
-                                    | "sessions.restart_fresh"
-                                    | "sessions.sync"
-                            ))
+                            && super::registry::is_guarded_session_action(action))
                     {
                         return Err(format!(
                             "action {action} is declared by both {owner} and {}",

@@ -259,17 +259,29 @@ pub fn protected_action(name: &str) -> bool {
         || name == super::clipboard::PASTE_ACTION
 }
 
+/// The session actions a person confirms before they run, on screen or with
+/// `thurbox-cli ui confirm`. Each takes a required `session_id` from outside.
+pub const GUARDED_SESSION_ACTIONS: [&str; 5] = [
+    "sessions.delete",
+    "sessions.force_delete",
+    "sessions.restart",
+    "sessions.restart_fresh",
+    "sessions.sync",
+];
+
+/// Whether `name` is one of [`GUARDED_SESSION_ACTIONS`].
+pub fn is_guarded_session_action(name: &str) -> bool {
+    GUARDED_SESSION_ACTIONS.contains(&name)
+}
+
 fn default_effect(name: &str) -> &'static str {
+    if is_guarded_session_action(name) {
+        return "kernel-write";
+    }
     match name {
-        "sessions.delete"
-        | "sessions.force_delete"
-        | "sessions.restart"
-        | "sessions.restart_fresh"
-        | "sessions.sync"
-        | "sessions.move_up"
-        | "sessions.move_down"
-        | "sessions.undo"
-        | "restore.restore" => "kernel-write",
+        "sessions.move_up" | "sessions.move_down" | "sessions.undo" | "restore.restore" => {
+            "kernel-write"
+        }
         _ => "ui-write",
     }
 }
@@ -739,14 +751,7 @@ impl Registry {
                 scope: binding.scope.as_str().into(),
                 arguments: Vec::new(),
                 effect: default_effect(&binding.action).into(),
-                destructive: matches!(
-                    binding.action.as_str(),
-                    "sessions.delete"
-                        | "sessions.force_delete"
-                        | "sessions.restart"
-                        | "sessions.restart_fresh"
-                        | "sessions.sync"
-                ),
+                destructive: is_guarded_session_action(&binding.action),
                 available: true,
                 chords: vec![binding.chord.clone()],
             });
@@ -771,14 +776,7 @@ impl Registry {
                 scope: "global".into(),
                 arguments: Vec::new(),
                 effect: default_effect(&command.action).into(),
-                destructive: matches!(
-                    command.action.as_str(),
-                    "sessions.delete"
-                        | "sessions.force_delete"
-                        | "sessions.restart"
-                        | "sessions.restart_fresh"
-                        | "sessions.sync"
-                ),
+                destructive: is_guarded_session_action(&command.action),
                 available: true,
                 chords: Vec::new(),
             });
@@ -851,7 +849,7 @@ impl Registry {
                     required: false,
                 });
             }
-            if matches!(action.name.as_str(), "sessions.delete") {
+            if is_guarded_session_action(&action.name) {
                 action.destructive = true;
                 action.effect = "kernel-write".into();
                 action.arguments = vec![ActionArgument {
