@@ -395,7 +395,10 @@ not applicable.
    Fleet first; each shows how it is reached and whether it is up, and the
    step is skipped when one is listed. Then choose where the session runs:
    that Fleet's `local` at once, and the places it defines (`fleet runtime
-   places --json`), each with whether it is ready, when it names them. The
+   places --json`), each with whether it is ready, when it names them.
+   Each runtime's `local` place is the Fleet's machine: it reads as that
+   machine with its runtime, as `this machine (herdr)`, and offers that
+   machine's repositories, as the default runtime's `local` does. The
    cursor opens on the first ready place; a place that is not ready is
    dimmed, its reason reads on one line under the list, and `enter`
    refuses it, as the Fleet step refuses an unreachable Fleet. The

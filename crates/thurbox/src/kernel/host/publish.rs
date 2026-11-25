@@ -766,6 +766,7 @@ fn hosts_table(lua: &Lua, known: Option<&[HostRow]>) -> Result<Value, String> {
         set(&item, "backend", host.backend.clone())?;
         set(&item, "ready", host.ready)?;
         set(&item, "why", host.why.clone())?;
+        set(&item, "here", host.here)?;
         hosts.raw_set(index + 1, item).map_err(|e| e.to_string())?;
     }
     Ok(Value::Table(hosts))

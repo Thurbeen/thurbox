@@ -255,6 +255,9 @@ pub struct HostRow {
     pub ready: Option<bool>,
     /// Why the place is not ready.
     pub why: Option<String>,
+    /// Whether the place is the machine its Fleet runs on: a runtime's
+    /// `local` place.
+    pub here: bool,
 }
 
 impl HostRow {
@@ -264,6 +267,7 @@ impl HostRow {
         Self {
             name: "local".to_string(),
             detail: machine.to_string(),
+            here: true,
             ..Self::default()
         }
     }

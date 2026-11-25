@@ -19,6 +19,7 @@ use serde_json::json;
 use super::bus::Progress;
 use super::execute::Outcome;
 use super::Command;
+use crate::kernel::snapshot::fleet::is_fleets_machine;
 
 pub(super) struct Fleet {
     /// Every listed Fleet's command line: a command goes to its session's
@@ -347,10 +348,10 @@ fn workspace_url(
         }
         return Ok(url);
     }
-    let local = host == "local" && fleet.is_local();
+    let local = is_fleets_machine(host) && fleet.is_local();
     let place = match (fleet.is_local(), host) {
         (true, host) => host.to_string(),
-        (false, "local") => fleet.name().to_string(),
+        (false, host) if is_fleets_machine(host) => fleet.name().to_string(),
         (false, host) => format!("{} · {host}", fleet.name()),
     };
     let dir = if local {
@@ -623,6 +624,24 @@ mod tests {
         assert_eq!(
             workspace_url(&here, "local", &dir, off, "wt").unwrap(),
             format!("file://{}", super::url_path(&dir))
+        );
+    }
+
+    /// Another runtime's `local` place is this machine: its workspace is
+    /// read on this disk, as the default runtime's `local` is.
+    #[test]
+    fn another_runtimes_local_place_is_answered_from_this_disk() {
+        let here = crate::fleet_link::FleetLink::local("fleet");
+        let repo = tempfile::tempdir().expect("tempdir");
+        std::fs::create_dir(repo.path().join(".git")).expect(".git");
+        let dir = repo.path().display().to_string();
+        assert_eq!(
+            workspace_url(&here, "herdr/local", &dir, Choice::default(), "wt").unwrap(),
+            workspace_url(&here, "local", &dir, Choice::default(), "wt").unwrap(),
+        );
+        assert_eq!(
+            workspace_url(&here, "herdr/local", "~", Choice::default(), "wt").unwrap(),
+            workspace_url(&here, "local", "~", Choice::default(), "wt").unwrap(),
         );
     }
 

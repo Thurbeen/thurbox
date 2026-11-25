@@ -491,6 +491,7 @@
 ---@field backend string
 ---@field ready? boolean Whether the place's runtime can run a session now. Nil when it did not say.
 ---@field why? string Why the place is not ready.
+---@field here boolean Whether the place is the machine its Fleet runs on: a runtime's `local` place.
 
 --- A Fleet `settings.toml` lists: where sessions are managed.
 ---@class (exact) thurbox.Fleet

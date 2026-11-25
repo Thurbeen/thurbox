@@ -284,6 +284,17 @@ local function place_label(flow)
   return flow.host
 end
 
+--- Where the repositories of `place` are remembered: a Fleet's own machine
+--- under one key whichever runtime's `local` names it, and any other place
+--- under `<fleet>/<place>`, since none of its paths is a path here.
+local function repository_key(flow, place)
+  local machine = flow.place == "" or place.here
+  if not flow.elsewhere then
+    return machine and "" or flow.place
+  end
+  return flow.fleet .. "/" .. (machine and "local" or place.name)
+end
+
 --- A typed `~` on a place elsewhere is that machine's home, never this one's.
 local function expand_remote_home(flow, path)
   local home = remote_home(flow)
@@ -2033,16 +2044,9 @@ return {
           return true
         end
         flow.place = chosen.backend or ""
-        -- Repositories are remembered per place. A place on another machine
-        -- (a remote Fleet's, or this Fleet's other than `local`) is kept under
-        -- `<fleet>/<place>`, never under this machine's empty key, since none
-        -- of its paths is a path here, and the kernel reads that key there.
-        flow.elsewhere = flow.fleet ~= nil and (flow.remote or flow.place ~= "")
-        if flow.elsewhere then
-          flow.host = flow.fleet .. "/" .. chosen.name
-        else
-          flow.host = flow.place
-        end
+        flow.elsewhere = flow.fleet ~= nil
+          and (flow.remote or not (flow.place == "" or chosen.here))
+        flow.host = repository_key(flow, chosen)
         flow.step = "repo"
         flow.cursor = 1
         -- Bookmarks are host-scoped, so the choices change with the host: an
