@@ -81,6 +81,7 @@ fn row(pane: &str) -> SessionRow {
         backend: "local:tmux".into(),
         backend_id: Some(pane.into()),
         remote_host: None,
+        place: None,
         agent_session_id: None,
         parent_id: None,
         display_order: None,

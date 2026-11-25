@@ -1005,8 +1005,9 @@ pub fn row_of(link: &FleetLink, task: &Value) -> SessionRow {
     let task_name = text(&task["metadata"]["name"]).unwrap_or_default();
     let name = text(&task["metadata"]["labels"][NAME_LABEL]).unwrap_or_else(|| task_name.clone());
     let id = super::row_id(link.name(), &task_name);
-    let place = text(&spec["host"]).filter(|place| !is_fleets_machine(place));
-    let remote_host = match (link.is_local(), place) {
+    let place = text(&spec["host"]);
+    let elsewhere = place.clone().filter(|place| !is_fleets_machine(place));
+    let remote_host = match (link.is_local(), elsewhere) {
         (true, place) => place,
         (false, None) => Some(link.name().to_string()),
         (false, Some(place)) => Some(format!("{} · {place}", link.name())),
@@ -1068,6 +1069,7 @@ pub fn row_of(link: &FleetLink, task: &Value) -> SessionRow {
         // thurbox's backends.
         backend_id: None,
         remote_host,
+        place,
         agent_session_id: text(&status["conversation"]),
         // A parent is a Task of the same Fleet.
         parent_id: text(&task["metadata"]["labels"]["gateway.fleet.dev/parent"])

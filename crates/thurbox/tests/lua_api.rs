@@ -178,6 +178,7 @@ fn row(name: &str) -> SessionRow {
         backend_id: Some("%1".to_string()),
         agent_session_id: None,
         remote_host: Some("box".to_string()),
+        place: Some("mux/box".to_string()),
         parent_id: Some("parent".to_string()),
         display_order: Some(3),
         worktree_count: 1,

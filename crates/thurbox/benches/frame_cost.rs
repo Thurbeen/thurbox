@@ -110,6 +110,7 @@ fn snapshot(sessions: usize) -> Snapshot {
                 backend: "local:tmux".into(),
                 backend_id: Some(format!("%{nth}")),
                 remote_host: None,
+                place: None,
                 agent_session_id: Some(format!("00000000-0000-0000-0000-{nth:012}")),
                 // Every fourth row nests under the one before it, so the
                 // session model's tree walk is exercised rather than skipped.

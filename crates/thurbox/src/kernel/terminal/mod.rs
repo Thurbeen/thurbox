@@ -1521,6 +1521,7 @@ mod tests {
             backend: backend.to_string(),
             backend_id: backend_id.map(str::to_string),
             remote_host: None,
+            place: None,
             agent_session_id: None,
             parent_id: None,
             display_order: None,

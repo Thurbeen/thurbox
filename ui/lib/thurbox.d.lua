@@ -459,6 +459,7 @@
 ---@field branch? string
 ---@field base_branch? string What a diff is taken against.
 ---@field host? string
+---@field place? string The place the session's Task names, as its Fleet names it: `local` or `<runtime>/<place>`. Nil for a Task that names none.
 ---@field parent? string
 ---@field cwd? string
 ---@field worktrees integer
