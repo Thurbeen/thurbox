@@ -1353,7 +1353,7 @@ fn another_runtimes_local_place_is_browsed_here() {
 
 /// On a remote Fleet whose default runtime has no `local` place, another
 /// runtime's `local` is read through that place itself, never through a
-/// `local` the Fleet would refuse.
+/// `local` the Fleet would refuse. Its repositories stay the machine's.
 #[test]
 fn a_remote_fleets_runtime_local_place_is_read_through_itself() {
     let host = host();
@@ -1374,15 +1374,22 @@ fn a_remote_fleets_runtime_local_place_is_read_through_itself() {
     )];
     press(&host, &world, "ctrl+n");
     press(&host, &world, "enter");
+    press(&host, &world, "tab");
+    press(&host, &world, "tab");
     drawn(&host, &world);
     assert_eq!(
         host.shared_string("want_bookmarks").as_deref(),
-        Some("box/herdr/local")
+        Some("box/local")
+    );
+    assert_eq!(
+        host.shared_string("want_browse").as_deref(),
+        Some("box/herdr/local\0~")
     );
 }
 
 /// A remote Fleet's `local` that is not ready reads nothing: another
-/// runtime's ready `local` is read through itself.
+/// runtime's ready `local` is read through itself, and its repositories
+/// stay the machine's whichever place reads them.
 #[test]
 fn a_remote_fleets_runtime_local_place_skips_a_local_that_is_not_ready() {
     let host = host();
@@ -1410,10 +1417,16 @@ fn a_remote_fleets_runtime_local_place_skips_a_local_that_is_not_ready() {
     )];
     press(&host, &world, "ctrl+n");
     press(&host, &world, "enter");
+    press(&host, &world, "tab");
+    press(&host, &world, "tab");
     drawn(&host, &world);
     assert_eq!(
         host.shared_string("want_bookmarks").as_deref(),
-        Some("box/herdr/local")
+        Some("box/local")
+    );
+    assert_eq!(
+        host.shared_string("want_browse").as_deref(),
+        Some("box/herdr/local\0~")
     );
 }
 

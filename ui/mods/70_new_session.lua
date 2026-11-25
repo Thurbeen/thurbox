@@ -254,6 +254,11 @@ local function fresh()
   }
 end
 
+--- The place the flow reads folders and branches through.
+local function reads(flow)
+  return flow.reads or flow.host or ""
+end
+
 --- The home of the place's machine, or nil while it is not known here.
 ---
 --- A remote Fleet's own `local` has the home its Fleet said. Any place
@@ -265,7 +270,7 @@ local function remote_home(flow)
     return fleet.home
   end
   local listing = browse()
-  if listing.host == flow.host and listing.home then
+  if listing.host == reads(flow) and listing.home then
     return listing.home
   end
   return nil
@@ -295,17 +300,26 @@ local function fleet_local_is_ready()
   return false
 end
 
---- Where the repositories of `place` are remembered, and read: a Fleet's own
---- machine under one key whichever runtime's `local` names it, read through
---- the Fleet's `local` while it offers a ready one, and any other place under
---- `<fleet>/<place>`, since none of its paths is a path here.
+--- Where the repositories of `place` are remembered: a Fleet's own machine
+--- under one key whichever runtime's `local` names it, and any other place
+--- under `<fleet>/<place>`, since none of its paths is a path here.
 local function repository_key(flow, place)
   local machine = flow.place == "" or place.here
   if not flow.elsewhere then
     return machine and "" or flow.place
   end
-  local shared = machine and fleet_local_is_ready()
-  return flow.fleet .. "/" .. (shared and "local" or place.name)
+  return flow.fleet .. "/" .. (machine and "local" or place.name)
+end
+
+--- Which place reads the repositories of `place`: the one they are
+--- remembered under, except a Fleet's own machine elsewhere while its
+--- `local` is not ready, which is read through `place` itself.
+local function reading_key(flow, place)
+  local key = repository_key(flow, place)
+  if flow.elsewhere and place.here and not fleet_local_is_ready() then
+    return flow.fleet .. "/" .. place.name
+  end
+  return key
 end
 
 --- A typed `~` on a place elsewhere is that machine's home, never this one's.
@@ -352,7 +366,7 @@ local function ask(flow)
   -- its existing worktrees. A place elsewhere has its read there, through
   -- Fleet, so they are asked as `<host>\0<repo>`.
   if flow.step == "branch" then
-    store.want_branches = flow.elsewhere and (flow.host .. "\0" .. flow.primary) or flow.primary
+    store.want_branches = flow.elsewhere and (reads(flow) .. "\0" .. flow.primary) or flow.primary
   elseif flow.step == "repo" and flow.wt_repo then
     store.want_branches = flow.wt_repo
   else
@@ -389,7 +403,7 @@ local function ask(flow)
         dir = "~"
       end
     end
-    store.want_browse = dir and ((flow.host or "") .. "\0" .. dir) or nil
+    store.want_browse = dir and (reads(flow) .. "\0" .. dir) or nil
   else
     store.want_browse = nil
   end
@@ -528,7 +542,7 @@ local function names_missing_folder(flow)
     return false
   end
   local listing = browse()
-  if listing.dir ~= dir or (listing.host or "") ~= (flow.host or "") or listing.loading then
+  if listing.dir ~= dir or (listing.host or "") ~= reads(flow) or listing.loading then
     return false
   end
   if listing.error then
@@ -2060,6 +2074,7 @@ return {
         flow.elsewhere = flow.fleet ~= nil
           and (flow.remote or not (flow.place == "" or chosen.here))
         flow.host = repository_key(flow, chosen)
+        flow.reads = reading_key(flow, chosen)
         flow.step = "repo"
         flow.cursor = 1
         -- Bookmarks are host-scoped, so the choices change with the host: an
