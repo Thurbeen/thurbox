@@ -56,8 +56,6 @@ pub fn current_wsl_distro() -> Option<String> {
 #[cfg(test)]
 pub(crate) fn with_path<T>(path: impl AsRef<OsStr>, f: impl FnOnce() -> T) -> T {
     static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
-    // A test that panicked while holding it poisoned the lock; the value is
-    // `()`, so there is nothing to protect against and the next test may run.
     let _guard = LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let saved = std::env::var_os("PATH");
     std::env::set_var("PATH", path.as_ref());

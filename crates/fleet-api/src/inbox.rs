@@ -358,7 +358,6 @@ mod tests {
             )
             .is_ok()
         );
-        // The same name with a new mirror uid, after retention, starts afresh.
         let mut rebound = entry("r1b", "forge/cr-1", Some(1));
         rebound.about.as_mut().unwrap().uid = "c1-again".into();
         assert!(check_append(&[], &BTreeMap::new(), &d, &rebound).is_ok());

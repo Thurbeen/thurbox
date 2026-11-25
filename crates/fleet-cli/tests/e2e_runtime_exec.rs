@@ -317,7 +317,6 @@ fn fleet_names_the_local_place_in_each_request_to_a_version_2_runtime() {
         }
     }
     assert_eq!(env.status("t1")["sessionState"], "Running");
-    // `mux/local` is the place `local` names on the default runtime.
     let mut long = support::task("t3", true);
     long["spec"]["host"] = json!("mux/local");
     env.apply(json!([long])).ok();
@@ -469,8 +468,6 @@ fn the_hosts_and_the_harness_profiles_are_listed_for_a_view() {
     let hosts = env.fleet(&["runtime", "hosts", "--json"]).ok().json();
     assert_eq!(hosts, json!({"hosts": ["local", "mux/devbox"]}));
 
-    // A runtime with no places table has the one place `local`; the
-    // default runtime's is also `local`, and another's is not.
     let two = Env::new("runtime-hosts-two");
     fs::write(
         &two.config,
@@ -480,8 +477,6 @@ fn the_hosts_and_the_harness_profiles_are_listed_for_a_view() {
     let hosts = two.fleet(&["runtime", "hosts", "--json"]).ok().json();
     assert_eq!(hosts, json!({"hosts": ["local", "vm/sandbox"]}));
 
-    // The one `[runtime]` of the linked adapters serves whatever host a Task
-    // names: there is no list.
     let single = Env::new("runtime-hosts-single");
     let any = single.fleet(&["runtime", "hosts", "--json"]).ok().json();
     assert_eq!(any, json!({"hosts": null}));
@@ -569,8 +564,6 @@ fn a_default_runtime_without_a_local_place_loads_and_local_names_nothing() {
     let mut placed = support::task("t3", true);
     placed["spec"]["host"] = json!("vm/sandbox");
     env.apply(placed).ok();
-    // A Task with no host takes its TaskConfig's: on `vm/sandbox` it is
-    // applied, whether the TaskConfig comes in the same batch or before.
     let config = support::object("TaskConfig", "on-vm", json!({"host": "vm/sandbox"}));
     let mut inherits = support::task("t4", true);
     inherits["spec"]
@@ -582,7 +575,6 @@ fn a_default_runtime_without_a_local_place_loads_and_local_names_nothing() {
     let mut later = inherits.clone();
     later["metadata"]["name"] = json!("t5");
     env.apply(later).ok();
-    // A TaskConfig that names no host leaves it `local`, which is refused.
     let bare = support::object("TaskConfig", "bare", json!({}));
     let mut on_bare = support::task("t6", true);
     on_bare["spec"]
@@ -591,8 +583,6 @@ fn a_default_runtime_without_a_local_place_loads_and_local_names_nothing() {
         .remove("host");
     on_bare["spec"]["configRef"] = json!({"name": "bare"});
     env.apply(json!([bare, on_bare])).code(1).stderr_has(why);
-    // Of two TaskConfigs of one name in a batch, the last is stored: its
-    // host, here none, is the one checked.
     let first = support::object("TaskConfig", "twice", json!({"host": "vm/sandbox"}));
     let last = support::object("TaskConfig", "twice", json!({}));
     let mut on_twice = support::task("t7", true);
@@ -604,8 +594,6 @@ fn a_default_runtime_without_a_local_place_loads_and_local_names_nothing() {
     env.apply(json!([first, last, on_twice]))
         .code(1)
         .stderr_has(why);
-    // A Task with no host and no configRef takes the default TaskConfig's,
-    // whether it comes in the same batch or before.
     let default = support::object("TaskConfig", "default", json!({"host": "vm/sandbox"}));
     let mut plain = support::task("t8", true);
     plain["spec"].as_object_mut().expect("spec").remove("host");
@@ -737,7 +725,6 @@ fn a_task_starts_and_is_released_through_runtime_mux() {
     };
     let sockets = Sockets::new("task");
     let mut env = mux_env("runtime-mux-task", &program, &sockets);
-    // The harness profile's program; this one waits and reports nothing.
     let bin = env.root.join("bin");
     fs::create_dir_all(&bin).expect("bin");
     let harness = bin.join("claude");
@@ -760,7 +747,6 @@ fn a_task_starts_and_is_released_through_runtime_mux() {
         .unwrap()
         .to_string();
     let key = format!("fleet.{uid}");
-    // The session is the key's, whatever process runs under it.
     assert_eq!(session["id"], key.as_str(), "{session:#}");
     assert_eq!(session["host"], "local", "{session:#}");
     let panes = |format: &str| {
@@ -775,10 +761,9 @@ fn a_task_starts_and_is_released_through_runtime_mux() {
         .unwrap_or_else(|| panic!("no pane in {}: {listed}", work.display()))
         .to_string();
 
-    // A second pass adopts the session rather than starting another.
     env.reconcile().ok();
     assert_eq!(env.get("t1")["status"]["session"]["id"], key.as_str());
-    // Beside the session's own first window, which tmux keeps the server on.
+    // tmux keeps the server alive on the session's own first window.
     let listed = panes("#{pane_id} #{window_name}");
     assert_eq!(
         listed.lines().filter(|l| l.contains(" tb-")).count(),
@@ -786,8 +771,6 @@ fn a_task_starts_and_is_released_through_runtime_mux() {
         "{listed}"
     );
 
-    // A running agent is never proven at rest, so the release waits for it;
-    // once it exits, the release stops what is left under the key.
     env.fleet(&["delete", "task", "t1"]).ok();
     env.reconcile().ok();
     assert_eq!(env.get("t1")["status"]["phase"], "Releasing");
@@ -937,9 +920,6 @@ fn a_task_on_runtime_mux_reports_through_fleet_signal_and_revives_on_its_convers
     task["spec"]["workspace"] = json!([format!("file://{}", work.display())]);
     env.apply(json!([task])).ok();
 
-    // Started on the harness profile's launch argv, with the file its hooks
-    // report to; its start report makes it ready, and its prompt hook proves
-    // the brief.
     reconcile_until(&env, "briefed on the prompt hook's proof", |env| {
         env.get("t1")["status"]["phase"] == "Briefed"
     });
@@ -950,7 +930,7 @@ fn a_task_on_runtime_mux_reports_through_fleet_signal_and_revives_on_its_convers
         .filter(|(_, a)| *a == "--settings")
         .map(|(i, _)| &first[i + 1])
         .collect();
-    // Claude Code keeps the last of several --settings: Fleet passes one.
+    // Claude Code keeps the last of several --settings.
     assert_eq!(settings.len(), 1, "{first:?}");
     let settings: Value = serde_json::from_str(settings[0]).expect("settings JSON");
     for event in ["SessionStart", "UserPromptSubmit", "PreToolUse", "Stop"] {
@@ -969,9 +949,6 @@ fn a_task_on_runtime_mux_reports_through_fleet_signal_and_revives_on_its_convers
     });
     assert_eq!(env.get("t1")["status"]["conversation"], "conv-1");
 
-    // The agent exits on its own: the session is lost, and revived by a
-    // start of the resume argv on the conversation its hooks reported,
-    // under the same identity.
     let id = env.get("t1")["status"]["session"]["id"].clone();
     let panes = sockets.tmux(&["list-panes", "-a", "-F", "#{pane_id} #{pane_current_path}"]);
     let listed = String::from_utf8_lossy(&panes.stdout).into_owned();
@@ -1409,15 +1386,12 @@ fn a_revived_agent_is_ready_only_once_it_reports_again() {
         .to_string();
     sockets.tmux(&["send-keys", "-t", &pane, "C-c"]);
     reconcile_until(&env, "revived", |_| starts(&work).len() >= 2);
-    // The previous process's last report was idle; the new one has said
-    // nothing, so the catch-up note waits.
     for _ in 0..3 {
         std::thread::sleep(Duration::from_millis(300));
         env.reconcile();
     }
     assert_eq!(typed(), 1, "nothing typed before the agent reports");
 
-    // The agent reports its start: the note goes.
     let file = env
         .data
         .join("signals")
@@ -1514,7 +1488,6 @@ fn an_idle_session_on_runtime_mux_is_stopped_and_a_message_resumes_its_conversat
     let sockets = Sockets::new("pause");
     let (env, key, work) = paused_on_mux("runtime-mux-pause", &program, &sockets, TYPING_CLAUDE);
 
-    // The agent's process is gone, and the runtime keeps its key.
     let listed = sockets.tmux(&["list-panes", "-a", "-F", "#{pane_current_path}"]);
     let listed = String::from_utf8_lossy(&listed.stdout).into_owned();
     assert!(
@@ -1551,8 +1524,6 @@ fn an_idle_session_on_runtime_mux_is_stopped_and_a_message_resumes_its_conversat
     }
     assert_eq!(starts(&work).len(), 1, "nothing restarted it");
 
-    // A message resumes the conversation under the same key, and reaches
-    // the agent.
     env.fleet(&["send", "t1", "next message"]).ok();
     let typed = || fs::read_to_string(work.join("typed.log")).unwrap_or_default();
     reconcile_until(&env, "the message typed", |_| {
@@ -1573,7 +1544,6 @@ fn an_idle_session_on_runtime_mux_is_stopped_and_a_message_resumes_its_conversat
     );
     let status = env.get("t1")["status"].clone();
     assert_eq!(status["session"]["id"], key.as_str(), "{status:#}");
-    // Idle again for pauseAfterMs, it may already be paused again.
     let paused = support::condition(&status, "Paused");
     assert!(
         paused["reason"] == "Resumed" || paused["reason"] == "Idle",
@@ -1888,8 +1858,6 @@ fn an_agent_state_comes_from_the_screen_below_the_hooks_on_runtime_mux() {
     });
     assert!(env.get("t1")["status"]["activity"]["rule"].is_null());
 
-    // Started again: the hooks have not reported since, and the screen
-    // shows no rule's text.
     let panes = sockets.tmux(&["list-panes", "-a", "-F", "#{pane_id} #{pane_current_path}"]);
     let listed = String::from_utf8_lossy(&panes.stdout).into_owned();
     let pane = listed
@@ -1995,7 +1963,7 @@ fn a_killed_holder_releases_the_lock(name: &str, path: &str) {
     }
     let waiters: Vec<_> = (0..4).map(|_| start(path)).collect();
     std::thread::sleep(Duration::from_millis(300));
-    // SIGKILL, to it and the tmux it waits on: no trap of its runs.
+    // SIGKILL runs no trap.
     Command::new("kill")
         .args(["-KILL", &format!("-{}", holder.id())])
         .status()
@@ -2074,8 +2042,6 @@ fn a_codex_task_on_runtime_mux_is_briefed_before_its_first_turn_ends() {
     task["spec"]["workspace"] = json!([format!("file://{}", work.display())]);
     env.apply(json!([task])).ok();
 
-    // Nothing reported before the brief: its empty composer on the screen
-    // makes it ready, and its trust override trusts it.
     reconcile_until(&env, "briefed on its notify's proof", |env| {
         env.get("t1")["status"]["phase"] == "Briefed"
     });
@@ -2338,7 +2304,6 @@ fn a_git_url_task_on_runtime_mux_runs_in_a_worktree_and_its_release_keeps_the_wo
     assert_ne!(dir, src, "never the checkout itself");
     assert_eq!(starts(&dir).len(), 1, "the agent started in the worktree");
 
-    // Work the session leaves uncommitted outlives the release.
     fs::write(dir.join("notes.txt"), "kept\n").expect("work");
     env.fleet(&["delete", "task", "t1"]).ok();
     let deadline = Instant::now() + Duration::from_secs(60);
@@ -2348,7 +2313,6 @@ fn a_git_url_task_on_runtime_mux_runs_in_a_worktree_and_its_release_keeps_the_wo
         env.reconcile();
     }
     assert!(!dir.exists(), "the release removed the worktree");
-    // The worktree was the checkout's own, so the work is kept there.
     let refs = preserved_refs(&src);
     assert_eq!(refs.len(), 1, "one preserved ref: {refs:?}");
     assert_eq!(
@@ -2643,8 +2607,6 @@ fn the_reference_script_truncates_nothing_through_a_planted_link() {
         return;
     }
     let sockets = Sockets::new("planted");
-    // Before the lock moved into tmux's private directory it lived in the
-    // shared one, where anyone could plant a link at its name.
     let sentinel = sockets.0.join("sentinel");
     fs::write(&sentinel, "keep\n").expect("sentinel");
     std::os::unix::fs::symlink(
@@ -2689,8 +2651,6 @@ fn task_running(env: &mut Env, script: &str) -> PathBuf {
     fs::set_permissions(&harness, fs::Permissions::from_mode(0o755)).expect("chmod");
     let path = std::env::var("PATH").unwrap_or_default();
     env.only_on_path(Path::new(&format!("{}:{path}", bin.display())));
-    // An empty workspace: the reference script makes none, so a session
-    // on it runs in the runtime's default directory.
     let work = env.root.join("work").join("t1");
     fs::create_dir_all(&work).expect("workspace");
     env.apply(json!([
@@ -2716,7 +2676,6 @@ fn fleet_attach_wraps_a_tty_answer_in_its_bridge() {
     let mut env = mux_env("attach-tty", &script, &sockets);
     waiting_task(&mut env);
 
-    // A Task that never started has nothing to attach to.
     env.fleet(&["attach", "t2", "--json"])
         .code(3)
         .stderr_has("no session");
@@ -2766,7 +2725,6 @@ fn fleet_attach_streams_a_runtime_mux_session_and_a_detach_leaves_it_running() {
     view.send(&Up::Detach);
     assert!(view.close().success());
 
-    // The agent keeps running: a second pass adopts it.
     env.reconcile().ok();
     assert_eq!(env.status("t1")["sessionState"], "Running");
 }
@@ -2781,8 +2739,6 @@ fn fleet_shell_opens_a_shell_in_the_tasks_directory_on_runtime_mux() {
     };
     let sockets = Sockets::new("shell-mux");
     let mut env = mux_env("shell-mux", &program, &sockets);
-    // The shell is `/bin/sh`, never the operator's own; `Env` gives it a
-    // home of the test's.
     env.set_var("SHELL", "/bin/sh");
     let bin = env.root.join("bin");
     fs::create_dir_all(&bin).expect("bin");
@@ -2799,7 +2755,6 @@ fn fleet_shell_opens_a_shell_in_the_tasks_directory_on_runtime_mux() {
     env.apply(json!([task, support::task("t2", false)])).ok();
     env.reconcile().ok();
 
-    // A Task that never started has no shell to open.
     env.fleet(&["shell", "t2", "--json"])
         .code(3)
         .stderr_has("no session");
@@ -2865,7 +2820,6 @@ fn term_bridge_relays_a_raw_command_as_a_stream() {
     let Down::Hello(hello) = view.next() else {
         panic!("no hello first")
     };
-    // A bridge keeps no screen: there is no snapshot to wait for.
     assert!(!hello.has(Capability::Snapshot), "{hello:?}");
     view.send(&Up::Resize(Size {
         rows: 30,
@@ -2904,7 +2858,7 @@ fn term_bridge_brackets_a_paste_the_program_asked_for() {
         r#"stty -icanon -echo; printf '\033[?2004h'; echo ready; head -c 20 | od -An -c"#,
         "ready",
     );
-    // Six bytes of bracket on each side: twenty in all.
+    // Bracketed paste adds six bytes on each side.
     view.send(&Up::Paste("abcdefgh".into()));
     view.until_text("2   0   0   ~   a   b");
 }
@@ -2946,7 +2900,7 @@ fn a_tty_attach_runs_through_the_bridge_end_to_end() {
         .unwrap_or_else(|e| panic!("a stream ({e}): {answer:#}"));
     assert_eq!(argv[1], "term-bridge", "{argv:?}");
 
-    // The view runs the argv as given; the tmux client needs a terminal type.
+    // The tmux client needs a terminal type.
     let mut cmd = Command::new(&argv[0]);
     cmd.args(&argv[1..])
         .env("TERM", "xterm-256color")
@@ -2970,7 +2924,6 @@ fn a_tty_attach_runs_through_the_bridge_end_to_end() {
     view.send(&Up::Detach);
     view.close();
 
-    // The detach ended the tmux client, not the agent.
     env.reconcile().ok();
     assert_eq!(env.status("t1")["sessionState"], "Running");
 }
@@ -2982,8 +2935,6 @@ fn the_lease_outlasts_one_whole_runtime_operation() {
     };
     let sockets = Sockets::new("lease");
     let env = mux_env("runtime-mux-lease", &program, &sockets);
-    // One operation is two calls of up to 2 s each, with their grace: a
-    // lease that cannot hold it is refused before anything runs.
     let cfg = fs::read_to_string(&env.config).expect("config");
     fs::write(
         &env.config,
@@ -2995,7 +2946,6 @@ fn the_lease_outlasts_one_whole_runtime_operation() {
         .code(1)
         .stderr_has("lease");
     assert!(env.get("t1")["status"]["phase"].is_null(), "nothing ran");
-    // The default lease is sized to hold it.
     env.reconcile().ok();
     assert_eq!(env.get("t1")["status"]["phase"], "Pending");
 }
@@ -3035,8 +2985,6 @@ fn a_message_typed_into_the_agent_is_recorded_as_one_the_route_may_hold() {
             .as_array()
             .is_some_and(|r| !r.is_empty())
     });
-    // A typed text may sit in the composer: a fact about the route, which
-    // no person can clear, so it raises nothing.
     let status = env.get("t1")["status"].clone();
     let receipt = &status["deliveries"]["receipts"][0];
     assert_eq!(receipt["mayHold"], true, "{status:#}");
@@ -3343,7 +3291,6 @@ fn pi_reports_its_state_through_the_extension_fleet_passes_at_launch() {
     let home = PathBuf::from(std::env::var("HOME").expect("HOME"));
     let config = std::env::var_os("PI_CODING_AGENT_DIR")
         .map_or_else(|| home.join(".pi/agent"), PathBuf::from);
-    // pi's own transcripts: another pi on this machine may write them.
     let before = snapshot(&config, &["sessions"]);
     let sockets = Sockets::new("pi");
     let env = agent_env("runtime-mux-pi", &program, &sockets);
@@ -3354,7 +3301,6 @@ fn pi_reports_its_state_through_the_extension_fleet_passes_at_launch() {
     task["spec"]["harness"] = json!("pi");
     task["spec"]["brief"] = json!("Reply with the single word ok.");
     task["spec"]["workspace"] = json!([format!("file://{}", work.display())]);
-    // No update check, and this test's transcripts in its own directory.
     task["spec"]["env"] = json!({
         "HOME": home.to_string_lossy(),
         "PI_OFFLINE": "1",
@@ -3381,7 +3327,6 @@ fn pi_reports_its_state_through_the_extension_fleet_passes_at_launch() {
         "pi's session {conversation} is the conversation"
     );
 
-    // pi ends: the revive resumes its session, whose start reports it again.
     end_agent(&sockets, &work);
     reconcile_until(&env, "resumed on its session", |env| {
         let states = reported(env, "t1");
@@ -3447,8 +3392,6 @@ fn opencode_reports_its_state_through_the_plugin_fleet_names_at_launch() {
         ) && env.get("t1")["status"]["agentState"] == "idle"
     });
 
-    // opencode ends: the revive resumes its session, which the next prompt
-    // names again.
     end_agent(&sockets, &work);
     reconcile_until(&env, "resumed on its session", |env| {
         let states = reported(env, "t1");
@@ -3484,8 +3427,7 @@ fn kilo_reports_its_state_through_the_plugins_fleet_names_at_launch() {
     )
     .expect("user config");
     fs::write(config.join("tui.json"), r#"{"scroll_speed":3}"#).expect("user TUI config");
-    // kilo's own first start rewrites the user's config (a `$schema`, a
-    // migration marker, a `.gitignore`): it runs once without Fleet first.
+    // kilo's first start rewrites the user's config, so it runs once without Fleet first.
     let settled = Command::new("kilo")
         .args(["debug", "config"])
         .current_dir(&env.root)
@@ -3526,8 +3468,6 @@ fn kilo_reports_its_state_through_the_plugins_fleet_names_at_launch() {
         ) && env.get("t1")["status"]["agentState"] == "idle"
     });
 
-    // kilo ends: the revive resumes its session, which the next prompt
-    // names again.
     end_agent(&sockets, &work);
     reconcile_until(&env, "resumed on its session", |env| {
         let states = reported(env, "t1");
@@ -3562,9 +3502,7 @@ fn omp_reports_its_state_through_the_extension_fleet_passes_at_launch() {
     let home = PathBuf::from(std::env::var("HOME").expect("HOME"));
     let agent_dir = std::env::var_os("PI_CODING_AGENT_DIR")
         .map_or_else(|| home.join(".omp/agent"), PathBuf::from);
-    // omp's own state: its databases (the sign-in, the models, the history),
-    // which it rewrites at each start, its transcripts and where it keeps
-    // the transcripts of a session directory of its own.
+    // omp rewrites its databases at each start and keeps transcripts per session directory.
     let user_files = |dir: &Path| {
         let skip = [
             "sessions",
@@ -3599,7 +3537,6 @@ fn omp_reports_its_state_through_the_extension_fleet_passes_at_launch() {
     task["spec"]["brief"] =
         json!("Run the shell command `echo fleet` yourself, with your bash tool, then stop.");
     task["spec"]["workspace"] = json!([format!("file://{}", work.display())]);
-    // This test's transcripts in its own directory.
     task["spec"]["env"] = json!({
         "HOME": env.root.to_string_lossy(),
         "PI_CODING_AGENT_DIR": agent_dir.to_string_lossy(),
@@ -3614,9 +3551,7 @@ fn omp_reports_its_state_through_the_extension_fleet_passes_at_launch() {
     reconcile_until(&env, "waiting on the approval", |env| {
         env.get("t1")["status"]["agentState"] == "attention"
     });
-    // Approve each tool the model runs: the default choice. omp reports a
-    // request before it draws its dialog, and takes keys only once the
-    // dialog is drawn, so each is approved when it shows.
+    // omp reports a request before it draws its dialog, and takes keys only once the dialog is drawn.
     let pane = pane_in(&sockets, &work);
     reconcile_until(&env, "the turn ended", |env| {
         let screen = sockets.tmux(&["capture-pane", "-p", "-t", &pane]).stdout;
@@ -3642,7 +3577,6 @@ fn omp_reports_its_state_through_the_extension_fleet_passes_at_launch() {
         "omp's session {conversation} is the conversation"
     );
 
-    // omp ends: the revive resumes its session, whose start reports it again.
     end_agent(&sockets, &work);
     reconcile_until(&env, "resumed on its session", |env| {
         let states = reported(env, "t1");
@@ -3843,7 +3777,6 @@ fn qwen_reports_its_state_through_the_settings_fleet_names_at_launch() {
         .expect("a conversation")
         .to_string();
 
-    // qwen ends: the revive resumes its session, whose start reports it again.
     end_agent(&sockets, &work);
     reconcile_until(&env, "resumed on its session", |env| {
         let states = reported(env, "t1");
@@ -4070,8 +4003,6 @@ fn fleet_runtime_browse_and_branches_read_a_place_through_its_runtime() {
         run.ok();
         assert_eq!(run.json(), want, "{place}");
     }
-    // With no directory, the place's home: the `HOME` the runtime runs
-    // with, the test's root, which holds `folders`.
     let run = env.fleet(&["runtime", "browse", "local", "--json"]);
     run.ok();
     let home = run.json();
@@ -4101,7 +4032,6 @@ fn fleet_runtime_browse_and_branches_read_a_place_through_its_runtime() {
         .ok()
         .stdout_has("* main");
 
-    // What the runtime refuses is an error, with its why.
     let missing = dir.join("absent");
     env.fleet(&[
         "runtime",
@@ -4120,7 +4050,6 @@ fn fleet_runtime_browse_and_branches_read_a_place_through_its_runtime() {
     ])
     .code(1)
     .stderr_has("no git repository");
-    // A place the config does not define is refused by name.
     env.fleet(&["runtime", "browse", "mux/devbox", dir.to_str().unwrap()])
         .code(1)
         .stderr_has("no place mux/devbox");
@@ -4255,8 +4184,6 @@ fn one_otel_setup_traces_a_task_through_fleet_runtime_mux_and_workspace_git() {
     let mux_workspace = one("runtime-mux", "runtime-mux workspace");
     let make = one("workspace-git", "workspace-git make");
     let mux_stop = one("runtime-mux", "runtime-mux stop");
-    // The Task's lifecycle is one trace, over several `fleet reconcile`
-    // commands and three programs.
     let trace = &spawn.trace_id;
     for span in [
         &release,
@@ -4302,9 +4229,6 @@ fn one_otel_setup_traces_a_task_through_fleet_runtime_mux_and_workspace_git() {
         );
     }
 
-    // The agent's window inherits none of Fleet's telemetry: it carries only
-    // its own, from its harness profile, pointed at the same collector and
-    // tagged with its Task (docs/observability.md, *Coding agents*).
     let seen = fs::read_to_string(&env_log).expect("the agent's environment");
     let otel: std::collections::BTreeMap<&str, &str> = seen
         .lines()
@@ -4609,8 +4533,6 @@ fn a_task_on_an_ssh_place_runs_there_and_reports_its_state() {
     let Some(sshd) = Sshd::start(&env.root.join("sshd"), &home, &remote) else {
         return;
     };
-    // The agent and `fleet` are on the place's PATH only through the place's
-    // `path_prepend`: this side's PATH names neither.
     let bin = env.root.join("place-bin");
     fs::create_dir_all(&bin).expect("bin");
     let claude = bin.join("claude");
@@ -4639,7 +4561,6 @@ fn a_task_on_an_ssh_place_runs_there_and_reports_its_state() {
     reconcile_until(&env, "briefed on the prompt hook's proof", |env| {
         env.get("t1")["status"]["phase"] == "Briefed"
     });
-    // The file Fleet passed is the place's, under its home.
     let file = fs::read_to_string(work.join("signal-file")).expect("FLEET_SIGNAL_FILE");
     let on_place = file
         .strip_prefix("~/")
@@ -4654,7 +4575,6 @@ fn a_task_on_an_ssh_place_runs_there_and_reports_its_state() {
 
     a_place_event_reaches_the_board_as_the_task(&env, &home, &file);
 
-    // The window is on the place's server; this machine's has none.
     let listed = remote.tmux(&["list-panes", "-a", "-F", "#{pane_current_path}"]);
     let listed = String::from_utf8_lossy(&listed.stdout).into_owned();
     assert!(
@@ -4667,7 +4587,6 @@ fn a_task_on_an_ssh_place_runs_there_and_reports_its_state() {
         "nothing runs on this machine's server"
     );
 
-    // The verbs that go through the backend reach the place.
     let place = json!({"name": "box", "config": toml_place(&sshd, &[&bin, fleet_dir])});
     let key = format!(
         "fleet.{}",
@@ -4693,7 +4612,6 @@ fn a_task_on_an_ssh_place_runs_there_and_reports_its_state() {
     );
     assert!(screen["known"]["screen"]["text"].is_string(), "{screen}");
 
-    // A stop ends the process on the place.
     let stopped = mux_call(
         &program,
         &sockets,
@@ -4748,12 +4666,10 @@ fn an_ssh_place_reports_its_readiness() {
         return;
     };
     let fleet_dir = Path::new(env!("CARGO_BIN_EXE_fleet")).parent().unwrap();
-    // A place with `fleet` and nothing else of the build on its PATH.
     let fleet_only = env.root.join("fleet-only");
     fs::create_dir_all(&fleet_only).expect("fleet-only");
     std::os::unix::fs::symlink(env!("CARGO_BIN_EXE_fleet"), fleet_only.join("fleet"))
         .expect("fleet link");
-    // A port nothing listens on: the place does not answer.
     let closed = std::net::TcpListener::bind("127.0.0.1:0")
         .and_then(|l| l.local_addr())
         .expect("a free port")
@@ -4792,14 +4708,11 @@ fn an_ssh_place_reports_its_readiness() {
             .is_some_and(|w| w.contains("unknown field `runtime`")),
         "{places:#}"
     );
-    // `fleet doctor` fails on the place that is down, and says why.
     let doctor = env.fleet(&["doctor"]);
     doctor
         .code(1)
         .stdout_has("mux/down")
         .stdout_has("cannot be reached");
-    // A place without `workspace-git` is ready: a `file://` workspace is
-    // made there without it, and only a `git+` one is refused, by name.
     assert_eq!(row("mux/bare")["ready"], true, "{places:#}");
     let bare = json!({"name": "bare", "config": toml_place(&sshd, &[&fleet_only])});
     let dir = env.root.join("on-the-place");
@@ -4824,8 +4737,6 @@ fn an_ssh_place_reports_its_readiness() {
     );
     assert_eq!(released, json!({"known": "stopped"}));
     assert!(dir.is_dir(), "a file:// directory outlives its release");
-    // A key with a workspace recorded on the place is not released by a
-    // place that cannot run `workspace-git` now: its teardown cannot run.
     let recorded = home.join(".local/share/runtime-mux/workspaces/k.made");
     fs::create_dir_all(&recorded).expect("recorded");
     fs::write(recorded.join(".fleet-workspace.json"), "{}").expect("record");
@@ -4973,7 +4884,6 @@ fn a_lost_session_on_a_place_without_exec_is_revived() {
     let Some(sshd) = Sshd::start(&env.root.join("sshd"), &home, &remote) else {
         return;
     };
-    // runtime-mux with `exec` taken out of its manifest and refused.
     let wrapper = env.root.join("no-exec.sh");
     fs::write(
         &wrapper,
@@ -5049,7 +4959,6 @@ fn a_revive_waits_for_the_new_report_past_a_mib_of_old_reports() {
 
 #[test]
 fn a_restart_whose_boundary_cannot_be_read_accepts_no_old_state() {
-    // runtime-mux, except that the length read of a restart never answers.
     let wrapper = |program: &Path, dir: &Path| {
         let script = dir.join("no-length.sh");
         fs::write(
@@ -5137,7 +5046,6 @@ fn revive_on_a_skewed_place(name: &str, pad: usize, wrap: Option<&Wrap>) {
             .and_then(|mut f| f.write_all(text.as_bytes()))
             .expect("the place's signal file");
     };
-    // Old reports, ending idle, before the agent is lost.
     let line = skewed_idle();
     append(&line.repeat(pad / line.len()));
     append(&skewed_idle());
@@ -5166,15 +5074,12 @@ fn revive_on_a_skewed_place(name: &str, pad: usize, wrap: Option<&Wrap>) {
         return;
     }
     reconcile_until(&env, "revived", |_| starts(&work).len() >= 2);
-    // The previous process's last report is idle, stamped 10 minutes after
-    // the restart by Fleet's clock; the new one has said nothing.
     for _ in 0..4 {
         std::thread::sleep(Duration::from_millis(300));
         env.reconcile();
     }
     assert_eq!(typed(), 1, "nothing typed before the new agent reports");
 
-    // The new agent reports, with the place's clock: the note goes.
     append(&skewed_idle());
     reconcile_until(&env, "the catch-up note typed", |_| typed() >= 2);
 }
@@ -5309,8 +5214,6 @@ fn a_git_workspace_on_an_ssh_place_is_made_and_released_there() {
     };
     let src = p.env.root.join("src");
     let bad = p.env.root.join("bad");
-    // runtime-mux's setup steps run on the place, in the worktree: one that
-    // succeeds, and one that leaves work and fails.
     let config = p.env.root.join("runtime-mux.toml");
     fs::write(
         &config,
@@ -5396,7 +5299,6 @@ fn a_git_workspace_on_an_ssh_place_is_made_and_released_there() {
         "the setup step ran once, in the worktree on the place"
     );
 
-    // A second call adopts the workspace and finds its setup finished.
     let place = json!({"name": "box", "config": toml_place(&p._sshd, &[&env.root.join("place-bin"), Placed::build()])});
     let again = mux_call_env(
         &p.program,
@@ -5413,8 +5315,6 @@ fn a_git_workspace_on_an_ssh_place_is_made_and_released_there() {
         "an adopted workspace's finished setup does not run again"
     );
 
-    // A failing step fails the call, and the work it left is preserved
-    // before the worktree goes.
     let failed = mux_call_env(
         &p.program,
         &p.sockets,
@@ -5511,7 +5411,6 @@ fn browse_and_branches_read_an_ssh_place() {
             ],
         })
     );
-    // With no directory, the place's home: not this side's.
     fs::create_dir_all(p.home.join("on-the-place")).expect("place dir");
     let run = env.fleet(&["runtime", "browse", "mux/box", "--json"]);
     run.ok();
@@ -5587,7 +5486,6 @@ fn attach_and_shell_view_a_pane_on_an_ssh_place() {
     view.until_text("pong-ping");
     view.send(&Up::Detach);
     assert!(view.close().success());
-    // Nothing of it was on this machine's server.
     assert!(p.sockets.tmux(&["list-panes", "-a"]).stdout.is_empty());
 
     let answer = env.fleet(&["shell", "t1", "--json"]).ok().json();
@@ -5625,7 +5523,6 @@ fn a_sessions_environment_is_in_no_argv_here_or_on_an_ssh_place() {
     let Some(sshd) = Sshd::start(&env.root.join("sshd"), &home, &remote) else {
         return;
     };
-    // Stand-ins that log every argument, then run the real program.
     let log = env.root.join("argv.log");
     let shims = env.root.join("shims");
     fs::create_dir_all(&shims).expect("shims");
@@ -5703,7 +5600,6 @@ fn a_sessions_environment_is_in_no_argv_here_or_on_an_ssh_place() {
         "the window was made through the shim, its words on stdin: {argv}"
     );
     assert!(!argv.contains("s3cr3t"), "{argv}");
-    // Nor in any argument of a process running now.
     let ps = Command::new("ps")
         .args(["-eo", "args"])
         .output()

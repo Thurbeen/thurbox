@@ -73,8 +73,6 @@ fn checks(run: &str) -> Result<Option<BTreeSet<String>>> {
     let Some(rest) = run.trim_start().strip_prefix("cargo xtask check") else {
         return Ok(None);
     };
-    // A gate command is a command, not arbitrary shell. Fail on an expression
-    // we cannot resolve rather than crediting it to every matrix row.
     if rest.trim().contains([';', '|', '&', '>', '<', '\n', '\r']) {
         return Err(
             "gate validation must be a standalone command; a shell chain may swallow failure"
@@ -115,9 +113,7 @@ fn shell_checks(name: &str, doc: &Value, errors: &mut Vec<String>) -> Result {
             if let Some(run) = step["run"].as_str() {
                 for part in run.split("${{").skip(1) {
                     let expr = part.split("}}").next().unwrap_or(part);
-                    // GitHub property names are case-insensitive and support
-                    // bracket access. Refuse dynamic GitHub indexing as well as
-                    // dotted contributor contexts, including nested functions.
+                    // GitHub expression property names are case-insensitive and allow bracket access.
                     let compact = expr
                         .chars()
                         .filter(|c| !c.is_whitespace())

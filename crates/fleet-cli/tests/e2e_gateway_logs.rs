@@ -219,7 +219,6 @@ fn a_tied_tasks_thread_gets_its_comment_and_one_ready_notice_and_the_log_gets_th
     env.fleet(&["declare", &task, "--change-request", URL]).ok();
     reconcile_clean(&env);
     let cr = derived_name("fake", FORGE_HOST, PROJECT, "7");
-    // The change leaves draft: ready for review, then merged.
     for state in [ChangeState::Open, ChangeState::Merged] {
         forge.set_change(PROJECT, "7", change(state)).unwrap();
         env.expire_wait_of("ChangeRequest", &cr);
@@ -279,14 +278,12 @@ fn a_tied_tasks_thread_gets_its_comment_and_one_ready_notice_and_the_log_gets_th
     let record = &gw["posts"][format!("{base}/result/1")];
     assert_eq!(record["intent"]["action"], "log", "{gw:#}");
     assert_eq!(record["receipt"]["outcome"]["known"]["type"], "posted");
-    // A log post opens no thread and creates no Conversation.
     let conv = conversation_name(GATEWAY_ACCOUNT, LOGS_ADDRESS);
     assert!(
         env.fleet(&["get", "conversation", &conv]).code != Some(0),
         "no Conversation for the log channel"
     );
     assert_eq!(env.fake_gateway().calls("open").unwrap(), 0);
-    // Nothing is posted twice.
     let all = posts(&env).len();
     reconcile_clean(&env);
     assert_eq!(posts(&env).len(), all);

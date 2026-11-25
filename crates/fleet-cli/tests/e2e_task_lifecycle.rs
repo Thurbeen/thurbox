@@ -67,7 +67,6 @@ fn a_task_runs_from_apply_to_release_with_one_spawn_and_one_brief() {
     );
     assert_eq!((env.calls("spawn"), env.calls("brief")), (1, 1));
 
-    // A duplicate reconcile, from a new process, changes nothing.
     let again = env.reconcile().ok().json();
     assert_eq!(
         (again["effects"].as_u64(), again["statusWrites"].as_u64()),
@@ -76,7 +75,6 @@ fn a_task_runs_from_apply_to_release_with_one_spawn_and_one_brief() {
     );
     assert_eq!((env.calls("spawn"), env.calls("brief")), (1, 1));
 
-    // The worker answers: validated against spec.outputs and fenced by generation.
     env.fleet(&result_args(
         "2",
         &["--output", "prUrl=\"https://example.test/pr/1\""],
@@ -119,7 +117,6 @@ fn a_task_runs_from_apply_to_release_with_one_spawn_and_one_brief() {
     assert_condition(&st, "Concluded", "True", "ResultRecorded");
     assert_eq!(st["result"]["outputs"]["tests"], 12);
 
-    // Deleting waits for a session proven at rest (P7), then releases once.
     env.fleet(&["delete", "task", "t1"])
         .ok()
         .stdout_has("marked for deletion");
@@ -174,7 +171,6 @@ fn a_task_waits_for_dispatch_and_its_spec_is_fixed_except_dispatch() {
         (Some("Briefed"), Some(2), Some(2))
     );
     assert_eq!(st["current"], true);
-    // The brief was delivered for generation 2, so that is what a result names.
     env.fleet(&result_args("1", &["--output", "prUrl=\"u\""]))
         .code(1)
         .stderr_has("stale generation 1");
@@ -205,8 +201,9 @@ fn a_crash_after_spawn_before_its_receipt_adopts_the_session() {
         "the effect happened"
     );
 
-    // The dead holder's lease must expire before the next manager can take it.
-    thread::sleep(Duration::from_millis(3_100));
+    let dead_holder_lease_expiry = Duration::from_millis(3_100);
+
+    thread::sleep(dead_holder_lease_expiry);
     env.reconcile().ok();
     let st = env.status("t1");
     assert_eq!(st["phase"], "Briefed", "{st:#}");
@@ -226,8 +223,8 @@ fn a_crash_after_the_brief_before_its_receipt_is_recovered_without_a_resend() {
     env.fault(Fault::new("brief", "abort"));
     env.fleet(&["reconcile", "--lease-ttl-ms", "3000"])
         .crashed();
-    // The dead holder's lease must expire before the next manager can take it.
-    thread::sleep(Duration::from_millis(3_100));
+    let dead_holder_lease_expiry = Duration::from_millis(3_100);
+    thread::sleep(dead_holder_lease_expiry);
     env.reconcile().ok();
     let st = env.status("t1");
     assert_eq!(st["phase"], "Briefed", "{st:#}");
@@ -367,7 +364,6 @@ fn unknown_delivery_probes_wait_between_tries_and_never_resend() {
         "a read never stalls the Task: {st:#}"
     );
     assert_condition(&st, "NeedsAttention", "True", "BriefUnconfirmed");
-    // The journal answers again: the delivered brief is recovered.
     env.expire_wait("t1");
     env.reconcile().ok();
     let st = env.status("t1");
@@ -467,7 +463,6 @@ fn a_vanished_worker_requires_attention_without_abandonment() {
     assert_condition(&st, "WorkerGone", "True", "SessionGone");
     assert_condition(&st, "NeedsAttention", "True", "WorkerGone");
     assert_eq!(env.calls("spawn"), 1);
-    // Re-deriving the same fact is not news: the next run writes nothing.
     let again = env.reconcile().ok().json();
     assert_eq!(
         (again["statusWrites"].as_u64(), again["idle"].as_bool()),
@@ -489,8 +484,6 @@ fn a_concluded_task_whose_session_vanishes_requires_attention() {
     assert_eq!(env.status("t1")["phase"], "Concluded");
     env.host().vanish(&env.session_key("t1")).unwrap();
 
-    // At rest, the session is looked up once per recheck interval, not on
-    // every pass.
     let finds = env.calls("find");
     let again = env.reconcile().ok().json();
     assert_eq!(env.calls("find"), finds, "{again:#}");
@@ -508,7 +501,6 @@ fn a_concluded_task_whose_session_vanishes_requires_attention() {
 #[test]
 fn one_manager_at_a_time_and_a_lost_lease_writes_nothing() {
     let env = setup("lease", true);
-    // A holds the lease while its spawn is slow; B is refused.
     env.fault(Fault::new("spawn", "normal").delay(1500));
     let a = env.spawn(&["reconcile", "--lease-ttl-ms", "30000"]);
     thread::sleep(Duration::from_millis(400));
@@ -518,14 +510,10 @@ fn one_manager_at_a_time_and_a_lost_lease_writes_nothing() {
     wait(a).ok();
     assert_eq!(env.status("t1")["phase"], "Briefed");
 
-    // C's lease expires during its slow spawn; D takes over and finishes;
-    // C's receipt write is refused and it exits with the lease error.
     env.apply(task("t2", true)).ok();
     env.fault(Fault::new("spawn", "normal").delay(1500));
     let c = env.spawn(&["reconcile", "--lease-ttl-ms", "300"]);
     thread::sleep(Duration::from_millis(700));
-    // D takes the lease as soon as C's has expired: C renews it before every
-    // probe and effect, so on a loaded machine that can be a little later.
     let deadline = std::time::Instant::now() + Duration::from_secs(5);
     loop {
         let d = env.reconcile();
@@ -538,7 +526,6 @@ fn one_manager_at_a_time_and_a_lost_lease_writes_nothing() {
     }
     let c = wait(c);
     c.code(6).stderr_has("lease lost");
-    // Whatever D saw of C's spawn, a waiting retry adopts it by its key.
     env.expire_wait("t2");
     env.reconcile().ok();
     let st = env.status("t2");
@@ -770,7 +757,7 @@ fn an_inaccessible_record_is_unknown_and_a_missing_one_is_not_found() {
     let env = setup("inaccessible", true);
     let path = env.object_path("Task", "t1");
     fs::set_permissions(&path, fs::Permissions::from_mode(0o000)).unwrap();
-    // Root reads anything; the distinction only exists for other users.
+    // Root reads anything.
     if fs::read(&path).is_ok() {
         return;
     }
@@ -808,7 +795,6 @@ fn a_failing_release_asks_for_attention_and_keeps_its_finalizer_until_it_succeed
         json!(["fleet.dev/release"]),
         "the finalizer holds the record"
     );
-    // The runtime recovers: the release goes through and the Task goes.
     env.expire_wait("t1");
     env.reconcile().ok();
     assert_eq!(env.calls("release"), 4);
@@ -824,7 +810,6 @@ fn a_task_deleted_before_it_spawned_goes_at_once() {
     env.reconcile().ok();
     env.fleet(&["get", "task", "t1"]).code(3);
     assert_eq!(env.calls("release"), 0);
-    // A deleting Task takes no worker result and no new spec.
     env.fleet(&["delete", "task", "t1"]).code(3);
 }
 
@@ -1053,7 +1038,6 @@ fn a_released_task_recovers_when_finalizer_clear_landed_before_unlink() {
             .values()
             .any(|r| r["outcome"]["known"]["type"] == "released")
     );
-    // A crash after durable finalizer clearing, before the record's unlink.
     stored["metadata"]["finalizers"] = json!([]);
     fs::write(
         env.object_path("Task", "t1"),
@@ -1156,8 +1140,6 @@ fn a_reboot_revives_the_session_and_resumes_the_brief_once() {
         ],
         "the brief once, then one catch-up note"
     );
-    // The revived worker is told it was restarted, and given its brief
-    // again, for the generation it was briefed for.
     assert_eq!(session.texts.len(), 2, "{:#?}", session.texts);
     let note = &session.texts[1];
     assert!(note.contains("restarted"), "{note}");
@@ -1169,7 +1151,6 @@ fn a_reboot_revives_the_session_and_resumes_the_brief_once() {
 
     let again = env.reconcile().ok().json();
     assert_eq!(again["effects"], 0, "{again:#}");
-    // The generation the worker was briefed for still fences its result.
     env.fleet(&result_args(
         "2",
         &["--output", "prUrl=\"https://example.test/pr/1\""],
@@ -1189,16 +1170,12 @@ fn a_host_that_cannot_be_read_is_unknown_for_its_own_tasks_only() {
     env.host().set_host("remote", "up").unwrap();
     let mut far = task("far", true);
     far["spec"]["host"] = json!("remote");
-    // The fake host reads no remote agent's prompt hook: the runtime's own
-    // answer proves this harness's brief.
     far["spec"]["harness"] = json!("aider");
     env.apply(far).ok();
     env.reconcile().ok();
     let st = env.status("far");
     assert_eq!(st["phase"], "Briefed", "{st:#}");
 
-    // The remote host stops answering. Its Task is Unknown: no WorkerGone
-    // clock, no respawn. A local Task carries on in the same run.
     env.host().set_host("remote", "unknown").unwrap();
     env.apply(task("near", true)).ok();
     let report = env.reconcile().ok().json();
@@ -1219,7 +1196,6 @@ fn a_host_that_cannot_be_read_is_unknown_for_its_own_tasks_only() {
     );
     assert_eq!(env.calls("spawn"), 2, "nothing respawned");
 
-    // A host known to be down is False: nothing is spawned there.
     env.host().set_host("remote", "down").unwrap();
     let mut blocked = task("blocked", true);
     blocked["spec"]["host"] = json!("remote");
@@ -1236,8 +1212,6 @@ fn a_host_that_cannot_be_read_is_unknown_for_its_own_tasks_only() {
 
 #[test]
 fn a_release_whose_answer_is_unknown_is_never_assumed_done() {
-    // The release happened but its answer was lost: the finalizer holds the
-    // record until a later attempt knows it is done.
     let env = setup("release-answer-lost", true);
     env.reconcile().ok();
     env.host()
@@ -1251,8 +1225,6 @@ fn a_release_whose_answer_is_unknown_is_never_assumed_done() {
     env.reconcile().ok();
     env.fleet(&["get", "task", "t1"]).code(3);
 
-    // The release never answers. After three attempts, each after a wait,
-    // a person is asked; the finalizer holds the record meanwhile.
     let env = setup("release-unknown", true);
     env.reconcile().ok();
     env.host()
@@ -1277,7 +1249,6 @@ fn a_different_session_reusing_the_key_does_not_hide_a_vanished_worker() {
     let env = setup("worker-identity", true);
     env.reconcile().ok();
     let original = env.get("t1")["status"]["session"]["id"].clone();
-    // Another session now holds the Task's key: the one Fleet started is gone.
     let key = env.session_key("t1");
     env.host()
         .update(|s| s.sessions.get_mut(&key).unwrap().id = "fake-other".into())
@@ -1296,7 +1267,6 @@ fn a_new_store_never_adopts_a_session_an_old_store_left_behind() {
     let env = setup("two-stores", true);
     env.reconcile().ok();
     assert_eq!(env.host().state().unwrap().sessions.len(), 1);
-    // A fresh data directory on the same host: same names, same order.
     let cfg = fs::read_to_string(&env.config).unwrap();
     fs::write(
         &env.config,
@@ -1316,7 +1286,6 @@ fn a_new_store_never_adopts_a_session_an_old_store_left_behind() {
 #[test]
 fn slow_probes_never_outlive_the_lease() {
     let env = setup("slow-probes", true);
-    // Each probe fits the lease; the probes of one Task together do not.
     for probe in ["host", "find", "ready"] {
         env.fault(Fault::new(probe, "normal").delay(1_200).times(2));
     }
@@ -1364,12 +1333,10 @@ fn a_reboot_revives_only_work_in_flight_or_feedback() {
     assert_eq!(env.status("held")["phase"], "Pending", "held stays held");
     assert_eq!(env.calls("spawn"), 1);
 
-    // Feedback for the concluded worker brings its session back to read it.
     env.fleet(&["send", "done", "Review: rename the flag."])
         .ok();
     env.reconcile().ok();
     assert_eq!((env.calls("revive"), env.calls("spawn")), (1, 1));
-    // A plain resume: the feedback is the only text the revive brings.
     let texts = env
         .host()
         .session(&env.session_key("done"))
@@ -1390,7 +1357,6 @@ fn a_task_deleted_after_a_reboot_releases_its_lost_session() {
     env.fleet(&["delete", "task", "t1"]).ok();
     env.reconcile().ok();
     assert_eq!(env.calls("revive"), 0, "a deleted Task is not revived");
-    // Whether a lost session is at rest is the runtime's to say.
     env.host().set_at_rest(&key, true).unwrap();
     env.reconcile().ok();
     assert_eq!(env.calls("revive"), 0);
@@ -1412,15 +1378,12 @@ fn a_task_reports_its_session_and_what_the_runtime_proves_of_it() {
         .stdout_has("session fake-1 on local Running")
         .stdout_has("Running");
 
-    // The runtime still holds the session, but its agent's window is gone:
-    // the pass that sees it says so, and the revive brings it back.
     env.host().reboot().unwrap();
     env.fleet(&["reconcile", "--max-passes", "1"]).ok();
     assert_eq!(env.status("t1")["sessionState"], "Lost");
     env.reconcile().ok();
     assert_eq!(env.status("t1")["sessionState"], "Running");
 
-    // A readable list that no longer shows the session proves it gone.
     env.host().vanish(&env.session_key("t1")).unwrap();
     env.reconcile().ok();
     let st = env.status("t1");

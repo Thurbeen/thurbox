@@ -157,8 +157,6 @@ fn a_discord_account_reports_what_its_listener_identifies_with() {
     assert_eq!(account["inbound"], "discord-gateway");
     assert_eq!(account["intents"], INTENTS, "{account:#}");
     assert!(account.get("curlConfig").is_none() && account.get("cli").is_none());
-    // Asking for the message content intent changes what the listener
-    // identifies with, and so the digest its beats carry.
     let cfg = fs::read_to_string(&env.config).unwrap();
     fs::write(
         &env.config,
@@ -205,22 +203,14 @@ fn a_discord_mention_reaches_a_conversation_and_the_reply_starts_its_thread() {
     );
     seed(&env, &[stranger.clone(), alex.clone()]);
 
-    // A stranger's top-level mention is a Conversation on the thread the
-    // message will start: `discord:<channel>:<message>`.
     receive(&env, 41, &stranger).ok();
     let address = format!("discord:{CHANNEL}:{stranger_id}");
     let conv = conversation_name(ACCOUNT, &address);
     let got = env.fleet(&["get", "conversation", &conv]).ok().json();
     assert_eq!(got["spec"]["address"], address, "{got:#}");
-    // The same dispatch again, as after a resume, is the same delivery.
     receive(&env, 41, &stranger).ok();
 
-    // Its answer is the one refusal. Discord has no thread yet, so the post
-    // starts it from the mention, and the first answer is lost: the
-    // resend inside the nonce window finds the post that landed.
     env.edit_stub(|s| s["discord"]["loseNextPost"] = json!(true));
-    // No clock is moved here: a post on a nonce platform brings the
-    // Conversation back at once, while the window is open.
     let report = env.reconcile().ok().json();
     assert_eq!(report["errors"], json!([]), "{report:#}");
     for _ in 0..3 {
@@ -269,8 +259,6 @@ fn a_discord_mention_reaches_a_conversation_and_the_reply_starts_its_thread() {
     assert_eq!(st["refusals"], json!([STRANGER]));
     assert!(st["task"].is_null(), "no Task for a stranger: {st:#}");
 
-    // Every call named the operator's curl config, and no argument carries
-    // a credential.
     for call in env.stub_calls() {
         let argv: Vec<String> = call["argv"]
             .as_array()
@@ -296,7 +284,6 @@ fn a_discord_mention_reaches_a_conversation_and_the_reply_starts_its_thread() {
         );
     }
 
-    // Alex is on the list: the mention starts one Task tied to the thread.
     receive(&env, 42, &alex).ok();
     let report = env.reconcile().ok().json();
     assert_eq!(report["errors"], json!([]), "{report:#}");
@@ -306,7 +293,6 @@ fn a_discord_mention_reaches_a_conversation_and_the_reply_starts_its_thread() {
     assert_condition(&st, "Tied", "True", "TaskKnown");
     let task = env.get(&format!("{conv}-1"));
     assert_eq!(task["metadata"]["labels"]["gateway.fleet.dev/route"], "eng");
-    // The Listener resolved the bot through the same curl.
     assert_condition(
         &env.listener_status(&format!("listener-{ACCOUNT}")),
         "Resolved",
@@ -350,8 +336,6 @@ fn the_discord_adapter_opens_reads_and_answers_unknown_where_discord_leaves_doub
         chat: CHANNEL.into(),
         thread: None,
     };
-    // Capabilities: the nonce window, and unmentioned only with the
-    // application's message content flag.
     let caps = g
         .capabilities(ACCOUNT)
         .known()
@@ -361,8 +345,6 @@ fn the_discord_adapter_opens_reads_and_answers_unknown_where_discord_leaves_doub
     assert!(!caps.unmentioned, "the application lacks the intent");
     env.edit_stub(|s| s["discord"]["appFlags"] = json!(1u64 << 19));
     assert!(g.capabilities(ACCOUNT).known().unwrap().unmentioned);
-    // Open: a post in the channel, then a thread from it, named after the
-    // first line; a long text's later chunks go into the thread.
     let long = format!("Question: which export?\n{}", "word ".repeat(500));
     let opened = g.open(ACCOUNT, &channel, &long, "gateway/u1/open/q1");
     let Observation::Known(EffectOutcome::Opened {
@@ -389,8 +371,6 @@ fn the_discord_adapter_opens_reads_and_answers_unknown_where_discord_leaves_doub
     assert_eq!(posts[1]["channel"], message.as_str());
     assert_eq!(posts[2]["channel"], message.as_str());
     assert_ne!(posts[0]["body"]["nonce"], posts[1]["body"]["nonce"]);
-    // History: the starter and the thread, oldest first; a thread Discord
-    // does not know yet is its starter alone.
     let h = g.history(
         ACCOUNT,
         &conversation,
@@ -406,8 +386,6 @@ fn the_discord_adapter_opens_reads_and_answers_unknown_where_discord_leaves_doub
         known.starter.as_ref().unwrap().id.as_deref(),
         Some(message.as_str())
     );
-    // A first read of a long thread takes its newest messages, paging
-    // backward, and never runs out of budget walking from the oldest.
     let first_at = 1_730_000_600_000u64;
     env.edit_stub(|s| {
         let thread = &mut s["discord"]["channels"][message.as_str()]["messages"];
@@ -432,7 +410,6 @@ fn the_discord_adapter_opens_reads_and_answers_unknown_where_discord_leaves_doub
     assert_eq!(known.messages.len(), 200);
     assert_eq!(known.messages[199].text, "line 1199");
     assert_eq!(known.messages[0].text, "line 1000");
-    // A throttled read carries Discord's retry_after.
     env.stub_fault("curl", "rate-limit", 1);
     match g.history(ACCOUNT, &conversation, &HistoryQuery::Since { at: 0 }) {
         HistoryObservation::Unknown {
@@ -442,12 +419,9 @@ fn the_discord_adapter_opens_reads_and_answers_unknown_where_discord_leaves_doub
         } => {}
         other => panic!("{other:?}"),
     }
-    // The opening post lands and the thread start is refused: something
-    // landed, so the outcome is Unknown, never a clean refusal.
     env.stub_fault_after("curl", "auth", 1, 1);
     let half = g.open(ACCOUNT, &channel, "Another question", "gateway/u1/open/q2");
     assert!(matches!(half, Observation::Unknown { .. }), "{half:?}");
-    // Nothing landed and Discord said no: a Known refusal.
     env.stub_fault("curl", "auth", 1);
     let refused = g.open(ACCOUNT, &channel, "A third", "gateway/u1/open/q3");
     assert!(
@@ -471,7 +445,6 @@ fn the_discord_adapter_creates_and_deletes_its_own_reactions_with_the_emoji_url_
             true,
         )],
     );
-    // The thread started from the starter message, holding one reply.
     env.edit_stub(|s| {
         s["discord"]["channels"][&starter] = json!({"parent": CHANNEL, "messages": [
             {"id": reply, "channel_id": starter, "type": 0, "content": "more",
@@ -485,7 +458,6 @@ fn the_discord_adapter_creates_and_deletes_its_own_reactions_with_the_emoji_url_
         thread: Some(starter.clone()),
     };
     let done = Observation::Known(EffectOutcome::Reacted { already: false });
-    // The starter stays in the parent channel; a reply is in the thread.
     assert_eq!(g.react(ACCOUNT, &thread, &starter, "eyes", true), done);
     assert_eq!(g.react(ACCOUNT, &thread, &reply, "eyes", true), done);
     assert_eq!(
@@ -493,7 +465,6 @@ fn the_discord_adapter_creates_and_deletes_its_own_reactions_with_the_emoji_url_
         done
     );
     assert_eq!(g.react(ACCOUNT, &thread, &reply, "eyes", false), done);
-    // A repeat changes nothing, and Discord answers it the same way.
     assert_eq!(g.react(ACCOUNT, &thread, &reply, "eyes", false), done);
     assert_eq!(
         g.react(ACCOUNT, &thread, &reply, "fleet:1250000000000000000", true),
@@ -527,8 +498,6 @@ fn the_discord_adapter_creates_and_deletes_its_own_reactions_with_the_emoji_url_
         format!("channels/{CHANNEL}/messages/{starter}/reactions/%F0%9F%91%80/@me")
     );
     assert_eq!(calls[3]["method"], "DELETE");
-    // A name Fleet does not map is refused without a call; an unknown
-    // message is Discord's refusal.
     assert!(matches!(
         g.react(ACCOUNT, &thread, &reply, "no_such_emoji", true),
         Observation::Known(EffectOutcome::Failed { .. })

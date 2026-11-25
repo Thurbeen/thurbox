@@ -577,7 +577,6 @@ impl Env {
 
 impl Drop for Env {
     fn drop(&mut self) {
-        // A failing test keeps its directory for the post-mortem.
         if !thread::panicking() {
             let _ = fs::remove_dir_all(&self.root);
         }

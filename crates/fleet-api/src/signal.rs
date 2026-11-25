@@ -77,8 +77,7 @@ impl Signal {
             for name in &fields.prompt {
                 match &p[name] {
                     serde_json::Value::String(text) => report(text),
-                    // Codex's `input-messages` are strings; Kimi's prompt
-                    // is a list of parts, each text one `{"text": ...}`.
+                    // Codex's `input-messages` are strings; Kimi's prompt is a list of `{"text": ...}` parts.
                     serde_json::Value::Array(list) => {
                         list.iter()
                             .filter_map(|m| m.as_str().or_else(|| m["text"].as_str()))
@@ -92,9 +91,7 @@ impl Signal {
             .conversation
             .iter()
             .find_map(|n| payload.and_then(|p| p[n].as_str()).map(str::to_string));
-        // Claude Code's `Stop` lists the work its turn left running: a
-        // background shell or subagent, a cron that wakes it later. A stop
-        // would end that work, so the agent is not idle.
+        // Claude Code's `Stop` lists the background work its turn left running.
         let in_flight = |list: &str| {
             payload
                 .and_then(|p| p[list].as_array())
@@ -107,9 +104,7 @@ impl Signal {
         } else if state == State::Blocked
             && payload.and_then(|p| p["notification_type"].as_str()) == Some("idle_prompt")
         {
-            // Claude Code's notification after 60 s of input idle: the agent
-            // waits for its next prompt, which needs no one. A hook wired
-            // without a matcher reports it as `blocked`.
+            // Claude Code notifies after 60 s of input idle, which needs no one.
             State::Idle
         } else {
             state
@@ -189,11 +184,13 @@ impl Reported {
     }
 }
 
+// A terminal may change a prompt's line endings and surrounding whitespace.
 pub fn prompt_digest(text: &str) -> String {
     let normal = text.replace("\r\n", "\n");
     fnv(0xcbf2_9ce4_8422_2325, normal.trim().bytes())
 }
 
+// Claude Code 2.1.327 wraps only the tail of a long paste and may change blank lines at the split.
 pub fn loose_prompt_digest(text: &str, tag: &str) -> String {
     let mut kept = String::with_capacity(text.len());
     let mut rest = text;
@@ -288,8 +285,6 @@ mod tests {
 
     #[test]
     fn a_restart_hides_the_states_reported_before_it() {
-        // The previous process's report is stamped later than the new one's:
-        // only where each line sits in the file counts.
         let before = format!(
             "{}\n",
             json!({"at": 900, "state": "idle", "conversation": "c1"})
@@ -354,7 +349,6 @@ mod tests {
         let s = Signal::from_hook_with(1, State::Prompt, Some(&hook), &fields);
         assert_eq!(s.prompts, vec![prompt_digest("brief")]);
         assert_eq!(s.conversation.as_deref(), Some("o1"));
-        // The default fields are not read for a profile that names others.
         let claude = json!({"prompt": "brief", "session_id": "abc"});
         let s = Signal::from_hook_with(1, State::Prompt, Some(&claude), &fields);
         assert!(s.prompts.is_empty() && s.conversation.is_none());

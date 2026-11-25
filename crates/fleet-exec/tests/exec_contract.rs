@@ -14,7 +14,6 @@ fn child_role() {
     let out = PathBuf::from(std::env::var("FLEET_EXEC_OUT").expect("out"));
     match role.as_str() {
         "hang-with-grandchild" => {
-            // Left running on purpose: it is what the parent's kill must reach.
             #[allow(clippy::zombie_processes)]
             let child = Command::new(std::env::current_exe().unwrap())
                 .args(["--exact", "child_role", "--nocapture"])
@@ -108,8 +107,6 @@ fn a_child_past_its_bound_is_killed_with_its_whole_tree() {
 fn stdin_and_environment_reach_the_child_and_never_its_command_line() {
     let dir = scratch("echo");
     let out = dir.join("echo");
-    // A value for the environment only, and an inherited variable (PATH)
-    // the parent removes.
     let mut spec = child("echo", &out, Duration::from_secs(30)).stdin("from-stdin");
     spec.env
         .push(("FLEET_EXEC_TOKEN".into(), "tok-value".into()));
@@ -123,7 +120,6 @@ fn stdin_and_environment_reach_the_child_and_never_its_command_line() {
         fs::read_to_string(&out).unwrap(),
         "from-stdin|tok-value|false"
     );
-    // The child's own argv, as it saw it.
     let argv = fs::read_to_string(out.with_extension("argv")).unwrap();
     assert!(
         !argv.contains("tok-value"),

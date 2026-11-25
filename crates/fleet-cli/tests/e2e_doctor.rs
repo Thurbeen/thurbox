@@ -81,8 +81,6 @@ fn an_unreachable_runtime_fails_and_the_rest_are_reported_with_their_fix() {
     assert_eq!(integration["hint"], "fleet integration install stub");
 
     assert_eq!(check(&report, "harness", "stub")["level"], "ok");
-    // A bundled harness whose program is not on PATH: users install only
-    // the agents they run.
     let claude = check(&report, "harness", "claude");
     assert_eq!(claude["level"], "info", "{report:#}");
 
@@ -237,8 +235,6 @@ fn an_unreadable_ledger_fails_even_when_no_profile_installs_anything() {
     let env = Env::new("doctor-unreadable-ledger");
     let harnesses = env.root.join("harnesses");
     fs::create_dir_all(&harnesses).expect("harnesses");
-    // The one bundled profile with an `[install]` table, replaced by one
-    // without it: no profile row reads the ledger.
     fs::write(
         harnesses.join("kimi.toml"),
         "name = \"kimi\"\nprogram = \"kimi\"\nauthority = \"full\"\n",

@@ -77,8 +77,6 @@ fn answer(verb: &str, request: &[u8]) -> Value {
 
 fn main() {
     let verb = std::env::args().nth(1).unwrap_or_default();
-    // Each call is one span, `workspace-git VERB`, under the caller's
-    // TRACEPARENT; off unless the OTEL_* variables ask (docs/observability.md).
     let telemetry = otel_env::init(
         "workspace-git",
         env!("CARGO_PKG_VERSION"),
@@ -105,9 +103,6 @@ fn main() {
         }
         out
     };
-    // The answer first: its caller waits for this process to exit, and
-    // the flush below is bounded far inside that caller's deadline, so a
-    // stalled collector never turns an answer into a timeout.
     println!("{out}");
     let _ = std::io::Write::flush(&mut std::io::stdout());
     telemetry.shutdown_within(otel_env::CALL_SHUTDOWN_BOUND);

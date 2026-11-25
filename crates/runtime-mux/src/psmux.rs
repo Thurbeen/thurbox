@@ -56,8 +56,7 @@ impl TmuxCompatible for Psmux {
     const COMMAND_LISTS: bool = false;
     const COMMAND_LIST_SINGLE_REPLY: bool = false;
 
-    // A cold psmux server can refuse `new-session` or disappear before the
-    // first `set-option`, even when its `new-session` client exited successfully.
+    // A cold psmux server can refuse `new-session` or vanish before the first `set-option`.
     const COLD_START_ATTEMPTS: usize = 3;
 
     const COLD_START_GRACE: std::time::Duration = if cfg!(test) {
@@ -449,7 +448,6 @@ fn psmux_window_powershell(
     env: &HashMap<String, String>,
 ) -> String {
     let mut prelude = String::new();
-    // Sort for a deterministic command (HashMap iteration order isn't).
     let mut pairs: Vec<_> = env.iter().collect();
     pairs.sort();
     for (k, v) in pairs {
@@ -493,8 +491,7 @@ fn psmux_window_command(
 }
 
 fn deferred_paste_script(mux: &str, socket: &str, target: &str, text: &str) -> Result<String> {
-    // Only the socket: a quoted program name is a string to PowerShell,
-    // not a command, and a multiplexer's binary name needs no quoting.
+    // PowerShell reads a quoted program name as a string, not a command.
     let socket = powershell_quote(socket);
     let t = powershell_quote(target);
     let payload = base64::engine::general_purpose::STANDARD.encode(text.as_bytes());
@@ -585,7 +582,6 @@ fn psmux_navigation_key(buf: &[u8]) -> Option<(usize, String)> {
         };
         return Some((4, name.to_string()));
     }
-    // The longest supported form has four bytes after CSI (for example 5;5~).
     let nav = &body[..body.len().min(4)];
     let semicolon = nav.iter().position(|&b| b == b';')?;
     let suffix_pos = nav
@@ -648,8 +644,7 @@ fn psmux_escape_sequence(buf: &[u8]) -> Option<(usize, String)> {
             }
             let end = 2 + params + inter + 1;
             if fin == b'M' && params + inter == 0 {
-                // xterm's default/UTF-8 mouse encoding: three fields, each one
-                // character offset by 32, after the final byte.
+                // xterm's default mouse encoding: three fields, each one character offset by 32.
                 let (fields, used) = mouse_fields(&buf[end..])?;
                 let mut args = vec!["0x1b".to_string(), psmux_quote("[M")];
                 args.extend(fields.iter().map(|c| format!("0x{:x}", *c as u32)));
@@ -664,8 +659,6 @@ fn psmux_escape_sequence(buf: &[u8]) -> Option<(usize, String)> {
             }
             (3, &buf[1..3])
         }
-        // Alt + a printable character (UTF-8 included); Alt + a control byte
-        // stays Escape and that byte's key-name.
         first => {
             let end = 1 + utf8_width(first);
             let ch = std::str::from_utf8(buf.get(1..end)?).ok()?.chars().next()?;
@@ -715,7 +708,6 @@ fn psmux_key_name(b: u8) -> Option<String> {
         b'\t' => "Tab".to_string(),
         0x1b => "Escape".to_string(),
         0x7f => "BSpace".to_string(),
-        // Ctrl+letter: 0x01..=0x1a → C-a..C-z (covers e.g. LF 0x0a → C-j).
         0x01..=0x1a => format!("C-{}", (b'a' + b - 1) as char),
         _ => return None,
     })
@@ -1943,8 +1935,6 @@ mod tests {
 
     #[test]
     fn psmux_window_script_folds_env_as_set_item() {
-        // Sorted for determinism. Values with spaces survive the PS single
-        // quotes.
         let mut env = HashMap::new();
         env.insert("THURBOX_SESSION".to_string(), "id-1".to_string());
         env.insert(
@@ -2061,8 +2051,7 @@ mod tests {
 
     #[test]
     fn login_wrap_is_noop_for_psmux_remote() {
-        // A Windows SSH host (multiplexer = "psmux") has no `/bin/sh`; wrapping
-        // would replace the agent command with one that can't start at all.
+        // A Windows SSH host has no `/bin/sh` to wrap the agent command in.
         let host = crate::HostDef {
             name: "winbox".into(),
             destination: "me@winbox".into(),
@@ -2083,7 +2072,6 @@ mod tests {
     fn a_deferred_prompt_names_the_servers_own_mux_and_socket() {
         let psmux = deferred_paste_script("psmux", "sock", "%3", "it's\nhere").expect("fits");
         assert!(psmux.starts_with("powershell -NoProfile -Command \"psmux -L 'sock' send-paste"));
-        // Base64: the prompt's newline and quote never reach the script.
         assert!(!psmux.contains("it's"), "{psmux}");
     }
 
@@ -2113,8 +2101,7 @@ mod tests {
                 transport.is_remote() && Psmux::HOOK_STATUS
             );
         }
-        // The session name is user-authored host entry text, quoted whole
-        // rather than stripped of what psmux's tokenizer reads as escapes.
+        // psmux's tokenizer reads escapes in the session name, so it is quoted whole.
         assert_eq!(
             Psmux::hook_poll_command("a\"b\\c"),
             "list-panes -s -t \"a\\\"b\\\\c\" -F \"#{pane_id} #{@thurbox_state}\""
@@ -2219,15 +2206,10 @@ mod tests {
         }
     }
 
-    // --- psmux send-keys encoding tests ---
-    //
-    // Regression: psmux 3.3.6 has no `send-keys -H`, so on Windows the hex path
-    // injected the literal text "62" when the user typed `b` (0x62), and Enter /
-    // Backspace did nothing. The psmux encoding must use `-l` literals + key-names.
+    // psmux 3.3.6 has no `send-keys -H`, so keys go as `-l` literals and key-names.
 
     #[test]
     fn psmux_printable_char_uses_literal_not_hex() {
-        // Typing `b` must inject `b`, not the literal text "62".
         assert_eq!(
             psmux_send_keys_commands("%1", b"b"),
             vec!["send-keys -t %1 -l -N 1 \"b\"\n".to_string()]
@@ -2265,19 +2247,19 @@ mod tests {
     #[test]
     fn psmux_ctrl_letters_map_to_c_prefix() {
         assert_eq!(
-            psmux_send_keys_commands("%1", &[0x03]), // Ctrl+C
+            psmux_send_keys_commands("%1", &[0x03]),
             vec!["send-keys -t %1 C-c\n".to_string()]
         );
         assert_eq!(
-            psmux_send_keys_commands("%1", &[0x01]), // Ctrl+A
+            psmux_send_keys_commands("%1", &[0x01]),
             vec!["send-keys -t %1 C-a\n".to_string()]
         );
         assert_eq!(
-            psmux_send_keys_commands("%1", &[0x1a]), // Ctrl+Z
+            psmux_send_keys_commands("%1", &[0x1a]),
             vec!["send-keys -t %1 C-z\n".to_string()]
         );
         assert_eq!(
-            psmux_send_keys_commands("%1", &[0x0a]), // LF → Ctrl+J
+            psmux_send_keys_commands("%1", &[0x0a]),
             vec!["send-keys -t %1 C-j\n".to_string()]
         );
     }
@@ -2330,14 +2312,12 @@ mod tests {
     #[test]
     fn psmux_unnamed_escape_sequences_are_typed_whole() {
         for (bytes, args) in [
-            // A mouse report: split, the pane got `[<35;10;5M` and no ESC.
             (&b"\x1b[<35;10;5M"[..], "0x1b \"[<35;10;5M\""),
             (&b"\x1b[<0;10;5m"[..], "0x1b \"[<0;10;5m\""),
             (&b"\x1b[15;5~"[..], "0x1b \"[15;5~\""),
             (&b"\x1bOP"[..], "0x1b \"OP\""),
             (&b"\x1bb"[..], "0x1b \"b\""),
             ("\x1bé".as_bytes(), "0x1b \"é\""),
-            // A leading `-` is still kept from reading as a flag.
             (&b"\x1b-"[..], "0x1b 0x2d"),
             (&b"\x1b[M #!"[..], "0x1b \"[M\" 0x20 0x23 0x21"),
         ] {
@@ -2352,7 +2332,7 @@ mod tests {
 
     #[test]
     fn psmux_shift_enter_is_ctrl_j() {
-        // Typed whole, `CSI 13;2u` did nothing in vibe's TUI or PowerShell.
+        // Typed whole, `CSI 13;2u` does nothing in a TUI or PowerShell on psmux.
         assert_eq!(
             psmux_send_keys_commands("%1", b"a\x1b[13;2ub"),
             vec![
@@ -2369,7 +2349,6 @@ mod tests {
             psmux_send_keys_commands("%1", b"\x1b\x1b"),
             vec!["send-keys -t %1 Escape\n", "send-keys -t %1 Escape\n"]
         );
-        // Alt + a control byte: Escape, then that byte's key-name.
         assert_eq!(
             psmux_send_keys_commands("%1", b"\x1b\r"),
             vec!["send-keys -t %1 Escape\n", "send-keys -t %1 Enter\n"]
@@ -2397,10 +2376,7 @@ mod tests {
 
     #[test]
     fn psmux_literal_single_quote_survives() {
-        // Regression: psmux's send-coalescing re-quoted literals with the
-        // POSIX `'\''` escape its own parser can't read back, so `it's` was
-        // typed into the pane as `it\s`. The `-N 1` opts out of coalescing and
-        // the double-quote framing passes `'` through untouched.
+        // psmux's send-coalescing re-quotes with POSIX `'\''`, which its own parser cannot read back.
         assert_eq!(
             psmux_send_keys_commands("%1", b"it's"),
             vec!["send-keys -t %1 -l -N 1 \"it's\"\n".to_string()]
@@ -2409,8 +2385,7 @@ mod tests {
 
     #[test]
     fn psmux_literal_escapes_backslash_and_double_quote() {
-        // psmux's double-quote tokenizer reads exactly `\"` and `\\`; both
-        // must be escaped so Windows paths and quoted text round-trip.
+        // psmux's double-quote tokenizer reads exactly `\"` and `\\`.
         assert_eq!(
             psmux_send_keys_commands("%1", br#"say "hi" C:\p"#),
             vec!["send-keys -t %1 -l -N 1 \"say \\\"hi\\\" C:\\\\p\"\n".to_string()]
@@ -2419,15 +2394,11 @@ mod tests {
 
     #[test]
     fn psmux_literal_escapes_a_leading_hyphen() {
-        // Regression (#920): psmux classifies arguments after tokenizing, so
-        // the quotes are gone by the time it drops everything starting with
-        // `-` as a flag — a typed `-` was silently swallowed. It comes back as
-        // psmux's own `0xNN` codepoint form, which decodes to the same char.
+        // psmux drops any argument starting with `-` as a flag after it strips the quotes.
         assert_eq!(
             psmux_send_keys_commands("%1", b"-"),
             vec!["send-keys -t %1 -l -N 1 0x2d\n".to_string()]
         );
-        // Only the leading hyphens need escaping; the rest stays one literal.
         assert_eq!(
             psmux_send_keys_commands("%1", b"--flag=a-b"),
             vec!["send-keys -t %1 -l -N 1 0x2d 0x2d \"flag=a-b\"\n".to_string()]
@@ -2436,18 +2407,15 @@ mod tests {
 
     #[test]
     fn psmux_literal_escapes_a_hex_codepoint_lookalike() {
-        // psmux rewrites a `0xNN` argument into the character it names, so a
-        // run literally spelling `0x41` would have arrived as `A`.
+        // psmux rewrites a `0xNN` argument into the character it names.
         assert_eq!(
             psmux_send_keys_commands("%1", b"0x41"),
             vec!["send-keys -t %1 -l -N 1 0x30 \"x41\"\n".to_string()]
         );
-        // A hyphen ahead of one still leaves a lookalike behind it.
         assert_eq!(
             psmux_send_keys_commands("%1", b"-0x41"),
             vec!["send-keys -t %1 -l -N 1 0x2d 0x30 \"x41\"\n".to_string()]
         );
-        // Not a lookalike: text past the hex digits is ordinary literal text.
         assert_eq!(
             psmux_send_keys_commands("%1", b"0x41z"),
             vec!["send-keys -t %1 -l -N 1 \"0x41z\"\n".to_string()]
@@ -2462,7 +2430,6 @@ mod tests {
 
     #[test]
     fn psmux_mixed_text_then_enter() {
-        // The common "type a command and submit" path.
         assert_eq!(
             psmux_send_keys_commands("%1", b"ls\r"),
             vec![
@@ -2474,9 +2441,6 @@ mod tests {
 
     #[test]
     fn psmux_bracketed_paste_keeps_markers_whole() {
-        // The markers are typed whole like any other sequence, but a paste
-        // still never takes this encoding: each CR in it would be Enter. The
-        // writer sends it through `PsmuxPaste` instead.
         assert_eq!(
             psmux_send_keys_commands("%1", b"\x1b[200~hi\x1b[201~"),
             vec![
@@ -2487,8 +2451,6 @@ mod tests {
         );
     }
 
-    // --- psmux out-of-band paste ---
-
     #[test]
     fn paste_chunks_keeps_an_ordinary_paste_whole() {
         assert_eq!(paste_chunks("one\ntwo"), vec!["one\ntwo"]);
@@ -2498,7 +2460,6 @@ mod tests {
 
     #[test]
     fn paste_chunks_splits_large_input_on_char_boundaries() {
-        // Multi-byte chars straddling the cut: 2 bytes each, odd-sized prefix.
         let text = format!("{}{}", "a", "é".repeat(PASTE_CHUNK_BYTES));
         let chunks = paste_chunks(&text);
         assert!(chunks.len() > 1);
@@ -2539,10 +2500,9 @@ mod tests {
 
     #[test]
     fn psmux_long_run_splits_on_char_boundary() {
-        let input = "é".repeat(400); // 800 bytes, each char 2 bytes
+        let input = "é".repeat(400);
         let cmds = psmux_send_keys_commands("%1", input.as_bytes());
         assert!(cmds.len() > 1, "expected a long run to span >1 command");
-        // Reassemble the quoted literals back into the original text.
         let mut text = String::new();
         for cmd in &cmds {
             let inner = cmd
@@ -2636,8 +2596,6 @@ mod tests {
             "psmux",
             "psmux dev",
             "ERROR: x",
-            // The last line names a pre-release, and an earlier one is not
-            // read in its place.
             "tmux 3.3.7\npsmux 3.3.8-dev (x)\n",
             "tmux 3.3.9\npsmux 3.3.9-dev (x)\n",
         ] {

@@ -388,7 +388,6 @@ impl FakeGateway {
                 mentions_fleet: false,
                 at,
                 text: chunk.clone(),
-                // Only a metadata marker is readable back from history.
                 key: (s.capabilities.marker == Marker::Metadata).then(|| key.clone()),
                 starts_thread: starts_thread && i == 0,
                 files: Vec::new(),
@@ -545,7 +544,6 @@ impl Gateway for FakeGateway {
             return Observation::unknown("the payload is not an object");
         };
         let Some(event) = payload.get("event") else {
-            // A reaction, a presence change: nothing the Gateway reads.
             return Observation::Known(None);
         };
         let Some(id) = payload.get("id").and_then(Value::as_str) else {
@@ -634,7 +632,6 @@ impl Gateway for FakeGateway {
         let empty = FakeConversation::default();
         let c = match s.conversations.get(&conversation.address()) {
             Some(c) => c,
-            // A channel Fleet never posted in at the top level holds nothing.
             None if conversation.thread.is_none() => &empty,
             None => {
                 return HistoryObservation::unknown(
@@ -693,8 +690,6 @@ impl Gateway for FakeGateway {
         let text = text.to_string();
         let key = intent_key.to_string();
         self.write("open", account, move |s, partly| {
-            // The thread an earlier send under this key opened inside the
-            // nonce window, else a new one.
             let first_key = Self::parts(s, &text, &key)
                 .into_iter()
                 .next()
@@ -727,7 +722,6 @@ impl Gateway for FakeGateway {
         let conversation = conversation.clone();
         let text = text.to_string();
         let key = intent_key.to_string();
-        // A channel address takes top-level posts; a thread must exist.
         let exists = match self.state() {
             Ok(s) => {
                 conversation.thread.is_none()
@@ -838,8 +832,7 @@ mod tests {
 
     fn fake(name: &str) -> (FakeGateway, PathBuf) {
         let n = SEQ.fetch_add(1, Ordering::Relaxed);
-        // Unit tests have no CARGO_TARGET_TMPDIR: use the workspace's own
-        // target directory, never the shared system temp.
+        // Cargo sets no CARGO_TARGET_TMPDIR for unit tests.
         let dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
             .join("../../target/tmp/fake-gateway")
             .join(format!("{name}-{}-{n}", std::process::id()));
@@ -1057,7 +1050,6 @@ mod tests {
             },
         );
         assert_eq!(since.known().unwrap().messages.len(), 2);
-        // A chat without a thread has no starter.
         let chat = t.channel();
         g.seed(&chat, vec![person("U1", 5, "dm")]).unwrap();
         assert_eq!(
@@ -1075,7 +1067,6 @@ mod tests {
                 .starter,
             Some(Starter::removed())
         );
-        // Unknowns, each in its own words; an unknown thread is a refusal, not absence.
         assert!(matches!(
             g.history(
                 "fake-main",
@@ -1182,7 +1173,6 @@ mod tests {
             h.starter.as_ref().and_then(|s| s.key.clone()).as_deref(),
             Some("task/t/u7/gateway/question/q1")
         );
-        // Refusals are Known; a thread is not a channel; a missing thread takes no post.
         assert!(matches!(
             g.open("fake-main", &conversation, "x", "k"),
             Observation::Known(EffectOutcome::Failed { .. })
@@ -1200,7 +1190,6 @@ mod tests {
             g.post("other", &conversation, "x", "k"),
             Observation::Known(EffectOutcome::Failed { .. })
         ));
-        // Faults: a refusal, a lost answer with nothing posted, and one with the post landed.
         g.add_fault(GatewayFault::new("post", "failed")).unwrap();
         assert!(matches!(
             g.post("fake-main", &conversation, "x", "k1"),
@@ -1225,12 +1214,9 @@ mod tests {
             ..channel.clone()
         };
         g.seed(&t, vec![]).unwrap();
-        // Metadata: a repeat is a second post, both carrying the key.
         g.post("fake-main", &t, "a", "k").known().unwrap();
         g.post("fake-main", &t, "a", "k").known().unwrap();
         assert_eq!(g.posts().unwrap().len(), 2);
-        // Nonce: a repeat inside the window returns the existing post, and
-        // the key is not readable from history.
         g.set_capabilities(Capabilities {
             marker: Marker::Nonce { window_ms: 60_000 },
             ..default_capabilities()
@@ -1255,7 +1241,6 @@ mod tests {
                 .skip(2)
                 .all(|m| m.key.is_none())
         );
-        // None: every call is a new post.
         g.set_capabilities(Capabilities {
             marker: Marker::None,
             ..default_capabilities()
@@ -1263,7 +1248,6 @@ mod tests {
         .unwrap();
         let x = g.post("fake-main", &t, "c", "z");
         assert_ne!(g.post("fake-main", &t, "c", "z"), x);
-        // The opening post obeys the same rule.
         g.set_capabilities(Capabilities {
             marker: Marker::Nonce { window_ms: 60_000 },
             ..default_capabilities()
@@ -1309,7 +1293,6 @@ mod tests {
         let t = thread();
         g.seed(&t, vec![]).unwrap();
         g.set_post_limit(Some(4)).unwrap();
-        // The first part lands, the answer is lost.
         g.add_fault(GatewayFault::new("post", "lost-partly"))
             .unwrap();
         assert!(matches!(
@@ -1324,10 +1307,8 @@ mod tests {
                 .collect::<Vec<_>>()
         };
         assert_eq!(keys(&g), ["k/1/3"]);
-        // Without a nonce, a resend makes every part again.
         g.post("fake-main", &t, "abcdefghij", "k");
         assert_eq!(keys(&g), ["k/1/3", "k/1/3", "k/2/3", "k/3/3"]);
-        // With one, the part that landed is returned and the rest made.
         g.set_capabilities(Capabilities {
             marker: Marker::Nonce { window_ms: 60_000 },
             ..default_capabilities()
@@ -1372,7 +1353,6 @@ mod tests {
             vec!["white_check_mark".to_string()]
         );
         assert_eq!(g.reactions().unwrap().len(), 4);
-        // Faults: a refusal, a lost answer with nothing done, and one done.
         g.add_fault(GatewayFault::new("react", "failed")).unwrap();
         assert!(matches!(
             react("x", true),
@@ -1384,7 +1364,6 @@ mod tests {
             .unwrap();
         assert!(react("x", true).is_unknown());
         assert_eq!(g.reacted(&thread(), "1").unwrap().len(), 2);
-        // An unknown thread, another account, or no reactions: refused.
         let other = ConversationRef::split("fake:C9:9").unwrap();
         assert!(matches!(
             g.react("fake-main", &other, "1", "eyes", true),
@@ -1428,7 +1407,6 @@ mod tests {
         assert!(g.capabilities("fake-main").is_unknown());
         assert!(g.whoami("other").is_unknown());
         assert!(g.capabilities("other").is_unknown());
-        // The state round-trips through its file, so another process sees it.
         let again = FakeGateway::open("fake-main", &dir).unwrap();
         assert_eq!(again.state().unwrap(), g.state().unwrap());
         assert_eq!(again.calls("whoami").unwrap(), 5);

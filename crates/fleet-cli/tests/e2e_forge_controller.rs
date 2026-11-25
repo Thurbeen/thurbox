@@ -135,8 +135,6 @@ fn declare_creates_the_change_request_and_the_worker_is_joined_at_the_present() 
     assert!(st.get("forge").is_none(), "nothing followed before a sweep");
     assert_eq!(env.change_request(&cr)["spec"]["url"], URL);
 
-    // Add a note before the first sweep: the join carries the snapshot as
-    // it stands, so the worker sees both notes in one message.
     forge
         .set_change(
             PROJECT,
@@ -193,14 +191,12 @@ fn declare_creates_the_change_request_and_the_worker_is_joined_at_the_present() 
         .stdout_has(&format!("following {cr} following cursor 1 gaps 0"));
     assert_eq!(env.status("t1")["forge"]["changes"][&cr]["cursor"], 1);
 
-    // Idle: a second sweep writes nothing.
     let again = env.reconcile().ok().json();
     assert_eq!(
         (again["statusWrites"].as_u64(), again["idle"].as_bool()),
         (Some(0), Some(true)),
         "{again:#}"
     );
-    // A second declare of the same URL is a no-op.
     declare(&env, "t1", URL)
         .ok()
         .stdout_has(&format!("ChangeRequest/{cr} (existing; already declared)"));
@@ -221,7 +217,6 @@ fn new_notes_relay_once_across_polls_and_the_cursor_advances() {
     env.reconcile().ok();
     assert_eq!(texts(&env, "t1").len(), 2);
 
-    // A note arrives; the mirror numbers it at revision 2; one relay.
     forge
         .set_change(
             PROJECT,
@@ -241,14 +236,12 @@ fn new_notes_relay_once_across_polls_and_the_cursor_advances() {
     assert!(!got[2].contains("> first look"), "only what is new");
     assert!(got[2].contains("revision 2"), "{}", got[2]);
 
-    // Several quiet polls: nothing more.
     for _ in 0..3 {
         poll(&env, &cr);
     }
     assert_eq!(texts(&env, "t1").len(), 3, "once and only once");
     assert_eq!(delivered(&full_status(&env, "t1")).len(), 2);
 
-    // An edit moves the note's number: it is relayed again.
     let mut edited = note("n2", 20, "bob", "please add a test, and a doc");
     edited.edited_at = Some(30);
     forge
@@ -369,7 +362,6 @@ fn spec_forge_relay_notes_false_stops_notes_and_not_checks() {
     let (env, forge, cr) = setup("relay-spec");
     declare(&env, "t1", URL).ok();
     env.reconcile().ok();
-    // spec.forge is mutable like dispatch.
     let mut t = task("t1", true);
     t["spec"]["forge"] = json!({"relay": {"notes": false}, "draft": {"policy": null}});
     env.apply(t.clone()).ok().stdout_has("Task/t1 configured");
@@ -394,7 +386,6 @@ fn spec_forge_relay_notes_false_stops_notes_and_not_checks() {
         got[2]
     );
     assert_eq!(entry(&full_status(&env, "t1"), &cr)["cursor"], 2);
-    // The brief stays immutable.
     t["spec"]["brief"] = json!("another brief");
     env.apply(t)
         .code(1)
@@ -410,7 +401,6 @@ fn two_tasks_declaring_one_url_each_get_their_own_join_and_cursor() {
         .ok()
         .stdout_has("(created; declared)");
     env.reconcile().ok();
-    // t1 is at revision 1; the forge moves before t2 joins.
     forge
         .set_change(
             PROJECT,
@@ -447,8 +437,6 @@ fn a_gap_delivers_the_snapshot_and_advances_the_cursor() {
     let (env, forge, cr) = setup("relay-gap");
     declare(&env, "t1", URL).ok();
     env.reconcile().ok();
-    // Rotate more than the cap past the cursor in one poll: everything the
-    // follower would have been owed below the window is gone.
     let many = |n: u64| -> Vec<Note> {
         let mut notes = vec![note("n1", 10, "ann", "first look")];
         notes.extend(
@@ -461,13 +449,9 @@ fn a_gap_delivers_the_snapshot_and_advances_the_cursor() {
     poll(&env, &cr);
     let cr_st = env.change_request_status(&cr);
     assert_eq!(cr_st["droppedBefore"], 1, "{cr_st:#}");
-    // The follower's cursor (1) is at droppedBefore, not below it: no gap
-    // yet. One more rotation drops a note numbered 2.
     let st = full_status(&env, "t1");
     assert_eq!(entry(&st, &cr)["cursor"], 2, "{st:#}");
     assert_eq!(entry(&st, &cr)["gaps"], 0);
-    // Move the cursor back as a follower that fell behind would be, then
-    // rotate again.
     let path = env.object_path("Task", "t1");
     let mut raw: Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
     raw["status"]["forge"]["changes"][&cr]["cursor"] = json!(1);
@@ -489,7 +473,6 @@ fn a_gap_delivers_the_snapshot_and_advances_the_cursor() {
         )),
         "{last}"
     );
-    // The next clean relay clears the attention.
     let mut notes = many(10);
     notes.push(note("fresh", 900, "bob", "after the gap"));
     forge.set_change(PROJECT, "7", draft(notes)).unwrap();
@@ -513,8 +496,6 @@ fn a_retired_mirror_is_change_gone_and_a_redeclare_rebinds_to_the_new_uid() {
         .as_str()
         .unwrap()
         .to_string();
-    // Retention: a person deletes the mirror, as its controller would after
-    // the settled TTL; the follower sees readable absence.
     env.fleet(&["delete", "changerequest", &cr]).ok();
     env.reconcile().ok();
     let st = full_status(&env, "t1");
@@ -523,7 +504,6 @@ fn a_retired_mirror_is_change_gone_and_a_redeclare_rebinds_to_the_new_uid() {
     env.fleet(&["status", "task", "t1"])
         .ok()
         .stdout_has("ChangeGone");
-    // Re-declare: a new object, a new uid, a new join at its first revision.
     forge
         .set_change(
             PROJECT,
@@ -596,7 +576,6 @@ fn a_concluded_task_still_receives_a_relay_and_a_deleted_task_leaves_the_mirror_
     assert_eq!(got.len(), 3, "{got:#?}");
     assert!(got[2].contains("> after the result"));
     assert_eq!(env.status("t1")["phase"], "Concluded");
-    // A declaration after the result is still accepted; it concludes nothing.
     env.fleet(&[
         "declare",
         "t1",
@@ -633,8 +612,6 @@ fn an_orphan_from_a_crash_between_the_two_steps_is_found_by_the_next_declare() {
     declare(&env, "t1", URL)
         .ok()
         .stdout_has("(created; declared)");
-    // The second step is lost: the record as it would be after a crash
-    // between the ChangeRequest's creation and the declaration's append.
     let path = env.object_path("Task", "t1");
     let mut raw: Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
     raw["status"].as_object_mut().unwrap().remove("declared");
@@ -694,7 +671,6 @@ fn declare_is_refused_before_the_brief_for_an_unknown_host_and_without_a_kind() 
     env.fleet(&["declare", "t1"])
         .code(1)
         .stderr_has("exactly one of");
-    // Without a [forge] section a change cannot be declared, but a fact can.
     let plain = Env::new("declare-no-forge");
     plain.apply(task("t1", true)).ok();
     plain.reconcile().ok();
@@ -708,7 +684,6 @@ fn declare_is_refused_before_the_brief_for_an_unknown_host_and_without_a_kind() 
         .fleet(&["declare", "t1", "--json", r#"{"kind": "Fact"}"#])
         .ok()
         .stdout_has("already declared");
-    // A deleting Task refuses both.
     env.fleet(&["delete", "task", "t1"]).ok();
     declare(&env, "t1", URL).code(1).stderr_has("being deleted");
 }
@@ -738,7 +713,6 @@ fn the_relay_and_mark_ready_keys_load_in_the_config_and_a_bad_one_is_refused() {
         got[2]
     );
     assert!(got[2].contains("checks `passed`"), "{}", got[2]);
-    // Bots relay where configured, once notes are back on for this Task.
     let mut t = task("t1", true);
     t["spec"]["forge"] = json!({"relay": {"notes": true}});
     env.apply(t).ok();
@@ -752,9 +726,6 @@ fn the_relay_and_mark_ready_keys_load_in_the_config_and_a_bad_one_is_refused() {
     assert_eq!(got.len(), 4, "{got:#?}");
     assert!(got[3].contains("coverage 94%"), "{}", got[3]);
     assert!(got[3].contains("(comment, bot)"), "{}", got[3]);
-    // The mark-ready keys load together; a default naming no policy, a
-    // predicate outside the vocabulary, and the two fixed predicates named
-    // as if they were optional are each refused at load.
     fs::write(
         &env.config,
         format!(

@@ -257,6 +257,7 @@ pub fn drive(unit: &Unit, verb: Verb, stop_bound: Duration) -> Result<(), Refusa
     .map(drop)
 }
 
+// `systemctl status` exits 0 while the unit is active and 3 while it is not.
 pub fn status(unit: &Unit) -> Result<(String, i32), Refusal> {
     SYSTEMCTL.report(&["status", &unit.name, "--no-pager"])
 }

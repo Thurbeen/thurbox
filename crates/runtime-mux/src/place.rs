@@ -70,8 +70,6 @@ pub fn parse(place: &Place) -> Result<Option<HostDef>, String> {
         }
         return Ok(None);
     }
-    // The name goes into the lock and pause-mark file names, and into a
-    // route, where `:` separates the multiplexer.
     let plain = !name.is_empty()
         && name.len() <= 64
         && !name.starts_with('.')
@@ -177,7 +175,6 @@ fn env(host: &HostDef, budget: Duration) -> Option<crate::host_path::HostEnv> {
     }
     let env = crate::host_path::env_within(host, budget)?;
     if let Some((file, identity)) = cached {
-        // A cache that cannot be written costs the next call a probe.
         let tmp = file.with_extension("path.tmp");
         let text = format!("{identity}\n{}", crate::host_path::render(&env));
         if std::fs::write(&tmp, text).is_ok() {
@@ -474,8 +471,7 @@ fn percent_decode(path: &str) -> Option<String> {
 
 pub fn home(host: &HostDef) -> Result<String, String> {
     if host.platform() != Platform::Posix {
-        // Spelled with `/`, which Windows takes, so a path built under it
-        // is one spelling.
+        // Windows takes `/` as a path separator.
         return run_powershell(
             host,
             "[Console]::Out.Write($env:USERPROFILE)",
@@ -650,9 +646,7 @@ pub fn run_detached(mut cmd: Command) {
         }
         const STD_HANDLES: [u32; 3] = [-10i32 as u32, -11i32 as u32, -12i32 as u32];
         const HANDLE_FLAG_INHERIT: u32 = 1;
-        // A child inherits every inheritable handle of its parent, and this
-        // program's own stdout is its caller's pipe: a waiter holding it
-        // open would keep the caller from ever reading the answer's end.
+        // A Windows child inherits every inheritable handle of its parent.
         for which in STD_HANDLES {
             // SAFETY: plain calls on this process's own standard handles; a
             // missing one is null or invalid, which the call refuses.
@@ -667,7 +661,7 @@ pub fn run_detached(mut cmd: Command) {
         if cmd.spawn().is_ok() {
             return;
         }
-        // A job that refuses a breakaway: the waiter stays in it.
+        // A Windows job that refuses a breakaway keeps the waiter in it.
         cmd.creation_flags(CREATE_NO_WINDOW | CREATE_NEW_PROCESS_GROUP);
     }
     let _ = cmd.spawn();
@@ -690,8 +684,7 @@ pub fn copy_dir(host: &HostDef, key: &str, local: &Path, under: &str) -> Result<
         .stderr(Stdio::null())
         .spawn()
         .map_err(|e| format!("cannot run tar: {e}"))?;
-    // Windows has had `tar.exe` since Windows 10 1803; the script makes the
-    // directory afresh, then starts it on the stream it inherits.
+    // Windows has had `tar.exe` since Windows 10 1803.
     let mut copy = if host.platform() == Platform::Posix {
         HostLauncher::for_host(host).shell_c_args(
             "rm -rf \"$1\" && mkdir -p \"$1\" && tar -xf - -C \"$1\"",
@@ -898,8 +891,6 @@ mod tests {
             "{:?}",
             cmd.get_program()
         );
-        // `wsl.exe` is given a neutral `--cd /` only from a Unix machine
-        // (`shell::wsl_command`).
         let mut want = vec!["-d".to_string(), "Ubuntu".to_string()];
         if cfg!(unix) {
             want.extend(["--cd".to_string(), "/".to_string()]);

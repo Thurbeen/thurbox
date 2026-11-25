@@ -32,17 +32,12 @@ fn vt_floor(rows: u16, cols: u16) -> (u16, u16) {
 
 fn utf8_ready_prefix_len(buf: &[u8]) -> usize {
     let len = buf.len();
-    // A truncated tail is at most 3 bytes, so only the last 3 can matter.
     let start = len.saturating_sub(3);
     let mut i = len;
     while i > start {
         i -= 1;
         let b = buf[i];
-        // Anything that is not a UTF-8 continuation byte (0x80..=0xbf) starts a
-        // character — ASCII or a multi-byte lead.
         if !(0x80..=0xbf).contains(&b) {
-            // A lead byte (or ASCII). Determine the sequence's expected length;
-            // if not all of it is present yet, cut before it.
             let expected = match b {
                 0x00..=0x7f => 1,
                 0xc0..=0xdf => 2,
@@ -51,9 +46,7 @@ fn utf8_ready_prefix_len(buf: &[u8]) -> usize {
             };
             return if len - i < expected { i } else { len };
         }
-        // Continuation byte (0x80..=0xbf): keep scanning back for its lead.
     }
-    // No lead byte within the last 3 bytes — malformed tail; don't hold it back.
     len
 }
 
@@ -135,8 +128,6 @@ impl TermSignals {
         if let Ok(mut guard) = self.title.lock() {
             *guard = (!s.is_empty()).then_some(s);
         }
-        // After the write, so a reader that observes the new generation also
-        // observes the new value.
         self.meta_gen.fetch_add(1, Ordering::Release);
     }
 
@@ -162,22 +153,17 @@ impl vt100::Callbacks for TermSignals {
     }
 
     fn set_window_icon_name(&mut self, _: &mut vt100::Screen, icon_name: &[u8]) {
-        // Some CLIs emit only OSC `1` (icon name); treat it as the title too.
+        // Some CLIs emit only OSC 1 (icon name) for their title.
         self.store_title(icon_name);
     }
 
     fn audible_bell(&mut self, _: &mut vt100::Screen) {
-        // BEL: the cross-agent "done / needs you" signal (e.g. Claude's
-        // `preferredNotifChannel terminal_bell`). No message text.
+        // BEL is the agents' "needs you" signal, e.g. Claude's `preferredNotifChannel terminal_bell`.
         self.signal_attention(None);
     }
 
     fn unhandled_osc(&mut self, screen: &mut vt100::Screen, params: &[&[u8]]) {
-        // Desktop-notification escapes carry the agent's status message.
-        //   OSC 9 ; <message>
-        //   OSC 777 ; notify ; <title> ; <body>
-        // A hyperlink pair brackets its label's glyphs.
-        //   OSC 8 ; <params> ; <uri>   …label…   OSC 8 ; ;
+        // OSC 9 ; <message> and OSC 777 ; notify ; <title> ; <body> carry a desktop notification.
         match params {
             [b"9", msg] => self.signal_attention(Some(String::from_utf8_lossy(msg).into_owned())),
             [b"777", kind, rest @ ..] if kind.eq_ignore_ascii_case(b"notify") => {
@@ -200,9 +186,7 @@ impl vt100::Callbacks for TermSignals {
         self.app_copy.offer(ty, data);
     }
 
-    // `paste_from_clipboard` keeps vt100's no-op: an app is never told what is
-    // on the clipboard, and tmux is kept from answering either
-    // (`set-clipboard external`, `Tmux::session_config` in `tmux`).
+    // vt100's `paste_from_clipboard` stays a no-op; tmux is kept from answering by `set-clipboard external`.
 }
 
 pub type SessionParser = vt100::Parser<TermSignals>;
@@ -509,8 +493,6 @@ impl WiredPane {
             return false;
         }
         let mut signals = std::mem::take(parser.callbacks_mut());
-        // Positions on a grid that is going; the rebuild records them again
-        // from whatever links the capture carries.
         signals.hyperlinks = HyperlinkTable::default();
         signals.pending_link = None;
         let carried = carried_state(parser.screen());
@@ -605,8 +587,6 @@ impl ProgramPane {
         scrollback: usize,
     ) -> Result<Self> {
         let spawned = backend.spawn(window_name, program, args, cwd, env, rows, cols)?;
-        // No session id: a program belongs to a plugin, and the role is what
-        // keeps its window from ever resolving as somebody's agent.
         if let Err(e) = backend.stamp_window(&spawned.backend_id, "", WindowRole::Program) {
             debug!("could not stamp the program window {window_name}: {e:#}");
         }
@@ -788,10 +768,6 @@ impl Session {
         backend: &Arc<dyn SessionBackend>,
         scrollback: usize,
     ) -> Result<Self> {
-        // Only the title and modes, not `None`: `None` is the backend capturing
-        // the whole history itself. The seed goes through the stream like any
-        // other, so the two cells' callbacks report it and `seed_len` keeps it
-        // from reading as output.
         let adopted =
             backend.adopt(backend_id, rows, cols, Some(backend.state_seed(backend_id)))?;
         let mut info = PaneInfo::new(name);
@@ -862,15 +838,7 @@ impl Session {
         scrollback: usize,
     ) -> (WiredPane, SignalCells) {
         let signals = SignalCells::new();
-        // The floor applies at construction too: a session first painted into a
-        // one-column pane would otherwise panic on its first line of output,
-        // before any resize could correct it.
         let (rows, cols) = vt_floor(rows, cols);
-        // The rect the caller is about to paint into, which the render path's
-        // own memo starts from too — so the first claim knows it. Taken before
-        // a dormant pane's grid size replaces `rows`/`cols`: the memo matches
-        // the rect, so no paint resizes the pane to correct it, and a claim
-        // would size it to the dormant grid.
         let wanted = pack_size(rows, cols);
         let (residency, (rows, cols), kept) = if io.resident {
             (Residency::resident(scrollback), (rows, cols), scrollback)
@@ -978,8 +946,6 @@ impl Session {
             p.process(notice.as_bytes());
         }
 
-        // A dead input channel: the receiver is dropped immediately, so any
-        // keystroke `try_send` fails fast and the byte is discarded.
         let (input_tx, _dead_rx) = mpsc::channel(INPUT_CHANNEL_CAPACITY);
 
         Self {
@@ -1020,21 +986,9 @@ impl Session {
         mut seed_len: usize,
         size: Option<PaneSize>,
     ) {
-        // Bytes of a trailing, not-yet-complete UTF-8 character held back from
-        // the previous chunk. The agent's output is a single byte stream, but
-        // tmux's `%output` framing (and the OS read boundary under it) can fall
-        // in the middle of a multi-byte character. vt100 is NOT robust to a
-        // `process()` chunk that ends mid-codepoint — it can swallow a following
-        // control byte (e.g. a newline), misplacing later output — so we never
-        // hand it a truncated tail. `carry` is at most 3 bytes (a 4-byte char
-        // missing one).
+        // vt100 can swallow the next control byte after a chunk that ends mid-codepoint.
         let mut carry: Vec<u8> = Vec::new();
         for chunk in reader {
-            // Taken between chunks, never during one: a reported size is a
-            // chunk of its own (`PaneChunk::Resized`), so every byte before it
-            // is already in the grid and none after it is. A pane with no grid
-            // has nothing to resize; the grid it gets back is built at the
-            // pane's size as tmux reports it then.
             if let Some((rows, cols)) = size.as_ref().and_then(PaneSize::take) {
                 let (rows, cols) = vt_floor(rows, cols);
                 if let Ok(mut p) = parser.lock() {
@@ -1052,11 +1006,6 @@ impl Session {
                     let ready = utf8_ready_prefix_len(&data);
                     carry = data.split_off(ready);
                     Self::feed_parser(&parser, &data);
-                    // Bytes beyond the seed boundary are live activity; a chunk
-                    // that is entirely within the seed is not. Activity records
-                    // the chunk even when its trailing character is still
-                    // buffered. The redraw sequence moves only when the parser
-                    // has taken a complete prefix, and after it has done so.
                     if seed_len < n {
                         signals
                             .last_output_at
@@ -1068,8 +1017,6 @@ impl Session {
                         crate::output_wake::notify(&signals.output_seq);
                     }
                 }
-                // A hidden pane's title and modes: parsed, never taken for
-                // output, since what they say is state the pane already had.
                 PaneChunk::State(state) => Self::feed_parser(&parser, &state),
                 PaneChunk::Snapshot(snapshot) => {
                     Self::install(&parser, &residency, &snapshot, false);
@@ -1084,8 +1031,6 @@ impl Session {
             }
         }
         debug!("Session reader: stream ended");
-        // Flush any leftover partial UTF-8 sequence, since no more bytes are
-        // coming to complete it.
         Self::feed_parser(&parser, &carry);
         signals.output_seq.fetch_add(1, Ordering::Release);
         signals.exited.store(true, Ordering::SeqCst);
@@ -1111,7 +1056,6 @@ impl Session {
             if rebuild {
                 let seed = snapshot_seed(snapshot, parser.screen());
                 let mut signals = std::mem::take(parser.callbacks_mut());
-                // Positions on the grid being replaced, as `evict` drops them.
                 signals.hyperlinks = HyperlinkTable::default();
                 signals.pending_link = None;
                 let (rows, cols) = vt_floor(snapshot.rows, snapshot.cols);
@@ -1129,8 +1073,6 @@ impl Session {
         }
         residency.requested_at.store(0, Ordering::Release);
         let (lock, landed) = &residency.landed;
-        // Taken so a waiter cannot check the flag, miss this wake-up and then
-        // sleep out its budget.
         let _guard = lock.lock();
         landed.notify_all();
     }
@@ -1166,10 +1108,6 @@ impl Session {
     }
 
     pub fn resize(&self, rows: u16, cols: u16) -> bool {
-        // A placeholder has no live pane; only resize its local notice buffer.
-        // Talking to the (possibly-down) backend here would issue a blocking
-        // ssh resize on the UI thread — the freeze we're avoiding. Floored for
-        // the reason `WiredPane::resize` (the live path) documents.
         if self.placeholder {
             let (rows, cols) = vt_floor(rows, cols);
             if let Ok(mut parser) = self.wired.parser.lock() {
@@ -1177,7 +1115,6 @@ impl Session {
                     .screen_mut()
                     .set_size(rows.try_into().unwrap(), cols.try_into().unwrap());
             }
-            // Nothing to reach, and nothing to ask again for.
             return true;
         }
         if let Err(e) = self.wired.resize(self.backend.as_ref(), rows, cols) {
@@ -1189,16 +1126,8 @@ impl Session {
 
     pub fn resize_shell(&self, rows: u16, cols: u16) -> bool {
         let Some(shell) = &self.shell_pane else {
-            // No shell, so nothing to reach and nothing left at a stale width.
             return true;
         };
-        // [`Self::resize`]'s placeholder branch, spelled out here too — grid
-        // included. Reporting `true` without sizing the local buffer would let
-        // the render path memoize a size the parser never took, leaving the
-        // pane wrapped at the old width with nothing to ask again: the #1220
-        // failure, one pane down. Nothing constructs a placeholder in v2 (see
-        // the field), so this costs a branch and buys the two halves being
-        // unable to come apart if one ever does.
         if self.placeholder {
             let (rows, cols) = vt_floor(rows, cols);
             if let Ok(mut parser) = shell.parser.lock() {
@@ -1288,7 +1217,6 @@ impl Session {
     }
 
     pub fn kill(&self) {
-        // A placeholder owns no live backend pane (see `placeholder`).
         if self.placeholder {
             return;
         }
@@ -1299,8 +1227,6 @@ impl Session {
     }
 
     pub fn detach(self) {
-        // A placeholder owns no live backend pane — detaching would issue a
-        // blocking ssh call (possibly to a down host) for nothing.
         if self.placeholder {
             return;
         }
@@ -1324,10 +1250,6 @@ impl Session {
         cols: u16,
         scrollback: usize,
     ) -> ShellPane {
-        // Without its grid until the stream's first snapshot, as an agent's
-        // stream pane (`adopt_io`): that snapshot is the shell's screen, with
-        // what it showed before this view came. A stream with no screen keeper
-        // sends a blank one.
         let io = SessionIo {
             resident: false,
             ..SessionIo::adopted(adopted, backend_id)
@@ -1365,9 +1287,6 @@ impl Session {
         backend: &Arc<dyn SessionBackend>,
     ) -> (Self, mpsc::Receiver<Vec<u8>>) {
         let (input_tx, input_rx) = mpsc::channel(INPUT_CHANNEL_CAPACITY);
-        // Wire TermSignals to the session's accessor cells exactly like
-        // `wire_up`, so bytes injected via `feed_output_for_test` drive
-        // `agent_title`/`needs_attention` the same way live PTY output does.
         let signals = SignalCells::new();
         let parser = Arc::new(Mutex::new(vt100::Parser::new_with_callbacks(
             24.try_into().unwrap(),
@@ -1404,8 +1323,6 @@ impl Session {
 
     #[cfg(any(test, feature = "test-support"))]
     pub fn feed_output_for_test(&self, bytes: &[u8]) {
-        // Strictly-increasing bump: two feeds within the same millisecond must
-        // still read as *new* output to `App::detect_output_redraw`'s signature.
         let prev = self.wired.last_output_at.load(Ordering::Relaxed);
         self.wired
             .last_output_at
@@ -1458,14 +1375,11 @@ mod tests {
         assert_eq!(copy.take(), [request("focused"), request("and-again")]);
         assert_eq!(copy.take(), [], "taken once");
 
-        // Made under focus, then focus left and came back: the write belongs
-        // to a focus that ended.
         print_copy(&copy, "before-blur");
         copy.blur();
         copy.focus(2);
         assert_eq!(copy.take(), []);
 
-        // The reader read token 2, focus moved on to 3, then the write landed.
         copy.focus(3);
         copy.pending
             .lock()
@@ -1537,12 +1451,7 @@ mod tests {
 
     #[test]
     fn a_grid_at_the_floor_survives_what_an_agent_prints() {
-        // The floor is not cosmetic: at one row vt100 underflows in
-        // `row_inc_scroll` as soon as output wraps, and at one column it
-        // underflows in `col_wrap` as soon as a double-width character arrives.
-        // Both used to be reachable — a one-cell pane is what a cramped layout
-        // hands a session — and both killed the reader thread, which poisons the
-        // parser mutex and blanks that pane for the rest of the run.
+        // vt100 underflows in `row_inc_scroll` at one row and in `col_wrap` at one column.
         for (rows, cols) in [(0, 0), (1, 1), (1, 2), (2, 1), (1, 40), (3, 1)] {
             let (rows, cols) = vt_floor(rows, cols);
             let mut parser =
@@ -1550,8 +1459,6 @@ mod tests {
             parser
                 .screen_mut()
                 .set_size(rows.try_into().unwrap(), cols.try_into().unwrap());
-            // A wide character (the `col_wrap` path) and enough plain text to
-            // wrap and scroll (the `row_inc_scroll` path).
             parser.process("🚀 done\r\n".repeat(4).as_bytes());
             parser.process("hello world hello world".as_bytes());
         }
@@ -1566,7 +1473,6 @@ mod tests {
     #[test]
     fn now_millis_returns_reasonable_value() {
         let ms = now_millis();
-        // Should be after 2024-01-01 (1704067200000 ms since epoch).
         assert!(ms > 1_704_067_200_000);
     }
 
@@ -1574,33 +1480,23 @@ mod tests {
     fn utf8_ready_prefix_passes_complete_input() {
         assert_eq!(utf8_ready_prefix_len(b""), 0);
         assert_eq!(utf8_ready_prefix_len(b"hello"), 5);
-        // "é" = c3 a9, complete.
         assert_eq!(utf8_ready_prefix_len(&[b'a', 0xc3, 0xa9]), 3);
-        // "你好" complete (two 3-byte chars).
         assert_eq!(utf8_ready_prefix_len("你好".as_bytes()), 6);
     }
 
     #[test]
     fn utf8_ready_prefix_holds_back_truncated_tail() {
-        // Lone 2-byte lead → hold all of it.
         assert_eq!(utf8_ready_prefix_len(&[b'a', 0xc3]), 1);
-        // 3-byte lead with one continuation, missing one → hold the two.
         assert_eq!(utf8_ready_prefix_len(&[b'x', 0xe4, 0xbd]), 1);
-        // 4-byte lead alone, and with 1 and 2 continuations → all held.
         assert_eq!(utf8_ready_prefix_len(&[b'x', 0xf0]), 1);
         assert_eq!(utf8_ready_prefix_len(&[b'x', 0xf0, 0x9f]), 1);
         assert_eq!(utf8_ready_prefix_len(&[b'x', 0xf0, 0x9f, 0x8e]), 1);
-        // Same 4-byte char, fully present → nothing held.
         assert_eq!(utf8_ready_prefix_len(&[b'x', 0xf0, 0x9f, 0x8e, 0x89]), 5);
-        // The realistic read-boundary case: a complete "é" (c3 a9) followed by
-        // the lead byte of the next char → hold only that fresh lead.
         assert_eq!(utf8_ready_prefix_len(&[0xc3, 0xa9, 0xe6]), 2);
     }
 
     #[test]
     fn utf8_ready_prefix_does_not_buffer_garbage() {
-        // Continuation bytes with no lead in the last 3 → pass through (no
-        // unbounded carry).
         assert_eq!(utf8_ready_prefix_len(&[0x80, 0x80, 0x80, 0x80]), 4);
     }
 
@@ -1657,8 +1553,6 @@ mod tests {
 
         #[test]
         fn regression_midcodepoint_newline_widechars() {
-            // f é \n 日本語. Chunked [2, 100] so the first read ends on "f" plus
-            // the lead byte of "é" and the rest arrives next.
             let bytes = b"f\xc3\xa9\n\xe6\x97\xa5\xe6\x9c\xac\xe8\xaa\x9e";
             assert_eq!(carry_chunked(bytes, &[2, 100]), whole(bytes));
         }
@@ -1706,16 +1600,11 @@ mod tests {
 
     #[test]
     fn wire_mode_adopt_starts_stale_spawn_starts_fresh() {
-        // Mirrors `App::refresh_session_statuses`: a session is `Busy` while
-        // `now - last_output_at <= ACTIVITY_TIMEOUT_MS` (1000 ms in app/mod.rs).
         const ACTIVITY_TIMEOUT_MS: u64 = 1000;
 
-        // Adopt: stale timestamp so the post-adopt SIGWINCH repaint doesn't
-        // read as activity → NOT busy.
         let adopt = initial_output_at(WireMode::Adopt);
         assert!(now_millis().saturating_sub(adopt) > ACTIVITY_TIMEOUT_MS);
 
-        // Spawn: "now" so a fresh process counts as active → busy.
         let spawn = initial_output_at(WireMode::Spawn);
         assert!(now_millis().saturating_sub(spawn) <= ACTIVITY_TIMEOUT_MS);
     }
@@ -1774,7 +1663,6 @@ mod tests {
             TermSignals::default(),
         )));
         let size = PaneSize::default();
-        // Reported as the backend's stream does, as the chunk is handed over.
         let reports = size.clone();
         let script = vec![
             b"aaaaaaaaaaaaaaa\r\n".to_vec().into(),
@@ -1848,7 +1736,6 @@ mod tests {
             (screen.contents(), screen.cell(0, 0).unwrap().fgcolor())
         };
 
-        // `\x1b[` and then, after the gap, `!`: parsed as one sequence.
         let (contents, _) = run(vec![bytes(b"old\x1b["), bytes(b"!")]);
         assert_eq!(contents, "old", "the gap corrupts the grid");
 
@@ -1863,8 +1750,6 @@ mod tests {
         let (contents, _) = run(vec![bytes(b"old"), PaneChunk::Snapshot(snapshot())]);
         assert_eq!(contents, "old", "a plain snapshot keeps a resident grid");
 
-        // A character's first byte held from before the gap must not join
-        // bytes that follow the resync, even ones that would complete it.
         let (contents, _) = run(vec![
             bytes(b"old\xc3"),
             PaneChunk::Resync(snapshot()),
@@ -1997,8 +1882,6 @@ mod tests {
         let exited = Arc::new(AtomicBool::new(false));
         let last_output_at = Arc::new(AtomicU64::new(0));
 
-        // "é" is 0xC3 0xA9: the first read ends on its lead byte, and the
-        // stream ends on the lead byte of "日".
         let reader = output(vec![
             b"f\xc3".to_vec().into(),
             b"\xa9\r\nok\xe6".to_vec().into(),
@@ -2083,7 +1966,7 @@ mod tests {
         );
 
         let quiet_for_ms = now_millis().saturating_sub(last_output_at.load(Ordering::Relaxed));
-        let state_age_ms = 3 * 60 * 60 * 1000; // hook_state_at stamped 3 hours ago
+        let state_age_ms = 3 * 60 * 60 * 1000;
 
         assert!(
             quiet_for_ms >= state_age_ms,
@@ -2104,24 +1987,18 @@ mod tests {
                 ..Default::default()
             },
         );
-        // OSC 2 (set window title), BEL-terminated.
         parser.process(b"\x1b]2;working on tests\x07");
         assert_eq!(title.lock().unwrap().as_deref(), Some("working on tests"));
 
-        // OSC 0 (set icon name + title) updates it too.
         parser.process(b"\x1b]0;done\x07");
         assert_eq!(title.lock().unwrap().as_deref(), Some("done"));
 
-        // ST-terminated, which is what the adopt-time replay of a pane title
-        // emits (`title_seed_bytes`) — the restored activity line depends on
-        // this arriving through the same callback a live title does.
         parser.process(b"\x1b]2;restored from the pane title\x1b\\");
         assert_eq!(
             title.lock().unwrap().as_deref(),
             Some("restored from the pane title")
         );
 
-        // An empty title clears the cell rather than storing "".
         parser.process(b"\x1b]2;\x07");
         assert_eq!(*title.lock().unwrap(), None);
     }
@@ -2143,19 +2020,16 @@ mod tests {
 
         assert_eq!(attention_at.load(Ordering::Relaxed), 0);
 
-        // Terminal bell → attention, no message.
         parser.process(b"\x07");
         assert!(attention_at.load(Ordering::Relaxed) > 0);
         assert_eq!(*notification.lock().unwrap(), None);
 
-        // OSC 9 desktop notification → attention + message text.
         parser.process(b"\x1b]9;Claude is waiting for your input\x07");
         assert_eq!(
             notification.lock().unwrap().as_deref(),
             Some("Claude is waiting for your input")
         );
 
-        // OSC 777 notify form → attention + joined title/body.
         parser.process(b"\x1b]777;notify;Claude;Task done\x07");
         assert_eq!(
             notification.lock().unwrap().as_deref(),

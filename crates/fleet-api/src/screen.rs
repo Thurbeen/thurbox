@@ -320,7 +320,6 @@ not = { contains = ["Allow?"] }
                 rule: "x/ask".into()
             })
         );
-        // The question scrolled above the region.
         assert_eq!(
             seen("Allow?\nesc\nmore\nlines\n", "⠙ x").map(|s| s.rule),
             Some("x/spinner".into())

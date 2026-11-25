@@ -331,7 +331,6 @@ impl Manager<'_> {
             ..RunReport::default()
         };
         let outcome = self.passes(&mut lease, opts, &mut report, &mut ForgeLogins::default());
-        // A lost lease is not ours to release; anything else is.
         if !matches!(outcome, Err(StoreError::LeaseLost(_))) {
             self.store.release_lease(&lease)?;
         }
@@ -347,7 +346,6 @@ impl Manager<'_> {
     ) -> Result<(), StoreError> {
         let mut passes = 0;
         if let Some(gateway) = &self.gateway {
-            // One Listener per account, as the config loads.
             for problem in verbs::ensure_listeners(self.store, &gateway.config) {
                 if !report.errors.contains(&problem) {
                     report.errors.push(problem);
@@ -372,9 +370,6 @@ impl Manager<'_> {
                 .iter()
                 .map(|t| (t.metadata.uid.clone(), t.metadata.name.clone()))
                 .collect();
-            // What the Gateway controller's due test needs besides the
-            // Task: the Conversations as they stand, and each Task's
-            // children, from this one listing.
             let conversations: Observation<BTreeMap<String, Object>> =
                 self.store.list(conversation::KIND).map(|list| {
                     list.into_iter()
@@ -384,8 +379,6 @@ impl Manager<'_> {
             if let Some(why) = conversations.why() {
                 report.unknowns.push(format!("list Conversation: {why}"));
             }
-            // What a Task's change news is judged against, listed only when
-            // some Task follows a change.
             let follows = tasks.iter().any(|t| {
                 t.status["forge"]["changes"]
                     .as_object()
@@ -505,9 +498,6 @@ impl Manager<'_> {
                     continue;
                 }
                 *lease = self.store.renew_lease(lease, opts.lease_ttl)?;
-                // Each later controller decides from the Task as it is now,
-                // after the earlier one's write, so the plans do not
-                // conflict on every sweep.
                 let mut moved = false;
                 if task_due {
                     let (stepped, rest) = self.reconcile_while_starting(
@@ -670,7 +660,6 @@ impl Manager<'_> {
             followed,
         };
         if obj.status.get("ref").is_none_or(Value::is_null) {
-            // The probe names the ref, so the first poll needs it parsed first.
             let parsed = forge.parse(&spec.url);
             if let Some(why) = parsed.why() {
                 report.unknowns.push(format!("{} parse: {why}", obj.key()));
@@ -740,7 +729,6 @@ impl Manager<'_> {
                 lease,
             ) {
                 Ok(_) => step.wrote += 1,
-                // Recreated or rewritten since the decision: nothing removed.
                 Err(StoreError::Conflict { .. }) => step.conflict = true,
                 Err(e) => return Err(e),
             }
@@ -818,8 +806,6 @@ impl Manager<'_> {
             input.observations.parsed = Some(parsed);
         }
         let ctl = ConversationController;
-        // Each round answers what the last one asked; the controller asks
-        // only for what it lacks, so this ends. The bound is a guard.
         for _ in 0..4 {
             let probes = ctl.probes(&input)?;
             if probes.is_empty() {
@@ -834,8 +820,6 @@ impl Manager<'_> {
                                 .unknowns
                                 .push(format!("{} object {kind}/{name}: {why}", obj.key()));
                         }
-                        // The tie's Task, or the Task a Fleet-opened
-                        // thread's marker names.
                         if obj.status["task"]["name"].as_str() == Some(name.as_str()) {
                             input.observations.task = Some(o);
                         } else {
@@ -884,7 +868,6 @@ impl Manager<'_> {
                         }
                         input.observations.history = Some(answer);
                     }
-                    // Not this controller's.
                     _ => {}
                 }
             }
@@ -912,8 +895,6 @@ impl Manager<'_> {
                 Err(e) => return Err(e),
             }
         }
-        // Intent first (written above), each effect under a fresh lease,
-        // receipt after, under the effect's key.
         for create in &plan.creates {
             *lease = self.store.renew_lease(lease, ttl)?;
             let (outcome, made) = self.perform_create(create, lease);
@@ -953,7 +934,6 @@ impl Manager<'_> {
                     self.retire_task(task, uid, &obj.metadata.uid, lease)
                 }
                 Action::RemoveDir { host, path } => self.remove_thread_dir(obj, host, path),
-                // Not this controller's effect: never performed from here.
                 _ => continue,
             };
             if let Observation::Unknown { why } = &outcome {
@@ -984,7 +964,6 @@ impl Manager<'_> {
                 lease,
             ) {
                 Ok(_) => step.wrote += 1,
-                // Recreated or rewritten since the decision: nothing removed.
                 Err(StoreError::Conflict { .. }) => step.conflict = true,
                 Err(e) => return Err(e),
             }
@@ -1016,8 +995,6 @@ impl Manager<'_> {
                 return (Observation::Known(busy), None);
             }
         }
-        // The directory first, recorded when this call made it, whatever
-        // the create then answers: Fleet removes it when the thread retires.
         let mut made = None;
         if let Some(dir) = create.exclusive.as_ref().map(|e| e.workspace.as_str()) {
             let host = match self.task_host(obj) {
@@ -1404,8 +1381,6 @@ impl Manager<'_> {
             now: self.clock.now(),
             defaults: self.forge_defaults.clone(),
         };
-        // Each round answers what the last one asked; the controller asks
-        // only for what it lacks, so this ends. The bound is a guard.
         for _ in 0..4 {
             let probes = ctl.probes(&input)?;
             if probes.is_empty() {
@@ -1453,7 +1428,6 @@ impl Manager<'_> {
                         }
                         input.observations.at_rest = Some(o);
                     }
-                    // Not this controller's.
                     _ => {}
                 }
             }
@@ -1478,8 +1452,6 @@ impl Manager<'_> {
                 step.wrote += 1;
                 o
             }
-            // Someone wrote first, or the key already landed: decide again
-            // from fresh state on the next pass. Nothing ran yet.
             Err(StoreError::Conflict { .. }) | Err(StoreError::AlreadyExists(_)) => {
                 step.conflict = true;
                 return Ok(step);
@@ -1488,7 +1460,6 @@ impl Manager<'_> {
         };
         for effect in &plan.effects {
             let Action::MarkReady { change, expect } = &effect.action else {
-                // Not this controller's effect: never performed from here.
                 continue;
             };
             let Some(forge) = self.forge else {
@@ -1496,8 +1467,6 @@ impl Manager<'_> {
                     "no [forge] section is configured; a change cannot be marked ready".into(),
                 ));
             };
-            // Intent first (written above), effect under a fresh lease,
-            // receipt after.
             *lease = self.store.renew_lease(lease, ttl)?;
             let outcome = telemetry::effect(obj, effect, || {
                 forge.mark_ready(change, expect, &effect.key)
@@ -1582,8 +1551,6 @@ impl Manager<'_> {
                         conversation,
                         query,
                     } => {
-                        // A read of the log channel recovers a log post; any
-                        // other, a post in the thread.
                         let logs = input
                             .defaults
                             .logs
@@ -1636,7 +1603,6 @@ impl Manager<'_> {
                         };
                         input.observations.children = Some(answer);
                     }
-                    // Not this controller's.
                     _ => {}
                 }
             }
@@ -1663,17 +1629,12 @@ impl Manager<'_> {
                 current = o;
                 step.wrote += 1;
             }
-            // Someone wrote first, or the key already landed: decide again
-            // from fresh state on the next pass, the intents unwritten and
-            // so nothing performed.
             Err(StoreError::Conflict { .. }) | Err(StoreError::AlreadyExists(_)) => {
                 step.conflict = true;
                 return Ok(step);
             }
             Err(e) => return Err(e),
         }
-        // Intent first (written above), each effect under a fresh lease,
-        // receipt after, under the effect's key.
         for effect in &plan.effects {
             *lease = self.store.renew_lease(lease, ttl)?;
             let outcome = self.perform_gateway(effect, lease);
@@ -2065,11 +2026,6 @@ impl Manager<'_> {
         } else {
             fleet_api::validate::typed(task::KIND, &obj.status)?
         };
-        // The default TaskConfig is taken at a Task's first launch only: one
-        // that launched without it keeps that launch. A launch frozen from
-        // it is kept even when it went before the launch reached status.
-        // A Task with no harness of its own takes one at its launch, or
-        // its launch fails: it never starts without one.
         let needs_launch = spec.config_ref.is_some()
             || !spec.env.is_empty()
             || obj.spec.get("harness").is_none()
@@ -2127,8 +2083,6 @@ impl Manager<'_> {
         };
         let ctl = TaskController;
         for probe in ctl.probes(&input)? {
-            // Every probe is bounded but not instant: renew first, so a
-            // Task's probes together never outlive the lease.
             *lease = self.store.renew_lease(lease, ttl)?;
             self.observe(&probe, obj, &mut input.observations, report);
         }
@@ -2140,11 +2094,9 @@ impl Manager<'_> {
             .unwrap_or(true);
         if let Some(execution) = effective {
             for effect in &mut plan.effects {
-                // A revive or a resume starts where the session is.
                 let first = matches!(effect.action, Action::Spawn(_));
                 if let Some(spawn) = effect.action.launch_mut() {
                     spawn.harness = execution.harness.clone();
-                    // The host the runtime made the workspace on is where it runs.
                     if first {
                         spawn.host = spawn
                             .ready
@@ -2157,11 +2109,6 @@ impl Manager<'_> {
                 }
             }
         }
-        // The harness profile's variables under the Task's own, unless the
-        // launch is frozen: a frozen one took them when it was resolved, and
-        // keeps them. Then the file the agent's hooks report to, on the host
-        // it runs on, and the harness and profile directory whose
-        // `[payload]` reads them.
         let profiles = fleet_api::harness::installed();
         for effect in &mut plan.effects {
             let Some(spawn) = effect.action.launch_mut() else {
@@ -2172,10 +2119,6 @@ impl Manager<'_> {
                 fleet_api::config::merge_env(&mut env, &spawn.env);
                 spawn.env = env;
             }
-            // The agent's own telemetry, under the Task's environment and
-            // never frozen: each start takes Fleet's collector as it is
-            // then, and no header is kept in the launch snapshot. A Task
-            // that names its own collector gets none of Fleet's.
             if let Some(collector) = &self.agent_telemetry
                 && telemetry_on
                 && !fleet_api::harness::names_collector(&spawn.env)
@@ -2230,8 +2173,6 @@ impl Manager<'_> {
         let by = TaskController::MANAGER;
         let mut step = Step::default();
         let mut current = obj.clone();
-        // A delivery receipt is written with the status, as one mutation:
-        // the receipt into status.deliveries, its entry out of status.inbox.
         let status = match (plan.status, &plan.delivery) {
             (Some(status), _) => Some(status),
             (None, Some(_)) => Some(current.status.clone()),
@@ -2262,8 +2203,6 @@ impl Manager<'_> {
                     current = o;
                     step.wrote += 1;
                 }
-                // Someone wrote first (the worker, a person): nothing ran yet,
-                // so drop this plan and decide again from what is there now.
                 Err(StoreError::Conflict { .. }) => {
                     step.conflict = true;
                     return Ok(step);
@@ -2283,11 +2222,6 @@ impl Manager<'_> {
             }
         }
         for effect in &plan.effects {
-            // Fence the effect itself, not only the writes around it: a
-            // manager that lost the lease since its intent write stops here.
-            // (The runtime cannot be fenced from fleet's side; an effect
-            // already started when the lease changed hands is adopted or
-            // refused by its key.)
             *lease = self.store.renew_lease(lease, ttl)?;
             let outcome = telemetry::effect(obj, effect, || self.perform(effect));
             if let Observation::Unknown { why } = &outcome {
@@ -2378,8 +2312,6 @@ impl Manager<'_> {
                 note(&format!("findWorkspace on {host}"), o.why());
                 obs.workspace = Some(o);
             }
-            // The agent's own hooks report it; the runtime knows nothing of
-            // it. A session that reported nothing yet has no activity.
             Probe::Activity { session } => {
                 let o = match (rt.signals(session), self.signals) {
                     (Some(o), _) => o,
@@ -2396,10 +2328,7 @@ impl Manager<'_> {
                 });
                 obs.signals = Some(o);
             }
-            // For a view only: a screen that cannot be read is not a
-            // reconcile problem worth reporting.
             Probe::Screen { session } => obs.screen = Some(rt.screen(session)),
-            // Not TaskController's probes: it never asks them.
             Probe::Change { .. }
             | Probe::Object { .. }
             | Probe::List { .. }
@@ -2448,8 +2377,6 @@ impl Manager<'_> {
             } => self
                 .runtime
                 .restart(session, conversation.as_deref(), launch),
-            // The Forge, Conversation, CronTask and Gateway controllers' effects,
-            // performed by their own steps; TaskController never plans them.
             Action::MarkReady { .. }
             | Action::Post { .. }
             | Action::Open { .. }

@@ -165,7 +165,6 @@ impl Forge for GitlabForge {
         let mr = match fetch(&base) {
             Ok(Some(mr)) => mr,
             Ok(None) => {
-                // Not found: proven absent only when the project itself answers.
                 return match fetch(&format!("projects/{project}")) {
                     Ok(Some(_)) => ChangeObservation::Known(None),
                     Ok(None) => ChangeObservation::unknown(
@@ -247,8 +246,7 @@ impl Forge for GitlabForge {
                 "the merge request is a draft without a recognised draft marker in its title",
             );
         }
-        // GitLab's REST update has no idempotency slot for the intent key;
-        // the key stays on the Task's record, where recovery reads it.
+        // GitLab has no idempotency key on its REST update.
         let _ = intent_key;
         let extra = vec![
             "-X".to_string(),
@@ -258,7 +256,6 @@ impl Forge for GitlabForge {
         ];
         match self.api_with(&extra, &base, self.call_timeout) {
             Ok(reply) => update_outcome(&reply),
-            // The process ran out of time: the update may have landed.
             Err((Uncertainty::Timeout, why)) => Observation::unknown(why),
             Err((_, why)) => failed(why),
         }
@@ -269,6 +266,7 @@ fn failed(why: impl Into<String>) -> Observation<EffectOutcome> {
     Observation::Known(EffectOutcome::Failed { why: why.into() })
 }
 
+// GitLab keeps the draft flag on a draft that is closed or merged.
 fn state_of(mr: &Value) -> Result<ChangeState, String> {
     let draft = mr["draft"] == true || mr["work_in_progress"] == true;
     match mr["state"].as_str() {

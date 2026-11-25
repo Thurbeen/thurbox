@@ -70,8 +70,6 @@ impl ConversationController {
             return false;
         }
         let Ok((_, st)) = decode(object) else {
-            // A status this controller cannot read is reported by the
-            // reconcile, not skipped silently.
             return true;
         };
         !st.received.is_empty()
@@ -114,7 +112,6 @@ impl ConversationController {
             return Ok(probes);
         };
         if obs.capabilities.is_none() && reactions_due(&st, input) {
-            // Whether the platform has reactions decides the marks.
             probes.push(Probe::Capabilities {
                 account: spec.account.clone(),
             });
@@ -124,7 +121,6 @@ impl ConversationController {
             .iter()
             .any(|p| matches!(p, Probe::Capabilities { .. }));
         if !asked && query.is_none() && obs.capabilities.is_none() && has_refused_post(&st) {
-            // Whether a retry must stay inside a nonce window.
             probes.push(Probe::Capabilities {
                 account: spec.account.clone(),
             });
@@ -142,8 +138,6 @@ impl ConversationController {
                         query,
                     });
                 }
-                // No history on this platform, or capabilities Unknown:
-                // nothing to read this pass.
                 Some(_) => {}
             }
         }
@@ -152,7 +146,6 @@ impl ConversationController {
 
     pub fn reconcile(&self, input: &ConversationInput<'_>) -> Result<Plan, StoreError> {
         if input.object.is_deleting() {
-            // No finalizer and no owner: the store removes the record itself.
             return Ok(Plan::default());
         }
         let (spec, before) = decode(input.object)?;
@@ -247,7 +240,6 @@ fn history_due(
 fn recovery_due(st: &ConversationStatus, obs: &ConversationObservations) -> Option<HistoryQuery> {
     let readable = match &obs.capabilities {
         Some(Observation::Known(caps)) => caps.history && caps.marker == Marker::Metadata,
-        // Not asked yet: ask, and decide once answered.
         None => true,
         Some(Observation::Unknown { .. }) => false,
     };
@@ -484,7 +476,6 @@ impl Pass<'_, '_> {
         let now = self.now();
         let orphaned_at = (self.st.phase == Phase::Orphaned).then(|| {
             match condition(&self.st.conditions, TIED) {
-                // Orphaned on this pass: the condition moves below.
                 Some(c) if c.status == ConditionStatus::True => now,
                 Some(c) => c.last_transition_time,
                 None => now,
@@ -589,7 +580,6 @@ impl Pass<'_, '_> {
                     "Unsupported",
                     "bots cannot read history on this platform",
                 );
-                // Nothing to read, now or later: the mirror is the events.
                 self.st.observed_at = Some(self.now());
                 None
             }
@@ -607,8 +597,6 @@ impl Pass<'_, '_> {
 
     fn number(&mut self, history: Option<History>, spooled: Vec<Delivery>) {
         let next = self.st.revision + 1;
-        // Only an untied thread judges a message to start a Task; a tied
-        // one keeps its numbers, so the relay does not carry it twice.
         let untied = self
             .st
             .task
@@ -645,18 +633,14 @@ impl Pass<'_, '_> {
                 Event::Message { message, .. } => {
                     match messages.iter_mut().find(|s| s.id == message.id) {
                         Some(stored) => {
-                            // Seen from history already: one message.
                             changed |= refresh(stored, &message, next);
                             if !delivered(&stored.via) {
-                                // The listener delivered what a history
-                                // read numbered first: it is a trigger now.
                                 stored.via = Via {
                                     verified: delivery.verified,
                                     received_at: delivery.received_at,
                                 };
                                 stored.mentions_fleet |= message.mentions_fleet;
                                 if untied {
-                                    // Numbered again, so it is judged once.
                                     stored.seq = next;
                                     stored.first_seq = next;
                                     changed = true;
@@ -665,9 +649,6 @@ impl Pass<'_, '_> {
                         }
                         None => {
                             if let Some(f) = fresh.iter_mut().find(|f| f.message.id == message.id) {
-                                // Read from history and delivered in one
-                                // pass: one message, which the listener
-                                // delivered.
                                 if !delivered(&f.via) {
                                     f.via = Via {
                                         verified: delivery.verified,
@@ -795,10 +776,6 @@ impl Pass<'_, '_> {
         self.st.starter = Some(merged);
         true
     }
-
-    // ------------------------------------------------------------------
-    // Effects: the create and the posts, each a keyed record.
-    // ------------------------------------------------------------------
 
     fn intent(&self, action: &str) -> Intent {
         Intent {
@@ -969,8 +946,6 @@ impl Pass<'_, '_> {
                 .and(self.workspace(&route).dir())
                 .map(|dir| Exclusive { workspace: dir }),
         });
-        // The receipt lands in the same manager step; should it not, look
-        // for the Task after one interval.
         let poll = self.spec.poll_ms(self.input.defaults.poll_ms);
         self.wake_at(self.now().saturating_add(poll));
     }
@@ -996,7 +971,6 @@ impl Pass<'_, '_> {
         }
         let key = task_key(self.uid(), tie.n);
         let Some(record) = self.st.effects.get(&key).cloned() else {
-            // A pending tie with no intent: write one.
             self.plan_create(true);
             return;
         };
@@ -1102,7 +1076,6 @@ impl Pass<'_, '_> {
                 self.wake_at(self.now().saturating_add(poll));
             }
             None => {
-                // Not asked this pass: ask on the next.
                 let poll = self.spec.poll_ms(self.input.defaults.poll_ms);
                 self.wake_at(self.now().saturating_add(poll));
             }
@@ -1129,8 +1102,6 @@ impl Pass<'_, '_> {
             .cloned()
             .collect();
         let recovery_read = self.read_was_recovery();
-        // Whether the platform reads markers back; `None` while the
-        // capabilities were not asked or could not be read.
         let readable = match &self.input.observations.capabilities {
             Some(Observation::Known(caps)) => Some(caps.history && caps.marker == Marker::Metadata),
             _ => None,
@@ -1139,7 +1110,6 @@ impl Pass<'_, '_> {
         let mut any_unconfirmed = false;
         for key in keys {
             if self.effects.iter().any(|e| e.key == key) {
-                // Planned this pass: its receipt is the manager's to write.
                 continue;
             }
             let record = self.st.effects[&key].clone();
@@ -1156,17 +1126,12 @@ impl Pass<'_, '_> {
                     }
                     let retry_at = at.saturating_add(RETRY_DELAY_MS);
                     if readable.is_none() {
-                        // Whether a nonce window binds the retry is not
-                        // known this pass: decide on a later one.
                         let poll = self.spec.poll_ms(self.input.defaults.poll_ms);
                         self.wake_at(
                             retry_at.max(self.now().saturating_add(poll.min(RETRY_DELAY_MS))),
                         );
                         continue;
                     }
-                    // On a nonce platform an earlier send under the key may
-                    // have landed: every send stays inside the window of
-                    // the first one, under the first intent.
                     if let Some(window) = nonce_window
                         && retry_at >= record.intent.at.saturating_add(window)
                     {
@@ -1204,10 +1169,7 @@ impl Pass<'_, '_> {
                         continue;
                     }
                     if let Some(window) = nonce_window {
-                        // Resent under the same key, the post carries the
-                        // same nonce: inside the window the platform returns
-                        // the post that landed, or makes it. The window
-                        // counts from the first intent, which a resend keeps.
+                        // Inside its window the platform answers a resent nonce with what landed.
                         let open = self.now() < record.intent.at.saturating_add(window);
                         if open
                             && record.attempts < MAX_ATTEMPTS
@@ -1226,15 +1188,12 @@ impl Pass<'_, '_> {
                     let poll = self.spec.poll_ms(self.input.defaults.poll_ms);
                     self.wake_at(self.now().saturating_add(poll));
                     if readable.is_none() || !recovery_read {
-                        // No recovery read this pass: ask on the next.
                         continue;
                     }
                     let read = self.input.observations.history.clone();
                     if read.as_ref().is_some_and(|h| h.known().is_some())
                         && record.intent.at >= self.recovery_since()
                     {
-                        // A complete read since the intent lacks the marker:
-                        // the post never landed.
                         if record.attempts >= MAX_ATTEMPTS {
                             self.attention.raise(
                                 POST_FAILED,
@@ -1307,10 +1266,6 @@ impl Pass<'_, '_> {
         }
     }
 
-    // ------------------------------------------------------------------
-    // Reactions: an admitted request is marked queued or working.
-    // ------------------------------------------------------------------
-
     fn react(&mut self) {
         if self.input.defaults.reactions.is_none() || self.st.retiring.is_some() {
             self.st.reactions = Default::default();
@@ -1325,7 +1280,6 @@ impl Pass<'_, '_> {
                 self.st.effects.retain(|k, _| !is_react_key(k));
                 return;
             }
-            // Not asked, or Unknown: no mark changes this pass.
             _ => return,
         }
         let left: Vec<String> = self
@@ -1338,7 +1292,6 @@ impl Pass<'_, '_> {
             .collect();
         for id in left {
             if self.st.reactions.marks.remove(&id) == Some(Mark::Queued) {
-                // Rotated out, or removed: a queued reaction would stay.
                 self.plan_react(&id, Mark::Queued, false);
             }
         }
@@ -1364,8 +1317,6 @@ impl Pass<'_, '_> {
                 }
             }
             Some(TieState::Created) => {
-                // Queued marks the tie pass could not change: the Task may
-                // have them already, so only the queued reaction goes.
                 for id in self.marked(Mark::Queued) {
                     self.st.reactions.marks.remove(&id);
                     self.plan_react(&id, Mark::Queued, false);
@@ -1486,8 +1437,6 @@ impl Pass<'_, '_> {
                 Some(Observation::Known(_)) => false,
             };
             if matches!(parsed, Some((_, Mark::Working, true))) {
-                // Tried once, on the tie pass: kept while the mark stands,
-                // so the join can read whether it landed, and never again.
                 if pointless {
                     self.st.effects.remove(&key);
                 }
@@ -1523,7 +1472,6 @@ impl Pass<'_, '_> {
             .not_before
             .is_some_and(|t| t > self.now())
         {
-            // Woken early by a delivery: the interval still runs.
             return;
         }
         self.plan_create(false);
@@ -1537,8 +1485,6 @@ impl Pass<'_, '_> {
             return true;
         }
         let Some(key) = starter.key.as_deref() else {
-            // Fleet opened the thread but its marker was not read back:
-            // ignore mentions rather than guess.
             return starter.kind != Some(AuthorKind::Fleet);
         };
         let Some((_, uid)) = task_of_key(key) else {
@@ -1590,8 +1536,6 @@ impl Pass<'_, '_> {
             return;
         }
         if self.st.observed_at.is_none() {
-            // The first read is still owed, so the starter is not known:
-            // judge once it is, unless the platform has no history.
             match &self.input.observations.capabilities {
                 Some(Observation::Known(caps)) if !caps.history => {}
                 _ => return,
@@ -1601,15 +1545,9 @@ impl Pass<'_, '_> {
             && opener_of(&self.st).is_some()
             && !matches!(&self.input.observations.opener, Some(Observation::Known(_)))
         {
-            // Fleet opened the thread: judge once its Task is known, and
-            // never guess whose it is.
             return;
         }
         if self.tied_task_deleting() {
-            // The thread orphans once the Task is gone, and an Orphaned
-            // thread starts a Task on any admitted message: judge then, so
-            // a message written meanwhile is not judged in a Tied thread
-            // and lost.
             return;
         }
         self.tie_by_marker();
@@ -1736,13 +1674,9 @@ impl Pass<'_, '_> {
             .is_some_and(|t| matches!(t.state, TieState::Busy | TieState::Pending));
         let wake = self.wake;
         if waiting {
-            // A pending or busy create: when its retry or recovery asks,
-            // else one interval.
             self.st.not_before = Some(wake.unwrap_or(next_read));
             return;
         }
-        // A post's receipt on the next pass. Not for a waiting tie above,
-        // whose `notBefore` is also its create's retry interval.
         let wake = if self.post_wake {
             Some(wake.map_or(now, |w| w.min(now)))
         } else {
@@ -1750,8 +1684,6 @@ impl Pass<'_, '_> {
         };
         let at_latest = |t: Millis| wake.map_or(t, |w| w.min(t));
         if self.st.phase == Phase::Tied {
-            // A retirement's next step, else the next read; an idle thread
-            // whose Task runs is looked at again then, never sooner.
             let next = if self.st.retiring.is_some() && self.post_wake {
                 now
             } else {
@@ -1774,7 +1706,6 @@ impl Pass<'_, '_> {
         .unwrap_or(now);
         let until = since.saturating_add(self.input.defaults.retain_ms);
         if self.st.retiring.is_some() || until <= now {
-            // The retirement's next step, decided in `retirement`.
             let next = if self.post_wake {
                 now
             } else {
@@ -1801,7 +1732,6 @@ impl Pass<'_, '_> {
                 )
             });
             if removed {
-                // Gone, whatever happens next: the record goes with it.
                 self.st.dir = None;
             }
         }
@@ -1810,7 +1740,6 @@ impl Pass<'_, '_> {
             .retiring
             .is_some_and(|r| r.revision != self.st.revision)
         {
-            // A message since: the thread is in use again.
             self.st.retiring = None;
             self.attention.clear(RETIRE_FAILED);
         }
@@ -1843,8 +1772,6 @@ impl Pass<'_, '_> {
         };
         if tied {
             let Some(Some(t)) = task else {
-                // Unknown waits; a readably gone Task orphans the thread
-                // on this pass's tie check, next pass.
                 return;
             };
             if t.is_deleting() {
@@ -1928,7 +1855,6 @@ impl Pass<'_, '_> {
                 }
                 true
             }
-            // Its outcome is not known: again, one interval later.
             Some((Observation::Unknown { .. }, at)) => {
                 let poll = self.spec.poll_ms(self.input.defaults.poll_ms);
                 if self.now() < at.saturating_add(poll) {
@@ -1937,7 +1863,6 @@ impl Pass<'_, '_> {
                 }
                 true
             }
-            // Not performed yet.
             None => true,
         };
         self.renew_intent(key, name, counted);

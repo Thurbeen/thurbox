@@ -327,7 +327,6 @@ mod tests {
                             "{at}: the launcher is the placement's"
                         );
 
-                        // The probe's own grammar, unchanged.
                         let command = crate::shell::launch(
                             spec.launcher.as_ref(),
                             mux.name(),

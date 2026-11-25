@@ -173,8 +173,6 @@ impl Signals for FileSignals {
         };
         let read = || -> io::Result<String> {
             let mut file = crate::events::open_regular(&path)?;
-            // Only the tail of a long file: the last state is at its end,
-            // and the cut line is skipped as unreadable.
             let len = file.metadata()?.len();
             file.seek(SeekFrom::Start(len.saturating_sub(MAX_FILE)))?;
             let mut bytes = Vec::new();
@@ -224,7 +222,6 @@ mod place_read_tests {
             Reported::fold_restarted(before, after).state,
             Some(State::Working)
         );
-        // An offset past the end: the file was made again, all of it new.
         let out = read_split(&path, Some(size + 1))
             .expect("read")
             .expect("there");

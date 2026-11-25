@@ -152,13 +152,10 @@ fn a_tied_task_joins_with_the_whole_thread_and_the_relay_moves_the_cursor_in_one
         .ok()
         .stdout_has(&format!("gateway tied {conv} cursor 1"));
 
-    // A quiet tied Task costs nothing: the next run is idle and writes nothing.
     let report = env.reconcile().ok().json();
     assert_eq!(report["statusWrites"], 0, "{report:#}");
     assert_eq!(report["idle"], true);
 
-    // A later admitted message is relayed on its own, and the cursor moves
-    // to the revision it covers.
     env.receive(
         "Ev02",
         message_event(
@@ -187,7 +184,6 @@ fn a_tied_task_joins_with_the_whole_thread_and_the_relay_moves_the_cursor_in_one
     );
     assert!(relay.contains("revision 2"), "{relay}");
 
-    // An edit is relayed again, marked as one.
     env.receive(
         "Ev03",
         json!({"type": "edited", "conversation": {"platform": "fake", "chat": "C0123ABCD", "thread": "1730000000000"},
@@ -207,8 +203,6 @@ fn context_messages_wait_for_the_next_admitted_one_and_fleets_own_posts_are_neve
     let (env, conv, task) = tied("context");
     env.reconcile().ok();
     assert_eq!(texts(&env, &task).len(), 2, "the brief and the join");
-    // Someone off the allowlist writes: no turn, the cursor stays, the
-    // mirror was read.
     env.receive(
         "Ev02",
         message_event(
@@ -225,7 +219,6 @@ fn context_messages_wait_for_the_next_admitted_one_and_fleets_own_posts_are_neve
     assert_eq!(gw["cursor"], 1, "{gw:#}");
     assert_eq!(gw["seen"], 2, "{gw:#}");
     assert_eq!(texts(&env, &task).len(), 2);
-    // Fleet's own post is never relayed either.
     env.receive(
         "Ev03",
         json!({
@@ -241,8 +234,6 @@ fn context_messages_wait_for_the_next_admitted_one_and_fleets_own_posts_are_neve
     assert_eq!(gw["cursor"], 1, "{gw:#}");
     assert_eq!(gw["seen"], 3);
     assert_eq!(texts(&env, &task).len(), 2);
-    // The next admitted message carries the waiting one first, under a
-    // header that marks it as content, and never Fleet's own.
     env.receive(
         "Ev04",
         message_event(
@@ -308,7 +299,6 @@ fn answers_are_recorded_by_send_and_refused_for_an_undeclared_question() {
     assert_eq!(st["answered"]["q1"]["key"], entry["key"], "{st:#}");
     assert_eq!(st["answered"]["q1"]["from"], "cli/tester");
     assert_eq!(st["answered"]["q1"]["at"], entry["queuedAt"]);
-    // The first answer wins; a later one still lands as a message.
     let later = env
         .fleet(&["send", &task, "--answers", "q1", "or the weekly", "--json"])
         .ok()
@@ -320,8 +310,6 @@ fn answers_are_recorded_by_send_and_refused_for_an_undeclared_question() {
     env.fleet(&["send", &task, "--answers", "q9", "nothing"])
         .code(1)
         .stderr_has("no declared Question");
-    // The record survives delivery: nobody owns it, so no status write
-    // moves it.
     env.reconcile().ok();
     let st = env.get(&task)["status"].clone();
     assert_eq!(st["answered"]["q1"]["key"], entry["key"], "{st:#}");
@@ -344,7 +332,6 @@ fn a_deleted_conversation_raises_conversation_gone_and_the_task_keeps_running() 
     assert_condition(&gw, "NeedsAttention", "True", "ConversationGone");
     assert_eq!(gw["cursor"], 1, "what was relayed stays relayed");
     assert_eq!(env.status(&task)["phase"], "Briefed");
-    // Stable: a later run writes nothing.
     let report = env.reconcile().ok().json();
     assert_eq!(report["statusWrites"], 0, "{report:#}");
 }
@@ -355,22 +342,18 @@ fn a_task_waits_for_its_conversation_to_name_it() {
     let joined = texts(&env, &task).len();
     env.apply(support::task("other", false)).ok();
     let other_uid = uid_of(&env, "task", "other");
-    // The Conversation names another Task: gone, not waiting.
     let mut obj = read_record(&env, "Conversation", &conv);
     obj["status"]["task"]["uid"] = json!(other_uid);
     obj["status"]["task"]["name"] = json!("other");
-    // A tied Task looks again when its Conversation moves.
     obj["status"]["revision"] = json!(obj["status"]["revision"].as_u64().unwrap() + 1);
     write_record(&env, "Conversation", &conv, &obj);
     env.reconcile().ok();
     let gw = gateway(&env, &task);
     assert_condition(&gw, "Tied", "False", "ConversationGone");
     assert_eq!(texts(&env, &task).len(), joined, "nothing relayed");
-    // No tie recorded on the Conversation: waiting.
     let mut obj = read_record(&env, "Conversation", &conv);
     obj["status"]["task"] = Value::Null;
     obj["status"]["phase"] = json!("Untied");
-    // A tied Task looks again when its Conversation moves.
     obj["status"]["revision"] = json!(obj["status"]["revision"].as_u64().unwrap() + 1);
     write_record(&env, "Conversation", &conv, &obj);
     env.reconcile().ok();
@@ -379,12 +362,10 @@ fn a_task_waits_for_its_conversation_to_name_it() {
     assert_condition(&gw, "Tied", "False", "Waiting");
     assert_condition(&gw, "NeedsAttention", "False", "Resolved");
     assert_eq!(texts(&env, &task).len(), joined);
-    // Then it names this Task again: tied, under the cursor it kept.
     let uid = uid_of(&env, "task", &task);
     let mut obj = read_record(&env, "Conversation", &conv);
     obj["status"]["task"] = json!({"name": task, "uid": uid, "n": 1, "state": "created"});
     obj["status"]["phase"] = json!("Tied");
-    // A tied Task looks again when its Conversation moves.
     obj["status"]["revision"] = json!(obj["status"]["revision"].as_u64().unwrap() + 1);
     write_record(&env, "Conversation", &conv, &obj);
     env.reconcile().ok();
@@ -405,7 +386,6 @@ fn with_plugin(name: &str, tasks: &str) -> Env {
         env.root.display()
     ));
     fs::write(&env.config, cfg).unwrap();
-    // Every verb registers the plugin, so its manifest must be there first.
     scenario(&env, json!({}));
     env
 }
@@ -429,8 +409,6 @@ fn the_parent_labels_are_set_only_at_creation_by_a_writer_with_scope_over_the_pa
     let env = with_plugin("parent-labels", "own");
     env.apply(support::task("p", false)).ok();
     let p_uid = uid_of(&env, "task", "p");
-    // One label without the other, a parent that does not exist, and a
-    // parent with another uid are each refused.
     let mut half = support::task("c", false);
     half["metadata"]["labels"]["gateway.fleet.dev/parent"] = json!("p");
     env.apply(half)
@@ -442,15 +420,12 @@ fn the_parent_labels_are_set_only_at_creation_by_a_writer_with_scope_over_the_pa
     env.apply(child_of("c", "p", "u0-wrong", false))
         .code(1)
         .stderr_has("uid");
-    // A parent the store cannot read is Unknown: retried, never refused.
     let path = env.object_path("Task", "p");
     let bytes = fs::read(&path).unwrap();
     fs::write(&path, &bytes[..bytes.len() / 2]).unwrap();
     env.apply(child_of("c", "p", &p_uid, false)).code(4);
     fs::write(&path, &bytes).unwrap();
-    // A person may name any parent.
     env.apply(child_of("c", "p", &p_uid, false)).ok();
-    // Once set, the labels never change: not removed, not pointed elsewhere.
     env.apply(support::task("c", false))
         .code(1)
         .stderr_has("gateway.fleet.dev/parent");
@@ -460,8 +435,6 @@ fn the_parent_labels_are_set_only_at_creation_by_a_writer_with_scope_over_the_pa
         .code(1)
         .stderr_has("gateway.fleet.dev/parent");
     env.apply(child_of("c", "p", &p_uid, true)).ok();
-    // A plugin whose Task scope is its own Tasks may not name a parent it
-    // does not own: it could not append to that inbox either.
     env.apply(json!({"apiVersion":"fleet/v1alpha1","kind":"Issue","metadata":{"name":"issue-1"},"spec":{"number":1}}))
         .ok();
     scenario(
@@ -478,7 +451,6 @@ fn the_parent_labels_are_set_only_at_creation_by_a_writer_with_scope_over_the_pa
         "{issue:#}"
     );
     env.fleet(&["get", "task", "plugin-child"]).code(3);
-    // The same plugin may name a parent it created.
     scenario(
         &env,
         json!({"creates":[support::task("own-parent", false)]}),
@@ -493,7 +465,6 @@ fn the_parent_labels_are_set_only_at_creation_by_a_writer_with_scope_over_the_pa
     env.expire_wait_of("Issue", "issue-1");
     env.reconcile().ok();
     env.fleet(&["get", "task", "plugin-child"]).ok();
-    // A plugin over any Task may name any parent.
     let env = with_plugin("parent-labels-any", "any");
     env.apply(support::task("p", false)).ok();
     let p_uid = uid_of(&env, "task", "p");
@@ -577,12 +548,10 @@ fn a_child_relays_its_declarations_and_result_into_its_parents_inbox() {
     assert_eq!(gw["children"]["c"]["uid"], c_uid, "{gw:#}");
     assert_eq!(gw["children"]["c"]["declared"], 3);
     assert!(gw["children"]["c"]["result"].is_null());
-    // The parent answers the child's Question.
     env.fleet(&["send", "c", "--answers", "q1", "Yes, go ahead."])
         .ok();
     let st = env.get("c")["status"].clone();
     assert_eq!(st["answered"]["q1"]["from"], "cli/tester", "{st:#}");
-    // The child's result is one more entry, once per generation.
     env.fleet(&[
         "result",
         "c",
@@ -609,14 +578,11 @@ fn a_child_relays_its_declarations_and_result_into_its_parents_inbox() {
         "{result}"
     );
     assert_eq!(gateway(&env, "p")["children"]["c"]["result"], 1);
-    // Quiet afterwards.
     let report = env.reconcile().ok().json();
     assert_eq!(report["idle"], true, "{report:#}");
     env.fleet(&["status", "task", "p"])
         .ok()
         .stdout_has("gateway children 1");
-    // Amended, the child re-opens, and its new result reaches the parent
-    // once more, under the new generation.
     env.fleet(&["amend", "c", "--text", "Also restart the importer."])
         .ok();
     env.reconcile().ok();
@@ -792,8 +758,6 @@ fn a_childs_declared_change_request_stays_out_of_its_parents_inbox() {
 
 #[test]
 fn a_long_child_result_reaches_its_parent_as_a_short_pointer() {
-    // A 16 KiB summary, as a review child reported to Mission Control: the
-    // parent is told where to read it, not given it to type.
     let mut env = Env::new("child-long-result");
     env.set_var("USER", "tester");
     env.apply(support::task("p", true)).ok();
@@ -859,8 +823,6 @@ fn a_parent_relays_more_unread_child_items_than_its_inbox_holds_in_bounded_batch
         "prUrl=\"https://example.test/pr/1\"",
     ])
     .ok();
-    // Each sweep relays what the inbox has room for and delivers it; no
-    // sweep fails, and the parent drains every item in order.
     let mut idle = false;
     for _ in 0..BURST {
         let report = env.reconcile().ok().json();

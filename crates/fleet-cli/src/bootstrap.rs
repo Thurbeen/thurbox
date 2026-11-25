@@ -17,6 +17,7 @@ pub fn absolute(path: &Path) -> Result<PathBuf, String> {
     std::path::absolute(path).map_err(|e| e.to_string())
 }
 
+// A symlinked ancestor is ordinary layout: `/home` on Fedora Atomic, `/var` on macOS.
 fn checked(path: &Path) -> Result<(), String> {
     match fs::symlink_metadata(path) {
         Ok(meta) if meta.file_type().is_symlink() => {
@@ -35,8 +36,6 @@ pub(crate) fn native(config_path: &Path, store_dir: &Path) -> Result<String, Str
         toml::Value::String(store_dir.to_string_lossy().into_owned())
     ))
     .map_err(|e| e.to_string())?;
-    // The three shipped ready policies, as the config page shows them;
-    // ordinary entries once written.
     let policies =
         toml::Value::try_from(fleet_api::follow::shipped_policies()).map_err(|e| e.to_string())?;
     config
@@ -58,7 +57,6 @@ pub fn init(
     store_override: Option<&Path>,
 ) -> Result<bool, String> {
     let config_path = absolute(config_path)?;
-    // Each explicit alternate config gets its own default store.
     let native_path = crate::config::default_config_path()
         .map(|p| absolute(&p))
         .transpose()?;
@@ -83,7 +81,6 @@ pub fn init(
     checked(&lock)?;
     let _lock = LockGuard::acquire(&lock).map_err(|e| e.to_string())?;
     if config_path.try_exists().map_err(|e| e.to_string())? {
-        // A malformed config is an error, never silently replaced.
         Config::load(&config_path)?;
         return Ok(false);
     }

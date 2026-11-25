@@ -79,8 +79,6 @@ pub fn serve_with(
     process_done: &mut dyn FnMut(),
 ) -> Value {
     if verb == "manifest" {
-        // The files a workspace holds are on the host, so they outlive the
-        // process: a stop without release keeps them.
         return known(json!({
             "protocol": PROTOCOL,
             "version": env!("RUNTIME_MUX_VERSION"),
@@ -112,14 +110,9 @@ pub fn serve_with(
     };
     let backend = backend.as_ref();
     let place = place.as_ref();
-    // The backend's commands lead with the place's login `PATH`: read it,
-    // or take it from the cache, before the first of them. `exec` reads it
-    // inside its own deadline.
     if let Some(host) = place.filter(|_| verb != "exec") {
         crate::place::warm(host);
     }
-    // A view of a remote place's pane names the place, so the view builds
-    // that place's backend and reads the pane over its connection.
     let view = match (place, request.get("place")) {
         (Some(_), Some(named)) => {
             let mut argv = view.to_vec();
@@ -153,7 +146,6 @@ pub fn serve_with(
             }
         }),
         "workspace" => parse(request).map(|r: Workspace| match Workspaces::load() {
-            // A place that does not answer may answer the next call.
             Ok(workspaces) => match workspaces.at(place) {
                 Ok(workspaces) => workspaces.make(&r.key, &r.urls),
                 Err(why) => unknown(why),
@@ -263,8 +255,6 @@ fn branches(place: Option<&HostDef>, request: Branches) -> Value {
         return unknown("repo must be an absolute path");
     }
     let failed = |why: String| known(json!({ "failed": { "why": why } }));
-    // A remote place's repository is read there, by the same rules, in one
-    // call ([`crate::place::git_refs`]).
     if let Some(host) = place {
         return match crate::place::git_refs(host, &repo.to_string_lossy()) {
             Err(why) => unknown(why),
@@ -274,8 +264,6 @@ fn branches(place: Option<&HostDef>, request: Branches) -> Value {
             }
         };
     }
-    // The repository itself, as `browse` marks one: a directory inside a
-    // checkout is not its repository.
     if !is_repository(repo) {
         return failed(format!("{} is no git repository", repo.display()));
     }
@@ -308,11 +296,7 @@ fn branch_list(refs: &str, upstream: Option<String>, checked_out: Option<String>
             }
         }
     }
-    // The rule thurbox's `git::discovery::branches` reads a repository on
-    // its own machine by, kept the same: no crate both may depend on holds
-    // it (crates/architecture.toml). `origin`'s branches and the local ones
-    // are told apart by their refs, never by name: a local branch may be
-    // called `origin/main`.
+    // git allows a local branch named `origin/main`: tell branches apart by ref, never by name.
     let in_remote = |name: &str| remote.iter().any(|n| n == name);
     let in_local = |name: &str| local.iter().any(|n| n == name);
     let upstream =
@@ -345,7 +329,6 @@ fn git_out(repo: &std::path::Path, args: &[&str]) -> Result<String, String> {
     ] {
         git.env_remove(var);
     }
-    // Nor may git look for a repository above `repo`.
     if let Some(parent) = repo.parent() {
         git.env("GIT_CEILING_DIRECTORIES", parent);
     }
@@ -514,8 +497,6 @@ impl Validate for Start {
         if self.argv.first().is_none_or(|program| program.is_empty()) {
             return Err("argv names no program".into());
         }
-        // The directory is the place's: `start` checks it by the place's
-        // rules ([`absolute_on`]).
         Ok(())
     }
 }
@@ -756,7 +737,6 @@ fn start(
     kept: &Kept,
     request: Start,
 ) -> Value {
-    // The one Known failure: nothing can have started without the binary.
     if let Err(e) = backend.check_available() {
         let why = match place {
             Some(host) => format!("place {:?}: {e}", host.name),
@@ -789,9 +769,6 @@ fn start(
         },
         Ok(Located::Absent) => {}
     }
-    // On a remote place the agent is looked for on the `PATH` its window
-    // gets before the window is made: a window whose program is missing dies
-    // at once, and its pane says less than this does.
     if let Some(why) = place.and_then(|host| {
         crate::place::missing_program(
             host,
@@ -822,8 +799,6 @@ fn start(
         cwd: request.dir.as_deref(),
         env: &request.env,
     };
-    // An error after the create went out may still have made the window, so
-    // it is Unknown: the next start adopts it.
     let pane = match backend.create_window(&spec) {
         Ok(pane) => pane,
         Err(e) => return unknown(e),
@@ -1057,7 +1032,6 @@ fn shell(backend: &dyn SessionBackend, key: &str, view: &[String]) -> Value {
             };
             match backend.create_window(&spec) {
                 Ok(pane) => pane.as_str().to_string(),
-                // The window may have been made: the next call finds it.
                 Err(e) => return unknown(e),
             }
         }
@@ -1127,8 +1101,6 @@ fn capture(backend: &dyn SessionBackend, request: Capture) -> Value {
 }
 
 fn exec(place: Option<&HostDef>, request: Exec) -> Value {
-    // The deadline starts here: on a remote place, reading its `PATH` is
-    // part of the command's time.
     let deadline = Instant::now() + Duration::from_millis(request.timeout_ms);
     let cap = request
         .output_cap
@@ -1167,8 +1139,6 @@ fn exec(place: Option<&HostDef>, request: Exec) -> Value {
         let into = Arc::clone(&kept);
         std::thread::spawn(move || {
             let Some(mut pipe) = pipe else { return };
-            // The pipe is drained to its end, past the cap: a command that
-            // writes more than is kept still finishes as it would.
             let mut chunk = [0u8; 64 * 1024];
             while let Ok(n @ 1..) = pipe.read(&mut chunk) {
                 if let Ok(mut kept) = into.lock() {
@@ -1199,12 +1169,8 @@ fn exec(place: Option<&HostDef>, request: Exec) -> Value {
             Ok(None) | Err(_) => break None,
         }
     };
-    // Whatever the command left in its group goes with it, so no grandchild
-    // holds a pipe open past the bound.
     kill_tree(&mut child);
     let text = |(kept, finished): (Arc<Mutex<Vec<u8>>>, mpsc::Receiver<()>)| {
-        // A killed command's pipes close at once: the grace only lets a
-        // reader take what was already written.
         let until = deadline.max(Instant::now() + READ_GRACE);
         let _ = finished.recv_timeout(until.saturating_duration_since(Instant::now()));
         let kept = kept.lock().map(|k| k.clone()).unwrap_or_default();

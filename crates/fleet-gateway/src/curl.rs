@@ -234,7 +234,6 @@ macro_rules! curl_gateway {
                     Some(thread) => {
                         self.post_chunks(&conversation.chat, Some(thread), text, intent_key)
                     }
-                    // A channel address: top-level posts, no thread.
                     None => self.post_channel(&conversation.chat, text, intent_key),
                 }
             }

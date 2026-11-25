@@ -117,7 +117,6 @@ fn a_top_level_dm_starts_a_task_without_a_mention_and_a_reply_is_its_turn() {
     );
     let st = env.conversation_status(&conv);
     assert_eq!(st["phase"], "Tied", "{st:#}");
-    // A reply in the DM thread, no mention, is the tied Task's turn.
     let out = deliver(
         &env,
         "Ev02",
@@ -152,8 +151,6 @@ fn a_strangers_dm_earns_one_refusal_and_starts_no_task() {
     assert_eq!(posts[0].conversation.address(), thread);
     assert_eq!(posts[0].text, fleet_api::gateway::DEFAULT_REFUSAL);
     assert_eq!(tasks(&env), Vec::<Value>::new());
-    // An edit that does not say it is in a DM still reaches the thread: no
-    // wildcard covers the chat, but its Conversation is a DM.
     let edit = json!({
         "type": "edited",
         "conversation": {"platform": "fake", "chat": DM, "thread": T0.to_string()},
@@ -172,7 +169,6 @@ fn a_strangers_dm_earns_one_refusal_and_starts_no_task() {
         .ok()
         .json();
     assert_eq!(out["outcome"], "written", "{out:#}");
-    // In a chat with no Conversation, it is still ignored.
     let other = edit.to_string().replace(DM, "D0456OTHER");
     let envelope = json!({
         "verified": "connection",
@@ -192,12 +188,10 @@ fn a_strangers_dm_earns_one_refusal_and_starts_no_task() {
 #[test]
 fn without_the_dm_entry_a_dm_keeps_the_wildcard_rules() {
     let env = dm_env("dm-unchanged", "[\"*\"]");
-    // An unmentioned top-level DM is chatter, as before.
     let quiet = format!("fake:{DM}:{T0}");
     let out = deliver(&env, "Ev01", said(&quiet, T0, ALEX_ID, "hello"), true);
     assert_eq!(out["outcome"], "ignored", "{out:#}");
     assert_eq!(out["why"], "chatter in a thread Fleet does not mirror");
-    // A mention there is the wildcard's, without the DM rule.
     let asked = format!("fake:{DM}:{}", T0 + 1_000);
     let out = deliver(
         &env,
@@ -215,8 +209,6 @@ fn without_the_dm_entry_a_dm_keeps_the_wildcard_rules() {
 #[test]
 fn a_listed_channel_wins_and_a_group_chat_is_no_dm() {
     let env = dm_env("dm-precedence", "[\"*\", \"dm:*\"]");
-    // A channel id another route lists keeps that route's rules, even when
-    // the platform calls it a DM.
     let base = section(&env, "[\"*\", \"dm:*\"]").replace(
         &format!("channels = [\"{GATEWAY_CHANNEL}\"]"),
         &format!("channels = [\"{GATEWAY_CHANNEL}\", \"{DM}\"]"),
@@ -236,8 +228,6 @@ fn a_listed_channel_wins_and_a_group_chat_is_no_dm() {
     let obj = env.fleet(&["get", "conversation", &conv]).ok().json();
     assert_eq!(obj["spec"]["route"], GATEWAY_ROUTE, "{obj:#}");
     assert_eq!(obj["spec"].get("direct"), None, "{obj:#}");
-    // A chat the platform does not call a one-to-one DM, such as a group
-    // DM, is a channel: the wildcard covers it under the mention rule.
     let group = format!("fake:G0123GRP:{T0}");
     let out = deliver(&env, "Ev03", said(&group, T0, ALEX_ID, "hello"), false);
     assert_eq!(out["outcome"], "ignored", "{out:#}");
@@ -283,7 +273,6 @@ inbound = \"discord-gateway\"\ncurlConfig = \"/etc/fleet/discord-curl.conf\"\n\n
         env.set_gateway(&section);
         env.fleet(&["list", "tasks"]).code(1).stderr_has(needle);
     }
-    // A DM-only route needs no mention rule, and may be top-level.
     env.set_gateway(&base.replace("[\"*\", \"dm:*\"]", "[\"dm:*\"]\nmention = \"top-level\""));
     env.fleet(&["list", "tasks"]).ok();
 }

@@ -169,11 +169,6 @@ impl WindowIndex {
             .as_slice()
         {
             [] => None,
-            // One session, one window per role — two is a listing nobody can
-            // act on rather than a choice to make. This holds regardless of
-            // liveness: a dead entry does not make the ambiguity go away, and
-            // must never fall through to a same-named window that belongs to
-            // somebody else.
             [_, _, ..] => Some(Located::Unknown),
             [only] => Some(if !live_only || only.alive {
                 Located::At(only.pane.clone())
@@ -201,14 +196,10 @@ impl WindowIndex {
             .collect();
         match named.as_slice() {
             [] => Located::Absent,
-            // A caller with no id of its own (a window addressed only by name)
-            // can claim a lone window; one with an id can only claim a window
-            // that is not already somebody else's.
             [only] if session_id.is_empty() || only.session.is_empty() => {
                 Located::At(only.pane.clone())
             }
             [_] => Located::Absent,
-            // Every candidate stamped, none of them ours: definitively not here.
             _ if !session_id.is_empty() && named.iter().all(|w| !w.session.is_empty()) => {
                 Located::Absent
             }
@@ -236,15 +227,13 @@ pub(crate) mod tests {
 
     #[test]
     fn sanitize_window_name_replaces_spaces() {
-        // Bug: session names with spaces broke `tmux send-keys` / capture
-        // because the target string `session:window with spaces` was
-        // re-split by tmux into `session`, `window`, `with`, `spaces`.
+        // tmux re-splits a target that holds spaces into separate words.
         assert_eq!(sanitize_window_name("Foo Bar"), "Foo_Bar");
     }
 
     #[test]
     fn sanitize_window_name_replaces_tmux_delimiters() {
-        // Colons, dots, commas all have meaning inside tmux target strings.
+        // Colons, dots and commas have meaning inside tmux target strings.
         assert_eq!(sanitize_window_name("a:b.c,d"), "a_b_c_d");
     }
 
@@ -269,8 +258,6 @@ pub(crate) mod tests {
             "deterministic"
         );
 
-        // Distinct prefix, so window discovery cannot adopt one as a session's
-        // agent (`tb-`) or its companion shell (`tbs-`).
         assert!(once.starts_with(PROGRAM_WINDOW_PREFIX));
         assert!(!once.starts_with(&format!("{WINDOW_PREFIX}a")));
         assert!(!once.starts_with(SHELL_WINDOW_PREFIX));
@@ -313,7 +300,6 @@ pub(crate) mod tests {
             listed("%1", "tb-fleet", TWO, WindowRole::Agent),
             listed("%2", "tb-other", ONE, WindowRole::Agent),
         ]);
-        // `%1` is what the stale row remembers; it resolves to its own window.
         assert_eq!(index.agent_window(ONE, "fleet"), Located::At("%2".into()));
     }
 
@@ -321,7 +307,6 @@ pub(crate) mod tests {
     fn a_lone_unstamped_namesake_is_adoptable() {
         let index = WindowIndex::from_listing([listed("%4", "tb-fleet", "", WindowRole::Agent)]);
         assert_eq!(index.agent_window(ONE, "fleet"), Located::At("%4".into()));
-        // And to a caller with no id of its own at all.
         assert_eq!(index.agent_window("", "fleet"), Located::At("%4".into()));
     }
 
@@ -378,13 +363,11 @@ pub(crate) mod tests {
         ]);
         assert!(index.places_agent(ONE, "fleet", "%1"));
         assert!(index.places_agent(TWO, "fleet", "%2"));
-        // Ambiguous for a caller with nothing but the name to go on.
         assert_eq!(index.agent_window(ONE, "fleet"), Located::Unknown);
 
         let stamped = WindowIndex::from_listing([listed("%1", "tb-fleet", TWO, WindowRole::Agent)]);
         assert!(!stamped.places_agent(ONE, "fleet", "%1"));
         assert!(stamped.places_agent(TWO, "fleet", "%1"));
-        // And a pane nothing listed is nobody's.
         assert!(!stamped.places_agent(TWO, "fleet", "%9"));
     }
 
@@ -413,7 +396,6 @@ pub(crate) mod tests {
             sanitize_window_name("mods.90.watch.lua"),
             "two distinct paths, one window name — the collision a digest avoids"
         );
-        // Digested owners of different paths do not collide.
         assert_ne!(
             program_window_name("aaaa1111", "watch"),
             program_window_name("bbbb2222", "watch")

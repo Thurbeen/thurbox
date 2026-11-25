@@ -320,8 +320,6 @@ fn check_with(ws: &Workspace, rules: &Rules, cache: bool) -> Vec<Violation> {
     let mut v = Vec::new();
     check_governance(ws, rules, &mut v);
     check_graphs(ws, rules, &mut v);
-    // Every crate is indexed, components included: what a component reaches
-    // through another crate's re-export shows only in its sources.
     let indexes: Vec<CrateIndex> = ws
         .crates
         .iter()
@@ -675,7 +673,6 @@ impl CrateIndex {
         }
         let modules = module_paths(&src, &parsed_files);
         for (file, rel, parsed) in &parsed_files {
-            // A file no target declares is placed by where it is.
             let paths = modules
                 .get(file)
                 .cloned()
@@ -685,7 +682,6 @@ impl CrateIndex {
                     idx.lib_doc = doc_text(&parsed.attrs);
                 }
                 idx.file_modules.insert(module.clone());
-                // `#![cfg(test)]`: the whole file is test code.
                 if parsed.attrs.iter().any(is_cfg_test) {
                     idx.test_modules.insert(module.clone());
                 }
@@ -700,7 +696,6 @@ impl CrateIndex {
                     attrs_seen: HashSet::new(),
                 };
                 walker.scope();
-                // A file's own `#![..]` attributes, `#![cfg(..)]` included.
                 for a in &parsed.attrs {
                     walker.visit_attribute(a);
                 }
@@ -760,13 +755,9 @@ fn module_paths(
     let mut out: BTreeMap<PathBuf, Vec<Vec<String>>> = BTreeMap::new();
     let mut queue = std::collections::VecDeque::new();
     for (file, module) in roots {
-        // A root declares its children beside it.
         let children_dir = file.parent().map(Path::to_path_buf);
         queue.push_back((file, module, children_dir, Vec::new()));
     }
-    // `chain` is the files that declared this one, root first: a `#[path]`
-    // back to one of them is a cycle, which would otherwise grow the module
-    // path forever.
     while let Some((file, module, children_dir, chain)) = queue.pop_front() {
         let Some(ast) = parsed.get(file.as_path()) else {
             continue;
@@ -830,8 +821,6 @@ fn declared_files(
             }
             (None, Some(p)) => {
                 let file = if top { file_dir } else { dir }.join(p);
-                // A `#[path]` file declares its children beside it, like a
-                // `mod.rs`.
                 let children = file.parent().map(Path::to_path_buf);
                 out.push((file, child, children));
             }
@@ -901,8 +890,6 @@ impl Walker<'_> {
 
     fn items(&mut self, items: &[Item]) {
         for item in items {
-            // The checker ignores `cfg`, so a module `cfg` can remove must
-            // not shadow anything.
             if let Item::Mod(m) = item
                 && !has_cfg(&m.attrs)
                 && self.blocks == 0
@@ -1076,8 +1063,7 @@ impl<'ast> Visit<'ast> for Walker<'_> {
     }
 
     fn visit_attribute(&mut self, a: &'ast syn::Attribute) {
-        // Every item's attributes are read in `visit_item`, and syn's own walk
-        // reaches some of them again: each attribute counts once.
+        // syn's own walk reaches some attributes `visit_item` already read.
         let start = a.pound_token.span.start();
         if !self.attrs_seen.insert((start.line, start.column)) {
             return;
@@ -1090,7 +1076,6 @@ impl<'ast> Visit<'ast> for Walker<'_> {
     }
 
     fn visit_item_static(&mut self, i: &'ast syn::ItemStatic) {
-        // A `static mut` reads as the path `#static_mut`.
         if !matches!(i.mutability, syn::StaticMutability::None) {
             self.synthetic(vec!["#static_mut".to_string()], i.static_token.span);
         }
@@ -1107,15 +1092,9 @@ impl<'ast> Visit<'ast> for Walker<'_> {
             }
             self.tests += 1;
         }
-        // Read here for every kind of item, whether or not its own visitor
-        // walks its attributes: inside the item's test scope, so a test-only
-        // item's own `cfg` is test code, and in the declaring module, which a
-        // module's attributes belong to.
         for a in item_attrs(i) {
             self.visit_attribute(a);
         }
-        // A `type` alias is a name for its target, as an import is: a path
-        // through the alias reaches what it names.
         if let Item::Type(t) = i
             && let syn::Type::Path(tp) = &*t.ty
             && tp.qself.is_none()
@@ -1285,8 +1264,7 @@ impl<'ast> Visit<'ast> for Walker<'_> {
                 site,
             });
         }
-        // The arguments of an expression-like macro (`format!`, `vec!`,
-        // `assert!`, ...) are code too: parse them as expressions and judge them.
+        // syn leaves a macro's arguments as tokens, so `format!`-like ones are parsed here.
         let args = m.parse_body_with(
             syn::punctuated::Punctuated::<syn::Expr, syn::Token![,]>::parse_terminated,
         );
@@ -1370,8 +1348,6 @@ impl<'a> Resolver<'a> {
         }
         let outer = self.cut.replace(false);
         let mut out = compute();
-        // Globs reach one item along many routes; one copy of each path is
-        // enough to judge, and keeps a result from doubling at every level.
         out.sort();
         out.dedup();
         let cut = self.cut.get();
@@ -1471,11 +1447,8 @@ impl<'a> Resolver<'a> {
                     let mut out = Vec::new();
                     for a in aliases.into_iter().flatten() {
                         if a.target.len() == 1 && a.target[0] == first && !a.global {
-                            // `use x;` of an extern crate: it names itself.
                             out.push(segments.to_vec());
                         } else {
-                            // A macro read goes on through the import as one in
-                            // `through_exports`, from the unaliased path below.
                             let base = self.resolve(
                                 idx,
                                 module,
@@ -1488,12 +1461,6 @@ impl<'a> Resolver<'a> {
                             out.extend(base.into_iter().map(join));
                         }
                     }
-                    // Only when every import of the name may be out of force
-                    // does it keep the meaning it has without one.
-                    // An import fills only the namespaces its target has, which
-                    // are not known here: a macro call may still mean the macro
-                    // a glob or the prelude brings, whatever is imported under
-                    // its name.
                     let macro_read = macro_call && segments.len() == 1;
                     let unaliased =
                         macro_read || aliases.is_none_or(|list| list.iter().all(|a| a.weak));
@@ -1531,11 +1498,9 @@ impl<'a> Resolver<'a> {
         };
         let mut out = Vec::new();
         for mut s in starts {
-            // A renamed dependency (`policy = { package = "x" }`) is crate `x`.
             if let Some(real) = s.first().and_then(|f| idx.renames.get(f)) {
                 s[0] = real.clone();
             }
-            // Only a glob's base is resolved without globs: a module or enum.
             let read = if !globs {
                 Read::Module
             } else if macro_call {
@@ -1577,9 +1542,6 @@ impl<'a> Resolver<'a> {
         for k in (2..=path.len()).rev() {
             let module: Vec<String> = path[1..k - 1].to_vec();
             let name = &path[k - 1];
-            // The longest prefix that is a real module is where the name
-            // lives: a shorter prefix would re-read a module path segment as
-            // an import, which is how a glob would expand through itself.
             let Some(scope) = idx.modules.get(&module) else {
                 continue;
             };
@@ -1593,8 +1555,6 @@ impl<'a> Resolver<'a> {
                 .map(Vec::as_slice)
                 .unwrap_or_default();
             let last = k == path.len();
-            // As in `resolve`: a macro read keeps every other meaning, and
-            // stays one through an import.
             let macro_read = last && read == Read::Macro;
             let mut via_alias: Vec<Vec<String>> = Vec::new();
             for a in aliases {
@@ -1607,8 +1567,6 @@ impl<'a> Resolver<'a> {
                     true,
                     depth + 1,
                 ) {
-                    // A re-export of another crate's item, read locally,
-                    // lands on the module that re-exports it.
                     if self.local && base.first() != path.first() {
                         via_alias.push(path.clone());
                     } else {
@@ -1622,14 +1580,10 @@ impl<'a> Resolver<'a> {
             let read_as_module = read == Read::Module || !last;
             let shadowed = read_as_module && scope.modules_declared.contains(name);
             if !scope.globs.is_empty() && !shadowed {
-                // The name may be the module's own item or come through any
-                // of its globs: judge every possibility.
                 let mut out = via_alias;
                 out.push(path.clone());
                 for (g, gg) in &scope.globs {
                     for base in self.resolve(idx, &module, g, *gg, false, false, depth + 1) {
-                        // Read locally, another crate's items a glob brings
-                        // in are the module's: `path` itself already is.
                         if self.local && base.first() != path.first() {
                             continue;
                         }
@@ -1818,8 +1772,6 @@ fn check_sources(
     let workspace_libs: BTreeSet<String> = ws.crates.iter().map(|c| c.lib.clone()).collect();
     let mut graph = (!rule.modules.is_empty()).then(|| ModuleGraph::new(rule));
     let needs_local = graph.is_some() || rule.restricted.iter().any(|x| x.direct);
-    // Each restriction's hits, keyed by source site so a file two targets
-    // include counts once: the file relative to `src/`, the site, the path.
     let mut hits: Vec<BTreeMap<(String, u32), (String, String)>> =
         vec![BTreeMap::new(); rule.restricted.len()];
     for r in &idx.refs {
@@ -1835,18 +1787,11 @@ fn check_sources(
             ));
             continue;
         }
-        // A target's root (`lib`, `main`, a binary) is judged under its own
-        // name: an exempt root keeps no module rule, but a restriction still
-        // binds it.
-        // What the module names itself, as far as this crate's own modules
-        // go: a module re-exporting another crate's item is what was reached.
-        // The module graph, `direct` restrictions and `external` read it.
         let local_paths = if needs_local {
             local.budget.set(RESOLVE_BUDGET);
             local.exhausted.set(false);
             let found = local.resolve(idx, &r.module, &r.segments, r.global, r.macro_call, true, 0);
             if local.exhausted.get() {
-                // A partial answer could miss a reach, so it is reported.
                 v.push(violation(
                     Code::Unresolvable,
                     &idx.name,
@@ -1860,7 +1805,6 @@ fn check_sources(
         };
         let from = match graph.as_ref() {
             Some(g) => g.node_of(&r.module),
-            // No module rules: each top-level module is judged by its name.
             None => without_target(&r.module).first().map(String::as_str),
         }
         .or_else(|| {
@@ -1894,7 +1838,6 @@ fn check_sources(
                 }
             }
         }
-        // A module limited to some external crates names no other itself.
         if let Some(external) = graph
             .as_ref()
             .and_then(|g| g.node_of(&r.module))
@@ -1926,8 +1869,6 @@ fn check_sources(
             let shown = path.join("::");
             let root = path[0].as_str();
             if root != idx.lib && workspace_libs.contains(root) && !allowed_libs.contains(root) {
-                // Reached directly (it is in this crate's manifest, under any
-                // name) or only through another crate's re-export.
                 let direct = idx.externs.contains(root) || idx.renames.values().any(|l| l == root);
                 let code = if direct {
                     Code::UndeclaredEdge
@@ -1956,7 +1897,6 @@ fn check_sources(
                     ));
                 }
                 let std_like = ["std", "core", "alloc"].contains(&root);
-                // A synthetic path (`#cfg::..`, `#static_mut`) names no crate.
                 if root != idx.lib
                     && !std_like
                     && !root.starts_with('#')
@@ -1971,9 +1911,6 @@ fn check_sources(
                     ));
                 }
             }
-            // The same forbidden methods called as paths: `Store::update_status(&s, ..)`
-            // or `FileStore::update_status(..)`. A type or trait segment before
-            // the method is what tells it from a free function of the same name.
             if let [.., owner, method] = path.as_slice()
                 && owner.starts_with(|c: char| c.is_ascii_uppercase())
                 && rule.forbidden_methods.contains(method)
@@ -1999,8 +1936,6 @@ fn check_sources(
                     ));
                 }
             }
-            // Which crate may write as a field manager is Fleet's rule; a
-            // component naming one already reaches a crate it may not.
             for (writer, crates) in &rules.status_writers {
                 if rule.role != Role::Component
                     && starts_with(&path, writer)
@@ -2223,9 +2158,6 @@ impl<'r> ModuleGraph<'r> {
                 }
             }
         }
-        // Every rule names a module, and every module has a rule: a top-level
-        // one, or a file module under a governed one. A test module belongs to
-        // the module that declares it.
         let modules: BTreeSet<&[String]> = idx.modules.keys().map(|m| without_target(m)).collect();
         for (path, name) in &self.nodes {
             if !modules.contains(path.as_slice()) {
@@ -2237,7 +2169,6 @@ impl<'r> ModuleGraph<'r> {
                 ));
             }
         }
-        // A `governed` entry naming no rule would govern nothing.
         for g in &rule.governed {
             if !rule.modules.contains_key(g) {
                 v.push(violation(
@@ -2253,7 +2184,6 @@ impl<'r> ModuleGraph<'r> {
             .iter()
             .map(|g| g.split("::").map(str::to_string).collect())
             .collect();
-        // Every top-level module, inline ones included, needs a rule.
         for module in idx.modules.keys() {
             let test = (0..=module.len()).any(|n| idx.test_modules.contains(&module[..n]));
             if let [top] = without_target(module)

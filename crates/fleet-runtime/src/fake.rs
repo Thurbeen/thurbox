@@ -245,8 +245,6 @@ impl HostLock {
             .create(true)
             .truncate(false)
             .open(path)?;
-        // Blocking, like the store lock: a holder is bounded and a dead one
-        // frees the lock, so a polling deadline only adds load failures.
         f.lock()?;
         Ok(HostLock(f))
     }
@@ -326,7 +324,6 @@ impl FakeRuntime {
             },
             Plan::Abort => {
                 let _ = self.host.update(perform);
-                // The caller dies between the effect and its receipt.
                 std::process::abort();
             }
             Plan::Normal => match self.host.update(perform) {
@@ -511,8 +508,6 @@ impl Runtime for FakeRuntime {
 
     fn spawn(&self, spec: &SpawnSpec) -> Observation<EffectOutcome> {
         let spec = spec.clone();
-        // The harness profile's argv, as a runtime that runs a program is
-        // given it.
         let argv = match spec.launch_argv() {
             Ok(argv) => argv,
             Err(why) => return Observation::Known(EffectOutcome::Failed { why }),
@@ -690,8 +685,6 @@ impl Runtime for FakeRuntime {
         launch: &SpawnSpec,
     ) -> Observation<EffectOutcome> {
         let key = session.key.clone();
-        // The launch the manager completed for this start, as a runtime that
-        // runs a program is given it: its argv and environment.
         let argv = match launch.launch_argv() {
             Ok(argv) => profile(&launch.harness).resume(&argv, conversation),
             Err(why) => return Observation::Known(EffectOutcome::Failed { why }),
@@ -747,8 +740,6 @@ impl Runtime for FakeRuntime {
         launch: &SpawnSpec,
     ) -> Observation<EffectOutcome> {
         let key = session.key.clone();
-        // The launch the manager completed for this start, as a runtime that
-        // runs a program is given it: its argv and environment.
         let argv = match launch.launch_argv() {
             Ok(argv) => profile(&launch.harness).resume(&argv, conversation),
             Err(why) => return Observation::Known(EffectOutcome::Failed { why }),

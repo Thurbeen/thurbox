@@ -119,7 +119,6 @@ fn upsert(
         match store.get(&obj.kind, &name) {
             Observation::Known(None) => match store.create(obj.clone(), FieldManager::Apply) {
                 Ok(o) => return Ok((ApplyOutcome::Created, o)),
-                // Another writer created it between our read and our create.
                 Err(StoreError::AlreadyExists(why)) if create_only => {
                     return Err(StoreError::AlreadyExists(why));
                 }
@@ -134,8 +133,6 @@ fn upsert(
                 let rv = current.metadata.resource_version;
                 let labels = Some(obj.metadata.labels.clone());
                 let mut spec = obj.spec.clone();
-                // A manifest carries no amendments: re-applying it keeps the
-                // stored ones, which only the store's amend mutation writes.
                 if obj.kind == task::KIND
                     && let (Some(fields), Some(kept)) =
                         (spec.as_object_mut(), current.spec.get("amendments"))
@@ -189,9 +186,6 @@ pub fn label(
             }
             Observation::Unknown { why } => return Err(StoreError::Unknown(why)),
         };
-        // The update replaces the labels. The ones only Fleet writes go back
-        // as they are, except the creator label, which the store refuses
-        // from a writer and keeps itself.
         let mut merged = current.metadata.labels.clone();
         merged.remove(fleet_api::plugin::CREATOR);
         merged.extend(labels.iter().map(|(k, v)| (k.clone(), v.clone())));
@@ -309,7 +303,6 @@ pub fn declare_change_request(
     task_name: &str,
     url: &str,
 ) -> Result<Declared, StoreError> {
-    // Eligibility first, so an ineligible Task creates no orphan.
     eligible_for_declare(store, task_name)?;
     let url = url.trim();
     let (name, created) = ensure_change_request(store, forge, url)?;
@@ -1317,8 +1310,6 @@ pub fn record_result(
                 obj.key()
             )));
         };
-        // An amendment still to deliver is owed an answer first; one given
-        // up on never reached the worker, so it holds nothing.
         if let Some(pending) = st.inbox.iter().find(|e| {
             e.amends.is_some_and(|g| g > brief.generation)
                 && !st.delivery_attempts.get(&e.key).is_some_and(|a| a.failed)
@@ -1345,8 +1336,6 @@ pub fn record_result(
                 problems.join("; ")
             )));
         }
-        // Write-once within a generation; a result for an amended brief
-        // replaces the one for an older generation.
         match &st.result {
             Some(existing) if *existing == result => return Ok(ResultOutcome::Unchanged),
             Some(existing) if existing.generation == result.generation => {
@@ -1404,7 +1393,6 @@ mod tests {
             conversation_name("slack-main", &thread.channel()),
             "per thread"
         );
-        // The canonical string is `<account>/<address>`, and the hash is of exactly that.
         use sha2::{Digest, Sha256};
         let hex: String = Sha256::digest(b"slack-main/slack:C0123ABCD:1730000000.000100")
             .iter()
@@ -1482,7 +1470,6 @@ pub fn apply_conversation(
             obj.key()
         )));
     }
-    // The stored address is the adapter's normalised one.
     obj.spec["address"] = json!(reference.address());
     store.validate(&obj)?;
     if !obj.status.is_null() {

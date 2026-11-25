@@ -43,7 +43,6 @@ mod pipe {
 
     pub(super) fn poke() {
         if let Some((_, write)) = ends() {
-            // A full pipe already holds a wake-up, so a failed write loses none.
             // SAFETY: a one-byte write from a valid buffer to an owned fd.
             let _ = unsafe { libc::write(write.as_raw_fd(), [1u8].as_ptr().cast(), 1) };
         }
@@ -60,9 +59,6 @@ mod pipe {
 }
 
 pub fn notify(seq: &AtomicU64) {
-    // SeqCst, pairing with `arm`: the loop arms, then reads the output
-    // sequence; a reader bumps the sequence, then reads this. One of the two
-    // sees the other, so an echo is never both unannounced and unnoticed.
     std::sync::atomic::fence(Ordering::SeqCst);
     if std::ptr::eq(ARMED.load(Ordering::SeqCst), seq) {
         #[cfg(unix)]

@@ -103,7 +103,6 @@ fn an_amendment_to_a_briefed_task_is_appended_and_delivered_to_the_same_session(
     assert_eq!(keys(inbox), vec![key.clone()]);
     assert_eq!(inbox[0]["amends"], 2);
 
-    // A result is refused while the amendment waits, for either generation.
     env.fleet(&result_args("1")).code(1).stderr_has("amendment");
     env.fleet(&result_args("2")).code(1);
 
@@ -163,7 +162,6 @@ fn an_amendment_before_the_brief_goes_out_with_the_brief() {
     env.fleet(&["amend", "t1", "--file", "-"]).code(1);
     env.fleet_stdin(&["amend", "t1", "--file", "-"], "Start with the tests.")
         .ok();
-    // Flipping dispatch with the original manifest keeps the amendment.
     env.apply(task("t1", true))
         .ok()
         .stdout_has("Task/t1 configured");
@@ -194,7 +192,8 @@ fn an_amendment_while_the_brief_is_in_flight_goes_out_after_it() {
     assert_eq!(session(&env).briefs.len(), 1, "the brief went out");
     env.fleet(&["amend", "t1", "--text", "Added while in flight."])
         .ok();
-    thread::sleep(Duration::from_millis(3_100));
+    let dead_holder_lease_expiry = Duration::from_millis(3_100);
+    thread::sleep(dead_holder_lease_expiry);
     env.reconcile().ok();
     let s = session(&env);
     assert_eq!(s.briefs.len(), 2, "the amendment followed: {:?}", s.briefs);
@@ -223,7 +222,6 @@ fn an_amendment_reopens_a_concluded_task() {
     let st = env.status("t1");
     assert_eq!(st["phase"], "Concluded");
     assert_condition(&st, "Concluded", "True", "ResultRecorded");
-    // Within one generation a result stays write-once.
     let mut other = result_args("2");
     other[5] = "stuck";
     env.fleet(&other).code(1).stderr_has("already recorded");
@@ -287,8 +285,6 @@ fn if_generation_is_an_optional_precondition() {
         .stderr_has("Task/t1 is at generation 2, not 1");
     let obj = full(&env);
     assert_eq!(obj["spec"]["amendments"].as_array().unwrap().len(), 1);
-    // Without one, an amend lands on the latest state; two identical
-    // amendments are both kept.
     let out = env
         .fleet(&["amend", "t1", "--text", "first", "--json"])
         .ok()
@@ -299,7 +295,6 @@ fn if_generation_is_an_optional_precondition() {
     assert_eq!(obj["spec"]["amendments"].as_array().unwrap().len(), 2);
     assert_eq!(keys(&obj["status"]["inbox"]).len(), 2);
 
-    // Only the newest is sent, and it carries both.
     env.reconcile().ok();
     let s = session(&env);
     assert_eq!(s.briefs.len(), 2, "{:?}", s.briefs);
@@ -318,7 +313,6 @@ fn an_amend_is_refused_with_nothing_to_deliver_or_no_one_to_deliver_it() {
         .code(1)
         .stderr_has("empty");
     env.fleet(&["amend", "nope", "--text", "x"]).code(3);
-    // A full inbox refuses the amend itself.
     let key = env.session_key("t1");
     env.host().set_ready(&key, false).unwrap();
     for i in 0..=fleet_api::inbox::MAX_INBOX {
@@ -329,14 +323,12 @@ fn an_amend_is_refused_with_nothing_to_deliver_or_no_one_to_deliver_it() {
         .stderr_has("inbox holds");
     assert!(full(&env)["spec"].get("amendments").is_none());
 
-    // Deleting.
     env.host().set_at_rest(&key, false).unwrap();
     env.fleet(&["delete", "task", "t1"]).ok();
     env.fleet(&["amend", "t1", "--text", "x"])
         .code(1)
         .stderr_has("being deleted");
 
-    // Stalled.
     let env = fresh("amend-stalled");
     env.apply(task("t2", true)).ok();
     env.fault(Fault::new("spawn", "fail").times(10));

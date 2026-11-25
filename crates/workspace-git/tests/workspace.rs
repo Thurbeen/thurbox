@@ -300,8 +300,7 @@ fn a_dirty_release_is_preserved_and_a_git_file_url_restores_it() {
     let restore = format!("{}#{preserved}", url("git+file", &source));
     let (back, _) = s.made("t.restored", &[restore]);
     let tree = Path::new(&back[0]);
-    // A checkout follows the user's git config: `core.autocrlf` on a
-    // Windows runner writes CRLF.
+    // `core.autocrlf` on a Windows runner checks out CRLF.
     let text = |name: &str| {
         fs::read_to_string(tree.join(name))
             .unwrap()
@@ -484,7 +483,6 @@ fn a_released_branch_origin_already_has_is_pruned() {
     let origin = s.bare("app");
     s.made("t.merged", &[url("git+file", &origin)]);
     release(&s.cfg, "t.merged").expect("release");
-    // The branch's head is origin's main: origin already has it.
     s.made("t.after", &[url("git+file", &origin)]);
     let heads = git(
         &s.source(),

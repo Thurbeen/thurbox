@@ -151,7 +151,6 @@ fn compare_and_swap_loses_no_update() {
         "every increment landed"
     );
     assert_eq!(end.metadata.generation, 1, "labels do not bump generation");
-    // Not asserted to be non-zero: the race is real but not guaranteed.
     let _ = conflicts;
 }
 
@@ -194,7 +193,6 @@ fn a_crashed_write_leaves_the_old_record_and_no_temp() {
     let store = FileStore::open(&dir.0).unwrap();
     let a = store.create(task("t"), FieldManager::Apply).unwrap();
     drop(store);
-    // A writer that died after writing its temp file and before the rename.
     fs::write(dir.0.join("tmp").join("999-0.tmp"), b"{\"half\": ").unwrap();
     let store = FileStore::open(&dir.0).unwrap();
     assert!(
@@ -653,7 +651,6 @@ fn a_finalizer_never_comes_off_a_live_object() {
         )
         .unwrap_err();
     assert!(matches!(err, StoreError::Forbidden(_)), "{err}");
-    // So a later delete still waits for the release.
     assert_eq!(
         store.delete("Task", "t", FieldManager::Apply).unwrap(),
         DeleteOutcome::Marked
@@ -792,10 +789,6 @@ fn concurrent_creates_of_distinct_objects_get_distinct_uids_and_versions() {
 
 #[test]
 fn a_writer_waits_out_a_slow_lock_holder_instead_of_failing_busy() {
-    // Under machine load a holder's fsyncs can keep the store lock longer
-    // than any fixed polling bound; a waiter must still get through rather
-    // than fail Busy, because every holder is making progress and the OS
-    // frees the lock if one dies.
     let dir = Dir::new("slow-holder");
     let store = FileStore::open(&dir.0).unwrap();
     let lock = std::fs::OpenOptions::new()
@@ -857,7 +850,6 @@ fn a_controllers_delete_is_fenced_by_uid_version_and_lease() {
         store.delete_fenced("ChangeRequest", "cr-1", &uid, rv + 1, cr.clone(), &lease),
         Err(StoreError::Conflict { .. })
     ));
-    // Recreated under the same name: a new uid the old plan did not name.
     store
         .delete("ChangeRequest", "cr-1", FieldManager::Apply)
         .unwrap();
@@ -880,7 +872,6 @@ fn a_controllers_delete_is_fenced_by_uid_version_and_lease() {
         known(store.get("ChangeRequest", "cr-1")).is_some(),
         "still there"
     );
-    // A stale lease is refused even with the right identity.
     store.release_lease(&lease).unwrap();
     let (uid2, rv2) = (again.metadata.uid.clone(), again.metadata.resource_version);
     assert!(matches!(
@@ -952,7 +943,6 @@ fn change_request_status_belongs_to_its_controller_alone() {
             Some(&lease),
         )
         .unwrap();
-    // The spec is fixed once created.
     let mut other = change_request("cr-2").spec;
     other["url"] = json!("https://forge.test/acme/widgets/pull/8");
     let current = known(store.get("ChangeRequest", "cr-2")).unwrap();
@@ -968,7 +958,6 @@ fn change_request_status_belongs_to_its_controller_alone() {
         Err(StoreError::Invalid(_))
     ));
 }
-// --- The inbox: two typed mutations on a field nobody owns. ---------------
 
 use fleet_api::inbox::{DeliveryReceipt, InboxAbout, InboxEntry, MAX_DELIVERIES, MAX_INBOX};
 
@@ -1027,7 +1016,6 @@ fn an_inbox_key_is_refused_while_queued_or_receipted() {
     assert!(matches!(err, StoreError::AlreadyExists(_)), "{err}");
     assert_eq!(inbox_status(&t).inbox.len(), 1, "nothing was written");
 
-    // Delivered: the receipt in, the entry out, one write.
     let rv = t.metadata.resource_version;
     let t = store
         .record_delivery(
@@ -1058,7 +1046,6 @@ fn an_inbox_key_is_refused_while_queued_or_receipted() {
         matches!(err, StoreError::AlreadyExists(_)),
         "a receipted key is refused too: {err}"
     );
-    // Recording a delivery nobody queued is refused, not invented.
     assert!(matches!(
         store.record_delivery(
             "t",
@@ -1104,10 +1091,6 @@ fn the_inbox_bound_and_the_delivered_revision_hold_on_append() {
     );
     assert_eq!(inbox_status(&t).inbox.len(), MAX_INBOX + 1);
 
-    // An entry's revision survives its receipt's rotation: the store keeps
-    // the highest delivered revision per source. (A relay's source is
-    // `forge/<change>`; until that caller exists, the rule is exercised on
-    // a `cli/` source carrying `about`.)
     let dir2 = Dir::new("inbox-revision");
     let store2 = FileStore::open(&dir2.0).unwrap();
     let mut r = store2.create(task("r"), FieldManager::Apply).unwrap();
@@ -1120,8 +1103,6 @@ fn the_inbox_bound_and_the_delivered_revision_hold_on_append() {
         }),
         ..entry(key)
     };
-    // Two hundred durable writes under one lease: it must outlast a loaded
-    // gate, which is not what this case is about.
     let lease2 = store2.acquire_lease("m", 60_000).unwrap();
     r = store2
         .append_inbox(
@@ -1229,7 +1210,6 @@ fn only_named_callers_reach_the_inbox_and_never_through_a_status_write() {
         .append_inbox("t", entry("k1"), rv, FieldManager::Cli, None)
         .unwrap();
 
-    // No manager replaces the list: not the controller, not the worker.
     let mut replaced = t.status.clone();
     replaced["inbox"] = json!([]);
     for (by, lease) in [
@@ -1251,7 +1231,6 @@ fn only_named_callers_reach_the_inbox_and_never_through_a_status_write() {
             "{by:?}: {err}"
         );
     }
-    // Not even in the record-and-remove write itself.
     let mut edited = t.status.clone();
     edited["inbox"][0]["text"] = json!("tampered");
     let err = store
@@ -1278,7 +1257,6 @@ fn only_named_callers_reach_the_inbox_and_never_through_a_status_write() {
             .unwrap_err();
         assert!(matches!(err, StoreError::Forbidden(_)), "{by:?}: {err}");
     }
-    // The controller's own fields still move in that write, under the lease.
     let mut moved = t.status.clone();
     moved["phase"] = json!("Briefed");
     let t = store
@@ -1316,7 +1294,6 @@ fn only_named_callers_reach_the_inbox_and_never_through_a_status_write() {
         ),
         Err(StoreError::LeaseLost(_))
     ));
-    // A deleting Task takes no more messages.
     store.delete("Task", "t", FieldManager::Apply).unwrap();
     let t = known(store.get("Task", "t")).unwrap();
     assert!(matches!(
@@ -1366,7 +1343,6 @@ fn concurrent_appends_and_removes_lose_nothing() {
             })
         })
         .collect();
-    // The controller, meanwhile, delivers whatever is at the head.
     let mut delivered = 0;
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
     while delivered < senders * per {
@@ -1430,13 +1406,11 @@ fn a_torn_inbox_write_leaves_the_last_complete_record() {
         )
         .unwrap();
     drop(store);
-    // An appender that died after its temp file, before the rename.
     fs::write(dir.0.join("tmp").join("999-0.tmp"), b"{\"half\": ").unwrap();
     let store = FileStore::open(&dir.0).unwrap();
     assert!(fs::read_dir(dir.0.join("tmp")).unwrap().next().is_none());
     assert_eq!(known(store.get("Task", "t")).unwrap(), t);
     assert_eq!(inbox_status(&t).inbox.len(), 1);
-    // A record torn in place is Unknown, and blocks both mutations.
     let path = dir.0.join("objects").join("Task").join("t.json");
     let bytes = fs::read(&path).unwrap();
     fs::write(&path, &bytes[..bytes.len() / 2]).unwrap();
@@ -1547,8 +1521,6 @@ fn task_controller_relays_its_subscription_cursors_and_notices_in_one_write() {
     assert_eq!(st.inbox.len(), 1);
 }
 
-// --- The relay: status.forge and the inbox entries land together. ---------
-
 #[test]
 fn a_relay_lands_the_cursor_and_its_entries_together_or_not_at_all() {
     use fleet_api::follow::{ChangeEntry, ForgeStatus};
@@ -1571,7 +1543,6 @@ fn a_relay_lands_the_cursor_and_its_entries_together_or_not_at_all() {
             .insert("cr-1".into(), ChangeEntry::joined("c1", cursor));
         serde_json::to_value(f).unwrap()
     };
-    // Only the Forge controller, under the lease, naming its source.
     for by in [
         FieldManager::Apply,
         FieldManager::Worker,
@@ -1632,7 +1603,6 @@ fn a_relay_lands_the_cursor_and_its_entries_together_or_not_at_all() {
     assert_eq!(st.forge.as_ref().unwrap().changes["cr-1"].cursor, 1);
     assert_eq!(st.inbox.len(), 1);
 
-    // A duplicate key refuses the whole write: the cursor stays where it was.
     let err = store
         .record_relay(
             "t",
@@ -1647,7 +1617,6 @@ fn a_relay_lands_the_cursor_and_its_entries_together_or_not_at_all() {
     let st = inbox_status(&store.get("Task", "t").known().unwrap().clone().unwrap());
     assert_eq!(st.forge.as_ref().unwrap().changes["cr-1"].cursor, 1);
     assert_eq!(st.inbox.len(), 1);
-    // A stale version is a conflict.
     assert!(matches!(
         store.record_relay(
             "t",
@@ -1659,7 +1628,6 @@ fn a_relay_lands_the_cursor_and_its_entries_together_or_not_at_all() {
         ),
         Err(StoreError::Conflict { .. })
     ));
-    // The cursor alone, with nothing to append, is a write too.
     let t = store
         .record_relay(
             "t",
@@ -1672,8 +1640,6 @@ fn a_relay_lands_the_cursor_and_its_entries_together_or_not_at_all() {
         .unwrap();
     assert_eq!(inbox_status(&t).forge.unwrap().changes["cr-1"].cursor, 2);
 
-    // status.forge is the Forge controller's and nobody else's; declared
-    // is the worker's.
     let mut other = t.status.clone();
     other["forge"]["changes"]["cr-1"]["cursor"] = json!(9);
     for (by, lease) in [
@@ -1737,7 +1703,6 @@ fn a_relay_lands_the_cursor_and_its_entries_together_or_not_at_all() {
         matches!(err, StoreError::Invalid(ref m) if m.contains("kind")),
         "{err}"
     );
-    // The Forge controller may also append alone, under the lease.
     let t = store
         .append_inbox(
             "t",
@@ -1870,12 +1835,6 @@ fn plugin_status_and_verbs_are_fenced_and_never_write_worker_results() {
     assert!(known(store.get("Task", "expired")).is_none());
 }
 
-// ----------------------------------------------------------------------
-// The Gateway's kinds: a Conversation's spool and a Listener's beats have
-// no owner and move only through their typed mutations, named by the
-// account's listener; the controllers own the rest and retire their own.
-// ----------------------------------------------------------------------
-
 fn conversation(name: &str) -> Object {
     serde_json::from_value(json!({
         "apiVersion": "fleet/v1alpha1",
@@ -1942,8 +1901,6 @@ fn a_conversation_is_created_by_apply_or_its_accounts_listener_and_its_spool_has
     let rv = c.metadata.resource_version;
     let lease = store.acquire_lease("m", 60_000).unwrap();
 
-    // Only the listener of the account the spec names spools; a redelivery
-    // is a duplicate; the spool is bounded; nothing else changes.
     assert!(matches!(
         store.receive_event("conv-1", delivery("Ev1", "m1"), rv, listener_of("other")),
         Err(StoreError::Forbidden(_))
@@ -2008,7 +1965,6 @@ fn a_conversation_is_created_by_apply_or_its_accounts_listener_and_its_spool_has
         "{err}"
     );
 
-    // No status write may touch the spool: not the controller's, not anyone's.
     let current = known(store.get("Conversation", "conv-1")).unwrap();
     let mut drained = current.status.clone();
     drained["received"] = json!([]);
@@ -2030,8 +1986,6 @@ fn a_conversation_is_created_by_apply_or_its_accounts_listener_and_its_spool_has
             .unwrap_err();
         assert!(matches!(err, StoreError::Forbidden(_)), "{by:?}: {err}");
     }
-    // The controller drains it with its status, through record_received,
-    // under the lease; it may remove entries and never add or alter one.
     for by in [
         FieldManager::Apply,
         FieldManager::ChangeRequestController,
@@ -2116,7 +2070,6 @@ fn a_conversation_is_created_by_apply_or_its_accounts_listener_and_its_spool_has
         .unwrap();
     let st: ConversationStatus = serde_json::from_value(c.status.clone()).unwrap();
     assert!(st.received.is_empty());
-    // The same status again is no write.
     let again = store
         .record_received(
             "conv-1",
@@ -2127,7 +2080,6 @@ fn a_conversation_is_created_by_apply_or_its_accounts_listener_and_its_spool_has
         )
         .unwrap();
     assert_eq!(again.metadata.resource_version, c.metadata.resource_version);
-    // A deleting Conversation takes no event, and the spec is fixed.
     assert!(matches!(
         store.update_spec(
             "Conversation",
@@ -2318,9 +2270,6 @@ fn a_listeners_beats_and_refusals_move_only_through_the_verbs_mutations() {
         "the oldest instance was evicted"
     );
 
-    // The controller writes the rest under the lease and may not touch
-    // beats, refused or beatRevision; nobody writes them through a status
-    // write.
     let mut judged = current.status.clone();
     judged["seen"] = json!(st.beat_revision);
     judged["conditions"] = json!([{"type": "Accepted", "status": "True", "reason": "Loaded",
@@ -2475,7 +2424,6 @@ fn the_gateway_kinds_are_reserved_against_plugin_manifests_and_validated_on_writ
         store.create(owned, FieldManager::Apply),
         Err(StoreError::Invalid(_))
     ));
-    // A record whose status its readers would refuse is Unknown, never a guess.
     let c = store
         .create(conversation("conv-z"), FieldManager::Apply)
         .unwrap();
@@ -2514,8 +2462,6 @@ fn a_conversation_task_is_created_fenced_by_its_controller_and_its_labels_are_fi
         .labels
         .insert(CONVERSATION_UID_LABEL.into(), "c7".into());
     let by = FieldManager::ConversationController;
-    // Unfenced, a controller creates nothing; apply and a listener never
-    // set the labels.
     assert!(matches!(
         store.create(labelled.clone(), by.clone()),
         Err(StoreError::Forbidden(_))
@@ -2568,7 +2514,6 @@ fn a_conversation_task_is_created_fenced_by_its_controller_and_its_labels_are_fi
         store.create_fenced(labelled.clone(), by.clone(), &lease),
         Err(StoreError::AlreadyExists(_))
     ));
-    // Apply may change the spec's mutable fields but not those labels.
     let rv = created.metadata.resource_version;
     let mut changed = labelled.metadata.labels.clone();
     changed.insert(CONVERSATION_UID_LABEL.into(), "c8".into());
@@ -2627,8 +2572,6 @@ fn a_conversation_task_is_created_fenced_by_its_controller_and_its_labels_are_fi
     ));
 }
 
-// --- Answers: an append records what it answers, in the same write. ------
-
 fn with_questions(store: &FileStore, name: &str, lease: &fleet_api::LeaseToken) -> Object {
     let t = store.create(task(name), FieldManager::Apply).unwrap();
     let t = store
@@ -2669,8 +2612,6 @@ fn an_append_records_its_answers_first_wins_and_refuses_an_undeclared_question()
         answers: ids.iter().map(|s| s.to_string()).collect(),
         ..entry(key)
     };
-    // An id that names no declared Question, or a Comment's id, refuses
-    // the append whole.
     for bad in ["q9", "c1", ""] {
         let err = store
             .append_inbox(
@@ -2706,7 +2647,6 @@ fn an_append_records_its_answers_first_wins_and_refuses_an_undeclared_question()
         ("k1", "cli/tester", 1)
     );
     assert!(!st.answered.contains_key("q2"));
-    // The first answer wins; the later entry still lands.
     let t = store
         .append_inbox(
             "t",
@@ -2720,8 +2660,6 @@ fn an_append_records_its_answers_first_wins_and_refuses_an_undeclared_question()
     assert_eq!(st.inbox.len(), 2);
     assert_eq!(st.answered["q1"], first);
     assert_eq!(st.answered["q2"].key, "k2");
-    // Nobody owns status.answered: no status write may change it, and the
-    // controller's delivery write passes it back unchanged.
     let mut cleared = t.status.clone();
     cleared["answered"] = json!({});
     for (by, lease) in [
@@ -2786,7 +2724,6 @@ fn the_gateway_relay_lands_its_status_its_entries_and_their_answers_together_or_
         answers: ids.iter().map(|s| s.to_string()).collect(),
         ..entry(key)
     };
-    // Only the Gateway controller, under the lease, naming its source.
     for by in [
         FieldManager::Apply,
         FieldManager::Cli,
@@ -2817,7 +2754,6 @@ fn the_gateway_relay_lands_its_status_its_entries_and_their_answers_together_or_
         ),
         Err(StoreError::Invalid(_))
     ));
-    // An undeclared answer refuses the whole write: no cursor, no entry.
     let err = store
         .record_relay(
             "t",
@@ -2849,7 +2785,6 @@ fn the_gateway_relay_lands_its_status_its_entries_and_their_answers_together_or_
         st.forge.is_none(),
         "the Forge controller's field is untouched"
     );
-    // A duplicate key refuses the whole write: the cursor stays.
     let err = store
         .record_relay(
             "t",
@@ -2868,9 +2803,6 @@ fn the_gateway_relay_lands_its_status_its_entries_and_their_answers_together_or_
             .cursor,
         1
     );
-    // status.gateway is the Gateway controller's and nobody else's: not
-    // the Task controller's, not the worker's, and not the Forge
-    // controller's relay write, which leaves it as it was.
     let mut other = t.status.clone();
     other["gateway"]["cursor"] = json!(9);
     for (by, lease) in [
@@ -2905,7 +2837,6 @@ fn the_gateway_relay_lands_its_status_its_entries_and_their_answers_together_or_
     let st = inbox_status(&t);
     assert_eq!(st.forge.as_ref().unwrap().changes["cr-1"].cursor, 3);
     assert_eq!(st.gateway.as_ref().unwrap().cursor, 1);
-    // An empty status is stored as none.
     let t = store
         .record_relay(
             "t",
@@ -2983,8 +2914,6 @@ fn a_plugins_append_records_its_answers_under_the_same_checks() {
     assert_eq!(st.inbox[0].answers, vec!["q1".to_string()]);
 }
 
-// --- The parent labels: authority, checked when the child is created. ----
-
 fn labelled(name: &str, parent: &str, uid: &str) -> Object {
     let mut t = task(name);
     t.metadata
@@ -3012,7 +2941,6 @@ fn the_parent_labels_are_accepted_only_at_creation_from_a_writer_with_scope_over
     let lease = store.acquire_lease("m", 10_000).unwrap();
     let p = store.create(task("p"), FieldManager::Apply).unwrap();
     let uid = p.metadata.uid.clone();
-    // Both labels or neither; the parent must exist with that uid.
     let mut half = task("c");
     half.metadata
         .labels
@@ -3036,7 +2964,6 @@ fn the_parent_labels_are_accepted_only_at_creation_from_a_writer_with_scope_over
         matches!(err, StoreError::Invalid(ref m) if m.contains("uid")),
         "{err}"
     );
-    // A parent the store cannot read is Unknown: retried, never refused.
     let path = dir.0.join("objects").join("Task").join("p.json");
     let bytes = fs::read(&path).unwrap();
     fs::write(&path, &bytes[..bytes.len() / 2]).unwrap();
@@ -3046,12 +2973,9 @@ fn the_parent_labels_are_accepted_only_at_creation_from_a_writer_with_scope_over
     ));
     fs::write(&path, &bytes).unwrap();
     assert!(store.get("Task", "c").known().unwrap().is_none());
-    // A person may name any parent.
     let c = store
         .create(labelled("c", "p", &uid), FieldManager::Apply)
         .unwrap();
-    // Once set, the labels never change: not removed, not pointed elsewhere,
-    // while other labels may.
     let q = store.create(task("q"), FieldManager::Apply).unwrap();
     let mut moved = c.metadata.labels.clone();
     moved.insert("gateway.fleet.dev/parent".into(), "q".into());
@@ -3089,8 +3013,6 @@ fn the_parent_labels_are_accepted_only_at_creation_from_a_writer_with_scope_over
         .unwrap();
     assert_eq!(c.metadata.labels["gateway.fleet.dev/parent"], "p");
     assert_eq!(c.metadata.labels["topic"], "x");
-    // A plugin over its own Tasks may name only a parent it created; one
-    // over any Task may name any.
     let own = fleet_api::plugin::writer_for_store("issues");
     let err = store
         .plugin_mutate(
@@ -3125,7 +3047,6 @@ fn the_parent_labels_are_accepted_only_at_creation_from_a_writer_with_scope_over
             .unwrap(),
         json!("created")
     );
-    // A parent being deleted takes no child: nothing would read its inbox.
     assert_eq!(
         store.delete("Task", "p", FieldManager::Apply).unwrap(),
         DeleteOutcome::Marked
@@ -3138,8 +3059,6 @@ fn the_parent_labels_are_accepted_only_at_creation_from_a_writer_with_scope_over
         "{err}"
     );
 }
-
-// --- Amendments: one append-only mutation over spec and inbox. -------------
 
 fn amendment(generation: u64) -> fleet_api::task::Amendment {
     fleet_api::task::Amendment {
@@ -3170,14 +3089,12 @@ fn an_amendment_lands_in_spec_and_inbox_together_and_only_through_amend() {
     let store = FileStore::open(&dir.0).unwrap();
     let t = store.create(task("t"), FieldManager::Apply).unwrap();
     let rv = t.metadata.resource_version;
-    // A new Task carries none.
     let mut born = task("u");
     born.spec["amendments"] = serde_json::to_value(vec![amendment(2)]).unwrap();
     assert!(matches!(
         store.create(born, FieldManager::Apply),
         Err(StoreError::Invalid(_))
     ));
-    // No other caller queues an amendment, through any append.
     assert!(matches!(
         store.append_inbox("t", amends(&t, 2), rv, FieldManager::Cli, None),
         Err(StoreError::Forbidden(_))
@@ -3192,7 +3109,6 @@ fn an_amendment_lands_in_spec_and_inbox_together_and_only_through_amend() {
             .unwrap_err();
         assert!(matches!(err, StoreError::Forbidden(_)), "{by:?}: {err}");
     }
-    // The generation, the key and the entry's `amends` name one generation.
     for (a, e) in [(amendment(3), amends(&t, 2)), (amendment(2), amends(&t, 3))] {
         assert!(matches!(
             store.amend_task("t", a, e, rv, FieldManager::Cli),
@@ -3213,7 +3129,6 @@ fn an_amendment_lands_in_spec_and_inbox_together_and_only_through_amend() {
         "the spec is never re-encoded"
     );
     assert_eq!(inbox_status(&done).inbox[0].amends, Some(2));
-    // An update leaves them as they are, or is refused.
     let mut dropped = done.spec.clone();
     dropped.as_object_mut().unwrap().remove("amendments");
     assert!(matches!(
@@ -3227,7 +3142,6 @@ fn an_amendment_lands_in_spec_and_inbox_together_and_only_through_amend() {
         ),
         Err(StoreError::Invalid(_))
     ));
-    // A Stalled Task is refused.
     let lease = store.acquire_lease("m", 10_000).unwrap();
     let stalled = store
         .update_status(
@@ -3272,7 +3186,6 @@ fn the_gateway_controller_creates_an_opened_threads_conversation_and_spools_only
         .create_fenced(conversation("conv-1"), by.clone(), &lease)
         .unwrap();
     let rv = c.metadata.resource_version;
-    // A person's message is the listener's to spool, never the controller's.
     assert!(matches!(
         store.receive_event("conv-1", delivery("Ev1", "m1"), rv, by.clone()),
         Err(StoreError::Forbidden(_))
@@ -3316,7 +3229,6 @@ fn only_a_concluded_conversation_task_is_retired_and_only_by_its_conversation() 
     let retire = |uid: &str, conv: &str, by: FieldManager| {
         store.retire_conversation_task("conv-1", uid, conv, by, &lease)
     };
-    // Running: never retired.
     assert!(matches!(
         retire(&uid, "c7", by.clone()),
         Err(StoreError::Forbidden(ref m)) if m.contains("not Concluded")
@@ -3331,7 +3243,6 @@ fn only_a_concluded_conversation_task_is_retired_and_only_by_its_conversation() 
             Some(&lease),
         )
         .unwrap();
-    // Another writer, another thread, another Task under the name: refused.
     assert!(matches!(
         retire(&uid, "c7", FieldManager::TaskController),
         Err(StoreError::Forbidden(_))
@@ -3344,8 +3255,6 @@ fn only_a_concluded_conversation_task_is_retired_and_only_by_its_conversation() 
         retire("u-other", "c7", by.clone()),
         Err(StoreError::Conflict { .. })
     ));
-    // Concluded and this thread's: marked, its finalizer releasing it; a
-    // second call is the same answer.
     assert_eq!(
         retire(&uid, "c7", by.clone()).unwrap(),
         DeleteOutcome::Marked
@@ -3387,7 +3296,6 @@ fn a_plugins_amend_is_fenced_on_its_generation_and_keeps_fleet_amends_checks() {
             if_generation: generation,
         })
     };
-    // An output name already declared is refused, and nothing is written.
     assert!(matches!(
         store.plugin_mutate(amend("own", &uid, 1, json!({"prUrl": {"type": "string"}})), writer.clone(), &lease),
         Err(StoreError::Invalid(why)) if why.contains("already declared")
@@ -3415,7 +3323,6 @@ fn a_plugins_amend_is_fenced_on_its_generation_and_keeps_fleet_amends_checks() {
     assert_eq!(st.inbox[0].from, "plugin/issues");
     assert_eq!(st.inbox[0].amends, Some(2));
 
-    // The same verb again is refused on its precondition: one amendment.
     assert!(matches!(
         store.plugin_mutate(amend("own", &uid, 1, json!({})), writer.clone(), &lease),
         Err(StoreError::Precondition(why)) if why.contains("generation 2, not 1")
@@ -3427,7 +3334,6 @@ fn a_plugins_amend_is_fenced_on_its_generation_and_keeps_fleet_amends_checks() {
             .len(),
         1
     );
-    // A replaced Task is refused on its uid.
     assert!(matches!(
         store.plugin_mutate(
             amend("own", "replaced", 2, json!({})),
@@ -3437,7 +3343,6 @@ fn a_plugins_amend_is_fenced_on_its_generation_and_keeps_fleet_amends_checks() {
         Err(StoreError::Forbidden(_))
     ));
 
-    // A full inbox refuses it.
     for n in 0..=MAX_INBOX {
         let _ = store.plugin_mutate(
             Mutation::Append(Append {
@@ -3456,14 +3361,12 @@ fn a_plugins_amend_is_fenced_on_its_generation_and_keeps_fleet_amends_checks() {
         Err(StoreError::Forbidden(why)) if why.contains("still to deliver")
     ));
 
-    // A Task this plugin did not create is foreign under `tasks = "own"`.
     let foreign = store.create(task("foreign"), FieldManager::Apply).unwrap();
     assert!(matches!(
         store.plugin_mutate(amend("foreign", &foreign.metadata.uid, 1, json!({})), writer.clone(), &lease),
         Err(StoreError::Forbidden(why)) if why.contains("foreign Task")
     ));
 
-    // A Stalled Task refuses it; so does a deleting one.
     store
         .plugin_mutate(Mutation::Create(task("stalled")), writer.clone(), &lease)
         .unwrap();

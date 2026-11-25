@@ -111,7 +111,6 @@ pub fn make(cfg: &Config, key: &str, urls: &[String]) -> Result<Answer, String> 
             why: format!("key {key} already holds a workspace of other URLs"),
         });
     }
-    // A partial workspace is never answered: roll it back, then make it again.
     rollback(cfg, key)?;
     prune(cfg);
     let mut trees = Vec::new();
@@ -416,8 +415,6 @@ fn preserve(tree: &Path, key: &str, name: &str) -> Result<(), String> {
     if status.is_empty() {
         return Ok(());
     }
-    // Beside the worktree, in the key's directory: never in a checkout's
-    // working tree, where it would show as a file of the user's.
     let index = tree
         .parent()
         .unwrap_or(tree)
@@ -471,8 +468,6 @@ fn worktree(
         Some(dir) => dir.clone(),
         None => source_dir(cfg, remote),
     };
-    // Held until the worktree is added: the repository is made, fetched and
-    // given a worktree by one maker at a time.
     let _lock = lock_repository(cfg, &source)?;
     let key_dir = cfg.root.join(key);
     fs::create_dir_all(&key_dir).map_err(|e| format!("cannot make {}: {e}", key_dir.display()))?;
@@ -482,8 +477,6 @@ fn worktree(
     } else {
         fill_source(&source, remote)?;
     }
-    // Before the worktree is added, so a rollback of a partial workspace
-    // finds it; a registration a removed partial directory left is pruned.
     list_path(&key_dir.join(KEY_SOURCES), &source)?;
     let _ = git(&source, &["worktree", "prune"], &[]);
     let path = key_dir.join(name);
@@ -519,8 +512,6 @@ fn worktree(
             &[],
         )?;
     } else {
-        // A checkout with no remote default starts from what the directory
-        // the URL names has checked out: a linked worktree's own HEAD.
         let named = checkout.as_ref().map(|_| Path::new(remote));
         let start = resolve_base(&source, named, key, name, base)?;
         let new = if has_ref(&source, &local) {
@@ -582,8 +573,6 @@ fn resolve_base(
     } else {
         vec![remote, tag, local]
     };
-    // `origin/<b>` is the remote-tracking branch the new-session flow offers,
-    // ahead of a local branch or tag spelled the same.
     if base.starts_with("origin/") {
         candidates.insert(0, format!("refs/remotes/{base}"));
     }
@@ -593,8 +582,6 @@ fn resolve_base(
             return Ok(commit);
         }
     }
-    // A ref the remote has but a fetch of its branches does not bring, such
-    // as preserved work: fetched by name.
     if base.starts_with("refs/") {
         let into = format!("refs/fleet/base/{key}/{name}");
         git(
@@ -694,14 +681,11 @@ fn fill_source(dir: &Path, remote: &str) -> Result<(), String> {
             .map_err(|why| format!("cannot fetch {remote}: {why}"))
     })();
     if let Err(why) = made {
-        // A source this call made and could not fill is not kept.
         if fresh {
             let _ = fs::remove_dir_all(dir);
         }
         return Err(why);
     }
-    // A remote with no default branch, such as another source, still serves
-    // a URL that names its base.
     let _ = git(dir, &["remote", "set-head", "origin", "--auto"], &[]);
     Ok(())
 }
@@ -794,9 +778,6 @@ fn git(dir: &Path, args: &[&str], env: &[(&str, &str)]) -> Result<String, String
             "ssh -o BatchMode=yes -o ConnectTimeout=10 -o ServerAliveInterval=10 -o ServerAliveCountMax=3",
         );
     }
-    // Every call that reaches a remote (a source's fetch, `set-head --auto`,
-    // a base fetched by name) gives up on an http remote that stalls, as
-    // the ssh default above gives up on an ssh one.
     if std::env::var_os("GIT_HTTP_LOW_SPEED_TIME").is_none() {
         cmd.env("GIT_HTTP_LOW_SPEED_LIMIT", "1").env(
             "GIT_HTTP_LOW_SPEED_TIME",
@@ -892,7 +873,7 @@ fn parse(url: &str) -> Parsed {
     }
     let transport = scheme.trim_start_matches("git+");
     let remote = if transport == "file" {
-        // A local path, as git reads one: it also clones a non-bare checkout.
+        // git clones a local path, a non-bare checkout included.
         local_path(&decode(rest))
     } else {
         format!("{transport}://{rest}")

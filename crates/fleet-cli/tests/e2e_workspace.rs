@@ -69,11 +69,9 @@ fn fleet_materializes_the_workspace_spawns_into_it_and_cleans_it_after_release()
     );
     assert_eq!(env.calls("materialize"), 1);
 
-    // A second run changes nothing and makes nothing twice.
     env.reconcile().ok();
     assert_eq!((env.calls("materialize"), env.calls("spawn")), (1, 1));
 
-    // Deleting releases the session, then cleans the workspace, then lets go.
     env.host().set_at_rest(&key, true).unwrap();
     env.fleet(&["delete", "task", "t1"]).ok();
     env.reconcile().ok();
@@ -91,12 +89,10 @@ fn a_crash_mid_materialization_is_recovered_by_observing_the_key() {
     env.fault(Fault::new("materialize", "abort"));
     env.fleet(&["reconcile", "--lease-ttl-ms", "3000"])
         .crashed();
-    // The dead holder's lease must expire before the next manager can take it.
-    std::thread::sleep(std::time::Duration::from_millis(3_100));
+    let dead_holder_lease_expiry = std::time::Duration::from_millis(3_100);
+    std::thread::sleep(dead_holder_lease_expiry);
     assert_eq!(env.calls("materialize"), 1);
 
-    // The intent has no receipt: the next run finds the workspace under the
-    // key and adopts it, and never materializes it again.
     env.reconcile().ok();
     let st = env.status("t1");
     assert_eq!(st["phase"], "Briefed", "{st:#}");
@@ -124,8 +120,6 @@ fn a_lost_request_is_tried_again_under_the_same_workspace_key() {
     env.fault(Fault::new("materialize", "unknown"));
     env.reconcile().ok();
 
-    // The key reads absent: the request never landed, so it is tried again
-    // after the wait, and the Task goes on.
     let st = env.status("t1");
     assert_eq!(st["phase"], "Pending", "{st:#}");
     assert_condition(&st, "WorkspaceReady", "False", "MaterializeRetry");

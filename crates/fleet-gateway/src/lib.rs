@@ -230,7 +230,6 @@ impl Gateway for GatewayAccounts {
     ) -> Observation<EffectOutcome> {
         match self.adapter(account) {
             Some(g) => g.open(account, channel, text, intent_key),
-            // Nothing ran: a Known refusal, not a question.
             None => Observation::Known(EffectOutcome::Failed {
                 why: Self::not_configured(account),
             }),
@@ -521,7 +520,6 @@ mod tests {
         );
         assert!(accounts.check_channel("discord-main", "C0456EFGH").is_err());
         assert!(accounts.check_channel("nobody", "C0456EFGH").is_err());
-        // Discord links a thread under its guild; Slack makes no link.
         let thread =
             ConversationRef::split("discord:1300000000000000000:1300000000000000001").unwrap();
         assert_eq!(

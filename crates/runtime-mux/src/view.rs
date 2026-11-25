@@ -77,9 +77,6 @@ pub fn serve(
             Some(_) => {}
         }
     };
-    // With snapshots the screen comes as one, in step with the output, and
-    // the title and modes it cannot carry follow it. Without, the backend
-    // replays the history and that state into the output itself.
     let (seed, state) = if snapshots {
         (Some(Vec::new()), backend.state_seed(pane))
     } else {
@@ -115,7 +112,6 @@ pub fn serve(
                     break;
                 }
             }
-            // Letting go of the pane ends its output, and so the stream.
             detached.store(true, Ordering::SeqCst);
             let _ = backend.detach(&pane);
         });

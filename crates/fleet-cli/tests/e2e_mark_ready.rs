@@ -192,18 +192,14 @@ fn ready_key(env: &Env, task: &str, cr: &str, head: &str) -> String {
 #[test]
 fn a_draft_passes_checks_once_the_worker_shipped_and_rests_and_is_marked_ready_once() {
     let (env, forge, cr) = setup("checks", "checks", draft(Checks::Pending));
-    // Not shipped: nothing is evaluated, so the session is not even asked.
     rest(&env, "t1", true);
     env.reconcile().ok();
     assert_eq!(env.calls("atRest"), 0);
     assert_eq!(record(&env, "t1", &cr)["state"], "none");
     rest(&env, "t1", false);
     ship(&env, "t1");
-    // Shipped, but checks still pending: not asked either, since the
-    // session is asked last, once the snapshot's predicates hold.
     assert_eq!(env.calls("atRest"), 0);
     assert_eq!(record(&env, "t1", &cr)["state"], "none");
-    // Checks pass; the session is mid-turn: asked, and refused.
     forge
         .set_change(PROJECT, "7", draft(Checks::Passed))
         .unwrap();
@@ -222,7 +218,6 @@ fn a_draft_passes_checks_once_the_worker_shipped_and_rests_and_is_marked_ready_o
         "the relay went on meanwhile"
     );
 
-    // At rest: one intent, one effect, one receipt, done, in one run.
     rest(&env, "t1", true);
     let report = env.reconcile().ok().json();
     assert_eq!(report["errors"], json!([]), "{report:#}");
@@ -257,7 +252,6 @@ fn a_draft_passes_checks_once_the_worker_shipped_and_rests_and_is_marked_ready_o
         "done"
     );
 
-    // The mirror sees it ready; the worker is told; nothing is repeated.
     poll(&env, &cr);
     let cr_st = env.change_request_status(&cr);
     assert_eq!(cr_st["state"]["value"], "open");
@@ -298,8 +292,6 @@ fn a_change_opened_ready_is_never_marked_and_neither_is_one_put_back_into_draft(
     assert_eq!(env.calls("atRest"), 0, "nothing to evaluate, nothing asked");
     assert_eq!(forge.calls("markReady").unwrap(), 0);
 
-    // A person puts it back into draft: everReady protects it, for this
-    // Task and for a second one that declares it afterwards.
     forge
         .set_change(PROJECT, "7", draft(Checks::Passed))
         .unwrap();
@@ -330,7 +322,6 @@ fn a_change_opened_ready_is_never_marked_and_neither_is_one_put_back_into_draft(
 fn a_moved_head_is_refused_without_counting_an_attempt_and_the_new_head_is_marked() {
     let (env, forge, cr) = setup("moved", "checks", draft(Checks::Passed));
     ship(&env, "t1");
-    // The worker pushes again; the mirror has not polled yet.
     forge
         .set_change(
             PROJECT,
@@ -355,10 +346,8 @@ fn a_moved_head_is_refused_without_counting_an_attempt_and_the_new_head_is_marke
         json!({"known": {"type": "moved", "head": "bbb222", "state": "draft"}})
     );
     assert!(forge.marked_ready().unwrap().is_empty(), "nothing mutated");
-    // The mirror still shows the old head: not tried again against it.
     env.reconcile().ok();
     assert_eq!(forge.calls("markReady").unwrap(), 1);
-    // The mirror catches up: the new head is evaluated afresh and marked.
     poll(&env, &cr);
     let r = record(&env, "t1", &cr);
     assert_eq!(r["state"], "done", "{r:#}");
@@ -420,7 +409,6 @@ fn a_known_failure_retries_after_the_wait_on_that_entry_while_another_keeps_rela
         "one failure is not attention"
     );
 
-    // Change 8 moves on and is relayed while 7 waits.
     forge
         .set_change(
             PROJECT,
@@ -441,8 +429,6 @@ fn a_known_failure_retries_after_the_wait_on_that_entry_while_another_keeps_rela
     assert_eq!(record(&env, "t1", &cr)["state"], "failed", "still waiting");
     assert_eq!(forge.calls("markReady").unwrap(), 1);
 
-    // The wait over: the second attempt succeeds, once the worker, busy
-    // with the relayed note, is at rest again.
     expire_entry_wait(&env, "t1", &cr);
     env.reconcile().ok();
     assert_eq!(
@@ -461,7 +447,6 @@ fn a_known_failure_retries_after_the_wait_on_that_entry_while_another_keeps_rela
 
 #[test]
 fn an_unknown_outcome_is_answered_by_the_next_fresh_revision_never_by_repeating() {
-    // The answer was lost after the mutation landed.
     let (env, forge, cr) = setup("unknown-applied", "checks", draft(Checks::Passed));
     forge
         .add_fault(ForgeFault::new("markReady", "lost-applied"))
@@ -496,7 +481,6 @@ fn an_unknown_outcome_is_answered_by_the_next_fresh_revision_never_by_repeating(
     assert_eq!(r["attempts"], 1);
     assert_eq!(forge.calls("markReady").unwrap(), 1);
 
-    // The answer was lost and the mutation did not land.
     let (env, forge, cr) = setup("unknown-lost", "checks", draft(Checks::Passed));
     forge
         .add_fault(ForgeFault::new("markReady", "lost"))
@@ -572,7 +556,6 @@ fn a_stale_mirror_never_marks() {
     env.reconcile().ok();
     assert_eq!(record(&env, "t1", &cr)["state"], "none");
     assert_eq!(forge.calls("markReady").unwrap(), 0);
-    // Reachable again: marked.
     poll(&env, &cr);
     assert_condition(
         &env.change_request_status(&cr),
@@ -606,7 +589,6 @@ fn checks_and_bots_waits_on_a_bots_unresolved_thread_and_relays_it_even_with_bot
     env.reconcile().ok();
     assert_eq!(record(&env, "t1", &cr)["state"], "none");
     assert_eq!(forge.calls("markReady").unwrap(), 0);
-    // A bot's status comment is not a blocker and is not relayed.
     let mut with_status = blocked.clone();
     let mut status = note("b2", 30, "coverage[bot]", "coverage 93%");
     status.bot = true;
@@ -621,7 +603,6 @@ fn checks_and_bots_waits_on_a_bots_unresolved_thread_and_relays_it_even_with_bot
         "the cursor still advanced"
     );
     assert_eq!(forge.calls("markReady").unwrap(), 0);
-    // The worker answers in the thread with its mark: addressed, and marked.
     let uid = env.get("t1")["metadata"]["uid"]
         .as_str()
         .unwrap()
@@ -652,7 +633,6 @@ fn the_no_check_grace_passes_a_checkless_head_only_after_it() {
     env.reconcile().ok();
     assert_eq!(record(&env, "t1", &cr)["state"], "none", "within the grace");
     assert_eq!(forge.calls("markReady").unwrap(), 0);
-    // The head was first seen at the join, longer than one millisecond ago.
     fs::write(
         &env.config,
         cfg.replace("[forge]\n", "[forge]\nnoCheckGraceMs = 1\n"),
@@ -816,8 +796,6 @@ fn github_and_gitlab_drafts_are_marked_ready_through_gh_and_glab_after_a_fresh_r
     assert_eq!(entry(&env, "t1", &gh_cr)["cursor"], 1);
     assert_eq!(entry(&env, "t1", &gl_cr)["cursor"], 1);
     ship(&env, "t1");
-    // The GitHub head moves before the mirror sees it: the fresh read
-    // refuses, nothing is mutated; GitLab's goes through.
     env.edit_stub(|s| s["changes"]["acme/widgets#7"]["head"] = json!("h2"));
     rest(&env, "t1", true);
     let report = env.reconcile().ok().json();
@@ -862,7 +840,6 @@ fn github_and_gitlab_drafts_are_marked_ready_through_gh_and_glab_after_a_fresh_r
         "no credential is passed"
     );
 
-    // The GitHub mirror catches up: the mutation runs under the intent key.
     poll(&env, &gh_cr);
     let gh = record(&env, "t1", &gh_cr);
     assert_eq!(gh["state"], "done", "{gh:#}");

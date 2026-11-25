@@ -20,14 +20,12 @@ fn each_harness_starts_with_its_profiles_argv_and_revives_on_its_conversation() 
     let env = Env::new("harness-profiles");
     let mut codex = support::task("c1", true);
     codex["spec"]["harness"] = json!("codex");
-    // Codex is trusted in exactly the directory it starts in.
     codex["spec"]["workspace"] = json!([format!("file://{}/work/c1", env.root.display())]);
     env.apply(json!([support::task("t1", true), codex])).ok();
     env.reconcile().ok();
     assert_eq!(env.status("t1")["phase"], "Briefed");
     assert_eq!(env.status("c1")["phase"], "Briefed");
 
-    // Claude Code: its hooks in --settings, reporting through fleet signal.
     let claude = session(&env, "t1");
     assert_eq!(
         claude.argv[..2],
@@ -40,7 +38,6 @@ fn each_harness_starts_with_its_profiles_argv_and_revives_on_its_conversation() 
         .as_str()
         .unwrap();
     assert!(prompt.starts_with("fleet signal prompt"), "{prompt}");
-    // Codex: its notify hook, then its trust of exactly its workspace.
     let codex = session(&env, "c1");
     assert_eq!(codex.argv[0], "codex");
     assert_eq!(
@@ -50,7 +47,6 @@ fn each_harness_starts_with_its_profiles_argv_and_revives_on_its_conversation() 
     assert_eq!(codex.argv[3], "-c");
     assert!(codex.argv[4].starts_with("projects="), "{:?}", codex.argv);
 
-    // The hooks reported each conversation; a reboot revives both on it.
     for (task, id) in [("t1", &claude.id), ("c1", &codex.id)] {
         assert_eq!(
             env.get(task)["status"]["conversation"],
@@ -183,7 +179,6 @@ fn run_asset(
     }
     let log = env.root.join("signals.log");
     let _ = std::fs::remove_file(&log);
-    // The plugin finds `fleet` and nothing else, wherever node is installed.
     let _ = std::fs::remove_file(bin.join("node"));
     std::os::unix::fs::symlink(node, bin.join("node")).unwrap();
     let mut cmd = std::process::Command::new(node);
@@ -273,7 +268,6 @@ fn pi_and_opencode_launch_with_the_plugin_files_fleet_writes() {
 
     let pi = session(&env, "p1");
     let extension = assets.join("fleet-pi.ts");
-    // `--approve`: the project is trusted for this run only.
     assert_eq!(
         pi.argv,
         ["pi", "-e", &*asset(&extension), "--approve"],
@@ -283,8 +277,7 @@ fn pi_and_opencode_launch_with_the_plugin_files_fleet_writes() {
     assert!(extension.is_file(), "{}", extension.display());
 
     let opencode = session(&env, "o1");
-    // Its own server: a shared background service was started with another
-    // environment, and would load neither the plugin nor the signal file.
+    // A shared opencode service started with another environment would load neither the plugin nor the signal file.
     assert_eq!(opencode.argv, ["opencode", "--standalone"]);
     let content: serde_json::Value = serde_json::from_str(
         opencode
@@ -299,7 +292,6 @@ fn pi_and_opencode_launch_with_the_plugin_files_fleet_writes() {
         assert!(plugin.join(part).is_file(), "{}/{part}", plugin.display());
     }
 
-    // A revive resumes each on the conversation its hooks reported.
     env.host().reboot().unwrap();
     env.reconcile().ok();
     let pi = session(&env, "p1");
@@ -330,7 +322,7 @@ fn the_pi_extension_reports_each_event_with_its_session() {
     task["spec"]["harness"] = json!("pi");
     env.apply(json!([task])).ok();
     env.reconcile().ok();
-    // Node runs a module by its extension; the file is plain JavaScript.
+    // Node runs a module by its extension.
     let asset = env.root.join("fleet-pi.mjs");
     std::fs::copy(env.data.join("harness-assets/fleet-pi.ts"), &asset).unwrap();
     let steps = json!([
@@ -360,7 +352,6 @@ fn the_pi_extension_reports_each_event_with_its_session() {
             ("idle".into(), session),
         ]
     );
-    // Outside a session Fleet started, nothing; without `fleet`, no failure.
     assert!(
         run_asset(
             &env,
@@ -414,7 +405,6 @@ fn the_opencode_plugin_reports_each_change_of_state_with_its_session() {
         ],
         "{sent:?}"
     );
-    // The TUI part reports the start, before any session.
     assert_eq!(sent[0].1, json!({}));
     assert_eq!(
         sent[1].1,
@@ -467,12 +457,10 @@ fn kilo_launches_with_the_plugin_files_fleet_writes() {
     for part in ["index.js", "tui.js", "signal.js", "tui.json"] {
         assert!(plugin.join(part).is_file(), "{}/{part}", plugin.display());
     }
-    // The TUI config names its plugin beside it, wherever the data dir is.
     let config: serde_json::Value =
         serde_json::from_str(&std::fs::read_to_string(&tui).unwrap()).unwrap();
     assert_eq!(config, json!({"plugin": ["./tui.js"]}));
 
-    // A revive resumes kilo on the conversation its hooks reported.
     env.host().reboot().unwrap();
     env.reconcile().ok();
     let kilo = session(&env, "k1");
@@ -528,7 +516,7 @@ fn the_kilo_plugin_reports_each_change_of_state_with_its_session() {
             ]}
         ])
     };
-    // A request is opened with its `id` and closed with its `requestID`.
+    // The agent opens a request with its `id` and closes it with its `requestID`.
     let open = |kind: &str, id: &str| event(kind, json!({"id": id, "sessionID": "ses-root"}));
     let close =
         |kind: &str, id: &str| event(kind, json!({"requestID": id, "sessionID": "ses-root"}));
@@ -562,7 +550,6 @@ fn the_kilo_plugin_reports_each_change_of_state_with_its_session() {
             "question.rejected",
             json!({"requestID": "que-1", "sessionID": "ses-root"})
         ),
-        // Two requests at once: the agent waits until both are closed.
         open("suggestion.shown", "sug-1"),
         open("session.network.asked", "net-1"),
         close("suggestion.dismissed", "sug-1"),
@@ -591,7 +578,6 @@ fn the_kilo_plugin_reports_each_change_of_state_with_its_session() {
         ],
         "{sent:?}"
     );
-    // The TUI part reports the start, before any session.
     assert_eq!(sent[0].1, json!({}));
     assert_eq!(
         sent[1].1,
@@ -646,7 +632,6 @@ fn omp_and_qwen_launch_with_the_hook_files_fleet_writes() {
     );
     assert!(settings.is_file(), "{}", settings.display());
 
-    // A revive resumes each on the conversation its hooks reported.
     env.host().reboot().unwrap();
     env.reconcile().ok();
     for (task, program) in [("m1", "omp"), ("q1", "qwen")] {
@@ -686,7 +671,7 @@ fn the_omp_extension_reports_each_event_with_its_session() {
     task["spec"]["harness"] = json!("omp");
     env.apply(json!([task])).ok();
     env.reconcile().ok();
-    // Node runs a module by its extension; the file is plain JavaScript.
+    // Node runs a module by its extension.
     let asset = env.root.join("fleet-omp.mjs");
     std::fs::copy(env.data.join("harness-assets/fleet-omp.ts"), &asset).unwrap();
     let approval = |kind: &str, id: &str| json!([kind, {"toolCallId": id, "toolName": "bash"}]);
@@ -704,7 +689,6 @@ fn the_omp_extension_reports_each_event_with_its_session() {
         ["agent_end", {"messages": []}, "sub"],
         ["agent_end", {"messages": [], "willContinue": true}],
         ["agent_end", {"messages": []}],
-        // `--restore` goes on with an unfinished turn: no prompt was given.
         ["before_agent_start", {"reason": "revive", "prompt": ""}],
     ]);
     let sent = run_asset(
@@ -775,7 +759,7 @@ fn run_hook(
     }
     let mut child = cmd.spawn().expect(shell[0]);
     use std::io::Write;
-    // Without `fleet` the shell exits unread, and the write may break its pipe.
+    // The shell may exit unread, so the write may break its pipe.
     let _ = child
         .stdin
         .take()
@@ -1010,7 +994,7 @@ fn pwsh_command(pwsh: &str) -> [&str; 4] {
     [pwsh, "-NoProfile", "-NonInteractive", "-Command"]
 }
 
-// Windows refuses a `"` in a file name, so the directory cannot exist there.
+// Windows refuses a `"` in a file name.
 #[cfg(unix)]
 #[test]
 fn a_data_directory_with_a_quote_in_its_path_is_refused_before_any_spawn() {

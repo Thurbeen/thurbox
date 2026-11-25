@@ -102,7 +102,6 @@ fn a_task_lifecycle_exports_its_spans_and_metrics_to_the_collector() {
     env.apply(secret_task()).ok();
     env.reconcile().ok();
     env.fleet(&["send", "t1", MESSAGE_SECRET]).ok();
-    // One pass, so the gauge's last value is the queued message.
     env.fleet(&["reconcile", "--max-passes", "1"]).ok();
     env.reconcile().ok();
     env.fleet(&["amend", "t1", "--text", MESSAGE_SECRET]).ok();
@@ -137,7 +136,6 @@ fn a_task_lifecycle_exports_its_spans_and_metrics_to_the_collector() {
             "no `{command}` span in {:#?}",
             names(&spans)
         );
-        // The one refused amend (`--if-generation` past) exits 5.
         let (refused, roots): (Vec<_>, Vec<_>) = roots
             .into_iter()
             .partition(|r| command == "fleet amend" && r.error);
@@ -167,9 +165,6 @@ fn a_task_lifecycle_exports_its_spans_and_metrics_to_the_collector() {
         assert!(span.resource.contains_key("service.version"), "{span:#?}");
     }
 
-    // A reconcile pass is a child of its command. An object's reconcile is
-    // in the object's own trace and links to its pass, and an effect is a
-    // child of its object's reconcile.
     let reconciles = named(&spans, "reconcile Task");
     assert!(!reconciles.is_empty(), "{:#?}", names(&spans));
     let first = reconciles[0];
@@ -190,7 +185,6 @@ fn a_task_lifecycle_exports_its_spans_and_metrics_to_the_collector() {
         .expect("the pass's command");
     assert_eq!(command.name, "fleet reconcile");
     assert_eq!(command.trace_id, pass.trace_id);
-    // Every reconcile of the Task, over every command, is one trace.
     assert!(
         reconciles.iter().all(|r| r.trace_id == first.trace_id),
         "{reconciles:#?}"
@@ -249,7 +243,6 @@ fn a_task_lifecycle_exports_its_spans_and_metrics_to_the_collector() {
         "the released Task's backlog drops to 0: {all:#?}"
     );
 
-    // Names and outcomes only: no brief, message or environment value.
     let raw = String::from_utf8_lossy(&collector.raw()).to_string();
     for secret in [BRIEF_SECRET, ENV_SECRET, MESSAGE_SECRET] {
         assert!(!raw.contains(secret), "{secret} was exported");
@@ -495,12 +488,9 @@ fn nothing_is_exported_unless_an_endpoint_is_set_and_the_sdk_enabled() {
     assert!(report.stderr.is_empty(), "{report:#?}");
     assert_eq!(report.json()["effects"], 2);
 
-    // One signal's exporter cannot be built: the warning says export is
-    // off, and it is off for both signals.
     let mut broken = Env::new("otel-broken");
     exporting(&mut broken, &collector.endpoint);
     broken.set_var("OTEL_EXPORTER_OTLP_METRICS_ENDPOINT", "not a url");
-    // Batches leave every 10 ms, as a long `fleet up` would send them.
     broken.set_var("OTEL_BSP_SCHEDULE_DELAY", "10");
     broken.apply(task("t1", true)).ok();
     let report = broken.reconcile();
@@ -537,8 +527,6 @@ fn an_unreachable_collector_never_changes_a_command() {
             (json!(true), json!(2))
         );
         assert_eq!(env.status("t1")["phase"], "Briefed", "{name}");
-        // Inside the shutdown bound, well short of the exporter's own
-        // 10-second timeout.
         assert!(
             took < Duration::from_secs(7),
             "{name}: the command took {took:?}"
@@ -632,8 +620,6 @@ fn a_stalled_collector_adds_at_most_the_call_bound_to_a_command() {
     let started = Instant::now();
     env.fleet(&["version", "--json"]).ok();
     let took = started.elapsed();
-    // The 2-second bound took 2.0 s here; the call bound takes about 0.2 s.
-    // 1.5 s tells them apart with room for a loaded runner.
     assert!(
         took < Duration::from_millis(1500),
         "the command took {took:?} with a stalled collector"

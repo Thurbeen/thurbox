@@ -299,9 +299,6 @@ mod tests {
             .expect("command");
         let (prog, args) = program_and_args(&cmd);
         assert_eq!(prog, "ssh");
-        // User opts, then the always-appended set (fail-fast hardening plus
-        // multiplexing when the machine has an `~/.ssh` —
-        // crate::shell::ssh_appended_opts), then the destination + remote cmd.
         let mut expected: Vec<String> = vec!["-o".into(), "ControlMaster=auto".into()];
         expected.extend(
             crate::shell::ssh_appended_opts()
@@ -352,9 +349,7 @@ mod tests {
             .expect("command");
         let (prog, args) = program_and_args(&cmd);
         assert_eq!(prog, "wsl.exe");
-        // A Unix caller passes `--cd /` (see `shell::wsl_command`) so wsl.exe
-        // doesn't inherit a caller cwd missing from — or mangled into — the
-        // target distro.
+        // wsl.exe back-translates the caller's cwd through the distro name; `--cd /` bypasses that.
         #[cfg(unix)]
         let prefix: &[&str] = &["-d", "Ubuntu", "--cd", "/"];
         #[cfg(not(unix))]
@@ -384,7 +379,7 @@ mod tests {
         let cmd = local()
             .tmux_command("thurbox", &["has-session"])
             .expect("command");
-        // Removed vars surface in get_envs() as (key, None).
+        // `Command::get_envs` lists a removed variable as (key, None).
         let removed: Vec<String> = cmd
             .get_envs()
             .filter(|(_, v)| v.is_none())
@@ -615,8 +610,6 @@ mod tests {
             "nothing ran"
         );
 
-        // A name `posix_quote` wraps, on a path exactly at the limit: the
-        // path fits, so the data dir is kept.
         // SAFETY: `getuid` cannot fail and touches no memory.
         let uid = unsafe { libc::getuid() };
         let socket = "a b";
@@ -648,8 +641,6 @@ mod tests {
         // SAFETY: `getuid` cannot fail and touches no memory.
         let uid = unsafe { libc::getuid() };
         let tail = format!("/thurbox/tmux/tmux-{uid}/thurbox");
-        // As many three-byte characters as fit in 103 *characters*: within
-        // the limit counted that way, well over it counted in bytes.
         let Some(wide) = 103usize.checked_sub(base.len() + 1 + tail.len()) else {
             eprintln!("skipping: the temp dir leaves no room");
             return;

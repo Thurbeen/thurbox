@@ -9,12 +9,9 @@ fn next_output(reader: &mut ControlModeReader) -> Vec<u8> {
     }
 }
 
-// --- diff_polled_hook_states tests ---
-
 #[test]
 fn poll_diff_reports_first_seen_and_changes_only() {
     let mut last = std::collections::HashMap::new();
-    // First poll: every non-empty value reports (arm-time catch-up parity).
     let events = diff_polled_hook_states(&mut last, "%1 working\n%2 \n%3 done");
     assert_eq!(
         events,
@@ -23,9 +20,7 @@ fn poll_diff_reports_first_seen_and_changes_only() {
             ("%3".to_string(), "done".to_string())
         ]
     );
-    // Steady state stays silent.
     assert!(diff_polled_hook_states(&mut last, "%1 working\n%3 done").is_empty());
-    // Only the changed pane reports.
     let events = diff_polled_hook_states(&mut last, "%1 done\n%3 done");
     assert_eq!(events, vec![("%1".to_string(), "done".to_string())]);
 }
@@ -34,9 +29,7 @@ fn poll_diff_reports_first_seen_and_changes_only() {
 fn poll_diff_clears_vanished_and_unset_panes_so_they_rereport() {
     let mut last = std::collections::HashMap::new();
     diff_polled_hook_states(&mut last, "%1 working\n%2 blocked");
-    // %1 vanishes (respawn), %2's option is unset.
     assert!(diff_polled_hook_states(&mut last, "%2").is_empty());
-    // Both re-report when they come back with a value.
     let events = diff_polled_hook_states(&mut last, "%1 working\n%2 blocked");
     assert_eq!(events.len(), 2);
 }
@@ -48,8 +41,6 @@ fn poll_diff_skips_malformed_lines_and_trims_values() {
         &mut last,
         "not-a-pane working\n%x done\n\n%7  done  \n%8 two words",
     );
-    // Invalid pane tokens are dropped; values are trimmed; a multi-word
-    // value passes through (the app-side allow-list rejects it there).
     assert_eq!(
         events,
         vec![
@@ -58,8 +49,6 @@ fn poll_diff_skips_malformed_lines_and_trims_values() {
         ]
     );
 }
-
-// --- parse_pane_pids tests ---
 
 #[test]
 fn pane_pids_parse_skips_malformed_lines() {
@@ -76,8 +65,6 @@ fn pane_ids_parse_keeps_every_listed_pane_whatever_its_pid() {
     ids.sort();
     assert_eq!(ids, ["%1", "%2", "%3"]);
 }
-
-// --- is_valid_pane_id tests ---
 
 #[test]
 fn pane_id_accepts_percent_digits() {
@@ -97,8 +84,6 @@ fn pane_id_rejects_everything_else() {
     assert!(!is_valid_pane_id("%42; kill-server"));
     assert!(!is_valid_pane_id("%42\nkill-server"));
 }
-
-// --- shell_escape tests ---
 
 #[test]
 fn shell_escape_empty() {
@@ -142,8 +127,7 @@ fn shell_escape_allows_equals_comma() {
 
 #[test]
 fn shell_escape_replaces_newlines() {
-    // Newlines in tmux control mode commands would split the command,
-    // corrupting the protocol. They must be replaced with spaces.
+    // A newline splits a tmux control-mode command.
     assert_eq!(
         shell_escape("line one\nline two\nline three"),
         "'line one line two line three'"
@@ -154,8 +138,6 @@ fn shell_escape_replaces_newlines() {
 fn shell_escape_newline_only() {
     assert_eq!(shell_escape("\n"), "' '");
 }
-
-// --- decode_octal tests ---
 
 #[test]
 fn decode_octal_incomplete() {
@@ -176,8 +158,6 @@ fn decode_octal_trailing_backslash() {
 fn decode_octal_overflow_wraps() {
     assert_eq!(decode_octal(b"\\400"), vec![0u8]);
 }
-
-// --- window close → reader EOF ---
 
 #[test]
 fn window_close_gives_its_panes_eof() {
@@ -221,8 +201,6 @@ fn window_close_leaves_other_windows_alone() {
     ControlMode::dispatch_output(&senders, "%7", b"still here".to_vec());
     assert_eq!(next_output(&mut reader), b"still here");
 }
-
-// --- a close that is only a hint (psmux) ---
 
 #[test]
 fn a_close_hint_for_a_live_window_ends_no_reader() {
@@ -272,7 +250,6 @@ fn a_dropped_readers_sender_is_unregistered() {
 fn a_window_close_is_confirmed_before_a_reader_ends() {
     use std::os::unix::fs::PermissionsExt;
 
-    // `%%` because the listing goes through the fake's `printf` format.
     for (listed, ends) in [("%%7", false), ("%%1", true)] {
         let root = tempfile::tempdir().expect("tempdir");
         let mux = root.path().join("fake-mux");
@@ -331,7 +308,6 @@ fn a_window_close_is_confirmed_before_a_reader_ends() {
             assert!(std::time::Instant::now() < deadline, "no close check ran");
             std::thread::sleep(std::time::Duration::from_millis(20));
         }
-        // Answered after the listing, so the check has its reply by now.
         control
             .send_command("display-message -p sync")
             .expect("sync");
@@ -346,8 +322,6 @@ fn a_window_close_is_confirmed_before_a_reader_ends() {
     }
 }
 
-// --- layout change → the reader's grid size ---
-
 #[test]
 fn layout_change_reads_the_window_and_its_size() {
     assert_eq!(
@@ -358,7 +332,6 @@ fn layout_change_reads_the_window_and_its_size() {
             cols: 100,
         }
     );
-    // A multi-pane layout nests, but its first size is still the window's.
     assert_eq!(
         parse_notification("%layout-change @4 d0a3,160x45,0,0{80x45,0,0,7,79x45,81,0,8} x"),
         Notification::LayoutChange {
@@ -462,8 +435,6 @@ fn a_sizer_change_is_not_handed_to_the_reader() {
     assert_eq!(next_output(&mut reader), b"x");
     assert!(size.sized_elsewhere());
 }
-
-// --- parse_notification tests ---
 
 #[test]
 fn parse_output_notification() {
@@ -637,11 +608,7 @@ fn parse_extended_output_missing_pane_space() {
     );
 }
 
-// --- %subscription-changed parsing tests ---
-// Wire shape (tmux man page): `%subscription-changed name session-id
-// window-id window-index pane-id ... : value` — args between pane-id and
-// the ':' are documented future-use; the value may be empty or contain
-// spaces/colons.
+// tmux: `%subscription-changed name session window index pane [future-use...] : value`.
 
 #[test]
 fn subscription_changed_parses_canonical_line() {
@@ -697,8 +664,6 @@ fn subscription_changed_value_keeps_spaces_and_colons() {
 
 #[test]
 fn subscription_changed_malformed_falls_to_other() {
-    // Invalid pane token / missing separator / truncated — wire data must
-    // never panic, it degrades to Other.
     for line in [
         "%subscription-changed s $1 @5 2 pane7 : done",
         "%subscription-changed s $1 @5 2 %7 done",
@@ -711,8 +676,6 @@ fn subscription_changed_malformed_falls_to_other() {
         );
     }
 }
-
-// --- format_send_keys tests ---
 
 #[test]
 fn format_send_keys_single_byte() {
@@ -740,8 +703,6 @@ fn format_send_keys_escape_sequence() {
     );
 }
 
-// --- hex_send_keys_commands chunking tests ---
-
 #[test]
 fn hex_send_keys_commands_short_input_is_one_command() {
     let cmds = hex_send_keys_commands("%1", b"ABC");
@@ -755,7 +716,6 @@ fn hex_send_keys_commands_empty_input_is_no_commands() {
 
 #[test]
 fn hex_send_keys_commands_chunks_large_input_losslessly() {
-    // 5 KB of bracketed-paste-wrapped content, like `send_paste_to_session`.
     let mut input = b"\x1b[200~".to_vec();
     input.extend((0..5000u32).map(|i| (i % 256) as u8));
     input.extend_from_slice(b"\x1b[201~");
@@ -768,7 +728,6 @@ fn hex_send_keys_commands_chunks_large_input_losslessly() {
         cmds.len()
     );
 
-    // Parse each `send-keys -t %1 -H XX XX …\n` back into its bytes.
     let decode = |cmd: &str| -> Vec<u8> {
         cmd.trim_end()
             .strip_prefix("send-keys -t %1 -H")
@@ -790,8 +749,6 @@ fn hex_send_keys_commands_chunks_large_input_losslessly() {
     }
     assert_eq!(reassembled, input);
 }
-
-// --- bracketed paste payloads ---
 
 #[test]
 fn tmux_quote_keeps_a_line_on_one_line() {
@@ -829,10 +786,6 @@ fn a_tmux_paste_lets_tmux_decide_the_markers() {
 
 #[test]
 fn two_tmux_pastes_never_share_a_buffer() {
-    // Two interfaces can paste into one pane over two connections, and their
-    // `set-buffer -a` and `paste-buffer -d` lines then interleave on the
-    // server: a buffer named after the pane alone mixed one paste into the
-    // other, or was deleted before the second could paste it.
     let first = tmux_paste_commands("%7", "one");
     let second = tmux_paste_commands("%7", "two");
     assert_ne!(paste_buffer_of(&first), paste_buffer_of(&second));
@@ -910,9 +863,6 @@ fn a_tmux_paste_goes_through_a_buffer_never_send_keys() {
 #[cfg(unix)]
 #[test]
 fn a_paste_that_cannot_go_out_of_band_presses_no_key() {
-    // The key encoding is what the out-of-band channel exists to avoid: every
-    // CR in it is `Enter`. Falling back to it when psmux's `send-paste` failed
-    // ran each pasted line as it went.
     let failing = FakeInput(Some(|| Err(anyhow::anyhow!("send-paste failed"))));
     let sent = written_by(
         failing,
@@ -927,10 +877,6 @@ fn a_paste_that_cannot_go_out_of_band_presses_no_key() {
 #[cfg(unix)]
 #[test]
 fn a_paste_with_a_marker_inside_presses_no_key() {
-    // A frame holding a second marker is not one paste, and was typed out
-    // through the key encoding — where the CR after the early end marker is
-    // `Enter`. Whatever the coordinator sanitised, the writer is the last
-    // place that can refuse it.
     for input in [FakeInput(None), FakeInput(Some(|| Ok(())))] {
         let sent = written_by(
             input,
@@ -949,24 +895,19 @@ fn bracketed_paste_text_unwraps_a_whole_payload() {
         bracketed_paste_text(b"\x1b[200~line one\nline two\r\x1b[201~"),
         Some("line one\nline two\r")
     );
-    // Empty paste is still a paste.
     assert_eq!(bracketed_paste_text(b"\x1b[200~\x1b[201~"), Some(""));
 }
 
 #[test]
 fn bracketed_paste_text_rejects_non_paste_input() {
-    // Ordinary keystrokes, and each half of a payload on its own.
     assert_eq!(bracketed_paste_text(b"ls\r"), None);
     assert_eq!(bracketed_paste_text(b"\x1b[200~partial"), None);
     assert_eq!(bracketed_paste_text(b"tail\x1b[201~"), None);
-    // Trailing keystroke past the closing marker: not one clean paste.
     assert_eq!(bracketed_paste_text(b"\x1b[200~hi\x1b[201~\r"), None);
 }
 
 #[test]
 fn bracketed_paste_text_rejects_nested_markers() {
-    // Two coalesced pastes, or pasted marker text: the key encoding keeps
-    // the bytes verbatim rather than flattening them into one paste.
     assert_eq!(
         bracketed_paste_text(b"\x1b[200~a\x1b[201~\x1b[200~b\x1b[201~"),
         None
@@ -976,8 +917,7 @@ fn bracketed_paste_text_rejects_nested_markers() {
 
 #[test]
 fn bracketed_paste_text_rejects_invalid_utf8() {
-    // psmux's `send-paste` payload is text; a byte run that is not UTF-8
-    // (e.g. a paste chunked mid-character) falls back to the key encoding.
+    // psmux's `send-paste` payload is text, so non-UTF-8 bytes take the key encoding.
     assert_eq!(bracketed_paste_text(b"\x1b[200~\xff\x1b[201~"), None);
 }
 
@@ -1104,8 +1044,6 @@ mod transport_proptests {
         }
     }
 }
-
-// --- command lists on a real tmux ---
 
 #[cfg(unix)]
 #[test]
@@ -1373,16 +1311,7 @@ impl Drop for ThrowawayServer {
             .tmux_command(&self.socket, &["kill-server"])
             .expect("command")
             .output();
-        // tmux does not unlink its socket when the server exits, so a killed
-        // server still leaves a dead socket file in the shared socket
-        // directory — one per test process, kept for good. The path is the
-        // rule tmux itself applies (`$TMUX_TMPDIR` or `/tmp`, then
-        // `tmux-<uid>/<name>`); this test cannot point `TMUX_TMPDIR`
-        // somewhere private instead, because the lib's unit tests share one
-        // process and the variable is process-wide.
-        // Empty is not a directory, and tmux itself only honours the variable
-        // when it is non-empty — matching that is what keeps this pointing at
-        // the file tmux actually made.
+        // tmux leaves its socket file behind and honours `TMUX_TMPDIR` only when non-empty.
         let tmpdir = std::env::var_os("TMUX_TMPDIR")
             .filter(|dir| !dir.is_empty())
             .map(std::path::PathBuf::from)
@@ -1450,8 +1379,6 @@ fn a_command_list_cut_short_by_an_error_fails_and_keeps_later_answers_in_place()
     assert_eq!(next, "next");
 }
 
-// --- the implicit attach response (docs/runtime/runtime-mux.md) ---
-
 #[test]
 fn the_drain_stops_at_the_end_of_the_implicit_block() {
     let stream = "\
@@ -1477,8 +1404,6 @@ fn a_psmux_shaped_stream_never_satisfies_the_drain() {
         "{err:#}"
     );
 }
-
-// --- pane snapshots ---
 
 #[cfg(unix)]
 #[test]
@@ -1552,8 +1477,6 @@ fn a_snapshot_is_read_from_its_three_blocks() {
     assert_eq!(normal.normal, vec!["current", "rows"]);
     assert_eq!(normal.alternate, None);
 
-    // With the alternate screen up, the capture without `-a` is that screen and
-    // the one with it is the normal screen behind.
     let alternate = parse_snapshot(blocks("1")).expect("an alternate screen");
     assert_eq!(alternate.normal, vec!["saved"]);
     assert_eq!(
@@ -1625,8 +1548,6 @@ fn a_snapshot_comes_out_of_the_reader_between_the_bytes_around_it() {
     assert_eq!(next_output(&mut reader), b"after");
 }
 
-// --- catching up a reader whose channel overflowed (`Resync`) ---
-
 fn resyncing_reader(capacity: usize) -> (PaneSendersMapShared, ControlModeReader, Arc<Resync>) {
     let (tx, rx) = sync_channel(capacity);
     let resync = Arc::new(Resync {
@@ -1679,7 +1600,6 @@ fn a_reader_that_lost_output_takes_none_until_a_resync() {
     assert!(resync.is_behind());
     assert_eq!(read_item(&mut reader), Ok(b"a".to_vec()));
     assert_eq!(read_item(&mut reader), Ok(b"b".to_vec()));
-    // Room again, but this is still behind the gap.
     ControlMode::dispatch_output(&senders, "%7", b"also lost".to_vec());
 
     let snapshot = caught_up_snapshot();
@@ -1710,7 +1630,6 @@ fn a_resync_that_finds_the_channel_full_comes_once_it_is_drained() {
 #[test]
 fn a_parked_resync_never_overtakes_output_queued_before_it() {
     let (senders, reader, resync) = resyncing_reader(1);
-    // Where the reader stands: it saw an empty channel and is about to lock.
     ControlMode::dispatch_output(&senders, "%7", b"queued".to_vec());
     ControlMode::dispatch_output(&senders, "%7", b"lost".to_vec());
     let snapshot = caught_up_snapshot();
@@ -1793,8 +1712,6 @@ fn a_reader_in_step_takes_a_plain_snapshot() {
     assert_eq!(read_item(&mut reader), Err((snapshot, false)));
 }
 
-// --- hidden panes (`ControlMode::hide_pane`) ---
-
 fn after_report(before: &[u8], value: &str) -> vt100::Parser {
     let (_, bytes) = hidden_state(value).expect("a report");
     let mut parser = vt100::Parser::new(2.try_into().unwrap(), 2.try_into().unwrap(), 0);
@@ -1845,7 +1762,7 @@ fn a_hidden_report_carries_its_activity_and_a_title_with_separators() {
     assert_eq!(activity, "1792003771");
     let text = String::from_utf8_lossy(&bytes);
     assert!(text.contains("\x1b]2;a | title: here"), "{text:?}");
-    // tmux's default title is the host's name, not an agent's line.
+    // tmux's default pane title is the host's name.
     let (_, bytes) = hidden_state("1|0,0,0,1|0,0,0,0,0,0|host|host").expect("report");
     assert!(!String::from_utf8_lossy(&bytes).contains("\x1b]2;"));
     assert!(hidden_state("not a report").is_none());
@@ -1877,8 +1794,6 @@ fn a_hidden_pane_reads_as_printing_only_when_its_activity_moves() {
     ControlMode::dispatch_hidden(&senders, &hidden, "%7", &report("102"));
     assert!(rx.try_recv().is_err(), "a pane shown again takes no report");
 }
-
-// --- a connection whose server stops reading ---
 
 #[cfg(unix)]
 fn stalled_server(root: &std::path::Path) -> (ControlMode, std::path::PathBuf) {
@@ -1939,10 +1854,8 @@ fn a_server_that_stops_reading_stalls_neither_output_nor_callers() {
         .unwrap()
         .insert("%7".to_string(), vec![tx.into()]);
     let flood = flood_keys(&control);
-    // Long enough for the flood to fill the pipe and park whatever writes it.
     std::thread::sleep(std::time::Duration::from_millis(300));
 
-    // The paint path's request: it must not queue behind the stalled write.
     let control = Arc::new(control);
     let (asked_tx, asked) = sync_channel(1);
     std::thread::spawn({
@@ -1953,8 +1866,6 @@ fn a_server_that_stops_reading_stalls_neither_output_nor_callers() {
     });
     let asked = asked.recv_timeout(std::time::Duration::from_secs(1));
 
-    // The server pauses `%7` and then streams it. Resuming the pane is a write,
-    // and the reader must not wait on one to go on reading.
     std::fs::write(mux.with_extension("go"), b"").expect("go");
     let (out_tx, out) = sync_channel(1);
     std::thread::spawn(move || {

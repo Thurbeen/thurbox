@@ -82,7 +82,6 @@ pub fn call(
 ) -> Result<Reply, (Uncertainty, String)> {
     let what = args.first().cloned().unwrap_or_default();
     let mut spec = Spec::new(program, timeout).args(args);
-    // No prompts, no colour, no update nag: the output is parsed.
     spec.env.extend(
         [
             ("GH_PROMPT_DISABLED", "1"),

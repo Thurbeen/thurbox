@@ -24,7 +24,6 @@ impl Clock for TestClock {
 }
 
 struct World {
-    // The directories the store and the fake runtime live in.
     _env: Env,
     clock: Arc<TestClock>,
     store: FileStore,
@@ -399,7 +398,6 @@ fn a_time_missed_past_its_deadline_is_skipped() {
     let w = World::new("cron-deadline", MONDAY_3AM - MINUTE);
     w.apply(nightly(json!({"startingDeadlineSeconds": 600})));
     w.reconcile();
-    // The manager was down from 02:59 until 03:30.
     w.at(MONDAY_3AM + 30 * MINUTE);
     w.reconcile();
     assert!(w.tasks_of("nightly").is_empty());
@@ -493,7 +491,6 @@ fn an_intent_without_a_receipt_adopts_the_task_and_never_makes_a_second() {
     w.apply(nightly(json!({})));
     w.at(MONDAY_3AM);
     w.reconcile();
-    // As if the manager died after the create, before the receipt landed.
     let lease = w.store.acquire_lease("test-crash", 30_000).expect("lease");
     let Observation::Known(Some(obj)) = w.store.get("CronTask", "nightly") else {
         panic!("CronTask/nightly");

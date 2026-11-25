@@ -1,3 +1,4 @@
+// Claude Code keeps the last of several `--settings`, so its hooks are one.
 pub const CLAUDE: &str = r#"
 name = "claude"
 program = "claude"
@@ -31,6 +32,7 @@ args = ["fleet", "inbox-post", "{address}", "--", "{text}"]
 env = { CLAUDE_CODE_ENABLE_TELEMETRY = "1", OTEL_METRICS_EXPORTER = "otlp", OTEL_LOGS_EXPORTER = "otlp", OTEL_EXPORTER_OTLP_ENDPOINT = "{endpoint}", OTEL_EXPORTER_OTLP_PROTOCOL = "{protocol}", OTEL_EXPORTER_OTLP_HEADERS = "{headers}", OTEL_SERVICE_NAME = "claude", OTEL_RESOURCE_ATTRIBUTES = "{resource}" }
 "#;
 
+// Codex splits a dotted `-c` key on every `.` and reads no `OTEL_EXPORTER_OTLP_*` variable.
 pub const CODEX: &str = r#"
 name = "codex"
 program = "codex"
@@ -63,6 +65,7 @@ args = [
 env = { OTEL_RESOURCE_ATTRIBUTES = "{resource}" }
 "#;
 
+// pi asks for trust in a directory with project resources unless `--approve` is given.
 pub const PI: &str = r#"
 name = "pi"
 program = "pi"
@@ -83,6 +86,7 @@ prompt = ["prompt"]
 conversation = ["session_id"]
 "#;
 
+// opencode's shared background server runs with another environment and loads no plugin.
 pub const OPENCODE: &str = r#"
 name = "opencode"
 program = "opencode"
@@ -103,6 +107,7 @@ conversation = ["session_id"]
 env = { OTEL_EXPORTER_OTLP_ENDPOINT = "{endpoint}", OTEL_EXPORTER_OTLP_HEADERS = "{headers}", OTEL_RESOURCE_ATTRIBUTES = "{resource}" }
 "#;
 
+// kilo's background daemon runs with another environment; `KILO_NO_DAEMON` keeps the server in-process.
 pub const KILO: &str = r#"
 name = "kilo"
 program = "kilo"
@@ -140,6 +145,7 @@ conversation = ["session_id"]
 env = { OTEL_EXPORTER_OTLP_ENDPOINT = "{endpoint}", OTEL_EXPORTER_OTLP_PROTOCOL = "{protocol}", OTEL_EXPORTER_OTLP_HEADERS = "{headers}", OTEL_SERVICE_NAME = "omp", OTEL_RESOURCE_ATTRIBUTES = "{resource}" }
 "#;
 
+// qwen derives its system defaults path from its system settings path when none is given.
 pub const QWEN: &str = r#"
 name = "qwen"
 program = "qwen"
@@ -160,6 +166,7 @@ conversation = ["session_id"]
 env = { QWEN_TELEMETRY_ENABLED = "true", QWEN_TELEMETRY_OTLP_ENDPOINT = "{endpoint}", QWEN_TELEMETRY_OTLP_PROTOCOL = "http", QWEN_TELEMETRY_LOG_PROMPTS = "false", OTEL_EXPORTER_OTLP_HEADERS = "{headers}", OTEL_SERVICE_NAME = "qwen", OTEL_RESOURCE_ATTRIBUTES = "{resource}" }
 "#;
 
+// Copilot runs `permissionRequest` for every permission check, an allowed one included.
 pub const COPILOT: &str = r#"
 name = "copilot"
 program = "copilot"
@@ -183,6 +190,7 @@ conversation = ["sessionId"]
 env = { COPILOT_OTEL_ENABLED = "true", OTEL_EXPORTER_OTLP_ENDPOINT = "{endpoint}", OTEL_EXPORTER_OTLP_PROTOCOL = "{protocol}", OTEL_EXPORTER_OTLP_HEADERS = "{headers}", OTEL_SERVICE_NAME = "copilot", OTEL_RESOURCE_ATTRIBUTES = "{resource}" }
 "#;
 
+// Kimi reads hooks only from its own `config.toml`; no flag or variable adds any at launch.
 pub const KIMI: &str = r#"
 name = "kimi"
 program = "kimi"

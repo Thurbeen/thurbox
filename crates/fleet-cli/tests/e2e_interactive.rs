@@ -26,7 +26,6 @@ fn a_task_with_no_brief_spawns_and_waits_for_its_user() {
     assert_eq!(env.calls("brief"), 0, "nothing is typed into the session");
     assert!(briefs(&env, "t1").is_empty());
 
-    // A message is delivered as to any session.
     let entry = env.fleet(&["send", "t1", "hello", "--json"]).ok().json();
     env.reconcile().ok();
     assert_eq!(
@@ -34,7 +33,6 @@ fn a_task_with_no_brief_spawns_and_waits_for_its_user() {
         vec![entry["key"].as_str().unwrap().to_string()]
     );
 
-    // There is no brief to add to.
     env.fleet(&["amend", "t1", "--text", "more"])
         .code(1)
         .stderr_has("interactive");

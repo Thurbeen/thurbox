@@ -440,7 +440,6 @@ fn more_than_the_cap_rotates_the_oldest_and_raises_dropped_before() {
     );
     assert_eq!(st.notes.iter().filter(|n| n.seq == 2).count(), 5);
 
-    // The same forge answer again: the rotated notes are not new, nothing moves.
     let (_, again) = run_at(&object(Some(&st)), seen(s), NOW + 2 * POLL);
     assert_eq!((again.revision, again.dropped_before), (2, 1));
 }
@@ -564,7 +563,6 @@ fn a_closed_change_is_watched_slowly_and_reopens_into_watching() {
     );
     assert_eq!(closed.revision, 2);
 
-    // Still closed within the grace: bookkeeping and the slow cadence.
     let t2 = NOW + 11 * POLL;
     let (_, still) = run_at(
         &object(Some(&closed)),
@@ -579,7 +577,6 @@ fn a_closed_change_is_watched_slowly_and_reopens_into_watching() {
     );
     assert_eq!(still.not_before, Some(t2 + 10 * POLL));
 
-    // Reopened within the grace: Watching again, numbered through the state.
     let t3 = t2 + 10 * POLL;
     let (_, reopened) = run_at(&object(Some(&still)), seen(snapshot(ChangeState::Open)), t3);
     assert_eq!(reopened.phase, Phase::Watching);

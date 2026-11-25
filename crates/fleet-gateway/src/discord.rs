@@ -264,7 +264,6 @@ impl DiscordGateway {
 
     fn thread_history(&self, chat: &str, thread: &str, query: &HistoryQuery) -> HistoryObservation {
         let mut budget = Budget::new(self.call_timeout, MAX_CALLS_PER_OPERATION);
-        // The message the thread started from, in its parent channel.
         let starter = match self.budgeted(
             "GET",
             &format!("channels/{chat}/messages/{thread}"),
@@ -419,8 +418,6 @@ impl DiscordGateway {
                 },
                 (None, None) => match self.send(chat, chunk, &chunk_key, &mut budget) {
                     Ok((id, at)) => {
-                        // The opening post landed: whatever the thread start
-                        // answers, the outcome is no longer a clean refusal.
                         first = Some((id.clone(), at));
                         self.start_thread(chat, &id, &name, &mut budget)
                             .map(|()| (id, at))
@@ -536,7 +533,6 @@ impl DiscordGateway {
         let Some(id) = me["id"].as_str().filter(|s| !s.is_empty()) else {
             return Observation::unknown("GET /users/@me named no id");
         };
-        // The bot sees the account's guild, or nothing it reads is real.
         let guild = format!("guilds/{}", self.guild);
         if let Err(e) = self.call("GET", &guild, None, self.call_timeout) {
             return Observation::unknown(format!(
@@ -568,10 +564,6 @@ impl DiscordGateway {
         })
     }
 }
-
-// ----------------------------------------------------------------------
-// Addresses, snowflakes, nonces and times.
-// ----------------------------------------------------------------------
 
 const EMOJI: &[(&str, &str)] = &[
     ("eyes", "\u{1F440}"),
@@ -702,21 +694,20 @@ pub fn iso_millis(s: &str) -> Option<Millis> {
         }
         _ => return None,
     };
-    // Days since 1970-01-01 (Howard Hinnant's days_from_civil).
+    let days = days_since_unix_epoch_from_civil(y, mo, d);
+    let secs = days * 86_400 + h * 3600 + mi * 60 + se - offset * 60;
+    u64::try_from(secs * 1000 + ms).ok()
+}
+
+fn days_since_unix_epoch_from_civil(y: i64, mo: i64, d: i64) -> i64 {
     let y = if mo <= 2 { y - 1 } else { y };
     let era = y.div_euclid(400);
     let yoe = y - era * 400;
     let mp = (mo + 9) % 12;
     let doy = (153 * mp + 2) / 5 + d - 1;
     let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
-    let days = era * 146_097 + doe - 719_468;
-    let secs = days * 86_400 + h * 3600 + mi * 60 + se - offset * 60;
-    u64::try_from(secs * 1000 + ms).ok()
+    era * 146_097 + doe - 719_468
 }
-
-// ----------------------------------------------------------------------
-// Reading messages and events, pure.
-// ----------------------------------------------------------------------
 
 pub fn message_of(bot: &str, item: &Value, starts_thread: bool) -> Result<Message, String> {
     let id = item["id"]
@@ -815,9 +806,7 @@ pub fn read_event(account: &AccountConfig, envelope: &Envelope) -> Observation<O
     if channel_type == Some(PRIVATE_THREAD) {
         return Observation::Known(None);
     }
-    // The listener names the thread's parent on every event, and `null`
-    // for a message in a channel: an edit or a removal carries no channel
-    // type, so a missing key cannot be told from a top-level message.
+    // Discord's edit and removal events carry no channel type.
     let parent = match outer.get("parentId") {
         Some(Value::Null) => None,
         Some(Value::String(p)) if is_snowflake(p) => Some(p.as_str()),
@@ -835,8 +824,6 @@ pub fn read_event(account: &AccountConfig, envelope: &Envelope) -> Observation<O
             "message {id} is in thread {channel}, and the envelope's parentId is null"
         ));
     }
-    // In a thread: the thread's conversation. In a channel: the thread the
-    // message starts, or will.
     let (conversation, in_thread) = match parent {
         Some(p) => (conv(p, channel), true),
         None => (conv(channel, id), false),
@@ -861,11 +848,11 @@ pub fn read_event(account: &AccountConfig, envelope: &Envelope) -> Observation<O
         }
         "MESSAGE_UPDATE" => {
             let Some(edited) = s("edited_timestamp") else {
-                // An embed resolving, a pin: not an edit.
+                // Discord sends an update for an embed resolving or a pin.
                 return Observation::Known(None);
             };
             let Some(text) = s("content") else {
-                // Without the message content intent an edit carries no text.
+                // Without the message content intent, Discord's edit carries no text.
                 return Observation::Known(None);
             };
             let Some(edited_at) = iso_millis(edited) else {
@@ -909,10 +896,6 @@ fn conv(chat: &str, thread: &str) -> ConversationRef {
 fn str_of<'a>(m: &'a Map<String, Value>, k: &str) -> Option<&'a str> {
     m.get(k).and_then(Value::as_str)
 }
-
-// ----------------------------------------------------------------------
-// One call's answer.
-// ----------------------------------------------------------------------
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum CallError {
@@ -970,14 +953,14 @@ impl CallError {
 }
 
 pub fn answer(reply: &Reply, what: &str) -> Result<Value, CallError> {
-    // `204 No Content`, as a reaction's create and delete answer.
+    // Discord answers a reaction's create and delete with `204 No Content`.
     if (200..=299).contains(&reply.status) && reply.body.trim().is_empty() && reply.exit == Some(0)
     {
         return Ok(Value::Null);
     }
     let body: Result<Value, _> = serde_json::from_str(reply.body.trim());
     if reply.status == 429 {
-        // `retry_after` is seconds as a float; the header whole seconds.
+        // Discord's `retry_after` is seconds as a float; its header is whole seconds.
         let from_body = body
             .as_ref()
             .ok()
@@ -1092,8 +1075,6 @@ mod tests {
         }
     }
 
-    // Recorded dispatches: synthetic, with made-up snowflakes, in the
-    // shapes Discord documents.
     const MENTION: &str = include_str!("../fixtures/discord/message-create-mention.json");
     const REPLY: &str = include_str!("../fixtures/discord/message-create-thread-reply.json");
     const OWN_POST: &str = include_str!("../fixtures/discord/message-create-own-post.json");
@@ -1124,7 +1105,6 @@ mod tests {
         assert_eq!(m.author.name, "Alex");
         assert_eq!(m.at, snowflake_millis(mention_id).unwrap());
         assert_eq!(m.key, None);
-        // A redelivery after a resume is the same delivery.
         assert_eq!(delivery(MENTION).id, d.id);
     }
 

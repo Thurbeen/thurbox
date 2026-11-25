@@ -162,7 +162,6 @@ fn a_create_stays_in_doubt_when_its_retry_has_no_receipt() {
     let planned = reconcile(&first, T + MINUTE);
     assert_eq!(attention(&planned), ("True".into(), "CreateUnknown".into()));
 
-    // The manager wrote the intent, then stopped before the receipt.
     let second = cron_task(planned);
     let next = reconcile(&second, T + 2 * MINUTE);
     assert_eq!(
@@ -202,7 +201,6 @@ fn three_unknown_attempts_raise_create_unknown() {
                 "pass {pass}: too early"
             );
         }
-        // The manager's receipt for the retry: Unknown again.
         status["effects"]["create/29913300"]["receipt"] = unknown.clone();
     }
     let status = reconcile(&cron_task(status), T + 4 * MINUTE);

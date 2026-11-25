@@ -31,8 +31,6 @@ pub fn config_dir(profile: &Profile, env: &dyn Fn(&str) -> Option<String>) -> Op
     let install = profile.install.as_ref()?;
     let home = env(HOME);
     let dir = PathBuf::from(api::config_dir(install, env, home.as_deref())?);
-    // Recorded and compared as an absolute path: a relative one names
-    // another directory from each working directory.
     if dir.is_relative() {
         return std::env::current_dir().ok().map(|cwd| cwd.join(dir));
     }
@@ -107,8 +105,6 @@ fn observe(name: &str, entry: Option<&Entry>, dir: Option<&Path>) -> io::Result<
     }
     for b in &entry.blocks {
         let now = match fs::read_to_string(root.join(&b.path)) {
-            // A block that lost a comment line is no longer as Fleet wrote
-            // it: modified.
             Ok(text) => match api::find_block(&text, name, &b.comment) {
                 Ok(range) => range.map(|r| api::hash(text[r].as_bytes())),
                 Err(_) => Some("broken".into()),
@@ -185,10 +181,6 @@ pub fn install(
     }
     let mut ledger = read_ledger(data_dir).map_err(|e| e.to_string())?;
     let old = ledger.integrations.get(&profile.name).cloned();
-    // Everything that would stop the new install is checked while the old
-    // one still works: it is removed only once the new one can be written.
-    // Owning a block in a shared file is not owning the file: a whole file
-    // is Fleet's to replace only when the old entry wrote it whole.
     let same_dir = old.as_ref().filter(|o| Path::new(&o.dir) == dir);
     let our_file = |rel: &str| same_dir.is_some_and(|o| o.files.iter().any(|f| f.path == rel));
     let our_block = |rel: &str| same_dir.is_some_and(|o| o.blocks.iter().any(|b| b.path == rel));
@@ -227,7 +219,6 @@ pub fn install(
         write_ledger(data_dir, &ledger).map_err(|e| e.to_string())?;
     }
 
-    // What will be written, recorded before any of it is.
     let version = install.version;
     let mut entry = Entry {
         version,

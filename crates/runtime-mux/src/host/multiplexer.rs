@@ -107,7 +107,6 @@ impl BackendChoice {
             None => local_default,
         };
         let multiplexer = match explicit.or(configured).unwrap_or("default") {
-            // A host's own multiplexer, else this machine's.
             "default" => host
                 .as_ref()
                 .map_or(Multiplexer::platform_default(), |host| {

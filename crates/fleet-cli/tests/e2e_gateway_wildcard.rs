@@ -108,7 +108,6 @@ fn an_explicit_route_wins_its_channel_and_the_log_channel_stays_uncovered() {
     let conv = conversation_name(GATEWAY_ACCOUNT, &listed);
     let obj = env.fleet(&["get", "conversation", &conv]).ok().json();
     assert_eq!(obj["spec"]["route"], GATEWAY_ROUTE, "{obj:#}");
-    // A reply under a log post is never admitted.
     let logged = format!("fake:{LOGS}:{T0}");
     let out = env
         .receive("Ev02", mention(&logged, ALEX_ID, T0))
@@ -127,7 +126,6 @@ fn an_explicit_route_wins_its_channel_and_the_log_channel_stays_uncovered() {
 #[test]
 fn a_wildcard_route_keeps_the_admission_rules_and_costs_nothing_for_chatter() {
     let env = wildcard_env("wildcard-admission");
-    // Chatter in a channel only the wildcard covers: no object.
     let quiet = format!("fake:C0777CHAT:{T0}");
     let out = env
         .receive(
@@ -144,7 +142,6 @@ fn a_wildcard_route_keeps_the_admission_rules_and_costs_nothing_for_chatter() {
         &conversation_name(GATEWAY_ACCOUNT, &quiet),
     ])
     .code(3);
-    // A stranger's mention earns the route's refusal and starts no Task.
     let asked = format!("fake:C0888ASK:{T0}");
     deliver(&env, "Ev02", mention(&asked, "U0999ZZZZ", T0));
     let report = env.reconcile().ok().json();
@@ -194,7 +191,6 @@ fn the_config_refuses_a_second_wildcard_and_a_questions_route_without_a_channel(
         env.set_gateway(&section);
         env.fleet(&["list", "tasks"]).code(1).stderr_has(needle);
     }
-    // A wildcard route that also lists a channel id can take Questions.
     env.set_gateway(
         &base
             .replace("channels = [\"*\"]", "channels = [\"*\", \"C0789IJKL\"]")

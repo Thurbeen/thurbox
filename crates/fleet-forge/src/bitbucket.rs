@@ -259,7 +259,7 @@ fn state_of(pr: &Value) -> Result<ChangeState, String> {
     let draft = pr["draft"]
         .as_bool()
         .ok_or("pull request has no draft flag")?;
-    // Only an open pull request is a draft; a declined draft keeps the flag.
+    // Bitbucket keeps the draft flag on a declined pull request.
     match pr["state"].as_str() {
         Some("OPEN") if draft => Ok(ChangeState::Draft),
         Some("OPEN") => Ok(ChangeState::Open),
@@ -534,7 +534,7 @@ fn snapshot(
         review_decision: review_decision(final_pr)?,
         mergeable: mergeable_of(state, mergeability)?,
         threads,
-        // Participant votes do not identify the head on which they were cast.
+        // Bitbucket participant votes do not name the head they were cast on.
         reviews: Vec::new(),
         notes,
     })

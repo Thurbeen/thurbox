@@ -41,9 +41,6 @@ fn default_share_sessions() -> bool {
     true
 }
 
-// By hand rather than derived: a derived `Default` would make `share_sessions`
-// `false`, and every `HostDef { name, .. Default::default() }` — the tests, the
-// WSL constructor — would silently opt its host out of sharing.
 impl Default for HostDef {
     fn default() -> Self {
         Self {
@@ -229,9 +226,6 @@ mod tests {
 
     #[test]
     fn resolve_accepts_both_spellings_of_a_host() {
-        // Which spelling a caller holds depends on where it came from, and
-        // resolving only one of them refused every session the new-session flow
-        // tried to create on a host ("Unknown host 'ssh:devbox'").
         let hosts = registry();
         for key in ["devbox", "ssh:devbox"] {
             assert_eq!(
@@ -372,9 +366,6 @@ mod tests {
 
     #[test]
     fn the_backend_prefix_is_not_checked_against_the_hosts_kind() {
-        // A name is unique across kinds, so the prefix carries no information
-        // the name does not. Asserted so the leniency is a decision, not an
-        // accident.
         let hosts = registry();
         assert_eq!(
             hosts.resolve("ssh:Ubuntu").map(|h| h.kind),
@@ -390,8 +381,6 @@ mod tests {
     fn is_windows_is_declared_by_the_multiplexer_alone() {
         let hosts = registry();
         assert!(hosts.resolve("winbox").expect("winbox").is_windows());
-        // Every other shape is POSIX: the default, an explicit `tmux`, and a
-        // WSL distro (Linux inside, whatever machine hosts it).
         assert!(!hosts.resolve("devbox").expect("devbox").is_windows());
         assert!(!hosts.resolve("Ubuntu").expect("Ubuntu").is_windows());
         let explicit_tmux = HostDef {
@@ -420,10 +409,9 @@ mod tests {
         assert_eq!(h.distro_name(), "Ubuntu");
         assert_eq!(h.backend_name(), "wsl:Ubuntu");
         assert_eq!(h.picker_detail(), "WSL");
-        // WSL distros run `tmux` inside the distro, same as a Unix SSH host.
+        // A WSL distro runs `tmux` inside the distro.
         assert_eq!(h.mux(), "tmux");
 
-        // An SSH host (the default kind) keeps the ssh prefix and is not WSL.
         let ssh = HostDef {
             name: "devbox".into(),
             destination: "me@devbox".into(),
@@ -498,7 +486,6 @@ mod tests {
                 ..Default::default()
             }],
         };
-        // The host comes back as configured, whichever route found it.
         let host = registry
             .host_of(&Route::parse("ssh:example:psmux").unwrap())
             .unwrap();

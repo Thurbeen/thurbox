@@ -139,7 +139,6 @@ fn the_spawn_runs_in_the_workspace_the_runtime_made() {
     };
     assert_eq!(spec.ready, Some(ws()));
     assert_eq!(spec.host, "local");
-    // The agent starts in the first directory and spans the others.
     let argv = spec.launch_argv().unwrap();
     assert!(argv.iter().any(|a| a == "/w/t.u7/docs"), "{argv:?}");
 }
@@ -156,7 +155,6 @@ fn a_lost_answer_is_settled_under_the_same_key_never_by_a_new_attempt() {
                 "git+https://example.test/docs.git".into()
             ],
         }));
-        // Unreadable: nothing concludes, nothing is sent.
         let (plan, st) = run(
             &obj,
             Observations {
@@ -170,7 +168,6 @@ fn a_lost_answer_is_settled_under_the_same_key_never_by_a_new_attempt() {
             (ConditionStatus::Unknown, "WorkspaceUnreadable".into())
         );
         assert_eq!(st.materialize_attempts, 1);
-        // Found: adopted, and the spawn follows.
         let (plan, st) = run(
             &obj,
             Observations {
@@ -180,7 +177,6 @@ fn a_lost_answer_is_settled_under_the_same_key_never_by_a_new_attempt() {
         );
         assert_eq!(cond(&st, "WorkspaceReady").1, "Adopted");
         assert!(matches!(plan.effects[0].action, Action::Spawn(_)));
-        // Proven absent: one more attempt, after the wait.
         let (plan, st) = run(
             &obj,
             Observations {
@@ -321,7 +317,6 @@ fn the_workspace_is_cleaned_after_the_release_and_only_then_let_go() {
     assert_eq!(st2.workspace, None);
     assert_eq!(cond(&st2, "WorkspaceReady").1, "Cleaned");
 
-    // A failed clean is tried again after the wait, never let go.
     let mut st3 = st;
     st3.receipts.insert(
         "task/t/u7/cleanWorkspace/1".into(),
@@ -400,7 +395,6 @@ fn clean_retries_past_the_bound_back_off_and_say_why() {
 #[test]
 fn a_task_deleted_mid_workspace_call_releases_the_key_before_letting_go() {
     let obj = deleting(materializing(None));
-    // Deletion never makes a workspace to learn what to release.
     assert!(
         !probes(&obj)
             .iter()

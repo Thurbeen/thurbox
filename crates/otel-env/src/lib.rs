@@ -129,8 +129,6 @@ fn signals(var: impl Fn(&str) -> Option<String>, logs: bool) -> Result<Signals, 
         let upper = name.to_ascii_uppercase();
         let exporter_var = format!("OTEL_{upper}_EXPORTER");
         match set(&exporter_var).as_deref().map(str::trim) {
-            // Log records carry text, so logs are opt-in: an endpoint alone,
-            // which an agent's own telemetry may have set, never sends them.
             None if name == "logs" => return Ok(false),
             None | Some("otlp") => {}
             Some("none") => return Ok(false),
@@ -221,8 +219,6 @@ pub fn init(
             ..Telemetry::default()
         });
     }
-    // Every exporter first: one that cannot be built leaves nothing
-    // installed, never one signal exporting under a warning that says off.
     let spans = wanted
         .traces
         .then(|| configured(SpanExporter::builder().with_http(), &merged, "traces").build())
@@ -596,7 +592,6 @@ mod tests {
                 ("OTEL_METRICS_EXPORTER", "none"),
             ],
             vec![endpoint, ("OTEL_EXPORTER_OTLP_PROTOCOL", "grpc")],
-            // A signal's own endpoint is no collector for the others.
             vec![(
                 "OTEL_EXPORTER_OTLP_TRACES_ENDPOINT",
                 "http://c:4318/v1/traces",
@@ -667,7 +662,6 @@ mod tests {
         );
         let grpc = read(&[endpoint, ("OTEL_EXPORTER_OTLP_PROTOCOL", "grpc")]).unwrap_err();
         assert!(grpc.contains("OTEL_EXPORTER_OTLP_PROTOCOL=grpc"), "{grpc}");
-        // The signal's own protocol wins over the general one.
         assert_eq!(
             read(&[
                 endpoint,

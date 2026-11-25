@@ -72,7 +72,6 @@ fn log_call(args: &[String]) {
 fn take_fault(state: &mut Value, call: &str) -> Option<String> {
     let faults = state.get_mut("faults")?.as_array_mut()?;
     let i = faults.iter().position(|f| f["call"] == call)?;
-    // `after: N` lets the first N matching calls through.
     if let Some(after) = faults[i]["after"].as_u64().filter(|n| *n > 0) {
         faults[i]["after"] = json!(after - 1);
         return None;
@@ -189,7 +188,7 @@ mod forge {
         let (secs, millis) = (ms / 1000, ms % 1000);
         let days = i64::try_from(secs / 86_400).unwrap_or(0);
         let rem = secs % 86_400;
-        // Civil-from-days, Howard Hinnant's algorithm.
+        // Howard Hinnant's civil-from-days algorithm.
         let z = days + 719_468;
         let era = if z >= 0 { z } else { z - 146_096 } / 146_097;
         let doe = z - era * 146_097;
@@ -317,8 +316,6 @@ mod forge {
             return answer(ExitCode::from(1), HEAD, &json!({"data": {"repository": null}, "errors": [{"type": "NOT_FOUND", "path": ["repository"], "message": "Could not resolve to a Repository"}]}).to_string());
         }
         if query.contains("markPullRequestReadyForReview") {
-            // The mutation names the pull request by the id the fresh read
-            // handed out: `PR_<project>#<number>`.
             let id = var(args, "id").unwrap_or_default();
             let Some(key) = id.strip_prefix("PR_") else {
                 return answer(ExitCode::SUCCESS, HEAD, &json!({"data": null, "errors": [{"type": "NOT_FOUND", "message": "Could not resolve to a node"}]}).to_string());
@@ -348,7 +345,6 @@ mod forge {
         let size = usize::try_from(state["pageSize"].as_u64().unwrap_or(100)).unwrap_or(100);
         let head = c["head"].as_str().unwrap_or("").to_string();
         if var(args, "withCore").is_none() {
-            // The fresh read before a mark-ready: id, draft, state and head.
             let state_word = match c["state"].as_str().unwrap_or("open") {
                 "closed" => "CLOSED",
                 "merged" => "MERGED",
@@ -1167,8 +1163,7 @@ mod slack {
         if args.iter().any(|a| a == "@-") {
             std::io::stdin().read_to_string(&mut text).expect("stdin");
         }
-        // Slack's read methods take form arguments only: a JSON body reaches
-        // them as no arguments at all, as the real API answers.
+        // Slack's read methods take form arguments only: a JSON body reaches them as no arguments.
         let json_body = args
             .iter()
             .any(|a| a.starts_with("Content-Type: application/json"));
@@ -1445,8 +1440,7 @@ mod slack {
                 "metadata": body["metadata"], "mrkdwn": body["mrkdwn"], "blocks": body["blocks"],
             }));
         save(state);
-        // `postErrorAfter`: the post landed, and Slack answers an error
-        // anyway, as its `internal_error` and `fatal_error` may.
+        // Slack may land a post and still answer `internal_error` or `fatal_error`.
         if let Some(error) = state["slack"]["postErrorAfter"].as_str() {
             return ok_false(error);
         }
@@ -1484,7 +1478,7 @@ mod discord {
     fn iso(ms: u64) -> String {
         let secs = ms / 1000;
         let (days, rem) = (secs / 86_400, secs % 86_400);
-        // Civil date from days since 1970-01-01 (Howard Hinnant's algorithm).
+        // Howard Hinnant's civil-from-days algorithm.
         let z = days as i64 + 719_468;
         let era = z.div_euclid(146_097);
         let doe = z - era * 146_097;
@@ -1578,8 +1572,7 @@ mod discord {
                     .cloned()
                     .collect();
                 page.sort_by_key(|m| id_of(&m["id"]));
-                // After a message: the ones right after it. Otherwise the
-                // newest. Either way newest first, as Discord answers.
+                // Discord answers newest first.
                 if after.is_some() {
                     page.truncate(limit);
                 } else {
@@ -1648,7 +1641,6 @@ mod discord {
         state["discord"]["loseNextPost"] = json!(false);
         save(state);
         if lose {
-            // The post landed; its answer never comes.
             drop(lock);
             hang();
         }

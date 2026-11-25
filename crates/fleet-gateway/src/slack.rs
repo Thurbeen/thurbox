@@ -21,11 +21,13 @@ pub const KIND: &str = "slack";
 pub const API: &str = "https://slack.com/api";
 pub const DEFAULT_CLI: &str = "curl";
 pub const POST_LIMIT: usize = 4_000;
+// Slack truncates a message past 40,000 characters.
 pub const MAX_CHUNKS: usize = 10;
 pub const METADATA_EVENT_TYPE: &str = "fleet_post";
 pub const MAX_CALLS_PER_OPERATION: u32 = 10;
 const PAGE: u32 = 200;
 pub const MAX_FILE_BYTES: u64 = 50 * 1024 * 1024;
+// Slack asks that the bot token go only to a Slack file host, over https.
 pub const FILE_HOSTS: &[&str] = &["files.slack.com"];
 const DOWNLOAD_CALLS: u32 = 6;
 
@@ -107,7 +109,7 @@ impl SlackGateway {
                 "POST",
                 "--header",
                 content_type,
-                // No `100 Continue` round trip: the whole answer is one head.
+                // An empty `Expect:` stops curl waiting for `100 Continue`.
                 "--header",
                 "Expect:",
                 "--data-binary",
@@ -213,8 +215,7 @@ impl SlackGateway {
         let is_parent = |m: &&Value| m["ts"].as_str() == Some(thread);
         let mut parent = items.iter().find(is_parent).cloned();
         if parent.is_none() && !matches!(query, HistoryQuery::After { id: None, .. }) {
-            // A read bounded by `oldest` may leave the parent out: ask for
-            // it alone, so `starter` is always answered.
+            // `conversations.replies` bounded by `oldest` may leave the parent out.
             let alone =
                 json!({"channel": chat, "ts": thread, "limit": 1, "include_all_metadata": true});
             match self.budgeted("conversations.replies", &alone, &mut budget) {
@@ -326,8 +327,6 @@ impl SlackGateway {
                     first.get_or_insert(landed);
                 }
                 Err(e) => {
-                    // Something landed: the outcome is for a recovery read
-                    // to settle, whatever Slack said last.
                     let partly = (i > 0)
                         .then(|| format!("{i} of {} posts landed under {key}", chunks.len()));
                     return send_failure(partly, e.why(), e.certain_failure());
@@ -545,10 +544,6 @@ impl SlackGateway {
     }
 }
 
-// ----------------------------------------------------------------------
-// Addresses and timestamps.
-// ----------------------------------------------------------------------
-
 fn form(body: &Value) -> Vec<u8> {
     fn encode(out: &mut String, s: &str) {
         for b in s.bytes() {
@@ -646,10 +641,6 @@ fn ts_after(a: &str, b: &str) -> bool {
     }
 }
 
-// ----------------------------------------------------------------------
-// Reading messages and events, pure.
-// ----------------------------------------------------------------------
-
 fn is_message_subtype(subtype: Option<&str>) -> bool {
     matches!(
         subtype,
@@ -677,7 +668,6 @@ pub fn message_of(bot: &str, item: &Value) -> Result<Message, String> {
     let thread_ts = item["thread_ts"].as_str();
     Ok(Message {
         id: ts.to_string(),
-        // Fleet's own post never mentions Fleet, whatever it quotes.
         mentions_fleet: author.kind != AuthorKind::Fleet && mentions(text, bot),
         at,
         key: key_of(item),
@@ -688,6 +678,7 @@ pub fn message_of(bot: &str, item: &Value) -> Result<Message, String> {
     })
 }
 
+// A Slack Connect stub carries only an id and `file_access: check_file_info`.
 pub fn files_of(item: &Value) -> Vec<Attachment> {
     let Some(files) = item["files"].as_array() else {
         return Vec::new();
@@ -811,6 +802,7 @@ fn download_answer(
     Ok((status, content_type.trim().to_string()))
 }
 
+// Slack answers a token it will not honour with its sign-in page, never an API error.
 pub fn check_download(
     status: u16,
     content_type: &str,
@@ -1182,7 +1174,6 @@ pub fn read_event(account: &AccountConfig, envelope: &Envelope) -> Observation<O
                     id: id.into(),
                 }
             }
-            // `message_replied`, `channel_join`, `tombstone` and the rest.
             _ => return Observation::Known(None),
         }
     };
@@ -1191,15 +1182,10 @@ pub fn read_event(account: &AccountConfig, envelope: &Envelope) -> Observation<O
         verified: envelope.verified,
         received_at: envelope.received_at,
         event,
-        // A one-to-one DM is the event's `channel_type` "im"; a group DM is
-        // "mpim", and a channel id prefix does not tell them apart.
+        // Slack marks a one-to-one DM `im` and a group DM `mpim`; the channel id prefix does not tell them apart.
         direct: str_of(ev, "channel_type") == Some("im"),
     }))
 }
-
-// ----------------------------------------------------------------------
-// One call's answer.
-// ----------------------------------------------------------------------
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum CallError {
@@ -1290,8 +1276,6 @@ impl Reply {
             });
         }
         if v["ok"] == false {
-            // Slack documents these two as "some aspect of the operation
-            // may have succeeded": the request may have been performed.
             if matches!(error, "internal_error" | "fatal_error") {
                 return Err(CallError::Unreadable(format!(
                     "{method}: {error}; Slack says some aspect of the operation may have succeeded"
@@ -1304,10 +1288,6 @@ impl Reply {
         )))
     }
 }
-
-// ----------------------------------------------------------------------
-// Text: Fleet's Markdown subset to mrkdwn, and splitting.
-// ----------------------------------------------------------------------
 
 pub fn escape(s: &str) -> String {
     let mut out = String::with_capacity(s.len());
@@ -1452,7 +1432,6 @@ fn inline(text: &str) -> String {
     let mut i = 0;
     while i < chars.len() {
         let c = chars[i];
-        // A code span: kept, its text escaped, never formatted.
         if c == '`'
             && let Some(end) = find(&chars, i + 1, &['`'])
         {
@@ -1463,7 +1442,6 @@ fn inline(text: &str) -> String {
             i = end + 1;
             continue;
         }
-        // A link: `[text](url)` to `<url|text>` for a web or mail URL.
         if c == '['
             && let Some(close) = find(&chars, i + 1, &[']'])
             && chars.get(close + 1) == Some(&'(')
@@ -1596,8 +1574,6 @@ mod tests {
         }
     }
 
-    // The recorded Socket Mode and Events API payloads: synthetic, with
-    // made-up ids, in the shapes Slack documents.
     const MENTION: &str = include_str!("../fixtures/slack/socket-mode-mention.json");
     const REPLY: &str = include_str!("../fixtures/slack/socket-mode-reply.json");
     const OWN_POST: &str = include_str!("../fixtures/slack/socket-mode-own-post.json");
@@ -1776,7 +1752,6 @@ mod tests {
         assert_eq!(m.author.kind, AuthorKind::Person);
         assert_eq!(m.key, None);
         assert_eq!(m.text, "<@U0BOT0001> please look at the failing build");
-        // The `<@id|name>` form is a mention too.
         let named = MENTION.replace("<@U0BOT0001>", "<@U0BOT0001|fleet>");
         assert!(message(&delivery(&named)).1.mentions_fleet);
     }
@@ -1789,9 +1764,7 @@ mod tests {
         assert_eq!(conversation.address(), "slack:D0123ABCD:1730000400.000100");
         assert!(m.starts_thread && !m.mentions_fleet);
         assert_eq!(m.author.kind, AuthorKind::Person);
-        // A group DM is `mpim`; its `G` id prefix is no DM signal either.
         assert!(!delivery(GROUP_DM).direct, "channel_type \"mpim\"");
-        // The channel type, not the id prefix, decides.
         let typed = |payload: &str, from: &str, to: &str| {
             delivery(&payload.replace(
                 &format!("\"channel_type\": \"{from}\""),
@@ -1802,7 +1775,6 @@ mod tests {
         assert!(!typed(DM, "im", "channel"));
         assert!(typed(MENTION, "channel", "im"));
         assert!(!delivery(MENTION).direct && !delivery(REPLY).direct);
-        // An event without a channel type does not say it is a DM.
         let untyped = DM.replace("\"channel_type\": \"im\",", "");
         assert!(!delivery(&untyped).direct);
     }
@@ -1975,14 +1947,12 @@ mod tests {
                 "{what}"
             );
         }
-        // Without a team on the account, any workspace's event is read.
         assert!(
             read_event(&account(None), &envelope(OTHER_TEAM))
                 .known()
                 .unwrap()
                 .is_some()
         );
-        // An enterprise id on the account matches the org.
         assert!(
             read_event(&account(Some("E0123ABCD")), &envelope(OTHER_TEAM))
                 .known()
@@ -2066,8 +2036,6 @@ mod tests {
         let own = json!({"type": "message", "ts": "1730000500.000000", "user": BOT, "bot_id": "B0FLEET001",
             "text": "On it.", "thread_ts": "1730000300.000200",
             "metadata": {"event_type": "fleet_post", "event_payload": {"key": "task/t/u/gateway/comment/c1"}}});
-        // Pages as Slack may give them: the parent on each, a system note,
-        // and a reply out of order.
         let items = vec![
             parent.clone(),
             item("1730000360.000300", "U0456EFGH", "second"),
@@ -2142,7 +2110,6 @@ mod tests {
         .unwrap();
         assert_eq!(since.messages.len(), 2);
         assert_eq!(since.left_out, 0);
-        // A parent Slack reports deleted is a tombstone.
         let tombstone = json!({"type": "message", "subtype": "tombstone", "ts": "1730000300.000200",
             "user": "USLACKBOT", "text": "This message was deleted.", "thread_ts": "1730000300.000200"});
         let gone: Vec<Value> = items
@@ -2154,13 +2121,11 @@ mod tests {
         let h = collect_thread(BOT, &gone, &tombstone, &all).unwrap();
         assert_eq!(h.starter, Some(Starter::removed()));
         assert_eq!(h.messages.len(), 3, "the tombstone is no message");
-        // A Fleet-opened thread's starter carries the key.
         let h = collect_thread(BOT, std::slice::from_ref(&own), &own, &all).unwrap();
         assert_eq!(
             h.starter.unwrap().key.as_deref(),
             Some("task/t/u/gateway/comment/c1")
         );
-        // An item without an author makes the read Unknown, never a guess.
         let odd = vec![json!({"type": "message", "ts": "1730000600.000000", "text": "?"})];
         assert!(collect_thread(BOT, &odd, &parent, &all).is_err());
     }
@@ -2178,7 +2143,6 @@ mod tests {
             Some("application/json; charset=utf-8")
         );
         assert_eq!(r.answer("chat.postMessage").unwrap()["ts"], "1.000001");
-        // An informational head before the real one is skipped.
         let r = Reply::parse(
             "HTTP/1.1 100 Continue\r\n\r\nHTTP/1.1 200 OK\r\n\r\n{\"ok\":true}",
             Some(0),
@@ -2345,7 +2309,6 @@ mod tests {
         for chunk in split(text, 9) {
             assert!(chunk.chars().count() <= 9);
         }
-        // A line longer than the limit is cut inside.
         let long = "x".repeat(25);
         let chunks = split(&long, 10);
         assert_eq!(chunks.len(), 3);
@@ -2353,12 +2316,9 @@ mod tests {
         for chunk in &chunks {
             assert!(chunk.chars().count() <= 10);
         }
-        // Paragraph breaks at a split are dropped, not carried.
         assert_eq!(split("one\n\ntwo\n\nthree", 8), ["one\n\ntwo", "three"]);
-        // Characters, not bytes.
         let wide = "é".repeat(12);
         assert_eq!(split(&wide, 10).len(), 2);
-        // A fence cut by a split is closed and reopened.
         let fenced = "```\nline one\nline two\nline three\n```\nafter";
         let chunks = split(fenced, 22);
         assert!(chunks.len() >= 2, "{chunks:?}");
@@ -2423,13 +2383,11 @@ mod tests {
         )
         .unwrap_err();
         assert_eq!(err, "a slack account needs a curlConfig");
-        // Refusals that need no call are Known.
         let thread = parse_address("slack:C0123ABCD:1730000000.000100").unwrap();
         assert!(matches!(
             g.open("slack-main", &thread, "x", "k"),
             Observation::Known(EffectOutcome::Failed { why }) if why.contains("is a thread")
         ));
-        // A channel address is a top-level post, but only on a channel id.
         let not_a_channel = ConversationRef {
             platform: "slack".into(),
             chat: "general".into(),
@@ -2462,7 +2420,6 @@ mod tests {
                 ..
             }
         ));
-        // A text past the chunk cap is refused before any call.
         let huge = "y".repeat(POST_LIMIT * MAX_CHUNKS + 1);
         assert!(matches!(
             g.post("slack-main", &thread, &huge, "k"),

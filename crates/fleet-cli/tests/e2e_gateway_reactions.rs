@@ -123,7 +123,6 @@ fn comment_posted(env: &Env, task: &str) -> bool {
 #[test]
 fn a_mention_is_marked_working_then_replied_once_the_tasks_comment_is_posted() {
     let (env, task) = tied("working-then-replied", |_| {});
-    // The join relayed the mention and the allowlisted message before it.
     assert_eq!(reacted(&env, MENTION), vec![WORKING.to_string()]);
     assert_eq!(reacted(&env, &T0.to_string()), vec![WORKING.to_string()]);
     let gw = gateway(&env, &task);
@@ -146,7 +145,6 @@ fn a_mention_is_marked_working_then_replied_once_the_tasks_comment_is_posted() {
     assert_eq!(gw["reactions"]["marks"][MENTION], "replied", "{gw:#}");
     assert_ne!(attention(&gw)["status"], "True", "{gw:#}");
 
-    // Nothing is reacted twice, and Fleet's own Comment gets no reaction.
     let calls = env.fake_gateway().reactions().unwrap();
     assert_eq!(
         calls.len(),
@@ -157,8 +155,6 @@ fn a_mention_is_marked_working_then_replied_once_the_tasks_comment_is_posted() {
     reconcile_clean(&env);
     assert_eq!(env.fake_gateway().reactions().unwrap(), calls);
 
-    // A later message is marked working on its relay, and a context message
-    // from someone off the allowlist is not.
     env.receive(
         "Ev02",
         message_event(THREAD, "x2", ALEX_ID, T0 + 400_000, "Also the weekly one."),
@@ -194,7 +190,6 @@ fn a_failing_reaction_holds_back_neither_the_relay_nor_the_post() {
     let gw = gateway(&env, &task);
     assert_ne!(attention(&gw)["status"], "True", "{gw:#}");
 
-    // The same with an answer that is lost: the reaction is Unknown.
     env.fake_gateway()
         .update(|s| {
             s.faults.clear();
@@ -225,8 +220,6 @@ fn a_failing_reaction_holds_back_neither_the_relay_nor_the_post() {
     );
     let gw = gateway(&env, &task);
     assert_ne!(attention(&gw)["status"], "True", "{gw:#}");
-    // Retries are bounded: at most three attempts per reaction key, and no
-    // record is left waiting.
     let calls = env.fake_gateway().calls("react").unwrap();
     assert!(calls <= 3 * 8, "{calls} react calls");
     let pending: Vec<&String> = gw["posts"]
@@ -386,8 +379,6 @@ fn an_admitted_mention_is_marked_working_at_admission_and_not_again_at_the_join(
     mention(&env, "Ev01", MENTION, T0 + 300_000);
     reconcile_clean(&env);
     let task = format!("{}-1", conv());
-    // Admission reacted, under the Conversation's own key: the mark exists
-    // before the Task's first pass needs to run.
     let st = env.conversation_status(&conv());
     assert_eq!(st["reactions"]["marks"][MENTION], "working", "{st:#}");
     let keys = conv_reactions(&env);
@@ -397,8 +388,6 @@ fn an_admitted_mention_is_marked_working_at_admission_and_not_again_at_the_join(
         "the working reaction is the Conversation's effect: {keys:?}"
     );
     assert_eq!(reacted(&env, MENTION), vec![WORKING.to_string()]);
-    // The join relayed the mention and marked it working, without a second
-    // reaction; the earlier message, which started nothing, is the join's.
     assert_eq!(
         gateway(&env, &task)["conversation"]["state"],
         "tied",
@@ -412,7 +401,6 @@ fn an_admitted_mention_is_marked_working_at_admission_and_not_again_at_the_join(
     assert_eq!(adds(&env, MENTION, WORKING), 1, "added once");
     assert_eq!(reacted(&env, &T0.to_string()), vec![WORKING.to_string()]);
     assert_eq!(adds(&env, &T0.to_string(), WORKING), 1);
-    // A thread post replies to both, as before.
     declare(
         &env,
         &task,
@@ -428,7 +416,6 @@ fn an_admitted_mention_is_marked_working_at_admission_and_not_again_at_the_join(
 #[test]
 fn a_queued_request_is_marked_queued_then_working_once_its_task_starts() {
     let env = admitting("queued-then-working");
-    // Another Task holds the thread's own directory: the request queues.
     let mut holder = support::task("holder", false);
     holder["spec"]["workspace"] = json!([format!("file://{}/{}", env.gateway_workspace(), conv())]);
     env.apply(holder).ok();
@@ -440,8 +427,6 @@ fn a_queued_request_is_marked_queued_then_working_once_its_task_starts() {
     assert_eq!(st["task"]["state"], "busy", "{st:#}");
     assert_eq!(st["reactions"]["marks"][MENTION], "queued", "{st:#}");
     assert_eq!(reacted(&env, MENTION), vec![QUEUED.to_string()]);
-    // A later admitted message waits with it, and is marked queued too; a
-    // stranger's is not.
     env.receive(
         "Ev02",
         message_event(THREAD, "x2", ALEX_ID, T0 + 400_000, "Also the weekly one."),
@@ -455,10 +440,7 @@ fn a_queued_request_is_marked_queued_then_working_once_its_task_starts() {
     reconcile_clean(&env);
     assert_eq!(reacted(&env, "x2"), vec![QUEUED.to_string()]);
     assert_eq!(reacted(&env, "x3"), Vec::<String>::new());
-    // The busy notice is no reply: the marks stay queued.
     assert_eq!(reacted(&env, MENTION), vec![QUEUED.to_string()]);
-    // The directory frees: the Task starts, and every queued message is
-    // marked working instead, once.
     env.fleet(&["delete", "task", "holder"]).ok();
     env.reconcile().ok();
     env.expire_wait_of("Conversation", &conv());
@@ -478,7 +460,6 @@ fn a_queued_request_is_marked_queued_then_working_once_its_task_starts() {
     let st = env.conversation_status(&conv());
     assert_eq!(st["reactions"]["marks"][MENTION], "working", "{st:#}");
     assert_eq!(reacted(&env, "x3"), Vec::<String>::new());
-    // A thread post replies to them.
     declare(
         &env,
         &task,
@@ -505,12 +486,9 @@ fn the_queued_reaction_can_be_renamed_and_a_failing_one_holds_nothing_back() {
     reconcile_clean(&env);
     let st = env.conversation_status(&conv());
     assert_eq!(st["task"]["state"], "busy", "{st:#}");
-    // The first attempt was refused: the busy notice went out all the
-    // same, and no condition names the reaction.
     assert_eq!(env.fake_gateway().posts().unwrap().len(), 1);
     let attention = support::condition(&st, "NeedsAttention");
     assert_eq!(attention["reason"], "WorkspaceBusy", "{st:#}");
-    // Tried again after the delay.
     age_reactions(&env);
     env.expire_wait_of("Conversation", &conv());
     reconcile_clean(&env);

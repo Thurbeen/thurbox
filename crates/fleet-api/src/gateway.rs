@@ -452,10 +452,6 @@ pub trait Gateway {
     }
 }
 
-// ----------------------------------------------------------------------
-// The `[gateway]` section.
-// ----------------------------------------------------------------------
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum Inbound {
@@ -933,8 +929,6 @@ impl GatewayConfig {
                             route.account
                         ));
                     }
-                    // The Discord adapter ignores every DM, so the entry
-                    // would cover nothing.
                     if self.accounts[&route.account].platform == "discord" {
                         return Err(format!(
                             "{at}: the Discord adapter reads no direct message; {ANY_DM:?} needs a slack or fake account"
@@ -950,8 +944,6 @@ impl GatewayConfig {
                     ));
                 }
             }
-            // A top-level route makes every top-level post a request: right
-            // for one alert channel, never for every channel.
             if route.is_wildcard() && route.mention == Mention::TopLevel {
                 return Err(format!(
                     "{at}: a wildcard route needs mention = \"required\""
@@ -984,8 +976,6 @@ impl GatewayConfig {
                 crate::validate::validate_workspace(w)
                     .map_err(|e| format!("{at}: workspace{e}"))?;
             }
-            // A base directory needs its own route; a URL list is made per
-            // Task, so nothing is shared between routes.
             let dir = route.workspace.base_dir().map(Path::new);
             if let Some(d) = route.workspace.base_dir()
                 && !is_absolute_path(d)
@@ -1059,8 +1049,6 @@ impl GatewayConfig {
             if logs.channel.trim().is_empty() {
                 return Err("gateway.logs: the channel id is empty".into());
             }
-            // A reply under a log post must never be admitted: the receive
-            // verb ignores a channel that no route covers.
             if let Some((route, _)) = self.route_of(&logs.account, &logs.channel) {
                 return Err(format!(
                     "gateway.logs: channel {:?} belongs to route {route}; the log channel must be no route's channel",
@@ -1071,10 +1059,6 @@ impl GatewayConfig {
         Ok(())
     }
 }
-
-// ----------------------------------------------------------------------
-// Admission.
-// ----------------------------------------------------------------------
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -1281,7 +1265,7 @@ mod tests {
         assert_eq!(thread.channel().address(), "slack:C0123ABCD");
         let channel = ConversationRef::split("discord:1300000000000000001").unwrap();
         assert_eq!(channel.thread, None);
-        // A thread id that itself holds a colon stays whole.
+        // A Teams thread id holds colons.
         let odd = ConversationRef::split("teams:19:abc@thread.tacv2:1730000000").unwrap();
         assert_eq!(odd.chat, "19");
         assert_eq!(odd.thread.as_deref(), Some("abc@thread.tacv2:1730000000"));
@@ -1462,7 +1446,6 @@ mod tests {
                 "{dir}"
             );
         }
-        // A URL list is made per Task: two routes share nothing.
         let mut c = config();
         let urls: RouteWorkspace =
             serde_json::from_value(serde_json::json!(["git+https://example.invalid/app.git"]))
@@ -1507,7 +1490,6 @@ mod tests {
                 .unwrap_err()
                 .contains("gateway.questions \"nowhere\"")
         );
-        // Both portable absolute forms pass on every platform.
         for brief in [
             "/etc/fleet/briefs/x.md",
             "C:/fleet/briefs/x.md",
@@ -1603,7 +1585,6 @@ mod tests {
         });
         assert_eq!(c.validate(), Ok(()));
         let route_name = |chat: &str| c.route_of("fake-main", chat).map(|(n, _)| n);
-        // An explicit route wins its channel, whatever the names' order.
         assert_eq!(route_name("C0123ABCD"), Some("eng"));
         assert_eq!(route_name("C0999WILD"), Some("any"));
         assert_eq!(route_name("D0123ABCD"), Some("any"));
@@ -1617,14 +1598,11 @@ mod tests {
             z.route_of("fake-main", "C0123ABCD").map(|(n, _)| n),
             Some("zz")
         );
-        // The wildcard is no channel id: the log channel check and the
-        // explicit lists ignore it.
         assert!(any.is_wildcard() && !c.routes["eng"].is_wildcard());
         assert_eq!(any.first_channel(), None);
         any.channels.push("C0789IJKL".into());
         assert_eq!(any.first_channel(), Some("C0789IJKL"));
         assert_eq!(any.channel_ids().collect::<Vec<_>>(), ["C0789IJKL"]);
-        // An explicit route still may not cover the log channel.
         let mut bad = c.clone();
         bad.routes
             .get_mut("eng")
@@ -1636,7 +1614,6 @@ mod tests {
                 .unwrap_err()
                 .contains("the log channel must be no route's channel")
         );
-        // One wildcard route per account; another account may have its own.
         let mut two = c.clone();
         let mut second = route("/work/second");
         second.channels = vec![ANY_CHANNEL.into()];
@@ -1654,7 +1631,6 @@ mod tests {
         second.account = "other".into();
         elsewhere.routes.insert("second".into(), second);
         assert_eq!(elsewhere.validate(), Ok(()));
-        // Every channel's top-level posts are never all requests.
         let mut top = c.clone();
         top.routes.get_mut("any").unwrap().mention = Mention::TopLevel;
         assert!(
@@ -1662,7 +1638,6 @@ mod tests {
                 .unwrap_err()
                 .contains("routes.any: a wildcard route needs mention = \"required\"")
         );
-        // A questions route needs a channel id to open a thread in.
         let mut q = c.clone();
         q.questions = Some("any".into());
         assert!(
@@ -1693,16 +1668,12 @@ mod tests {
             c.route_for("fake-main", chat, direct)
                 .map(|k| (k.name.to_string(), k.direct))
         };
-        // A DM no route lists is the DM route's, by its DM entry.
         assert_eq!(covered(&c, "D0123ALEX", true), Some(("any".into(), true)));
-        // The same chat not called a DM, such as a group DM, is a channel.
         assert_eq!(covered(&c, "G0123GRP", false), Some(("any".into(), false)));
-        // A listed id wins, DM or not; the log channel stays uncovered.
         assert_eq!(covered(&c, "C0123ABCD", true), Some(("eng".into(), false)));
         assert_eq!(covered(&c, "C0456EFGH", true), None);
         assert_eq!(c.route_for("other", "D0123ALEX", true), None);
         assert!(c.has_dm_route("fake-main") && !c.has_dm_route("other"));
-        // Without a DM entry, a DM is the wildcard's, as before.
         let mut plain = c.clone();
         plain.routes.get_mut("any").unwrap().channels = vec![ANY_CHANNEL.into()];
         assert_eq!(
@@ -1710,7 +1681,6 @@ mod tests {
             Some(("any".into(), false))
         );
         assert!(!plain.has_dm_route("fake-main"));
-        // A DM-only route covers no channel.
         let mut only = c.clone();
         only.routes.get_mut("any").unwrap().channels = vec![ANY_DM.into()];
         assert_eq!(only.validate(), Ok(()));
@@ -1720,15 +1690,11 @@ mod tests {
             covered(&only, "D0123ALEX", true),
             Some(("any".into(), true))
         );
-        // The DM entry is no channel id, and no wildcard.
         assert!(any.covers_dms() && any.is_wildcard());
         assert!(!only.routes["any"].is_wildcard());
         assert_eq!(only.routes["any"].first_channel(), None);
-        // A DM-only route may be top-level: its mention rule covers no
-        // channel, and a DM has its own rule.
         only.routes.get_mut("any").unwrap().mention = Mention::TopLevel;
         assert_eq!(only.validate(), Ok(()));
-        // One DM route per account.
         let mut two = c.clone();
         let mut second = route("/work/second");
         second.channels = vec![ANY_DM.into()];
@@ -1738,7 +1704,6 @@ mod tests {
                 .unwrap_err()
                 .contains("routes any and second are both the DM route of account \"fake-main\"")
         );
-        // A questions route needs a channel id.
         let mut q = only.clone();
         q.questions = Some("any".into());
         assert!(
@@ -1746,7 +1711,6 @@ mod tests {
                 .unwrap_err()
                 .contains("gateway.questions \"any\" lists no channel id")
         );
-        // The Discord adapter reads no DM.
         let mut discord = c.clone();
         discord.accounts.get_mut("fake-main").unwrap().platform = "discord".into();
         assert!(discord.validate().unwrap_err().contains(
@@ -1790,7 +1754,6 @@ mod tests {
             kind: AuthorKind::Fleet,
         };
         assert_eq!(admit(route, &c.people, &msg(fleet, true)), Admission::Own);
-        // A person's id on another account does not admit them here.
         let mut elsewhere = config();
         elsewhere.people.get_mut("alex").unwrap().clear();
         elsewhere
@@ -1802,7 +1765,6 @@ mod tests {
             admit(route, &elsewhere.people, &msg(person("U0123ABCD"), true)),
             Admission::Context
         );
-        // The mention rule decides whether an admitted message starts a Task.
         assert!(starts_task(
             route,
             false,
@@ -1832,7 +1794,6 @@ mod tests {
             Admission::Admitted,
             &msg(person("U0123ABCD"), true)
         ));
-        // One refusal for an unlisted person who mentions Fleet; none for a bot.
         assert!(earns_refusal(
             false,
             Admission::Context,
@@ -1853,9 +1814,6 @@ mod tests {
             Admission::Admitted,
             &msg(person("U0123ABCD"), true)
         ));
-        // In a DM the route covers by its DM entry, a top-level message or
-        // a mention starts a Task, whatever the mention rule, and a
-        // stranger's top-level message earns the refusal.
         let mut dm = msg(person("U0123ABCD"), false);
         dm.starts_thread = true;
         assert!(starts_task(route, true, Admission::Admitted, &dm));

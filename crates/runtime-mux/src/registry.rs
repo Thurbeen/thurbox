@@ -357,7 +357,6 @@ mod tests {
         registry.register(remote.clone(), stub(&remote));
 
         assert_eq!(registry.get(&remote).unwrap().name(), "ssh:box:tmux");
-        // Another multiplexer on the same machine is another backend.
         for missing in [
             remote.with_mux(Multiplexer::Rmux),
             Route::remote(Via::Wsl, "box", Multiplexer::Tmux),

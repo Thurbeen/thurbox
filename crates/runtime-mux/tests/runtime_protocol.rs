@@ -46,8 +46,6 @@ impl Runtime {
 
     fn call_as(&self, program: &Path, socket: Option<&str>, verb: &str, request: Value) -> Value {
         let mut command = Command::new(program);
-        // The guard pins the interface's socket name, as a runtime started
-        // from a thurbox pane inherits it; the runtime must not use it.
         self.server.scope(&mut command);
         command.env("XDG_DATA_HOME", self.server.tmpdir().join("data"));
         command.envs(self.env.iter().map(|(k, v)| (k, v)));
@@ -328,7 +326,6 @@ fn a_version_2_request_runs_at_its_place() {
     assert!(inspected["known"]["running"].is_object(), "{inspected}");
     let list = rt.call("list", json!({"protocol": 2, "place": local()}));
     assert_eq!(list["known"]["keys"], json!(["p.one"]), "{list}");
-    // A version 1 request still reaches the same place.
     assert!(rt.inspect("p.one")["known"]["running"].is_object());
 }
 
@@ -848,8 +845,7 @@ fn concurrent_starts_under_different_tmpdirs_leave_one_process() {
     }
     let server = DefaultDirServer(format!("rmux-tmpdir-{}", std::process::id()));
     let base = std::path::PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join(&server.0);
-    // Each caller has a TMPDIR of its own and no TMUX_TMPDIR, so tmux puts
-    // every one of them on the one socket under /tmp.
+    // With no TMUX_TMPDIR, tmux puts every caller's socket under /tmp.
     let call = |n: usize, verb: &str, request: Value| -> Value {
         let tmpdir = base.join(format!("caller-{n}"));
         std::fs::create_dir_all(&tmpdir).expect("TMPDIR");
@@ -904,7 +900,6 @@ fn a_start_killed_holding_the_lock_does_not_block_the_next_one() {
     use std::os::unix::fs::PermissionsExt;
     use std::os::unix::process::CommandExt;
     let Some(rt) = Runtime::new() else { return };
-    // A tmux that never answers: the start that took the lock hangs in it.
     let hang = std::path::PathBuf::from(env!("CARGO_TARGET_TMPDIR"))
         .join(format!("rmux-hang-{}", std::process::id()));
     std::fs::create_dir_all(&hang).expect("hang dir");
@@ -939,7 +934,7 @@ fn a_start_killed_holding_the_lock_does_not_block_the_next_one() {
         holder.try_wait().expect("holder").is_none(),
         "the first start hangs holding the lock"
     );
-    // SIGKILL: the kernel drops its flock with its descriptors.
+    // The kernel drops a SIGKILLed process's flock with its descriptors.
     Command::new("kill")
         .args(["-KILL", &format!("-{}", holder.id())])
         .status()
@@ -964,8 +959,6 @@ fn uid() -> String {
 #[test]
 fn the_lock_follows_no_link_planted_where_it_used_to_live() {
     let Some(rt) = Runtime::new() else { return };
-    // Before the lock moved into tmux's private directory it lived in the
-    // shared one, where anyone could plant a link at its name.
     let planted = rt.server.tmpdir().join("planted");
     std::os::unix::fs::symlink(
         &planted,
@@ -1130,7 +1123,6 @@ fn a_workspace_is_made_and_a_release_takes_it_with_the_process() {
     assert_eq!(stopped["known"], "stopped", "{stopped}");
     assert_eq!(ws.rt.inspect("w.one")["known"], "none");
     assert!(!tree.exists(), "the release removes the worktree");
-    // A local checkout's worktree keeps its preserved work in the checkout.
     git(
         &ws.base.join("app"),
         &["rev-parse", "--verify", "refs/fleet/preserved/w.one/app"],
@@ -1189,8 +1181,6 @@ fn a_slow_workspace_call_does_not_hold_up_a_start_on_another_key() {
     let ws = &ws;
     std::thread::scope(|scope| {
         let slow = scope.spawn(|| ws.workspace("w.slow", &[url.as_str()]));
-        // The worktree exists: the workspace call holds its lock and runs
-        // its setup.
         let deadline = Instant::now() + Duration::from_secs(10);
         while !ws.base.join("root/w.slow/app").exists() {
             assert!(Instant::now() < deadline, "the workspace call never began");
@@ -1229,7 +1219,6 @@ fn a_slow_releasing_stop_does_not_hold_up_a_start_on_another_key() {
                 json!({"protocol": 1, "key": "w.down", "release": true}),
             )
         });
-        // The teardown runs: the stop holds its locks.
         let deadline = Instant::now() + Duration::from_secs(10);
         while !ws.base.join("root/w.down/tearing").exists() {
             assert!(Instant::now() < deadline, "the teardown never began");
@@ -1257,7 +1246,6 @@ fn a_workspace_whose_setup_never_finished_runs_it_when_adopted() {
     ws.configure(&format!(
         "[[workspace.setup]]\nmatch = '{url}'\nrun = ['printf ready > setup.txt']\n"
     ));
-    // `workspace-git` alone: what a runtime killed during setup leaves.
     let mut child = Command::new(&ws.program)
         .arg("make")
         .stdin(std::process::Stdio::piped())
@@ -1438,7 +1426,6 @@ fn branches_lists_a_repositorys_branches_and_its_default() {
         json!({"names": ["feat", "main"], "default": "main"}),
         "{answer}"
     );
-    // A directory inside a checkout is not its repository.
     let plain = repo.join("plain");
     std::fs::create_dir_all(&plain).expect("plain");
     let refused = rt.call(
@@ -1521,7 +1508,6 @@ fn branches_defaults_to_origins_default() {
             .clone()
     };
 
-    // A clone: `origin/HEAD` names upstream's `trunk`.
     git(
         dir.path(),
         &["clone", "-q", &upstream.display().to_string(), "clone"],
@@ -1533,8 +1519,6 @@ fn branches_defaults_to_origins_default() {
         json!({"names": ["trunk", "work", "origin/master", "origin/trunk"], "default": "origin/trunk"})
     );
 
-    // Fetched, its `origin/HEAD` removed: `origin/master` (no
-    // `origin/main`), not the branch checked out.
     let fetched = dir.path().join("fetched");
     std::fs::create_dir_all(&fetched).expect("fetched");
     git(&fetched, &["init", "-q"]);
@@ -1692,8 +1676,6 @@ fn shell_opens_a_shell_in_the_keys_directory_and_a_stop_closes_it() {
         "the shell runs in the directory the key's process is in"
     );
 
-    // Idempotent by key: a second call opens the shell the first view typed
-    // into, which still holds the variable it set.
     let again = shell();
     assert_eq!(again["known"], answer["known"], "the shell is adopted");
     let mut view = Stream::open(&argv);
@@ -1707,7 +1689,6 @@ fn shell_opens_a_shell_in_the_keys_directory_and_a_stop_closes_it() {
         "one agent, one shell: {:?}",
         windows(&rt)
     );
-    // The key's agent is still the only key listed.
     let list = rt.call("list", json!({"protocol": 2, "place": local()}));
     assert_eq!(list["known"]["keys"], json!(["sh.one"]), "{list}");
 
@@ -1780,9 +1761,6 @@ fn runtime_tmux(rt: &Runtime, args: &[&str]) -> std::process::Output {
 #[test]
 fn a_shell_whose_directory_is_gone_opens_where_the_server_says() {
     let Some(mut rt) = Runtime::new() else { return };
-    // The server starts with one home, and the shell call runs with
-    // another: on a place that is another machine, the call's own disk and
-    // home say nothing about the place's.
     let server_home = tempfile::tempdir().expect("server home");
     let server_home_path = server_home.path().canonicalize().expect("canonical");
     shell_env(&mut rt, &server_home_path);
@@ -1824,8 +1802,6 @@ fn a_stop_closes_every_shell_window_of_the_key() {
     started(&rt.start("sh.two", &["sleep", "300"]));
     let shell = json!({"protocol": 2, "place": local(), "key": "sh.two"});
     assert!(rt.call("shell", shell.clone())["known"]["stream"].is_object());
-    // A second window of the same name, as a crash between two calls could
-    // leave: the key's shell is ambiguous now.
     let name = windows(&rt)
         .into_iter()
         .find(|name| name.starts_with("tbs-"))
@@ -1851,8 +1827,6 @@ fn a_pause_cut_short_before_the_shell_closed_is_not_paused_until_a_pause_finishe
     started(&rt.start("sh.cut", &["sleep", "300"]));
     let shell = json!({"protocol": 2, "place": local(), "key": "sh.cut"});
     assert!(rt.call("shell", shell)["known"]["stream"].is_object());
-    // As a pause cut short after the agent's window went: its mark is
-    // written, and the key's shell still runs.
     let listed = runtime_tmux(
         &rt,
         &["list-windows", "-a", "-F", "#{window_id} #{window_name}"],
@@ -1928,7 +1902,7 @@ fn a_sessions_environment_reaches_its_window_and_no_argv() {
             vec![(*shell).to_string(), "-c".into(), script],
         ));
     }
-    // One token: the window's shell splits it, as tmux runs it.
+    // tmux runs the window's command through its shell, which splits it.
     let out = dir.path().join("token.env");
     cases.push((
         "env.token".into(),

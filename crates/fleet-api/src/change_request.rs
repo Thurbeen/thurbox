@@ -148,7 +148,6 @@ impl StoredNote {
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ChangeRequestStatus {
-    // Bookkeeping.
     #[serde(default)]
     pub phase: Phase,
     #[serde(rename = "ref", default, skip_serializing_if = "Option::is_none")]
@@ -164,7 +163,6 @@ pub struct ChangeRequestStatus {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub conditions: Vec<Condition>,
 
-    // The snapshot.
     #[serde(default)]
     pub revision: u64,
     #[serde(default, skip_serializing_if = "Option::is_none")]

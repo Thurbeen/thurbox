@@ -153,8 +153,7 @@ pub fn shell_assignment(plan: &PathPlan) -> String {
         .collect::<Vec<_>>()
         .join(":");
     if keep_inherited {
-        // `${PATH:+…}`: an unset inherited `PATH` must not leave a trailing
-        // `:`, which POSIX reads as the current directory.
+        // POSIX reads a trailing `:` in `PATH` as the current directory.
         value.push_str("\"${PATH:+:$PATH}\"");
     }
     format!("PATH={value}; export PATH; ")
@@ -198,13 +197,9 @@ fn cached_env(host: &HostDef) -> Option<HostEnv> {
     if let Some(hit) = cache().lock().ok().and_then(|c| c.get(&key).cloned()) {
         return hit;
     }
-    // Tests never reach a real host: a host a test did not seed is one whose
-    // probe did not answer.
     if cfg!(test) {
         return None;
     }
-    // Probed without the lock held, so one slow host does not stall another;
-    // two racing first calls for the same host only probe it twice.
     let env = probe(host);
     if let Ok(mut c) = cache().lock() {
         c.insert(key, env.clone());
@@ -372,8 +367,6 @@ fn run_bounded(mut cmd: std::process::Command, timeout: Duration) -> Option<Stri
         .ok()?;
     let stdout = child.stdout.take()?;
     let (tx, rx) = std::sync::mpsc::channel();
-    // Detached: if the deadline passes it is left blocked on a pipe someone
-    // else still holds, and ends when they close it.
     std::thread::spawn(move || {
         let mut out = Vec::new();
         let mut capped = stdout.take(MAX_PROBE_OUTPUT);
@@ -714,7 +707,6 @@ mod tests {
     fn the_probe_script_reads_a_login_shells_path_through_rc_noise() {
         let home = tempfile::TempDir::new().unwrap();
         let shell = home.path().join("fake-shell");
-        // A "login shell" that echoes before printing, as a chatty rc would.
         std::fs::write(
             &shell,
             "#!/bin/sh\necho 'welcome!'\nPATH=/opt/user/bin:$PATH\nexport PATH\nshift\nexec /bin/sh -c \"$1\"\n",

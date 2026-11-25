@@ -37,6 +37,7 @@ pub const SCREEN_REUSE: Duration = Duration::from_secs(2);
 pub const INSPECT_REUSE: Duration = Duration::from_millis(500);
 
 const PLACE_READ: [&str; 2] = ["fleet", "signal-read"];
+const PLACE_READ_FILE_ABSENT: i32 = 3;
 
 enum Length {
     At(u64),
@@ -91,7 +92,6 @@ impl ExecProgram {
     pub fn manifest(&self) -> Observation<Manifest> {
         let request = json!({ "protocol": PROTOCOL, "places": self.places });
         let manifest = self.ask::<Manifest>("manifest", request);
-        // An Unknown manifest proves no version: the next request asks again.
         let protocol = match &manifest {
             Observation::Known(m) => PROTOCOLS.contains(&m.protocol).then_some(m.protocol),
             Observation::Unknown { .. } => None,
@@ -549,9 +549,6 @@ impl ExecRuntime {
                 ),
             });
         }
-        // A non-empty workspace is made before the first start, and the
-        // session runs in its first directory; an empty one runs in the
-        // runtime's default directory.
         let dir = spec.ready.as_ref().and_then(WorkspaceRef::dir);
         if dir.is_none() && !spec.workspace.is_empty() {
             return Observation::Known(Started::Failed {
@@ -587,8 +584,6 @@ impl ExecRuntime {
             Ok(argv) => profile(&spec.harness).resume(&argv, conversation),
             Err(why) => return Observation::Known(EffectOutcome::Failed { why }),
         };
-        // What the previous process reported is not the new one's: its
-        // readiness and trust wait for the new one's own report.
         if let Some(file) = self
             .signals
             .as_ref()
@@ -602,19 +597,11 @@ impl ExecRuntime {
                 seq: None,
                 inbox: None,
             };
-            // On another host the file is the place's: the restart is kept
-            // in Fleet's own data, as the file's length then, and a start
-            // never waits on writing there.
             let marked = match &self.signals {
                 Some(signals) if spec.host != LOCAL_HOST => {
                     let boundary = match self.place_file_length(&spec.host, &file) {
                         Length::At(length) => Boundary::At(length),
-                        // A file Fleet cannot read there is never read:
-                        // the session's state stays Unknown.
                         Length::Unreadable => Boundary::Unknown,
-                        // A read that may answer on the next pass: start
-                        // nothing until it does, so no state the previous
-                        // process reported passes for the new one's.
                         Length::Unknown(why) => {
                             return Observation::unknown(format!(
                                 "cannot read the length of the signal file on {}, which marks the restart: {why}",
@@ -721,12 +708,6 @@ impl ExecRuntime {
             Some(Boundary::At(offset)) => Some(offset),
             None => None,
         };
-        // Two parts, each bounded so the whole answer stays under `exec`'s
-        // cap: the end of what the file held at the restart (`since`), for
-        // its prompts and conversation, then a line no report writes, then
-        // the end of what came after, whose last state is the session's. A
-        // file shorter than `since` was made again: all of it came after.
-        // Exit 3 is a file never written.
         let offset = since.map(|o| o.to_string());
         let fold = |text: &str| {
             let (before, after) = text
@@ -752,7 +733,10 @@ impl ExecRuntime {
                     stdout,
                     ..
                 } => Observation::Known(fold(&stdout)),
-                Executed::Exited { code: Some(3), .. } => Observation::Known(fold("")),
+                Executed::Exited {
+                    code: Some(PLACE_READ_FILE_ABSENT),
+                    ..
+                } => Observation::Known(fold("")),
                 Executed::Exited { stderr, .. } => Observation::unknown(format!(
                     "cannot read the signal file on {}: {}",
                     session.host,
@@ -789,7 +773,10 @@ impl ExecRuntime {
                 || Observation::unknown("fleet signal-read --from answered no offset"),
                 |read| Observation::Known(Some(read)),
             ),
-            Executed::Exited { code: Some(3), .. } => Observation::Known(None),
+            Executed::Exited {
+                code: Some(PLACE_READ_FILE_ABSENT),
+                ..
+            } => Observation::Known(None),
             Executed::Exited { stderr, .. } => Observation::unknown(format!(
                 "cannot read the outbox on {}: {}",
                 session.host,
@@ -825,8 +812,6 @@ impl ExecRuntime {
                 |_| Length::Unknown(format!("fleet signal-read answered {:?}", stdout.trim())),
                 Length::At,
             ),
-            // The runtime cannot run it at this place, as on a native-Windows
-            // one: it cannot read the file either.
             Observation::Known(Executed::Failed { .. }) => Length::Unreadable,
             Observation::Known(Executed::Exited { stderr, .. }) => Length::Unknown(
                 stderr
@@ -854,7 +839,6 @@ impl ExecRuntime {
 
 impl Runtime for ExecRuntime {
     fn operation_bound(&self) -> fleet_api::Millis {
-        // A workspace call is a manifest, then the `workspace` verb.
         let longest = self
             .hosts
             .values()
@@ -943,7 +927,6 @@ impl Runtime for ExecRuntime {
                 Executed::Failed { why } => {
                     Observation::Known(Err(format!("cannot remove {dir}: {why}")))
                 }
-                // Part of it may be gone: only the next call can tell.
                 Executed::TimedOut { .. } => {
                     Observation::unknown(format!("removing {dir} timed out"))
                 }
@@ -1054,20 +1037,16 @@ impl Runtime for ExecRuntime {
                     ),
                 })
             }
-            // The exec kind starts Codex with its launch override trusting
-            // the workspace, so its composer is a trusted session's.
             Observation::Known(FirstScreen::CodexComposer) => {
                 Observation::Known(WorkspaceTrust::Trusted {
                     how: "Codex runs with its launch override trusting the workspace".into(),
                 })
             }
-            // Kimi asks its folder trust before it shows its composer.
             Observation::Known(FirstScreen::KimiComposer) => {
                 Observation::Known(WorkspaceTrust::Trusted {
                     how: "Kimi Code shows its composer only in a folder it trusts".into(),
                 })
             }
-            // Copilot asks its folder trust before it shows its composer.
             Observation::Known(FirstScreen::CopilotComposer) => {
                 Observation::Known(WorkspaceTrust::Trusted {
                     how: "GitHub Copilot CLI shows its composer only in a folder it trusts".into(),
@@ -1194,7 +1173,6 @@ impl Runtime for ExecRuntime {
         {
             return screen.clone();
         }
-        // Not under the lock: a capture runs a process.
         let screen = self.capture(session).map(|captured| match captured {
             Captured::Screen { text, title, .. } => Some(fleet_api::screen::Screen {
                 text,
@@ -1510,9 +1488,6 @@ pub fn check(program: &ExecProgram) -> Vec<Case> {
         result: twice,
     });
 
-    // Every verb is idempotent by key even when calls overlap: a start looks
-    // the key up, then makes its process, and two at once must not both make
-    // one.
     let racing = key("race");
     let raced = (|| {
         let answers: Vec<Observation<Started>> = std::thread::scope(|s| {
@@ -1802,7 +1777,6 @@ fn check_branches(program: &ExecProgram, protocol: u64, key: &str) -> Vec<Case> 
         .try_for_each(|args| git_in(&repo, args));
         let answer = made.map(|()| branches(&repo));
         let _ = std::fs::remove_dir_all(&repo);
-        // The names are compared as a set: their order is the runtime's.
         let names = |got: &Value| {
             let mut names: Vec<String> = got["branches"]["names"]
                 .as_array()

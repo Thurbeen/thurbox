@@ -64,7 +64,6 @@ fn test() -> Result {
     Ok(())
 }
 fn docs() -> Result {
-    // Check Markdown file links without reaching the network or operator data.
     let root = fs::canonicalize(".")?;
     let tracked = files()?;
     for file in &tracked {
@@ -93,8 +92,6 @@ fn docs() -> Result {
             );
         }
     }
-    // Every controller guide appears in the diagram as <Name>Controller; one
-    // marked as design appears as "planned <Name>Controller", and only then.
     if tracked.iter().any(|file| file == "docs/architecture.svg") {
         let architecture = fs::read_to_string("docs/architecture.svg")?;
         let mut guides = tracked

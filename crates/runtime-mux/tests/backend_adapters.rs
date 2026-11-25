@@ -59,7 +59,7 @@ fn each_adapter_serves_its_own_multiplexer_wherever_it_runs() {
 fn what_each_multiplexer_can_report_is_its_own_adapters_answer() {
     let windows = host("windows", Platform::Windows, None);
     let linux = host("linux", Platform::Posix, Some("psmux"));
-    // `[needs_liveness_poll, supports_snapshots, keeps_exited_windows, hooks]`
+    // MUST KILL: type — a named capabilities struct would label `[needs_liveness_poll, supports_snapshots, keeps_exited_windows, hooks]`
     let tmux = [false, true, true, true];
     let psmux = [true, false, false, false];
     let rmux = [true, true, true, true];
@@ -181,8 +181,6 @@ fn have(binary: &str) -> bool {
 fn forwarding_psmux(tmux: &std::path::Path) -> tempfile::TempDir {
     use std::os::unix::fs::PermissionsExt;
 
-    // Real unstamped windows exercise the psmux ownership rules; forwarding
-    // changes only the executable name, never the listing replies.
     let bin = tempfile::tempdir().expect("shim directory");
     let shim = bin.path().join("psmux");
     std::fs::write(&shim, "#!/bin/sh\nexec \"$IDENTITY_REAL_TMUX\" \"$@\"\n").expect("shim");
@@ -631,9 +629,7 @@ fn the_psmux_backend_keeps_the_contract_where_psmux_is_installed() {
         eprintln!("skipping: psmux is not installed");
         return;
     }
-    // psmux has no socket directory, so the pinned socket's name is all that
-    // keeps this off the operator's own server — and a tmux reap does not
-    // reach a psmux server, so it is killed by name too.
+    // psmux has no socket directory, and a tmux reap does not reach a psmux server.
     const SOCKET: &str = "thurbox-psmux-contract";
     let _pinned = tmux_server::TmuxServer::pin(SOCKET);
     struct Reap;

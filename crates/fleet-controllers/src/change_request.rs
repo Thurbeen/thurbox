@@ -90,7 +90,6 @@ impl ChangeRequestController {
     pub fn reconcile(&self, input: &ChangeRequestInput<'_>) -> Result<Plan, StoreError> {
         let (spec, before) = decode(input.object)?;
         if input.object.is_deleting() {
-            // No finalizer and no owner: the store removes the record itself.
             return Ok(Plan::default());
         }
         let mut pass = Pass {
@@ -179,8 +178,6 @@ impl Pass<'_, '_> {
                 why,
                 retry_after,
             }) => {
-                // The snapshot is untouched: Unknown never means closed,
-                // merged or empty.
                 self.cond(REACHABLE, ConditionStatus::Unknown, kind.reason(), why);
                 let wait = retry_after.unwrap_or_else(|| self.interval());
                 self.wait(wait);
@@ -216,7 +213,6 @@ impl Pass<'_, '_> {
         self.st.phase = Phase::Settled;
         self.st.settled_at = Some(now);
         self.cond(SETTLED, ConditionStatus::True, reason, message);
-        // Not looked at again until its retention has passed.
         let ttl = self.spec.settled_ttl_ms(&self.input.defaults);
         self.st.not_before = Some(now.saturating_add(ttl));
     }

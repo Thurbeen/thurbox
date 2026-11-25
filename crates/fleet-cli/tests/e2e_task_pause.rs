@@ -110,7 +110,6 @@ fn an_idle_task_is_paused_and_an_entry_resumes_it_with_no_note_of_fleets() {
         assert!(!raised, "{c} in {st:#}");
     }
 
-    // A paused session rests: nothing is stopped twice, nothing restarts.
     env.reconcile().ok();
     assert_eq!(env.calls("pause"), 1);
     assert_eq!(env.calls("resume"), 0);
@@ -149,7 +148,6 @@ fn unknown_activity_never_pauses() {
             "{activity:?}"
         );
     }
-    // Active resets the idle time: it starts again from the next Idle.
     set_activity(&env, Some("idle"));
     env.reconcile().ok();
     expire_idle(&env, "t1");
@@ -209,8 +207,6 @@ fn a_concluded_task_is_paused_too() {
 
 #[test]
 fn a_session_stopped_outside_fleet_resumes_on_the_next_entry() {
-    // Before, a stopped session only read as not ready: the entry waited in
-    // the inbox for good, and nothing said why.
     let env = setup("pause-external", vec![plain_task("t1")]);
     env.reconcile().ok();
     let key = env.session_key("t1");
@@ -264,7 +260,6 @@ fn deleting_a_paused_task_releases_it() {
 #[test]
 fn a_pause_whose_answer_was_lost_is_read_back_and_never_repeated() {
     let env = setup("pause-lost-answer", vec![task("t1")]);
-    // The stop happens, and its answer never comes back.
     env.fault(Fault::new("pause", "unknown").performed());
     pause(&env, "t1");
     assert!(stopped(&env));
@@ -289,7 +284,6 @@ fn a_resume_whose_answer_was_lost_is_read_back_and_never_repeated() {
 
 #[test]
 fn an_agent_fleet_cannot_resume_is_never_paused() {
-    // aider has no resume argv: a stop would end its conversation.
     let mut aider = task("t1");
     aider["spec"]["harness"] = json!("aider");
     let env = setup("pause-aider", vec![aider]);

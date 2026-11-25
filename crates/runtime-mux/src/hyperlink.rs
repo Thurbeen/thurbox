@@ -115,7 +115,6 @@ fn label_at_column(row_text: &str, col: usize, label: &str) -> bool {
             return row_text[offset..].starts_with(label);
         }
         if width > col {
-            // `col` lands inside a wide glyph — no label can start there.
             return false;
         }
         width += UnicodeWidthChar::width(ch).unwrap_or(0);
@@ -132,7 +131,6 @@ mod tests {
         let mut table = HyperlinkTable::default();
         table.record("https://github.com", "Github", 4);
         let row = "see Github done";
-        // Every cell of the label resolves; the cells around it do not.
         assert_eq!(table.resolve(row, 4), Some("https://github.com"));
         assert_eq!(table.resolve(row, 9), Some("https://github.com"));
         assert_eq!(table.resolve(row, 3), None);
@@ -143,10 +141,7 @@ mod tests {
     fn ignores_row_whose_content_moved_on() {
         let mut table = HyperlinkTable::default();
         table.record("https://github.com", "Github", 4);
-        // Same column, different text now printed there (the row scrolled and
-        // was reused): no link, rather than the stale one.
         assert_eq!(table.resolve("see Gitlab done", 4), None);
-        // Right label, wrong column.
         assert_eq!(table.resolve("Github done", 0), None);
     }
 
@@ -156,7 +151,6 @@ mod tests {
         table.record("https://a.example", "docs", 0);
         table.record("https://b.example", "docs", 0);
         assert_eq!(table.resolve("docs", 0), Some("https://b.example"));
-        // The replaced entry is gone, not shadowed.
         assert_eq!(table.runs().count(), 1);
     }
 
@@ -173,13 +167,10 @@ mod tests {
     #[test]
     fn wide_glyphs_before_a_label_shift_its_column() {
         let mut table = HyperlinkTable::default();
-        // 漢字 spans four cells, so the label starts at column 5.
         table.record("https://example.com", "Github", 5);
         let row = "漢字 Github";
         assert_eq!(table.resolve(row, 5), Some("https://example.com"));
-        // The trailing cell of 字 is not part of the label.
         assert_eq!(table.resolve(row, 4), None);
-        // A column landing inside a wide glyph never starts a label.
         assert_eq!(table.resolve(row, 1), None);
     }
 
@@ -198,7 +189,6 @@ mod tests {
             table.record(&format!("https://example.com/{i}"), "link", i);
         }
         assert_eq!(table.runs().count(), MAX_RUNS);
-        // The oldest runs were dropped, the newest kept.
         assert!(table.resolve("link", 0).is_none());
         let last = MAX_RUNS + 49;
         let row = " ".repeat(last) + "link";
@@ -247,8 +237,6 @@ mod tests {
             osc8_open("https://example.com"),
             "\x1b]8;;https://example.com\x07"
         );
-        // An agent-supplied URL must not be able to end the sequence early and
-        // inject escapes into the user's terminal.
         assert_eq!(
             osc8_open("https://x.example\x1b[31m\x07\n"),
             "\x1b]8;;https://x.example[31m\x07"

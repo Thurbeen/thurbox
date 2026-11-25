@@ -171,8 +171,6 @@ impl Config {
                 config.version
             ));
         }
-        // Relative paths in the file are relative to the file, not to the
-        // directory fleet happens to run in.
         let base = path.parent().unwrap_or(Path::new("."));
         if let Some(d) = &config.data.dir {
             config.data.dir = Some(base.join(d));

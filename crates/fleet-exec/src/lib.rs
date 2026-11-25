@@ -271,8 +271,7 @@ pub fn run(spec: &Spec) -> Outcome {
         };
     };
     guard.exited = true;
-    // A process the child left in its group or job may still hold the
-    // pipes; give the readers until the deadline, then clean up after it.
+    // A grandchild left in the process group or job can hold the pipes open.
     if !settle(&readers, deadline.max(Instant::now() + GRACE)) {
         guard.kill();
         settle(&readers, Instant::now() + GRACE);

@@ -63,8 +63,6 @@ pub fn serve(
                     break;
                 }
             }
-            // Ending the command is how a bridge lets go; the killer needs no
-            // lock, so a wait for the command does not hold it up.
             killer.kill();
         });
     }

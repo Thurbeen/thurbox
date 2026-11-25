@@ -62,8 +62,6 @@ impl ForgeController {
             return false;
         }
         let Ok((_, st)) = decode(task) else {
-            // A status this controller cannot read is reported by the
-            // reconcile, not skipped silently.
             return true;
         };
         let forge = st.forge.unwrap_or_default();
@@ -89,8 +87,6 @@ impl ForgeController {
             let policy = Policy::select(&spec.forge.unwrap_or_default(), &input.defaults);
             let shipped = shipped(&st);
             let mark = worker_mark(&input.task.metadata.uid);
-            // The session is asked last, once everything the snapshot can
-            // answer holds; the login is needed for the bot predicate.
             let wants_rest = forge.changes.iter().any(|(name, entry)| {
                 let Some(Observation::Known(Some(obj))) = input.observations.changes.get(name)
                 else {
@@ -266,16 +262,12 @@ fn evaluating(
     let record = &entry.mark_ready;
     match record.state {
         MarkReadyState::None => {
-            // A `Moved` refusal for this very head means the mirror has not
-            // caught up with the forge yet, or the change went ready and
-            // back to draft between two polls: wait for the mirror to show
-            // a new head, and never mark the old one.
             let suffix = format!("/{}/{}", entry.uid, head.id);
-            let moved_here = record.receipts.iter().any(|(k, r)| {
+            let forge_refused_this_head_as_moved = record.receipts.iter().any(|(k, r)| {
                 k.ends_with(&suffix)
                     && matches!(&r.outcome, Observation::Known(EffectOutcome::Moved { .. }))
             });
-            !moved_here
+            !forge_refused_this_head_as_moved
         }
         MarkReadyState::Failed => {
             record.attempts < MAX_ATTEMPTS && entry.not_before.is_none_or(|t| t <= now)
@@ -497,11 +489,9 @@ impl Pass<'_, '_> {
 
     fn change(&mut self, name: &str) {
         let Some(observed) = self.input.observations.changes.get(name) else {
-            // Not asked: settled, or the manager has nothing for it.
             return;
         };
         let obj = match observed {
-            // Unknown never means gone: skip this entry this pass.
             Observation::Unknown { .. } => return,
             Observation::Known(None) => {
                 self.attention.raise(
@@ -524,12 +514,9 @@ impl Pass<'_, '_> {
             }
         };
         let Some(reference) = &cr.reference else {
-            // Known, but its own controller has not looked yet: there is no
-            // snapshot to join at. Wait for the first poll.
             return;
         };
         let me = match self.input.observations.whoami.get(&reference.host) {
-            // Attribution is needed to filter: nothing moves without it.
             Some(Observation::Known(login)) => login.clone(),
             Some(Observation::Unknown { .. }) | None => return,
         };
@@ -552,8 +539,6 @@ impl Pass<'_, '_> {
                     .insert(name.to_string(), self.settled(&ctx, entry));
             }
             Some(existing) if existing.uid != uid => {
-                // A new incarnation after retention: the old cursor and
-                // mark-ready record belong to an object that is gone.
                 let entry = ChangeEntry::joined(&uid, cr.revision);
                 self.attention.clear(RELAY_GAP, name);
                 self.attention.clear(MARK_READY_FAILED, name);
@@ -587,7 +572,6 @@ impl Pass<'_, '_> {
             self.settle_pending(ctx, &mut entry);
         }
         if cr.ever_ready {
-            // Ready, by Fleet's hand or anyone's: nothing is left to attend to.
             self.attention.clear(MARK_READY_FAILED, name);
         }
         let policy = match &self.policy {
@@ -632,11 +616,8 @@ impl Pass<'_, '_> {
         ) {
             return entry;
         }
-        // `workerIdle`, last: asked of the session only now.
         match &self.input.observations.at_rest {
             Some(Observation::Known(true)) => {}
-            // Mid-turn, unreadable, or not asked yet (the manager asks in
-            // rounds): nothing moves.
             Some(_) | None => return entry,
         }
         let Some(head) = &cr.head else {
@@ -656,8 +637,6 @@ impl Pass<'_, '_> {
                 generation: self.input.task.metadata.generation,
             },
         );
-        // A retry on the same head: the manager writes this attempt's
-        // receipt under the same key, so the last one goes.
         record.receipts.remove(&key);
         entry.not_before = None;
         let Some(reference) = &cr.reference else {
@@ -694,8 +673,6 @@ impl Pass<'_, '_> {
                 self.done(ctx, entry, &key);
             }
             Some(Observation::Known(EffectOutcome::Moved { .. })) => {
-                // Not an attempt against the change. The receipt stays, so
-                // this head is not tried again while the mirror lags.
                 let record = &mut entry.mark_ready;
                 record.state = MarkReadyState::None;
                 record.attempts = record.attempts.saturating_sub(1);
@@ -710,7 +687,6 @@ impl Pass<'_, '_> {
             Some(Observation::Unknown { .. }) | None => {
                 let intent_at = entry.mark_ready.intents.get(&key).map(|i| i.at);
                 let Some(intent_at) = intent_at else {
-                    // No intent and no receipt: nothing was ever asked.
                     entry.mark_ready.state = MarkReadyState::None;
                     return;
                 };
@@ -828,7 +804,6 @@ impl Pass<'_, '_> {
         }
         let delta = self.delta(ctx, entry.cursor);
         if !delta.transitions.is_empty() || !delta.notes.is_empty() {
-            // The next clean relay: one that carries something past the gap.
             self.attention.clear(RELAY_GAP, name);
             let mut text = ctx.header();
             text.push_str(&format!(
@@ -850,7 +825,6 @@ impl Pass<'_, '_> {
             entry.cursor = cr.revision;
             self.send(ctx, &entry, text);
         } else {
-            // Nothing passed the filters: the cursor still moves.
             entry.cursor = cr.revision;
         }
         entry
@@ -865,14 +839,14 @@ impl Pass<'_, '_> {
         {
             delta
                 .transitions
-                .push(format!("- state changed to `{}`", word(state.value)));
+                .push(format!("- state changed to `{}`", kebab(state.value)));
         }
         if let Some(decision) = &cr.review_decision
             && decision.seq > cursor
         {
             delta.transitions.push(format!(
                 "- review decision changed to `{}`",
-                word(decision.value)
+                kebab(decision.value)
             ));
         }
         if let Some(conflicts) = &cr.conflicts
@@ -892,7 +866,7 @@ impl Pass<'_, '_> {
         {
             delta.transitions.push(format!(
                 "- checks `{}` on head `{}`{}",
-                word(head.checks),
+                kebab(head.checks),
                 head.id,
                 failing(&head.failing)
             ));
@@ -938,19 +912,19 @@ impl Pass<'_, '_> {
             "- state `{}`\n",
             cr.state
                 .as_ref()
-                .map_or("not observed yet".to_string(), |s| word(s.value))
+                .map_or("not observed yet".to_string(), |s| kebab(s.value))
         ));
         match &cr.head {
             Some(h) => out.push_str(&format!(
                 "- head `{}`, checks `{}`{}\n",
                 h.id,
-                word(h.checks),
+                kebab(h.checks),
                 failing(&h.failing)
             )),
             None => out.push_str("- head not observed yet\n"),
         }
         if let Some(d) = &cr.review_decision {
-            out.push_str(&format!("- review decision `{}`\n", word(d.value)));
+            out.push_str(&format!("- review decision `{}`\n", kebab(d.value)));
         }
         match &cr.mergeable {
             Some(m) => {
@@ -992,7 +966,7 @@ impl Pass<'_, '_> {
 
     fn render_note(&self, note: &StoredNote) -> String {
         let (_, uid) = self.task_meta();
-        let mut head = format!("- {} ({}", note.author, word(note.kind));
+        let mut head = format!("- {} ({}", note.author, kebab(note.kind));
         if note.bot {
             head.push_str(", bot");
         }
@@ -1151,9 +1125,7 @@ impl Ctx<'_> {
     }
 }
 
-fn word<T: std::fmt::Debug>(value: T) -> String {
-    // Every vocabulary enum is a unit variant list; its Debug name is the
-    // CamelCase variant, and the pages spell it in kebab-case.
+fn kebab<T: std::fmt::Debug>(value: T) -> String {
     let mut out = String::new();
     for (i, c) in format!("{value:?}").chars().enumerate() {
         if c.is_ascii_uppercase() {
@@ -1212,9 +1184,9 @@ mod tests {
     #[test]
     fn vocabulary_words_are_the_resource_pages() {
         use fleet_api::forge::{ChangeState, ReviewDecision};
-        assert_eq!(word(ChangeState::Draft), "draft");
-        assert_eq!(word(ReviewDecision::ChangesRequested), "changes-requested");
-        assert_eq!(word(Checks::Failed), "failed");
-        assert_eq!(word(NoteKind::Inline), "inline");
+        assert_eq!(kebab(ChangeState::Draft), "draft");
+        assert_eq!(kebab(ReviewDecision::ChangesRequested), "changes-requested");
+        assert_eq!(kebab(Checks::Failed), "failed");
+        assert_eq!(kebab(NoteKind::Inline), "inline");
     }
 }

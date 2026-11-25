@@ -37,12 +37,10 @@ fn an_agent_waiting_for_trust_is_never_briefed_and_asks_for_it_once() {
     assert_condition(&st, "WorkspaceTrusted", "False", "Unsupported");
     assert_condition(&st, "NeedsAttention", "True", "WorkspaceUntrusted");
 
-    // Looked at again after the retry wait, not in a hot loop.
     assert!(env.get("t1")["status"]["notBefore"].is_u64());
     env.reconcile().ok();
     assert_eq!(env.calls("brief"), 0);
 
-    // The same Task now gets its brief, without a respawn.
     trust(&env, "t1");
     env.expire_wait("t1");
     env.reconcile().ok();

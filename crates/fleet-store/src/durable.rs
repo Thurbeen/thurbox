@@ -27,6 +27,7 @@ pub fn write_temp(tmp_dir: &Path, bytes: &[u8]) -> io::Result<PathBuf> {
     Ok(path)
 }
 
+// A hard link is atomic and fails on a taken name, on Unix and on NTFS alike.
 pub fn create_exclusive(tmp_dir: &Path, path: &Path, bytes: &[u8]) -> io::Result<bool> {
     let tmp = write_temp(tmp_dir, bytes)?;
     let linked = fs::hard_link(&tmp, path);
@@ -70,6 +71,7 @@ pub fn remove(path: &Path) -> io::Result<()> {
     }
 }
 
+// Windows fails a rename onto a file another process has open until that reader closes it.
 fn rename_retrying(from: &Path, to: &Path) -> io::Result<()> {
     let mut tries = 0;
     loop {
@@ -86,6 +88,7 @@ fn rename_retrying(from: &Path, to: &Path) -> io::Result<()> {
     }
 }
 
+// Windows has no directory handle to sync; NTFS journals the rename itself.
 pub fn sync_parent(path: &Path) -> io::Result<()> {
     #[cfg(unix)]
     {

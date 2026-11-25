@@ -62,7 +62,6 @@ pub(crate) fn resolve(
         )?,
         None => TaskConfigSpec::default(),
     };
-    // Validate every reference before executing any external provider command.
     let mut providers = Vec::new();
     for r in &defaults.env_from {
         let obj = source(store, ENV_PROVIDER, &r.name, &mut sources)?;
@@ -83,8 +82,6 @@ pub(crate) fn resolve(
     let pause_after_ms = spec.pause_after_ms.or(defaults.pause_after_ms);
     let agent_telemetry = spec.agent_telemetry.or(defaults.agent_telemetry);
     validate_execution(Some(&harness), Some(&host), model.as_deref())?;
-    // The harness profile's variables first, under every source: the
-    // frozen launch keeps them as they were when it was resolved.
     let mut env = fleet_api::harness::profile(&harness).launch.env;
     for (name, provider) in providers {
         let mut data = provider.data;

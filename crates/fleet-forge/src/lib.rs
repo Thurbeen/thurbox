@@ -200,7 +200,6 @@ impl Forge for ForgeHosts {
     ) -> Observation<EffectOutcome> {
         match self.adapter(&change.host) {
             Some(f) => f.mark_ready(change, expect, intent_key),
-            // Nothing ran: a Known refusal, not a question.
             None => Observation::Known(EffectOutcome::Failed {
                 why: format!("host {} is not configured under [forge.hosts]", change.host),
             }),

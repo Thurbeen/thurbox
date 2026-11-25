@@ -72,7 +72,6 @@ mod tests {
         for (name, text) in FILES {
             assert_eq!(fs::read_to_string(dir.join(name)).unwrap(), *text, "{name}");
         }
-        // A changed file is put back; an unchanged one is left as it is.
         let (name, text) = FILES[0];
         fs::write(dir.join(name), "changed").unwrap();
         write(&dir).unwrap();

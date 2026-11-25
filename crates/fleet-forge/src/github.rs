@@ -132,7 +132,6 @@ fn body_of(reply: &Reply) -> Result<Option<Value>, (Uncertainty, String)> {
     }
     let repo = &v["data"]["repository"];
     if repo.is_object() && repo["pullRequest"].is_null() {
-        // The repository answered and has no such pull request.
         return Ok(None);
     }
     if let Some(e) = errors.first() {
@@ -358,7 +357,6 @@ impl Forge for GithubForge {
         ];
         match self.graphql(READY_MUTATION, &vars, self.call_timeout) {
             Ok(reply) => mutation_outcome(&reply),
-            // The process ran out of time: the mutation may have landed.
             Err((Uncertainty::Timeout, why)) => Observation::unknown(why),
             Err((_, why)) => failed(why),
         }
@@ -369,6 +367,7 @@ fn failed(why: impl Into<String>) -> Observation<EffectOutcome> {
     Observation::Known(EffectOutcome::Failed { why: why.into() })
 }
 
+// GitHub keeps `isDraft` on a draft closed without being marked ready.
 fn state_of(pr: &Value) -> Result<ChangeState, String> {
     match pr["state"].as_str() {
         Some("OPEN") if pr["isDraft"] == true => Ok(ChangeState::Draft),
@@ -413,8 +412,6 @@ pub fn mutation_outcome(reply: &Reply) -> Observation<EffectOutcome> {
             .unwrap_or("the forge reported an error");
         let lower = message.to_ascii_lowercase();
         if lower.contains("not a draft") || lower.contains("not in draft") {
-            // Someone took it out of draft inside the window: the outcome
-            // Fleet wanted, by another hand.
             return Observation::Known(EffectOutcome::MarkedReady { already: true });
         }
         return failed(message.to_string());

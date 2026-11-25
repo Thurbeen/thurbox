@@ -59,39 +59,16 @@ impl TmuxCompatible for Tmux {
 
     fn session_config(session: &str) -> Vec<ConfigOption> {
         let mut config = Vec::new();
-        // An app's OSC 52 copy does not need tmux: control mode hands thurbox
-        // the raw bytes in `%output` whatever `set-clipboard` says, and thurbox
-        // puts the focused pane's write on the user's clipboard itself
-        // (`TermSignals::copy_to_clipboard`). tmux never sends a control-mode
-        // client a selection, so `set-clipboard on` never delivered one here.
-        //
-        // What `on` did do was make tmux parse the write: keep it as a paste
-        // buffer, and answer every app's OSC 52 *read* (`?`) with the newest
-        // one — so an app in one session could read what an app in another had
-        // copied, local or on a remote host. `get-clipboard off` stops the
-        // answer only on tmux 3.7+; `external` stops tmux handling an app's
-        // OSC 52 at all on every tmux from the 3.2 floor up, and still
-        // forwards tmux's own copy-mode yanks to a terminal attached directly
-        // (which is what the `*:clipboard` feature below is for).
+        // `set-clipboard external` stops tmux answering an app's OSC 52 read from 3.2 up; `get-clipboard off` only from 3.7.
         config.push(ConfigOption::set(
             &["-s", "set-clipboard", "external"],
             false,
         ));
 
-        // Apps inside tmux can inspect this option before deciding whether to
-        // request mouse reports. With it off, a full-screen app may leave wheel
-        // capture disabled even though thurbox can forward those reports.
+        // Apps inside tmux read the `mouse` option before they request mouse reports.
         config.push(ConfigOption::set(&["-t", session, "mouse", "on"], true));
 
-        // The `*:clipboard` feature goes into a fixed slot, and only while that
-        // slot is empty. Appending it grew the list by one entry a run, since
-        // this runs on every spawn and the server outlives thurbox (#1278); an
-        // unconditional write to the slot would overwrite an entry the user's
-        // `~/.tmux.conf` put there. Reading the list from Rust first would cost
-        // a process per session create, and a format cannot test the whole
-        // array on 3.2 (`#{terminal-features}` expands to "") — but it can read
-        // one index. `-a` fills the first free index, so appended entries
-        // never land on this one.
+        // tmux 3.2 expands `#{terminal-features}` to "" but reads one index, and `-a` fills the first free index.
         let slot = format!("#{{{CLIPBOARD_FEATURE_SLOT}}}");
         let write = format!("set-option -qs {CLIPBOARD_FEATURE_SLOT} *:clipboard");
         config.push(ConfigOption {
@@ -175,22 +152,18 @@ mod tests {
             line.contains(" -e 'FLEET_SIGNAL_FILE=~/.local/state/fleet/signals/t1.u1.jsonl' "),
             "{line}"
         );
-        // A test reads no place's login `PATH`: `path_prepend` leads the
-        // inherited one.
         assert!(
             line.ends_with(
                 " /bin/sh -lc 'PATH=/opt/fleet/bin\"${PATH:+:$PATH}\"; export PATH; exec claude --resume c1'"
             ),
             "{line}"
         );
-        // The connection the line travels over enters the distro.
         let argv: Vec<String> = backend
             .mux_command(&["-C", "attach"])
             .expect("command")
             .get_args()
             .map(|a| a.to_string_lossy().into_owned())
             .collect();
-        // `--cd /` only from a Unix machine (`shell::wsl_command`).
         let enter: &[&str] = if cfg!(unix) {
             &["-d", "Ubuntu", "--cd", "/", "-e", "sh"]
         } else {
@@ -234,8 +207,7 @@ mod tests {
 
     #[test]
     fn min_version_accepts_non_tmux_clone() {
-        // psmux numbers itself independently and may not print a `tmux ` banner;
-        // once it answers `-V` it is accepted regardless of its own version.
+        // psmux numbers its own versions and may print no `tmux ` banner.
         assert!(check_min_version("psmux 0.3.1").is_ok());
         assert!(check_min_version("psmux 1.0").is_ok());
         assert!(check_min_version("pmux 0.1").is_ok());
@@ -419,8 +391,6 @@ mod tests {
 
     #[test]
     fn a_deferred_prompt_quotes_a_socket_name_the_host_configured() {
-        // A socket the immediate commands pass as one argument must reach the
-        // server's shell as one word too, or the paste runs against no server.
         let tmux = Tmux::deferred_paste_script("tmux", "my sock", "%3", "hi").unwrap();
         assert_eq!(tmux.matches("-L 'my sock' send-keys").count(), 2, "{tmux}");
     }

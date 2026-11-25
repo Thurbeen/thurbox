@@ -8,6 +8,7 @@ const LAUNCHCTL: Tool = Tool {
     program: "launchctl",
     lead: &[],
 };
+// launchd ignores a property list key it does not know.
 const STORE: &str = "<key>XFleetStore</key>\n  <string>";
 const EX_CONFIG: &str = "78";
 

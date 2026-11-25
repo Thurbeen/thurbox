@@ -45,6 +45,7 @@ pub struct Size {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Exit {
+    // `None` when a signal ended the program: POSIX gives it no exit status.
     Known { code: Option<i64> },
     Unknown { why: String },
 }
@@ -80,7 +81,6 @@ pub trait Frame: Sized {
 }
 
 fn to_json(value: &impl Serialize) -> Vec<u8> {
-    // These types serialize infallibly: plain structs of numbers and strings.
     serde_json::to_vec(value).unwrap_or_default()
 }
 

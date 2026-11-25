@@ -193,25 +193,21 @@ fn a_name_cannot_alias_another_change() {
     let (env, forge, cr) = setup("alias");
     forge.set_change(PROJECT, "8", open_change(vec![])).unwrap();
     env.apply(change_request(URL, json!({}))).ok();
-    // Before the first poll, the existing object's own URL is what it mirrors.
     let mut other = change_request("https://forge.test/acme/widgets/pull/8", json!({}));
     other["metadata"]["name"] = json!(cr);
     env.apply(other.clone())
         .code(1)
         .stderr_has("a change names one object");
-    // After it, the recorded ref is.
     env.reconcile().ok();
     assert_eq!(env.change_request_status(&cr)["ref"]["id"], "7");
     env.apply(other)
         .code(1)
         .stderr_has("mirrors fake/forge.test/acme/widgets/7");
-    // Another name for the same change is allowed, and a second mirror.
     let mut twin = change_request(URL, json!({}));
     twin["metadata"]["name"] = json!("watch-7");
     env.apply(twin)
         .ok()
         .stdout_has("ChangeRequest/watch-7 created");
-    // The spec is fixed once created.
     env.apply(change_request(URL, json!({"pollMs": 5})))
         .code(1)
         .stderr_has("immutable");
@@ -251,7 +247,6 @@ fn edits_unresolves_and_head_transitions_take_the_revision_that_saw_them() {
     env.apply(change_request(URL, json!({}))).ok();
     env.reconcile().ok();
 
-    // A new note and an inline thread.
     let mut change = open_change(vec![
         note("n1", 10, "first"),
         note("n2", 20, "second"),
@@ -274,7 +269,6 @@ fn edits_unresolves_and_head_transitions_take_the_revision_that_saw_them() {
     );
     assert_eq!(st["threads"]["unresolved"], 1);
 
-    // An edit moves a number; a resolve moves the revision but not the note.
     change.notes[0].body = "first, clarified".into();
     change.notes[0].edited_at = Some(50);
     change.notes[3].resolved = Some(true);
@@ -295,7 +289,6 @@ fn edits_unresolves_and_head_transitions_take_the_revision_that_saw_them() {
     );
     assert_eq!(st["notes"][3]["resolved"], true);
 
-    // An unresolve moves it.
     change.notes[3].resolved = Some(false);
     change.threads.unresolved = 1;
     forge.set_change(PROJECT, "7", change.clone()).unwrap();
@@ -307,7 +300,6 @@ fn edits_unresolves_and_head_transitions_take_the_revision_that_saw_them() {
         (Some(4), Some(4))
     );
 
-    // New head, failing checks, a review and the forge's verdict.
     change.head = HeadSeen {
         id: "bbb222".into(),
         checks: Checks::Failed,
@@ -344,7 +336,6 @@ fn edits_unresolves_and_head_transitions_take_the_revision_that_saw_them() {
     assert_eq!(st["state"]["seq"], 1, "the state never moved");
     assert_condition(&st, "Mergeable", "False", "Blocked");
 
-    // Draft, then back: everReady never returns to false.
     change.state = ChangeState::Draft;
     forge.set_change(PROJECT, "7", change).unwrap();
     env.expire_wait_of("ChangeRequest", &cr);
@@ -393,7 +384,6 @@ fn more_than_a_hundred_notes_rotate_and_raise_dropped_before() {
         .collect();
     assert!(!ids.contains(&"n000") && !ids.contains(&"n001") && ids.contains(&"late2"));
 
-    // The same answer again is not news: the rotated notes are not renumbered.
     env.expire_wait_of("ChangeRequest", &cr);
     let report = env.reconcile().ok().json();
     assert_eq!(report["statusWrites"], 1);
@@ -414,7 +404,6 @@ fn an_unknown_answer_leaves_the_snapshot_untouched_and_retry_after_is_honoured()
         ("malformed", "Unreadable"),
     ] {
         forge.add_fault(ForgeFault::new("change", mode)).unwrap();
-        // The forge changed meanwhile, but an Unknown read must not show it.
         forge
             .set_change(PROJECT, "7", open_change(vec![note("n9", 90, "unseen")]))
             .unwrap();
@@ -438,7 +427,6 @@ fn an_unknown_answer_leaves_the_snapshot_untouched_and_retry_after_is_honoured()
         );
     }
 
-    // Throttled: the forge's own advice sets the next poll.
     forge
         .add_fault(ForgeFault::new("change", "throttle").retry_after(90_000))
         .unwrap();
@@ -450,7 +438,6 @@ fn an_unknown_answer_leaves_the_snapshot_untouched_and_retry_after_is_honoured()
     let nb = st["notBefore"].as_u64().unwrap();
     assert!(nb >= t + 90_000 && nb < t + 90_000 + 60_000, "{st:#}");
 
-    // Back: the change is read, including what Unknown hid.
     env.expire_wait_of("ChangeRequest", &cr);
     env.reconcile().ok();
     let st = env.change_request_status(&cr);
@@ -561,7 +548,6 @@ fn a_merged_change_settles_and_retention_deletes_it() {
     assert_condition(&st, "Settled", "True", "Merged");
     assert_eq!(st["state"]["value"], "merged");
     let calls = forge.calls("change").unwrap();
-    // Retained: no poll, no delete, until the retention passed.
     env.expire_wait_of("ChangeRequest", &cr);
     env.reconcile().ok();
     assert_eq!(
@@ -576,7 +562,6 @@ fn a_merged_change_settles_and_retention_deletes_it() {
     env.fleet(&["get", "changerequest", &cr])
         .code(3)
         .stderr_has("not found");
-    // Declared again, it is a new mirror with a new uid.
     forge.set_change(PROJECT, "7", open_change(vec![])).unwrap();
     env.apply(change_request(URL, json!({})))
         .ok()
@@ -752,8 +737,6 @@ fn a_stale_delete_plan_cannot_remove_a_recreated_object() {
     assert_eq!(settled["status"]["phase"], "Settled");
     age(&env, &cr, "settledAt", 4000);
 
-    // The manager, in this process, over a store that swaps the object
-    // between its read and its fenced delete.
     let store = FileStore::open(&env.data).unwrap();
     let racing = Racing {
         inner: &store,
@@ -825,7 +808,6 @@ fn a_change_request_needs_a_configured_forge_host_and_a_bad_policy_is_refused_at
     env.apply(with_status)
         .code(1)
         .stderr_has("written by controllers");
-    // The ready policies load; a predicate outside the vocabulary does not.
     let cfg = fs::read_to_string(&env.config).unwrap();
     fs::write(
         &env.config,
@@ -1374,7 +1356,6 @@ fn github_pull_requests_are_read_through_gh_with_pagination_and_bounded_calls() 
         );
     }
 
-    // The forge's rate limit: Unknown, with its Retry-After as the next poll.
     env.edit_stub(|s| s["retryAfter"] = json!(45));
     env.stub_fault("gh", "rate-limit", 1);
     env.expire_wait_of("ChangeRequest", &cr);
@@ -1386,7 +1367,6 @@ fn github_pull_requests_are_read_through_gh_with_pagination_and_bounded_calls() 
     let nb = st["notBefore"].as_u64().unwrap();
     assert!(nb >= t + 45_000 && nb < t + 45_000 + 60_000, "{st:#}");
 
-    // No login, a malformed answer, a refusal: each Unknown, each with its reason.
     for (mode, reason) in [
         ("auth", "NotLoggedIn"),
         ("malformed", "Unreadable"),
@@ -1420,7 +1400,6 @@ fn github_pull_requests_are_read_through_gh_with_pagination_and_bounded_calls() 
         );
     }
 
-    // A pull request the repository no longer has is proven absent.
     env.edit_stub(|s| s["changes"] = json!({}));
     env.expire_wait_of("ChangeRequest", &cr);
     env.reconcile().ok();
@@ -1686,8 +1665,6 @@ fn a_self_hosted_gitlab_merge_request_is_read_through_glab_with_its_hostname() {
     let mut model = github_model();
     model["mergeable"] = json!("ci_must_pass");
     model["approvedBy"] = json!(["ann"]);
-    // Enough discussions for a second page at the adapter's page size, all
-    // older than the inline threads.
     let comments: Vec<Value> = (0..105u64)
         .map(|i| json!({"id": format!("c{i}"), "author": "ann", "body": format!("note {i}"), "at": 10 + i, "editedAt": null}))
         .collect();
@@ -1773,7 +1750,6 @@ fn a_self_hosted_gitlab_merge_request_is_read_through_glab_with_its_hostname() {
         );
     }
 
-    // 429 with Retry-After.
     env.edit_stub(|s| s["retryAfter"] = json!(60));
     env.stub_fault("glab", "rate-limit", 1);
     env.expire_wait_of("ChangeRequest", &cr);
@@ -1783,7 +1759,6 @@ fn a_self_hosted_gitlab_merge_request_is_read_through_glab_with_its_hostname() {
     assert_condition(&st, "Reachable", "Unknown", "Throttled");
     assert!(st["notBefore"].as_u64().unwrap() >= t + 60_000);
 
-    // Gone: the merge request 404s while the project answers.
     env.edit_stub(|s| s["changes"] = json!({}));
     env.expire_wait_of("ChangeRequest", &cr);
     env.reconcile().ok();
@@ -1791,7 +1766,6 @@ fn a_self_hosted_gitlab_merge_request_is_read_through_glab_with_its_hostname() {
     assert_eq!(st["phase"], "Settled");
     assert_condition(&st, "Settled", "True", "Gone");
 
-    // A project that cannot be seen is not absence.
     env.edit_stub(|s| {
         s["changes"] = json!({format!("{project}#4"): github_model()});
     });
@@ -1812,9 +1786,7 @@ fn a_self_hosted_gitlab_merge_request_is_read_through_glab_with_its_hostname() {
 
 #[test]
 fn a_closed_draft_github_pull_request_is_closed_and_settles() {
-    // GitHub keeps isDraft true on a draft pull request that is closed
-    // without being marked ready. The forge's state is terminal; the draft
-    // flag must not keep the mirror Watching forever.
+    // GitHub keeps isDraft true on a draft pull request closed without being marked ready.
     let env = Env::forge_stubs("github-closed-draft");
     let mut model = github_model();
     model["state"] = json!("closed");
@@ -1838,8 +1810,7 @@ fn a_closed_draft_github_pull_request_is_closed_and_settles() {
 
 #[test]
 fn a_closed_draft_is_closed_on_every_forge() {
-    // GitLab, Azure DevOps and Bitbucket Cloud can also close a draft
-    // without marking it ready. Each adapter must let the terminal state win.
+    // GitLab, Azure DevOps and Bitbucket Cloud can also close a draft without marking it ready.
     for (kind, host, project, url) in [
         (
             "gitlab",

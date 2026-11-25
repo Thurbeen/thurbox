@@ -54,8 +54,6 @@ pub fn host_of_key(key: &str) -> Option<&str> {
     let rest = [SSH_PREFIX, WSL_PREFIX]
         .iter()
         .find_map(|prefix| key.strip_prefix(prefix))?;
-    // A host name holds no `:` (a registry refuses one), so a known
-    // multiplexer after the last one is the route's.
     let host = match rest.rsplit_once(':') {
         Some((host, name)) if Multiplexer::parse(name).is_ok() => host,
         _ => rest,

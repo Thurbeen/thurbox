@@ -53,8 +53,6 @@ impl From<anyhow::Error> for BackendError {
                 Self::Io(_) => Self::Io(message),
             };
         }
-        // A control-mode reply that never arrived: the reader is gone or the
-        // server stopped answering.
         if e.chain()
             .any(|cause| cause.is::<std::sync::mpsc::RecvTimeoutError>())
         {
@@ -605,9 +603,6 @@ mod tests {
 
     #[test]
     fn a_key_accepts_the_spellings_people_write() {
-        // Separator, prefix and case are the three things spelled differently;
-        // all the forms are the one key, and the canonical name is what the
-        // caller gets back to depend on.
         for spelling in ["ctrl-c", "ctrl+c", "C-c", "c+C", " CTRL-C "] {
             let key = Key::parse(spelling).expect("{spelling} should parse");
             assert_eq!(key.name(), "ctrl-c");

@@ -40,8 +40,6 @@ pub(crate) fn handle(
 
 fn close_run(screen: &vt100::Screen, table: &mut HyperlinkTable, open: PendingHyperlink) {
     let (end_row, end_col) = screen.cursor_position();
-    // The label is no longer where it printed — the screen scrolled under the
-    // run, or was cleared — so there is nothing to anchor to.
     if end_row < open.row || scroll_witness(screen, open.row, open.col) != open.witness {
         return;
     }
@@ -49,18 +47,10 @@ fn close_run(screen: &vt100::Screen, table: &mut HyperlinkTable, open: PendingHy
     let cols = cols.get();
     for row in open.row..=end_row {
         let from = if row == open.row { open.col } else { 0 };
-        // The cursor sits on the cell the *next* glyph goes to, so `end_col` is
-        // exclusive. A label that fills the row to its edge leaves the cursor
-        // parked on the last column (pending wrap) and loses that one cell:
-        // the click target ends up a cell short, never pointing at the wrong
-        // run.
+        // A label that fills the row leaves the cursor in pending wrap on the last column, a cell short.
         let to = if row == end_row { end_col } else { cols };
         let label = row_glyphs(screen, row, from, to);
         table.record(&open.url, label.trim_end(), from as usize);
-        // A run reaches the next row only by wrapping. Anything else moved the
-        // cursor down on its own (a newline inside the label), which leaves the
-        // rows below holding text this run never printed — so stop rather than
-        // claim them.
         if row < end_row && !screen.row_wrapped(row) {
             break;
         }
@@ -138,15 +128,13 @@ mod tests {
         let table = &parser.callbacks().table;
         assert_eq!(table.resolve(&row, 4), Some("https://github.com"));
         assert_eq!(table.resolve(&row, 9), Some("https://github.com"));
-        // Only the label's own cells are clickable.
         assert_eq!(table.resolve(&row, 3), None);
         assert_eq!(table.resolve(&row, 10), None);
     }
 
     #[test]
     fn captures_an_st_terminated_run_with_params_and_a_uri_semicolon() {
-        // `id=…` link params must not be mistaken for the URI, and a URI
-        // carrying its own `;` arrives split across several OSC fields.
+        // A URI holding its own `;` arrives split across several OSC fields.
         let parser = feed(
             4,
             40,
@@ -161,8 +149,6 @@ mod tests {
 
     #[test]
     fn captures_each_row_of_a_wrapped_run() {
-        // The label runs past the right edge, so it lands on two rows and each
-        // gets its own entry.
         let parser = feed(
             4,
             10,
@@ -215,7 +201,6 @@ mod tests {
             table.resolve(&screen_row(&parser, 0), 0),
             Some("https://example.com")
         );
-        // The cursor moved down on its own, so "more" is not part of the run.
         assert_eq!(table.resolve(&screen_row(&parser, 1), 0), None);
     }
 
@@ -227,8 +212,6 @@ mod tests {
 
     #[test]
     fn a_run_the_screen_scrolled_under_is_dropped() {
-        // Opening on the last row and printing past it scrolls the label above
-        // its recorded row, leaving nothing to anchor to.
         let parser = feed(
             2,
             10,

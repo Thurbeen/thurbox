@@ -25,6 +25,7 @@ use systemd as host;
 
 pub const DEFAULT_NAME: &str = "fleet";
 #[cfg(any(target_os = "linux", windows))]
+// systemd keeps and ignores a unit key that starts with `X-`.
 const STORE_KEY: &str = "X-Fleet-Store=";
 const QUICK_BOUND: Duration = Duration::from_secs(30);
 
@@ -318,9 +319,7 @@ struct Tool {
 impl Tool {
     fn spec(&self, args: &[&str], bound: Duration) -> Spec {
         let mut spec = Spec::new(self.program, bound).args(self.lead).args(args);
-        // Windows looks a bare program up in System32 before the parent's
-        // PATH, and in a PATH set on the child first: setting it keeps the
-        // lookup to PATH, as on Unix.
+        // Windows looks a bare program up in System32 before PATH unless the child's PATH is set.
         if let Some(path) = std::env::var_os("PATH").and_then(|p| p.into_string().ok()) {
             spec.env.push(("PATH".into(), path));
         }

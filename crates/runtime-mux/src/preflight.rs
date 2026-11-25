@@ -213,12 +213,6 @@ mod tests {
 
     #[test]
     fn a_relative_command_is_unknown_because_its_directory_is_not_ours() {
-        // `./bin/agent` is resolved by whoever launches it, from the *session's*
-        // working directory — the repo or worktree the window is opened in, not
-        // thurbox's own. Answering from this process's directory would report a
-        // binary that launches fine as missing, and one that does not as
-        // present. Not looking is the honest answer, and `Unknown` is how this
-        // module says it.
         assert_eq!(look_up("./bin/agent"), Presence::Unknown);
         assert_eq!(look_up("bin/agent"), Presence::Unknown);
     }
@@ -234,19 +228,12 @@ mod tests {
             std::fs::set_permissions(&agent, std::fs::Permissions::from_mode(0o700))
                 .expect("chmod");
         }
-        // An absolute path means the same thing from every working directory,
-        // so it is the one spelling this can answer without guessing.
         assert_eq!(look_up(&agent.display().to_string()), Presence::Present);
     }
 
     #[test]
     fn a_command_spelled_as_a_path_is_checked_where_the_user_pointed() {
-        // Not a PATH lookup at all: no directory on PATH could make this true
-        // or false, so answering from PATH would answer about the wrong file.
-        // Built from a tempdir rather than a hardcoded `/definitely/not/here`:
-        // that literal has a root but no prefix on Windows, so it is not
-        // `Path::is_absolute()` there and this exercised the relative-path
-        // (`Unknown`) branch instead of the one it's named for.
+        // On Windows a root without a prefix is not `Path::is_absolute`.
         let dir = tempfile::tempdir().expect("tempdir");
         let missing = dir.path().join("definitely-not-here").join("agent-xyz");
         assert_eq!(
@@ -258,8 +245,6 @@ mod tests {
 
     #[test]
     fn an_empty_command_is_unknown_rather_than_missing() {
-        // There is nothing to look for, which is not the same claim as having
-        // looked and found nothing.
         assert_eq!(look_up(""), Presence::Unknown);
     }
 
@@ -302,12 +287,7 @@ mod tests {
 
     #[test]
     fn the_search_phrase_summarizes_a_long_path_instead_of_printing_it() {
-        // Built with the platform's own absolute-path shape and joined with
-        // `env::join_paths` rather than a hardcoded `/opt/dirN` + `:`: on
-        // Windows neither holds (the separator is `;`, and a prefix-less
-        // `/opt/dirN` is not `Path::is_absolute`), so `path_dirs()` would
-        // filter every entry out and this test would exercise the "PATH is
-        // unset" branch instead of the one it's named for.
+        // On Windows the PATH separator is `;` and a prefix-less `/opt/dirN` is not absolute.
         let many: Vec<std::path::PathBuf> = (0..20)
             .map(|i| {
                 if cfg!(windows) {

@@ -67,7 +67,6 @@ fn a_task_a_conversation_made_keeps_its_labels() {
         CONVERSATION_LABEL: "conv-0123456789ab",
         CONVERSATION_UID_LABEL: "u-1",
     });
-    // As the Conversation's controller makes one: under the manager lease.
     let lease = store.acquire_lease("test", 60_000).unwrap();
     store
         .create_fenced(
@@ -77,8 +76,6 @@ fn a_task_a_conversation_made_keeps_its_labels() {
         )
         .unwrap();
     store.release_lease(&lease).unwrap();
-    // And as a plugin's child of another Task: the labels only a plugin's
-    // host and a parent's creation write, put where the store keeps them.
     let file = env.data.join("objects/Task/t2.json");
     let mut stored: serde_json::Value =
         serde_json::from_str(&std::fs::read_to_string(&file).unwrap()).unwrap();

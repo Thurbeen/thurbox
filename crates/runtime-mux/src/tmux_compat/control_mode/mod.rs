@@ -161,8 +161,7 @@ pub(crate) fn hidden_state(value: &str) -> Option<(String, Vec<u8>)> {
             _ => {}
         }
     }
-    // Every tracking mode off, then the one tmux reports on: a terminal
-    // tracks one at a time, and the replay only ever turns one on.
+    // A terminal tracks one mouse mode at a time.
     out.push_str("\x1b[?1000l\x1b[?1002l\x1b[?1003l\x1b[?1005l\x1b[?1006l");
     let mut bytes = out.into_bytes();
     bytes.extend(mouse_seed_bytes(mouse));
@@ -176,7 +175,6 @@ pub(crate) fn mouse_seed_bytes(flags: &str) -> Vec<u8> {
     let on: Vec<bool> = flags.split(',').map(|f| f.trim() == "1").collect();
     let flag = |i: usize| on.get(i).copied().unwrap_or(false);
     let mut out = String::new();
-    // The widest mode on wins: a terminal tracks one mode at a time.
     let tracking = [(2, "1003"), (1, "1002"), (0, "1000"), (3, "1000")]
         .into_iter()
         .find_map(|(i, mode)| flag(i).then_some(mode));
@@ -275,7 +273,6 @@ impl Resync {
 
 impl PaneSender {
     fn send_output(&self, chunk: PaneChunk) -> Sent {
-        // Only this thread puts a reader behind, so one seen in step is.
         let in_step = self.resync.as_ref().is_none_or(|r| !r.is_behind());
         let chunk = if in_step {
             match self.tx.try_send(chunk) {
@@ -294,7 +291,6 @@ impl PaneSender {
             return Sent::Kept;
         };
         if !in_step && !resync.is_behind() {
-            // It took a parked snapshot since: in step again.
             drop(state);
             return self.send_output(chunk);
         }
@@ -646,8 +642,6 @@ impl Write for ControlModeWriter {
         if buf.is_empty() {
             return Ok(0);
         }
-        // `Ok` either way for a paste that is dropped: an error here ends the
-        // pane's writer thread, and with it every later keystroke to this pane.
         let cmds = if buf.starts_with(PASTE_START) {
             let Some(text) = bracketed_paste_text(buf) else {
                 warn!("dropped a paste that is not one bracketed frame");
@@ -656,10 +650,6 @@ impl Write for ControlModeWriter {
             if text.is_empty() {
                 return Ok(buf.len());
             }
-            // A paste out of band does not queue behind the keys typed before
-            // it, so it waits for them to be written. One down the connection
-            // is ordered by the queue, and waiting would only park this pane's
-            // writer behind a stalled link.
             if self.input.pastes_out_of_band() {
                 self.wait_written();
             }
@@ -773,10 +763,8 @@ fn parse_output(line: &[u8]) -> Option<Notification> {
         });
     }
     // Format: %extended-output %<pane_id> <age> : <octal-encoded data>
-    // The " : " separator divides metadata from payload.
     let rest = line.strip_prefix(b"%extended-output ")?;
     let split = rest.windows(3).position(|w| w == b" : ")?;
-    // meta is "%<pane_id> <age>" — extract pane_id.
     let meta = &rest[..split];
     let pane_id = &meta[..meta.iter().position(|&b| b == b' ')?];
     Some(Notification::Output {
@@ -790,8 +778,7 @@ fn parse_window_close(line: &str) -> Option<Notification> {
         .strip_prefix("%window-close ")
         .or_else(|| line.strip_prefix("%unlinked-window-close "))?;
     let window_id = rest.trim();
-    // `%window-close` can carry a layout after the id in some tmux
-    // versions; the id is the first token either way.
+    // Some tmux versions put a layout after the `%window-close` id.
     let window_id = window_id.split_whitespace().next().unwrap_or(window_id);
     if window_id.is_empty() {
         return None;
@@ -820,7 +807,6 @@ fn parse_subscription_changed(line: &str) -> Option<Notification> {
     let rest = line.strip_prefix("%subscription-changed ")?;
     let mut tokens = rest.splitn(6, ' ');
     let name = tokens.next()?.to_string();
-    // session-id, window-id, window-index — positional, unused.
     for _ in 0..3 {
         tokens.next()?;
     }
@@ -828,7 +814,6 @@ fn parse_subscription_changed(line: &str) -> Option<Notification> {
     if !is_valid_pane_id(&pane_id) {
         return None;
     }
-    // Whatever follows the pane id: `[future-use tokens ]: value`.
     let tail = tokens.next().unwrap_or("");
     let value = if let Some(v) = tail.strip_prefix(": ") {
         v.to_string()
@@ -837,7 +822,6 @@ fn parse_subscription_changed(line: &str) -> Option<Notification> {
     } else if let Some(idx) = tail.find(" : ") {
         tail[idx + 3..].to_string()
     } else if tail.ends_with(" :") {
-        // Future-use tokens then an empty value ("a b :").
         String::new()
     } else {
         return None;
@@ -911,7 +895,6 @@ pub fn diff_polled_hook_states(
 
 pub fn format_send_keys(pane_id: &str, bytes: &[u8]) -> String {
     use std::fmt::Write;
-    // "send-keys -t %NN -H" + " XX" per byte + "\n"
     let mut cmd = String::with_capacity(20 + pane_id.len() + bytes.len() * 3 + 1);
     write!(cmd, "send-keys -t {pane_id} -H").unwrap();
     for &b in bytes {
@@ -922,8 +905,6 @@ pub fn format_send_keys(pane_id: &str, bytes: &[u8]) -> String {
 }
 
 pub fn shell_escape(s: &str) -> String {
-    // Strip the protocol-breaking newlines, then apply standard POSIX
-    // single-quote escaping (shared with the SSH/git paths).
     crate::shell::posix_quote(&s.replace('\n', " "))
 }
 
@@ -974,17 +955,13 @@ impl ControlMode {
         sizer: &str,
         policy: &ControlPolicy,
     ) -> Result<Self> {
-        // -C (single C): control mode with echo — works with piped stdin.
-        // -CC (double C) requires a TTY and fails with "tcgetattr: Inappropriate ioctl".
+        // tmux -CC needs a TTY ("tcgetattr: Inappropriate ioctl"); -C works with piped stdin.
         let mut child = transport
             .tmux_command(socket, &["-C", "attach-session", "-t", session])?
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::null())
             .spawn()
-            // No `tmux`/`ssh`/`wsl.exe` on this machine at all: the message
-            // names which, where thurbox looked and the fix, rather than the
-            // errno the launcher raised.
             .map_err(|e| {
                 transport.launch_failure(
                     &format!("Failed to start {} control mode", transport.mux()),
@@ -1001,18 +978,7 @@ impl ControlMode {
             .take()
             .context("Failed to get control mode stdout")?;
 
-        // Consume tmux's implicit response to the `-C attach-session` command
-        // carried on argv — the one `%begin`/`%end` block tmux emits on
-        // connect that is not a reply to anything we send. This must happen
-        // synchronously, before the reader thread exists: `deliver_response`
-        // matches replies to waiters by queue position only, so if the
-        // reader thread instead raced a `send_command` no-op meant to drain
-        // this block — as this used to — whichever finished first decided
-        // whether that no-op's waiter received this block (harmless, since
-        // both are empty) or the *real* reply to the no-op did, silently
-        // shifting every later response one FIFO slot for the rest of the
-        // connection's life. Draining here, before any waiter can exist,
-        // makes that race impossible instead of merely unlikely.
+        // tmux answers the argv `attach-session` with one `%begin`/`%end` block: drain it before any waiter exists.
         let mut reader = BufReader::new(stdout);
         if policy.implicit_attach_reply {
             Self::drain_implicit_attach_response(&mut reader)?;
@@ -1083,13 +1049,7 @@ impl ControlMode {
             control.send_command(command)?;
         }
 
-        // Subscribe to the remote-hook status option of every pane of the
-        // attached session (tmux pushes `%subscription-changed` on change) —
-        // how an off-local agent's hooks reach the local status derivation.
-        // Only where the server has format subscriptions, and best-effort: a
-        // refusal must not brick the whole backend, status just stays dark.
-        // Armed here — not per pane — so `reconnect_control` re-arms for free
-        // and panes created later are covered (`%*` is session-scoped).
+        // `%*` is session-scoped in tmux, so one subscription covers panes created later.
         if policy.subscriptions {
             let arm = format!(
                 "refresh-client -B '{}:%*:#{{{}}}'",
@@ -1098,17 +1058,11 @@ impl ControlMode {
             if let Err(e) = control.send_command(&arm) {
                 warn!("failed to arm the remote-hook status subscription: {e:#}");
             }
-            // Which client sizes each pane, for the interface to say why a
-            // pane is not the size of its rect. The same passive mechanism and
-            // the same best effort: without it the hint is simply never shown.
             let arm = format!("refresh-client -B '{SIZER_SUBSCRIPTION}:%*:{SIZED_BY}'");
             if let Err(e) = control.send_command(&arm) {
                 warn!("failed to arm the pane sizer subscription: {e:#}");
             }
         } else if let Some(command) = &policy.status_poll {
-            // Unlike the subscription (passive — zero recurring cost), the
-            // poller is a 1 Hz command, so the adapter asks for it only where a
-            // producer can exist.
             control.spawn_hook_poller(command.clone());
         }
 
@@ -1217,14 +1171,11 @@ impl ControlMode {
         confirm_close: Option<String>,
         sizer: &str,
     ) {
-        // The in-flight block: the tag its `%begin` carried, and its lines.
         let mut collecting: Option<(Option<String>, Vec<String>)> = None;
         let mut answering: Option<Answer> = None;
         let mut line_buf = Vec::new();
 
         while Self::read_control_line(&mut reader, &mut line_buf) {
-            // A pane's bytes, taken before the line is text (`parse_output`).
-            // Not inside a tagged block, whose every line is the reply's.
             if !matches!(collecting, Some((Some(_), _))) {
                 if let Some(Notification::Output { pane_id, data }) = parse_output(&line_buf) {
                     Self::dispatch_output(&pane_senders, &pane_id, data);
@@ -1232,10 +1183,7 @@ impl ControlMode {
                 }
             }
             let line = String::from_utf8_lossy(&line_buf).into_owned();
-            // Inside a block every line is the command's output until the
-            // `%end`/`%error` that carries the `%begin`'s tag — tmux writes a
-            // command's output in one piece, never with a notification in it,
-            // and that output can be anything a pane showed (`capture-pane`).
+            // tmux writes a command's output in one piece, never with a notification inside it.
             if let Some((Some(tag), lines)) = &mut collecting {
                 let ends = (line.starts_with("%end ") || line.starts_with("%error "))
                     && block_tag(&line).map(joined_tag).as_ref() == Some(tag);
@@ -1260,9 +1208,6 @@ impl ControlMode {
                     Self::dispatch_output(&pane_senders, &pane_id, data);
                 }
                 Notification::Begin => {
-                    // A server whose blocks are not known to carry tmux's tag
-                    // ([`ControlPolicy::tagged_blocks`]) has a block framed as
-                    // it was before tags were read: any `%end` ends it.
                     let tag = block_tag(&line).map(joined_tag).filter(|_| strict_blocks);
                     collecting = Some((tag, Vec::new()));
                 }
@@ -1312,9 +1257,6 @@ impl ControlMode {
                         cols,
                     );
                 }
-                // Consumed even mid-%begin block: tmux never interleaves
-                // notifications inside response bodies, so this can't eat a
-                // response line. Empty value = the pane option is unset.
                 Notification::SubscriptionChanged {
                     name,
                     pane_id,
@@ -1338,7 +1280,6 @@ impl ControlMode {
             }
         }
 
-        // EOF — control mode connection ended. Close all pane senders so readers get EOF.
         debug!("Control reader thread exiting");
         Self::drop_panes(&pane_senders, &pane_windows, &pane_sizes);
     }
@@ -1373,8 +1314,6 @@ impl ControlMode {
             Err(_) => return,
         };
         if gone.is_empty() {
-            // A window nothing was reading — every window the interface did not
-            // open itself, which is most of them on a shared server.
             return;
         }
         Self::close_panes(pane_senders, pane_windows, &gone);
@@ -1536,9 +1475,6 @@ impl ControlMode {
         let Some(tx_vec) = senders.get(pane_id) else {
             return;
         };
-        // Single-sender is the dominant case (one reader per pane): move the
-        // chunk into it instead of cloning. Only fan-out (multiple registered
-        // instances) pays for a clone.
         let mut data = Some(data);
         let mut gone = Vec::new();
         for (i, tx) in tx_vec.iter().enumerate() {
@@ -1609,9 +1545,6 @@ impl ControlMode {
             *answering = Some(answer);
             return;
         }
-        // Here, on this thread, and before the next line is read: every
-        // `%output` ahead of this answer has been handed to the pane already and
-        // none behind it has, which is the one place the snapshot is exact.
         if let Some(pane) = &answer.waiter.splice {
             let snapshot = (!is_error)
                 .then(|| parse_snapshot(answer.blocks.clone()))
@@ -1820,8 +1753,6 @@ impl ControlMode {
             text: format!("{cmd}\n"),
         };
         if lines.send(line).is_err() {
-            // The writer thread is gone. Un-enqueue our waiter — still under
-            // the outbox lock, so no other sender can have pushed after us.
             if let Ok(mut queue) = response_queue.lock() {
                 queue.pop_back();
             }
@@ -2093,12 +2024,8 @@ impl ControlMode {
         if self.closed.swap(true, Ordering::AcqRel) {
             return;
         }
-        // Wind down the (detached) hook poller; it observes the flag on
-        // its next cycle, or exits via the dead pipe once the child is killed.
         self.alive.store(false, Ordering::Relaxed);
 
-        // Try to gracefully detach — the last line this connection takes. The
-        // writer thread ends once it has written it.
         if let Ok(mut outbox) = self.outbox.lock() {
             if let Some(lines) = outbox.lines.take() {
                 let _ = lines.send(Line {
@@ -2108,18 +2035,7 @@ impl ControlMode {
             }
         }
 
-        // Give the child a moment to exit gracefully, then force-kill so the
-        // reader thread gets EOF promptly and we never block indefinitely.
-        //
-        // The check goes *after* the sleep: `try_wait` runs immediately after
-        // `detach-client` is flushed, long before tmux has processed it, so a
-        // leading check never succeeds and only costs a full interval. Every
-        // backend pays this at quit, so the interval is kept short.
-        //
-        // Force-killing is safe: the tmux *server* and the agent panes are
-        // independent processes, so this only tears down the control-mode
-        // client. The graceful `detach-client` above is a courtesy, which is
-        // why the budget can be this aggressive.
+        // A `try_wait` right after `detach-client` never succeeds: tmux has not processed it yet.
         if let Ok(mut child) = self.child.lock() {
             let exited = (0..GRACEFUL_EXIT_POLLS).any(|_| {
                 std::thread::sleep(GRACEFUL_EXIT_POLL_INTERVAL);
@@ -2134,7 +2050,6 @@ impl ControlMode {
             queue.clear();
         }
 
-        // Reader thread should exit now that the child is dead (stdout closed).
         if let Ok(mut handle) = self.reader_handle.lock() {
             if let Some(h) = handle.take() {
                 let _ = h.join();

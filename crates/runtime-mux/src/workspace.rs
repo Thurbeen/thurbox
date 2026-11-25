@@ -101,8 +101,7 @@ impl Workspaces {
     pub fn at(mut self, place: Option<&HostDef>) -> Result<Workspaces, String> {
         if let Some(host) = place {
             let home = crate::place::home(host)?;
-            // Joined with `/` as the place spells a path, whatever this
-            // machine joins with: `wsl.exe` runs this program on Windows.
+            // `wsl.exe` runs this program on Windows, so the place's path is joined with `/`.
             self.root = PathBuf::from(format!("{}/{PLACE_ROOT}", home.trim_end_matches('/')));
             self.place = Some(host.clone());
         }
@@ -116,8 +115,6 @@ impl Workspaces {
         }
         let answer = match self.call("make", &request) {
             Ok(answer) => answer,
-            // A place without `workspace-git` takes directories already
-            // there; only a `git+` URL needs the program.
             Err(Call::NotRun(why)) => {
                 return match self
                     .place
@@ -140,7 +137,6 @@ impl Workspaces {
                 None => known(answer),
             };
         };
-        // With no step for its URLs, there is nothing to run or mark.
         if !self
             .setup
             .iter()
@@ -168,15 +164,11 @@ impl Workspaces {
             })
             .unwrap_or_default();
         if let Err(why) = self.run_steps(&self.setup, urls, &dirs) {
-            // A failed setup may have left work, as a session would: the
-            // release preserves it before the worktree goes.
             return match self.release(key) {
                 Ok(()) => known(json!({ "failed": { "why": why } })),
                 Err(e) => unknown(format!("{why}; and the workspace was not released: {e}")),
             };
         }
-        // A marker that cannot be written only costs the steps again on the
-        // next call.
         match &self.place {
             Some(host) => crate::place::touch(host, &done.to_string_lossy()),
             None => {
@@ -189,10 +181,6 @@ impl Workspaces {
     pub fn release(&self, key: &str) -> Result<(), String> {
         let request = json!({ "root": self.root, "key": key });
         let found = match (self.call("inspect", &request), &self.place) {
-            // A place without `workspace-git` releases a key only when the
-            // key has no directory under the root, where the program keeps
-            // every workspace it makes: its `file://` directories are the
-            // user's own. Anything else waits for the program.
             (Err(Call::NotRun(why)), Some(host)) => {
                 let dir = format!("{}/{key}", self.root.display());
                 return match crate::place::exists(host, &dir) {
@@ -231,7 +219,7 @@ impl Workspaces {
             let (code, stdout, stderr) =
                 crate::place::workspace_git(host, verb, request.to_string().as_bytes())
                     .map_err(Call::Unanswered)?;
-            // `sh` exits 127 when it cannot find the program: nothing ran.
+            // `sh` exits 127 when it cannot find the program.
             if code == Some(127) {
                 return Err(Call::NotRun(format!(
                     "cannot run workspace-git on place {:?}: {}; a git+ workspace needs it on the place's PATH (it ships beside runtime-mux), or add its directory to path_prepend",

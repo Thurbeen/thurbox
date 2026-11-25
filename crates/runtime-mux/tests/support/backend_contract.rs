@@ -20,7 +20,6 @@ pub fn suite(backend: &dyn SessionBackend) {
             .backend_id
     };
 
-    // A window, once stamped, is listed as its owner's in its role.
     let a = spawn("tb-contract");
     backend
         .stamp_window(&a, OWNER_A, WindowRole::Agent)
@@ -35,8 +34,6 @@ pub fn suite(backend: &dyn SessionBackend) {
     assert_eq!(window.role, WindowRole::Agent);
     assert!(window.is_alive);
 
-    // A namesake stamped for another row is that row's, and a row with no
-    // window of its own is never handed either of them.
     let b = spawn("tb-contract");
     backend
         .stamp_window(&b, OWNER_B, WindowRole::Agent)
@@ -56,7 +53,6 @@ pub fn suite(backend: &dyn SessionBackend) {
         "a row with no window claimed a namesake stamped for another"
     );
 
-    // The exact-name lookup reports every window of the name.
     let mut named: Vec<String> = backend
         .window_panes("tb-contract")
         .expect("window_panes")
@@ -68,7 +64,6 @@ pub fn suite(backend: &dyn SessionBackend) {
     expected.sort();
     assert_eq!(named, expected);
 
-    // Killing is idempotent: a pane already gone is what a kill wanted.
     backend.kill(&a).expect("kill");
     backend
         .kill(&a)
@@ -99,7 +94,6 @@ pub fn lifecycle(backend: &dyn SessionBackend) {
         env: &env,
     };
 
-    // Created stamped for its owner, and named by thurbox's convention.
     let pane: String = backend
         .create_window(&spec(owner))
         .expect("create_window")
@@ -124,14 +118,12 @@ pub fn lifecycle(backend: &dyn SessionBackend) {
         "a running pane has a pid"
     );
 
-    // Another row is never handed this one's window, namesake or not.
     let stranger = Owner::new(OWNER_B, "headless");
     assert_eq!(
         backend.locate(stranger).expect("locate a stranger").agent,
         Located::Absent
     );
 
-    // A rename follows the owner's window and keeps its stamp.
     backend
         .rename_windows(owner, "moved")
         .expect("rename_windows");
@@ -146,8 +138,6 @@ pub fn lifecycle(backend: &dyn SessionBackend) {
         .iter()
         .any(|w| w.backend_id == pane && w.name == "tb-moved" && w.session == OWNER_A));
 
-    // A second window for the same owner and role keeps one of the two, and
-    // the owner resolves to it: one session, one window per role (ADR-25).
     let again: String = backend
         .create_window(&spec(renamed))
         .expect("create again")
@@ -158,7 +148,6 @@ pub fn lifecycle(backend: &dyn SessionBackend) {
         "the newer window keeps the identity"
     );
 
-    // Killing is idempotent without an attachment too.
     backend.kill(&again).expect("kill");
     backend.kill(&again).expect("a second kill is not an error");
     backend
@@ -195,7 +184,6 @@ pub fn pane_io(backend: &dyn SessionBackend) {
         Located::At(pane.clone())
     );
 
-    // Text lands literally; submitted, it is one line; unsubmitted, it waits.
     backend
         .send_text(&pane, "-first line", true)
         .expect("send_text");
@@ -228,7 +216,6 @@ pub fn pane_io(backend: &dyn SessionBackend) {
         "a present pane's PATH is answered, known or not"
     );
 
-    // A pane gone is not somebody else's to answer for.
     backend.kill(&pane).expect("kill");
     assert_eq!(
         backend.pane_state(&pane).unwrap_or_default(),

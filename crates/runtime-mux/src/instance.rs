@@ -84,8 +84,6 @@ fn socket_for(
     relocated_data_dir: Option<&Path>,
 ) -> String {
     if let Some(name) = override_name.filter(|s| !s.is_empty()) {
-        // An owner that still names this instance's data dir — or no owner at
-        // all, which is an operator typing the name — keeps the override.
         let inherited_from_elsewhere =
             matches!(socket_owner, Some(owner) if Some(owner) != data_dir);
         if !inherited_from_elsewhere {
@@ -188,7 +186,7 @@ fn socket_dir_for(
 }
 
 pub fn socket_path_fits(dir: &str, socket: &str) -> bool {
-    // `/tmux-` + the widest 32-bit uid + `/`.
+    // tmux puts its socket at `<dir>/tmux-<uid>/<name>`; 10 digits hold any 32-bit uid.
     dir.len() + "/tmux-".len() + 10 + 1 + socket.len() <= SOCKET_PATH_MAX
 }
 
@@ -331,10 +329,6 @@ mod tests {
 
     #[test]
     fn a_default_instance_keeps_the_build_socket() {
-        // The backwards-compatibility guarantee: nothing about an operator's
-        // existing instance moves, including one whose `THURBOX_DATA_DIR`
-        // merely restates the default (which is what thurbox injects into
-        // every session it spawns).
         assert_eq!(socket_for(None, None, None, None), TMUX_SOCKET);
     }
 
@@ -377,8 +371,6 @@ mod tests {
 
     #[test]
     fn a_relocated_socket_ignores_separator_noise() {
-        // One directory named two ways is one instance — otherwise a script
-        // with a trailing slash would strand the sessions of one without it.
         assert_eq!(
             socket_for(
                 None,
@@ -406,7 +398,6 @@ mod tests {
             ),
             "thurbox-named"
         );
-        // Empty is unset, and then the relocation still applies.
         assert_eq!(
             socket_for(
                 Some(String::new()),
@@ -427,21 +418,14 @@ mod tests {
     fn an_inherited_socket_is_dropped_once_the_data_dir_moves() {
         let lab = Path::new("/tmp/lab");
         let home = Path::new("/home/me/.local/share/thurbox");
-        // What a pane carries: the spawning instance's socket, tagged with the
-        // data dir it belongs to. A child that stays put keeps it...
         assert_eq!(
             socket_for(Some("thurbox".into()), Some(home), Some(home), None),
             "thurbox"
         );
-        // ...and one that relocates itself does not: the tag no longer names
-        // where this instance's database is, so the name is somebody else's
-        // server and the derivation has to run instead.
         assert_eq!(
             socket_for(Some("thurbox".into()), Some(home), Some(lab), Some(lab)),
             derived_socket(lab)
         );
-        // An override with no tag at all is an operator naming a server
-        // outright, which still wins over everything.
         assert_eq!(
             socket_for(Some("thurbox-named".into()), None, Some(lab), Some(lab)),
             "thurbox-named"
@@ -450,20 +434,10 @@ mod tests {
 
     #[test]
     fn local_socket_honors_env_override() {
-        // nextest runs one process per test, so env mutation can't race other
-        // tests reading `local_socket()`.
-        //
-        // The owner tag has to go first. `cargo test` runs inside a live
-        // thurbox session on any developer machine, and that session injects
-        // the pair — so an inherited `THURBOX_SOCKET_FOR` naming the operator's
-        // data dir would make the override below read as inherited rather than
-        // typed, and `local_socket()` would derive a socket instead of
-        // honouring it.
+        // nextest runs one process per test, so this env mutation races no other test.
         std::env::remove_var(SOCKET_OWNER_ENV);
         std::env::set_var(SOCKET_OVERRIDE_ENV, "thurbox-lab-test");
         assert_eq!(local_socket(&MuxSettings::default()), "thurbox-lab-test");
-        // Empty counts as unset — a sandbox script exporting `THURBOX_SOCKET=`
-        // must not produce `-L ''`.
         std::env::set_var(SOCKET_OVERRIDE_ENV, "");
         assert_eq!(local_socket(&MuxSettings::default()), TMUX_SOCKET);
         std::env::remove_var(SOCKET_OVERRIDE_ENV);

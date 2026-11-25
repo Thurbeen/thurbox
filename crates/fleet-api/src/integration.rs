@@ -270,7 +270,6 @@ pub fn remove_block(text: &str, range: Range<usize>, prefix: &str) -> String {
         range.start
     };
     let (before, after) = (&text[..start], &text[range.end..]);
-    // A line the user added after the block keeps a line of its own.
     let joint = if !before.is_empty() && !before.ends_with('\n') && !after.is_empty() {
         "\n"
     } else {
@@ -396,19 +395,15 @@ command = "fleet signal idle"
             assert_eq!(&text[range.clone()], block);
             assert_eq!(remove_block(&text, range, &prefix), user, "{user:?}");
         }
-        // Another agent's block, or one cut short, is not Fleet's for stub.
         assert_eq!(
             find_block(&block.replace("stub", "kimi"), "stub", "#"),
             Ok(None)
         );
         assert!(find_block(&block[..block.len() - 30], "stub", "#").is_err());
-        // A user's line after the block stays where it is.
         let (text, prefix) = append_block("a = 1", &block);
         let text = format!("{text}b = 2\n");
         let range = find_block(&text, "stub", "#").unwrap().unwrap();
         assert_eq!(remove_block(&text, range, &prefix), "a = 1\nb = 2\n");
-        // A first line with no last one, or two first lines, is no block
-        // Fleet can remove: it would take the user's lines between them.
         let cut = block.replace("# <<< fleet integration stub\n", "");
         assert!(find_block(&cut, "stub", "#").is_err());
         assert!(find_block(&format!("{cut}{block}"), "stub", "#").is_err());
@@ -539,7 +534,7 @@ command = "fleet signal idle"
         let windows =
             parse(&STUB.replace("version = 2\n", "version = 2\nwindows = true\n")).unwrap();
         assert!(supported(windows.install.as_ref().unwrap(), Platform::Windows).is_ok());
-        // Kimi's hooks are POSIX shell commands: refused on Windows.
+        // Kimi's hooks are POSIX shell commands.
         let kimi = crate::harness::profile("kimi");
         assert!(supported(kimi.install.as_ref().unwrap(), Platform::Windows).is_err());
     }

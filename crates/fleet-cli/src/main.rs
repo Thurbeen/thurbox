@@ -859,10 +859,6 @@ fn main() -> ExitCode {
         }
         code
     };
-    // A one-shot command answers whoever ran it (thurbox's probes, an agent's
-    // hook), often under a deadline: its output is written, and its flush
-    // stays inside the call bound. Only `up`, stopped by Ctrl-C, waits the
-    // longer bound for its last sweeps (docs/observability.md).
     if name == "up" {
         telemetry.shutdown();
     } else {
@@ -1025,8 +1021,6 @@ fn run(cli: Cli) -> Result<(), Failure> {
         default_task_config(&store)?;
         ensure_board(&store, fleet_api::board::SHARED)?;
         ensure_board(&store, fleet_api::board::FLEET)?;
-        // The profiles `fleet doctor` checks: the bundled ones, then the
-        // user's beside this config.
         let harnesses = harness_dir(Some(&path));
         let user = user_profiles(harnesses.as_deref(), true).map_err(fail)?;
         let profiles = fleet_api::harness::Profiles::bundled().with(user);
@@ -1061,8 +1055,6 @@ fn run(cli: Cli) -> Result<(), Failure> {
         command: RuntimeCommand::Hosts { json },
     } = &cli.command
     {
-        // Runtime programs serve exactly their places, as `open_runtime`
-        // wires them; `local` stands for the default runtime's own.
         let hosts = (!config.runtimes.is_empty()).then(|| {
             let places = config.places();
             let mut hosts: Vec<String> = places
@@ -1173,7 +1165,6 @@ fn run(cli: Cli) -> Result<(), Failure> {
         .ok_or_else(|| {
             fail("no data directory: pass --data-dir or set data.dir in the config file")
         })?;
-    // Before the store opens: a doctor writes nothing.
     if let Command::Service { command } = &cli.command {
         if cli.data_dir.is_some() {
             return Err(fail(
@@ -1186,8 +1177,6 @@ fn run(cli: Cli) -> Result<(), Failure> {
     if let Command::Doctor { json } = &cli.command {
         return cmd_doctor(&config, &profiles, &data_dir, *json);
     }
-    // The plugin files a profile names sit under the data dir, where
-    // `open_signals` writes them.
     fleet_api::harness::install(
         profiles.with_assets(
             bootstrap::absolute(&data_dir.join(fleet_api::harness::ASSET_DIR))
@@ -1242,8 +1231,6 @@ fn run(cli: Cli) -> Result<(), Failure> {
             e => e.into(),
         })?
         .with_plugins(&registrations)?;
-    // The ledger sits in the store's directory, which the store must hold
-    // first: it refuses a directory that holds anything else.
     if let Command::Integration { command } = &cli.command {
         return cmd_integration(command, &data_dir);
     }
@@ -1603,10 +1590,6 @@ fn cmd_signal(
     };
     let payload = serde_json::from_str::<serde_json::Value>(&text).ok();
     let now = fleet_api::store::Clock::now(&SystemClock);
-    // The profiles Fleet launched the session with: the directory it names
-    // at spawn, else the one beside the config this `fleet` finds. A user
-    // profile that cannot be read never fails the agent's turn: the bundled
-    // profile, or the default fields, read the payload.
     let profile = harness
         .or_else(|| std::env::var(HARNESS_ENV).ok())
         .filter(|h| !h.is_empty())
@@ -1628,8 +1611,6 @@ fn cmd_signal(
             .filter(|a| !a.is_empty()),
         ..Signal::from_hook_with(now, state, payload.as_ref(), &fields)
     };
-    // A session on another host than Fleet's reports to a file under that
-    // host's home, `~/…`, whose directory the first report makes.
     let on_place = file.to_string_lossy().starts_with("~/");
     let file = fleet_runtime::signals::expand_home(Path::new(&file));
     if on_place && let Some(dir) = file.parent() {
@@ -1984,9 +1965,6 @@ fn serve_up(
     let runtime = open_runtime(config, &signals)?;
     let forge = open_forge(config)?;
     let gateway = open_gateway(config)?;
-    // Every host the config names, or `local` under one `[runtime]`. One
-    // that answers is enough to start; each other is reported, and its
-    // Tasks wait in their own status.
     let hosts: Vec<String> = if config.runtimes.is_empty() {
         vec![config::LOCAL.to_string()]
     } else {
@@ -2080,8 +2058,6 @@ fn serve_up(
                 .chain(&report.unknowns)
                 .cloned()
                 .collect();
-            // A Task blocked at startup, or needing attention, is reported
-            // here, so no separate status query is needed to see why.
             match store.list("Task") {
                 Observation::Known(tasks) => {
                     for task in tasks {
@@ -2179,9 +2155,6 @@ fn version(json: bool, config: Option<PathBuf>, data_dir: Option<PathBuf>) -> Re
     if json {
         let explicit = config.is_some() || std::env::var_os(config::CONFIG_ENV).is_some();
         let config = config::discover(config);
-        // The user's profiles too, so a view offers their harnesses; one
-        // that does not parse is left out here and refused by every
-        // command that loads the config.
         let user =
             user_profiles(harness_dir(config.as_deref()).as_deref(), false).unwrap_or_default();
         let profiles = fleet_api::harness::Profiles::bundled().with(user);
@@ -2526,8 +2499,6 @@ fn cmd_integration(command: &IntegrationCommand, data_dir: &Path) -> Result<(), 
         IntegrationCommand::Uninstall { agent, all } => {
             let installed = io::installed(data_dir).map_err(|e| fail(e.to_string()))?;
             let agent = agent.as_deref().unwrap_or_default();
-            // The ledger's own name first: an integration outlives a user
-            // profile removed since.
             let names = if *all {
                 installed
             } else if installed.iter().any(|n| n == agent) {
@@ -2549,9 +2520,7 @@ fn cmd_integration(command: &IntegrationCommand, data_dir: &Path) -> Result<(), 
 
 fn open_signals(data_dir: &Path) -> Result<FileSignals, Failure> {
     let assets = data_dir.join(fleet_api::harness::ASSET_DIR);
-    // A profile names a plugin file inside a JSON string, as opencode's
-    // config does, where a quote or a control character cannot stand as
-    // it is.
+    // opencode's config names a plugin file inside a JSON string, where a quote or control character cannot stand.
     if assets
         .to_string_lossy()
         .chars()
@@ -2573,8 +2542,6 @@ fn open_runtime(config: &Config, signals: &FileSignals) -> Result<Box<dyn Runtim
         let mut hosts = BTreeMap::new();
         for place in config.places() {
             let mut rt = exec_program(config, &place.runtime);
-            // Its manifest asks about its own place only: a Task on one
-            // place never waits on another's probe.
             rt.places = vec![place.place.clone()];
             rt.place = place.place;
             if place.local {
@@ -3163,7 +3130,6 @@ fn init_summary(
     } else {
         out.push_str(&format!("  coding agents found: {}\n", agents.join(", ")));
     }
-    // Fleet runs without thurbox, so both ways to start are named.
     let fleet = match named {
         Some(p) => format!("fleet --config {}", p.display()),
         None => "fleet".to_string(),
@@ -3235,7 +3201,6 @@ fn cmd_doctor(
     }
     match fleet_runtime::integration::read_ledger(data_dir) {
         Ok(ledger) => checks.extend(doctor::left_behind(&ledger, profiles)),
-        // Each profile with an `[install]` table already failed on it above.
         Err(e) if !profiles.list().iter().any(|p| p.install.is_some()) => {
             checks.push(doctor::integration_unknown(
                 fleet_api::integration::LEDGER,
@@ -3535,9 +3500,6 @@ fn cmd_apply(
         let obj: Object = fleet_api::validate::parse(&format!("item {i}"), &item).map_err(fail)?;
         objs.push(obj);
     }
-    // The TaskConfig a Task takes its defaults from, as the manager
-    // resolves it: the one `configRef` names, else `default`. Of several of
-    // one name in the batch, the last is the one stored; else the store's.
     let task_config = |obj: &Object| {
         let name = obj.spec["configRef"]["name"]
             .as_str()
@@ -3550,9 +3512,6 @@ fn cmd_apply(
                 Observation::Unknown { .. } => None,
             })
     };
-    // A Task with no harness and no `configRef` takes `default`'s, or the
-    // one its saved launch froze. One whose `configRef` names a TaskConfig
-    // not there yet is checked at its launch.
     let launched = |obj: &Object| match store.get(fleet_api::task::KIND, &obj.metadata.name) {
         Observation::Known(Some(stored)) => store.launch(&stored).is_ok_and(|l| l.is_some()),
         _ => false,
@@ -3573,11 +3532,6 @@ fn cmd_apply(
             hint: Some("give the Task a harness, or a harness to the TaskConfig default".into()),
         });
     }
-    // `local` naming no place is refused here, by name: the runtime would
-    // only read the place as unreachable. The host is the manager's rule
-    // (`effective_host`), from the TaskConfig the Task takes. A named
-    // TaskConfig not there yet leaves it untold; with no `default`, the
-    // host is `local`.
     let on_local = |obj: &Object| {
         if obj.kind != fleet_api::task::KIND {
             return false;
@@ -3607,7 +3561,6 @@ fn cmd_apply(
     let mut forge: Option<ForgeHosts> = None;
     let mut gateway: Option<GatewayAccounts> = None;
     let policies = policy_names(config);
-    // A taken name under --create-only is a conflict, whatever the kind.
     let refused = |e: StoreError| match e {
         StoreError::AlreadyExists(_) if create_only => Failure {
             code: exit::CONFLICT,
@@ -3618,7 +3571,6 @@ fn cmd_apply(
     };
     for obj in objs {
         let (outcome, stored) = if obj.kind == fleet_api::conversation::KIND {
-            // The account's adapter parses the address and the name derives from it.
             let Some(section) = &config.gateway else {
                 return Err(Failure {
                     code: exit::ERROR,
@@ -3640,7 +3592,6 @@ fn cmd_apply(
             )
             .map_err(refused)?
         } else if obj.kind == fleet_api::change_request::KIND {
-            // The forge adapter parses the URL and the name derives from it.
             if forge.is_none() {
                 forge = Some(open_forge(config)?.ok_or_else(|| Failure {
                     code: exit::ERROR,
@@ -3927,7 +3878,6 @@ fn cmd_watch(
             }
         };
         let Some(events) = watch.read(&tasks).map_err(fail)? else {
-            // A write landed between this read and the last: read again now.
             std::thread::sleep(std::time::Duration::from_millis(5));
             continue;
         };
@@ -3937,7 +3887,6 @@ fn cmd_watch(
             } else {
                 watch_line(&event)
             };
-            // A reader that went away ends the watch.
             if writeln!(out, "{line}").and_then(|()| out.flush()).is_err() {
                 return Ok(());
             }
@@ -4079,7 +4028,6 @@ fn status_summary(obj: &Object) -> Value {
     });
     let own = summary.as_object_mut().expect("object");
     if obj.kind == fleet_api::change_request::KIND {
-        // The bookkeeping and the whole numbered snapshot.
         for k in [
             "ref",
             "observedAt",
@@ -4101,7 +4049,6 @@ fn status_summary(obj: &Object) -> Value {
             own.insert(k.to_string(), field(k));
         }
     } else if obj.kind == fleet_api::conversation::KIND {
-        // The tie, the numbered mirror and the spool.
         for k in [
             "ref",
             "task",
@@ -4388,8 +4335,6 @@ mod tests {
 
     #[test]
     fn a_torn_read_never_moves_the_cursor_past_a_write_it_missed() {
-        // The first read took A before a writer moved it to 3 and B after it
-        // moved B to 4: reporting it would say "synced at 4" with A at 1.
         let torn = vec![task("a", 1), task("b", 4)];
         let whole = vec![task("a", 3), task("b", 4)];
         let mut watch = Watch::new(0);

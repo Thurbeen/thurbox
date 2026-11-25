@@ -14,28 +14,16 @@ impl TmuxServer {
         let server = Self::private(socket);
         std::env::set_var("TMUX_TMPDIR", server.tmpdir());
         std::env::set_var(runtime_mux::instance::SOCKET_OVERRIDE_ENV, &server.socket);
-        // Cleared, not merely overridden: thurbox tags an injected socket with
-        // the data dir it belongs to, so a suite run inside a thurbox pane
-        // inherits a tag naming the operator's instance. `socket_for` then
-        // reads the override above as inherited and derives a socket from this
-        // test's own data dir — a server no `kill-server` here names.
         std::env::remove_var(runtime_mux::instance::SOCKET_OWNER_ENV);
         server
     }
 
     pub fn private(socket: &str) -> Self {
-        // An AF_UNIX path is limited to ~104 bytes and tmux spends ten of them
-        // on its own `tmux-<uid>/` level, so this sits next to the runtime dir
-        // under a short prefix rather than nested under a `TMPDIR` whose length
-        // is not ours to choose. macOS has no runtime dir and a `TMPDIR` of
-        // about fifty bytes, so there it is `/tmp`.
+        // An AF_UNIX path holds about 104 bytes and tmux spends ten on `tmux-<uid>/`; macOS has no runtime dir.
         let base = std::env::var_os("XDG_RUNTIME_DIR")
             .map(PathBuf::from)
             .filter(|dir| dir.is_dir())
             .unwrap_or_else(short_temp_dir);
-        // Created exclusively, so two guards in one process — or two runs on
-        // one machine — can never be handed the same directory and reap each
-        // other's server.
         let tmpdir = tempfile::Builder::new()
             .prefix("tbx-")
             .tempdir_in(base)
@@ -88,9 +76,7 @@ impl TmuxServer {
             }
         }
         cmd.env("TMUX_TMPDIR", self.tmpdir())
-            // A suite run inside a tmux pane inherits `TMUX`, and a command
-            // that reads it resolves against the operator's server rather than
-            // this one however the socket is spelled.
+            // A tmux command resolves against an inherited `TMUX` however the socket is spelled.
             .env_remove("TMUX")
             .args(["-L", &self.socket])
             .args(args)
@@ -132,9 +118,6 @@ impl TmuxServer {
     }
 
     pub fn reap(&self) {
-        // The pinned name first, then whatever else turned up: a server whose
-        // socket file was already unlinked is unreachable either way, but one
-        // that started on a derived name still has its file here.
         for socket in std::iter::once(self.socket.clone()).chain(self.sockets()) {
             let _ = Command::new("tmux")
                 .env("TMUX_TMPDIR", self.tmpdir())
@@ -169,10 +152,7 @@ pub fn system_path() -> String {
 
 impl Drop for TmuxServer {
     fn drop(&mut self) {
-        // The socket file has to still be there when the kill goes out, or
-        // there is nothing left to connect to and the server runs forever.
-        // This body is what guarantees that: it runs to completion before
-        // `tmpdir` — and with it the socket — is dropped.
+        // tmux can only be killed while its socket file exists.
         self.reap();
     }
 }

@@ -11,8 +11,7 @@ fn installed(env: &Env, args: &[&str]) -> Command {
         .root
         .join(if cfg!(windows) { "fleet.exe" } else { "fleet" });
     if !bin.exists() {
-        // A standalone hard link avoids a writable-copy/exec race between
-        // parallel test forks; unlinking the build path leaves it runnable.
+        // A hard link avoids ETXTBSY between a writable copy and exec across parallel test forks.
         fs::hard_link(env!("CARGO_BIN_EXE_fleet"), &bin).unwrap();
     }
     let mut cmd = Command::new(bin);
@@ -82,14 +81,10 @@ fn fake_bootstrap(name: &str) -> Env {
         &env.root.join("local-data").to_string_lossy(),
     );
     env.set_var("APPDATA", &env.root.join("config").to_string_lossy());
-    // An explicit fresh config uses the same discovery and bootstrap machinery.
     fs::remove_file(&env.config).unwrap();
     env.fleet(&["init"]).ok();
     let generated = fs::read_to_string(&env.config).unwrap();
     let mut config: toml::Value = toml::from_str(&generated).unwrap();
-    // The three shipped ready policies, exactly as the config page shows
-    // them, and no default policy: a draft is marked ready only when a
-    // Task names one.
     assert!(
         generated.contains(
             "[forge.readyPolicies.checks]\nchecksPassed = true\n\n[forge.readyPolicies.checks-and-bots]\nbotReviewsAddressed = true\nchecksPassed = true\n\n[forge.readyPolicies.strict]\nbotReviewsAddressed = true\nchecksPassed = true\nnoUnresolvedThreads = true\n"
@@ -257,7 +252,6 @@ fn manager_renews_after_the_final_probe_before_waiting_under_its_lease() {
         atomic::{AtomicU64, Ordering},
     };
 
-    // First run a Task through the CLI and the real controller.
     let env = fake_bootstrap("up-lease-clock");
     env.apply(support::task("first", true)).ok();
     env.reconcile().ok();
@@ -352,8 +346,6 @@ fn manager_renews_after_the_final_probe_before_waiting_under_its_lease() {
         gateway: None,
     };
     let mut sweeps = 0;
-    // Probe 1500ms and wait900ms each fit the2000ms lease, but together
-    // do not. Clock values avoid measuring the machine's scheduling/fsync.
     manager
         .serve(
             RunOptions {
@@ -494,7 +486,7 @@ fn up_with_no_host_up_exports_a_failed_startup_check_of_its_own() {
 fn native_config_and_data_can_live_on_different_filesystems() {
     use std::os::unix::fs::MetadataExt;
     let env = Env::without_tools("different-filesystems");
-    // A tiny native tmpfs fixture, never a build or shared deployment.
+    // /dev/shm is a tmpfs: a filesystem other than the test root's.
     let other = std::path::PathBuf::from("/dev/shm")
         .join(format!("fleet-bootstrap-{}", std::process::id()));
     struct Cleanup(std::path::PathBuf);
@@ -609,13 +601,11 @@ fn init_writes_the_config_and_no_starter_workspace() {
         "{text}"
     );
     assert!(!env.root.join("local-data/fleet/vega").exists());
-    // The config is the user's once written: a second init keeps it.
     let customized = customize_config(&config);
     wait(installed(&env, &["init"]).spawn().unwrap())
         .ok()
         .stdout_has("kept");
     assert_eq!(fs::read(&config).unwrap(), customized);
-    // No runtime-mux on PATH: `up` names the program it could not start.
     wait(installed(&env, &["up"]).spawn().unwrap())
         .code(1)
         .stderr_has("runtime-mux");
@@ -831,7 +821,6 @@ fn version_reports_the_manager_lease_without_taking_it() {
     );
     assert!(held["expiresAt"].as_u64().is_some(), "{held:#}");
 
-    // A released lease is no manager; version leaves the record as it is.
     assert!(
         Command::new("/bin/kill")
             .args(["-TERM", &up.0.id().to_string()])
@@ -846,7 +835,6 @@ fn version_reports_the_manager_lease_without_taking_it() {
     assert_eq!(after["holder"], held["holder"], "{after:#}");
     assert_eq!(fs::read(&lease).unwrap(), released, "version took no lease");
 
-    // A lease that cannot be read is unknown, never absent.
     fs::write(&lease, b"{not json").unwrap();
     let unknown = manager();
     assert!(unknown["held"].is_null(), "{unknown:#}");
@@ -855,8 +843,6 @@ fn version_reports_the_manager_lease_without_taking_it() {
         "{unknown:#}"
     );
 
-    // A named config that does not exist is unknown too: the default data
-    // directory is not that Fleet's, and its lease says nothing of it.
     let missing = env.root.join("missing.toml");
     let out = installed(
         &env,
@@ -1080,7 +1066,6 @@ fn init_writes_a_default_task_config_that_pauses_an_idle_session_after_thirty_mi
         serde_json::json!({"pauseAfterMs": 1_800_000})
     );
 
-    // A second init keeps the one the user changed.
     let mut changed = default.clone();
     changed["spec"]["pauseAfterMs"] = serde_json::json!(60_000);
     for field in ["status", "metadata"] {
@@ -1092,8 +1077,6 @@ fn init_writes_a_default_task_config_that_pauses_an_idle_session_after_thirty_mi
     let kept = env.fleet(&["get", "taskconfig", "default"]).ok().json();
     assert_eq!(kept["spec"]["pauseAfterMs"], 60_000);
 
-    // A Task with no configRef takes it; its own setting or another config
-    // overrides it.
     let mut config: toml::Value =
         toml::from_str(&fs::read_to_string(&env.config).unwrap()).unwrap();
     set_runtime(

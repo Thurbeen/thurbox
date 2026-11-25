@@ -255,12 +255,7 @@ pub fn launch(launcher: Option<&HostLauncher>, program: &str, args: &[&str]) -> 
             cmd.args(args);
             cmd
         }
-        // Each word is its own argument of `--exec`, which hands argv over
-        // verbatim, so no quoting and a spaced path stays one word. A small
-        // `sh` runs first to read the profile a login shell would, for the
-        // `PATH` set there (`~/.cargo/bin`), with its output discarded so a
-        // profile that prints never reaches the program's stdout, then
-        // `exec`s the words.
+        // `wsl.exe --exec` hands argv over verbatim; a small `sh` first reads the login profile for its `PATH`.
         Some(launcher @ HostLauncher::Wsl { .. }) => {
             let mut cmd = launcher.command();
             cmd.args(["--exec", "sh", "-c", WSL_PROFILE_EXEC, "sh", program])
@@ -314,8 +309,7 @@ pub fn windows_program_script<S: AsRef<str>>(
     let dir = dir
         .map(|d| format!("$s.WorkingDirectory={}\n", powershell_quote(d)))
         .unwrap_or_default();
-    // Terse on purpose: the script rides the command line base64'd from
-    // UTF-16, about 2.7 bytes per character, inside WINDOWS_CMD_LINE_MAX.
+    // The script rides the command line base64'd from UTF-16, inside WINDOWS_CMD_LINE_MAX.
     format!(
         "$ProgressPreference='SilentlyContinue'\n\
          {path}{prelude}\
@@ -1200,8 +1194,6 @@ mod tests {
             .get_args()
             .map(|a| a.to_string_lossy().into_owned())
             .collect();
-        // Caller opts first, the appended set (hardening + multiplexing when
-        // the machine has an `~/.ssh`), destination last.
         let mut expected: Vec<&str> = vec!["-p", "2222"];
         expected.extend(ssh_appended_opts());
         expected.push("me@box");
@@ -1210,8 +1202,7 @@ mod tests {
 
     #[test]
     fn ssh_command_hardening_follows_user_opts_so_user_wins() {
-        // ssh honors the first occurrence of an option, so a user-set
-        // ConnectTimeout must precede ours in the arg list.
+        // ssh honors the first occurrence of an option.
         let cmd = ssh_command("me@box", &["-o".into(), "ConnectTimeout=30".into()]);
         let args: Vec<String> = cmd
             .get_args()
@@ -1255,9 +1246,7 @@ mod tests {
             }
             cmd.spawn().expect("spawn ping")
         };
-        // A child joins the console while it starts up, after `spawn` has
-        // returned, so the list is read once the unflagged child is on it —
-        // started second, so the flagged one has had at least as long.
+        // A Windows child joins the console after `spawn` has returned.
         let mut kept_off = start(true);
         let mut sharing = start(false);
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
@@ -1290,17 +1279,11 @@ mod tests {
             .get_args()
             .map(|a| a.to_string_lossy().into_owned())
             .collect();
-        // A Unix caller passes `--cd /` so wsl.exe doesn't inherit (and fail to
-        // chdir to) a caller cwd that doesn't exist in the target distro.
-        // Pinning only the child cwd is insufficient — wsl.exe back-translates
-        // it through the caller-distro name and, with a prefix-sibling distro,
-        // yields a mangled `chdir(<suffix>/…)`; `--cd /` bypasses that.
+        // wsl.exe back-translates the caller's cwd through the distro name; `--cd /` bypasses that.
         #[cfg(unix)]
         assert_eq!(args, ["-d", "Ubuntu", "--cd", "/"]);
         #[cfg(windows)]
         assert_eq!(args, ["-d", "Ubuntu"]);
-        // The child cwd is left to the OS default; the translation control is
-        // the `--cd` flag, not the caller's process cwd.
         assert_eq!(cmd.get_current_dir(), None);
     }
 

@@ -58,7 +58,6 @@ fn the_agents_hooks_drive_its_session_state_and_an_idle_one_pauses() {
     env.reconcile().ok();
     assert_eq!(env.status("t1")["phase"], "Briefed");
     let file = signal_file(&env);
-    // Nothing reported yet: the session is present, not idle.
     assert_eq!(session_state(&env), "Running");
 
     signal(&env, &file, &["working"]);
@@ -85,7 +84,6 @@ fn a_signal_file_fleet_cannot_read_concludes_nothing() {
     env.reconcile().ok();
     assert_eq!(session_state(&env), "Idle");
     expire_idle(&env);
-    // The file goes unreadable: a directory where it was.
     std::fs::remove_file(&file).unwrap();
     std::fs::create_dir(&file).unwrap();
     env.reconcile().ok();
@@ -100,8 +98,6 @@ fn a_signal_file_fleet_cannot_read_concludes_nothing() {
 #[test]
 fn a_signal_outside_a_fleet_session_does_nothing() {
     let env = Env::new("signal-outside");
-    // No FLEET_SIGNAL_FILE: a hook installed for every session of the
-    // harness may run where Fleet started nothing.
     env.fleet(&["signal", "idle"]).ok();
     env.fleet(&["signal", "busy"]).code(2);
 }
@@ -117,14 +113,12 @@ fn a_turn_that_ends_with_background_work_is_not_idle_and_never_pauses() {
     env.reconcile().ok();
     assert_eq!(session_state(&env), "Running");
     assert!(env.get("t1")["status"]["idleSince"].is_null());
-    // A cron that will wake it later is work too.
     let cron = json!({"background_tasks": [], "session_crons": [{"id": "k1"}]});
     signal(&env, &file, &["idle", &cron.to_string()]);
     env.reconcile().ok();
     assert_eq!(session_state(&env), "Running");
     assert_eq!(env.calls("pause"), 0);
 
-    // Nothing left in flight: idle.
     let done = json!({"background_tasks": [], "session_crons": []});
     signal(&env, &file, &["idle", &done.to_string()]);
     env.reconcile().ok();
@@ -256,7 +250,6 @@ fn a_harness_profile_names_the_payload_fields_fleet_signal_reads() {
     env.reconcile().ok();
     assert_eq!(conversation(&env), "v2");
 
-    // No harness named: the default fields.
     signal(
         &env,
         &file,

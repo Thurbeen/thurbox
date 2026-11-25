@@ -43,9 +43,6 @@ fn main() {
         }
         answer
     };
-    // The answer first: its caller waits for this process to exit, and
-    // the flush below is bounded far inside that caller's deadline, so a
-    // stalled collector never turns an answer into a timeout.
     println!("{answer}");
     let _ = std::io::Write::flush(&mut std::io::stdout());
     telemetry.shutdown_within(otel_env::CALL_SHUTDOWN_BOUND);
@@ -70,20 +67,12 @@ fn serve(verb: &str) -> serde_json::Value {
         .ok()
         .filter(|s| !s.is_empty())
         .unwrap_or_else(|| SOCKET.to_string());
-    // A remote place's server is not this machine's: its locks and pause
-    // marks name the place, so a slow place never holds up a local start.
     let place = protocol::place_of(&request);
     let server = match &place {
         Some(host) => format!("{socket}@{}", host.name),
         None => socket.clone(),
     };
-    // A start looks the key up and then makes its window, so two at once
-    // could each make one; a stop between them could remove the one the
-    // other just adopted. Both run one at a time per server. A workspace
-    // call makes or adopts by key the same way, but may take minutes (a
-    // first clone, setup steps), so it holds only its key's lock, never the
-    // server's. A stop that releases the workspace takes the key's lock
-    // first, then the server's: no call takes them the other way round.
+    // MUST KILL: type — a lock guard type that can only take the key lock before the server lock would make the order impossible to break
     let key_lock = match verb {
         "workspace" => true,
         "stop" => released(&request),
@@ -98,12 +87,7 @@ fn serve(verb: &str) -> serde_json::Value {
             }
         }
     }
-    // A releasing stop lets go of the server's lock once the process is
-    // stopped: the workspace's teardown and release hold the key only.
     let mut server_turn = None;
-    // A shell call makes the key's shell window the way a start makes its
-    // agent's, so it takes the same turn.
-    // A pause stops the process as a stop does.
     if matches!(verb, "start" | "stop" | "shell" | "pause") {
         match take(&format!("runtime-mux-{server}.lock")) {
             Ok(file) => server_turn = Some(file),
@@ -124,8 +108,6 @@ fn serve(verb: &str) -> serde_json::Value {
             return answer;
         }
     }
-    // Each remote place's login `PATH` is cached beside the locks, so a call
-    // does not read it again over ssh.
     keep_cache(&socket);
     let settings = MuxSettings {
         socket: Some(socket),
@@ -250,7 +232,6 @@ fn view(args: Vec<String>) -> Result<(), String> {
         match arg.as_str() {
             "--socket" => socket = args.next().ok_or("--socket takes a name")?,
             "--pane" => pane = Some(args.next().ok_or("--pane takes a pane id")?),
-            // The history a snapshot carries: the viewer's own setting.
             "--scrollback" => {
                 let lines = args.next().ok_or("--scrollback takes a line count")?;
                 scrollback = Some(
@@ -267,7 +248,7 @@ fn view(args: Vec<String>) -> Result<(), String> {
             }
             "--tmux-tmpdir" => {
                 let dir = args.next().ok_or("--tmux-tmpdir takes a directory")?;
-                // Before any thread starts: tmux finds the socket there.
+                // tmux finds its socket under TMUX_TMPDIR; set it before any thread starts.
                 std::env::set_var("TMUX_TMPDIR", dir);
             }
             _ if key.is_none() => key = Some(arg),
@@ -383,10 +364,8 @@ fn lock(name: &str) -> std::io::Result<std::fs::File> {
     let (dir, prefix) = private_dir();
     let path = dir?.join(format!("{prefix}{name}"));
     let mut options = std::fs::OpenOptions::new();
-    // Appending never truncates. Windows locks only a handle opened to read
-    // or write, and an append-only one is neither.
+    // Windows locks only a handle opened to read or write.
     options.create(true).read(true).append(true);
-    // A link at the name is refused.
     #[cfg(unix)]
     std::os::unix::fs::OpenOptionsExt::custom_flags(&mut options, libc::O_NOFOLLOW);
     let file = options.open(path)?;

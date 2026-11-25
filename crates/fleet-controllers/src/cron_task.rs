@@ -50,7 +50,6 @@ impl CronTaskController {
     pub fn reconcile(&self, input: &CronTaskInput<'_>) -> Result<Plan, StoreError> {
         let obj = input.object;
         if obj.is_deleting() {
-            // No finalizer: the store removes it. Its Tasks stay.
             return Ok(Plan::default());
         }
         let spec: CronTaskSpec = typed(cron_task::KIND, &obj.spec)?;
@@ -66,7 +65,7 @@ impl CronTaskController {
             st: before.clone(),
             creates: Vec::new(),
             effects: Vec::new(),
-            recovering: false,
+            look_again_soon: false,
         };
         pass.advance();
         settle_transitions(&mut pass.st.conditions, &before.conditions);
@@ -89,7 +88,7 @@ struct Pass<'a, 'b> {
     st: CronTaskStatus,
     creates: Vec<Create>,
     effects: Vec<Effect>,
-    recovering: bool,
+    look_again_soon: bool,
 }
 
 impl Pass<'_, '_> {
@@ -135,8 +134,6 @@ impl Pass<'_, '_> {
         };
         self.settle_effects();
         self.prune_history();
-        // Before Forbid counts pending creates against a new time: one the
-        // limits in force no longer allow must not block it.
         self.discard_stale_creates();
         if self.spec.suspend {
             self.st.phase = Phase::Suspended;
@@ -160,7 +157,7 @@ impl Pass<'_, '_> {
             .chain(self.pending_creates().into_iter().map(|(_, r)| r.task))
             .collect();
         self.st.next_schedule_time = schedule.first_after(self.now());
-        self.st.not_before = if self.recovering {
+        self.st.not_before = if self.look_again_soon {
             let soon = self.now().saturating_add(RECOVERY_MS);
             Some(self.st.next_schedule_time.map_or(soon, |n| n.min(soon)))
         } else {
@@ -350,12 +347,10 @@ impl Pass<'_, '_> {
                         record.task
                     ),
                 );
-                self.recovering = true;
+                self.look_again_soon = true;
                 continue;
             }
-            // Look again soon, the first attempt included: should this one
-            // never land, the next look is within a minute, not a period.
-            self.recovering = true;
+            self.look_again_soon = true;
             self.plan_create(&key, &record.task);
         }
     }
@@ -394,8 +389,6 @@ impl Pass<'_, '_> {
     fn plan_create(&mut self, key: &str, name: &str) {
         let intent = self.intent(CREATE_ACTION);
         if let Some(record) = self.st.effects.get_mut(key) {
-            // The doubt is kept on the record: a retry clears the receipt,
-            // and a Known refusal is the only answer that ends the doubt.
             let refused = matches!(
                 record.receipt.as_ref().map(|r| &r.outcome),
                 Some(Observation::Known(_))
@@ -440,9 +433,7 @@ impl Pass<'_, '_> {
         };
         self.effects.retain(|e| e.key != key);
         self.effects.push(Effect { key, action });
-        // Look again soon: should this delete never land, it is retried
-        // within a minute, not at the next scheduled time.
-        self.recovering = true;
+        self.look_again_soon = true;
     }
 
     fn task_object(&self, name: &str) -> Object {
@@ -484,14 +475,10 @@ impl Pass<'_, '_> {
             }
             let found = self.task(&record.task).map(|t| t.metadata.uid.clone());
             if creating {
-                // Adopt a Task an earlier attempt made; an absent one is a
-                // pending create, which `flush_creates` decides about.
                 if let Some(uid) = found {
                     self.recover(&key, EffectOutcome::Created { uid, adopted: true });
                 }
             } else if let Some(uid) = found {
-                // The store refused: the Task is not this CronTask's to
-                // delete any more. Nothing is tried again.
                 if matches!(
                     outcome,
                     Some(Observation::Known(EffectOutcome::Failed { .. }))
@@ -538,9 +525,6 @@ impl Pass<'_, '_> {
             .map(|t| (t.metadata.name.clone(), t.metadata.uid.clone()))
             .collect();
         for (name, uid) in old {
-            // A fresh decision: none was made, or the store refused the last
-            // one (the Task was reopened since). One still in flight is
-            // `settle_effects`' to retry.
             let refused = self
                 .st
                 .effects

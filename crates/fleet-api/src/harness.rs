@@ -610,6 +610,7 @@ pub fn copilot_initial_composer(output: &str, cursor_row: usize, cursor_col: usi
             .any(|l| l.contains("· / commands"))
 }
 
+// Copilot's npm package leads its process group as `node`; the native binary is a child.
 pub fn copilot_process(foreground: &str) -> bool {
     matches!(
         foreground.rsplit(['/', '\\']).next(),
@@ -651,6 +652,7 @@ pub fn claude_process(foreground: &str) -> bool {
     )
 }
 
+// Kimi Code's trust dialog asks in the same words as Codex's.
 pub fn codex_trust_dialog(output: &str) -> bool {
     let lines: Vec<&str> = output.lines().map(str::trim).collect();
     lines.iter().any(|l| l.starts_with("Trust this folder?"))
@@ -692,8 +694,6 @@ mod tests {
             ("UserPromptSubmit", "prompt"),
             ("Stop", "idle"),
             ("PreToolUse", "working"),
-            // Claude Code's notification is a permission prompt or a wait
-            // for input: the agent needs a person.
             ("Notification", "blocked"),
         ] {
             let command = settings["hooks"][event][0]["hooks"][0]["command"]
@@ -704,15 +704,13 @@ mod tests {
                 "{command}"
             );
         }
-        // Only a permission prompt needs a person: Claude Code also notifies
-        // after 60 s of input idle (`idle_prompt`), which is no attention.
+        // Claude Code also notifies after 60 s of input idle (`idle_prompt`).
         assert_eq!(
             settings["hooks"]["Notification"][0]["matcher"],
             "permission_prompt"
         );
         assert_eq!(&claude[3..], ["--add-dir", "/w/docs"]);
-        // Claude Code keeps the last of several `--settings`, so the hooks
-        // are one, and a resume keeps them one.
+        // Claude Code keeps the last of several `--settings`.
         let resumed = profile("claude").resume(&claude, Some("c1"));
         assert_eq!(resumed.iter().filter(|a| *a == "--settings").count(), 1);
 
@@ -802,7 +800,6 @@ mod tests {
             ["opencode", "--standalone", "--session", "ses_1"]
         );
         assert!(pi.prompt_hook() && opencode.prompt_hook());
-        // Each names a file under the asset directory.
         for p in [&pi, &opencode] {
             let named = p
                 .launch
@@ -812,7 +809,6 @@ mod tests {
                 .any(|a| a.contains("/data/harness-assets/"));
             assert!(named, "{}", p.name);
         }
-        // Without an asset directory a profile is left as written.
         assert_eq!(profile("pi").launch.args, ["-e", "{asset:fleet-pi.ts}"]);
         assert_eq!(
             name_assets(r"{asset:a} {asset:b/c}{asset:", r"C:\data"),
@@ -850,7 +846,7 @@ mod tests {
         let launch = omp.launch(&["/w/docs".into()], Some("/w")).unwrap();
         let extension = "/data/harness-assets/fleet-omp.ts";
         assert_eq!(launch, ["omp", "-e", extension, "--add-dir", "/w/docs"]);
-        // Fleet never answers omp's first-run setup wizard.
+        // omp otherwise opens its first-run setup wizard.
         assert_eq!(omp.launch.env["OMP_SKIP_SETUP"], "1");
         assert_eq!(
             omp.resume(&launch, Some("01a1")),
@@ -867,10 +863,7 @@ mod tests {
         let qwen = all.get("qwen");
         let launch = qwen.launch(&["/w/docs".into()], Some("/w")).unwrap();
         assert_eq!(launch, ["qwen", "--add-dir", "/w/docs"]);
-        // Merged with the system's, the user's and the project's settings,
-        // hooks included. Only the system defaults file is replaced: the
-        // system settings file keeps its own path, and its defaults path
-        // would otherwise follow the one given.
+        // qwen merges system, user and project settings; only its system defaults file is replaced.
         assert_eq!(
             qwen.launch.env,
             [(
@@ -1197,7 +1190,6 @@ mod tests {
                 ("OTEL_RESOURCE_ATTRIBUTES", &resource("copilot")),
             ])
         );
-        // No OpenTelemetry export Fleet can turn on: nothing is injected.
         for none in ["pi", "kilo", "kimi", "aider"] {
             assert_eq!(render(none), AgentTelemetry::default(), "{none}");
         }
@@ -1244,7 +1236,6 @@ mod tests {
             claude.env["OTEL_RESOURCE_ATTRIBUTES"],
             "service.name=claude,fleet.task=a%2Cb%3Dc,fleet.uid=u%201"
         );
-        // An endpoint is escaped for Codex's TOML string.
         let quoted = Collector {
             endpoint: r#"http://c/"x""#.into(),
             ..collector(None)
@@ -1253,7 +1244,6 @@ mod tests {
             profile("codex").telemetry(&quoted, "t", "u").args[1]
                 .contains(r#"endpoint="http://c/\"x\"/v1/logs""#)
         );
-        // A header is never an argument.
         let base = "name = \"x\"\nprogram = \"x\"\nauthority = \"none\"\n";
         assert!(parse(&format!("{base}[telemetry]\nargs = [\"h={{headers}}\"]\n")).is_err());
         assert!(

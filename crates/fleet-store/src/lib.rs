@@ -577,8 +577,6 @@ fn apply_amendment(
             obj.key()
         )));
     }
-    // Appended to the stored JSON as is: which execution fields a spec
-    // sets is itself meaningful, so the spec is never re-encoded.
     let amendment = serde_json::to_value(&amendment)
         .map_err(|e| StoreError::Invalid(format!("Task amendment: {e}")))?;
     let mut spec = obj.spec.clone();
@@ -801,7 +799,6 @@ impl Store for FileStore {
             };
             match read_object(self, &path, kind, name) {
                 Observation::Known(Some(o)) => objs.push(o),
-                // Removed between read_dir and read: it is gone, which is a fact.
                 Observation::Known(None) => {}
                 Observation::Unknown { why } => return Observation::Unknown { why },
             }
@@ -883,8 +880,6 @@ impl Store for FileStore {
                     "plugin creator label is assigned by the host".into(),
                 ));
             }
-            // The conversation labels are set by the one create that may,
-            // and never change afterwards.
             for label in [
                 conversation::CONVERSATION_LABEL,
                 conversation::CONVERSATION_UID_LABEL,
@@ -1222,7 +1217,6 @@ impl Store for FileStore {
                 by.name()
             )));
         };
-        // The writer's own field, decoded as its readers would.
         let own = match field {
             "forge" if status.is_null() => RelayField::Forge(None),
             "forge" => RelayField::Forge(Some(
@@ -1299,8 +1293,6 @@ impl Store for FileStore {
         self.check_lease(lease)?;
         let mut obj = self.read_existing(task::KIND, name)?;
         expect_rv(&obj, expected)?;
-        // The controller's own fields change as in update_status; inbox,
-        // having no owner, must be passed back unchanged.
         check_owned(task::KIND, &obj.status, &status, by)?;
         let mut st: TaskStatus = serde_json::from_value(status)
             .map_err(|e| StoreError::Invalid(format!("Task status: {e}")))?;
@@ -1353,8 +1345,6 @@ impl Store for FileStore {
         let _guard = self.lock()?;
         self.check_lease(lease)?;
         let obj = self.read_existing(kind, name)?;
-        // A recreated object under the same name has a new uid: the plan that
-        // named the old one removes nothing.
         if obj.metadata.uid != uid {
             return Err(StoreError::Conflict {
                 key: obj.key(),
@@ -1383,8 +1373,6 @@ impl Store for FileStore {
         let _guard = self.lock()?;
         self.check_lease(lease)?;
         let obj = self.read_existing(task::KIND, name)?;
-        // A recreated Task under the same name has a new uid: the plan that
-        // named the old one removes nothing.
         if obj.metadata.uid != uid {
             return Err(StoreError::Conflict {
                 key: obj.key(),
@@ -1434,8 +1422,6 @@ impl Store for FileStore {
         let _guard = self.lock()?;
         self.check_lease(lease)?;
         let obj = self.read_existing(task::KIND, name)?;
-        // A recreated Task under the same name has a new uid: the plan that
-        // named the old one removes nothing.
         if obj.metadata.uid != uid {
             return Err(StoreError::Conflict {
                 key: obj.key(),
@@ -1531,8 +1517,6 @@ impl Store for FileStore {
         self.check_lease(lease)?;
         let mut obj = self.read_existing(conversation::KIND, name)?;
         expect_rv(&obj, expected)?;
-        // The controller's own fields change as in update_status; the
-        // spool, having no owner, may only have been drained.
         let before = conversation_status(&obj)?;
         let after: ConversationStatus = serde_json::from_value(status.clone())
             .map_err(|e| StoreError::Invalid(format!("Conversation status: {e}")))?;
@@ -1661,9 +1645,6 @@ impl Store for FileStore {
         self.check_lease(lease)?;
         let mut obj = self.read_existing(kind, name)?;
         expect_rv(&obj, expected)?;
-        // A finalizer comes off only when its work is done, which is only
-        // after the object was marked for deletion. Removed from a live
-        // object it would let a later delete skip the release entirely.
         if !obj.is_deleting() {
             return Err(StoreError::Forbidden(format!(
                 "{} is not being deleted; its finalizers stay",
@@ -1671,8 +1652,6 @@ impl Store for FileStore {
             )));
         }
         if !obj.metadata.finalizers.iter().any(|f| f == finalizer) {
-            // The finalizer write may have survived a crash before unlink.
-            // Ownership, CAS, lease and deletion checks still fence cleanup.
             return self.remove_if_done(&obj);
         }
         obj.metadata.finalizers.retain(|f| f != finalizer);
@@ -1740,7 +1719,6 @@ impl Store for FileStore {
             && l.holder == lease.holder
             && l.token == lease.token
         {
-            // Keep the token so the next holder's is larger: expire, never erase.
             let expired = LeaseToken { expires_at: 0, ..l };
             self.write_lease(&expired)?;
         }
@@ -1842,7 +1820,6 @@ impl FileStore {
             Observation::Known(Some(_)) => return Err(StoreError::AlreadyExists(key)),
             Observation::Unknown { why } => return Err(StoreError::Unknown(why)),
         }
-        // Nothing owns a Task in this build, so no object may name an owner.
         if !obj.metadata.owner_references.is_empty() {
             return Err(StoreError::Invalid(
                 "metadata.ownerReferences is not served: no kind owns a Task".into(),
@@ -2032,8 +2009,6 @@ mod initialization_tests {
 
     #[test]
     fn initialization_rechecks_a_marker_created_by_another_writer() {
-        // open() can observe no marker before another initializer gets the
-        // lock. init() must recheck the winner's format while holding it.
         let root = std::env::temp_dir().join(format!("fleet-init-marker-{}", std::process::id()));
         fs::create_dir_all(&root).unwrap();
         let marker = root.join("store.json");

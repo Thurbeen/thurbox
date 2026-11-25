@@ -313,7 +313,6 @@ fn each_invalid_gateway_case_is_refused_at_load() {
         env.set_gateway(&section);
         env.fleet(&["list", "tasks"]).code(1).stderr_has(needle);
     }
-    // The valid section loads again.
     env.set_gateway(&base);
     env.fleet(&["list", "tasks"]).ok();
 }
@@ -328,7 +327,6 @@ fn an_account_this_build_cannot_serve_is_refused_when_the_gateway_opens() {
     );
     assert_ne!(telegram, base);
     env.set_gateway(&telegram);
-    // The section is well formed, so every verb but the manager's runs.
     env.fleet(&["list", "tasks"]).ok();
     env.reconcile().code(1).stderr_has(
         "accounts.fake-main: unknown platform \"telegram\"; this build has discord, fake, slack",
@@ -413,7 +411,6 @@ fn a_mention_creates_the_conversation_and_the_first_pass_numbers_it_with_the_his
         1,
         "one first read"
     );
-    // Quiet: the thread is not read again before its backstop interval.
     env.reconcile().ok();
     assert_eq!(env.conversation_status(&conv), st);
     env.assert_no_temp();
@@ -432,7 +429,6 @@ fn a_redelivered_event_changes_nothing_and_edits_and_removals_move_the_mirror() 
         .json();
     assert_eq!(again["outcome"], "duplicate", "{again:#}");
     assert_eq!(env.conversation_status(&conv), before);
-    // Redelivered and numbered from history too: still one message.
     env.receive(
         "Ev02",
         message_event(
@@ -450,7 +446,6 @@ fn a_redelivered_event_changes_nothing_and_edits_and_removals_move_the_mirror() 
     assert_eq!(st["messages"].as_array().unwrap().len(), 2);
     assert_eq!(st["seenEvents"], json!(["Ev01", "Ev02"]));
 
-    // A newer edit moves the message's number; an older one changes nothing.
     let edited = |id: &str, text: &str, edited_at: u64| {
         json!({"type": "edited", "conversation": {"platform": "fake", "chat": GATEWAY_CHANNEL, "thread": "1730000000000"},
                "id": id, "text": text, "editedAt": edited_at})
@@ -484,7 +479,6 @@ fn a_redelivered_event_changes_nothing_and_edits_and_removals_move_the_mirror() 
     );
     assert_eq!(st["messages"][1]["text"], "can you look into the export?");
 
-    // A removal leaves the mirror.
     env.receive(
         "Ev05",
         json!({"type": "removed", "conversation": {"platform": "fake", "chat": GATEWAY_CHANNEL, "thread": "1730000000000"},
@@ -585,7 +579,6 @@ fn refusals_and_ignored_events_each_answer_as_the_interface_says() {
     )
     .code(1)
     .stderr_has("account \"nobody\" is not configured under [gateway.accounts]");
-    // The wrong `verified` is the listener's own fault.
     env.fleet_stdin(
         &["gateway", "receive", "--account", GATEWAY_ACCOUNT],
         &json!({"verified": "signature", "receivedAt": 1, "payload": {"id": "Ev01", "event": mention("1730000300000", T0 + 300_000)}}).to_string(),
@@ -595,7 +588,6 @@ fn refusals_and_ignored_events_each_answer_as_the_interface_says() {
     let st = env.listener_status(&listener);
     assert_eq!(st["refused"]["counts"]["WrongVerified"], 1, "{st:#}");
     assert!(st["refused"]["lastFaultAt"].is_u64());
-    // Not an envelope: the listener's fault too, and Unknown.
     env.fleet_stdin(
         &["gateway", "receive", "--account", GATEWAY_ACCOUNT],
         "not json",
@@ -603,7 +595,6 @@ fn refusals_and_ignored_events_each_answer_as_the_interface_says() {
     .code(4);
     let st = env.listener_status(&listener);
     assert_eq!(st["refused"]["counts"]["NotEnvelope"], 1, "{st:#}");
-    // A payload the adapter cannot read: Unknown, one thread's trouble.
     env.fleet_stdin(
         &["gateway", "receive", "--account", GATEWAY_ACCOUNT],
         &json!({"verified": "connection", "receivedAt": 1, "payload": {"id": "Ev02", "event": {"type": "wave"}}}).to_string(),
@@ -619,8 +610,6 @@ fn refusals_and_ignored_events_each_answer_as_the_interface_says() {
         "False",
         "NoListener",
     );
-    // Ignored, with exit 0 and no Conversation: a reaction, a channel no
-    // route covers, and chatter in a thread Fleet does not mirror.
     let ignored = |delivery: &str, payload: Value| -> Value {
         env.fleet_stdin(
             &["gateway", "receive", "--account", GATEWAY_ACCOUNT, "--json"],
@@ -662,8 +651,6 @@ fn refusals_and_ignored_events_each_answer_as_the_interface_says() {
     assert_eq!(out["outcome"], "ignored");
     assert_eq!(out["why"], "chatter in a thread Fleet does not mirror");
     env.fleet(&["get", "conversation", &conv]).code(3);
-    // A mention from someone not on the allowlist earns a refusal, so it
-    // creates the Conversation.
     let out = ignored(
         "Ev06",
         message_event(
@@ -676,7 +663,6 @@ fn refusals_and_ignored_events_each_answer_as_the_interface_says() {
     );
     assert_eq!(out["outcome"], "written", "{out:#}");
     env.fleet(&["get", "conversation", &conv]).ok();
-    // Once mirrored, chatter is spooled too.
     let out = ignored(
         "Ev07",
         message_event(
@@ -688,7 +674,6 @@ fn refusals_and_ignored_events_each_answer_as_the_interface_says() {
         ),
     );
     assert_eq!(out["outcome"], "written");
-    // A Conversation being deleted takes nothing.
     env.fleet(&["delete", "conversation", &conv])
         .ok()
         .stdout_has(&format!("Conversation/{conv} deleted"));
@@ -724,7 +709,6 @@ fn a_beat_is_recorded_on_the_listener_and_the_account_verbs_report_it() {
         .code(1)
         .stderr_has("account \"nobody\" is not configured");
     let listener = format!("listener-{GATEWAY_ACCOUNT}");
-    // Before the manager ever ran: the verb creates the Listener.
     let out = env.beat("a1", "connected", &digest).ok().json();
     assert_eq!(out["outcome"], "beat", "{out:#}");
     let obj = env.fleet(&["get", "listener", &listener]).ok().json();
@@ -769,8 +753,6 @@ fn a_beat_is_recorded_on_the_listener_and_the_account_verbs_report_it() {
     assert_eq!(rows[0]["account"], GATEWAY_ACCOUNT);
     assert_eq!(rows[0]["inbound"]["reason"], "DeliveriesRefused");
     assert_eq!(rows[0]["lastDeliveryAt"], Value::Null);
-    // Time passes on the record, not on the clock: the fault ages out, then
-    // the beat goes stale.
     let day = 86_400_000u64;
     let age = |f: &dyn Fn(&mut Value)| {
         let path = env.object_path("Listener", &listener);
@@ -827,8 +809,6 @@ fn a_beat_is_recorded_on_the_listener_and_the_account_verbs_report_it() {
         "False",
         "ListenerConfigOld",
     );
-    // The platform's identity is checked against the configured bot, every
-    // pollMs.
     env.fake_gateway()
         .set_identity(fleet_api::gateway::Identity {
             id: "B0OTHER".into(),
@@ -843,7 +823,6 @@ fn a_beat_is_recorded_on_the_listener_and_the_account_verbs_report_it() {
         "False",
         "IdentityMismatch",
     );
-    // An account that left the config loses its Listener.
     env.set_gateway(&gateway_section(&env.root).replace(
         &format!("[gateway.accounts.{GATEWAY_ACCOUNT}]"),
         &format!(
@@ -877,8 +856,6 @@ fn an_orphaned_conversation_keeps_its_messages_and_is_retired_after_its_retentio
     assert_eq!(st["phase"], "Tied", "{st:#}");
     assert_condition(&st, "Tied", "True", "TaskKnown");
     assert_eq!(st["task"]["state"], "created");
-    // A Task the store cannot read keeps the thread Tied: the manager
-    // reports the unreadable record and decides nothing from it.
     let task_path = env.object_path("Task", &task_name);
     let bytes = fs::read(&task_path).unwrap();
     fs::write(&task_path, &bytes[..bytes.len() / 2]).unwrap();
@@ -894,8 +871,6 @@ fn an_orphaned_conversation_keeps_its_messages_and_is_retired_after_its_retentio
     );
     assert_eq!(env.conversation_status(&conv)["phase"], "Tied");
     fs::write(&task_path, &bytes).unwrap();
-    // Readably gone: Orphaned, the messages kept through a retention that
-    // counts from the orphaning, not from the thread's last message.
     delete_task(&env, &task_name);
     env.expire_wait_of("Conversation", &conv);
     env.reconcile().ok();
@@ -912,8 +887,6 @@ fn an_orphaned_conversation_keeps_its_messages_and_is_retired_after_its_retentio
     env.expire_wait_of("Conversation", &conv);
     env.reconcile().ok();
     env.fleet(&["get", "conversation", &conv]).ok();
-    // Time passes on the record: the retention runs out, and the object is
-    // retired by uid and resourceVersion.
     let mut obj: Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
     let old = orphaned_at - retain - 1;
     obj["metadata"]["creationTimestamp"] = json!(old);
@@ -929,7 +902,6 @@ fn an_orphaned_conversation_keeps_its_messages_and_is_retired_after_its_retentio
     assert_eq!(report["errors"], json!([]), "{report:#}");
     env.fleet(&["get", "conversation", &conv]).code(3);
     assert_eq!(env.fake_gateway().calls("post").unwrap(), 0);
-    // A later message there is a new thread: the mention rule applies again.
     let out = env
         .receive(
             "Ev02",
@@ -956,7 +928,6 @@ fn manifests_follow_the_write_ownership_rules() {
         "metadata": {"name": "listener-fake-main"}, "spec": {"account": GATEWAY_ACCOUNT}}))
         .code(1)
         .stderr_has("the config is the only source");
-    // A Conversation by manifest takes its derived name, or none.
     let conversation = |name: Option<&str>, address: &str| {
         let mut metadata = json!({});
         if let Some(n) = name {
@@ -982,8 +953,6 @@ fn manifests_follow_the_write_ownership_rules() {
     env.apply(conversation(Some(&conv), THREAD))
         .ok()
         .stdout_has(&format!("Conversation/{conv} unchanged"));
-    // One thread's derived name with another's address is refused, and so
-    // is any change to the spec once created.
     env.apply(conversation(Some(&conv), "fake:C0123ABCD:2"))
         .code(1)
         .stderr_has("names one object");
@@ -997,7 +966,6 @@ fn manifests_follow_the_write_ownership_rules() {
         "the history alone numbers the thread: {st:#}"
     );
     assert_eq!(st["messages"].as_array().unwrap().len(), 1);
-    // A manifest may not carry status, and the verb refuses a Task label it owns.
     let mut with_status = conversation(None, THREAD);
     with_status["status"] = json!({"phase": "Tied"});
     env.apply(with_status)
@@ -1028,8 +996,6 @@ fn a_slack_account_is_served_by_curl_and_refused_without_what_curl_needs() {
     assert_eq!(account["platform"], "slack");
     assert_eq!(account["bot"], SLACK_BOT);
     assert_eq!(account["inbound"], "socket-mode");
-    // The manager run resolves the account's Listener: the adapter asks
-    // Slack who it is, through the stub curl, and nothing else.
     let report = env.reconcile().ok().json();
     assert_eq!(report["errors"], json!([]), "{report:#}");
     let calls = env.stub_calls();
@@ -1041,14 +1007,12 @@ fn a_slack_account_is_served_by_curl_and_refused_without_what_curl_needs() {
             &json!("https://slack.com/api/auth.test"),
             "{call:#}"
         );
-        // The path as the section spells it, with forward slashes.
         assert!(argv.contains(&json!(curl_config.to_string_lossy().replace('\\', "/"))));
     }
     let listener = format!("listener-{GATEWAY_ACCOUNT}");
     let st = env.listener_status(&listener);
     assert_condition(&st, "Accepted", "True", "Loaded");
     assert_condition(&st, "Resolved", "True", "IdentityMatches");
-    // The identity is asked again every pollMs: make the next poll due.
     let poll_due = || {
         let path = env.object_path("Listener", &listener);
         let mut obj: Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
@@ -1056,7 +1020,6 @@ fn a_slack_account_is_served_by_curl_and_refused_without_what_curl_needs() {
         obj["status"]["notBefore"] = json!(0);
         fs::write(&path, obj.to_string()).unwrap();
     };
-    // A bot id that is not what `auth.test` answers is a mismatch, not a crash.
     env.set_gateway(&base.replace(&format!("bot = \"{SLACK_BOT}\""), "bot = \"U0OTHER001\""));
     poll_due();
     env.reconcile().ok();
@@ -1068,14 +1031,12 @@ fn a_slack_account_is_served_by_curl_and_refused_without_what_curl_needs() {
         .ok()
         .json();
     assert_eq!(v["gateways"], json!(["discord", "fake", "slack"]));
-    // Either Slack delivery method is a listener Slack has; the fake's is not.
     env.set_gateway(&slack_section(&env, &curl, &curl_config, "events-api"));
     env.reconcile().ok();
     env.set_gateway(&slack_section(&env, &curl, &curl_config, "connection"));
     env.reconcile().code(1).stderr_has(
         "accounts.fake-main: inbound \"connection\" is not how a Slack listener delivers; use \"socket-mode\" or \"events-api\"",
     );
-    // The curl config is what carries the credential, so it is required; the client defaults to `curl` on PATH.
     let without_config = base.replace(
         &format!(
             "curlConfig = \"{}\"\n",
@@ -1088,10 +1049,7 @@ fn a_slack_account_is_served_by_curl_and_refused_without_what_curl_needs() {
     env.reconcile()
         .code(1)
         .stderr_has("accounts.fake-main: a slack account needs a curlConfig");
-    // Without `cli`, `curl` is found on PATH: the stub, since that is all
-    // the children's PATH holds. Not on Windows, where process creation
-    // searches the system directories before PATH and finds the system's
-    // own curl.exe, which a test must not run.
+    // Windows process creation searches the system directories before PATH and would find the system's curl.exe.
     if cfg!(windows) {
         return;
     }
@@ -1314,7 +1272,6 @@ fn the_slack_adapter_adds_and_removes_its_reactions_as_form_arguments() {
         react("eyes", true),
         Observation::Known(EffectOutcome::Reacted { already: false })
     );
-    // A repeat is a Known success: `already_reacted`.
     assert_eq!(
         react("eyes", true),
         Observation::Known(EffectOutcome::Reacted { already: true })
@@ -1327,7 +1284,6 @@ fn the_slack_adapter_adds_and_removes_its_reactions_as_form_arguments() {
         react("eyes", false),
         Observation::Known(EffectOutcome::Reacted { already: false })
     );
-    // Removing one that is not there: `no_reaction`, a Known success.
     assert_eq!(
         react("eyes", false),
         Observation::Known(EffectOutcome::Reacted { already: true })
@@ -1351,12 +1307,10 @@ fn the_slack_adapter_adds_and_removes_its_reactions_as_form_arguments() {
         json!({"channel": GATEWAY_CHANNEL, "timestamp": REPLY_TS, "name": "eyes"}),
         "form arguments, read back by the stub"
     );
-    // A message Slack does not know is refused, never Unknown.
     assert!(matches!(
         g.react(GATEWAY_ACCOUNT, &t, "1730000999.000000", "eyes", true),
         Observation::Known(EffectOutcome::Failed { .. })
     ));
-    // An answer that cannot be read is Unknown.
     env.edit_stub(|s| s["faults"] = json!([{"call": "curl", "mode": "malformed"}]));
     assert!(react("eyes", true).is_unknown());
 }
@@ -1404,7 +1358,6 @@ fn the_slack_adapter_reads_identity_capabilities_and_a_thread_through_the_stub_c
     assert!(known.messages[0].mentions_fleet && known.messages[0].starts_thread);
     assert_eq!(known.messages[1].author.id, SAM_ID);
     assert!(!known.messages[1].starts_thread);
-    // Paged one message at a time, the read is the same, through the cursor.
     let before = slack_calls(&env).len();
     env.edit_stub(|s| s["slack"]["pageSize"] = json!(1));
     assert_eq!(
@@ -1416,9 +1369,6 @@ fn the_slack_adapter_reads_identity_capabilities_and_a_thread_through_the_stub_c
     assert_eq!(paged[1]["body"]["cursor"], "c:1");
     assert_eq!(paged[0]["body"]["include_all_metadata"], true);
     env.edit_stub(|s| s["slack"]["pageSize"] = json!(200));
-    // After the parent: the reply alone. The stub leaves the parent out of
-    // a bounded read, so the adapter asks for it alone and still answers
-    // the starter.
     let h = g.history(
         GATEWAY_ACCOUNT,
         &t,
@@ -1444,22 +1394,17 @@ fn the_slack_adapter_reads_identity_capabilities_and_a_thread_through_the_stub_c
         },
     );
     assert_eq!(ids(&h), [REPLY_TS]);
-    // A channel read is its top-level posts, with no starter.
     let h = g.history(GATEWAY_ACCOUNT, &t.channel(), &first);
     assert_eq!(ids(&h), [PARENT_TS, OTHER_TS]);
     assert_eq!(h.known().unwrap().starter, None);
-    // A parent Slack reports deleted.
     env.edit_stub(|s| s["slack"]["tombstones"] = json!([PARENT_TS]));
     let h = g.history(GATEWAY_ACCOUNT, &t, &first);
     assert_eq!(ids(&h), [REPLY_TS]);
     assert_eq!(h.known().unwrap().starter, Some(Starter::removed()));
-    // A thread Slack does not know is a refusal, never proven absence.
     assert!(matches!(
         g.history(GATEWAY_ACCOUNT, &thread("1730009999.000000"), &first),
         HistoryObservation::Unknown { kind: Uncertainty::Refused, why, .. } if why.contains("thread_not_found")
     ));
-    // What reached curl: the operator's config file named, the method's
-    // URL, and no credential on any command line.
     let calls = env.stub_calls();
     assert!(!calls.is_empty());
     for call in &calls {
@@ -1673,7 +1618,6 @@ fn the_slack_adapter_opens_and_posts_keyed_mrkdwn_through_the_stub_curl() {
         "a post replies to the parent"
     );
     assert_eq!(posts[1]["text"], "Thanks &lt;you&gt; &amp; bye");
-    // Fleet's posts read back as Fleet's, with their keys, from history.
     let h = g.history(
         GATEWAY_ACCOUNT,
         &conversation,
@@ -1695,8 +1639,6 @@ fn the_slack_adapter_opens_and_posts_keyed_mrkdwn_through_the_stub_curl() {
         h.starter.as_ref().and_then(|s| s.key.clone()).as_deref(),
         Some("task/t/u7/gateway/question/q1")
     );
-    // A long text is split at the limit into consecutive replies under
-    // derived keys; the outcome names the first.
     let long: String = (1..=3)
         .map(|i| format!("paragraph {i} {}", "x".repeat(POST_LIMIT * 2 / 3)))
         .collect::<Vec<_>>()
@@ -1729,7 +1671,6 @@ fn the_slack_adapter_opens_and_posts_keyed_mrkdwn_through_the_stub_curl() {
             "{text:.20}"
         );
     }
-    // A refusal from Slack is Known, and nothing lands.
     env.edit_stub(|s| s["slack"]["postError"] = json!("not_in_channel"));
     assert!(matches!(
         g.post(GATEWAY_ACCOUNT, &conversation, "x", "k"),
@@ -1741,8 +1682,6 @@ fn the_slack_adapter_opens_and_posts_keyed_mrkdwn_through_the_stub_curl() {
         Observation::Known(EffectOutcome::Failed { why }) if why.contains("channel_not_found")
     ));
     assert_eq!(slack_posts(&env).len(), 5);
-    // Every post named mrkdwn, carried one markdown block, and carried its
-    // text on stdin, never in argv.
     for call in slack_calls(&env)
         .iter()
         .filter(|c| c["method"] == "chat.postMessage")
@@ -1784,21 +1723,17 @@ fn the_slack_adapter_posts_an_agents_markdown_as_a_markdown_block_with_a_mrkdwn_
     );
     let posts = slack_posts(&env);
     assert_eq!(posts.len(), 1, "{posts:#?}");
-    // Slack renders the Markdown itself, the table included.
     assert_eq!(
         posts[0]["blocks"],
         json!([{"type": "markdown", "text": report}]),
         "{:#}",
         posts[0]
     );
-    // The fallback, for notifications and history, is mrkdwn: the heading
-    // is one bold span and the table is kept legible as a code block.
     assert_eq!(
         posts[0]["text"],
         "*Production*\n\n```\n| Week | Total | ACTIVE |\n|---|---|---|\n| 44 | 12 | 3 |\n```\n\n\
          Run `fleet get task t` &amp; check."
     );
-    // The post still reads back as Fleet's, with its key.
     let h = g.history(
         GATEWAY_ACCOUNT,
         &thread(PARENT_TS),
@@ -1828,7 +1763,6 @@ fn the_slack_adapter_posts_a_log_post_at_the_top_level_of_a_channel() {
     let Observation::Known(EffectOutcome::Posted { message, .. }) = posted else {
         panic!("{posted:?}")
     };
-    // A long one splits into top-level posts too: none replies to another.
     let long: String = (1..=3)
         .map(|i| format!("paragraph {i} {}", "x".repeat(POST_LIMIT * 2 / 3)))
         .collect::<Vec<_>>()
@@ -1859,7 +1793,6 @@ fn the_slack_adapter_posts_a_log_post_at_the_top_level_of_a_channel() {
             format!("task/t/u7/gateway/change/k7/2/{}/3", i + 1)
         );
     }
-    // A `since` read of the channel finds the post by its marker.
     let h = g.history(GATEWAY_ACCOUNT, &channel, &HistoryQuery::Since { at: 0 });
     let h = h.known().unwrap_or_else(|| panic!("{h:?}"));
     assert!(
@@ -1868,7 +1801,7 @@ fn the_slack_adapter_posts_a_log_post_at_the_top_level_of_a_channel() {
             .any(|m| m.id == message && m.key.as_deref() == Some("task/t/u7/gateway/result/1")),
         "{h:#?}"
     );
-    // Slack gives no permalink without a call: the post names the address.
+    // Slack gives no permalink without a call.
     assert_eq!(g.link(GATEWAY_ACCOUNT, &thread(PARENT_TS)), None);
 }
 
@@ -1880,10 +1813,7 @@ fn the_slack_adapters_unknowns_carry_slacks_reasons() {
     let quick = slack_adapter(&curl, &curl_config, Duration::from_millis(500));
     let t = thread(PARENT_TS);
     let since = HistoryQuery::Since { at: 0 };
-    // `internal_error` and `fatal_error` are the two `ok: false` answers
-    // Slack documents as "some aspect of the operation may have succeeded":
-    // the stub lands the post and then answers so. The write is Unknown,
-    // never a Known failure that step 4 would retry under the same key.
+    // Slack documents `internal_error` and `fatal_error` as "some aspect of the operation may have succeeded".
     for error in ["internal_error", "fatal_error"] {
         env.edit_stub(|s| s["slack"]["postErrorAfter"] = json!(error));
         let landed = slack_posts(&env).len();
@@ -1943,8 +1873,6 @@ fn the_slack_adapters_unknowns_carry_slacks_reasons() {
         2,
         "no fault but Slack's two maybe-performed errors let a post land"
     );
-    // A split post refused after its first chunk landed is Unknown, naming
-    // what landed, for a recovery read to settle.
     env.stub_fault_after("curl", "auth", 1, 1);
     let long = format!("{}\n\n{}", "a".repeat(POST_LIMIT), "b".repeat(10));
     assert!(matches!(
@@ -1952,8 +1880,6 @@ fn the_slack_adapters_unknowns_carry_slacks_reasons() {
         Observation::Unknown { why } if why.contains("1 of 2 posts landed under k4")
     ));
     assert_eq!(slack_posts(&env).len(), 3);
-    // A curl that cannot start: nothing was sent, so a write is a Known
-    // refusal and a read is Unavailable.
     let missing = slack_adapter(
         &env.root.join("no-such-curl"),
         &curl_config,
@@ -1971,9 +1897,7 @@ fn the_slack_adapters_unknowns_carry_slacks_reasons() {
         }
     ));
     assert!(missing.whoami(GATEWAY_ACCOUNT).is_unknown());
-    // A call past its bound is a timeout. Last, because the stub takes its
-    // fault only once it runs, and a loaded host can see it killed first,
-    // leaving the fault armed for whatever call comes next.
+    // MUST KILL: extract — a test of its own would free the hang fault from having to run last
     env.stub_fault("curl", "hang", 1);
     assert!(matches!(
         quick.history(GATEWAY_ACCOUNT, &t, &since),
@@ -1990,11 +1914,6 @@ fn the_slack_adapters_unknowns_carry_slacks_reasons() {
         "a timed-out post landed nothing"
     );
 }
-
-// ----------------------------------------------------------------------
-// Step 2: admission, Task creation under the workspace precondition, the
-// busy notice and the refusal post.
-// ----------------------------------------------------------------------
 
 fn admitting(name: &str) -> (Env, String) {
     mirror(name)
@@ -2054,14 +1973,11 @@ fn an_admitted_mention_starts_one_task_tied_to_the_thread() {
         st["judged"], st["revision"],
         "every message was judged: {st:#}"
     );
-    // One Task, however many passes: the key has its receipt.
     env.expire_wait_of("Conversation", &conv);
     env.reconcile().ok();
     let tasks = env.fleet(&["list", "tasks", "--json"]).ok().json();
     assert_eq!(tasks.as_array().unwrap().len(), 1, "{tasks:#}");
     assert_eq!(env.conversation_status(&conv)["task"]["n"], 1);
-    // A second mention in the tied thread is a turn for the relay, not a
-    // new Task.
     env.receive("Ev02", mention("1730000400000", T0 + 400_000))
         .ok();
     env.reconcile().ok();
@@ -2082,7 +1998,6 @@ fn an_admitted_mention_starts_one_task_tied_to_the_thread() {
         0,
         "nothing was posted"
     );
-    // The labels are the controller's: apply refuses them on another Task.
     let mut labelled = support::task("labelled", false);
     labelled["metadata"]["labels"]["gateway.fleet.dev/conversation-uid"] = json!(conv_uid);
     env.apply(labelled)
@@ -2130,7 +2045,6 @@ fn a_mention_from_someone_not_on_the_allowlist_earns_one_refusal() {
             .len(),
         0
     );
-    // The same author again: no second refusal. Another stranger: one more.
     stranger("U0999ZZZZ", "Ev02", T0 + 400_000);
     env.reconcile().ok();
     assert_eq!(env.fake_gateway().posts().unwrap().len(), 1);
@@ -2144,8 +2058,6 @@ fn a_mention_from_someone_not_on_the_allowlist_earns_one_refusal() {
     );
     let st = env.conversation_status(&conv);
     assert_eq!(st["refusals"], json!(["U0999ZZZZ", "U0888YYYY"]));
-    // Fleet's own post reached the mirror through history and is never a
-    // candidate for anything.
     assert!(st["task"].is_null());
     env.assert_no_temp();
 }
@@ -2164,8 +2076,6 @@ fn an_orphaned_thread_starts_the_next_task_on_any_admitted_message() {
     let st = env.conversation_status(&conv);
     assert_eq!(st["phase"], "Orphaned", "{st:#}");
     assert_eq!(st["task"]["state"], "gone");
-    // Context from a stranger starts nothing; an admitted message without a
-    // mention starts Task 2 with the whole thread behind it.
     env.receive(
         "Ev02",
         message_event(THREAD, "1730000400000", "U0999ZZZZ", T0 + 400_000, "me too"),
@@ -2217,7 +2127,6 @@ fn two_threads_on_one_route_each_start_a_task_in_their_own_directory() {
             vec![person(SAM_ID, T0 + 900_000, "The import is slow too.")],
         )
         .unwrap();
-    // The first thread's Task runs, concludes and is kept.
     env.receive("Ev01", mention("1730000300000", T0 + 300_000))
         .ok();
     env.reconcile().ok();
@@ -2244,8 +2153,6 @@ fn two_threads_on_one_route_each_start_a_task_in_their_own_directory() {
     .ok();
     env.reconcile().ok();
     assert_eq!(env.status(&first)["phase"], "Concluded");
-    // A mention in a second thread of the same route starts its Task at
-    // once, in its own directory, with no busy notice.
     env.receive(
         "Ev02",
         message_event(
@@ -2291,8 +2198,6 @@ fn two_threads_on_one_route_each_start_a_task_in_their_own_directory() {
 #[test]
 fn a_thread_directory_the_manager_cannot_make_is_a_refused_create_and_no_task() {
     let (env, conv) = admitting("dir-refused");
-    // A file stands where the route's base directory should be, so the
-    // thread's directory cannot be made under it.
     let base = PathBuf::from(env.gateway_workspace());
     fs::create_dir_all(base.parent().unwrap()).unwrap();
     fs::write(&base, "not a directory").unwrap();
@@ -2319,8 +2224,6 @@ fn a_thread_directory_the_manager_cannot_make_is_a_refused_create_and_no_task() 
         0,
         "no busy notice"
     );
-    // The operator clears the way; the retry, under the same key, makes the
-    // directory and the Task.
     fs::remove_file(&base).unwrap();
     let path = env.object_path("Conversation", &conv);
     let mut obj: Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
@@ -2344,7 +2247,6 @@ fn a_thread_directory_the_manager_cannot_make_is_a_refused_create_and_no_task() 
 #[test]
 fn a_thread_directory_whose_creation_is_unknown_is_recovered_by_a_lookup_and_a_retry() {
     let (env, conv) = admitting("dir-unknown");
-    // The runtime made the directory, and its answer was lost.
     env.fault(Fault::new("createDir", "unknown").performed());
     env.receive("Ev01", mention("1730000300000", T0 + 300_000))
         .ok();
@@ -2356,9 +2258,6 @@ fn a_thread_directory_whose_creation_is_unknown_is_recovered_by_a_lookup_and_a_r
             .contains("the thread's directory"),
         "{report:#}"
     );
-    // A later pass of the same run looked for the Task, found none, and
-    // created it under the same key; making the directory again was
-    // harmless.
     let task_name = format!("{conv}-1");
     let conv_uid = uid_of(&env, "conversation", &conv);
     let key = format!("conversation/{conv_uid}/task/1");
@@ -2432,8 +2331,6 @@ fn conclude(env: &Env, task: &str) {
 fn a_concluded_thread_idle_past_its_retention_is_retired_as_a_whole() {
     let env = Env::gateway("retire");
     env.apply(task_config()).ok();
-    // Thread A concludes. Thread B's Task still runs. Thread C concludes,
-    // but its directory was there before Fleet made it.
     let a = start_thread(&env, "fake:C0123ABCD:1730000100000", "Ev01", T0 + 100_000);
     let b = start_thread(&env, "fake:C0123ABCD:1730000200000", "Ev02", T0 + 200_000);
     let c_dir = thread_dir(
@@ -2460,11 +2357,9 @@ fn a_concluded_thread_idle_past_its_retention_is_retired_as_a_whole() {
         env.conversation_status(&c)["dir"].is_null(),
         "a directory that was there already is not Fleet's"
     );
-    // Not idle yet: nothing is retired.
     env.expire_wait_of("Conversation", &a);
     env.reconcile().ok();
     env.get(&a_task);
-    // Every thread is idle past its retention.
     for conv in [&a, &b, &c] {
         age_past_retention(&env, conv);
     }
@@ -2477,7 +2372,6 @@ fn a_concluded_thread_idle_past_its_retention_is_retired_as_a_whole() {
             }
         }
     }
-    // A: its Task, its session, its Conversation and its directory are gone.
     env.get_absent(&a_task);
     env.fleet(&["get", "conversation", &a]).code(3);
     assert!(
@@ -2488,21 +2382,16 @@ fn a_concluded_thread_idle_past_its_retention_is_retired_as_a_whole() {
         env.host().session(&a_key).unwrap().unwrap().released,
         "the session was released"
     );
-    // B: a running Task holds its thread; nothing is retired.
     env.get(&b_task);
     assert_eq!(env.conversation_status(&b)["phase"], "Tied");
     assert!(Path::new(&thread_dir(&env, &b)).is_dir());
-    // C: retired, but the directory Fleet did not make stays, as it was.
     env.get_absent(&c_task);
     env.fleet(&["get", "conversation", &c]).code(3);
     assert_eq!(
         fs::read_to_string(Path::new(&c_dir).join("notes.md")).unwrap(),
         "kept by the operator"
     );
-    // The base directory stays.
     assert!(Path::new(&env.gateway_workspace()).is_dir());
-    // A later mention in thread A starts fresh: a new Conversation, the
-    // thread's history, and an empty directory.
     let again = start_thread(&env, "fake:C0123ABCD:1730000100000", "Ev04", T0 + 900_000);
     assert_eq!(again, a);
     assert!(
@@ -2515,13 +2404,9 @@ fn a_concluded_thread_idle_past_its_retention_is_retired_as_a_whole() {
 #[test]
 fn a_busy_thread_directory_holds_the_thread_says_so_once_and_starts_when_free() {
     let (env, conv) = admitting("busy");
-    // A Task applied by hand into the route's base directory holds no
-    // thread's directory.
     let mut bystander = support::task("bystander", false);
     bystander["spec"]["workspace"] = json!([format!("file://{}", env.gateway_workspace())]);
     env.apply(bystander).ok();
-    // Another Task already runs in this thread's own directory, spelled
-    // with a trailing slash: the same directory.
     let mut holder = support::task("holder", false);
     holder["spec"]["workspace"] = json!([format!("file://{}/", thread_dir(&env, &conv))]);
     env.apply(holder).ok();
@@ -2560,8 +2445,6 @@ fn a_busy_thread_directory_holds_the_thread_says_so_once_and_starts_when_free() 
         st["effects"][&busy_key]["receipt"]["outcome"]["known"]["type"],
         "posted"
     );
-    // Planned again every pollMs, still busy: no second notice, and no
-    // retention while it waits.
     env.expire_wait_of("Conversation", &conv);
     env.reconcile().ok();
     env.get_absent(&task_name);
@@ -2574,7 +2457,6 @@ fn a_busy_thread_directory_holds_the_thread_says_so_once_and_starts_when_free() 
         st["notBefore"].as_u64().unwrap() <= now + poll + 5_000,
         "the next look is one pollMs away, not the retention: {st:#}"
     );
-    // The directory frees: the Task starts, with the whole thread.
     env.fleet(&["delete", "task", "holder"]).ok();
     env.reconcile().ok();
     env.get_absent("holder");
@@ -2605,9 +2487,6 @@ fn a_crash_between_the_create_intent_and_its_receipt_adopts_the_task() {
     let task_uid = uid_of(&env, "task", &task_name);
     let conv_uid = uid_of(&env, "conversation", &conv);
     let key = format!("conversation/{conv_uid}/task/1");
-    // The manager wrote the intent and created the Task, then died before
-    // the receipt: the record holds the intent alone and the tie is still
-    // pending.
     let path = env.object_path("Conversation", &conv);
     let mut obj: Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
     obj["status"]["effects"][&key]
@@ -2663,8 +2542,6 @@ fn a_mention_read_from_history_before_the_listener_delivers_it_still_starts_a_ta
         .unwrap();
     env.apply(task_config()).ok();
     let conv = conversation_name(GATEWAY_ACCOUNT, THREAD);
-    // A stranger's mention opens the mirror; its first history read
-    // numbers Alex's mention before the listener delivers it.
     env.receive(
         "Ev01",
         message_event(
@@ -2681,7 +2558,6 @@ fn a_mention_read_from_history_before_the_listener_delivers_it_still_starts_a_ta
     let st = env.conversation_status(&conv);
     assert_eq!(st["messages"].as_array().map(Vec::len), Some(3), "{st:#}");
     assert!(st["task"].is_null(), "history alone starts nothing: {st:#}");
-    // The listener's delivery of that mention arrives one pass later.
     env.receive("Ev02", mention("1730000300000", T0 + 300_000))
         .ok();
     env.expire_wait_of("Conversation", &conv);
@@ -2699,8 +2575,6 @@ fn a_mention_read_from_history_before_the_listener_delivers_it_still_starts_a_ta
 #[test]
 fn a_same_named_task_created_for_another_thread_is_never_adopted() {
     let (env, conv) = admitting("adopt-refused");
-    // `<conversation>-1` exists already, in another directory, labelled for
-    // another Conversation's uid, as that one's create would leave it.
     let task_name = format!("{conv}-1");
     env.apply(support::task(&task_name, false)).ok();
     let other_uid = uid_of(&env, "task", &task_name);

@@ -139,8 +139,6 @@ impl TaskController {
             urls: spec.workspace.urls().to_vec(),
         });
         if input.task.is_deleting() {
-            // A workspace call whose answer was lost is released by its key,
-            // never made again to be found.
             let mut probes = vec![find];
             if let Some(s) = &st.session {
                 probes.push(Probe::AtRest { session: s.clone() });
@@ -177,7 +175,6 @@ impl TaskController {
                             key: bk,
                         });
                     } else {
-                        // The brief is not in flight: the inbox may ask.
                         inbox_probes(&st, s, &mut probes);
                     }
                 }
@@ -193,12 +190,6 @@ impl TaskController {
                 }
                 probes
             }
-            // A Concluded Task is due for delivery, and at rest once per
-            // recheck interval; its session is looked up, so a vanished
-            // worker is reported, never respawned, and a lost one reads
-            // lost. Only a delivery or a view revives a lost session: a
-            // concluded worker at rest stays at rest. A session that may be
-            // paused has its activity watched.
             Phase::Concluded
                 if next_entry(&st).is_some()
                     || st.catch_up.is_some()
@@ -252,8 +243,6 @@ impl TaskController {
         settle_transitions(&mut r.st.conditions, &before.conditions);
         r.start_outbox_unread(&before);
         r.queue_phase_event(&before);
-        // A delivery is a status write even when nothing else moved: the
-        // store takes the status along with the receipt.
         let status = if r.st == before && r.delivery.is_none() {
             None
         } else {
@@ -321,10 +310,6 @@ impl Pass<'_, '_> {
             return;
         }
         let profile = fleet_api::harness::profile(&self.spec.harness);
-        // A harness with no hooks and no screen rules, such as a shell, has
-        // no agent state to report, so no source either: only an agent can
-        // be unknown. Cleared before the signals are read, so a session on a
-        // host whose signal file cannot be read drops one too.
         let agentless = profile.authority == fleet_api::harness::Authority::None
             && profile.screen_rules().is_none();
         if agentless {
@@ -337,9 +322,6 @@ impl Pass<'_, '_> {
             }
             _ => None,
         };
-        // Only a file that was read says what the agent reported. An
-        // unreadable one, as on another host, claims no silence: a matched
-        // screen rule still says the state, and otherwise the last stands.
         let unread = fleet_api::signal::Reported::default();
         let r = match &self.input.observations.signals {
             Some(Observation::Known(r)) => r,
@@ -359,8 +341,6 @@ impl Pass<'_, '_> {
             self.st.agent_state = Some(merged.state);
             return;
         }
-        // A capture that failed says nothing: a screen state stands until a
-        // capture reads another, or the hooks speak.
         let last = self.st.activity.as_ref();
         if merged.source != fleet_api::screen::Source::Hook
             && matches!(screen, Some(Observation::Unknown { .. }))
@@ -427,8 +407,6 @@ impl Pass<'_, '_> {
         let Some(digest) = self.st.prompts.get(key) else {
             return Proof::NotNeeded;
         };
-        // A report older than this send's intent proves an earlier send of
-        // the same text, not this one.
         let since = self.st.intents.get(key).map_or(0, |i| i.at);
         let loose = self.st.loose_prompts.get(key);
         match &self.input.observations.signals {
@@ -522,20 +500,13 @@ impl Pass<'_, '_> {
     fn advance(&mut self) {
         self.forget_resolved_entries();
         match self.st.phase {
-            // Stalled has no session to deliver to; nothing moves.
             Phase::Stalled => return,
-            // Terminal, except that its inbox is still delivered.
             Phase::Concluded => return self.concluded(),
             _ => {}
         }
-        // A result for the generation the worker was last given ends the
-        // run: a result is only accepted once the brief has a receipt, so
-        // this is Briefed in practice. One for an older generation answers
-        // less than the worker now has, and the run goes on.
         if let Some(result) = self.st.result.as_ref().filter(|_| result_current(&self.st)) {
             let outcome = format!("{:?}", result.outcome);
             self.st.phase = Phase::Concluded;
-            // Reporting a result is work: the idle time starts again.
             self.st.idle_since = None;
             self.cond(
                 CONCLUDED,
@@ -591,7 +562,6 @@ impl Pass<'_, '_> {
         let key = self.key(SPAWN, Some(attempt));
         self.st.spawn_attempts = attempt;
         self.st.not_before = None;
-        // An attempt given back after a trust gap reuses its key.
         self.st.receipts.remove(&key);
         self.st.phase = Phase::Spawning;
         self.cond(
@@ -638,8 +608,6 @@ impl Pass<'_, '_> {
             Some(Observation::Known(other)) => {
                 self.spawn_retry(&format!("unexpected outcome {other:?}"))
             }
-            // Unknown outcome, or an intent with no receipt (a crash between the
-            // effect and its receipt): the key decides, never a blind respawn.
             Some(Observation::Unknown { .. }) | None => {
                 match self.input.observations.find.clone() {
                     Some(Observation::Known(Some(session))) => {
@@ -720,8 +688,6 @@ impl Pass<'_, '_> {
 
     fn spawned(&mut self) {
         let Some(session) = self.st.session.clone() else {
-            // A Spawned phase without a session is not a state this controller
-            // writes; start over rather than brief nobody.
             self.st.phase = Phase::Pending;
             return;
         };
@@ -775,7 +741,6 @@ impl Pass<'_, '_> {
     fn brief_step(&mut self, session: SessionRef) {
         let key = brief_key(self.input.task);
         match self.st.receipts.get(&key).map(|r| r.outcome.clone()) {
-            // The runtime typed it; the agent's prompt hook proves it.
             Some(Observation::Known(EffectOutcome::Delivered { .. })) => {
                 return match self.proof(&key) {
                     Proof::NotNeeded | Proof::Proven => self.briefed_now(key, false),
@@ -785,8 +750,6 @@ impl Pass<'_, '_> {
                     Proof::NotAsked => {}
                 };
             }
-            // The text waits where the agent does not read it. It is not
-            // sent again: a person moves it on, and the inbox waits too.
             Some(Observation::Known(EffectOutcome::Queued { why })) => {
                 self.cond(
                     BRIEFED,
@@ -810,9 +773,6 @@ impl Pass<'_, '_> {
             _ => {}
         }
         if self.st.intents.contains_key(&key) {
-            // Sent, but no Known receipt: ask the session. Known yes is a
-            // recovered receipt, Known no a send, Unknown a read tried again
-            // after a wait: a read can do no harm, so it never stalls the Task.
             match self.delivered(&key) {
                 Some(Observation::Known(true)) => {
                     self.st
@@ -857,8 +817,6 @@ impl Pass<'_, '_> {
             self.needs_attention("Stalled", "brief attempts exhausted");
             return;
         }
-        // Every send, including retries proven not delivered, needs fresh
-        // trust and readiness. Receipt recovery above sends nothing.
         if !self.workspace_trusted() {
             return;
         }
@@ -881,8 +839,6 @@ impl Pass<'_, '_> {
         self.st.receipts.remove(&key);
         let msg = format!("send {}", self.st.brief_sends);
         self.cond(BRIEFED, ConditionStatus::Unknown, "Sending", msg);
-        // The brief and every amendment so far, as one message: an
-        // amendment queued before the brief went out is then already given.
         let text = self
             .spec
             .assignment(&self.input.task.metadata.name, self.generation);
@@ -948,8 +904,6 @@ impl Pass<'_, '_> {
         self.st.brief_probe_failures = 0;
         self.st.not_before = None;
         self.settle_attention("BriefUnconfirmed");
-        // The generation the brief was composed for, which an amendment
-        // since may have moved past.
         let generation = self
             .st
             .intents
@@ -988,7 +942,6 @@ impl Pass<'_, '_> {
 
     fn concluded(&mut self) {
         if next_entry(&self.st).is_some() {
-            // A delivery breaks the idle time: it starts again at rest.
             self.st.idle_since = None;
         }
         if next_entry(&self.st).is_none() && self.st.catch_up.is_none() {
@@ -1006,8 +959,6 @@ impl Pass<'_, '_> {
             {
                 return;
             }
-            // A worker at rest is revived only for a view, and it may be
-            // paused. A pass that does not watch it breaks its idle time.
             match self.st.session.clone() {
                 Some(session) if watched(self.input.task, self.spec, &self.st) => {
                     if !self.restart_step(&session) && !self.pause_state(&session) {
@@ -1046,8 +997,6 @@ impl Pass<'_, '_> {
         } else {
             self.settle_attention("InboxFull");
         }
-        // Not in a pass that sent something, is waiting something out, or
-        // has lost sight of the session.
         if !self.effects.is_empty()
             || self.st.not_before.is_some_and(|t| t > self.now())
             || condition(&self.st.conditions, WORKER_GONE)
@@ -1077,8 +1026,6 @@ impl Pass<'_, '_> {
         let Some(given) = self.st.brief.as_ref().map(|b| b.generation) else {
             return;
         };
-        // The worker has it already, or the newer amendment queued behind
-        // it, never sent yet, will carry it: recorded without a send.
         let newer = self.st.inbox.iter().any(|e| {
             e.amends.is_some_and(|g| g > generation)
                 && !self
@@ -1124,7 +1071,6 @@ impl Pass<'_, '_> {
 
     fn keyed_send(&mut self, session: SessionRef, key: &str, text: String, what: &str) -> Sent {
         match self.st.receipts.get(key).map(|r| r.outcome.clone()) {
-            // The runtime typed it; the agent's prompt hook proves it.
             Some(Observation::Known(EffectOutcome::Delivered { via, may_hold, .. })) => {
                 return match self.proof(key) {
                     Proof::NotNeeded | Proof::Proven => Sent::Delivered {
@@ -1145,8 +1091,6 @@ impl Pass<'_, '_> {
                     Proof::NotAsked => Sent::Pending,
                 };
             }
-            // Queued where the agent does not read it: given up, never sent
-            // again, so that later entries go out past it.
             Some(Observation::Known(EffectOutcome::Queued { why })) => {
                 self.st
                     .delivery_attempts
@@ -1183,9 +1127,6 @@ impl Pass<'_, '_> {
             _ => {}
         }
         if self.st.intents.contains_key(key) {
-            // Sent, but no Known receipt: the agent's prompt hook, or the
-            // session's journal, decides, exactly as for the brief. Unknown
-            // is read again after a wait.
             match self.delivered(key) {
                 Some(Observation::Known(true)) => {
                     return Sent::Delivered {
@@ -1416,7 +1357,6 @@ impl Pass<'_, '_> {
                 self.found_again();
                 return false;
             }
-            // Unknown proves nothing either way.
             _ => return false,
         }
         if cannot_resume(&self.st) {
@@ -1744,7 +1684,6 @@ impl Pass<'_, '_> {
                     self.pause_refused(&pause, why);
                     return false;
                 }
-                // No Known receipt: the session decides, never a second stop.
                 Some(Observation::Unknown { .. }) | None => match observed {
                     Some(Observation::Known(true)) => self.paused_by_fleet(&pause),
                     Some(Observation::Known(false)) => {
@@ -1763,13 +1702,10 @@ impl Pass<'_, '_> {
                     self.resumed(Some(&resume));
                     return false;
                 }
-                // Refused: tried again after a wait.
                 Some(Observation::Known(_)) => {
                     self.resume_again(&resume);
                     return true;
                 }
-                // No Known receipt: a running session is resumed; one still
-                // stopped is resumed again after a wait, which is harmless.
                 Some(Observation::Unknown { .. }) | None => match observed {
                     Some(Observation::Known(false)) => {
                         self.resumed(Some(&resume));
@@ -1808,7 +1744,6 @@ impl Pass<'_, '_> {
                 }
                 false
             }
-            // Unknown proves nothing: a paused session stays paused.
             _ => paused,
         }
     }
@@ -2147,9 +2082,6 @@ impl Pass<'_, '_> {
                     );
                 }
                 Some(Observation::Known(EffectOutcome::Unsupported { url })) => {
-                    // A configuration gap, not an attempt: given back. Nothing
-                    // spawns until a runtime that handles the URL serves the
-                    // host.
                     self.st.intents.remove(&key);
                     self.st.receipts.remove(&key);
                     self.st.materialize_attempts = attempt - 1;

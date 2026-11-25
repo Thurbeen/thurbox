@@ -48,7 +48,6 @@ pub fn validate_object(obj: &Object) -> Result<(), StoreError> {
     }
     validate_kind(&obj.kind)?;
     validate_name(&obj.metadata.name)?;
-    // Each Task it creates is named `<name>-<minutes since the epoch>`.
     if obj.kind == cron_task::KIND && obj.metadata.name.len() > 240 {
         return Err(StoreError::Invalid(format!(
             "name {:?}: a CronTask's name is at most 240 characters, so its Tasks' names fit",
@@ -123,9 +122,6 @@ pub fn validate_spec(kind: &str, spec: &Value) -> Result<(), StoreError> {
     validate_env(&s.env)?;
     validate_pause_after(s.pause_after_ms)?;
     crate::subscription::validate(&s.subscriptions).map_err(StoreError::Invalid)?;
-    // A Task with no harness of its own takes one from its TaskConfig, the
-    // one `configRef` names or `default`: the store cannot see either here,
-    // so `fleet apply` checks `default` and the launch checks the rest.
     validate_execution(
         if spec.as_object().is_some_and(|m| m.contains_key("harness")) {
             Some(&s.harness)
@@ -138,7 +134,6 @@ pub fn validate_spec(kind: &str, spec: &Value) -> Result<(), StoreError> {
     if s.host.trim().is_empty() {
         return Err(StoreError::Invalid("spec.host must not be empty".into()));
     }
-    // No brief makes an interactive Task; a blank one is a mistake.
     if !s.brief.is_empty() && s.brief.trim().is_empty() {
         return Err(StoreError::Invalid(
             "spec.brief is blank: leave it out for an interactive Task".into(),
@@ -147,7 +142,6 @@ pub fn validate_spec(kind: &str, spec: &Value) -> Result<(), StoreError> {
     validate_workspace(&s.workspace)
         .map_err(|e| StoreError::Invalid(format!("spec.workspace{e}")))?;
     validate_amendments(&s)?;
-    // Both reach the runtime as arguments: never as a flag.
     for (field, value) in [("spec.harness", &s.harness), ("spec.host", &s.host)] {
         if value.starts_with('-') {
             return Err(StoreError::Invalid(format!(
@@ -215,8 +209,6 @@ fn validate_cron_task_spec(spec: &Value) -> Result<(), StoreError> {
             )));
         }
     }
-    // An amendment is a stamped `fleet amend` of one Task; a template has
-    // none to copy, and the store refuses a Task created with one.
     if s.template.spec["amendments"]
         .as_array()
         .is_some_and(|a| !a.is_empty())
@@ -255,7 +247,6 @@ pub fn validate_spec_update(kind: &str, old: &Value, new: &Value) -> Result<(), 
     }
     let mut a: TaskSpec = typed(kind, old)?;
     let b: TaskSpec = typed(kind, new)?;
-    // Explicit presence affects inheritance, so preserve it in immutability checks.
     for field in ["harness", "host", "model"] {
         if old.get(field).is_some() != new.get(field).is_some() {
             return Err(StoreError::Invalid(
@@ -562,7 +553,6 @@ mod tests {
         let one = serde_json::json!({"text": "t", "from": "cli/a", "at": 1, "generation": 2});
         let two = serde_json::json!({"text": "u", "from": "cli/a", "at": 2, "generation": 3});
         let old = amended(serde_json::json!([one]));
-        // Neither dropped, rewritten nor appended by apply or a plugin patch.
         for new in [
             amended(serde_json::json!([])),
             amended(serde_json::json!([{"text": "x", "from": "cli/a", "at": 1, "generation": 2}])),

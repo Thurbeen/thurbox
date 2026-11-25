@@ -76,8 +76,6 @@ impl ListenerController {
         }
         let (_, before) = decode(input.object)?;
         let Some(account) = &input.defaults.account else {
-            // The account left the config: the manager creates the Listener
-            // again if it returns.
             return Ok(Plan {
                 delete: true,
                 ..Plan::default()
@@ -90,7 +88,6 @@ impl ListenerController {
             set_condition(&mut st.conditions, t, s, reason, message, generation, now);
         };
 
-        // Accepted: the digest the config loaded, and whether a route uses it.
         let accepted_at = match &st.accepted {
             Some(a) if a.digest == account.digest => a.at,
             _ => now,
@@ -117,7 +114,6 @@ impl ListenerController {
             );
         }
 
-        // Resolved: the platform's identity against the configured bot.
         match (&input.observations.whoami, &input.observations.capabilities) {
             (Some(Observation::Known(identity)), Some(Observation::Known(_))) => {
                 st.observed_at = Some(now);
@@ -156,11 +152,9 @@ impl ListenerController {
                     why,
                 );
             }
-            // Not asked this pass: what was recorded stands.
             _ => {}
         }
 
-        // InboundReady: the beats against the window and the digest.
         let window = input.defaults.beat_ms.saturating_mul(STALE_BEATS);
         let fresh = |at: Millis| now.saturating_sub(at) <= window;
         let current = |digest: &str| digest == account.digest;
@@ -218,8 +212,6 @@ impl ListenerController {
         cond(&mut st, INBOUND_READY, status, reason, message.into());
 
         st.seen = st.beat_revision;
-        // The next poll: one interval after the last Known answer, or after
-        // an Unknown one asked this pass; at once when nothing was asked yet.
         let asked =
             input.observations.whoami.is_some() || input.observations.capabilities.is_some();
         let next_poll = match st.observed_at {

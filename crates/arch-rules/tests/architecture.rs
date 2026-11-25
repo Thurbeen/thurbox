@@ -48,8 +48,6 @@ fn this_workspace_obeys_its_architecture() {
             "{expected} missing from {names:?}"
         );
     }
-    // Only `check`: resolving every component name afresh takes ten times as
-    // long, and the fixtures already compare it with the cache.
     let violations = check(&ws, &rules);
     let shown: Vec<String> = violations.iter().map(ToString::to_string).collect();
     assert!(
@@ -464,9 +462,6 @@ fn a_pure_crate_without_its_compile_fail_probes_is_caught() {
 
 #[test]
 fn a_glob_of_a_local_module_resolves_without_expanding_through_itself() {
-    // The shape of fleet-controllers' `use conditions::*`: a glob of a sibling
-    // module, used from the module that globs it. Resolution must terminate
-    // within its budget and find nothing to report.
     let src = ctl(
         "pub mod conditions { pub const A: &str = \"a\"; }\nuse conditions::*;\npub fn f() -> &'static str { let _ = conditions::A; A }\n",
     );
@@ -1340,8 +1335,6 @@ fn gateway_effect_capability_cannot_leak_to_an_observer_adapter_or_a_controller(
         ],
         &[],
     );
-    // A gateway adapter beside the forge one: each is below the controllers
-    // and above nothing else, and neither reaches the other.
     let mut rules = RULES.to_string();
     rules.push_str(
         "\n[crates.fx-forge]\nrole = \"adapter\"\ndeps = [\"fx-api\"]\n\n[crates.fx-gateway]\nrole = \"adapter\"\ndeps = [\"fx-api\"]\n",
@@ -1563,8 +1556,6 @@ fn the_rules_keep_the_mirrors_writes_with_the_controllers_and_the_receive_verb()
         "record_received",
         "record_beat",
         "record_refusal",
-        // The conversation Task's create, fenced by the lease: the
-        // manager's, performing ConversationController's plan.
         "create_fenced",
     ] {
         assert!(
@@ -1886,7 +1877,6 @@ fn a_module_reaching_what_its_rule_does_not_name_is_caught() {
                 "pub fn a() { crate::b::b(); let _: Option<crate::b::Seen> = None; }\n",
             ),
         ],
-        // `b` declaring the alias reaches `c::d` itself, and `a` through it.
         &bad,
     );
 }
@@ -1990,7 +1980,6 @@ fn a_restricted_path_binds_every_module_it_does_not_allow() {
     let hit = [("module-restricted", "fx-mod")];
     let rules = restricted("");
     modules("restricted-module", &[("architecture.toml", &rules)], &hit);
-    // An exempt root has no module rule, but a restriction binds it.
     modules(
         "restricted-root",
         &[
@@ -2139,9 +2128,7 @@ fn a_direct_restriction_judges_what_a_module_names_itself() {
 fn a_restriction_binds_only_where_it_applies_and_frees_whole_files() {
     let hit = [("module-restricted", "fx-mod")];
     let scoped = restriction("paths = [\"fx_mod::b::b\"]\nallowed = []\napplies_to = [\"c\"]\n");
-    // `c::d` reaches `b::b`; `a` does too, but `a` is outside the scope.
     modules("applies-to", &[("architecture.toml", &scoped)], &hit);
-    // A reach through a glob import is resolved, so it is caught too.
     modules(
         "applies-to-glob",
         &[
@@ -2250,8 +2237,6 @@ fn static_mut_and_build_target_cfg_can_be_restricted() {
             &hit,
         );
     }
-    // A test-only item's own `cfg` is test code: it is not production code
-    // deciding by a build target.
     modules(
         "cfg-all-test",
         &[
