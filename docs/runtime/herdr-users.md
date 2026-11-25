@@ -40,6 +40,7 @@ runtime. The steps below explain each one.
 ```bash
 curl -fsSL https://releases.herdr.dev/core/install.sh | sh
 curl -fsSL https://raw.githubusercontent.com/Thurbeen/thurbox/main/scripts/install.sh | sh -s -- --fleet-only
+export PATH="$HOME/.local/bin:$PATH"
 fleet init
 
 git clone https://github.com/Thurbeen/thurbox
@@ -58,10 +59,18 @@ fleet runtime places
 fleet doctor
 ```
 
+Both installers put their programs in `~/.local/bin` and do not change the
+shell's `PATH`, so the `export` lets this shell find `fleet` and `hc`. Add
+the same line to your shell's profile.
+
 `local` then names `herdr/local`, and `mux/local` stays available. On a
 Fleet that already runs Tasks on `local`, keep `runtime-mux` the default
-instead ([step 2](#herdr-beside-runtime-mux)). Then start `fleet up`, or
-restart it ([step 3](#3-check-it-and-restart-fleet-up)).
+instead ([step 2](#herdr-beside-runtime-mux)).
+
+On Linux with a systemd user session, the Fleet installer runs `fleet init`
+and starts `fleet up` as a user service, which read the config before the
+herdr lines were there. Run `fleet service restart`. Otherwise, start
+`fleet up` ([step 3](#3-check-it-and-restart-fleet-up)).
 
 ### Or ask an agent
 
