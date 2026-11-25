@@ -2456,3 +2456,93 @@ fn the_screen_is_read_only_where_the_hooks_do_not_say_the_state() {
     assert_eq!(activity.map(|a| a.0), Some(Source::Screen));
     assert_eq!(state, None, "kept as it was");
 }
+
+fn interactive(extra: impl FnOnce(&mut TaskStatus)) -> Object {
+    let mut obj = spawned(|st| {
+        st.conversation = Some("conv-1".into());
+        extra(st);
+    });
+    obj.spec.as_object_mut().unwrap().remove("brief");
+    obj
+}
+
+#[test]
+fn an_interactive_task_is_paused_on_request_and_a_wake_resumes_it() {
+    let obj = interactive(|st| st.pause_requested_at = Some(NOW - 5));
+    assert!(probes(&obj).contains(&Probe::Paused { session: session() }));
+    let (plan, st) = run(&obj, pause_obs(working(), Observation::Known(false)));
+    assert_eq!(plan.effects.len(), 1, "{plan:#?}");
+    assert_eq!(plan.effects[0].key, "task/t/u7/pause/1");
+    assert_eq!(plan.effects[0].action, Action::Pause { session: session() });
+    assert_eq!(st.phase, Phase::Spawned);
+    assert_eq!(cond(&st, "Briefed").reason, "Interactive");
+
+    let mut st = st;
+    st.receipts.insert(
+        "task/t/u7/pause/1".into(),
+        Receipt {
+            action: "pause".into(),
+            at: NOW,
+            outcome: Observation::Known(EffectOutcome::Paused),
+        },
+    );
+    let (plan, st) = run(
+        &with_status(&obj, &st),
+        pause_obs(not_asked(), Observation::Known(true)),
+    );
+    assert!(plan.effects.is_empty(), "{plan:#?}");
+    assert_eq!(cond(&st, "Paused").status, ConditionStatus::True);
+    assert_eq!(cond(&st, "Paused").reason, "Requested");
+
+    let mut st = st;
+    st.wake_requested_at = Some(NOW + 1);
+    let (plan, st) = run_at(
+        &with_status(&obj, &st),
+        pause_obs(not_asked(), Observation::Known(true)),
+        NOW + 2,
+    );
+    assert_eq!(plan.effects.len(), 1, "{plan:#?}");
+    assert_eq!(plan.effects[0].key, "task/t/u7/resume/1");
+    assert!(matches!(
+        &plan.effects[0].action,
+        Action::Resume { conversation: Some(c), .. } if c == "conv-1"
+    ));
+    assert!(st.intents.contains_key("task/t/u7/resume/1"));
+}
+
+#[test]
+fn an_idle_interactive_task_is_paused_after_pause_after_ms() {
+    let mut obj = interactive(|st| st.idle_since = Some(NOW - PAUSE_AFTER));
+    obj.spec["pauseAfterMs"] = json!(PAUSE_AFTER);
+    let (plan, st) = run(&obj, pause_obs(idle(), Observation::Known(false)));
+    assert_eq!(plan.effects.len(), 1, "{plan:#?}");
+    assert_eq!(plan.effects[0].key, "task/t/u7/pause/1");
+    assert!(st.intents.contains_key("task/t/u7/pause/1"));
+}
+
+#[test]
+fn an_interactive_task_waits_to_be_pausable() {
+    for (why, obj) in [
+        (
+            "no conversation to resume",
+            interactive(|st| {
+                st.pause_requested_at = Some(NOW - 5);
+                st.conversation = None;
+            }),
+        ),
+        (
+            "an entry to deliver",
+            interactive(|st| {
+                st.pause_requested_at = Some(NOW - 5);
+                st.inbox = vec![entry("task/t/u7/send/1")];
+            }),
+        ),
+    ] {
+        let (plan, st) = run(&obj, pause_obs(working(), Observation::Known(false)));
+        assert!(
+            !plan.effects.iter().any(|e| e.key.contains("/pause/")),
+            "{why}: {plan:#?}"
+        );
+        assert_eq!(st.pause_requested_at, Some(NOW - 5), "{why}: still pending");
+    }
+}

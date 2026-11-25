@@ -640,3 +640,34 @@ fn a_wake_asked_for_during_a_sweep_starts_the_next_sweep_at_once() {
         "a wake asked for during a sweep waited {waited:?}, past the sweep, for the next poll"
     );
 }
+
+#[test]
+fn fleet_pause_pauses_an_interactive_task_and_a_wake_resumes_it() {
+    let mut t1 = plain_task("t1");
+    t1["spec"].as_object_mut().unwrap().remove("brief");
+    let env = setup("pause-requested-interactive", vec![t1]);
+    env.reconcile().ok();
+    let st = env.status("t1");
+    assert_eq!(st["phase"], "Spawned", "{st:#}");
+    assert_condition(&st, "Briefed", "False", "Interactive");
+    env.fleet(&["send", "t1", "hello"]).ok();
+    env.reconcile().ok();
+    set_activity(&env, Some("active"));
+
+    env.fleet(&["pause", "t1"]).ok();
+    env.reconcile().ok();
+    assert_eq!(env.calls("pause"), 1);
+    assert!(stopped(&env));
+    let st = env.status("t1");
+    assert_eq!(st["phase"], "Spawned", "{st:#}");
+    assert_condition(&st, "Paused", "True", "Requested");
+    env.reconcile().ok();
+    assert_eq!(env.calls("pause"), 1, "a request is honoured once");
+    assert_eq!(env.calls("revive"), 0, "a paused session is not lost");
+
+    wake_by_view(&env);
+    assert_eq!(env.calls("resume"), 1);
+    assert!(!stopped(&env));
+    assert_condition(&env.status("t1"), "Paused", "False", "Resumed");
+    assert_eq!(sent(&env), ["hello"], "a pause types nothing");
+}

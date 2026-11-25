@@ -220,6 +220,9 @@ impl TaskController {
                         ready: st.workspace.clone(),
                     });
                     probes.push(Probe::Ready { session: s.clone() });
+                    if spec.is_interactive() {
+                        probes.push(Probe::Paused { session: s.clone() });
+                    }
                     let bk = brief_key(input.task);
                     if awaits_proof(&st, &bk) {
                         proof_probe(s, &mut probes);
@@ -803,12 +806,13 @@ impl Pass<'_, '_> {
                 INTERACTIVE,
                 "no brief: the session waits for its user",
             );
-            return self.deliver(session);
+            if self.pause_state(&session) {
+                return;
+            }
+            self.deliver(session.clone());
+            return self.pause_step(session);
         }
         self.brief_step(session.clone());
-        // The brief comes first: an entry goes out only once it was sent, in
-        // a pass that sent nothing and has no brief send unconfirmed. A brief
-        // held for trust or readiness holds the inbox with it.
         let sent = self.st.intents.contains_key(&brief_key(self.input.task));
         if matches!(self.st.phase, Phase::Spawned | Phase::Briefed)
             && sent
@@ -2391,16 +2395,18 @@ fn pause_candidate(spec: &TaskSpec, st: &TaskStatus) -> bool {
     spec.pause_after_ms.is_some() && pausable(spec, st)
 }
 
-/// Whether the session may be paused at all: a conversation a resume can
-/// name on a harness Fleet can resume, dispatch on, Briefed or Concluded,
-/// and nothing in flight that a pause would cut short.
 fn pausable(spec: &TaskSpec, st: &TaskStatus) -> bool {
+    let in_pausable_phase = if spec.is_interactive() {
+        st.phase == Phase::Spawned
+    } else {
+        st.brief.is_some()
+            && (st.phase == Phase::Concluded || (st.phase == Phase::Briefed && !result_current(st)))
+    };
     st.conversation.is_some()
         && fleet_api::harness::profile(&spec.harness).resumes()
         && spec.dispatch
-        && (st.phase == Phase::Concluded || (st.phase == Phase::Briefed && !result_current(st)))
+        && in_pausable_phase
         && st.session.is_some()
-        && st.brief.is_some()
         && next_entry(st).is_none()
         && st.catch_up.is_none()
         && st.revive_attempts == 0
