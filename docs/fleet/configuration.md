@@ -674,7 +674,8 @@ distro = "Ubuntu-24.04"
 #### Places on runtime-herdr
 
 [`runtime-herdr`](../runtime/herdr.md) runs each Task in a herdr-core
-terminal, which herdr's desktop app shows:
+terminal, which herdr's desktop app shows. [Fleet for herdr
+users](../runtime/herdr-users.md) walks through the setup:
 
 ```toml
 [runtimes.herdr]

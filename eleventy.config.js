@@ -250,6 +250,7 @@ function listRepoDocs() {
         {
           'docs/fleet/README.md': 'fleet-reference',
           'docs/fleet/configuration.md': 'fleet-configuration',
+          'docs/runtime/herdr-users.md': 'fleet-herdr',
           'docs/fleet/resources/workspace.md': 'fleet-workspace',
           'docs/observability.md': 'observability',
           'docs/thurbox/mods.md': 'thurbox-mods',

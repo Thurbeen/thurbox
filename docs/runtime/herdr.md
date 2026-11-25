@@ -9,6 +9,8 @@ that herdr's desktop app is a client of. Fleet drives it through
 
 Its configuration is in
 [Fleet's configuration](../fleet/configuration.md#places-on-runtime-herdr).
+To set it up and run a first Task, follow
+[Fleet for herdr users](herdr-users.md).
 
 ## How it reaches herdr-core
 

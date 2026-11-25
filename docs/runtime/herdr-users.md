@@ -1,0 +1,273 @@
+# Fleet for herdr users
+
+This guide is for a person who uses herdr: herdr-core (`hc`) and herdr's
+desktop app. It sets up Fleet to run coding agents as Tasks in herdr-core
+terminals, so the agents show in herdr's app. thurbox is optional.
+How the runtime works inside is [runtime-herdr](herdr.md).
+
+## What Fleet adds to herdr
+
+herdr-core keeps terminals alive and herdr's app shows them. Fleet decides
+what runs in them:
+
+| You get | From |
+| --- | --- |
+| Terminals that outlive the app and a core restart | herdr-core |
+| A space and a tab per terminal | herdr's app |
+| One agent session per Task, started from a JSON file or from thurbox | Fleet |
+| A git worktree per Task, made before the agent starts and removed when you delete the Task | Fleet, through `runtime-herdr` |
+| A brief as the agent's first prompt, messages later, a recorded result | Fleet |
+| A session revived on its conversation when its process ends | Fleet |
+| A Task's pull request followed, and marked ready when a policy you choose holds | Fleet's forge controller |
+
+```text
+fleet apply ─▶ Fleet ─▶ runtime-herdr ─▶ herdr-core
+                                             │ runs
+                                             ▼
+          herdr's app ◀── labels ─── a terminal per Task
+```
+
+`runtime-herdr` is the bridge. It starts each Task's agent in a herdr-core
+terminal with the labels herdr's app reads. Fleet's other runtime,
+`runtime-mux`, uses tmux instead. You can keep both.
+
+## Prerequisites
+
+- Linux or macOS. `runtime-herdr` does not run on Windows yet.
+- herdr-core 0.1.22 or newer. CI tests with the version that
+  `nix/herdr-core.nix` pins, 0.1.22, which is also herdr-core's latest
+  stable release. Check yours with `hc --version`. To install or update it:
+
+  ```bash
+  curl -fsSL https://releases.herdr.dev/core/install.sh | sh
+  hc update    # later, to update it
+  ```
+
+- herdr's desktop app, to see the Tasks. The herdr 1 terminal interface (the
+  `herdr` program) does not share herdr-core's terminals, so it does not
+  show them.
+- Fleet, with `fleet init` done: [Get started with
+  Fleet](https://thurbox.thurbeen.eu/docs/fleet-get-started.html).
+- A coding-agent CLI, installed and logged in.
+- Rust 1.99 or newer and git, to build `runtime-herdr`.
+
+## 1. Install runtime-herdr
+
+`runtime-herdr` is not in the release archive or the installers yet. Build
+it from source:
+
+```bash
+git clone https://github.com/Thurbeen/thurbox
+cd thurbox
+cargo install --locked --path crates/runtime-herdr
+```
+
+Cargo puts `runtime-herdr` in `~/.cargo/bin`. rustup reads the toolchain the
+clone pins. To update, pull and run `cargo install` again.
+
+`runtime-herdr` makes worktrees with `workspace-git`, which the Fleet
+installer puts in `~/.local/bin`. It looks for it beside its own executable
+first, then on the `PATH`.
+
+## 2. Add herdr to Fleet's config
+
+Fleet's config is `~/.config/fleet/config.toml` (`fleet init` wrote it). Add
+one of the two shapes below.
+
+### herdr as the only runtime
+
+Replace the `[runtimes.mux]` table with the lines below. Keep it while a
+Task still runs on `mux/local`: Fleet reaches each Task through its
+runtime.
+
+```toml
+[runtimes.herdr]
+program = "runtime-herdr"
+
+[runtimes.herdr.places.local]
+```
+
+`local` then names `herdr/local`, because herdr is the only runtime.
+
+### herdr beside runtime-mux
+
+Keep `[runtimes.mux]` and add `[runtimes.herdr]`. With two runtimes, mark
+exactly one of them `default = true`. Fleet refuses a config with several
+runtimes and no single default.
+
+```toml
+[runtimes.mux]
+program = "runtime-mux"
+default = true
+
+[runtimes.mux.places.local]
+
+[runtimes.herdr]
+program = "runtime-herdr"
+
+[runtimes.herdr.places.local]
+```
+
+Here `local` still names `mux/local`. A Task runs in herdr when it names
+`herdr/local`. Move `default = true` to `[runtimes.herdr]` to make
+`local` name `herdr/local`.
+
+### A place's keys
+
+A herdr place takes two keys: `session`, the herdr-core session
+(`HC_SESSION`), and `space`, the herdr app space that shows the Tasks
+(`fleet` by default).
+
+```toml
+# spec.host = "herdr/work": the herdr-core session "work", app space "agents"
+[runtimes.herdr.places.work]
+session = "work"
+space = "agents"
+```
+
+Their defaults and rules are in [Fleet's
+configuration](../fleet/configuration.md#places-on-runtime-herdr).
+
+## 3. Check it and restart fleet up
+
+```bash
+fleet runtime places    # herdr/local, and whether it is ready
+fleet doctor            # each runtime's places, each agent's program
+```
+
+A place is ready when its herdr-core answers. `runtime-herdr` starts the core
+when it does not run.
+
+`fleet up` reads the config only when it starts. Restart it after each change
+to the config:
+
+```bash
+fleet service restart   # when `fleet service install` runs it
+```
+
+Or press `Ctrl+C` in the terminal that runs `fleet up`, and start it again.
+
+A service does not read your login `PATH`. `fleet service install` records
+the `PATH` of the shell it runs in, after the directory of `fleet` itself.
+If `~/.cargo/bin` or the directory of `herdr-core` was not on it, run
+`fleet service install` again from a shell whose `PATH` has both. Or give
+`program` an absolute path, such as
+`program = "/home/me/.cargo/bin/runtime-herdr"`.
+
+## 4. Run a first Task in herdr
+
+### From the CLI
+
+A Task is a JSON file. `spec.host` names the place:
+
+```json
+{
+  "apiVersion": "fleet/v1alpha1",
+  "kind": "Task",
+  "metadata": {"name": "fix-login"},
+  "spec": {
+    "harness": "claude",
+    "host": "herdr/local",
+    "brief": "Fix the login redirect and run the tests.",
+    "workspace": ["git+file:///home/me/app"],
+    "dispatch": true
+  }
+}
+```
+
+```bash
+fleet apply -f fix-login.json
+fleet list task          # its phase
+fleet watch --json       # one event per change, until Ctrl+C
+```
+
+With herdr as the default runtime, `"host": "local"` and no `host` at all
+mean the same place. `fleet version --json` lists the harnesses you can
+name.
+
+### From thurbox
+
+Press `Ctrl+N`. The Place step lists each place of the Fleet. Pick
+`this machine (herdr)`, which is `herdr/local`. The next steps offer this
+machine's repositories, as on `mux/local`. A place that is not ready is
+dimmed, and its reason shows under the list.
+
+## 5. Find it in herdr
+
+The runtime knows a Task by its key, not by its name. `fleet status task`
+prints the key on its `session` line:
+
+```text
+$ fleet status task fix-login
+...
+session fleet.u5-e5fb0263df286e78 on herdr/local Running
+```
+
+In herdr's app, the Task is in the space `fleet` (or the place's `space`),
+in a tab named after the key.
+
+With `hc`, select the Task's terminals by label. `hc ls` does not print
+labels:
+
+```bash
+hc ls --label herdr.space=fleet       # every Task's terminal at the default space
+hc ls --label fleet.key=<key>         # one Task's terminals
+hc get <terminal> --json              # one terminal, with its labels
+```
+
+The labels are `fleet.key` and `herdr.tab` (the key), `fleet.place` (the
+place's name), `herdr.space` (the place's `space`), and `fleet.role=shell` on
+the shell that `fleet shell` opens ([runtime-herdr](herdr.md#how-it-reaches-herdr-core)).
+
+For a place with a `session`, set `HC_SESSION` to that session before you
+run `hc`.
+
+## 6. Work with the Task
+
+| To | Run |
+| --- | --- |
+| Type to the agent | Its tab in herdr's app, `hc attach <terminal>`, or thurbox |
+| Open a shell in its directory | `fleet shell <task>` |
+| Send it a message | `fleet send <task> "Run the tests too"` |
+| Stop its process and keep the conversation | `fleet pause <task>` |
+| Start it again | `fleet attach --wake <task>`, or `fleet send` |
+| Stop it for good and remove its worktree | `fleet delete task <task>` |
+
+- `fleet attach` and `fleet shell` print the command that opens the
+  terminal as a [terminal stream](README.md#the-terminal-stream), one
+  argument per line: `runtime-herdr view <terminal>`. thurbox runs it for
+  you. In a shell, use `hc attach` instead.
+- The shell is a second herdr-core terminal, in the Task's tab, labelled
+  `fleet.role=shell`. A second `fleet shell` opens the same one.
+- Fleet pauses on its next pass, once the agent has reported its
+  conversation. The pause ends the Task's terminals. The Task stays, and
+  its next start resumes the same conversation.
+- Fleet has no separate stop. `fleet delete task` waits until the agent is
+  at rest, at most 5 minutes. Then it ends the Task's terminals, the shell
+  among them, removes the worktree, and removes the Task.
+- A terminal that you end in herdr's app, or with `hc kill`, reads as a lost
+  session. Fleet starts the Task again in a new terminal. To stop a Task,
+  use Fleet.
+- A herdr-core restart or update keeps the Task's process running.
+
+## Limits
+
+- Linux and macOS only. On another system, each herdr place is not ready.
+- A herdr place is a herdr-core session on Fleet's own machine. herdr-core's
+  remote machines (`hc machine`) are not places. For a remote machine, use
+  `runtime-mux`'s ssh places.
+- `runtime-herdr` is not in the release archive or the installers.
+- herdr-core waits while a person has an unfinished draft in the terminal,
+  up to its `draft_wait` (60 s by default). Fleet then holds the message
+  until the agent's hooks report its state.
+
+## Troubleshooting
+
+| Symptom | Check |
+| --- | --- |
+| Fleet refuses the config | Several runtimes and no `default = true`, or two defaults. |
+| `herdr/local` is not ready | `fleet doctor` and `fleet runtime places` print the reason, such as `herdr-core is not installed`. |
+| The place works in your shell but not under the service | The service's `PATH`: see [step 3](#3-check-it-and-restart-fleet-up). |
+| A new place or runtime is not used | `fleet up` still runs the old config: restart it. |
+| The Task is not in herdr's app | `hc ls --label fleet.key=<key>` shows whether the terminal exists, and `hc get <terminal> --json` its labels. Check the place's `space`. |
+| The runtime itself misbehaves | `fleet runtime check -- runtime-herdr` runs the runtime protocol's conformance suite against it. |

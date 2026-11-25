@@ -8,7 +8,8 @@ and Fleet is the [overview](../README.md).
 How `runtime-mux` reaches hosts, where psmux differs from tmux, and its
 status channel are [runtime-mux.md](runtime-mux.md).
 How `runtime-herdr` runs sessions as herdr-core terminals is
-[herdr.md](herdr.md).
+[herdr.md](herdr.md), and how a herdr user sets it up is
+[herdr-users.md](herdr-users.md).
 
 ## Two roles
 
