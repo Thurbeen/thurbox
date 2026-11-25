@@ -33,18 +33,15 @@ terminal with the labels herdr's app reads. Fleet's other runtime,
 
 ## Quick setup
 
-On Linux or macOS, with rustup installed, these commands install
-herdr-core, Fleet and `runtime-herdr`, and make herdr Fleet's default
-runtime. The steps below explain each one.
+On Linux or macOS, these commands install herdr-core and Fleet, whose
+installer ships `runtime-herdr`, and make herdr Fleet's default runtime.
+The steps below explain each one.
 
 ```bash
 curl -fsSL https://releases.herdr.dev/core/install.sh | sh
 curl -fsSL https://raw.githubusercontent.com/Thurbeen/thurbox/main/scripts/install.sh | sh -s -- --fleet-only
 export PATH="$HOME/.local/bin:$PATH"
 fleet init
-
-rustup update stable
-cargo +stable install --locked --git https://github.com/Thurbeen/thurbox runtime-herdr
 
 cat >> "${XDG_CONFIG_HOME:-$HOME/.config}/fleet/config.toml" <<'EOF'
 
@@ -79,8 +76,8 @@ Send this prompt to a coding agent on the machine:
 ```text
 Set up Fleet to run my coding agents as Tasks in herdr, following
 https://thurbox.thurbeen.eu/docs/runtime/herdr-users.html.
-Install herdr-core and Fleet if they are missing, then build runtime-herdr
-from source. Add a [runtimes.herdr] runtime with a local place to my Fleet
+Install herdr-core if it is missing, and install or reinstall Fleet with its
+installer, which ships runtime-herdr. Add a [runtimes.herdr] runtime with a local place to my Fleet
 config. If Fleet already runs Tasks on another runtime, keep that runtime
 and its default. Check the result with `fleet runtime places`,
 `fleet doctor` and `fleet runtime check -- runtime-herdr`, then restart
@@ -103,29 +100,23 @@ existing Task. Tell me what you changed and what each check printed.
 - herdr's desktop app, to see the Tasks. The herdr 1 terminal interface (the
   `herdr` program) does not share herdr-core's terminals, so it does not
   show them.
-- Fleet, with `fleet init` done: [Get started with
-  Fleet](https://thurbox.thurbeen.eu/docs/fleet-get-started.html).
 - A coding-agent CLI, installed and logged in.
-- rustup with a stable Rust of 1.99 or newer, to build `runtime-herdr`.
 
-## 1. Install runtime-herdr
+## 1. Install Fleet
 
-`runtime-herdr` is not in the release archive or the installers yet. Cargo
-builds it from the repository, with no clone to keep:
+Fleet's installer ships `runtime-herdr` beside `fleet`, `runtime-mux` and
+`workspace-git`:
 
 ```bash
-rustup update stable
-cargo +stable install --locked --git https://github.com/Thurbeen/thurbox runtime-herdr
+curl -fsSL https://raw.githubusercontent.com/Thurbeen/thurbox/main/scripts/install.sh | sh -s -- --fleet-only
+fleet init
+command -v runtime-herdr
 ```
 
-Cargo puts `runtime-herdr` in `~/.cargo/bin`. `+stable` matters: an install
-from a URL does not read the toolchain the repository pins, and
-`runtime-herdr` needs Rust 1.99 or newer. To update, run the same command
-with `--force`.
-
-`runtime-herdr` makes worktrees with `workspace-git`, which the Fleet
-installer puts in `~/.local/bin`. It looks for it beside its own executable
-first, then on the `PATH`.
+Without `--fleet-only`, the installer also installs thurbox. A Fleet
+installed before `runtime-herdr` shipped does not have it: run the installer
+again. [Install Fleet](https://thurbox.thurbeen.eu/docs/fleet-install.html)
+covers the service and a source build.
 
 ## 2. Add herdr to Fleet's config
 
@@ -206,11 +197,9 @@ fleet service restart   # when `fleet service install` runs it
 Or press `Ctrl+C` in the terminal that runs `fleet up`, and start it again.
 
 A service does not read your login `PATH`. `fleet service install` records
-the `PATH` of the shell it runs in, after the directory of `fleet` itself.
-If `~/.cargo/bin` or the directory of `herdr-core` was not on it, run
-`fleet service install` again from a shell whose `PATH` has both. Or give
-`program` an absolute path, such as
-`program = "/home/me/.cargo/bin/runtime-herdr"`.
+the `PATH` of the shell it runs in, after the directory of `fleet` itself,
+which holds `runtime-herdr`. If the directory of `herdr-core` was not on it,
+run `fleet service install` again from a shell whose `PATH` has it.
 
 ## 4. Run a first Task in herdr
 
@@ -308,13 +297,40 @@ run `hc`.
   use Fleet.
 - A herdr-core restart or update keeps the Task's process running.
 
+## 7. Run VEGA in herdr
+
+[VEGA](https://github.com/Thurbeen/vega) is a mission-control Task. You send
+it a request. It applies one worker Task per piece of work, follows them, and
+reports their results. Fleet runs VEGA and its workers like any other Task,
+so they can run in herdr too.
+
+Install VEGA from its repository. It reads its instructions from that
+checkout, so the clone stays:
+
+```bash
+git clone https://github.com/Thurbeen/vega
+cd vega
+./install.sh
+```
+
+VEGA's Task names no place, and it gives its workers none unless you ask:
+
+- With herdr as the default runtime, VEGA runs on `herdr/local`. In herdr's
+  app, VEGA has a tab in the space `fleet`, and each worker gets a tab of its
+  own beside it.
+- With `runtime-mux` as the default, VEGA runs in tmux. Ask it for herdr in
+  your request, such as "run the workers on `herdr/local`", and the workers
+  run in herdr.
+
+Talk to VEGA with `fleet send vega "..."`, or type in its tab. Each tab is
+named after its Task's key: `fleet status task vega` prints VEGA's.
+
 ## Limits
 
 - Linux and macOS only. On another system, each herdr place is not ready.
 - A herdr place is a herdr-core session on Fleet's own machine. herdr-core's
   remote machines (`hc machine`) are not places. For a remote machine, use
   `runtime-mux`'s ssh places.
-- `runtime-herdr` is not in the release archive or the installers.
 - herdr-core waits while a person has an unfinished draft in the terminal,
   up to its `draft_wait` (60 s by default). Fleet then holds the message
   until the agent's hooks report its state.

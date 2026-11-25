@@ -8,8 +8,10 @@ breadcrumb: 'Install Fleet'
 <h1>Install Fleet</h1>
 <p>
   Fleet needs <code>fleet</code> and a runtime on your <code>PATH</code>. The installer ships
-  <code>runtime-mux</code>, the runtime that runs its sessions, and <code>workspace-git</code>,
-  its workspace provider; either can be replaced by your own
+  <code>runtime-mux</code>, the runtime that runs its sessions in tmux,
+  <code>runtime-herdr</code>, which runs them in herdr (<a href="runtime/herdr-users.html">Fleet in
+  herdr</a>), and <code>workspace-git</code>, its workspace provider; each can be replaced by your
+  own
   (<a href="fleet-places.html">Places and runtimes</a>). To use Fleet with thurbox, follow
   <a href="installation.html">thurbox's installation</a> instead: it installs both.
 </p>
@@ -33,8 +35,9 @@ fleet init
 fleet doctor
 fleet up</code></pre>
 <p>
-  The installer's fleet-only mode puts <code>fleet</code>, <code>runtime-mux</code> and
-  <code>workspace-git</code> in <code>~/.local/bin</code>, and nothing else. On Windows, pass
+  The installer's fleet-only mode puts <code>fleet</code>, <code>runtime-mux</code>,
+  <code>runtime-herdr</code> and <code>workspace-git</code> in <code>~/.local/bin</code>, and
+  nothing else. On Windows, pass
   <code>-FleetOnly</code> through a script block:
 </p>
 <pre data-wrap><code class="language-powershell">&amp; ([scriptblock]::Create((irm https://raw.githubusercontent.com/Thurbeen/thurbox/main/scripts/install.ps1))) -FleetOnly</code></pre>
@@ -81,4 +84,5 @@ systemctl --user enable --now fleet.service</code></pre>
 <p>From a clone of the repository (its <code>rust-toolchain.toml</code> picks the toolchain):</p>
 <pre><code class="language-bash">cargo install --locked --path crates/fleet-cli --bin fleet
 cargo install --locked --path crates/runtime-mux
+cargo install --locked --path crates/runtime-herdr
 cargo install --locked --path crates/workspace-git</code></pre>

@@ -80,14 +80,14 @@ irm https://raw.githubusercontent.com/Thurbeen/thurbox/main/scripts/install.ps1 
 ```
 
 The installer puts `thurbox` (the interface), `thurbox-cli`, `fleet`,
-`runtime-mux` and `workspace-git` on your `PATH`. You also need:
+`runtime-mux`, `runtime-herdr` and `workspace-git` on your `PATH`. You also need:
 
 - **tmux ≥ 3.2**, or [psmux](https://github.com/psmux/psmux) ≥ 3.3.8 on native Windows
 - **git**
 - at least one coding-agent CLI
 
 **Fleet on its own** needs no thurbox. The installer's fleet-only mode installs
-`fleet`, `runtime-mux` and `workspace-git`, and nothing else:
+`fleet`, `runtime-mux`, `runtime-herdr` and `workspace-git`, and nothing else:
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/Thurbeen/thurbox/main/scripts/install.sh | sh -s -- --fleet-only

@@ -600,7 +600,7 @@ copy_on_select = true          # releasing a drag copies; false = Ctrl+C copies 
             (<code>curl</code>/<code>wget</code>), verifies the SHA256 in process, extracts it
             (<code>tar</code>), and installs every program the release ships (<code>thurbox</code>,
             <code>thurbox-cli</code>, <code>fleet</code>, <code>runtime-mux</code>,
-            <code>workspace-git</code>) &mdash; mirroring <code>scripts/install.sh</code>. The download is verified
+            <code>runtime-herdr</code>, <code>workspace-git</code>) &mdash; mirroring <code>scripts/install.sh</code>. The download is verified
             <strong>before</strong> any installed file is touched, so a failed download leaves the
             current binaries untouched; the step runs before the TUI takes the terminal and is
             best-effort. The replaced binary takes effect on the <strong>next launch</strong>, so the
