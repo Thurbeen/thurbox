@@ -1589,6 +1589,13 @@ fn the_slack_adapter_reads_a_bots_attachments_and_blocks_as_its_text() {
                         {"type": "link", "text": "backend", "url": "https://monitoring.example.com/s/1"}]}]},
                      {"type": "raw_number", "value": 7.2, "text": "7.2%"}],
                     [{"type": "raw_text", "text": "a|b"}],
+                ]}],
+                "attachments": [{"type": "data_table", "caption": "Slowest routes", "rows": [
+                    [{"type": "raw_text", "text": "route"}, {"type": "raw_text", "text": "p99"},
+                     {"type": "raw_text", "text": "action"}],
+                    [{"type": "raw_text", "text": "transfer\ncreate"}, {"type": "raw_number", "value": 2.4},
+                     {"type": "action_cell", "element": {"type": "button", "text": {"type": "plain_text", "text": "Open"}},
+                      "fallback": {"type": "raw_text", "text": "open in monitoring"}}],
                 ]}]}),
             json!({"type": "message", "ts": TABLE_TS, "user": ALEX_ID,
                 "text": "per env:", "thread_ts": ALERT_TS,
@@ -1635,7 +1642,11 @@ fn the_slack_adapter_reads_a_bots_attachments_and_blocks_as_its_text() {
             "| service | rate |\n\
              | --- | --- |\n\
              | backend (https://monitoring.example.com/s/1) | 7.2% |\n\
-             | a\\|b |  |",
+             | a\\|b |  |\n\
+             Slowest routes\n\
+             | route | p99 | action |\n\
+             | --- | --- | --- |\n\
+             | transfer create | 2.4 | open in monitoring |",
             "per env:\n\
              | env | errors |\n\
              | --- | --- |\n\

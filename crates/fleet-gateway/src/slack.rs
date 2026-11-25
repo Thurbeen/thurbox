@@ -1017,8 +1017,12 @@ fn lines(parts: impl Iterator<Item = String>) -> String {
 }
 
 /// A legacy attachment's shown fields in display order, or its `fallback`
-/// summary when it shows none of them.
+/// summary when it shows none of them. A table block sent as an attachment
+/// reads as its table.
 fn attachment_text(a: &Value) -> String {
+    if let Some(rows) = table_rows(a) {
+        return table(a, rows);
+    }
     let title = match (text_at(a, "title"), text_at(a, "title_link")) {
         (t, l) if !t.is_empty() && !l.is_empty() => format!("{t} ({l})"),
         (t, _) => t,
@@ -1097,10 +1101,17 @@ fn table(b: &Value, rows: &[Value]) -> String {
 }
 
 /// A table cell on one line, its `|` escaped. A `rich_text` cell reads as
-/// rich text; `raw_text` and `raw_number` read as their shown `text`.
+/// rich text, and a `raw_text` or `raw_number` cell as its shown `text`; a
+/// `raw_number` without one reads as its `value`. An `action_cell` reads as
+/// its `fallback` cell.
 fn cell(c: &Value) -> String {
     let text = match c["type"].as_str() {
         Some("rich_text") => lines(each(&c["elements"]).map(rich_text)),
+        Some("action_cell") => return cell(&c["fallback"]),
+        Some("raw_number") if text_of(c).is_empty() => match &c["value"] {
+            Value::Number(n) => n.to_string(),
+            _ => String::new(),
+        },
         _ => text_of(c),
     };
     text.replace('|', "\\|").replace('\n', " ")
