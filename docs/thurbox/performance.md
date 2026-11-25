@@ -450,7 +450,7 @@ the work wasted only after paying for it.
 - **Pure panes**: a pane may declare `pure = true`, asserting its render is a
   function of the published tables and its context. The kernel then reuses the
   tree it last returned, keyed on the epoch, the rect, focus, an animation tick
-  and the plugin-state version. **Opt-in**, because a render may write `store`
+  and the mod-state version. **Opt-in**, because a render may write `store`
   (the search strip does) or animate, and neither is visible from outside the
   VM; an undeclared pane behaves exactly as before.
 

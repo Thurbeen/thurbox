@@ -111,7 +111,7 @@
       "Other platforms (POSIX tools and nvim required; unverified)"
     ],
     "updated": "2026-09-24",
-    "install": "thurbox-cli mod install git+https://github.com/spscream/thurbox-files --as plugins/90_files.lua\nthurbox-cli mod install git+https://github.com/spscream/thurbox-files --as plugins/95_files_menu.lua\nthurbox-cli mod install git+https://github.com/spscream/thurbox-files --as plugins/20_agent.lua",
+    "install": "thurbox-cli mod install git+https://github.com/spscream/thurbox-files --as mods/90_files.lua\nthurbox-cli mod install git+https://github.com/spscream/thurbox-files --as mods/95_files_menu.lua\nthurbox-cli mod install git+https://github.com/spscream/thurbox-files --as mods/20_agent.lua",
     "notes": "Follow the README to replace the bundled agent pane, place the files slot in layout.lua and grant capabilities. Requires nvim. Conflicts with the code-review agent pane fork.",
     "media": {
       "url": "https://raw.githubusercontent.com/spscream/thurbox-files/main/media/demo.gif",
@@ -131,7 +131,7 @@
       "Windows / WSL (Lite clipboard support; Full requires POSIX scripts)"
     ],
     "updated": "2026-09-17",
-    "install": "thurbox-cli mod install git+https://github.com/spscream/thurbox-annotate --as plugins/41_notes.lua",
+    "install": "thurbox-cli mod install git+https://github.com/spscream/thurbox-annotate --as mods/41_notes.lua",
     "notes": "Shown command installs Lite; requires Thurbox \u2265 2.25.0. Grant run for agent clipboard selection. Full uses plannotator-tui and the program capability; see README for its installer. F2 opens Lite; GIF shows Full.",
     "media": {
       "url": "https://raw.githubusercontent.com/spscream/thurbox-annotate/main/media/demo.gif",

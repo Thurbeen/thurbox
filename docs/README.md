@@ -7,7 +7,7 @@ is the whole system: what each owns and how they meet. The decision is
 
 | Component | Directory | Start at |
 | --- | --- | --- |
-| thurbox, the interface | [`thurbox/`](thurbox/README.md) | its index: architecture decisions, features, kernel, plugins, configuration |
+| thurbox, the interface | [`thurbox/`](thurbox/README.md) | its index: architecture decisions, features, kernel, mods, configuration |
 | Fleet, the engine | [`fleet/`](fleet/README.md) | its index: architecture, contracts, controllers, resources, configuration |
 | runtimes | [`runtime/`](runtime/README.md) | the runtime protocol and the terminal stream |
 
