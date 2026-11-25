@@ -82,7 +82,8 @@ on every build:
 The file is `crates/architecture.toml`, and the `architecture` test of
 `arch-rules` checks it. Every crate that is not Fleet's is `role = "component"`: held
 to the crate graph from its manifest and its sources, but not to Fleet's own
-source rules.
+source rules. [Architecture rules](architecture-rules.md) is the reference for
+the file's keys and for what the checker can and cannot see.
 
 Components talk only through processes. Two crates are shared and are not
 components: `term-stream`, a wire format, and `otel-env`, so every program
@@ -104,6 +105,7 @@ to a repository of its own with nothing to untangle.
 docs/
 ├── README.md                  the system: this page
 ├── constitution.md            the rules for every component, and each one's own
+├── architecture-rules.md      the keys of crates/architecture.toml
 ├── where-sessions-run.md      Fleets and places: where a session runs
 ├── observability.md           OpenTelemetry: one setup for every program
 ├── components.svg

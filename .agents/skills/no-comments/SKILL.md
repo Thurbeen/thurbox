@@ -19,10 +19,24 @@ they fall under an exception below.
   unsafe block.
 - Lint suppressions, such as `// prettier-ignore`, only when their rule is
   faulty, pedantic, or style-only.
-- Directives a tool reads: generated-region markers, type annotations, and
-  shebangs.
-- Doc comments that define a public API contract.
+- Directives a tool reads: generated-region markers, type annotations (Lua
+  `---@` lines), shebangs, `just` recipe descriptions, the version comment on
+  a pinned action (`uses: …@<sha> # v4`), and the `//! ```compile_fail` probes
+  in a pure crate's `lib.rs`, which `arch-rules` reads.
 - Issue or RFC links that explain a constraint code cannot express.
+
+## Doc comments
+
+This repository publishes no crate, so it has no public API for a doc comment
+to define. Write no `///` or `//!`, and no `---` description lines on a Lua
+type. The code is the knowledge base. A contract other components or users
+build on is documented under `docs/`: the Fleet API and runtime protocol in
+`docs/fleet/` and `docs/runtime/`, the mod API in `docs/thurbox/mods.md`, and
+the config files in `docs/thurbox/config.md`.
+
+clap reads a doc comment as help text. Give a command or an argument its help
+with an explicit `#[command(about = "…")]` or `#[arg(help = "…")]`. That text
+is a user-facing string, not a comment.
 
 ## MUST KILL
 
