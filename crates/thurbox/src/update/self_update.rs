@@ -610,9 +610,25 @@ fn install_binaries(
     install_dir: &Path,
     exe_suffix: &str,
 ) -> Result<Vec<String>, String> {
-    // Phase 1: stage every binary the archive ships.
-    let mut staged: Vec<(PathBuf, PathBuf, String)> = Vec::new(); // (staged, dest, name)
-    for stem in BINARIES {
+    install_programs(extract_dir, install_dir, exe_suffix, &BINARIES)
+}
+
+#[cfg(any(windows, test))]
+fn saved_programs(dir: &Path, exe_suffix: &str) -> Vec<&'static str> {
+    BINARIES
+        .into_iter()
+        .filter(|stem| dir.join(format!("{stem}{exe_suffix}")).is_file())
+        .collect()
+}
+
+fn install_programs(
+    extract_dir: &Path,
+    install_dir: &Path,
+    exe_suffix: &str,
+    stems: &[&str],
+) -> Result<Vec<String>, String> {
+    let mut staged: Vec<(PathBuf, PathBuf, String)> = Vec::new();
+    for stem in stems {
         let name = format!("{stem}{exe_suffix}");
         let src = extract_dir.join(&name);
         let dest = install_dir.join(&name);
@@ -856,7 +872,7 @@ fn roll_back(bin: &Path, _to: &str) -> Result<String, String> {
     let previous = bin.join(PREVIOUS);
     let old = std::fs::read_to_string(previous.join(PREVIOUS_VERSION))
         .map_err(|_| "no previous release to roll back to".to_string())?;
-    install_binaries(&previous, bin, ".exe")?;
+    install_programs(&previous, bin, ".exe", &saved_programs(&previous, ".exe"))?;
     Ok(old.trim().to_string())
 }
 
@@ -1537,6 +1553,34 @@ cccc3333  thurbox-v0.114.0-aarch64-apple-darwin.tar.gz
                 std::fs::read(install.path().join(name)).unwrap(),
                 b"NEW",
                 "{name}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_rollback_restores_the_programs_its_previous_release_saved() {
+        let previous = tempfile::TempDir::new().unwrap();
+        let install = tempfile::TempDir::new().unwrap();
+        let saved: Vec<&str> = BINARIES
+            .iter()
+            .copied()
+            .filter(|stem| *stem != "runtime-herdr")
+            .collect();
+        for stem in &saved {
+            std::fs::write(previous.path().join(format!("{stem}.exe")), b"OLD").unwrap();
+        }
+        for stem in BINARIES {
+            std::fs::write(install.path().join(format!("{stem}.exe")), b"NEW").unwrap();
+        }
+
+        let programs = saved_programs(previous.path(), ".exe");
+        assert_eq!(programs, saved);
+        install_programs(previous.path(), install.path(), ".exe", &programs).unwrap();
+        for stem in &saved {
+            assert_eq!(
+                std::fs::read(install.path().join(format!("{stem}.exe"))).unwrap(),
+                b"OLD",
+                "{stem}"
             );
         }
     }
