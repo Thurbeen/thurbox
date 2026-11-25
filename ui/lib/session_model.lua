@@ -1,34 +1,13 @@
--- The session list's model: what to draw, before any width is known.
---
--- Pure functions over the published snapshot tables — sessions and in-flight
--- commands in, an ordered item list out. The bundled pane opts into selectable
--- host and repo rows. Preserved panes retain v1's glued repo headers and the
--- earlier machine-qualified header shape.
---
--- Deliberately free of theme and widgets: nothing here is text yet. The one
--- dependency is `lib.settings`, because whether the list groups by repo is a
--- knob the model has to answer for every consumer at once.
---
--- Hosts are the outer axis; repo groups remain inside them.
-
 local mod_settings = require("lib.settings")
 
 local session_model = {}
 
 local NO_REPO = "(no repo)"
 
---- The single group's key when grouping is off. `\0` cannot occur in a repo
---- name — the same property `group_key` relies on — so it can never collide
---- with a real repo set.
 local FLAT_KEY = "\0flat"
 
---- The key prefix of a group a driver named (`ui.group`). `\0` cannot occur in
---- a repo name, so a label spelled like a repo still forms a group of its own.
 local LABEL_KEY = "\0group\0"
 
---- The group label whoever drives the session gave it, through the session's
---- `ui.group` meta (issue #1523), or nil. Untrusted text, already one line;
---- blank counts as unset.
 local function labelled_group(session)
   local label = session.meta and session.meta["ui.group"]
   label = label and label:match("^%s*(.-)%s*$")
@@ -38,32 +17,16 @@ local function labelled_group(session)
   return label
 end
 
---- The grouping key for sessions on this machine. Local rows stay above remote
---- hosts and have their own fold handle.
----
---- The key is `\0`-prefixed, like `FLAT_KEY` and for the same reason: a host
---- name cannot contain `\0`, so a host somebody actually called `local` is a
---- second machine here rather than one merged into this one's group. Spelling
---- the key as the bare word merged the two silently, and — because `lib.order`
---- decides a host boundary by comparing these keys — it also turned off the
---- refusal that keeps a group from being moved onto another machine.
 local LOCAL_HOST_KEY = "\0local"
 
---- A group's identity across the two axes, for the lookups below that have to
---- ask "does THIS machine already have a group for that repo?".
 local function group_slot(host, label)
   return (host or "") .. "\1" .. label
 end
 
---- Which machine a session runs on. `session.host` is the bare remote host name
---- and nil when the session is local, so this is the one place the two are one
---- vocabulary.
 local function host_of(session)
   return session.host or LOCAL_HOST_KEY
 end
 
---- Older preserved panes call `build(rows)` and expect the pre-fold model:
---- machine-qualified headers only when more than one machine is present.
 local function spans_hosts(rows, creations)
   local seen, count = {}, 0
   local function note(host)
@@ -86,12 +49,6 @@ local function spans_hosts(rows, creations)
   return false
 end
 
---- In-flight commands, keyed by the session they concern.
----
---- A command is accepted instantly and lands in a later snapshot, so without
---- this a restart would look like nothing happened for a moment. v1 needed a
---- whole `PendingSpawn` type for the same reason. A delete is the exception:
---- see `live_sessions()`, which drops the row instead of annotating it.
 function session_model.pending()
   local by_session = {}
   for _, item in ipairs(thurbox and thurbox.commands or {}) do
@@ -102,22 +59,9 @@ function session_model.pending()
   return by_session
 end
 
---- The sessions the list draws: every published row but the ones being deleted.
----
---- Every other in-flight command leaves a row to annotate; a delete is the one
---- whose subject is the row itself. Waiting for it to land left the session
---- sitting there tagged `delete` for as long as the worker took — so the list
---- kept showing what you had just removed. Dropping it on the keystroke is what
---- makes the delete read as done. Once the delete succeeds, the kernel stops
---- publishing the row while Fleet releases the session, and lists it again
---- only as a stuck deletion (`deleting_since_ms`).
----
---- A FAILED delete is deliberately kept. The session is still there, and the
---- failed row is the only thing that says the deletion did not happen.
 local function live_sessions(rows)
   local gone = {}
   for _, item in ipairs(thurbox and thurbox.commands or {}) do
-    -- Guarded like `pending()`: a nil key is a runtime error in Lua.
     if item.kind == "delete" and item.phase ~= "failed" and item.session then
       gone[item.session] = true
     end
@@ -132,17 +76,6 @@ local function live_sessions(rows)
   return live
 end
 
---- Every creation in flight, in publication order.
----
---- Read before the host axis is decided, because deciding it counts the machines
---- these name as well as the machines the rows are on.
----
---- A FAILED create is kept, unlike the failed delete `live_sessions` drops: the
---- row it would have made does not exist, so its placeholder is the only thing
---- that says the creation happened at all, and it stays for the few seconds the
---- bus holds a failure. It therefore also holds the host axis on for that long,
---- which is the point rather than a side effect — the failure is reported under
---- the machine it was asked for.
 local function creations()
   local all = {}
   for _, item in ipairs(thurbox and thurbox.commands or {}) do
@@ -153,19 +86,6 @@ local function creations()
   return all
 end
 
---- Those creations bucketed by the group each will land in, and the buckets in
---- publication order.
----
---- A create names no session yet, so it cannot be matched to a row. It carries
---- the two facts that identify its group instead: its subject — the repo — and,
---- once the host axis is on, the machine it was asked for. v1 needed a bespoke
---- slot in its ordering code for this.
----
---- `item.host` is nil for a creation on this machine, which is the same thing
---- `session.host` says about a local row, so the two axes read the same either
---- side of a session existing. The bucket list is ordered because `pairs` over
---- the map is not: two fresh repos created at once would otherwise swap headers
---- between runs.
 local function pending_creations(all, by_host)
   local by_slot, buckets = {}, {}
   for _, item in ipairs(all) do
@@ -182,8 +102,6 @@ local function pending_creations(all, by_host)
   return by_slot, buckets
 end
 
---- The repos a session spans, de-duplicated, in its own member order — primary
---- repo first. Empty when it spans none.
 local function repo_set(session)
   local seen, names = {}, {}
   for _, name in ipairs(session.repos or {}) do
@@ -192,17 +110,12 @@ local function repo_set(session)
       names[#names + 1] = name
     end
   end
-  -- A row published before the member list existed still has to group.
   if #names == 0 and session.repo then
     names[1] = session.repo
   end
   return names
 end
 
---- The grouping **key**: the repo *set*, sorted, so two sessions spanning the
---- same repos cluster regardless of the order they were selected in. Mirrors
---- v1's `repo_set_key` — including its `\0` separator, which cannot occur in a
---- repo name, so distinct sets never collide. Never displayed.
 local function group_key(names)
   if #names == 0 then
     return NO_REPO
@@ -215,9 +128,6 @@ local function group_key(names)
   return table.concat(sorted, "\0")
 end
 
---- The header **label**: the same repos joined with ` + ` in natural order, so a
---- multi-repo session's group names every repo it spans rather than just its
---- primary. v1's `repo_set_display`.
 local function group_label(names)
   if #names == 0 then
     return NO_REPO
@@ -225,19 +135,6 @@ local function group_label(names)
   return table.concat(names, " + ")
 end
 
---- Group by repo set — or by the label a driver set, which wins over it — and
---- order exactly as v1's `compute_session_order` does:
---- members by (manual order, original index), groups by (lowest member order,
---- label). "Never moved" sorts *after* everything ordered, in creation order —
---- not alphabetically.
----
---- With `grouping` off there is exactly one group holding every row, so the
---- manual order is the whole order. See `grouped()` for why off has to mean
---- that rather than the same clustering with its headers hidden.
----
---- `by_host` splits each of those groups per machine. It only qualifies the KEY
---- here; clustering the machines together is `by_host_first`, so the order
---- above stays the one v1 computes and the host is layered over it.
 local function ordered_groups(rows, grouping, by_host)
   local groups, by_key = {}, {}
   for index, session in ipairs(rows) do
@@ -251,9 +148,6 @@ local function ordered_groups(rows, grouping, by_host)
     else
       key, label = FLAT_KEY, NO_REPO
     end
-    -- `\1` rather than the `\0` the repo-set key already separates with: a
-    -- host prefixed with the same byte would read as one more repo in the set,
-    -- and a host and a repo sharing a name would then collide.
     local repo_key = key
     local host = by_host and host_of(session) or nil
     if host then
@@ -261,10 +155,6 @@ local function ordered_groups(rows, grouping, by_host)
     end
     local group = by_key[key]
     if not group then
-      -- `repo_key` and not `label`: a session spanning `a` and `b` is labelled
-      -- `a + b`, and so is a session in a repo directory literally called
-      -- `a + b`. Their keys differ, and a creation names a repo, so matching a
-      -- placeholder on the key puts it in the group it is actually for.
       group = { label = label, repo_key = repo_key, host = host, members = {} }
       by_key[key] = group
       groups[#groups + 1] = group
@@ -295,10 +185,6 @@ local function ordered_groups(rows, grouping, by_host)
     if a.order ~= b.order then
       return a.order < b.order
     end
-    -- Two machines running the same repos give two groups one label, and
-    -- `table.sort` is not stable — so without the host they would swap places
-    -- between builds. Both hosts are nil when the axis is off, and the
-    -- comparison then answers exactly what the label alone answered.
     if a.label ~= b.label then
       return a.label < b.label
     end
@@ -307,11 +193,6 @@ local function ordered_groups(rows, grouping, by_host)
   return groups
 end
 
---- The same groups, re-clustered so every group of one machine is adjacent:
---- this machine first, then each remote host by name. Stable within a host, so
---- the manual order this function is handed survives inside it.
----
---- Applied when the host axis is on. Local-only lists keep their previous order.
 local function by_host_first(groups)
   local position = {}
   for index, group in ipairs(groups) do
@@ -319,8 +200,6 @@ local function by_host_first(groups)
   end
   table.sort(groups, function(a, b)
     if a.host ~= b.host then
-      -- This machine first: it is the one you are sitting at, and on a list
-      -- that is mostly local it is the one you are mostly reading.
       local a_remote = a.host ~= LOCAL_HOST_KEY
       local b_remote = b.host ~= LOCAL_HOST_KEY
       if a_remote ~= b_remote then
@@ -333,8 +212,6 @@ local function by_host_first(groups)
   return groups
 end
 
---- The bundled pane draws repo rows inside host rows. Preserved panes still
---- receive the earlier machine-qualified header shape.
 local function header_label(group, grouping, by_host, host_rows)
   if by_host and not host_rows then
     local machine = group.host == LOCAL_HOST_KEY and "local" or group.host
@@ -343,40 +220,14 @@ local function header_label(group, grouping, by_host, host_rows)
   return grouping and group.label or nil
 end
 
---- Whether the list groups by repo.
----
---- v1 always groups; a user with one repo sees a header that says nothing, so
---- this is a knob rather than a rule. Off means genuinely UNGROUPED, not the
---- same clustering with its headers hidden: one flat list ordered by the manual
---- order alone. Hiding only the header line is what this was first, and it made
---- a move ACROSS repos persist and then be undone by the next build
---- re-clustering the row under its own repo -- with the headers that would have
---- explained it turned off. Parent/child nesting is unaffected either way; it
---- is not a repo property.
 local function grouped()
   return mod_settings.enabled("sessions", "group_by_repo", true)
 end
 
---- Whether the list separates the machines it spans.
----
---- The second half of the host gate, beside the machine tally. An operator who
---- wants one manually ordered list can turn this axis off.
----
---- A second boolean rather than one `none / repo / host / host then repo` row
---- because the settings modal has no choice type: a mod's `Text` value is
---- free text you type into, and a misspelt word there would silently mean
---- "none". The two are independent anyway — all four combinations render, from
---- one flat list to repo groups within host rows.
 local function host_grouped()
   return mod_settings.enabled("sessions", "group_by_host", true)
 end
 
---- Digest of the published in-flight commands, for the model memo below.
----
---- `thurbox.sessions` is a gated group, so its table identity is a sound memo
---- key — but `thurbox.commands` is rebuilt every publish, so it is digested by
---- value instead. Commands in flight are few, so the digest is far cheaper
---- than the rebuild it prevents.
 local function commands_digest()
   local parts = {}
   for _, item in ipairs(thurbox and thurbox.commands or {}) do
@@ -386,10 +237,6 @@ local function commands_digest()
       .. "\1"
       .. (item.subject or "")
       .. "\1"
-      -- The machine a creation names is read by the model, so two creations
-      -- differing only in it are two different lists. A create's `session` is
-      -- always empty, so without this they digest the same and the second one
-      -- is drawn with the first one's grouping.
       .. (item.host or "")
       .. "\1"
       .. (item.phase or "")
@@ -397,7 +244,6 @@ local function commands_digest()
   return table.concat(parts, "\2")
 end
 
---- A saved fold list — `;`-separated, each name `%XX`-escaped — as a set.
 local function decode_set(saved)
   local set = {}
   for escaped in saved:gmatch("[^;]+") do
@@ -411,17 +257,9 @@ end
 
 local model_cache = {}
 
---- The rows to draw, in order, before any of them is turned into text.
 function session_model.build(rows, folded, reveal, host_rows, folded_repos, folded_parents)
-  -- Memoized: this walks and sorts every row and runs again per render AND per
-  -- click/action, so the same inputs must not pay twice. Consumers treat the
-  -- returned items as read-only, which is what makes sharing the table safe.
   local digest = commands_digest()
   local grouping = grouped()
-  -- Both knobs in the key. `by_host` below is derived from the rows too, and
-  -- those are covered by the two entries above it -- but the switch is read
-  -- from the registry, which neither the row table nor the digest can see, so
-  -- without it flipping the row in the modal is answered from the cache.
   local host_grouping = host_grouped()
   host_rows = host_rows == true
   folded = folded or ""
@@ -444,24 +282,15 @@ function session_model.build(rows, folded, reveal, host_rows, folded_repos, fold
 
   local items = {}
   local folded_parent = decode_set(folded_parents)
-  -- Dropped before anything is grouped or ordered, so every consumer of the
-  -- model agrees: the cursor lands on the next row, and a group whose last
-  -- session went takes its header with it.
   local all_rows = rows
   rows = live_sessions(rows)
 
   local all_creating = creations()
-  -- With the axis off, every group is built as a local flat/repo group.
   local by_host = host_grouping
     and (host_rows and (#rows > 0 or #all_creating > 0) or spans_hosts(rows, all_creating))
   local groups = ordered_groups(rows, grouping, by_host)
   local creating, creating_buckets = pending_creations(all_creating, by_host)
 
-  -- A creation has no row yet, so the group that draws it is built for it when
-  -- nothing on screen is already that group: the repo it names, on the machine
-  -- it was asked for. Both halves matter — keyed by the repo alone, a creation
-  -- into a repo only a remote host holds drew its placeholder over there and
-  -- said the session was being spun up on that box.
   if grouping then
     local have = {}
     for _, group in ipairs(groups) do
@@ -481,9 +310,6 @@ function session_model.build(rows, folded, reveal, host_rows, folded_repos, fold
       end
     end
   elseif #all_creating > 0 then
-    -- Ungrouped: one flat group per machine, and a creation still needs its
-    -- machine's — which may hold no session at all, and on a list with nothing
-    -- on it yet is the only group there is.
     local have = {}
     for _, group in ipairs(groups) do
       have[group.host or ""] = true
@@ -506,16 +332,11 @@ function session_model.build(rows, folded, reveal, host_rows, folded_repos, fold
     by_host_first(groups)
   end
 
-  -- Handed to the group built for it above. No claiming: a bucket is keyed by
-  -- (machine, repo key) and so is a group, and every bucket either matched a
-  -- group or had one built, so each creation reaches exactly one.
   for _, group in ipairs(groups) do
     if grouping then
       local bucket = creating[group_slot(group.host, group.repo_key)]
       group.placeholders = bucket and bucket.items or nil
     else
-      -- One group per machine, so it takes every creation for that machine,
-      -- in publication order.
       local mine = {}
       for _, item in ipairs(all_creating) do
         local host = by_host and (item.host or LOCAL_HOST_KEY) or nil
@@ -527,20 +348,13 @@ function session_model.build(rows, folded, reveal, host_rows, folded_repos, fold
     end
   end
 
-  -- Every rendered session, for the cross-group child mark: v1 only marks a
-  -- child whose parent is actually on screen somewhere.
   local visible = {}
   for _, session in ipairs(rows) do
     visible[session.id] = true
   end
 
   for _, group in ipairs(groups) do
-    -- Claimed above: grouped, a placeholder belongs to the repo it names;
-    -- ungrouped there is one list per machine and it lands at the end of the
-    -- first.
     local placeholders = group.placeholders or {}
-    -- Composed once per group rather than per row: `first` decides WHETHER a
-    -- row carries it, this decides what it says.
     local group_header = nil
     if grouping or (by_host and not host_rows) then
       group_header = header_label(group, grouping, by_host, host_rows)
@@ -551,9 +365,6 @@ function session_model.build(rows, folded, reveal, host_rows, folded_repos, fold
       in_group[rows[index].id] = true
     end
 
-    -- Children nest under their parent, within the same repo group, keeping the
-    -- manual order among siblings and among roots. Indexed by parent up front:
-    -- scanning the member list per emitted member made the walk O(members²).
     local children = {}
     for _, index in ipairs(group.members) do
       local parent = rows[index].parent
@@ -563,10 +374,6 @@ function session_model.build(rows, folded, reveal, host_rows, folded_repos, fold
       end
     end
 
-    -- A folded parent hides its subtree, but never a descendant that waits for
-    -- the user: folding is for quiet work, and a question folded out of sight
-    -- is a question nobody answers. Walked through regardless, because such a
-    -- descendant can sit under a quiet child.
     local nested, seen = {}, {}
     local function emit(index, depth, hidden, ancestor)
       local session = rows[index]
@@ -603,8 +410,6 @@ function session_model.build(rows, folded, reveal, host_rows, folded_repos, fold
         kind = "session",
         session = session,
         depth = entry.depth,
-        -- Every session nested under this one in its group, shown or folded.
-        -- Non-zero is what makes a row a parent with a fold handle of its own.
         descendants = entry.descendants,
         collapsed = entry.collapsed,
         hidden = entry.hidden,
@@ -614,9 +419,6 @@ function session_model.build(rows, folded, reveal, host_rows, folded_repos, fold
           and parent ~= session.id
           and visible[parent] == true,
         header = first and group_header or nil,
-        -- Which machine this row is on, or nil while the host axis is off.
-        -- `lib.order` reads it to refuse a move that would carry a group
-        -- past a host boundary.
         host = group.host,
         repo_label = group.label,
         repo_target = ":repo:" .. group_slot(group.host, group.repo_key),
@@ -626,19 +428,10 @@ function session_model.build(rows, folded, reveal, host_rows, folded_repos, fold
       first = false
     end
 
-    -- Placeholders at the end of the group, where the real row will appear.
     for _, item in ipairs(placeholders) do
       items[#items + 1] = {
         kind = "pending",
         command = item,
-        -- A placeholder sits at group level, like the row it will become. Stated
-        -- rather than left nil because every ordering helper compares `depth`
-        -- numerically, and `nil` there is not a shallow row -- it is an error
-        -- that takes the pane down on Shift+J/K while a session is being
-        -- created. The `session` this row does NOT carry is the other half of
-        -- the same contract: `lib.order`'s sort (see its `block_name`) holds a
-        -- nameless block out of the comparison and puts it back at the group's
-        -- end, so the placeholder stays here, where its session will appear.
         depth = 0,
         header = first and group_header or nil,
         host = group.host,
@@ -702,9 +495,6 @@ function session_model.build(rows, folded, reveal, host_rows, folded_repos, fold
             host = host,
             counts = counts[host],
             collapsed = collapsed[host] == true,
-            -- A group's id starts with `:`, which no session's id does (a
-            -- session's id is `<fleet>:<task>`, its Fleet named), so a
-            -- Fleet named `host` or `repo` cannot pass for a group.
             target = ":host:" .. host,
           }
         end
@@ -718,8 +508,6 @@ function session_model.build(rows, folded, reveal, host_rows, folded_repos, fold
     items = with_hosts
   end
 
-  -- Folded descendants still contribute to host counts. Only their visibility
-  -- changes, after the summaries have seen the full membership.
   local shown = {}
   for _, item in ipairs(items) do
     if not item.hidden then
@@ -741,7 +529,6 @@ function session_model.build(rows, folded, reveal, host_rows, folded_repos, fold
             target = target,
             host = item.host,
             repo_label = item.repo_label,
-            -- Sessions only: a placeholder is not one yet.
             count = item.group_size or 0,
             collapsed = collapsed[target] == true,
           }
@@ -769,9 +556,6 @@ function session_model.build(rows, folded, reveal, host_rows, folded_repos, fold
   return items
 end
 
---- How a session that does not run comes back: `start` when Fleet can resume
---- it (paused, stopped, or lost with its window gone), `recreate` when Fleet
---- cannot resume its conversation, nil when it runs.
 ---@param session thurbox.Session
 ---@return "start"|"recreate"|nil
 function session_model.revival(session)

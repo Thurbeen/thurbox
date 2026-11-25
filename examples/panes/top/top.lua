@@ -1,48 +1,15 @@
--- CPU and memory, from `top`, as gauges.
---
--- NOT bundled. Install it into your interface with:
---
---     thurbox-cli mod install top
---
--- Then trust it: settings (`Ctrl+,`) → Interface (`]`) → the row → `t`. Until you
--- do, `run` is **not in this mod's environment** — not a function that returns
--- an error, absent — so `render` checks for it rather than assuming, and draws the
--- reason instead of a blank pane.
---
--- The property worth noticing: it reads the machine the SELECTED SESSION runs on.
--- `run` executes in that session's directory, on that session's host, so moving
--- the cursor onto a session running over SSH shows the load on the remote box
--- with nothing here knowing what SSH is.
---
--- Parsing note. `top` has two dialects and this reads both:
---
---   procps (Linux)  %Cpu(s): 12.1 us,  2.3 sy, ...  64.2 id, ...
---                   MiB Mem :  32017.1 total,  1086.1 free,  15603.1 used, ...
---   BSD (macOS)     CPU usage: 5.9% user, 2.0% sys, 92.1% idle
---                   PhysMem: 8000M used (1200M wired), 4000M unused.
---
--- Idle is what both report, so CPU is `100 - idle` rather than the sum of the
--- busy fields — which differ per dialect and do not always add up.
-
 local theme = require("lib.theme")
 local widgets = require("lib.widgets")
 
---- Rows of the process table to show under the gauges.
 local PROCESSES = 6
 
---- Seconds an answer stays fresh. `top` is cheap but not free, and a gauge that
---- moves once a second reads as live without costing a process per frame.
 local TTL = 2
 
---- One `top` snapshot, bounded: the whole table would be hundreds of lines and
---- the kernel would truncate it anyway.
 local COMMAND = "top -bn1 2>/dev/null | head -"
   .. tostring(7 + PROCESSES)
   .. " || top -l 1 -n "
   .. tostring(PROCESSES)
 
---- Colour by pressure, not by value: the same 80% means the same thing whatever
---- is being measured, and the roles keep it right in every palette.
 local function pressure(ratio)
   if ratio >= 0.85 then
     return theme.bad
@@ -52,16 +19,12 @@ local function pressure(ratio)
   return theme.ok
 end
 
---- `12.1` out of `%Cpu(s): 12.1 us, ... 64.2 id` — or nil when the line is not
---- there, which is how the BSD branch below gets its turn.
 local function number_before(text, unit)
   local found = text:match("([%d%.]+)%s*" .. unit)
   return found and tonumber(found) or nil
 end
 
---- CPU busy fraction, 0..1.
 local function cpu_of(out)
-  -- procps: the idle field is `id`. BSD: `92.1% idle`.
   local idle = number_before(out, "id[,%s]") or number_before(out, "%%%s*idle")
   if not idle then
     return nil
@@ -69,14 +32,11 @@ local function cpu_of(out)
   return math.max(0, math.min((100 - idle) / 100, 1))
 end
 
---- Memory as `used, total` in MiB, or nil when neither dialect matched.
 local function mem_of(out)
-  -- procps states both, in whatever unit it chose (`MiB Mem :`).
   local total, used = out:match("Mem%s*:%s*([%d%.]+)%s*total.-([%d%.]+)%s*used")
   if total and used then
     return tonumber(used), tonumber(total)
   end
-  -- BSD states used and unused; the total is their sum.
   local used_m, unused_m = out:match("PhysMem:%s*(%d+)M%s*used.-(%d+)M%s*unused")
   if used_m and unused_m then
     return tonumber(used_m), tonumber(used_m) + tonumber(unused_m)
@@ -84,7 +44,6 @@ local function mem_of(out)
   return nil
 end
 
---- The three load averages, as text. Both dialects print them the same way.
 local function load_of(out)
   local one, five, fifteen =
     out:match("load average[s]?:%s*([%d%.]+)[,%s]+([%d%.]+)[,%s]+([%d%.]+)")
@@ -94,18 +53,10 @@ local function load_of(out)
   return { one, five, fifteen }
 end
 
---- `15603.1 / 32017.1` MiB as `15.2/31.3 GiB`.
----
---- One unit for the pair, not two: `17.9 GiB / 31.3 GiB` is nineteen columns for
---- thirteen columns of information, and in a 30%-wide side column that difference
---- is the whole reason it did not fit.
 local function gib_pair(used, total)
   return string.format("%.1f/%.1f GiB", (used or 0) / 1024, (total or 0) / 1024)
 end
 
---- The process rows: procps and BSD both end with COMMAND, so the last field is
---- the name and `%CPU`/`%MEM` sit at known offsets from it. Parsed loosely on
---- purpose — a row that does not match is skipped rather than drawn wrong.
 local function processes(out)
   local rows = {}
   local seen_header = false
@@ -117,8 +68,6 @@ local function processes(out)
       for field in line:gmatch("%S+") do
         fields[#fields + 1] = field
       end
-      -- procps: … %CPU %MEM TIME+ COMMAND. Enough fields, and a numeric %CPU
-      -- three from the end, is the shape worth trusting.
       if #fields >= 4 then
         local name = fields[#fields]
         local cpu = tonumber(fields[#fields - 3])
@@ -135,27 +84,10 @@ local function processes(out)
   return rows
 end
 
---- A labelled gauge on one line: `CPU  ████░░░░  38%  11.2/15.9 GiB`.
----
---- The bar is sized from what is actually left after the label, the percentage AND
---- the detail — budgeting for the first two only is how `17.5 GiB /` ended up
---- clipped at the pane edge in a 30%-wide column. When there is not room for both,
---- the DETAIL goes: a percentage you cannot read is useless, and the gauge beside
---- it already carries the same number approximately.
 local function meter(label, ratio, detail, width)
   local LABEL, PCT, GAP, INDENT, BORDERS = 5, 6, 3, 2, 2
-  -- Truncated to what is LEFT rather than dropped when the arithmetic says it
-  -- will not fit. Budgeting by subtraction is how `31.3 GiB` became `31.3 Gi` at
-  -- the pane edge twice: every fix is one column short of the next terminal
-  -- width. Deciding the bar first and handing the detail exactly the remainder
-  -- cannot overflow, whatever the width turns out to be.
   local inner = math.max(0, width - BORDERS)
   local fixed = INDENT + LABEL + PCT
-  -- The DETAIL is served first and the bar takes what is left, which is the
-  -- opposite of the obvious order and the right one: a bar is legible at any
-  -- length above a handful of columns, and a number truncated to `17.… GiB` is
-  -- legible at none. Sizing the bar first gave it twenty-six columns and the
-  -- detail eight, which is how that string reached the screen.
   local shown = nil
   if detail then
     local wanted = GAP + widgets.len(detail)
@@ -196,9 +128,6 @@ local function selected_session()
   return nil
 end
 
---- A single line of explanation in the pane's own frame, for the cases where
---- there is nothing to draw yet. A blank pane is indistinguishable from a broken
---- one, which is the state this exists to avoid.
 local function saying(ctx, text)
   return {
     type = "box",
@@ -209,16 +138,10 @@ end
 
 return {
   name = "top",
-  -- Its own slot, placed by `examples/lua/layout.lua` — copy that too, or this
-  -- pane loads and never draws (`mod list` says `no slot`, which is the fastest
-  -- way to spot it). To use it with the SHIPPED arrangement instead, set
-  -- `slot = "center"` and `slot_mode = "switch"`: it then shares the centre with
-  -- the agent and F7 brings it forward.
   slot = "top",
   order = 85,
   focusable = true,
 
-  -- Declaring it is not being granted it.
   capabilities = { "run" },
 
   keys = {
@@ -235,9 +158,6 @@ return {
       return saying(ctx, "no session selected")
     end
 
-    -- Asked every frame, on purpose: the TTL decides whether a process actually
-    -- runs, and a fresh answer is a table lookup. Trying to ask "only once" is
-    -- how you get a pane that never updates.
     run("sys", COMMAND, { session = session.id, ttl = TTL })
 
     local answer = (thurbox.runs or {})["sys"]
@@ -257,8 +177,6 @@ return {
     local used, total = mem_of(out)
 
     if not cpu and not used then
-      -- Both dialects missed. Say so rather than draw empty gauges, and show
-      -- what arrived so the reader can see which `top` this is.
       children[#children + 1] = {
         type = "text",
         len = 1,
@@ -275,8 +193,6 @@ return {
       }
     end
 
-    -- Where this is being measured. Named first, because the number below means
-    -- something different on another machine.
     children[#children + 1] = {
       type = "text",
       len = 1,
@@ -364,8 +280,6 @@ return {
       return true
     end
     if action == "top.refresh" then
-      -- `refresh` is what overrides freshness. Without it this key would do
-      -- nothing, because the answer it asks for is the one already on screen.
       local session = selected_session()
       if run and session then
         run("sys", COMMAND, { session = session.id, refresh = true })

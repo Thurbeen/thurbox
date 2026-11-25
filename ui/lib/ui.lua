@@ -1,32 +1,3 @@
--- The component layer: what a pane is made of, spelled once.
---
--- `lib/widgets.lua` is the primitive kit — measurement, windowing, a row of
--- text. This is the layer above it: the handful of shapes every pane in this
--- interface turns out to be, with the conventions that make them look like one
--- program rather than six.
---
--- The conventions, and why they are here rather than in each pane:
---
---   * **One focus border.** A panel's border and title come from
---     `lib/chrome`: thick and marked with focus, thin and quiet without. Three
---     panes had grown three different answers to "what does focused look
---     like", and a fourth pane copied whichever it was written next to.
---   * **One selection idiom.** A selected row is a full-width bar
---     (`selection_bg`/`selection_fg`), painted as the row's own `style`, never
---     a marker glyph eating two columns of every row. Hover is the same band
---     with the foreground left alone.
---   * **One empty state.** A blank line, the sentence centred, and — when
---     something is actually bound to it — the chord that fixes it, also
---     centred.
---   * **One footer.** Hints are resolved from the key registry, so a rebind
---     moves the hint with the key and a removed action takes its hint with it.
---
--- Everything here composes the four kernel node kinds. Nothing here is a node
--- kind, and nothing here is appearance the kernel decides: a pane still says
--- which glyph, which role and when to drop a trailing status. What it no
--- longer says is how a window is computed, where a selection bar comes from,
--- or what a border looks like when the pane has focus.
-
 local chrome = require("lib.chrome")
 local fuzzy = require("lib.fuzzy")
 local hover = require("lib.hover")
@@ -37,36 +8,8 @@ local widgets = require("lib.widgets")
 
 local ui = {}
 
--- ── Status ──────────────────────────────────────────────────────────────────
-
--- The glyphs a screen rule's reading draws instead of the state's own. Only
--- blocked has a hollow twin: idle's circle is hollow already, and working
--- animates.
 local SCREEN_GLYPHS = { blocked = "◇" }
 
---- Glyph and colour for a session status, with the moving ones animated.
----
---- `theme.status` answers the static half; the spinner is for the statuses
---- whose glyph depends on the frame, and every pane that draws a status was
---- choosing between the two itself.
----
---- Two statuses animate, on different evidence. `working` is the agent's own
---- report that a turn is running. `running` is thurbox's observation that an
---- agent holds the pane and has said nothing — which on its own cannot tell a
---- turn in flight from a prompt waiting for input, so it animates only while
---- `printing` says that pane is actually producing output. That is the same
---- signal `with_output_quiescence` trusts in the other direction, and it is
---- what keeps the spinner a report rather than a guess: quiet, it falls back
---- to the static glyph.
----
---- `printing` comes from `thurbox.printing`, which only a surface holding the
---- terminals can fill. A caller that passes nothing gets the static answer,
---- which is the honest one when nobody looked.
----
---- `source` is where a Fleet session's status came from. A screen rule's
---- reading is drawn dimmed, and blocked's diamond hollow, so it reads apart
---- from the agent's own report in the same colour; with neither, the state is
---- unknown and the glyph is `?`.
 ---@param name thurbox.Status
 ---@param elapsed number?
 ---@param printing boolean?
@@ -86,11 +29,6 @@ function ui.status(name, elapsed, printing, source)
   return { glyph = spec.glyph, color = spec.color }
 end
 
---- Whether `session_id`'s pane is producing output right now.
----
---- The published set is keyed by session id, so a missing entry is "not
---- printing" and an absent table (a surface that publishes none) is the same
---- answer — never an error.
 ---@param session_id string?
 ---@return boolean
 function ui.printing(session_id)
@@ -101,12 +39,6 @@ function ui.printing(session_id)
   return set ~= nil and set[session_id] == true
 end
 
---- One status glyph per item, in render order — a panel's border strip.
----
---- `status_of` returns the status to draw, or nil for an item the strip skips
---- (work in flight has no status of its own yet). `id_of` names the session a
---- row stands for, so a `running` dot animates on the same evidence its row
---- does; a strip whose items are not sessions omits it and draws static.
 ---@param items table[]
 ---@param elapsed number?
 ---@param status_of fun(item: table): string?
@@ -125,19 +57,8 @@ function ui.dots(items, elapsed, status_of, id_of)
   return runs
 end
 
--- ── The key registry ────────────────────────────────────────────────────────
-
--- Memoized on the published table's identity: `thurbox.registry` is a gated
--- group, so seeing the same table object again means the same bindings — and a
--- footer resolves several actions per render, each of which would otherwise
--- walk every mod's bindings.
 local chord_cache = { src = nil, by_action = {} }
 
---- The chord bound to `action`, or nil when nothing is.
----
---- Read from the registry rather than written into a pane, because every chord
---- is rebindable and every action is removable: a hint naming a key that
---- resolves to nothing is worse than no hint at all.
 ---@param action string
 ---@return string?
 function ui.chord(action)
@@ -157,12 +78,10 @@ function ui.chord(action)
       break
     end
   end
-  -- `false` marks "looked, nothing bound", so a miss is remembered too.
   chord_cache.by_action[action] = found or false
   return found
 end
 
---- What the registry says an action does, for a hint that writes no label.
 ---@param action string
 ---@return string?
 function ui.describe(action)
@@ -174,10 +93,6 @@ function ui.describe(action)
   return nil
 end
 
--- ── The cursor ──────────────────────────────────────────────────────────────
-
---- Read an item's identity. A falsy one means the item selects nothing — a
---- header, or a row for work that has no session yet.
 local function identity(item, id)
   if item == nil then
     return nil
@@ -188,7 +103,6 @@ local function identity(item, id)
   return item[id or "id"]
 end
 
---- The row carrying `wanted`, or nil when nothing in the list does.
 local function row_of(items, key_of, wanted)
   if wanted == nil then
     return nil
@@ -204,16 +118,6 @@ end
 local Cursor = {}
 Cursor.__index = Cursor
 
---- Clamp onto a selectable row, then publish where we landed.
----
---- Publishing is what lets another pane read the selection; remembering what
---- was published is what lets this one tell an outside write from its own echo.
----
---- Where the cursor is gets written down twice, and the pair is the point. The
---- row number is where it sits *on screen*, and is what the next build falls
---- back to. The identity is *what is selected*, and is what the next build
---- restores from — the list can be reordered, grown or shortened between one
---- build and the next, and a row number then names a different item.
 function Cursor:_settle()
   local count = #self.items
   self.index = widgets.clamp(self.index, count)
@@ -233,7 +137,6 @@ function Cursor:_settle()
   end
 end
 
---- The next index in `step`'s direction that selects something.
 function Cursor:_step(from, step)
   local count = #self.items
   if count == 0 then
@@ -249,18 +152,14 @@ function Cursor:_step(from, step)
   return from
 end
 
---- The selected item's identity, or nil when nothing is selected.
 function Cursor:id()
   return identity(self.items[self.index], self.key_of) or nil
 end
 
---- The selected item itself.
 function Cursor:item()
   return self.items[self.index]
 end
 
---- Move by `step` rows, skipping what selects nothing. Drops any follow: you
---- moved the cursor yourself, so it is no longer chasing a row.
 function Cursor:move(step)
   self.index = self:_step(self.index, step)
   self:_stop_following()
@@ -268,7 +167,6 @@ function Cursor:move(step)
   return self.index
 end
 
---- Put the cursor at `index`.
 function Cursor:select(index)
   self.index = index
   self:_stop_following()
@@ -276,7 +174,6 @@ function Cursor:select(index)
   return self.index
 end
 
---- Put the cursor on the row carrying `id`, if it is in the list.
 function Cursor:select_by_id(id)
   local at = row_of(self.items, self.key_of, id)
   if at then
@@ -285,11 +182,6 @@ function Cursor:select_by_id(id)
   return nil
 end
 
---- Chase `id` until a render lands on it.
----
---- Sticky rather than immediate because the row may not be here yet: a reorder
---- and a spawn both land a frame or two after the keystroke, and by then the
---- row that was under the cursor has moved or has only just appeared.
 function Cursor:follow(id)
   ui.follow(self.prefix, id)
 end
@@ -298,7 +190,6 @@ function Cursor:_stop_following()
   state[self.prefix .. ".follow"] = nil
 end
 
---- The first visible row, 0-based — what `ui.list` scrolled to last frame.
 function Cursor:offset()
   return state[self.prefix .. ".offset"] or 0
 end
@@ -307,13 +198,10 @@ function Cursor:set_offset(offset)
   state[self.prefix .. ".offset"] = offset
 end
 
---- Forget where the cursor was, for a list that opens fresh each time.
 function Cursor:reset()
   ui.reset(self.prefix)
 end
 
---- Forget where the cursor named `key` was — a list that opens fresh starts at
---- the top rather than wherever it was left the last time it was up.
 ---@param key string
 function ui.reset(key)
   state[key .. ".cursor"] = nil
@@ -322,50 +210,12 @@ function ui.reset(key)
   state[key .. ".follow"] = nil
 end
 
---- Ask the cursor named `key` to chase `id`, without holding one.
----
---- An event handler has no list to build a cursor over — the row it is being
---- told about may not be in the snapshot yet, which is the whole reason a
---- follow is sticky.
 ---@param key string
 ---@param id string?
 function ui.follow(key, id)
   state[key .. ".follow"] = id
 end
 
---- A list cursor that survives the list changing under it.
----
---- The state a pane with a list invariably grows — what is selected, where the
---- cursor is, where the window is, which row it is chasing, and what it last
---- told everyone else — written once. Four panes had four spellings of it and
---- none of them agreed on what happens when the list is reordered under the
---- selection.
----
---- **The selection is the item, not the row.** Every build re-derives the row
---- number from the identity `_settle` remembered, so a list that is reordered,
---- grown or shortened between two builds keeps the cursor on the same item. The
---- remembered row number answers only when that item is no longer in the list,
---- and then it answers with whatever has taken its place.
----
---- Built fresh on every call, from `state`, so a render, a key handler and a
---- click handler all see the same cursor without passing one around.
----
---- opts:
----   id      — the field carrying an item's identity, or a function returning
----             it. An item with none selects nothing and is skipped.
----   steer   — a `store` key this cursor publishes its selection to, and reads
----             a *foreign* write of as a request to move. Another pane steering
----             the list is the reason this is not simply a write: publishing
----             every frame would otherwise undo the write a frame later, so a
----             value this cursor did not publish is followed instead.
----   publish — optional projection from the selected item to the value on
----             `steer`, for lists with selectable headings that name no session
----   initial — first row number when no cursor state exists, or a function of
----             `items` returning it
----   request — a `store` key carrying a one-shot "go to this row" (a clicked OS
----             notification, `thurbox-cli session focus`). Consumed here,
----             because a plain `store` write would be overwritten by the next
----             publish.
 ---@param key string A name for this list's state, unique within the mod.
 ---@param items table[]
 ---@param opts table?
@@ -394,14 +244,6 @@ function ui.cursor(key, items, opts)
       state[key .. ".follow"] = steered
     end
   end
-  -- Where the cursor lands, in order of authority: the row it is chasing, then
-  -- the row it was already on. A row number is the last resort rather than the
-  -- first, because the list is rebuilt from a snapshot that nothing here
-  -- controls — a session opening or closing above the cursor renumbers every
-  -- row below it, and honouring the old number moves the selection onto a
-  -- different item while the operator is reading it (issue #1211). The number
-  -- is still what answers when the selected item has gone: `_settle` clamps it,
-  -- so the cursor lands on whatever now occupies that position.
   local at = row_of(items, self.key_of, state[key .. ".follow"])
     or row_of(items, self.key_of, state[key .. ".selected"])
   if at then
@@ -411,16 +253,9 @@ function ui.cursor(key, items, opts)
   return self
 end
 
--- ── The row builder ─────────────────────────────────────────────────────────
-
 local Row = {}
 Row.__index = Row
 
---- The style a span actually wears, after the row has had its say.
----
---- A span that named no style is left alone: it is structure — a separator, an
---- indent — and dimming or un-colouring it says nothing while making it
---- different from the same cells drawn by a pane that did not ask.
 function Row:_tone(style)
   if style == nil or self.tone == nil then
     return style
@@ -428,7 +263,6 @@ function Row:_tone(style)
   return self.tone(style)
 end
 
---- Append a run.
 function Row:add(run, style)
   if run == nil or run == "" then
     return self
@@ -438,15 +272,10 @@ function Row:add(run, style)
   return self
 end
 
---- Append `n` blank columns.
 function Row:gap(n)
   return self:add(string.rep(" ", math.max(0, n or 1)))
 end
 
---- Append a run that is its own click target. A run carries `id`/`role` of its
---- own, so a chip inside a line needs no node with a hand-computed `len`. It
---- lights under the pointer (`hover.button_style`), matched on that same
---- identity, so the lit chip is the one a press lands on.
 function Row:button(label, style, role, id)
   if label == nil or label == "" then
     return self
@@ -459,12 +288,6 @@ function Row:button(label, style, role, id)
   return self
 end
 
---- Append text with its search hits marked, or plain when there are none.
----
---- `hits` is what `fuzzy.match` returned. A marked run names its own colour, so
---- it survives a selection bar that supplies only what a span left unsaid —
---- which matters because previewing a result moves the cursor onto the very row
---- whose marks would otherwise disappear.
 function Row:match(subject, hits, style, hit_style)
   if not hits then
     return self:add(subject, style)
@@ -476,24 +299,13 @@ function Row:match(subject, hits, style, hit_style)
   return self
 end
 
---- The row's trailing note — a status, an age — appended after a separator and
---- budgeted against what is left of the row.
----
---- Dropped rather than overflowed: a note that would arrive truncated to a
---- column or two says nothing and costs the columns something else could have
---- used. v1 drops it at the same threshold.
 local SEPARATOR = "  "
 local MIN_TRAILING = 4
 
---- `note` rather than `text`: `text` is the kernel's measurement global, and a
---- local of that name in a function that measures is a trap waiting for the next
---- edit.
 function Row:trailing(note, style)
   if not note or note == "" then
     return self
   end
-  -- A row with no width budgets nothing: it is being built for a rect nobody
-  -- has resolved, and truncating against a guess is worse than not truncating.
   if not self.width then
     return self:add(SEPARATOR):add(note, style)
   end
@@ -505,25 +317,10 @@ function Row:trailing(note, style)
   return self:add(widgets.truncate_hard(note, avail), style)
 end
 
---- The spans, ready for a `text` node.
 function Row:spans_list()
   return self.spans
 end
 
---- A span builder that knows how wide the row is.
----
---- The width is the whole point: every trailing note, every truncation and
---- every right-hand budget in this interface was computed by re-measuring the
---- spans built so far, in each pane, with its own idea of what the row's
---- columns were.
----
---- opts:
----   width — the row's columns (a list passes its own inner width). Omit it and
----           `:trailing` budgets nothing, which is what a row built for a rect
----           nobody has resolved wants
----   tone  — a function every span's style passes through, which is how a row
----           says "this whole row is dimmed" or "the bar underneath speaks for
----           every colour" without each caller branching
 ---@param opts table?
 function ui.row(opts)
   opts = opts or {}
@@ -535,7 +332,6 @@ function ui.row(opts)
   }, Row)
 end
 
---- `── label ───────`, muted, full bleed — the rule that heads a group.
 ---@param label string
 ---@param width integer
 ---@return thurbox.Span[]
@@ -548,8 +344,6 @@ function ui.rule(label, width)
   return { { text = line, style = { fg = theme.muted } } }
 end
 
--- ── The empty state ─────────────────────────────────────────────────────────
-
 local function centred(sentence, width, colour)
   local pad = math.max(0, math.floor((width - widgets.len(sentence)) / 2))
   return {
@@ -557,25 +351,6 @@ local function centred(sentence, width, colour)
   }
 end
 
---- The one empty state: a blank line, the sentence, and the way out.
----
---- Returns the LINES rather than a node, so a modal can size itself against
---- them — a float is measured in cells and an empty state that grew a line
---- would otherwise clip its own footer.
----
---- `hint_action` is looked up in the registry and the hint is dropped when
---- nothing is bound: an empty state advertising a chord that does nothing is
---- the failure this whole indirection exists to prevent.
----
---- `note` is one line, or a list of them, below the hint in `note_colour`: the
---- empty list is the one screen a first run is guaranteed to reach, so it is
---- where "the thing that would run your session is not installed" belongs.
---- Absent on every machine that has what it needs, which is the normal case.
---- Keep each line short — this state is drawn in a sidebar, where anything
---- longer is truncated to its first clause.
----
---- opts: title, width, hint (a format string taking the chord), hint_action,
---- note, note_colour
 ---@param opts table
 ---@return thurbox.Span[][]
 function ui.empty(opts)
@@ -595,27 +370,15 @@ function ui.empty(opts)
   return lines
 end
 
--- ── The list ────────────────────────────────────────────────────────────────
-
---- An overflow marker: a row of its own, never drawn over one.
 local function marker(label)
   return { type = "text", len = 1, text = theme.dim(label), role = "overflow" }
 end
 
---- The first visible item, and how many rows are hidden at each end.
 local function window_of(heights, offset, selected, height)
   local first, visible = scroll.window_variable(heights, offset, selected, height)
   return first, first - 1, #heights - (first - 1 + visible)
 end
 
---- The window with room kept for however many overflow markers it needs.
----
---- A marker is a row, so it costs a line the rows would otherwise have had —
---- and giving up that line can push a further row out of view, which calls for
---- the second marker too. Hence the escalation rather than one subtraction.
----
---- A list with no line to spare shows rows and no markers: a strip made
---- entirely of "N more" says nothing.
 local function marked_window(heights, offset, selected, height)
   for markers = 0, 2 do
     if height - markers < 1 then
@@ -629,11 +392,6 @@ local function marked_window(heights, offset, selected, height)
   return (window_of(heights, offset, selected, height)), 0, 0
 end
 
---- The selection bar and the hover band.
----
---- Built per row rather than hoisted, because a theme change must be picked up
---- on the next frame and a role reads through the theme's own memo — and at
---- most two rows on screen wear one.
 local function selected_style()
   return {
     bg = theme.role("selection_bg"),
@@ -642,47 +400,10 @@ local function selected_style()
   }
 end
 
---- Only the BACKGROUND is tinted, so a status dot and a branch colour survive
---- being pointed at. A button gets the stronger accent fill instead; a row is
---- not a button.
 local function hover_style()
   return { bg = theme.role("selection_bg") }
 end
 
---- A scrolling list of rows, with the selection bar and the window written
---- once.
----
---- What a pane still decides: what a row says (`row`), what heads a group
---- (`header`), and what "nothing here" reads as. What it no longer decides:
---- where the window is, how the selection looks, whether a hidden row is
---- announced, or how any of that is spelled.
----
---- The returned box carries `above` and `below` — the counts of rows hidden at
---- each end. `ui.panel` reads them off the node, which is what puts a `▲ N` on
---- the border instead of costing a content row. (An extra key on a node table
---- is how a mod carries its own bookkeeping; the kernel ignores it.)
----
---- opts:
----   items       — the model rows, in render order
----   cursor      — a `ui.cursor`, or a plain index
----   width       — the row's columns, for the empty state's centring
----   height      — the rows available
----   row(item, selected) → spans
----   header(item) → spans | spans[] | nil, drawn above the row and never
----                  selected: a group heading glued to its group's first row,
----                  so clicking the heading selects that row and the window
----                  arithmetic counts the pair as one item
----   id_of(item) → the row's identity, for hover, clicks and decoration
----                 (defaults to the cursor's)
----   class_of(item) → an extra class on the row
----   style_of(item) → the row's own style (a band, a tint) when it is neither
----                    selected nor hovered; both of those win over it
----   empty       — the lines `ui.empty` returned, or a string to centre
----   on_overflow — "rows" (markers take a line each) or "border" (the counts
----                 ride the frame, and no line is spent on them)
----   pad         — fill the remaining lines with blanks, so the box is exactly
----                 `height` rows however few items there are
----   len, fill   — the returned box's own size
 ---@param opts table
 function ui.list(opts)
   local items = opts.items or {}
@@ -706,16 +427,12 @@ function ui.list(opts)
       line(spans)
     end
   else
-    -- Headers are built in the pass that measures the list: they decide an
-    -- item's height, and building them again to draw them would be the second
-    -- source of truth this module exists to remove.
     local heights, headers = {}, {}
     for index, item in ipairs(items) do
       local head = opts.header and opts.header(item) or nil
       if head and #head == 0 then
         head = nil
       elseif head and head[1].text ~= nil then
-        -- One span list, not a list of them: a SPAN is what carries `text`.
         head = { head }
       end
       headers[index] = head
@@ -745,9 +462,6 @@ function ui.list(opts)
       if drawn >= budget then
         break
       end
-      -- A header may be the last thing that fits: it belongs to the row below
-      -- it, and drawing the pair or nothing would leave a blank line where the
-      -- reader can see there is more list.
       for _, head in ipairs(headers[index] or {}) do
         if drawn >= budget then
           break
@@ -769,11 +483,6 @@ function ui.list(opts)
         if is_selected then
           classes[#classes + 1] = "selected"
         end
-        -- The bar is the row's own `style`: the kernel paints it across the
-        -- row's rect before the spans go on top, so it reaches the border with
-        -- no spacer span and no style merged into every span by hand. It is
-        -- the row's and not the list's, so it never bleeds onto a header glued
-        -- above a group's first row.
         local style
         if is_selected then
           style = selected_style()
@@ -789,8 +498,6 @@ function ui.list(opts)
           style = style,
           id = id or nil,
           class = table.concat(classes, " "),
-          -- Decoration finds rows by this role, and only the content is inside
-          -- it — so a highlight can never repaint the border.
           role = id and "row" or nil,
         }
         drawn = drawn + 1
@@ -818,14 +525,6 @@ function ui.list(opts)
   }
 end
 
--- ── The panel ───────────────────────────────────────────────────────────────
-
---- `glyph N ` laid over the tail of `strip`.
----
---- v1 LAYERS the two: the count is painted onto border cells the dot strip
---- already occupies, so it covers the last dots rather than pushing them left.
---- One right-aligned run list says the same thing, and the dots it would have
---- covered are dropped here instead of overwritten there.
 local function with_count(strip, glyph, count)
   if count <= 0 then
     return strip
@@ -849,24 +548,6 @@ local function with_count(strip, glyph, count)
   return runs
 end
 
---- A framed pane, in the one focus convention this interface has.
----
---- Passing `focused = ctx.focused` is the whole of what a pane does to opt in:
---- the thick border, the ` ▸ ` mark, the title badge and the two border roles
---- all come from `lib/chrome` (see its "Focus styling" section for why focus is
---- a shape and a mark as well as a colour). `level` overrides the mapping for a
---- pane that wants `active` — lit without focus.
----
---- The overlays paint onto the border cells the block already drew, so a status
---- strip, a scroll count or a scrollbar costs no content row and no content
---- column.
----
---- A `body` built by `ui.list` with `on_overflow = "border"` carries its own
---- hidden-row counts, and they are laid over the top-right and bottom-right
---- overlays here rather than by the pane.
----
---- opts: title, focused, level, body, overlay_left, overlay_right,
----       right_column, border, title_align
 ---@param opts table
 ---@return thurbox.BoxNode
 function ui.panel(opts)
@@ -904,23 +585,11 @@ function ui.panel(opts)
   }
 end
 
--- ── The float ───────────────────────────────────────────────────────────────
-
---- A modal float, sized from what is in it.
----
---- Every float in this interface had hand-summed its own height, and each sum
---- had to be revisited whenever a row was added to its body — which is how one
---- of them came to clip its own footer. `rows` is still accepted for a float
---- whose body is not a list of fixed-height children.
----
---- opts: title, cols, rows, children, crumbs, border
 ---@param opts table
 ---@return thurbox.BoxNode
 function ui.modal(opts)
   local rows = opts.rows
   if not rows then
-    -- The borders, plus every child that declared a height. A child that did
-    -- not is the caller's business to size, which is what `rows` is for.
     rows = 2
     for _, child in ipairs(opts.children or {}) do
       rows = rows + (child.len or 0)
@@ -935,22 +604,6 @@ function ui.modal(opts)
   })
 end
 
---- The footer strip: key hints on the left, the confirm and dismiss pills on
---- the right.
----
---- Hints are resolved from the key registry rather than written out, so a
---- rebind moves the hint with the key and an action nobody bound shows no hint
---- at all. An entry is one of:
----
----   "plugin.action"                  — the chord and the description the
----                                      binding itself declares
----   { "plugin.action", "label" }     — that chord, this label
----   { { "a", "b" }, "label" }        — both chords, joined with `/`
----   { key = "esc", label = "close" } — a chord the registry does not carry
----                                      (`esc` and `enter` belong to every
----                                      modal and are declared by none)
----
---- opts: actions, primary, cancel, key, style
 ---@param opts table
 ---@return thurbox.BoxNode
 function ui.footer(opts)

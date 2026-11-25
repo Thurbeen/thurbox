@@ -1,30 +1,9 @@
--- Reading back what your mod declared.
---
--- A mod declares settings as data:
---
---   settings = {
---     { id = "group_by_repo", desc = "Group sessions under foldable repo rows", default = true },
---   },
---
--- and the kernel collects every mod's declarations into one registry, which
--- the settings modal renders. That is the whole extension point: you get a row
--- in settings by declaring a field, and the modal never learns what it is for.
---
--- The registry is published FLAT -- every mod's settings in one list -- so
--- reading your own means filtering it. This module is that filter, so a mod
--- reads a knob in one line instead of repeating the search.
-
 local settings = {}
 
 local function all()
   return (thurbox and thurbox.registry and thurbox.registry.settings) or {}
 end
 
---- The effective value of `plugin`'s `id`, or `fallback` when it is unset.
----
---- `value` is what the registry resolved: the user's override when there is
---- one, otherwise the declared default. A mod therefore never needs to know
---- whether a setting was overridden, only what it currently is.
 function settings.get(plugin, id, fallback)
   for _, entry in ipairs(all()) do
     if entry.mod == plugin and entry.id == id then
@@ -37,8 +16,6 @@ function settings.get(plugin, id, fallback)
   return fallback
 end
 
---- `settings.get` narrowed to booleans, since most knobs are toggles and a
---- caller wants a definite true/false rather than nil.
 function settings.enabled(plugin, id, fallback)
   local value = settings.get(plugin, id, fallback)
   if value == nil then
@@ -47,11 +24,6 @@ function settings.enabled(plugin, id, fallback)
   return value == true
 end
 
---- A `[features]` flag from the CORE settings (`settings.toml`), which are a
---- different thing from the mod declarations above: the kernel publishes
---- them whole as `thurbox.settings`, and a pane gating a surface on one reads
---- three levels that can each be absent. This is that read, nil-safe once,
---- returning `fallback` when the flag was never set.
 function settings.feature(name, fallback)
   local published = thurbox and thurbox.settings
   local features = published and published.features

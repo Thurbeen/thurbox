@@ -1,36 +1,13 @@
--- A to-do list pane, as a mod.
---
--- NOT bundled. Install it into your interface with:
---
---     thurbox-cli mod install tasks
---
--- The list is a scratch list for this run of thurbox: it lives in the pane's
--- `state`, which outlives an interface reload but not a restart (thurbox gives
--- a mod no storage that does). Nothing here is privileged: it reads nothing
--- but its own state, issues no command, and declares no capabilities, so it
--- needs no trust.
---
--- What it shows that the other examples do not:
---
---   * the `input` node kind, which is the one of the four that nothing bundled
---     draws — the other three are text, box and surface
---   * an armed destructive key, so `x` cannot delete on a mistouch
---   * a pane in a slot of its OWN, placed by `examples/lua/layout.lua` — which is
---     the half people forget: adding a pane is two edits, the mod and the slot
-
 local theme = require("lib.theme")
 local widgets = require("lib.widgets")
 local textinput = require("lib.textinput")
 
 local ROWS_MAX = 14
 
---- The three statuses, in the order `space` cycles them.
 local ORDER = { "todo", "in_progress", "done" }
 
 local GLYPH = { todo = "☐", in_progress = "◐", done = "☑" }
 
---- Colour per status, from theme ROLES rather than colours, so this pane looks
---- right under every palette without knowing any of them.
 local function status_style(status)
   if status == "done" then
     return { fg = theme.muted }
@@ -40,9 +17,6 @@ local function status_style(status)
   return { fg = theme.text }
 end
 
---- The list, read whole and written whole: `state` hands back a fresh table on
---- every read, so an item changed in place would not be kept. `state` lives in
---- memory, so the list ends when thurbox quits.
 local function tasks()
   return state.tasks or {}
 end
@@ -51,7 +25,6 @@ local function save(list)
   state.tasks = list
 end
 
---- The next status in the cycle, so one key moves a task forward.
 local function next_status(current)
   for index, name in ipairs(ORDER) do
     if name == current then
@@ -61,8 +34,6 @@ local function next_status(current)
   return ORDER[1]
 end
 
---- Per-pane UI state. `store` survives a frame; `state` would persist across
---- restarts, which a cursor position has no business doing.
 ---@return { cursor: integer, adding: table?, armed: table? }
 local function ui()
   store.tasks_ui = store.tasks_ui or { cursor = 1 }
@@ -94,11 +65,6 @@ end
 
 return {
   name = "tasks",
-  -- Its own slot, placed by `examples/lua/layout.lua` — copy that too, or this
-  -- pane loads and never draws (`mod list` says `no slot`, which is the fastest
-  -- way to spot it). To use it with the SHIPPED arrangement instead, set
-  -- `slot = "center"` and `slot_mode = "switch"`: it then shares the centre with
-  -- the agent and F5 brings it forward.
   slot = "tasks",
   order = 80,
   focusable = true,
@@ -144,8 +110,6 @@ return {
       children[#children + 1] = body
     end
 
-    -- The `input` kind, drawn only while it is wanted: a field that is always
-    -- there is a row spent on nothing most of the time.
     if view.adding then
       children[#children + 1] = textinput.node(view.adding, {
         label = "New task",
@@ -202,8 +166,6 @@ return {
       return true
     end
     if action == "tasks.down" or action == "tasks.up" then
-      -- Any movement disarms: an armed delete that survives the cursor moving
-      -- off it is a delete aimed at whatever you land on.
       view.armed = nil
       local step = action == "tasks.down" and 1 or -1
       view.cursor = widgets.clamp(view.cursor + step, #list)
@@ -223,8 +185,6 @@ return {
       return true
     end
     if action == "tasks.remove" then
-      -- Armed rather than confirmed in a modal: a modal for every delete is what
-      -- teaches people to dismiss modals without reading them.
       if view.armed and view.armed.at == at then
         view.armed = nil
         table.remove(list, at)
@@ -237,8 +197,6 @@ return {
     return false
   end,
 
-  -- Keys the pane did not declare arrive here, which is how the input field gets
-  -- ordinary letters without every one of them being an action.
   on_key = function(key)
     local view = ui()
     if not view.adding then

@@ -1,4 +1,3 @@
--- `thurbox.metrics`, with one letter wrong.
 return {
   name = "std_typo_metrics",
   render = function()

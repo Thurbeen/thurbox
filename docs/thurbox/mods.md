@@ -449,6 +449,33 @@ probes: `reads.lua` reads every path `thurbox.yml` declares and must lint clean,
 while `typos/` holds one pane per table misspelling one field, each of which must
 not.
 
+### What the types do not say
+
+The types in `thurbox.d.lua` cannot carry these rules:
+
+- A node's size resolves exact (`len`), then percentage (`pct`), then share
+  (`fill`). `min` and `max` clamp each one. A node that asks for nothing takes
+  an equal share of the remainder.
+- A frame's `borders` is all or none.
+- A `surface` has exactly one source: a session, a program this mod asked to
+  run, or lines the mod produced itself.
+- The kernel reads `float` from the value `render` returns, and from nowhere
+  else. A `float` on a child node is dropped. `decorate` returns a plain node,
+  because nothing reads `float` from its result.
+- Reading `ctx.elapsed` marks a `pure` pane as one that depends on the
+  animation clock.
+- `text.truncate` raises on an unknown `side`. `text.pad` never truncates: text
+  that is already too wide is returned as it is.
+- `command("restart", { fresh = true })` starts the agent on a new
+  conversation in the same session. Thurbox refuses it while a turn is in
+  progress.
+- `command("send")` types the text and presses Enter, as `thurbox-cli session
+  send` does. Thurbox refuses an empty text and a stopped session. While the
+  agent's composer holds typing, the text goes to the agent's inbox.
+- `command("program", { keys = … })` sends the bytes to the program's stdin as
+  typed (`"\r"` is Enter, `"\27"` is Escape). Alone, it starts nothing. With
+  `repo`, an empty pane starts from `repo` and the keys are not sent.
+
 ## The four node kinds
 
 `text`, `box`, `input`, `surface`. That is the whole vocabulary, and it is meant

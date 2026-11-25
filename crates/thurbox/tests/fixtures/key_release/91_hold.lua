@@ -1,5 +1,3 @@
--- A pane that asks for key releases on one chord and not on another, and
--- reports everything it was handed through `ui_state`.
 local log = {}
 local plain = 0
 local spaces = 0
@@ -11,7 +9,13 @@ return {
   size = { len = 1 },
   focusable = false,
   keys = {
-    { key = "ctrl+space", action = "hold.talk", desc = "talk while held", scope = "global", release = true },
+    {
+      key = "ctrl+space",
+      action = "hold.talk",
+      desc = "talk while held",
+      scope = "global",
+      release = true,
+    },
     { key = "f7", action = "hold.plain", desc = "a press-only chord", scope = "global" },
     { key = "space", action = "hold.space", desc = "where a stray space lands", scope = "global" },
   },

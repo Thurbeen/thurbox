@@ -1,4 +1,3 @@
--- `thurbox.platform`, with one letter wrong.
 return {
   name = "std_typo_platform",
   render = function()
