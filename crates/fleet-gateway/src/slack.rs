@@ -768,42 +768,25 @@ pub fn message_of(bot: &str, item: &Value) -> Result<Message, String> {
     let at = ts_millis(ts).ok_or_else(|| format!("message ts {ts:?} is not a Slack timestamp"))?;
     let user = item["user"].as_str().filter(|u| !u.is_empty());
     let bot_id = item["bot_id"].as_str().filter(|b| !b.is_empty());
-    let subtype = item["subtype"].as_str();
-    let name = name_of(item);
-    let author = match (user, bot_id) {
-        (Some(u), _) if u == bot => Author {
-            id: u.into(),
-            name,
-            kind: AuthorKind::Fleet,
-        },
-        (Some(u), None) if subtype != Some("bot_message") => Author {
-            id: u.into(),
-            name,
-            kind: AuthorKind::Person,
-        },
-        (Some(u), _) => Author {
-            id: u.into(),
-            name,
-            kind: AuthorKind::Bot,
-        },
-        (None, Some(b)) => Author {
-            id: b.into(),
-            name,
-            kind: AuthorKind::Bot,
-        },
-        (None, None) => return Err(format!("message {ts} has neither a user nor a bot_id")),
+    let Some(id) = user.or(bot_id) else {
+        return Err(format!("message {ts} has neither a user nor a bot_id"));
     };
-    let text = item["text"].as_str().unwrap_or("").to_string();
+    let author = Author {
+        id: id.into(),
+        name: name_of(item),
+        kind: kind_of(bot, item),
+    };
+    let text = item["text"].as_str().unwrap_or("");
     let thread_ts = item["thread_ts"].as_str();
     Ok(Message {
         id: ts.to_string(),
         // Fleet's own post never mentions Fleet, whatever it quotes.
-        mentions_fleet: author.kind != AuthorKind::Fleet && mentions(&text, bot),
+        mentions_fleet: author.kind != AuthorKind::Fleet && mentions(text, bot),
         at,
         key: key_of(item),
         starts_thread: thread_ts.is_none_or(|t| t == ts),
         files: files_of(item),
-        text,
+        text: shown(bot, item),
         author,
     })
 }
@@ -976,6 +959,175 @@ pub fn check_download(
     Ok(())
 }
 
+fn kind_of(bot: &str, item: &Value) -> AuthorKind {
+    let user = item["user"].as_str().filter(|u| !u.is_empty());
+    let bot_id = item["bot_id"].as_str().filter(|b| !b.is_empty());
+    if user == Some(bot) {
+        AuthorKind::Fleet
+    } else if bot_id.is_some() || item["subtype"].as_str() == Some("bot_message") {
+        AuthorKind::Bot
+    } else {
+        AuthorKind::Person
+    }
+}
+
+// Slack: with `blocks`, `text` is only the notification fallback; alert
+// bots leave `text` empty and post their body as attachments; a table block
+// is not in `text`; a person's attachments are unfurls and shared messages.
+fn shown(bot: &str, item: &Value) -> String {
+    let kind = kind_of(bot, item);
+    let tabled = each(&item["blocks"]).any(|b| table_rows(b).is_some());
+    if kind == AuthorKind::Fleet || (kind == AuthorKind::Person && !tabled) {
+        return text_of(item);
+    }
+    let blocks = blocks_text(&item["blocks"]);
+    let body = if blocks.is_empty() {
+        text_of(item)
+    } else {
+        blocks
+    };
+    if kind == AuthorKind::Person {
+        return body;
+    }
+    lines(std::iter::once(body).chain(each(&item["attachments"]).map(attachment_text)))
+}
+
+fn each(v: &Value) -> impl Iterator<Item = &Value> {
+    v.as_array().into_iter().flatten()
+}
+
+fn lines(parts: impl Iterator<Item = String>) -> String {
+    parts
+        .filter(|p| !p.is_empty())
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+fn attachment_text(a: &Value) -> String {
+    if let Some(rows) = table_rows(a) {
+        return table(a, rows);
+    }
+    let title = match (text_at(a, "title"), text_at(a, "title_link")) {
+        (t, l) if !t.is_empty() && !l.is_empty() => format!("{t} ({l})"),
+        (t, _) => t,
+    };
+    let fields = each(&a["fields"]).map(|f| match (text_at(f, "title"), text_at(f, "value")) {
+        (t, v) if !t.is_empty() && !v.is_empty() => format!("{t}: {v}"),
+        (t, v) => t + &v,
+    });
+    let shown = lines(
+        [
+            text_at(a, "pretext"),
+            text_at(a, "author_name"),
+            title,
+            text_of(a),
+        ]
+        .into_iter()
+        .chain(fields)
+        .chain([blocks_text(&a["blocks"]), text_at(a, "footer")]),
+    );
+    if shown.is_empty() {
+        text_at(a, "fallback")
+    } else {
+        shown
+    }
+}
+
+fn blocks_text(blocks: &Value) -> String {
+    lines(each(blocks).map(|b| {
+        match b["type"].as_str() {
+            Some("header") => text_of(&b["text"]),
+            Some("markdown") => text_of(b),
+            Some("section") => {
+                lines(std::iter::once(text_of(&b["text"])).chain(each(&b["fields"]).map(text_of)))
+            }
+            Some("context") => each(&b["elements"])
+                .map(text_of)
+                .filter(|t| !t.is_empty())
+                .collect::<Vec<_>>()
+                .join(" "),
+            Some("rich_text") => lines(each(&b["elements"]).map(rich_text)),
+            _ => table_rows(b).map(|rows| table(b, rows)).unwrap_or_default(),
+        }
+    }))
+}
+
+fn table_rows(b: &Value) -> Option<&Vec<Value>> {
+    matches!(b["type"].as_str(), Some("table" | "data_table"))
+        .then(|| b["rows"].as_array())
+        .flatten()
+}
+
+fn table(b: &Value, rows: &[Value]) -> String {
+    let cells: Vec<Vec<String>> = rows.iter().map(|r| each(r).map(cell).collect()).collect();
+    let width = cells.iter().map(Vec::len).max().unwrap_or(0);
+    if width == 0 {
+        return text_at(b, "caption");
+    }
+    let row = |r: &[String]| {
+        let padded = (0..width).map(|i| r.get(i).map_or("", String::as_str));
+        format!("| {} |", padded.collect::<Vec<_>>().join(" | "))
+    };
+    let rule = row(&vec!["---".to_string(); width]);
+    lines(
+        std::iter::once(text_at(b, "caption"))
+            .chain(cells.first().map(|r| row(r)))
+            .chain(std::iter::once(rule))
+            .chain(cells.iter().skip(1).map(|r| row(r))),
+    )
+}
+
+fn cell(c: &Value) -> String {
+    let text = match c["type"].as_str() {
+        Some("rich_text") => lines(each(&c["elements"]).map(rich_text)),
+        Some("action_cell") => return cell(&c["fallback"]),
+        Some("raw_number") if text_of(c).is_empty() => match &c["value"] {
+            Value::Number(n) => n.to_string(),
+            _ => String::new(),
+        },
+        _ => text_of(c),
+    };
+    text.replace('|', "\\|").replace('\n', " ")
+}
+
+fn rich_text(e: &Value) -> String {
+    match e["type"].as_str() {
+        Some("rich_text_list") => {
+            let indent = "  ".repeat(e["indent"].as_u64().unwrap_or(0) as usize);
+            let offset = e["offset"].as_u64().unwrap_or(0);
+            let ordered = e["style"] == "ordered";
+            lines(each(&e["elements"]).zip(offset + 1..).map(|(i, n)| {
+                let marker = if ordered { format!("{n}.") } else { "-".into() };
+                format!("{indent}{marker} {}", rich_text(i))
+            }))
+        }
+        Some("text") => text_of(e),
+        Some("link") => match (text_at(e, "text"), text_at(e, "url")) {
+            (label, url) if !label.is_empty() && label != url => format!("{label} ({url})"),
+            (_, url) => url,
+        },
+        Some("user") => format!("<@{}>", text_at(e, "user_id")),
+        Some("channel") => format!("<#{}>", text_at(e, "channel_id")),
+        Some("usergroup") => format!("<!subteam^{}>", text_at(e, "usergroup_id")),
+        Some("emoji") => format!(":{}:", text_at(e, "name")),
+        Some("broadcast") => format!("<!{}>", text_at(e, "range")),
+        Some("date") => match (text_at(e, "fallback"), &e["timestamp"]) {
+            (fallback, _) if !fallback.is_empty() => fallback,
+            (_, Value::Number(ts)) => ts.to_string(),
+            (_, _) => String::new(),
+        },
+        _ => each(&e["elements"]).map(rich_text).collect(),
+    }
+}
+
+fn text_at(v: &Value, key: &str) -> String {
+    v[key].as_str().unwrap_or("").to_string()
+}
+
+fn text_of(v: &Value) -> String {
+    text_at(v, "text")
+}
+
 /// `<@U…>` or `<@U…|name>` with Fleet's bot user id.
 fn mentions(text: &str, bot: &str) -> bool {
     text.contains(&format!("<@{bot}>")) || text.contains(&format!("<@{bot}|"))
@@ -1146,7 +1298,7 @@ pub fn read_event(account: &AccountConfig, envelope: &Envelope) -> Observation<O
                 Event::Edited {
                     conversation: conversation(thread),
                     id: id.into(),
-                    text: str_of(m, "text").unwrap_or("").into(),
+                    text: shown(&account.bot, &Value::Object(m.clone())),
                     edited_at,
                 }
             }
@@ -1880,6 +2032,77 @@ mod tests {
                 assert_eq!(conversation.thread.as_deref(), Some("1730000300.000200"));
                 assert_eq!(id, "1730000360.000300");
             }
+            other => panic!("{other:?}"),
+        }
+    }
+
+    fn edited(payload: &str, inner: bool, f: impl FnOnce(&mut Value)) -> String {
+        let mut v: Value = serde_json::from_str(payload).unwrap();
+        let event = &mut v["payload"]["event"];
+        f(if inner { &mut event["message"] } else { event });
+        v.to_string()
+    }
+
+    #[test]
+    fn a_bots_event_and_its_edit_read_its_attachments_and_blocks() {
+        let alert = edited(BOT_MESSAGE, false, |e| {
+            e["text"] = json!("");
+            e["attachments"] = json!([{"fallback": "Triggered: api latency",
+                "title": "[FIRING] api latency above 2s", "text": "p99 2.4s",
+                "fields": [{"title": "env", "value": "production"}]}]);
+        });
+        let d = delivery(&alert);
+        let (_, m) = message(&d);
+        assert_eq!(m.author.kind, AuthorKind::Bot);
+        assert_eq!(
+            m.text,
+            "[FIRING] api latency above 2s\np99 2.4s\nenv: production"
+        );
+        let both = edited(BOT_MESSAGE, false, |e| {
+            e["text"] = json!("");
+            e["attachments"] = json!([{"author_name": "monitor", "pretext": "Monitor triggered",
+                "title": "api latency"}]);
+            e["blocks"] = json!([{"type": "rich_text", "elements": [{"type": "rich_text_section", "elements": [
+                {"type": "text", "text": "since "},
+                {"type": "date", "timestamp": 1_730_000_000, "format": "{date_num}"}]}]}]);
+        });
+        assert_eq!(
+            message(&delivery(&both)).1.text,
+            "since 1730000000\nMonitor triggered\nmonitor\napi latency"
+        );
+        let item = |t: &str| json!({"type": "rich_text_section", "elements": [{"type": "text", "text": t}]});
+        let runbook = edited(BOT_MESSAGE, false, |e| {
+            e["blocks"] = json!([{"type": "rich_text", "elements": [
+                {"type": "rich_text_list", "style": "ordered", "elements": [item("drain"), item("restart")]},
+                {"type": "rich_text_list", "style": "bullet", "indent": 1, "elements": [item("api"), item("worker")]},
+                {"type": "rich_text_list", "style": "ordered", "offset": 2, "elements": [item("verify")]}]}]);
+        });
+        assert_eq!(
+            message(&delivery(&runbook)).1.text,
+            "1. drain\n2. restart\n  - api\n  - worker\n3. verify"
+        );
+        let bare = edited(BOT_MESSAGE, false, |e| {
+            e["text"] = json!("");
+            e["attachments"] = json!([{"fallback": "Triggered: api latency", "color": "danger"}]);
+        });
+        assert_eq!(message(&delivery(&bare)).1.text, "Triggered: api latency");
+        let edit = edited(EDIT, true, |m| {
+            m.as_object_mut().unwrap().remove("user");
+            m["subtype"] = json!("bot_message");
+            m["bot_id"] = json!("B0ALERT001");
+            m["text"] = json!("Resolved");
+            m["blocks"] = json!([{"type": "section", "text": {"type": "mrkdwn", "text": "*Resolved:* api latency"}}]);
+        });
+        match &delivery(&edit).event {
+            Event::Edited { text, .. } => assert_eq!(text, "*Resolved:* api latency"),
+            other => panic!("{other:?}"),
+        }
+        let person = edited(EDIT, true, |m| {
+            m["attachments"] =
+                json!([{"title": "an unfurled page", "from_url": "https://example.com/"}]);
+        });
+        match &delivery(&person).event {
+            Event::Edited { text, .. } => assert_eq!(text, "here is the full log"),
             other => panic!("{other:?}"),
         }
     }
