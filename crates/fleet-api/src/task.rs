@@ -525,6 +525,17 @@ pub struct TaskStatus {
     /// A request is acted on once, whatever the pause's outcome.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub pause_request_answered: Option<Millis>,
+    /// Restart effects planned over the Task's life; the next one's key.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub restarts: u32,
+    /// The `restartRequested` TaskController last planned a restart for.
+    /// A request is acted on once, whatever the restart's outcome.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub restart_request_answered: Option<RestartRequest>,
+    /// The conversation a fresh restart left. A report that names it is the
+    /// previous agent's, so `conversation` never takes it again.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub retired_conversation: Option<String>,
     /// Catch-up notes queued over the Task's life; the next one's key.
     #[serde(default, skip_serializing_if = "is_zero")]
     pub catch_ups: u32,
@@ -585,6 +596,11 @@ pub struct TaskStatus {
     /// the last `Paused` transition and after the last wake.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub pause_requested_at: Option<Millis>,
+    /// What `fleet restart` last asked for. No owner: written only by
+    /// `fleet restart` through a typed mutation. TaskController restarts the
+    /// session once for a request newer than `restartRequestAnswered`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub restart_requested: Option<RestartRequest>,
     /// TaskController's place in the session's outbox: what it ingested
     /// into the boards so far. Absent until a session published.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -625,6 +641,16 @@ impl TaskStatus {
     }
 }
 
+/// One `fleet restart`: when it asked, Unix milliseconds, and whether the
+/// agent starts on a new conversation instead of resuming its own.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct RestartRequest {
+    pub at: Millis,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub fresh: bool,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct BriefRecord {
@@ -652,7 +678,13 @@ pub const GATEWAY_FIELDS: &[&str] = &["gateway"];
 
 /// The status fields nobody owns: reached only through typed mutations.
 /// Every field in none of these lists is TaskController's.
-pub const UNOWNED_FIELDS: &[&str] = &["inbox", "answered", "wakeRequestedAt", "pauseRequestedAt"];
+pub const UNOWNED_FIELDS: &[&str] = &[
+    "inbox",
+    "answered",
+    "wakeRequestedAt",
+    "pauseRequestedAt",
+    "restartRequested",
+];
 
 #[cfg(test)]
 mod tests {

@@ -1196,6 +1196,53 @@ impl Store for FileStore {
         Ok(obj)
     }
 
+    fn request_restart(
+        &self,
+        name: &str,
+        request: task::RestartRequest,
+        expected: u64,
+        by: FieldManager,
+    ) -> Result<Object, StoreError> {
+        if !kinds::may_request_restart(&by) {
+            return Err(StoreError::Forbidden(format!(
+                "{} does not write status.restartRequested",
+                by.name()
+            )));
+        }
+        let _guard = self.lock()?;
+        let mut obj = self.read_existing(task::KIND, name)?;
+        expect_rv(&obj, expected)?;
+        if obj.is_deleting() {
+            return Err(StoreError::Forbidden(format!(
+                "{} is being deleted; its session is released, not restarted",
+                obj.key()
+            )));
+        }
+        let spec: task::TaskSpec = fleet_api::validate::typed(task::KIND, &obj.spec)?;
+        if !spec.dispatch {
+            return Err(StoreError::Forbidden(format!(
+                "{} is held (spec.dispatch is false); nothing restarts its session",
+                obj.key()
+            )));
+        }
+        let mut st = task_status(&obj)?;
+        if st.session.is_none()
+            || !matches!(st.phase, task::Phase::Briefed | task::Phase::Concluded)
+        {
+            return Err(StoreError::Forbidden(format!(
+                "{} has no session to restart yet: it is {:?}",
+                obj.key(),
+                st.phase
+            )));
+        }
+        st.restart_requested = Some(request);
+        obj.status = encode_status(&st)?;
+        obj.metadata.resource_version = self.next_rv()?;
+        self.write(&obj)?;
+        self.note_wake_for_the_manager(obj.metadata.resource_version);
+        Ok(obj)
+    }
+
     fn amend_task(
         &self,
         name: &str,

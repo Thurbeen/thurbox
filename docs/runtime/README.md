@@ -65,9 +65,10 @@ process per call: `<program> <verb>`, a JSON request on stdin, and on stdout
 
 Every verb is idempotent by key. The runtime knows no harness, Task or
 journal: pause is `pause`, resume and revive are `start` with the harness's
-resume argv, idle comes from agent hooks, delivery is proven by the agent's
-prompt hook. Fleet reads an agent's state off the `capture` screen with its
-own rules, below the hooks; the runtime only returns the screen.
+resume argv, a restart is `pause` and then `start`, idle comes from agent
+hooks, delivery is proven by the agent's prompt hook. Fleet reads an agent's
+state off the `capture` screen with its own rules, below the hooks; the
+runtime only returns the screen.
 
 Fleet's config names each runtime in `[runtimes.<name>]`, a `program`, and
 its [places](#places-protocol-version-2). A Task's `spec.host` names a place,
@@ -208,6 +209,9 @@ What Fleet's `exec` kind does with the answers:
   as for a revive. Fleet pauses a session only on a runtime whose
   `manifest` declares `pause`. On any other runtime, whether a session is
   paused stays Unknown, and Unknown never pauses.
+- `fleet restart` is `pause` and then `start`: with the resume argv on the
+  conversation, or with the launch argv for `--fresh`. On a runtime whose
+  `manifest` does not declare `pause`, Fleet restarts nothing.
 
 Agent hooks append to the file Fleet passes as `FLEET_SIGNAL_FILE` in `start`
 ([signals on a remote place](#signals-on-a-remote-place)). Fleet reads it

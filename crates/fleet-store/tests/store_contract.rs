@@ -4010,6 +4010,88 @@ fn only_the_cli_asks_for_a_pause_and_no_status_write_changes_it() {
 }
 
 #[test]
+fn only_the_cli_asks_for_a_restart_of_a_briefed_dispatched_task_and_no_status_write_changes_it() {
+    let dir = Dir::new("restart-request");
+    let store = FileStore::open(&dir.0).unwrap();
+    let lease = store.acquire_lease("m", 10_000).unwrap();
+    let request = fleet_api::task::RestartRequest { at: 7, fresh: true };
+    let mut held = task("held");
+    held.spec["dispatch"] = json!(false);
+    let held = store.create(held, FieldManager::Apply).unwrap();
+    let err = store
+        .request_restart(
+            "held",
+            request,
+            held.metadata.resource_version,
+            FieldManager::Cli,
+        )
+        .unwrap_err();
+    assert!(matches!(err, StoreError::Forbidden(_)), "{err}");
+
+    let mut t = task("t");
+    t.spec["dispatch"] = json!(true);
+    let t = store.create(t, FieldManager::Apply).unwrap();
+    let rv = t.metadata.resource_version;
+    let err = store
+        .request_restart("t", request, rv, FieldManager::Cli)
+        .unwrap_err();
+    assert!(err.to_string().contains("no session"), "{err}");
+
+    let briefed = TaskStatus {
+        phase: fleet_api::task::Phase::Briefed,
+        session: Some(fleet_api::task::SessionRef {
+            id: "s1".into(),
+            host: "local".into(),
+            key: "t.u".into(),
+        }),
+        ..TaskStatus::default()
+    };
+    let t = store
+        .update_status(
+            "Task",
+            "t",
+            serde_json::to_value(&briefed).unwrap(),
+            rv,
+            FieldManager::TaskController,
+            Some(&lease),
+        )
+        .unwrap();
+    let rv = t.metadata.resource_version;
+    let err = store
+        .request_restart("t", request, rv, FieldManager::TaskController)
+        .unwrap_err();
+    assert!(matches!(err, StoreError::Forbidden(_)), "{err}");
+    let t = store
+        .request_restart("t", request, rv, FieldManager::Cli)
+        .unwrap();
+    assert_eq!(t.metadata.resource_version, rv + 1, "one write");
+    let st = inbox_status(&t);
+    assert_eq!(st.restart_requested, Some(request));
+    assert_eq!(
+        TaskStatus {
+            restart_requested: None,
+            ..st
+        },
+        briefed,
+        "no other field changes"
+    );
+
+    let mut status = t.status.clone();
+    status["restartRequested"] = json!({"at": 8});
+    let err = store
+        .update_status(
+            "Task",
+            "t",
+            status,
+            t.metadata.resource_version,
+            FieldManager::TaskController,
+            Some(&lease),
+        )
+        .unwrap_err();
+    assert!(matches!(err, StoreError::Forbidden(_)), "{err}");
+}
+
+#[test]
 fn a_given_up_relay_is_retried_after_a_newer_revision_was_delivered() {
     let dir = Dir::new("inbox-retry-older-relay");
     let store = FileStore::open(&dir.0).unwrap();

@@ -97,7 +97,7 @@ pub use verbs::{
     ResultOutcome, Sent, amend, apply, apply_change_request, apply_conversation, beat,
     conversation_name, declare, declare_change_request, delete, derived_name, ensure_listeners,
     fetch_file, label, list_events, pause, publish_event, receive, record_result, resolve_inbox,
-    send, wake,
+    restart, send, wake,
 };
 
 /// How a bounded reconcile run ends.
@@ -2642,6 +2642,13 @@ impl Manager<'_> {
             } => self
                 .runtime
                 .resume(session, conversation.as_deref(), launch),
+            Action::Restart {
+                session,
+                conversation,
+                launch,
+            } => self
+                .runtime
+                .restart(session, conversation.as_deref(), launch),
             // The Forge, Conversation, CronTask and Gateway controllers' effects,
             // performed by their own steps; TaskController never plans them.
             Action::MarkReady { .. }

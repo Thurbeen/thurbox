@@ -76,6 +76,7 @@ for the distinction between bounded sends and continuing recovery attempts.
 | Session identity and the runtime protocol | [Exec runtime](../../../crates/fleet-runtime/src/exec.rs) | [Exec runtime E2E](../../../crates/fleet-cli/tests/e2e_runtime_exec.rs) |
 | Workspace trust before the brief | [Runtime port](../../../crates/fleet-api/src/runtime.rs), [Exec runtime](../../../crates/fleet-runtime/src/exec.rs), [harness profiles](../../../crates/fleet-api/src/harness.rs) | [Workspace trust E2E](../../../crates/fleet-cli/tests/e2e_workspace_trust.rs), [Controller transitions](../../../crates/fleet-controllers/tests/task_controller.rs) |
 | Pausing an idle session and resuming it | [TaskController](../../../crates/fleet-controllers/src/task.rs), [runtime port](../../../crates/fleet-api/src/runtime.rs), [Fake runtime](../../../crates/fleet-runtime/src/fake.rs) | [Pause E2E](../../../crates/fleet-cli/tests/e2e_task_pause.rs), [Controller transitions](../../../crates/fleet-controllers/tests/task_controller.rs) |
+| Restarting a session on request | [TaskController](../../../crates/fleet-controllers/src/task.rs), [runtime port](../../../crates/fleet-api/src/runtime.rs), [Exec runtime](../../../crates/fleet-runtime/src/exec.rs), [Fake runtime](../../../crates/fleet-runtime/src/fake.rs) | [Restart E2E](../../../crates/fleet-cli/tests/e2e_task_restart.rs), [Controller transitions](../../../crates/fleet-controllers/tests/task_controller.rs) |
 | Inbox: `fleet send`, typed mutations and delivery | [Inbox types](../../../crates/fleet-api/src/inbox.rs), [verbs](../../../crates/fleet-manager/src/verbs.rs), [store](../../../crates/fleet-store/src/lib.rs) | [Inbox E2E](../../../crates/fleet-cli/tests/e2e_inbox.rs), [Store contract](../../../crates/fleet-store/tests/store_contract.rs), [Controller transitions](../../../crates/fleet-controllers/tests/task_controller.rs) |
 
 The lifecycle E2E suite drives the built CLI from apply to result and release,
@@ -154,9 +155,13 @@ concludes nothing.
 | Spawned, Briefed, or Concluded with a delivery due | Session lost: the runtime holds the session, but its agent's window is gone | unchanged | Set `SessionLost=True/WindowGone`. Send nothing. With `dispatch: true`, persist a revive intent and plan `Revive` under `revive/<n>`. A held Task is not revived. |
 | Spawned, Briefed, or Concluded with a delivery due | Still lost after a revive | unchanged | Wait 30 seconds from the last revive, then revive again. After three revives have left the session lost, each further revive raises `NeedsAttention/ReviveFailed`. When each of those three started the agent (a Known `Revived` receipt) and its window still went away, its agent cannot resume it: set `SessionLost=True/CannotResume` and `NeedsAttention/CannotResume`, and revive no more until the window is seen again. `fleet attach` then exits 3 and opens no view. |
 | Spawned, Briefed, or Concluded with a delivery due | Not lost while `SessionLost` is True | unchanged | Set `SessionLost=False/Revived`. When the brief has a receipt and the Task has not concluded, owe a catch-up note under `catchup/<n>`; a Concluded Task is resumed plainly. In Spawned, the brief protocol continues. |
-| Briefed or Concluded | A catch-up note is owed | unchanged | Send the note as an inbox entry is sent, before any inbox entry. In Briefed, the note repeats the brief, the amendments the worker has, and their generation. |
+| Briefed or Concluded | A catch-up note is owed | unchanged | Send the note as an inbox entry is sent, before any inbox entry. In Briefed, the note repeats the brief, the amendments the worker has, and their generation. The note of a fresh restart repeats them in Concluded too, and lists the declared Questions that have no answer. |
 | Briefed, interactive Spawned, or Concluded and watched | A pause setting; a harness with a resume argv and a reported conversation; the agent's hooks report Idle without a break for `pauseAfterMs`; the session observed running and not known lost; nothing to deliver or in flight | unchanged | Persist a pause intent and plan `Pause` under `pause/<n>`. See [pausing an idle session](#pausing-an-idle-session). |
 | Briefed, interactive Spawned, or Concluded and watched | A pending `pauseRequestedAt`; a harness with a resume argv and a reported conversation; the session observed running and not known lost; nothing to deliver or in flight | unchanged | Record the request in `pauseRequestAnswered`, persist a pause intent and plan `Pause` under `pause/<n>`. See [pausing on request](#pausing-on-request). |
+| Briefed, or Concluded and watched | A pending `restartRequested`; `dispatch: true`; the session not known gone or lost; nothing else planned in the pass | unchanged | Record the request in `restartRequestAnswered` and persist a restart intent. Plan `Restart` under `restart/<n>`, on `status.conversation`, or for `fresh` on no conversation: move `status.conversation` to `retiredConversation`. Idle time, the inbox and a pause do not hold it back. See [restarting on request](#restarting-on-request). |
+| Briefed or Concluded | Known Restarted receipt | unchanged | Set `Restarted=True/Resumed`, or `Restarted=True/Fresh` and owe a catch-up note under `rebrief/<n>`. |
+| Briefed or Concluded | Known RestartUnsupported or Failed restart receipt | unchanged | Set `Restarted=False/Unsupported` or `Restarted=False/RestartFailed`. A request is not tried again. |
+| Briefed or Concluded | Missing/Unknown restart receipt | unchanged | Set `Restarted=Unknown/RestartUnconfirmed`. A request is not tried again. |
 | Briefed, interactive Spawned, or Concluded | Known Paused receipt, or a missing/Unknown receipt with the session observed stopped | unchanged | Set `Paused=True/Requested` for a pending `pauseRequestedAt`, else `Paused=True/Idle`. Raise no WorkerGone, SessionLost or revive. |
 | Briefed, interactive Spawned, or Concluded | Failed pause receipt, or a missing/Unknown receipt with the session observed running | unchanged | Set `Paused=False/PauseFailed`. The idle time starts again. A request is not tried again. |
 | Briefed, interactive Spawned, or Concluded with a delivery due or watched | Session observed stopped and Fleet did not stop it | unchanged | Set `Paused=True/External`. |
@@ -235,6 +240,7 @@ configuration resources.
 | Session lookup unreadable | A later readable lookup | Unknown is not absence and does not by itself trigger WorkerGone or permit a blind spawn. |
 | Session lost | A Known lost answer; Unknown revives nothing | Revive at once, then wait before each further revive. After three revives have left the session lost, raise NeedsAttention, and continue: a revive leaves a running session alone. |
 | Pause answer missing/Unknown | Whether the session is stopped | Stopped records the pause. Running records a failed pause. Unknown waits; the stop is never repeated blindly. |
+| Restart refused, or answer missing/Unknown | None | Never repeated: each restart ends the agent's turn. `Restarted` says what is known. A session left stopped reads `Paused=True/External`, and the next inbox entry or wake resumes it. |
 | Resume refused, or answer missing/Unknown | Whether the session is stopped | Running records the resume. Stopped resumes again after a wait. Unknown waits. After three resumes have left the session stopped, raise NeedsAttention, and continue: a resume leaves a running session alone. |
 | Catch-up note send refused or answer missing/Unknown | As for an inbox entry, under the note's key | At most 3 sends, then `DeliveryFailed` naming the note. After 3 unreadable reads, `DeliveryUnconfirmed` naming it. Either way the inbox goes next. |
 | Inbox entry send refused or answer missing/Unknown | As for the brief, under the entry's key: a failure receipt, or the journal's answer | Wait before retry; every retry needs fresh readiness; at most 3 sends per entry, then `DeliveryFailed` and the next entry. Unknown journal reads continue after each wait; the third raises `DeliveryUnconfirmed` and the next entry goes. |
@@ -273,6 +279,7 @@ are last recorded observations; absence of a condition is not a True value.
 | Released | A known release completed, or there was nothing to release. |
 | WorkspaceTrusted | The session's agent trusts its workspace (`Trusted`). False reasons are `Unsupported` and `Mismatch`; Unknown is `TrustUnknown`. |
 | SessionLost | The runtime holds the session, but its agent's window is gone (`WindowGone`). False after a lost session is back (`Revived`). |
+| Restarted | The last `fleet restart` started the agent again: `Resumed` on its conversation, `Fresh` on a new one. False with `Unsupported` when the runtime cannot pause, and nothing was stopped, and with `RestartFailed`. Unknown with `RestartUnconfirmed` when the answer was lost. The phase does not change. |
 | Paused | The runtime holds the session with its agent stopped. `Idle` when Fleet paused it while its agent was idle; `Requested` when Fleet paused it for `fleet pause`; `External` when Fleet found it stopped. False with `Resumed` once the agent runs again, and with `PauseFailed` after a pause that did not happen. The phase does not change. |
 | NeedsAttention | Reason is Stalled, WorkerGone, BriefUnconfirmed, ReleaseFailed, DeliveryFailed, DeliveryUnconfirmed, DeliveryQueued, BriefUndelivered, InboxFull, WorkspaceUnsupported, TrustUnmapped, WorkspaceUntrusted, ReviveFailed, CannotResume, ResumeFailed or CleanFailed. |
 
@@ -440,6 +447,76 @@ raises nothing. The controller honours it when the session becomes
 pausable, for example after the inbox is delivered. A later wake or resume
 supersedes it. The controller acts on a request once: after a refused
 pause (`Paused=False/PauseFailed`) it does not try again.
+
+### Restarting on request
+
+`fleet restart TASK [--fresh]` asks for a restart now. A restart stops the
+session's agent and starts it again in the same session. The verb sets
+`status.restartRequested` to `{at, fresh}` through a typed store mutation,
+and prints `Task/TASK restart requested`, or `Task/TASK fresh restart
+requested`. The restart is TaskController's, on its next pass.
+
+The verb exits 3 for a Task that does not exist. It exits 1, and writes
+nothing, for one of these Tasks:
+
+- a deleting Task;
+- a held Task (`dispatch: false`);
+- a Task that is not Briefed or Concluded: it has no briefed session to
+  restart yet.
+
+```text
+fleet restart ──> restartRequested ──> Restart (pause, then start) ──> Restarted=True/Resumed
+                                                │
+                                   --fresh: no conversation
+                                                v
+                                       Restarted=True/Fresh ──> rebrief note ──> the inbox
+```
+
+The controller plans one `Restart` effect under `restart/<n>`. The runtime's
+`restart` stops the agent with its `pause` verb, and then starts it as a
+resume does:
+
+- By default, the start resumes `status.conversation` through the harness
+  profile's resume argv. Fleet types nothing of its own: the agent continues
+  its conversation.
+- With `--fresh`, the start uses the harness profile's launch argv. The
+  controller moves `status.conversation` to `status.retiredConversation`, so
+  a later pause, resume or revive does not open the old conversation. A
+  report that names the old conversation does not set `status.conversation`
+  again. The new agent is owed a catch-up note under `rebrief/<n>`. The note
+  says that the agent starts with no memory of the previous conversation,
+  lists the declared Questions that have no answer, and repeats the brief
+  and the amendments.
+
+A restart differs from a pause:
+
+- It does not wait for the agent to be idle. It ends the agent's current
+  turn, as a person asked.
+- An inbox entry, a catch-up note or a pause setting does not hold it back.
+- It starts a paused session directly. `Paused` then reads
+  `Paused=False/Resumed`.
+
+A restart keeps the Task, its generation, spec, inbox, declarations,
+answers, ChangeRequests, labels and result. The session keeps its key, its
+workspace, its worktree and its branch. A restart is not a respawn: the
+runtime starts the agent again under the same key. Entries that wait in the
+inbox are delivered once the new agent reports ready, as always.
+
+The runtime must declare the `pause` verb
+([pause](../../runtime/README.md#pause)). `runtime-mux` and
+`runtime-herdr` declare it. On a runtime without it, the controller sets
+`Restarted=False/Unsupported`, and nothing is stopped.
+
+The controller acts on a request once:
+
+- A refused restart sets `Restarted=False/RestartFailed`.
+- A lost answer sets `Restarted=Unknown/RestartUnconfirmed`. The agent may
+  run, or may be stopped. A stopped session reads `Paused=True/External`,
+  and the next inbox entry or wake resumes it.
+- In each case, run `fleet restart` again to ask for another restart.
+
+A pending request waits while the session is lost or gone, and while the
+Task is held.
 
 ### Signals
 
