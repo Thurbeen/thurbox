@@ -693,7 +693,7 @@ space = "agents"
 | Key | Default | Meaning |
 | --- | --- | --- |
 | `session` | herdr-core's default session | The herdr-core session (`HC_SESSION`). |
-| `space` | `fleet` | The herdr app space that shows the Tasks, as its `herdr.space` label. |
+| `space` | none: each Task has a space of its own | One herdr app space for every Task of the place, each Task a tab in it, as their `herdr.space` label. |
 
 - `runtime-herdr` refuses any other key, and names it.
 - With `default = true` on `[runtimes.herdr]`, `local` names
