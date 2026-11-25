@@ -8,7 +8,8 @@ and Fleet is the [overview](../README.md).
 How `runtime-mux` reaches hosts, where psmux differs from tmux, and its
 status channel are [runtime-mux.md](runtime-mux.md).
 How `runtime-herdr` runs sessions as herdr-core terminals is
-[herdr.md](herdr.md).
+[herdr.md](herdr.md), and how a herdr user sets it up is
+[herdr-users.md](herdr-users.md).
 
 ## Two roles
 
@@ -16,9 +17,9 @@ How `runtime-herdr` runs sessions as herdr-core terminals is
 
 - A **runtime** is a role. Any program that answers
   [the runtime protocol](#the-runtime-protocol) at a place is a runtime.
-  `runtime-mux` is the runtime that Fleet ships. It runs sessions in tmux or
-  psmux. [`runtime-herdr`](herdr.md) runs them as herdr-core terminals,
-  which herdr's desktop app shows. `examples/runtimes/tmux.sh` is a minimal
+  Fleet ships two runtimes. `runtime-mux`, the default, runs sessions in
+  tmux or psmux. [`runtime-herdr`](herdr.md) runs them as herdr-core
+  terminals, which herdr's desktop app shows. `examples/runtimes/tmux.sh` is a minimal
   runtime in a shell script.
   Write your own for containers, VMs or a remote service.
   `fleet runtime check` runs the conformance suite against it.

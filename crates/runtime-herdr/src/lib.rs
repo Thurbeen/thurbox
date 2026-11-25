@@ -19,7 +19,6 @@ const KEY_LABEL: &str = "fleet.key";
 const PLACE_LABEL: &str = "fleet.place";
 const ROLE_LABEL: &str = "fleet.role";
 const SHELL_ROLE: &str = "shell";
-const DEFAULT_SPACE: &str = "fleet";
 const VERBS: &[&str] = &[
     "manifest",
     "start",
@@ -132,8 +131,8 @@ impl Place {
         self.session.as_deref()
     }
 
-    fn space(&self) -> &str {
-        self.space.as_deref().unwrap_or(DEFAULT_SPACE)
+    fn space<'a>(&'a self, key: &'a str) -> &'a str {
+        self.space.as_deref().unwrap_or(key)
     }
 
     fn records(&self, core: &Core) -> Result<Records, String> {
@@ -300,7 +299,7 @@ fn start(place: &Place, key: &str, request: &Value) -> Result<Value, String> {
         "labels": {
             KEY_LABEL: key,
             PLACE_LABEL: place.name,
-            "herdr.space": place.space(),
+            "herdr.space": place.space(key),
             "herdr.tab": key,
         },
         "no_parent": true,
@@ -440,6 +439,12 @@ fn shell(place: &Place, key: &str) -> Result<Value, String> {
         .terminals_labelled(&key_labels(place, key))?
         .into_iter()
         .find(|t| t.is_live() && t.has_label(ROLE_LABEL, SHELL_ROLE));
+    let space = agent
+        .labels
+        .get("herdr.space")
+        .and_then(Value::as_str)
+        .unwrap_or_else(|| place.space(key))
+        .to_string();
     let shell = match open {
         Some(shell) => shell,
         None => core.run(json!({
@@ -449,7 +454,7 @@ fn shell(place: &Place, key: &str) -> Result<Value, String> {
                 KEY_LABEL: key,
                 PLACE_LABEL: place.name,
                 ROLE_LABEL: SHELL_ROLE,
-                "herdr.space": place.space(),
+                "herdr.space": space,
                 "herdr.tab": key,
             },
             "no_parent": true,

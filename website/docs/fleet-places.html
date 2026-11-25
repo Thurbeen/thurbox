@@ -9,10 +9,12 @@ breadcrumb: 'Places and runtimes'
 <p>
   Fleet starts no process itself. It asks a <strong>runtime</strong>. A runtime is a role: any
   program that answers <a href="runtime/index.html#the-runtime-protocol">the runtime protocol</a>
-  at a place. <code>runtime-mux</code> is the runtime Fleet ships; it runs each session in a tmux
+  at a place. Fleet ships two. <code>runtime-mux</code>, the default, runs each session in a tmux
   window (psmux on native Windows). <code>examples/runtimes/tmux.sh</code> is a minimal one, and
   you can write your own for containers, VMs or a remote service. <code>fleet runtime check</code>
-  tests a runtime against the protocol.
+  tests a runtime against the protocol. <code>runtime-herdr</code>, the other one Fleet ships,
+  runs each session in a herdr-core terminal, which herdr's desktop app shows:
+  <a href="runtime/herdr-users.html">Fleet in herdr</a> sets it up.
 </p>
 <p>
   To turn a workspace URL into a directory, a runtime can run a <strong>workspace

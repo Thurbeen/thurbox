@@ -222,10 +222,10 @@ BeforeDiscovery {
 Describe 'Install-Archive' {
     BeforeAll {
         function New-ReleaseZip {
-            param([string]$Dir, [string]$Payload)
+            param([string]$Dir, [string]$Payload, [string[]]$Names = $script:Shipped)
             $src = Join-Path $Dir 'zip-src'
             New-Item -ItemType Directory -Path $src -Force | Out-Null
-            foreach ($name in $script:Shipped) {
+            foreach ($name in $Names) {
                 Set-Content -Path (Join-Path $src "$name.exe") -Value $Payload -NoNewline
             }
             $zip = Join-Path $Dir 'release.zip'
@@ -250,6 +250,20 @@ Describe 'Install-Archive' {
         foreach ($name in $script:Shipped) {
             Get-Content -Raw (Join-Path $script:Dest "$name.exe") | Should -Be 'new'
         }
+    }
+
+    It 'installs Fleet alone from a release from before runtime-herdr shipped' {
+        $old = New-ReleaseZip -Dir (Join-Path $script:Work 'old') -Payload 'old' `
+            -Names @('thurbox', 'thurbox-cli', 'fleet', 'runtime-mux', 'workspace-git')
+        Install-Archive -ZipPath $old -Destination $script:Dest -Only $script:FleetShipped
+        (Get-ChildItem $script:Dest -Filter '*.exe').BaseName | Sort-Object |
+            Should -Be @('fleet', 'runtime-mux', 'workspace-git')
+    }
+
+    It 'refuses to install Fleet alone from a release with no fleet' {
+        $v2 = New-ReleaseZip -Dir (Join-Path $script:Work 'v2') -Payload 'v2' -Names @('thurbox', 'thurbox-cli')
+        { Install-Archive -ZipPath $v2 -Destination $script:Dest -Only $script:FleetShipped } |
+            Should -Throw '*no Fleet*'
     }
 
     It 'replaces an existing install and leaves no backup behind' {

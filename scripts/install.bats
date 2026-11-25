@@ -242,6 +242,12 @@
   [[ "$fleet" != *thurbox* ]]
 }
 
+@test "a Fleet install ships runtime-herdr beside runtime-mux" {
+  fleet=" $("${BATS_TEST_DIRNAME}/ci/release-archive.sh" --fleet-binaries | tr '\n' ' ')"
+  [[ "$fleet" == *" runtime-mux "* ]]
+  [[ "$fleet" == *" runtime-herdr "* ]]
+}
+
 @test "installs the Fleet programs the release archive names" {
   expected=$("${BATS_TEST_DIRNAME}/ci/release-archive.sh" --fleet-binaries | tr '\n' ' ' | sed 's/ $//')
   run sh -c "TEST_TMPDIR=1 . '${BATS_TEST_DIRNAME}/install.sh'; printf '%s' \"\$FLEET_BINARIES\""
@@ -254,7 +260,7 @@ fake_release() {
   tmpdir=$(mktemp -d)
   assets="$tmpdir/www" dest="$tmpdir/bin"
   mkdir -p "$tmpdir/src" "$assets/v9.9.9"
-  files="$("${BATS_TEST_DIRNAME}/ci/release-archive.sh" --binaries) LICENSE"
+  files="${release_files:-$("${BATS_TEST_DIRNAME}/ci/release-archive.sh" --binaries) LICENSE}"
   for f in $files; do printf '#!/bin/sh\n' > "$tmpdir/src/$f"; done
   printf '#!/bin/sh\necho "$*" >> "%s/fleet-calls"\n' "$tmpdir" > "$tmpdir/src/fleet"
   target=$(TEST_TMPDIR=1 sh -c ". '${BATS_TEST_DIRNAME}/install.sh'; get_target \$(detect_platform)")
@@ -286,6 +292,22 @@ fleet_only_installed() {
   fake_release
   run_installer sh "${BATS_TEST_DIRNAME}/install.sh" --fleet-only
   fleet_only_installed
+  rm -rf "$tmpdir"
+}
+
+@test "--fleet-only installs a release from before runtime-herdr shipped" {
+  release_files="thurbox thurbox-cli fleet runtime-mux workspace-git LICENSE" fake_release
+  run_installer sh "${BATS_TEST_DIRNAME}/install.sh" --fleet-only
+  [ "$code" -eq 0 ]
+  [ "$(installed)" = "fleet runtime-mux workspace-git" ]
+  rm -rf "$tmpdir"
+}
+
+@test "--fleet-only refuses a release with no fleet" {
+  release_files="thurbox thurbox-cli LICENSE" fake_release
+  run_installer sh "${BATS_TEST_DIRNAME}/install.sh" --fleet-only
+  [ "$code" -ne 0 ]
+  [[ "$log" == *"This release has no Fleet"* ]]
   rm -rf "$tmpdir"
 }
 

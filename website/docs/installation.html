@@ -31,7 +31,7 @@ breadcrumb: 'Installation'
             One command on Linux and macOS. The install script downloads the latest release,
             detects your platform, verifies checksums, and installs
             <code>thurbox</code>, <code>thurbox-cli</code>, <code>fleet</code>,
-            <code>runtime-mux</code> and <code>workspace-git</code> to
+            <code>runtime-mux</code>, <code>runtime-herdr</code> and <code>workspace-git</code> to
             <code>~/.local/bin</code>. When it is done, it points at <code>fleet init</code>.
           </p>
           <pre data-wrap><code class="language-bash">curl -fsSL https://raw.githubusercontent.com/Thurbeen/thurbox/main/scripts/install.sh | sh</code></pre>
@@ -316,8 +316,8 @@ nix profile install github:Thurbeen/thurbox          # install into your profile
           </h2>
           <p>
             The install scripts (<code>install.sh</code> and <code>install.ps1</code>) ship
-            <code>fleet</code>, <code>runtime-mux</code> and <code>workspace-git</code> beside
-            Thurbox. Homebrew, the AUR, winget and Chocolatey ship thurbox 2.x, without Fleet. Nix ships
+            <code>fleet</code>, <code>runtime-mux</code>, <code>runtime-herdr</code> and
+            <code>workspace-git</code> beside Thurbox. Homebrew, the AUR, winget and Chocolatey ship thurbox 2.x, without Fleet. Nix ships
             <code>thurbox</code> and <code>thurbox-cli</code> only: run the install script
             as well, or
             <a href="#from-source">build from source</a>. To install Fleet alone, with no thurbox, see
@@ -340,7 +340,8 @@ cargo build --release</code></pre>
             <code>thurbox</code>,
             <code>thurbox-cli</code>,
             <code>fleet</code>,
-            <code>runtime-mux</code>
+            <code>runtime-mux</code>,
+            <code>runtime-herdr</code>
             and
             <code>workspace-git</code>.
             A source build is a development build (version
@@ -560,11 +561,11 @@ fleet integration uninstall --all</code></pre>
           <h3 id="uninstall-binaries">3. Remove the binaries</h3>
           <p>
             Every install method ships <code>thurbox</code> and <code>thurbox-cli</code>; the install
-            scripts also ship <code>fleet</code>, <code>runtime-mux</code> and
-            <code>workspace-git</code>.
+            scripts also ship <code>fleet</code>, <code>runtime-mux</code>,
+            <code>runtime-herdr</code> and <code>workspace-git</code>.
           </p>
-          <pre data-wrap><code class="language-bash"># install.sh: the five programs and the LICENSE beside them, in ~/.local/bin or your INSTALL_DIR
-cd ~/.local/bin &amp;&amp; rm -f thurbox thurbox-cli fleet runtime-mux workspace-git LICENSE
+          <pre data-wrap><code class="language-bash"># install.sh: the six programs and the LICENSE beside them, in ~/.local/bin or your INSTALL_DIR
+cd ~/.local/bin &amp;&amp; rm -f thurbox thurbox-cli fleet runtime-mux runtime-herdr workspace-git LICENSE
 
 brew uninstall thurbox          # Homebrew
 paru -R thurbox-bin             # Arch (AUR), prebuilt package

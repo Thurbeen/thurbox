@@ -22,13 +22,8 @@
 
 set -euo pipefail
 
-# thurbox runs `fleet`, Fleet runs `runtime-mux`, and runtime-mux runs
-# `workspace-git`, each found on PATH or beside its caller. A release that
-# leaves one out installs a thurbox that cannot start a session.
-BINARIES=(thurbox thurbox-cli fleet runtime-mux workspace-git)
-# The part of BINARIES Fleet runs headless, without thurbox: what the
-# installers' fleet-only mode installs. install.bats holds it to a subset.
-FLEET_BINARIES=(fleet runtime-mux workspace-git)
+BINARIES=(thurbox thurbox-cli fleet runtime-mux runtime-herdr workspace-git)
+FLEET_BINARIES=(fleet runtime-mux runtime-herdr workspace-git)
 
 case "${1:-}" in
   --binaries) printf '%s\n' "${BINARIES[@]}"; exit 0 ;;
