@@ -85,8 +85,6 @@ fn every_resource_example_applies_as_written() {
     env.apply(listener[0].clone())
         .code(1)
         .stderr_has("created by the manager");
-
-    // Reconciling the ChangeRequest and Conversation examples would reach gitlab.example.com and Slack.
 }
 
 #[test]

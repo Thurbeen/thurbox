@@ -615,8 +615,8 @@ fn a_stalled_collector_adds_at_most_the_call_bound_to_a_command() {
     let endpoint = format!("http://{}", silent.local_addr().unwrap());
     let mut env = Env::new("otel-call-bound");
     exporting(&mut env, &endpoint);
-    // Warm the binary's page cache so the measure is the flush alone.
-    env.fleet(&["version", "--json"]).ok();
+    let _page_cache_warmed_so_the_measure_is_the_flush_alone =
+        env.fleet(&["version", "--json"]).ok();
     let started = Instant::now();
     env.fleet(&["version", "--json"]).ok();
     let took = started.elapsed();

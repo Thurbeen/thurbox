@@ -2579,7 +2579,6 @@ mod tests {
 
     #[test]
     fn a_banner_names_the_version_on_its_last_line_that_has_one() {
-        // psmux's banner, the one the version question is asked of.
         let banner_version = |banner| {
             Psmux::banner_version(banner)
                 .filter(|v| crate::tmux_compat::server::is_version_answer(v))

@@ -65,7 +65,6 @@ fn log_call(args: &[String]) {
         .create(true)
         .open(dir().join("calls.jsonl"))
         .expect("calls log");
-    // One write per line, so a reader never sees half of one.
     f.write_all(format!("{line}\n").as_bytes()).expect("log");
 }
 
