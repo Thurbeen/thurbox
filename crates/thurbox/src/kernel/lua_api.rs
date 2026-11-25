@@ -1,6 +1,6 @@
-//! The plugin API's published shape, declared once (issue #1476).
+//! The mod API's published shape, declared once (issue #1476).
 //!
-//! What a plugin can read off `thurbox` used to be written out by hand in four
+//! What a mod can read off `thurbox` used to be written out by hand in four
 //! places — the publish code, `ui/lib/thurbox.d.lua`, `thurbox.yml` and the
 //! `tests/fixtures/lua_std` probe — and nothing compared them, so a field could
 //! be published undeclared (#1133) with CI green. This module is the one
@@ -12,17 +12,17 @@
 //! `just lua-api` rewrites the generated regions after an edit here.
 //!
 //! [`API`] versions the contract. A field is added freely; removing one, or
-//! changing what it means, bumps the number. A plugin that needs a newer
+//! changing what it means, bumps the number. A mod that needs a newer
 //! contract says so with `requires_api` in its declaration table, and is
 //! refused at load with a reason rather than rendering against a field that is
 //! not there.
 
-/// The plugin API contract number, published as `thurbox.api`.
+/// The mod API contract number, published as `thurbox.api`.
 ///
-/// Bumped when the plugin contract changes incompatibly (ADR-40).
+/// Bumped when the mod contract changes incompatibly (ADR-40).
 /// API 2 makes `files.read` asynchronous: `nil` means pending.
 /// API 3 removes `thurbox.metrics.sessions[id].usage`: account quotas belong
-/// to a plugin that fetches them through `run`, such as `thurbox-info-panel`.
+/// to a mod that fetches them through `run`, such as `thurbox-info-panel`.
 /// API 4 is thurbox 3.0's, on Fleet (ADR-41). It removes what no engine
 /// serves any more: `thurbox.deleted`, `thurbox.tasks`, `thurbox.preflight`,
 /// `thurbox.branches`, `thurbox.worktrees`, `thurbox.agent_default`, an
@@ -36,14 +36,14 @@
 /// longer holds them.
 /// API 6 removes `thurbox.automations` and the `automations` feature flag:
 /// thurbox schedules nothing of its own.
-/// Additions never bump it: a plugin reads a newer field defensively, as it
+/// Additions never bump it: a mod reads a newer field defensively, as it
 /// reads any optional one.
 pub const API: u32 = 6;
 
 /// The prefix of the session meta keys published as `session.meta`.
 ///
 /// Fixed, so a key a driver keeps for itself (`fm.lease`) or thurbox keeps for
-/// itself (`thurbox.codex_conversation_id`) never reaches a plugin.
+/// itself (`thurbox.codex_conversation_id`) never reaches a mod.
 pub const META_PREFIX: &str = crate::session::PUBLISHED_META_PREFIX;
 
 /// The longest published meta value, in characters. A row note is one line.
@@ -115,7 +115,7 @@ fn is_hidden(c: char) -> bool {
             .any(|&(start, end)| (start..=end).contains(&c))
 }
 
-/// Whether a stored meta key is one a plugin may see. A pane may draw the key
+/// Whether a stored meta key is one a mod may see. A pane may draw the key
 /// too, so one carrying a hidden character is skipped, not cleaned: cleaning
 /// could fold it onto another key.
 pub fn is_published_meta_key(key: &str) -> bool {
@@ -155,8 +155,8 @@ pub enum Ty {
     Map(&'static Class),
     /// Keyed by surface, each entry a list.
     MapOfLists(&'static Class),
-    /// Keyed by the key THIS plugin passed to `run`, so a literal key is a
-    /// dotted path a plugin really writes (`thurbox.runs.cpu.state`).
+    /// Keyed by the key THIS mod passed to `run`, so a literal key is a
+    /// dotted path a mod really writes (`thurbox.runs.cpu.state`).
     OwnKeys(&'static Class),
     /// The palette, one key per role of [`roles`].
     Roles,
@@ -200,7 +200,7 @@ impl Field {
     }
 }
 
-/// Every theme role, named as a plugin names it — `theme::palette_roles` is the
+/// Every theme role, named as a mod names it — `theme::palette_roles` is the
 /// field set, so a role added there is declared here without a second edit.
 pub fn roles() -> Vec<&'static str> {
     let palette = crate::theme::ThemePreset::all()[0].palette();
@@ -824,7 +824,7 @@ pub static REGISTRY_SNAPSHOT: Class = Class {
     ],
 };
 
-pub static PLUGIN_ROW: Class = Class {
+pub static MOD_ROW: Class = Class {
     name: "thurbox.ModRow",
     doc: &["One of the interface's own files: where it came from, and whether it runs."],
     exact: true,
@@ -866,7 +866,7 @@ pub static GRANTED: Class = Class {
 };
 
 /// The root. Two publish paths fill it: `LuaHost::publish` for everything, and
-/// `LuaHost::enter`, which sets `runs` and `granted` per plugin.
+/// `LuaHost::enter`, which sets `runs` and `granted` per mod.
 pub static API_ROOT: Class = Class {
     name: "thurbox.Api",
     doc: &[
@@ -918,8 +918,8 @@ pub static API_ROOT: Class = Class {
         leaf("selection", "string")
             .doc("The mouse text selection, empty when nothing is selected."),
         field("hover", Ty::Record(&HOVER)),
-        field("mods", Ty::List(&PLUGIN_ROW)),
-        field("plugins", Ty::List(&PLUGIN_ROW)).doc("Deprecated: the same list as `mods`."),
+        field("mods", Ty::List(&MOD_ROW)),
+        field("plugins", Ty::List(&MOD_ROW)).doc("Deprecated: the same list as `mods`."),
         leaf("ui_dir", "string"),
         field("chrome", Ty::Record(&CHROME)),
         field("theme", Ty::Record(&THEME_SNAPSHOT)),
@@ -967,7 +967,7 @@ pub static ITEMS: &[Item] = &[
     Item::Class(&REGISTRY_COMMAND),
     Item::Class(&REGISTRY_SETTING),
     Item::Class(&REGISTRY_SNAPSHOT),
-    Item::Class(&PLUGIN_ROW),
+    Item::Class(&MOD_ROW),
     Item::Class(&CHROME),
     Item::Class(&GRANTED),
     Item::Class(&API_ROOT),
@@ -1044,7 +1044,7 @@ pub fn declarations() -> String {
 /// index, so a record is written out field by field while a list or an
 /// id-keyed map stops at itself: its rows are reached through `[i]` or a
 /// variable. Declaring a field implies its parents, so only leaves appear.
-/// `runs` is the one map a plugin indexes with a literal of its own choosing,
+/// `runs` is the one map a mod indexes with a literal of its own choosing,
 /// so it takes `*` twice instead.
 pub fn selene_paths() -> Vec<String> {
     let mut paths = Vec::new();
@@ -1052,8 +1052,6 @@ pub fn selene_paths() -> Vec<String> {
     paths
 }
 
-/// The same paths as a plugin really writes them — `runs.*` as a key a plugin
-/// would pick — for the probe that must lint clean.
 fn probe_paths() -> Vec<String> {
     let mut paths = Vec::new();
     walk_paths("thurbox", &API_ROOT, &mut paths, false);

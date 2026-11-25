@@ -29,7 +29,7 @@
 local chrome = require("lib.chrome")
 local panels = require("lib.panels")
 local hover = require("lib.hover")
-local plugin_settings = require("lib.settings")
+local mod_settings = require("lib.settings")
 local session_model = require("lib.session_model")
 local theme = require("lib.theme")
 local ui = require("lib.ui")
@@ -52,7 +52,7 @@ local NAME = "agent"
 --- v1 gates the pane, its chord and its tab on `[features] shell_pane`; this pane
 --- owns all three in v2, so it is the thing that has to ask.
 local function shell_enabled()
-  return plugin_settings.feature("shell_pane", true) ~= false
+  return mod_settings.feature("shell_pane", true) ~= false
 end
 
 local AGENT_TAB, SHELL_TAB = "agent", "shell"

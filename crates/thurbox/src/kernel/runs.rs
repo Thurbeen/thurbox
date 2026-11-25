@@ -1,6 +1,6 @@
-//! Programs a plugin asked to be run, and what they printed.
+//! Programs a mod asked to be run, and what they printed.
 //!
-//! The eighth worker. A plugin cannot call anything that waits, so running a
+//! The eighth worker. A mod cannot call anything that waits, so running a
 //! program is an *ask* (a command) whose answer arrives as a *read* (published
 //! next frame) — the split the kernel already enforces everywhere else, applied
 //! to the one thing that most obviously cannot block a render: a process.
@@ -32,29 +32,21 @@ const OUTPUT_CAP: usize = 256 * 1024;
 /// How long a program may run before it is given up on.
 pub const DEFAULT_TIMEOUT: Duration = Duration::from_secs(30);
 
-/// The longest timeout a plugin may ask for. `npm ci` legitimately takes
-/// minutes; nothing legitimately takes an hour, and a plugin that asks for one
-/// has made a mistake the kernel should not honour.
 const MAX_TIMEOUT: Duration = Duration::from_secs(600);
 
 /// How long an answer stays fresh when the asker does not say.
 pub const DEFAULT_TTL: Duration = Duration::from_secs(2);
 
-/// The shortest TTL the kernel will honour.
-///
-/// A plugin asking for zero would run a process per frame — which is not a
-/// choice it should be able to make, since the cost lands on the whole
-/// interface rather than on that pane.
 const MIN_TTL: Duration = Duration::from_millis(250);
 
 /// Programs running at once. The rest queue.
 const MAX_CONCURRENT: usize = 4;
 
-/// What a plugin asked for.
+/// What a mod asked for.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Ask {
-    /// The plugin's own name for this run. Namespaced by the kernel, so two
-    /// plugins may both call theirs `status`.
+    /// The mod's own name for this run. Namespaced by the kernel, so two
+    /// mods may both call theirs `status`.
     pub key: String,
     /// The command line, run through the shell of the machine it targets.
     pub program: String,
@@ -91,7 +83,7 @@ pub enum Target {
 }
 
 impl Ask {
-    /// Clamp what a plugin asked for into what the kernel will do.
+    /// Clamp what a mod asked for into what the kernel will do.
     ///
     /// Applied here rather than at the worker so the stored TTL is the honoured
     /// one — otherwise freshness would be judged against a number nobody used.
@@ -129,7 +121,7 @@ pub struct Output {
 
 /// One finished run, on its way back to the loop.
 struct Finished {
-    plugin: String,
+    owner: String,
     key: String,
     run: Run,
     at: Instant,
@@ -145,7 +137,7 @@ struct Finished {
 /// is owed even when its answer was forgotten, on every exit path.
 struct Report {
     tx: Sender<Finished>,
-    plugin: String,
+    owner: String,
     key: String,
     run: Option<Run>,
     started: Instant,
@@ -155,7 +147,7 @@ struct Report {
 impl Drop for Report {
     fn drop(&mut self) {
         let _ = self.tx.send(Finished {
-            plugin: std::mem::take(&mut self.plugin),
+            owner: std::mem::take(&mut self.owner),
             key: std::mem::take(&mut self.key),
             run: self.run.take().unwrap_or(Run::Pending),
             at: Instant::now(),
@@ -199,7 +191,7 @@ impl Answer {
 /// the host resolution, neither of which belongs in a store.
 pub type Runner = dyn Fn(&Ask) -> Run + Send + Sync;
 
-/// A program starting or finishing, handed to the loop for the per-plugin perf
+/// A program starting or finishing, handed to the loop for the per-mod perf
 /// report.
 ///
 /// Events rather than running totals so the *report* decides which measuring
@@ -208,17 +200,17 @@ pub type Runner = dyn Fn(&Ask) -> Run + Send + Sync;
 #[derive(Debug, Clone)]
 pub enum RunEvent {
     Started {
-        plugin: String,
+        owner: String,
         at: Instant,
     },
     Finished {
-        plugin: String,
+        owner: String,
         started: Instant,
         took: Duration,
     },
 }
 
-/// Every run a plugin asked for, keyed by `(plugin, key)`.
+/// Every run a mod asked for, keyed by `(mod, key)`.
 #[derive(Default)]
 pub struct RunStore {
     answers: HashMap<(String, String), Answer>,
@@ -243,9 +235,9 @@ impl RunStore {
     ///
     /// Returns whether anything was started or queued, which the caller uses to
     /// decide nothing more than whether to repaint.
-    pub fn request(&mut self, plugin: &str, ask: Ask, runner: &std::sync::Arc<Runner>) -> bool {
+    pub fn request(&mut self, mod_name: &str, ask: Ask, runner: &std::sync::Arc<Runner>) -> bool {
         let ask = ask.clamped();
-        let id = (plugin.to_string(), ask.key.clone());
+        let id = (mod_name.to_string(), ask.key.clone());
         let now = Instant::now();
 
         if let Some(answer) = self.answers.get(&id) {
@@ -274,7 +266,7 @@ impl RunStore {
         entry.inflight = true;
         entry.identity = identity.clone();
 
-        self.queued.push_back((plugin.to_string(), ask, identity));
+        self.queued.push_back((mod_name.to_string(), ask, identity));
         self.drain_queue(runner);
         true
     }
@@ -282,13 +274,13 @@ impl RunStore {
     /// Start whatever the concurrency bound allows.
     fn drain_queue(&mut self, runner: &std::sync::Arc<Runner>) {
         while self.running < MAX_CONCURRENT {
-            let Some((plugin, ask, identity)) = self.queued.pop_front() else {
+            let Some((owner, ask, identity)) = self.queued.pop_front() else {
                 return;
             };
             self.running += 1;
             let started = Instant::now();
             self.events.push(RunEvent::Started {
-                plugin: plugin.clone(),
+                owner: owner.clone(),
                 at: started,
             });
             let tx = self.ensure_channel();
@@ -301,7 +293,7 @@ impl RunStore {
                 // the interface.
                 let mut report = Report {
                     tx,
-                    plugin,
+                    owner,
                     key: ask.key.clone(),
                     run: Some(Run::Failed(format!("{}: the run panicked", ask.program))),
                     started,
@@ -330,11 +322,11 @@ impl RunStore {
         for done in finished {
             self.running = self.running.saturating_sub(1);
             self.events.push(RunEvent::Finished {
-                plugin: done.plugin.clone(),
+                owner: done.owner.clone(),
                 started: done.started,
                 took: done.at.saturating_duration_since(done.started),
             });
-            let id = (done.plugin, done.key);
+            let id = (done.owner, done.key);
             if let Some(answer) = self.answers.get_mut(&id) {
                 if Arc::ptr_eq(&answer.identity, &done.identity) {
                     answer.run = done.run;
@@ -358,37 +350,39 @@ impl RunStore {
         self.answers.is_empty() && self.queued.is_empty() && self.running == 0
     }
 
-    pub fn get(&self, plugin: &str, key: &str) -> Option<&Run> {
+    pub fn get(&self, mod_name: &str, key: &str) -> Option<&Run> {
         self.answers
-            .get(&(plugin.to_string(), key.to_string()))
+            .get(&(mod_name.to_string(), key.to_string()))
             .map(|answer| &answer.run)
     }
 
-    /// Every answer belonging to one plugin, for publishing.
-    pub fn for_plugin<'a>(&'a self, plugin: &str) -> Vec<(&'a str, &'a Run)> {
+    /// Every answer belonging to one mod, for publishing.
+    pub fn for_mod<'a>(&'a self, mod_name: &str) -> Vec<(&'a str, &'a Run)> {
         self.answers
             .iter()
-            .filter(|((owner, _), _)| owner == plugin)
+            .filter(|((owner, _), _)| owner == mod_name)
             .map(|((_, key), answer)| (key.as_str(), &answer.run))
             .collect()
     }
 
     /// Forget this owner's answer and queued ask. Active work keeps its slot
     /// until it finishes, but no longer owns an answer it could publish into.
-    pub fn forget(&mut self, plugin: &str, key: &str) -> bool {
-        let removed = self.answers.remove(&(plugin.to_string(), key.to_string()));
+    pub fn forget(&mut self, mod_name: &str, key: &str) -> bool {
+        let removed = self
+            .answers
+            .remove(&(mod_name.to_string(), key.to_string()));
         self.queued
-            .retain(|(owner, ask, _)| owner != plugin || ask.key != key);
+            .retain(|(owner, ask, _)| owner != mod_name || ask.key != key);
         removed.is_some()
     }
 
-    /// Forget everything belonging to plugins that no longer exist.
+    /// Forget everything belonging to mods that no longer exist.
     ///
-    /// Called after a reload: a plugin that was edited away, renamed or removed
+    /// Called after a reload: a mod that was edited away, renamed or removed
     /// must not leave its answers behind to accumulate across reloads.
-    pub fn retain_plugins(&mut self, live: &[String]) {
-        self.answers.retain(|(plugin, _), _| live.contains(plugin));
-        self.queued.retain(|(plugin, _, _)| live.contains(plugin));
+    pub fn retain_mods(&mut self, live: &[String]) {
+        self.answers.retain(|(owner, _), _| live.contains(owner));
+        self.queued.retain(|(owner, _, _)| live.contains(owner));
     }
 
     /// Take the runs started and finished since the last call.
@@ -559,7 +553,7 @@ impl Captured {
     }
 }
 
-/// The command line a plugin asked for, run on this machine through the
+/// The command line a mod asked for, run on this machine through the
 /// platform shell in `cwd`. thurbox runs nothing on another machine: a
 /// session there is refused before a run is asked for.
 pub fn command_for(program: &str, cwd: &PathBuf) -> std::process::Command {
@@ -659,14 +653,6 @@ mod tests {
         assert_eq!(count.load(std::sync::atomic::Ordering::SeqCst), 2);
     }
 
-    /// Asking every frame is the documented way to use `run`, so asking while a
-    /// run is in flight has to be free.
-    ///
-    /// It was not: a refresh leaves the old answer `Done` on purpose, and
-    /// `Run::Pending` was the only "already going" test — so once an answer went
-    /// stale, every ask started another process until the whole concurrency pool
-    /// was full. A program slower than its own TTL never settled and held all four
-    /// slots for good, starving every other key and plugin.
     #[test]
     fn asking_repeatedly_while_a_refresh_is_in_flight_starts_one_run() {
         let count = Arc::new(std::sync::atomic::AtomicUsize::new(0));
@@ -751,7 +737,7 @@ mod tests {
     }
 
     #[test]
-    fn a_plugin_cannot_ask_for_the_same_run_twice_at_once() {
+    fn a_mod_cannot_ask_for_the_same_run_twice_at_once() {
         // Two asks in one frame, or an ask while the first is still going, must
         // not become two processes.
         let (runner, count) = counting();
@@ -764,7 +750,7 @@ mod tests {
     }
 
     #[test]
-    fn two_plugins_may_use_the_same_key() {
+    fn two_mods_may_use_the_same_key() {
         let (runner, _) = counting();
         let mut store = RunStore::new();
         store.request("a", ask("status"), &runner);
@@ -825,17 +811,17 @@ mod tests {
     }
 
     #[test]
-    fn a_plugin_that_went_away_leaves_nothing_behind() {
+    fn a_mod_that_went_away_leaves_nothing_behind() {
         let (runner, _) = counting();
         let mut store = RunStore::new();
         store.request("gone", ask("k"), &runner);
         run_to_completion(&mut store, &runner);
-        store.retain_plugins(&["still-here".to_string()]);
+        store.retain_mods(&["still-here".to_string()]);
         assert!(store.get("gone", "k").is_none());
     }
 
     #[test]
-    fn a_retired_plugins_late_completion_cannot_recreate_its_answer() {
+    fn a_retired_mods_late_completion_cannot_recreate_its_answer() {
         let (started_tx, started_rx) = std::sync::mpsc::channel();
         let (release_tx, release_rx) = std::sync::mpsc::channel();
         let release_rx = std::sync::Mutex::new(release_rx);
@@ -858,18 +844,18 @@ mod tests {
         });
         let mut store = RunStore::new();
         for _ in 0..64 {
-            store.retain_plugins(&["gone".to_string(), "keeper".to_string()]);
+            store.retain_mods(&["gone".to_string(), "keeper".to_string()]);
             store.request("gone", ask("retired"), &runner);
             started_rx
                 .recv_timeout(Duration::from_secs(5))
                 .expect("retired request started");
-            store.retain_plugins(&["keeper".to_string()]);
+            store.retain_mods(&["keeper".to_string()]);
             store.request("keeper", ask("live"), &runner);
             release_tx.send(()).expect("release");
             run_to_completion(&mut store, &runner);
 
             assert!(store.get("gone", "retired").is_none());
-            assert!(store.for_plugin("gone").is_empty());
+            assert!(store.for_mod("gone").is_empty());
             assert!(matches!(store.get("keeper", "live"), Some(Run::Done(_))));
             assert_eq!(store.answers.len(), 1);
             assert!(store.queued.is_empty());
@@ -973,7 +959,7 @@ mod tests {
             assert!(store.forget("p", &key));
             assert!(!store.forget("p", &key));
             assert!(retired.upgrade().is_none());
-            assert!(store.for_plugin("p").is_empty());
+            assert!(store.for_mod("p").is_empty());
             assert_eq!(store.answers.len(), 1);
             assert!(store.queued.is_empty());
             assert_eq!(store.running, 0);
@@ -983,9 +969,7 @@ mod tests {
     }
 
     #[test]
-    fn what_a_plugin_asked_for_is_clamped_to_what_the_kernel_will_do() {
-        // A plugin choosing its own bounds could take the interface down, so the
-        // numbers it offers are a preference, not a decision.
+    fn what_a_mod_asked_for_is_clamped_to_what_the_kernel_will_do() {
         let greedy = Ask {
             ttl: Duration::ZERO,
             timeout: Duration::from_secs(86_400),

@@ -130,13 +130,13 @@ fn validate() -> (Value, Vec<String>) {
         "themes.toml",
     );
     let (ui_json, ui_ok) = validate_ui_json();
-    let (plugin_state, plugin_state_ok) = validate_mod_state();
+    let (mod_state, mod_state_ok) = validate_mod_state();
 
     let failed: Vec<String> = [
         ("settings.toml", settings_ok),
         ("themes.toml", themes_ok),
         ("ui.json", ui_ok),
-        ("mod-state.json", plugin_state_ok),
+        ("mod-state.json", mod_state_ok),
     ]
     .iter()
     .filter(|(_, ok)| !ok)
@@ -148,8 +148,8 @@ fn validate() -> (Value, Vec<String>) {
         "settings_toml": settings,
         "themes_toml": themes,
         "ui_json": ui_json,
-        "mod_state_json": plugin_state.clone(),
-        "plugin_state_json": plugin_state,
+        "mod_state_json": mod_state.clone(),
+        "plugin_state_json": mod_state,
     });
     (report, failed)
 }
@@ -340,7 +340,7 @@ mod tests {
     }
 
     #[test]
-    fn validate_checks_the_plugin_state_store() {
+    fn validate_checks_the_mod_state_store() {
         // Trust is granted from this file, so a broken one is reported rather
         // than read as "nothing trusted" in silence.
         let tmp = tempfile::tempdir().unwrap();

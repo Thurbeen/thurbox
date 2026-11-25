@@ -11,7 +11,7 @@
 --
 -- Hosts are the outer axis; repo groups remain inside them.
 
-local plugin_settings = require("lib.settings")
+local mod_settings = require("lib.settings")
 
 local session_model = {}
 
@@ -354,7 +354,7 @@ end
 --- explained it turned off. Parent/child nesting is unaffected either way; it
 --- is not a repo property.
 local function grouped()
-  return plugin_settings.enabled("sessions", "group_by_repo", true)
+  return mod_settings.enabled("sessions", "group_by_repo", true)
 end
 
 --- Whether the list separates the machines it spans.
@@ -368,7 +368,7 @@ end
 --- "none". The two are independent anyway — all four combinations render, from
 --- one flat list to repo groups within host rows.
 local function host_grouped()
-  return plugin_settings.enabled("sessions", "group_by_host", true)
+  return mod_settings.enabled("sessions", "group_by_host", true)
 end
 
 --- Digest of the published in-flight commands, for the model memo below.

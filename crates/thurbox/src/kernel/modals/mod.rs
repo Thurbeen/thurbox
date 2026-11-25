@@ -1,13 +1,13 @@
 //! System modals: help, settings and the theme picker.
 //!
-//! These three are not panes and not plugins. A pane shows
+//! These three are not panes and not mods. A pane shows
 //! your work and belongs in the layout; these are **system chrome** — they are
 //! about thurbox itself, they overlay, they are modal, and they are the same in
-//! every install. Making them plugins bought no extensibility (nobody replaces
+//! every install. Making them mods bought no extensibility (nobody replaces
 //! the help pane wholesale) while costing the layout, the focus ring, and a
 //! contribution mechanism nobody could reach.
 //!
-//! So the kernel draws them, in Rust, above the arrangement and above plugin
+//! So the kernel draws them, in Rust, above the arrangement and above mod
 //! floats — the same place the perf HUD and the error panel already draw. The
 //! consequences are the reasons:
 //!
@@ -15,15 +15,15 @@
 //!   be shrunk by one.
 //! - **Not in the focus ring.** `focusable()` never contains one, so `Tab`
 //!   keeps its short ring.
-//! - **Captures input.** While open, keys reach the modal and no plugin is
+//! - **Captures input.** While open, keys reach the modal and no mod is
 //!   offered them. `Esc` closes; the opening chord toggles.
 //! - **One at a time.** Opening one closes another, so there is no z-order
 //!   question because there is no stack.
 //!
-//! Modularity lives one level down: plugins contribute **data** —
+//! Modularity lives one level down: mods contribute **data** —
 //! `Registry::bindings` for help, `Registry::settings` for settings — and the
 //! kernel renders it. The theme picker deliberately takes no contribution;
-//! there is nothing a plugin could add to a list of palettes.
+//! there is nothing a mod could add to a list of palettes.
 
 pub mod chrome;
 pub mod help;
@@ -40,10 +40,10 @@ use self::chrome::{Chrome, Hits, Hover};
 use super::registry::{binding_from, Binding, Pill, Registry};
 use super::theme::Themes;
 
-/// The declaring "plugin" of a modal's chord.
+/// The declaring "mod" of a modal's chord.
 ///
 /// The bindings go through the ordinary registry so the modals appear in help
-/// and can be rebound like anything else — but no Lua plugin owns them, so the
+/// and can be rebound like anything else — but no Lua mod owns them, so the
 /// loop routes this name to the modal layer instead of to `host.on_action`.
 pub const OWNER: &str = "kernel";
 
@@ -60,7 +60,7 @@ pub enum ModalKind {
 impl ModalKind {
     /// The registry action that toggles this modal.
     ///
-    /// Named as the plugins that used to own these panes named them, because
+    /// Named as the mods that used to own these panes named them, because
     /// the footer pills and v1's own key table both reach them by action id —
     /// moving the code should not move the vocabulary.
     pub fn action(self) -> &'static str {
@@ -86,7 +86,7 @@ impl ModalKind {
 
 /// Every chord that opens a system modal, as a registry declaration.
 ///
-/// Collected alongside the plugins' own declarations, so help lists them, the
+/// Collected alongside the mods' own declarations, so help lists them, the
 /// conflict detector sees them, and the editor can rebind them. Each keeps v1's
 /// pair — the `Ctrl` chord plus an F-key alternate, which exists because a
 /// focused terminal passes a bare `Ctrl+<letter>` through to the agent.
@@ -123,7 +123,7 @@ pub fn bindings() -> Vec<Binding> {
 
 /// The action-band entries the system modals contribute.
 ///
-/// The kernel declares these the same way a plugin declares its own: the band
+/// The kernel declares these the same way a mod declares its own: the band
 /// resolves the chord from the registry, so an entry cannot advertise a chord
 /// the keyboard does not honour, and rebinding one moves its entry with it.
 ///
@@ -140,7 +140,7 @@ pub fn pills() -> Vec<Pill> {
     ]
     .into_iter()
     .map(|(kind, label, priority)| Pill {
-        plugin: OWNER.to_string(),
+        owner: OWNER.to_string(),
         action: kind.action().to_string(),
         label: label.to_string(),
         priority,
@@ -154,7 +154,7 @@ pub struct World<'a> {
     pub registry: &'a mut Registry,
     pub themes: &'a mut Themes,
     /// The settings **as the file has them**, which the settings modal shows
-    /// beside what plugins declared and seeds its draft from.
+    /// beside what mods declared and seeds its draft from.
     ///
     /// Deliberately not the settings in force — the panel edits the file, and the
     /// two documents differ by exactly the restart-only half: see
@@ -235,7 +235,7 @@ impl Modals {
     ///
     /// True only while help is capturing a chord: binding
     /// `ctrl+q` has to be possible, and it is possible precisely because the
-    /// kernel knows it is capturing and for exactly one keystroke. A plugin
+    /// kernel knows it is capturing and for exactly one keystroke. A mod
     /// could never be trusted with that.
     pub fn captures_everything(&self) -> bool {
         matches!(&self.open, Some(Open::Help(help)) if help.capturing())

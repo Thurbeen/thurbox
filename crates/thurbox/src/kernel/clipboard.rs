@@ -5,7 +5,7 @@
 //! rebindable)* and nobody could move them. They are ordinary bindings now,
 //! owned by [`super::modals::OWNER`] like the modal chords: listed in help,
 //! offered by the palette, conflict-checked, and rebindable. The loop still
-//! *runs* them itself, because there is no Lua plugin behind them.
+//! *runs* them itself, because there is no Lua mod behind them.
 //!
 //! **macOS gets `Cmd` as well.** `Ctrl+C` on a terminal means interrupt, so a
 //! Mac user reaches for `Cmd+C` — and it did nothing, because the Command key
@@ -143,7 +143,7 @@ mod tests {
     #[test]
     fn the_declarations_are_global_and_owned_by_the_kernel() {
         for binding in bindings_for(true) {
-            assert_eq!(binding.plugin, OWNER);
+            assert_eq!(binding.owner, OWNER);
             assert_eq!(binding.scope, Scope::Global);
             assert!(!binding.passthrough, "{}", binding.chord);
             assert_eq!(binding.group, GROUP);

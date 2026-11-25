@@ -6,7 +6,7 @@
 //! `THURBOX_PERF_LOG=1` or an open perf HUD (F12). `kernel::perf::snapshot_json`
 //! owns the shape; this renders it. This command prints the latest one, so a
 //! running instance can be inspected from outside without tailing
-//! `thurbox.log`. `--plugins` prints the per-pane half. See
+//! `thurbox.log`. `--mods` prints the per-pane half. See
 //! `docs/thurbox/performance.md`.
 
 use serde_json::{json, Value};
@@ -32,11 +32,11 @@ const NO_SNAPSHOT_HINT: &str = "No perf snapshot published. Run the TUI with THU
      or open its perf HUD (F12), then retry.";
 
 /// Shown for a snapshot published by a thurbox that predates `--plugins`.
-const NO_PLUGINS_HINT: &str = "This perf snapshot has no per-mod section: the running TUI \
+const NO_MODS_HINT: &str = "This perf snapshot has no per-mod section: the running TUI \
      is older than `perf --mods`.";
 
 /// Run the `perf` command: print the last published snapshot.
-pub fn run(plugins: bool) -> Result<CommandOutput, String> {
+pub fn run(mods: bool) -> Result<CommandOutput, String> {
     let raw =
         crate::paths::perf_snapshot_file().and_then(|path| std::fs::read_to_string(path).ok());
     let Some(raw) = raw else {
@@ -48,8 +48,8 @@ pub fn run(plugins: bool) -> Result<CommandOutput, String> {
     };
     let snapshot: Value =
         serde_json::from_str(&raw).map_err(|e| format!("perf snapshot is not valid JSON: {e}"))?;
-    if plugins {
-        return Ok(render_plugins(&snapshot));
+    if mods {
+        return Ok(render_mods(&snapshot));
     }
     let human = render_human(&snapshot);
     Ok(CommandOutput::new(snapshot, human))
@@ -162,13 +162,9 @@ fn render_human(s: &Value) -> String {
 }
 
 /// The per-mod table, in the order the snapshot ranked it.
-fn render_plugins(s: &Value) -> CommandOutput {
+fn render_mods(s: &Value) -> CommandOutput {
     let Some(rows) = s.get("plugins").and_then(Value::as_array) else {
-        return CommandOutput::failed(
-            json!({ "plugins": null }),
-            NO_PLUGINS_HINT,
-            "no per-mod data",
-        );
+        return CommandOutput::failed(json!({ "plugins": null }), NO_MODS_HINT, "no per-mod data");
     };
     let json = json!({
         "pid": s["pid"],
@@ -307,7 +303,7 @@ mod tests {
     }
 
     #[test]
-    fn a_snapshot_from_before_plugins_says_so_rather_than_printing_nothing() {
+    fn a_snapshot_from_before_mods_says_so_rather_than_printing_nothing() {
         let _env = isolated();
         publish(SNAPSHOT);
         let out = run(true).unwrap();

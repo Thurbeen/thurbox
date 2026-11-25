@@ -33,7 +33,7 @@ use thurbox::kernel::mod_migration;
 use thurbox::kernel::registry::Registry;
 use thurbox::kernel::snapshot::{SessionRow, Snapshot};
 use thurbox::kernel::theme::Themes;
-use thurbox::session::plugin_spec::mod_destination;
+use thurbox::session::mod_spec::mod_destination;
 use thurbox::session::SessionState;
 
 /// Every release a user may have edited files from, each with what they edited.
@@ -252,7 +252,7 @@ fn edited_session_pane_still_renders_remote_sessions() {
 }
 
 #[test]
-fn edited_interfaces_pass_plugin_check() {
+fn edited_interfaces_pass_mod_check() {
     // What the user runs — and what `AGENTS.md` tells an agent to run — after an
     // upgrade. It loads the whole interface at two sizes the way thurbox does.
     for (release, edited) in RELEASES {
@@ -399,9 +399,6 @@ fn lib_still_exports_every_name_it_ever_published() {
 
 #[test]
 fn restoring_an_edited_layout_keeps_the_edit_as_a_backup() {
-    // Restore is a user's act (settings → Interface → `r`), but a pane's
-    // `command("plugin", …)` can ask for one too, so it may replace the edit
-    // but never make it unrecoverable.
     let (release, edited) = RELEASES[0];
     let dir = upgraded_edited_interface(release, edited);
     let backup = bundled::restore(dir.path(), "layout.lua").expect("restore");

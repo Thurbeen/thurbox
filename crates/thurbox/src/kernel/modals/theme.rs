@@ -1,7 +1,7 @@
 //! The theme picker: the presets plus `themes.toml`, and nothing else.
 //!
 //! Deliberately asymmetric with the other two: there is nothing
-//! a plugin could usefully add to a list of palettes, so this modal declares no
+//! a mod could usefully add to a list of palettes, so this modal declares no
 //! extension point at all rather than an unused one.
 //!
 //! The layout is v1's `ui::theme_picker_modal`, kept detail for detail: a

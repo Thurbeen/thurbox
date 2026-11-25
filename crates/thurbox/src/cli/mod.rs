@@ -36,10 +36,10 @@ pub mod config;
 pub mod doctor;
 pub mod editor;
 pub mod migrate;
+pub mod mods;
 pub mod notify;
 pub mod output;
 pub mod perf;
-pub mod plugins;
 pub mod toon;
 pub mod ui;
 pub mod update;
@@ -202,12 +202,12 @@ pub enum Command {
     /// Interface mods: where they live, start one, check it loads.
     Mod {
         #[command(subcommand)]
-        action: plugins::Action,
+        action: mods::Action,
     },
     #[command(hide = true)]
     Plugin {
         #[command(subcommand)]
-        action: plugins::Action,
+        action: mods::Action,
     },
     /// Control a running local interface instance.
     Ui {
@@ -353,12 +353,12 @@ fn dispatch(command: Command, settings: &Settings) -> Result<CommandOutput, Comm
         }
         Command::Mod { action } => {
             migrate_mods()?;
-            plugins::run(action)?
+            mods::run(action)?
         }
         Command::Plugin { action } => {
             eprintln!("{DEPRECATED_PLUGIN_VERB}");
             migrate_mods()?;
-            plugins::run(action)?
+            mods::run(action)?
         }
         Command::Ui { instance, action } => ui::run(instance, action)?,
         Command::Schema { instance } => ui::schema(instance)?,

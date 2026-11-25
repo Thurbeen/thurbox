@@ -3,11 +3,11 @@
 //! An action used to be reachable only by its chord, in a `Ctrl+<letter>`
 //! namespace that readline, the agents and v1's muscle memory have already
 //! spent; help could *list* an action but not run it. The palette lists every
-//! plugin's keys, every chord-less `commands` declaration and the kernel's own,
+//! mod's keys, every chord-less `commands` declaration and the kernel's own,
 //! filters them as you type, and runs the chosen one through the same
-//! `on_action` path a key press takes — so a plugin cannot tell the two apart.
+//! `on_action` path a key press takes — so a mod cannot tell the two apart.
 //!
-//! Chrome like help and settings: plugins contribute rows by declaring data,
+//! Chrome like help and settings: mods contribute rows by declaring data,
 //! the kernel draws and dispatches.
 
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
@@ -38,7 +38,7 @@ pub const QUIT_ACTION: &str = "kernel.quit";
 /// carries them.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Dispatch {
-    pub plugin: String,
+    pub owner: String,
     pub action: String,
 }
 
@@ -79,7 +79,7 @@ pub fn rows(registry: &Registry) -> Vec<PaletteRow> {
     actions
         .into_iter()
         .map(|action| PaletteRow {
-            plugin: action.owner,
+            owner: action.owner,
             action: action.name,
             description: action.description,
             chords: (!action.chords.is_empty()).then(|| action.chords.join(" / ")),
@@ -115,7 +115,7 @@ pub fn matches(rows: &[PaletteRow], query: &str) -> Vec<usize> {
         .filter(|(_, row)| {
             subsequence(&needle, &row.description)
                 || subsequence(&needle, &row.action)
-                || subsequence(&needle, &row.plugin)
+                || subsequence(&needle, &row.owner)
         })
         .map(|(index, _)| index)
         .collect()
@@ -174,7 +174,7 @@ impl PaletteModal {
                     return Outcome::Stay(None);
                 };
                 return Outcome::Run(Dispatch {
-                    plugin: row.plugin.clone(),
+                    owner: row.owner.clone(),
                     action: row.action.clone(),
                 });
             }
@@ -333,7 +333,7 @@ impl PaletteModal {
         let owner_width = matched
             .iter()
             .filter_map(|index| rows.get(*index))
-            .map(|row| row.plugin.chars().count())
+            .map(|row| row.owner.chars().count())
             .max()
             .unwrap_or(0);
 
@@ -351,7 +351,7 @@ impl PaletteModal {
                 match_index,
             ));
             let marker = if selected { " ▸ " } else { "   " };
-            let owner = chrome::pad(&row.plugin, owner_width + 1);
+            let owner = chrome::pad(&row.owner, owner_width + 1);
             let chord = row.chords.clone().unwrap_or_default();
             let description = if row.description.is_empty() {
                 row.action.clone()
@@ -425,7 +425,7 @@ mod tests {
             Vec::<Setting>::new(),
         );
         registry.declare_commands(vec![CommandDecl {
-            plugin: "mine".into(),
+            owner: "mine".into(),
             action: "mine.export".into(),
             description: "export the list".into(),
         }]);
@@ -457,7 +457,7 @@ mod tests {
         }
         match modal.on_key(&press(KeyCode::Enter), &registry) {
             Outcome::Run(dispatch) => {
-                assert_eq!(dispatch.plugin, "mine");
+                assert_eq!(dispatch.owner, "mine");
                 assert_eq!(dispatch.action, "mine.export");
             }
             Outcome::Stay(_) => panic!("Enter must run the selection"),

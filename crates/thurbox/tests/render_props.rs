@@ -138,12 +138,10 @@ fn index_of(host: &LuaHost, name: &str) -> usize {
         .unwrap_or_else(|| panic!("no plugin named {name}"))
 }
 
-/// Render one pane and paint it, the way `draw_plugin` does — the two halves
-/// that can each fail on a size nobody tried.
 fn render_and_paint(host: &LuaHost, index: usize, width: u16, height: u16) {
     let node = host
         .render(index, ctx(width, height))
-        .unwrap_or_else(|e| panic!("{} at {width}x{height}: {e}", host.plugins[index].name))
+        .unwrap_or_else(|e| panic!("{} at {width}x{height}: {e}", host.mods[index].name))
         .node;
     let mut terminal = Terminal::new(TestBackend::new(width, height)).expect("terminal");
     terminal
@@ -155,13 +153,9 @@ fn render_and_paint(host: &LuaHost, index: usize, width: u16, height: u16) {
 
 #[test]
 fn every_bundled_pane_renders_and_paints_at_any_size() {
-    // The size a pane is handed is the arrangement's business, not the
-    // plugin's, so every bundled pane must render and paint whatever it gets,
-    // down to a single cell. The floats are included: a float's rect is
-    // clamped to the screen, which on a tiny one is a rect nobody sized for.
     let host = host();
     publish(&host, sample());
-    let panes = host.plugins.len();
+    let panes = host.mods.len();
 
     proptest!(ProptestConfig::with_cases(64), |(width in 1u16..=200, height in 1u16..=80)| {
         for index in 0..panes {
@@ -252,18 +246,15 @@ fn any_key() -> impl Strategy<Value = KeyPress> {
     })
 }
 
-/// Press a key the way the loop does: a declared chord resolves through the
-/// registry to `on_action` on the plugin that claimed it, anything else goes
-/// to the focused plugin's `on_key`. Returns the error, if either raised one.
 fn press(
     host: &LuaHost,
     registry: &Registry,
     focused: usize,
     key: &KeyPress,
 ) -> Result<(), String> {
-    let name = host.plugins[focused].name.clone();
+    let name = host.mods[focused].name.clone();
     if let Some(binding) = registry.resolve(key, Some(&name)) {
-        if let Some(index) = host.index_of(&binding.plugin) {
+        if let Some(index) = host.index_of(&binding.owner) {
             if host
                 .on_action(index, &binding.action)
                 .map_err(|e| format!("{}: {e}", binding.action))?
@@ -307,7 +298,7 @@ fn no_key_sequence_makes_a_bundled_pane_throw() {
             prop_assert!(
                 rendered.is_ok(),
                 "{} stopped rendering after {keys:?}: {:?}",
-                host.plugins[index].name,
+                host.mods[index].name,
                 rendered.err()
             );
         }

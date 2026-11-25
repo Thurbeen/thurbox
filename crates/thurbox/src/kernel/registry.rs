@@ -1,13 +1,13 @@
-//! Keys, actions and settings, declared by plugins and collected in one place.
+//! Keys, actions and settings, declared by mods and collected in one place.
 //!
 //! Coherence has to be a property of the API, not a request in
-//! the docs. A plugin declares its keys and settings as *data*, so the kernel
+//! the docs. A mod declares its keys and settings as *data*, so the kernel
 //! can enumerate them without invoking anything — which is what makes a new
-//! plugin's keys show up in help and become rebindable with no other file
+//! mod's keys show up in help and become rebindable with no other file
 //! edited.
 //!
 //! The kernel collects, detects conflicts, applies persisted overrides and
-//! routes. It renders nothing: help and settings are plugins reading what was
+//! routes. It renders nothing: help and settings are mods reading what was
 //! collected.
 
 use serde::Serialize;
@@ -21,33 +21,33 @@ use super::host::KeyPress;
 pub enum Scope {
     /// Fires wherever focus is.
     Global,
-    /// Fires only while the declaring plugin holds focus, so two plugins may
+    /// Fires only while the declaring mod holds focus, so two mods may
     /// declare the same chord without conflicting.
-    Plugin,
+    Mod,
 }
 
 impl Scope {
     pub fn as_str(self) -> &'static str {
         match self {
             Scope::Global => "global",
-            Scope::Plugin => "plugin",
+            Scope::Mod => "plugin",
         }
     }
 
     fn parse(raw: Option<&str>) -> Self {
         match raw {
             Some("global") => Scope::Global,
-            _ => Scope::Plugin,
+            _ => Scope::Mod,
         }
     }
 }
 
-/// A key a plugin responds to.
+/// A key a mod responds to.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Binding {
-    /// Plugin that declared it.
-    pub plugin: String,
-    /// Stable identifier the plugin is called back with.
+    /// Mod that declared it.
+    pub owner: String,
+    /// Stable identifier the mod is called back with.
     pub action: String,
     /// Chord as declared, canonicalised.
     pub default_chord: String,
@@ -72,7 +72,7 @@ pub struct Binding {
     /// `Ctrl+Q`, `Ctrl+N`) are deliberately not marked: they are the keyboard
     /// escape route out of the terminal.
     pub passthrough: bool,
-    /// Whether the plugin is also told when the key is let go.
+    /// Whether the mod is also told when the key is let go.
     ///
     /// Such a binding is called `on_action(action, { event = "press" })` on the
     /// press and `{ event = "release" }` on the release, and its auto-repeat is
@@ -89,14 +89,14 @@ pub struct Binding {
     /// v1 grouped its help by *function* rather than by which module owned the
     /// key, and that is the more useful grouping: you look for "how do I delete
     /// a session", not "what does the session list offer". Defaults to the
-    /// plugin's name so an undeclared key still lands somewhere sensible.
+    /// mod's name so an undeclared key still lands somewhere sensible.
     pub group: String,
 }
 
-/// A setting a plugin accepts.
+/// A setting a mod accepts.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Setting {
-    pub plugin: String,
+    pub owner: String,
     pub id: String,
     pub description: String,
     pub default: Value,
@@ -108,10 +108,10 @@ pub struct Setting {
     /// The only values a text setting may take, in the order the settings modal
     /// steps through them. Empty means free text.
     ///
-    /// Declared rather than validated by the plugin, so the modal can offer a
+    /// Declared rather than validated by the mod, so the modal can offer a
     /// pick instead of a text field and refuse a misspelt value before it is
-    /// persisted, and a stored value a newer plugin no longer offers falls back
-    /// to the default instead of reaching the plugin.
+    /// persisted, and a stored value a newer mod no longer offers falls back
+    /// to the default instead of reaching the mod.
     pub choices: Vec<String>,
 }
 
@@ -129,7 +129,7 @@ impl Setting {
     }
 }
 
-/// An action-band entry a plugin contributes.
+/// An action-band entry a mod contributes.
 ///
 /// Declared as data, like a key or a setting, so a pane earns its place in the
 /// chrome by declaring one table field and knowing nothing about how the band
@@ -137,18 +137,18 @@ impl Setting {
 /// never advertise a chord the keyboard does not honour.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Pill {
-    /// Plugin that declared it.
-    pub plugin: String,
+    /// Mod that declared it.
+    pub owner: String,
     /// The action pressing it runs — the same identifier a key binds to.
     pub action: String,
     pub label: String,
     /// Higher is kept longer when the band runs out of width, and drawn
-    /// further left. The plugin declares it; `ui.json`'s `pills` section
-    /// replaces it, so ordering the band does not mean editing a plugin.
+    /// further left. The mod declares it; `ui.json`'s `pills` section
+    /// replaces it, so ordering the band does not mean editing a mod.
     pub priority: i64,
 }
 
-/// An action a plugin wants reachable **without** a chord.
+/// An action a mod wants reachable **without** a chord.
 ///
 /// The palette's row. Declared as data beside `keys`, with the same `action`
 /// namespace and the same `on_action` handler, so an action need not spend a
@@ -156,7 +156,7 @@ pub struct Pill {
 /// rebinding surface, at which point it is a [`Binding`] like any other.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CommandDecl {
-    pub plugin: String,
+    pub owner: String,
     pub action: String,
     pub description: String,
 }
@@ -165,7 +165,7 @@ pub struct CommandDecl {
 /// has one.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PaletteRow {
-    pub plugin: String,
+    pub owner: String,
     pub action: String,
     pub description: String,
     /// Every chord bound to the action, joined as help joins them.
@@ -197,13 +197,13 @@ pub struct Conflict {
     pub kept: String,
     pub shadowed: String,
     /// Who declared the claim that fires, and who declared the one that does not
-    /// — the names [`Binding::plugin`] carries.
+    /// — the names [`Binding::owner`] carries.
     ///
     /// The action ids do not identify a claimant on their own: nothing stops two
-    /// plugins both declaring `toggle`, and a report naming only the actions
+    /// mods both declaring `toggle`, and a report naming only the actions
     /// leaves a reader unable to tell which file to open.
-    pub kept_plugin: String,
-    pub shadowed_plugin: String,
+    pub kept_mod: String,
+    pub shadowed_mod: String,
 }
 
 impl Conflict {
@@ -211,7 +211,7 @@ impl Conflict {
     ///
     /// Spelled here rather than at each reporting surface so `warnings()` and
     /// `thurbox-cli mod check` cannot come to describe the same clash
-    /// differently — the check is a plugin author's pre-flight for exactly the
+    /// differently — the check is a mod author's pre-flight for exactly the
     /// diagnostic the running interface collects.
     pub fn message(&self) -> String {
         format!(
@@ -231,20 +231,8 @@ pub const QUIT_CHORD: &str = "ctrl+q";
 
 /// Chords the kernel keeps for itself.
 ///
-/// The escape route: a plugin that consumes every key it is offered must not be
+/// The escape route: a mod that consumes every key it is offered must not be
 /// able to trap you inside it. Declaring or overriding one of these is refused.
-// Reload is F10 because v1 already spends F5 on the tasks panel; the kernel
-// takes one of the two F-keys v1 leaves free rather than shadowing a pane.
-//
-// Focus movement is here as well as on Tab: v1 binds it to Ctrl+H/Ctrl+L and
-// refuses to defer either to the agent, precisely because they are how you get
-// *out* of a focused terminal. F12 is v1's perf HUD, which reports on the loop
-// and so must not be something a plugin can take over.
-// Tab and Shift+Tab are DELIBERATELY absent. v1 forwards both to the agent
-// (`agent::input::key_to_bytes` maps Tab to `\t` and BackTab to CSI Z), because
-// every coding agent uses Tab for completion — taking it for focus movement
-// makes the pane unusable for the thing the pane exists to run. Focus moves on
-// Ctrl+H/Ctrl+L, which v1 reserves for exactly this reason.
 pub const RESERVED: [&str; 5] = [QUIT_CHORD, "f10", "ctrl+h", "ctrl+l", "f12"];
 
 /// Kernel shortcuts have stable action names even though no Lua pane owns them.
@@ -315,7 +303,7 @@ impl ActionDescriptor {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ActionDecl {
-    pub plugin: String,
+    pub owner: String,
     pub name: String,
     pub description: String,
     pub scope: Scope,
@@ -336,41 +324,9 @@ pub struct Registry {
     conflicts: Vec<Conflict>,
     /// Persisted overrides: action → chord.
     binding_overrides: BTreeMap<String, String>,
-    /// Persisted overrides: `plugin.setting` → value.
     setting_overrides: BTreeMap<String, Value>,
-    /// Persisted overrides: a pill's action → the priority it is given.
-    ///
-    /// The one decision about the interface that used to live in the plugin
-    /// that declared it, which meant ordering the action band by editing
-    /// somebody else's file. No default is kept beside it: `declare_all`
-    /// replaces the pill list, so the declared number is simply what is there
-    /// when no entry names the action.
-    ///
-    /// Held as the JSON the file carried rather than as an `i64`, so a value of
-    /// the wrong shape is *kept* and refused at apply time — which is what
-    /// `setting_overrides` does, and it matters more here. `persist` rewrites
-    /// `ui.json` from these maps on any unrelated change, so an entry dropped at
-    /// read time would take the user's own typo out of their file before they
-    /// ever ran `thurbox-cli config validate` over it, leaving nothing to find.
     pill_overrides: BTreeMap<String, serde_json::Value>,
-    /// Plugins the user turned off: absolute paths, present on disk and not
-    /// loaded.
-    ///
-    /// Kept here rather than in the delivery manifest deliberately.
-    /// `.bundled.json` records what the *binary* did to the directory — wrote,
-    /// updated, preserved, tombstoned — and a disabled bundled file is still one
-    /// delivery should keep up to date. Putting a user's preference there would
-    /// make "I turned this off" and "we stopped shipping this" the same kind of
-    /// fact (design D1).
     disabled: BTreeSet<String>,
-    /// Plugins the user trusted with a capability: absolute path → the digest
-    /// its contents had when trust was granted.
-    ///
-    /// Keyed by **absolute** path because a repo's `./ui` and the config
-    /// directory's are different sets of files and must not share trust. Keyed
-    /// by path rather than by digest because revoking on every edit would make
-    /// writing your own plugin intolerable — the digest is kept so the drift can
-    /// be *reported* instead (design D6).
     trusted: BTreeMap<String, Granted>,
     /// What would not load: a config file that failed to parse, a rejected
     /// override. Conflicts are *not* kept here — see [`Registry::warnings`].
@@ -388,19 +344,6 @@ pub struct Registry {
     version: u64,
 }
 
-/// Where a registry's overrides came from.
-///
-/// A registry built with [`Default`] holds no overrides at all, so persisting
-/// one does not *change* `ui.json` and `mod-state.json` — it empties them:
-/// every disabled plugin, every trust grant and every setting a user chose is
-/// gone, replaced by the empty tables the fresh registry has. That is not hypothetical. thurbox
-/// injects `THURBOX_CONFIG_DIR` into the sessions it spawns, so a `cargo test`
-/// run from inside thurbox resolves the *real* config directory, and the tests
-/// that build a registry to assert routing wiped the running interface's
-/// decisions as a side effect.
-///
-/// So writing back is a capability of a registry that was *read*, and the type
-/// carries which kind it is rather than every caller remembering.
 #[derive(Default, Clone, Copy, PartialEq, Eq, Debug)]
 enum Origin {
     /// Never read: it has nothing of the user's to write back.
@@ -444,9 +387,9 @@ impl Registry {
 
     /// Replace the declarations after a reload, keeping the overrides.
     ///
-    /// Overrides survive because they belong to the *user*, not to the plugin
-    /// set — an override naming a plugin that is temporarily broken must come
-    /// back when the plugin does.
+    /// Overrides survive because they belong to the *user*, not to the mod
+    /// set — an override naming a mod that is temporarily broken must come
+    /// back when the mod does.
     /// How many times anything published from this registry has changed.
     pub fn version(&self) -> u64 {
         self.version
@@ -525,28 +468,14 @@ impl Registry {
             }
         }
         for setting in &mut self.settings {
-            let key = format!("{}.{}", setting.plugin, setting.id);
+            let key = format!("{}.{}", setting.owner, setting.id);
             if let Some(value) = self.setting_overrides.get(&key) {
-                // A stored value of the wrong shape is ignored rather than
-                // coerced: a plugin that declared a number should never be
-                // handed a string because an old file said so — nor a choice
-                // the plugin no longer offers.
                 if setting.admits(value) {
                     setting.value = value.clone();
                 }
             }
         }
         for pill in &mut self.pills {
-            // Only what the user moved, and only onto something a plugin
-            // declared. An entry naming an unknown action is left alone rather
-            // than turned into a button: a binding may be synthesised from an
-            // override because a bound command becomes a key, but a pill has no
-            // such source, and a chip that does nothing when pressed is what
-            // `bands::entries` already drops declared entries to avoid.
-            //
-            // A priority is a whole number, so `"75"` or `75.5` is refused here
-            // rather than coerced — the same check the settings loop above makes
-            // against a declared default.
             let overridden = self
                 .pill_overrides
                 .get(&pill.action)
@@ -577,25 +506,21 @@ impl Registry {
             }
             if let Some(chord) = self.binding_overrides.get(&command.action) {
                 self.bindings.push(Binding {
-                    plugin: command.plugin.clone(),
+                    owner: command.owner.clone(),
                     action: command.action.clone(),
                     default_chord: String::new(),
                     chord: chord.clone(),
                     overridden: true,
                     description: command.description.clone(),
-                    scope: Scope::Plugin,
+                    scope: Scope::Mod,
                     passthrough: false,
                     release: false,
-                    group: command.plugin.clone(),
+                    group: command.owner.clone(),
                 });
             }
         }
     }
 
-    /// Find chords claimed twice in overlapping scopes.
-    ///
-    /// Two plugin-scoped declarations of `j` are fine — focus decides. A global
-    /// claim overlaps with everything.
     fn detect_conflicts(&mut self) {
         let mut seen: Vec<(String, usize)> = Vec::new();
         for (index, binding) in self.bindings.iter().enumerate() {
@@ -614,8 +539,8 @@ impl Registry {
                     chord: binding.chord.clone(),
                     kept: kept.action.clone(),
                     shadowed: shadowed.action.clone(),
-                    kept_plugin: kept.plugin.clone(),
-                    shadowed_plugin: shadowed.plugin.clone(),
+                    kept_mod: kept.owner.clone(),
+                    shadowed_mod: shadowed.owner.clone(),
                 });
                 continue;
             }
@@ -624,7 +549,7 @@ impl Registry {
     }
 
     /// Everything worth telling the user: what would not load, then every chord
-    /// two plugins both claimed.
+    /// two mods both claimed.
     ///
     /// Conflicts are rendered here on demand rather than appended during
     /// `apply_overrides`. That ran on every `declare` — i.e. on every reload — and
@@ -643,13 +568,13 @@ impl Registry {
     /// declared has to move the chord, or the help editor would accept a
     /// binding that silently never fires. Between two equals, the earlier
     /// declaration wins — load order, so it is stable across runs.
-    pub fn resolve(&self, press: &KeyPress, focused_plugin: Option<&str>) -> Option<&Binding> {
+    pub fn resolve(&self, press: &KeyPress, focused_mod: Option<&str>) -> Option<&Binding> {
         let chord = canonical_chord(press);
         let active = |binding: &&Binding| {
             binding.chord == chord
                 && match binding.scope {
                     Scope::Global => true,
-                    Scope::Plugin => focused_plugin == Some(binding.plugin.as_str()),
+                    Scope::Mod => focused_mod == Some(binding.owner.as_str()),
                 }
         };
         self.bindings
@@ -668,7 +593,7 @@ impl Registry {
         self.disabled.iter().map(String::as_str)
     }
 
-    /// Turn a plugin off, or back on. Returns whether it is now off.
+    /// Turn a mod off, or back on. Returns whether it is now off.
     ///
     /// Idempotent in both directions: the user asked for a state, not for a
     /// transition, and a toggle they cannot predict is worse than one that does
@@ -766,7 +691,7 @@ impl Registry {
 
     /// Resolve the action surface from effective bindings and palette rows.
     /// Reload replaces both source lists before this is called, so a removed
-    /// plugin cannot leave stale catalog entries behind.
+    /// mod cannot leave stale catalog entries behind.
     pub fn action_catalog(&self) -> Vec<ActionDescriptor> {
         let mut actions = Vec::<ActionDescriptor>::new();
         for (chord, name, description) in RESERVED_ACTIONS {
@@ -794,21 +719,21 @@ impl Registry {
             chords: vec![QUIT_CHORD.into()],
         });
         for binding in &self.bindings {
-            if binding.plugin != "kernel" && binding.action.starts_with("kernel.") {
+            if binding.owner != "kernel" && binding.action.starts_with("kernel.") {
                 continue;
             }
             if let Some(existing) = actions
                 .iter_mut()
                 .find(|entry| entry.name == binding.action)
             {
-                if existing.owner == binding.plugin {
+                if existing.owner == binding.owner {
                     existing.chords.push(binding.chord.clone());
                 }
                 continue;
             }
             actions.push(ActionDescriptor {
                 name: binding.action.clone(),
-                owner: binding.plugin.clone(),
+                owner: binding.owner.clone(),
                 description: binding.description.clone(),
                 scope: binding.scope.as_str().into(),
                 arguments: Vec::new(),
@@ -825,21 +750,21 @@ impl Registry {
             });
         }
         for command in &self.commands {
-            if command.plugin != "kernel" && command.action.starts_with("kernel.") {
+            if command.owner != "kernel" && command.action.starts_with("kernel.") {
                 continue;
             }
             if let Some(existing) = actions
                 .iter_mut()
                 .find(|entry| entry.name == command.action)
             {
-                if existing.owner == command.plugin && existing.description.is_empty() {
+                if existing.owner == command.owner && existing.description.is_empty() {
                     existing.description = command.description.clone();
                 }
                 continue;
             }
             actions.push(ActionDescriptor {
                 name: command.action.clone(),
-                owner: command.plugin.clone(),
+                owner: command.owner.clone(),
                 description: command.description.clone(),
                 scope: "global".into(),
                 arguments: Vec::new(),
@@ -886,7 +811,7 @@ impl Registry {
                 .iter_mut()
                 .find(|entry| entry.name == declaration.name)
             {
-                if existing.owner != declaration.plugin {
+                if existing.owner != declaration.owner {
                     continue;
                 }
                 existing.arguments = declaration.arguments.clone();
@@ -898,7 +823,7 @@ impl Registry {
             } else {
                 actions.push(ActionDescriptor {
                     name: declaration.name.clone(),
-                    owner: declaration.plugin.clone(),
+                    owner: declaration.owner.clone(),
                     description: declaration.description.clone(),
                     scope: declaration.scope.as_str().into(),
                     arguments: declaration.arguments.clone(),
@@ -940,22 +865,22 @@ impl Registry {
     }
 
     /// Everything the palette lists: one row per action, from the bindings and
-    /// the chord-less commands alike, de-duplicated on `(plugin, action)`.
+    /// the chord-less commands alike, de-duplicated on `(mod, action)`.
     ///
     /// A binding's row carries its chords, joined the way help joins an action's
     /// alternates; a command's row carries none unless the user bound one. The
-    /// order is declaration order — the plugins' load order, then the kernel's —
+    /// order is declaration order — the mods' load order, then the kernel's —
     /// which is what makes the unfiltered list stable across runs.
     pub fn palette_rows(&self) -> Vec<PaletteRow> {
         let mut rows: Vec<PaletteRow> = Vec::new();
         for binding in &self.bindings {
             let existing = rows
                 .iter_mut()
-                .find(|row| row.plugin == binding.plugin && row.action == binding.action);
+                .find(|row| row.owner == binding.owner && row.action == binding.action);
             match existing {
                 Some(row) => add_chord(row.chords.get_or_insert_with(String::new), &binding.chord),
                 None => rows.push(PaletteRow {
-                    plugin: binding.plugin.clone(),
+                    owner: binding.owner.clone(),
                     action: binding.action.clone(),
                     description: binding.description.clone(),
                     chords: Some(binding.chord.clone()),
@@ -965,7 +890,7 @@ impl Registry {
         for command in &self.commands {
             let bound = rows
                 .iter_mut()
-                .find(|row| row.plugin == command.plugin && row.action == command.action);
+                .find(|row| row.owner == command.owner && row.action == command.action);
             match bound {
                 // The key's row already exists; a command's description wins
                 // when the key declared none.
@@ -974,7 +899,7 @@ impl Registry {
                 }
                 Some(_) => {}
                 None => rows.push(PaletteRow {
-                    plugin: command.plugin.clone(),
+                    owner: command.owner.clone(),
                     action: command.action.clone(),
                     description: command.description.clone(),
                     chords: None,
@@ -988,11 +913,11 @@ impl Registry {
         &self.conflicts
     }
 
-    /// Settings belonging to one plugin, as `id → value`.
-    pub fn settings_for(&self, plugin: &str) -> BTreeMap<&str, &Value> {
+    /// Settings belonging to one mod, as `id → value`.
+    pub fn settings_for(&self, mod_name: &str) -> BTreeMap<&str, &Value> {
         self.settings
             .iter()
-            .filter(|setting| setting.plugin == plugin)
+            .filter(|setting| setting.owner == mod_name)
             .map(|setting| (setting.id.as_str(), &setting.value))
             .collect()
     }
@@ -1028,16 +953,16 @@ impl Registry {
     /// Set a setting's value, or clear the override when `value` is `None`.
     pub fn set_setting(
         &mut self,
-        plugin: &str,
+        mod_name: &str,
         id: &str,
         value: Option<Value>,
     ) -> Result<(), String> {
         self.mark_changed();
-        let key = format!("{plugin}.{id}");
+        let key = format!("{mod_name}.{id}");
         let Some(declared) = self
             .settings
             .iter()
-            .find(|s| s.plugin == plugin && s.id == id)
+            .find(|s| s.owner == mod_name && s.id == id)
         else {
             return Err(format!("no setting named {key:?}"));
         };
@@ -1148,8 +1073,7 @@ fn add_chord(chords: &mut String, chord: &str) {
 /// Do two declarations compete for the same chord?
 fn scopes_overlap(a: &Binding, b: &Binding) -> bool {
     match (a.scope, b.scope) {
-        // Two plugin-scoped claims only collide when the same plugin makes both.
-        (Scope::Plugin, Scope::Plugin) => a.plugin == b.plugin,
+        (Scope::Mod, Scope::Mod) => a.owner == b.owner,
         _ => true,
     }
 }
@@ -1175,7 +1099,7 @@ pub fn canonical_chord(press: &KeyPress) -> String {
     // Ctrl+/ reaches a terminal as one of three things: the kitty protocol
     // reports it literally, while a legacy terminal sends the raw 0x1F byte,
     // which crossterm surfaces as ctrl+7 or ctrl+_ depending on the emulator.
-    // Folding them here means a plugin declares one chord and it works
+    // Folding them here means a mod declares one chord and it works
     // everywhere — the same argument as the capital-letter case below. v1
     // instead bound all three, in three places.
     if press.ctrl && matches!(key.as_str(), "7" | "_" | "/") {
@@ -1526,9 +1450,9 @@ fn json_to_value(value: &serde_json::Value) -> Option<Value> {
     }
 }
 
-/// Build a binding from a plugin's declaration table.
+/// Build a binding from a mod's declaration table.
 pub fn binding_from(
-    plugin: &str,
+    mod_name: &str,
     chord: &str,
     action: &str,
     description: &str,
@@ -1538,7 +1462,7 @@ pub fn binding_from(
 ) -> Binding {
     let chord = normalise_chord(chord);
     Binding {
-        plugin: plugin.to_string(),
+        owner: mod_name.to_string(),
         action: action.to_string(),
         default_chord: chord.clone(),
         chord,
@@ -1547,7 +1471,7 @@ pub fn binding_from(
         scope: Scope::parse(scope),
         passthrough,
         release: false,
-        group: group.unwrap_or(plugin).to_string(),
+        group: group.unwrap_or(mod_name).to_string(),
     }
 }
 
@@ -1566,8 +1490,8 @@ pub fn is_ctrl_letter_chord(chord: &str) -> bool {
 
 /// Help sections, in v1's order.
 ///
-/// Anything a plugin puts in a group not listed here follows, alphabetically —
-/// so a third-party plugin appears without editing this list.
+/// Anything a mod puts in a group not listed here follows, alphabetically —
+/// so a third-party mod appears without editing this list.
 pub const HELP_SECTIONS: [&str; 4] = ["Navigation", "Sessions", "Project", "UI"];
 
 #[cfg(test)]
@@ -1585,9 +1509,9 @@ mod tests {
         }
     }
 
-    fn binding(plugin: &str, chord: &str, action: &str, scope: Scope) -> Binding {
+    fn binding(mod_name: &str, chord: &str, action: &str, scope: Scope) -> Binding {
         Binding {
-            plugin: plugin.into(),
+            owner: mod_name.into(),
             action: action.into(),
             default_chord: normalise_chord(chord),
             chord: normalise_chord(chord),
@@ -1596,26 +1520,23 @@ mod tests {
             scope,
             passthrough: false,
             release: false,
-            group: plugin.into(),
+            group: mod_name.into(),
         }
     }
 
-    /// One row per `(plugin, action)`: its chords joined once each in
-    /// declaration order, the first description kept, a command filling only a
-    /// blank one, and a chord-less command after every binding.
     #[test]
     fn palette_rows_merge_an_actions_chords_and_descriptions() {
         let mut registry = Registry::default();
-        let mut next = binding("mine", "j", "mine.next", Scope::Plugin);
+        let mut next = binding("mine", "j", "mine.next", Scope::Mod);
         next.description = "next item".into();
-        let mut next_again = binding("mine", "down", "mine.next", Scope::Plugin);
+        let mut next_again = binding("mine", "down", "mine.next", Scope::Mod);
         next_again.description = "a second description".into();
-        let repeated = binding("mine", "j", "mine.next", Scope::Plugin);
-        let export = binding("mine", "x", "mine.export", Scope::Plugin);
-        let theirs = binding("theirs", "k", "mine.next", Scope::Plugin);
+        let repeated = binding("mine", "j", "mine.next", Scope::Mod);
+        let export = binding("mine", "x", "mine.export", Scope::Mod);
+        let theirs = binding("theirs", "k", "mine.next", Scope::Mod);
         registry.declare(vec![next, next_again, repeated, export, theirs], Vec::new());
         let command = |action: &str, description: &str| CommandDecl {
-            plugin: "mine".into(),
+            owner: "mine".into(),
             action: action.into(),
             description: description.into(),
         };
@@ -1625,8 +1546,8 @@ mod tests {
             command("mine.fresh", "chord-less"),
         ]);
         let row =
-            |plugin: &str, action: &str, description: &str, chords: Option<String>| PaletteRow {
-                plugin: plugin.into(),
+            |loaded: &str, action: &str, description: &str, chords: Option<String>| PaletteRow {
+                owner: loaded.into(),
                 action: action.into(),
                 description: description.into(),
                 chords,
@@ -1670,7 +1591,7 @@ mod tests {
     #[test]
     fn every_encoding_of_ctrl_slash_agrees() {
         // A legacy terminal sends the raw 0x1F byte, surfaced as ctrl+7 or
-        // ctrl+_; a kitty-protocol one reports ctrl+/ literally. A plugin
+        // ctrl+_; a kitty-protocol one reports ctrl+/ literally. A mod
         // declares one chord and gets all three.
         for name in ["7", "_", "/"] {
             assert_eq!(
@@ -1708,12 +1629,12 @@ mod tests {
     }
 
     #[test]
-    fn a_plugin_scoped_key_fires_only_for_its_plugin() {
+    fn a_mod_scoped_key_fires_only_for_its_mod() {
         let mut registry = Registry::default();
         registry.declare(
             vec![
-                binding("sessions", "j", "sessions.next", Scope::Plugin),
-                binding("themes", "j", "themes.next", Scope::Plugin),
+                binding("sessions", "j", "sessions.next", Scope::Mod),
+                binding("themes", "j", "themes.next", Scope::Mod),
             ],
             Vec::new(),
         );
@@ -1730,7 +1651,6 @@ mod tests {
                 .map(|b| b.action.as_str()),
             Some("themes.next")
         );
-        // Two plugins declaring `j` is not a conflict — focus decides.
         assert!(
             registry.conflicts().is_empty(),
             "{:?}",
@@ -1773,12 +1693,12 @@ mod tests {
     }
 
     #[test]
-    fn a_global_claim_overlaps_a_plugin_scoped_one() {
+    fn a_global_claim_overlaps_a_mod_scoped_one() {
         let mut registry = Registry::default();
         registry.declare(
             vec![
                 binding("a", "x", "a.x", Scope::Global),
-                binding("b", "x", "b.x", Scope::Plugin),
+                binding("b", "x", "b.x", Scope::Mod),
             ],
             Vec::new(),
         );
@@ -1791,7 +1711,7 @@ mod tests {
         registry.declare(
             Vec::new(),
             vec![Setting {
-                plugin: "sessions".into(),
+                owner: "sessions".into(),
                 id: "compact".into(),
                 description: String::new(),
                 default: Value::Bool(false),
@@ -1808,9 +1728,6 @@ mod tests {
 
     #[test]
     fn an_override_of_the_wrong_type_is_ignored() {
-        // A stored value that no longer matches the declaration must not be
-        // coerced — handing a plugin a string where it declared a number is
-        // worse than ignoring the file.
         let mut registry = Registry::default();
         registry
             .setting_overrides
@@ -1818,7 +1735,7 @@ mod tests {
         registry.declare(
             Vec::new(),
             vec![Setting {
-                plugin: "sessions".into(),
+                owner: "sessions".into(),
                 id: "compact".into(),
                 description: String::new(),
                 default: Value::Bool(false),
@@ -1835,8 +1752,6 @@ mod tests {
 
     #[test]
     fn an_override_survives_a_reload_that_drops_its_action() {
-        // The user's override belongs to the user: a plugin that is broken for
-        // one reload must get its binding back when it returns.
         let mut registry = Registry::default();
         registry
             .binding_overrides
@@ -1846,7 +1761,7 @@ mod tests {
         assert!(registry.bindings().is_empty());
 
         registry.declare(
-            vec![binding("sessions", "d", "sessions.delete", Scope::Plugin)],
+            vec![binding("sessions", "d", "sessions.delete", Scope::Mod)],
             Vec::new(),
         );
         assert_eq!(registry.bindings()[0].chord, "ctrl+x");
@@ -1857,7 +1772,7 @@ mod tests {
     fn reserved_chords_cannot_be_rebound() {
         let mut registry = Registry::default();
         registry.declare(
-            vec![binding("sessions", "d", "sessions.delete", Scope::Plugin)],
+            vec![binding("sessions", "d", "sessions.delete", Scope::Mod)],
             Vec::new(),
         );
         for reserved in RESERVED {
@@ -1881,7 +1796,7 @@ mod tests {
         registry.declare(
             Vec::new(),
             vec![Setting {
-                plugin: "sessions".into(),
+                owner: "sessions".into(),
                 id: "width".into(),
                 description: String::new(),
                 default: Value::Number(30.0),
@@ -1973,11 +1888,6 @@ mod tests {
         );
     }
 
-    /// The bug this guards: a registry nobody read from disk used to write
-    /// itself over `ui.json`, and its five empty tables *are* the whole file. A
-    /// test run inherits `THURBOX_CONFIG_DIR` from the session that spawned it,
-    /// so `cargo test` from inside thurbox emptied the running interface's
-    /// disabled set, trust grants and plugin settings.
     #[test]
     fn a_registry_that_was_never_read_does_not_write_over_the_file() {
         let dir = tempfile::tempdir().expect("temp dir");
@@ -1992,7 +1902,7 @@ mod tests {
 
         let mut registry = Registry::default();
         registry.declare(
-            vec![binding("sessions", "d", "sessions.delete", Scope::Plugin)],
+            vec![binding("sessions", "d", "sessions.delete", Scope::Mod)],
             Vec::new(),
         );
         // Each of the four writers, all reporting success: the state asked for
@@ -2029,7 +1939,7 @@ mod tests {
 
         let mut registry = Registry::load();
         registry.declare(
-            vec![binding("sessions", "d", "sessions.delete", Scope::Plugin)],
+            vec![binding("sessions", "d", "sessions.delete", Scope::Mod)],
             Vec::new(),
         );
         registry
@@ -2045,9 +1955,9 @@ mod tests {
         assert!(reloaded.is_disabled("/ui/mods/65_search.lua"));
     }
 
-    fn pill(plugin: &str, action: &str, label: &str, priority: i64) -> Pill {
+    fn pill(mod_name: &str, action: &str, label: &str, priority: i64) -> Pill {
         Pill {
-            plugin: plugin.into(),
+            owner: mod_name.into(),
             action: action.into(),
             label: label.into(),
             priority,
@@ -2081,8 +1991,6 @@ mod tests {
         std::fs::write(dir.join("ui.json"), body).expect("write ui.json");
     }
 
-    /// The issue's own case: ordering the band meant editing the plugin that
-    /// declared the number, and one of those plugins was somebody else's.
     #[test]
     fn a_pills_priority_is_overridden_from_ui_json() {
         let home = tempfile::TempDir::new().expect("tempdir");
@@ -2096,9 +2004,6 @@ mod tests {
         assert_eq!(band_labels(&registry), vec!["Fleet", "Settings"]);
     }
 
-    /// Removing the entry is how the plugin's own number comes back. There is no
-    /// second copy of it to restore from — `declare_all` replaces the list, so
-    /// the declared value is simply what is there when no override names it.
     #[test]
     fn clearing_a_pill_override_restores_the_declared_priority() {
         let home = tempfile::TempDir::new().expect("tempdir");
@@ -2216,8 +2121,6 @@ mod tests {
         let mut registry = Registry::load();
         let (bindings, pills) = banded();
         registry.declare_all(bindings, Vec::new(), pills);
-        // Nothing to do with the band: trusting a file, rebinding a chord in the
-        // help editor or turning a plugin off all reach the same `persist`.
         registry
             .trust("/ui/mods/mine.lua", "return {}")
             .expect("trust");

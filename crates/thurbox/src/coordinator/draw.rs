@@ -1,7 +1,7 @@
 //! Painting a frame, and deciding whether one is owed.
 //!
 //! Demand-driven: a frame happens when something changed or the 250 ms floor
-//! elapsed. `draw` compares each plugin's returned tree against the last one and
+//! elapsed. `draw` compares each mod's returned tree against the last one and
 //! only marks the frame changed when it differs; a float diffs its own tree and
 //! rect, and a chrome band — which has no tree — diffs the cells it just
 //! painted. Marking a band changed for having been *drawn* held `dirty` set
@@ -14,7 +14,7 @@ use ratatui::layout::Rect;
 use ratatui::{DefaultTerminal, Frame};
 
 use thurbox::kernel::bands::{Band, BandState, Level};
-use thurbox::kernel::host::{PluginError, RenderContext, Rendered};
+use thurbox::kernel::host::{ModError, RenderContext, Rendered};
 use thurbox::kernel::layout::{resolve, SlotMode};
 use thurbox::kernel::node::{Axis, Identity};
 use thurbox::kernel::perf::Counters;
@@ -22,7 +22,7 @@ use thurbox::kernel::snapshot::FleetState;
 use thurbox::kernel::{bands, paint};
 
 use super::{
-    clamp_span, error_area, hud_area, plugin_hud_area, read_cells, render_hud, render_plugin_hud,
+    clamp_span, error_area, hud_area, mod_hud_area, read_cells, render_hud, render_mod_hud,
 };
 use crate::{
     App, ClickTarget, FAILURE_HOLD, FORCE_REDRAW_INTERVAL, KEEP_FRAME_WHILE_TYPING,
@@ -30,11 +30,6 @@ use crate::{
 };
 
 impl App {
-    /// Demand-driven paint: when something changed, or when the forced-redraw
-    /// floor elapsed.
-    ///
-    /// `draw` diffs each plugin's tree and clears `dirty` when every one matched,
-    /// so an idle screen settles at the floor.
     pub(crate) fn paint_if_due(
         &mut self,
         terminal: &mut DefaultTerminal,
@@ -68,10 +63,6 @@ impl App {
                 return Ok(());
             }
         }
-        // Published HERE rather than every iteration: a plugin only reads
-        // `thurbox.*` while it renders, so rebuilding those tables on a tick
-        // that paints nothing is pure waste. At `drain_input`'s 10ms poll that
-        // was 100 rebuilds a second to feed a screen that redraws four times.
         let timing = self.perf_timing_active();
         if timing {
             self.host
@@ -266,9 +257,8 @@ impl App {
         // Taken before this frame's panes render, so the HUD's table reads a
         // window whose renders and frame count agree: afterwards, the renders
         // would include this frame while `note_frame` has not counted it yet.
-        let plugin_report = self.hud.then(|| self.host.plugin_report());
+        let mod_report = self.hud.then(|| self.host.mod_report());
 
-        // 1. The arrangement decides where slots go — before any plugin runs.
         let region = match self.host.arrangement(area.width, area.height) {
             Ok(region) => {
                 self.layout_error = None;
@@ -276,8 +266,6 @@ impl App {
             }
             Err(e) => {
                 self.layout_error = Some(e);
-                // A broken arrangement must not take the plugins with it, so
-                // fall back to giving everything to the centre.
                 std::rc::Rc::new(thurbox::kernel::layout::Region {
                     slot: Some("center".to_string()),
                     ..Default::default()
@@ -306,42 +294,22 @@ impl App {
         // and before the guard below, which would otherwise read the pane as one
         // focus cannot rest on and walk straight off it.
         self.apply_pending_focus();
-        // Closing the column you were standing in must not strand focus on it.
-        // Corrected here rather than at key time because the toggle only shows
-        // up in the arrangement on the frame AFTER it is flipped.
-        //
-        // Asked as `can_focus`, not `is_drawn`, and the difference is load-
-        // bearing: this runs BEFORE the switch slot below records its selection,
-        // so a pane focused by its own opening chord is still an alternate at
-        // this point. Judging it drawn would move focus off it every time —
-        // which is exactly what made the plugins pane unreachable by `F11`.
         let focusable_now = self.host.focusable();
         if focusable_now
             .get(self.focus)
-            .is_some_and(|index| !self.can_focus_plugin(*index))
+            .is_some_and(|index| !self.can_focus_mod(*index))
         {
             self.cycle_focus(1);
         }
 
-        // 2. Each slot divides its rect among its plugins, by their DECLARED
-        //    sizes — which is why this can happen before rendering.
         let focusable = self.host.focusable();
-        let focused_plugin = focusable.get(self.focus).copied();
+        let focused_mod = focusable.get(self.focus).copied();
 
-        self.draw_slots(frame, &placed, focused_plugin);
+        self.draw_slots(frame, &placed, focused_mod);
 
-        // 2b. Floats, above the arrangement. A plugin only floats on the
-        //     frames it returns a float node, so a modal opens and closes with
-        //     no separate channel for the kernel to keep in sync.
         self.draw_floats(frame, area);
         self.diffs_shown = self.host.take_diffs_read();
 
-        // System modals, above the arrangement and above every plugin float —
-        // they are not in the layout, so nothing below could shrink them and
-        // they shrink nothing. Deliberately NOT marked as a change: a modal's
-        // content only moves when a key arrives, and that already marks the
-        // screen dirty, so an open modal settles like everything else instead
-        // of repainting sixty times a second.
         if self.modals.is_open() {
             // Given the area WITHOUT the chrome bands, for two reasons that are
             // really one: a modal dims everything it is handed
@@ -374,8 +342,8 @@ impl App {
         if self.hud {
             let hud = hud_area(area);
             render_hud(frame, hud, &self.perf.read(), &self.timings);
-            if let Some(report) = &plugin_report {
-                render_plugin_hud(frame, plugin_hud_area(area, hud, report.rows.len()), report);
+            if let Some(report) = &mod_report {
+                render_mod_hud(frame, mod_hud_area(area, hud, report.rows.len()), report);
             }
             // The counters move on every iteration, so the HUD is never
             // settled — while it is up, the loop keeps painting.
@@ -456,17 +424,6 @@ impl App {
         // something does or the floor elapses.
         self.dirty = self.changed_this_frame;
 
-        // 3. A reload failure outranks anything a stale-but-working plugin says.
-        //    The floor comes last of the three: while it is up the host is the
-        //    bundled copy and reports no error of its own, so without it the
-        //    interface would silently be something other than what the user
-        //    edited.
-        //
-        //    Not over a system modal: the settings modal's Interface tab is how a
-        //    broken interface is fixed, and it names the failing file and prints
-        //    this same error itself. Painted over it, the panel hid the recovery
-        //    tool behind the fault it was opened to fix. Closing the modal brings
-        //    the panel back.
         if let Some(error) = self
             .host
             .error
@@ -490,19 +447,13 @@ impl App {
         }
     }
 
-    /// Step 2: each placed slot divides its rect among its plugins, by their
-    /// DECLARED sizes — which is why this can happen before rendering.
     pub(crate) fn draw_slots(
         &mut self,
         frame: &mut Frame,
         placed: &[thurbox::kernel::layout::SlotRect],
-        focused_plugin: Option<usize>,
+        focused_mod: Option<usize>,
     ) {
         for slot in placed {
-            // A band is a slot the KERNEL occupies: the arrangement names and
-            // places it exactly as it does a pane's region, and the contents come
-            // from here rather than from any plugin. Drawing one runs no Lua, so
-            // no plugin can break it.
             if let Some(band) = Band::from_slot(&slot.slot) {
                 self.render_band(frame, slot.rect, band);
                 continue;
@@ -515,25 +466,22 @@ impl App {
                 continue;
             }
             match self.host.slot_mode(&slot.slot) {
-                SlotMode::Switch => self.draw_switch_slot(frame, slot, &members, focused_plugin),
-                SlotMode::Stack => self.draw_stack_slot(frame, slot, &members, focused_plugin),
+                SlotMode::Switch => self.draw_switch_slot(frame, slot, &members, focused_mod),
+                SlotMode::Stack => self.draw_stack_slot(frame, slot, &members, focused_mod),
             }
         }
     }
 
-    /// One visible occupant; the rest are alternatives waiting to be selected.
-    ///
-    /// The focused plugin wins, so tabbing into a pane brings it forward.
     pub(crate) fn draw_switch_slot(
         &mut self,
         frame: &mut Frame,
         slot: &thurbox::kernel::layout::SlotRect,
         members: &[usize],
-        focused_plugin: Option<usize>,
+        focused_mod: Option<usize>,
     ) {
         let visible = members
             .iter()
-            .position(|index| focused_plugin == Some(*index))
+            .position(|index| focused_mod == Some(*index))
             .unwrap_or_else(|| {
                 self.slot_selection
                     .get(&slot.slot)
@@ -543,7 +491,7 @@ impl App {
             });
         self.slot_selection.insert(slot.slot.clone(), visible);
         if let Some(&index) = members.get(visible) {
-            self.draw_plugin(frame, index, slot.rect, focused_plugin == Some(index));
+            self.draw_mod(frame, index, slot.rect, focused_mod == Some(index));
         }
     }
 
@@ -553,9 +501,9 @@ impl App {
         frame: &mut Frame,
         slot: &thurbox::kernel::layout::SlotRect,
         members: &[usize],
-        focused_plugin: Option<usize>,
+        focused_mod: Option<usize>,
     ) {
-        let sizes: Vec<_> = members.iter().map(|i| self.host.plugins[*i].size).collect();
+        let sizes: Vec<_> = members.iter().map(|i| self.host.mods[*i].size).collect();
         let rects = thurbox::kernel::layout::divide_slot(slot.rect, Axis::Vertical, &sizes, 0);
         for (nth, &index) in members.iter().enumerate() {
             let Some(&rect) = rects.get(nth) else {
@@ -564,14 +512,10 @@ impl App {
             if rect.width == 0 || rect.height == 0 {
                 continue;
             }
-            self.draw_plugin(frame, index, rect, focused_plugin == Some(index));
+            self.draw_mod(frame, index, rect, focused_mod == Some(index));
         }
     }
 
-    /// Step 2b: floats, above the arrangement.
-    ///
-    /// A plugin only floats on the frames it returns a float node, so a modal
-    /// opens and closes with no separate channel for the kernel to keep in sync.
     pub(crate) fn draw_floats(&mut self, frame: &mut Frame, area: Rect) {
         self.grabbed = None;
         self.drawn_floats.clear();
@@ -613,8 +557,6 @@ impl App {
             // click that misses every button still lands on the modal rather than
             // on the pane it covers.
             self.push_targets(index, Some(rect), hits);
-            // The topmost float takes input; later plugins win, matching the
-            // order they are painted in.
             self.grabbed = Some(index);
             // Settled like a pane, by comparing what it drew — not marked changed
             // for simply being open. Unconditional, an open float held `dirty` set
@@ -640,18 +582,7 @@ impl App {
         }
     }
 
-    /// Render one plugin, painting an error panel in ITS OWN rect on failure.
-    ///
-    /// This is the isolation rule made concrete: a plugin that throws costs its
-    /// own pane and nothing else. Its neighbours keep drawing, and its state
-    /// survives for when the file is fixed.
-    pub(crate) fn draw_plugin(
-        &mut self,
-        frame: &mut Frame,
-        index: usize,
-        rect: Rect,
-        focused: bool,
-    ) {
+    pub(crate) fn draw_mod(&mut self, frame: &mut Frame, index: usize, rect: Rect, focused: bool) {
         let ctx = RenderContext {
             width: rect.width,
             height: rect.height,
@@ -670,22 +601,13 @@ impl App {
         let rendered = match self.hold_failure(index, rendered) {
             Ok(rendered) => rendered,
             Err(e) => {
-                paint::render_error(frame, rect, &e.plugin, &e.message);
+                paint::render_error(frame, rect, &e.owner, &e.message);
                 self.errors.push(e);
-                // The pane's own rect, though it drew no rows to record. A
-                // press matching no target at all falls through to
-                // `begin_selection`, so without this a throwing plugin costs
-                // not just its pane but the pointer over it — clicks there
-                // silently paint a text selection across the error panel
-                // instead of focusing it. Isolation is the rule everywhere
-                // else here; this is its mouse half.
-                let fallback = self.host.plugins[index].focusable.then_some(rect);
+                let fallback = self.host.mods[index].focusable.then_some(rect);
                 self.push_targets(index, fallback, Vec::new());
                 return;
             }
         };
-        // A plugin that floats is drawn above the arrangement instead, so it
-        // takes no room in its slot.
         if rendered.float.is_some() {
             return;
         }
@@ -693,10 +615,6 @@ impl App {
             // The session, for everything that is about sessions — the focus
             // label, the info the bands show, `Ctrl+O`.
             self.focused_session = rendered.node.first_session_surface().map(str::to_string);
-            // And whatever this pane is actually showing, which is where raw
-            // input goes. `input = "session"` never meant "the selected
-            // session"; it meant "what this pane is showing", and a plugin's own
-            // program is now one of the things that can be.
             self.focused_surface = rendered.node.first_live_surface().map(str::to_string);
             self.focused_typing = rendered.node.has_focused_input();
         }
@@ -742,22 +660,15 @@ impl App {
         // The pane's own rect is only a target when focus can rest on it. A
         // footer click must reach the pill it landed on and nothing else — v1
         // likewise records no `FocusPane` for panes that cannot hold focus.
-        let fallback = self.host.plugins[index].focusable.then_some(rect);
+        let fallback = self.host.mods[index].focusable.then_some(rect);
         self.push_targets(index, fallback, hits);
     }
 
-    /// Hold a plugin in its failed state for [`FAILURE_HOLD`] after its last
-    /// throw, so a render that succeeds in the meantime answers with the held
-    /// failure instead of its tree.
-    ///
-    /// Only the start and the end of a failure are changes; a failure that
-    /// repeats on every tick moves nothing on screen. A float has no rect to
-    /// show its failure in, so its start goes to the message band.
     pub(crate) fn hold_failure(
         &mut self,
         index: usize,
-        rendered: Result<Rendered, PluginError>,
-    ) -> Result<Rendered, PluginError> {
+        rendered: Result<Rendered, ModError>,
+    ) -> Result<Rendered, ModError> {
         match rendered {
             Err(e) => {
                 let started = self
@@ -768,12 +679,12 @@ impl App {
                     self.changed_this_frame = true;
                     if self
                         .host
-                        .plugins
+                        .mods
                         .get(index)
-                        .is_some_and(|plugin| plugin.floats)
+                        .is_some_and(|loaded| loaded.floats)
                     {
                         let first = e.message.lines().next().unwrap_or_default().trim();
-                        self.report(format!("{} failed: {first}", e.plugin), Level::Error);
+                        self.report(format!("{} failed: {first}", e.owner), Level::Error);
                     }
                 }
                 Err(e)
@@ -790,19 +701,13 @@ impl App {
         }
     }
 
-    /// Let every decorator of this plugin's slot restyle its tree.
-    ///
-    /// A decorator that fails costs its decoration, not the pane — so the
-    /// original is what gets drawn. `None` means no decorator claims the slot,
-    /// which is nearly every pane on nearly every frame: the caller keeps the
-    /// shared tree instead of paying a clone for a restyle that never runs.
     pub(crate) fn decorate_tree(
         &mut self,
         index: usize,
         node: &thurbox::kernel::node::Node,
         ctx: RenderContext,
     ) -> Option<thurbox::kernel::node::Node> {
-        let slot = &self.host.plugins[index].slot;
+        let slot = &self.host.mods[index].slot;
         let decorators = self.host.decorators_of(slot);
         if decorators.is_empty() {
             return None;
@@ -821,9 +726,6 @@ impl App {
 
     /// Place a float in `area`: centred, or opened at its `at` point.
     pub(crate) fn float_rect(area: Rect, float: thurbox::kernel::host::Float) -> Rect {
-        // Cells when the plugin knows them, else a share of the screen. A modal
-        // whose height follows its content — v1's pickers, all of them — can only
-        // say so in cells; clamping keeps an over-ambitious one on screen.
         let width = clamp_span(
             float
                 .cols
@@ -895,11 +797,6 @@ impl App {
         }
     }
 
-    /// Draw one chrome band into the rect the arrangement gave it.
-    ///
-    /// Every value is read from state the kernel already holds — the version, the
-    /// theme, the counts, the focused surface, the message — which is what makes
-    /// "a band cannot be broken by a plugin" true rather than aspirational.
     pub(crate) fn render_band(&mut self, frame: &mut Frame, rect: Rect, band: Band) {
         let snapshot = self.snapshots.current();
         let selected = self.host.shared_string("selected");
@@ -911,14 +808,14 @@ impl App {
         // `focused_session` carries `<id>#shell` while the shell tab is up, and
         // the centre pane paints before the footer band, so this is already
         // resolved by the time the band draws.
-        let focused_plugin = self
+        let focused_mod = self
             .host
             .focusable()
             .get(self.focus)
-            .and_then(|index| self.host.plugins.get(*index))
-            .map(|plugin| plugin.name.clone())
+            .and_then(|index| self.host.mods.get(*index))
+            .map(|loaded| loaded.name.clone())
             .unwrap_or_default();
-        let focus_label = bands::focus_label(self.focused_session.as_deref(), &focused_plugin);
+        let focus_label = bands::focus_label(self.focused_session.as_deref(), &focused_mod);
         // Work in flight outranks a toast while it runs: creation phases
         // routinely outlast the retention window, which is why they are progress
         // rather than a message. `first_running` rather than the whole list,
@@ -963,15 +860,6 @@ impl App {
         }
         let hits = bands::render(frame, rect, band, &state);
         self.band_targets.extend(hits);
-        // A band is chrome the kernel paints directly, so there is no tree to
-        // diff the way a plugin's is — and marking it changed for having been
-        // *drawn* is not the same question. It held `dirty` set after every
-        // single frame, which defeated the demand-driven redraw entirely: the
-        // loop never settled to the 250ms floor and repainted at the frame cap
-        // forever, on an idle screen with no sessions at all.
-        //
-        // The cells it just painted are the honest analog of a plugin's tree —
-        // exact, and immune to a new `BandState` field being forgotten here.
         let painted = read_cells(frame, rect);
         let entry = (rect, painted);
         if self.last_bands.get(&band) != Some(&entry) {
@@ -1058,28 +946,22 @@ impl App {
         stamp.is_some() && previous != stamp
     }
 
-    /// Record one plugin's hitboxes, its own rect first.
-    ///
-    /// Order is the whole contract: the pane fallback goes in before the tree
-    /// so that scanning in reverse finds an identified node first and the
-    /// fallback only when nothing inside matched. v1 spells the same rule the
-    /// other way round — specific targets recorded first, first match wins.
     pub(crate) fn push_targets(
         &mut self,
-        plugin: usize,
+        mod_index: usize,
         pane: Option<Rect>,
         hits: Vec<paint::Hit>,
     ) {
         if let Some(rect) = pane {
             self.click_targets.push(ClickTarget {
-                plugin,
+                mod_index,
                 rect,
                 identity: Identity::default(),
             });
         }
         self.click_targets
             .extend(hits.into_iter().map(|hit| ClickTarget {
-                plugin,
+                mod_index,
                 rect: hit.rect,
                 identity: hit.identity,
             }));

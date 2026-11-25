@@ -1,4 +1,4 @@
-//! Watches the plugin directory and reports that something changed.
+//! Watches the mod directory and reports that something changed.
 //!
 //! Deliberately dumb: it answers "has anything changed since you last asked?"
 //! and the caller decides when to act. Editors save in bursts — write, then
@@ -56,10 +56,6 @@ impl Watcher {
 /// lost track (an overflow or rescan), which is exactly when a reload matters
 /// most. `all()` on an empty iterator is `true`, so that case is handled first.
 fn is_noise(event: &Event) -> bool {
-    // Reading a file is not changing it. inotify reports plain reads as access
-    // events, so without this the host reading its own plugins looks like an
-    // edit — and a reader that runs every frame keeps the debounce window
-    // rolling forward forever, meaning the reload never actually fires.
     if matches!(event.kind, EventKind::Access(_)) {
         return true;
     }
@@ -71,7 +67,7 @@ fn is_noise(event: &Event) -> bool {
         // watched RECURSIVELY, so without this every `git` operation anywhere under
         // it — an index lock, a ref update, a pack — looks like an edit.
         //
-        // This is not only for installed plugins that arrive as a clone: putting
+        // This is not only for installed mods that arrive as a clone: putting
         // your own interface under version control is a reasonable thing to do, and
         // it currently makes your own commits fight the reload. And the symptom is
         // the surprising one this function's other carve-out documents — a burst of
@@ -108,7 +104,7 @@ mod tests {
     }
 
     #[test]
-    fn a_plugin_edit_is_not_noise() {
+    fn a_mod_edit_is_not_noise() {
         assert!(!is_noise(&event(&["/ui/mods/session_list.lua"])));
     }
 
@@ -118,19 +114,12 @@ mod tests {
         assert!(is_noise(&event(&["/ui/mods/.#session_list.lua"])));
     }
 
-    /// Version-control bookkeeping is not an interface edit.
-    ///
-    /// The directory is watched recursively, so every `git` operation under it would
-    /// otherwise read as an edit. Two callers depend on this: a plugin installed as
-    /// a clone, and a user who versions their own panes — and the second is why this
-    /// is a fix rather than a concession.
     #[test]
     fn version_control_bookkeeping_is_noise() {
         for path in [
             "/ui/.git/index.lock",
             "/ui/.git/refs/heads/main",
             "/ui/.git/objects/pack/pack-abc.pack",
-            // A clone belonging to an installed plugin, nested deeper.
             "/ui/doom/.git/FETCH_HEAD",
         ] {
             assert!(is_noise(&event(&[path])), "{path}");
@@ -148,8 +137,6 @@ mod tests {
 
     #[test]
     fn a_real_edit_beside_git_churn_still_wakes_it() {
-        // `all` over the batch: a commit that also touched a plugin must not be
-        // swallowed because most of its paths were bookkeeping.
         assert!(!is_noise(&event(&[
             "/ui/.git/index",
             "/ui/mods/session_list.lua",

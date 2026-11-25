@@ -8,7 +8,7 @@
 //!
 //! - an agent's window keeps its corpse, so the error it printed stays readable
 //!   and the listing can still report `#{pane_dead}`;
-//! - a plugin's program is read from its output *stream*, and tmux announces a
+//! - a mod's program is read from its output *stream*, and tmux announces a
 //!   pane's death only by closing its window — so a kept window is a death that
 //!   is never announced, which is what "the editor hung" was.
 //!
@@ -126,7 +126,6 @@ async fn an_agent_window_keeps_its_corpse_and_a_program_window_does_not() {
         }
     };
 
-    // The plugin's program, through the control-mode path.
     let key = ProgramKey::new("mods/90_files.lua", "editor_opts");
     let mut terminals = Terminals::with_registry(
         std::sync::Arc::new(thurbox::backend::wiring::local_only(&Default::default())),

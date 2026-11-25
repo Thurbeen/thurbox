@@ -1,14 +1,14 @@
-//! The read side: an in-memory picture of the session engine that plugins
+//! The read side: an in-memory picture of the session engine that mods
 //! read from, refreshed on the kernel's own schedule.
 //!
-//! One rule: **Lua never blocks and never awaits.** A plugin
+//! One rule: **Lua never blocks and never awaits.** A mod
 //! renders on the UI thread ~20×/s, so a read that could touch SQLite, git, a
 //! subprocess or an unreachable SSH host would stall the loop — and would do
-//! so for plugins nobody has written yet. Serving every read from a snapshot
+//! so for mods nobody has written yet. Serving every read from a snapshot
 //! removes the whole class.
 //!
 //! The cost is staleness, and the spec requires that be *visible* rather than
-//! denied: every snapshot carries the instant it was taken, so a plugin can
+//! denied: every snapshot carries the instant it was taken, so a mod can
 //! render freshness instead of misrepresenting it.
 
 use std::path::PathBuf;
@@ -55,10 +55,10 @@ pub struct GitState {
     pub merged: Option<bool>,
 }
 
-/// One session, flattened to what a plugin needs to draw it.
+/// One session, flattened to what a mod needs to draw it.
 ///
 /// Deliberately a plain owned struct rather than a borrow of engine state:
-/// plugins read it on the UI thread while the engine mutates elsewhere.
+/// mods read it on the UI thread while the engine mutates elsewhere.
 #[derive(Debug, Clone, PartialEq)]
 pub struct SessionRow {
     pub id: String,
@@ -158,7 +158,7 @@ pub struct SessionRow {
     /// The session's `ui.*` meta keys (issue #1523), cleaned for publishing
     /// ([`crate::kernel::lua_api::clean_meta_value`]) and capped at
     /// [`crate::kernel::lua_api::META_KEYS`]; empty when it has none. Every
-    /// other key is a driver's or thurbox's own and never reaches a plugin.
+    /// other key is a driver's or thurbox's own and never reaches a mod.
     pub meta: std::collections::BTreeMap<String, String>,
     /// Where a Fleet row's status came from (the Task's `status.activity`);
     /// `None` for a row whose status Fleet's agent state did not decide.
@@ -340,7 +340,7 @@ pub struct Snapshot {
     pub hosts: Option<Vec<HostRow>>,
     /// Every Fleet thurbox lists, by name, with its own agents and places.
     pub fleets: Vec<FleetRow>,
-    /// Epoch milliseconds this snapshot represents. Readable by plugins so
+    /// Epoch milliseconds this snapshot represents. Readable by mods so
     /// they can render staleness.
     pub taken_at_ms: i64,
     /// Set when the last refresh failed, and the previous rows are retained;
@@ -448,7 +448,7 @@ pub struct SourceRead {
 
 /// Owns the snapshot and decides when to rebuild it.
 ///
-/// Refresh happens on the kernel's schedule, never inside a plugin call, and
+/// Refresh happens on the kernel's schedule, never inside a mod call, and
 /// the source reads on a worker of its own, so a slow source shows up as stale
 /// rows, never as a loop that stops painting.
 pub struct SnapshotStore {
@@ -578,7 +578,7 @@ impl SnapshotStore {
 
     /// Apply what the source has answered and, when the refresh interval has
     /// elapsed, fold in the git stats and the preflight answers. Called from
-    /// the event loop, never from a plugin. Returns whether rows from the
+    /// the event loop, never from a mod. Returns whether rows from the
     /// source were applied by this call.
     pub fn refresh_if_due(&mut self) -> bool {
         self.refresh_if_due_at(Instant::now())
@@ -739,17 +739,6 @@ pub(crate) fn repo_name(cwd: &Option<PathBuf>, repo_path: Option<&PathBuf>) -> O
         .map(|name| name.to_string_lossy().to_string())
 }
 
-/// The instant a snapshot was taken, to the second.
-///
-/// Deliberately coarser than the clock. `taken_at_ms` is published, and its only
-/// reader is `widgets.now_ms` feeding `time_ago`, which floors the difference to
-/// whole seconds — so sub-second precision is unobservable to the interface,
-/// while re-stamping it moved [`SnapshotStore::version`] 2.5 times a second
-/// and capped how long any pure pane could stay cached (`frame-cost`).
-///
-/// Quantising the published *value* rather than delaying the signal is what
-/// keeps "a plugin never reads a stale published value" true: the field means
-/// "when these rows were read, to the second", and it is never behind that.
 fn taken_at_stamp() -> i64 {
     now_ms() / 1000 * 1000
 }
@@ -761,7 +750,7 @@ fn now_ms() -> i64 {
         .unwrap_or(0)
 }
 
-/// Parse a session id the way a plugin would have written it.
+/// Parse a session id the way a mod would have written it.
 pub fn parse_id(raw: &str) -> Option<SessionId> {
     raw.parse().ok()
 }

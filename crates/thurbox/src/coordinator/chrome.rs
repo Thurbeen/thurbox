@@ -13,16 +13,6 @@ use ratatui::{DefaultTerminal, Frame};
 
 use thurbox::kernel::host::KeyPress;
 
-/// Can a link actually be opened here?
-///
-/// On a remote session or a bare tty there is no browser, and spawning an
-/// opener goes nowhere silently — which is why v1 learned to copy instead and
-/// say so. Published to plugins so a pane can label its key "open" or "copy"
-/// *before* you press it.
-///
-/// v1's `has_browser_target`: any of the three set and non-blank is enough, and
-/// `BROWSER` overrides the display check because a terminal browser is a valid
-/// target on a machine with no X or Wayland session.
 pub(crate) fn browser_available() -> bool {
     if cfg!(target_os = "macos") || cfg!(target_os = "windows") {
         return true;
@@ -64,14 +54,6 @@ pub(crate) fn open_url(url: &str) -> Result<(), String> {
         })
 }
 
-/// Turn a written chord back into the keystroke it names.
-///
-/// The inverse of `registry::canonical_chord`, needed only by
-/// [`ClickVerb::Key`]: replaying a click as a real key event is what stops a
-/// modal button and its letter from ever diverging. Built on
-/// `registry::normalise_chord` so the spellings a plugin may write (`Ctrl+D`,
-/// `command+j`) stay the registry's vocabulary rather than becoming a second
-/// one.
 pub(crate) fn key_event_from_chord(chord: &str) -> Option<KeyEvent> {
     let normalised = thurbox::kernel::registry::normalise_chord(chord);
     let mut modifiers = KeyModifiers::NONE;
@@ -458,9 +440,6 @@ pub(crate) fn clamp_span(value: u16, floor: u16, cap: u16) -> u16 {
 /// Where the reload-failure panel goes: the bottom of the screen, sized to the
 /// message but never more than half the height.
 pub(crate) fn error_area(area: Rect) -> Rect {
-    // Half the screen, but never less than the three rows the message needs and
-    // never more than the screen has. This panel is what a broken plugin shows
-    // through, so it is the last thing that may itself panic.
     let cap = (area.height / 2).max(3).min(area.height);
     let height = clamp_span(area.height.saturating_sub(2), 3, cap);
     Rect {
@@ -580,8 +559,8 @@ pub(crate) fn render_hud(
     // The pane when there is one: it is what the reader goes to fix, and the
     // op name alone does not fit beside it.
     match timings.slow_ops.iter_recent().next() {
-        Some(op) => match &op.plugin {
-            Some(plugin) => text.push_str(&format!("slow   {}ms {plugin}", op.ms)),
+        Some(op) => match &op.owner {
+            Some(owner) => text.push_str(&format!("slow   {}ms {owner}", op.ms)),
             None => text.push_str(&format!("slow   {}:{}ms", op.name, op.ms)),
         },
         None => text.push_str("slow   none"),
@@ -594,26 +573,23 @@ pub(crate) fn render_hud(
     );
 }
 
-/// Rows of the per-pane table. The table is ranked, so an interface with more
-/// plugins than this shows its most expensive ones; `thurbox-cli perf
-/// --plugins` lists all of them.
-const PLUGIN_HUD_ROWS: usize = 8;
+const MOD_HUD_ROWS: usize = 8;
 
 /// Columns the per-pane table wants: the widest row it formats, plus borders.
-const PLUGIN_HUD_WIDTH: u16 = 52;
+const MOD_HUD_WIDTH: u16 = 52;
 
 /// Two borders, the header and one row: less than this shows no pane at all.
-const PLUGIN_HUD_MIN_HEIGHT: u16 = 4;
+const MOD_HUD_MIN_HEIGHT: u16 = 4;
 
 /// Where the per-pane table sits: under the counters, in the same corner — or
 /// beside them on a terminal too short to have room below, where placing it
 /// underneath would draw nothing at all.
-pub(crate) fn plugin_hud_area(area: Rect, hud: Rect, rows: usize) -> Rect {
+pub(crate) fn mod_hud_area(area: Rect, hud: Rect, rows: usize) -> Rect {
     // Two borders, the header, the rows and one hint line.
-    let wanted = (rows.min(PLUGIN_HUD_ROWS) as u16).saturating_add(4);
+    let wanted = (rows.min(MOD_HUD_ROWS) as u16).saturating_add(4);
     let below = area.bottom().saturating_sub(hud.bottom());
-    if below >= wanted.min(PLUGIN_HUD_MIN_HEIGHT) {
-        let width = PLUGIN_HUD_WIDTH.min(area.width);
+    if below >= wanted.min(MOD_HUD_MIN_HEIGHT) {
+        let width = MOD_HUD_WIDTH.min(area.width);
         return Rect {
             x: area.right() - width,
             y: hud.bottom(),
@@ -621,7 +597,7 @@ pub(crate) fn plugin_hud_area(area: Rect, hud: Rect, rows: usize) -> Rect {
             height: wanted.min(below),
         };
     }
-    let width = PLUGIN_HUD_WIDTH.min(hud.x.saturating_sub(area.x));
+    let width = MOD_HUD_WIDTH.min(hud.x.saturating_sub(area.x));
     Rect {
         x: hud.x - width,
         y: area.y,
@@ -632,10 +608,10 @@ pub(crate) fn plugin_hud_area(area: Rect, hud: Rect, rows: usize) -> Rect {
 
 /// Paint the per-pane cost table: most expensive first, the worst in red, any
 /// pane with a hint marked `!`, and the first hint spelled out underneath.
-pub(crate) fn render_plugin_hud(
+pub(crate) fn render_mod_hud(
     frame: &mut Frame,
     area: Rect,
-    report: &thurbox::kernel::perf::PluginReport,
+    report: &thurbox::kernel::perf::ModReport,
 ) {
     use ratatui::style::{Color, Modifier, Style};
     use ratatui::text::Line;
@@ -658,7 +634,7 @@ pub(crate) fn render_plugin_hud(
         ),
         yellow,
     )];
-    for (rank, row) in report.rows.iter().take(PLUGIN_HUD_ROWS).enumerate() {
+    for (rank, row) in report.rows.iter().take(MOD_HUD_ROWS).enumerate() {
         let text = format!(
             "{} {} {:>7} {:>6} {:>4}% {:>5}/{:<5}{}",
             rank + 1,
@@ -724,10 +700,6 @@ mod tests {
 
     use crate::App;
 
-    /// Every chrome rect is derived from the space available, so each one has to
-    /// hold at a size smaller than its own content floor. The error panel matters
-    /// most: it is what a broken plugin shows through, and a five-row pane plus a
-    /// syntax error under `ui/` is the ordinary state while authoring one.
     #[test]
     fn chrome_rects_survive_a_terminal_too_small_for_them() {
         for height in 0..=10u16 {
@@ -750,10 +722,10 @@ mod tests {
                     hud.right() <= area.right() && hud.bottom() <= area.bottom(),
                     "hud_area({width}x{height}) escaped: {hud:?}"
                 );
-                let panes = plugin_hud_area(area, hud, 20);
+                let panes = mod_hud_area(area, hud, 20);
                 assert!(
                     panes.right() <= area.right() && panes.bottom() <= area.bottom(),
-                    "plugin_hud_area({width}x{height}) escaped: {panes:?}"
+                    "mod_hud_area({width}x{height}) escaped: {panes:?}"
                 );
 
                 for float in [
@@ -890,7 +862,7 @@ mod tests {
                 height,
             };
             let hud = hud_area(area);
-            let panes = plugin_hud_area(area, hud, 8);
+            let panes = mod_hud_area(area, hud, 8);
             assert!(
                 panes.height >= 4 && panes.width >= 20,
                 "{width}x{height}: no room for a row: {panes:?}"
@@ -908,7 +880,7 @@ mod tests {
         };
         let hud = hud_area(area);
         assert_eq!(
-            plugin_hud_area(area, hud, 8).y,
+            mod_hud_area(area, hud, 8).y,
             hud.bottom(),
             "with room below, it stays under the counters"
         );

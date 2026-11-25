@@ -1,7 +1,7 @@
 //! Paint a resolved [`Node`] tree into a ratatui frame.
 //!
 //! Everything here is arithmetic plus ratatui calls — no Lua is touched, which
-//! is what lets a plugin's tree be rendered after its VM has been thrown away.
+//! is what lets a mod's tree be rendered after its VM has been thrown away.
 //!
 //! The tree arriving here has already been through the layout pass, so this
 //! walks it with rects rather than computing them: a `box` divides its own
@@ -23,7 +23,7 @@ use super::node::{
 ///
 /// v1 built the same registry by hand, one `record_click` per renderer
 /// (`App::click_targets`); here it falls out of the paint walk, so a hitbox
-/// cannot drift from the cells it covers and a plugin nobody has written yet is
+/// cannot drift from the cells it covers and a mod nobody has written yet is
 /// clickable the moment it gives a node an `id`.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Hit {
@@ -34,7 +34,7 @@ pub struct Hit {
 /// Fills a session-backed surface.
 ///
 /// The kernel owns this because a live terminal grid cannot round-trip through
-/// Lua tables at 20 fps. A plugin *places and frames* a surface; the provider
+/// Lua tables at 20 fps. A mod *places and frames* a surface; the provider
 /// paints inside the rect it was given.
 ///
 /// Painting into the frame rather than returning lines is deliberate: a live
@@ -46,12 +46,6 @@ pub trait SurfaceProvider {
     /// behind it, and the caller draws a placeholder instead.
     fn render_session(&self, frame: &mut Frame, area: Rect, session: &str, scroll: u16) -> bool;
 
-    /// Paint the program `surface` names into `area`, for a pane a plugin owns.
-    ///
-    /// Returns what to draw instead when there is nothing to paint, so a pane
-    /// that has not been started and one whose program has ended read
-    /// differently — a frozen grid and an empty box are the two answers this
-    /// exists to avoid.
     fn render_program(&self, frame: &mut Frame, area: Rect, surface: &str) -> ProgramPaint;
 }
 
@@ -377,7 +371,7 @@ fn paint_surface(
     }
 }
 
-/// Paint an error panel for a plugin that failed, in that plugin's own rect.
+/// Paint an error panel for a mod that failed, in that mod's own rect.
 ///
 /// The isolation rule made visible: the neighbours around this rect are painted
 /// normally and keep their state.
@@ -431,7 +425,7 @@ const VARIATION_SELECTOR_16_LEN: usize = VARIATION_SELECTOR_16.len_utf8();
 /// column everywhere, and the blank ratatui already reserved beside it keeps the
 /// row the width it was measured at. Applied to the finished frame, so it covers
 /// panes, bands, modals and the vt100 surfaces alike — an agent printing `✔️`
-/// corrupts a row exactly as a plugin does.
+/// corrupts a row exactly as a mod does.
 ///
 /// The clusters it cannot help (a regional-indicator flag is two columns here
 /// and a different number there) are why a reflow repaints in full — see

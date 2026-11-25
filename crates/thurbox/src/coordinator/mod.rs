@@ -382,12 +382,12 @@ impl App {
                 .timings
                 .slow_ops
                 .iter_recent()
-                .map(|op| match &op.plugin {
-                    Some(plugin) => format!("{}:{}ms@{plugin}", op.name, op.ms),
+                .map(|op| match &op.owner {
+                    Some(owner) => format!("{}:{}ms@{owner}", op.name, op.ms),
                     None => format!("{}:{}ms", op.name, op.ms),
                 })
                 .collect();
-            let plugins = self.host.plugin_report().summary(5);
+            let mods = self.host.mod_report().summary(5);
             tracing::info!(
                 iterations = window.iterations,
                 frames = window.frames,
@@ -403,13 +403,13 @@ impl App {
                 tick_p50_us = self.timings.tick.percentile_us(50),
                 tick_p95_us = self.timings.tick.percentile_us(95),
                 slow_ops = slow.join(" "),
-                plugins,
+                plugins = mods,
                 "perf_window"
             );
             self.perf_window_base = counters;
             self.perf_window_tick = counters.iterations;
             self.timings.reset_window();
-            self.host.reset_plugin_perf();
+            self.host.reset_mod_perf();
         }
 
         // The snapshot, on its own slower cadence: it is a database write, not
@@ -426,7 +426,7 @@ impl App {
             &self.timings,
             &self.startup,
             self.snapshots.current().sessions.len(),
-            &self.host.plugin_report(),
+            &self.host.mod_report(),
         );
         // Off the loop: `thurbox-cli perf` reads the file whenever it is asked.
         let text = json.to_string();
@@ -448,13 +448,13 @@ impl App {
         let start = Instant::now();
         let out = f(self);
         let elapsed = start.elapsed();
-        let plugin = self.host.end_op();
-        let log_plugin = plugin.clone().unwrap_or_default();
-        if self.timings.record_op(name, elapsed, plugin) {
+        let owner = self.host.end_op();
+        let log_mod = owner.clone().unwrap_or_default();
+        if self.timings.record_op(name, elapsed, owner) {
             tracing::warn!(
                 op = name,
                 ms = elapsed.as_millis() as u64,
-                plugin = log_plugin,
+                plugin = log_mod,
                 "slow op"
             );
         }
@@ -498,21 +498,10 @@ impl App {
         }
     }
 
-    /// Note that something a plugin reads has moved.
-    ///
-    /// Separate from [`Self::note_data_change`] because the callers inside
-    /// `republish` are already *in* the frame that will show the new value:
-    /// marking it dirty there would buy a second repaint of what is about to be
-    /// painted anyway.
     pub(crate) fn note_published_change(&mut self) {
         self.data_epoch = self.data_epoch.wrapping_add(1);
     }
 
-    /// Note that published data moved, and that the screen owes a frame.
-    ///
-    /// The two go together everywhere this is used: something that changes what
-    /// a plugin would read is also something worth repainting for, and worth
-    /// polling quickly again after.
     pub(crate) fn note_data_change(&mut self) {
         self.note_published_change();
         // A worker result or a row another process wrote is the answer to
@@ -539,16 +528,6 @@ impl App {
         if self.host.poll_files() {
             self.note_data_change();
         }
-        // The selected session's diff, computed on a worker. Requesting is
-        // idempotent, so calling it every frame costs nothing after the
-        // first.
-        //
-        // Driven by the *selection*, not by `focused_session`: the latter is
-        // re-derived each frame from the focused plugin's session surface, so
-        // only a pane drawing a terminal ever asked for one. A pane that shows
-        // a diff draws no terminal by definition, and would never be handed the
-        // thing it exists to show. The selection is what "the session the user
-        // is looking at" actually means, and the session list publishes it.
         let wanted = self
             .host
             .shared_string("selected")
@@ -652,24 +631,11 @@ impl App {
         }
         self.settle_echo();
         self.collect_shells();
-        // Programs plugins asked for. Served here because resolving a
-        // session to a directory and a machine is the loop's knowledge, not
-        // a store's — the store owns the bounds and the queue.
         self.serve_runs();
     }
 
-    /// Take what plugins asked for, start what may start, and publish answers.
-    ///
-    /// Session directories/routes are snapshotted for the runner; host
-    /// resolution and execution stay on its worker. An unknown target is a
-    /// reported failure, never a fallback to another machine.
     pub(crate) fn serve_runs(&mut self) {
         let asked = self.host.drain_run_requests();
-        // Nothing asked now, nothing ever asked: every interface with no
-        // capability-using plugin, i.e. almost all of them. Checked *before*
-        // `self.runner()`, which clones every session's id, cwd and backend into a
-        // fresh map behind a new `Arc` — the `||` below evaluates it whenever
-        // nothing was asked, so that was happening on every 10 ms iteration.
         if asked.is_empty() && self.runs.is_empty() {
             return;
         }
@@ -678,13 +644,13 @@ impl App {
         }
         if !asked.is_empty() {
             let runner = self.runner();
-            for (plugin, request) in asked {
+            for (owner, request) in asked {
                 match request {
                     thurbox::kernel::runs::Request::Ask(ask) => {
-                        self.runs.request(&plugin, ask, &runner);
+                        self.runs.request(&owner, ask, &runner);
                     }
                     thurbox::kernel::runs::Request::Forget(key) => {
-                        self.runs.forget(&plugin, &key);
+                        self.runs.forget(&owner, &key);
                     }
                 }
             }
@@ -694,16 +660,15 @@ impl App {
         for event in self.runs.drain_events() {
             self.host.note_run(&event);
         }
-        // Answers, per plugin, for the next render to read.
         let mut answers = thurbox::kernel::host::RunAnswers::new();
-        for plugin in &self.host.plugins {
-            if plugin.capabilities.is_empty() {
+        for loaded in &self.host.mods {
+            if loaded.capabilities.is_empty() {
                 continue;
             }
-            let mine = self.runs.for_plugin(&plugin.path);
+            let mine = self.runs.for_mod(&loaded.path);
             if !mine.is_empty() {
                 answers.insert(
-                    plugin.path.clone(),
+                    loaded.path.clone(),
                     mine.into_iter()
                         .map(|(key, run)| (key.to_string(), run.clone()))
                         .collect(),

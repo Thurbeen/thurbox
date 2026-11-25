@@ -1,8 +1,8 @@
 //! The active colour scheme, resolved once and published as named roles.
 //!
-//! Resolution is a *contract* — every plugin expresses colour by
+//! Resolution is a *contract* — every mod expresses colour by
 //! naming a role, so something must turn roles into colours before any pane can
-//! draw. Choosing a theme, by contrast, is presentation, and stays a plugin.
+//! draw. Choosing a theme, by contrast, is presentation, and stays a mod.
 //!
 //! Nothing here is reimplemented. The top-level `theme` module is data and
 //! already reachable from the kernel: it carries all 36 presets and a 31-role
@@ -218,7 +218,7 @@ fn resolve(wanted: Option<&str>, custom: &[ThemeEntry]) -> ThemeEntry {
     }
 }
 
-/// Every role in a palette, named as a plugin names it.
+/// Every role in a palette, named as a mod names it.
 ///
 /// Listed explicitly rather than derived: the field set is a published contract,
 /// so adding a role should be a visible edit here, and a *removed* field becomes
@@ -307,7 +307,7 @@ pub fn palette_roles(p: &ThemePalette) -> BTreeMap<&'static str, String> {
 /// Render a ratatui colour in the form [`super::node::parse_color`] accepts.
 ///
 /// `Reset` is emitted as `"reset"` rather than dropped: a theme setting a role
-/// to the terminal's own colour is *defining* it, and a plugin asking for that
+/// to the terminal's own colour is *defining* it, and a mod asking for that
 /// role should get an answer.
 pub fn color_to_string(color: &ratatui::style::Color) -> String {
     use ratatui::style::Color;
@@ -416,8 +416,6 @@ mod tests {
 
     #[test]
     fn published_colours_parse_back_through_the_node_vocabulary() {
-        // The round trip that matters: whatever we publish, a plugin must be
-        // able to hand straight back as a style.
         for preset in ThemePreset::all() {
             let roles = palette_roles(&preset.palette());
             for (role, text) in roles {

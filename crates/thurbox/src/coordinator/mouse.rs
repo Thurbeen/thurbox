@@ -2,8 +2,8 @@
 //!
 //! Everything here reads `click_targets`, the identified nodes of the frame just
 //! painted, scanned in reverse so the innermost node under a point — and, across
-//! plugins, the one painted last — wins. Bands keep their own list: a click on
-//! one must not focus a pane, and there is no plugin index to record.
+//! mods, the one painted last — wins. Bands keep their own list: a click on
+//! one must not focus a pane, and there is no mod index to record.
 
 use std::time::{Duration, Instant};
 
@@ -217,7 +217,7 @@ impl App {
                 x: x.saturating_sub(target.rect.x),
                 y: y.saturating_sub(target.rect.y),
             };
-            match self.host.on_scroll(target.plugin, &scroll) {
+            match self.host.on_scroll(target.mod_index, &scroll) {
                 Ok(true) => {
                     self.dirty = true;
                     return;
@@ -226,7 +226,7 @@ impl App {
                 Err(e) => self.errors.push(e),
             }
             if self.wheel_notch.opens(Instant::now(), up) {
-                self.dispatch_key_to(target.plugin, &key);
+                self.dispatch_key_to(target.mod_index, &key);
                 self.dirty = true;
             }
         }
@@ -295,9 +295,6 @@ impl App {
             // is not still there when Help closes.
             let missed = self.grabbed;
             match hit.identity.click_verb() {
-                // `clicked` is only the fallback owner, and a band has no plugin
-                // to fall back to; the action's own declaration is what resolves
-                // it, exactly as for a pill drawn by a pane.
                 Some(ClickVerb::Action(action)) => {
                     if let Some(float) = missed {
                         self.dispatch_outside(float, x, y);
@@ -394,10 +391,9 @@ impl App {
         }
     }
 
-    /// Offer a right press to the plugin that painted the node under it.
     fn dispatch_context(&mut self, target: ClickTarget, x: u16, y: u16) {
         let click = self.click_at(&target, x, y, false, 1);
-        match self.host.on_context(target.plugin, &click) {
+        match self.host.on_context(target.mod_index, &click) {
             Ok(handled) => {
                 if handled {
                     self.dirty = true;
@@ -436,11 +432,11 @@ impl App {
         // Every click focuses the pane it landed in, before the target acts. In
         // a `switch` slot that is also how a view is selected, so a tab pill
         // and a Tab press bring the same pane forward.
-        self.focus_plugin(target.plugin);
+        self.focus_mod(target.mod_index);
 
         match target.identity.click_verb() {
             Some(ClickVerb::Action(action)) => {
-                self.run_clicked_action(&action, target.plugin);
+                self.run_clicked_action(&action, target.mod_index);
                 true
             }
             // Replayed as a real keystroke, through the very handler the
@@ -452,9 +448,9 @@ impl App {
                 }
                 true
             }
-            Some(ClickVerb::Focus(plugin)) => {
-                if let Some(index) = self.host.index_of(&plugin) {
-                    self.focus_plugin(index);
+            Some(ClickVerb::Focus(mod_name)) => {
+                if let Some(index) = self.host.index_of(&mod_name) {
+                    self.focus_mod(index);
                 }
                 true
             }
@@ -477,16 +473,16 @@ impl App {
                 if target.identity.is_drag_handle() {
                     self.selection = None;
                     self.pointer_grab = Some(PointerGrab {
-                        plugin: target.plugin,
+                        mod_index: target.mod_index,
                         rect: target.rect,
                         identity: target.identity.clone(),
                     });
                 }
                 let clicks =
                     self.click_train
-                        .count(Instant::now(), target.plugin, &target.identity);
+                        .count(Instant::now(), target.mod_index, &target.identity);
                 let click = self.click_at(&target, x, y, false, clicks);
-                match self.host.on_click(target.plugin, &click) {
+                match self.host.on_click(target.mod_index, &click) {
                     Ok(handled) => handled,
                     Err(e) => {
                         self.errors.push(e);
@@ -497,10 +493,6 @@ impl App {
         }
     }
 
-    /// Run a declared action, on the plugin that declared it.
-    ///
-    /// The catalog maps action to owner, so a button may name another pane's
-    /// action without guessing which plugin will handle it.
     pub(crate) fn run_clicked_action(&mut self, action: &str, _clicked: usize) {
         self.run_clicked_action_with_args(action, _clicked, &[]);
     }
@@ -628,7 +620,7 @@ impl App {
             return false;
         };
         let target = ClickTarget {
-            plugin: grab.plugin,
+            mod_index: grab.mod_index,
             rect: grab.rect,
             identity: grab.identity,
         };
@@ -636,7 +628,7 @@ impl App {
         let (x, y) = bounds.clamp(x, y);
         // A move under a press is not another press.
         let click = self.click_at(&target, x, y, true, 1);
-        match self.host.on_click(grab.plugin, &click) {
+        match self.host.on_click(grab.mod_index, &click) {
             Ok(_) => {}
             Err(e) => self.errors.push(e),
         }
@@ -833,23 +825,6 @@ impl App {
         self.toast(message);
     }
 
-    /// Hand every visible link back to the terminal thurbox runs in.
-    ///
-    /// The only route to a browser when the agent is on a remote host: the
-    /// outer terminal opens the link, so it has to be told the runs are links.
-    /// Every attached session is offered rather than only the focused one,
-    /// because the paints are validated against the drawn buffer — a session
-    /// not painted this frame contributes nothing on its own.
-    ///
-    /// A pane's [`ClickVerb::Url`] nodes ride the same leg, which is the whole
-    /// point of the verb: a plugin hands the kernel cells and can emit no
-    /// escape of its own, so this is the only place its content can become a
-    /// link the outer terminal knows about.
-    ///
-    /// `self.links` — already maintained for `thurbox.links`, and paced by its
-    /// own stamp and age — is handed over so a **plain-text** URL is offered
-    /// too, not only an OSC 8 run. Nothing rescans here: the list is the one
-    /// [`Self::refresh_links`] built before this frame was drawn.
     pub(crate) fn paint_outer_hyperlinks(&mut self, buf: &ratatui::buffer::Buffer) {
         let mut paints = Vec::new();
         for row in &self.snapshots.current().sessions {
@@ -865,21 +840,19 @@ impl App {
                 paints.extend(self.terminals.hyperlink_paints(&surface, buf, scanned));
             }
         }
-        // A band's hit carries no plugin, which is also what makes it unable to
-        // be its own float — hence the `Option`.
         let panes = self
             .click_targets
             .iter()
-            .map(|target| (Some(target.plugin), target.rect, &target.identity));
+            .map(|target| (Some(target.mod_index), target.rect, &target.identity));
         let bands = self
             .band_targets
             .iter()
             .map(|hit| (None, hit.rect, &hit.identity));
-        for (plugin, rect, identity) in panes.chain(bands) {
+        for (mod_index, rect, identity) in panes.chain(bands) {
             let Some(ClickVerb::Url(url)) = identity.click_verb() else {
                 continue;
             };
-            if self.link_paint_obscured(plugin, rect) {
+            if self.link_paint_obscured(mod_index, rect) {
                 continue;
             }
             paints.extend(thurbox::kernel::terminal::drawn_link_paints(
@@ -900,22 +873,12 @@ impl App {
         }
     }
 
-    /// Is something drawn over these cells, so that linking them would link
-    /// somebody else's glyphs?
-    ///
-    /// `hyperlink_paints` gets this for free by matching the glyphs it expects
-    /// against the frame — a run the frame no longer prints there drops out. A
-    /// pane's node has no label to match (the text is in the plugin's tree, and
-    /// wrapping and scroll have moved it since), so what covers it is checked
-    /// directly instead: a modal owns the whole screen while it is up, and a
-    /// float owns its rect. Without this a modal over a `url:` node would make
-    /// the modal's own text `Ctrl+Click` to that url.
-    pub(crate) fn link_paint_obscured(&self, plugin: Option<usize>, rect: Rect) -> bool {
+    pub(crate) fn link_paint_obscured(&self, mod_index: Option<usize>, rect: Rect) -> bool {
         if self.modals.is_open() {
             return true;
         }
         self.drawn_floats.iter().any(|index| {
-            Some(*index) != plugin
+            Some(*index) != mod_index
                 && self
                     .last_floats
                     .get(index)
@@ -944,7 +907,7 @@ enum Grab {
 fn float_grab(grabbed: Option<usize>, target: Option<ClickTarget>) -> Grab {
     match grabbed {
         None => Grab::Free(target),
-        Some(float) => match target.filter(|target| target.plugin == float) {
+        Some(float) => match target.filter(|target| target.mod_index == float) {
             Some(target) => Grab::Held(target),
             None => Grab::Outside(float),
         },
@@ -998,7 +961,7 @@ const DOUBLE_CLICK: Duration = Duration::from_millis(400);
 /// many it made.
 struct Press {
     at: Instant,
-    plugin: usize,
+    mod_index: usize,
     id: String,
     clicks: u8,
 }
@@ -1037,20 +1000,20 @@ impl ClickTrain {
     /// A third quick press starts over at 1 rather than counting to 3, so a
     /// pane that opens on 2 opens once. A node with no id has nothing to be
     /// the same as, and every press on it is a first.
-    fn count(&mut self, now: Instant, plugin: usize, identity: &Identity) -> u8 {
+    fn count(&mut self, now: Instant, mod_index: usize, identity: &Identity) -> u8 {
         let Some(id) = identity.id.clone() else {
             return 1;
         };
         let repeats = self.previous.as_ref().is_some_and(|press| {
             press.clicks == 1
-                && press.plugin == plugin
+                && press.mod_index == mod_index
                 && press.id == id
                 && now.duration_since(press.at) < DOUBLE_CLICK
         });
         let clicks = if repeats { 2 } else { 1 };
         self.last = Some(Press {
             at: now,
-            plugin,
+            mod_index,
             id,
             clicks,
         });
@@ -1077,16 +1040,16 @@ fn copy_message(
 mod tests {
     use super::*;
 
-    fn painted_by(plugin: usize) -> Option<ClickTarget> {
+    fn painted_by(mod_index: usize) -> Option<ClickTarget> {
         Some(ClickTarget {
-            plugin,
+            mod_index,
             rect: Rect::new(0, 0, 10, 1),
             identity: Identity::default(),
         })
     }
 
-    fn plugin_of(target: &Option<ClickTarget>) -> Option<usize> {
-        target.as_ref().map(|target| target.plugin)
+    fn mod_of(target: &Option<ClickTarget>) -> Option<usize> {
+        target.as_ref().map(|target| target.mod_index)
     }
 
     /// Both presses answer to this one rule, so a left and a right press can
@@ -1095,11 +1058,11 @@ mod tests {
     #[test]
     fn a_float_holds_every_press_and_hands_on_only_its_own() {
         match float_grab(None, painted_by(3)) {
-            Grab::Free(target) => assert_eq!(plugin_of(&target), Some(3)),
+            Grab::Free(target) => assert_eq!(mod_of(&target), Some(3)),
             _ => panic!("no float is up, so nothing holds the press"),
         }
         match float_grab(Some(7), painted_by(7)) {
-            Grab::Held(target) => assert_eq!(target.plugin, 7),
+            Grab::Held(target) => assert_eq!(target.mod_index, 7),
             _ => panic!("a press on the float is the float's"),
         }
         match float_grab(Some(7), painted_by(3)) {
@@ -1172,9 +1135,9 @@ mod tests {
 
     /// One press, start to finish: it begins wherever it lands and is counted
     /// on the node it reached.
-    fn press(train: &mut ClickTrain, at: Instant, plugin: usize, identity: &Identity) -> u8 {
+    fn press(train: &mut ClickTrain, at: Instant, mod_index: usize, identity: &Identity) -> u8 {
         train.begin();
-        train.count(at, plugin, identity)
+        train.count(at, mod_index, identity)
     }
 
     /// The gesture every desktop teaches: press twice on the same thing, fast,

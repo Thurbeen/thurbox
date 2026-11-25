@@ -13,12 +13,6 @@ use super::{
 use crate::kernel::command::{Args, Command};
 use crate::kernel::events::Field;
 
-/// Install what every plugin shares into a fresh VM: `store`, `text`, the
-/// clock, and the sealed standard library.
-///
-/// What is bound to one plugin — `command`, `run`, `run_forget`, `files`, `state`, `require`
-/// — is not here. It goes into that plugin's own environment
-/// ([`plugin_env`]), because every plugin runs in this one Lua state.
 pub(super) fn install_api(
     lua: &Lua,
     store: Shared,
@@ -38,8 +32,6 @@ pub(super) fn install_api(
     Ok(())
 }
 
-/// What a plugin's own environment is built from: the host's handles, shared by
-/// every environment, which each one binds to its own plugin.
 #[derive(Clone)]
 pub(super) struct EnvParts {
     pub ui_dir: PathBuf,
@@ -51,47 +43,21 @@ pub(super) struct EnvParts {
     pub runs: Rc<RefCell<Vec<(String, crate::kernel::runs::Request)>>>,
     pub version: StateVersion,
     pub writes: super::WriteCount,
-    /// The plugin whose request a handler is running for, while one is: see
-    /// `LuaHost::acting_for`.
     pub behalf: Rc<RefCell<Option<Vec<String>>>>,
-    /// The path of the plugin the kernel is calling into, which is the
-    /// handler `behalf` applies to.
     pub entered: Rc<RefCell<String>>,
 }
 
-/// One plugin's environment, and the capability it holds only while granted.
 pub(super) struct Env {
     /// The `_ENV` its chunk, its modules and every function they define run in.
     pub table: Table,
-    /// `run`, bound to this plugin. Kept out of `table` until the plugin is
-    /// granted it — `LuaHost::enter` puts it there per call.
     pub run: mlua::Function,
     pub run_forget: mlua::Function,
     /// `files`, kept out of `table` the same way until granted.
     pub files: Table,
-    /// This plugin's `thurbox`: the published data, read through, plus the
-    /// values that are this plugin's alone (`runs`, `granted`), which
-    /// `LuaHost::enter` sets here and nowhere every plugin reads.
     pub thurbox: Table,
 }
 
-/// Build the environment the plugin at `path` runs in.
-///
-/// Every plugin shares one Lua state, so "the plugin running now" is not who
-/// issued a call: a pane that replaced a global another pane calls would run
-/// its own code inside that pane's call, with its grant. So nothing here asks
-/// who is running. Each plugin's chunk gets its own `_ENV`, and the functions
-/// that act for a plugin — `command`, `run`, `run_forget`, `files`, `state`, `require` — are created
-/// for it, with its identity bound in. Code a plugin defines resolves those
-/// names through its own environment wherever it is called from, so a
-/// hijacking function acts as its author and nobody else.
-///
-/// Reads fall through to the shared globals, which hold only what every plugin
-/// may have; the library tables and `store` are shadowed by views of the
-/// plugin's own ([`seal_shared`]). Writes land in the plugin's own table. `_G`
-/// is that table, and its metatable is sealed, so the shared one is not
-/// reachable to write to. `ns` is the key `state` is kept under.
-pub(super) fn plugin_env(lua: &Lua, parts: &EnvParts, path: &str, ns: &str) -> mlua::Result<Env> {
+pub(super) fn mod_env(lua: &Lua, parts: &EnvParts, path: &str, ns: &str) -> mlua::Result<Env> {
     let table = lua.create_table()?;
     let meta = lua.create_table()?;
     meta.set("__index", lua.globals())?;
@@ -137,13 +103,6 @@ pub(super) fn plugin_env(lua: &Lua, parts: &EnvParts, path: &str, ns: &str) -> m
     })
 }
 
-/// One plugin's `thurbox`: reads fall through to whatever is published now,
-/// a write is refused, and the fields only this plugin may see are its own.
-///
-/// Per plugin because what the kernel sets per call — a plugin's own run
-/// answers, its grants — must never sit in a table another plugin's code can
-/// read: a finalizer runs inside whichever call the collector interrupts, and
-/// it reads through its own environment, so it finds only its own plugin's.
 fn thurbox_view(lua: &Lua) -> mlua::Result<Table> {
     let view = lua.create_table()?;
     let meta = lua.create_table()?;
@@ -182,22 +141,6 @@ fn thurbox_view(lua: &Lua) -> mlua::Result<Table> {
     Ok(view)
 }
 
-/// Make the shared library tables read-only, by building the metatable each
-/// plugin's view of them carries ([`sealed_views`]).
-///
-/// A plugin's own `_ENV` keeps a replaced global to itself, but `string.upper =
-/// …` writes into a table every plugin reads — and so does a string method,
-/// through the one metatable all strings share. So no plugin is handed the real
-/// table: each gets an empty proxy of its own that reads through and refuses a
-/// write. Of its own, because `rawset` writes past `__newindex` into the proxy
-/// itself, and a proxy every plugin shared would carry that write to all of them.
-/// The real tables stay in the shared globals, which no plugin can reach, and
-/// the string metatable is sealed so `getmetatable("")` cannot hand one out.
-///
-/// Nothing on a view leads back to the table behind it: `__index` is followed
-/// by Lua and never returned, `__pairs` iterates through a closure rather than
-/// returning `next` and the table as the iteration state, and `__metatable`
-/// hides the metatable itself.
 fn seal_shared(lua: &Lua) -> mlua::Result<()> {
     lua.load("getmetatable('').__metatable = false")
         .set_name("seal")
@@ -213,12 +156,8 @@ fn seal_shared(lua: &Lua) -> mlua::Result<()> {
     lua.set_named_registry_value(SEALED_METAS, metas)
 }
 
-/// Where [`seal_shared`] keeps the metatable of each sealed library table, out
-/// of every plugin's reach.
 const SEALED_METAS: &str = "__sealed_metas";
 
-/// One plugin's views of the shared tables: a fresh empty table per sealed
-/// library carrying the shared, sealed metatable, and one for `store`.
 fn sealed_views(lua: &Lua, env: &Table, path: &str, parts: &EnvParts) -> mlua::Result<()> {
     let metas: Table = lua.named_registry_value(SEALED_METAS)?;
     for name in SEALED {
@@ -231,22 +170,6 @@ fn sealed_views(lua: &Lua, env: &Table, path: &str, parts: &EnvParts) -> mlua::R
     env.raw_set("store", store_view(lua, path, parts)?)
 }
 
-/// One plugin's view of `store`: reads what every plugin reads, and records
-/// this plugin as the last writer of each key it writes ([`STORE_WRITERS`]) —
-/// or, writing for another plugin's request, that request's chain
-/// ([`requester`]), so the pane a request came from is the one named.
-///
-/// The record is made here, by a function built for this plugin, so it cannot
-/// be claimed for another: a `rawset` on the view lands in the plugin's own
-/// table and never reaches `store`.
-/// Who a request from the plugin at `owner` is made by: the chain of plugins
-/// it passed through, the one that first asked first.
-///
-/// A handler running at another plugin's request (`behalf`, while `entered` is
-/// that handler) adds itself to that request's chain, and the gate allows the
-/// request only with what every plugin in it holds. Anything else — the
-/// handler's key the user pressed, another plugin's finalizer the collector
-/// runs meanwhile — is its author's own request.
 pub(super) fn requester(
     behalf: &RefCell<Option<Vec<String>>>,
     entered: &RefCell<String>,
@@ -288,15 +211,8 @@ fn store_view(lua: &Lua, path: &str, parts: &EnvParts) -> mlua::Result<Table> {
     Ok(view)
 }
 
-/// Who last wrote each `store` key, by plugin path: what `store_writer` reads.
 const STORE_WRITERS: &str = "__store_writers";
 
-/// `store_writer(key)` — the path of the plugin that last wrote `store[key]`,
-/// or nil when nothing has, or the kernel or `layout.lua` did.
-///
-/// `store` is how one pane hands another a request, and the one acting on it
-/// may need to say whose request it is: the shipped confirmation names the
-/// pane that asked, because the question it was handed is that pane's words.
 fn install_store_writer(lua: &Lua) -> mlua::Result<()> {
     let writers = lua.create_table()?;
     lua.set_named_registry_value(STORE_WRITERS, writers.clone())?;
@@ -310,7 +226,6 @@ fn install_store_writer(lua: &Lua) -> mlua::Result<()> {
     )
 }
 
-/// The library tables every plugin reads, sealed by [`seal_shared`].
 const SEALED: [&str; 6] = ["string", "table", "math", "coroutine", "utf8", "text"];
 
 pub(super) const READ_TAKEN_AT: u8 = 1;
@@ -332,15 +247,6 @@ fn note_sample_read(read: &std::cell::Cell<u8>, key: &Value) {
     read.set(read.get() | flag);
 }
 
-/// Preserve raw reads and iteration of the published table while observing
-/// the volatile inputs. Weak keys let a plugin retain a snapshot without
-/// retaining every later publication in the VM.
-///
-/// `rawget` and `next` read through to what a published proxy stands for —
-/// the top-level table ([`PUBLISHED_TABLES`]) or any table under it
-/// ([`FROZEN`]) — so code written against plain tables keeps working. There
-/// is no `rawset` to route: it is withheld, being the one way past a
-/// metatable's refusal to write.
 fn install_sample_reads(lua: &Lua, read: Rc<std::cell::Cell<u8>>) -> mlua::Result<()> {
     let weak = || -> mlua::Result<Table> {
         let table = lua.create_table()?;
@@ -355,7 +261,6 @@ fn install_sample_reads(lua: &Lua, read: Rc<std::cell::Cell<u8>>) -> mlua::Resul
     lua.set_named_registry_value(FROZEN, frozen.clone())?;
     let views = weak()?;
     lua.set_named_registry_value(VIEWS, views.clone())?;
-    // A plugin's `thurbox` view reads as the table published now.
     let published = |lua: &Lua, tables: &Table| -> mlua::Result<Option<Table>> {
         match lua.globals().get::<Value>("thurbox")? {
             Value::Table(proxy) => tables.raw_get::<Option<Table>>(proxy),
@@ -364,12 +269,12 @@ fn install_sample_reads(lua: &Lua, read: Rc<std::cell::Cell<u8>>) -> mlua::Resul
     };
 
     let original_get: mlua::Function = lua.globals().get("rawget")?;
-    let (map, nested, plugin_views) = (tables.clone(), frozen.clone(), views.clone());
+    let (map, nested, mod_views) = (tables.clone(), frozen.clone(), views.clone());
     let reads = read.clone();
     lua.globals().set(
         "rawget",
         lua.create_function(move |lua, (table, key): (Table, Value)| {
-            if plugin_views.raw_get::<bool>(table.clone()).unwrap_or(false) {
+            if mod_views.raw_get::<bool>(table.clone()).unwrap_or(false) {
                 let own = table.raw_get::<Value>(key.clone())?;
                 if !own.is_nil() {
                     return Ok(own);
@@ -461,8 +366,6 @@ fn install_frozen_meta(lua: &Lua) -> mlua::Result<()> {
 /// Where [`install_frozen_meta`] keeps the shared metamethods.
 const FROZEN_META: &str = "__frozen_meta";
 
-/// Every plugin's `thurbox` view ([`thurbox_view`]), so `rawget` and `next`
-/// read one as the table published now.
 const VIEWS: &str = "__thurbox_views";
 
 /// Every read-only proxy [`freeze`] made, mapped to the table it stands for.
@@ -504,14 +407,6 @@ fn read_only_meta(lua: &Lua, inner: Table, what: &str) -> mlua::Result<Table> {
     Ok(meta)
 }
 
-/// Make published data read-only: `value`, and every table under it, is
-/// replaced by a proxy that reads through and refuses a write.
-///
-/// The published tables are one set every plugin reads, so a write into one —
-/// a session's id a trusted pane builds a command from — would be one pane
-/// steering another. The proxies are shared, which is safe only because
-/// `rawset` is withheld: nothing else writes past `__newindex`. A table already
-/// frozen is returned as it is, so a cached group is not wrapped twice.
 pub(super) fn freeze(lua: &Lua, value: Value) -> mlua::Result<Value> {
     let Value::Table(table) = value else {
         return Ok(value);
@@ -548,8 +443,6 @@ pub(super) fn freeze_fields(lua: &Lua, table: &Table) -> mlua::Result<()> {
     Ok(())
 }
 
-/// The table behind the published `thurbox` proxy, for the kernel's own
-/// in-place patches — plugins cannot write there.
 pub(super) fn published_backing(lua: &Lua) -> Option<Table> {
     let proxy: Table = lua.globals().get("thurbox").ok()?;
     let tables: Table = lua.named_registry_value(PUBLISHED_TABLES).ok()?;
@@ -604,40 +497,8 @@ pub(super) fn observe_samples(
     Ok(proxy)
 }
 
-/// The registry name of the metatable every render context carries.
-///
-/// See [`install_clock`]. In the registry rather than in globals because the
-/// shared globals are every plugin's fallback `_ENV`, so anything parked there
-/// is reachable by name from every plugin.
 pub(super) const CTX_META: &str = "__ctx_meta";
 
-/// Serve `ctx.elapsed` through a metatable, and record that it was asked for.
-///
-/// The animation clock is the one render input whose reader the kernel cannot
-/// otherwise name, and it invalidates every pure pane eight times a second while
-/// any agent is working. Making it a *lookup* rather than a field is what lets
-/// the kernel see which panes actually depend on it — the coupling Textual gets
-/// from `set_interval` on a widget and Bubble Tea from a spinner returning its
-/// own tick. See `CachedTree`.
-///
-/// `__index` fires only for keys the table does not have, so every ordinary
-/// field (`width`, `height`, `focused`, `frame`, `name`, `slot`) is still a raw
-/// read and pays nothing. Built once per VM and shared by every render, because
-/// a closure per render would cost more than the field it replaces.
-///
-/// The key is taken as a `Value` rather than a `String`: `__index` also fires
-/// for `ctx[nil]` or `ctx[true]`, which Lua defines as nil, and coercing would
-/// raise out of the index and fail the whole render instead.
-///
-/// One visible consequence: `elapsed` is not a key of the ctx table, so it does
-/// not appear in `pairs(ctx)`. Nothing iterates a render context — a plugin asks
-/// it for named facts — and the alternative is to give up knowing who reads the
-/// clock.
-///
-/// `__metatable` seals it, because `getmetatable`/`setmetatable` are both in the
-/// plugin sandbox and this one table is shared by every pane: without the seal a
-/// plugin could replace the `__index` behind every other pane's clock, freezing
-/// their spinners and making the read-detection above silently answer "no".
 fn install_clock(
     lua: &Lua,
     clock: Rc<std::cell::Cell<f64>>,
@@ -664,12 +525,6 @@ pub(super) fn attach_clock(lua: &Lua, ctx: &Table) -> mlua::Result<()> {
     ctx.set_metatable(Some(meta))
 }
 
-/// `run(key, program, opts)` — ask for a program and read the answer later.
-///
-/// Queued, never executed here: the whole point is that a plugin cannot call
-/// anything that waits. Created for one plugin, with its path bound in, so a
-/// run is attributed without the plugin naming itself (and without being able
-/// to claim another's key).
 fn run_for(
     lua: &Lua,
     runs: Rc<RefCell<Vec<(String, crate::kernel::runs::Request)>>>,
@@ -766,12 +621,6 @@ fn forget_for(
     })
 }
 
-/// `files.list(session, path)` and `files.read(session, path)`.
-///
-/// Bounded twice. A plugin gets a directory listing and a file's text, both
-/// rooted at that session's working directory and refusing anything outside
-/// it — never a filesystem. And it gets even that only when granted `files`
-/// (`LuaHost::enter`), because a worktree's `.env` is inside that root.
 fn files_for(
     lua: &Lua,
     roots: Roots,
@@ -833,14 +682,6 @@ fn files_for(
     Ok(files)
 }
 
-/// `command("delete", { session = id })` — the only way a plugin changes state.
-///
-/// It enqueues and returns; it never runs the operation. That is the whole of
-/// the write side, and it is why a plugin cannot stall the render loop with a
-/// database write or an unreachable host.
-///
-/// A malformed command raises immediately, because the mistake is in the
-/// plugin's own call and there is nothing to report asynchronously about.
 fn command_for(
     lua: &Lua,
     queue: Queue,
@@ -859,9 +700,6 @@ fn command_for(
                 .and_then(|t| t.get::<Option<bool>>(key).ok().flatten())
         };
         let args = Args {
-            // Bound when this plugin's environment was built, NEVER read from
-            // the options table or from whichever plugin is running: either
-            // would let one plugin act as another. Same as `run`'s attribution.
             owner: owner.clone(),
             argv: opts
                 .as_ref()
@@ -908,19 +746,10 @@ fn command_for(
             level: get_string("level"),
             file: get_string("file"),
             action: get_string("action"),
-            // Bytes for a program pane this plugin already started. Read as
-            // bytes and never through a Rust `String`: `"\27"` and `"\r"` are the
-            // point of the field, and a Lua string may hold a sequence that is
-            // not UTF-8 at all — a keyboard escape for a program that speaks its
-            // own encoding. Converted, such a field would be dropped whole and
-            // silently, which reads as "the editor ignored the file" with no
-            // error anywhere. The pane's stdin takes bytes, not text.
             keys: opts
                 .as_ref()
                 .and_then(|t| t.get::<Option<mlua::LuaString>>("keys").ok().flatten())
                 .map(|keys| keys.as_bytes().to_vec()),
-            // A Lua array of session ids. Read here rather than as text so a
-            // plugin cannot build an order by string concatenation.
             list: opts
                 .as_ref()
                 .and_then(|t| t.get::<Option<Table>>("list").ok().flatten())
@@ -931,8 +760,6 @@ fn command_for(
                         .collect()
                 })
                 .unwrap_or_default(),
-            // Every scalar the plugin passed, for an event's payload. `text` is
-            // the event's name and is left out; nothing else is interpreted.
             payload: opts
                 .as_ref()
                 .map(|table| {
@@ -985,7 +812,7 @@ fn command_for(
 /// so a stray `print` would corrupt the screen rather than log anything.
 ///
 /// Removed rather than replaced with a stub that refuses, because the
-/// capability model is enforcement by *absence*: a plugin should find nothing
+/// capability model is enforcement by *absence*: a mod should find nothing
 /// there at all.
 /// (`tests/kernel_mvp.rs` probes for each of these — that test is what found
 /// `dofile`/`loadfile` in the first place.)
@@ -997,8 +824,6 @@ const WITHHELD_GLOBALS: [&str; 8] = [
     "print",      // stdout is the TUI's
     "warn",       // and stderr is usually the same terminal
     "collectgarbage",
-    // The one way to write past a metatable that refuses: with it, a plugin
-    // could plant a field in a table every plugin reads.
     "rawset",
 ];
 
@@ -1010,16 +835,6 @@ fn scrub_globals(lua: &Lua) -> mlua::Result<()> {
     Ok(())
 }
 
-/// `require("lib.theme")` loads `ui/lib/theme.lua`, for one plugin.
-///
-/// Ours rather than Lua's, because `package` is withheld: this resolves only
-/// inside the plugin directory, so `require` cannot reach the filesystem at
-/// large. Each plugin has its own, with its own module cache, and a module runs
-/// in the requiring plugin's `env`: a module shared between plugins would be a
-/// table one of them could rewrite under the other, and a module's
-/// `command(…)` has to act as the plugin that required it. The cache is held by
-/// this function rather than placed anywhere Lua can name it, and it dies with
-/// the VM, which is what makes shared libraries reload alongside their plugins.
 fn require_for(lua: &Lua, ui_dir: &Path, env: Table) -> mlua::Result<mlua::Function> {
     let root = ui_dir.to_path_buf();
     let cache = lua.create_table()?;
@@ -1048,7 +863,6 @@ fn require_for(lua: &Lua, ui_dir: &Path, env: Table) -> mlua::Result<mlua::Funct
     })
 }
 
-/// Install a persisted table under `global`, optionally namespaced per plugin.
 fn install_store(
     lua: &Lua,
     global: &str,
@@ -1100,21 +914,12 @@ fn install_store(
         })?,
     )?;
 
-    // Sealed: every plugin reads this one table, so one able to replace its
-    // metatable would decide what `store` is for all of them.
     meta.set("__metatable", false)?;
     table.set_metatable(Some(meta))?;
     lua.globals().set(global, table)?;
     Ok(())
 }
 
-/// `state` — private to one plugin (keyed by `ns`), and **in memory only**.
-///
-/// It outlives a reload because [`LuaHost::build`] hands the same map to the new VM,
-/// which is what "persistent" in the plugin docs used to mean and read as more than
-/// it was. Nothing serialises it: a plugin's `state` dies with the process, and so
-/// does `store`. Anything a plugin needs after a restart has nowhere to go today —
-/// worth knowing before this word is chosen again.
 fn state_for(
     lua: &Lua,
     state: Private,
@@ -1168,10 +973,6 @@ fn state_for(
     Ok(table)
 }
 
-/// Count one `store`/`state` assignment, and whether it assigned a table.
-///
-/// Always counted, since it is one add; the host attributes the count to a
-/// plugin by reading it before and after that plugin renders.
 fn count_write(writes: &super::WriteCount, value: &Value) {
     let (all, tables) = writes.get();
     let table = u64::from(matches!(value, Value::Table(_)));
@@ -1224,10 +1025,6 @@ fn from_lua(lua: &Lua, value: &Value) -> Option<Persisted> {
     }
 }
 
-/// The table whose entries `table` holds: itself, or — for a read-only view
-/// of published data, which is empty underneath — what it reads through to,
-/// and for a plugin's `thurbox` view, all of that plus its own fields.
-/// Copied raw, a published table saved into `store` or `state` was empty.
 fn contents(lua: &Lua, table: &Table) -> Table {
     let lookup = |name: &str, key: &Table| -> Option<Table> {
         lua.named_registry_value::<Table>(name)
@@ -1252,10 +1049,6 @@ fn contents(lua: &Lua, table: &Table) -> Table {
     table.clone()
 }
 
-/// A plugin's `thurbox` view as one table, the way a read sees it: every
-/// published field — walked through the view's own `pairs`, so the copy counts
-/// as reading all of it, as iterating it does — and then this plugin's own
-/// `runs` and `granted`, which are the view's and nobody else's.
 fn view_contents(lua: &Lua, view: &Table) -> mlua::Result<Table> {
     let copy = lua.create_table()?;
     let pairs: mlua::Function = lua.globals().get("pairs")?;
@@ -1301,7 +1094,7 @@ fn canonical(a: &Persisted, b: &Persisted) -> std::cmp::Ordering {
     }
 }
 
-/// Trim mlua's wrapper noise so the pane shows the plugin's own message.
+/// Trim mlua's wrapper noise so the pane shows the mod's own message.
 pub(super) fn clean_error(error: &mlua::Error) -> String {
     let text = error.to_string();
     // Before the memory check: arming fails on a full VM, and its cause reads
@@ -1333,13 +1126,6 @@ pub(super) fn clean_error(error: &mlua::Error) -> String {
 /// What a cut is marked with when the caller does not say.
 const ELLIPSIS: &str = "…";
 
-/// How many terminal columns `s` occupies.
-///
-/// Not its bytes and not its characters: a CJK glyph takes two columns and a
-/// combining mark none, so the three counts disagree on exactly the text a
-/// column budget is hardest to get right on. This is the same `unicode-width`
-/// the painter measures with, so a plugin that budgets with it agrees with what
-/// lands on the screen.
 pub(crate) fn columns(s: &str) -> usize {
     UnicodeWidthStr::width(s)
 }
@@ -1464,10 +1250,6 @@ fn pad(s: &str, cols: usize, align: &Align) -> String {
     }
 }
 
-/// No real terminal is remotely this wide; the ceiling exists so that
-/// `pad`'s `" ".repeat(cols)` — a Rust-side allocation the VM's own
-/// [`super::memory_limit`] cannot see or budget for — stays too small to
-/// ever hit the allocator's abort path, whatever a plugin passes in.
 const MAX_COLS: usize = 1 << 20;
 
 /// A column count as Lua spells it: any number, floored, never negative,
@@ -1482,11 +1264,11 @@ fn cols_arg(n: f64) -> usize {
 
 /// `text.width(s)`, `text.truncate(s, cols, opts)` and `text.pad(s, cols, align)`.
 ///
-/// The one measurement a plugin cannot make for itself. Lua's `#` counts bytes
+/// The one measurement a mod cannot make for itself. Lua's `#` counts bytes
 /// and `utf8.len` counts codepoints; a terminal budget is columns, and no
 /// arithmetic over the other two recovers it. Every truncation and every pad in
 /// the interface rides on this, so it is the kernel's `unicode-width` — the
-/// painter's own measure — rather than an approximation per plugin.
+/// painter's own measure — rather than an approximation per mod.
 ///
 /// `opts` is the ellipsis, or `{ ellipsis = "…", side = "right"|"left"|"middle" }`
 /// for the cuts that keep the far end. An unknown `side` or `align` raises
@@ -1538,8 +1320,6 @@ fn install_text(lua: &Lua) -> mlua::Result<()> {
 mod tests {
     use super::*;
 
-    /// The three counts a plugin could reach for disagree here, which is why
-    /// this one is the kernel's: six characters, eighteen bytes, twelve columns.
     #[test]
     fn width_is_columns_and_not_bytes_or_characters() {
         assert_eq!(columns("修复终端宽度"), 12);
@@ -1601,9 +1381,6 @@ mod tests {
         assert!(Align::parse("centre").is_ok());
     }
 
-    /// `pad`'s `" ".repeat(cols)` is a Rust-side allocation the VM's memory
-    /// limit cannot see; a plugin passing a huge `cols` must not drive it
-    /// past a bounded size regardless of how large the request claims to be.
     #[test]
     fn a_huge_cols_is_capped_rather_than_allocated_in_full() {
         assert_eq!(cols_arg(f64::MAX), MAX_COLS);

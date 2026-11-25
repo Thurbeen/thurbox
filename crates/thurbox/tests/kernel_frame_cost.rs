@@ -99,10 +99,10 @@ fn interface() -> (tempfile::TempDir, LuaHost) {
     // A pane that reports what it can see of the published tables, so a stale
     // group is visible as a rendered string rather than only as a counter.
     let dir = tempfile::tempdir().expect("tempdir");
-    let plugins = dir.path().join("mods");
-    std::fs::create_dir_all(&plugins).expect("mkdir");
+    let mods = dir.path().join("mods");
+    std::fs::create_dir_all(&mods).expect("mkdir");
     std::fs::write(
-        plugins.join("10_probe.lua"),
+        mods.join("10_probe.lua"),
         r#"return { name = "probe", slot = "center", render = function()
              local names = {}
              for _, s in ipairs(thurbox.sessions or {}) do names[#names + 1] = s.name end
@@ -273,9 +273,6 @@ fn a_change_of_what_is_printing_rebuilds_one_group_and_no_others() {
 
 #[test]
 fn a_moved_source_is_published_even_though_groups_are_gated() {
-    // The requirement gating exists to not break: what a plugin reads after a
-    // source moves is the new value. A group reused when its inputs changed is
-    // undetectable from Lua, so this asserts on what the pane actually renders.
     let (_dir, host) = interface();
     let themes = Themes::load(None);
 
@@ -301,9 +298,6 @@ fn a_moved_source_is_published_even_though_groups_are_gated() {
 
 #[test]
 fn a_gated_publish_matches_a_full_rebuild() {
-    // The proof: for the same inputs, gating changes nothing
-    // a plugin can observe. `always_fresh` rebuilds every group, so it stands in
-    // for the ungated build.
     let (_dir, host) = interface();
     let themes = Themes::load(None);
     let snapshot = Snapshot {
@@ -373,20 +367,20 @@ fn a_theme_change_reaches_lua_through_its_own_version() {
 /// which is the point: a skip is meant to be invisible when the epoch is honest.
 fn two_panes() -> (tempfile::TempDir, LuaHost) {
     let dir = tempfile::tempdir().expect("tempdir");
-    let plugins = dir.path().join("mods");
-    std::fs::create_dir_all(&plugins).expect("mkdir");
+    let mods = dir.path().join("mods");
+    std::fs::create_dir_all(&mods).expect("mkdir");
     let body = r#"render = function()
              local names = {}
              for _, s in ipairs(thurbox.sessions or {}) do names[#names + 1] = s.name end
              return { text = table.concat(names, ",") }
            end }"#;
     std::fs::write(
-        plugins.join("10_pure.lua"),
+        mods.join("10_pure.lua"),
         format!("return {{ name = \"pure\", slot = \"left\", pure = true, {body}"),
     )
     .expect("write");
     std::fs::write(
-        plugins.join("20_plain.lua"),
+        mods.join("20_plain.lua"),
         format!("return {{ name = \"plain\", slot = \"center\", {body}"),
     )
     .expect("write");
@@ -445,8 +439,6 @@ fn a_pure_pane_is_not_re_rendered_while_its_inputs_stand() {
 
 #[test]
 fn an_undeclared_pane_renders_every_time() {
-    // The promise to every plugin that predates the declaration: nothing about
-    // it changed. Rendering it repeatedly must never be served from a cache.
     let (_dir, host) = two_panes();
     let themes = Themes::load(None);
     publish_at(&host, Epoch::default(), &Snapshot::default(), &themes);
@@ -603,10 +595,6 @@ fn a_different_rect_or_focus_re_renders_a_pure_pane() {
         .expect("render")
     };
 
-    // Each of these is a distinct key, so each must reach the plugin rather than
-    // being served the previous one. Asserted through the cache's own behaviour:
-    // a second ask at the SAME key is served from it, so if width or focus were
-    // ignored these would collide.
     let _ = at(40, false);
     let _ = at(80, false);
     let _ = at(40, true);
@@ -663,10 +651,10 @@ fn writing_the_same_value_to_the_store_is_not_a_change() {
     // invalidate every cached tree ~40 times a second, and the measured saving
     // went from 27% to nothing.
     let dir = tempfile::tempdir().expect("tempdir");
-    let plugins = dir.path().join("mods");
-    std::fs::create_dir_all(&plugins).expect("mkdir");
+    let mods = dir.path().join("mods");
+    std::fs::create_dir_all(&mods).expect("mkdir");
     std::fs::write(
-        plugins.join("10_pure.lua"),
+        mods.join("10_pure.lua"),
         r#"return { name = "pure", slot = "left", pure = true,
              render = function()
                local names = {}
@@ -677,7 +665,7 @@ fn writing_the_same_value_to_the_store_is_not_a_change() {
     .expect("write");
     // A pane that writes the SAME value every render, like the search strip.
     std::fs::write(
-        plugins.join("20_noisy.lua"),
+        mods.join("20_noisy.lua"),
         r#"return { name = "noisy", slot = "center",
              render = function()
                store["panels.count"] = 3
@@ -931,10 +919,10 @@ fn reading_attach_failures_is_not_itself_a_change() {
 /// widget is the one that asks to be redrawn.
 fn clock_panes() -> (tempfile::TempDir, LuaHost) {
     let dir = tempfile::tempdir().expect("tempdir");
-    let plugins = dir.path().join("mods");
-    std::fs::create_dir_all(&plugins).expect("mkdir");
+    let mods = dir.path().join("mods");
+    std::fs::create_dir_all(&mods).expect("mkdir");
     std::fs::write(
-        plugins.join("10_spinner.lua"),
+        mods.join("10_spinner.lua"),
         r#"return { name = "spinner", slot = "left", pure = true,
              render = function(ctx)
                return { text = "tick " .. tostring(math.floor(ctx.elapsed or 0)) }
@@ -942,7 +930,7 @@ fn clock_panes() -> (tempfile::TempDir, LuaHost) {
     )
     .expect("write");
     std::fs::write(
-        plugins.join("20_still.lua"),
+        mods.join("20_still.lua"),
         r#"return { name = "still", slot = "center", pure = true,
              render = function() return { text = "still" } end }"#,
     )
@@ -1018,10 +1006,10 @@ fn a_non_string_index_on_the_render_context_is_nil_rather_than_an_error() {
     // evaluated to nil; a key typed as `String` would coerce and raise instead,
     // failing the whole render over an expression the language allows.
     let dir = tempfile::tempdir().expect("tempdir");
-    let plugins = dir.path().join("mods");
-    std::fs::create_dir_all(&plugins).expect("mkdir");
+    let mods = dir.path().join("mods");
+    std::fs::create_dir_all(&mods).expect("mkdir");
     std::fs::write(
-        plugins.join("10_odd.lua"),
+        mods.join("10_odd.lua"),
         r#"return { name = "odd", slot = "left",
              render = function(ctx)
                local typo
@@ -1042,18 +1030,12 @@ fn a_non_string_index_on_the_render_context_is_nil_rather_than_an_error() {
 }
 
 #[test]
-fn a_plugin_cannot_reach_or_replace_the_render_context_metatable() {
-    // The metatable is built once per VM and shared by every render, and both
-    // `getmetatable` and `setmetatable` are in the sandbox. Handing it out would
-    // let one plugin rewrite `__index` and freeze every other pane's clock —
-    // and silently make the kernel's "did this render read it" answer false
-    // everywhere. `__metatable` is what makes it neither readable nor settable
-    // from Lua, the same boundary `RUN_IMPL` gets from the registry.
+fn a_mod_cannot_reach_or_replace_the_render_context_metatable() {
     let dir = tempfile::tempdir().expect("tempdir");
-    let plugins = dir.path().join("mods");
-    std::fs::create_dir_all(&plugins).expect("mkdir");
+    let mods = dir.path().join("mods");
+    std::fs::create_dir_all(&mods).expect("mkdir");
     std::fs::write(
-        plugins.join("10_prober.lua"),
+        mods.join("10_prober.lua"),
         r#"return { name = "prober", slot = "left",
              render = function(ctx)
                local hidden = getmetatable(ctx) == false
@@ -1096,10 +1078,10 @@ fn a_pane_that_starts_reading_the_clock_is_keyed_on_it_from_then_on() {
     // clock is itself the one that re-keys the entry; there is no frame in
     // between on which a stale tree could be served.
     let dir = tempfile::tempdir().expect("tempdir");
-    let plugins = dir.path().join("mods");
-    std::fs::create_dir_all(&plugins).expect("mkdir");
+    let mods = dir.path().join("mods");
+    std::fs::create_dir_all(&mods).expect("mkdir");
     std::fs::write(
-        plugins.join("10_maybe.lua"),
+        mods.join("10_maybe.lua"),
         r#"return { name = "maybe", slot = "left", pure = true,
              render = function(ctx)
                if store.spin then

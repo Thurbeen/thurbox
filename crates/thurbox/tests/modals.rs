@@ -1,9 +1,9 @@
 //! The system modals — help, settings and the theme picker — against the real
-//! bundled plugins.
+//! bundled mods.
 //!
 //! What is under test is the shape rather than the pixels: that these three are
-//! *not* plugins, that they overlay the interface instead of replacing a pane,
-//! that they capture input while open, and that a plugin reaches them by
+//! *not* mods, that they overlay the interface instead of replacing a pane,
+//! that they capture input while open, and that a mod reaches them by
 //! declaring data and nothing else.
 //!
 //! Renders the modals through the same entry point the binary uses
@@ -36,8 +36,6 @@ fn host() -> LuaHost {
     host
 }
 
-/// The registry the binary builds: every plugin's declarations plus the
-/// kernel's own modal chords.
 fn registry(host: &LuaHost) -> Registry {
     let mut registry = Registry::default();
     let (mut bindings, settings) = host.declarations();
@@ -117,8 +115,6 @@ fn publish(host: &LuaHost, registry: &Registry, themes: &Themes) {
     .expect("publish");
 }
 
-/// Paint the whole interface — every plugin in its resolved rect — and then,
-/// optionally, the modal layer over it. This is the binary's own order.
 fn screen(
     host: &LuaHost,
     modals: &mut Modals,
@@ -500,15 +496,15 @@ fn send(
 // --- the layer -------------------------------------------------------------
 
 #[test]
-fn no_modal_is_a_plugin_or_a_focus_stop() {
+fn no_modal_is_a_mod_or_a_focus_stop() {
     // The whole point of the change: system chrome does not compete for a
     // layout slot, so it can never lengthen the focus ring.
     let host = host();
-    let names: Vec<&str> = host.plugins.iter().map(|p| p.name.as_str()).collect();
+    let names: Vec<&str> = host.mods.iter().map(|p| p.name.as_str()).collect();
     let focusable: Vec<&str> = host
         .focusable()
         .iter()
-        .map(|i| host.plugins[*i].name.as_str())
+        .map(|i| host.mods[*i].name.as_str())
         .collect();
     for gone in ["help", "settings", "themes"] {
         assert!(
@@ -521,8 +517,6 @@ fn no_modal_is_a_plugin_or_a_focus_stop() {
 
 #[test]
 fn every_modal_chord_v1_binds_opens_its_modal() {
-    // Declared through the ordinary registry, so they are listed in help and
-    // rebindable — but routed to the kernel, since no plugin owns them.
     let host = host();
     let registry = registry(&host);
     for (chord, kind) in [
@@ -571,9 +565,6 @@ fn a_modal_covers_the_interface_rather_than_replacing_it() {
     let themes = Themes::load(None);
     publish(&host, &registry, &themes);
 
-    // Rendered once first: a plugin settles state on its first frame (the list
-    // picks a row, and the header then names it), and that settling would
-    // otherwise read as the modal having repainted the row.
     let mut closed = Modals::default();
     screen(&host, &mut closed, &registry, &themes);
     let before = screen(&host, &mut closed, &registry, &themes);
@@ -604,9 +595,7 @@ fn a_modal_covers_the_interface_rather_than_replacing_it() {
 // --- help ------------------------------------------------------------------
 
 #[test]
-fn help_lists_keys_from_plugins_it_never_heard_of() {
-    // The payoff of declaring keys as data: help renders the registry, so a
-    // plugin added tomorrow appears with no edit to the modal.
+fn help_lists_keys_from_mods_it_never_heard_of() {
     let host = host();
     let mut registry = registry(&host);
     let mut themes = Themes::load(None);
@@ -614,10 +603,8 @@ fn help_lists_keys_from_plugins_it_never_heard_of() {
     modals.toggle(ModalKind::Help);
 
     let screen = modal_screen(&mut modals, &registry, &themes, 120, 90);
-    // Grouped by function, as v1 groups it — not by which plugin owns the key.
     assert!(screen.contains("Navigation"), "{screen}");
     assert!(screen.contains("Sessions"), "{screen}");
-    // A key declared by a plugin the modal has never heard of.
     assert!(screen.contains("delete session"), "{screen}");
     // The kernel's own chords are declarations like any other.
     assert!(screen.contains("open keybindings help"), "{screen}");
@@ -639,7 +626,7 @@ fn help_lists_keys_from_plugins_it_never_heard_of() {
 }
 
 #[test]
-fn a_key_declared_by_an_unknown_plugin_appears_without_touching_help() {
+fn a_key_declared_by_an_unknown_mod_appears_without_touching_help() {
     let mut registry = Registry::default();
     registry.declare(
         vec![binding_from(
@@ -802,9 +789,7 @@ fn reset_puts_an_action_back_on_its_declared_chord() {
 // --- settings --------------------------------------------------------------
 
 #[test]
-fn settings_renders_what_the_bundled_plugins_declare() {
-    // The modal is only worth having if something reaches it: at least one
-    // shipped plugin must declare a setting.
+fn settings_renders_what_the_bundled_mods_declare() {
     let host = host();
     let registry = registry(&host);
     let themes = Themes::load(None);
@@ -814,17 +799,12 @@ fn settings_renders_what_the_bundled_plugins_declare() {
     );
     let mut modals = Modals::default();
     modals.toggle(ModalKind::Settings);
-    // Tall enough that the core rows above do not push the plugin's off screen.
     let screen = modal_screen(&mut modals, &registry, &themes, 130, 60);
     let first = &registry.settings()[0];
     assert!(screen.contains("Settings"), "{screen}");
-    // The kernel's own settings are listed first, so `settings.toml` is editable
-    // from the same screen as everything a plugin declared.
     assert!(screen.contains("CORE"), "{screen}");
     assert!(screen.contains("features.shell_pane"), "{screen}");
-    // Grouped by the declaring plugin, which is the only grouping the registry
-    // knows about.
-    assert!(screen.contains(&first.plugin.to_uppercase()), "{screen}");
+    assert!(screen.contains(&first.owner.to_uppercase()), "{screen}");
     assert!(screen.contains(&first.id), "{screen}");
 }
 
@@ -1037,7 +1017,7 @@ fn a_fold_list_reads_as_a_count_and_spells_its_entries_out_when_selected() {
 }
 
 #[test]
-fn a_setting_declared_by_an_unknown_plugin_is_editable_without_touching_settings() {
+fn a_setting_declared_by_an_unknown_mod_is_editable_without_touching_settings() {
     let dir = tempfile::tempdir().expect("temp dir");
     let _guard = thurbox::paths::TestPathGuard::new(dir.path());
     // Loaded, like the loop's own: writing `ui.json` back is a capability of a
@@ -1047,7 +1027,7 @@ fn a_setting_declared_by_an_unknown_plugin_is_editable_without_touching_settings
     registry.declare(
         Vec::new(),
         vec![Setting {
-            plugin: "weather".into(),
+            owner: "weather".into(),
             id: "units".into(),
             description: "metric or imperial".into(),
             default: Value::Bool(false),
@@ -1060,9 +1040,6 @@ fn a_setting_declared_by_an_unknown_plugin_is_editable_without_touching_settings
     let mut modals = Modals::default();
     modals.toggle(ModalKind::Settings);
 
-    // The kernel's own core settings come first, so a plugin's row is the last
-    // one — `End` is how the modal gets there, and it is what a user with a long
-    // list does too.
     send(
         &mut modals,
         press(KeyCode::End),
@@ -1537,7 +1514,7 @@ fn help_and_settings_page_and_jump_through_their_rows() {
     // the modal's job is to page whatever it is given, not to have a long list.
     let extra: Vec<thurbox::kernel::registry::Setting> = (0..40)
         .map(|n| thurbox::kernel::registry::Setting {
-            plugin: "probe".to_string(),
+            owner: "probe".to_string(),
             id: format!("flag_{n:02}"),
             description: format!("a stand-in setting ({n})"),
             default: thurbox::kernel::registry::Value::Bool(true),
@@ -1671,7 +1648,7 @@ fn a_setting_with_choices_steps_through_them_and_is_never_typed_into() {
     registry.declare(
         Vec::new(),
         vec![Setting {
-            plugin: "voice".into(),
+            owner: "voice".into(),
             id: "engine".into(),
             description: "speech model".into(),
             default: declared.clone(),

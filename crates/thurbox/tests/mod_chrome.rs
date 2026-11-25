@@ -1,7 +1,7 @@
 //! What a pane may say, and what it may set off, outside its own rect.
 //!
 //! Two gaps this closes, both recorded in the panes themselves. The creation
-//! flow states one of them in a comment — "a plugin cannot write the message
+//! flow states one of them in a comment — "a mod cannot write the message
 //! band (it is kernel chrome), so a refusal this flow makes itself is shown on
 //! its own footer row instead" — and pays a row of every modal for it. The
 //! other is quieter: the kernel's own modals are reachable from a `role =
@@ -9,7 +9,7 @@
 //! open help from a key handler at all.
 //!
 //! Both are commands rather than globals, for the reason every write is one: a
-//! plugin says what it wants and the loop does it on a later frame. The
+//! mod says what it wants and the loop does it on a later frame. The
 //! coordinator half — the band actually showing the text, the modal actually
 //! opening — is asserted on a real terminal in `tests/tui_e2e.rs`; what is
 //! pinned here is the vocabulary, and that a mistake in it is refused rather
@@ -22,11 +22,11 @@ use thurbox::kernel::host::{KeyPress, LuaHost, RenderContext};
 /// An interface of exactly the bundled `lib/` plus the panes given, so a test
 /// pane may `require` the component layer without the bundled panes' snapshot
 /// needs.
-fn interface(plugins: &[(&str, &str)]) -> (tempfile::TempDir, std::path::PathBuf) {
+fn interface(mods: &[(&str, &str)]) -> (tempfile::TempDir, std::path::PathBuf) {
     let home = tempfile::tempdir().expect("tempdir");
     let ui = home.path().join("ui");
     thurbox::kernel::bundled::materialize(&ui);
-    for (name, source) in plugins {
+    for (name, source) in mods {
         std::fs::write(ui.join("mods").join(name), source).expect("write");
     }
     (home, ui)
@@ -89,10 +89,6 @@ fn a_pane_can_run_a_kernel_action_from_a_key_handler() {
     assert_eq!(
         commands,
         vec![Command::Action {
-            // Stamped from the plugin executing, never read from the options
-            // table — the same rule `program` and `emit` follow. It is the
-            // fallback owner a click carries, so an action nothing declares
-            // still reaches the pane that asked for it.
             fallback: "mods/91_presser.lua".to_string(),
             action: "help.open".to_string(),
         }]

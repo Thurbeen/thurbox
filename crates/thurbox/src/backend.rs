@@ -67,7 +67,7 @@ pub mod wiring {
     use super::{mux_settings, BackendRegistry};
 
     /// Every adapter for this machine, with this platform's own multiplexer
-    /// as the default: what the interface's own windows (plugin programs, the
+    /// as the default: what the interface's own windows (mod programs, the
     /// stream panes' view) run on. A session's machine is its Fleet's and its
     /// place's, which the runtime reaches. `settings` are the ones the process
     /// loaded.

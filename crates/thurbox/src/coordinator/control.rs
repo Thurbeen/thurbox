@@ -45,14 +45,14 @@ impl App {
         self.control_floats.clone_from(&self.drawn_floats);
         self.control_focus = self.focus;
         self.control_modal = modal_marker;
-        let focused_plugin = self
+        let focused_mod = self
             .host
             .focusable()
             .get(self.focus)
-            .and_then(|index| self.host.plugins.get(*index));
-        let focused = focused_plugin.map(|plugin| plugin.name.clone());
-        let focused_id = focused_plugin.map(|plugin| plugin.path.clone());
-        let plugin_states = self.host.ui_states();
+            .and_then(|index| self.host.mods.get(*index));
+        let focused = focused_mod.map(|loaded| loaded.name.clone());
+        let focused_id = focused_mod.map(|loaded| loaded.path.clone());
+        let mod_states = self.host.ui_states();
         let slots: Vec<Value> = self
             .last_placed
             .iter()
@@ -60,11 +60,11 @@ impl App {
                 let members = self.host.in_slot(&placed.slot);
                 let panes: Vec<String> = members
                     .iter()
-                    .map(|index| self.host.plugins[*index].name.clone())
+                    .map(|index| self.host.mods[*index].name.clone())
                     .collect();
                 let pane_ids: Vec<String> = members
                     .iter()
-                    .map(|index| self.host.plugins[*index].path.clone())
+                    .map(|index| self.host.mods[*index].path.clone())
                     .collect();
                 let visible_indices: Vec<usize> = match self.host.slot_mode(&placed.slot) {
                     thurbox::kernel::layout::SlotMode::Stack => (0..members.len()).collect(),
@@ -118,11 +118,11 @@ impl App {
             .drawn_floats
             .iter()
             .filter_map(|index| {
-                self.host.plugins.get(*index).map(|plugin| {
+                self.host.mods.get(*index).map(|loaded| {
                     json!({
-                        "name": plugin.name,
-                        "id": plugin.path,
-                        "state": plugin_states.get(&plugin.path),
+                        "name": loaded.name,
+                        "id": loaded.path,
+                        "state": mod_states.get(&loaded.path),
                     })
                 })
             })
@@ -131,10 +131,10 @@ impl App {
         let search_query = self.host.shared_string("search.query");
         let search_state = self
             .host
-            .plugins
+            .mods
             .iter()
-            .find(|plugin| plugin.name == "search")
-            .and_then(|plugin| plugin_states.get(&plugin.path));
+            .find(|loaded| loaded.name == "search")
+            .and_then(|loaded| mod_states.get(&loaded.path));
         let search = json!({
             "query": search_query,
             "selected_result": search_state.and_then(|s| s.get("selected_result")),
@@ -150,7 +150,7 @@ impl App {
             },
             "modal": modal,
             "overlays": overlays,
-            "plugin_state": plugin_states,
+            "plugin_state": mod_states,
             "search": search,
             "search_query": search_query,
             "catalog_revision": self.registry.version(),
@@ -731,9 +731,10 @@ impl App {
                 }
                 if descriptor.destructive
                     && descriptor.owner == "sessions"
-                    && !self.host.index_of("sessions").is_some_and(|index| {
-                        self.host.plugins[index].path == "mods/10_sessions.lua"
-                    })
+                    && !self
+                        .host
+                        .index_of("sessions")
+                        .is_some_and(|index| self.host.mods[index].path == "mods/10_sessions.lua")
                 {
                     descriptor.available = false;
                 }
@@ -784,8 +785,7 @@ impl App {
             .host
             .index_of(target)
             .ok_or(("unavailable", "mod is not loaded".into()))?;
-        if self.host.plugins[index].session_input && !matches!(input, InputOperation::Scroll { .. })
-        {
+        if self.host.mods[index].session_input && !matches!(input, InputOperation::Scroll { .. }) {
             return Err((
                 "unavailable",
                 "session terminals require an addressed session input operation".into(),
@@ -852,7 +852,7 @@ impl App {
                     .on_scroll(index, &scroll)
                     .map_err(|e| ("action_failed", e.to_string()))?;
                 if !handled {
-                    if self.host.plugins[index].session_input {
+                    if self.host.mods[index].session_input {
                         return Err(("unavailable", "terminal pane declined the scroll".into()));
                     }
                     let key = crossterm::event::KeyEvent::new(

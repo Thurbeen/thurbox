@@ -307,11 +307,6 @@ session = { use = [], external = [
   "chrono", "chrono_tz", "cron", "otel_env", "runtime_mux", "serde", "serde_json",
   "toml", "toml_edit", "unicode_width", "uuid",
 ] }
-# The downloads plugins and the updater make, and keyboard input. Never a
-# session backend: the multiplexer runtime (`backend`) is reached through its
-# own module. Every file is a module of its own, so a grant names what it
-# reads and a file added here is reachable by nobody until that is decided.
-# The root only declares them.
 agent = { use = [] }
 "agent::fetch" = { use = ["paths"] }
 "agent::input" = { use = [] }
@@ -344,28 +339,11 @@ theme = { use = [] }
 # and the diagnostic-log bridge, built by `coordinator`, which hands it the
 # identity it exports under.
 telemetry = { use = [] }
-# Thin headless dispatch: must not depend on the TUI or the live backend.
-# `kernel` for the two subcommands that drive the interface's own files:
-# `plugin` (`check` loads the real host: the failures worth reporting are
-# declaration-shaped, no `render`, an unplaced slot, a clashing key, and a
-# syntax check passes all of them) and `config` (the interface directory and
-# its `ui.json` overrides). Both are kernel-owned surfaces asked about from
-# outside.
 cli = { use = ["session", "paths", "notifications", "ui_control", "theme", "fleet_link", "shell"], path_only = [
   "kernel", "backend", "config::file", "config::interface_state",
   "config::settings", "config::themes", "update::self_update",
   "update::version_check",
 ] }
-# The plugin kernel: hosts the Lua VM the whole UI is written in. Builds the
-# snapshot plugins render from Fleet's rows (`session` for the types, `paths`
-# for the interface's files and plugin directories).
-#
-# `git` IS allowed, and the rule is about where: the worker-backed stores
-# (`diff`, `repos`, `packages`, `command`) shell out to it off-thread, which
-# is rule 5 rather than an exception to it. What must not happen is a `git`
-# call from a render path; the loop's shape enforces that (a plugin returns a
-# tree; it cannot call Rust), not this allowlist.
-#
 # Live agent terminals: `kernel::terminal` adopts a session's real pane
 # through the backend contract and paints its vt100 screen. Those crossings
 # are path-only, as `cli`'s are, so every one into the side-effect layer is
@@ -489,14 +467,6 @@ allowed = ["session"]
 production_only = true
 why = "which multiplexer serves a session is the route's decision"
 
-# Everything a user edits or thurbox reads back, through `std::fs` or
-# `tokio::fs`, goes through `paths::write_atomically`, which a crash, a full
-# disk or a second writer cannot leave half-written. A truncated
-# `agents.toml`, manifest or plugin lock is a broken install; a cut log line
-# or a stale cache is not. Each
-# exception is exact, so a further write in an allowed file needs its own
-# reason, and a write that moves to the atomic writer takes its exception
-# with it.
 [[crates.thurbox.restricted]]
 paths = ["std::fs::write", "tokio::fs::write"]
 allowed = ["paths"]

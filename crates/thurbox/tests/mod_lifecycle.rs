@@ -3,7 +3,7 @@
 //! Every one of these already worked, or nearly did, and none of them was held
 //! by anything: the bundled set changes pane by pane, so "you can drop a file
 //! in" is exactly the kind of promise that regresses without anyone noticing
-//! until a user's plugin stops loading.
+//! until a user's mod stops loading.
 //!
 //! The interface is built in a temporary directory the same way the binary
 //! builds the user's, so these exercise delivery and loading together.
@@ -22,7 +22,6 @@ use thurbox::kernel::layout::{divide_slot, resolve};
 use thurbox::kernel::node::Axis;
 use thurbox::kernel::registry::Registry;
 
-/// A pane that draws nothing, in as few lines as a plugin can be written.
 fn pane(name: &str, slot: &str) -> String {
     format!(
         "return {{ name = \"{name}\", slot = \"{slot}\", focusable = true,\n\
@@ -67,7 +66,7 @@ fn the_inventory_view_draws_what_the_kernel_computed() {
     let dir = interface();
     let host = loaded(dir.path());
     let rows = inventory::rows(
-        &host.plugins,
+        &host.mods,
         &sources(dir.path()),
         &HashSet::new(),
         &HashSet::new(),
@@ -147,15 +146,15 @@ fn a_pane_is_added_by_adding_a_file() {
 
     let host = loaded(dir.path());
     let mine = host
-        .plugins
+        .mods
         .iter()
-        .find(|plugin| plugin.name == "mine")
+        .find(|loaded| loaded.name == "mine")
         .expect("the added pane loads");
     assert_eq!(mine.path, "mods/50_mine.lua");
     assert!(host
         .focusable()
         .iter()
-        .any(|index| host.plugins[*index].name == "mine"));
+        .any(|index| host.mods[*index].name == "mine"));
 
     // And delivery has no opinion about a file it did not write.
     let report = bundled::materialize(dir.path());
@@ -181,9 +180,9 @@ fn a_decorator_and_a_module_are_added_the_same_way() {
 
     let host = loaded(dir.path());
     let decor = host
-        .plugins
+        .mods
         .iter()
-        .find(|plugin| plugin.name == "decor")
+        .find(|loaded| loaded.name == "decor")
         .expect("the decorator loads");
     assert_eq!(decor.decorates.as_deref(), Some("sessions"));
     // It draws into another pane's tree, so it is nobody's slot occupant — the
@@ -191,7 +190,7 @@ fn a_decorator_and_a_module_are_added_the_same_way() {
     assert!(!host
         .in_slot("center")
         .iter()
-        .any(|index| host.plugins[*index].name == "decor"));
+        .any(|index| host.mods[*index].name == "decor"));
 
     let report = bundled::materialize(dir.path());
     assert!(report.is_empty(), "{report:?}");
@@ -213,10 +212,10 @@ fn a_bundled_pane_is_replaced_by_a_differently_named_file() {
     let host = loaded(dir.path());
 
     let occupants: Vec<&str> = host
-        .plugins
+        .mods
         .iter()
-        .filter(|plugin| plugin.slot == "sessions")
-        .map(|plugin| plugin.path.as_str())
+        .filter(|loaded| loaded.slot == "sessions")
+        .map(|loaded| loaded.path.as_str())
         .collect();
     assert_eq!(occupants, vec!["mods/15_my_sessions.lua"]);
 }
@@ -229,11 +228,11 @@ fn the_arrangement_decides_which_panes_have_a_rect() {
     // The stock arrangement has no `notes` region, so the pane loads and is
     // simply not placed — the silent drop this inventory exists to name.
     let host = loaded(dir.path());
-    assert!(host.plugins.iter().any(|plugin| plugin.slot == "notes"));
+    assert!(host.mods.iter().any(|loaded| loaded.slot == "notes"));
     assert!(!placed(&host, 120, 40).contains("notes"));
 
     let rows = inventory::rows(
-        &host.plugins,
+        &host.mods,
         &sources(dir.path()),
         &HashSet::new(),
         &placed(&host, 120, 40),
@@ -261,9 +260,6 @@ fn the_arrangement_decides_which_panes_have_a_rect() {
 
 #[test]
 fn removing_every_pane_is_an_empty_interface_rather_than_a_fault() {
-    // The failure this guards: an empty plugin set used to be an error, the
-    // error summoned the recovery floor, and the floor delivered the bundled
-    // interface again — undoing the removal it was asked to make.
     let dir = interface();
     for (relative, _) in bundled::BUNDLED {
         if relative.starts_with("mods/") {
@@ -273,12 +269,12 @@ fn removing_every_pane_is_an_empty_interface_rather_than_a_fault() {
     bundled::materialize(dir.path());
 
     let host = loaded(dir.path());
-    assert!(host.plugins.is_empty(), "{:?}", host.error);
+    assert!(host.mods.is_empty(), "{:?}", host.error);
     assert!(host.error.is_none());
 
     // And every one of them is still listed, so they can be brought back.
     let rows = inventory::rows(
-        &host.plugins,
+        &host.mods,
         &sources(dir.path()),
         &HashSet::new(),
         &HashSet::new(),
@@ -300,7 +296,7 @@ fn the_view_that_lists_the_files_is_not_one_of_them() {
     let dir = interface();
     let host = loaded(dir.path());
     assert!(
-        !host.plugins.iter().any(|plugin| plugin.name == "plugins"),
+        !host.mods.iter().any(|loaded| loaded.name == "plugins"),
         "the file list is a settings tab, not a plugin"
     );
 
@@ -320,16 +316,16 @@ fn restoring_brings_a_removed_pane_back() {
     bundled::remove(dir.path(), "mods/20_agent.lua").expect("remove");
     bundled::materialize(dir.path());
     assert!(!loaded(dir.path())
-        .plugins
+        .mods
         .iter()
-        .any(|plugin| plugin.path == "mods/20_agent.lua"));
+        .any(|loaded| loaded.path == "mods/20_agent.lua"));
 
     bundled::restore(dir.path(), "mods/20_agent.lua").expect("restore");
     let host = loaded(dir.path());
     assert!(host
-        .plugins
+        .mods
         .iter()
-        .any(|plugin| plugin.path == "mods/20_agent.lua"));
+        .any(|loaded| loaded.path == "mods/20_agent.lua"));
     assert_eq!(
         sources(dir.path())["mods/20_agent.lua"],
         Source::Bundled,
@@ -337,16 +333,6 @@ fn restoring_brings_a_removed_pane_back() {
     );
 }
 
-/// The recovery floor is a state, not a one-way door.
-///
-/// A user copy that will not load is swapped for the bundled interface so thurbox
-/// stays usable while the file is fixed from inside it. But a `LuaHost` reloads
-/// from the directory it was *built* from, so once the floor was installed every
-/// later reload rebuilt the bundled copy: the watcher fired on the user's fix,
-/// nothing changed, and no error said why — while the watcher, the inventory and
-/// every Interface-tab action still pointed at the user's own directory. Only a
-/// restart recovered, and a `./ui` checkout took the same path, so it cost a
-/// plugin author their edit-reload loop too.
 #[test]
 fn a_broken_interface_loads_again_once_it_is_fixed() {
     let dir = interface();
@@ -411,10 +397,7 @@ fn a_disabled_pane_does_not_reserve_its_column() {
     host.reload();
     assert!(host.error.is_none(), "{:?}", host.error);
     assert!(
-        !host
-            .plugins
-            .iter()
-            .any(|p| p.path == "mods/10_sessions.lua"),
+        !host.mods.iter().any(|p| p.path == "mods/10_sessions.lua"),
         "a disabled file is not loaded at all"
     );
 
@@ -462,7 +445,7 @@ fn a_float_does_not_make_its_slot_count_as_occupied() {
     .expect("write");
     let host = loaded(dir.path());
     assert!(
-        host.plugins.iter().any(|p| p.name == "floaty"),
+        host.mods.iter().any(|p| p.name == "floaty"),
         "the float loaded"
     );
 
@@ -492,7 +475,7 @@ fn a_float_drawing_nothing_is_reported_on_demand_rather_than_on_screen() {
 
     // No float painted, which is the state at rest: nothing in `visible`.
     let rows = inventory::rows(
-        &host.plugins,
+        &host.mods,
         &sources(dir.path()),
         &HashSet::new(),
         &["sessions".to_string(), "center".to_string()]
@@ -555,7 +538,7 @@ fn the_interface_ships_guidance_and_lists_it_as_a_doc() {
 
     let host = loaded(dir.path());
     let rows = inventory::rows(
-        &host.plugins,
+        &host.mods,
         &sources(dir.path()),
         &HashSet::new(),
         &HashSet::new(),
@@ -607,15 +590,13 @@ fn the_demo_examples_load_and_stack_where_the_layout_says() {
     let host = loaded(dir.path());
     for name in ["tasks", "top"] {
         assert!(
-            host.plugins.iter().any(|p| p.name == name),
+            host.mods.iter().any(|p| p.name == name),
             "{name} must load: {:?}",
             host.error
         );
     }
-    // The `top` example asks to run a program, and declaring that is not being
-    // granted it — the whole point of the capability being per-plugin.
     let top = host
-        .plugins
+        .mods
         .iter()
         .find(|p| p.name == "top")
         .expect("top loaded");
@@ -668,10 +649,8 @@ fn the_demo_examples_load_and_stack_where_the_layout_says() {
     );
 }
 
-/// A slot the arrangement reserves for a plugin that was not copied is an empty
-/// column, and an empty column reads as breakage.
 #[test]
-fn the_demo_layout_drops_a_stack_slot_whose_plugin_is_missing() {
+fn the_demo_layout_drops_a_stack_slot_whose_mod_is_missing() {
     let dir = interface();
     let root = Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/../.."));
     fs::copy(
@@ -697,7 +676,7 @@ fn the_demo_layout_drops_a_stack_slot_whose_plugin_is_missing() {
 
 // ── strips: a pane that asks for a row needs no edit to `layout.lua` ────────
 
-fn strip_plugin(name: &str, slot: &str, extra: &str) -> String {
+fn strip_mod(name: &str, slot: &str, extra: &str) -> String {
     format!(
         "return {{ name = \"{name}\", slot = \"{slot}\", strip = true, {extra}\n\
          render = function() return {{ type = \"text\", text = \"{name}\" }} end }}"
@@ -720,17 +699,12 @@ fn rect_of(rects: &[(String, Rect)], slot: &str) -> Rect {
         .1
 }
 
-/// The whole point: installing a pane that wants a full-width row is enough.
-/// `plugin install` never writes `layout.lua` — placement is the user's — so a
-/// pane in a slot of its own used to load, declare its keys, and draw nothing
-/// until the user found the line to add. The bundled arrangement places every
-/// declared strip instead, so the user's file is still where it is decided.
 #[test]
 fn a_strip_is_placed_above_the_bars_at_its_declared_height_with_no_layout_edit() {
     let dir = interface();
     fs::write(
         dir.path().join("mods/50_strip.lua"),
-        strip_plugin("dictation", "dictation", "size = { len = 2 },"),
+        strip_mod("dictation", "dictation", "size = { len = 2 },"),
     )
     .expect("write");
     let host = loaded(dir.path());
@@ -756,12 +730,12 @@ fn strips_stack_in_load_order_and_default_to_one_row() {
     let dir = interface();
     fs::write(
         dir.path().join("mods/50_first.lua"),
-        strip_plugin("first", "first", ""),
+        strip_mod("first", "first", ""),
     )
     .expect("write");
     fs::write(
         dir.path().join("mods/51_second.lua"),
-        strip_plugin("second", "second", "size = { len = 3 },"),
+        strip_mod("second", "second", "size = { len = 3 },"),
     )
     .expect("write");
     let host = loaded(dir.path());
@@ -780,7 +754,7 @@ fn a_float_is_not_a_strip() {
     let dir = interface();
     fs::write(
         dir.path().join("mods/50_strip.lua"),
-        strip_plugin("hover", "hover", "floats = true, size = { len = 2 },"),
+        strip_mod("hover", "hover", "floats = true, size = { len = 2 },"),
     )
     .expect("write");
     let host = loaded(dir.path());
@@ -796,7 +770,7 @@ fn pane_heights(host: &LuaHost, placed: &[(String, Rect)], slot: &str) -> Vec<u1
     let sizes: Vec<_> = host
         .in_slot(slot)
         .iter()
-        .map(|index| host.plugins[*index].size)
+        .map(|index| host.mods[*index].size)
         .collect();
     divide_slot(rect_of(placed, slot), Axis::Vertical, &sizes, 0)
         .into_iter()
@@ -823,12 +797,12 @@ fn two_strips_sharing_a_stack_slot_get_one_rect_with_both_heights() {
     let dir = interface();
     fs::write(
         dir.path().join("mods/50_first.lua"),
-        strip_plugin("first", "ticker", "size = { len = 2 },"),
+        strip_mod("first", "ticker", "size = { len = 2 },"),
     )
     .expect("write");
     fs::write(
         dir.path().join("mods/51_second.lua"),
-        strip_plugin("second", "ticker", "size = { len = 3 },"),
+        strip_mod("second", "ticker", "size = { len = 3 },"),
     )
     .expect("write");
     let host = loaded(dir.path());
@@ -850,7 +824,7 @@ fn two_strips_sharing_a_switch_slot_get_the_tallest_height() {
     let dir = interface();
     fs::write(
         dir.path().join("mods/50_first.lua"),
-        strip_plugin(
+        strip_mod(
             "first",
             "ticker",
             "slot_mode = \"switch\", size = { len = 2 },",
@@ -859,7 +833,7 @@ fn two_strips_sharing_a_switch_slot_get_the_tallest_height() {
     .expect("write");
     fs::write(
         dir.path().join("mods/51_second.lua"),
-        strip_plugin("second", "ticker", "size = { len = 3 },"),
+        strip_mod("second", "ticker", "size = { len = 3 },"),
     )
     .expect("write");
     let host = loaded(dir.path());
@@ -876,7 +850,7 @@ fn a_strip_placed_by_hand_is_not_placed_again_by_the_loop() {
     let dir = interface();
     fs::write(
         dir.path().join("mods/50_strip.lua"),
-        strip_plugin("ticker", "ticker", "size = { len = 2 },"),
+        strip_mod("ticker", "ticker", "size = { len = 2 },"),
     )
     .expect("write");
     let layout = dir.path().join("layout.lua");
@@ -910,7 +884,7 @@ fn a_strip_placed_by_hand_below_the_loop_is_not_placed_again() {
     let dir = interface();
     fs::write(
         dir.path().join("mods/50_strip.lua"),
-        strip_plugin("ticker", "ticker", "size = { len = 2 },"),
+        strip_mod("ticker", "ticker", "size = { len = 2 },"),
     )
     .expect("write");
     let layout = dir.path().join("layout.lua");

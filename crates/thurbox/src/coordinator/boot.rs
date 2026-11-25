@@ -302,10 +302,6 @@ pub(crate) async fn run() -> Result<(), Box<dyn Error>> {
             false => Registry::load(),
         },
         modals: Modals::default(),
-        // v1 boots with the TERMINAL focused, not the session list: the point
-        // of the app is the agent, and you should be able to type at it without
-        // a keystroke of navigation first. Falls back to the first focusable
-        // plugin when the agent pane is absent (a user who removed it).
         focus: initial_focus,
         focus_return: initial_focus,
         reload_at: None,
@@ -356,18 +352,9 @@ pub(crate) async fn run() -> Result<(), Box<dyn Error>> {
         quit: false,
     };
 
-    // The user's decisions have to reach the host before the interface it will
-    // run is built: `LuaHost::new` already built one, from every file on disk,
-    // so a plugin turned off would be loaded for exactly one frame. Told, then
-    // rebuilt.
     app.publish_disabled();
     app.reload_interface(crate::coordinator::events::ReloadReason::Boot);
-    // Declarations are collected once up front and again on every reload, so
-    // a newly added plugin's keys appear in help with nothing else edited.
     app.collect_declarations();
-    // Everything from `LuaHost::new` to here is what it costs to have an
-    // interface at all — a v2-only startup phase, and the one a slow plugin
-    // shows up in.
     app.startup.ui_build_ms = ui_phase.elapsed().as_millis() as u64;
     // Non-empty only on a profile's first wire-up or on a failure, so this is a
     // real signal rather than noise on every launch.
@@ -464,28 +451,17 @@ fn install_signal_restore() {
     }
 }
 
-/// Index into the host's focusable plugins for `name`, or 0.
-///
-/// `App::focus` indexes the FOCUSABLE list, not the plugin list, so this cannot
-/// just be `plugins.position(...)`.
 fn focus_index_of(host: &LuaHost, name: &str) -> usize {
     host.focusable()
         .iter()
         .position(|index| {
-            host.plugins
+            host.mods
                 .get(*index)
-                .is_some_and(|plugin| plugin.name == name)
+                .is_some_and(|loaded| loaded.name == name)
         })
         .unwrap_or(0)
 }
 
-/// Find the plugin directory.
-///
-/// Two rules, in order: `THURBOX_UI_DIR`, then the user's own copy —
-/// materialized from the embedded interface on first run, preserving anything
-/// they edited. A missing or unwritable config directory is not fatal: the
-/// embedded copies are written somewhere throwaway and used from there, because
-/// no interface at all is the one outcome worth avoiding.
 fn resolve_ui_dir() -> Result<(PathBuf, Vec<String>, bool), Box<dyn Error>> {
     // The resolution itself lives in the library, so `thurbox-cli mod dir`
     // reports the directory this will actually load. Writing the user's copy is

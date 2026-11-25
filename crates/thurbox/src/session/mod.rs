@@ -1,5 +1,5 @@
 pub mod hook_status;
-pub mod plugin_spec;
+pub mod mod_spec;
 pub mod review;
 pub mod settings;
 
@@ -12,15 +12,13 @@ pub use runtime_mux::{host_def, hyperlink, multiplexer, platform, route};
 pub use hook_status::{SessionState, WORKING_QUIET_MS};
 pub use host_def::{HostDef, HostKind, HostRegistry};
 pub use hyperlink::{HyperlinkRun, HyperlinkTable, VisibleRun};
+pub use mod_spec::{LockEntry, ModEntry, ModLock, ModSpec, PackageFile, PackageManifest};
 pub use multiplexer::{BackendChoice, Multiplexer};
 pub use platform::Platform;
-pub use plugin_spec::{
-    LockEntry, PackageFile, PackageManifest, PluginEntry, PluginLock, PluginSpec,
-};
 pub use review::FileStatus;
 pub use route::{host_of_key, Place, Route, RouteError, Via, SSH_PREFIX, WSL_PREFIX};
 
-/// The session meta keys published to interface plugins as `session.meta`
+/// The session meta keys published to interface mods as `session.meta`
 /// (ADR-40).
 pub const PUBLISHED_META_PREFIX: &str = "ui.";
 

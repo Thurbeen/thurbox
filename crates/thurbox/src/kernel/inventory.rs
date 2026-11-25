@@ -1,11 +1,11 @@
 //! What the interface is made of, and which of it is actually running.
 //!
 //! The kernel already knows every one of these facts and, until now, kept all
-//! of them: a plugin whose slot the arrangement never places is dropped without
+//! of them: a mod whose slot the arrangement never places is dropped without
 //! a word (`layout.rs`), and a reload that fails leaves the previous version
 //! running, so the screen looks right while the file on disk is not what is on
 //! it. Both are invisible from inside, which is the failure this module exists
-//! to end (v2-plugin-lifecycle design D5).
+//! to end (v2-mod-lifecycle design D5).
 //!
 //! It is pure. The facts arrive as arguments — delivery says where a file came
 //! from, the paint pass says what it drew — and one function joins them.
@@ -13,7 +13,7 @@
 use std::collections::{BTreeMap, HashSet};
 
 use super::bundled::Source;
-use super::host::{Capability, Plugin};
+use super::host::{Capability, Mod};
 
 /// What a file of the interface is.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -44,7 +44,7 @@ impl Kind {
     fn of(relative: &str) -> Self {
         if relative == "layout.lua" {
             Kind::Arrangement
-        } else if relative == crate::session::plugin_spec::SPEC_FILE {
+        } else if relative == crate::session::mod_spec::SPEC_FILE {
             // Before the `mods/` fallthrough, for the same reason `Doc` is: a
             // manifest reported as a pane that failed to load is a false alarm,
             // and the loader never offers it one (it reads `mods/*.lua`).
@@ -116,11 +116,11 @@ pub struct Row {
     /// Path relative to the interface directory — the identity every command
     /// about this file uses, since it is the only name a file always has.
     pub path: String,
-    /// The plugin's declared name; its bare filename when it declares none **or
+    /// The mod's declared name; its bare filename when it declares none **or
     /// when it did not load**.
     ///
     /// A display name, not an identity: `path` is the identity, and a *managed*
-    /// file additionally answers to its spec entry's name (which is what `plugin
+    /// file additionally answers to its spec entry's name (which is what `mod
     /// remove` takes). Those three can all differ for one file, so do not pass this
     /// to a command.
     pub name: String,
@@ -180,7 +180,7 @@ impl Trust {
     ///
     /// The one rule both the enforced grant (`packages::granted`) and the row the
     /// user reads go through, so the screen cannot say "untrusted" while the
-    /// plugin still holds `run`.
+    /// mod still holds `run`.
     pub fn grants(self) -> bool {
         matches!(self, Trust::Trusted | Trust::Drifted | Trust::Shipped)
     }
@@ -247,7 +247,7 @@ impl Trust {
 /// current size, so the only true answer is the one the arrangement just gave.
 #[allow(clippy::too_many_arguments)]
 pub fn rows(
-    plugins: &[Plugin],
+    mods: &[Mod],
     sources: &BTreeMap<String, Source>,
     visible: &HashSet<usize>,
     placed: &HashSet<String>,
@@ -258,10 +258,10 @@ pub fn rows(
     let mut out = Vec::with_capacity(sources.len());
     for (path, source) in sources {
         let kind = Kind::of(path);
-        let loaded = plugins
+        let loaded = mods
             .iter()
             .enumerate()
-            .find(|(_, plugin)| plugin.path == *path);
+            .find(|(_, found)| found.path == *path);
 
         let state = match (source, loaded) {
             (Source::Removed, _) => State::Removed,
@@ -272,15 +272,15 @@ pub fn rows(
             // A decorator occupies no slot by design, so asking whether it is
             // on screen is the wrong question — it draws into someone else's
             // tree, and reporting it as hidden would read as a fault.
-            (_, Some((_, plugin))) if plugin.decorates.is_some() => State::Present,
-            (_, Some((index, plugin))) => {
+            (_, Some((_, found))) if found.decorates.is_some() => State::Present,
+            (_, Some((index, found))) => {
                 if visible.contains(&index) {
                     State::Visible
-                } else if plugin.floats {
+                } else if found.floats {
                     // Asked before the slot question, because a float's slot is
                     // beside the point — it is not waiting for a column to open.
                     State::OnDemand
-                } else if placed.contains(&plugin.slot) {
+                } else if placed.contains(&found.slot) {
                     State::Hidden
                 } else {
                     State::Unplaced
@@ -301,22 +301,22 @@ pub fn rows(
 
         out.push(Row {
             name: loaded
-                .map(|(_, plugin)| plugin.name.clone())
+                .map(|(_, found)| found.name.clone())
                 .unwrap_or_else(|| file_name(path).to_string()),
             path: path.clone(),
             kind,
             slot: loaded
-                .map(|(_, plugin)| plugin.slot.clone())
+                .map(|(_, found)| found.slot.clone())
                 .filter(|_| kind == Kind::Pane)
                 .unwrap_or_default(),
             source: source.clone(),
             state,
             error,
             capabilities: loaded
-                .map(|(_, plugin)| plugin.capabilities.clone())
+                .map(|(_, found)| found.capabilities.clone())
                 .unwrap_or_default(),
             trust: match loaded {
-                Some((_, plugin)) if !plugin.capabilities.is_empty() => trust(path),
+                Some((_, found)) if !found.capabilities.is_empty() => trust(path),
                 _ => Trust::NotAsked,
             },
         });
@@ -324,11 +324,6 @@ pub fn rows(
     out
 }
 
-/// Whether a load error names this file.
-///
-/// `load_plugin` prefixes the file stem and `load_arrangement` the file name,
-/// so matching on either is what attributes an all-or-nothing reload failure to
-/// the one file that caused it.
 fn blames(error: &str, path: &str) -> bool {
     let name = file_name(path);
     let stem = name.strip_suffix(".lua").unwrap_or(name);

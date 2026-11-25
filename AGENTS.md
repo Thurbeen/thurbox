@@ -198,7 +198,7 @@ that each make one of those mistakes and fails if any stops being reported —
 
 **`thurbox.yml` is the mod sandbox, checked statically.** It is selene's
 standard library for `ui/`, and it deliberately declares **no `base:`** — it lists
-only what `kernel::host::plugin_stdlib` grants (`string`, `table`, `math`,
+only what `kernel::host::mod_stdlib` grants (`string`, `table`, `math`,
 `coroutine`, `utf8`) plus the six globals `install_api` injects. So `os`, `io`,
 `debug`, `package`, `print` and the loaders are *absent* rather than marked
 removed, which is the same shape the VM enforces and means a mod

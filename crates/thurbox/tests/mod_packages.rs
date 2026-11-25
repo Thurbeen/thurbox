@@ -11,10 +11,8 @@
 
 use std::path::{Path, PathBuf};
 
-use thurbox::cli::plugins::{run, Action};
+use thurbox::cli::mods::{run, Action};
 
-/// Point the interface directory at a fresh tempdir, with the bundled interface
-/// delivered — a plugin `require`s `lib/`, so a bare directory is not one yet.
 fn interface(dir: &Path) -> PathBuf {
     let ui = dir.join("ui");
     std::fs::create_dir_all(&ui).expect("mkdir");
@@ -128,14 +126,14 @@ fn every_distributed_package_installs_and_loads() {
 
     // And the listing names them, since that is what a bare-name install and a typo
     // suggestion are resolved against.
-    let listed: Vec<&str> = thurbox::kernel::packages::EXAMPLE_PLUGINS
+    let listed: Vec<&str> = thurbox::kernel::packages::EXAMPLE_MODS
         .iter()
         .map(|(name, _)| *name)
         .collect();
     for name in &names {
         assert!(
             listed.contains(&name.as_str()),
-            "{name} is in examples/panes/ but absent from EXAMPLE_PLUGINS, so it cannot \
+            "{name} is in examples/panes/ but absent from EXAMPLE_MODS, so it cannot \
              be installed by name and a typo suggests nothing: {listed:?}"
         );
     }
@@ -301,10 +299,6 @@ fn a_module_may_not_be_delivered_outside_its_own_namespace() {
 
 // ── a package that carries several panes ───────────────────────────────────
 
-/// A package with two panes sharing one module, one version and one lock entry.
-///
-/// Modelled on the plugins people actually ship: `thurbox-annotate` carries two
-/// panes and `thurbox-files` three, sharing a `lib/`, a gate and one history.
 fn multi_pane_package(root: &Path, name: &str, version: &str) -> PathBuf {
     let dir = root.join(name);
     std::fs::create_dir_all(&dir).expect("mkdir");
@@ -374,8 +368,8 @@ fn a_package_with_several_panes_installs_all_of_them() {
     // One version, one pin, one lock entry: the package is the unit of
     // distribution, so both panes are recorded under the one record.
     let lock = thurbox::kernel::packages::read_lock(&ui).expect("lock");
-    assert_eq!(lock.plugins.len(), 1, "{lock:?}");
-    let entry = &lock.plugins[0];
+    assert_eq!(lock.mods.len(), 1, "{lock:?}");
+    let entry = &lock.mods[0];
     assert_eq!(entry.version, "v0.3.1");
     for file in [
         "mods/75_atlas.lua",
@@ -500,7 +494,7 @@ fn keying_an_installed_package_on_another_pane_is_refused() {
         "names the owner: {error}"
     );
     let spec = thurbox::kernel::packages::read_spec(&ui).expect("spec");
-    assert_eq!(spec.plugins.len(), 1, "{spec:?}");
+    assert_eq!(spec.mods.len(), 1, "{spec:?}");
 
     // Reinstalling the same selection is an update, not a conflict.
     let again = install(&src);
@@ -532,7 +526,7 @@ fn syncing_a_spec_that_keys_one_package_twice_is_refused() {
         "names the owner: {error}"
     );
     let lock = thurbox::kernel::packages::read_lock(&ui).expect("lock");
-    assert_eq!(lock.plugins.len(), 1, "no second record: {lock:?}");
+    assert_eq!(lock.mods.len(), 1, "no second record: {lock:?}");
 }
 
 #[test]
@@ -554,8 +548,8 @@ fn rekeying_the_sole_entry_by_hand_then_updating_converges() {
     let updated = run(Action::Update { name: None }).expect("update converges");
     assert!(updated.failure.is_none(), "{:?}", updated.json);
     let lock = thurbox::kernel::packages::read_lock(&ui).expect("lock");
-    assert_eq!(lock.plugins.len(), 1, "{lock:?}");
-    assert_eq!(lock.plugins[0].file, "mods/76_atlas_notes.lua");
+    assert_eq!(lock.mods.len(), 1, "{lock:?}");
+    assert_eq!(lock.mods[0].file, "mods/76_atlas_notes.lua");
     assert!(ui.join("mods/75_atlas.lua").is_file());
     assert!(ui.join("mods/76_atlas_notes.lua").is_file());
 
@@ -751,8 +745,8 @@ fn syncing_installs_what_the_spec_lists_and_the_directory_lacks() {
     // delivered here", not as "the user deleted these", or nothing is ever
     // installed from a checked-in lock.
     let lock = thurbox::kernel::packages::read_lock(&ui).expect("lock");
-    let mut fresh = thurbox::session::PluginLock::default();
-    for entry in lock.plugins {
+    let mut fresh = thurbox::session::ModLock::default();
+    for entry in lock.mods {
         fresh.record(thurbox::session::LockEntry {
             files: Default::default(),
             removed: Vec::new(),
@@ -929,17 +923,11 @@ fn removing_works_without_the_source_and_refuses_an_unknown_name() {
     assert!(checked.failure.is_none(), "{:?}", checked.json);
 }
 
-// ── a plugin that carries more than Lua ────────────────────────────────────
-
-/// Build a throwaway plugin **repository**: a pane in a nested directory, a module
-/// beside it, and a payload no text path could carry.
-fn plugin_repo(root: &Path, marker: &str) -> PathBuf {
-    plugin_repo_in(root, marker, "sha1")
+fn mod_repo(root: &Path, marker: &str) -> PathBuf {
+    mod_repo_in(root, marker, "sha1")
 }
 
-/// [`plugin_repo`] on a named object format (`sha1` or `sha256`), so a repository
-/// whose object ids are 64 characters rather than 40 can be installed from too.
-fn plugin_repo_in(root: &Path, marker: &str, object_format: &str) -> PathBuf {
+fn mod_repo_in(root: &Path, marker: &str, object_format: &str) -> PathBuf {
     let repo = root.join("thurbox-widget");
     std::fs::create_dir_all(repo.join("mods")).expect("mkdir");
     std::fs::create_dir_all(repo.join("lib")).expect("mkdir");
@@ -1051,7 +1039,7 @@ fn commit_more(repo: &Path, marker: &str) -> String {
 fn installing_at_a_commit_pin_checks_out_that_commit() {
     let home = tempfile::tempdir().expect("tempdir");
     let ui = interface(home.path());
-    let repo = plugin_repo(home.path(), "first");
+    let repo = mod_repo(home.path(), "first");
     let pinned = git_in(&repo, &["rev-parse", "HEAD"]);
     // The branch moves past the pin, so checking out the tip would be visible.
     commit_more(&repo, "second");
@@ -1090,7 +1078,7 @@ fn installing_at_a_commit_pin_checks_out_that_commit() {
 fn an_abbreviated_commit_pin_names_the_prefix_not_a_rebase() {
     let home = tempfile::tempdir().expect("tempdir");
     let ui = interface(home.path());
-    let repo = plugin_repo(home.path(), "first");
+    let repo = mod_repo(home.path(), "first");
     let short = git_in(&repo, &["rev-parse", "--short=8", "HEAD"]);
 
     let error = run(Action::Install {
@@ -1131,7 +1119,7 @@ fn an_abbreviated_commit_pin_names_the_prefix_not_a_rebase() {
 fn a_hex_named_tag_pin_still_installs() {
     let home = tempfile::tempdir().expect("tempdir");
     let ui = interface(home.path());
-    let repo = plugin_repo(home.path(), "first");
+    let repo = mod_repo(home.path(), "first");
     git_in(&repo, &["tag", "20240115"]);
     let tagged = git_in(&repo, &["rev-parse", "HEAD"]);
     commit_more(&repo, "second");
@@ -1159,7 +1147,7 @@ fn a_hex_named_tag_pin_still_installs() {
 fn installing_at_a_tag_pin_checks_out_the_tag() {
     let home = tempfile::tempdir().expect("tempdir");
     let ui = interface(home.path());
-    let repo = plugin_repo(home.path(), "first");
+    let repo = mod_repo(home.path(), "first");
     git_in(&repo, &["tag", "v1"]);
     let tagged = git_in(&repo, &["rev-parse", "HEAD"]);
     // The branch moves past the tag, so checking out the tip would be visible.
@@ -1190,7 +1178,7 @@ fn installing_at_a_tag_pin_checks_out_the_tag() {
 fn installing_at_a_sha256_commit_pin_checks_out_that_commit() {
     let home = tempfile::tempdir().expect("tempdir");
     let ui = interface(home.path());
-    let repo = plugin_repo_in(home.path(), "first", "sha256");
+    let repo = mod_repo_in(home.path(), "first", "sha256");
     let pinned = git_in(&repo, &["rev-parse", "HEAD"]);
     assert_eq!(pinned.len(), 64, "a sha256 object id: {pinned}");
     commit_more(&repo, "second");
@@ -1217,7 +1205,7 @@ fn installing_at_a_sha256_commit_pin_checks_out_that_commit() {
 fn a_commit_pinned_spec_reproduces_on_a_fresh_machine() {
     let home = tempfile::tempdir().expect("tempdir");
     let ui = interface(home.path());
-    let repo = plugin_repo(home.path(), "first");
+    let repo = mod_repo(home.path(), "first");
     let pinned = git_in(&repo, &["rev-parse", "HEAD"]);
     commit_more(&repo, "second");
     run(Action::Install {
@@ -1249,7 +1237,7 @@ fn a_commit_pinned_spec_reproduces_on_a_fresh_machine() {
 fn advancing_a_commit_pinned_entry_holds_its_pin() {
     let home = tempfile::tempdir().expect("tempdir");
     let ui = interface(home.path());
-    let repo = plugin_repo(home.path(), "first");
+    let repo = mod_repo(home.path(), "first");
     let pinned = git_in(&repo, &["rev-parse", "HEAD"]);
     run(Action::Install {
         src: format!("git+{}", repo.display()),
@@ -1290,7 +1278,7 @@ fn advancing_a_commit_pinned_entry_holds_its_pin() {
 fn advancing_a_branch_pinned_entry_follows_the_branch() {
     let home = tempfile::tempdir().expect("tempdir");
     let ui = interface(home.path());
-    let repo = plugin_repo(home.path(), "first");
+    let repo = mod_repo(home.path(), "first");
     run(Action::Install {
         src: format!("git+{}", repo.display()),
         as_file: None,
@@ -1327,7 +1315,7 @@ fn advancing_a_branch_pinned_entry_follows_the_branch() {
 fn a_clone_that_fails_leaves_nothing_behind() {
     let home = tempfile::tempdir().expect("tempdir");
     let ui = interface(home.path());
-    let repo = plugin_repo(home.path(), "widget");
+    let repo = mod_repo(home.path(), "widget");
 
     for pin in [
         None,
@@ -1383,7 +1371,7 @@ fn a_clone_that_fails_leaves_nothing_behind() {
 fn installing_a_repository_delivers_its_payload_and_loads_its_pane() {
     let home = tempfile::tempdir().expect("tempdir");
     let ui = interface(home.path());
-    let repo = plugin_repo(home.path(), "widget");
+    let repo = mod_repo(home.path(), "widget");
 
     // A local path that ends in `.git`? No — the form has to be explicit, so the
     // `git+` prefix is what says "clone this".
@@ -1451,7 +1439,7 @@ fn installing_a_repository_delivers_its_payload_and_loads_its_pane() {
 fn an_edit_inside_a_working_copy_survives_sync_and_update() {
     let home = tempfile::tempdir().expect("tempdir");
     let ui = interface(home.path());
-    let repo = plugin_repo(home.path(), "widget");
+    let repo = mod_repo(home.path(), "widget");
     run(Action::Install {
         src: format!("git+{}", repo.display()),
         as_file: None,
@@ -1487,7 +1475,7 @@ fn an_edit_inside_a_working_copy_survives_sync_and_update() {
 fn syncing_a_repository_entry_is_idempotent_and_clones_what_is_missing() {
     let home = tempfile::tempdir().expect("tempdir");
     let ui = interface(home.path());
-    let repo = plugin_repo(home.path(), "widget");
+    let repo = mod_repo(home.path(), "widget");
     run(Action::Install {
         src: format!("git+{}", repo.display()),
         as_file: None,
@@ -1518,7 +1506,7 @@ fn syncing_a_repository_entry_is_idempotent_and_clones_what_is_missing() {
 fn removing_a_repository_takes_the_whole_working_copy() {
     let home = tempfile::tempdir().expect("tempdir");
     let ui = interface(home.path());
-    let repo = plugin_repo(home.path(), "widget");
+    let repo = mod_repo(home.path(), "widget");
     run(Action::Install {
         src: format!("git+{}", repo.display()),
         as_file: None,
@@ -1542,14 +1530,11 @@ fn removing_a_repository_takes_the_whole_working_copy() {
     assert!(checked.failure.is_none(), "{:?}", checked.json);
 }
 
-/// A repository with several panes names its entry point in its own manifest — so a
-/// manifest is not irrelevant to a cloned plugin, and one repository serves both
-/// install mechanisms rather than presenting two doors that behave differently.
 #[test]
 fn a_cloned_repository_takes_its_pane_from_its_own_manifest() {
     let home = tempfile::tempdir().expect("tempdir");
     let _ui = interface(home.path());
-    let repo = plugin_repo(home.path(), "widget");
+    let repo = mod_repo(home.path(), "widget");
 
     // A second pane makes auto-detection ambiguous, and a manifest that resolves it.
     std::fs::write(
@@ -1611,7 +1596,7 @@ fn a_cloned_repository_takes_its_pane_from_its_own_manifest() {
 fn a_cloned_repository_declaring_several_panes_asks_which_to_load() {
     let home = tempfile::tempdir().expect("tempdir");
     let _ui = interface(home.path());
-    let repo = plugin_repo(home.path(), "widget");
+    let repo = mod_repo(home.path(), "widget");
     std::fs::write(
         repo.join("mods/50_extra.lua"),
         "return { name = \"extra\", slot = \"extra\", render = function() return \"\" end }\n",
@@ -1653,7 +1638,7 @@ fn a_cloned_repository_declaring_several_panes_asks_which_to_load() {
 fn a_cloned_repository_with_a_malformed_second_pane_still_asks() {
     let home = tempfile::tempdir().expect("tempdir");
     let _ui = interface(home.path());
-    let repo = plugin_repo(home.path(), "widget");
+    let repo = mod_repo(home.path(), "widget");
     std::fs::write(
         repo.join("mod.toml"),
         "name = \"widget\"\n\
@@ -1678,7 +1663,7 @@ fn a_cloned_repository_with_a_malformed_second_pane_still_asks() {
 fn a_repository_with_several_panes_and_no_manifest_says_so() {
     let home = tempfile::tempdir().expect("tempdir");
     let _ui = interface(home.path());
-    let repo = plugin_repo(home.path(), "widget");
+    let repo = mod_repo(home.path(), "widget");
     std::fs::write(
         repo.join("mods/50_extra.lua"),
         "return { name = \"extra\", slot = \"extra\", render = function() return \"\" end }\n",
@@ -1717,7 +1702,7 @@ fn a_repository_with_several_panes_and_no_manifest_says_so() {
 fn a_repository_read_through_plugin_toml_says_so() {
     let home = tempfile::tempdir().expect("tempdir");
     interface(home.path());
-    let repo = plugin_repo(home.path(), "first");
+    let repo = mod_repo(home.path(), "first");
     std::fs::write(
         repo.join("plugin.toml"),
         "name = \"thurbox-widget\"\n\

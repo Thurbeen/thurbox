@@ -55,7 +55,7 @@ const CTRL_P: &[u8] = b"\x10";
 const CTRL_Q: &[u8] = b"\x11";
 const CTRL_T: &[u8] = b"\x14";
 const CTRL_Y: &[u8] = b"\x19";
-/// What a legacy terminal sends for `ctrl+/` (the search plugin folds
+/// What a legacy terminal sends for `ctrl+/` (the search mod folds
 /// `ctrl+/`, `ctrl+7` and `ctrl+_` into one chord).
 const CTRL_SLASH: &[u8] = b"\x1f";
 const ESC: &[u8] = b"\x1b";
@@ -1908,7 +1908,7 @@ fn ui_state_and_watch_report_modal_changes_only_for_the_target_instance() {
 }
 
 #[test]
-fn ui_state_reads_plugin_local_changes_without_store_writes() {
+fn ui_state_reads_mod_local_changes_without_store_writes() {
     let interface = interface_plus(
         "91_counter.lua",
         r#"local count = 0
@@ -2553,8 +2553,6 @@ fn a_pane_that_fails_to_load_is_reported_and_the_rest_of_the_interface_runs() {
     tui.send(F6);
     tui.wait_for("Settings");
     tui.send(b"]");
-    // The file's own name, which the error panel does not print (it names
-    // the plugin), so this can only be the Interface tab's row.
     tui.wait_for("10_sessions.lua");
     tui.send(ESC);
     tui.wait_gone("Interface");
@@ -2663,9 +2661,6 @@ fn the_interface_tab_explains_each_file_and_drives_every_action() {
     assert!(status.success(), "exit must be clean: {status:?}");
 }
 
-/// A copy of the shipped interface with a mix of plugins in it: the `top`
-/// example installed as a package, a pane of your own the layout does not
-/// place, one that asks to run programs, and an edited shipped pane.
 fn mixed_interface(profile: &Profile) -> tempfile::TempDir {
     let interface = interface_with("mods/10_sessions.lua", {
         let shipped = std::fs::read_to_string(
@@ -2702,7 +2697,6 @@ fn mixed_interface(profile: &Profile) -> tempfile::TempDir {
     interface
 }
 
-/// Settings, then the Interface tab, then wait for its plugin groups.
 fn open_interface_tab(tui: &mut Tui) {
     tui.send(F6);
     tui.wait_for("Settings");
@@ -2720,12 +2714,7 @@ fn line_of(tui: &Tui, path: &str) -> String {
 }
 
 #[test]
-fn the_interface_tab_groups_plugins_by_where_they_came_from() {
-    // A real interface is forty-odd files, and twenty of them are modules and
-    // docs nobody acts on. The plugins are what an operator manages, so they are
-    // grouped by where they came from — yours, each installed package, shipped —
-    // with what each asks for on its row, and the support files stay out of the
-    // way until asked for or until one of them needs attention.
+fn the_interface_tab_groups_mods_by_where_they_came_from() {
     let profile = Profile::new();
     let interface = mixed_interface(&profile);
     let mut tui = Tui::spawn_with(&profile, 40, 120, |cmd| {
@@ -2768,7 +2757,7 @@ fn the_interface_tab_groups_plugins_by_where_they_came_from() {
 }
 
 #[test]
-fn a_plugin_that_breaks_the_reload_is_named_and_the_others_are_not_blamed() {
+fn a_mod_that_breaks_the_reload_is_named_and_the_others_are_not_blamed() {
     // A reload is all-or-nothing, so one broken file leaves every other file of
     // yours unloaded. Calling all of them `failed` hid the one to fix among
     // several red rows; the summary counts the culprit, its row carries the
@@ -3030,21 +3019,6 @@ impl Tui {
     }
 }
 
-/// A right press travels from the terminal to the `on_context` of the pane
-/// that painted the node under it, and a left one still reaches `on_click`.
-///
-/// `tests/mouse.rs` calls both hooks directly, with a plugin index it picked
-/// and a `Click` it built, which proves the hooks are separate and nothing
-/// about the road to them. That road is entirely the binary's: the
-/// mouse-reporting mode it turns on, `crossterm` reading button 2 as
-/// `Down(Right)`, `on_mouse` sending it to `on_context_click` rather than down
-/// the click path, and the hit under the pointer resolving to the plugin that
-/// painted it. A wire that named `on_click` for both buttons would leave every
-/// in-process test green while making every pane ever written act on a right
-/// press — the failure this feature exists to avoid.
-///
-/// Two panes answer `on_context`, so a press that reached every pane, or the
-/// wrong one, repaints the bystander and fails here.
 #[test]
 fn the_right_button_reaches_on_context_and_the_left_one_still_reaches_on_click() {
     // The `id` is what makes the row a hit target: a pane that cannot hold
@@ -3224,7 +3198,7 @@ fn listening_pane(name: &str, order: u8) -> String {
 /// A press read in the same batch as a reload reaches no pane, rather than the
 /// one that now sits at the index the last paint recorded (#1118).
 ///
-/// Click targets name plugins by index, and a reload rebuilds the vector those
+/// Click targets name mods by index, and a reload rebuilds the vector those
 /// indices point into. Removing a pane that sorts before `aim` moves `near` into
 /// `aim`'s old index, so a press resolved against the previous paint reaches
 /// `near` carrying `aim`'s node id. The reload and both presses are one write
@@ -3234,9 +3208,9 @@ fn listening_pane(name: &str, order: u8) -> String {
 #[test]
 fn a_press_right_after_a_reload_never_reaches_a_pane_that_did_not_paint_it() {
     let interface = interface_plus("06_tbgone.lua", &listening_pane("gone", 6));
-    let plugins = interface.path().join("mods");
-    std::fs::write(plugins.join("07_tbaim.lua"), listening_pane("aim", 7)).expect("add aim");
-    std::fs::write(plugins.join("08_tbnear.lua"), listening_pane("near", 8)).expect("add near");
+    let mods = interface.path().join("mods");
+    std::fs::write(mods.join("07_tbaim.lua"), listening_pane("aim", 7)).expect("add aim");
+    std::fs::write(mods.join("08_tbnear.lua"), listening_pane("near", 8)).expect("add near");
     let profile = Profile::new();
     let mut tui = Tui::spawn_with(&profile, 40, 120, |cmd| {
         cmd.env("THURBOX_UI_DIR", interface.path());
@@ -3247,7 +3221,7 @@ fn a_press_right_after_a_reload_never_reaches_a_pane_that_did_not_paint_it() {
 
     // Written at once, well inside the watcher's debounce, so the reload the
     // deletion schedules cannot repaint before F10 is read.
-    std::fs::remove_file(plugins.join("06_tbgone.lua")).expect("remove gone");
+    std::fs::remove_file(mods.join("06_tbgone.lua")).expect("remove gone");
     let (px, py) = (x + 1, y + 1);
     let mut batch = F10.to_vec();
     for button in [2, 0] {
@@ -3501,7 +3475,7 @@ fn configured_host_runs_still_require_a_trusted_run_capability() {
 }
 
 #[test]
-fn forgetting_an_asked_key_preserves_another_plugins_answer_with_that_key() {
+fn forgetting_an_asked_key_preserves_another_mods_answer_with_that_key() {
     let forgetting = r#"return {
   name = "forgetter", slot = "sessions", capabilities = { "run" },
   keys = {
@@ -3628,10 +3602,10 @@ const TYPIST: &str = r#"return {
 }"#;
 
 /// A live program whose input failed is distinct from a missing program, and
-/// both refusal reasons reach the plugin (#1119). Queue overflow itself is
+/// both refusal reasons reach the mod (#1119). Queue overflow itself is
 /// pinned without a consumer by `input_channel_overflow_fails_fast_without_blocking`.
 #[test]
-fn a_refused_keystroke_reaches_the_plugin_with_the_reason_it_was_refused() {
+fn a_refused_keystroke_reaches_the_mod_with_the_reason_it_was_refused() {
     if !have_tmux() {
         eprintln!("skipping: tmux is not installed");
         return;
@@ -3714,7 +3688,6 @@ const PAINTER: &str = r#"return {
   end,
 }"#;
 
-/// A plugin's program pane shows what its program prints.
 #[test]
 fn a_program_pane_draws_what_its_program_prints() {
     if !have_tmux() {
@@ -5415,11 +5388,6 @@ fn shell_word(path: &Path) -> String {
     format!("'{}'", path.display().to_string().replace('\'', "'\\''"))
 }
 
-/// A pane that fills the plugin VM to the byte when `ctrl+g` is pressed.
-///
-/// The heap is held live rather than leaked, which reaches the ceiling in one
-/// press. Small tables rather than one big string, because a collection's cost
-/// is the objects it has to traverse.
 const HOG_PANE: &str = r#"local held = {}
 return {
   name = "hog",
@@ -5483,13 +5451,7 @@ fn fill_the_vm_and_keep_answering(tui: &mut Tui) {
 }
 
 #[test]
-fn a_plugin_vm_at_its_memory_limit_does_not_freeze_the_interface() {
-    // Every plugin shares one VM under the memory limit. Once its heap is at
-    // the ceiling and cannot be collected below it, each allocation any pane
-    // makes runs a full emergency collection and then fails anyway: every
-    // frame pays one per plugin call, for as long as the process lives. That
-    // was a full freeze of the interface, with nothing in the log, until it
-    // was killed.
+fn a_mod_vm_at_its_memory_limit_does_not_freeze_the_interface() {
     let interface = interface_plus("91_hog.lua", HOG_PANE);
     let Some((_profile, mut tui)) = shell_session_with(|cmd| {
         cmd.env("THURBOX_UI_DIR", interface.path());
@@ -5553,9 +5515,6 @@ fn a_vm_that_a_rebuild_cannot_shrink_is_not_rebuilt_again_and_again() {
     assert!(tui.quit().success());
 }
 
-/// Fill the VM to the byte from inside a plugin, holding every chunk in
-/// `held`, and return how many whole MiB chunks went in first. The same
-/// halving as [`HOG_PANE`]'s, as a Lua prelude several panes share.
 const FILL_TO_THE_BYTE: &str = r#"local function fill(held)
   local mib = 0
   while pcall(function()
@@ -5689,11 +5648,6 @@ const SPINNER_PANE: &str = r#"return {
 
 #[test]
 fn a_call_whose_instruction_budget_cannot_be_armed_does_not_freeze_the_interface() {
-    // The instruction budget is a hook installed before every plugin call, and
-    // installing it allocates. On a full VM that allocation fails; a call run
-    // anyway has no bound, and a handler that never returns takes the render
-    // loop with it. A private profile, and the harness kills the binary when a
-    // wait gives up.
     let interface = interface_plus("91_filler.lua", FILLER_PANE);
     std::fs::write(
         interface.path().join("mods").join("92_spinner.lua"),
@@ -5765,7 +5719,7 @@ fn a_vm_that_fills_on_its_first_frame_is_rebuilt_once_then_kept() {
 }
 
 #[test]
-fn the_memory_floor_keeps_the_plugins_the_user_turned_off() {
+fn the_memory_floor_keeps_the_mods_the_user_turned_off() {
     let interface = interface_plus("91_hog.lua", HOG_PANE);
     let profile = Profile::new();
     let off = interface.path().join("mods").join("93_off.lua");
@@ -5878,7 +5832,7 @@ fn full_vm_with_unbuildable_interface(explicit: bool) {
 }
 
 #[test]
-fn memory_fallback_keeps_disabled_bundled_plugins_disabled() {
+fn memory_fallback_keeps_disabled_bundled_mods_disabled() {
     let interface = interface_plus("91_hog.lua", HOG_PANE);
     let profile = Profile::new();
     std::fs::write(

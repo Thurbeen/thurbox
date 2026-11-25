@@ -1,6 +1,6 @@
 //! The write side: draining what Lua asked for, and reporting what happened.
 //!
-//! A plugin never acts; it queues a command and the answer arrives on a later
+//! A mod never acts; it queues a command and the answer arrives on a later
 //! frame (rule 3). This is where the queue is drained, the ones the loop owns
 //! are applied here, and everything that touches the world is handed to a worker
 //! (rule 5). `tracked_commands` is why a finished command can still be reported:
@@ -15,10 +15,6 @@ use super::open_editor;
 use crate::{App, TrackedCommand};
 
 impl App {
-    /// Commands plugins issued last frame, handed to the bus.
-    ///
-    /// Draining here rather than inside the render call is what keeps `command()`
-    /// a queue push and nothing more.
     pub(crate) fn apply_commands(&mut self, terminal: &mut DefaultTerminal) {
         for (chain, command) in self.host.drain_requests() {
             if self.refuse_ungranted(&chain, &command) || self.apply_local_command(&chain, &command)
@@ -30,13 +26,6 @@ impl App {
         self.open_requested_editor(terminal);
     }
 
-    /// Refuse a plugin's command that needs a grant its issuer does not hold,
-    /// reporting why. `true` = refused, and nothing else is done with it.
-    ///
-    /// Here rather than on a worker, which knows no grant: `send`, `create`,
-    /// `restart` and a force `delete` drive an agent or destroy a worktree, so
-    /// each is checked before anything applies it — against every plugin in
-    /// the chain the request came through, so the least-privileged one decides.
     fn refuse_ungranted(
         &mut self,
         chain: &[String],
@@ -83,9 +72,9 @@ impl App {
             // Editing the interface's own files. Applied here because it is two
             // file operations and the watcher turns the write into a reload — a
             // worker would only add a race.
-            Command::Plugin { file, edit } => self.apply_plugin_edit(file, *edit),
+            Command::Mod { file, edit } => self.apply_mod_edit(file, *edit),
             // Focus is the loop's own state, so it is applied here.
-            Command::Focus { plugin, toggle } => self.apply_focus_command(plugin, *toggle),
+            Command::Focus { mod_name, toggle } => self.apply_focus_command(mod_name, *toggle),
             Command::Shell { session } => self.apply_shell_command(session),
             Command::Program {
                 owner,
@@ -109,8 +98,8 @@ impl App {
             Command::Copy { session } => self.apply_copy_command(session),
             // Settings live in the registry, which is in-process too.
             Command::Setting { key, value } => {
-                let (plugin, id) = key.split_once('.').unwrap_or((key.as_str(), ""));
-                if let Err(e) = self.registry.set_setting(plugin, id, value.clone()) {
+                let (mod_name, id) = key.split_once('.').unwrap_or((key.as_str(), ""));
+                if let Err(e) = self.registry.set_setting(mod_name, id, value.clone()) {
                     self.report(e, Level::Error);
                 }
             }
@@ -120,9 +109,6 @@ impl App {
                 self.bookmark_in_flight = true;
                 return false;
             }
-            // A user event: queued for the next dispatch, with the emitting
-            // plugin's *name* as its source — the owner is stamped by path, and
-            // the name is what subscribers know a plugin by.
             Command::Emit {
                 owner,
                 name,
@@ -138,10 +124,6 @@ impl App {
                 event.payload.push(("source".to_string(), source.into()));
                 self.enqueue_event(event);
             }
-            // A declared action, run exactly as a click on an `action:` node
-            // runs one — the same handler, so a pane's key and its own button
-            // cannot come to mean different things. The issuing plugin is the
-            // fallback owner, which is what the click path passes too.
             Command::Action { fallback, action } => {
                 let asked = self.fallback_pane(fallback);
                 // The handler runs for the chain the queue says made this —
@@ -165,8 +147,6 @@ impl App {
                 self.run_clicked_action_with_args(action, asked, &[(argument, value)]);
                 self.host.acting_for(previous);
             }
-            // The message band is kernel chrome; this is a plugin contributing
-            // to it, like a pill or a binding.
             Command::Message { text, level } => self.report(text.clone(), *level),
             _ => return false,
         }
@@ -183,8 +163,8 @@ impl App {
     }
 
     /// `Command::Focus`: move focus, or return whence it came.
-    pub(crate) fn apply_focus_command(&mut self, plugin: &str, toggle: bool) {
-        let Some(index) = self.host.index_of(plugin) else {
+    pub(crate) fn apply_focus_command(&mut self, mod_name: &str, toggle: bool) {
+        let Some(index) = self.host.index_of(mod_name) else {
             return;
         };
         let position = self
@@ -204,13 +184,7 @@ impl App {
             }
             return;
         }
-        // Through `focus_plugin`, not by assigning `focus`: it records where focus
-        // came from, and holds a request for a slot the arrangement has not placed
-        // yet rather than refusing it (`kernel::focus::defer_until_placed`) —
-        // which is what a pane opening itself needs. Assigning directly skipped
-        // both, so a pane reached from a plugin command could not be left with
-        // `Esc`.
-        self.focus_plugin(index);
+        self.focus_mod(index);
         self.dirty = true;
     }
 
@@ -235,8 +209,6 @@ impl App {
         }
     }
 
-    /// Store a theme the picker or a plugin chose in `interface.json`, on a
-    /// thread of its own so a slow disk delays the write and not the frame.
     pub(crate) fn store_chosen_theme(&mut self) {
         if let Some(name) = self.themes.take_chosen() {
             std::thread::spawn(move || {
@@ -491,17 +463,6 @@ impl App {
         self.note_data_change();
     }
 
-    /// Start or close a plugin's program pane.
-    ///
-    /// The gate is here rather than in the queue: a command is honoured after the
-    /// call that made it, so the check is "may the plugin that asked, right now" —
-    /// which is also what makes revoking trust take effect on the next frame
-    /// rather than at the next reload.
-    ///
-    /// A refusal is **reported** — see `refuse_program` — rather than silently
-    /// dropped, because a pane that cannot start needs to be able to say why: an
-    /// empty box that never explains itself is the failure mode the capability
-    /// model is otherwise prone to.
     pub(crate) fn apply_program(
         &mut self,
         owner: &str,
@@ -518,10 +479,6 @@ impl App {
             }
             return;
         }
-        // Absent rather than refusing, as `run` is: a plugin that did not declare
-        // the capability, or that the user has not trusted, simply cannot start
-        // anything. Reported so an untrusted pane can say so instead of looking
-        // broken.
         if !self
             .host
             .may_path(owner, thurbox::kernel::host::Capability::Program)
@@ -533,17 +490,6 @@ impl App {
             return;
         }
 
-        // Typing into a pane that is already running, checked after the
-        // capability and before the start: this changes what a live program is
-        // doing, which is the same privilege as starting one, and a plugin whose
-        // trust was revoked must not keep driving a process it started while it
-        // had it.
-        //
-        // `keys` WITH a program is "type at it, or start it if it is not there" —
-        // one command, decided here by `plan_keys`. The plugin cannot make that
-        // decision itself: liveness is not in the snapshot, and a plugin that
-        // tracked it in its own state would be wrong across an interface reload,
-        // which keeps panes but re-runs the file.
         if let Some(keys) = keys {
             use thurbox::kernel::terminal::{plan_keys, KeysPlan};
             let running = self
@@ -582,8 +528,6 @@ impl App {
             Some(rect) if rect.width > 0 && rect.height > 0 => (rect.height, rect.width),
             _ => (rows, cols),
         };
-        // The interface directory: the one directory a plugin-owned pane can be
-        // said to belong to, since it has no session and therefore no worktree.
         let cwd = self.ui_dir.clone();
         if let Err(e) = self
             .terminals
@@ -595,13 +539,6 @@ impl App {
         self.changed_this_frame = true;
     }
 
-    /// Report a refused `program` command to the message band and to
-    /// `command.failed`.
-    ///
-    /// Both, because the band is the user's and the event is the plugin's: a pane
-    /// that cannot start or be typed at has to be able to react, not only be
-    /// explained. Applied on this thread, so there is no `TrackedCommand` for
-    /// `report_finished_commands` to report it through.
     fn refuse_program(&mut self, name: &str, error: String) {
         self.enqueue_event(
             thurbox::kernel::events::Event::new("command.failed")

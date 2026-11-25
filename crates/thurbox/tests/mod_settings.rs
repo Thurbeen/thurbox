@@ -1,7 +1,7 @@
-//! Settings a plugin declares are real knobs, not decoration.
+//! Settings a mod declares are real knobs, not decoration.
 //!
 //! The contribution API (`Registry::settings`) existed from the start and no
-//! bundled plugin used it, so the settings modal rendered an empty pane. That
+//! bundled mod used it, so the settings modal rendered an empty pane. That
 //! is the failure mode these guard against: a declaration that nothing reads is
 //! worse than none, because it puts a row in front of the user that does not do
 //! anything when they change it.
@@ -130,7 +130,7 @@ fn session_list_of(host: &LuaHost, registry: &Registry, sessions: Vec<SessionRow
     .expect("publish");
 
     let index = host
-        .plugins
+        .mods
         .iter()
         .position(|p| p.name == "sessions")
         .expect("sessions plugin");
@@ -178,7 +178,7 @@ fn registry_for(host: &LuaHost) -> Registry {
 }
 
 #[test]
-fn the_bundled_plugins_declare_settings_at_all() {
+fn the_bundled_mods_declare_settings_at_all() {
     // The regression this whole file exists for: with none declared, the
     // settings modal has nothing to render and the extension point is unproven.
     let host = host();
@@ -393,7 +393,7 @@ fn picker(registry: &Registry) -> &thurbox::kernel::registry::Setting {
     registry
         .settings()
         .iter()
-        .find(|s| s.plugin == "picker" && s.id == "engine")
+        .find(|s| s.owner == "picker" && s.id == "engine")
         .expect("declared")
 }
 
@@ -405,7 +405,7 @@ fn declared_choices_are_collected_and_a_value_outside_them_is_refused() {
     let free = registry
         .settings()
         .iter()
-        .find(|s| s.plugin == "picker" && s.id == "free")
+        .find(|s| s.owner == "picker" && s.id == "free")
         .expect("declared");
     assert!(free.choices.is_empty(), "no choices means free text");
 
@@ -473,7 +473,7 @@ fn the_choices_are_published_to_lua() {
     })
     .expect("publish");
     let index = host
-        .plugins
+        .mods
         .iter()
         .position(|p| p.name == "picker")
         .expect("picker plugin");

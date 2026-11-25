@@ -10,8 +10,8 @@ use std::path::{Path, PathBuf};
 
 use serde_json::Value;
 
-use crate::session::plugin_spec::{
-    mod_destination, PluginLock, LEGACY_MODS_DIR, LOCK_FILE, MODS_DIR, SPEC_FILE,
+use crate::session::mod_spec::{
+    mod_destination, ModLock, LEGACY_MODS_DIR, LOCK_FILE, MODS_DIR, SPEC_FILE,
 };
 
 /// The spec's name before mods were mods.
@@ -320,8 +320,8 @@ pub fn rewrite_spec(text: &str) -> Result<String, String> {
     let mut doc: toml_edit::DocumentMut = text
         .parse()
         .map_err(|e: toml_edit::TomlError| e.to_string())?;
-    crate::session::plugin_spec::rename_entries_key(&mut doc);
-    crate::session::plugin_spec::for_each_entry_file(&mut doc, |file| {
+    crate::session::mod_spec::rename_entries_key(&mut doc);
+    crate::session::mod_spec::for_each_entry_file(&mut doc, |file| {
         let Some(current) = file.as_str() else {
             return;
         };
@@ -338,8 +338,8 @@ pub fn rewrite_spec(text: &str) -> Result<String, String> {
 
 /// The lock's text with every recorded path under `mods/`.
 pub fn rewrite_lock(text: &str) -> Result<String, String> {
-    let mut lock = PluginLock::parse(text)?;
-    for entry in &mut lock.plugins {
+    let mut lock = ModLock::parse(text)?;
+    for entry in &mut lock.mods {
         entry.file = mod_destination(&entry.file);
         entry.files = std::mem::take(&mut entry.files)
             .into_iter()
@@ -708,8 +708,8 @@ mod tests {
         let rewritten =
             rewrite_spec("plugin = [{ src = \"atlas\", file = \"plugins/75_atlas.lua\" }]\n")
                 .expect("rewrite");
-        let spec = crate::session::plugin_spec::PluginSpec::parse(&rewritten).expect("parse");
-        assert_eq!(spec.plugins[0].file, "mods/75_atlas.lua", "{rewritten}");
+        let spec = crate::session::mod_spec::ModSpec::parse(&rewritten).expect("parse");
+        assert_eq!(spec.mods[0].file, "mods/75_atlas.lua", "{rewritten}");
     }
 
     #[test]
@@ -869,8 +869,8 @@ mod tests {
         );
         assert!(rewritten.contains("file = \"y/40_y.lua\""), "{rewritten}");
         assert!(!rewritten.contains("[[plugin]]"), "{rewritten}");
-        let spec = crate::session::plugin_spec::PluginSpec::parse(&rewritten).expect("parse");
-        assert_eq!(spec.plugins.len(), 2);
+        let spec = crate::session::mod_spec::ModSpec::parse(&rewritten).expect("parse");
+        assert_eq!(spec.mods.len(), 2);
     }
 
     #[test]
@@ -882,7 +882,7 @@ mod tests {
         )
         .expect("rewrite");
         assert!(!rewritten.contains("plugins/"), "{rewritten}");
-        let lock = PluginLock::parse(&rewritten).expect("parse");
+        let lock = ModLock::parse(&rewritten).expect("parse");
         let entry = lock.entry("mods/75_a.lua").expect("entry");
         assert_eq!(entry.digest("mods/75_a.lua"), Some("d1"));
         assert_eq!(entry.digest("lib/a/u.lua"), Some("d2"));

@@ -9,7 +9,7 @@
 //! terminal emulators commonly claim for fullscreen.
 //!
 //! Both were fixed, and then the view stopped being a pane at all: it is a tab of
-//! the settings modal, because a recovery tool that is itself a plugin can be the
+//! the settings modal, because a recovery tool that is itself a mod can be the
 //! thing that is broken. So what is asserted here is what survived that move —
 //! that the view is reachable without a chord of its own, and that no file in the
 //! interface can take it away.
@@ -152,8 +152,6 @@ fn the_tab_keys_are_offered_where_they_can_be_seen() {
 
 #[test]
 fn no_interface_file_declares_a_chord_for_it() {
-    // A leftover `f11` pointing at a plugin that no longer exists would resolve
-    // to nothing and look like the original bug all over again.
     let host = host();
     let mut registry = Registry::default();
     let (bindings, settings) = host.declarations();
@@ -166,7 +164,7 @@ fn no_interface_file_declares_a_chord_for_it() {
         );
     }
     assert!(
-        !host.plugins.iter().any(|plugin| plugin.name == "plugins"),
+        !host.mods.iter().any(|loaded| loaded.name == "plugins"),
         "the file list is chrome, not a plugin"
     );
 }
@@ -196,11 +194,11 @@ fn the_centre_is_still_a_switch_slot() {
     ));
 }
 
-fn host_with(plugins: &[(&str, &str)]) -> (tempfile::TempDir, LuaHost) {
+fn host_with(mods: &[(&str, &str)]) -> (tempfile::TempDir, LuaHost) {
     let home = tempfile::tempdir().expect("tempdir");
     let ui = home.path().join("ui");
     std::fs::create_dir_all(ui.join("mods")).expect("mkdir");
-    for (file, body) in plugins {
+    for (file, body) in mods {
         std::fs::write(ui.join("mods").join(file), body).expect("write plugin");
     }
     let host = LuaHost::new(ui);
@@ -209,7 +207,7 @@ fn host_with(plugins: &[(&str, &str)]) -> (tempfile::TempDir, LuaHost) {
 }
 
 fn index_of(host: &LuaHost, name: &str) -> usize {
-    host.plugins
+    host.mods
         .iter()
         .position(|p| p.name == name)
         .unwrap_or_else(|| panic!("{name} should have loaded"))

@@ -19,7 +19,7 @@ use crate::kernel::paint::SurfaceProvider;
 /// on screen at once, in slots of different sizes. Sharing one of these between
 /// the two is what made them fight: each frame set the memo from its own rect,
 /// found the other's there, and resized on a size that was never its own
-/// (#1220). A plugin's program pane holds one of these too, for the same
+/// (#1220). A mod's program pane holds one of these too, for the same
 /// reason.
 #[derive(Default)]
 pub(super) struct Painted {
@@ -162,10 +162,6 @@ impl Terminals {
         let Ok(mut parser) = parser.lock() else {
             return false;
         };
-        // Scrollback is a property of the screen, not of the widget, so it is
-        // set before reading and left where the plugin asked for it. The shell
-        // has one of its own — it is wired up by the same `wire_up` the agent
-        // pane is — and it is this surface's offset that is applied here.
         parser.screen_mut().set_scrollback(usize::from(scroll));
         super::links::clear_uncovered(frame, area, parser.screen());
         let top = grid_top(parser.screen(), area);

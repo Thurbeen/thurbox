@@ -6,7 +6,7 @@
 //! result, let the UI read whatever is currently known.
 //!
 //! Account quotas are not sampled here (#1601). Asking a provider means reading
-//! credentials and calling its API, which belongs to a plugin the user installs
+//! credentials and calling its API, which belongs to a mod the user installs
 //! and grants `run` — `thurbox-info-panel` does it with `quota-axi` — not to a
 //! core that would do it for every session whether anything reads the answer.
 //!

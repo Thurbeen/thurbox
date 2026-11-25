@@ -938,8 +938,8 @@ browser, a review pane) that was the question actually being asked, and the only
 way to answer it was to delete panes until the number moved.
 
 **Decision**: the Lua host records cost per mod, keyed by the mod's path,
-into one `kernel::perf::PluginTable`, and `kernel::perf::plugin_report` turns it
-into the one ranked `PluginReport` that all three surfaces read — the HUD's
+into one `kernel::perf::ModTable`, and `kernel::perf::mod_report` turns it
+into the one ranked `ModReport` that all three surfaces read — the HUD's
 `panes` table under the counters, the `plugins` array of the published snapshot,
 and `thurbox-cli perf --mods` (text, or `--json` for a script). Per mod:
 Lua renders and pure-cache reuses, render time (p50/p95/max and the exact sum),

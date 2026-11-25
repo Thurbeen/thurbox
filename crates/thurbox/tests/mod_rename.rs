@@ -75,7 +75,7 @@ fn perf_plugins_is_perf_mods_with_a_deprecation() {
 }
 
 const MIGRATION_NOTICE: &str = "plugins/ → mods/";
-const STARTER: &str = include_str!("../../../examples/lua/plugin.lua");
+const STARTER: &str = include_str!("../../../examples/lua/mod.lua");
 
 fn digest(text: &str) -> String {
     let mut hash: u64 = 0xcbf2_9ce4_8422_2325;

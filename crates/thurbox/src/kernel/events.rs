@@ -1,6 +1,6 @@
-//! Events a plugin can subscribe to, and how the kernel's own are derived.
+//! Events a mod can subscribe to, and how the kernel's own are derived.
 //!
-//! A plugin used to learn that the world changed only by being rendered and
+//! A mod used to learn that the world changed only by being rendered and
 //! diffing the snapshot itself — once per frame, in every pane that cared. This
 //! is the push: the loop hands each subscriber one call per change, off the
 //! render path.
@@ -14,7 +14,7 @@
 //! The set is a closed enumeration ([`KERNEL_EVENTS`]) with one reader for each
 //! of its three uses: the loader validates a subscription against it, the help
 //! modal renders it, and `thurbox-cli mod events` prints it. One list, so a
-//! name a plugin can subscribe to is always one the kernel can emit.
+//! name a mod can subscribe to is always one the kernel can emit.
 
 use std::collections::BTreeSet;
 
@@ -54,15 +54,15 @@ pub struct Event {
     ///
     /// Zero for anything the kernel derived. A user event emitted from a handler
     /// is one deeper than the event that handler was running for, which is what
-    /// bounds a ping-pong between two plugins — see [`MAX_DEPTH`].
+    /// bounds a ping-pong between two mods — see [`MAX_DEPTH`].
     pub depth: u8,
-    /// The one plugin this event is addressed to, by path, or `None` for every
+    /// The one mod this event is addressed to, by path, or `None` for every
     /// subscriber.
     ///
     /// Almost nothing needs this: an event about a session is about a thing
     /// every pane can already see. A **program** pane is the exception — it
-    /// belongs to the plugin that started it and no other plugin can even name
-    /// it, so the news that it ended has the same owner. Two plugins may both
+    /// belongs to the mod that started it and no other mod can even name
+    /// it, so the news that it ended has the same owner. Two mods may both
     /// call their pane `editor`, and a broadcast would have each of them acting
     /// on the other's.
     pub only: Option<String>,
@@ -78,9 +78,9 @@ impl Event {
         }
     }
 
-    /// Address this event to one plugin, by path.
-    pub fn to(mut self, plugin: impl Into<String>) -> Self {
-        self.only = Some(plugin.into());
+    /// Address this event to one mod, by path.
+    pub fn to(mut self, mod_name: impl Into<String>) -> Self {
+        self.only = Some(mod_name.into());
         self
     }
 
@@ -105,12 +105,12 @@ impl Event {
 /// How many generations of user events one dispatch may cascade through.
 ///
 /// A handler for `user.a` emits `user.b`, whose handler emits `user.a` again —
-/// two plugins can do that to each other without either being wrong on its
+/// two mods can do that to each other without either being wrong on its
 /// own. The fifth generation is dropped and reported once, so the loop keeps
-/// its frame cadence whatever two plugins agree to do.
+/// its frame cadence whatever two mods agree to do.
 pub const MAX_DEPTH: u8 = 4;
 
-/// The prefix every plugin-emitted event carries.
+/// The prefix every mod-emitted event carries.
 pub const USER_PREFIX: &str = "user.";
 
 /// One event the kernel emits: its name, when it fires, and its payload fields.
@@ -201,7 +201,7 @@ fn is_identifier(name: &str) -> bool {
             .all(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '-' | '.'))
 }
 
-/// Check a name a plugin subscribes to.
+/// Check a name a mod subscribes to.
 ///
 /// Refused rather than ignored: a subscription to a name nothing emits is a
 /// handler that never fires, which is the one failure with no symptom. The
@@ -225,9 +225,9 @@ pub fn validate_subscription(name: &str) -> Result<(), String> {
     ))
 }
 
-/// The full name a plugin's emit is delivered under, or why it may not be.
+/// The full name a mod's emit is delivered under, or why it may not be.
 ///
-/// A plugin writes `command("emit", { text = "refresh" })` and subscribers see
+/// A mod writes `command("emit", { text = "refresh" })` and subscribers see
 /// `user.refresh`. A kernel name is refused outright, and so is one already
 /// spelled with the prefix — `user.user.x` would be a name nobody subscribed to.
 pub fn user_event_name(name: &str) -> Result<String, String> {
@@ -298,7 +298,7 @@ impl Facts {
 ///
 /// Keyed on `SnapshotStore::version`, so asking on every iteration costs one
 /// integer compare while nothing moves — and the first snapshot after a load
-/// **seeds** silently: the rows that existed before a plugin did are not news.
+/// **seeds** silently: the rows that existed before a mod did are not news.
 #[derive(Debug, Default)]
 pub struct Deriver {
     /// Rows as last observed, in published order.
@@ -345,7 +345,7 @@ impl Deriver {
 
     /// Forget everything, so the next snapshot seeds again.
     ///
-    /// For a reload: the plugins that would have heard about the rows since the
+    /// For a reload: the mods that would have heard about the rows since the
     /// last observation no longer exist, and the ones that replaced them are
     /// told `interface.reloaded` instead.
     pub fn reset(&mut self) {
@@ -438,8 +438,6 @@ mod tests {
             .find(|spec| spec.name == "program.exited")
             .expect("the spec is what `mod events` and `F1` print");
         assert_eq!(spec.fields, &["name", "program"]);
-        // Broadcast is the default; this one is addressed, because a program pane
-        // belongs to one plugin and two may name theirs the same.
         assert!(Event::new("program.exited").only.is_none());
         assert_eq!(
             Event::new("program.exited")

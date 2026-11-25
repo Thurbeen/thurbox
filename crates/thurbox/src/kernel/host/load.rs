@@ -5,10 +5,8 @@ use std::rc::Rc;
 
 use mlua::{Lua, Table, Value, VmState};
 
-use super::api::{clean_error, plugin_env, EnvParts};
-use super::{
-    instruction_budget, memory_limit, plugin_stdlib, Arrangement, Capability, Float, Plugin,
-};
+use super::api::{clean_error, mod_env, EnvParts};
+use super::{instruction_budget, memory_limit, mod_stdlib, Arrangement, Capability, Float, Mod};
 use crate::kernel::lua_api::API;
 use crate::kernel::node::Size;
 use crate::kernel::registry::{
@@ -18,7 +16,7 @@ use crate::kernel::registry::{
 
 /// Build a VM with the deliberate stdlib set and the memory ceiling.
 pub(super) fn new_vm() -> mlua::Result<Lua> {
-    let lua = Lua::new_with(plugin_stdlib(), mlua::LuaOptions::default())?;
+    let lua = Lua::new_with(mod_stdlib(), mlua::LuaOptions::default())?;
     lua.set_memory_limit(memory_limit())?;
     Ok(lua)
 }
@@ -36,12 +34,12 @@ pub(super) const BUDGET_EXCEEDED: &str = "thurbox: instruction budget exceeded";
 /// installed, for [`clean_error`] in the same way.
 pub(super) const BUDGET_UNARMED: &str = "thurbox: instruction budget could not be armed";
 
-/// Arms the instruction-count hook for the duration of one plugin call.
+/// Arms the instruction-count hook for the duration of one mod call.
 ///
 /// This is the Lua 5.4 half of the instruction bound. Luau donates
 /// `set_interrupt`; stock Lua does not, so the equivalent is a count hook that
-/// raises an error once the budget is spent — which unwinds the plugin call
-/// and surfaces as an ordinary plugin failure. It is what stops
+/// raises an error once the budget is spent — which unwinds the mod call
+/// and surfaces as an ordinary mod failure. It is what stops
 /// `while true do end` from taking the render loop with it.
 ///
 /// Disarmed on drop, so the budget is per call rather than per VM.
@@ -49,7 +47,7 @@ pub(super) const BUDGET_UNARMED: &str = "thurbox: instruction budget could not b
 /// Installing the hook allocates, so on a full VM it can fail. [`Budget::arm`]
 /// then returns the error and the caller does not make the call: an unbounded
 /// call that never returns would freeze the render loop, while a refused one
-/// is an ordinary plugin failure the memory recovery can act on.
+/// is an ordinary mod failure the memory recovery can act on.
 pub(super) struct Budget<'a> {
     lua: &'a Lua,
 }
@@ -81,10 +79,6 @@ impl Drop for Budget<'_> {
     }
 }
 
-/// Read `ui/layout.lua`, if there is one.
-///
-/// A parse error here fails the whole reload, exactly like a broken plugin —
-/// so the previous arrangement keeps running rather than the screen collapsing.
 pub(super) fn load_arrangement(lua: &Lua, parts: &EnvParts) -> Result<Arrangement, String> {
     let path = parts.ui_dir.join("layout.lua");
     let source = match fs::read_to_string(&path) {
@@ -92,9 +86,7 @@ pub(super) fn load_arrangement(lua: &Lua, parts: &EnvParts) -> Result<Arrangemen
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Arrangement::Missing),
         Err(e) => return Err(format!("{}: {e}", path.display())),
     };
-    // An environment of its own like any plugin's, under an owner no grant
-    // names: the arrangement asks for nothing.
-    let env = plugin_env(lua, parts, "", "").map_err(|e| format!("layout.lua: {e}"))?;
+    let env = mod_env(lua, parts, "", "").map_err(|e| format!("layout.lua: {e}"))?;
     let value: Value = lua
         .load(&source)
         .set_name("layout.lua")
@@ -109,24 +101,19 @@ pub(super) fn load_arrangement(lua: &Lua, parts: &EnvParts) -> Result<Arrangemen
     }
 }
 
-/// Read one plugin file into a [`Plugin`].
-///
-/// `relative` is the path within the interface directory, carried through
-/// rather than re-derived: the kernel writes and removes files by that name, so
-/// it must be the same string everywhere.
-pub(super) fn load_plugin(
+pub(super) fn load_mod(
     lua: &Lua,
     parts: &EnvParts,
     path: &Path,
     relative: &str,
-) -> Result<Plugin, String> {
+) -> Result<Mod, String> {
     let file = path
         .file_stem()
         .map(|stem| stem.to_string_lossy().to_string())
         .unwrap_or_else(|| path.display().to_string());
     let source = fs::read_to_string(path).map_err(|e| format!("{}: {e}", path.display()))?;
 
-    let env = plugin_env(lua, parts, relative, &file).map_err(|e| format!("{file}: {e}"))?;
+    let env = mod_env(lua, parts, relative, &file).map_err(|e| format!("{file}: {e}"))?;
     let value: Value = lua
         .load(&source)
         .set_name(file.clone())
@@ -153,9 +140,6 @@ pub(super) fn load_plugin(
         return Err(format!("{file}.name: kernel is reserved"));
     }
 
-    // Refused before the rest of the declaration is read: a plugin written
-    // against a newer contract may misread every field below, and why it did
-    // not load is the one thing its author needs to see in the inventory.
     let requires_api = def
         .get::<Option<u32>>("requires_api")
         .map_err(|e| format!("{file}.requires_api: {e}"))?;
@@ -240,7 +224,7 @@ pub(super) fn load_plugin(
         ));
     }
 
-    Ok(Plugin {
+    Ok(Mod {
         name,
         path: relative.to_string(),
         file,
@@ -265,25 +249,25 @@ pub(super) fn load_plugin(
     })
 }
 
-fn read_actions(def: &Table, plugin: &str) -> Result<Vec<ActionDecl>, String> {
+fn read_actions(def: &Table, mod_name: &str) -> Result<Vec<ActionDecl>, String> {
     let raw: Option<Table> = def
         .get("actions")
-        .map_err(|e| format!("{plugin}.actions: {e}"))?;
+        .map_err(|e| format!("{mod_name}.actions: {e}"))?;
     let Some(list) = raw else {
         return Ok(Vec::new());
     };
     let mut out = Vec::new();
     for (index, row) in list.sequence_values::<Table>().enumerate() {
-        let row = row.map_err(|e| format!("{plugin}.actions[{}]: {e}", index + 1))?;
+        let row = row.map_err(|e| format!("{mod_name}.actions[{}]: {e}", index + 1))?;
         let name: String = row
             .get("name")
-            .map_err(|e| format!("{plugin}.actions[{}].name: {e}", index + 1))?;
+            .map_err(|e| format!("{mod_name}.actions[{}].name: {e}", index + 1))?;
         if name.is_empty()
             || crate::kernel::registry::protected_action(&name)
             || out.iter().any(|entry: &ActionDecl| entry.name == name)
         {
             return Err(format!(
-                "{plugin}.actions[{}]: invalid or kernel-owned name",
+                "{mod_name}.actions[{}]: invalid or kernel-owned name",
                 index + 1
             ));
         }
@@ -293,7 +277,7 @@ fn read_actions(def: &Table, plugin: &str) -> Result<Vec<ActionDecl>, String> {
             .unwrap_or_else(|| "ui-write".into());
         if !matches!(effect.as_str(), "read" | "ui-write" | "kernel-write") {
             return Err(format!(
-                "{plugin}.actions[{}]: unknown effect {effect}",
+                "{mod_name}.actions[{}]: unknown effect {effect}",
                 index + 1
             ));
         }
@@ -303,10 +287,10 @@ fn read_actions(def: &Table, plugin: &str) -> Result<Vec<ActionDecl>, String> {
             .as_deref()
         {
             Some("global") => Scope::Global,
-            Some("mod" | "plugin") | None => Scope::Plugin,
+            Some("mod" | "plugin") | None => Scope::Mod,
             Some(other) => {
                 return Err(format!(
-                    "{plugin}.actions[{}]: unknown scope {other}",
+                    "{mod_name}.actions[{}]: unknown scope {other}",
                     index + 1
                 ))
             }
@@ -327,7 +311,7 @@ fn read_actions(def: &Table, plugin: &str) -> Result<Vec<ActionDecl>, String> {
                         .any(|arg: &ActionArgument| arg.name == arg_name)
                 {
                     return Err(format!(
-                        "{plugin}.actions[{}].args[{}]: invalid argument",
+                        "{mod_name}.actions[{}].args[{}]: invalid argument",
                         index + 1,
                         position + 1
                     ));
@@ -343,7 +327,7 @@ fn read_actions(def: &Table, plugin: &str) -> Result<Vec<ActionDecl>, String> {
             }
         }
         out.push(ActionDecl {
-            plugin: plugin.into(),
+            owner: mod_name.into(),
             name,
             description: row
                 .get::<Option<String>>("desc")
@@ -387,17 +371,17 @@ fn read_events(def: &Table, file: &str) -> Result<Vec<String>, String> {
 /// Same shape as a key without the chord: the action id is the one `on_action`
 /// is called back with, so a command and a key for one action are one thing
 /// reached two ways.
-fn read_commands(def: &Table, plugin: &str) -> Result<Vec<CommandDecl>, String> {
+fn read_commands(def: &Table, mod_name: &str) -> Result<Vec<CommandDecl>, String> {
     let raw: Value = def
         .get("commands")
-        .map_err(|e| format!("{plugin}.commands: {e}"))?;
+        .map_err(|e| format!("{mod_name}.commands: {e}"))?;
     let Value::Table(list) = raw else {
         return Ok(Vec::new());
     };
     let mut commands = Vec::new();
     for (index, entry) in list.sequence_values::<Table>().enumerate() {
-        let entry = entry.map_err(|e| format!("{plugin}.commands[{}]: {e}", index + 1))?;
-        let where_ = format!("{plugin}.commands[{}]", index + 1);
+        let entry = entry.map_err(|e| format!("{mod_name}.commands[{}]: {e}", index + 1))?;
+        let where_ = format!("{mod_name}.commands[{}]", index + 1);
         let action: String = entry
             .get::<Option<String>>("action")
             .map_err(|e| format!("{where_}.action: {e}"))?
@@ -407,7 +391,7 @@ fn read_commands(def: &Table, plugin: &str) -> Result<Vec<CommandDecl>, String> 
             .map_err(|e| format!("{where_}.desc: {e}"))?
             .unwrap_or_default();
         commands.push(CommandDecl {
-            plugin: plugin.to_string(),
+            owner: mod_name.to_string(),
             action,
             description,
         });
@@ -440,11 +424,6 @@ fn read_capabilities(def: &Table, file: &str) -> Result<Vec<Capability>, String>
     Ok(out)
 }
 
-/// Read the `float` field off whatever a plugin returned.
-///
-/// `float = true` takes the default size; a table may set `width`/`height` as
-/// percentages of the screen, or `cols`/`rows` to ask in cells; `at = { x, y }`
-/// opens it at that screen cell instead of the centre.
 pub(super) fn read_float(value: &Value) -> Result<Option<Float>, String> {
     let Value::Table(table) = value else {
         return Ok(None);
@@ -491,19 +470,17 @@ pub(super) fn read_float(value: &Value) -> Result<Option<Float>, String> {
     }
 }
 
-/// Read a plugin's `keys` declaration.
-///
-/// Declared as data rather than handled imperatively so the registry can
-/// enumerate, conflict-check and rebind them without ever calling the plugin.
-fn read_bindings(def: &Table, plugin: &str) -> Result<Vec<Binding>, String> {
-    let raw: Value = def.get("keys").map_err(|e| format!("{plugin}.keys: {e}"))?;
+fn read_bindings(def: &Table, mod_name: &str) -> Result<Vec<Binding>, String> {
+    let raw: Value = def
+        .get("keys")
+        .map_err(|e| format!("{mod_name}.keys: {e}"))?;
     let Value::Table(list) = raw else {
         return Ok(Vec::new());
     };
     let mut bindings = Vec::new();
     for (index, entry) in list.sequence_values::<Table>().enumerate() {
-        let entry = entry.map_err(|e| format!("{plugin}.keys[{}]: {e}", index + 1))?;
-        let where_ = format!("{plugin}.keys[{}]", index + 1);
+        let entry = entry.map_err(|e| format!("{mod_name}.keys[{}]: {e}", index + 1))?;
+        let where_ = format!("{mod_name}.keys[{}]", index + 1);
         let chord: String = entry
             .get::<Option<String>>("key")
             .map_err(|e| format!("{where_}.key: {e}"))?
@@ -540,7 +517,7 @@ fn read_bindings(def: &Table, plugin: &str) -> Result<Vec<Binding>, String> {
             .map_err(|e| format!("{where_}.release: {e}"))?
             .unwrap_or(false);
         let mut binding = binding_from(
-            plugin,
+            mod_name,
             &chord,
             &action,
             &description,
@@ -554,18 +531,17 @@ fn read_bindings(def: &Table, plugin: &str) -> Result<Vec<Binding>, String> {
     Ok(bindings)
 }
 
-/// Read a plugin's `settings` declaration.
-fn read_settings(def: &Table, plugin: &str) -> Result<Vec<Setting>, String> {
+fn read_settings(def: &Table, mod_name: &str) -> Result<Vec<Setting>, String> {
     let raw: Value = def
         .get("settings")
-        .map_err(|e| format!("{plugin}.settings: {e}"))?;
+        .map_err(|e| format!("{mod_name}.settings: {e}"))?;
     let Value::Table(list) = raw else {
         return Ok(Vec::new());
     };
     let mut settings = Vec::new();
     for (index, entry) in list.sequence_values::<Table>().enumerate() {
-        let entry = entry.map_err(|e| format!("{plugin}.settings[{}]: {e}", index + 1))?;
-        let where_ = format!("{plugin}.settings[{}]", index + 1);
+        let entry = entry.map_err(|e| format!("{mod_name}.settings[{}]: {e}", index + 1))?;
+        let where_ = format!("{mod_name}.settings[{}]", index + 1);
         let id: String = entry
             .get::<Option<String>>("id")
             .map_err(|e| format!("{where_}.id: {e}"))?
@@ -593,10 +569,6 @@ fn read_settings(def: &Table, plugin: &str) -> Result<Vec<Setting>, String> {
             .get::<Option<Vec<String>>>("choices")
             .map_err(|e| format!("{where_}.choices: {e}"))?
             .unwrap_or_default();
-        // Refused rather than repaired: a default the plugin does not offer
-        // would be shown as the value of a row whose every step leaves it, a
-        // choice listed twice would be a step that goes nowhere, and a choice on
-        // a boolean or a number has nothing to choose between.
         if let Some(twice) = choices
             .iter()
             .enumerate()
@@ -624,7 +596,7 @@ fn read_settings(def: &Table, plugin: &str) -> Result<Vec<Setting>, String> {
             return Err(format!("{where_}: choices must not be empty"));
         }
         settings.push(Setting {
-            plugin: plugin.to_string(),
+            owner: mod_name.to_string(),
             id,
             description,
             default: default.clone(),
@@ -636,22 +608,17 @@ fn read_settings(def: &Table, plugin: &str) -> Result<Vec<Setting>, String> {
     Ok(settings)
 }
 
-/// Read a plugin's `pills` declaration — its entries in the action band.
-///
-/// Data, like `keys` and `settings`, for the same reason: the band must be able
-/// to enumerate every entry without invoking any plugin, because drawing chrome
-/// that can call into Lua is chrome a plugin can break.
-fn read_pills(def: &Table, plugin: &str) -> Result<Vec<Pill>, String> {
+fn read_pills(def: &Table, mod_name: &str) -> Result<Vec<Pill>, String> {
     let raw: Value = def
         .get("pills")
-        .map_err(|e| format!("{plugin}.pills: {e}"))?;
+        .map_err(|e| format!("{mod_name}.pills: {e}"))?;
     let Value::Table(list) = raw else {
         return Ok(Vec::new());
     };
     let mut pills = Vec::new();
     for (index, entry) in list.sequence_values::<Table>().enumerate() {
-        let entry = entry.map_err(|e| format!("{plugin}.pills[{}]: {e}", index + 1))?;
-        let where_ = format!("{plugin}.pills[{}]", index + 1);
+        let entry = entry.map_err(|e| format!("{mod_name}.pills[{}]: {e}", index + 1))?;
+        let where_ = format!("{mod_name}.pills[{}]", index + 1);
         let action: String = entry
             .get::<Option<String>>("action")
             .map_err(|e| format!("{where_}.action: {e}"))?
@@ -667,7 +634,7 @@ fn read_pills(def: &Table, plugin: &str) -> Result<Vec<Pill>, String> {
             .map_err(|e| format!("{where_}.priority: {e}"))?
             .unwrap_or(0);
         pills.push(Pill {
-            plugin: plugin.to_string(),
+            owner: mod_name.to_string(),
             action,
             label,
             priority,

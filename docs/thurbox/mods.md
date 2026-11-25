@@ -30,7 +30,7 @@ thurbox-cli mod check        # does it load? exits non-zero if not
 thurbox-cli mod list         # every file, where it came from, is it drawn
 ```
 
-`mod new` writes [`examples/lua/plugin.lua`](../../examples/lua/plugin.lua) under your
+`mod new` writes [`examples/lua/mod.lua`](../../examples/lua/mod.lua) under your
 chosen name — a pane that renders, declares a key and a setting, and comments the
 one rule that catches everybody (see **Traps**). Edit it, run `check`, and it is
 live on the next save: the interface watches the directory.
@@ -1858,7 +1858,7 @@ below.
 
 | Example file | What it is |
 |---|---|
-| [`plugin.lua`](../../examples/lua/plugin.lua) | what `mod new` writes: a pane, a key, a setting |
+| [`mod.lua`](../../examples/lua/mod.lua) | what `mod new` writes: a pane, a key, a setting |
 | [`composite.lua`](../../examples/lua/composite.lua) | the worked `run` example — git status and log, on the session's own host |
 | [`events.lua`](../../examples/lua/events.lua) | the worked `on_event` example — selects a session the moment it blocks, with a palette command to switch it off |
 | [`layout.lua`](../../examples/lua/layout.lua) | an arrangement putting the two panes above in a column beside the agent |

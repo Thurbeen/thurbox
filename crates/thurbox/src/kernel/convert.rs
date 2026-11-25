@@ -1,10 +1,10 @@
 //! Lua table → [`Node`].
 //!
-//! A plugin returns a plain table; nothing here hands it a ratatui object.
+//! A mod returns a plain table; nothing here hands it a ratatui object.
 //! That indirection is what makes throwing the VM away on reload safe, and it
 //! is why a malformed tree is a *reported* error rather than a crash: every
 //! failure below returns `Err(String)` naming the path where it happened, so
-//! the host can render it in the offending plugin's own region.
+//! the host can render it in the offending mod's own region.
 
 use mlua::{Table, Value};
 use ratatui::style::Style;
@@ -39,17 +39,15 @@ impl std::fmt::Display for Crumb<'_> {
     }
 }
 
-/// Deepest tree accepted. Guards against a plugin building a cyclic or
-/// pathological structure and taking the render thread down with it.
 const MAX_DEPTH: usize = 64;
 
-/// Convert a plugin's returned value into a node tree.
-/// Read a plugin's returned tree.
+/// Convert a mod's returned value into a node tree.
+/// Read a mod's returned tree.
 ///
-/// `owner` is the path of the plugin that produced it, needed because a
-/// `surface` naming a **program** names one of that plugin's own — the plugin
+/// `owner` is the path of the mod that produced it, needed because a
+/// `surface` naming a **program** names one of that mod's own — the mod
 /// writes `program = "watch"` and the kernel resolves the owner, so naming another
-/// plugin's pane is impossible by construction rather than refused by a check.
+/// mod's pane is impossible by construction rather than refused by a check.
 pub fn to_node(value: &Value, owner: &str) -> Result<Node, String> {
     convert(value, Crumb::Root, 0, owner)
 }
@@ -61,7 +59,6 @@ fn convert(value: &Value, path: Crumb<'_>, depth: usize, owner: &str) -> Result<
         ));
     }
     match value {
-        // A bare string is the shorthand every plugin reaches for first.
         Value::String(s) => Ok(Node::line(s.to_string_lossy(), Style::default())),
         Value::Nil => Ok(Node::empty()),
         Value::Table(table) => convert_table(table, path, depth, owner),
@@ -72,20 +69,6 @@ fn convert(value: &Value, path: Crumb<'_>, depth: usize, owner: &str) -> Result<
     }
 }
 
-/// Every field a node may carry, gathered in ONE pass over the table.
-///
-/// Read individually this cost ~25 keyed lookups per node — `read_size` alone
-/// is five — and each one hashes its key and crosses into the VM. At ~570ns a
-/// lookup that was ~14µs *per node*, and the session list builds 187 of them:
-/// conversion outweighed running every plugin's Lua put together, and was the
-/// single largest cost in a frame. One `pairs` pass visits only the handful of
-/// keys a node actually has.
-///
-/// This is the same fix, for the same reason, that [`read_style_field`] already
-/// applies one level down — see its comment.
-///
-/// Keys are read **raw**, as all but two of the individual lookups already
-/// were; a node table is data a plugin wrote, never a view onto something else.
 #[derive(Default)]
 struct Fields {
     kind: Option<Value>,
@@ -153,8 +136,6 @@ impl Fields {
                 b"session" => &mut out.session,
                 b"program" => &mut out.program,
                 b"cells" => &mut out.cells,
-                // A key this kernel does not know is not an error: it is how a
-                // plugin carries its own bookkeeping on the same table.
                 _ => continue,
             };
             *slot = Some(value);
@@ -181,8 +162,6 @@ fn convert_table(
                 "{path}: unknown node kind {name:?} — the vocabulary is text, box, input, surface"
             )
         })?,
-        // Inference keeps simple plugins terse: the presence of a field
-        // implies the kind, and a table of children is a box.
         None => {
             if fields.cells.is_some() || fields.session.is_some() {
                 "surface"
@@ -251,9 +230,6 @@ fn convert_table(
             {
                 SurfaceSource::Session(session)
             } else if let Some(program) = val_string(fields.program.as_ref(), "program", path)? {
-                // Resolved against the plugin that drew it. The name is checked
-                // here so a bad one is a conversion error naming its path, rather
-                // than a pane that never appears.
                 super::terminal::validate_program_name(&program)
                     .map_err(|e| format!("{path}.program: {e}"))?;
                 SurfaceSource::Program(
@@ -279,7 +255,6 @@ fn convert_table(
     }
 }
 
-/// Accept the primitive names plus the aliases a plugin author will reach for.
 fn normalize_kind(name: &str) -> Option<&'static str> {
     match name {
         "text" | "paragraph" | "line" => Some("text"),
@@ -297,9 +272,6 @@ fn read_children(
     depth: usize,
     owner: &str,
 ) -> Result<Vec<Node>, String> {
-    // Children live under `children`, or in the array part of the table so a
-    // plugin can write `{ a, b, c }` without the extra key. Taken from the
-    // single field pass, so a box costs no lookup of its own.
     let list = match fields.children.clone().unwrap_or(Value::Nil) {
         Value::Table(t) => t,
         Value::Nil => table.clone(),
@@ -324,12 +296,6 @@ fn read_children(
     Ok(children)
 }
 
-/// Read text in any of the shapes a plugin may write it:
-/// a string, a list of lines, a `{ text =, style = }` table, or a list of runs.
-///
-/// `depth` is threaded for the same reason [`convert`] threads it: a table that
-/// contains itself is a legal Lua value, and text is a place a plugin can hand
-/// one over.
 fn read_lines(value: &Value, path: Crumb<'_>, depth: usize) -> Result<Vec<Vec<Run>>, String> {
     if depth > MAX_DEPTH {
         return Err(format!(
@@ -390,9 +356,6 @@ fn read_runs(value: &Value, path: Crumb<'_>, depth: usize) -> Result<Vec<Run>, S
         }]),
         Value::Nil => Ok(Vec::new()),
         Value::Table(table) => {
-            // Read once and branch on what came back, rather than asking
-            // `contains_key` and then reading it again — this is the hottest
-            // leaf in the renderer, one call per span per plugin per frame.
             let raw: Value = table
                 .raw_get("text")
                 .map_err(|e| lua_err(path, "text", &e))?;
@@ -505,9 +468,6 @@ fn read_frame(fields: &Fields, path: Crumb<'_>) -> Result<Option<Frame>, String>
                     ))
                 }
             };
-            // A plain string stays a plain string; a table of runs is styled, the
-            // same shape a `text` node accepts. Raw, like every other read of a
-            // frame spec — the table is data a plugin wrote, never a view.
             let title = match spec.raw_get::<Value>("title") {
                 Ok(Value::Nil) => None,
                 Ok(value) => Some(read_runs(
@@ -645,10 +605,6 @@ fn read_style_field(table: &Table, key: &str, path: Crumb<'_>) -> Result<Style, 
 fn read_style_raw(raw: Value, key: &str, path: Crumb<'_>) -> Result<Style, String> {
     match raw {
         Value::Nil => Ok(Style::default()),
-        // `style = "cyan"` — the shorthand every plugin uses for a foreground.
-        // Borrowed straight out of the VM: `to_string_lossy` was an owned
-        // `String` per styled span per frame, and a non-UTF-8 name fails
-        // `parse_color` either way.
         Value::String(name) => Ok(
             match name.to_str().ok().and_then(|name| parse_color(&name)) {
                 Some(color) => Style::default().fg(color),
@@ -663,14 +619,6 @@ fn read_style_raw(raw: Value, key: &str, path: Crumb<'_>) -> Result<Style, Strin
     }
 }
 
-/// A full style table, applied field by field rather than collected into a
-/// map first.
-///
-/// This is the hottest path in the whole renderer: it runs once per SPAN per
-/// plugin per frame, and the map it used to build allocated a heap `String`
-/// for every key and value. At ~100 spans a pane that was thousands of
-/// allocations a frame, and it dominated render time — the session list cost
-/// 1.2ms with zero sessions in it.
 fn read_style_table(spec: &Table, key: &str, path: Crumb<'_>) -> Result<Style, String> {
     let mut style = Style::default();
     for pair in spec.pairs::<mlua::LuaString, Value>() {
@@ -814,17 +762,6 @@ fn lua_err(path: Crumb<'_>, key: &str, error: &mlua::Error) -> String {
     format!("{path}.{key}: {error}")
 }
 
-/// Convert a [`Node`] back into the Lua table a plugin would have written.
-///
-/// Needed only by decoration: a decorator receives another plugin's rendered
-/// tree, so the tree has to cross back into Lua. Round-tripping through the
-/// same shape `to_node` accepts means a decorator can return the table it was
-/// given, modified or not, and it converts back cleanly.
-/// A `Style` as the same table shape a plugin would have written, so the value
-/// a decorator receives is indistinguishable from one it could author.
-///
-/// `None` when the style is empty, which keeps an unstyled span free of a
-/// pointless table and keeps `to_lua` output stable for the tree diff.
 fn style_to_lua(lua: &mlua::Lua, style: &Style) -> Result<Option<Table>, String> {
     use ratatui::style::Modifier;
 
@@ -858,11 +795,6 @@ fn style_to_lua(lua: &mlua::Lua, style: &Style) -> Result<Option<Table>, String>
     Ok(any.then_some(table))
 }
 
-/// One run as the table a plugin would have written, identity included.
-///
-/// Everything a run carries MUST round-trip, for the reason the styles below
-/// do: a decorator is handed the tree and returns one, so a field dropped here
-/// is dropped from the pane.
 fn run_to_lua(lua: &mlua::Lua, run: &Run) -> Result<Table, String> {
     let entry = lua.create_table().map_err(|e| e.to_string())?;
     entry
@@ -1103,8 +1035,6 @@ fn overlay_to_lua(lua: &mlua::Lua, overlay: &Overlay) -> Result<Table, String> {
     Ok(out)
 }
 
-/// One table of styled runs per line: a text node's lines and a plugin-fed
-/// surface's cells are the same shape on the way out.
 fn lines_to_lua(lua: &mlua::Lua, lines: &[Vec<Run>]) -> Result<Table, String> {
     let out = lua.create_table().map_err(|e| e.to_string())?;
     for (index, runs) in lines.iter().enumerate() {
@@ -1121,13 +1051,7 @@ fn surface_source_to_lua(
 ) -> Result<(), String> {
     match source {
         SurfaceSource::Session(id) => table.set("session", id.clone()),
-        // The resolved id, not the bare name the plugin wrote: the tree a
-        // decorator receives has to name the same surface the paint will.
         SurfaceSource::Program(id) => table.set("program", id.clone()),
-        // Emitted as runs rather than flattened to one string per line: a
-        // plugin-fed surface is where a review diff's syntax colouring lives,
-        // and joining the text throws all of it away the moment any decorator
-        // touches the pane.
         SurfaceSource::Cells(lines) => table.set("cells", lines_to_lua(lua, lines)?),
     }
     .map_err(|e| e.to_string())
@@ -1213,9 +1137,6 @@ mod tests {
         assert_eq!(identity.role.as_deref(), Some("row"));
     }
 
-    /// What `to_lua` hands a decorator for the shapes the decoration round trip
-    /// cannot show: a program surface is re-resolved against its plugin on the
-    /// way back in, so these are read off the table itself.
     #[test]
     fn to_lua_spells_every_source_identity_and_frame_variant() {
         let lua = Lua::new();

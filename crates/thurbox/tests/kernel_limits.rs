@@ -8,11 +8,11 @@
 
 use thurbox::kernel::host::{self, LuaHost, MemoryPressure, RenderContext};
 
-fn plugin_dir(source: &str) -> tempfile::TempDir {
+fn mod_dir(source: &str) -> tempfile::TempDir {
     let dir = tempfile::tempdir().expect("tempdir");
-    let plugins = dir.path().join("mods");
-    std::fs::create_dir_all(&plugins).expect("mkdir");
-    std::fs::write(plugins.join("10_probe.lua"), source).expect("write");
+    let mods = dir.path().join("mods");
+    std::fs::create_dir_all(&mods).expect("mkdir");
+    std::fs::write(mods.join("10_probe.lua"), source).expect("write");
     dir
 }
 
@@ -39,7 +39,7 @@ fn ctx() -> RenderContext {
 fn a_float_focus_hook_that_never_returns_is_interrupted_and_reported() {
     let _limits = limits();
     host::set_instruction_budget(200_000);
-    let dir = plugin_dir(
+    let dir = mod_dir(
         r#"return {
              name = "spinner", floats = true,
              on_focus_cycle = function() while true do end end,
@@ -51,7 +51,7 @@ fn a_float_focus_hook_that_never_returns_is_interrupted_and_reported() {
     let result = spinner.on_focus_cycle(0, "next");
     host::set_instruction_budget(0);
     let failure = result.expect_err("cycle must be interrupted");
-    assert_eq!(failure.plugin, "spinner");
+    assert_eq!(failure.owner, "spinner");
     assert_eq!(failure.phase, host::Phase::Key);
     assert!(failure.message.contains("instruction budget"), "{failure}");
     spinner.render(0, ctx()).expect("budget removed after hook");
@@ -61,7 +61,7 @@ fn a_float_focus_hook_that_never_returns_is_interrupted_and_reported() {
 fn an_event_handler_that_never_returns_is_interrupted_and_reported() {
     let _limits = limits();
     host::set_instruction_budget(200_000);
-    let dir = plugin_dir(
+    let dir = mod_dir(
         r#"return {
              name = "spinner", slot = "a",
              events = { "session.status" },
@@ -76,7 +76,7 @@ fn an_event_handler_that_never_returns_is_interrupted_and_reported() {
     );
     host::set_instruction_budget(0);
     assert_eq!(failures.len(), 1, "{failures:?}");
-    assert_eq!(failures[0].plugin, "spinner");
+    assert_eq!(failures[0].owner, "spinner");
     assert_eq!(failures[0].phase, host::Phase::Event);
     assert!(
         failures[0].message.contains("instruction budget"),
@@ -124,11 +124,11 @@ const SPINNER: &str = r#"return {
 /// then [`SPINNER`], on a thread of its own: a call that runs without its
 /// instruction budget never comes back, and this one must not take the test
 /// with it.
-fn reload_beside_a_filler(limit: usize) -> Option<Vec<host::PluginError>> {
+fn reload_beside_a_filler(limit: usize) -> Option<Vec<host::ModError>> {
     host::set_memory_limit(limit);
     let (sent, received) = std::sync::mpsc::channel();
     std::thread::spawn(move || {
-        let dir = plugin_dir(FILLER);
+        let dir = mod_dir(FILLER);
         std::fs::write(dir.path().join("mods").join("20_spinner.lua"), SPINNER).expect("write");
         let host = LuaHost::new(dir.path());
         assert!(host.error.is_none(), "{:?}", host.error);
@@ -153,7 +153,7 @@ fn a_call_whose_instruction_budget_cannot_be_armed_is_not_run() {
     let failures =
         failures.expect("the spinner ran without an instruction budget and never returned");
     assert_eq!(failures.len(), 1, "{failures:?}");
-    assert_eq!(failures[0].plugin, "spinner");
+    assert_eq!(failures[0].owner, "spinner");
     assert_eq!(failures[0].phase, host::Phase::Event);
     assert!(
         failures[0].message.contains("could not be armed"),
@@ -207,10 +207,10 @@ fn memory_pressure_tells_a_full_vm_from_a_large_one() {
     let _limits = limits();
     let limit = 16 * 1024 * 1024;
     host::set_memory_limit(limit);
-    let base = LuaHost::new(plugin_dir(&resident_probe(0)).path()).used_memory();
+    let base = LuaHost::new(mod_dir(&resident_probe(0)).path()).used_memory();
     let loading = |share: usize| {
         let host =
-            LuaHost::new(plugin_dir(&resident_probe((limit / 100 * share - base) / CHUNK)).path());
+            LuaHost::new(mod_dir(&resident_probe((limit / 100 * share - base) / CHUNK)).path());
         assert!(host.error.is_none(), "{:?}", host.error);
         host
     };
@@ -326,7 +326,7 @@ fn the_limits_are_settable_and_enforced() {
     // --- memory ------------------------------------------------------------
     // A small ceiling, so exhausting it is a test rather than an ordeal.
     host::set_memory_limit(4 * 1024 * 1024);
-    let dir = plugin_dir(
+    let dir = mod_dir(
         r#"local t = {}
            return {
              name = "hog", slot = "a",
@@ -344,7 +344,7 @@ fn the_limits_are_settable_and_enforced() {
     let error = hog
         .render(0, ctx())
         .expect_err("exhausting memory must fail the plugin");
-    assert_eq!(error.plugin, "hog");
+    assert_eq!(error.owner, "hog");
     assert!(
         error.message.contains("memory"),
         "the message should name the limit: {}",
@@ -365,7 +365,7 @@ fn the_limits_are_settable_and_enforced() {
     host::set_instruction_budget(200_000);
     assert_eq!(host::instruction_budget(), 200_000);
 
-    let dir = plugin_dir(
+    let dir = mod_dir(
         r#"return {
              name = "spin", slot = "a",
              render = function() while true do end end,
@@ -378,7 +378,7 @@ fn the_limits_are_settable_and_enforced() {
         .expect_err("an unterminated render must be interrupted");
     let elapsed = started.elapsed();
 
-    assert_eq!(error.plugin, "spin");
+    assert_eq!(error.owner, "spin");
     assert!(
         error.message.contains("instruction budget"),
         "{}",
@@ -396,11 +396,9 @@ fn the_limits_are_settable_and_enforced() {
 }
 
 #[test]
-fn a_healthy_plugin_is_unaffected_by_the_hook() {
+fn a_healthy_mod_is_unaffected_by_the_hook() {
     let _limits = limits();
-    // The overhead question from task 2.12, as a bound rather than a number:
-    // a plugin doing ordinary work must not be near the budget.
-    let dir = plugin_dir(
+    let dir = mod_dir(
         r#"return {
              name = "ordinary", slot = "a",
              render = function()

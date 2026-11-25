@@ -117,20 +117,20 @@ fn publish_with(
     .expect("publish");
 }
 
-fn index_of(host: &LuaHost, plugin: &str) -> usize {
-    host.plugins
+fn index_of(host: &LuaHost, mod_name: &str) -> usize {
+    host.mods
         .iter()
-        .position(|p| p.name == plugin)
-        .unwrap_or_else(|| panic!("no plugin {plugin}"))
+        .position(|p| p.name == mod_name)
+        .unwrap_or_else(|| panic!("no mod {mod_name}"))
 }
 
 /// A pane rendered but not painted, purely so it publishes into `store` — the
 /// bus a neighbour reads to learn which session is selected.
 /// Given a column of its own, because a pane too small to draw returns early
 /// before it publishes anything.
-fn prime(host: &LuaHost, plugin: &str) {
+fn prime(host: &LuaHost, mod_name: &str) {
     host.render(
-        index_of(host, plugin),
+        index_of(host, mod_name),
         RenderContext {
             width: 40,
             height: 20,
@@ -142,12 +142,11 @@ fn prime(host: &LuaHost, plugin: &str) {
     .expect("render");
 }
 
-/// Paint `plugin` into a `width` x `height` buffer, after priming `first`.
 fn screen(
     host: &LuaHost,
     snapshot: &Snapshot,
     first: &[&str],
-    plugin: &str,
+    mod_name: &str,
     width: u16,
     height: u16,
 ) -> String {
@@ -158,7 +157,7 @@ fn screen(
 
     let node = host
         .render(
-            index_of(host, plugin),
+            index_of(host, mod_name),
             RenderContext {
                 width,
                 height,
@@ -338,8 +337,6 @@ fn progress_outranks_a_message_because_it_outlives_one() {
 fn the_action_band_carries_the_focus_the_counts_and_the_entries() {
     let themes = Themes::load(None);
     let host = host();
-    // Declared exactly as the loop declares them: every plugin's contributions
-    // plus the kernel's own, so the band sees what it sees at runtime.
     let mut registry = Registry::default();
     let (mut bindings, settings, mut pills) = host.all_declarations();
     bindings.extend(thurbox::kernel::modals::bindings());
@@ -355,11 +352,6 @@ fn the_action_band_carries_the_focus_the_counts_and_the_entries() {
     assert!(row.contains("3 session(s)"), "v1's count spelling: {row}");
     assert!(row.contains("^H/^L Focus"), "the focus hint: {row}");
     assert!(row.contains("^O Open"), "the open hint: {row}");
-    // The kernel's own modals contribute these three; no bundled PANE declares an
-    // entry, and that is deliberate — see `ui/mods/20_agent.lua`. The
-    // plugin-contributed path is covered in `tests/kernel_mvp.rs` with a
-    // throwaway plugin, so this asserting nothing about a pane's entry is not a
-    // gap in coverage.
     assert!(row.contains("Help · F1"), "{row}");
     assert!(row.contains("Theme · F4"), "{row}");
     assert!(row.contains("Settings · F6"), "{row}");
@@ -646,9 +638,6 @@ fn pane_slots(placed: &[SlotRect]) -> Vec<&str> {
 
 #[test]
 fn the_two_panes_split_the_width_between_the_bands() {
-    // The interface is the session column plus the centre. v1's info/tasks/files
-    // columns went with their plugins, and so did their slots — a slot no plugin
-    // can fill would reserve a rect for nothing.
     let host = host();
     let placed = slots(&host, &world(), 160, 40);
     assert_eq!(pane_slots(&placed), ["sessions", "center"]);

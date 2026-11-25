@@ -87,7 +87,7 @@ end
 --- with their mods. Consulting only the toggle is what left a turned-off
 --- session list as an empty quarter-width column.
 ---
---- Only optional PLUGIN columns are gated on this. The chrome bands are drawn by
+--- Only optional MOD columns are gated on this. The chrome bands are drawn by
 --- the kernel and belong to no mod, and `center` is never dropped, so neither
 --- appears in `ctx.slots` and neither may ask.
 ---

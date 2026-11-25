@@ -9,11 +9,11 @@
 //! published.**
 //!
 //! Requests reach here from the flow through `store`, which the loop reads. A
-//! plugin cannot call something that waits, and a command is an at-most-once
+//! mod cannot call something that waits, and a command is an at-most-once
 //! *act* — neither fits "tell me what is in this directory, and ask again as I
 //! type".
 //!
-//! Two consequences a plugin renders rather than hides:
+//! Two consequences a mod renders rather than hides:
 //!
 //! - "not listed yet" is a state of its own, distinct from "nothing there" — a
 //!   slow host must not look like an empty directory;
@@ -85,7 +85,7 @@ pub enum Listing {
 /// (`ssh:<name>` / `wsl:<name>`) — the same key `repo_bookmarks.host` uses.
 pub type HostKey = String;
 
-/// The keys a plugin asks through, in `store`.
+/// The keys a mod asks through, in `store`.
 pub const WANT_BOOKMARKS: &str = "want_bookmarks";
 pub const WANT_BROWSE: &str = "want_browse";
 /// A repository whose branches the flow offers for a worktree: its path,
@@ -113,7 +113,7 @@ pub struct Wants {
 
 impl Wants {
     /// Build from the two raw store values, dropping one that is malformed
-    /// rather than guessing what a plugin meant.
+    /// rather than guessing what a mod meant.
     pub fn new(bookmarks: Option<String>, browse: Option<String>) -> Self {
         Self {
             bookmarks,
