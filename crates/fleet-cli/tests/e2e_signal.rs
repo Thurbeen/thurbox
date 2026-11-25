@@ -139,8 +139,6 @@ fn a_turn_that_ends_with_background_work_is_not_idle_and_never_pauses() {
     assert_eq!(session_state(&env), "Idle");
 }
 
-/// An interactive session (no brief) shows what its agent's hooks
-/// report: a person reads `sessionState` to know whether it works or waits.
 #[test]
 fn an_interactive_sessions_hooks_drive_its_session_state() {
     let env = Env::new("signal-interactive");

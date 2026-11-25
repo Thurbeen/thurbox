@@ -2398,10 +2398,6 @@ fn pause_candidate(spec: &TaskSpec, st: &TaskStatus) -> bool {
     spec.pause_after_ms.is_some() && pausable(spec, st)
 }
 
-/// Whether the session may be paused at all: a conversation a resume can
-/// name on a harness Fleet can resume, dispatch on, Briefed or Concluded
-/// (or Spawned for an interactive Task, which has no brief), and nothing in
-/// flight that a pause would cut short.
 fn pausable(spec: &TaskSpec, st: &TaskStatus) -> bool {
     let phase = if spec.is_interactive() {
         st.phase == Phase::Spawned

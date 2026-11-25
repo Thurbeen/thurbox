@@ -2457,7 +2457,6 @@ fn the_screen_is_read_only_where_the_hooks_do_not_say_the_state() {
     assert_eq!(state, None, "kept as it was");
 }
 
-/// An interactive Task (no brief) whose session runs with a conversation.
 fn interactive(extra: impl FnOnce(&mut TaskStatus)) -> Object {
     let mut obj = spawned(|st| {
         st.conversation = Some("conv-1".into());
