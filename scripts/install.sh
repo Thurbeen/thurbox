@@ -10,10 +10,8 @@ INSTALL_DIR="${INSTALL_DIR:-$HOME/.local/bin}"
 VERSION="${VERSION:-}"
 # Where the release assets are fetched from; a mirror, or a local copy in tests.
 DOWNLOAD_URL="${DOWNLOAD_URL:-https://github.com/${REPO}/releases/download}"
-# Every program a v3 install runs by name, and the part Fleet runs without
-# thurbox: BINARIES and FLEET_BINARIES in scripts/ci/release-archive.sh.
-BINARIES="thurbox thurbox-cli fleet runtime-mux workspace-git"
-FLEET_BINARIES="fleet runtime-mux workspace-git"
+BINARIES="thurbox thurbox-cli fleet runtime-mux runtime-herdr workspace-git"
+FLEET_BINARIES="fleet runtime-mux runtime-herdr workspace-git"
 FLEET_ONLY="${THURBOX_FLEET_ONLY:-}"
 TEMP_DIR=""
 

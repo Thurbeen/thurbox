@@ -226,7 +226,7 @@ ARM64 Windows installs the x86_64 build (runs under x64 emulation).
 **Fleet alone.** `install.sh --fleet-only` (`curl … | sh -s -- --fleet-only`),
 `install.ps1 -FleetOnly`, or `THURBOX_FLEET_ONLY=1` for either, installs only
 `FLEET_BINARIES` from `scripts/ci/release-archive.sh` (`fleet`, `runtime-mux`,
-`workspace-git`; `--fleet-binaries` prints them, and `install.bats` holds them
+`runtime-herdr`, `workspace-git`; `--fleet-binaries` prints them, and `install.bats` holds them
 to a subset of `BINARIES`) and prints only Fleet's next steps. `0` turns the
 variable off, an explicit `-FleetOnly:$false` wins over it, and a fleet-only
 install the variable chose warns that it skipped thurbox. The documented

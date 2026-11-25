@@ -242,6 +242,12 @@
   [[ "$fleet" != *thurbox* ]]
 }
 
+@test "a Fleet install ships runtime-herdr beside runtime-mux" {
+  fleet=" $("${BATS_TEST_DIRNAME}/ci/release-archive.sh" --fleet-binaries | tr '\n' ' ')"
+  [[ "$fleet" == *" runtime-mux "* ]]
+  [[ "$fleet" == *" runtime-herdr "* ]]
+}
+
 @test "installs the Fleet programs the release archive names" {
   expected=$("${BATS_TEST_DIRNAME}/ci/release-archive.sh" --fleet-binaries | tr '\n' ' ' | sed 's/ $//')
   run sh -c "TEST_TMPDIR=1 . '${BATS_TEST_DIRNAME}/install.sh'; printf '%s' \"\$FLEET_BINARIES\""

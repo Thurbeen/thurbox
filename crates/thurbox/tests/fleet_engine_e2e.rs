@@ -2594,7 +2594,13 @@ mod an_update {
         /// file name: the list when asked for no file.
         fn publish(&self, fleet: &Path) {
             let stage = self.path("stage");
-            for name in ["thurbox", "thurbox-cli", "runtime-mux", "workspace-git"] {
+            for name in [
+                "thurbox",
+                "thurbox-cli",
+                "runtime-mux",
+                "runtime-herdr",
+                "workspace-git",
+            ] {
                 make_script(&stage.join(name), "#!/bin/sh\nexit 0\n");
             }
             std::fs::copy(fleet, stage.join("fleet")).expect("fleet");
@@ -2610,6 +2616,7 @@ mod an_update {
                     "thurbox-cli",
                     "fleet",
                     "runtime-mux",
+                    "runtime-herdr",
                     "workspace-git",
                 ])
                 .status()
