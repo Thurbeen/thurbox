@@ -41,7 +41,6 @@ def main() -> int:
         print(f"error: checksum missing for: {fname}", file=sys.stderr)
         return 1
 
-    # nuspec <version> (first occurrence — the metadata one)
     nt = nuspec.read_text()
     nt, n = re.subn(r"<version>[^<]*</version>", f"<version>{version}</version>", nt, count=1)
     if n != 1:
@@ -49,7 +48,6 @@ def main() -> int:
         return 1
     nuspec.write_text(nt)
 
-    # install script $version / $url64 / $checksum64 (single-quoted literals)
     url = f"https://github.com/Thurbeen/thurbox/releases/download/v{version}/{fname}"
     it = install_ps1.read_text()
     repls = [

@@ -12,6 +12,7 @@ directory, inspect it, then run it with `FLEET_VERSION` set to the tag the
 user chose. The repository's `scripts/fleet/install-release.sh` has no
 default release and refuses to run without `FLEET_VERSION`.
 `FLEET_RELEASE_BASE` supports an offline release base.
+`FLEET_INSTALL_DIR` sets where `fleet` goes (default `$HOME/.local/bin`).
 
 For a fresh deployment, run `fleet init` to create the native per-user
 config without Git or network. Read

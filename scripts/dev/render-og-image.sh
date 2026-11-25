@@ -1,11 +1,4 @@
 #!/usr/bin/env bash
-# Rasterize website/assets/og-image.svg → website/assets/og-image.png (1200x630),
-# the social preview card referenced by the OpenGraph/Twitter tags in
-# website/_includes/base.njk. Re-run after editing the SVG.
-#
-# Uses a headless Chromium screenshot (no extra deps). Point CHROMIUM at a
-# chrome/headless_shell binary, or let it auto-discover a Playwright-managed
-# one under $PLAYWRIGHT_BROWSERS_PATH (or /opt/pw-browsers).
 set -euo pipefail
 
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"

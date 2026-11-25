@@ -1,34 +1,4 @@
 #!/usr/bin/env bash
-#
-# release-line.sh <version> <channels-major>
-#
-# The release gate for major versions, run by cd.yml's check-release before
-# anything is tagged. Three decisions, all printed as `key=value` lines for
-# $GITHUB_OUTPUT:
-#
-# 0. `held=true` when the tree carries .github/release-hold: nothing is
-#    released from it, on a push or a dispatch, whatever the version. `main`
-#    holds while it carries the next major's unreleased work; the pull request
-#    that cuts that major deletes the file. A maintenance branch cut before the
-#    hold does not carry it, so its releases are untouched.
-#
-# 1. The version must be on the line the source declares
-#    (`RELEASE_LINE` in crates/thurbox/src/update/version_check.rs). `cog bump --auto` turns
-#    any `BREAKING CHANGE:` footer or `feat!:` into a new major, and a squash
-#    merge carries branch commit bodies into the commit on main, so without
-#    this a stray footer cuts 3.0.0 by itself. With it, a new major needs a
-#    reviewed change to RELEASE_LINE, and every older line's updater knows only
-#    its own. Exits 1 when the version is off the line.
-#
-# 2. `channels=true` when the version should go to the existing package names
-#    (Homebrew `thurbox`, AUR `thurbox`/`thurbox-bin`, Chocolatey `thurbox`,
-#    winget `Thurbeen.thurbox`): its major is <channels-major> and it is the
-#    highest tag of that major. Those names stay on that major for good, so a
-#    user who never opts in to the next one never gets it from `brew upgrade`.
-#
-# THURBOX_RELEASE_LINE_SOURCE overrides the source file, and
-# THURBOX_RELEASE_HOLD_FILE the hold file (tests).
-
 set -euo pipefail
 
 version="${1:?usage: release-line.sh <version> <channels-major>}"
@@ -61,13 +31,16 @@ if [ "$major" != "$line" ]; then
   exit 1
 fi
 
-channels=false
-if [ "$major" = "$channels_major" ]; then
+is_newest_tag_of_its_major() {
+  local highest
   highest="$(git tag --list "v${major}.*" | sort -V | tail -1)"
-  if [ -z "$highest" ] \
-    || [ "$(printf '%s\n%s\n' "$highest" "v$bare" | sort -V | tail -1)" = "v$bare" ]; then
-    channels=true
-  fi
+  [ -z "$highest" ] \
+    || [ "$(printf '%s\n%s\n' "$highest" "v$bare" | sort -V | tail -1)" = "v$bare" ]
+}
+
+channels=false
+if [ "$major" = "$channels_major" ] && is_newest_tag_of_its_major; then
+  channels=true
 fi
 
 echo "held=false"

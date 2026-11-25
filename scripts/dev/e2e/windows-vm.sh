@@ -1,47 +1,4 @@
 #!/usr/bin/env bash
-#
-# e2e: thurbox's Windows/psmux support against a throwaway Windows VM — the
-# ephemeral-Windows member of the e2e family (see scripts/dev/README.md).
-# Mirrors linux-container.sh: a single Podman container runs a real,
-# KVM-accelerated Windows VM via dockur/windows, with an unattended first-boot
-# script that installs psmux + OpenSSH so the harness can drive the VM headlessly
-# over SSH — exactly like the Linux-container test drives its container.
-#
-# All state lives under target/windows-test/ (gitignored): the throwaway SSH
-# keypair, the cached psmux release zip, the generated /oem setup payload, and
-# the VM disk image. Nothing touches your real ~/.ssh or ~/.config.
-#
-# Usage:
-#   scripts/dev/e2e/windows-vm.sh up      # build /oem payload + boot the VM (first run installs Windows, ~10-20 min)
-#   scripts/dev/e2e/windows-vm.sh wait     # block until the VM's SSH is reachable
-#   scripts/dev/e2e/windows-vm.sh test     # headless smoke test (asserts psmux + a control-mode session round-trip)
-#   scripts/dev/e2e/windows-vm.sh test-suite # run the FULL nextest suite inside the VM (cross-built archive)
-#   scripts/dev/e2e/windows-vm.sh ssh      # open a PowerShell shell inside the VM
-#   scripts/dev/e2e/windows-vm.sh deploy   # cross-build thurbox for Windows + copy the .exe into the VM
-#   scripts/dev/e2e/windows-vm.sh web      # print the browser viewer URL (eyes-on)
-#   scripts/dev/e2e/windows-vm.sh rdp      # print RDP connection details
-#   scripts/dev/e2e/windows-vm.sh logs     # follow container/install logs
-#   scripts/dev/e2e/windows-vm.sh down     # stop + remove the container (keeps the disk image)
-#   scripts/dev/e2e/windows-vm.sh clean    # remove container + all local state (disk image included)
-#
-# Env overrides:
-#   THURBOX_WIN_SSH_PORT  (default 2223)   host port forwarded to the VM's :22
-#   THURBOX_WIN_RDP_PORT  (default 3389)   host port forwarded to the VM's :3389
-#   THURBOX_WIN_WEB_PORT  (default 8006)   host port for the browser viewer
-#   THURBOX_WIN_VERSION   (default 11) any dockur VERSION (11, 10, 2025, 2022, ...);
-#                                       note: dockur has no "tiny" edition token.
-#   THURBOX_WIN_RAM       (default 4G)
-#   THURBOX_WIN_CPUS      (default 4)
-#   THURBOX_WIN_DISK      (default 64G)
-#   THURBOX_WIN_TEST_DIR  (default <repo>/target/windows-test)
-#   PSMUX_VERSION         (default v3.3.6) psmux release tag to install in the VM
-#   NEXTEST_VERSION       (default latest) cargo-nextest release to install in the VM
-#
-# Requires: podman (with /dev/kvm + /dev/net/tun), ssh, ssh-keygen, curl.
-# Cross-build (deploy / test-suite) additionally needs the x86_64-pc-windows-gnu
-# Rust target, the mingw-w64 toolchain, and (for test-suite) cargo-nextest on the
-# host. No Rust toolchain is needed *inside* the VM: test-suite cross-builds a
-# self-contained nextest archive on the host and runs it with cargo-nextest.exe.
 
 set -euo pipefail
 
@@ -63,7 +20,6 @@ WIN_DISK="${THURBOX_WIN_DISK:-64G}"
 PSMUX_VERSION="${PSMUX_VERSION:-v3.3.6}"
 PSMUX_ZIP_URL="https://github.com/psmux/psmux/releases/download/${PSMUX_VERSION}/psmux-${PSMUX_VERSION}-windows-x64.zip"
 NEXTEST_VERSION="${NEXTEST_VERSION:-latest}"
-# get.nexte.st serves a prebuilt cargo-nextest.exe (zip) per platform/version.
 NEXTEST_ZIP_URL="https://get.nexte.st/${NEXTEST_VERSION}/windows"
 WIN_TARGET="x86_64-pc-windows-gnu"
 
@@ -71,13 +27,9 @@ KEY="$WORKDIR/id_ed25519"
 OEM_DIR="$WORKDIR/oem"
 STORAGE_DIR="$WORKDIR/storage"
 
-# VM credentials (the dockur default admin user). Keys are the real auth path;
-# the password just unblocks the unattended install / RDP login.
 WIN_USER="Docker"
 WIN_PASS="admin"
 
-# Dev builds share the thurbox-dev tmux socket name (see AGENTS.md / demo
-# isolation). psmux honours -L the same way, so the smoke test uses it too.
 SOCKET="thurbox-dev"
 
 ssh_vm() {
@@ -94,16 +46,61 @@ scp_vm() {
     "$@"
 }
 
+usage() {
+  cat <<'USAGE'
+
+e2e: thurbox's Windows/psmux support against a throwaway Windows VM — the
+ephemeral-Windows member of the e2e family (see scripts/dev/README.md).
+Mirrors linux-container.sh: a single Podman container runs a real,
+KVM-accelerated Windows VM via dockur/windows, with an unattended first-boot
+script that installs psmux + OpenSSH so the harness can drive the VM headlessly
+over SSH — exactly like the Linux-container test drives its container.
+
+All state lives under target/windows-test/ (gitignored): the throwaway SSH
+keypair, the cached psmux release zip, the generated /oem setup payload, and
+the VM disk image. Nothing touches your real ~/.ssh or ~/.config.
+
+Usage:
+  scripts/dev/e2e/windows-vm.sh up      # build /oem payload + boot the VM (first run installs Windows, ~10-20 min)
+  scripts/dev/e2e/windows-vm.sh wait     # block until the VM's SSH is reachable
+  scripts/dev/e2e/windows-vm.sh test     # headless smoke test (asserts psmux + a control-mode session round-trip)
+  scripts/dev/e2e/windows-vm.sh test-suite # run the FULL nextest suite inside the VM (cross-built archive)
+  scripts/dev/e2e/windows-vm.sh ssh      # open a PowerShell shell inside the VM
+  scripts/dev/e2e/windows-vm.sh deploy   # cross-build thurbox for Windows + copy the .exe into the VM
+  scripts/dev/e2e/windows-vm.sh web      # print the browser viewer URL (eyes-on)
+  scripts/dev/e2e/windows-vm.sh rdp      # print RDP connection details
+  scripts/dev/e2e/windows-vm.sh logs     # follow container/install logs
+  scripts/dev/e2e/windows-vm.sh down     # stop + remove the container (keeps the disk image)
+  scripts/dev/e2e/windows-vm.sh clean    # remove container + all local state (disk image included)
+
+Env overrides:
+  THURBOX_WIN_SSH_PORT  (default 2223)   host port forwarded to the VM's :22
+  THURBOX_WIN_RDP_PORT  (default 3389)   host port forwarded to the VM's :3389
+  THURBOX_WIN_WEB_PORT  (default 8006)   host port for the browser viewer
+  THURBOX_WIN_VERSION   (default 11) any dockur VERSION (11, 10, 2025, 2022, ...);
+                                      note: dockur has no "tiny" edition token.
+  THURBOX_WIN_RAM       (default 4G)
+  THURBOX_WIN_CPUS      (default 4)
+  THURBOX_WIN_DISK      (default 64G)
+  THURBOX_WIN_TEST_DIR  (default <repo>/target/windows-test)
+  PSMUX_VERSION         (default v3.3.6) psmux release tag to install in the VM
+  NEXTEST_VERSION       (default latest) cargo-nextest release to install in the VM
+
+Requires: podman (with /dev/kvm + /dev/net/tun), ssh, ssh-keygen, curl.
+Cross-build (deploy / test-suite) additionally needs the x86_64-pc-windows-gnu
+Rust target, the mingw-w64 toolchain, and (for test-suite) cargo-nextest on the
+host. No Rust toolchain is needed *inside* the VM: test-suite cross-builds a
+self-contained nextest archive on the host and runs it with cargo-nextest.exe.
+USAGE
+}
+
 require_kvm() {
   command -v podman >/dev/null || die "podman not found"
   [ -e /dev/kvm ]     || die "/dev/kvm missing — KVM is required to run the Windows VM"
   [ -e /dev/net/tun ] || die "/dev/net/tun missing — load the 'tun' module (modprobe tun)"
 }
 
-# ---- /oem first-boot payload --------------------------------------------------
-# dockur copies the /oem folder into the VM at C:\OEM and runs install.bat once,
-# as an administrator, right after Windows is installed. We download psmux on the
-# host (cached, reproducible) and let the in-VM script lay it down + enable SSH.
+# dockur copies /oem to C:\OEM in the VM and runs install.bat once, as admin, after Windows installs.
 build_oem() {
   mkdir -p "$OEM_DIR"
 
@@ -119,15 +116,12 @@ build_oem() {
       || die "could not download psmux from $PSMUX_ZIP_URL"
   fi
 
-  # cargo-nextest.exe runs the cross-built test archive in the VM (no toolchain).
   if [ ! -f "$OEM_DIR/nextest.zip" ]; then
     log "fetching cargo-nextest ($NEXTEST_VERSION) → $OEM_DIR/nextest.zip"
     curl -fL# -o "$OEM_DIR/nextest.zip" "$NEXTEST_ZIP_URL" \
       || die "could not download cargo-nextest from $NEXTEST_ZIP_URL"
   fi
 
-  # install.bat is the entry point dockur runs. Keep it a thin shim that hands
-  # off to PowerShell, where the real work (CRLF-agnostic) lives.
   cat > "$OEM_DIR/install.bat" <<'EOF'
 @echo off
 echo [thurbox] running first-boot setup...
@@ -135,7 +129,6 @@ powershell -ExecutionPolicy Bypass -NoProfile -File "%~dp0setup.ps1" >> "%~dp0se
 echo [thurbox] setup exit code %errorlevel% >> "%~dp0setup.log"
 EOF
 
-  # PowerShell does the heavy lifting: OpenSSH server + key, psmux on PATH, git.
   cat > "$OEM_DIR/setup.ps1" <<'EOF'
 $ErrorActionPreference = 'Continue'
 $oem = $PSScriptRoot
@@ -212,9 +205,7 @@ EOF
 cmd_up() {
   require_kvm
   mkdir -p "$STORAGE_DIR"
-  # dockur warns that Windows Setup can choke on copy-on-write filesystems. When
-  # /storage sits on btrfs, disable COW on the (empty) dir so the VM disk image
-  # inherits nodatacow. Best-effort — ignored on non-btrfs / if chattr is absent.
+  # dockur: Windows Setup can fail on a copy-on-write filesystem such as btrfs.
   if command -v chattr >/dev/null 2>&1; then
     chattr +C "$STORAGE_DIR" >/dev/null 2>&1 || true
   fi
@@ -224,13 +215,13 @@ cmd_up() {
 
   log "booting Windows VM ($WIN_VERSION, $WIN_RAM RAM, $WIN_CPUS CPUs, $WIN_DISK disk)"
   log "first boot installs Windows unattended — watch progress at http://localhost:$WEB_PORT"
+  # dockur forwards only 3389 to a Windows guest unless USER_PORTS names more.
   podman run -d --name "$CONTAINER" \
     --device=/dev/kvm --device=/dev/net/tun --cap-add NET_ADMIN \
     -e "VERSION=$WIN_VERSION" \
     -e "RAM_SIZE=$WIN_RAM" -e "CPU_CORES=$WIN_CPUS" -e "DISK_SIZE=$WIN_DISK" \
     -e "USERNAME=$WIN_USER" -e "PASSWORD=$WIN_PASS" \
     -e "USER_PORTS=22" \
-    `# dockur only forwards 3389 to a Windows guest by default; USER_PORTS=22 extends qemu's host-forward so the published SSH port actually reaches the VM` \
     -p "$WEB_PORT:8006" \
     -p "$RDP_PORT:3389/tcp" -p "$RDP_PORT:3389/udp" \
     -p "$SSH_PORT:22/tcp" \
@@ -245,13 +236,12 @@ cmd_up() {
   printf '  smoke test:     %s test\n' "$0"
 }
 
-# Windows unattended install + first-boot setup can take 10-20 min. Poll SSH.
 cmd_wait() {
   [ -f "$KEY" ] || die "no keypair yet — run '$0 up' first"
   podman inspect "$CONTAINER" >/dev/null 2>&1 || die "container not running — run '$0 up' first"
-  local tries="${1:-180}" # ~30 min at 10s spacing
+  local poll_attempts_10s_apart="${1:-180}"
   log "waiting for the VM's SSH to come up (Windows is installing; up to ~30 min)..."
-  for i in $(seq 1 "$tries"); do
+  for i in $(seq 1 "$poll_attempts_10s_apart"); do
     if ssh_vm 'echo ok' >/dev/null 2>&1; then
       log "SSH reachable after ~$((i * 10))s"
       ssh_vm 'powershell -NoProfile -Command "Test-Path C:\thurbox-oem-done.txt"' 2>/dev/null \
@@ -270,36 +260,9 @@ cmd_ssh() {
   if [ "$#" -gt 0 ]; then ssh_vm "$@"; else ssh_vm; fi
 }
 
-# --- the psmux hook-status gate, and the probes that hold it to psmux -------
-#
-# Remote hooks-driven status on a psmux host is gated off in the binary (the
-# psmux adapter reports no status channel, `Psmux::HOOK_STATUS`) until psmux is proven
-# to do two things: (A) pane **user options** settable with `set-option -p -t`
-# and expanded by `#{@opt}` in `list-panes -F` — the mailbox the status poller
-# reads; and (B) an **id-less** in-pane `set-option -p` landing on the calling
-# pane — what the rewritten hook command runs.
-#
-# The probes measure both halves and hold them against that gate. They used to
-# report `ok`/`--` and never fail, which is how psmux dropping the option
-# entirely sat unseen (issue #1170): a probe that passes on its own `ok` branch
-# whichever way the measurement went is evidence of nothing.
-#
-# Those two are the mailbox, and the mailbox is not the whole gate: it also
-# rests on claude accepting the forward-slash `--settings` path thurbox
-# generates on Windows, which needs a real agent launch rather than a psmux
-# capability check and is measured nowhere in this harness. It is named here so
-# the verdict can say what it does not know, and so that giving it a probe is a
-# change to one line.
 PSMUX_GATE_UNPROBED="claude's forward-slash --settings path on Windows"
 
-# psmux_hook_gate [SOURCE] — "open" or "closed": whether runtime-mux's psmux
-# adapter offers a hook status channel, read from its `HOOK_STATUS` constant
-# (SOURCE defaults to crates/runtime-mux/src/psmux.rs). No binary reports the
-# gate, so the source is its one record: a gate flipped without this evidence
-# then fails the verdict below. Non-zero if the file cannot be read or declares
-# no `HOOK_STATUS` — a gate the harness cannot read is an error, not an
-# assumption.
-# shellcheck disable=SC2120 # SOURCE defaults; windows-vm.bats passes a stand-in
+# shellcheck disable=SC2120
 psmux_hook_gate() {
   local src="${1:-$REPO_ROOT/crates/runtime-mux/src/psmux.rs}" line
   line="$(grep -E '^[[:space:]]*const HOOK_STATUS: bool = (true|false);' "$src" 2>/dev/null)" \
@@ -311,20 +274,7 @@ psmux_hook_gate() {
   esac
 }
 
-# pane_option_measured PANE VALUE OUTPUT — what one half measured, from the
-# whole `list-panes -s -F '#{pane_id} #{@opt}'` output:
-#
-#   yes      VALUE came back on PANE and on no other pane
-#   no       it did not come back (psmux 3.3.6's answer, an empty expansion),
-#            or it came back on another pane too
-#   unknown  the host said nothing at all, so nothing was measured
-#
-# The mailbox has to be **per pane**, not merely writable: the poller maps one
-# pane to one session, so an option stored at window or server scope would
-# expand on every pane and attribute one session's state to another. A value
-# that leaks to a second pane is therefore not the capability, and reads `no`;
-# the caller prints the raw output beside it, which is where the difference
-# between "empty" and "on every pane" is visible.
+# MUST KILL: rename — a name saying a value that also shows on another pane reads `no`
 pane_option_measured() {
   local pane="$1" value="$2" out="$3" line found=no
   [ -n "$out" ] || { printf 'unknown\n'; return 0; }
@@ -339,23 +289,6 @@ EOF
   printf '%s\n' "$found"
 }
 
-# psmux_gate_verdict GATE A B — the two measurements against the gate. The pair
-# is judged together because the gate needs both halves: one of them arriving
-# is not a reason to call the gate stale.
-#
-#   closed, a half missing   the gate is earning its keep (#1170)      --
-#   closed, both present     psmux grew the scope: the reason the gate
-#                            is closed no longer holds                 FAIL
-#   open,   both present     the mailbox is proven                     ok
-#   open,   a half missing   hook state goes into a mailbox psmux
-#                            drops — #1170 itself                      FAIL
-#   either, unmeasured       the probe learned nothing, which is the
-#                            defect it exists not to have              FAIL
-#
-# Nothing here ever reports `ok` for the gate — only for the mailbox, which is
-# what it measures. A pair that holds says the gate may be reconsidered, never
-# that it may be opened, and the unprobed condition is named alongside it, so
-# no output of this harness is an approval to flip the switch.
 psmux_gate_verdict() {
   local gate="$1" a="$2" b="$3"
   if [ "$a" = unknown ] || [ "$b" = unknown ]; then
@@ -369,19 +302,12 @@ psmux_gate_verdict() {
   else
     info "psmux hook gate stays closed, as recorded: A=$a B=$b — the transport is deferred (#1170)"
   fi
-  # Said whenever the mailbox holds, which is the only time anyone would act on
-  # it: what is proven then is the mailbox, and the gate needs one thing more
-  # that nothing here has measured.
   if [ "$a$b" = yesyes ]; then
     info "psmux hook gate: $PSMUX_GATE_UNPROBED is not probed here — the mailbox holding is not the gate being proven"
   fi
   return 0
 }
 
-# smoke_verdict SESSIONS FAILS — the harness's single verdict. The session
-# round-trip is the smoke test; FAILS is what the gate probes recorded through
-# `bad`, and it counts toward the exit status. That it counts is the whole of
-# the #1170 fix: a probe the suite does not act on is not a probe.
 smoke_verdict() {
   local sessions="$1" fails="$2"
   if ! printf '%s\n' "$sessions" | grep -qx smoke; then
@@ -393,44 +319,33 @@ smoke_verdict() {
   fi
 }
 
+add_second_pane_to_expose_option_scope_leaks() {
+  ssh_vm "psmux -L $SOCKET split-window -d -t $1" >/dev/null 2>&1 || true
+}
+
 cmd_test() {
   ssh_vm 'echo ok' >/dev/null 2>&1 || die "VM not reachable over SSH — run '$0 wait' first"
 
-  # Owned here, bumped by `bad` in every probe below, and read by the verdict.
   local FAILS=0
 
   log "checking psmux is installed and control-mode capable"
   local ver sessions
-  # `psmux` is the canonical binary thurbox's psmux adapter invokes (the default
-  # multiplexer on Windows); it also ships `tmux`/`pmux` aliases. -V proves
-  # binary + PATH.
   ver="$(ssh_vm 'psmux -V' 2>/dev/null | tr -d '\r')" \
     || die "psmux not found on PATH inside the VM"
   log "psmux reports: $ver"
 
-  # Exercise the exact surface runtime-mux needs: an -L socket server you can
-  # spin up headless, create a detached session in, and enumerate. No command is
-  # passed so the session holds its default shell open — a self-exiting command
-  # (e.g. `cmd /c ver`) would close the session before we list it. This mirrors
-  # how thurbox launches a long-running agent CLI inside the session.
+  # psmux closes a session whose command exits, so the session runs the default shell.
   ssh_vm "psmux -L $SOCKET kill-server 2>\$null; psmux -L $SOCKET new-session -d -s smoke" >/dev/null 2>&1 || true
   sessions="$(ssh_vm "psmux -L $SOCKET list-sessions -F '#{session_name}'" 2>/dev/null | tr -d '\r')"
   ssh_vm "psmux -L $SOCKET kill-server" >/dev/null 2>&1 || true
 
-  # --- psmux hook-status gate probes (verdict; see psmux_gate_verdict) ------
-  # A and B are the two halves of the mailbox the gate rests on. Each one only
-  # measures; the verdict is on the pair, against the gate itself.
   log "probing psmux pane-user-option support (hook-status gate)"
   local gate pane opt inpane measured_a=unknown measured_b=unknown
   gate="$(psmux_hook_gate)" \
     || die "could not read HOOK_STATUS from crates/runtime-mux/src/psmux.rs — the gate probes have nothing to check against"
   ssh_vm "psmux -L $SOCKET new-session -d -s probe" >/dev/null 2>&1 || true
   pane="$(ssh_vm "psmux -L $SOCKET list-panes -s -t probe -F '#{pane_id}'" 2>/dev/null | tr -d '\r' | head -n1)"
-  # A second pane is what makes the per-pane half observable: with one pane an
-  # option stored at window or server scope is indistinguishable from a
-  # per-pane one. Best-effort — a psmux that refuses the split leaves the
-  # isolation check with nothing to see rather than failing the probe.
-  ssh_vm "psmux -L $SOCKET split-window -d -t probe" >/dev/null 2>&1 || true
+  add_second_pane_to_expose_option_scope_leaks probe
   if [ -n "$pane" ]; then
     ssh_vm "psmux -L $SOCKET set-option -p -t $pane @thurboxprobe working" >/dev/null 2>&1 || true
     opt="$(ssh_vm "psmux -L $SOCKET list-panes -s -t probe -F '#{pane_id} #{@thurboxprobe}'" 2>/dev/null | tr -d '\r')"
@@ -447,19 +362,11 @@ cmd_test() {
   psmux_gate_verdict "$gate" "$measured_a" "$measured_b"
   ssh_vm "psmux -L $SOCKET kill-server" >/dev/null 2>&1 || true
 
-  # --- paste-delivery probe (evidence, not verdict) -------------------------
-  # A paste cannot be key-encoded for psmux (a split ESC arrives as a bare
-  # Escape keypress, losing the ESC[200~ marker, and every embedded CR then
-  # submits — issue #916), so thurbox hands pastes to psmux's own
-  # `send-paste` (see runtime-mux's `psmux` adapter, `PsmuxPaste`). This probes the two
-  # properties that path relies on: the payload is standard **base64**, and a
-  # multi-line payload keeps its newlines instead of being cut on the wire with
-  # its tail executed as a psmux command (psmux #560). `rename-window` is the
-  # observable, harmless injection canary, exactly as in that report.
+  # psmux #560: a multi-line payload can be cut on the wire and its tail run as a psmux command.
   log "probing psmux send-paste multi-line delivery (paste path evidence)"
   local ppane pcontent pname
-  # base64 of: PASTE_HEAD_916\nrename-window pastePWNED
-  local payload="UEFTVEVfSEVBRF85MTYKcmVuYW1lLXdpbmRvdyBwYXN0ZVBXTkVE"
+  local payload
+  payload="$(printf 'PASTE_HEAD_916\nrename-window pastePWNED' | base64 | tr -d '\n')"
   ssh_vm "psmux -L $SOCKET new-session -d -s pasteprobe" >/dev/null 2>&1 || true
   ppane="$(ssh_vm "psmux -L $SOCKET list-panes -s -t pasteprobe -F '#{pane_id}'" 2>/dev/null | tr -d '\r' | head -n1)"
   if [ -n "$ppane" ]; then
@@ -480,15 +387,7 @@ cmd_test() {
   fi
   ssh_vm "psmux -L $SOCKET kill-server" >/dev/null 2>&1 || true
 
-  # --- literal-hyphen probe (evidence, not verdict) -------------------------
-  # psmux classifies a send-keys argument only *after* tokenizing it, dropping
-  # every one that starts with `-` as an unknown flag — so a quoted literal `-`
-  # never reached the pane and hyphens could not be typed on Windows (issue
-  # #920). thurbox escapes such a run into psmux's own `0xNN` codepoint form
-  # (runtime-mux's `control_mode::psmux_literal_args`). The psmux CLI forwards both encodings
-  # to the same server-side classifier thurbox's control-mode line hits, so
-  # typing them into one prompt line is evidence about that rule: the old
-  # encoding must lose its hyphen, the new one must keep it.
+  # psmux drops a send-keys argument starting with `-` as an unknown flag (#920).
   log "probing psmux literal-hyphen delivery (keystroke encoding evidence)"
   local hpane hcontent
   ssh_vm "psmux -L $SOCKET new-session -d -s hyphenprobe" >/dev/null 2>&1 || true
@@ -516,7 +415,6 @@ cmd_test() {
   smoke_verdict "$sessions" "$FAILS"
 }
 
-# Cross-build the Windows binaries and drop them in the VM for a real run.
 cmd_deploy() {
   ssh_vm 'echo ok' >/dev/null 2>&1 || die "VM not reachable over SSH — run '$0 wait' first"
   local target="x86_64-pc-windows-gnu"
@@ -536,12 +434,6 @@ cmd_deploy() {
   printf '  then inside the VM:  C:\\Tools\\thurbox\\thurbox.exe\n'
 }
 
-# Run the ENTIRE test suite inside the VM. No Rust toolchain lives in the VM, so
-# we cross-build a self-contained nextest *archive* on the host and execute it
-# there with cargo-nextest.exe. Tests that read fixtures/insta snapshots relative
-# to the workspace root need the sources present, so we also ship a clean tarball
-# of the working tree (uncommitted changes included) and `--workspace-remap` onto
-# it.
 cmd_test_suite() {
   ssh_vm 'echo ok' >/dev/null 2>&1 || die "VM not reachable over SSH — run '$0 wait' first"
   ssh_vm 'cargo-nextest --version' >/dev/null 2>&1 \
@@ -570,17 +462,10 @@ cmd_test_suite() {
 
   log "running the full suite in the VM (cargo-nextest from archive)"
   echo
-  # Standalone form: the binary needs the `nextest` subcommand token (cargo
-  # injects it when invoked as `cargo nextest`). Notes on the env/filter:
-  #   * INSTA_WORKSPACE_ROOT points insta at the shipped sources so snapshot
-  #     tests resolve their `.snap` files (the archive bakes in the Linux build
-  #     path otherwise).
-  #   * `not package(arch-rules)` and `not binary(proptest_seeds)` skip the
-  #     tests that read the sources via the compile-time manifest dir, which a
-  #     cross-built archive can't. The Linux CI jobs cover them instead.
-  # The single quotes are intentional: `$env:` must reach PowerShell unexpanded.
+  # A standalone cargo-nextest binary needs the `nextest` subcommand token cargo would inject.
+  local skip_tests_reading_build_machine_sources='not package(arch-rules) and not binary(proptest_seeds)'
   # shellcheck disable=SC2016
-  ssh_vm '$env:INSTA_WORKSPACE_ROOT="C:/thurbox-tests/src"; cargo-nextest nextest run --archive-file C:/thurbox-tests/nextest-archive.tar.zst --workspace-remap C:/thurbox-tests/src -E "not package(arch-rules) and not binary(proptest_seeds)"'
+  ssh_vm '$env:INSTA_WORKSPACE_ROOT="C:/thurbox-tests/src"; cargo-nextest nextest run --archive-file C:/thurbox-tests/nextest-archive.tar.zst --workspace-remap C:/thurbox-tests/src -E "'"$skip_tests_reading_build_machine_sources"'"'
 }
 
 cmd_web()  { printf 'Browser viewer: http://localhost:%s\n' "$WEB_PORT"; }
@@ -599,8 +484,6 @@ cmd_clean() {
   log "removed $WORKDIR (keypair, psmux cache, VM disk image)"
 }
 
-# Sourced rather than executed (windows-vm.bats drives the gate helpers above
-# without a VM to provision): hand back the functions and dispatch nothing.
 [ "${BASH_SOURCE[0]}" = "$0" ] || return 0
 
 case "${1:-}" in
@@ -615,5 +498,5 @@ case "${1:-}" in
   logs)   cmd_logs ;;
   down)   cmd_down ;;
   clean)  cmd_clean ;;
-  *) sed -n '2,46p' "$0" | sed 's/^# \{0,1\}//'; exit 1 ;;
+  *) usage; exit 1 ;;
 esac

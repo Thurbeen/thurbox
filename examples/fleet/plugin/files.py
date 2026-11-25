@@ -1,20 +1,9 @@
 #!/usr/bin/env python3
-"""A minimal Fleet plugin: the `File` kind keeps one file's content.
-
-Fleet runs this program once per call, with the call as the last argument
-and one JSON request on stdin. It answers one JSON object on stdout.
-`docs/fleet/plugins.md` walks through it.
-
-- manifest:  the kinds this plugin serves, with their JSON Schemas.
-- probes:    what the controller needs to know (pure).
-- observe:   read the file (I/O, bounded by Fleet).
-- reconcile: compare spec, status and observations; return a plan (pure).
-- perform:   write the file (I/O, journaled by Fleet).
-
-Files live in the plugin's working directory, `cwd` in fleet.toml.
-"""
 import json
 import sys
+
+CONFIRM_WRITE_AFTER_MS = 1000
+FLEET_RESERVED_STATUS_FIELDS = ("notBefore", "effects", "host")
 
 MANIFEST = {
     "protocol": 1,
@@ -67,41 +56,35 @@ def reconcile(req):
     generation = obj["metadata"]["generation"]
     seen = req["observations"]["file"]
     if "unknown" in seen:
-        # Unknown never means absent: keep the status, look again later.
-        return {"plan": {"status": {**own(obj["status"]), "phase": "Unknown"}}}
+        return {"plan": {"status": keep_status_as_unknown(obj["status"])}}
     if seen["known"].get("content") == spec["content"]:
         return {"plan": {"status": {"phase": "Ready", "observedGeneration": generation}}}
     key = write_key(obj["status"], generation)
     write = {"key": key, "request": {"name": spec["name"], "content": spec["content"]}}
     plan = {"status": {"phase": "Writing", "observedGeneration": generation}, "effects": [write]}
     if not last_failed(obj["status"]):
-        # Look again in a second, to confirm the write. After a failed
-        # write, wait pollMs before the next attempt instead.
-        plan["notBefore"] = req["now"] + 1000
+        plan["notBefore"] = req["now"] + CONFIRM_WRITE_AFTER_MS
     return {"plan": plan}
 
 
-def write_key(status, generation):
-    """The key of the next write: `write/<generation>/<attempt>`.
+def keep_status_as_unknown(status):
+    return {**own(status), "phase": "Unknown"}
 
-    Fleet runs an effect key once. A key that has a receipt is spent, so a
-    file that drifted, or a write that failed, needs the next attempt's key.
-    A key with an intent and no receipt is still in flight: keep it, and
-    Fleet records its lost answer instead of running it twice.
-    """
+
+def write_key(status, generation):
     prefix = f"write/{generation}/"
     effects = (status or {}).get("effects", {})
     attempts = {int(k[len(prefix):]): e for k, e in effects.items() if k.startswith(prefix)}
     if not attempts:
         return f"{prefix}1"
     last = max(attempts)
-    if "receipt" not in attempts[last]:
+    attempt_in_flight = "receipt" not in attempts[last]
+    if attempt_in_flight:
         return f"{prefix}{last}"
     return f"{prefix}{last + 1}"
 
 
 def last_failed(status):
-    """Whether the newest write that has a receipt failed."""
     done = [e for k, e in (status or {}).get("effects", {}).items() if k.startswith("write/") and "receipt" in e]
     if not done:
         return False
@@ -110,8 +93,7 @@ def last_failed(status):
 
 
 def own(status):
-    """The plugin's own status fields, without the ones Fleet reserves."""
-    return {k: v for k, v in (status or {}).items() if k not in ("notBefore", "effects", "host")}
+    return {k: v for k, v in (status or {}).items() if k not in FLEET_RESERVED_STATUS_FIELDS}
 
 
 def perform(req):

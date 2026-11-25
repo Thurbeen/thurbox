@@ -1,22 +1,27 @@
 #!/usr/bin/env bash
-#
-# A throwaway Podman container running sshd + tmux + git, to point a remote
-# host at by hand — the ephemeral-Linux member of the e2e family (see
-# scripts/dev/README.md). Nothing touches your real ~/.ssh or ~/.config; all
-# state lives under target/remote-ssh-test/ (gitignored).
-#
-# Usage:
-#   scripts/dev/e2e/linux-container.sh up        # build image + start container
-#   scripts/dev/e2e/linux-container.sh ssh       # open a shell on the container
-#   scripts/dev/e2e/linux-container.sh down      # remove the container
-#   scripts/dev/e2e/linux-container.sh clean     # remove container + all local state
-#
-# Env overrides: THURBOX_SSH_TEST_PORT (default 2222),
-#                THURBOX_SSH_TEST_DIR  (default <repo>/target/remote-ssh-test)
-#
-# Requires: podman, ssh-keygen.
 
 set -euo pipefail
+
+usage() {
+  cat <<'EOF'
+
+A throwaway Podman container running sshd + tmux + git, to point a remote
+host at by hand — the ephemeral-Linux member of the e2e family (see
+scripts/dev/README.md). Nothing touches your real ~/.ssh or ~/.config; all
+state lives under target/remote-ssh-test/ (gitignored).
+
+Usage:
+  scripts/dev/e2e/linux-container.sh up        # build image + start container
+  scripts/dev/e2e/linux-container.sh ssh       # open a shell on the container
+  scripts/dev/e2e/linux-container.sh down      # remove the container
+  scripts/dev/e2e/linux-container.sh clean     # remove container + all local state
+
+Env overrides: THURBOX_SSH_TEST_PORT (default 2222),
+               THURBOX_SSH_TEST_DIR  (default <repo>/target/remote-ssh-test)
+
+Requires: podman, ssh-keygen.
+EOF
+}
 
 REPO_ROOT="$(cd "$(dirname "$0")/../../.." && pwd)"
 # shellcheck source=scripts/dev/e2e/lib/e2e-common.sh
@@ -35,7 +40,6 @@ ssh_remote() {
     -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR -o ConnectTimeout=4 \
     root@localhost "$@"
 }
-
 
 cmd_up() {
   command -v podman >/dev/null || die "podman not found"
@@ -95,5 +99,5 @@ case "${1:-}" in
   ssh)   shift; cmd_ssh "$@" ;;
   down)  cmd_down ;;
   clean) cmd_clean ;;
-  *) sed -n '2,20p' "$0" | sed 's/^# \{0,1\}//'; exit 1 ;;
+  *) usage; exit 1 ;;
 esac

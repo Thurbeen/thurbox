@@ -1,5 +1,3 @@
-"""Exercise the installed Claude CLI's permission checks against a local fake API."""
-
 import http.server
 import json
 import os

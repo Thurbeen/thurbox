@@ -1,8 +1,4 @@
 #!/usr/bin/env bats
-#
-# The sandbox starts its own `fleet up` and records its pid. A pid file can
-# outlive its manager, and the pid can then belong to anything: the teardown
-# must signal only a process that is this sandbox's `fleet up`.
 
 bats_require_minimum_version 1.5.0
 

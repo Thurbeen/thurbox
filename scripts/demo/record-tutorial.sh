@@ -1,45 +1,4 @@
 #!/usr/bin/env bash
-# Regenerate the onboarding tutorial's screenshots (media/tutorial/*.png).
-#
-# One PNG per step of docs/thurbox/tutorial.md, taken from the REAL TUI: this drives
-# `Ctrl+N` through the creation flow the way a first-time reader does, so a step
-# that stops looking like its screenshot breaks this script rather than quietly
-# ageing the doc.
-#
-# Three things shape it:
-#
-#   * The profile starts with ZERO sessions and an EMPTY repo memory. The
-#     tutorial's subject is the first launch, and a seeded list would show a
-#     screen the reader cannot have yet.
-#   * Fleet starts with NO config: the recorder runs `fleet init` and starts
-#     `fleet up`, the two steps the tutorial asks of a reader before the first
-#     launch. The agent step lists the harnesses Fleet ships; when
-#     `claude` is not installed, a stand-in `claude` that runs a shell is put on
-#     PATH, so the session still starts.
-#   * thurbox runs in a detached tmux session, `tmux send-keys` presses the
-#     real chords (`Ctrl+/` is sent as its actual byte), and each screenshot is
-#     `capture-pane -e` rasterised by agg — the same asciicast→agg→ffmpeg chain
-#     scripts/demo/record-doom.sh uses, minus the recording step.
-#
-# Isolation is the shared dev-sandbox helper, in its full flavor: a throwaway
-# HOME/XDG/TMUX_TMPDIR, so this can touch neither your thurbox profile, nor your
-# tmux server, nor your agent credentials.
-#
-# Requirements: cargo, git, tmux, agg, ffmpeg, python3, jq. A coding
-# agent CLI is optional (see the agent section below). agg ships no font, so FONT_DIR
-# is provisioned under target/fonts: JetBrains Mono (whose box-drawing glyphs
-# tile, which is what keeps a pane border from rendering as a dashed line), plus
-# Noto Sans Symbols 2 for `⑂` (U+2442), the mark the session list puts on a
-# worktree session. Both are fetched best-effort and fall back to a system
-# DejaVu — a missing glyph is worth a box on screen, not a failed re-record.
-#
-# Usage:  scripts/demo/record-tutorial.sh [OUTPUT_DIR]
-#
-#   OUTPUT_DIR  where the PNGs go (default: <repo>/media/tutorial)
-#
-# Env: THEME (default doom), COLS, ROWS, FONT_SIZE, LINE_HEIGHT, FONT_DIR,
-# FONT_FAMILY, TEXT_DIR (also keep each frame as plain text there, to check a
-# re-record against the prose without opening the PNGs).
 set -euo pipefail
 
 log() { printf '[tutorial] %s\n' "$*" >&2; }
@@ -53,38 +12,20 @@ OUT_DIR="${1:-$REPO_ROOT/media/tutorial}"
 mkdir -p "$OUT_DIR"
 OUT_DIR="$(cd "$OUT_DIR" && pwd)"
 
-# The theme the demo videos are recorded in, so the tutorial and the videos
-# show the same thurbox.
 THEME="${THEME:-doom}"
-# 140x38 at font size 18 lands around 1500x970 — comfortably past the 80-column
-# two-panel threshold in ui/layout.lua, and under the ~1568px long edge above
-# which a reader's viewer resamples the PNG and the fine detail (status glyphs,
-# tree marks) blurs.
 COLS="${COLS:-140}"
 ROWS="${ROWS:-38}"
 FONT_SIZE="${FONT_SIZE:-18}"
-# 1.2, not agg's 1.4 default: a line much taller than the glyph leaves a gap
-# between one row's `│` and the next, and every pane border then reads as a
-# dashed line. 1.0 closes the gap but clips descenders, so this is the pair of
-# constraints met rather than either one won.
+# agg's 1.4 default leaves a gap between rows' `│`; 1.0 clips descenders.
 LINE_HEIGHT="${LINE_HEIGHT:-1.2}"
 FONT_DIR="${FONT_DIR:-$REPO_ROOT/target/fonts}"
 FONT_FAMILY="${FONT_FAMILY:-JetBrains Mono,DejaVu Sans Mono,Noto Sans Symbols 2}"
-# The recording server's socket. Its own name, and inside the sandbox's private
-# TMUX_TMPDIR, so it can reach neither your tmux nor thurbox's own `thurbox-dev`
-# server.
 SOCK="thurbox-tutorial-rec"
 
 for bin in cargo git tmux agg ffmpeg python3 jq; do
     command -v "$bin" >/dev/null 2>&1 || die "$bin not found on PATH"
 done
 
-# --- Fonts ------------------------------------------------------------------
-# agg matches by family name and falls back per glyph, so the pair only has to
-# exist somewhere in FONT_DIR. Every step is best-effort: this is a rendering
-# nicety, not a reason to fail a re-record on a machine with no network.
-
-# fetch_font <filename> <url> — cached, so a second run downloads nothing.
 fetch_font() {
     local dest="$FONT_DIR/$1"
     [ -f "$dest" ] && return 0
@@ -111,7 +52,6 @@ ensure_fonts() {
 }
 ensure_fonts
 
-# --- Build the dev binaries (BEFORE the HOME override, so cargo finds ~/.cargo) -
 log "Building thurbox (dev) ..."
 cargo build --bin thurbox --bin thurbox-cli --bin fleet --bin runtime-mux --bin workspace-git >&2
 THURBOX_BIN="$REPO_ROOT/target/debug/thurbox"
@@ -120,48 +60,28 @@ THURBOX_BIN="$REPO_ROOT/target/debug/thurbox"
 HAS_CLAUDE=0
 command -v claude >/dev/null 2>&1 && HAS_CLAUDE=1
 
-# --- Isolated environment ----------------------------------------------------
 # shellcheck source=scripts/dev/lib/sandbox-env.sh
 # shellcheck disable=SC1091
 . "$REPO_ROOT/scripts/dev/lib/sandbox-env.sh"
 tbx_sandbox_init_full fresh
 
-# The repo picker prints the ABSOLUTE path of a remembered repository, so the
-# sandbox's `mktemp` home would put `/tmp/thurbox-sandbox.4tGnQx/home/code/…` in
-# the screenshot a reader is meant to recognise their own `~/code` in. HOME is
-# therefore a short, stable symlink to it: the isolation is unchanged (it points
-# inside the sandbox, and teardown still removes the root), and the tilde
-# expansion the flow does is still the real one.
 HOME_LINK="${HOME_LINK:-/tmp/tutorial-home}"
 if [ -e "$HOME_LINK" ] && [ ! -L "$HOME_LINK" ]; then
     die "$HOME_LINK exists and is not a symlink — refusing to touch it"
 fi
 ln -sfn "$HOME" "$HOME_LINK"
 export HOME="$HOME_LINK"
-# Same reasoning one level down: the worktree a session runs in is printed by
-# `fleet list task`, and it is built under XDG_DATA_HOME. Pointing the
-# XDG roots at their DEFAULT places inside the (now short) home keeps every path
-# in a screenshot the shape a reader's own would be, and stays inside the
-# sandbox — these resolve through the symlink to the sandbox root.
 export XDG_CONFIG_HOME="$HOME/.config"
 export XDG_DATA_HOME="$HOME/.local/share"
 export XDG_STATE_HOME="$HOME/.local/state"
 export XDG_CACHE_HOME="$HOME/.cache"
 mkdir -p "$XDG_CONFIG_HOME" "$XDG_DATA_HOME" "$XDG_STATE_HOME" "$XDG_CACHE_HOME"
 
-# Derived AFTER the overrides above, or the theme and the tripwire below would be
-# written to and read from a profile the TUI never opens — which is a run of
-# screenshots in the wrong theme, with nothing failing.
 CFG_DIR="$XDG_CONFIG_HOME/thurbox-dev"
 mkdir -p "$CFG_DIR"
-# runtime-mux's workspaces inside the sandbox. No Fleet config: `fleet init`
-# writes it below, at the per-user path under the sandbox's XDG_CONFIG_HOME.
 tbx_sandbox_runtime
 unset FLEET_CONFIG
 
-# The teardown runs before the link goes: it stops the sandbox's `fleet up`,
-# which it knows as the sandbox's by an XDG_CONFIG_HOME that resolves through
-# that link.
 cleanup() {
     tmux -L "$SOCK" kill-server >/dev/null 2>&1 || true
     tbx_sandbox_teardown
@@ -169,36 +89,26 @@ cleanup() {
 }
 trap cleanup EXIT INT TERM
 
-# Hide `wsl.exe`: WSL distros are auto-discovered, and a discovered host puts the
-# "Run on" step in front of the repo step — which would shift every keypress
-# below by one.
-PATH=$(printf '%s' "$PATH" | tr ':' '\n' | grep -v '^/mnt/[a-z]/' | paste -sd: -)
+path_without_wsl_exe_so_no_run_on_step_shifts_the_keys() {
+    printf '%s' "$1" | tr ':' '\n' | grep -v '^/mnt/[a-z]/' | paste -sd: -
+}
+PATH=$(path_without_wsl_exe_so_no_run_on_step_shifts_the_keys "$PATH")
 export PATH
 
-# --- The repositories the tutorial browses to -------------------------------
-# ~/code is what gets typed into the path field, so these have to exist in the
-# throwaway HOME. `scratch` is deliberately NOT a git repo: it is what makes the
-# browse dropdown's `●git` marker mean something on screen.
 CODE_DIR="$HOME/code"
-mkdir -p "$CODE_DIR/scratch"
+NON_GIT_DIR_FOR_THE_BROWSE_MARKER="$CODE_DIR/scratch"
+mkdir -p "$NON_GIT_DIR_FOR_THE_BROWSE_MARKER"
 for repo in api-server web-app; do
     dir="$CODE_DIR/$repo"
     mkdir -p "$dir/src"
     printf '# %s\n\nPart of the tutorial workspace.\n' "$repo" > "$dir/README.md"
     printf 'fn main() {\n    println!("%s");\n}\n' "$repo" > "$dir/src/main.rs"
-    # `-b main` rather than the host's init.defaultBranch: the base-branch step
-    # is a screenshot, and it should show what a reader's own repository most
-    # likely has.
     git init -q -b main "$dir"
     git -C "$dir" -c user.email=tutorial@thurbox -c user.name=tutorial add -A
     git -C "$dir" -c user.email=tutorial@thurbox -c user.name=tutorial \
         commit -q -m "chore: init $repo"
 done
 
-# --- The agent ----------------------------------------------------------------
-# The claude-code harness launches `claude`. Without it installed, a stand-in
-# that runs a shell lets the session start, so the running-session screenshot
-# still has a live terminal in it.
 mkdir -p "$HOME/.local/bin"
 if [ "$HAS_CLAUDE" -eq 0 ]; then
     log "claude not installed — a stand-in claude runs a shell"
@@ -207,26 +117,14 @@ if [ "$HAS_CLAUDE" -eq 0 ]; then
 fi
 export PATH="$HOME/.local/bin:$PATH"
 
-# --- Keep the agent's own first-run chrome off the screenshots ---------------
-# A fresh HOME means a fresh agent CLI: update banners and trust dialogs would
-# render instead of the agent, and some are modal enough to swallow a keypress.
-# Only trust + onboarding flags are seeded, never credentials or history: claude
-# is featured LOGGED OUT on purpose, because its welcome box prints the account's
-# organisation name (auto-named after your email) when it is not.
 export OPENCODE_DISABLE_AUTOUPDATE=true
 export CODEX_DISABLE_UPDATE_CHECK=1
 export npm_config_update_notifier=false
 export NO_UPDATE_NOTIFIER=1
 
-# The session created below runs in a worktree the runtime makes under the
-# sandbox's workspace root, a directory the agent has never seen. The two
-# repositories are trusted up front; the worktree's name is the runtime's, and
-# the agent's own permission mode keeps a trust dialog off the screenshot.
 TUTORIAL_BRANCH="rate-limit"
 
-# Each path twice: as thurbox spells it, and resolved. HOME is a symlink (above),
-# and an agent that canonicalises its cwd would not find the trust entry filed
-# under the pretty spelling.
+# An agent that canonicalises its cwd looks its trust entry up under the resolved path.
 trusted_paths=()
 for path in "$CODE_DIR/api-server" "$CODE_DIR/web-app"; do
     trusted_paths+=("$path" "$(readlink -f "$path")")
@@ -237,31 +135,24 @@ jq -n '{hasCompletedOnboarding: true,
                    | map({(.): {hasTrustDialogAccepted: true}}) | add)}' \
     --args "${trusted_paths[@]}" > "$HOME/.claude.json"
 if [ "$HAS_CLAUDE" -eq 1 ]; then
-    # The symlink keeps claude's self-install check ("claude command missing")
-    # quiet under the throwaway HOME.
+    # claude's self-install check reports "claude command missing" without this link.
     ln -sf "$(readlink -f "$(command -v claude)")" "$HOME/.local/bin/claude"
 fi
 
-# --- Profile state, before the first frame ----------------------------------
 printf '{"theme": "%s"}\n' "$THEME" > "$CFG_DIR/interface.json"
 
-# Tripwire: the sessions must live in this sandbox. Fleet's config is found
-# under XDG_CONFIG_HOME; one that resolves outside the sandbox means the
-# isolation broke and `fleet init` would set up, or read, a real Fleet.
-case "$(readlink -f "$XDG_CONFIG_HOME")" in
-    "$(readlink -f "$TBX_SANDBOX_ROOT")"/*) ;;
-    *) die "XDG_CONFIG_HOME ($XDG_CONFIG_HOME) is outside the sandbox — aborting" ;;
-esac
-[ -z "${FLEET_CONFIG:-}" ] || die "FLEET_CONFIG is set — aborting"
+abort_unless_fleet_config_resolves_inside_the_sandbox() {
+    case "$(readlink -f "$XDG_CONFIG_HOME")" in
+        "$(readlink -f "$TBX_SANDBOX_ROOT")"/*) ;;
+        *) die "XDG_CONFIG_HOME ($XDG_CONFIG_HOME) is outside the sandbox — aborting" ;;
+    esac
+    [ -z "${FLEET_CONFIG:-}" ] || die "FLEET_CONFIG is set — aborting"
+}
+abort_unless_fleet_config_resolves_inside_the_sandbox
 fleet init >/dev/null || die "fleet init failed"
 tbx_sandbox_fleet_up
 
-# --- The recording terminal --------------------------------------------------
-# `status off` because the pane has to own every row it was given, and
-# `escape-time 0` so an Escape below is not held back waiting for a sequence that
-# never comes. RGB is declared for the pane's own TERM: capture-pane -e re-emits
-# the colours tmux stored, and a downgraded palette here is a downgraded palette
-# in every PNG.
+# tmux holds Escape back without escape-time 0, and capture-pane -e re-emits only the colours tmux stored.
 TMUX_CONF="$TBX_SANDBOX_ROOT/tmux.conf"
 cat > "$TMUX_CONF" <<'TMUXCONF'
 set -g default-terminal "tmux-256color"
@@ -273,26 +164,16 @@ TMUXCONF
 tmux -L "$SOCK" -f "$TMUX_CONF" new-session -d -s tut -x "$COLS" -y "$ROWS" \
     "$THURBOX_BIN"
 
-# The pane every helper below acts on. The run drives two in turn: the TUI, then
-# a shell for the `fleet` still, once the TUI has quit and taken its window
-# with it.
 TARGET=tut
 
 send()  { tmux -L "$SOCK" send-keys -t "$TARGET" "$@"; }
 write() { tmux -L "$SOCK" send-keys -t "$TARGET" -l -- "$1"; }
-# Ctrl+/ is 0x1F, which has no tmux key name — the byte is sent directly.
+# Ctrl+/ is 0x1F, which has no tmux key name.
 search() { tmux -L "$SOCK" send-keys -t "$TARGET" -H 1f; }
-# run <command> <settle seconds> — type a command line and let its output land.
 run()   { write "$1"; send Enter; sleep "$2"; }
 
 SHOT_INDEX=0
-# shot <name> — rasterise what the pane is showing right now.
-#
-# capture-pane -e re-emits the cell colours as SGR, which is the whole frame in a
-# form agg can replay: a one-event asciicast is a screenshot in cast clothing.
-# The cursor is not part of a capture, so it is carried separately — without it
-# the path field and the name field show their text with no caret, which is the
-# one thing a reader has to see to know where typing lands.
+# tmux capture-pane leaves the cursor out, so its position is read separately.
 shot() {
     local name="$1"
     SHOT_INDEX=$((SHOT_INDEX + 1))
@@ -310,7 +191,7 @@ shot() {
     geom=$(tmux -L "$SOCK" display -p -t "$TARGET" \
         '#{pane_width} #{pane_height} #{cursor_x} #{cursor_y} #{cursor_flag}')
 
-    # shellcheck disable=SC2086 # $geom is five fields, split on purpose
+    # shellcheck disable=SC2086
     python3 - "$work/$stem.ansi" "$work/$stem.cast" $geom <<'PYCAST'
 import json
 import sys
@@ -330,9 +211,7 @@ with open(out, "w", encoding="utf-8") as f:
     f.write(json.dumps([0.0, "o", payload]) + "\n")
 PYCAST
 
-    # `fontdue` rather than the default resvg renderer: resvg parses the family
-    # list as CSS and chokes on a name ending in a digit ("Noto Sans Symbols 2"),
-    # falling back to Times New Roman for the whole frame — a blank-looking PNG.
+    # agg's resvg renderer chokes on a family name ending in a digit ("Noto Sans Symbols 2").
     agg --renderer fontdue --font-dir "$FONT_DIR" --font-family "$FONT_FAMILY" \
         --font-size "$FONT_SIZE" --line-height "$LINE_HEIGHT" \
         --last-frame-duration 1 \
@@ -346,103 +225,68 @@ PYCAST
 log "Driving the TUI (${COLS}x${ROWS}, theme: $THEME) -> $OUT_DIR"
 rm -f "$OUT_DIR"/*.png
 
-# thurbox boots, resolves its interface and paints the first frame.
 sleep 6
-# 01 — first launch: an empty session list beside an empty centre pane.
 shot first-launch
 
-# 02 — Ctrl+N opens the creation flow on the place step: where the session
-# runs. A fresh setup has one, `local`. (The Fleet step before it is skipped
-# while settings.toml lists one Fleet.)
 send C-n; sleep 3
 shot place-picker
 
-# 03 — enter takes the place and opens the repo step. Memory is empty, so the
-# only row is the interface directory the kernel offers on its own account.
 send Enter; sleep 2
 shot repo-picker
 
-# 04 — tab moves focus to the path field. The trailing slash is what makes the
-# next tab browse rather than complete: a completion needs a prefix to extend.
 send Tab; sleep 1
-# shellcheck disable=SC2088 # a literal `~` is what gets typed; the kernel expands it
+# shellcheck disable=SC2088
 write "~/code/"; sleep 2
 shot add-repo-path
 
-# 05 — tab again: the browse dropdown lists that directory, marking which
-# subdirectories are git repositories.
 send Tab; sleep 3
 shot browse-directory
 
-# 06 — enter on a git row adds it to repo memory, selects it, and puts focus back
-# on the search with the cursor on the row just added.
 send Enter; sleep 3
 shot repo-added
 
-# 07 — `alt+w` gives the selected repository its own worktree.
 send M-w; sleep 2
 shot worktree-mode
 
-# 08 — enter leaves the repo step. Worktree mode is what makes the base-branch
-# step appear at all.
 send Enter; sleep 3
 shot base-branch
 
-# 09 — the session name. The placeholder is the suggestion `enter` would take.
 send Enter; sleep 2
 write "$TUTORIAL_BRANCH"; sleep 2
 shot session-name
 
-# 10 — the branch name, prefilled from the session name.
 send Enter; sleep 2
 shot branch-name
 
-# 11 — the agent. Skipped with one harness or none; Fleet ships several, so it
-# is not.
 send Enter; sleep 2
 shot agent-picker
 
-# 12 — created: a Fleet Task, whose runtime makes the worktree and starts the
-# agent in it, with the session selected in the list.
 send Enter; sleep 12
 shot session-running
 
-# 13 — the second session is cheaper than the first: the repository is in memory
-# now, so the picker opens with it already listed and `space` is all it takes.
 send C-n; sleep 3
 send Enter; sleep 2
 shot repo-remembered
 send Escape; sleep 1
 
-# Out of the agent terminal for the rest of the run. Focus-cycling is never
-# passed through to the agent, which is what makes it the way out.
 send C-h; sleep 1
 
-# 14 — search: matches highlight inside the panes being searched rather than
-# being reprinted in the strip.
 search; sleep 1
 write "rate"; sleep 2
 shot search
 send Escape; sleep 1
 
-# 15 — the key list, rendered from the live registry.
 send C-g; sleep 2
 shot keybindings
 send Escape; sleep 1
 
-# Quit: detaches, leaving every agent running under the sandbox's tmux.
 send C-q; sleep 3
 
-# 16 — the other half of the tutorial: the same sessions from `fleet`, which is
-# what an agent inside a session reaches for. Its own tmux session
-# because the TUI's window closed with the TUI.
 tmux -L "$SOCK" -f "$TMUX_CONF" new-session -d -s cli -x "$COLS" -y "$ROWS" \
     "bash --norc"
 TARGET=cli
 sleep 1
-# A bare `$` reads as a prompt in a doc; `bash-5.2$` reads as this machine.
 run "PS1='\$ '; clear" 1
-# The sessions the walkthrough made, as Fleet Tasks: the store the TUI reads.
 run "fleet list task" 3
 shot cli
 

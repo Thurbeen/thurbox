@@ -1,21 +1,14 @@
 #!/usr/bin/env bats
-#
-# The winget channel's two decisions, exercised without cutting a release:
-# whether to submit at all (submit-decision.py `decide`), and whether a
-# completed `wingetcreate submit` opened a PR, was pushed back by the
-# moderated channel, or failed for real (`after-submit`). Plus
-# bump-manifests.py against a recorded `checksums.txt`.
 
 setup() {
   DIR="${BATS_TEST_DIRNAME}"
 }
 
-# `--now` is fixed so the age arithmetic is deterministic; the PR fixtures are
-# dated relative to it.
-NOW="2026-09-09T12:00:00Z"
+FIXTURE_NOW="2026-09-09T12:00:00Z"
 
-decide() { # <throttle-days> <prs-json>
-  echo "$2" | python3 "${DIR}/submit-decision.py" decide --throttle-days "$1" --now "$NOW"
+decide() {
+  local throttle_days="$1" prs_json="$2"
+  echo "$prs_json" | python3 "${DIR}/submit-decision.py" decide --throttle-days "$throttle_days" --now "$FIXTURE_NOW"
 }
 
 @test "decide: no prior PR is a first submission" {
@@ -48,8 +41,6 @@ decide() { # <throttle-days> <prs-json>
   echo "$output" | jq -e '.reason | test("5.0 days ago")'
 }
 
-# The cadence ask: at THROTTLE_DAYS=0 every release attempts, exactly like
-# Chocolatey — the last submission's age can never gate it.
 @test "decide: throttle 0 submits however recent the last merged PR is" {
   prs='[{"number":3,"state":"MERGED","createdAt":"2026-09-09T11:00:00Z","title":"New version: Thurbeen.thurbox version 2.19.5"}]'
   run decide 0 "$prs"
@@ -78,11 +69,9 @@ decide() { # <throttle-days> <prs-json>
   [ "$status" -ne 0 ]
 }
 
-# `after-submit` turns a finished `wingetcreate submit` into the three things the
-# workflow needs: did it open a PR (`opened`, which gates the cleanup step), may
-# the job exit green (`deferrable`), must it fail (`fail`).
-after_submit() { # <exit-code> <submit output>
-  echo "$2" | python3 "${DIR}/submit-decision.py" after-submit --exit-code "$1"
+after_submit() {
+  local exit_code="$1" submit_output="$2"
+  echo "$submit_output" | python3 "${DIR}/submit-decision.py" after-submit --exit-code "$exit_code"
 }
 
 @test "after-submit: a successful submit opened a PR" {
@@ -92,10 +81,6 @@ after_submit() { # <exit-code> <submit output>
   [ "$(echo "$output" | jq -r .fail)" = "false" ]
 }
 
-# The regression this file exists to prevent. A deferred submission exits green
-# having opened NOTHING, so cleanup must not run: closing the pending PR behind
-# a submission that never happened leaves winget-pkgs with no thurbox PR at all
-# and the version silently never ships.
 @test "after-submit: a deferred submit reports it opened nothing" {
   run after_submit 1 "API rate limit exceeded for user ID 1234."
   [ "$status" -eq 0 ]
@@ -111,9 +96,6 @@ after_submit() { # <exit-code> <submit output>
   [ "$(echo "$output" | jq -r .deferrable)" = "true" ]
 }
 
-# Run 34381951096's exact failure. Now that the job syncs the fork before
-# submitting, seeing this again means the sync did not work — that must stay a
-# red job, not a warning nobody reads.
 @test "after-submit: the stale-fork failure fails the job" {
   msg='The forked repository could not be synced with the upstream commits. Sync your fork manually and try again.'
   run after_submit 1 "$msg"
@@ -130,8 +112,6 @@ after_submit() { # <exit-code> <submit output>
   [ "$(echo "$output" | jq -r .opened)" = "false" ]
 }
 
-# No path may report both: cleanup keys off `opened`, and a job that failed
-# must never look like it opened a PR.
 @test "after-submit: opened and fail are never both true" {
   for code_and_output in "0|created" "1|API rate limit exceeded" "1|Manifest validation failed"; do
     code="${code_and_output%%|*}"
@@ -141,7 +121,6 @@ after_submit() { # <exit-code> <submit output>
   done
 }
 
-# bump-manifests.py against a recorded release checksums.txt.
 @test "bump-manifests: rewrites all three manifests from recorded checksums" {
   cp -r "${DIR}/manifests" "${BATS_TEST_TMPDIR}/manifests"
   run python3 "${DIR}/bump-manifests.py" v2.19.6 "${BATS_TEST_TMPDIR}/manifests" \
