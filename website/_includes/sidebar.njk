@@ -1,9 +1,3 @@
-{#- Two products, two groups: Fleet (the engine, usable on its own) and thurbox
-    (the interface on top of one or more Fleets), then the pages about both.
-    Hrefs are relative to /docs/; a page below it (the rendered docs/fleet
-    pages) sets docsBase to the way back up. -#}
-{#- Rendered docs with a top-level entry of their own, left out of the
-    generated Resources and Controllers lists. -#}
 {%- set ownEntries = ["docs/fleet/resources/workspace.md"] -%}
 {%- set sections = [
   { heading: "Fleet", links: [
@@ -54,11 +48,8 @@
         >{{ link.label }}</a
       >
       {%- if link.sub %}
-      {#- One entry per page in docs/fleet/<sub>/, read from the rendered docs,
-          so a new page there joins the list with no change here. #}
       <ul class="docs-sidebar__sub">
         {%- for d in repoDocs %}
-        {#- A page with an entry of its own above is not listed twice. #}
         {%- if d.src.startsWith("docs/fleet/" + link.sub + "/") and d.src not in ownEntries %}
         <li>
           <a

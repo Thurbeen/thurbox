@@ -11,8 +11,6 @@ html {
   scroll-padding-top: calc(var(--nav-height) + var(--space-lg));
 }
 
-/* Native anchor scrolling is the only scroll path (there is no JS handler),
-   so the reduced-motion opt-out has to live here. */
 @media (prefers-reduced-motion: reduce) {
   html {
     scroll-behavior: auto;
@@ -32,16 +30,12 @@ body {
   overflow-x: clip;
 }
 
-/* CRT scanline overlay — single global, click-through */
 body::after {
   content: '';
   position: fixed;
   inset: 0;
   z-index: 9999;
   pointer-events: none;
-
-  /* A 1px dark line every 3px. The 2px→3px band is the line itself; a
-     duplicated final stop here would collapse it to zero width. */
   background: repeating-linear-gradient(
     to bottom,
     transparent 0,
@@ -52,7 +46,6 @@ body::after {
   mix-blend-mode: multiply;
 }
 
-/* CRT vignette — faint screen-shell darkening at the edges */
 body::before {
   content: '';
   position: fixed;
@@ -75,7 +68,6 @@ h6 {
   overflow-wrap: break-word;
 }
 
-/* Press Start 2P for the largest display headings only — wide & blocky */
 h1,
 h2 {
   font-family: var(--font-display);
@@ -108,11 +100,6 @@ a {
     text-shadow var(--transition);
 }
 
-/* WCAG 1.4.1. The link green and the body grey are 1.02:1 against EACH OTHER -
-   near-identical luminance - so inside a paragraph colour is not merely the
-   primary cue, it is the only one, and a red-green deficient reader sees plain
-   body text. Underline the links that sit in prose. The block links are excluded
-   by :not([class]): .feature-link wraps a whole card, where position already says "link". */
 p a:not([class]),
 li a:not([class]) {
   text-decoration: underline;
@@ -156,8 +143,6 @@ code {
   color: var(--cyan);
 }
 
-/* A long command in prose (an install URL) breaks rather than pushing a phone
-   page sideways; overflow-wrap only breaks a word that cannot fit. */
 p code,
 li code {
   overflow-wrap: anywhere;
@@ -220,13 +205,11 @@ hr {
   color: var(--selection-text);
 }
 
-/* Keyboard focus — visible ring on every interactive element */
 :focus-visible {
   outline: 2px solid var(--green);
   outline-offset: 2px;
 }
 
-/* Skip to main content (visible only when focused) */
 .skip-link {
   position: fixed;
   top: var(--space-sm);

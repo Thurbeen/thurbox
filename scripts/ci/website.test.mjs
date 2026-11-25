@@ -7,7 +7,6 @@ import { THEMES, overviewPath, overviewSvg } from '../docs/overview-svg.mjs';
 import { fleetLoopPath, fleetLoopSvg } from '../docs/fleet-loop-svg.mjs';
 import { RENDERED_DOCS } from '../../eleventy.config.js';
 
-// Reads the built site, so run it after `npm run build:website`.
 const built = (path) => parse(readFileSync(`_site/${path}`, 'utf8'));
 const text = (node) => node.textContent.replace(/\s+/g, ' ');
 
@@ -50,7 +49,6 @@ const retiredFleet = [
   /nothing else is periodic/i,
 ];
 
-// Fleet v1: the Python control plane that installed as a Thurbox extension.
 const fleetV1 = [/uv run fleet/, /\/fleet-onboarding/, /Mission Control/, /Kanban/, /result\.md/, /--kind result/];
 
 test('orchestration page leads with Fleet, its reference on this site and Fleet Lens', () => {
@@ -76,7 +74,6 @@ const pages = (dir = '_site') =>
     return entry.name.endsWith('.html') ? [path.slice('_site/'.length)] : [];
   });
 
-// The harnesses Fleet bundles, read from the profiles themselves.
 const harnesses = [
   ...readFileSync('crates/fleet-api/src/harness/bundled.rs', 'utf8').matchAll(/^name = "([a-z-]+)"$/gm),
 ].map((m) => m[1]);
@@ -144,7 +141,6 @@ test('mod gallery is discovered by topic and documents the mod.toml listing conv
 test('homepage presents Fleet and thurbox apart, links each official mod, and stays light on commands', () => {
   const home = built('index.html');
   const install = 'curl -fsSL https://raw.githubusercontent.com/Thurbeen/thurbox/main/scripts/install.sh | sh';
-  // One string per code block, one line per command.
   const code = (node) =>
     node.querySelectorAll('pre').map((pre) => parse(pre.innerHTML).textContent.trim().split(/\s*\n\s*/));
 
@@ -155,13 +151,11 @@ test('homepage presents Fleet and thurbox apart, links each official mod, and st
   const starts = home.querySelectorAll('.get-started').map((s) => s.getAttribute('id'));
   assert.deepEqual(starts, ['fleet-start', 'thurbox-start'], 'Fleet gets started first');
 
-  // Fleet stands on its own: its own band, its own first steps, no thurbox in them.
   const fleet = home.querySelector('#fleet');
   assert.match(text(fleet), /works on its own/i, 'Fleet is said to run without thurbox');
   const fleetStart = code(home.querySelector('#fleet-start'));
   assert.equal(fleetStart.length, 1);
   assert.deepEqual(fleetStart[0], [`${install} -s -- --fleet-only`, 'fleet init', 'fleet doctor', 'fleet up']);
-  // Every fleet subcommand the band shows is a variant of the CLI's Command enum.
   const cli = readFileSync('crates/fleet-cli/src/main.rs', 'utf8');
   for (const line of code(fleet).flat().filter((l) => l.startsWith('fleet '))) {
     const verb = line.split(' ')[1];
@@ -169,7 +163,6 @@ test('homepage presents Fleet and thurbox apart, links each official mod, and st
     assert.match(cli, new RegExp(`^    ${variant}\\b`, 'm'), `${line}: fleet ${verb} exists`);
   }
 
-  // thurbox: the full install, then the program.
   const thurboxStart = code(home.querySelector('#thurbox-start'));
   assert.deepEqual(thurboxStart, [[install, 'thurbox']]);
   assert.ok(home.querySelector('#thurbox video'), 'the demo is in the thurbox band');
@@ -185,7 +178,6 @@ test('homepage presents Fleet and thurbox apart, links each official mod, and st
   assert.ok(section.querySelector('a[href="mods.html"]'), 'points at the full catalog');
   assert.ok(home.querySelector('#thurbox #plugins'), 'the mods sit under thurbox');
   assert.doesNotMatch(home.innerHTML, /thurbox-discord|thurbox-plugin-orchestrator|thurbox-ask/);
-  // The first steps and one short Fleet example are the only code blocks.
   const codeBlocks = home.querySelectorAll('pre').filter((pre) => /language-/.test(pre.innerHTML));
   assert.equal(codeBlocks.length, 3, 'two install blocks and the Fleet example');
   assert.doesNotMatch(text(home), /thurbox-cli (mod|plugin|session) /);
@@ -300,20 +292,16 @@ test('the docs sidebar gives Fleet and thurbox a group each', () => {
     built('docs/index.html').querySelector('.docs-sidebar__sub a[href="fleet/plugins.html"]'),
     'Controllers lists the plugin guide',
   );
-  // Resources and Controllers list every page of their directory, read from it.
   const subs = built('docs/index.html').querySelectorAll('.docs-sidebar__sub a').map((a) => a.getAttribute('href'));
   for (const dir of ['resources', 'controllers']) {
-    // workspace.md has a top-level entry of its own (sidebar.njk's ownEntries).
     for (const file of readdirSync(`docs/fleet/${dir}`).filter((f) => f.endsWith('.md') && f !== 'workspace.md')) {
       assert.ok(subs.includes(`fleet/${dir}/${file.replace(/\.md$/, '.html')}`), `the sidebar lists ${dir}/${file}`);
     }
   }
-  // The published URL of the old single page stays, as a pointer to the two pages.
   const moved = built('docs/features.html');
   for (const page of ['fleet-features.html', 'thurbox-features.html']) {
     assert.ok(moved.querySelector(`.docs-content a[href="${page}"]`), `docs/features.html links ${page}`);
   }
-  // Every section of the old page goes to an id that exists on its new page.
   const script = moved.querySelector('#features-moved').textContent;
   const targets = [...script.matchAll(/'?([a-z-]+)'?: '([a-z-]+\.html)(?:#([a-z-]+))?'/g)];
   const oldIds = ['agent-definitions', 'automations', 'customizable-interface', 'feature-flags', 'git-worktrees',
@@ -329,8 +317,6 @@ test('the docs sidebar gives Fleet and thurbox a group each', () => {
   }
 });
 
-// The Markdown pages rendered from the repository (repo-docs.njk), as
-// [source, built path]: a README is its directory's index.html.
 const repoDocs = ['docs/fleet', 'docs/runtime', 'docs/thurbox/mods.md', 'docs/thurbox/kernel.md'].flatMap((entry) =>
   (entry.endsWith('.md') ? [entry.split('/').pop()] : readdirSync(entry, { recursive: true }))
     .map((file) => (entry.endsWith('.md') ? [entry.replace(/\/[^/]+$/, ''), file] : [entry, file]))
@@ -402,18 +388,11 @@ test('the site redeploys when a rendered doc changes', () => {
   }
 });
 
-// The node test has no layout engine, so the overflow at 320px is checked by
-// its cause: a grid track whose minimum is a bare length cannot shrink below
-// it, and on the narrowest phones the overview's cards then ran out of the
-// frame. Every track minimum on the home page is clamped with min(…, 100%).
 test("the home page's grid tracks shrink to a phone's width", () => {
   const css = readFileSync('website/css/landing.css', 'utf8');
   assert.doesNotMatch(css, /minmax\(\s*\d+(\.\d+)?(rem|px|em)\s*,/, 'a minmax() minimum is wrapped in min(…, 100%)');
 });
 
-// A link to a section lands on that section: on this site, the id exists on
-// the built page it names; a repository doc the site does not render is
-// linked on GitHub, where its heading anchors live.
 test('every link to a section on the site lands on an element with that id', () => {
   for (const path of pages()) {
     const page = built(path);

@@ -2,9 +2,7 @@ import { encode } from '@toon-format/toon';
 import fs from 'node:fs';
 import path from 'node:path';
 
-// serde_json's Map is a BTreeMap: keys come out sorted. Sort the reference
-// encoder's input the same way so the two encoders see one key order and the
-// diff is about encoding, not ordering.
+// serde_json's Map is a BTreeMap, so the Rust encoder sees keys in sorted order.
 const sortDeep = (v) => {
   if (Array.isArray(v)) return v.map(sortDeep);
   if (v && typeof v === 'object') {

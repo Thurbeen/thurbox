@@ -1,17 +1,10 @@
 (function () {
   'use strict';
 
-  // Read live rather than cached: a visitor can flip the OS setting mid-visit,
-  // and every caller here is in an event handler, not on the hot path.
   function prefersReducedMotion() {
     return !!window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
   }
 
-  // Only true text-entry contexts. Deliberately excludes A/BUTTON/VIDEO: those
-  // are merely focusable, and treating them as typing contexts meant a couple
-  // of Tab presses (focus lands on a nav link) silently killed press-to-begin.
-  // Printable keys do nothing on a focused link anyway. Shared by every
-  // document-level printable-key listener below (press-to-begin, god mode).
   function isTypingContext(el) {
     if (!el) return false;
     if (el.isContentEditable) return true;
@@ -19,7 +12,6 @@
     return tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT';
   }
 
-  // ---- Mobile nav toggle ----
   var hamburger = document.getElementById('hamburger');
   var navLinks = document.getElementById('nav-links');
 
@@ -40,19 +32,16 @@
       setNavOpen(!navLinks.classList.contains('open'));
     });
 
-    // Close menu when a link is clicked
     navLinks.querySelectorAll('a').forEach(function (link) {
       link.addEventListener('click', function () {
         closeNav(false);
       });
     });
 
-    // Escape closes and hands focus back to the toggle that opened it.
     document.addEventListener('keydown', function (e) {
       if (e.key === 'Escape') closeNav(true);
     });
 
-    // A tap outside the open dropdown dismisses it.
     document.addEventListener('click', function (e) {
       if (!navLinks.classList.contains('open')) return;
       if (navLinks.contains(e.target) || hamburger.contains(e.target)) return;
@@ -60,22 +49,11 @@
     });
   }
 
-  // ---- Title-screen "press any key to begin" ----
-  // The prompt is a real <button> (click / Enter / Space) plus a document
-  // keydown so pressing *any* printable key really does start the tour.
-  // It stays armed until it fires: an earlier version disarmed on the first
-  // scroll event, which killed it for every visitor who nudged the page before
-  // reaching for the keyboard (a 1px wheel tick was enough). The guards below —
-  // no chords, no navigation keys, not while focus is in a field — are what
-  // keep it from hijacking the keyboard, not the arming window.
   var pressStart = document.getElementById('press-start');
   if (pressStart) {
     var pressTarget = document.getElementById('demo') || document.getElementById('installation');
     var pressArmed = true;
 
-    // Keys the browser or the user owns. Enter/Space are here because the
-    // <button> already handles them natively via click — letting the document
-    // handler fire too would double-scroll and hijack Enter on every link.
     var pressReserved = {
       Tab: 1,
       Escape: 1,
@@ -99,10 +77,8 @@
 
     var onAnyKey = function (e) {
       if (!pressArmed) return;
-      if (e.metaKey || e.ctrlKey || e.altKey) return; // Ctrl+F, Cmd+R, …
-      // shiftKey is intentionally not checked: a capital letter is a real key.
+      if (e.metaKey || e.ctrlKey || e.altKey) return;
       if (e.key && (pressReserved[e.key] || /^F\d{1,2}$/.test(e.key))) return;
-      // Only printable single characters — drops Insert, Dead, media keys, …
       if (!e.key || e.key.length !== 1) return;
       if (isTypingContext(e.target) || isTypingContext(document.activeElement)) return;
       firePressStart();
@@ -125,14 +101,11 @@
       disarmPressStart();
     };
 
-    // The button itself always works, armed or not.
     pressStart.addEventListener('click', firePressStart);
 
-    // Capture phase so no element can swallow it first; the guards make that safe.
     document.addEventListener('keydown', onAnyKey, true);
   }
 
-  // ---- Sticky nav background ----
   var nav = document.getElementById('nav');
   if (nav) {
     var sentinel = document.createElement('div');
@@ -151,10 +124,6 @@
     observer.observe(sentinel);
   }
 
-  // ---- Copy-to-clipboard ----
-  // The button lives in the code-block header; the code is in the sibling
-  // .code-block-body. Read the rendered <pre> text content (the Prism token
-  // spans contribute only their text, so this round-trips to the source).
   document.querySelectorAll('.copy-btn').forEach(function (btn) {
     btn.addEventListener('click', function () {
       var code = btn.getAttribute('data-code');
@@ -174,9 +143,7 @@
         }, 2000);
       };
 
-      // The Clipboard API needs a secure context, so it is absent over plain
-      // http and rejects when permission is denied — report either instead of
-      // failing silently with an unhandled rejection.
+      // The Clipboard API is absent outside a secure context and rejects when permission is denied.
       if (!navigator.clipboard || !navigator.clipboard.writeText) {
         flash('Copy failed', 'copy-failed');
         return;
@@ -193,16 +160,6 @@
     });
   });
 
-  // Anchor smooth-scrolling is handled natively by `html { scroll-behavior:
-  // smooth }` in base.css, which also honors prefers-reduced-motion and keeps
-  // location.hash (and therefore the back button and deep links) intact — so
-  // there is deliberately no JS click handler for a[href^="#"] here.
-
-  // ---- Active sidebar link (docs pages) ----
-  // Matches both in-page anchors (#id) and same-page section links
-  // (page.html#id) so the section-enumerating sidebar highlights on scroll.
-  // Also covers the build-time "on this page" rail, which shares the .active
-  // convention with the sidebar.
   var sidebarLinks = document.querySelectorAll(
     '.docs-sidebar a[href*="#"], .docs-toc a[href*="#"]',
   );
@@ -222,8 +179,6 @@
               sidebarLinks.forEach(function (l) {
                 l.classList.remove('active');
               });
-              // A heading can be linked from both the sidebar and the TOC rail,
-              // so activate every link pointing at it — not just the first.
               headings.forEach(function (h) {
                 if (h.el === entry.target) h.link.classList.add('active');
               });
@@ -235,7 +190,6 @@
           threshold: 0,
         },
       );
-      // Observe each heading once even when several links point at it.
       var observed = [];
       headings.forEach(function (h) {
         if (observed.indexOf(h.el) !== -1) return;
@@ -245,7 +199,6 @@
     }
   }
 
-  // ---- Active top-nav link (landing page scroll-spy) ----
   var navSpyLinks = [];
   document.querySelectorAll('.nav-links a[href*="#"]').forEach(function (link) {
     var hash = link.getAttribute('href').split('#')[1];
@@ -279,7 +232,6 @@
     });
   }
 
-  // ---- Back to top button ----
   var backToTop = document.getElementById('back-to-top');
   if (backToTop) {
     window.addEventListener(
@@ -294,7 +246,6 @@
     });
   }
 
-  // ---- Install method tabs (ARIA tabs pattern) ----
   var installTablist = document.querySelector('.install-tablist');
   if (installTablist) {
     var installTabs = Array.prototype.slice.call(installTablist.querySelectorAll('[role="tab"]'));
@@ -322,9 +273,6 @@
           e.preventDefault();
           selectInstallTab(installTabs[next]);
           installTabs[next].focus();
-          // Arrowing past the edge of the scroll rail must bring the tab into
-          // view. No `behavior` here so it inherits scroll-behavior, which is
-          // already reduced-motion aware.
           if (installTabs[next].scrollIntoView) {
             installTabs[next].scrollIntoView({ block: 'nearest', inline: 'nearest' });
           }
@@ -333,12 +281,7 @@
     });
   }
 
-  // ---- Videos: lazy poster + play only when in view; honor reduced motion ----
-  // A <video poster> has no loading="lazy" equivalent — the browser always
-  // fetches it eagerly. So every below-the-fold video ships its poster as
-  // data-poster and we promote it to a real poster shortly
-  // before the video reaches the viewport. Only the hero keeps an eager
-  // poster=, because that one *is* the above-the-fold content.
+  // A <video poster> has no loading="lazy": browsers fetch it eagerly, so posters wait in data-poster.
   var videos = document.querySelectorAll('video');
   var reduceMotion = prefersReducedMotion();
 
@@ -351,8 +294,6 @@
 
   if (videos.length > 0) {
     if (reduceMotion) {
-      // No autoplay: pause everything and let the user opt in via controls.
-      // The poster is the only thing they'll see until they do, so load it.
       videos.forEach(function (v) {
         v.autoplay = false;
         v.removeAttribute('autoplay');
@@ -361,8 +302,6 @@
         v.pause();
       });
     } else if ('IntersectionObserver' in window) {
-      // Poster first, on a generous margin so it has arrived by the time the
-      // video is actually on screen.
       var posterObserver = new IntersectionObserver(
         function (entries) {
           entries.forEach(function (entry) {
@@ -379,7 +318,7 @@
           entries.forEach(function (entry) {
             var v = entry.target;
             if (entry.isIntersecting) {
-              loadPoster(v); // covers a jump-scroll that skipped the margin
+              loadPoster(v);
               var played = v.play();
               if (played && played.catch) played.catch(function () {});
             } else {
@@ -394,18 +333,11 @@
         videoObserver.observe(v);
       });
     } else {
-      // No IntersectionObserver: autoplay handles playback, so just make sure
-      // no poster is left stranded in data-poster.
       videos.forEach(loadPoster);
     }
   }
 
-  // ---- CRT sweep: run it only on panels that are actually on screen ----
-  // The sweep is paused in CSS by default. There is no CSS way to key
-  // animation-play-state off viewport position (animation-timeline: view() ties
-  // the sweep to scroll position instead of a clock, and lacks Safari support),
-  // so an observer adds .is-live. Pausing rather than stopping preserves the
-  // animation's phase across re-entry.
+  // CSS cannot key animation-play-state off viewport position without scroll-driven timelines Safari lacks.
   var sweepPanels = document.querySelectorAll('.terminal-frame, .tui-demo, .code-block');
   if (sweepPanels.length > 0 && 'IntersectionObserver' in window) {
     var sweepObserver = new IntersectionObserver(
@@ -421,10 +353,6 @@
     });
   }
 
-  // ---- Scroll reveal (home page) ----
-  // landing.css hides a [data-reveal] group's children only under html.js-motion,
-  // which is set here and only when motion is welcome, so the page reads in full
-  // with JS off or reduced motion. ?nomotion skips it for full-page screenshots.
   var revealGroups = document.querySelectorAll('[data-reveal]');
   if (
     revealGroups.length > 0 &&
@@ -615,7 +543,6 @@
     ).observe(story);
   }
 
-  // ---- Mobile sidebar toggle (docs pages) ----
   var sidebarToggle = document.getElementById('sidebar-toggle');
   var sidebar = document.querySelector('.docs-sidebar');
   var backdrop = document.getElementById('docs-sidebar-backdrop');
@@ -635,8 +562,6 @@
       sidebarToggle.classList.toggle('active', open);
       sidebarToggle.setAttribute('aria-expanded', open ? 'true' : 'false');
       if (backdrop) backdrop.classList.toggle('open', open);
-      // Move focus into the drawer so keyboard and screen-reader users land
-      // where the visual focus went.
       if (open) {
         var first = sidebar.querySelector('a');
         if (first) first.focus();
@@ -647,12 +572,10 @@
       backdrop.addEventListener('click', closeSidebar);
     }
 
-    // Close sidebar when a link is clicked or the backdrop is tapped
     sidebar.querySelectorAll('a').forEach(function (link) {
       link.addEventListener('click', closeSidebar);
     });
 
-    // Escape closes the drawer and returns focus to the toggle that opened it.
     document.addEventListener('keydown', function (e) {
       if (e.key !== 'Escape') return;
       if (!sidebar.classList.contains('open')) return;
@@ -661,18 +584,6 @@
     });
   }
 
-  // ---- God mode: typing the 1993 Doom cheat plays a clip of Doom in a pane ----
-  // The clue is the footer's .footer-secret line plus the HUD bar's "God Mode /
-  // 5 keys" segment; the code itself is never written on the page.
-  //
-  // The overlay and its <video> are built on first trigger, so the several-MB
-  // clip and its poster cost nothing for the overwhelming majority of visitors
-  // who never type it. Regenerate the media with scripts/demo/record-doom.sh.
-  //
-  // Note this shares the document with press-to-begin, which fires on any
-  // printable key: from the top of the landing page the leading "i" scrolls to
-  // the demo section before the overlay opens. Left deliberately uncoupled —
-  // suppressing that would mean breaking "press any key" for the letter i.
   var CHEAT_CODE = 'iddqd';
   var assetsDir = document.body && document.body.getAttribute('data-assets');
 
@@ -687,8 +598,6 @@
       if (!doomOverlay || doomOverlay.hidden) return;
       doomOverlay.hidden = true;
       document.documentElement.classList.remove('doom-open');
-      // Drop the source so an in-flight download stops and the decoder is
-      // released; reopening re-attaches it.
       doomVideo.pause();
       doomVideo.removeAttribute('src');
       doomVideo.load();
@@ -696,9 +605,6 @@
       doomReturnFocus = null;
     };
 
-    // The overlay is a modal dialog, so Tab must not walk out of it into the
-    // page behind. Only the close button, the video's controls and the caption's
-    // link to the mod are focusable.
     var trapDoomTab = function (e) {
       if (e.key !== 'Tab') return;
       var focusable = doomOverlay.querySelectorAll('button, video, a[href]');
@@ -743,9 +649,7 @@
 
       doomVideo = document.createElement('video');
       doomVideo.className = 'doom-overlay__video';
-      // Intrinsic size reserves the aspect ratio so opening the overlay does not
-      // reflow once the first frame arrives. Matches what record-doom.sh emits
-      // (a 160x44 terminal rasterised at font-size 20) — keep the two in sync.
+      // MUST KILL: extract — a clip size shared with record-doom.sh would keep the two in sync
       doomVideo.width = 1944;
       doomVideo.height = 1260;
       doomVideo.loop = true;
@@ -773,7 +677,6 @@
       overlay.appendChild(frame);
 
       doomClose.addEventListener('click', closeDoom);
-      // A click on the backdrop dismisses; one inside the frame must not.
       overlay.addEventListener('click', function (e) {
         if (e.target === overlay) closeDoom();
       });
@@ -790,8 +693,6 @@
       doomVideo.setAttribute('src', assetsDir + '/doom-easter-egg.mp4');
       doomOverlay.hidden = false;
       document.documentElement.classList.add('doom-open');
-      // Reduced motion: show the poster frame and let the controls opt in,
-      // rather than starting a 21-second loop unasked.
       if (!prefersReducedMotion()) {
         var played = doomVideo.play();
         if (played && played.catch) played.catch(function () {});
@@ -799,9 +700,6 @@
       doomClose.focus();
     };
 
-    // Capture phase, like press-to-begin, so nothing on the page can swallow the
-    // sequence. A rolling buffer of the last few printable keys means a typo just
-    // shifts the window instead of needing an explicit reset.
     document.addEventListener(
       'keydown',
       function (e) {
@@ -809,7 +707,7 @@
           closeDoom();
           return;
         }
-        if (e.metaKey || e.ctrlKey || e.altKey) return; // Ctrl+D is not a cheat
+        if (e.metaKey || e.ctrlKey || e.altKey) return;
         if (!e.key || e.key.length !== 1) return;
         if (isTypingContext(e.target) || isTypingContext(document.activeElement)) return;
         cheatBuffer = (cheatBuffer + e.key.toLowerCase()).slice(-CHEAT_CODE.length);

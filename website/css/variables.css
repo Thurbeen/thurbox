@@ -1,12 +1,3 @@
-/* ---- Self-hosted fonts ----
-   Served from our own origin instead of fonts.googleapis.com. That removes a
-   16.7 KB stylesheet, two preconnects, and a DNS+TLS round-trip to a third
-   party — and browsers now partition their HTTP cache per-origin, so the old
-   "someone else already cached it from Google" argument no longer holds.
-   Inter and JetBrains Mono are variable fonts: one file each covers 400-700,
-   which is why three files serve seven faces. Latin subset only.
-   font-display: swap keeps text visible while they load. */
-
 @font-face {
   font-family: Inter;
   font-style: normal;
@@ -32,23 +23,15 @@
 }
 
 :root {
-  /* Backgrounds — neutral warm-charcoal (Doom is an accent, not the whole room) */
   --bg-primary: #15120f;
   --bg-secondary: #1e1a16;
   --bg-card: #1e1a16;
   --bg-code: #0d0b09;
   --bg-hover: #2a241e;
   --bg-nav: rgb(21, 18, 15, 0.92);
-
-  /* Text */
   --text-primary: #e0e0e0;
   --text-secondary: #a0a0a0;
   --text-muted: #948a7d;
-
-  /* Accents — Doom red is the primary accent slot.
-     --accent is the semantic name; --cyan is a compat alias kept because the
-     Doom repaint reused the old cyan slot for red and ~14 call sites still
-     reference it. Prefer --accent in new rules. */
   --green: #6eff6e;
   --accent: #ff5c54;
   --cyan: var(--accent);
@@ -56,38 +39,21 @@
   --purple: #ff8c8c;
   --red: #ff3b30;
   --blue: #00d9ff;
-
-  /* Borders */
   --border: #36302a;
   --border-light: #26211c;
-
-  /* Retro neon glows (used sparingly, as a wink to Doom) */
   --glow-red: 0 0 5px rgb(255, 92, 84, 0.7), 0 0 12px rgb(255, 59, 48, 0.4);
-
-  /* The same wink, sized for TYPE rather than chrome. Press Start 2P draws on a
-     0.1em pixel grid, so one glyph-pixel is 2.2px at an h2's 22px and 5.1px at
-     the hero's 51px - and --glow-red's outer 12px blur bleeds across five glyph
-     pixels of an h2, filling the 1px gaps the letterforms are made of. A single
-     tight blur keeps the wink without dissolving the edges it sits on. */
   --glow-red-type: 0 0 4px rgb(255, 92, 84, 0.4);
   --glow-green: 0 0 5px rgb(110, 255, 110, 0.7), 0 0 12px rgb(110, 255, 110, 0.4);
   --glow-cyan: 0 0 5px rgb(0, 217, 255, 0.7), 0 0 12px rgb(0, 217, 255, 0.4);
   --scanline: rgb(0, 0, 0, 0.2);
-
-  /* Typography */
   --font-display: 'Press Start 2P', 'JetBrains Mono', monospace;
   --font-mono: 'JetBrains Mono', 'Fira Code', 'Cascadia Code', monospace;
   --font-body: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
-
-  /* Type scale: the one set of font sizes body copy, ledes and small print
-     use. Display sizes (h1, h2) stay in base.css. */
   --text-xs: 0.75rem;
   --text-sm: 0.875rem;
   --text-base: 1rem;
   --text-lg: 1.125rem;
   --measure: 62ch;
-
-  /* Spacing */
   --space-xs: 0.25rem;
   --space-sm: 0.5rem;
   --space-md: 1rem;
@@ -95,8 +61,6 @@
   --space-xl: 2rem;
   --space-2xl: 3rem;
   --space-3xl: 4rem;
-
-  /* Sizing */
   --container-max: 1200px;
   --container-wide: 1440px;
   --nav-height: 64px;
@@ -106,44 +70,14 @@
   --hero-demo-max: 900px;
   --border-radius: 0;
   --border-radius-sm: 0;
-
-  /* The one deliberate exception to the squared pixel-era look: status dots,
-     which read as LEDs rather than panels. Named so it can't drift silently.
-     (Badges and step numbers used to be rounded too — both are squared now.) */
   --radius-round: 50%;
-
-  /* Breakpoint ladder (media queries can't use custom properties, so these
-     are documentation — keep every @media in the codebase on one of these):
-       480px   xs → sm   phone: scroll rails collapse to wrapped rows
-       640px   sm → md   nav goes inline; panel sweeps switch on; HUD grows
-       768px   md → lg   plugin grid collapses to one column
-       960px   lg        install tablist stops scrolling and wraps
-       1024px  xl        .grid-3 reaches 3 cols; docs sidebar becomes static
-       1280px  2xl       docs gains the on-this-page rail
-       1440px  3xl       wide container; .grid-3 reaches 5 cols (10 cards = 5+5) */
-
-  /* Transitions */
   --transition: 200ms ease;
-
-  /* ============================================================
-     DOOM GAME-UI — boot-screen treatment (full immersion)
-     Pixel bevels, HUD readouts, blood-red drama. Applied to CHROME
-     only (panels, buttons, bars, headings); body copy keeps its
-     readable Inter + AA contrast untouched.
-     ============================================================ */
-
-  /* Blood-red ramp for title + intermission drama */
   --doom-red: #e8180b;
   --doom-red-bright: #ff3326;
   --ember: #ff5c1f;
-
-  /* Pixel bevel edges — Doom's signature 3D-beveled panels.
-     A light edge top-left, a shadow bottom-right, framed in near-black. */
   --bevel-light: rgb(255, 255, 255, 0.14);
   --bevel-dark: rgb(0, 0, 0, 0.62);
   --bevel-frame: #07060a;
-
-  /* Composite bevel shadows (reusable on any panel / button) */
   --bevel:
     0 0 0 2px var(--bevel-frame), inset 2px 2px 0 0 var(--bevel-light),
     inset -2px -2px 0 0 var(--bevel-dark);
@@ -153,16 +87,10 @@
   --bevel-glow-red:
     0 0 0 2px var(--bevel-frame), 0 0 12px rgb(232, 24, 11, 0.5),
     inset 2px 2px 0 0 var(--bevel-light), inset -2px -2px 0 0 var(--bevel-dark);
-
-  /* HUD status-bar surfaces */
   --hud-bg: #14110e;
   --hud-bg-deep: #0a0807;
   --hud-edge: #3a322b;
-
-  /* CRT vignette for the screen-shell feel */
   --vignette: radial-gradient(ellipse at 50% 50%, transparent 58%, rgb(0, 0, 0, 0.6));
-
-  /* Colours the light palette has to change, named so no rule hard-codes them */
   --on-green: #0a2e0a;
   --green-hover: #8cff8c;
   --glow-btn: 0 0 10px rgb(110, 255, 110, 0.5), inset 0 0 6px rgb(255, 255, 255, 0.25);
@@ -175,10 +103,6 @@
   color-scheme: dark;
 }
 
-/* The light palette. Same Doom identity - red accent, pixel headings, squared
-   bevelled panels - on warm paper: the neon tones darken until they read as
-   text on a light ground, and the glows, scanlines and vignette fade to a hint
-   because on a light ground they read as dirt rather than as light. */
 @media (prefers-color-scheme: light) {
   :root {
     --bg-primary: #f6f1ea;

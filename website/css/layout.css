@@ -23,23 +23,12 @@
   margin: 0 auto;
 }
 
-/* Grid system.
-
-   align-items: start is load-bearing, not a default worth inheriting: every
-   .grid on this site holds .card children, and a stretched card is as tall as
-   the tallest card in its row while its text still sits at the top. That left
-   up to 163px of empty bordered box under a short card at the five-column
-   step, which reads as a hole punched in the card rather than as a grid. */
 .grid {
   display: grid;
   gap: var(--space-lg);
   align-items: start;
 }
 
-/* The opt-out, for a grid whose cards align something to their own bottom:
-   .ask-card puts its footer link at `margin-top: auto`, which needs a row
-   height to align to. Cards that align nothing are better off at their own
-   height - see .grid above. */
 .grid--stretch {
   align-items: stretch;
 }
@@ -52,7 +41,6 @@
   grid-template-columns: 1fr;
 }
 
-/* Responsive */
 @media (min-width: 640px) {
   .grid-2 {
     grid-template-columns: repeat(2, 1fr);
@@ -69,10 +57,6 @@
   }
 }
 
-/* Wide desktops: use the space instead of leaving dead margins. Explicit
-   rather than auto-fit, because auto-fit reintroduces a ragged tail at
-   intermediate widths; a grid whose card count five does not divide sets its
-   own column count at this step. */
 @media (min-width: 1440px) {
   .container {
     max-width: var(--container-wide);
@@ -83,7 +67,6 @@
   }
 }
 
-/* Visibility utilities */
 .hide-mobile {
   display: none;
 }
