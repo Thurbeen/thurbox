@@ -284,11 +284,11 @@ local function place_label(flow)
   return flow.host
 end
 
---- Whether the chosen Fleet offers a `local` of its own, which a Task names
---- with an empty backend.
-local function fleet_has_local()
+--- Whether the chosen Fleet offers a ready `local` of its own, which a Task
+--- names with an empty backend.
+local function fleet_local_is_ready()
   for _, place in ipairs(hosts() or {}) do
-    if (place.backend or "") == "" then
+    if (place.backend or "") == "" and place.ready ~= false then
       return true
     end
   end
@@ -297,14 +297,14 @@ end
 
 --- Where the repositories of `place` are remembered, and read: a Fleet's own
 --- machine under one key whichever runtime's `local` names it, read through
---- the Fleet's `local` while it offers one, and any other place under
+--- the Fleet's `local` while it offers a ready one, and any other place under
 --- `<fleet>/<place>`, since none of its paths is a path here.
 local function repository_key(flow, place)
   local machine = flow.place == "" or place.here
   if not flow.elsewhere then
     return machine and "" or flow.place
   end
-  local shared = machine and fleet_has_local()
+  local shared = machine and fleet_local_is_ready()
   return flow.fleet .. "/" .. (shared and "local" or place.name)
 end
 

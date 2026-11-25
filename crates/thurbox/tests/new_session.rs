@@ -1381,6 +1381,42 @@ fn a_remote_fleets_runtime_local_place_is_read_through_itself() {
     );
 }
 
+/// A remote Fleet's `local` that is not ready reads nothing: another
+/// runtime's ready `local` is read through itself.
+#[test]
+fn a_remote_fleets_runtime_local_place_skips_a_local_that_is_not_ready() {
+    let host = host();
+    let mut world = World::default();
+    let down = HostRow {
+        detail: "box itself (mux)".into(),
+        ready: Some(false),
+        why: Some("tmux is not running".into()),
+        ..HostRow::local("box itself")
+    };
+    let herdr_local = HostRow {
+        name: "herdr/local".into(),
+        detail: "box itself (herdr)".into(),
+        backend: "herdr/local".into(),
+        ready: Some(true),
+        here: true,
+        ..HostRow::default()
+    };
+    world.snapshot.fleets = vec![fleet(
+        "box",
+        "ssh box",
+        FleetState::Up,
+        vec![down, herdr_local],
+        &["claude"],
+    )];
+    press(&host, &world, "ctrl+n");
+    press(&host, &world, "enter");
+    drawn(&host, &world);
+    assert_eq!(
+        host.shared_string("want_bookmarks").as_deref(),
+        Some("box/herdr/local")
+    );
+}
+
 #[test]
 fn escape_closes_the_flow_and_stops_asking() {
     let host = host();
