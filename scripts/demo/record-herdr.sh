@@ -53,7 +53,6 @@ trap cleanup EXIT
 step() { printf '[record-herdr] %s\n' "$*" >&2; }
 pause() { sleep "$1"; }
 app() { herdr-app "do" "$@" >/dev/null; }
-terminals() { hc ls --label "herdr.space=fleet" | jq -r '.terminals[].address'; }
 key_of() { fleet status task "$1" | awk '/^session / {print $2}'; }
 terminal_of() { hc ls --label "fleet.key=$1" | jq -r '[.terminals[] | .address][0] // empty'; }
 
@@ -128,7 +127,7 @@ done
 
 step "the shell the viewer types in"
 you="$(hc run --bg --name you "$SHELL" | jq -r .address)"
-hc label "$you" herdr.space=fleet herdr.tab=you >/dev/null
+hc label "$you" herdr.space=you herdr.tab=you >/dev/null
 pause 2
 hc send "$you" "export FLEET_CONFIG=$FLEET_CONFIG PATH=$PATH USER=you; cd $DEMO/src/greeter; clear" >/dev/null
 pause 2

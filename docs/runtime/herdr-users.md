@@ -7,8 +7,8 @@ How the runtime works inside is [runtime-herdr](herdr.md).
 
 ![herdr's app while Fleet runs VEGA and two worker Tasks: each Task is a tab, and the agents list shows them working, then done](https://github.com/Thurbeen/thurbox/releases/download/media/herdr-fleet-vega.gif)
 
-VEGA gets a request in the shell tab, applies two worker Tasks, and each one
-appears in herdr's app as a tab while it works. The
+VEGA gets a request in the shell, applies two worker Tasks, and each one
+appears in herdr's app as a space of its own while it works. The
 [video](https://github.com/Thurbeen/thurbox/releases/download/media/herdr-fleet-vega.mp4)
 is the same recording, sharper.
 
@@ -20,7 +20,7 @@ what runs in them:
 | You get | From |
 | --- | --- |
 | Terminals that outlive the app and a core restart | herdr-core |
-| A space and a tab per terminal | herdr's app |
+| A space in the sidebar for each Task, with its agent and its shell | herdr's app |
 | One agent session per Task, started from a JSON file or from thurbox | Fleet |
 | A git worktree per Task, made before the agent starts and removed when you delete the Task | Fleet, through `runtime-herdr` |
 | A brief as the agent's first prompt, messages later, a recorded result | Fleet |
@@ -171,8 +171,9 @@ Here `local` still names `mux/local`. A Task runs in herdr when it names
 ### A place's keys
 
 A herdr place takes two keys: `session`, the herdr-core session
-(`HC_SESSION`), and `space`, the herdr app space that shows the Tasks
-(`fleet` by default).
+(`HC_SESSION`), and `space`. Without `space`, each Task is a space of its
+own in herdr's app. With it, every Task of the place is a tab in that one
+space.
 
 ```toml
 # spec.host = "herdr/work": the herdr-core session "work", app space "agents"
@@ -257,20 +258,23 @@ $ fleet status task fix-login
 session fleet.u5-e5fb0263df286e78 on herdr/local Running
 ```
 
-In herdr's app, the Task is in the space `fleet` (or the place's `space`),
-in a tab named after the key.
+In herdr's app, the Task is a space of its own, named after the folder it
+works in, such as the repository's name. A Task in a worktree is listed
+under its repository, with its branch beside it. Its agent and its
+`fleet shell` are inside. On a place that sets `space`, the Task is a tab in that space,
+named after the key.
 
 With `hc`, select the Task's terminals by label. `hc ls` does not print
 labels:
 
 ```bash
-hc ls --label herdr.space=fleet       # every Task's terminal at the default space
+hc ls --label fleet.place=local       # every Task's terminal at the place local
 hc ls --label fleet.key=<key>         # one Task's terminals
 hc get <terminal> --json              # one terminal, with its labels
 ```
 
 The labels are `fleet.key` and `herdr.tab` (the key), `fleet.place` (the
-place's name), `herdr.space` (the place's `space`), and `fleet.role=shell` on
+place's name), `herdr.space` (the key, or the place's `space`), and `fleet.role=shell` on
 the shell that `fleet shell` opens ([runtime-herdr](herdr.md#how-it-reaches-herdr-core)).
 
 For a place with a `session`, set `HC_SESSION` to that session before you
@@ -323,8 +327,8 @@ cd vega
 VEGA's Task names no place, and it gives its workers none unless you ask:
 
 - With herdr as the default runtime, VEGA runs on `herdr/local`. In herdr's
-  app, VEGA has a tab in the space `fleet`, and each worker gets a tab of its
-  own beside it.
+  app, VEGA is a space, and each worker it applies appears as a space of its
+  own, named after the repository it works in.
 - With `runtime-mux` as the default, VEGA runs in tmux. Ask it for herdr in
   your request, such as "run the workers on `herdr/local`", and the workers
   run in herdr.
@@ -350,5 +354,5 @@ named after its Task's key: `fleet status task vega` prints VEGA's.
 | `herdr/local` is not ready | `fleet doctor` and `fleet runtime places` print the reason, such as `herdr-core is not installed`. |
 | The place works in your shell but not under the service | The service's `PATH`: see [step 3](#3-check-it-and-restart-fleet-up). |
 | A new place or runtime is not used | `fleet up` still runs the old config: restart it. |
-| The Task is not in herdr's app | `hc ls --label fleet.key=<key>` shows whether the terminal exists, and `hc get <terminal> --json` its labels. Check the place's `space`. |
+| The Task is not in herdr's app | `hc ls --label fleet.key=<key>` shows whether the terminal exists, and `hc get <terminal> --json` its labels. Look for a space named after the Task's folder, or in the place's `space`. |
 | The runtime itself misbehaves | `fleet runtime check -- runtime-herdr` runs the runtime protocol's conformance suite against it. |
