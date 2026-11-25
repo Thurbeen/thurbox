@@ -2,13 +2,6 @@ name: Release
 
 on:
   workflow_dispatch:
-    # Cut a specific version by dispatching with `version` (e.g. `1.0.0`).
-    # This is the only way to cross a major line: `cog bump --auto` maps a
-    # breaking change to a *minor* bump while on a 0.x line (SemVer treats 0.x
-    # as inherently unstable), so it can never reach 1.0.0 from 0.x on its own.
-    # When `version` is set the workflow tags + releases that exact version;
-    # when empty (the default, and always on a `push` trigger) it falls back to
-    # the normal `cog bump --auto` from the commit history.
     inputs:
       version:
         description: "Exact version to release (e.g. 1.0.0). Empty = auto from commits."
@@ -18,47 +11,22 @@ on:
   push:
     branches: [main]
 
-# The major the existing package names carry: Homebrew `thurbox`, AUR
-# `thurbox`/`thurbox-bin`, Chocolatey `thurbox`, winget `Thurbeen.thurbox`.
-# They stay on it for good, so nobody moves to a new major through a package
-# upgrade they did not choose; a new major ships under names of its own. See
-# docs/thurbox/releasing.md, "v2 and v3".
 env:
   PACKAGE_CHANNELS_MAJOR: "2"
 
-# Prevent concurrent releases
 concurrency:
   group: release-${{ github.ref }}
   cancel-in-progress: false
 
 jobs:
-  # Analyze commits and determine if release is needed
   check-release:
     name: Analyze commits for release
     runs-on: ubuntu-latest
     outputs:
-      # Gated by BOTH the commit-type decision (`parse`) and the
-      # artifact-relevance gate (`shipped`): a `feat`/`fix` that touches only
-      # the website, docs, or CI config bumps nothing shippable, so it must not
-      # cut a release. See the `shipped` step for the rationale + path list.
-      # And by the hold (`line`): a tree carrying .github/release-hold
-      # releases nothing, on a push or a dispatch.
       should_release: ${{ steps.parse.outputs.should_release == 'true' && steps.shipped.outputs.shipped != 'false' && steps.line.outputs.held != 'true' }}
       version: ${{ steps.parse.outputs.version }}
-      # The exact `cog bump` args create-tag runs. Computed here in bash (not
-      # via a YAML `${{ && || }}` ternary in create-tag) so the forced-version
-      # path is deterministic — the ternary form silently fell back to `--auto`
-      # when an output briefly evaluated empty, defeating the forced cut.
       bump_args: ${{ steps.parse.outputs.bump_args }}
-      # Whether this cut is the highest version the repository has ever tagged.
-      # A maintenance release off `v1.x` is not: everything downstream of the
-      # tag points at "the current thurbox" rather than at a version, so a 1.8.x
-      # cut would drag all of it backwards past 2.x. See the `newest` step.
       newest: ${{ steps.newest.outputs.newest }}
-      # Whether this cut goes to the existing package names: the newest release
-      # of PACKAGE_CHANNELS_MAJOR. Not `newest`: once a later major exists, a
-      # 2.x maintenance release is behind the highest tag yet is still exactly
-      # what those names' users should get. See the `line` step.
       channels: ${{ steps.line.outputs.channels }}
     steps:
       - name: Checkout code
@@ -67,8 +35,6 @@ jobs:
           fetch-depth: 0  # Full history for cocogitto
 
       - name: Check for releasable commits
-        # Pinned to v4.2.0 (same SHA as the other cocogitto-action steps below);
-        # used here in install-only mode to provide the `cog` binary.
         uses: cocogitto/cocogitto-action@52d0023b4396897f1815648e553db2ab8d782f3a # v4.2.0
         id: check
         with:
@@ -77,36 +43,19 @@ jobs:
       - name: Parse release decision
         id: parse
         env:
-          # '' on a push trigger or an empty dispatch; a bare version otherwise.
           FORCED_VERSION: ${{ inputs.version }}
         run: |
-          # Two paths pick the target version:
-          #
-          # 1. Forced (workflow_dispatch with `version`): use it verbatim. This
-          #    is how a major cut is made — `cog bump --auto` can't reach 1.0.0
-          #    from a 0.x line (breaking maps to minor there), so an explicit
-          #    version is the only route across a major boundary.
-          # 2. Auto (push, or dispatch with an empty `version`): the next tag
-          #    `cog bump --auto` computes from the commits since the last tag.
-          #
-          # cog prints the next tag (e.g. "v0.99.1") when a bump is due, but a
-          # human-readable "No conventional commits…" message when none is. Match
-          # only a real semver so that non-bump message never reaches
-          # $GITHUB_OUTPUT — writing its multi-line text there previously failed
-          # this step (and the whole workflow) on every docs/ci/chore push.
           if [ -n "$FORCED_VERSION" ]; then
-            # Strip a leading `v` if the caller included one (UI convenience).
             VERSION="v${FORCED_VERSION#v}"
             echo "should_release=true" >> "$GITHUB_OUTPUT"
             echo "version=$VERSION" >> "$GITHUB_OUTPUT"
-            # `cog bump --version` parses a bare semver (no `v`); the tag_prefix
-            # in cog.toml re-adds the `v` on the created tag. `version` (above)
-            # keeps the `v` because the tag_name / `ref: <tag>` lookups need it.
+            # `cog bump --version` takes a bare semver; cog.toml's tag_prefix adds the `v`.
             echo "bump_args=--version ${VERSION#v} --disable-bump-commit" >> "$GITHUB_OUTPUT"
             echo "✅ Forced release: $VERSION"
             exit 0
           fi
 
+          # cog prints prose, not a tag, when no bump is due.
           RAW="$(cog bump --auto --disable-bump-commit --dry-run 2>/dev/null || true)"
           echo "cog output: $RAW"
           VERSION="$(printf '%s\n' "$RAW" | grep -oE '^v?[0-9]+\.[0-9]+\.[0-9]+[A-Za-z0-9.+-]*' | head -1 || true)"
@@ -126,43 +75,11 @@ jobs:
         id: shipped
         if: steps.parse.outputs.should_release == 'true' && inputs.version == ''
         run: |
-          # Commit *type* alone over-releases: cocogitto sees `fix`/`feat` and
-          # bumps, but Renovate labels a GitHub-Actions pin bump `fix(deps)` and
-          # the website is versioned as `feat(ui)`/`fix(ui)`. Those change no
-          # byte of the shipped binary, yet each cut a release (v1.2.13..v1.3.0
-          # were four CSS-only releases, one of them a *minor*). Every such
-          # release also re-runs the 5-target build and pushes to Homebrew/AUR/
-          # Chocolatey/winget — the moderated channels that then rate-limit us.
-          #
-          # So gate on the diff as well: release only when something a user
-          # actually installs changed. The range is the whole span since the last
-          # tag, NOT this single push — a website-only push landing on top of an
-          # unreleased `src/` commit still owes that release.
-          #
-          # A forced `workflow_dispatch` version skips this gate entirely (the
-          # `if:` above): an explicit human cut is always honoured.
-          #
-          # `examples/panes/` is in the list although no binary carries it: a
-          # bare-name install resolves against the release TAG
-          # (`official_set_base`), so a change that is never tagged is one nobody
-          # can install.
-          # `ui/` and `examples/lua/` are here for the same reason and, more
-          # directly, because both are `include_str!`d into the binary, so they
-          # are bytes a user installs. A releasable span confined to a pane fix would
-          # otherwise be suppressed as "no shipped artifact changed" — no tag, no
-          # binaries, no channel pushes — and the `ui` commit scope cannot separate
-          # a pane fix from a website one, so the type gate will not catch it either.
           SHIPPED_PATHS='^(crates/|ui/|examples/|Cargo\.toml$|Cargo\.lock$|rust-toolchain\.toml$|Cross\.toml$|packaging/|scripts/install\.(sh|ps1)$|scripts/ci/release-archive\.sh$|\.github/workflows/cd\.yml$)'
 
-          # Version tags only: the `media` release's tag
-          # (scripts/demo/publish-media.sh) also sits on main, and diffing from
-          # it would hide an unreleased `crates/` change behind a later push.
           LAST_TAG="$(git describe --tags --abbrev=0 --match 'v*' 2>/dev/null || true)"
 
           if [ -z "$LAST_TAG" ]; then
-            # No tag yet: nothing to diff against, so the first release always
-            # ships. Reported as a single pseudo-path so the decision below
-            # stays a plain "is RELEVANT empty?" test for both branches.
             LAST_TAG="(none)"
             RELEVANT="(no previous tag — first release)"
           else
@@ -183,28 +100,10 @@ jobs:
       - name: Is this the highest version ever tagged
         id: newest
         run: |
-          # The release line is not a single line any more: 2.x ships from
-          # `main` while 1.8.x is maintained on `v1.x`, and a v1 patch is cut by
-          # dispatching this workflow from that ref. Nothing downstream of the
-          # tag knows that. The GitHub Release would claim "Latest" — which is
-          # what `scripts/install.{sh,ps1}` resolve, so every fresh install would
-          # land on the older line — and the Homebrew formula and the AUR
-          # PKGBUILDs would be rewritten to it, moving 2.x users *backwards* on
-          # their next upgrade. The moderated channels (Chocolatey, winget) would
-          # merely reject a version behind what they already carry.
-          #
-          # So compare the cut against every tag that exists. Behind the highest
-          # one means this is a maintenance release: still tagged, still built,
-          # still published with its binaries, but not marked latest. The
-          # version is the whole test — not the ref — because that is the
-          # property the installers care about. The package channels are decided
-          # by major instead (the `line` step): a 2.x cut behind a 3.x tag is
-          # still the newest 2.x, which is what the existing package names carry.
           TARGET="${{ steps.parse.outputs.version }}"
           HIGHEST="$(git tag --list 'v*' | sort -V | tail -1)"
           echo "cutting ${TARGET:-(nothing)}; highest existing tag ${HIGHEST:-(none)}"
           if [ -z "$TARGET" ]; then
-            # No release is being cut; the value is unused but must not be empty.
             echo "newest=false" >> "$GITHUB_OUTPUT"
           elif [ -z "$HIGHEST" ] \
             || [ "$(printf '%s\n%s\n' "$HIGHEST" "$TARGET" | sort -V | tail -1)" = "$TARGET" ]; then
@@ -217,31 +116,20 @@ jobs:
 
       - name: Is this release on the source's major line
         id: line
-        # Only for a cut that will happen: a span the relevance gate already
-        # suppressed tags nothing, so there is nothing to refuse.
         if: steps.parse.outputs.should_release == 'true' && steps.shipped.outputs.shipped != 'false'
-        # `shell: bash` is what turns on pipefail; the default shell would let
-        # `tee` swallow the script's refusal.
+        # `shell: bash` enables pipefail, so `tee` cannot hide the script's refusal.
         shell: bash
         run: |
-          # Holds every release while the tree carries .github/release-hold
-          # (`held=true`, a clean skip, not a failure). Otherwise refuses —
-          # failing the run before anything is tagged — a version
-          # whose major is not the source's RELEASE_LINE, which is what stops a
-          # `BREAKING CHANGE:` footer from cutting the next major on its own.
-          # Also decides `channels`. The rules and their tests are in
-          # scripts/ci/release-line.{sh,bats}.
           scripts/ci/release-line.sh "${{ steps.parse.outputs.version }}" "$PACKAGE_CHANNELS_MAJOR" \
             | tee -a "$GITHUB_OUTPUT"
 
-  # Create git tag (only if release needed)
   create-tag:
     name: Create release tag
     needs: check-release
     if: needs.check-release.outputs.should_release == 'true'
     runs-on: ubuntu-latest
     permissions:
-      contents: write  # Required to push the version tag
+      contents: write
     steps:
       - name: Checkout code
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
@@ -253,23 +141,13 @@ jobs:
         id: bump
         with:
           command: bump
-          # `bump_args` is resolved by check-release: `--version <v>` for a
-          # forced cut (the only way across a major boundary on a 0.x line),
-          # `--auto` otherwise. Computed in bash upstream to stay deterministic.
           args: ${{ needs.check-release.outputs.bump_args }}
           git-user: 'github-actions[bot]'
           git-user-email: 'github-actions[bot]@users.noreply.github.com'
 
-      # Push the tag and nothing else. `ad-m/github-push-action` stood here and
-      # defaults its `branch` to the repository's default: from `main` that is
-      # the ref already checked out, so pushing it is a no-op and the tag rides
-      # along — but from `v1.x` it tries to push that branch's tip onto `main`,
-      # is rejected as a non-fast-forward, and the tag it was there to deliver
-      # never leaves the runner. A tag push is what this step means; say so.
       - name: Push tag to repository
         run: git push origin "refs/tags/${{ needs.check-release.outputs.version }}"
 
-  # Build binaries for all platforms (only if tag created)
   build:
     name: Build ${{ matrix.target }}
     needs: [check-release, create-tag]
@@ -309,15 +187,11 @@ jobs:
         if: matrix.use_cross
         run: cargo install cross --locked
 
-      # Every program the archive ships: scripts/ci/release-archive.sh lists
-      # them, and CI's `install-e2e` job installs that archive on a clean
-      # machine.
       - name: Build release binaries
         shell: bash
         env:
           THURBOX_RELEASE_VERSION: ${{ needs.check-release.outputs.version }}
         run: |
-          # Fleet stamps its version from its own variable, bare (no `v`).
           export FLEET_RELEASE_VERSION="${THURBOX_RELEASE_VERSION#v}"
           bins=()
           for bin in $(scripts/ci/release-archive.sh --binaries); do bins+=(--bin "$bin"); done
@@ -327,8 +201,6 @@ jobs:
             cargo build --release --target ${{ matrix.target }} "${bins[@]}"
           fi
 
-      # A .tar.gz, or a .zip for Windows, which install.ps1 extracts with the
-      # built-in Expand-Archive (no tar dependency).
       - name: Create archive
         shell: bash
         run: |
@@ -344,7 +216,6 @@ jobs:
             thurbox-*.zip
           if-no-files-found: error
 
-  # Generate checksums for all binaries
   checksums:
     name: Generate checksums
     needs: [check-release, build]
@@ -360,13 +231,8 @@ jobs:
         with:
           path: artifacts
 
-      # The sums file is thurbox-<V>-sha256sums.txt, never
-      # thurbox-v<V>-checksums.txt: every 2.x updater fetches that name first,
-      # and its absence is what makes them fail safe on a 3.x release
-      # (docs/thurbox/releasing.md, "What a 3.x release must do").
       - name: Generate SHA256 checksums
         run: |
-          # Flatten directory structure (tar.gz for Unix, zip for Windows)
           find artifacts \( -name "*.tar.gz" -o -name "*.zip" \) -exec mv {} artifacts/ \;
           sums="$(scripts/ci/release-archive.sh --sums "${{ needs.check-release.outputs.version }}" artifacts)"
           cat "$sums"
@@ -378,7 +244,6 @@ jobs:
           path: artifacts/thurbox-*-sha256sums.txt
           if-no-files-found: error
 
-  # Generate CHANGELOG from commits
   generate-changelog:
     name: Generate changelog
     needs: [check-release, create-tag]
@@ -399,13 +264,12 @@ jobs:
           command: changelog
           args: --at ${{ needs.check-release.outputs.version }}
 
-  # Publish GitHub Release
   publish:
     name: Publish GitHub Release
     needs: [check-release, create-tag, build, checksums, generate-changelog]
     runs-on: ubuntu-latest
     permissions:
-      contents: write  # Required to create releases
+      contents: write
     steps:
       - name: Download all artifacts
         uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
@@ -431,25 +295,17 @@ jobs:
           files: release-assets/*
           draft: false
           prerelease: false
-          # A maintenance cut off an older line must not claim the pointer the
-          # installers resolve. Not `prerelease`: 1.8.7 is a real release, it is
-          # simply not the newest one.
           make_latest: ${{ needs.check-release.outputs.newest }}
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-  # Publish the Arch Linux AUR packages.
-  # Runs after `publish` so the GitHub Release assets (needed by thurbox-bin)
-  # and the tag's source tarball (needed by thurbox) are both available.
-  # Requires the AUR_SSH_PRIVATE_KEY secret; skipped automatically if unset.
   publish-aur:
     name: Publish AUR (${{ matrix.pkgname }})
     needs: [check-release, create-tag, publish]
     if: needs.check-release.outputs.should_release == 'true'
       && needs.check-release.outputs.channels == 'true'
     runs-on: ubuntu-latest
-    # Hoisted so the publish step can be skipped when the secret is unset
-    # (the `secrets` context cannot be used directly in an `if` condition).
+    # The `secrets` context is not available in `if:`.
     env:
       AUR_SSH_PRIVATE_KEY: ${{ secrets.AUR_SSH_PRIVATE_KEY }}
     strategy:
@@ -465,7 +321,7 @@ jobs:
       - name: Bump pkgver to the release version
         run: |
           PKGVER="${{ needs.check-release.outputs.version }}"
-          PKGVER="${PKGVER#v}"   # PKGBUILD pkgver is the bare semver
+          PKGVER="${PKGVER#v}"
           PKGBUILD="packaging/aur/${{ matrix.pkgname }}/PKGBUILD"
           sed -i "s/^pkgver=.*/pkgver=${PKGVER}/" "$PKGBUILD"
           sed -i "s/^pkgrel=.*/pkgrel=1/" "$PKGBUILD"
@@ -477,26 +333,19 @@ jobs:
         with:
           pkgname: ${{ matrix.pkgname }}
           pkgbuild: packaging/aur/${{ matrix.pkgname }}/PKGBUILD
-          updpkgsums: true   # recompute sha256sums from the freshly released sources
+          updpkgsums: true
           commit_username: thurbox-release-bot
           commit_email: magicletur@protonmail.com
           ssh_private_key: ${{ env.AUR_SSH_PRIVATE_KEY }}
           commit_message: "Update to ${{ needs.check-release.outputs.version }}"
 
-  # Publish the Homebrew formula to the tap (Thurbeen/homebrew-thurbox).
-  # Runs after `publish` so the release tarballs + sums file exist.
-  # Pushes over SSH using HOMEBREW_TAP_DEPLOY_KEY — a write-enabled deploy key
-  # registered on the tap repo (the Thurbeen org blocks cross-repo PATs, so a
-  # repo-scoped deploy key is the credential). Skipped automatically if the
-  # secret is unset (e.g. on forks).
   publish-homebrew:
     name: Publish Homebrew formula
     needs: [check-release, create-tag, publish]
     if: needs.check-release.outputs.should_release == 'true'
       && needs.check-release.outputs.channels == 'true'
     runs-on: ubuntu-latest
-    # Hoisted so the push step can be skipped when the secret is unset
-    # (the `secrets` context cannot be used directly in an `if` condition).
+    # The `secrets` context is not available in `if:`.
     env:
       HOMEBREW_TAP_DEPLOY_KEY: ${{ secrets.HOMEBREW_TAP_DEPLOY_KEY }}
     steps:
@@ -545,35 +394,15 @@ jobs:
           git commit -m "Update to ${VERSION}"
           git push origin HEAD
 
-  # Publish the Chocolatey package to the community repo.
-  #
-  # Chocolatey's community repo moderates + rate-limits every push, so it can't
-  # keep up with thurbox's per-`feat`/`fix`/`perf` release cadence: versions
-  # pile up in the queue and `choco push` starts returning 403 (rate/quota).
-  # This job therefore *throttles* itself — it pushes at most once per
-  # THROTTLE_DAYS window, coalescing the intervening patch releases into a
-  # single Chocolatey version (the latest binary still ships immediately via
-  # GitHub Releases + Homebrew/AUR/winget). When the window hasn't elapsed (or a
-  # push still 403s despite the throttle), the job records a `::warning::` and
-  # exits green — a backed-up Chocolatey channel must never turn the whole
-  # release red.
-  #
-  # Runs after `publish` so the release zip + sums file exist. The choco CLI
-  # is Windows-only, so this runs on windows-latest. Requires the
-  # CHOCOLATEY_API_KEY secret; skipped automatically if unset (e.g. on forks).
   publish-chocolatey:
     name: Publish Chocolatey package
     needs: [check-release, create-tag, publish]
     if: needs.check-release.outputs.should_release == 'true'
       && needs.check-release.outputs.channels == 'true'
     runs-on: windows-latest
-    # Hoisted so the steps can be skipped when the secret is unset
-    # (the `secrets` context cannot be used directly in an `if` condition).
+    # The `secrets` context is not available in `if:`.
     env:
       CHOCOLATEY_API_KEY: ${{ secrets.CHOCOLATEY_API_KEY }}
-      # Minimum days between Chocolatey pushes. One push/month keeps thurbox well
-      # under the community-repo moderation/rate limits while still shipping a
-      # recent version. Tune here if the queue clears faster/slower.
       THROTTLE_DAYS: "30"
     steps:
       - name: Checkout code at tag
@@ -581,10 +410,6 @@ jobs:
         with:
           ref: ${{ needs.check-release.outputs.version }}
 
-      # Query the community feed for the last-published thurbox version and when
-      # it went up. If that push is younger than THROTTLE_DAYS, skip this
-      # release (green + warning) so patch releases coalesce into one monthly
-      # Chocolatey version instead of hammering the moderation queue.
       - name: Check throttle window
         id: throttle
         if: env.CHOCOLATEY_API_KEY != ''
@@ -592,9 +417,6 @@ jobs:
         run: |
           $ErrorActionPreference = "Stop"
           $throttleDays = [int]$env:THROTTLE_DAYS
-          # OData v2 feed for the latest published thurbox version, as JSON
-          # (`$format=json` → a stable `.d.results` array — far less fragile
-          # than parsing the default Atom/XML shape).
           $feed = "https://community.chocolatey.org/api/v2/Packages()?" +
             "`$filter=Id eq 'thurbox' and IsLatestVersion eq true&`$top=1&`$format=json"
           $shouldPush = $true
@@ -605,8 +427,7 @@ jobs:
             if (-not $entry) {
               $reason = "no published thurbox version found on Chocolatey — first push"
             } else {
-              # OData dates arrive as ISO-8601 or `/Date(ms)/`; [datetime] parses
-              # the former, so strip the wrapper for the latter.
+              # OData dates arrive as ISO-8601 or `/Date(ms)/`; [datetime] parses only the first.
               $raw = "$($entry.Published)"
               if ($raw -match '/Date\((\d+)') {
                 $published = [datetimeoffset]::FromUnixTimeMilliseconds([long]$Matches[1]).UtcDateTime
@@ -622,7 +443,6 @@ jobs:
               }
             }
           } catch {
-            # A feed hiccup must not block a legitimate release; err toward pushing.
             $reason = "could not read Chocolatey feed ($($_.Exception.Message)); proceeding with push"
           }
           "should_push=$($shouldPush.ToString().ToLower())" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
@@ -659,7 +479,6 @@ jobs:
         if: env.CHOCOLATEY_API_KEY != '' && steps.throttle.outputs.should_push == 'true'
         shell: pwsh
         run: |
-          # Version is read from the bumped nuspec — do not pass --version.
           choco pack packaging/chocolatey/thurbox.nuspec --outputdirectory packaging/chocolatey
 
       - name: Push to the Chocolatey community repo
@@ -673,10 +492,6 @@ jobs:
             "Chocolatey push **succeeded** — held for community moderation." | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append
             exit 0
           }
-          # Even with the throttle, a residual rate/quota rejection (403) or a
-          # "version already submitted/pending" conflict (409) must stay green —
-          # the version is safely on GitHub Releases and will be retried next
-          # window. Any other failure (bad package, auth) is a real error.
           if ($out -match '\b(403|409)\b' -or $out -match '(?i)rate limit|too many|already been submitted|pending') {
             Write-Host "::warning title=Chocolatey push deferred::choco push was rejected (rate limit / already pending). Exiting green; the version stays on GitHub Releases and will retry next window."
             "Chocolatey push **deferred** (green): rejected by the community repo (rate limit / already pending)." | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append
@@ -685,33 +500,6 @@ jobs:
           Write-Error "choco push failed for a non-throttle reason (see log above)."
           exit 1
 
-  # Submit the winget manifests to microsoft/winget-pkgs.
-  # Runs after `publish` so the release zip + sums file exist. wingetcreate
-  # is Windows-only, so this runs on windows-latest. Requires the WINGET_TOKEN
-  # secret (a classic PAT with `public_repo` scope that can fork/PR against
-  # microsoft/winget-pkgs); skipped automatically if unset (e.g. on forks).
-  # New versions go through winget-pkgs PR review before going live.
-  #
-  # Cadence — the same shape as `publish-chocolatey`: attempt on every release,
-  # detect the moderated channel pushing back, warn, exit green, retry next
-  # release. winget-pkgs is *manually moderated* and its reviewers cannot absorb
-  # a PR per patch release (30 open at once, flagged in
-  # microsoft/winget-pkgs#405639), so what paces this is the queue itself rather
-  # than a calendar: while a thurbox PR is still **open** there, the decision
-  # step skips green instead of stacking a second one — `wingetcreate` has no
-  # mode that updates a pending PR (`--replace` only supersedes a *published*
-  # version). THROTTLE_DAYS remains as a knob on top of that, defaulted to 0 (no
-  # calendar throttle); set it to 30 to restore the old monthly cadence without
-  # a code change.
-  #
-  # Note `continue-on-error` on the JOB rather than a step. Once the binaries
-  # are on GitHub Releases, a downstream packaging channel must not turn the
-  # Release run red — the previous version of this job only *claimed* that. Its
-  # green paths were the throttle skips, `wingetcreate submit` had no guard at
-  # all, and the file's only `continue-on-error` sat on the cleanup step below,
-  # so v2.19.6's stale-fork failure failed the step, the job and the whole run
-  # (34381951096). The job itself still reports red in the run's job list, so a
-  # genuine break stays visible.
   publish-winget:
     name: Publish winget manifest
     needs: [check-release, create-tag, publish]
@@ -719,14 +507,9 @@ jobs:
       && needs.check-release.outputs.channels == 'true'
     runs-on: windows-latest
     continue-on-error: true
-    # Hoisted so the steps can be skipped when the secret is unset
-    # (the `secrets` context cannot be used directly in an `if` condition).
+    # The `secrets` context is not available in `if:`.
     env:
       WINGET_TOKEN: ${{ secrets.WINGET_TOKEN }}
-      # Minimum days between winget-pkgs submissions. 0 = attempt every release,
-      # matching Chocolatey's shape; the open-PR rule below is what keeps the
-      # moderation queue to one thurbox PR at a time. Raise it to re-throttle by
-      # calendar (30 was the old monthly window).
       THROTTLE_DAYS: "0"
     steps:
       - name: Checkout code at tag
@@ -734,11 +517,6 @@ jobs:
         with:
           ref: ${{ needs.check-release.outputs.version }}
 
-      # Ask packaging/winget/submit-decision.py whether to submit, from our own
-      # thurbox PRs on winget-pkgs (any state). It skips green when one is still
-      # open, and when the newest is younger than THROTTLE_DAYS. The rules and
-      # their edge cases are covered by packaging/winget/winget.bats — the
-      # reason this is a script and not inline PowerShell.
       - name: Decide whether to submit
         id: decide
         if: env.WINGET_TOKEN != ''
@@ -761,8 +539,6 @@ jobs:
             $shouldSubmit = [bool]$decision.should_submit
             $reason = $decision.reason
           } catch {
-            # A lookup hiccup (or a malformed THROTTLE_DAYS) must not block a
-            # legitimate release; err toward submitting.
             $reason = "could not read winget-pkgs PRs ($($_.Exception.Message)); proceeding with submission"
           }
           "should_submit=$($shouldSubmit.ToString().ToLower())" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
@@ -802,16 +578,6 @@ jobs:
             -Uri https://aka.ms/wingetcreate/latest `
             -OutFile wingetcreate.exe
 
-      # `wingetcreate submit` pushes the manifest branch to the token account's
-      # fork of winget-pkgs, and its own auto-sync of that fork is fast-forward
-      # only. winget-pkgs merges hundreds of PRs a day, so a fork touched once a
-      # month is thousands of commits behind and the sync gives up with "The
-      # forked repository could not be synced with the upstream commits" — which
-      # is what failed v2.19.6. Sync it here instead, falling back to a hard
-      # reset when the default branch has diverged: this fork is a submission
-      # staging area, nothing of ours lives on its default branch, and each
-      # submission gets its own branch, so a reset cannot destroy work or an
-      # open PR.
       - name: Sync the winget-pkgs fork
         if: env.WINGET_TOKEN != '' && steps.decide.outputs.should_submit == 'true'
         shell: pwsh
@@ -836,8 +602,6 @@ jobs:
             Write-Host "Synced $fork from microsoft/winget-pkgs."
             exit 0
           }
-          # Not fast-forwardable: --force hard-resets the fork's default branch
-          # to upstream's, which is the only way back for a fork this far behind.
           Write-Host "::warning title=winget fork hard-reset::$fork could not be fast-forwarded; resetting its default branch to microsoft/winget-pkgs."
           gh repo sync $fork --source microsoft/winget-pkgs --force
           if ($LASTEXITCODE -ne 0) {
@@ -845,24 +609,7 @@ jobs:
             exit 1
           }
 
-      # `submit` validates the bumped manifests and opens a PR against
-      # microsoft/winget-pkgs from the fork synced above. Works for both the
-      # first submission and every subsequent version from the same in-repo
-      # manifest set. WINGET_TOKEN MUST be a classic PAT with the `public_repo`
-      # scope — wingetcreate rejects fine-grained tokens as invalid
-      # (microsoft/winget-create#595). The token is passed via
-      # WINGET_CREATE_GITHUB_TOKEN (Microsoft's recommended CI path) instead of
-      # --token, which wingetcreate warns can leak the token into logs.
-      #
-      # A rejection from the channel itself (rate limit, version already
-      # pending) warns and exits green, mirroring the Chocolatey push's
-      # 403/409 handling; `after-submit` decides which is which, and everything
-      # else — including the stale-fork failure the step above exists to prevent
-      # — stays a red job. It also reports whether a PR was actually **opened**,
-      # which is what gates the cleanup below: a deferred submission exits green
-      # having opened nothing, and cleanup keyed off the pre-submit decision
-      # would then close the pending PR and put nothing in its place, leaving
-      # winget-pkgs with no thurbox PR at all.
+      # wingetcreate rejects fine-grained tokens (microsoft/winget-create#595) and warns that --token can leak.
       - name: Submit manifests to winget-pkgs
         id: submit
         if: env.WINGET_TOKEN != '' && steps.decide.outputs.should_submit == 'true'
@@ -870,9 +617,7 @@ jobs:
         env:
           WINGET_CREATE_GITHUB_TOKEN: ${{ secrets.WINGET_TOKEN }}
         run: |
-          # The runner injects `$ErrorActionPreference = 'stop'`, which (with
-          # PSNativeCommandUseErrorActionPreference) can turn a native non-zero
-          # exit into a throw before the classification below ever runs.
+          # The runner sets `$ErrorActionPreference = 'stop'`, which turns a native non-zero exit into a throw.
           $ErrorActionPreference = "Continue"
           $out = .\wingetcreate.exe submit packaging/winget/manifests 2>&1 | Out-String
           $submitExit = $LASTEXITCODE
@@ -884,8 +629,6 @@ jobs:
             Write-Error "could not classify wingetcreate's outcome (submit exited $submitExit)."
             exit 1
           }
-          # Written before any exit: the cleanup step reads this, and a missing
-          # output would read as "not true" only by luck rather than by design.
           "opened=$($verdict.opened.ToString().ToLower())" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
           if ($verdict.opened) {
             "winget submission **succeeded** — PR opened on microsoft/winget-pkgs, awaiting review." | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append
@@ -899,20 +642,6 @@ jobs:
           Write-Error "wingetcreate submit failed for a non-channel reason (see log above)."
           exit 1
 
-      # Second-line cleanup behind the open-PR rule above: a stray manual
-      # dispatch (or a race) can still leave more than one open Thurbeen.thurbox
-      # PR. wingetcreate has no "supersede the previous open PR" mode
-      # (`--replace` only supersedes a *published* manifest version, not a
-      # pending PR), so right after submitting the new version, close every
-      # *older* still-open PR authored by the token account, keeping only the one
-      # just opened. Best-effort: never fail the release on a cleanup hiccup.
-      #
-      # Gated on what `submit` DID (`steps.submit.outputs.opened`), never on the
-      # pre-submit decision: a deferred submission exits green without opening a
-      # PR, and closing the pending one behind a submission that never happened
-      # would leave winget-pkgs with no thurbox PR at all — the version would
-      # silently never ship. `submit-decision.py after-submit` computes that
-      # flag, and packaging/winget/winget.bats pins it.
       - name: Close superseded winget-pkgs PRs
         if: env.WINGET_TOKEN != '' && steps.submit.outputs.opened == 'true'
         shell: pwsh
@@ -922,8 +651,7 @@ jobs:
         run: |
           $ErrorActionPreference = "Continue"
           $version = "${{ needs.check-release.outputs.version }}".TrimStart("v")
-          # Open PRs by the token account for this package. `search` matches the
-          # package moniker in the title that wingetcreate always emits.
+          # wingetcreate always puts the package moniker in the PR title.
           $prs = gh pr list --repo microsoft/winget-pkgs --author "@me" `
             --state open --search "Thurbeen.thurbox in:title" `
             --json number,title,createdAt --limit 100 | ConvertFrom-Json
@@ -931,8 +659,6 @@ jobs:
             Write-Host "Nothing to close ($($prs.Count) open PR(s))."
             exit 0
           }
-          # Keep the PR for the version we just submitted; fall back to the most
-          # recently created one if the title match is somehow ambiguous.
           $keep = $prs | Where-Object { $_.title -match [regex]::Escape("version $version") } | Select-Object -First 1
           if (-not $keep) {
             $keep = $prs | Sort-Object { [datetime]$_.createdAt } -Descending | Select-Object -First 1
