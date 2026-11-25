@@ -1,20 +1,3 @@
-// Eleventy build for the Thurbox docs website.
-//
-// The site is plain static HTML/CSS/JS; Eleventy is used only to de-duplicate
-// the shared chrome (head, nav, docs sidebar, footer) into layouts under
-// website/_includes/. Each page keeps its hand-written content body and just
-// declares front matter (layout, title, root depth, sidebar state).
-//
-// Page bodies are emitted verbatim (htmlTemplateEngine: false) so nothing in
-// the content is ever interpreted as a template — only the .njk layouts run.
-//
-// Code blocks are the one exception: a build-time transform (`highlight-code`)
-// rewrites every `<pre><code class="language-X">…</code></pre>` into a framed,
-// syntax-highlighted block. Authors write plain, escaped code with a language
-// class; the transform supplies the terminal chrome, language label, copy
-// button, and Prism token spans. This keeps highlighting entirely at build
-// time (zero client-side JS) and out of the hand-written page bodies.
-
 import { existsSync, mkdirSync, readdirSync, readFileSync, statSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import { RenderPlugin } from '@11ty/eleventy';
@@ -25,7 +8,6 @@ import { galleryData } from './scripts/ci/mods-gallery.mjs';
 
 loadLanguages(['bash', 'powershell', 'toml', 'json', 'rust']);
 
-// Author-facing language tokens → the canonical Prism grammar key.
 const LANG_ALIASES = {
   sh: 'bash',
   shell: 'bash',
@@ -41,16 +23,9 @@ const LANG_ALIASES = {
   rs: 'rust',
 };
 
-// Matches a single authored code block: an optional attribute list on <pre>
-// (carrying data-title / data-wrap), then <code class="language-X">…</code>.
-// The body is non-greedy and an escaped `</code>` can never appear in it, so
-// this stays reliable over the controlled authoring format.
 const CODE_BLOCK_RE =
   /<pre((?:\s+[a-z-]+(?:="[^"]*")?)*)\s*>\s*<code class="language-([\w-]+)">([\s\S]*?)<\/code>\s*<\/pre>/g;
 
-// Decode HTML entities back to the raw source text Prism expects (and that the
-// copy button later reads off `pre.textContent`). Reuse node-html-parser's own
-// decoder by round-tripping through a throwaway element.
 function decodeEntities(escaped) {
   return parse(`<x>${escaped}</x>`).querySelector('x').textContent;
 }
@@ -63,7 +38,6 @@ function escapeHtml(text) {
     .replace(/"/g, '&quot;');
 }
 
-// Pull data-title / data-wrap out of the captured <pre> attribute string.
 function parsePreAttrs(attrs) {
   const titleMatch = attrs.match(/\bdata-title="([^"]*)"/);
   return {
@@ -75,7 +49,7 @@ function parsePreAttrs(attrs) {
 function renderCodeBlock(match, attrs, rawLang, body) {
   const lang = LANG_ALIASES[rawLang.toLowerCase()];
   if (!lang || !Prism.languages[lang]) {
-    return match; // unsupported language — leave the block untouched
+    return match;
   }
 
   const { title, wrap } = parsePreAttrs(attrs);
@@ -93,15 +67,8 @@ function renderCodeBlock(match, attrs, rawLang, body) {
 </div>`;
 }
 
-// ---- Build-time "on this page" rail ----
-// Every docs <h2>/<h3> is already hand-authored with an `id`, so the rail can be
-// derived from the rendered HTML instead of being restated in each page's front
-// matter (which 19 of 22 pages used to do, and three pages simply lacked).
-// Build-time keeps it consistent with the rest of the pipeline: no client-side
-// JS, no first-paint layout shift from a rail that appears late.
 const TOC_PLACEHOLDER = '<!--TOC-->';
 
-// A single heading's link text, minus the trailing "#" anchor affordance.
 function headingLabel(heading) {
   const clone = parse(heading.innerHTML);
   clone.querySelectorAll('.heading-anchor').forEach((a) => a.remove());
@@ -115,7 +82,6 @@ function renderToc(root) {
     if (label) items.push({ id: h.getAttribute('id'), label, level: h.rawTagName.toLowerCase() });
   });
 
-  // A page with a single heading gains nothing from a rail.
   if (items.length < 2) return '';
 
   const lis = items
@@ -134,20 +100,8 @@ function renderToc(root) {
 </nav>`;
 }
 
-// ---- Build-time CSS bundle ----
-// The four sheets every page loads (tokens, reset, layout, components) are
-// concatenated into one `core.css`, turning four render-blocking requests into
-// one. They are authored separately for maintainability and must stay in this
-// order — variables first (every other file reads its custom properties), then
-// base, layout, components, matching the old <link> order exactly so the
-// cascade is unchanged. Page-specific sheets are deliberately NOT bundled: they
-// would otherwise ship landing CSS to docs pages and vice versa.
 const CORE_CSS = ['variables', 'base', 'layout', 'components'];
 
-// Comments and blank lines are ~20% of the source and carry no runtime meaning.
-// Deliberately conservative: strip /* … */ and collapse runs of blank lines,
-// but leave declarations untouched — a real minifier is not worth a dependency
-// here, and mangling values risks the layout for a few hundred bytes.
 function stripCssComments(css) {
   return css.replace(/\/\*[\s\S]*?\*\//g, '').replace(/\n{2,}/g, '\n');
 }
@@ -163,14 +117,6 @@ function writeCoreBundle() {
   return bundle.length;
 }
 
-// ---- The repository's Fleet and runtime docs, rendered as pages ----
-// docs/fleet and docs/runtime, and thurbox's mod-author guides, are the one
-// source of these pages: each Markdown file becomes /docs/<same path>.html (a
-// README becomes the directory's index.html) through the paginated
-// website/repo-docs.njk. A directory is read on every build, so a new or
-// renamed page there needs no change here; a single file is listed by name.
-// .github/workflows/pages.yml redeploys on a change to each entry; the website
-// test holds its `paths` to this list.
 export const RENDERED_DOCS = [
   'docs/fleet',
   'docs/runtime',
@@ -182,11 +128,6 @@ export const RENDERED_DOCS = [
 
 const REPO_URL = 'https://github.com/Thurbeen/thurbox';
 
-// A repository document the site does not render, linked from one it does:
-// the website page that covers it, relative to /docs/. A `path#fragment` key
-// maps one section; the bare path is the fallback, since GitHub's heading ids
-// mean nothing on the site's own page. A document missing here loses its link
-// and keeps its text.
 const DOC_ON_SITE = {
   'docs/README.md': 'architecture.html#components',
   'docs/where-sessions-run.md': 'architecture.html#places',
@@ -197,11 +138,8 @@ const DOC_ON_SITE = {
 const docUrl = (src) =>
   `/${src.replace(/(^|\/)README\.md$/, '$1index.md').replace(/\.md$/, '.html')}`;
 
-// A site URL as a link from the page at `fromUrl`: the site links relatively,
-// so it also works opened from disk.
 const relativeUrl = (fromUrl, toUrl) => path.posix.relative(path.posix.dirname(fromUrl), toUrl);
 
-// The first paragraph under the title, as plain text, for the meta description.
 function summary(body) {
   const para = body
     .split(/\n\s*\n/)
@@ -215,7 +153,6 @@ function summary(body) {
   return plain.length > 200 ? `${plain.slice(0, 197).replace(/\s+\S*$/, '')}…` : plain;
 }
 
-// Every rendered Markdown file, as [directory, path below it].
 const renderedFiles = () =>
   RENDERED_DOCS.flatMap((entry) =>
     entry.endsWith('.md')
@@ -232,8 +169,8 @@ function listRepoDocs() {
     const url = docUrl(src);
     const source = readFileSync(src, 'utf8');
     const title = (source.match(/^# (.+)$/m) || [, file])[1].replace(/`/g, '');
-    const depth = url.split('/').length - 3; // directories below /docs/
-    const area = src.split('/')[2]; // resources, controllers, or a page
+    const depth = url.split('/').length - 3;
+    const area = src.split('/')[2];
     return {
       src,
       url,
@@ -246,7 +183,6 @@ function listRepoDocs() {
       docsBase: '../'.repeat(depth),
       product:
         { 'docs/fleet': 'Fleet', 'docs/thurbox': 'thurbox', docs: 'Fleet' }[dir] ?? 'Runtime',
-      // The sidebar entry this page sits under, if any.
       currentPage:
         {
           'docs/fleet/README.md': 'fleet-reference',
@@ -261,7 +197,6 @@ function listRepoDocs() {
   });
 }
 
-// Where a link in the rendered document `fromSrc` goes, or null to drop it.
 function rewriteHref(href, fromSrc, renderedSet) {
   if (/^([a-z][a-z0-9+.-]*:|#|\/\/)/i.test(href)) return href;
   const [rawPath, fragment] = href.split(/#(.*)/s);
@@ -278,16 +213,12 @@ function rewriteHref(href, fromSrc, renderedSet) {
       console.warn(`[11ty] ${fromSrc}: no site page for ${href}; the link is dropped`);
       return null;
     }
-    return href; // a file beside the docs, copied with them (the SVGs)
+    return href;
   }
-  // Source code and examples stay on GitHub.
   const kind = existsSync(target) && statSync(target).isDirectory() ? 'tree' : 'blob';
   return `${REPO_URL}/${kind}/main/${target}${hash}`;
 }
 
-// GitHub's heading ids (github-slugger): lower-case, drop punctuation, spaces
-// to hyphens, and -1, -2… on a repeat. The docs' own `#fragment` links are
-// written against these.
 function githubSlug(text, seen) {
   const base = text
     .toLowerCase()
@@ -299,9 +230,6 @@ function githubSlug(text, seen) {
   return slug;
 }
 
-// A markdown-it core rule: heading ids and anchors, and the links rewritten
-// for the page's place on the site. The page passes { repoDoc } as the render
-// environment; anything else rendered as Markdown is left alone.
 function repoDocRule(state) {
   const doc = state.env && state.env.repoDoc;
   if (!doc) return;
@@ -346,32 +274,21 @@ function repoDocRule(state) {
 }
 
 export default function (eleventyConfig) {
-  // Runs on every build and rebuild, so `--serve` keeps the bundle fresh.
   eleventyConfig.on('eleventy.after', () => {
     const bytes = writeCoreBundle();
     console.log(`[11ty] Wrote _site/css/core.css (${(bytes / 1024).toFixed(1)} KB)`);
   });
 
-  // Static assets are copied through untouched. The input-dir prefix
-  // ("website/") is stripped in the output, so these land at _site/css, etc.
-  // Only the page-specific sheets are copied: the four core files are shipped
-  // as the generated core.css bundle instead, so copying them too would be dead
-  // weight in the deployed output.
   for (const sheet of ['landing', 'docs', 'tutorial', 'mods']) {
     eleventyConfig.addPassthroughCopy(`website/css/${sheet}.css`);
   }
   eleventyConfig.addPassthroughCopy('website/js');
   eleventyConfig.addPassthroughCopy('website/mods.schema.json');
   eleventyConfig.addPassthroughCopy('website/assets');
-  // robots.txt (crawler discovery) + CNAME (the GitHub Pages custom domain,
-  // tracked so a redeploy can't drop it) + llms.txt (curated entry point for
-  // LLM-based engines and coding agents). Same prefix-stripping as above.
   eleventyConfig.addPassthroughCopy('website/robots.txt');
   eleventyConfig.addPassthroughCopy('website/CNAME');
   eleventyConfig.addPassthroughCopy('website/llms.txt');
 
-  // The repository docs rendered as pages (see listRepoDocs), their diagrams
-  // beside them, and a rebuild under --serve when one changes.
   eleventyConfig.addPlugin(RenderPlugin);
   eleventyConfig.addGlobalData('repoDocs', listRepoDocs);
   eleventyConfig.addGlobalData('gallery', () => galleryData());
@@ -381,17 +298,11 @@ export default function (eleventyConfig) {
     eleventyConfig.addWatchTarget(`${dir}/`);
   }
 
-  // Build-time syntax highlighting. Runs on rendered HTML output only, so the
-  // page bodies stay verbatim in source. Blocks without a `language-*` class
-  // (the ASCII-art TUI mockups, video frames) never match and are untouched.
   eleventyConfig.addTransform('highlight-code', function (content, outputPath) {
     if (!outputPath || !outputPath.endsWith('.html')) return content;
     return content.replace(CODE_BLOCK_RE, renderCodeBlock);
   });
 
-  // Registered after highlight-code: transforms run in registration order, and
-  // building the rail from already-final HTML keeps the two independent. Pages
-  // without the placeholder (the landing page) short-circuit before parsing.
   eleventyConfig.addTransform('docs-toc', function (content, outputPath) {
     if (!outputPath || !outputPath.endsWith('.html')) return content;
     if (!content.includes(TOC_PLACEHOLDER)) return content;
@@ -404,9 +315,6 @@ export default function (eleventyConfig) {
       output: '_site',
       includes: '_includes',
     },
-    // Layouts are Nunjucks; page bodies are left untouched. `njk` is enabled
-    // for generated data files (sitemap.xml); `_includes` is excluded from
-    // page processing, so the shared layouts are unaffected.
     htmlTemplateEngine: false,
     templateFormats: ['html', 'njk'],
   };

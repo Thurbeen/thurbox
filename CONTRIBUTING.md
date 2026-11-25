@@ -264,8 +264,9 @@ doc in the **same PR**. Rationale lives in:
 - [`docs/thurbox/review.md`](docs/thurbox/review.md) — the house rules a change is reviewed
   against, and which document owns which class of fact
 
-Comments explain **why**, not **what** — see the Comments section of
-[`AGENTS.md`](AGENTS.md).
+Code carries no comments: names, types, small functions and tests say what it
+does and why. The [`no-comments`](.agents/skills/no-comments/SKILL.md) skill
+lists the few exceptions and the `MUST KILL` marker.
 
 ## Architecture
 

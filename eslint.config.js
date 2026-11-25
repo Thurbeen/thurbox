@@ -1,5 +1,4 @@
 export default [
-  // Eleventy data files are ES modules the build reads, not scripts the browser runs.
   { ignores: ['website/**/*.11tydata.js'] },
   {
     files: ['website/**/*.js'],
