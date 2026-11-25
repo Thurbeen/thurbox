@@ -35,8 +35,6 @@ fn a_stream_pane_shows_the_screen_and_takes_input() {
         return;
     };
     let server = tmux_server::TmuxServer::private("thurbox-stream-pane");
-    // Started the way the runtime starts a session, so the window sits where
-    // the view's control-mode client reads it.
     let started = std::process::Command::new(&program)
         .arg("start")
         .env("TMUX_TMPDIR", server.tmpdir())

@@ -100,15 +100,10 @@ async fn a_dead_program_window_is_replaced_rather_than_adopted() {
         24,
         80,
     ) {
-        // Not a skip: tmux is installed, so a pane that would not start is this
-        // path being broken rather than a machine without a multiplexer.
-        panic!("the program pane could not be started: {e}");
+        panic!("the program pane could not be started with tmux installed: {e}");
     }
     let (window, _pane, pid, _) = program_window().expect("the program window should exist");
 
-    // The corpse: the option that keeps a dead pane's frame, then the program
-    // killed from outside — which is what an editor being quit looks like to
-    // tmux, minus the window closing.
     let _ = tmux(&["set-window-option", "-t", &window, "remain-on-exit", "on"]);
     let _ = tokio::process::Command::new("kill")
         .arg(&pid)
@@ -131,8 +126,6 @@ async fn a_dead_program_window_is_replaced_rather_than_adopted() {
         return;
     }
 
-    // The restart: a fresh `Terminals` over the same server, finding that window
-    // by its deterministic name.
     drop(first);
     let mut second = Terminals::with_registry(
         std::sync::Arc::new(thurbox::backend::wiring::local_only(&Default::default())),

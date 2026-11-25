@@ -86,8 +86,6 @@ impl Fleet {
             .expect("root");
         let r = root.path();
         std::fs::create_dir_all(r.join("tmp")).expect("tmp");
-        // thurbox's own config and data too, so the registry it reads (and
-        // seeds when absent) is the test's. Each test is a process of its own.
         for (var, dir) in [
             ("THURBOX_CONFIG_DIR", "thurbox-config"),
             ("THURBOX_DATA_DIR", "thurbox-data"),
@@ -252,6 +250,7 @@ struct PathGuard {
 }
 
 fn fake_ssh_first(dir: &Path) -> PathGuard {
+    // `cargo test` runs tests as threads of one process, which share one `PATH`.
     static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
     let lock = LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let saved = std::env::var_os("PATH");
@@ -336,7 +335,6 @@ fn the_snapshot_shows_each_fleet_task_as_a_session_and_follows_a_deletion() {
     assert_eq!(alpha.backend, "fleet");
     assert_eq!(alpha.cwd.as_deref(), Some(Path::new("/work/alpha")));
 
-    // The controller releases a deleted Task, then it leaves the store.
     fleet.run(&["delete", "task", "beta"]).ok();
     fleet.run(&["reconcile"]).ok();
     until("the deleted Task's row goes", || {
@@ -416,7 +414,6 @@ fn a_fleet_that_will_not_answer_is_an_error_beside_the_last_rows() {
         store.refresh_if_due();
         store.current().error.is_some()
     });
-    // The first thing asked of a Fleet is its version.
     let error = store.current().error.clone().unwrap();
     assert!(error.contains("fleet version"), "{error}");
 }
@@ -455,7 +452,6 @@ fn the_commands_create_send_to_and_delete_fleet_tasks() {
     fleet.map(&repo);
     let mut bus = fleet_bus(&fleet.program);
 
-    // A session thurbox creates is an interactive Task: no brief, dispatched.
     run_command(
         &mut bus,
         Command::Create {
@@ -475,8 +471,6 @@ fn the_commands_create_send_to_and_delete_fleet_tasks() {
     assert_eq!(gamma["spec"]["harness"], "claude-code");
     assert_eq!(gamma["spec"]["host"], "local");
     assert_eq!(gamma["spec"]["dispatch"], true);
-    // A repository on this machine: the runtime makes the session a
-    // worktree of its own, on a branch named after the session.
     assert_eq!(
         gamma["spec"]["workspace"],
         json!([format!("git+file://{}?branch=gamma", repo.display())])
@@ -583,8 +577,7 @@ fn a_name_already_taken_is_refused_and_the_task_left_alone() {
 #[test]
 fn a_bridged_stream_with_no_snapshot_shows_its_output() {
     let Some(bin) = fleet_bin() else { return };
-    // For its isolated thurbox config and data; its store is not used.
-    let _isolated = Fleet::new(bin.clone());
+    let _isolated_thurbox_dirs = Fleet::new(bin.clone());
     let dir = tempfile::tempdir().expect("dir");
     let program = dir.path().join("fleet");
     let argv = json!([
@@ -703,8 +696,6 @@ fn a_deleted_session_stays_hidden_until_the_source_drops_it() {
     tx.send(read(&["kept", "gone"])).unwrap();
     assert_eq!(names(&mut store), ["gone", "kept"], "made again since");
 
-    // Removed and made again between two answers: the name never leaves the
-    // rows, and the source says it went.
     store.hide_until_gone("local:gone".into());
     tx.send(SourceRead {
         removed: vec!["local:gone".into()],
@@ -735,8 +726,7 @@ fn a_stuck_deletion_deleted_again_stays_listed() {
     assert_eq!(names(&mut store), ["stuck"]);
 }
 
-// A Darwin pty discards what its program does not read instead of blocking the
-// writer, so the bridge never stops reading and no input is ever refused.
+// A Darwin pty discards unread input instead of blocking the writer, so none is refused.
 #[cfg(not(target_os = "macos"))]
 #[test]
 fn refused_input_is_a_notice_and_leaves_the_grid_alone() {
@@ -924,8 +914,6 @@ impl Drop for Sockets {
 fn a_fleet_session_has_a_terminal_pane_through_fleet_attach() {
     let Some(bin) = fleet_bin() else { return };
     let runtime_mux = bin.with_file_name("runtime-mux");
-    // runtime-mux prepares the Task's `file://` workspace with the
-    // workspace-git beside it.
     if !runtime_mux.is_file() || !bin.with_file_name("workspace-git").is_file() {
         assert!(
             std::env::var_os("CI").is_none(),
@@ -949,7 +937,6 @@ fn a_fleet_session_has_a_terminal_pane_through_fleet_attach() {
         ),
         &format!("TMUX_TMPDIR='{}'", sockets.0.display()),
     );
-    // The harness's program: it prints a marker, then answers each line.
     let harness_dir = fleet.root.path().join("bin");
     std::fs::create_dir_all(&harness_dir).expect("bin");
     let harness = harness_dir.join("claude");
@@ -975,8 +962,6 @@ fn a_fleet_session_has_a_terminal_pane_through_fleet_attach() {
             .session("local:t1")
             .is_some_and(|row| row.key.is_some())
     });
-    // A pane's reader and writer run on the process's runtime, as in the
-    // interface.
     let runtime = tokio::runtime::Runtime::new().expect("runtime");
     let _entered = runtime.enter();
     let mut terminals = thurbox::kernel::terminal::Terminals::with_registry(
@@ -1517,8 +1502,6 @@ fn doctor_reports_each_listed_fleet() {
     std::fs::create_dir_all(&ssh_bin).expect("ssh-bin");
     let log = root.join("ssh.log");
     let ssh = ssh_bin.join("ssh");
-    // "box" is a second sandboxed machine: its own HOME, so nothing of this
-    // one's Fleet is in reach there.
     std::fs::write(
         &ssh,
         format!(
@@ -1594,7 +1577,6 @@ fn doctor_reports_each_listed_fleet() {
     };
     assert_eq!(check("fleet", "box")["level"], "ok", "{report:#}");
     assert_eq!(check("fleet", "laptop")["level"], "ok", "{report:#}");
-    // A Fleet the interface does not use yet warns, never fails the report.
     assert_eq!(check("fleet", "gpu")["level"], "warn", "{report:#}");
     assert!(
         check("fleet-manager", "box")["fix"]
@@ -1612,7 +1594,6 @@ fn doctor_reports_each_listed_fleet() {
             )),
         "{calls}"
     );
-    // An unreachable Fleet is asked once, not once per probe.
     assert_eq!(
         calls.lines().filter(|c| c.starts_with("gpu ")).count(),
         1,
@@ -1702,7 +1683,6 @@ fn every_listed_fleet_is_followed_in_one_list() {
     assert_eq!(row(&store, "box:review").fleet(), Some("box"));
     assert_eq!(row(&store, "box:review").name, "review");
     assert_eq!(row(&store, "laptop:review").fleet(), Some("laptop"));
-    // A row of a Fleet on another machine names that Fleet as where it is.
     assert_eq!(
         row(&store, "box:review").remote_host.as_deref(),
         Some("box")
@@ -1727,7 +1707,6 @@ fn every_listed_fleet_is_followed_in_one_list() {
         row(&store, "laptop:review").status,
         SessionState::Unreachable
     );
-    // The first watch ended killed; the next one is refused by ssh.
     until("the error names box and why it cannot be asked", || {
         store.refresh_if_due();
         store
@@ -1742,8 +1721,6 @@ fn every_listed_fleet_is_followed_in_one_list() {
         "still no row is dropped"
     );
 
-    // box answers again: the restarted watch reads, and its rows are
-    // reachable once more.
     std::fs::remove_file(&down).expect("up again");
     until("box's rows are reachable again", || {
         store.refresh_if_due();
@@ -1783,8 +1760,6 @@ fn a_creation_is_awaited_by_its_fleet_qualified_id() {
         .created_id("Review", None)
         .expect("a Fleet bus names what it creates");
     assert_eq!(id, "box:review");
-    // The modal names the Fleet it picked: with `laptop` in force, a
-    // creation on box is still awaited as box's.
     let several = CommandBus::fleet(thurbox::fleet_link::Fleets::new(
         "laptop",
         vec![
@@ -1885,7 +1860,6 @@ fn doctor_reports_whether_a_remote_fleets_manager_runs() {
     assert!(!detail.contains("cannot tell"), "{detail}");
     assert_eq!(remote.manager(), None, "doctor started no manager");
 
-    // The unit's `fleet up`, started on box by hand here.
     let mut unit = Process::new(&remote.program)
         .arg("up")
         .stdin(Stdio::null())
@@ -2076,8 +2050,6 @@ fn a_remote_fleets_session_pane_works_over_the_link() {
     fleet.apply(t1);
     fleet.run(&["reconcile"]).ok();
 
-    // "box": this Fleet, reached only through a stand-in ssh that logs each
-    // remote command line and is refused while `down` exists.
     let root = fleet.root.path();
     let ssh_bin = root.join("ssh-bin");
     std::fs::create_dir_all(&ssh_bin).expect("ssh-bin");
@@ -2159,7 +2131,6 @@ fn a_remote_fleets_session_pane_works_over_the_link() {
         "the stream itself ran over ssh: {calls}"
     );
 
-    // The link drops: every ssh ends, and box refuses new ones.
     std::fs::write(&down, "").expect("down");
     for pid in std::fs::read_to_string(&pids).expect("pids").lines() {
         let _ = Process::new("kill").arg(pid).status();
@@ -2178,7 +2149,6 @@ fn a_remote_fleets_session_pane_works_over_the_link() {
     }
     assert_eq!(asked(), refused_at, "the attach is not tried again at once");
 
-    // box answers again: the pane is attached again and takes typing.
     std::fs::remove_file(&down).expect("up");
     until("the pane is back", || {
         screen(&mut store, &mut terminals);
@@ -2232,8 +2202,6 @@ fn a_remote_fleets_companion_shell_opens_on_its_machine_through_fleet_shell() {
     fleet.apply(t1);
     fleet.run(&["reconcile"]).ok();
 
-    // "box": this Fleet, reached only through a stand-in ssh that logs each
-    // remote command line.
     let root = fleet.root.path();
     let ssh_bin = root.join("ssh-bin");
     std::fs::create_dir_all(&ssh_bin).expect("ssh-bin");
@@ -2367,8 +2335,6 @@ fn a_fleet_thurbox_cannot_speak_to_is_refused() {
         },
     );
 
-    // A Fleet that cannot be reached at all is unreachable, never
-    // incompatible: only an answer says which API a Fleet speaks.
     let gpu = FleetLink::of(
         "gpu",
         &FleetDef {

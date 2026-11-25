@@ -116,7 +116,6 @@ async fn two_instances_painting_different_rects_leave_the_pane_alone() {
         return;
     }
 
-    // Instance A starts the program in its 24×80 rect.
     let a_backend = instance();
     let a = ProgramPane::spawn(
         Arc::clone(&a_backend),
@@ -136,8 +135,6 @@ async fn two_instances_painting_different_rects_leave_the_pane_alone() {
     })
     .await;
 
-    // Instance B, in a bigger terminal, attaches to the same pane and paints it
-    // into a 40×120 rect.
     let b_backend = instance();
     let b = ProgramPane::adopt(
         Arc::clone(&b_backend),
@@ -161,8 +158,6 @@ async fn two_instances_painting_different_rects_leave_the_pane_alone() {
     })
     .await;
 
-    // A's rect changes by a row — a toast coming or going. A is the sizer, so
-    // the pane follows A, and B's grid follows the pane.
     assert!(a.resize(25, 80));
     until("A's new rect to reach the pane", || {
         pane_size(&server, &id) == (25, 80)
@@ -170,12 +165,10 @@ async fn two_instances_painting_different_rects_leave_the_pane_alone() {
     .await;
     until("B's grid to follow", || grid_size(&b) == (25, 80)).await;
 
-    // B's rect changes too: still not B's to size.
     assert!(b.resize(41, 120));
     let seen = sizes_over_settle(&server, &id).await;
     assert_eq!(seen, vec![(25, 80)], "B's rect change flapped the pane");
 
-    // Typing into B hands it the size.
     b.send_input(b"\n".to_vec()).expect("input to B");
     until("B's claim to reach the pane", || {
         pane_size(&server, &id) == (41, 120)
@@ -187,15 +180,10 @@ async fn two_instances_painting_different_rects_leave_the_pane_alone() {
     .await;
     assert_eq!(grid_size(&b), (41, 120));
 
-    // And now it is A that cannot move it by painting.
     assert!(a.resize(26, 80));
     let seen = sizes_over_settle(&server, &id).await;
     assert_eq!(seen, vec![(41, 120)], "A took the size back without input");
 
-    // B goes away. A is alone, so the size is A's again: it takes it back on
-    // its own — A's rect has not changed, so nothing else would ask — once,
-    // with nothing in between. `retake_size` is what the render path calls for
-    // every pane it paints, so calling it here is a frame going by.
     // Heard over a format subscription, which tmux re-evaluates once a second.
     until("A to hear that B sizes the pane", || a.sized_elsewhere()).await;
     drop(b);
@@ -214,7 +202,6 @@ async fn two_instances_painting_different_rects_leave_the_pane_alone() {
     .await;
     assert!(!a.sized_elsewhere());
 
-    // And from here on it resizes freely, as a lone instance always did.
     assert!(a.resize(27, 80));
     until("the lone instance to size the pane", || {
         pane_size(&server, &id) == (27, 80)
@@ -394,7 +381,6 @@ async fn focusing_a_pane_another_instance_sizes_takes_its_size_before_any_keystr
     }
     let id = session_window(&server);
 
-    // This instance shows the session without the focus, and sizes the pane.
     let mut here = Terminals::with_registry(
         Arc::new(thurbox::backend::wiring::local_only(&Default::default())),
         &Default::default(),
@@ -406,7 +392,6 @@ async fn focusing_a_pane_another_instance_sizes_takes_its_size_before_any_keystr
     })
     .await;
 
-    // Another instance, in a bigger terminal, is typed into: the pane is its.
     let there_backend = instance();
     let there = ProgramPane::adopt(
         Arc::clone(&there_backend),
@@ -429,7 +414,6 @@ async fn focusing_a_pane_another_instance_sizes_takes_its_size_before_any_keystr
     })
     .await;
 
-    // Painted here without the focus, it stays the other instance's.
     frame(&mut here, here_rect, false);
     assert_eq!(
         sizes_over_settle(&server, &id).await,
@@ -437,7 +421,6 @@ async fn focusing_a_pane_another_instance_sizes_takes_its_size_before_any_keystr
         "an unfocused paint took the size"
     );
 
-    // Focused here, and nothing typed: the pane is this instance's size.
     until("focus to size the pane to this instance's rect", || {
         frame(&mut here, here_rect, true);
         pane_size(&server, &id) == here_rect
@@ -449,10 +432,6 @@ async fn focusing_a_pane_another_instance_sizes_takes_its_size_before_any_keystr
     })
     .await;
 
-    // The other instance is typed into while this one keeps the focus. Keeping
-    // it is not gaining it, so the pane stays where that input put it. Typed
-    // once it has heard the pane moved: a claim compares the pane's size as it
-    // last heard it, and one that still has its own size sends nothing.
     until("the other instance to hear the pane moved", || {
         grid_size(&there) == here_rect
     })
@@ -474,7 +453,6 @@ async fn focusing_a_pane_another_instance_sizes_takes_its_size_before_any_keystr
         "a pane that kept the focus took the size back"
     );
 
-    // The focus leaves and comes back: that is gaining it again.
     frame(&mut here, here_rect, false);
     frame(&mut here, here_rect, true);
     until("refocusing to size the pane again", || {
@@ -510,9 +488,6 @@ async fn a_focused_session_whose_pane_is_replaced_takes_the_new_panes_size() {
     })
     .await;
 
-    // The session restarts: its window goes and a new one takes its place, and
-    // another instance sizes the new pane before this one attaches to it.
-    // `forget` is the restart telling the interface, as the coordinator does.
     server.tmux(&["kill-window", "-t", &first]);
     here.forget(ID);
     let second = session_window(&server);
@@ -533,7 +508,6 @@ async fn a_focused_session_whose_pane_is_replaced_takes_the_new_panes_size() {
     })
     .await;
 
-    // This instance picks up the new pane with the session focused throughout.
     attach(&mut here, &second, here_rect).await;
     until("the new pane to take this instance's size", || {
         frame(&mut here, here_rect, true);

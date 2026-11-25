@@ -61,8 +61,6 @@ fn install(src: &Path) -> thurbox::cli::output::CommandOutput {
     .expect("install runs")
 }
 
-// ── what we distribute ─────────────────────────────────────────────────────
-
 #[test]
 fn every_distributed_package_installs_and_loads() {
     let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../examples/panes");
@@ -84,14 +82,10 @@ fn every_distributed_package_installs_and_loads() {
             "{name} did not install: {:?}",
             report.json
         );
-        // The manifest is what says where the pane goes; a package that delivered
-        // nowhere would install "successfully" and leave the directory unchanged.
         let file = report.json["file"].as_str().unwrap_or_default();
         assert!(ui.join(file).is_file(), "{name} delivered no pane");
     }
 
-    // They load together, which is the real test: a package that requires a
-    // renamed module or reads a renamed snapshot field fails here.
     let checked = run(Action::Check).expect("check runs");
     let loaded = checked.json["loaded"].to_string();
     for name in &names {
@@ -101,8 +95,6 @@ fn every_distributed_package_installs_and_loads() {
         );
     }
 
-    // And the listing names them, since that is what a bare-name install and a typo
-    // suggestion are resolved against.
     let listed: Vec<&str> = thurbox::kernel::packages::EXAMPLE_MODS
         .iter()
         .map(|(name, _)| *name)
@@ -121,8 +113,6 @@ fn every_distributed_package_installs_and_loads() {
     );
 }
 
-// ── acquiring ──────────────────────────────────────────────────────────────
-
 #[test]
 fn a_package_installs_its_pane_and_its_own_modules() {
     let home = tempfile::tempdir().expect("tempdir");
@@ -139,7 +129,6 @@ fn a_package_installs_its_pane_and_its_own_modules() {
         "a package's shared module lands in a namespace of its own"
     );
 
-    // The spec records the source, the destination and what it resolved to.
     let spec = std::fs::read_to_string(ui.join("mods.toml")).expect("spec");
     assert!(spec.contains("mods/75_atlas.lua"), "{spec}");
     assert!(spec.contains("atlas"), "{spec}");
@@ -147,8 +136,6 @@ fn a_package_installs_its_pane_and_its_own_modules() {
     assert!(lock.contains("v0.3.1"), "{lock}");
     assert!(lock.contains("lib/atlas/util.lua"), "{lock}");
 
-    // And it loads — which is the only real proof the namespaced `require`
-    // resolved, since the pane requires its own module at load time.
     let checked = run(Action::Check).expect("check runs");
     assert!(
         checked.json["loaded"].to_string().contains("atlas"),
@@ -159,8 +146,6 @@ fn a_package_installs_its_pane_and_its_own_modules() {
 
 #[test]
 fn installing_says_what_to_add_to_the_arrangement() {
-    // The one failure with no symptom: a pane that loads and draws nothing. The
-    // instruction has to arrive before anyone goes looking for it.
     let home = tempfile::tempdir().expect("tempdir");
     let src = package(home.path(), "atlas", "v1", "atlas");
     let _ui = interface(home.path());
@@ -189,8 +174,6 @@ fn a_single_lua_file_needs_a_destination_and_then_installs() {
     )
     .expect("write");
 
-    // No manifest means no proposed destination, and guessing one would put a pane
-    // somewhere nobody asked for.
     let refused = run(Action::Install {
         src: loose.display().to_string(),
         as_file: None,
@@ -207,7 +190,6 @@ fn a_single_lua_file_needs_a_destination_and_then_installs() {
     .expect("install");
     assert!(done.failure.is_none(), "{:?}", done.json);
     assert!(ui.join("mods/90_notes.lua").is_file());
-    // Nothing to pin to, and saying so is better than inventing a version.
     assert_eq!(done.json["version"], "unpinned", "{:?}", done.json);
 }
 
@@ -239,8 +221,6 @@ fn a_destination_already_holding_an_unmanaged_file_is_refused() {
 
 #[test]
 fn a_module_may_not_be_delivered_outside_its_own_namespace() {
-    // `lib/theme.lua` is a namespace with one tenant. A package free to write there
-    // could replace a module every other pane requires.
     let home = tempfile::tempdir().expect("tempdir");
     let ui = interface(home.path());
     let theme = ui.join("lib/theme.lua");
@@ -273,8 +253,6 @@ fn a_module_may_not_be_delivered_outside_its_own_namespace() {
         "the shipped module is untouched"
     );
 }
-
-// ── a package that carries several panes ───────────────────────────────────
 
 fn multi_pane_package(root: &Path, name: &str, version: &str) -> PathBuf {
     let dir = root.join(name);
@@ -342,8 +320,6 @@ fn a_package_with_several_panes_installs_all_of_them() {
     );
     assert!(ui.join("lib/atlas/util.lua").is_file(), "with their module");
 
-    // One version, one pin, one lock entry: the package is the unit of
-    // distribution, so both panes are recorded under the one record.
     let lock = thurbox::kernel::packages::read_lock(&ui).expect("lock");
     assert_eq!(lock.mods.len(), 1, "{lock:?}");
     let entry = &lock.mods[0];
@@ -356,8 +332,6 @@ fn a_package_with_several_panes_installs_all_of_them() {
         assert!(entry.files.contains_key(file), "{file} recorded: {entry:?}");
     }
 
-    // And both load, which is the only proof the second pane is more than a file
-    // on disk.
     let checked = run(Action::Check).expect("check runs");
     let loaded: Vec<&str> = checked.json["loaded"]
         .as_array()
@@ -371,9 +345,6 @@ fn a_package_with_several_panes_installs_all_of_them() {
 
 #[test]
 fn a_singular_pane_manifest_installs_exactly_as_it_did() {
-    // The compatibility promise, and the thing most likely to break quietly:
-    // `pane = { … }` is sugar for one `[[pane]]` and must keep parsing, keep its
-    // destination, and keep honouring `--as`.
     let home = tempfile::tempdir().expect("tempdir");
     let ui = interface(home.path());
     let src = package(home.path(), "atlas", "v0.3.1", "atlas");
@@ -420,7 +391,6 @@ fn as_selects_which_pane_the_entry_is_keyed_on() {
         "the named pane is the one the spec entry is keyed on: {:?}",
         done.json
     );
-    // Selecting is not installing half a package: every pane still arrives.
     assert!(ui.join("mods/75_atlas.lua").is_file());
     assert!(ui.join("mods/76_atlas_notes.lua").is_file());
 
@@ -430,9 +400,6 @@ fn as_selects_which_pane_the_entry_is_keyed_on() {
 
 #[test]
 fn as_naming_no_declared_pane_is_refused_and_lists_them() {
-    // A redirect the spec cannot record is a redirect `sync` cannot reproduce, so
-    // several panes land where their author put them — and saying which ones those
-    // are is the difference between a rule and a wall.
     let home = tempfile::tempdir().expect("tempdir");
     let ui = interface(home.path());
     let src = multi_pane_package(home.path(), "atlas", "v1");
@@ -453,8 +420,6 @@ fn as_naming_no_declared_pane_is_refused_and_lists_them() {
 
 #[test]
 fn keying_an_installed_package_on_another_pane_is_refused() {
-    // A second entry covering the same panes would make `remove` of either one take
-    // the other's files, and leave the survivor pointing at nothing.
     let home = tempfile::tempdir().expect("tempdir");
     let ui = interface(home.path());
     let src = multi_pane_package(home.path(), "atlas", "v1");
@@ -473,15 +438,12 @@ fn keying_an_installed_package_on_another_pane_is_refused() {
     let spec = thurbox::kernel::packages::read_spec(&ui).expect("spec");
     assert_eq!(spec.mods.len(), 1, "{spec:?}");
 
-    // Reinstalling the same selection is an update, not a conflict.
     let again = install(&src);
     assert!(again.failure.is_none(), "{:?}", again.json);
 }
 
 #[test]
 fn syncing_a_spec_that_keys_one_package_twice_is_refused() {
-    // The same conflict as re-keying on install, reached by hand-editing the spec:
-    // convergence must not write the second record either.
     let home = tempfile::tempdir().expect("tempdir");
     let ui = interface(home.path());
     let src = multi_pane_package(home.path(), "atlas", "v1");
@@ -490,7 +452,7 @@ fn syncing_a_spec_that_keys_one_package_twice_is_refused() {
     std::fs::write(
         ui.join("mods.toml"),
         format!(
-            // A literal string, so a Windows path's backslashes are not escapes.
+            // A TOML literal string, so a Windows path's backslashes are not escapes.
             "{spec}\n[[mod]]\nsrc = '{}'\nfile = \"mods/76_atlas_notes.lua\"\n",
             src.display()
         ),
@@ -508,9 +470,6 @@ fn syncing_a_spec_that_keys_one_package_twice_is_refused() {
 
 #[test]
 fn rekeying_the_sole_entry_by_hand_then_updating_converges() {
-    // Changing which pane the one entry is keyed on is a legitimate edit. The record
-    // under the old key is stale, not a second owner, and `update` takes it back the
-    // way `sync` does rather than refusing.
     let home = tempfile::tempdir().expect("tempdir");
     let ui = interface(home.path());
     let src = multi_pane_package(home.path(), "atlas", "v1");
@@ -530,7 +489,6 @@ fn rekeying_the_sole_entry_by_hand_then_updating_converges() {
     assert!(ui.join("mods/75_atlas.lua").is_file());
     assert!(ui.join("mods/76_atlas_notes.lua").is_file());
 
-    // And the result is one a later sync agrees with, not one it undoes.
     let synced = run(Action::Sync).expect("sync");
     assert_eq!(
         synced.json["entries"][0]["outcome"], "current",
@@ -542,10 +500,6 @@ fn rekeying_the_sole_entry_by_hand_then_updating_converges() {
 
 #[test]
 fn a_targeted_update_leaves_another_entrys_stale_record_alone() {
-    // Two entries from one source — a single-pane package installed twice — and the
-    // first re-keyed by hand. Updating only the second must not take back the first's
-    // files: that entry is not delivered by this update, so it would be left with
-    // nothing installed until a full sync.
     let home = tempfile::tempdir().expect("tempdir");
     let ui = interface(home.path());
     let src = package(home.path(), "beacon", "v1", "beacon");
@@ -577,10 +531,6 @@ fn a_targeted_update_leaves_another_entrys_stale_record_alone() {
 
 #[test]
 fn a_targeted_update_leaves_a_live_entrys_old_record_alone() {
-    // A three-pane package re-keyed by hand from its first pane to its second, and
-    // another source keyed on its third. The re-keyed entry's old record covers the
-    // other entry's key too, but it is still the re-keyed entry's: updating the other
-    // one must not take back files the re-keyed entry is running.
     let home = tempfile::tempdir().expect("tempdir");
     let ui = interface(home.path());
     let src = multi_pane_package(home.path(), "atlas", "v1");
@@ -607,7 +557,6 @@ fn a_targeted_update_leaves_a_live_entrys_old_record_alone() {
     )
     .expect("hand edit");
 
-    // Refused or not, it must not have taken anything of the re-keyed entry's back.
     let _ = run(Action::Update {
         name: Some("mods/77_atlas_extra.lua".into()),
     });
@@ -620,12 +569,9 @@ fn a_targeted_update_leaves_a_live_entrys_old_record_alone() {
 
 #[test]
 fn the_legacy_placement_hint_is_about_the_keyed_pane() {
-    // `file` names the keyed pane, so `placement_hint` — kept for existing readers —
-    // must describe that pane, not whichever pane happened to need a hint first.
     let home = tempfile::tempdir().expect("tempdir");
     let _ui = interface(home.path());
     let src = multi_pane_package(home.path(), "atlas", "v1");
-    // The keyed pane floats, so it needs no placing; the second one does.
     std::fs::write(
         src.join("main.lua"),
         "return { name = \"atlas\", slot = \"atlas\", floats = true, \
@@ -687,8 +633,6 @@ fn syncing_a_multi_pane_package_is_idempotent() {
     assert!(ui.join("mods/76_atlas_notes.lua").is_file());
 }
 
-// ── converging ─────────────────────────────────────────────────────────────
-
 #[test]
 fn syncing_an_agreeing_directory_changes_nothing() {
     let home = tempfile::tempdir().expect("tempdir");
@@ -709,7 +653,6 @@ fn syncing_an_agreeing_directory_changes_nothing() {
 
 #[test]
 fn syncing_installs_what_the_spec_lists_and_the_directory_lacks() {
-    // The reproduce-elsewhere case: the spec and the lock, with nothing delivered.
     let home = tempfile::tempdir().expect("tempdir");
     let ui = interface(home.path());
     let src = package(home.path(), "atlas", "v1", "atlas");
@@ -717,10 +660,6 @@ fn syncing_installs_what_the_spec_lists_and_the_directory_lacks() {
 
     std::fs::remove_file(ui.join("mods/75_atlas.lua")).expect("remove");
     std::fs::remove_file(ui.join("lib/atlas/util.lua")).expect("remove");
-    // A genuinely fresh machine has the spec and the lock and no delivered files.
-    // Its lock records versions but no digests — and that must read as "never
-    // delivered here", not as "the user deleted these", or nothing is ever
-    // installed from a checked-in lock.
     let lock = thurbox::kernel::packages::read_lock(&ui).expect("lock");
     let mut fresh = thurbox::session::ModLock::default();
     for entry in lock.mods {
@@ -745,7 +684,6 @@ fn syncing_takes_back_what_the_spec_no_longer_lists() {
     let src = package(home.path(), "atlas", "v1", "atlas");
     install(&src);
 
-    // The hand edit the spec exists for.
     std::fs::write(ui.join("mods.toml"), "").expect("empty the spec");
 
     let report = run(Action::Sync).expect("sync");
@@ -790,7 +728,6 @@ fn an_edit_to_an_installed_pane_survives_a_sync_and_is_reported() {
 
     let pane = ui.join("mods/75_atlas.lua");
     std::fs::write(&pane, "-- mine\nreturn {}\n").expect("edit");
-    // Upstream moves under them, which is when a manager is most tempted to win.
     package(home.path(), "atlas", "v2", "atlas v2");
 
     let report = run(Action::Sync).expect("sync");
@@ -828,8 +765,6 @@ fn a_deleted_pane_is_not_silently_reinstalled() {
     }
 }
 
-// ── moving a pin, and removing ─────────────────────────────────────────────
-
 #[test]
 fn updating_reports_the_version_it_came_from() {
     let home = tempfile::tempdir().expect("tempdir");
@@ -837,8 +772,6 @@ fn updating_reports_the_version_it_came_from() {
     let src = package(home.path(), "atlas", "v0.3.1", "atlas");
     install(&src);
 
-    // Nothing newer yet: success, not a failure — an update that exits non-zero on
-    // "already current" is one nobody can schedule.
     let current = run(Action::Update { name: None }).expect("update");
     assert!(current.failure.is_none(), "{:?}", current.json);
     assert_eq!(current.json["moved"], 0, "{:?}", current.json);
@@ -868,8 +801,6 @@ fn removing_works_without_the_source_and_refuses_an_unknown_name() {
     let src = package(home.path(), "atlas", "v1", "atlas");
     install(&src);
 
-    // Everything removal needs is in the record, so a source that has gone away is
-    // not a reason to be stuck with the pane.
     std::fs::remove_dir_all(&src).expect("delete the source");
 
     let error = run(Action::Remove {
@@ -895,10 +826,11 @@ fn removing_works_without_the_source_and_refuses_an_unknown_name() {
         !ui.join("mods.lock").exists(),
         "and so is its record — an empty lock leaves no file behind"
     );
-    // The interface still loads with the pane gone.
     let checked = run(Action::Check).expect("check");
     assert!(checked.failure.is_none(), "{:?}", checked.json);
 }
+
+const NOT_UTF8_PAYLOAD: [u8; 4] = [0x00, 0xff, 0xfe, 0x01];
 
 fn mod_repo(root: &Path, marker: &str) -> PathBuf {
     mod_repo_in(root, marker, "sha1")
@@ -910,8 +842,6 @@ fn mod_repo_in(root: &Path, marker: &str, object_format: &str) -> PathBuf {
     std::fs::create_dir_all(repo.join("lib")).expect("mkdir");
     std::fs::create_dir_all(repo.join("bin")).expect("mkdir");
 
-    // The pane requires a module by the repo-relative path `require` already
-    // resolves, and reads the platform to find its own payload.
     std::fs::write(
         repo.join("mods/40_widget.lua"),
         "local util = require(\"thurbox-widget.lib.util\")\n\
@@ -930,15 +860,13 @@ fn mod_repo_in(root: &Path, marker: &str, object_format: &str) -> PathBuf {
         format!("local u = {{}}\nfunction u.label() return \"{marker}\" end\nreturn u\n"),
     )
     .expect("module");
-    // Bytes that are not valid UTF-8: the exact thing the text fetch path corrupts.
-    std::fs::write(repo.join("bin/payload.bin"), [0x00u8, 0xff, 0xfe, 0x01]).expect("payload");
+    std::fs::write(repo.join("bin/payload.bin"), NOT_UTF8_PAYLOAD).expect("payload");
 
     let git = |args: &[&str]| {
         let status = std::process::Command::new("git")
             .args(args)
             .current_dir(&repo)
-            // The pre-commit hook exports these; without scrubbing them a test's git
-            // call lands in the real repository.
+            // A git hook exports these; unscrubbed, git acts on the real repository.
             .env_remove("GIT_DIR")
             .env_remove("GIT_WORK_TREE")
             .env_remove("GIT_INDEX_FILE")
@@ -954,15 +882,14 @@ fn mod_repo_in(root: &Path, marker: &str, object_format: &str) -> PathBuf {
     git(&["config", "user.email", "t@example.com"]);
     git(&["config", "user.name", "T"]);
     git(&["config", "commit.gpgsign", "false"]);
-    // Insulated from the machine's own config for the same reason as the line
-    // above: a developer who signs their tags would otherwise get an annotated
-    // tag demanding a message where the test asks for a lightweight one.
+    // With tag.gpgsign set, git annotates every tag and demands a message for it.
     git(&["config", "tag.gpgsign", "false"]);
     git(&["add", "-A"]);
     git(&["commit", "-m", "seed"]);
     repo
 }
 
+// git ignores `--depth` on a plain local path; a Windows drive path needs `file:///`.
 fn file_url(repo: &Path) -> String {
     let path = repo.display().to_string().replace('\\', "/");
     match path.starts_with('/') {
@@ -1005,7 +932,6 @@ fn installing_at_a_commit_pin_checks_out_that_commit() {
     let ui = interface(home.path());
     let repo = mod_repo(home.path(), "first");
     let pinned = git_in(&repo, &["rev-parse", "HEAD"]);
-    // The branch moves past the pin, so checking out the tip would be visible.
     commit_more(&repo, "second");
 
     let report = run(Action::Install {
@@ -1017,7 +943,6 @@ fn installing_at_a_commit_pin_checks_out_that_commit() {
     assert!(report.failure.is_none(), "{:?}", report.json);
     assert_eq!(report.json["version"], pinned);
 
-    // The bytes on disk are the pinned commit's, not the branch tip's.
     assert!(
         std::fs::read_to_string(ui.join("thurbox-widget/lib/util.lua"))
             .expect("module")
@@ -1098,7 +1023,6 @@ fn installing_at_a_tag_pin_checks_out_the_tag() {
     let repo = mod_repo(home.path(), "first");
     git_in(&repo, &["tag", "v1"]);
     let tagged = git_in(&repo, &["rev-parse", "HEAD"]);
-    // The branch moves past the tag, so checking out the tip would be visible.
     commit_more(&repo, "second");
 
     let report = run(Action::Install {
@@ -1156,7 +1080,6 @@ fn a_commit_pinned_spec_reproduces_on_a_fresh_machine() {
     })
     .expect("install");
 
-    // A fresh machine: spec and lock present, working copy absent.
     std::fs::remove_dir_all(ui.join("thurbox-widget")).expect("remove");
     let fresh = run(Action::Sync).expect("sync");
     assert_eq!(fresh.json["entries"][0]["outcome"], "installed");
@@ -1243,8 +1166,6 @@ fn a_clone_that_fails_leaves_nothing_behind() {
         None,
         Some("0123456789abcdef0123456789abcdef01234567".to_string()),
     ] {
-        // A source that resolves as git and cannot be cloned. The pinned case is the
-        // other half: the clone succeeds and the *pin* is what cannot be obtained.
         let src = match &pin {
             None => format!("git+{}", home.path().join("no-such-repo").display()),
             Some(_) => format!("git+{}", repo.display()),
@@ -1257,10 +1178,6 @@ fn a_clone_that_fails_leaves_nothing_behind() {
         });
         let error = report.expect_err("the install must fail");
 
-        // The two failures must read differently. A pin that cannot be obtained is
-        // the ordinary consequence of a rebase or squash merge replacing the commit
-        // somebody pinned, and its fix (drop the pin, or take the new commit) is not
-        // the fix for a repository that is not there.
         match pinned {
             true => assert!(
                 error.contains("cloned, but commit") && error.contains("rebased"),
@@ -1293,8 +1210,6 @@ fn installing_a_repository_delivers_its_payload_and_loads_its_pane() {
     let ui = interface(home.path());
     let repo = mod_repo(home.path(), "widget");
 
-    // A local path that ends in `.git`? No — the form has to be explicit, so the
-    // `git+` prefix is what says "clone this".
     let report = run(Action::Install {
         src: format!("git+{}", repo.display()),
         as_file: None,
@@ -1303,12 +1218,11 @@ fn installing_a_repository_delivers_its_payload_and_loads_its_pane() {
     .expect("install runs");
     assert!(report.failure.is_none(), "{:?}", report.json);
 
-    // Delivered in the layout the author chose, payload included.
     assert!(ui.join("thurbox-widget/mods/40_widget.lua").is_file());
     assert!(ui.join("thurbox-widget/lib/util.lua").is_file());
     assert_eq!(
         std::fs::read(ui.join("thurbox-widget/bin/payload.bin")).expect("read"),
-        [0x00u8, 0xff, 0xfe, 0x01],
+        NOT_UTF8_PAYLOAD,
         "the bytes survive — this is what the text fetch path cannot do"
     );
     assert!(
@@ -1316,7 +1230,6 @@ fn installing_a_repository_delivers_its_payload_and_loads_its_pane() {
         "the clone keeps its .git, which is what makes update a fetch"
     );
 
-    // The lock records the COMMIT, not the ref: `main` moves, a commit does not.
     let lock = thurbox::kernel::packages::read_lock(&ui).expect("lock");
     let entry = lock
         .entry("thurbox-widget/mods/40_widget.lua")
@@ -1324,11 +1237,10 @@ fn installing_a_repository_delivers_its_payload_and_loads_its_pane() {
     assert_eq!(
         entry.version.len(),
         40,
-        "a full commit id: {}",
+        "the lock records a full commit id, not the moving ref: {}",
         entry.version
     );
 
-    // And the pane LOADS, from outside `mods/`, requiring its own module.
     let checked = run(Action::Check).expect("check runs");
     assert!(
         checked.json["loaded"].to_string().contains("widget"),
@@ -1336,7 +1248,6 @@ fn installing_a_repository_delivers_its_payload_and_loads_its_pane() {
         checked.json
     );
 
-    // The inventory accounts for it, with the origin its entry names.
     let listing = run(Action::List).expect("list runs");
     let row = listing.json["files"]
         .as_array()
@@ -1346,7 +1257,6 @@ fn installing_a_repository_delivers_its_payload_and_loads_its_pane() {
         .cloned()
         .unwrap_or_else(|| panic!("the pane must be listed: {:?}", listing.json));
     assert_eq!(row["source"], "installed", "{row}");
-    // The rest of the working copy is deliberately not walked.
     assert!(
         !listing.json["files"].to_string().contains("payload.bin"),
         "a repository's assets are not interface files"
@@ -1409,7 +1319,6 @@ fn syncing_a_repository_entry_is_idempotent_and_clones_what_is_missing() {
     );
     assert_eq!(again.json["changed"], false, "{:?}", again.json);
 
-    // A fresh machine: the spec and lock are there, the working copy is not.
     std::fs::remove_dir_all(ui.join("thurbox-widget")).expect("remove");
     let fresh = run(Action::Sync).expect("sync");
     assert_eq!(
@@ -1432,7 +1341,6 @@ fn removing_a_repository_takes_the_whole_working_copy() {
     })
     .expect("install");
 
-    // Offline: everything removal needs is on disk.
     std::fs::remove_dir_all(&repo).expect("delete the source");
     let removed = run(Action::Remove {
         name: "40_widget".into(),
@@ -1454,14 +1362,11 @@ fn a_cloned_repository_takes_its_pane_from_its_own_manifest() {
     let _ui = interface(home.path());
     let repo = mod_repo(home.path(), "widget");
 
-    // A second pane makes auto-detection ambiguous, and a manifest that resolves it.
     std::fs::write(
         repo.join("mods/50_extra.lua"),
         "return { name = \"extra\", slot = \"extra\", render = function() return \"\" end }\n",
     )
     .expect("second pane");
-    // Modules at `lib/…` inside its own tree — legitimate for a clone, and something
-    // the copy-model rules would reject, which is why the manifest is read leniently.
     std::fs::write(
         repo.join("mod.toml"),
         "name = \"widget\"\n\
@@ -1500,7 +1405,6 @@ fn a_cloned_repository_takes_its_pane_from_its_own_manifest() {
         "{:?}",
         report.json
     );
-    // And only that one is loaded as a pane; the other is present, not claimed.
     let checked = run(Action::Check).expect("check runs");
     let loaded = checked.json["loaded"].to_string();
     assert!(loaded.contains("widget"), "{loaded}");
@@ -1593,7 +1497,6 @@ fn a_repository_with_several_panes_and_no_manifest_says_so() {
             .expect("git");
     }
 
-    // Guessing which is the entry point would be a silent wrong answer.
     let error = run(Action::Install {
         src: format!("git+{}", repo.display()),
         as_file: None,

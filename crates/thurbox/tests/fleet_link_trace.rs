@@ -11,8 +11,8 @@ const PARENT: &str = "00f067aa0ba902b7";
 
 #[test]
 fn a_bounded_call_carries_its_own_span_as_traceparent() {
-    // An endpoint nothing listens on: spans are made and dropped unsent.
-    std::env::set_var("OTEL_EXPORTER_OTLP_ENDPOINT", "http://127.0.0.1:9");
+    let endpoint_nothing_listens_on = "http://127.0.0.1:9";
+    std::env::set_var("OTEL_EXPORTER_OTLP_ENDPOINT", endpoint_nothing_listens_on);
     std::env::set_var("OTEL_METRICS_EXPORTER", "none");
     let telemetry = otel_env::init("thurbox", "test", &[], otel_env::Logs::Off).expect("telemetry");
 

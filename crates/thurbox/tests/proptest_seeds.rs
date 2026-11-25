@@ -6,10 +6,7 @@ fn every_proptest_seed_still_names_a_live_source_file() {
     let root = Path::new(env!("CARGO_MANIFEST_DIR"));
     let mut orphans = Vec::new();
 
-    // SourceParallel: the tree is rooted at `src/`, so the seed's relative path
-    // names exactly one source file. `tests/` is deliberately not a candidate —
-    // seeds for an integration test never land here, and accepting one would
-    // let an unrelated `tests/foo.rs` mask a genuinely orphaned seed.
+    // proptest's SourceParallel persistence mirrors `src/` under proptest-regressions/.
     let seeds_dir = root.join("proptest-regressions");
     if seeds_dir.exists() {
         for seed in collect_files_with_extension(&seeds_dir, "txt") {
@@ -27,7 +24,7 @@ fn every_proptest_seed_still_names_a_live_source_file() {
         }
     }
 
-    // WithSource fallback: a seed beside its integration test.
+    // proptest's WithSource fallback writes a seed beside its integration test.
     let tests_dir = root.join("tests");
     for seed in collect_files_with_extension(&tests_dir, "proptest-regressions") {
         let source = seed.with_extension("rs");

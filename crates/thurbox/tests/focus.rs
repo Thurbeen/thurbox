@@ -20,8 +20,6 @@ fn key(code: KeyCode) -> KeyEvent {
 
 #[test]
 fn the_file_list_is_reached_through_settings_and_needs_no_chord_of_its_own() {
-    // The whole point of the move: no opening key to be swallowed by a terminal,
-    // and no pane to be skipped by a focus ring.
     let mut modal = SettingsModal::default();
     assert_eq!(modal.tab(), Tab::Settings);
 
@@ -33,7 +31,6 @@ fn the_file_list_is_reached_through_settings_and_needs_no_chord_of_its_own() {
     );
     assert_eq!(modal.tab(), Tab::Interface);
 
-    // And back, so the pair is a cycle rather than a one-way trip.
     modal.on_key(
         &key(KeyCode::Char('[')),
         &mut Registry::default(),
@@ -45,9 +42,6 @@ fn the_file_list_is_reached_through_settings_and_needs_no_chord_of_its_own() {
 
 #[test]
 fn clicking_a_tab_heading_switches_to_it() {
-    // The bug this closes: the settings half recorded its footer pills by
-    // *assigning* the button list, which wiped the tab hitboxes recorded a few
-    // lines earlier. The headings drew, and clicking one did nothing.
     let palette = thurbox::theme::ThemePreset::Default.palette();
     let mut modal = SettingsModal::default();
     let mut terminal =
@@ -68,15 +62,12 @@ fn clicking_a_tab_heading_switches_to_it() {
         })
         .expect("draw");
 
-    // Two headings, both clickable — one per tab.
     let buttons = modal.hits().buttons.len();
     assert!(
         buttons >= 2,
         "the tab headings are not clickable: {buttons}"
     );
 
-    // The `Interface` heading sits on the frame's top border, right of
-    // `Settings`. Replaying its key is what a click on it does.
     let (rect, replay) = modal.hits().buttons[1];
     let key = KeyEvent::new(replay.code, replay.modifiers);
     modal.on_key(&key, &mut Registry::default(), &Default::default(), &[]);
@@ -85,9 +76,6 @@ fn clicking_a_tab_heading_switches_to_it() {
 
 #[test]
 fn the_tab_keys_are_offered_where_they_can_be_seen() {
-    // A key that only works if you already know it is a key nobody uses. Both
-    // halves say so on their own footer, since a modal's keys are not in the
-    // registry and so cannot reach help by declaration.
     let palette = thurbox::theme::ThemePreset::Default.palette();
     for tab in [Tab::Settings, Tab::Interface] {
         let mut modal = SettingsModal::default();
@@ -151,9 +139,6 @@ fn no_interface_file_declares_a_chord_for_it() {
 
 #[test]
 fn settings_opens_on_its_own_half() {
-    // The chord says "settings", so it must not land on whichever tab was last
-    // looked at — a modal that remembered would answer a different question than
-    // the one asked.
     let mut modals = Modals::default();
     modals.toggle(ModalKind::Settings);
     assert_eq!(modals.kind(), Some(ModalKind::Settings));
@@ -164,9 +149,6 @@ fn settings_opens_on_its_own_half() {
 
 #[test]
 fn the_centre_is_still_a_switch_slot() {
-    // Nothing shares it today, so `kernel::focus::can_focus` is exercised only by
-    // its own tests. The slot mode is what makes the next pane to share it
-    // inherit the fix — if this ever stops being a switch slot, the rule can go.
     let host = host();
     assert!(matches!(
         host.slot_mode("center"),
@@ -208,10 +190,6 @@ fn centre_pane(name: &str, order: u8, extra: &str) -> String {
 
 #[test]
 fn a_switch_slots_cycle_stop_is_its_first_focusable_pane_never_a_float() {
-    // The Ctrl+H/Ctrl+L cycle stops once per switch slot, here. A float named
-    // into the same slot is not an occupant anyone switches to — it draws over
-    // the arrangement — so letting it be the stop took the slot's real pane out
-    // of the cycle.
     let popup = centre_pane("popup", 5, "floats = true,");
     let unfocusable =
         centre_pane("banner", 10, "").replace("focusable = true", "focusable = false");

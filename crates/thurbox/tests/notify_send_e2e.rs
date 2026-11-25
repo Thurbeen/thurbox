@@ -117,8 +117,6 @@ const DEDUPED: &[&str] = &["--key", "build-failure", "--min-interval", "60"];
 #[test]
 fn notify_send_honours_the_notifications_feature_switch() {
     let instance = Instance::new("notifications = false", "backend = 'dbus'");
-    // An off switch short-circuits before the bus or the dedupe key is
-    // looked at.
     assert_disabled(&instance.send(Some(NO_BUS), DEDUPED));
     assert_disabled(&instance.send(Some(NO_BUS), DEDUPED));
 }
@@ -221,7 +219,6 @@ fn notify_send_dedupes_a_key_across_processes() {
     assert_eq!(other["delivered"], true, "a key of its own: {other}");
     assert_eq!(bus.shown().len(), 2, "{:?}", bus.shown());
 
-    // An interval that has passed lets the key through again.
     let short = ["--key", "short", "--min-interval", "1"];
     assert_eq!(instance.send(Some(&address), &short)["delivered"], true);
     std::thread::sleep(std::time::Duration::from_millis(1_100));
@@ -304,14 +301,11 @@ fn a_late_failure_keeps_a_newer_hold() {
     let instance = Instance::with_backend("windows", "");
     let path = fake_toast(&instance, "echo $$ > '{pid}'\nsleep 3\nexit 1");
     let short = ["--key", "k", "--min-interval", "1"];
-    // Slow and failing: holds `k` for one second, fails after three.
     let slow = instance
         .command(Some(NO_BUS), &send_args(&short))
         .env("PATH", path)
         .spawn()
         .expect("start the slow send");
-    // Spawning the CLI does not mean it has read its settings or taken the
-    // lease yet. The notifier starting proves both before we replace them.
     let started = instance.path("notifier.pid");
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
     while !started.exists() {

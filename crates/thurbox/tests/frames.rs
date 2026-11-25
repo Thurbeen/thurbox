@@ -15,8 +15,6 @@ use thurbox::kernel::terminal::AgentMeta;
 use thurbox::kernel::theme::Themes;
 use thurbox::session::SessionState;
 
-// --- the world --------------------------------------------------------------
-
 fn host() -> LuaHost {
     let host = LuaHost::new(std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../ui"));
     assert!(host.error.is_none(), "{:?}", host.error);
@@ -164,13 +162,14 @@ fn sample() -> Snapshot {
     snapshot(rows)
 }
 
+const PINNED_SPINNER_ELAPSED: f64 = 1.0;
+
 fn ctx(width: u16, height: u16, focused: bool) -> RenderContext {
     RenderContext {
         width,
         height,
         focused,
-        // Fixed, so the working spinner picks the same frame every run.
-        elapsed: 1.0,
+        elapsed: PINNED_SPINNER_ELAPSED,
         frame: 1,
     }
 }
@@ -195,8 +194,6 @@ fn press(host: &LuaHost, mod_name: &str, ch: char) {
     }
     host.on_key(index_of(host, mod_name), &key).expect("key");
 }
-
-// --- painting ---------------------------------------------------------------
 
 fn paint(host: &LuaHost, name: &str, width: u16, height: u16, focused: bool) -> Buffer {
     paint_over(host, name, width, height, focused, &PlaceholderSurfaces)
@@ -227,14 +224,15 @@ fn text(buffer: &Buffer) -> Vec<String> {
     (0..area.height)
         .map(|y| {
             let mut line = String::new();
-            let mut owed = 0;
+            let mut cells_held_by_wide_glyph = 0;
             for x in 0..area.width {
-                if owed > 0 {
-                    owed -= 1;
+                if cells_held_by_wide_glyph > 0 {
+                    cells_held_by_wide_glyph -= 1;
                     continue;
                 }
                 let symbol = buffer[(x, y)].symbol();
-                owed = symbol.width().saturating_sub(1);
+                // A terminal shows a double-width glyph over the blank cell after it.
+                cells_held_by_wide_glyph = symbol.width().saturating_sub(1);
                 line.push_str(symbol);
             }
             line.trim_end().to_string()
@@ -274,8 +272,6 @@ fn assert_frame(actual: &[String], expected: &[&str]) {
     panic!("frame differs from the expected literal.\nactual, as a literal:\n[\n{literal}\n]");
 }
 
-// --- the session list -------------------------------------------------------
-
 #[test]
 fn the_session_list_groups_by_repo_and_nests_a_child_under_its_parent() {
     let host = host();
@@ -301,10 +297,6 @@ fn the_session_list_groups_by_repo_and_nests_a_child_under_its_parent() {
 
 #[test]
 fn the_session_list_groups_by_host_when_sessions_span_machines() {
-    // The host is the OUTER axis: every local group first, then each remote
-    // host's, and the repo grouping survives inside one. Without it the remote
-    // row sits inside the local `thurbox` group with nothing to say it is
-    // somewhere else.
     let host = host();
     publish(
         &host,
@@ -380,13 +372,6 @@ fn one_remote_host_has_a_fold_handle_above_its_repo_groups() {
 
 #[test]
 fn a_host_named_local_is_a_second_machine_rather_than_this_one() {
-    // The host axis keys this machine by a sentinel a host name cannot spell.
-    // Keyed by the bare word, a host somebody called `local` merged into this
-    // machine's group -- and since the move algebra decides a host boundary by
-    // comparing those keys, the refusal that keeps a group on its own machine
-    // went with it.
-    //
-    // Both rows have host handles, and they must remain distinct.
     let host = host();
     publish(
         &host,
@@ -436,8 +421,6 @@ fn the_session_list_windows_more_rows_than_it_has_lines() {
 
 #[test]
 fn the_session_list_keeps_its_columns_under_double_width_names() {
-    // Where column budgets go wrong: a CJK or emoji name that miscounts its
-    // width shears the whole row, and the border with it.
     let host = host();
     publish(
         &host,
@@ -464,15 +447,7 @@ fn the_session_list_keeps_its_columns_under_double_width_names() {
 
 #[test]
 fn a_double_width_name_budgets_the_status_by_the_columns_it_takes() {
-    // The trailing status is budgeted against what the name left of the row.
-    // A CJK name spends two columns per character, so a budget counted in
-    // characters is six columns too generous here: the status overruns the
-    // row and the clip shears it, dropping the very mark that says it was
-    // cut.
     let host = host();
-    //
-    // A blocked agent's question, because it is what still trails a row this
-    // narrow: the agent's current action needs a 100-column panel.
     let world = snapshot(vec![row("修复终端宽度", "thurbox", "blocked")]);
     let meta = HashMap::from([(
         world.sessions[0].id.clone(),
@@ -517,9 +492,6 @@ fn the_session_list_truncates_rather_than_overflows_when_narrow() {
 
 #[test]
 fn the_selection_is_a_style_and_moves_with_j() {
-    // The selection is a STYLE, not a glyph (v1's rule), so only a styled row
-    // can see it move — and only one can see a status dot's colour. Two rows
-    // on record: the one the cursor left and the one it landed on.
     let host = host();
     publish(&host, &sample());
     let before = paint(&host, "sessions", 40, 12, true);
@@ -544,8 +516,6 @@ fn the_selection_is_a_style_and_moves_with_j() {
 
 #[test]
 fn a_host_row_with_no_room_for_its_rule_keeps_the_session_total_whole() {
-    // One column short of a rule: the fallback trails the short note, which
-    // fits exactly, rather than truncating the long one.
     let host = host();
     publish(
         &host,
@@ -566,8 +536,6 @@ fn a_host_row_with_no_room_for_its_rule_keeps_the_session_total_whole() {
 
 #[test]
 fn a_selected_host_row_is_one_bar_rule_included() {
-    // The rule names a muted foreground. Under the bar it must yield like every
-    // other span on the row, or it punches a dim hole in the selection.
     let host = host();
     publish(&host, &sample());
     press(&host, "sessions", 'k');
@@ -579,8 +547,6 @@ fn a_selected_host_row_is_one_bar_rule_included() {
         ],
     );
 }
-
-// --- node props -------------------------------------------------------------
 
 fn paint_lua_node(source: &str, width: u16, height: u16) -> Buffer {
     let lua = mlua::Lua::new();
@@ -596,8 +562,6 @@ fn paint_lua_node(source: &str, width: u16, height: u16) -> Buffer {
 
 #[test]
 fn a_styled_text_node_paints_its_style_across_its_whole_rect() {
-    // What a selection bar is: the row's style covers the rect, so it reaches
-    // the right edge without the pane appending a spacer span sized by hand.
     let buffer = paint_lua_node(
         r#"{ text = "hi", style = { fg = "white", bg = 24, bold = true } }"#,
         10,
@@ -617,9 +581,6 @@ fn a_styled_text_node_paints_its_style_across_its_whole_rect() {
 
 #[test]
 fn a_span_keeps_the_colour_it_names_over_the_node_style() {
-    // The other half of the same contract, and why the pane no longer needs a
-    // `keep_fg` exception list: a search hit names its own foreground and the
-    // bar underneath it supplies only what the span left unsaid.
     let buffer = paint_lua_node(
         r#"{
              style = { fg = "white", bg = 24 },
@@ -639,9 +600,6 @@ fn a_span_keeps_the_colour_it_names_over_the_node_style() {
 
 #[test]
 fn a_frame_title_takes_the_alignment_it_asks_for() {
-    // The reason two panes drew their borders by hand: a title could only sit at
-    // the left, so a right-aligned session title meant composing the row out of
-    // `text` nodes.
     let left = paint_lua_node(r#"{ text = "", frame = { title = "T" } }"#, 8, 3);
     let centre = paint_lua_node(
         r#"{ text = "", frame = { title = "T", title_align = "center" } }"#,
@@ -669,8 +627,6 @@ fn a_frame_title_takes_the_alignment_it_asks_for() {
 
 #[test]
 fn a_frame_draws_the_border_type_it_asks_for() {
-    // `square` is what the panes call it and `plain` is ratatui's name for the
-    // same corners; the agent pane's empty state is the one that wants them.
     assert_frame(
         &text(&paint_lua_node(r#"{ text = "", frame = true }"#, 4, 3)),
         &[
@@ -693,8 +649,6 @@ fn a_frame_draws_the_border_type_it_asks_for() {
             ],
         );
     }
-    // `thick` is the focused pane's: a cue in the glyphs themselves, so it
-    // survives a terminal with no colour at all.
     assert_frame(
         &text(&paint_lua_node(
             r#"{ text = "", frame = { border_type = "thick" } }"#,
@@ -720,9 +674,6 @@ const OVERLAY_NODE: &str = r#"{
 
 #[test]
 fn a_frame_overlay_paints_onto_the_border_cells() {
-    // The other half of what the hand-drawn chrome was for: the session list's
-    // dot strip and its scroll counts, and the agent pane's scrollbar in the
-    // border column, all of which cost zero content cells.
     assert_frame(
         &text(&paint_lua_node(OVERLAY_NODE, 10, 4)),
         &[
@@ -736,8 +687,6 @@ fn a_frame_overlay_paints_onto_the_border_cells() {
 
 #[test]
 fn an_overlay_never_paints_over_a_corner() {
-    // An over-long strip clips at the corner rather than eating it: the corners
-    // are what makes a pane read as a pane.
     let buffer = paint_lua_node(
         r#"{ text = "", frame = { overlay = { top_left = { { text = "abcdefgh" } } } } }"#,
         6,
@@ -799,9 +748,6 @@ const PROBE_LIST: &str = r#"
 
 #[test]
 fn a_list_paints_its_selected_and_hovered_rows_edge_to_edge() {
-    // The two props that replace hand-padding a spacer span and merging a style
-    // into every span: the row's own style covers its rect, so the bar reaches
-    // the right edge whatever the row says.
     let buffer = paint_probe(PROBE_LIST, Some("b"), 12, 2);
     for x in 0..12 {
         assert_eq!(buffer[(x, 0)].bg, Color::Indexed(24), "selected cell {x}");
@@ -811,8 +757,6 @@ fn a_list_paints_its_selected_and_hovered_rows_edge_to_edge() {
 
 #[test]
 fn a_list_without_the_style_props_paints_no_band() {
-    // They are opt-in: a pane that asks for neither gets the marker it always
-    // had and no background at all.
     let buffer = paint_probe(
         r#"return widgets.list({ rows = { "one" }, selected = 1, height = ctx.height })"#,
         None,
@@ -823,8 +767,6 @@ fn a_list_without_the_style_props_paints_no_band() {
         assert_eq!(buffer[(x, 0)].bg, Color::Reset, "cell {x}");
     }
 }
-
-// --- the agent pane ---------------------------------------------------------
 
 #[test]
 fn the_agent_pane_with_nothing_selected() {
@@ -847,14 +789,6 @@ fn the_agent_pane_with_nothing_selected() {
 
 #[test]
 fn the_no_session_title_takes_the_borders_muted_colour_not_the_terminals_default() {
-    // The one deliberate visible change of the frame-parity work: this title
-    // used to go through chrome.lua's hand-drawn cell buffer, which never
-    // passed it a colour, so it painted in the terminal's own default
-    // foreground. Routed through frame.title instead, build_block's existing
-    // "an unstyled run takes the border's colour" rule now reaches it, so the
-    // 'N' of "No Session" carries the same fg as the border it sits in rather
-    // than Color::Reset. Unfocused: focused, the empty pane wears the focus
-    // frame and its badge instead.
     let host = host();
     publish(&host, &snapshot(Vec::new()));
     let buffer = paint(&host, "agent", 50, 8, false);
@@ -876,8 +810,6 @@ fn the_no_session_title_takes_the_borders_muted_colour_not_the_terminals_default
 
 #[test]
 fn the_agent_pane_before_its_session_is_attached() {
-    // Nothing live behind the surface, so it draws the detached notice — the
-    // frame a fresh boot shows before the first attach lands.
     let host = host();
     publish(&host, &sample());
     host.render(index_of(&host, "sessions"), ctx(40, 12, true))
@@ -899,10 +831,6 @@ fn the_agent_pane_before_its_session_is_attached() {
 
 #[test]
 fn the_agent_pane_closes_its_border_over_a_double_width_name() {
-    // The title is fitted to the columns the border has left, and a CJK name
-    // spends two of them per character. Measured in characters the title is
-    // wider than its budget, and the corner drawn afterwards lands on top of
-    // the very ellipsis that says the branch was cut.
     let host = host();
     let world = snapshot(vec![row("修复终端宽度", "thurbox", "idle")]);
     publish(&host, &world);
@@ -969,10 +897,6 @@ impl SurfaceProvider for LiveScreen {
 
 #[test]
 fn the_agent_pane_paints_a_live_screen_inside_its_border() {
-    // The surface is the one node kind with a process behind it; every other
-    // frame here has a placeholder there. This one puts a real grid behind
-    // it: the pane must give the screen its whole interior and nothing of
-    // its chrome, with a double-width glyph landing on its own two cells.
     let host = host();
     let world = sample();
     publish(&host, &world);

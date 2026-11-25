@@ -39,18 +39,10 @@ async fn restarting_a_finished_program_still_reports_the_ending() {
         &Default::default(),
     );
 
-    // Lives for a moment, then ends on its own — an editor being quit. Not
-    // instant: a program that exits before tmux has sized the window takes the
-    // pane with it and the spawn fails outright, which would turn this into a
-    // skip that proves nothing. The registration round trip it also used to
-    // have to outlive is gone — `new-window` answers with the window id — so
-    // this is back to the moment it was written as.
+    // tmux drops the pane of a program that exits before the window is sized, so it lives a moment.
     let short = ["-c".to_string(), "printf started; sleep 1".to_string()];
     if let Err(e) = terminals.start_program(&key, "sh", &short, Some(dir.path()), 24, 80) {
-        // Not a skip: tmux is installed, so a pane that would not start is the
-        // path under test being broken — and a skip would pass it off as a
-        // machine without a multiplexer.
-        panic!("the program pane could not be started: {e}");
+        panic!("the program pane could not be started with tmux installed: {e}");
     }
 
     let exited = |terminals: &Terminals| {
@@ -67,9 +59,6 @@ async fn restarting_a_finished_program_still_reports_the_ending() {
         panic!("the program never reported that it ended; nothing to restart over");
     }
 
-    // The iteration that spawned it: one transition, the spawn. Drained here so
-    // the restart below is read exactly as the loop would read it — a fresh log,
-    // holding only what the restart itself puts there.
     assert_eq!(
         terminals.take_program_transitions(),
         vec![ProgramTransition::Started(key.clone())],
@@ -91,9 +80,6 @@ async fn restarting_a_finished_program_still_reports_the_ending() {
         "the restart left no live pane, so this asserts nothing about a \
          replacement"
     );
-    // The order is asserted, not just the contents: the deriver reads this log
-    // in sequence, and a replacement that arrived *after* the spawn beside it
-    // would be read as a fresh death — the same ending announced twice.
     assert_eq!(
         transitions,
         vec![

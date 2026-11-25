@@ -26,8 +26,8 @@ fn matches_the_reference_encoder_on_the_spec_suite() {
         }
     }
 
-    // A corpus that silently emptied would otherwise pass with zero coverage.
-    assert!(checked > 150, "only {checked} cases loaded from the corpus");
+    assert!(checked > 150, "only {checked} cases loaded from the corpus; an emptied corpus would pass with no coverage"
+    );
     assert!(
         failures.is_empty(),
         "{} of {checked} cases diverge from the reference encoder:\n{}",
@@ -38,8 +38,6 @@ fn matches_the_reference_encoder_on_the_spec_suite() {
 
 #[test]
 fn default_encoding_is_comma_delimited_and_two_space_indented() {
-    // `encode` is the document default the CLI uses; `encode_with` is the
-    // parameterized core the corpus above drives.
     let value = serde_json::json!({ "items": [{ "a": 1, "b": "x" }, { "a": 2, "b": "y" }] });
     assert_eq!(toon::encode(&value), toon::encode_with(&value, ',', 2));
     assert_eq!(toon::encode(&value), "items[2]{a,b}:\n  1,x\n  2,y");

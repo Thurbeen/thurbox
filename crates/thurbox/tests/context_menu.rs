@@ -203,8 +203,6 @@ fn open(host: &LuaHost) {
         .expect("context"));
 }
 
-// ── the menu float ──────────────────────────────────────────────────────────
-
 #[test]
 fn nothing_floats_until_a_menu_is_asked_for() {
     let (_home, host) = menu_host();
@@ -368,8 +366,6 @@ fn clicking_the_rule_does_nothing() {
     assert!(menu_text(&host).is_some(), "still open");
 }
 
-// ── the sessions pane opens it ──────────────────────────────────────────────
-
 fn row(name: &str, repo: &str) -> SessionRow {
     SessionRow {
         id: format!("{name}-0000-0000-0000-000000000000"),
@@ -459,8 +455,6 @@ fn the_right_press_selects_the_session_it_landed_on() {
         &right_press_at(7, 4, Some(&beta)),
     )
     .expect("context");
-    // Down once, from Open, is Rename; its action opens the rename float for
-    // the selected session once the coordinator runs it.
     let menu = index_of(&host, "menu");
     host.on_key(menu, &key("down")).expect("key");
     host.on_key(menu, &key("enter")).expect("key");
@@ -683,8 +677,6 @@ fn a_right_press_on_an_empty_list_opens_nothing() {
     assert!(menu_text(&host).is_none());
 }
 
-// ── review follow-ups ───────────────────────────────────────────────────────
-
 fn node_with_id<'a>(
     node: &'a thurbox::kernel::node::Node,
     id: &str,
@@ -743,7 +735,6 @@ fn a_menu_entry_does_not_act_on_a_session_other_than_the_one_pressed() {
     host.on_context(sessions, &right_press_at(7, 4, Some(&beta)))
         .expect("context");
 
-    // beta disappears (another instance deleted it) while its menu is up.
     publish(
         &host,
         &Snapshot {
@@ -754,7 +745,6 @@ fn a_menu_entry_does_not_act_on_a_session_other_than_the_one_pressed() {
     host.render(sessions, ctx()).expect("render");
 
     assert_eq!(choose_menu_entry(&host, "Delete"), "sessions.delete");
-    // What the coordinator does with that command.
     host.on_action_with_args(sessions, "sessions.delete", &[("session_id", &beta)])
         .expect("action");
     let issued = host.drain_commands();
@@ -866,7 +856,6 @@ fn a_menu_entry_acts_on_the_pressed_session_after_the_cursor_moved() {
         if action == "sessions.rename" && argument == "session_id" && value == &beta),
         "{issued:?}"
     );
-    // The cursor moves before the action lands.
     host.on_action(sessions, "sessions.first").expect("action");
     host.on_action_with_args(sessions, "sessions.rename", &[("session_id", &beta)])
         .expect("action");
@@ -1027,7 +1016,6 @@ fn a_contributed_entry_runs_on_the_session_pressed_not_the_selection() {
     }
     host.on_key(menu, &key("enter")).expect("key");
     assert_eq!(actions(&host), ["extra.toggle"]);
-    // The cursor moves back to alpha before the action lands.
     host.on_action(sessions, "sessions.first").expect("action");
     host.drain_commands();
     assert!(host

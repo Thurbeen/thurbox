@@ -11,6 +11,7 @@ mod tmux_server;
 use tmux_server::TmuxServer;
 
 const SOCKET: &str = "thurbox-remain-on-exit-e2e";
+const TIME_FOR_A_CORPSE_TO_BE_REAPED: std::time::Duration = std::time::Duration::from_millis(500);
 
 fn have_tmux() -> bool {
     Command::new("tmux")
@@ -68,10 +69,6 @@ async fn an_agent_window_keeps_its_corpse_and_a_program_window_does_not() {
     let _server = TmuxServer::pin(SOCKET);
     thurbox::paths::set_test_dir(dir.path());
 
-    // The agent, through the headless spawn path — which creates the session and
-    // applies its options on the way, exactly as a restart does. A long-lived
-    // program: one that exits before tmux finishes setting the window up turns a
-    // real failure into a skip.
     let spawned = thurbox::backend::WindowLifecycle::create_window(
         &thurbox::backend::tmux::TmuxBackend::local(&thurbox::backend::mux_settings(
             &Default::default(),
@@ -91,11 +88,10 @@ async fn an_agent_window_keeps_its_corpse_and_a_program_window_does_not() {
     let agent_pane = match spawned {
         Ok(pane) if !pane.is_empty() => pane,
         other => {
-            // Not a skip. tmux is installed — that was checked above — so a
-            // spawn that produced no pane is the spawn path being broken, which
-            // is half of what this file is about. A skip here would report the
-            // regression as a clean run on a machine without a multiplexer.
-            panic!("the agent window could not be spawned: {other:?}");
+            panic!(
+                "the agent window could not be spawned with tmux installed, so the spawn \
+                 path is broken: {other:?}"
+            );
         }
     };
 
@@ -156,7 +152,6 @@ async fn adopting_a_program_window_normalises_what_it_finds() {
         panic!("the program pane was started and tmux lists no window for it");
     };
 
-    // What an interface from before the per-window setting left behind.
     tmux(&["set-window-option", "-t", &pane, "remain-on-exit", "on"]);
     assert_eq!(
         remain_on_exit(&pane),
@@ -164,8 +159,6 @@ async fn adopting_a_program_window_normalises_what_it_finds() {
         "the test could not stage the state it is about"
     );
 
-    // A second interface over the same tmux: the window is found by name and
-    // adopted, exactly as a restart does.
     drop(first);
     let mut second = Terminals::with_registry(
         std::sync::Arc::new(thurbox::backend::wiring::local_only(&Default::default())),
@@ -216,8 +209,7 @@ async fn an_agent_that_dies_at_once_still_leaves_its_window() {
         }
     };
 
-    // Long enough for the corpse to be reaped if it was ever going to be.
-    tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+    tokio::time::sleep(TIME_FOR_A_CORPSE_TO_BE_REAPED).await;
     let listed = pane_of("tb-");
     let retention = remain_on_exit(&pane);
 
@@ -246,8 +238,6 @@ async fn an_older_namesake_does_not_take_the_new_windows_retention() {
     let _server = TmuxServer::pin(SOCKET);
     thurbox::paths::set_test_dir(dir.path());
 
-    // The older namesake, from the other session that shares the name. Spawned
-    // through the same path, so it is a real one rather than a hand-made window.
     let first = thurbox::backend::WindowLifecycle::create_window(
         &thurbox::backend::tmux::TmuxBackend::local(&thurbox::backend::mux_settings(
             &Default::default(),
@@ -291,7 +281,7 @@ async fn an_older_namesake_does_not_take_the_new_windows_retention() {
         }
     };
 
-    tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+    tokio::time::sleep(TIME_FOR_A_CORPSE_TO_BE_REAPED).await;
     let retention = remain_on_exit(&pane);
     let listed = tmux(&["list-windows", "-a", "-F", "#{pane_id}"]);
     let alive = String::from_utf8_lossy(&listed.stdout)

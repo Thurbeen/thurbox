@@ -206,8 +206,6 @@ fn rect_of(placed: &[SlotRect], slot: &str) -> Option<Rect> {
     placed.iter().find(|s| s.slot == slot).map(|s| s.rect)
 }
 
-// ── Chrome bands (kernel-rendered, arrangement-placed) ─────────────────────
-
 fn band_row(band: thurbox::kernel::bands::Band, state: &BandState<'_>, width: u16) -> String {
     let mut terminal = Terminal::new(TestBackend::new(width, 1)).expect("terminal");
     terminal
@@ -331,8 +329,6 @@ fn the_action_band_carries_the_focus_the_counts_and_the_entries() {
     let state = band_state(&registry, &themes, None);
     let row = band_row(thurbox::kernel::bands::Band::Action, &state, 110);
 
-    // v1's left cluster, in its four parts: the focused surface as a badge, the
-    // counts in v1's own `session(s)` spelling, then the informational chords.
     assert!(row.contains(" Agent "), "the focus badge: {row}");
     assert!(row.contains("3 session(s)"), "v1's count spelling: {row}");
     assert!(row.contains("^H/^L Focus"), "the focus hint: {row}");
@@ -340,8 +336,6 @@ fn the_action_band_carries_the_focus_the_counts_and_the_entries() {
     assert!(row.contains("Help · F1"), "{row}");
     assert!(row.contains("Theme · F4"), "{row}");
     assert!(row.contains("Settings · F6"), "{row}");
-    // v1's rightmost pill, and the only entry the registry does not resolve:
-    // quit is reserved rather than declared, so the band carries it itself.
     assert!(row.contains("Quit · ^Q"), "{row}");
     assert!(
         !row.contains("Shell"),
@@ -380,9 +374,6 @@ fn action_registry(host: &LuaHost) -> Registry {
 
 #[test]
 fn every_entry_is_a_button_with_a_hitbox_over_its_own_label() {
-    // Without this an entry is a picture of a button: drawn, and unpressable.
-    // Bands are painted by the kernel rather than walked as a tree, so they must
-    // hand their hitboxes back themselves.
     let themes = Themes::load(None);
     let host = host();
     let registry = action_registry(&host);
@@ -391,20 +382,16 @@ fn every_entry_is_a_button_with_a_hitbox_over_its_own_label() {
 
     assert!(!hits.is_empty(), "the entries recorded no hitbox");
     for hit in &hits {
-        // The verb a press performs, and it names a real action.
         let verb = hit.identity.click_verb().expect("an entry carries a verb");
         let action = match verb {
             ClickVerb::Action(action) => action,
             other => panic!("an entry must be an action, got {other:?}"),
         };
-        // Quit is the one exception, and by design: it is reserved rather than
-        // declared, so there is no binding for it to be found under.
         assert!(
             action == thurbox::kernel::bands::QUIT_ACTION
                 || registry.bindings().iter().any(|b| b.action == action),
             "{action} is not declared anywhere"
         );
-        // The hitbox covers the label the user is aiming at.
         let painted: String = row
             .chars()
             .skip(usize::from(hit.rect.x))
@@ -417,7 +404,6 @@ fn every_entry_is_a_button_with_a_hitbox_over_its_own_label() {
         );
     }
 
-    // Hitboxes do not overlap, so a press resolves to exactly one entry.
     let mut sorted: Vec<_> = hits.iter().map(|h| h.rect).collect();
     sorted.sort_by_key(|rect| rect.x);
     for pair in sorted.windows(2) {
@@ -432,10 +418,6 @@ fn every_entry_is_a_button_with_a_hitbox_over_its_own_label() {
 
 #[test]
 fn the_left_cluster_gives_up_its_parts_tail_first() {
-    // v1 `fit_spans_to_budget`: trailing spans are dropped whole so the focus
-    // badge is the last thing to lose its space, and only a badge that still
-    // overflows is truncated. At 100 columns v1's own recording keeps just
-    // ` Sessions ` beside the pills, for exactly this reason.
     let themes = Themes::load(None);
     let host = host();
     let registry = action_registry(&host);
@@ -444,7 +426,6 @@ fn the_left_cluster_gives_up_its_parts_tail_first() {
     let wide = band_row(thurbox::kernel::bands::Band::Action, &state, 160);
     assert!(wide.contains("^O Open"), "everything fits at 160: {wide}");
 
-    // Narrow enough that the hints cannot survive beside the entries.
     let narrow = band_row(thurbox::kernel::bands::Band::Action, &state, 60);
     assert!(
         narrow.contains("Agent"),
@@ -455,8 +436,6 @@ fn the_left_cluster_gives_up_its_parts_tail_first() {
 
 #[test]
 fn quit_outlives_every_other_entry_when_the_band_narrows() {
-    // v1 sheds Theme → Settings → Help and keeps `Quit` at any width: the button
-    // that gets you out must not be the one that disappears.
     let themes = Themes::load(None);
     let host = host();
     let registry = action_registry(&host);
@@ -476,9 +455,6 @@ fn quit_outlives_every_other_entry_when_the_band_narrows() {
 
 #[test]
 fn an_entry_is_formatted_the_way_v1_formats_a_footer_pill() {
-    // v1 `ui::render_button_bar` + `button_style(primary = false)`: the chip is
-    // ` label · key `, filled with the selection pair, bold, two cells of padding,
-    // one cell between chips, and the last one flush with the right edge.
     use ratatui::style::Modifier;
     let themes = Themes::load(None);
     let host = host();
@@ -513,7 +489,6 @@ fn an_entry_is_formatted_the_way_v1_formats_a_footer_pill() {
             cell.modifier.contains(Modifier::BOLD),
             "a chip is bold, as v1's is"
         );
-        // Two cells of padding: the chip starts and ends on a space.
         let text: String = (hit.rect.x..hit.rect.x + hit.rect.width)
             .map(|x| buffer[(x, 0)].symbol().to_string())
             .collect();
@@ -527,7 +502,6 @@ fn an_entry_is_formatted_the_way_v1_formats_a_footer_pill() {
         );
     }
 
-    // One cell between neighbours, and that cell is not part of either chip.
     let mut rects: Vec<_> = hits.iter().map(|h| h.rect).collect();
     rects.sort_by_key(|rect| rect.x);
     for pair in rects.windows(2) {
@@ -541,8 +515,6 @@ fn an_entry_is_formatted_the_way_v1_formats_a_footer_pill() {
 
 #[test]
 fn a_hovered_entry_lights_and_its_neighbours_do_not() {
-    // v1's split: a BUTTON brightens its fill to the accent and forces its
-    // foreground, where a list row takes only a background band.
     let themes = Themes::load(None);
     let host = host();
     let registry = action_registry(&host);
@@ -581,7 +553,6 @@ fn a_hovered_entry_lights_and_its_neighbours_do_not() {
         "the hovered entry should light"
     );
 
-    // A neighbour is untouched, or the highlight is lying about where you are.
     if let Some(neighbour) = hits.get(1) {
         let outside = usize::from(neighbour.rect.x);
         assert_eq!(
@@ -593,16 +564,13 @@ fn a_hovered_entry_lights_and_its_neighbours_do_not() {
 
 #[test]
 fn a_band_is_placed_by_the_arrangement_and_omitting_it_is_not_an_error() {
-    // The whole point of bands being slots: `ui/layout.lua` decides.
     let host = host();
     let placed = slots(&host, &world(), 160, 40);
     let names: Vec<&str> = placed.iter().map(|s| s.slot.as_str()).collect();
     assert!(names.contains(&"header"), "{names:?}");
     assert!(names.contains(&"footer"), "{names:?}");
-    // Nothing to say, so the message band takes no row at all.
     assert!(!names.contains(&"status"), "{names:?}");
 
-    // Under 20 rows the identity band is surrendered first, as v1 does.
     let short = slots(&host, &world(), 160, 12);
     let short_names: Vec<&str> = short.iter().map(|s| s.slot.as_str()).collect();
     assert!(!short_names.contains(&"header"), "{short_names:?}");
@@ -628,12 +596,9 @@ fn the_two_panes_split_the_width_between_the_bands() {
 
     let sessions = rect_of(&placed, "sessions").expect("a session column");
     let centre = rect_of(&placed, "center").expect("a centre pane");
-    // A row for the identity band above and the action band below; the message
-    // band is quiet, so it takes none.
     assert_eq!(sessions.y, 1, "below the identity band");
     assert_eq!(sessions.height, 38, "between the two placed bands");
     assert_eq!(centre.height, sessions.height);
-    // v1's two-panel split is 25/75, and the centre takes the remainder.
     assert_eq!(sessions.width, 40, "25% of 160");
     assert_eq!(centre.x, sessions.width);
     assert_eq!(sessions.width + centre.width, 160);
@@ -641,7 +606,6 @@ fn the_two_panes_split_the_width_between_the_bands() {
 
 #[test]
 fn below_the_two_panel_threshold_only_the_centre_is_placed() {
-    // v1 `compute_layout`: under 80 columns there is room for the agent alone.
     let host = host();
     let placed = slots(&host, &world(), 79, 24);
     assert_eq!(pane_slots(&placed), ["center"]);
@@ -650,7 +614,6 @@ fn below_the_two_panel_threshold_only_the_centre_is_placed() {
 
 #[test]
 fn hiding_the_session_list_gives_the_centre_the_whole_width() {
-    // v1's F9. The centre is never dropped, so it absorbs the freed columns.
     let host = host();
     let placed = slots(&host, &world(), 160, 40);
     assert_eq!(rect_of(&placed, "center").expect("centre").width, 120);
@@ -666,8 +629,6 @@ fn hiding_the_session_list_gives_the_centre_the_whole_width() {
     assert_eq!(rect_of(&placed, "center").expect("centre").width, 160);
 }
 
-// ── Focus (v1 `ui::FocusLevel`) ─────────────────────────────────────────────
-
 const FOCUS_THEMES: [&str; 4] = ["default", "github-light", "zenburn", "oxocarbon"];
 
 const FOCUSABLE: [&str; 3] = ["sessions", "agent", "search"];
@@ -676,7 +637,6 @@ fn framed(host: &LuaHost, pane: &str, focused: bool, theme: &str) -> ratatui::bu
     let mut themes = Themes::load(None);
     themes.preview(theme).expect("a shipped theme");
     publish(host, &world(), &themes);
-    // The session list publishes the selection the agent pane reads.
     let sessions = host.index_of("sessions").expect("sessions");
     host.render(
         sessions,
@@ -747,9 +707,6 @@ fn colour(color: Color) -> String {
 
 #[test]
 fn a_focused_pane_is_framed_thick_and_marked_in_every_theme() {
-    // The cues that survive with colour removed — a monochrome terminal, a
-    // colour-blind reader, a low-contrast palette — are the SHAPE of the border
-    // and the MARK in the title. Colour comes on top of those, never instead.
     let host = host();
     for theme in FOCUS_THEMES {
         for pane in FOCUSABLE {
@@ -788,8 +745,6 @@ fn a_focused_pane_is_framed_thick_and_marked_in_every_theme() {
                 "{theme}/{pane} no thick run unfocused:\n{off_top}"
             );
 
-            // And the colour agrees with the theme's own two border roles, so a
-            // theme that recolours focus recolours it here.
             assert_eq!(
                 colour(on[(0, 0)].fg),
                 role(theme, "border_focused"),
@@ -806,9 +761,6 @@ fn a_focused_pane_is_framed_thick_and_marked_in_every_theme() {
 
 #[test]
 fn a_focused_title_is_a_bold_badge_and_an_unfocused_one_is_plain() {
-    // The badge is the second non-colour cue: bold, and on a filled field, where
-    // the unfocused title is neither — so it reads even where the border's two
-    // colours are close.
     let host = host();
     for theme in FOCUS_THEMES {
         for pane in FOCUSABLE {
@@ -846,9 +798,6 @@ fn a_focused_title_is_a_bold_badge_and_an_unfocused_one_is_plain() {
 
 #[test]
 fn every_focusable_pane_agrees_on_what_unfocused_looks_like() {
-    // One convention, not one per pane: the three panes had grown three
-    // answers, and the agent pane's accent border beside the list's accent
-    // border is what made "which one has focus?" a question at all.
     let host = host();
     for theme in FOCUS_THEMES {
         let corners: Vec<_> = FOCUSABLE
@@ -867,9 +816,6 @@ fn every_focusable_pane_agrees_on_what_unfocused_looks_like() {
 
 #[test]
 fn widgets_panel_keeps_the_shape_it_always_returned() {
-    // `lib/` results keep their fields and their types (ui/AGENTS.md): a pane
-    // preserved across an upgrade may read `title` as a string or copy
-    // `borders` and `padding`. The focus frame is added beside them.
     let home = tempfile::tempdir().expect("tempdir");
     let ui = home.path().join("ui");
     thurbox::kernel::bundled::materialize(&ui);
@@ -915,9 +861,6 @@ return {
 
 #[test]
 fn the_empty_agent_pane_still_says_it_has_focus() {
-    // With no session the agent pane draws its own square frame, and it is
-    // the pane holding focus at boot on a fresh install: without the cue there
-    // no pane on screen looked focused at all.
     let host = host();
     let empty = Snapshot {
         sessions: Vec::new(),
@@ -954,8 +897,6 @@ fn the_empty_agent_pane_still_says_it_has_focus() {
 
 #[test]
 fn a_third_party_pane_calling_ui_panel_gets_the_focus_treatment_for_free() {
-    // What a pane must do to opt in is pass `focused = ctx.focused` to
-    // `ui.panel`. Nothing else: no border type, no colour, no mark.
     let home = tempfile::tempdir().expect("tempdir");
     let ui = home.path().join("ui");
     thurbox::kernel::bundled::materialize(&ui);
@@ -1000,8 +941,6 @@ return {
     assert!(paint(false).starts_with("╭ Notes ─"), "{}", paint(false));
 }
 
-// ── The central pane's border strip (v1 `App::render_central_pane`) ─────────
-
 fn agent_border(host: &LuaHost, width: u16) -> String {
     screen(host, &world(), &["sessions"], "agent", width, 10)
         .lines()
@@ -1018,7 +957,6 @@ fn the_tab_strip_packs_v1s_chevron_and_tabs_into_the_top_border() {
         border.starts_with("╭ ◀ F9 ─ Agent ─ Shell · F8 ─"),
         "the chevron packs first, then the tabs, one border cell between chips:\n{border}"
     );
-    // The session title keeps the right of the same row.
     assert!(
         border.ends_with("fix-osc52 (claude) [fix/osc52] [Idle] ╮"),
         "the right-aligned title survives beside the strip:\n{border}"
@@ -1041,13 +979,10 @@ fn the_strip_never_overruns_the_title_or_the_corners() {
 
 #[test]
 fn a_narrow_pane_sheds_the_shortcuts_then_the_lowest_priority_tabs() {
-    // v1 `trim_central_tabs`: strip the `· key` suffixes first, then drop the
-    // lowest-priority tab — never Agent.
     let host = host();
     let wide = agent_border(&host, 113);
     assert!(wide.contains("Shell · F8"), "{wide}");
 
-    // Narrow enough that the suffix cannot fit but both names can.
     let medium = agent_border(&host, 24);
     assert!(!medium.contains("· F8"), "shortcuts shed first:\n{medium}");
     for name in ["Agent", "Shell"] {
@@ -1061,8 +996,6 @@ fn a_narrow_pane_sheds_the_shortcuts_then_the_lowest_priority_tabs() {
 
 #[test]
 fn a_pane_too_narrow_for_the_hint_keeps_a_bare_chevron() {
-    // v1 `COLLAPSE_HINT_MIN_WIDTH`: under 40 columns the ` F9 ` hint goes and
-    // the chevron alone stays, because it is how the list comes back.
     let host = host();
     let narrow = agent_border(&host, 30);
     assert!(narrow.starts_with("╭ ◀ "), "{narrow}");
@@ -1071,8 +1004,6 @@ fn a_pane_too_narrow_for_the_hint_keeps_a_bare_chevron() {
 
 #[test]
 fn the_welcome_screen_draws_no_strip() {
-    // v1 returns no chevron and no tabs with no session — there is no pane
-    // boundary to collapse and no view to switch to.
     let host = host();
     let empty = Snapshot::default();
     let border = screen(&host, &empty, &["sessions"], "agent", 80, 10)
@@ -1101,16 +1032,6 @@ fn band_cells(
 
 #[test]
 fn a_band_repaints_identically_from_identical_state() {
-    // The premise the demand-driven redraw rests on. `render_band` decides a
-    // frame changed by comparing the cells a band just painted against the ones
-    // it painted last frame, so a band carrying anything time-varying — a
-    // clock, an uptime, an animation — would report a change on every single
-    // frame and the loop would never settle to the 250ms floor.
-    //
-    // It did exactly that once, for a much blunter reason: the band marked the
-    // frame changed for having been *drawn* at all, so an idle screen with no
-    // sessions repainted at the frame cap forever. This is the guard for the
-    // property that made fixing it possible.
     let themes = Themes::load(None);
     let registry = Registry::default();
     let state = band_state(&registry, &themes, None);
@@ -1130,9 +1051,6 @@ fn a_band_repaints_identically_from_identical_state() {
 
 #[test]
 fn a_band_repaints_differently_when_what_it_says_changes() {
-    // The other half: if the comparison could not see a real change, a message
-    // appearing would never be painted. Cells rather than symbols, so a change
-    // of level (colour) counts too.
     let themes = Themes::load(None);
     let registry = Registry::default();
 

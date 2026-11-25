@@ -46,8 +46,6 @@ fn an_unchanged_tree_is_the_signal_to_skip_a_frame() {
 
 #[test]
 fn a_changing_tree_is_never_equal() {
-    // The other half: if this ever compared equal, the loop would stop
-    // painting a pane that is actually moving.
     let dir = mod_dir(
         r#"return { name = "clock", slot = "a",
                     render = function(ctx) return { text = "frame " .. ctx.frame } end }"#,
@@ -74,12 +72,14 @@ fn a_changing_tree_is_never_equal() {
         )
         .expect("render")
         .node;
-    assert_ne!(a, b);
+    assert_ne!(
+        a, b,
+        "an equal tree would stop the loop painting a pane that is moving"
+    );
 }
 
 #[test]
 fn counters_distinguish_painted_frames_from_skipped_ones() {
-    // What the perf HUD and these tests both read.
     let counters = Counters::default();
     let before = counters.read();
 
@@ -94,15 +94,14 @@ fn counters_distinguish_painted_frames_from_skipped_ones() {
     assert_eq!(window.iterations, 10);
     assert_eq!(window.frames, 1);
     assert_eq!(window.skipped, 9);
-    // The property v1's ADR-P-series existed for: idle iterations vastly
-    // outnumber painted frames.
-    assert!(window.skipped > window.frames * 5);
+    assert!(
+        window.skipped > window.frames * 5,
+        "idle iterations must vastly outnumber painted frames"
+    );
 }
 
 #[test]
 fn a_snapshot_read_never_touches_the_database() {
-    // Reads come from the snapshot, and refresh is the only thing that
-    // queries.
     let store = SnapshotStore::without_sessions(&Default::default());
 
     let started = std::time::Instant::now();
@@ -118,7 +117,6 @@ fn a_snapshot_read_never_touches_the_database() {
 
 #[test]
 fn dispatching_a_command_never_blocks_the_caller() {
-    // The bus has no blocking form to accidentally use.
     let bus = CommandBus::fleet(thurbox::fleet_link::FleetLink::local(
         "thurbox-test-no-fleet",
     ));
@@ -147,8 +145,6 @@ fn dispatching_a_command_never_blocks_the_caller() {
 
 #[test]
 fn rendering_many_panes_stays_within_a_frame_budget() {
-    // A regression guard, not a benchmark: generous enough for shared CI, tight
-    // enough to catch an accidental O(n²) in the render path.
     let dir = mod_dir(
         r#"return { name = "rows", slot = "a", render = function(ctx)
              local out = {}
@@ -165,7 +161,7 @@ fn rendering_many_panes_stays_within_a_frame_budget() {
     let each = started.elapsed() / 200;
     assert!(
         each < std::time::Duration::from_millis(20),
-        "a 200-row pane took {each:?} per render"
+        "a 200-row pane took {each:?} per render: an accidental O(n²) in the render path?"
     );
 
     let _ = Perf::default();
@@ -173,10 +169,6 @@ fn rendering_many_panes_stays_within_a_frame_budget() {
 
 #[test]
 fn the_published_snapshot_is_what_the_cli_renders() {
-    // The drift guard between the two halves of ADR-P11: `kernel::perf` owns
-    // the shape and `cli::perf` renders it, so a key renamed on one side and
-    // not the other prints a silent zero rather than failing. Both unit test
-    // suites pass in that world; only pairing them catches it.
     let counters = Counters::default();
     Counters::bump(&counters.frames);
     Counters::bump(&counters.reloads);
@@ -211,7 +203,6 @@ fn the_published_snapshot_is_what_the_cli_renders() {
         "a published snapshot is not a failure"
     );
     let human = &out.human;
-    // Every row the renderer promises, carrying the value the producer put in.
     assert!(human.contains("sessions"), "missing sessions row: {human}");
     assert!(human.contains("interface_reload"), "slow op lost: {human}");
     assert!(human.contains("140ms"), "slow op duration lost: {human}");
@@ -224,11 +215,8 @@ fn the_published_snapshot_is_what_the_cli_renders() {
         human.contains("first frame 120ms"),
         "first-frame phase lost: {human}"
     );
-    // And the machine half stays addressable by the documented keys.
     assert_eq!(out.json["counters"]["frames"], 1);
     assert_eq!(out.json["counters"]["reloads"], 1);
-    // The skip counters travel too: they are the only evidence a frame was made
-    // cheaper, so a rename that lost them would hide exactly what they exist for.
     assert!(
         human.contains("renders skipped"),
         "skip counter lost: {human}"
@@ -242,9 +230,6 @@ fn the_published_snapshot_is_what_the_cli_renders() {
 
 #[test]
 fn timing_costs_nothing_until_something_asks_for_it() {
-    // The gate of ADR-P11 in the shape a caller can hold: an untouched
-    // `Timings` reports no samples, so a run that never enabled timing
-    // publishes zeros rather than stale or invented numbers.
     let timings = Timings::default();
     let json = snapshot_json(
         &Counters::default().read(),
@@ -273,8 +258,6 @@ fn interface_with(extra: &[(&str, &str)]) -> (tempfile::TempDir, LuaHost) {
     let write = |file: &str, body: String| {
         std::fs::write(mods.join(file), body).expect("write");
     };
-    // Every mistake the interface guide warns about, in one pane: not pure,
-    // real work per render, and a fresh table written to `store` every frame.
     write(
         "10_heavy.lua",
         format!(
@@ -302,8 +285,6 @@ fn interface_with(extra: &[(&str, &str)]) -> (tempfile::TempDir, LuaHost) {
                  render = function() return {{ text = "listener" }} end }}"#
         ),
     );
-    // A float that is closed on every frame it is asked, and not pure: it runs
-    // its Lua every frame to draw nothing.
     write(
         "40_modal.lua",
         r#"return { name = "modal", floats = true,
@@ -439,9 +420,6 @@ fn a_slow_on_event_is_attributed_to_its_mod() {
 
 #[test]
 fn a_pure_pane_that_keeps_re_rendering_while_idle_is_flagged() {
-    // Pure, but its render writes `state` — which moves the version every pure
-    // tree is keyed on, so it never settles and takes every other pure pane's
-    // cache with it.
     let (_dir, host) = interface_with(&[(
         "50_restless.lua",
         r#"return { name = "restless", slot = "bottom", pure = true,
@@ -459,12 +437,16 @@ fn a_pure_pane_that_keeps_re_rendering_while_idle_is_flagged() {
     let restless = row(&report, "restless");
     assert_eq!(restless.stats.idle_renders, 12, "{restless:?}");
     assert!(restless.hints.contains(&Hint::IdleRenders), "{restless:?}");
-    assert!(restless.hints.contains(&Hint::RenderWrites), "{restless:?}");
-    // An impure pane re-renders on every paint by definition; saying so is the
-    // not-pure hint's job, not this one's.
+    assert!(
+        restless.hints.contains(&Hint::RenderWrites),
+        "a pure render writing `state` never settles: {restless:?}"
+    );
     let heavy = row(&report, "heavy");
     assert_eq!(heavy.stats.idle_renders, 12);
-    assert!(!heavy.hints.contains(&Hint::IdleRenders), "{heavy:?}");
+    assert!(
+        !heavy.hints.contains(&Hint::IdleRenders),
+        "an impure pane's idle renders are the not-pure hint's job: {heavy:?}"
+    );
 }
 
 #[test]
@@ -483,9 +465,11 @@ fn nothing_is_recorded_per_mod_while_timing_is_off() {
             && row.stats.hooks.event.calls == 0),
         "{report:?}"
     );
-    // Attribution is the exception: a slow op is timed whether or not anyone
-    // is watching, so it must still be able to say whose it was.
-    assert_eq!(host.end_op().as_deref(), Some("listener"));
+    assert_eq!(
+        host.end_op().as_deref(),
+        Some("listener"),
+        "a slow op is attributed whether or not timing is on"
+    );
 }
 
 #[test]
@@ -515,8 +499,6 @@ fn a_run_is_counted_only_in_the_window_it_started_in() {
         took: Duration::from_millis(ms),
     };
 
-    // Started before anyone was measuring, finished after the HUD opened: its
-    // finish must not show up in a window it did not start in.
     let before = Instant::now() - Duration::from_millis(50);
     host.note_run(&started(before));
     host.set_perf_timing(true);
@@ -524,15 +506,21 @@ fn a_run_is_counted_only_in_the_window_it_started_in() {
     let inside = Instant::now();
     host.note_run(&started(inside));
     let runs = row(&host.mod_report(), "heavy").stats.runs;
-    assert_eq!((runs.started, runs.finished), (1, 0), "{runs:?}");
+    assert_eq!(
+        (runs.started, runs.finished),
+        (1, 0),
+        "a finish must not count in a window it did not start in: {runs:?}"
+    );
 
-    // A window roll splits the run in flight: the new window must not report
-    // a finish whose start it never saw.
     std::thread::sleep(Duration::from_millis(2));
     host.reset_mod_perf();
     host.note_run(&finished(inside, 5));
     let runs = row(&host.mod_report(), "heavy").stats.runs;
-    assert_eq!((runs.started, runs.finished), (0, 0), "{runs:?}");
+    assert_eq!(
+        (runs.started, runs.finished),
+        (0, 0),
+        "a new window must not report a finish whose start it never saw: {runs:?}"
+    );
 }
 
 const ROW_KEYS: [&str; 19] = [
@@ -634,15 +622,12 @@ fn the_cli_prints_the_mod_table_sorted_with_a_stable_json_shape() {
         .iter()
         .any(|hint| hint["id"] == "not_pure" && hint["text"].is_string()));
 
-    // The human table names the panes in the same order and says why.
     let human = &out.human;
     let heavy_at = human.find("heavy").expect("heavy row");
     let cheap_at = human.find("cheap").expect("cheap row");
     assert!(heavy_at < cheap_at, "{human}");
     assert!(human.contains("not pure"), "{human}");
 
-    // Without --mods the aggregate view is unchanged, and says where the
-    // per-pane view lives.
     let plain = thurbox::cli::perf::run(false).expect("render");
     assert!(plain.human.contains("--mods"), "{}", plain.human);
 }

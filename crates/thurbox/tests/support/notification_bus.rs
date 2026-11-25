@@ -79,6 +79,7 @@ pub struct NotificationBus {
 
 impl NotificationBus {
     pub fn start(dir: &Path) -> Self {
+        // `XDG_RUNTIME_DIR/bus` is where D-Bus clients look for the session bus.
         let socket = dir.join("bus");
         let daemon = Daemon(
             Command::new("dbus-daemon")

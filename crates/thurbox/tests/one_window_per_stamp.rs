@@ -118,10 +118,6 @@ fn a_second_spawn_for_one_session_retires_the_window_the_first_left() {
     let server = TmuxServer::pin(SOCKET);
 
     let first = spawn(SESSION, NAME);
-    // No kill in between, on purpose: this is the state a repairer's relaunch
-    // lands in when it runs between a restart's kill and its spawn — nothing
-    // there for it to kill, and a second window about to appear beside the one
-    // the restart is still creating.
     let second = spawn(SESSION, NAME);
 
     let index = local_index();
@@ -138,8 +134,6 @@ fn a_second_spawn_for_one_session_retires_the_window_the_first_left() {
         listing(&server)
     );
 
-    // The symptom as the operator meets it: an unresolvable session is one
-    // nothing can be sent to.
     send_to(SESSION, NAME, "true")
         .unwrap_or_else(|e| panic!("send to a session with one window: {e:#}"));
 }
@@ -152,10 +146,8 @@ fn a_repairers_relaunch_inside_a_restart_leaves_the_session_one_window() {
     }
     let server = TmuxServer::pin(SOCKET);
 
-    // The agent that is running when the restart arrives.
     spawn(SESSION, NAME);
 
-    // A restart's respawn is kill → spawn, and this is the moment between them.
     kill_agent(SESSION, NAME).expect("the restart's kill");
     let index = local_index();
     assert!(
@@ -163,8 +155,6 @@ fn a_repairers_relaunch_inside_a_restart_leaves_the_session_one_window() {
         "the premise: a repairer asks whether the window is gone and is told yes"
     );
 
-    // `relaunch_is_owed` is satisfied, so the repairer spawns — and the
-    // restart's own spawn arrives afterwards, against a row it still owns.
     let repaired = spawn(SESSION, NAME);
     let restarted = spawn(SESSION, NAME);
 
@@ -194,13 +184,8 @@ fn two_restarts_at_once_still_leave_the_session_one_window() {
     }
     let server = TmuxServer::pin(SOCKET);
 
-    // The window both restarts are replacing.
     spawn(SESSION, NAME);
 
-    // Released together so the kills and the spawns interleave rather than
-    // being serialised by thread startup — the retirement's rule has to hold
-    // whatever the order, which is why it keeps the highest window id rather
-    // than "the one I just made".
     let barrier = Arc::new(Barrier::new(2));
     let restarts: Vec<_> = (0..2)
         .map(|_| {
@@ -244,12 +229,6 @@ fn a_pair_already_on_the_server_becomes_addressable_again() {
     }
     let server = TmuxServer::pin(SOCKET);
 
-    // The shape a machine is already in: a stale window from an earlier race
-    // and the session's own beside it. Planted in this order so the stale one
-    // holds the lower window id, and stamped only once both exist — no spawn
-    // sees the pair, which is what makes this the *already broken* case rather
-    // than the prevented one. An operator's server that has held such a pair
-    // for a day is reached by nothing else: the windows are already there.
     let stale = spawn(OTHER, "other");
     let mine = spawn(SESSION, NAME);
     plant_stamp(&server, &stale);
@@ -260,8 +239,6 @@ fn a_pair_already_on_the_server_becomes_addressable_again() {
         listing(&server)
     );
 
-    // Acting on the session is what repairs it — the same verb the operator
-    // found refused ("has no window of its own here").
     send_to(SESSION, NAME, "true")
         .unwrap_or_else(|e| panic!("send to a session a pair had locked out: {e:#}"));
 
@@ -288,10 +265,6 @@ fn the_listing_itself_still_refuses_a_pair() {
     }
     let server = TmuxServer::pin(SOCKET);
 
-    // The repair above is a write — a window is retired and the next listing
-    // has one answer. `WindowIndex` is not part of it: its refusal is the last
-    // guard against addressing the wrong pane, and a resolver taught to pick
-    // one of two would hide this defect rather than fix it.
     let mine = spawn(SESSION, NAME);
     let impostor = spawn(OTHER, "other");
     plant_stamp(&server, &impostor);

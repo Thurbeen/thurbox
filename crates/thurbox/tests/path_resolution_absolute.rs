@@ -17,8 +17,6 @@ fn an_empty_path_component_never_resolves_to_a_relative_program() {
     executable_marker(dir.path(), marker);
 
     let saved_cwd = std::env::current_dir().expect("cwd");
-    // The current directory *is* the directory holding the marker, so an empty
-    // component would match — and match first.
     std::env::set_current_dir(dir.path()).expect("chdir");
     let saved_path = std::env::var_os("PATH");
     std::env::set_var("PATH", format!(":{}", dir.path().to_string_lossy()));

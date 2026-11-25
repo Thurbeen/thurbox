@@ -14,8 +14,7 @@ struct UpdateProcess {
 impl UpdateProcess {
     fn stop(&mut self) -> std::io::Result<std::process::ExitStatus> {
         if !self.stopped {
-            // The leader is kept unreaped until the group is stopped, so its
-            // pid cannot be reused for a group this test does not own.
+            // SAFETY: the leader stays unreaped until the group stops, so its pid is still this test's group.
             let result = unsafe { libc::kill(-(self.child.id() as libc::pid_t), libc::SIGKILL) };
             if result != 0 {
                 let error = std::io::Error::last_os_error();

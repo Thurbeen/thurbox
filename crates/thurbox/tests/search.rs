@@ -203,36 +203,33 @@ fn the_strip_opens_closed_and_takes_focus() {
 
 #[test]
 fn it_matches_a_subsequence_not_a_substring() {
-    // `fb` is not a substring of `fix-branch`, which is the whole difference
-    // between a search you type three letters into and one you have to spell.
     let host = host();
     open(&host);
     type_query(&host, "fb");
     render(&host, MOD);
 
-    // The single match is previewed, which is how the result set is observable
-    // without reading the painted strip.
-    assert_eq!(selected(&host).as_deref(), Some("bbb"));
+    assert_eq!(
+        selected(&host).as_deref(),
+        Some("bbb"),
+        "`fb` is no substring of `fix-branch`, yet its single subsequence match is previewed"
+    );
 }
 
 #[test]
 fn a_letter_is_typed_rather_than_navigating() {
-    // `j` and `k` move every other list in this interface. Here they are
-    // characters, or a session with a `j` in its name could not be searched for.
     let host = host();
     open(&host);
     type_query(&host, "j");
     render(&host, MOD);
-    // Nothing matches a bare `j`, so the preview stayed where it was rather than
-    // stepping down the list the way `j` would elsewhere.
-    assert_eq!(selected(&host).as_deref(), Some("aaa"));
+    assert_eq!(
+        selected(&host).as_deref(),
+        Some("aaa"),
+        "a bare `j` is typed into the query, not a step down the list"
+    );
 }
 
 #[test]
 fn moving_the_selection_previews_it_in_the_list() {
-    // The preview IS the feature: the session list's cursor moves to the result
-    // while focus stays in the strip, so a result can be judged before it is
-    // chosen.
     let host = host();
     open(&host);
     render(&host, MOD);
@@ -245,16 +242,12 @@ fn moving_the_selection_previews_it_in_the_list() {
     press(&host, "up");
     assert_eq!(selected(&host).as_deref(), Some("bbb"));
 
-    // And the list really followed, rather than the value merely sticking.
     render(&host, SESSIONS);
     assert_eq!(selected(&host).as_deref(), Some("bbb"));
 }
 
 #[test]
 fn cancelling_puts_back_what_was_selected_before() {
-    // Previewing has already moved a cursor by the time you press escape, so
-    // closing without restoring would make cancelling a way to change the
-    // selection by accident.
     let host = host();
     render(&host, SESSIONS);
     host.set_shared_string("selected", "ccc");
@@ -278,8 +271,6 @@ fn cancelling_puts_back_what_was_selected_before() {
 
 #[test]
 fn enter_keeps_the_jump_and_lands_in_the_session() {
-    // v1's Enter puts you IN the result: a session result focuses that session's
-    // terminal, not the row you picked it from.
     let host = host();
     render(&host, SESSIONS);
     host.set_shared_string("selected", "aaa");
@@ -303,8 +294,6 @@ fn enter_keeps_the_jump_and_lands_in_the_session() {
 
 #[test]
 fn a_session_found_by_something_other_than_its_name_still_matches() {
-    // v1 searches the agent and the branch too, so a session can be found by
-    // what it is working on rather than by what it was called.
     let host = host();
     open(&host);
     type_query(&host, "codex");
@@ -314,9 +303,6 @@ fn a_session_found_by_something_other_than_its_name_still_matches() {
 
 #[test]
 fn the_query_is_published_so_the_panes_can_highlight_themselves() {
-    // Search decides WHAT matches; the pane holding the row decides how a match
-    // looks in it. That contract is the shared query — without it the strip
-    // would have to reprint rows it does not own.
     let host = host();
     open(&host);
     type_query(&host, "fix");
@@ -325,16 +311,9 @@ fn the_query_is_published_so_the_panes_can_highlight_themselves() {
 
 #[test]
 fn backspace_widens_the_search_again() {
-    // The caret editing v1's strip has. Without it a mistyped query can only be
-    // escaped out of and started over.
     let host = host();
     open(&host);
     type_query(&host, "docs");
-    // Rendered before asserting because rendering is what previews: typing
-    // records the query, and the frame it causes clamps the cursor to the new
-    // results and points the list at whatever that lands on. The strip used to
-    // do both — the scan of every session, and once a query settled every
-    // session's *screen*, ran twice per keystroke for the same answer.
     render(&host, MOD);
     assert_eq!(selected(&host).as_deref(), Some("ccc"));
 
@@ -343,8 +322,11 @@ fn backspace_widens_the_search_again() {
     }
     assert_eq!(host.shared_string("search.query").as_deref(), Some(""));
     render(&host, MOD);
-    // Everything matches an empty query, so the cursor is back on the first row.
-    assert_eq!(selected(&host).as_deref(), Some("aaa"));
+    assert_eq!(
+        selected(&host).as_deref(),
+        Some("aaa"),
+        "an empty query matches everything, so the cursor is back on the first row"
+    );
 }
 
 #[test]
@@ -404,11 +386,6 @@ fn render_answered(host: &LuaHost, search: Option<&Answer>) {
 
 #[test]
 fn an_open_strip_warms_the_terminals_and_a_keystroke_asks_at_once() {
-    // Open with nothing typed, the strip asks with an empty query: the kernel
-    // reads every history into its cache and matches nothing, so the first
-    // keystroke is matched against text already read. And a keystroke asks on
-    // the very next frame — the worker gives up a run the moment a newer one
-    // supersedes it, so a debounce would only add its wait to every keystroke.
     let host = host();
     open(&host);
     render(&host, MOD);
@@ -421,8 +398,6 @@ fn an_open_strip_warms_the_terminals_and_a_keystroke_asks_at_once() {
 
 #[test]
 fn a_session_is_found_by_a_line_in_its_terminal() {
-    // The half that finds a session by the error in it, rather than by anything
-    // anyone thought to name it.
     let host = host();
     open(&host);
     type_query(&host, "ENOSPC");
@@ -433,18 +408,20 @@ fn a_session_is_found_by_a_line_in_its_terminal() {
             &[("ccc", "error: ENOSPC no space left", 0)],
         )),
     );
-    // Nothing matches `ENOSPC` by name, agent, branch or repo — only the text.
-    assert_eq!(selected(&host).as_deref(), Some("ccc"));
-    // And the session list is told, so it lights a row it could not have
-    // matched against its own fields.
-    assert_eq!(host.shared_string("search.matches").as_deref(), Some("ccc"));
+    assert_eq!(
+        selected(&host).as_deref(),
+        Some("ccc"),
+        "only the terminal text matches `ENOSPC`"
+    );
+    assert_eq!(
+        host.shared_string("search.matches").as_deref(),
+        Some("ccc"),
+        "the session list must learn of a match it cannot find in its own fields"
+    );
 }
 
 #[test]
 fn an_answer_to_an_older_query_is_not_shown() {
-    // The kernel answers a frame or two after the query settles, so while the
-    // next query runs the last answer is still published. Showing it under the
-    // new query would light the wrong characters and then vanish.
     let host = host();
     open(&host);
     type_query(&host, "ENOSPC");
@@ -460,9 +437,6 @@ fn an_answer_to_an_older_query_is_not_shown() {
 
 #[test]
 fn stepping_onto_a_text_hit_scrolls_its_terminal_to_the_line() {
-    // Preview is the feature: the agent pane scrolls back to the line while
-    // focus stays in the strip. The request is left in `store` and the agent
-    // pane is asked to read it — an action carries no argument.
     let host = host();
     open(&host);
     type_query(&host, "ENOSPC");
@@ -475,8 +449,6 @@ fn stepping_onto_a_text_hit_scrolls_its_terminal_to_the_line() {
 
     press(&host, "down");
     assert_eq!(selected(&host).as_deref(), Some("aaa"));
-    // The first hit was revealed the moment the answer selected it, so
-    // stepping off it puts that terminal back as well.
     assert_eq!(
         host.shared_string("terminal.reveal").as_deref(),
         Some("-ccc;aaa 40 7")
@@ -486,15 +458,12 @@ fn stepping_onto_a_text_hit_scrolls_its_terminal_to_the_line() {
         action: "terminal.reveal".into(),
     }));
 
-    // Stepping back puts the terminal it left at the bottom in the same
-    // request, so previews do not leave a trail of scrolled terminals.
     press(&host, "up");
     assert_eq!(
         host.shared_string("terminal.reveal").as_deref(),
         Some("-aaa;ccc 120 7")
     );
 
-    // Cancelling scrolls the last one back too.
     press(&host, "esc");
     assert_eq!(
         host.shared_string("terminal.reveal").as_deref(),
@@ -504,11 +473,6 @@ fn stepping_onto_a_text_hit_scrolls_its_terminal_to_the_line() {
 
 #[test]
 fn the_selected_text_hit_is_revealed_without_a_key_and_followed_when_it_moves() {
-    // Typing lands the cursor on the first result, and that result is shown —
-    // the session AND the line — with no key pressed. And a hit is a position:
-    // once its agent prints, the re-run search hands the same result back
-    // further up, and the preview follows it there rather than leaving the
-    // terminal at the offset where the line used to be.
     let host = host();
     open(&host);
     type_query(&host, "ENOSPC");
@@ -526,8 +490,6 @@ fn the_selected_text_hit_is_revealed_without_a_key_and_followed_when_it_moves() 
         action: "terminal.reveal".into(),
     }));
 
-    // The same answer again is not a new place: nothing is re-sent, so a
-    // frame does not fight a terminal the user scrolled by hand.
     render_answered(
         &host,
         Some(&answer("ENOSPC", &[("ccc", "error: ENOSPC", 120)])),
@@ -550,10 +512,6 @@ fn the_selected_text_hit_is_revealed_without_a_key_and_followed_when_it_moves() 
 
 #[test]
 fn a_hit_that_comes_back_after_an_empty_answer_is_revealed_again() {
-    // A query edit that matches nothing selects nothing, and while it does the
-    // terminal is the user's to scroll. Backing the edit out brings the same
-    // hit back at the same place — and it is selected again, so it is shown
-    // again rather than taken for the place already previewed.
     let host = host();
     open(&host);
     type_query(&host, "ENOSPC");
@@ -615,14 +573,11 @@ fn opening_a_text_hit_lands_the_agent_pane_on_the_line() {
         .node;
     let tree = format!("{node:?}");
     assert!(tree.contains("scroll: 120"), "{tree}");
-    // And the line it landed on is marked, at the row the kernel said.
     assert!(tree.contains("mark: Some(7)"), "{tree}");
 }
 
 #[test]
 fn every_word_must_match_in_any_order_across_fields() {
-    // `claude docs`: the agent is claude, the name has docs. aaa is claude but
-    // not docs; only ccc is both.
     let host = host();
     open(&host);
     type_query(&host, "docs claude");
@@ -648,8 +603,6 @@ fn a_capital_makes_the_query_case_sensitive() {
 
 #[test]
 fn an_exact_match_ranks_above_a_subsequence() {
-    // `ch` is a subsequence of `docs-hub` and a substring of `fix-branch`; the
-    // list puts docs-hub first, the ranking must not.
     let host = host();
     let snap = Snapshot {
         sessions: vec![
@@ -690,8 +643,6 @@ fn an_exact_match_ranks_above_a_subsequence() {
 
 #[test]
 fn a_filter_narrows_the_terminals_searched() {
-    // `in:` and `repo:` never reach the kernel as text; they become the list of
-    // sessions its search is limited to.
     let host = host();
     open(&host);
     type_query(&host, "in:docs err");
@@ -711,12 +662,10 @@ fn tab_cycles_what_is_searched() {
     render_answered(&host, None);
     assert!(host.shared_string("want_content").is_some());
 
-    // text only: the terminals are still asked, and no name matches listed.
     press(&host, "tab");
     render_answered(&host, None);
     assert!(host.shared_string("want_content").is_some());
 
-    // names only: nothing is asked of the terminals.
     press(&host, "tab");
     render_answered(&host, None);
     assert_eq!(host.shared_string("want_content"), None);
@@ -821,8 +770,6 @@ fn every_match_still_paints_when_the_results_fill_the_strip() {
             .collect();
         let screen = painted.join("\n");
 
-        // The cursor starts on the first result, so its marker is the one thing
-        // that must be on screen at every count.
         assert!(
             screen.contains('▸'),
             "{count} matches: the selected result vanished\n{screen}"
@@ -852,13 +799,11 @@ fn a_match_keeps_its_colour_under_the_selection_bar() {
     let accent = colour("accent");
     let selection_bg = colour("selection_bg");
 
-    // Paint the session list, optionally with a query in force.
     let cells = |query: Option<&str>| -> Vec<(String, Color, Color)> {
         let host = host();
         if let Some(text) = query {
             open(&host);
             type_query(&host, text);
-            // The strip previews as it renders, which is what selects the row.
             render(&host, MOD);
             assert_eq!(selected(&host).as_deref(), Some("bbb"));
         } else {
@@ -893,8 +838,6 @@ fn a_match_keeps_its_colour_under_the_selection_bar() {
             .collect()
     };
 
-    // `fb` matches `fix-branch` and nothing else, so the two lit characters are
-    // its `f` and its `b`.
     let searched = cells(Some("fb"));
     let bar: Vec<&(String, Color, Color)> = searched
         .iter()
@@ -915,9 +858,6 @@ fn a_match_keeps_its_colour_under_the_selection_bar() {
         "the matched characters must keep the accent through the selection bar"
     );
 
-    // The control: with nothing searched, nothing in the bar is accent — so the
-    // assertion above is reading the highlight and not some other affordance
-    // that happens to be lit.
     let resting = cells(None);
     assert!(
         !resting
@@ -1010,7 +950,6 @@ fn a_text_result_says_where_it_is_and_keeps_its_line_when_narrow() {
         "{wide}"
     );
 
-    // Narrow: the session column goes before the line does.
     let narrow = painted_strip(&host, 36, 10, Some(&found));
     let row = narrow
         .lines()
@@ -1046,8 +985,6 @@ fn nothing_found_says_what_was_searched() {
 
 #[test]
 fn while_the_terminals_are_read_the_strip_says_so() {
-    // The answer lands a frame or two after the query settles; until it does
-    // the strip must not look finished.
     let host = host();
     open(&host);
     type_query(&host, "zzqx");
@@ -1071,24 +1008,6 @@ fn an_invalid_regex_says_why() {
     let strip = painted_strip(&host, 100, 10, Some(&broken));
     assert!(strip.contains("not a valid regex"), "{strip}");
 }
-
-// ── What a frame of the open strip costs ──────────────────────────────────
-//
-// The strip is not `pure`, so it renders on every frame it is open, and while
-// agents print that is every frame there is. Two things made each of those
-// frames expensive, and each is pinned here:
-//
-// * it re-matched every session and rebuilt a row per text hit: ~2.4ms a
-//   frame with twenty sessions. A frame whose inputs did not move now reuses
-//   the last answer;
-// * re-stating its own state (a table) counted as a change on most frames, so
-//   every pure pane's cached tree was dropped with it and the whole interface
-//   re-rendered for as long as search was open.
-//
-// Asserted on work done rather than on a clock (ADR-P5): calls into a counting
-// `lib.fuzzy`, and renders the kernel served from cache. Instruction counts
-// would not do — matching is C string functions and table allocation, one VM
-// instruction apiece.
 
 const MANY_SESSIONS: usize = 24;
 
@@ -1201,7 +1120,6 @@ fn full_answer(query: &str) -> Answer {
         total: 5_000,
         sessions: MANY_SESSIONS,
         lines: 240_000,
-        // As a store hands it out: what the published table is gated on.
         serial: 1,
         ..Answer::default()
     }
@@ -1266,8 +1184,6 @@ fn a_frame_that_changed_nothing_matches_nothing() {
         ..Snapshot::default()
     };
     let found = full_answer("error");
-    // One epoch, as the loop holds between changes: the kernel hands back the
-    // same published tables, which is what lets the strip see nothing moved.
     let settled = Epoch::always_fresh();
 
     publish_at(&host, settled, &snapshot, &found);
@@ -1290,9 +1206,6 @@ fn a_frame_that_changed_nothing_matches_nothing() {
         "a frame whose query, scope and published tables stood still matched again"
     );
 
-    // Another worker landing moves the data epoch — links, diffs and metrics
-    // do, several times a second under load. The answer did not change, so
-    // neither does anything the strip matches.
     for data in 1..=5 {
         let other_worker = Epoch {
             data: settled.data + data,
@@ -1307,8 +1220,6 @@ fn a_frame_that_changed_nothing_matches_nothing() {
         "another worker's result re-matched a search whose answer had not changed"
     );
 
-    // The control: moved inputs are matched afresh, or the count above could
-    // stand still for a reason that has nothing to do with the memo.
     publish_at(&host, Epoch::always_fresh(), &snapshot, &found);
     render_strip(&host).expect("render");
     assert!(
@@ -1319,16 +1230,7 @@ fn a_frame_that_changed_nothing_matches_nothing() {
 
 #[test]
 fn an_open_strip_that_changed_nothing_leaves_every_pure_pane_cached() {
-    // The strip re-states its own state on every frame — the query field, a
-    // table — and the kernel compares a write with what is held so an unmoved
-    // value is no change. A table used to compare in whatever order `pairs`
-    // happened to walk it, which differs between two copies of the same table,
-    // so the field "moved" on most frames and dropped every pure pane's cached
-    // tree with it: the session list re-rendered on every frame search was open.
-    //
-    // Lua seeds its string hash per VM, so which order `pairs` walks a table in
-    // is decided when the VM is made; several are tried, or the one this run
-    // happened to draw could hide the bug.
+    // Lua seeds its string hash per VM, so each fresh VM may walk `pairs` in another order.
     for _ in 0..32 {
         settled_strip_keeps_the_list_cached();
     }
@@ -1363,7 +1265,6 @@ fn settled_strip_keeps_the_list_cached() {
     for ch in "error".chars() {
         press(&host, &ch.to_string());
     }
-    // Let the first frames after the keystrokes settle what they write.
     for _ in 0..3 {
         publish_at(&host, settled, &snapshot, &found);
         render_strip(&host).expect("render");

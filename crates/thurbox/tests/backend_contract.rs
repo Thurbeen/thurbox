@@ -50,8 +50,6 @@ fn the_tmux_backend_keeps_the_contract() {
     backend_contract::suite(&backend);
     backend.shutdown();
 
-    // Headless, on a backend nothing attached to: a teardown or a restart
-    // from `thurbox-cli` opens no control client on the server it acts on.
     let headless = TmuxBackend::local(&thurbox::backend::mux_settings(&Default::default()));
     backend_contract::lifecycle(&headless);
     backend_contract::pane_io(&headless);
@@ -439,8 +437,6 @@ fn a_psmux_hosts_duplicate_names_stay_unknown_even_with_a_remembered_pane() {
         "sleep",
         "300",
     ]);
-    // Split, and the new pane selected: the listing now reports it, not the
-    // pane the row remembers.
     pane(&[
         "split-window",
         "-t",
@@ -566,8 +562,6 @@ fn a_keystroke_never_answers_the_next_command() {
     for n in 0..50 {
         adopted.input.write_all(b"x").expect("type");
         adopted.input.flush().expect("flush");
-        // A round trip of its own on the control connection, answered with
-        // the pane's pid — or, handed the keystroke's empty reply, with none.
         if !matches!(backend.pane_pid(&pane), Ok(Some(_))) {
             wrong.push(n);
         }

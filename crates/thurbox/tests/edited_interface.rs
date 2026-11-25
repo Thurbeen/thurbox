@@ -172,8 +172,6 @@ fn rect_of(host: &LuaHost, width: u16, height: u16, slot: &str) -> Option<Rect> 
         .map(|placed| placed.rect)
 }
 
-// ── the edited files, against the current lib/ and kernel ───────────────────
-
 #[test]
 fn edited_layouts_and_panes_from_old_releases_still_arrange_and_render() {
     for (release, edited) in RELEASES {
@@ -182,7 +180,6 @@ fn edited_layouts_and_panes_from_old_releases_still_arrange_and_render() {
         assert!(host.error.is_none(), "{release}: {:?}", host.error);
         publish(&host);
 
-        // The edit is honoured: the list on the right, wider than it shipped.
         let sessions = rect_of(&host, 160, 48, "sessions").expect("the list is placed");
         let center = rect_of(&host, 160, 48, "center").expect("the agent is placed");
         assert!(sessions.x > center.x, "{release}: {sessions:?} {center:?}");
@@ -191,8 +188,6 @@ fn edited_layouts_and_panes_from_old_releases_still_arrange_and_render() {
         assert!(rect_of(&host, 60, 48, "center").is_some());
 
         for focused in [false, true] {
-            // The list first: it is what selects a session, which is what gives
-            // the agent pane something to draw.
             let list = host
                 .render(index_of(&host, "sessions"), ctx(48, 40, focused))
                 .unwrap_or_else(|e| panic!("{release}: the session list renders: {e:?}"));
@@ -228,8 +223,6 @@ fn edited_session_pane_still_renders_remote_sessions() {
 
 #[test]
 fn edited_interfaces_pass_mod_check() {
-    // What the user runs — and what `AGENTS.md` tells an agent to run — after an
-    // upgrade. It loads the whole interface at two sizes the way thurbox does.
     for (release, edited) in RELEASES {
         let dir = upgraded_edited_interface(release, edited);
         let output = Process::new(env!("CARGO_BIN_EXE_thurbox-cli"))
@@ -247,8 +240,6 @@ fn edited_interfaces_pass_mod_check() {
         );
     }
 }
-
-// ── lib/'s published surface ────────────────────────────────────────────────
 
 fn lib_modules() -> Vec<String> {
     let lib = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../ui/lib");
@@ -357,8 +348,6 @@ fn lib_still_exports_every_name_it_ever_published() {
     );
 }
 
-// ── the explicit writers of layout.lua ──────────────────────────────────────
-
 #[test]
 fn restoring_an_edited_layout_keeps_the_edit_as_a_backup() {
     let (release, edited) = RELEASES[0];
@@ -375,7 +364,6 @@ fn restoring_an_edited_layout_keeps_the_edit_as_a_backup() {
         fixture(&format!("{release}/layout.lua"))
     );
 
-    // Restoring the untouched file again has nothing to keep.
     assert_eq!(
         bundled::restore(dir.path(), "layout.lua").expect("restore"),
         None

@@ -165,8 +165,6 @@ fn registry_for(host: &LuaHost) -> Registry {
 
 #[test]
 fn the_bundled_mods_declare_settings_at_all() {
-    // The regression this whole file exists for: with none declared, the
-    // settings modal has nothing to render and the extension point is unproven.
     let host = host();
     let registry = registry_for(&host);
     assert!(
@@ -177,8 +175,6 @@ fn the_bundled_mods_declare_settings_at_all() {
 
 #[test]
 fn a_declared_setting_actually_changes_what_is_drawn() {
-    // Declaring is half of it. Flipping `sessions.group_by_repo` must remove the
-    // repo rows, or the row in the modal is a lie.
     let host = host();
     let mut registry = registry_for(&host);
 
@@ -196,7 +192,6 @@ fn a_declared_setting_actually_changes_what_is_drawn() {
         !flat.contains("thurbox") && !flat.contains("website"),
         "headers should be gone once grouping is off:\n{flat}"
     );
-    // The sessions themselves are untouched — only the header line goes.
     assert!(
         flat.contains("one") && flat.contains("two"),
         "sessions must survive:\n{flat}"
@@ -222,11 +217,6 @@ fn a_setting_reverts_to_its_default_when_cleared() {
 
 #[test]
 fn grouping_off_means_ungrouped_and_not_merely_unlabelled() {
-    // The knob suppressed the header LINE and kept the repo clustering, so a
-    // manual order that interleaved two repos was silently re-clustered on the
-    // next build: `Shift+J` past a repo boundary was accepted, persisted, and
-    // undone a frame later, with the headers that would have explained it
-    // turned off. Off has to mean one flat list ordered by the manual order.
     let host = host();
     let mut registry = registry_for(&host);
     let sessions = || {
@@ -257,13 +247,8 @@ fn grouping_off_means_ungrouped_and_not_merely_unlabelled() {
 
 #[test]
 fn host_grouping_is_the_operators_choice() {
-    // The host axis shipped derived: a list spanning machines grouped by them
-    // and there was no way to say otherwise. The repo axis has been a knob
-    // since it shipped, and this is the row beside it.
     let host = host();
     let mut registry = registry_for(&host);
-    // One repo on two machines, so the repo axis alone cannot produce the
-    // second header and only the host axis can.
     let across_machines = || {
         vec![
             row("one", "thurbox"),
@@ -271,9 +256,6 @@ fn host_grouping_is_the_operators_choice() {
         ]
     };
 
-    // Two headers, because the two machines split one repo group in two. The
-    // repo name is only ever on a header here -- the sessions are `one` and
-    // `two` -- so counting it counts the groups.
     let by_machine = session_list_of(&host, &registry, across_machines());
     assert!(
         by_machine.contains("buildbox"),
@@ -307,7 +289,6 @@ fn host_grouping_is_the_operators_choice() {
 
 #[test]
 fn local_host_row_follows_the_host_grouping_setting() {
-    // The local row is useful even on a single machine: it is the fold handle.
     let host = host();
     let mut registry = registry_for(&host);
     let one_machine = || vec![row("one", "thurbox"), row("two", "website")];
@@ -324,8 +305,6 @@ fn local_host_row_follows_the_host_grouping_setting() {
     let flat = session_list_of(&host, &registry, one_machine());
     assert!(!flat.contains("local"), "{flat}");
 }
-
-// --- a text setting with declared choices -----------------------------------
 
 fn host_with_choices() -> (tempfile::TempDir, LuaHost) {
     let dir = tempfile::tempdir().expect("tempdir");

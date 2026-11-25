@@ -17,8 +17,6 @@ fn have_tmux() -> bool {
         .unwrap_or(false)
 }
 
-// --- the panic that used to leak ------------------------------------------
-
 #[cfg(unix)]
 const PROBE_REPORT_ENV: &str = "THURBOX_PANIC_PROBE_REPORT";
 
@@ -64,9 +62,6 @@ fn a_panicking_harness_still_reaps_its_tmux_server() {
         String::from_utf8_lossy(&out.stderr)
     );
 
-    // An empty report means the probe never got a server started, and there is
-    // nothing for the assertion below to be about: passing it then would be
-    // passing for the wrong reason.
     let socket = std::fs::read_to_string(&report).unwrap_or_default();
     let socket = socket.trim();
     if socket.is_empty() {
@@ -94,12 +89,8 @@ fn a_harness_that_panics_after_starting_a_server() {
     }
 
     let server = TmuxServer::pin(&format!("thurbox-panic-probe-{}", std::process::id()));
-    // A pane that outlives the test: one that exits takes the server with it
-    // and would turn this probe into a test of tmux's own idle shutdown.
+    // tmux shuts an idle server down, so the pane outlives the test.
     let started = server.tmux(&["new-session", "-d", "-s", "probe", "sleep", "300"]);
-    // The report is what says a server exists to leak; the panic happens
-    // either way, so the caller reads one failing child rather than having to
-    // tell "could not start a server" from "did not panic".
     if started.status.success() {
         std::fs::write(&report, server.socket()).expect("report the socket");
     }
@@ -128,17 +119,11 @@ fn touches(line: &str, prev: &str, konst: Option<&str>, literal: &str, verbs: &[
         return false;
     }
     let verbed = verbs.iter().any(|v| line.contains(v));
-    // A real use of the constant, not this file's own description of one:
-    // `marks(Some("SOCKET_OVERRIDE_ENV"), …)` names it inside a string, and a
-    // use never is.
     let names_konst = konst.is_some_and(|k| {
         line.match_indices(k)
             .any(|(at, _)| at == 0 || !line[..at].ends_with('"'))
     });
     if names_konst {
-        // …and it still has to be a set or a clear. `var(SOCKET_OVERRIDE_ENV)`
-        // reads the socket rather than moving it, and counting that as a pin
-        // would fail a harness for asking a question.
         let continued = prev.trim_end().ends_with('(') && verbs.iter().any(|v| prev.contains(v));
         return verbed || continued;
     }
@@ -241,8 +226,6 @@ fn the_guard_scopes_every_socket_it_pins() {
 
 #[test]
 fn no_harness_pins_a_socket_outside_the_guard() {
-    // The one file that is *about* the resolution, sets the pair on purpose,
-    // and never starts a multiplexer.
     const EXEMPT: [&str; 1] = ["cli_socket_isolation.rs"];
 
     let mut offenders = Vec::new();
@@ -308,8 +291,7 @@ fn held_guard(line: &str, next: &str) -> Option<bool> {
         || before.ends_with(':')
         || before.ends_with('(')
         || before.ends_with(',');
-    // `next` because rustfmt breaks a method chain across lines, and a chain
-    // whose first link sits on the following line is the same temporary.
+    // rustfmt may put a method chain's first link on the following line.
     let rest = after_call(&line[at + ctor.len()..]);
     let rest = if rest.is_empty() {
         next.trim_start()

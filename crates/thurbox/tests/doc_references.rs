@@ -160,7 +160,6 @@ fn every_source_path_in_a_document_exists() {
     for (rel, text) in texts().iter().filter(|(rel, _)| rel.ends_with(".md")) {
         for m in path.captures_iter(text).map(|m| m.get(1).unwrap()) {
             let target = m.as_str();
-            // By directory, so `src/ui_control.rs` is still checked.
             let v1 = ["src/app", "src/ui"].iter().any(|dir| {
                 target == *dir
                     || target

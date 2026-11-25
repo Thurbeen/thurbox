@@ -155,9 +155,7 @@ fn path_in_lock(lock: &str, from: &str, to: &str) -> Option<Vec<String>> {
         .as_array()
         .expect("Cargo.lock lists packages");
     let field = |package: &toml::Value, key: &str| package.get(key)?.as_str().map(str::to_owned);
-    // A dependency entry is `name`, then ` version` when the lock holds more
-    // than one version of that name, then ` (source)` when one version comes
-    // from more than one source.
+    // Cargo.lock writes a dependency as `name[ version][ (source)]`, adding parts only to disambiguate.
     let find = |entry: &str| {
         let mut words = entry.splitn(3, ' ');
         let (name, version) = (words.next(), words.next());

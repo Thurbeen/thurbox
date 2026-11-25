@@ -80,7 +80,6 @@ async fn repeated_setup_adds_clipboard_once_and_keeps_every_other_feature() {
     thurbox::paths::set_test_dir(dir.path());
 
     spawn(1, dir.path());
-    // A feature the operator added by hand, which a fix must not disturb.
     stage(
         &server,
         &[
@@ -101,7 +100,6 @@ async fn repeated_setup_adds_clipboard_once_and_keeps_every_other_feature() {
         "the test could not stage the feature it is about: {before:?}"
     );
 
-    // Each spawn re-applies the config, exactly as a restart does.
     for n in 2..=4 {
         spawn(n, dir.path());
     }
@@ -153,7 +151,6 @@ async fn existing_duplicates_stop_growing_and_are_not_removed() {
     let server = TmuxServer::pin(SOCKET);
     thurbox::paths::set_test_dir(dir.path());
 
-    // One appended `*:clipboard` per pre-fix run.
     start_bare(&server);
     for _ in 0..3 {
         stage(

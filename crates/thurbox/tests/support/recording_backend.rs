@@ -404,7 +404,6 @@ impl WindowLifecycle for RecordingBackend {
         state.windows.push(Window {
             pane: pane.clone(),
             name,
-            // Stamped as it is created, which is what makes it findable by id.
             session: spec.owner.session_id.to_string(),
             role: spec.role,
             alive: true,
@@ -432,8 +431,6 @@ impl WindowLifecycle for RecordingBackend {
             callback();
         }
         let state = self.lock(format!("locate {}", owner.session_id))?;
-        // Every window here carries its own stamp, so an ambiguous name is
-        // left ambiguous: nothing the fake could do would be proof.
         Ok(Placed {
             agent: state.place(owner, WindowRole::Agent),
             shell: state.place(owner, WindowRole::Shell),
@@ -577,8 +574,6 @@ impl WindowLifecycle for RecordingBackend {
         if state.refuse_kill {
             return Err(anyhow::anyhow!("scripted kill refusal").into());
         }
-        // Idempotent, as the contract asks: a pane already gone is the
-        // outcome a kill wanted.
         state.windows.retain(|w| w.pane != backend_id);
         Ok(())
     }
@@ -622,8 +617,6 @@ impl PaneIo for RecordingBackend {
         text: &str,
         submit: bool,
     ) -> thurbox::backend::contract::BackendResult<()> {
-        // The paste and the Enter are two calls, as they are on a real
-        // multiplexer: nothing holds the pane between them.
         self.lock(format!("send_text {pane} {text}"))?
             .input(pane)?
             .screen
@@ -644,8 +637,6 @@ impl PaneIo for RecordingBackend {
         text: &str,
         delay: std::time::Duration,
     ) -> thurbox::backend::contract::BackendResult<()> {
-        // The fake's time passes at once: what a real timer would type later
-        // is on the screen when this returns.
         let mut state = self.lock(format!(
             "send_text_after {pane} {}s {text}",
             delay.as_secs()

@@ -192,8 +192,6 @@ fn right_arrow_steps_through_a_folded_repo_one_level_at_a_time() {
     list_text(&host, &snapshot, &registry);
     press_in(&host, &snapshot, "l");
     list_text(&host, &snapshot, &registry);
-    // The host's first child is its folded repo row: Right selects it, the
-    // next Right unfolds it, and only the third reaches the session.
     press_in(&host, &snapshot, "right");
     let frame = list_text(&host, &snapshot, &registry);
     assert!(!frame.contains("remote-alpha"), "{frame}");
@@ -839,8 +837,6 @@ fn press_inflight(host: &LuaHost, snapshot: &Snapshot, inflight: &[InFlight], ch
 
 #[test]
 fn enter_opens_the_selected_session() {
-    // v1's Enter on a row moves focus to the terminal; the agent pane is what
-    // shows a session here, so opening is a focus change.
     let host = host();
     render(&host);
     press(&host, "enter");
@@ -878,9 +874,6 @@ fn the_list_publishes_the_session_under_its_cursor() {
 
 #[test]
 fn another_pane_can_steer_the_selection() {
-    // The gap this closes: the list republished its own cursor every frame, so a
-    // pane that wrote `store.selected` — a search result, a task opening its
-    // session — was undone a frame later and the jump silently did nothing.
     let host = host();
     render(&host);
     assert_eq!(host.shared_string("selected").as_deref(), Some("aaa"));
@@ -893,17 +886,17 @@ fn another_pane_can_steer_the_selection() {
         "the write survived the next render"
     );
 
-    // And the cursor really moved with it, rather than the value merely sticking:
-    // stepping on lands past the steered row, not past the old one.
     press(&host, "k");
     render(&host);
-    assert_eq!(host.shared_string("selected").as_deref(), Some("aaa"));
+    assert_eq!(
+        host.shared_string("selected").as_deref(),
+        Some("aaa"),
+        "the cursor itself moved to the steered row, so stepping up lands above it"
+    );
 }
 
 #[test]
 fn a_session_that_went_away_does_not_freeze_the_selection() {
-    // Steering at an id the list cannot show must not strand the cursor: the list
-    // keeps its own, and the request is simply not honoured.
     let host = host();
     render(&host);
     host.set_shared_string("selected", "gone");
@@ -914,8 +907,6 @@ fn a_session_that_went_away_does_not_freeze_the_selection() {
         "the cursor stayed on a row that exists"
     );
 }
-
-// --- the selection is a session, not the row it happens to sit on -----------
 
 fn three() -> Snapshot {
     Snapshot {
@@ -1027,10 +1018,6 @@ fn on_the_middle_row(host: &LuaHost, world: &Snapshot) {
 
 #[test]
 fn a_session_opening_above_the_cursor_moves_neither_the_bar_nor_the_agent_pane() {
-    // The whole of issue #1211: the cursor was an index restored from `state`,
-    // so a row appearing above it slid a different session under the highlight —
-    // and under the agent pane, which draws whatever the list published, while
-    // the keyboard stayed where it was.
     let host = host();
     let world = three();
     on_the_middle_row(&host, &world);
@@ -1045,9 +1032,6 @@ fn a_session_opening_above_the_cursor_moves_neither_the_bar_nor_the_agent_pane()
 
 #[test]
 fn a_session_closing_above_the_cursor_moves_neither_the_bar_nor_the_agent_pane() {
-    // The other half of the same write: a row *leaving* above the cursor shifts
-    // every later row up by one, so an index-based cursor lands one row further
-    // down the list.
     let host = host();
     let world = three();
     on_the_middle_row(&host, &world);
@@ -1058,10 +1042,6 @@ fn a_session_closing_above_the_cursor_moves_neither_the_bar_nor_the_agent_pane()
 
 #[test]
 fn the_selected_session_going_away_hands_the_selection_to_the_row_below_it() {
-    // The branch that decides what "follow the session" means when there is no
-    // session left to follow: the row that has taken its place. Never the top,
-    // which is a second theft, and never nothing, which would blank the agent
-    // pane over a session the operator never closed.
     let host = host();
     let world = three();
     on_the_middle_row(&host, &world);
@@ -1072,8 +1052,6 @@ fn the_selected_session_going_away_hands_the_selection_to_the_row_below_it() {
 
 #[test]
 fn the_last_session_going_away_clamps_to_the_new_last_row() {
-    // The same rule at the end of the list, where there is no row below: the
-    // list shortened under the cursor, so the cursor lands on its last row.
     let host = host();
     let world = three();
     render_in(&host, &world);
@@ -1093,11 +1071,6 @@ fn the_last_session_going_away_clamps_to_the_new_last_row() {
 
 #[test]
 fn the_last_session_of_all_going_away_publishes_nothing_rather_than_a_dead_id() {
-    // The end of the removal branch. Re-deriving the row from a session id says
-    // nothing about a list with no sessions left in it, so what is pinned here is
-    // that the list publishes *nothing* and the agent pane falls back to its own
-    // empty frame — rather than the last id it saw being held on out of caution,
-    // which would leave that pane titled after a session that is gone.
     let host = host();
     let world = three();
     on_the_middle_row(&host, &world);
@@ -1132,9 +1105,6 @@ fn following_new_sessions(host: &LuaHost) -> Registry {
 
 #[test]
 fn a_session_this_interface_created_moves_nothing_by_default() {
-    // The default this interface has always had: the row appears and waits to
-    // be picked. Asserted rather than assumed, because the machinery that can
-    // move the cursor is now loaded either way — only the setting is off.
     let host = host();
     render(&host);
 
@@ -1154,14 +1124,10 @@ fn a_session_this_interface_created_moves_nothing_by_default() {
 
 #[test]
 fn with_the_setting_on_a_created_session_is_selected_and_opened() {
-    // The whole of what the setting buys: the two halves `Enter` performs, for
-    // a row the user did not have to find.
     let host = host();
     let registry = following_new_sessions(&host);
     render_with(&host, &snapshot(), &registry);
 
-    // Nothing is drained first: a render that started issuing commands should
-    // fail this assertion rather than hide behind a reset buffer.
     host.dispatch_event(&post_create("bbb", "second"));
     assert_eq!(
         host.drain_commands(),
@@ -1181,8 +1147,6 @@ fn with_the_setting_on_a_created_session_is_selected_and_opened() {
 
 #[test]
 fn a_pending_jump_loses_to_the_users_own_cursor_move() {
-    // The follow is sticky, not a lock: moving the cursor yourself after the
-    // jump is a choice made later, so it stands.
     let host = host();
     let registry = following_new_sessions(&host);
     render_with(&host, &snapshot(), &registry);
@@ -1200,9 +1164,6 @@ fn a_pending_jump_loses_to_the_users_own_cursor_move() {
 
 #[test]
 fn only_a_create_this_interface_made_is_subscribed_to() {
-    // `session.created` fires for every row that appears, whoever made it —
-    // subscribing to it would let a `thurbox-cli session create` or a second
-    // instance take the keyboard out from under the user.
     let host = host();
     let index = host.index_of(MOD).expect("no sessions plugin");
     let events = &host.mods[index].events;
@@ -1325,9 +1286,6 @@ fn force_deleting_a_session_with_work_asks_first_and_says_what_is_lost() {
 
 #[test]
 fn a_clean_primary_does_not_speak_for_the_other_worktrees() {
-    // The snapshot stats one directory per session, so on a multi-worktree
-    // session a clean answer covers the primary and nothing else. v1 assessed
-    // every worktree it was about to remove; not being able to is unknown.
     let host = host();
     let mut snapshot = snapshot();
     snapshot.sessions[0].git = Some(clean());
@@ -1352,9 +1310,6 @@ fn a_clean_primary_does_not_speak_for_the_other_worktrees() {
 
 #[test]
 fn a_state_that_could_not_be_read_asks_rather_than_assume_clean() {
-    // `git` is nil for a stat that has not run, a directory that is not a
-    // worktree, and a host that could not be reached. v1 folded all three into
-    // `DeleteRisk::unknown()` and confirmed.
     let host = host();
     let snapshot = snapshot();
     assert!(snapshot.sessions[0].git.is_none());
@@ -1389,9 +1344,6 @@ fn force_deleting_a_merged_branch_asks_without_claiming_lost_commits() {
 
 #[test]
 fn force_deleting_an_unmerged_branch_still_asks() {
-    // The other half: `merged` only ever silences the question, never asks one
-    // of its own, and an unproven branch (`false`, or a check that could not
-    // run) keeps the commits it is ahead by.
     for merged in [Some(false), None] {
         let host = host();
         let mut snapshot = snapshot();
@@ -1418,8 +1370,6 @@ fn force_deleting_an_unmerged_branch_still_asks() {
 
 #[test]
 fn shift_s_sorts_each_group_by_name() {
-    // The baseline the fix below must not move: with nothing in flight, the
-    // group's sessions are persisted in name order, case-insensitively.
     let host = host();
     let snapshot = Snapshot {
         sessions: vec![row("aaa", "Zulu"), row("bbb", "alpha")],
@@ -1446,13 +1396,12 @@ fn sorting_with_a_creation_in_flight_does_not_take_the_pane_down() {
     render_in(&host, &snapshot);
     press_inflight(&host, &snapshot, &inflight, "S");
 
-    // The sort still happens, over the sessions that have one: a placeholder
-    // carries no session id, so there is nothing of it to persist an order for.
     assert_eq!(
         host.drain_commands(),
         vec![Command::Order {
             list: vec!["aaa".into(), "bbb".into()],
-        }]
+        }],
+        "the sort orders the real sessions; a placeholder has no id to persist"
     );
 }
 
@@ -1461,8 +1410,6 @@ fn sorted_by_order_lua(items: &str) -> String {
     let mods = dir.path().join("mods");
     std::fs::create_dir_all(&mods).expect("mkdir");
 
-    // `require` reads the interface directory, so the module under test is the
-    // repository's own file, copied in beside the probe rather than restated.
     let lib = dir.path().join("lib");
     std::fs::create_dir_all(&lib).expect("mkdir");
     let checkout = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../ui");
@@ -1510,11 +1457,6 @@ return {{
 
 #[test]
 fn the_sort_puts_a_nameless_block_at_its_groups_end() {
-    // The placeholder is deliberately FIRST in the input. `session_model.build`
-    // never emits one there — which is the point: the contract has to hold for
-    // the function, not for the one arrangement its caller happens to pass, or
-    // the next caller inherits a comparator that indexes a session that is not
-    // there.
     let items = r#"{
       { session = { name = "zulu" }, depth = 0, header = "thurbox", target = "z" },
       { command = {}, depth = 0, target = false },
@@ -1528,22 +1470,20 @@ fn the_sort_puts_a_nameless_block_at_its_groups_end() {
     );
 }
 
-// --- the hierarchy (issue #1551) ---------------------------------------------
-
 fn frame_at(host: &LuaHost, width: u16, height: u16) -> Vec<String> {
     use unicode_width::UnicodeWidthStr;
     let buffer = paint(host, MOD, width, height);
     (0..buffer.area.height)
         .map(|y| {
             let mut line = String::new();
-            let mut owed = 0;
+            let mut cells_owned_by_wide_glyph = 0;
             for x in 0..buffer.area.width {
-                if owed > 0 {
-                    owed -= 1;
+                if cells_owned_by_wide_glyph > 0 {
+                    cells_owned_by_wide_glyph -= 1;
                     continue;
                 }
                 let symbol = buffer[(x, y)].symbol();
-                owed = symbol.width().saturating_sub(1);
+                cells_owned_by_wide_glyph = symbol.width().saturating_sub(1);
                 line.push_str(symbol);
             }
             line
@@ -1591,10 +1531,6 @@ fn family() -> Snapshot {
 
 #[test]
 fn sessions_nest_by_indentation_under_their_host_and_parent() {
-    // Host handle in column 1, repo separator one column in, sessions two in
-    // from the host and two more per parent; a fold slot in front of every dot
-    // so a parent's dot lines up with its siblings'. No `└`, no `⇅`/`⑂`, and no
-    // status strip on the border.
     let host = host();
     publish_with(&host, &family(), &registry_for(&host));
     assert_eq!(
@@ -1620,7 +1556,6 @@ fn folding_a_parent_hides_its_children_but_not_one_waiting_for_you() {
     let registry = registry_for(&host);
     publish_with(&host, &world, &registry);
     frame_at(&host, 40, 9);
-    // The cursor opens on the first session, the lead; Left folds it.
     act(&host, "sessions.parent_host");
     publish_with(&host, &world, &registry);
     let folded = frame_at(&host, 40, 9);
@@ -1634,13 +1569,11 @@ fn folding_a_parent_hides_its_children_but_not_one_waiting_for_you() {
         ],
         "{folded:#?}"
     );
-    // The fold is saved like a host's, so it survives a restart.
     assert!(host.drain_commands().iter().any(|command| matches!(
         command,
         Command::Setting { key, value: Some(Value::Text(value)) }
             if key == "sessions.folded_parents" && value == "lead"
     )));
-    // Right unfolds it, and the handle is a click target that folds it again.
     act(&host, "sessions.first_child");
     publish_with(&host, &world, &registry);
     assert!(frame_at(&host, 40, 9)[4].contains("worker-a"));
@@ -1858,8 +1791,6 @@ fn a_folded_repo_row_says_how_many_sessions_it_holds() {
 
 #[test]
 fn without_host_rows_only_a_top_level_remote_row_carries_the_host_mark() {
-    // Host rows are what says where a session runs; with them off, the top of
-    // each remote tree says it instead, once — its children do not repeat it.
     let host = host();
     let mut lead = row("remote-lead", "remote-lead");
     lead.remote_host = Some("example-ssh".into());
@@ -1881,8 +1812,6 @@ fn without_host_rows_only_a_top_level_remote_row_carries_the_host_mark() {
             "┃   ○ local-one                        ┃",
         ]
     );
-    // Grouped by repo but not by host: the repo separators sit at the edge
-    // and the sessions two columns in from them.
     let registry = with_settings(&host, &[("group_by_host", false)]);
     publish_with(&host, &world, &registry);
     let grouped = frame_at(&host, 40, 7);
@@ -1961,8 +1890,6 @@ fn the_terminal_title_stays_visible_and_aligns_on_wide_panels() {
             .find_map(|line| line.find(needle).map(|at| line[..at].chars().count()))
             .unwrap_or_else(|| panic!("{needle} is not drawn: {wide:#?}"))
     };
-    // Its own aligned column, just past the longest title, without the
-    // agent's spinner glyph.
     assert_eq!(column("Writing tests"), column("Reviewing"), "{wide:#?}");
     assert!(column("Writing tests") > column("beta-longer-name") + 16);
     assert!(!wide.iter().any(|line| line.contains('✳')), "{wide:#?}");
@@ -2016,8 +1943,10 @@ fn the_window_title_setting_shows_the_agents_title_in_place_of_the_name() {
     );
     let on = frame_at(&host, 40, 6);
     assert!(on[3].contains("○ Writing tests"), "{on:#?}");
-    // A session whose agent set no title keeps its name.
-    assert!(on[4].contains("○ beta"), "{on:#?}");
+    assert!(
+        on[4].contains("○ beta"),
+        "a session whose agent set no title keeps its name: {on:#?}"
+    );
 }
 
 fn rgb(colour: &str) -> Option<(u8, u8, u8)> {
@@ -2084,11 +2013,6 @@ fn a_waiting_row_has_a_background_in_the_default_terminal_palette() {
 
 #[test]
 fn the_host_band_and_a_waiting_row_are_tinted_readably_in_every_preset() {
-    // Tints are mixed from each preset's own roles over its own background, so
-    // the check is per preset: the band and the waiting row must differ from
-    // the background, and the text on them must still read. A preset whose
-    // colours are not `#rrggbb` has nothing to mix; its host band falls back to
-    // `modal_bg`.
     let host = host();
     let world = family();
     let registry = registry_for(&host);
@@ -2168,9 +2092,6 @@ fn answering_a_folded_blocked_child_keeps_it_selected() {
 
 #[test]
 fn each_grouping_level_indents_sessions_once() {
-    // Issue #1605: a session is indented once per group row above it. Grouped
-    // by host alone, it sits where a repo row would under that host, not where
-    // a session under a repo row does.
     let host = host();
     let world = Snapshot {
         sessions: vec![
@@ -2382,8 +2303,6 @@ fn a_fleet_status_draws_its_source_in_every_theme() {
             "{name}: {:?}",
             line(sl)
         );
-        // The first row carries the selection bar, which paints its own
-        // colours; every other glyph wears its state's role.
         let blocked = themes.roles()["status_blocked"]
             .parse::<ratatui::style::Color>()
             .expect("a colour");
@@ -2410,11 +2329,9 @@ fn a_fleet_status_draws_its_source_in_every_theme() {
         glyph(sl, "?");
     }
 
-    // Selected, a screen state's glyph takes the bar's colours and stays dim.
     let mut first = snapshot.clone();
     first.sessions.rotate_left(1);
     themes.preview("default").expect("a preset");
-    // A fresh interface: the selection follows a session, not a row.
     let host = self::host();
     publish_full(&host, &first, &registry, &[], &themes, &Default::default());
     let buffer = paint(&host, MOD, 90, 8);

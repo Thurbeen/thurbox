@@ -11,6 +11,7 @@ fn interface(mods: &[(&str, &str)]) -> (tempfile::TempDir, std::path::PathBuf) {
     (home, ui)
 }
 
+// THURBOX_CONFIG_DIR is process-wide and cargo test threads tests, so setters share a lock.
 fn configure(home: &std::path::Path) -> std::sync::MutexGuard<'static, ()> {
     static CONFIG: std::sync::Mutex<()> = std::sync::Mutex::new(());
     let guard = CONFIG
@@ -95,8 +96,6 @@ fn asker(name: &str, key: &str, declares: bool) -> String {
 
 #[test]
 fn an_undeclared_mod_has_no_run_at_all() {
-    // Absent, not refusing: `run` is nil, so the pane's own `if run then` is the
-    // check — there is no error to catch because there is no function to call.
     let (_home, ui) = interface(&[("91_quiet.lua", &asker("quiet", "k", false))]);
     let host = LuaHost::new(&ui);
     assert!(host.error.is_none(), "{:?}", host.error);
@@ -109,7 +108,6 @@ fn an_undeclared_mod_has_no_run_at_all() {
 
 #[test]
 fn a_declared_but_untrusted_mod_has_no_run_either() {
-    // Declaring is asking, not being granted.
     let (_home, ui) = interface(&[("91_asks.lua", &asker("asks", "k", true))]);
     let host = LuaHost::new(&ui);
     assert_eq!(
@@ -226,7 +224,6 @@ fn forgetting_run_answers_requires_the_same_owner_grant_as_running() {
 
 #[test]
 fn a_capability_that_does_not_exist_fails_the_load_naming_the_file() {
-    // Loading it and granting nothing would look like the capability is broken.
     let (_home, ui) = interface(&[(
         "91_typo.lua",
         r#"return { name = "typo", slot = "sessions", capabilities = { "rnu" },
@@ -313,8 +310,6 @@ fn reader(name: &str) -> String {
 
 #[test]
 fn a_mod_may_be_written_as_several_modules() {
-    // A substantial pane is not a file anyone wants to keep in one piece, so
-    // this is a guarantee rather than an accident of how `require` resolves.
     let home = tempfile::tempdir().expect("tempdir");
     let ui = home.path().join("ui");
     thurbox::kernel::bundled::materialize(&ui);
@@ -367,8 +362,6 @@ return { name = "escape", slot = "sessions",
 
 #[test]
 fn an_ask_names_a_session_that_must_exist() {
-    // Resolved before any worker starts, so a bad session is a reported failure
-    // rather than a program run somewhere unexpected.
     let ask = Ask {
         key: "k".into(),
         program: "true".into(),
@@ -406,8 +399,6 @@ fn the_one_ask(opts: &str) -> Ask {
 
 #[test]
 fn a_run_belongs_to_its_session_by_default() {
-    // Today's behaviour, unchanged: the session's directory, on the session's
-    // machine — which is what makes `docker compose ps` mean the right containers.
     assert_eq!(
         the_one_ask(r#"{ session = "s1" }"#).target,
         Target::Session("s1".into())
@@ -420,14 +411,10 @@ fn a_run_belongs_to_its_session_by_default() {
 
 #[test]
 fn a_run_may_ask_for_this_machine_instead() {
-    // A pane whose program needs *this* machine — its microphone, its display,
-    // its clipboard — asks for it, and no session is needed to do so.
     assert_eq!(
         the_one_ask(r#"{ machine = "local" }"#).target,
         Target::Local
     );
-    // Naming a session as well does not move the run onto that session's host:
-    // where it runs is what `machine` says.
     assert_eq!(
         the_one_ask(r#"{ machine = "local", session = "s1" }"#).target,
         Target::Local
@@ -542,9 +529,6 @@ fn session_routing_requires_a_nonempty_string_before_queueing() {
 
 #[test]
 fn a_machine_nobody_knows_is_refused_not_guessed() {
-    // Falling back to the session would run the program somewhere the pane did
-    // not ask for, which is the one thing a `run` must never do. A value that is
-    // not a string at all is no less unknown than a misspelt one.
     for opts in [
         r#"{ machine = "mars" }"#,
         r#"{ machine = "host:" }"#,
@@ -576,8 +560,6 @@ fn a_machine_nobody_knows_is_refused_not_guessed() {
         assert!(host.drain_runs().is_empty(), "{opts}: nothing queued");
     }
 }
-
-// ── the two capabilities are two decisions ─────────────────────────────────
 
 fn declares(name: &str, capabilities: &[&str]) -> String {
     let list: Vec<String> = capabilities
@@ -611,8 +593,6 @@ fn program_is_a_capability_of_its_own_and_is_enumerable_from_the_declaration() {
 
 #[test]
 fn a_misspelled_capability_is_refused_and_names_what_exists() {
-    // Refused rather than ignored, for the reason `run` already is: a typo would
-    // otherwise load, be granted nothing, and look like the capability is broken.
     let (_home, ui) = interface(&[("91_typo.lua", &declares("typo", &["porgram"]))]);
     let host = LuaHost::new(&ui);
     let error = host.error.clone().unwrap_or_default();
@@ -659,7 +639,6 @@ fn declaring_a_capability_is_not_being_granted_it() {
         !host.may(watch, Capability::Program),
         "declaring is asking, not being granted"
     );
-    // And the path-keyed form agrees, since that is what a queued command carries.
     assert!(!host.may_path("mods/91_watch.lua", Capability::Program));
     host.set_trusted(vec!["mods/91_watch.lua".to_string()]);
     assert!(host.may_path("mods/91_watch.lua", Capability::Program));
@@ -671,8 +650,6 @@ fn declaring_a_capability_is_not_being_granted_it() {
 
 #[test]
 fn each_capability_says_what_it_would_let_a_file_do() {
-    // The list where the user presses `t` has to distinguish them: "runs programs"
-    // describes both while hiding the difference that decides the answer.
     let described: Vec<&str> = Capability::ALL
         .iter()
         .map(|capability| capability.describe())
@@ -746,7 +723,6 @@ fn an_update_that_moves_the_pin_takes_run_away() {
     render(&host, "asks");
     assert_eq!(host.drain_runs().len(), 1, "trusted at v1, so it may run");
 
-    // The interface reloads after an update, which is when the grant is recomputed.
     deliver_package(&ui, file, "v2", &asker("asks", "k2", true));
     let host = LuaHost::new(&ui);
     enforce(&host, &ui);
@@ -759,8 +735,6 @@ fn an_update_that_moves_the_pin_takes_run_away() {
 
 #[test]
 fn an_installed_file_whose_contents_changed_under_its_pin_loses_run() {
-    // A source re-tagging the same version, or a local edit to an installed file:
-    // the grant was made to other contents and must not ride along.
     let (home, ui) = interface(&[]);
     let _config = configure(home.path());
     let file = "mods/91_asks.lua";
@@ -782,8 +756,6 @@ fn an_installed_file_whose_contents_changed_under_its_pin_loses_run() {
 
 #[test]
 fn editing_your_own_trusted_file_keeps_run() {
-    // A file the user wrote is theirs to edit; the row says `trusted · modified`
-    // and the grant stands, which is what the row says.
     let (home, ui) = interface(&[("91_asks.lua", &asker("asks", "k", true))]);
     let _config = configure(home.path());
     let file = "mods/91_asks.lua";
@@ -873,9 +845,6 @@ fn lured() -> (tempfile::TempDir, LuaHost) {
 
 #[test]
 fn a_pane_cannot_run_a_program_through_a_global_another_pane_calls() {
-    // Every pane used to share one Lua state, so a pane that replaced `type`
-    // ran its own code inside a trusted pane's call — with that pane's `run`
-    // bound and its path stamped on the ask.
     let (_home, host) = lured();
     let runs = host.drain_runs();
     assert!(runs.iter().all(|(_, ask)| ask.key != "stolen"), "{runs:?}");
@@ -920,8 +889,6 @@ fn refused_kinds(host: &LuaHost) -> Vec<(&'static str, bool)> {
 
 #[test]
 fn an_untrusted_pane_may_not_drive_or_destroy_a_session() {
-    // Issue #1467: an untrusted pane could read a worktree's `.env` and send it
-    // into an agent. Declaring the capability is not enough; the user decides.
     let (home, ui) = interface(&[(
         "91_driver.lua",
         &driver(r#"capabilities = { "sessions" },"#),
@@ -1000,8 +967,6 @@ fn files_seen(host: &LuaHost) -> String {
 
 #[test]
 fn a_pane_cannot_change_the_library_every_pane_shares() {
-    // A replaced global stays in the pane's own environment, but `string` is one
-    // table every pane reads — and every string's methods come from it.
     for (lure, says) in [
         (
             "string.upper = function() return 'PWNED' end",
@@ -1057,10 +1022,6 @@ fn a_pane_trusted_with_files_may_read_them_and_the_next_pane_may_not() {
 
 #[test]
 fn the_shipped_confirmation_and_creation_flow_hold_sessions_untouched() {
-    // They issue every gated command the bundled interface has: the confirmation
-    // a force delete and a restart, the creation flow a create. Asking every user
-    // to trust the binary's own panes before a session can be made would be a
-    // prompt with only one answer.
     let (home, ui) = interface(&[]);
     let _config = configure(home.path());
     let host = LuaHost::new(&ui);
@@ -1123,13 +1084,9 @@ fn victim_program_after(lure: &str) -> String {
 
 #[test]
 fn a_pane_cannot_reach_the_library_behind_its_sealed_proxy() {
-    // Each of these once reached the table every pane shares: `pairs` handed out
-    // the backing table as its iteration state, and `rawset` wrote past
-    // `__newindex` into the one proxy every pane read.
     let leaked = [
         "local _, real = pairs(string)\nif type(real) == 'table' then real.format = function() return 'echo pwned' end end",
         "local step, state = pairs(string)\nlocal _, f = step(state, nil)\nlocal real = state\nif type(real) == 'table' then pcall(rawset, real, 'format', function() return 'echo pwned' end) end",
-        // `rawset` is withheld, so these find nothing to call.
         "pcall(rawset, string, 'format', function() return 'echo pwned' end)",
         "pcall(rawset, store, 'extra', ' && echo pwned')",
     ]
@@ -1167,9 +1124,6 @@ end }"#;
 
 #[test]
 fn only_data_crosses_the_store() {
-    // `store` is the bus between panes, so a write reaches every reader. What
-    // reaches them is a copy of the data: a function or a metatable the writer
-    // attached does not, so a pane cannot hand another code to run.
     let writer = r#"return { name = "writer", slot = "sessions", render = function()
   store.handoff = setmetatable({ text = "hi", run = function() return "pwned" end },
     { __index = function() return "pwned" end })
@@ -1197,8 +1151,6 @@ end }"#;
 
 #[test]
 fn an_edited_shipped_pane_loses_sessions_until_it_is_trusted() {
-    // The grant goes to what the binary ships. An edit is anybody's code, so it
-    // is decided like any other file.
     let (home, ui) = interface(&[]);
     let _config = configure(home.path());
     let file = ui.join("mods/60_confirm.lua");
@@ -1249,8 +1201,6 @@ fn confirmed_through_the_shipped_pane(
 
 #[test]
 fn the_shipped_confirmation_does_not_launder_send_or_create() {
-    // It holds `sessions`, and `store` is written by every pane: forwarding any
-    // command would hand the grant to whoever wrote the question.
     for kind in ["send", "create"] {
         assert!(
             confirmed_through_the_shipped_pane(kind).is_empty(),
@@ -1270,17 +1220,12 @@ fn the_shipped_confirmation_does_not_launder_send_or_create() {
 
 #[test]
 fn a_pane_that_declares_nothing_cannot_read_the_last_panes_answers() {
-    // `thurbox.runs` is one field of a shared table, set per call. A pane that
-    // declared no capability skipped that set, so it read whatever the pane
-    // before it was handed.
     let plain = r#"return { name = "plain", slot = "sessions", render = function()
   local got = (thurbox.runs or {}).mine
   return { type = "text", text = got and got.stdout or "none" }
 end }"#;
     let (_home, ui) = interface(&[("91_a.lua", &reader("a")), ("92_plain.lua", plain)]);
     let host = LuaHost::new(&ui);
-    // After a publish, as in the running interface: `thurbox` is then the
-    // published proxy, whose fields a raw write does not reach.
     publish(&host);
     let mut answers = std::collections::HashMap::new();
     answers.insert(
@@ -1377,9 +1322,6 @@ end }"#;
 
 #[test]
 fn published_data_is_read_only_to_every_pane() {
-    // `thurbox` is one set of tables every pane reads, so a write into it
-    // would change what the next pane sees — a session's id a trusted pane
-    // builds a command from, say. Every route a write could take is refused.
     let probes = [
         "thurbox.error = 'x'",
         "thurbox.theme.roles = {}",
@@ -1412,8 +1354,6 @@ fn published_data_is_read_only_to_every_pane() {
 
 #[test]
 fn a_published_table_saved_to_store_or_state_keeps_its_contents() {
-    // Published data is read-only proxies, empty underneath. Copied into
-    // `store` or `state` raw, it was saved empty; it is copied through.
     let saver = r#"return { name = "saver", slot = "sessions", render = function()
   store.saved = thurbox.theme
   state.saved = thurbox.theme
@@ -1439,10 +1379,6 @@ end }"#;
 
 #[test]
 fn saving_a_panes_whole_thurbox_keeps_what_it_reads() {
-    // A pane's `thurbox` is its own view: published data plus its own answers.
-    // Saved whole, it must keep both, and count as reading all of it, as
-    // iterating it does — the loop fetches remote diffs only for a pane that
-    // reads them.
     let saver = r#"return { name = "saver", slot = "sessions", capabilities = { "run" },
   render = function()
     store.saved = thurbox
@@ -1488,9 +1424,6 @@ fn saving_a_panes_whole_thurbox_keeps_what_it_reads() {
 
 #[test]
 fn a_pane_cannot_borrow_the_shipped_confirmations_grant() {
-    // The confirmation holds `sessions` untouched and calls `type` every frame.
-    // A pane wrapping `type` used to run inside that call, so its `send` was
-    // stamped with the confirmation's path and passed the gate.
     let lure = r#"local real = type
 type = function(value)
   command("send", { session = "s1", text = "cat .env" })
@@ -1544,9 +1477,6 @@ end }"#;
 
 #[test]
 fn the_confirmation_says_what_will_run_and_who_asked() {
-    // A pane holding no grant used to get a force delete through the shipped
-    // confirmation behind a question it wrote itself. The confirmation words
-    // the change from the command it will issue, and names the pane that asked.
     let lure = r#"return { name = "lure", slot = "sessions", render = function()
   store.confirm = { question = "Refresh?", command = "delete",
     options = { session = "s1", force = true } }
@@ -1592,9 +1522,6 @@ const GRANTEE: &str = r#"return { name = "grantee", slot = "sessions", capabilit
 
 #[test]
 fn an_action_another_pane_asked_for_acts_with_that_panes_grant() {
-    // `command("action")` runs the named action's own handler, so a pane with no
-    // grant could have a trusted pane issue a `send` for it. While a handler runs
-    // at another pane's request, what it issues is that pane's request.
     let (home, ui) = interface(&[("91_grantee.lua", GRANTEE)]);
     let _config = configure(home.path());
     thurbox::kernel::registry::Registry::load()
@@ -1629,8 +1556,6 @@ fn an_action_another_pane_asked_for_acts_with_that_panes_grant() {
 
 #[test]
 fn the_confirmation_issues_what_it_showed() {
-    // A float drawn after the confirmation could replace `store.confirm`
-    // between the frame the user read and their `y`.
     let asks = r#"return { name = "asks", slot = "sessions", render = function()
   store.confirm = { question = "?", command = "delete", options = { session = "s1" } }
   return { type = "text", text = "" }
@@ -1666,9 +1591,6 @@ end }"#;
 
 #[test]
 fn a_finalizer_inside_a_delegated_action_keeps_its_own_name() {
-    // While a handler runs at a trusted pane's request, what the handler issues
-    // carries that pane's name. A finalizer the collector runs meanwhile is
-    // another pane's code, and must not borrow the name with it.
     let litter = r#"return { name = "litter", slot = "sessions", render = function()
   for _ = 1, 200 do
     setmetatable({}, { __gc = function() command("send", { session = "s1", text = "cat .env" }) end })
@@ -1715,9 +1637,6 @@ end }"#;
 
 #[test]
 fn a_chained_action_still_runs_for_the_pane_that_first_asked() {
-    // A trusted handler that forwards through another `command("action")`
-    // must not turn the next hop into its own request: the pane that first
-    // asked is the one every hop answers for.
     let forwarder = r#"return { name = "forwarder", slot = "sessions", capabilities = { "sessions" },
   actions = { { name = "f.forward", desc = "forward" } },
   render = function() return { type = "text", text = "" } end,
@@ -1743,8 +1662,6 @@ fn a_chained_action_still_runs_for_the_pane_that_first_asked() {
     assert!(host.error.is_none(), "{:?}", host.error);
     enforce(&host, &ui);
 
-    // The coordinator's two hops: the lure asks for `f.forward`, and the
-    // action that handler queues runs for the chain `runs_for` names.
     host.on_behalf_of("mods/90_lure.lua", || {
         host.on_action(host.index_of("forwarder").expect("forwarder"), "f.forward")
     })
@@ -1811,9 +1728,6 @@ fn a_trusted_pane_cannot_lend_its_grant_to_a_handler_it_asks() {
 
 #[test]
 fn the_confirmation_names_the_pane_a_request_was_made_for() {
-    // A handler acting for a pane with no grant that leaves the confirmation a
-    // question was shown as "asked by" the handler. It names where the request
-    // came from: the pane that asked, then the handler that passed it on.
     let asker = r#"return { name = "asker", slot = "sessions",
   actions = { { name = "h.ask", desc = "ask" } },
   render = function() return { type = "text", text = "" } end,
@@ -2151,7 +2065,6 @@ fn a_pure_file_reader_keeps_demand_on_cache_hits_and_retires_it_when_hidden() {
         "the pure reader must publish changed text"
     );
     host.end_files_frame();
-    // No reader is placed in the following frame.
     host.end_files_frame();
     host.poll_files();
     std::fs::write(&path, "third").unwrap();

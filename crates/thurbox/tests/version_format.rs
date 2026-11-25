@@ -11,9 +11,11 @@ fn version_starts_with_digit() {
 
 #[test]
 fn dev_build_version_matches_cargo_toml() {
-    // When THURBOX_RELEASE_VERSION is not set, build.rs falls back to CARGO_PKG_VERSION.
-    // This test validates that contract for the default (dev) build.
     if VERSION.contains("-dev") {
-        assert_eq!(VERSION, env!("CARGO_PKG_VERSION"));
+        assert_eq!(
+            VERSION,
+            env!("CARGO_PKG_VERSION"),
+            "without THURBOX_RELEASE_VERSION, build.rs falls back to CARGO_PKG_VERSION"
+        );
     }
 }

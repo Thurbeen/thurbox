@@ -127,26 +127,19 @@ fn every_kind_of_action_is_a_row() {
     let rows = palette::rows(&registry);
     let find = |action: &str| rows.iter().find(|row| row.action == action);
 
-    // A key-bound action, with its chord beside it.
     let delete = find("sessions.delete").expect("a plugin's key is a row");
     assert_eq!(delete.chords.as_deref(), Some("ctrl+d"));
     assert_eq!(delete.owner, "sessions");
-    // Alternates joined as help joins them: the pane-scoped keys and the global
-    // `ctrl+j` are one action.
     let next = find("sessions.next").expect("a plugin's key is a row");
     assert_eq!(next.chords.as_deref(), Some("j / down / ctrl+j"));
-    // A chord-less command, with none.
     let export = find("mine.export").expect("a chord-less command is a row");
     assert_eq!(export.chords, None);
     assert_eq!(export.description, "export the list");
-    // The kernel's own: the modals with their chords, plus reload and quit,
-    // which no binding backs.
     let help = find("help.open").expect("a kernel modal is a row");
     assert_eq!(help.owner, modals::OWNER);
     assert_eq!(help.chords.as_deref(), Some("f1 / ctrl+g"));
     assert_eq!(find(RELOAD_ACTION).unwrap().chords.as_deref(), Some("f10"));
     assert_eq!(find(QUIT_ACTION).unwrap().chords.as_deref(), Some("ctrl+q"));
-    // Not itself: opening the palette from inside it is not an action.
     assert!(find("palette.open").is_none());
 }
 
@@ -167,8 +160,6 @@ fn a_disabled_mods_actions_are_absent() {
 fn ctrl_p_opens_the_palette_from_a_focused_terminal_and_over_another_modal() {
     let host = host();
     let registry = registry(&host);
-    // Global and never deferred to the agent: the palette has to open from the
-    // terminal, which is where the user mostly is.
     let binding = registry
         .resolve(&key_press("ctrl+p"), Some("agent"))
         .expect("ctrl+p is bound");
@@ -284,7 +275,6 @@ fn a_chord_less_command_can_be_given_a_chord_and_is_then_a_key() {
         .expect("the chord now fires the command");
     assert_eq!(binding.action, "mine.export");
     assert!(binding.overridden);
-    // Help lists it, since it is a binding now; the palette shows the chord.
     assert!(registry
         .bindings()
         .iter()
@@ -292,7 +282,6 @@ fn a_chord_less_command_can_be_given_a_chord_and_is_then_a_key() {
     let rows = palette::rows(&registry);
     let export = rows.iter().find(|row| row.action == "mine.export").unwrap();
     assert_eq!(export.chords.as_deref(), Some("f7"));
-    // One row, not two, even though it is both a command and a key.
     assert_eq!(
         rows.iter()
             .filter(|row| row.action == "mine.export")
@@ -300,7 +289,6 @@ fn a_chord_less_command_can_be_given_a_chord_and_is_then_a_key() {
         1
     );
 
-    // Reset, and it is chord-less again.
     registry.rebind("mine.export", None).expect("reset");
     assert!(registry.resolve(&key_press("f7"), Some("mine")).is_none());
     assert!(!registry
@@ -434,10 +422,6 @@ fn the_palette_frame_is_pinned() {
 
 #[test]
 fn the_agent_pane_is_reachable_by_name_from_the_palette() {
-    // The pane's tabs were click-only roles and focusing it was only ever the
-    // session list's `Enter`, so "open the agent" had no row. Now it has three,
-    // none spending a chord, and the focus one issues the same command the
-    // list's Enter does.
     let host = host();
     let registry = registry(&host);
     let rows = palette::rows(&registry);

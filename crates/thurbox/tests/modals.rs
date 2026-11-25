@@ -216,7 +216,6 @@ fn a_modal_dims_the_chrome_beneath_it_rather_than_erasing_its_colours() {
     let mut modals = Modals::default();
     modals.toggle(ModalKind::Help);
 
-    // A filled chip on the bottom row, exactly as the action band draws one.
     let filled = Style::default().fg(Color::White).bg(Color::Indexed(24));
     let mut terminal = Terminal::new(TestBackend::new(90, 20)).expect("terminal");
     terminal
@@ -260,9 +259,6 @@ fn a_modal_dims_the_chrome_beneath_it_rather_than_erasing_its_colours() {
 
 #[test]
 fn a_long_chord_list_widens_the_column_instead_of_running_into_its_description() {
-    // Regression: the column was a fixed 16 and `pad` only ever ADDS spaces, so
-    // an action carrying three alternates (`j / down / ctrl+j`, 17 columns) had
-    // its description butted straight onto it with no gap.
     let themes = Themes::load(None);
     let host = host();
     let mut registry = Registry::default();
@@ -274,9 +270,6 @@ fn a_long_chord_list_widens_the_column_instead_of_running_into_its_description()
     modals.toggle(ModalKind::Help);
     let screen = modal_screen(&mut modals, &registry, &themes, 100, 40);
 
-    // Every row that lists chords keeps at least one space before its
-    // description. Checked by finding the widest chord run and asserting no line
-    // has a non-space immediately after it.
     let long_rows: Vec<&str> = screen.lines().filter(|line| line.contains(" / ")).collect();
     assert!(
         !long_rows.is_empty(),
@@ -284,16 +277,12 @@ fn a_long_chord_list_widens_the_column_instead_of_running_into_its_description()
     );
     for line in long_rows {
         let joined = line.trim_start_matches([' ', '›']);
-        // The chords end at the first double space; whatever follows must not be
-        // glued to them.
         let gap = joined
             .find("  ")
             .unwrap_or_else(|| panic!("no gap after the chords in {line:?}"));
         assert!(gap > 0, "{line:?}");
     }
 
-    // And the descriptions still line up: every row's description starts at the
-    // same column.
     let starts: std::collections::BTreeSet<usize> = screen
         .lines()
         .filter(|line| line.contains(" / ") || line.trim_start().starts_with("ctrl+q"))
@@ -321,10 +310,8 @@ fn the_theme_picker_previews_as_you_move_and_reverts_when_abandoned() {
 
     let mut modals = Modals::default();
     modals.toggle(ModalKind::Theme);
-    // Settles the cursor onto the active theme and records what to put back.
     modal_screen(&mut modals, &registry, &themes, 90, 30);
 
-    // Moving previews: the palette changes without being asked to.
     send(
         &mut modals,
         press(KeyCode::Down),
@@ -339,10 +326,8 @@ fn the_theme_picker_previews_as_you_move_and_reverts_when_abandoned() {
         "moving the cursor should apply the theme it lands on"
     );
 
-    // Nothing was persisted — a preview is not a choice.
     assert_eq!(themes.take_chosen(), None, "a preview must not be stored");
 
-    // Esc puts back what was active when it opened.
     send(
         &mut modals,
         press(KeyCode::Esc),
@@ -400,7 +385,6 @@ fn choosing_a_theme_keeps_it_and_persists_it() {
 
 #[test]
 fn closing_the_picker_by_its_own_chord_also_reverts() {
-    // Toggling it shut is no more a choice than pressing Esc.
     let dir = tempfile::tempdir().expect("temp dir");
     let _guard = thurbox::paths::TestPathGuard::new(dir.path());
     let mut registry = Registry::default();
@@ -420,7 +404,6 @@ fn closing_the_picker_by_its_own_chord_also_reverts() {
     );
     assert_ne!(themes.active_name(), opened_with);
 
-    // What the loop does for the picker's own chord.
     {
         let mut world = World {
             settings_on_disk: &Default::default(),
@@ -470,12 +453,8 @@ fn send(
     message
 }
 
-// --- the layer -------------------------------------------------------------
-
 #[test]
 fn no_modal_is_a_mod_or_a_focus_stop() {
-    // The whole point of the change: system chrome does not compete for a
-    // layout slot, so it can never lengthen the focus ring.
     let host = host();
     let names: Vec<&str> = host.mods.iter().map(|p| p.name.as_str()).collect();
     let focusable: Vec<&str> = host
@@ -549,14 +528,12 @@ fn a_modal_covers_the_interface_rather_than_replacing_it() {
     open.toggle(ModalKind::Help);
     let after = screen(&host, &mut open, &registry, &themes);
 
-    // The modal is centred, so the interface survives at the edges…
     assert_eq!(before[0], after[0], "the top row was repainted");
     assert_eq!(
         before[HEIGHT as usize - 1],
         after[HEIGHT as usize - 1],
         "the bottom row was repainted"
     );
-    // …and only the middle changed.
     assert_ne!(
         before[HEIGHT as usize / 2],
         after[HEIGHT as usize / 2],
@@ -568,8 +545,6 @@ fn a_modal_covers_the_interface_rather_than_replacing_it() {
         after.join("\n")
     );
 }
-
-// --- help ------------------------------------------------------------------
 
 #[test]
 fn help_lists_keys_from_mods_it_never_heard_of() {
@@ -583,11 +558,8 @@ fn help_lists_keys_from_mods_it_never_heard_of() {
     assert!(screen.contains("Navigation"), "{screen}");
     assert!(screen.contains("Sessions"), "{screen}");
     assert!(screen.contains("delete session"), "{screen}");
-    // The kernel's own chords are declarations like any other.
     assert!(screen.contains("open keybindings help"), "{screen}");
 
-    // The reserved chords are the last section, so scroll to them. That they
-    // need scrolling is the point: help lists everything, not a summary.
     send(
         &mut modals,
         press(KeyCode::End),
@@ -598,7 +570,6 @@ fn help_lists_keys_from_mods_it_never_heard_of() {
     );
     let bottom = modal_screen(&mut modals, &registry, &themes, 120, 90);
     assert!(bottom.contains("Fixed (not rebindable)"), "{bottom}");
-    // Spelled as v1 spells a chord, not as the footer compacts one.
     assert!(bottom.contains("ctrl+q"), "{bottom}");
 }
 
@@ -628,7 +599,6 @@ fn a_key_declared_by_an_unknown_mod_appears_without_touching_help() {
 
 #[test]
 fn one_row_per_action_joins_its_chords_the_way_v1_spells_them() {
-    // `ctrl+g / f1`, not two unrelated rows and not the footer's compact `^G`.
     let host = host();
     let registry = registry(&host);
     let themes = Themes::load(None);
@@ -641,9 +611,6 @@ fn one_row_per_action_joins_its_chords_the_way_v1_spells_them() {
 
 #[test]
 fn capturing_ctrl_q_in_help_is_data_rather_than_a_quit() {
-    // The reason the modal layer belongs to the kernel: while
-    // capturing, EVERY chord reaches the modal — including the one chord the
-    // loop otherwise handles before anything else.
     let host = host();
     let mut registry = registry(&host);
     let mut themes = Themes::load(None);
@@ -670,8 +637,6 @@ fn capturing_ctrl_q_in_help_is_data_rather_than_a_quit() {
         &mut themes,
         None,
     );
-    // Consumed and answered rather than obeyed: the app is still running, and
-    // the registry says why the chord cannot be taken.
     assert!(
         message.is_some_and(|m| m.contains("reserved")),
         "ctrl+q while capturing must be answered, not acted on"
@@ -692,8 +657,6 @@ fn a_rebind_moves_the_chord_and_says_what_moved() {
     let mut modals = Modals::default();
     modals.toggle(ModalKind::Help);
 
-    // Whatever the first listed action is, take a chord that already belongs to
-    // something else and give it to that action.
     let first = registry.bindings()[0].action.clone();
     let victim = registry
         .bindings()
@@ -721,8 +684,6 @@ fn a_rebind_moves_the_chord_and_says_what_moved() {
     .expect("a rebind reports");
     assert!(message.contains(&victim.action), "{message}");
 
-    // The reassignment is real: the chord now fires the action it was moved to,
-    // not the declaration that merely defaults to it.
     let selected = registry.bindings()[0].action.clone();
     assert_eq!(
         registry
@@ -762,8 +723,6 @@ fn reset_puts_an_action_back_on_its_declared_chord() {
     assert_eq!(registry.bindings()[0].chord, default_chord);
     assert!(!registry.bindings()[0].overridden);
 }
-
-// --- settings --------------------------------------------------------------
 
 #[test]
 fn settings_renders_what_the_bundled_mods_declare() {
@@ -874,7 +833,6 @@ fn a_long_value_stays_in_its_column_and_every_other_value_stays_visible() {
             scrollback.contains('‹') && scrollback.trim_end().ends_with('›'),
             "the stepper is cut off at {width} columns: {scrollback:?}\n{joined}"
         );
-        // Descriptions get the room the value column no longer takes.
         assert!(
             row("features.mouse").contains("mouse"),
             "no description at {width} columns\n{joined}"
@@ -891,7 +849,6 @@ fn a_long_value_stays_in_its_column_and_every_other_value_stays_visible() {
             "the long value ate its own description at {width} columns: {folded:?}"
         );
 
-        // The modal clears every cell it covers: no `#` between its borders.
         for line in &screen {
             if let Some(inner) = inside_borders(line) {
                 assert!(
@@ -984,9 +941,6 @@ fn a_fold_list_reads_as_a_count_and_spells_its_entries_out_when_selected() {
 fn a_setting_declared_by_an_unknown_mod_is_editable_without_touching_settings() {
     let dir = tempfile::tempdir().expect("temp dir");
     let _guard = thurbox::paths::TestPathGuard::new(dir.path());
-    // Loaded, like the loop's own: writing `ui.json` back is a capability of a
-    // registry that read it (`registry::Origin`), and persistence is the half of
-    // this test that matters.
     let mut registry = Registry::load();
     registry.declare(
         Vec::new(),
@@ -1025,8 +979,6 @@ fn a_setting_declared_by_an_unknown_mod_is_editable_without_touching_settings() 
         None,
     );
     assert_eq!(registry.settings()[0].value, Value::Bool(true));
-    // Written through the registry, so it is persisted where every other
-    // override lives.
     let overrides = thurbox::paths::config_file()
         .and_then(|config| config.parent().map(|dir| dir.join("ui.json")))
         .expect("a config directory");
@@ -1037,8 +989,6 @@ fn a_setting_declared_by_an_unknown_mod_is_editable_without_touching_settings() 
     );
 }
 
-// --- theme -----------------------------------------------------------------
-
 #[test]
 fn every_v1_theme_is_offered_by_the_picker() {
     let host = host();
@@ -1046,17 +996,13 @@ fn every_v1_theme_is_offered_by_the_picker() {
     let themes = Themes::load(None);
     let mut modals = Modals::default();
     modals.toggle(ModalKind::Theme);
-    // Tall enough that the scroll window does not hide the entries asserted.
     let screen = modal_screen(&mut modals, &registry, &themes, 100, 60);
     for name in ["Default", "Tokyo Night", "Gruvbox Dark"] {
         assert!(screen.contains(name), "{name} missing:\n{screen}");
     }
-    // v1's picker heads the list with a `matched/total` count and groups the
-    // presets under Dark/Light headers.
     assert!(screen.contains("themes"), "{screen}");
     assert!(screen.contains("Dark"), "{screen}");
     assert!(screen.contains("Light"), "{screen}");
-    // The swatch, which is what makes it a picker rather than a list.
     assert!(screen.contains("Accent"), "{screen}");
     assert!(screen.contains("theme id:"), "{screen}");
     assert!(themes.choices().len() >= 36, "v1 shipped 36 presets");
@@ -1090,7 +1036,6 @@ fn the_filter_narrows_the_list_and_the_count_says_so() {
         "the count must show matched/total:\n{screen}"
     );
 
-    // Esc closes the filter first and the picker second, as v1's does.
     send(
         &mut modals,
         press(KeyCode::Esc),
@@ -1139,11 +1084,8 @@ fn enter_applies_the_highlighted_theme_and_persists_it_where_v1_does() {
 
     assert_eq!(themes.active_name(), wanted);
     assert_eq!(db.borrow().clone(), Some(wanted));
-    // Applying closes the picker, so the palette just chosen is visible.
     assert!(!modals.is_open());
 }
-
-// --- the mouse -------------------------------------------------------------
 
 fn modal_buffer(
     modals: &mut Modals,
@@ -1176,10 +1118,9 @@ fn locate(buffer: &ratatui::buffer::Buffer, width: u16, height: u16, label: &str
         let row: String = (0..width)
             .map(|x| buffer[(x, y)].symbol().to_string())
             .collect();
-        if let Some(byte) = row.find(label) {
-            // Columns, not bytes: the modal frame and its markers are
-            // multi-byte glyphs.
-            return (row[..byte].chars().count() as u16, y);
+        if let Some(byte_offset) = row.find(label) {
+            let column = row[..byte_offset].chars().count();
+            return (column as u16, y);
         }
     }
     panic!("'{label}' is nowhere on screen");
@@ -1209,9 +1150,6 @@ fn click(
 
 #[test]
 fn clicking_select_applies_the_theme_exactly_as_enter_does() {
-    // The rule a button exists to keep: it replays a key through the same
-    // handler the keyboard uses, so ` Select ` cannot come to mean something
-    // `Enter` does not.
     let db = Database::default();
     let mut registry = Registry::default();
     let mut themes = Themes::load(None);
@@ -1228,8 +1166,6 @@ fn clicking_select_applies_the_theme_exactly_as_enter_does() {
     );
     let wanted = themes.choices()[1].name.clone();
 
-    // Rendered first: a modal paints cell by cell, so its hitboxes exist only
-    // once it has drawn — which is exactly the state a real click arrives in.
     let buffer = modal_buffer(&mut modals, &registry, &themes, 100, 40);
     let (x, y) = locate(&buffer, 100, 40, "Select");
     let message = click(&mut modals, x, y, &mut registry, &mut themes, Some(&db));
@@ -1282,8 +1218,6 @@ fn clicking_close_closes_help_and_settings() {
 
 #[test]
 fn clicking_reset_all_resets_every_override() {
-    // v1 spells this button `Shift+D`, and the click has to go through that
-    // key — otherwise the pill and the letter could drift apart.
     let dir = tempfile::tempdir().expect("temp dir");
     let _guard = thurbox::paths::TestPathGuard::new(dir.path());
     let host = host();
@@ -1322,8 +1256,6 @@ fn clicking_a_row_selects_it_and_a_miss_is_swallowed() {
     modals.toggle(ModalKind::Theme);
     let buffer = modal_buffer(&mut modals, &registry, &themes, 100, 60);
 
-    // A row still selects rather than applies, so a stray click cannot repaint
-    // the whole interface.
     let (x, y) = locate(&buffer, 100, 60, "Gruvbox Dark");
     click(&mut modals, x, y, &mut registry, &mut themes, None);
     let after = modal_screen(&mut modals, &registry, &themes, 100, 60);
@@ -1333,8 +1265,6 @@ fn clicking_a_row_selects_it_and_a_miss_is_swallowed() {
     );
     assert!(modals.is_open(), "a row click must not apply and close");
 
-    // The mouse half of capturing input: a press outside every hitbox is eaten
-    // rather than reaching the pane the modal covers.
     click(&mut modals, 0, 0, &mut registry, &mut themes, None);
     assert!(modals.is_open(), "a miss closed the modal");
 }
@@ -1396,9 +1326,11 @@ fn the_row_under_the_pointer_takes_a_band() {
         palette.selection_bg,
         "the hovered row took no band"
     );
-    // The band is the width of the row, not of its label — v1 tints the whole
-    // hitbox, which is what makes it read as a row rather than as text.
-    assert_eq!(hovered[(x + 3, y)].bg, palette.selection_bg);
+    assert_eq!(
+        hovered[(x + 3, y)].bg,
+        palette.selection_bg,
+        "the band spans the row's hitbox, not only its label"
+    );
     assert_ne!(
         hovered[(x, y + 1)].bg,
         palette.selection_bg,
@@ -1408,9 +1340,7 @@ fn the_row_under_the_pointer_takes_a_band() {
 
 #[test]
 fn a_pointer_crossing_one_target_costs_a_single_repaint() {
-    // Motion reporting delivers one event per cell crossed, so the modal must
-    // answer for the *target* under the pointer rather than the cell — the same
-    // rule `App::hover` follows for everything else.
+    // A terminal's motion reporting sends one event per cell the pointer crosses.
     let host = host();
     let registry = registry(&host);
     let themes = Themes::load(None);
@@ -1449,9 +1379,6 @@ fn a_hover_never_outlives_the_modal_that_resolved_it() {
     let (x, y) = locate(&buffer, 140, 40, "Select");
     assert!(modals.on_hover(x, y), "the picker's first pill");
 
-    // Both modals' first pill is "button 0", so a resolution kept across the
-    // switch would read as "already hovered" and the new pill would never
-    // light. The index means nothing outside the modal that recorded it.
     modals.toggle(ModalKind::Help);
     let buffer = modal_buffer(&mut modals, &registry, &themes, 140, 40);
     let (x, y) = locate(&buffer, 140, 40, "Reset all");
@@ -1460,15 +1387,10 @@ fn a_hover_never_outlives_the_modal_that_resolved_it() {
 
 #[test]
 fn help_and_settings_page_and_jump_through_their_rows() {
-    // Both are lists long enough to scroll, so they take v1's list keys. The
-    // observable is what `d` reports resetting: it names the selected row.
     let dir = tempfile::tempdir().expect("temp dir");
     let _guard = thurbox::paths::TestPathGuard::new(dir.path());
     let host = host();
     let mut registry = registry(&host);
-    // Paging needs more rows than a screen, and the bundled set declares one
-    // setting. These stand in for the panes that used to contribute the rest —
-    // the modal's job is to page whatever it is given, not to have a long list.
     let extra: Vec<thurbox::kernel::registry::Setting> = (0..40)
         .map(|n| thurbox::kernel::registry::Setting {
             owner: "probe".to_string(),
@@ -1480,8 +1402,6 @@ fn help_and_settings_page_and_jump_through_their_rows() {
             choices: Vec::new(),
         })
         .collect();
-    // `declare` REPLACES both lists, so the bundled declarations are re-passed
-    // alongside the stand-ins — dropping them would leave help with no rows.
     let (bindings, mut settings) = host.declarations();
     settings.extend(extra);
     registry.declare(bindings, settings);
@@ -1490,7 +1410,6 @@ fn help_and_settings_page_and_jump_through_their_rows() {
     for kind in [ModalKind::Help, ModalKind::Settings] {
         let mut modals = Modals::default();
         modals.toggle(kind);
-        // The page step is a screenful of rows, which only exists once drawn.
         modal_screen(&mut modals, &registry, &themes, 140, 20);
 
         let selected = |code: KeyCode,
@@ -1499,8 +1418,6 @@ fn help_and_settings_page_and_jump_through_their_rows() {
                         registry: &mut Registry,
                         themes: &mut Themes| {
             send(modals, press(code), chord, registry, themes, None);
-            // `d` reports the row it reset, which is how a test outside the
-            // modal can see where the cursor is.
             send(
                 modals,
                 press(KeyCode::Char('d')),
@@ -1568,17 +1485,6 @@ fn key_press(chord: &str) -> KeyPress {
 
 #[test]
 fn a_modal_owns_the_caret_so_none_is_left_blinking_behind_it() {
-    // The bug: a frame either shows the cursor at a position or hides it (see
-    // ratatui's `apply_buffer_with_cursor`), and a modal never sets one. The
-    // only thing in this interface that does is an `input` node — the search
-    // strip's query, the creation flow's fields. So a pane underneath that claimed the caret — the
-    // search strip, the creation flow — kept it, and the terminal drew a
-    // blinking cursor behind the modal. It reads as the screen refreshing
-    // wrongly rather than as a cursor in the wrong place, which is why it was
-    // reported as a refresh-rate problem.
-    //
-    // The correction is made after the frame, because a `Frame`'s cursor can be
-    // set but never unset. What is asserted here is the decision that drives it.
     let mut modals = Modals::default();
     assert_eq!(
         modals.caret(),
@@ -1630,10 +1536,12 @@ fn a_setting_with_choices_steps_through_them_and_is_never_typed_into() {
     }
     let value = |registry: &Registry| registry.settings()[0].value.clone();
     key!(KeyCode::End, "end");
-    // Enter steps rather than opening an edit: were an edit open, the arrow
-    // below would be a no-op inside it and the value would not move.
     key!(KeyCode::Enter, "enter");
-    assert_eq!(value(&registry), Value::Text("whisper".into()));
+    assert_eq!(
+        value(&registry),
+        Value::Text("whisper".into()),
+        "enter steps to the next choice rather than opening an edit"
+    );
     key!(KeyCode::Right, "right");
     assert_eq!(value(&registry), Value::Text("other".into()));
     key!(KeyCode::Char(' '), "space");

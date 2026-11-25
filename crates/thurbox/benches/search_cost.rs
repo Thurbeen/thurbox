@@ -229,7 +229,6 @@ fn main() {
     println!("  typing  (slowest letter of {typed:?})  {}", ms(slowest));
     budget("typing", slowest, KEYSTROKE_BUDGET);
 
-    // Three agents print a burst, and the open strip re-runs its query.
     let mut rescans = Vec::new();
     let mut rows = 0;
     for round in 0..runs {

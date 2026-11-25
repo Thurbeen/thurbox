@@ -129,8 +129,6 @@ fn a_call_whose_instruction_budget_cannot_be_armed_is_not_run() {
     let failures = reload_beside_a_filler(16 * 1024 * 1024);
     host::set_instruction_budget(0);
 
-    // `an_event_handler_that_never_returns_is_interrupted_and_reported` is the
-    // same spinner with room for its hook.
     let failures =
         failures.expect("the spinner ran without an instruction budget and never returned");
     assert_eq!(failures.len(), 1, "{failures:?}");
@@ -193,7 +191,6 @@ fn memory_pressure_tells_a_full_vm_from_a_large_one() {
         host
     };
 
-    // Large and stable: above the rebuild threshold from load, and not full.
     let large = loading(93);
     assert_eq!(
         large.memory_pressure(),
@@ -201,8 +198,6 @@ fn memory_pressure_tells_a_full_vm_from_a_large_one() {
         "a VM that loads large is not full"
     );
     // Checked once a frame, as the loop does: the check is also what collects
-    // the garbage, which the collector's own pace would leave to pile up to the
-    // ceiling, where a buffer allocation fails without an emergency collection.
     for _ in 0..400 {
         large.render(0, ctx()).expect("the large VM renders");
         assert_eq!(
@@ -212,11 +207,9 @@ fn memory_pressure_tells_a_full_vm_from_a_large_one() {
         );
     }
 
-    // A leak from a small build is caught by its growth, before the ceiling.
     let leaking = loading(10);
     assert_eq!(grow_until_pressure(&leaking), Some(MemoryPressure::Grown));
 
-    // Accepted as resident, it is pressure again only once it grows further.
     leaking.accept_resident_memory();
     let accepted = leaking.used_memory();
     assert_eq!(
@@ -230,8 +223,6 @@ fn memory_pressure_tells_a_full_vm_from_a_large_one() {
         "only growth past the accepted heap counts"
     );
 
-    // Accepted this close to the ceiling, no growth allowance fits under it:
-    // only the ceiling itself can say the VM filled, and it must.
     leaking.accept_resident_memory();
     assert!(
         leaking.used_memory() + limit / 20 > limit - limit / 32,
@@ -249,9 +240,6 @@ fn memory_pressure_tells_a_full_vm_from_a_large_one() {
         "a VM whose allocations fail is full"
     );
 
-    // A live heap inside the exhaustion margin is exhausted whether or not
-    // anything new was allocated since the last collection: one whose
-    // allocations fail leaves no garbage behind to move a pacing gate.
     let crossing = loading(10);
     let probe = crossing.index_of("probe").expect("the probe loaded");
     assert_eq!(grow_until_pressure(&crossing), Some(MemoryPressure::Grown));
@@ -276,8 +264,6 @@ fn memory_pressure_tells_a_full_vm_from_a_large_one() {
         "a live heap inside the margin is full"
     );
 
-    // A live heap parked just under a threshold must not buy a full collection
-    // on every frame: the next one waits for a share of new garbage.
     let parked = loading(10);
     let probe = parked.index_of("probe").expect("the probe loaded");
     while parked.used_memory() < limit / 1000 * 895 {
@@ -288,8 +274,6 @@ fn memory_pressure_tells_a_full_vm_from_a_large_one() {
         parked.render(0, ctx()).expect("the parked VM renders");
         assert_eq!(parked.memory_pressure(), None, "parked, not full");
     }
-    // 200 frames of 64 KiB of garbage is 12.5 MiB; one collection per 1/64
-    // of the limit is at most 50 of them.
     let collections = parked.pressure_collections() - before;
     assert!(
         collections <= 51,
@@ -301,8 +285,6 @@ fn memory_pressure_tells_a_full_vm_from_a_large_one() {
 #[test]
 fn the_limits_are_settable_and_enforced() {
     let _limits = limits();
-    // --- memory ------------------------------------------------------------
-    // A small ceiling, so exhausting it is a test rather than an ordeal.
     host::set_memory_limit(4 * 1024 * 1024);
     let dir = mod_dir(
         r#"local t = {}
@@ -328,18 +310,12 @@ fn the_limits_are_settable_and_enforced() {
         "the message should name the limit: {}",
         error.message
     );
-    // The process is still here, which is the actual guarantee.
-    // And the VM is reported as full, which is what gets it rebuilt rather
-    // than called again on every frame. The hog keeps what it allocated: a
-    // spike a collection returns leaves a VM that is not full at all.
     assert!(
         hog.near_memory_limit(),
         "a VM that ran out is near its ceiling"
     );
     host::set_memory_limit(0);
 
-    // --- instructions ------------------------------------------------------
-    // A tiny budget, so the guard fires immediately rather than after 20M.
     host::set_instruction_budget(200_000);
     assert_eq!(host::instruction_budget(), 200_000);
 
@@ -362,8 +338,6 @@ fn the_limits_are_settable_and_enforced() {
         "{}",
         error.message
     );
-    // A smaller budget must actually mean a shorter wait, which is the whole
-    // point of the setting.
     assert!(
         elapsed < std::time::Duration::from_secs(5),
         "a 200k budget took {elapsed:?}"
@@ -394,8 +368,6 @@ fn a_healthy_mod_is_unaffected_by_the_hook() {
     }
     let elapsed = started.elapsed();
 
-    // 100 renders of 500 rows each. Generous, because this runs on shared CI
-    // hardware; it is a regression guard, not a benchmark.
     assert!(
         elapsed < std::time::Duration::from_secs(10),
         "100 renders took {elapsed:?} — the instruction hook may be too frequent"

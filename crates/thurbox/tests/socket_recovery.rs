@@ -223,9 +223,6 @@ fn a_server_in_the_old_directory_is_adopted_until_it_exits() {
         eprintln!("skipping: tmux is not installed");
         return;
     }
-    // The guard's directory stands for tmux's default (`TMUX_TMPDIR`, which
-    // an earlier build left alone); `new/` inside it is the one a build
-    // choosing its own directory would use.
     let server = TmuxServer::pin(&format!("tbx-sockrec-move-{}", std::process::id()));
     let mut reap = ReapByPid::default();
     let new_dir = server.tmpdir().join("new");
@@ -256,7 +253,6 @@ fn a_server_in_the_old_directory_is_adopted_until_it_exits() {
     );
     adopted.shutdown();
 
-    // The old server exits on its own terms; the next start is a clean one.
     assert!(server.tmux(&["kill-server"]).status.success());
     let started = backend();
     started.ensure_ready().expect("start");

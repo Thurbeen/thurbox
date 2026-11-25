@@ -3,9 +3,6 @@ use thurbox::kernel::theme::Themes;
 
 #[test]
 fn a_snapshot_refresh_moves_the_version() {
-    // The version is what a reader compares to decide it can reuse what it
-    // built last time. If a refresh left it still, every such reader would keep
-    // showing what the database said before.
     let mut store = SnapshotStore::without_sessions(&Default::default());
 
     let before = store.version();
@@ -19,8 +16,6 @@ fn a_snapshot_refresh_moves_the_version() {
 
 #[test]
 fn every_refresh_moves_it_again() {
-    // An explicit refresh replaces the rows. The clock-only idle path has
-    // its own signal, tested separately below and in the snapshot tests.
     let mut store = SnapshotStore::without_sessions(&Default::default());
 
     let mut seen = store.version();
@@ -34,8 +29,6 @@ fn every_refresh_moves_it_again() {
 
 #[test]
 fn reading_the_snapshot_leaves_the_version_alone() {
-    // The other half, and the one that makes gating worth anything: if merely
-    // looking moved the signal, nothing could ever be reused.
     let mut store = SnapshotStore::without_sessions(&Default::default());
     store.refresh();
 
@@ -80,15 +73,11 @@ fn selecting_a_theme_moves_the_version_and_reading_it_does_not() {
     );
 }
 
-// --- the gated publish ------------------------------------------------------
-
 use thurbox::kernel::host::{Epoch, LuaHost, Published};
 use thurbox::kernel::registry::Registry;
 use thurbox::kernel::snapshot::{SessionRow, Snapshot};
 
 fn interface() -> (tempfile::TempDir, LuaHost) {
-    // A pane that reports what it can see of the published tables, so a stale
-    // group is visible as a rendered string rather than only as a counter.
     let dir = tempfile::tempdir().expect("tempdir");
     let mods = dir.path().join("mods");
     std::fs::create_dir_all(&mods).expect("mkdir");
@@ -223,10 +212,8 @@ fn a_change_of_what_is_printing_rebuilds_one_group_and_no_others() {
     };
     let epoch = Epoch::always_fresh();
 
-    // Warm every group at this epoch.
     publish_at(&host, epoch, &rows, &themes);
 
-    // Control: the same epoch again reuses all of them.
     let before = host.reused_groups();
     publish_at(&host, epoch, &rows, &themes);
     let all_groups = host.reused_groups() - before;
@@ -235,7 +222,6 @@ fn a_change_of_what_is_printing_rebuilds_one_group_and_no_others() {
         "expected several gated groups, saw {all_groups}"
     );
 
-    // The printing set moves and nothing else does.
     let printing: std::collections::HashSet<String> = ["s1".to_string()].into_iter().collect();
     let mut moved = epoch;
     moved.printing = epoch.printing.wrapping_add(1);
@@ -289,11 +275,9 @@ fn a_gated_publish_matches_a_full_rebuild() {
     publish_at(&host, epoch, &snapshot, &themes);
     let gated_first = probe(&host);
 
-    // Same epoch, same data: every group is served from the cache.
     publish_at(&host, epoch, &snapshot, &themes);
     let gated_again = probe(&host);
 
-    // Nothing cached at all.
     publish_at(&host, Epoch::always_fresh(), &snapshot, &themes);
     let rebuilt = probe(&host);
 
@@ -309,9 +293,6 @@ fn a_gated_publish_matches_a_full_rebuild() {
 
 #[test]
 fn a_theme_change_reaches_lua_through_its_own_version() {
-    // Each group names only the versions it reads, so the theme group must move
-    // on the theme's version alone — a snapshot that never changes must not
-    // pin it.
     let (_dir, host) = interface();
     let mut themes = Themes::load(None);
     let snapshot = Snapshot::default();
@@ -336,8 +317,6 @@ fn a_theme_change_reaches_lua_through_its_own_version() {
         "the theme group was reused after the palette changed"
     );
 }
-
-// --- the purity declaration -------------------------------------------------
 
 fn two_panes() -> (tempfile::TempDir, LuaHost) {
     let dir = tempfile::tempdir().expect("tempdir");
@@ -384,9 +363,6 @@ fn tree_of(host: &LuaHost, name: &str) -> String {
 
 #[test]
 fn a_pure_pane_is_not_re_rendered_while_its_inputs_stand() {
-    // A skip cannot be seen in what is painted — that IS the correctness claim,
-    // and the group cache withholds new data at an unchanged epoch anyway — so
-    // it is asserted on the count instead.
     let (_dir, host) = two_panes();
     let themes = Themes::load(None);
     publish_at(
@@ -460,16 +436,6 @@ fn a_moved_epoch_re_renders_a_pure_pane() {
 
 #[test]
 fn accepting_a_command_must_move_the_epoch_to_reach_a_pure_pane() {
-    // The session list drops a row the moment its `delete` is accepted, so that
-    // a delete does not sit there wearing a tag until the worker is done. It
-    // reads that from `thurbox.commands` — and it is a PURE pane, so an accepted
-    // command that leaves every published signal standing is served the tree
-    // built before the command existed. The row then survives until whatever
-    // moves a signal next: the animation clock 125ms later, or the completion.
-    //
-    // Hence `dispatch_tracked` moves the data epoch as the command is accepted.
-    // This is that requirement, asserted where the caching lives: the in-flight
-    // list alone must not be expected to reach a pure pane.
     let dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../ui");
     let host = LuaHost::new(dir);
     assert!(host.error.is_none(), "{:?}", host.error);
@@ -501,11 +467,6 @@ fn accepting_a_command_must_move_the_epoch_to_reach_a_pure_pane() {
     publish_at(&host, epoch, &snapshot, &themes);
     assert!(paint().contains("doomed"), "the row should start present");
 
-    // Let it settle first. The list publishes the selection as it renders, so
-    // its first pass moves the state version — which is part of the cache key —
-    // and the second pass is the one whose tree can be reused. A pane that never
-    // settled could not go stale either, which would make the rest of this test
-    // prove nothing.
     let _ = paint();
     let settled = host.skipped_renders();
     let _ = paint();
@@ -525,8 +486,6 @@ fn accepting_a_command_must_move_the_epoch_to_reach_a_pure_pane() {
         error: None,
     }];
 
-    // Accepted, but with every signal left standing: the pane never runs, so
-    // the row it drew before the delete existed is what stays on screen.
     publish_at_with(&host, epoch, &snapshot, &themes, &inflight);
     assert!(
         paint().contains("doomed"),
@@ -535,7 +494,6 @@ fn accepting_a_command_must_move_the_epoch_to_reach_a_pure_pane() {
          fails the bump may no longer be needed"
     );
 
-    // Moved, as the loop moves it the moment the command is accepted.
     epoch.data += 1;
     publish_at_with(&host, epoch, &snapshot, &themes, &inflight);
     let screen = paint();
@@ -548,8 +506,6 @@ fn accepting_a_command_must_move_the_epoch_to_reach_a_pure_pane() {
 
 #[test]
 fn a_different_rect_or_focus_re_renders_a_pure_pane() {
-    // The tree was built for a rect. Reusing it in another one would paint the
-    // previous size's layout into the new space.
     let (_dir, host) = two_panes();
     let themes = Themes::load(None);
     publish_at(&host, Epoch::default(), &Snapshot::default(), &themes);
@@ -572,15 +528,10 @@ fn a_different_rect_or_focus_re_renders_a_pure_pane() {
     let _ = at(40, false);
     let _ = at(80, false);
     let _ = at(40, true);
-    // Nothing to assert on the trees here — this pane ignores its rect — so the
-    // guarantee under test is that none of the three panicked or was rejected,
-    // and that the key type carries both. See `TreeKey`.
 }
 
 #[test]
 fn a_reload_drops_every_cached_tree() {
-    // A cached tree belongs to the version of the pane that produced it. After a
-    // reload the file on disk may say something else entirely.
     let (dir, mut host) = two_panes();
     let themes = Themes::load(None);
     publish_at(
@@ -620,10 +571,6 @@ fn a_reload_drops_every_cached_tree() {
 
 #[test]
 fn writing_the_same_value_to_the_store_is_not_a_change() {
-    // The fix that made the whole mechanism work. A pane that re-states an
-    // unchanged value on every frame — the search strip does — would otherwise
-    // invalidate every cached tree ~40 times a second, and the measured saving
-    // went from 27% to nothing.
     let dir = tempfile::tempdir().expect("tempdir");
     let mods = dir.path().join("mods");
     std::fs::create_dir_all(&mods).expect("mkdir");
@@ -637,7 +584,6 @@ fn writing_the_same_value_to_the_store_is_not_a_change() {
              end }"#,
     )
     .expect("write");
-    // A pane that writes the SAME value every render, like the search strip.
     std::fs::write(
         mods.join("20_noisy.lua"),
         r#"return { name = "noisy", slot = "center",
@@ -664,8 +610,6 @@ fn writing_the_same_value_to_the_store_is_not_a_change() {
     assert!(tree_of(&host, "pure").contains("alpha"));
     let _ = tree_of(&host, "noisy");
 
-    // The noisy pane has now written its unchanged value. If that counted as a
-    // change, the pure pane's tree would be gone.
     publish_at(
         &host,
         epoch,
@@ -683,15 +627,6 @@ fn writing_the_same_value_to_the_store_is_not_a_change() {
 
 #[test]
 fn a_still_animation_clock_lets_a_pure_pane_settle() {
-    // The bug this guards: the clock used to be read straight from
-    // `ctx.elapsed`, so it advanced 8 times a second whether or not anything on
-    // screen was moving. At the 4fps idle floor that invalidated every pure
-    // pane on every frame — 3 renders skipped out of 284 — and an idle
-    // interface re-ran all its Lua for a byte-identical tree.
-    //
-    // The clock now lives in the epoch and the loop advances it only while
-    // something animates, so an epoch that stands still is one a pane can be
-    // cached across, however much wall-clock time passes.
     let (_dir, host) = two_panes();
     let themes = Themes::load(None);
     publish_at(&host, Epoch::default(), &Snapshot::default(), &themes);
@@ -713,7 +648,6 @@ fn a_still_animation_clock_lets_a_pure_pane_settle() {
 
     let _ = at(0.0);
     let settled = host.skipped_renders();
-    // Seconds of wall clock, and several frame numbers, with a still epoch.
     for step in 1..=10 {
         let _ = at(f64::from(step));
     }
@@ -726,17 +660,6 @@ fn a_still_animation_clock_lets_a_pure_pane_settle() {
 
 #[test]
 fn a_moved_animation_clock_re_renders_a_pane_that_reads_it() {
-    // The other half: while something IS animating the loop advances the clock,
-    // and a pane that draws from it must run again or its spinner freezes on
-    // screen.
-    //
-    // "That reads it" is the narrowing this test grew: the clock used to
-    // invalidate every pure pane, and now invalidates the ones whose render
-    // actually asked for `ctx.elapsed` (see `CachedTree`). So the fixture is a
-    // pane that reads the clock — `two_panes()`'s does not, and is now
-    // deliberately cached across a tick, which is what
-    // `the_animation_clock_does_not_re_render_a_pane_that_never_reads_it`
-    // asserts from the other side.
     let (_dir, host) = clock_panes();
     let themes = Themes::load(None);
     let mut epoch = Epoch::default();
@@ -757,11 +680,6 @@ fn a_moved_animation_clock_re_renders_a_pane_that_reads_it() {
 
 #[test]
 fn a_re_stamped_snapshot_does_not_move_the_version_within_a_second() {
-    // `taken_at_ms` is published, but its only reader floors the difference to
-    // whole seconds, so it is published to the second. Re-reading rows that did
-    // not change must therefore leave the version alone — it used to move
-    // 2.5 times a second, which capped how long any pure pane could be cached
-    // and was the dominant reason an idle interface kept re-rendering.
     let mut store = SnapshotStore::without_sessions(&Default::default());
     store.refresh();
 
@@ -784,9 +702,6 @@ fn a_re_stamped_snapshot_does_not_move_the_version_within_a_second() {
 
 #[test]
 fn the_published_instant_is_whole_seconds() {
-    // The contract that makes the above honest rather than merely stale: the
-    // field means "when these rows were read, to the second", and every reader
-    // of it floors to seconds anyway.
     let mut store = SnapshotStore::without_sessions(&Default::default());
     store.refresh();
     assert_eq!(
@@ -796,14 +711,8 @@ fn the_published_instant_is_whole_seconds() {
     );
 }
 
-// --- the signals the first round of tests left uncovered ---------------------
-
 #[test]
 fn declaring_and_setting_move_the_registrys_version_and_reading_does_not() {
-    // The registry gates the published `keys`, `settings` and `registry` groups,
-    // and those are among the largest. Reading it happens constantly — every
-    // key press resolves through it — so a read that moved the version would
-    // rebuild all three on every keystroke.
     let mut registry = Registry::default();
 
     let settled = registry.version();
@@ -836,11 +745,6 @@ fn declaring_and_setting_move_the_registrys_version_and_reading_does_not() {
 
 #[test]
 fn asking_terminals_for_metadata_is_not_itself_a_change() {
-    // `Terminals::meta` is mutated ON READ: it syncs each live agent's reported
-    // title before handing the map back, and it is called once per published
-    // frame. If merely asking counted as a change it would move the version ~40
-    // times a second and invalidate every cached tree — the exact failure that
-    // made the `store` write comparison worth 27%.
     let mut terminals = thurbox::kernel::terminal::Terminals::with_registry(
         std::sync::Arc::new(thurbox::backend::wiring::local_only(&Default::default())),
         &Default::default(),
@@ -859,10 +763,6 @@ fn asking_terminals_for_metadata_is_not_itself_a_change() {
 
 #[test]
 fn reading_attach_failures_is_not_itself_a_change() {
-    // The other half of the sessions group's key. `failures()` builds a fresh
-    // map on every publish, so — like `meta` above — the read must not be
-    // mistaken for a write. (`failures` takes `&self` today, so this also
-    // guards the day someone needs it to sync something first — as `meta` does.)
     let terminals = thurbox::kernel::terminal::Terminals::with_registry(
         std::sync::Arc::new(thurbox::backend::wiring::local_only(&Default::default())),
         &Default::default(),
@@ -880,8 +780,6 @@ fn reading_attach_failures_is_not_itself_a_change() {
         "reading the failure set moved its version"
     );
 }
-
-// --- the animation clock, scoped to whoever reads it -------------------------
 
 fn clock_panes() -> (tempfile::TempDir, LuaHost) {
     let dir = tempfile::tempdir().expect("tempdir");
@@ -927,10 +825,6 @@ fn render_at(host: &LuaHost, name: &str, elapsed: f64) -> String {
 
 #[test]
 fn the_animation_clock_does_not_re_render_a_pane_that_never_reads_it() {
-    // The saving. Measured at +51% CPU under load before this held
-    // (docs/thurbox/performance.md, ADR-P21): every pure pane —
-    // the centre pane and all three closed floats included — re-ran eight
-    // times a second to move a spinner none of them draws.
     let (_dir, host) = clock_panes();
     let themes = Themes::load(None);
     let mut epoch = Epoch::default();
@@ -952,9 +846,6 @@ fn the_animation_clock_does_not_re_render_a_pane_that_never_reads_it() {
 
 #[test]
 fn a_pane_that_reads_the_clock_sees_the_time_it_was_given() {
-    // Serving `elapsed` through a metatable rather than as a field must not
-    // change what a pane reads — the whole mechanism is meant to be invisible
-    // from Lua.
     let (_dir, host) = clock_panes();
     let themes = Themes::load(None);
     let mut epoch = Epoch::default();
@@ -967,10 +858,6 @@ fn a_pane_that_reads_the_clock_sees_the_time_it_was_given() {
 
 #[test]
 fn a_non_string_index_on_the_render_context_is_nil_rather_than_an_error() {
-    // `__index` fires for every absent key, including one Lua defines as nil —
-    // `ctx[nil]` from a mistyped local, `ctx[true]`. Before the metatable those
-    // evaluated to nil; a key typed as `String` would coerce and raise instead,
-    // failing the whole render over an expression the language allows.
     let dir = tempfile::tempdir().expect("tempdir");
     let mods = dir.path().join("mods");
     std::fs::create_dir_all(&mods).expect("mkdir");
@@ -1037,12 +924,6 @@ fn a_mod_cannot_reach_or_replace_the_render_context_metatable() {
 
 #[test]
 fn a_pane_that_starts_reading_the_clock_is_keyed_on_it_from_then_on() {
-    // The transition, which is where a learned optimisation would go wrong: a
-    // pane may only consult the clock under some condition — the session list
-    // draws a spinner only for a `working` row. The flag is recorded from the
-    // render that produced the cached tree, so the first render that reads the
-    // clock is itself the one that re-keys the entry; there is no frame in
-    // between on which a stale tree could be served.
     let dir = tempfile::tempdir().expect("tempdir");
     let mods = dir.path().join("mods");
     std::fs::create_dir_all(&mods).expect("mkdir");
@@ -1063,7 +944,6 @@ fn a_pane_that_starts_reading_the_clock_is_keyed_on_it_from_then_on() {
     let mut epoch = Epoch::default();
     publish_at(&host, epoch, &Snapshot::default(), &themes);
 
-    // Not reading the clock: cached across an animation tick.
     let _ = render_at(&host, "maybe", 0.0);
     let settled = host.skipped_renders();
     epoch.animation += 1;
@@ -1075,14 +955,11 @@ fn a_pane_that_starts_reading_the_clock_is_keyed_on_it_from_then_on() {
         "should have been cached"
     );
 
-    // Now it starts. The write moves the state version, so this render happens
-    // for that reason and is the one that records the dependency.
     host.set_shared_bool("spin", true);
     epoch.animation += 1;
     publish_at(&host, epoch, &Snapshot::default(), &themes);
     assert!(render_at(&host, "maybe", 2.0).contains("tick 2"));
 
-    // From here the clock alone must reach it.
     let settled = host.skipped_renders();
     epoch.animation += 1;
     publish_at(&host, epoch, &Snapshot::default(), &themes);
@@ -1096,10 +973,6 @@ fn a_pane_that_starts_reading_the_clock_is_keyed_on_it_from_then_on() {
 
 #[test]
 fn the_bundled_centre_pane_is_not_re_rendered_by_the_clock() {
-    // Against the real interface, because the saving is only real if the panes
-    // thurbox actually ships fall on the right side of it — and both sides are
-    // asserted below. The session list draws a spinner and must stay
-    // clock-keyed; the agent pane draws a surface and must not.
     let dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../ui");
     let host = LuaHost::new(dir);
     assert!(host.error.is_none(), "{:?}", host.error);
@@ -1111,8 +984,6 @@ fn the_bundled_centre_pane_is_not_re_rendered_by_the_clock() {
     };
     publish_at(&host, epoch, &snapshot, &themes);
 
-    // Settle both first: each publishes its own state as it renders, so the
-    // first pass moves the state version and only the second can be reused.
     for _ in 0..2 {
         let _ = render_at(&host, "agent", 0.0);
         let _ = render_at(&host, "sessions", 0.0);
@@ -1128,9 +999,6 @@ fn the_bundled_centre_pane_is_not_re_rendered_by_the_clock() {
         "the agent pane paid for an animation tick it draws nothing for"
     );
 
-    // And the other direction on the same tick, which is what makes the first
-    // half a saving rather than a freeze: the session list reads the clock for
-    // its status glyphs, so the same tick must reach it.
     let settled = host.skipped_renders();
     let _ = render_at(&host, "sessions", 1.0);
     assert_eq!(

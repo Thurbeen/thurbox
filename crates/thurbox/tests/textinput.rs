@@ -251,8 +251,6 @@ fn the_character_keys_are_unchanged() {
 
 #[test]
 fn an_alt_chord_that_is_not_a_line_edit_reaches_the_pane_untyped() {
-    // `alt+p` is new-session's "import parent": a field must neither type the
-    // `p` nor claim the chord, or the pane holding the field never sees it.
     let field = Field::new("al|pha");
     assert!(!field.press("alt+p"));
     assert!(!field.press("alt+up"));
