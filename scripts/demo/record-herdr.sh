@@ -57,7 +57,7 @@ key_of() { fleet status task "$1" | awk '/^session / {print $2}'; }
 terminal_of() { hc ls --label "fleet.key=$1" | jq -r '[.terminals[] | .address][0] // empty'; }
 
 step "scratch dir $DEMO"
-mkdir -p "$DEMO/app" "$DEMO/src/greeter" "$DEMO/you"
+mkdir -p "$DEMO/app" "$DEMO/src/backend" "$DEMO/src/frontend" "$DEMO/src/docs"
 cat >"$FLEET_CONFIG" <<EOF
 version = 1
 
@@ -72,13 +72,44 @@ keyPrefix = "$PREFIX"
 session = "$SESSION"
 EOF
 
-(
-  cd "$DEMO/src/greeter"
-  git init -q -b main
-  printf 'import sys\n\n\ndef greet(name):\n    return f"Hello, {name}!"\n\n\nif __name__ == "__main__":\n    print(greet(sys.argv[1] if len(sys.argv) > 1 else "world"))\n' >greet.py
-  printf '%s\n' '# greeter' '' 'python3 greet.py NAME prints a greeting.' >README.md
-  git add . && git -c user.name=demo -c user.email=demo@example.invalid commit -qm "greeter"
-)
+cat >"$DEMO/src/backend/server.py" <<'SERVER'
+import json
+from http.server import BaseHTTPRequestHandler, HTTPServer
+
+
+class Handler(BaseHTTPRequestHandler):
+    def do_GET(self):
+        if self.path == "/api/greeting":
+            body = json.dumps({"greeting": "Hello, world!"}).encode()
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.end_headers()
+            self.wfile.write(body)
+        else:
+            self.send_error(404)
+
+
+if __name__ == "__main__":
+    HTTPServer(("127.0.0.1", 8000), Handler).serve_forever()
+SERVER
+cat >"$DEMO/src/frontend/index.html" <<'HTML'
+<!doctype html>
+<title>Greeting</title>
+<p id="greeting">Loading...</p>
+<script src="app.js"></script>
+HTML
+cat >"$DEMO/src/frontend/app.js" <<'SCRIPT'
+fetch("/api/greeting")
+  .then((r) => r.json())
+  .then((data) => {
+    document.getElementById("greeting").textContent = data.greeting;
+  });
+SCRIPT
+printf '%s\n' '# Greeting' '' 'A backend that serves a greeting, and a frontend that shows it.' >"$DEMO/src/docs/README.md"
+for repo in backend frontend docs; do
+  (cd "$DEMO/src/$repo" && git init -q -b main && git add . &&
+    git -c user.name=demo -c user.email=demo@example.invalid commit -qm "$repo")
+done
 
 VEGA_DIR="${VEGA_DIR:-$DEMO/vega}"
 [ -d "$VEGA_DIR" ] || git clone -q https://github.com/Thurbeen/vega "$VEGA_DIR"
@@ -125,14 +156,20 @@ for _ in $(seq 1 90); do
   pause 2
 done
 
-step "the shell the viewer types in"
-you="$(hc run --bg --name you --cwd "$DEMO/you" "$SHELL" | jq -r .address)"
-hc label "$you" herdr.space=you herdr.tab=you >/dev/null
-pause 2
-hc send "$you" "export FLEET_CONFIG=$FLEET_CONFIG PATH=$PATH USER=you; clear" >/dev/null
-pause 2
+type_into() {
+  local terminal="$1" text="$2" i c
+  for ((i = 0; i < ${#text}; i++)); do
+    c="${text:i:1}"
+    case "$c" in
+      " ") c=space ;;
+      [A-Z]) c="shift+${c,,}" ;;
+    esac
+    hc keys "$terminal" "$c" >/dev/null
+    sleep 0.02
+  done
+}
 
-REQUEST="In git+file://$DEMO/src/greeter, dispatch two workers at once: one adds a --shout flag to greet.py that prints the greeting in capitals, the other adds tests for greet.py with unittest. Each one commits on its own branch and runs the tests. Local only: no push, no pull request."
+REQUEST="Dispatch three workers at once, one per repository in $DEMO/src. In backend, add a GET /api/health endpoint that answers ok, with a unittest. In frontend, show the backend health next to the greeting. In docs, document both endpoints in the README. Each worker commits on its own branch. Local only, no push and no pull request."
 
 step "record"
 ffmpeg -loglevel error -y -f x11grab -framerate 10 -video_size "${SCREEN_W}x${SCREEN_H}" -i "$DISPLAY" \
@@ -142,19 +179,18 @@ pids+=("$recorder")
 started=$(date +%s)
 mark() { echo "$1 $(($(date +%s) - started))" >>"$DEMO/marks"; }
 
+vega_terminal="$(terminal_of "$vega_key")"
 pause 2
-app agent.focus --terminal "$(terminal_of "$vega_key")"
-pause 4
-app pane.focus --terminal "$you"
+app agent.focus --terminal "$vega_terminal"
+pause 3
+type_into "$vega_terminal" "$REQUEST"
 pause 2
-hc send "$you" "fleet list task" >/dev/null
+hc keys "$vega_terminal" enter >/dev/null
 pause 4
-hc send "$you" "fleet send vega \"$REQUEST\"" >/dev/null
-pause 5
 mark work-start
-app agent.focus --terminal "$(terminal_of "$vega_key")"
 
 workers=()
+declare -A unsent_since=()
 finished=
 deadline=$(($(date +%s) + WORK_TIMEOUT))
 while [ "$(date +%s)" -lt "$deadline" ]; do
@@ -163,6 +199,16 @@ while [ "$(date +%s)" -lt "$deadline" ]; do
   for w in "${workers[@]}"; do
     k="$(key_of "$w" || true)"
     t="$( [ -n "$k" ] && terminal_of "$k" || true)"
+    if [ -n "$t" ] && hc read "$t" 2>/dev/null | tail -6 | grep -q "❯ \[Pasted text"; then
+      unsent_since[$w]="${unsent_since[$w]:-$(date +%s)}"
+      if [ $(($(date +%s) - unsent_since[$w])) -gt 90 ]; then
+        KEEP=1
+        step "the brief of $w sat in its composer unsent for 90s: no clip written"
+        exit 1
+      fi
+    else
+      unset "unsent_since[$w]"
+    fi
     if [ -n "$t" ] && ! grep -qx "$w" "$DEMO/shown" 2>/dev/null; then
       echo "$w" >>"$DEMO/shown"
       app agent.focus --terminal "$t"
@@ -170,7 +216,7 @@ while [ "$(date +%s)" -lt "$deadline" ]; do
       pause 6
     fi
   done
-  if [ "${#workers[@]}" -ge 2 ]; then
+  if [ "${#workers[@]}" -ge 3 ]; then
     done_count=$(fleet list task --json | jq '[.[] | select(.metadata.name != "vega" and .spec.dispatch and .status.result != null)] | length')
     if [ "$done_count" -ge "${#workers[@]}" ]; then finished=1; break; fi
   fi
@@ -186,10 +232,23 @@ for w in "${workers[@]}"; do
   k="$(key_of "$w" || true)"; t="$( [ -n "$k" ] && terminal_of "$k" || true)"
   [ -n "$t" ] && { app agent.focus --terminal "$t"; pause 4; }
 done
-app agent.focus --terminal "$(terminal_of "$vega_key")"
-pause 6
-app pane.focus --terminal "$you"
-hc send "$you" "clear; fleet list task" >/dev/null
+app agent.focus --terminal "$vega_terminal"
+vega_idle() {
+  fleet get task vega | jq -e '.status.agentState == "idle" and ((.status.inbox // []) | length) == 0' >/dev/null
+}
+summarised=
+for _ in $(seq 1 60); do
+  if vega_idle; then
+    pause 5
+    if vega_idle; then summarised=1; break; fi
+  fi
+  pause 5
+done
+if [ -z "$summarised" ]; then
+  KEEP=1
+  step "VEGA did not read its workers' results and go idle in 5 minutes: no clip written"
+  exit 1
+fi
 pause 6
 mark end
 kill -INT "$recorder"
