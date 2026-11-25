@@ -992,12 +992,13 @@ function require(name) end
 ---@field session string
 ---@field force? boolean Restore what can be restored.
 
---- Kill and relaunch a session's agent, as `thurbox-cli session restart`.
---- `fresh` starts it on a new conversation (same session, new agent session
---- id), refused while a turn is in progress.
+--- Restart a session's agent in its session, as `fleet restart` does: on its
+--- conversation when Fleet can resume it, or on a new one when `fresh`. It cuts a turn in
+--- progress and works on a paused session. Fleet refuses a held or deleting
+--- session, and one with no session to restart yet, as `command.failed`.
 ---@class (exact) thurbox.cmd.Restart
 ---@field session string
----@field fresh? boolean
+---@field fresh? boolean Start a new conversation instead of resuming this one.
 
 ---@class (exact) thurbox.cmd.Session
 ---@field session string A session id, or for `copy` a surface: `<id>#shell` reads the companion shell's screen rather than the agent's.

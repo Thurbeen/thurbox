@@ -67,8 +67,11 @@ lost one whose window is gone; `lost · cannot resume` and `gone` rows cannot
 come back. `p` (or Pause in the menu) asks `60_confirm` to issue the `pause`
 command, which runs `fleet pause <task>` and needs the `sessions` capability;
 `sessions.pause` refuses a row whose agent does not run (stopped, lost, or no
-session yet). A held Task (`spec.dispatch = false`) never reads `paused ·
-resuming`: Fleet does not resume it.
+session yet). `R` (or Restart in the menu) and Restart fresh ask
+`60_confirm` to issue `restart`, which runs `fleet restart [--fresh] <task>`
+and needs the `sessions` capability; a row that is not running or paused is
+refused before Fleet is asked. A held Task (`spec.dispatch = false`) never
+reads `paused · resuming`: Fleet does not resume it.
 
 The agent pane (`ui/mods/20_agent.lua`) draws such a row as its state, its
 reason and the way back, with the chords read from the registry. A start the

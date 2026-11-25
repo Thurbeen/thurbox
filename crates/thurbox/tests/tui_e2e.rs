@@ -7550,6 +7550,127 @@ fn the_pause_confirmation_names_the_key_that_resumes() {
     assert!(tui.quit().success());
 }
 
+fn fleet_restarting_napping(profile: &Profile, restart: &str) -> PathBuf {
+    let calls = profile.root.path().join("fleet-calls");
+    let mut running = resumed("napping");
+    running["object"]["status"]["conditions"] = serde_json::json!([]);
+    let synced = serde_json::json!({"type": "synced", "revision": 1, "names": ["napping"]});
+    write_script(
+        &profile.bin.join("fleet"),
+        &format!(
+            "#!/bin/sh\necho \"$*\" >> '{calls}'\ncase \"$1\" in\n  watch) echo '{running}'; echo '{synced}'; while kill -0 $PPID 2>/dev/null; do sleep 1; done ;;\n  get) echo '{task}' ;;\n  restart) {restart} ;;\n  attach) sleep 60 ;;\n  up) exit 6 ;;\n  version) echo '{{\"apiVersions\":[\"fleet/v1alpha1\"]}}' ;;\n  *) exit 1 ;;\nesac\n",
+            calls = calls.display(),
+            task = running["object"],
+        ),
+    );
+    calls
+}
+
+#[test]
+fn restart_on_a_session_asks_first_then_runs_fleet_restart_and_says_why_fleet_refused() {
+    let profile = Profile::new();
+    let calls = fleet_restarting_napping(
+        &profile,
+        "echo 'error: Task/napping is held: dispatch is false' >&2; exit 1",
+    );
+    let mut tui = Tui::spawn(&profile, 40, 160);
+    tui.wait_until("the napping row", |frame| frame.contains("napping"));
+    focus_the_list(&mut tui);
+    tui.send(b"G");
+    tui.wait_until_quiet();
+    tui.send(b"R");
+    tui.wait_for("Restart napping?");
+    let asked = std::fs::read_to_string(&calls).unwrap_or_default();
+    assert!(
+        !asked.lines().any(|call| call.starts_with("restart")),
+        "{asked}"
+    );
+    tui.send(b"y");
+    tui.wait_for("could not restart napping");
+    tui.wait_for("is held: dispatch is false");
+    let log = std::fs::read_to_string(&calls).unwrap_or_default();
+    assert!(log.lines().any(|call| call == "restart napping"), "{log}");
+    assert!(tui.quit().success());
+}
+
+#[test]
+fn restart_fresh_in_a_sessions_menu_runs_fleet_restart_fresh() {
+    let profile = Profile::new();
+    let calls = fleet_restarting_napping(&profile, "echo 'Task/napping fresh restart requested'");
+    let mut tui = Tui::spawn(&profile, 40, 160);
+    tui.wait_until("the napping row", |frame| frame.contains("napping"));
+    tui.wait_until_quiet();
+    tui.press(2, tui.find("○ napping"));
+    tui.wait_for("Restart fresh");
+    tui.press(0, tui.find("Restart fresh"));
+    tui.wait_for("Restart napping on a new conversation?");
+    tui.send(b"y");
+    tui.wait_for("restarting napping");
+    let log = std::fs::read_to_string(&calls).unwrap_or_default();
+    assert!(
+        log.lines().any(|call| call == "restart --fresh napping"),
+        "{log}"
+    );
+    assert!(tui.quit().success());
+}
+
+#[test]
+fn a_confirmed_ui_action_restarts_a_session_on_its_conversation_or_a_fresh_one() {
+    let profile = Profile::new();
+    let calls = fleet_restarting_napping(&profile, "echo 'Task/napping restart requested'");
+    let mut tui = Tui::spawn(&profile, 40, 160);
+    tui.wait_until("the napping row", |frame| frame.contains("napping"));
+    tui.wait_until_quiet();
+    let cli = |args: &[&str]| -> serde_json::Value {
+        let mut command = Command::new(env!("CARGO_BIN_EXE_thurbox-cli"));
+        profile.apply(&mut command);
+        let output = command
+            .args(["--json", "ui"])
+            .args(args)
+            .output()
+            .expect("ui cli");
+        serde_json::from_slice(&output.stdout).unwrap_or_else(|_| {
+            panic!(
+                "{}{}",
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr)
+            )
+        })
+    };
+    for (action, expected) in [
+        ("sessions.restart", "restart napping"),
+        ("sessions.restart_fresh", "restart --fresh napping"),
+    ] {
+        let catalog = cli(&["actions"]);
+        let entry = catalog["actions"]
+            .as_array()
+            .and_then(|actions| actions.iter().find(|entry| entry["name"] == action))
+            .unwrap_or_else(|| panic!("{action} is not in {catalog}"));
+        assert_eq!(
+            entry["arguments"],
+            serde_json::json!([{"name": "session_id", "kind": "string", "required": true}]),
+            "{action}: {entry}"
+        );
+        let asked = cli(&["action", action, "--session", "napping"]);
+        assert_eq!(
+            asked["result"]["error"]["code"], "confirmation_required",
+            "{action}: {asked}"
+        );
+        let ticket = asked["result"]["error"]["ticket"]
+            .as_str()
+            .expect("a ticket");
+        let confirmed = cli(&["confirm", ticket]);
+        assert_eq!(confirmed["result"]["ok"], true, "{action}: {confirmed}");
+        tui.wait_until(expected, |_| {
+            std::fs::read_to_string(&calls)
+                .unwrap_or_default()
+                .lines()
+                .any(|call| call == expected)
+        });
+    }
+    assert!(tui.quit().success());
+}
+
 fn select_in_the_list(profile: &Profile, tui: &mut Tui, session: &str) {
     let mut command = Command::new(env!("CARGO_BIN_EXE_thurbox-cli"));
     profile.apply(&mut command);

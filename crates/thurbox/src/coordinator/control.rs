@@ -392,10 +392,7 @@ impl App {
             .into_iter()
             .find(|entry| entry.name == name)
             .ok_or(("unknown_action", "unknown UI action".into()))?;
-        if !matches!(
-            name,
-            "sessions.delete" | "sessions.force_delete" | "sessions.restart" | "sessions.sync"
-        ) {
+        if !thurbox::kernel::registry::is_guarded_session_action(name) {
             return Err((
                 "unavailable",
                 "this destructive action has no guarded external executor".into(),
@@ -528,12 +525,19 @@ impl App {
         {
             return json!({"ok": false, "error": {"code": "audit_unavailable", "message": "cannot record destructive action"}});
         }
-        let result: Result<(), (&'static str, String)> = match pending.action.as_str() {
-            "sessions.force_delete" | "sessions.delete" => {
-                let inner = Command::Delete {
-                    session: pending.target.clone(),
-                    force: pending.action == "sessions.force_delete",
-                };
+        let inner = match pending.action.as_str() {
+            "sessions.force_delete" | "sessions.delete" => Some(Command::Delete {
+                session: pending.target.clone(),
+                force: pending.action == "sessions.force_delete",
+            }),
+            "sessions.restart" | "sessions.restart_fresh" => Some(Command::Restart {
+                session: pending.target.clone(),
+                fresh: pending.action == "sessions.restart_fresh",
+            }),
+            _ => None,
+        };
+        let result: Result<(), (&'static str, String)> = match inner {
+            Some(inner) => {
                 self.dispatch_tracked(Command::Guarded {
                     inner: Box::new(inner),
                     session: pending.target,
@@ -543,7 +547,7 @@ impl App {
                 });
                 Ok(())
             }
-            _ => Err(("unavailable", "unknown confirmed action".into())),
+            None => Err(("unavailable", "unknown confirmed action".into())),
         };
         match result {
             Ok(()) => {
@@ -719,13 +723,7 @@ impl App {
                         .is_some_and(|index| self.host.action_handler_present(index)),
                 };
                 if descriptor.destructive
-                    && !matches!(
-                        descriptor.name.as_str(),
-                        "sessions.delete"
-                            | "sessions.force_delete"
-                            | "sessions.restart"
-                            | "sessions.sync"
-                    )
+                    && !thurbox::kernel::registry::is_guarded_session_action(&descriptor.name)
                 {
                     descriptor.available = false;
                 }

@@ -57,6 +57,9 @@ pub enum Command {
     Start { session: String },
     /// Ask Fleet to pause a running session's agent, keeping its conversation.
     Pause { session: String },
+    /// Ask Fleet to restart a session's agent: on its conversation when Fleet
+    /// can resume it, or on a new one when `fresh`.
+    Restart { session: String, fresh: bool },
     /// Persist an explicit manual order, densely renumbered.
     ///
     /// The permutation is computed by the pane that *renders* the list, because
@@ -312,6 +315,7 @@ impl Command {
             Command::Send { .. } => "send",
             Command::Start { .. } => "start",
             Command::Pause { .. } => "pause",
+            Command::Restart { .. } => "restart",
             Command::Create { .. } => "create",
             Command::Rename { .. } => "rename",
             Command::Copy { .. } => "copy",
@@ -341,6 +345,7 @@ impl Command {
             | Command::Send { session, .. }
             | Command::Start { session }
             | Command::Pause { session }
+            | Command::Restart { session, .. }
             | Command::Rename { session, .. }
             | Command::Copy { session }
             | Command::Diff { session }
@@ -417,6 +422,7 @@ impl Command {
             Command::Program { .. } => Some(Capability::Program),
             Command::Send { .. }
             | Command::Pause { .. }
+            | Command::Restart { .. }
             | Command::Create { .. }
             | Command::Mod { .. }
             // Fleet has no undo window, so every delete is for good.
@@ -785,6 +791,7 @@ impl Command {
             session,
             text,
             force,
+            fresh,
             ..
         } = args;
         if session.is_empty() {
@@ -794,6 +801,7 @@ impl Command {
             "delete" => Ok(Command::Delete { session, force }),
             "start" => Ok(Command::Start { session }),
             "pause" => Ok(Command::Pause { session }),
+            "restart" => Ok(Command::Restart { session, fresh }),
             "send" => match text {
                 Some(text) => Ok(Command::Send { session, text }),
                 None => Err("command \"send\" needs text".to_string()),
@@ -837,6 +845,8 @@ pub struct Args {
     pub text: Option<String>,
     pub value: Option<String>,
     pub force: bool,
+    /// `restart`: start the agent on a new conversation.
+    pub fresh: bool,
     pub flag: Option<bool>,
     /// `focus`: return to the previous pane when the named one already has focus.
     pub toggle: bool,
@@ -1409,6 +1419,7 @@ mod tests {
             ),
             ("delete", with(Args::default()), Some(Sessions)),
             ("pause", with(Args::default()), Some(Sessions)),
+            ("restart", with(Args::default()), Some(Sessions)),
             ("start", with(Args::default()), None),
             (
                 "mod",
@@ -1686,15 +1697,7 @@ mod tests {
         )
         .is_err());
         // A verb no engine runs any more is no command at all.
-        for gone in [
-            "reorder",
-            "restore",
-            "restart",
-            "fork",
-            "sync",
-            "task",
-            "automation",
-        ] {
+        for gone in ["reorder", "restore", "fork", "sync", "task", "automation"] {
             assert!(Command::parse(
                 gone,
                 Args {
@@ -1705,6 +1708,35 @@ mod tests {
             )
             .is_err());
         }
+    }
+
+    #[test]
+    fn restart_names_its_session_and_whether_the_conversation_is_fresh() {
+        let restart = |fresh| {
+            Command::parse(
+                "restart",
+                Args {
+                    session: "s1".into(),
+                    fresh,
+                    ..Args::default()
+                },
+            )
+        };
+        assert_eq!(
+            restart(false),
+            Ok(Command::Restart {
+                session: "s1".into(),
+                fresh: false
+            })
+        );
+        assert_eq!(
+            restart(true),
+            Ok(Command::Restart {
+                session: "s1".into(),
+                fresh: true
+            })
+        );
+        assert!(Command::parse("restart", Args::default()).is_err());
     }
 
     #[test]
