@@ -374,6 +374,26 @@ them every withheld capability is declared absent, so reaching for one is a lint
 error rather than a nil-index at the moment someone opens your pane. `stylua ui`
 formats. All three run in CI; selene and stylua also run on commit.
 
+`thurbox.yml` lists the granted set and inherits no `base:`, the same shape
+`kernel::host::mod_stdlib` and `install_api` build; keep the three in step.
+Inheriting `lua53` and marking names `removed` does not work: selene applies
+`removed` to plain functions but not to a table's fields. Three names stay out
+on purpose:
+
+- `_G`: selene's `global_usage` lint rejects it anyway, and `_G["io"]` is a
+  spelling the file cannot see.
+- the math functions Lua 5.4 removed (`pow`, `ldexp`, `log10`, …): mlua's
+  vendored Lua still answers them through `LUA_COMPAT_MATHLIB`, and a
+  dependency bump can take them away.
+- arities: every function takes varargs, because the check is that a name
+  exists, not how many arguments it takes.
+
+`selene.toml` only warns on an unused variable: the kernel calls a mod's fields,
+and nothing else references them. It allows shadowing, which the bundled panes
+use to narrow a name for a few lines (`local session = item.session`). It
+excludes `thurbox.d.lua`: describing a global means assigning it, which the
+sandbox forbids, so lua-language-server checks that file instead.
+
 ## Names, checked before you run
 
 Absence is the loud half. The quiet half is everything that *is* there and is

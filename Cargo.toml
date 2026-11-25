@@ -1,15 +1,8 @@
 [workspace]
-# One repository for thurbox, Fleet and the runtimes (ADR-41). Each component
-# is a crate under crates/; docs/README.md says which may depend on which, and
-# crates/architecture.toml is that rule as arch-rules checks it.
 members = ["crates/*"]
-# The vendored crates are patches, not members: CI runs crossterm's own tests
-# from its own manifest and lockfile.
 exclude = ["vendor/crossterm", "vendor/tui-term"]
 resolver = "3"
 
-# Fleet's crates inherit these; thurbox keeps its own edition, MSRV and
-# dependency versions in crates/thurbox/Cargo.toml.
 [workspace.package]
 version = "0.0.0-dev"
 edition = "2024"
@@ -48,11 +41,9 @@ opentelemetry_sdk = { version = "0.33.1", default-features = false, features = [
 opentelemetry-otlp = { version = "0.33.1", default-features = false, features = ["trace", "metrics", "http-proto", "reqwest-blocking-client"] }
 opentelemetry-proto = { version = "0.33.1", default-features = false, features = ["gen-tonic-messages", "trace", "metrics"] }
 prost = "0.14.4"
-# CronTask schedules: five-field cron, evaluated in UTC by fleet-api.
 croner = "4.0.3"
 chrono = { version = "0.4.45", default-features = false, features = ["std"] }
 serde_path_to_error = "0.1.20"
-
 
 [workspace.lints.rust]
 unsafe_code = "forbid"
@@ -63,24 +54,10 @@ dbg_macro = "deny"
 todo = "deny"
 
 [profile.dev]
-# Keep source locations in backtraces without copying full type/variable
-# information into every integration-test binary. The test profile inherits this.
 debug = "line-tables-only"
 
-# Our own crate: enough optimisation to be usable, still quick to rebuild.
-#
-# v2 renders through an embedded Lua VM, so a dev build runs interpreter-heavy
-# work on every frame in a way v1 never did. At opt-level 0 that is felt as lag
-# in the TUI itself, and `cargo run` is the documented way to
-# run it -- so the dev profile is part of how fast thurbox *is*, not just
-# how fast it builds.
 opt-level = 1
 
-# Dependencies: fully optimised even in a dev build.
-#
-# These are compiled once and then cached, so the build-time cost is paid on
-# the first build and never again, while every frame pays the runtime cost.
-# mlua (and its vendored Lua C), ratatui and vt100 are all on the render path.
 [profile.dev.package."*"]
 opt-level = 3
 
@@ -98,20 +75,7 @@ inherits = "release"
 debug = true
 strip = false
 
-# crossterm 0.29.0 with a parser fix: a terminal reply
-# behind the `>` marker, such as the secondary device attributes
-# `ESC [ > 0 ; 10 ; 1 c`, is consumed instead of reaching the focused agent as
-# the keys `0;10;1c`. `vendor/crossterm` is the published crate's Cargo.toml,
-# LICENSE and src/, unchanged but for the parts marked "thurbox patch": the fix
-# in src/event/sys/unix/parse.rs and the Mio readiness fix/tests in
-# src/event/source/unix/mio.rs. The latter rearms readiness between reads so
-# input beyond one buffer is delivered without changing blocking descriptor
-# flags. Its Cargo.lock pins the vendored tests' dependencies for CI's Nextest
-# job. Drop these patches once a release fixes both behaviors; tui_e2e covers
-# device-attributes replies and a prewritten mouse burst across the buffer edge.
 [patch.crates-io]
 crossterm = { path = "vendor/crossterm" }
 
-# tui-term 0.3.4 still requires vt100 0.16. Drop this patch when a release
-# supports vt100 0.18; the dependency and parser size arguments are patched.
 tui-term = { path = "vendor/tui-term" }

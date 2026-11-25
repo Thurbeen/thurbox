@@ -8,9 +8,7 @@ pkgdesc="TUI for orchestrating multiple coding-agent CLI sessions in persistent 
 arch=('x86_64' 'aarch64')
 url="https://github.com/Thurbeen/thurbox"
 license=('MIT')
-# tmux/git are required at runtime. glibc is the shared library the binary
-# links (gcc-libs is implicitly satisfied).
-# The clipboard backend (arboard) loads X11/Wayland libs lazily, not hard deps.
+# arboard loads the X11 and Wayland libraries lazily, so they are not hard dependencies.
 depends=('tmux' 'git' 'glibc')
 makedepends=('cargo')
 optdepends=('claude-code: Claude Code agent CLI'
@@ -31,8 +29,6 @@ build() {
     cd "$pkgname-$pkgver" || return
     export RUSTUP_TOOLCHAIN=stable
     export CARGO_TARGET_DIR=target
-    # build.rs reads the real version from this env var; without it the
-    # binary reports 0.0.0-dev (Cargo.toml is a static dev marker).
     export THURBOX_RELEASE_VERSION="v$pkgver"
     cargo build --frozen --release --bin thurbox --bin thurbox-cli
 }

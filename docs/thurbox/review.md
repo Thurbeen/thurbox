@@ -24,8 +24,8 @@ slash matches by basename at any depth.
 - `Cargo.lock`
 - `package-lock.json`
 - `proptest-regressions/**`
-- `vendor/**` — a published crate copied as released; the comment on
-  `[patch.crates-io]` in Cargo.toml says why. The hunks marked `thurbox patch`
+- `vendor/**` — a published crate copied as released; `docs/thurbox/development.md`
+  → *Cargo profiles and manifests* says why. The hunks marked `thurbox patch`
   are the exception: they are this repository's code and stay under review.
 - `media/**` — tutorial stills and Fleet's images. The demo GIFs/MP4s that
   `scripts/demo/record*.sh` write there are gitignored and live on the `media`

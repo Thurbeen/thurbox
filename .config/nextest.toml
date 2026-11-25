@@ -1,46 +1,17 @@
-# Nextest configuration
-# See: https://nexte.st/book/configuration.html
-
 [profile.default]
-# Number of retries for failing tests
 retries = 0
-
-# Number of threads to use for running tests
 test-threads = "num-cpus"
-
-# Show slow tests that take more than 60 seconds
 slow-timeout = { period = "60s", terminate-after = 2 }
-
-# Fail fast - stop after first failure
 fail-fast = false
-
-# Success output
 success-output = "immediate"
-
-# Failure output
 failure-output = "immediate-final"
-
-# Status level
 status-level = "pass"
 
 [profile.ci]
-# CI-specific configuration
 retries = 2
 fail-fast = true
 slow-timeout = { period = "30s" }
 
-# tests/tui_e2e.rs drives the real binary on a real pty/tmux session with
-# wall-clock waits. Run alongside the rest of the (much larger) suite at full
-# parallelism, they starve each other of CPU and blow their timeouts under
-# load even though each passes cleanly in isolation — serialize this one
-# binary so its tests do not contend with each other. Other binaries still
-# run alongside it; a test group does not reserve the whole runner.
-#
-# One thread works through this group's tests back to back, so it is the
-# longest chain in the run. Without a priority `tui_e2e` began only after the
-# rest of the suite was mostly done and ran as a single-threaded tail.
-# Starting it first lets the remaining threads finish everything else
-# alongside it.
 [test-groups]
 e2e-pty = { max-threads = 1 }
 
@@ -54,9 +25,6 @@ filter = 'binary_id(thurbox::tui_e2e)'
 test-group = 'e2e-pty'
 priority = 100
 
-# A dispatched Task's start, timed beside twelve running ones: starting
-# those twelve under a loaded runner can outlast the default 120 s kill, which
-# would end the test before it names the Task that is late.
 [[profile.default.overrides]]
 filter = 'binary_id(fleet-cli::e2e_runtime_exec) & test(a_task_dispatched_beside_running_tasks)'
 slow-timeout = { period = "60s", terminate-after = 4 }

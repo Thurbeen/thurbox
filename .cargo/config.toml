@@ -1,4 +1,3 @@
 [alias]
-# fleet-dev builds in its own target dir: the gate it runs rebuilds the
-# workspace, and Windows cannot replace a running executable.
+# Windows cannot replace a running executable, and the gate fleet-dev runs rebuilds the workspace.
 xtask = "run --locked --package fleet-dev --target-dir target/xtask --"

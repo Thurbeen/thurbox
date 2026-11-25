@@ -1,8 +1,4 @@
 # yaml-language-server: $schema=https://aka.ms/winget-manifest.defaultLocale.1.6.0.schema.json
-#
-# Winget default-locale manifest for thurbox. CI bumps PackageVersion and
-# ReleaseNotesUrl on every release (packaging/winget/bump-manifests.py); the
-# rest is descriptive metadata that rarely changes.
 PackageIdentifier: Thurbeen.thurbox
 PackageVersion: 0.79.46
 PackageLocale: en-US

@@ -1,14 +1,9 @@
-# thurbox as a Nix package. Kept out of flake.nix so the same file can be
-# `callPackage`d from an overlay, the flake's own `packages`, or a nixpkgs
-# checkout.
 {
   lib,
   rustPlatform,
   makeWrapper,
   git,
   tmux,
-  # Set by the flake from its own source; a caller without one gets a
-  # version that still reads as unreleased.
   version ? "0.0.0-unstable",
   rev ? null,
 }:
@@ -25,18 +20,12 @@ rustPlatform.buildRustPackage {
       ../crates
       ../ui
       ../examples
-      # The `[patch.crates-io]` crates Cargo.toml points at.
       ../vendor
     ];
   };
 
   cargoLock.lockFile = ../Cargo.lock;
 
-  # build.rs takes the version from here. It must not contain `-dev`: that
-  # turns on the `dev_build` cfg, which moves a build onto the `thurbox-dev`
-  # tmux socket and data directory. A `0.0.0` version still counts as
-  # unreleased at runtime (`is_dev_version`), which is what keeps
-  # `thurbox-cli update` from trying to replace a binary in the read-only store.
   env.THURBOX_RELEASE_VERSION = version + lib.optionalString (rev != null) "+${rev}";
 
   cargoBuildFlags = [
@@ -46,15 +35,10 @@ rustPlatform.buildRustPackage {
     "thurbox-cli"
   ];
 
-  # CI's Nextest job covers the tests; compiling them again here takes longer
-  # than the release build and does not change the package output.
   doCheck = false;
 
   nativeBuildInputs = [ makeWrapper ];
 
-  # tmux is the session backend and git drives worktrees. Appended rather than
-  # prepended, so a tmux or git the user already has keeps winning, and so the
-  # agents thurbox starts see the same PATH they would without Nix.
   postInstall = ''
     for bin in thurbox thurbox-cli; do
       wrapProgram "$out/bin/$bin" --suffix PATH : ${

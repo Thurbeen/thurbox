@@ -72,19 +72,21 @@ on every build:
 
 | Crate | May depend on | Must not depend on |
 | --- | --- | --- |
-| `fleet-*` | `fleet-*`, `term-stream`, crates.io | `runtime-*`, `thurbox` |
-| each `runtime-*` | `term-stream`, crates.io | `fleet-*`, `thurbox`, every other `runtime-*` |
+| `fleet-*` | `fleet-*`, `term-stream`, `otel-env`, crates.io | `runtime-*`, `thurbox` |
+| each `runtime-*` | `term-stream`, `otel-env`, crates.io | `fleet-*`, `thurbox`, every other `runtime-*` |
 | `term-stream` | crates.io | everything else |
-| `workspace-git` (makes git workspaces; runtimes run it, never link it) | crates.io | everything else |
-| `thurbox` | `term-stream`, crates.io, and `runtime-mux` until Fleet drives the runtimes | `fleet-*`, every other `runtime-*` |
+| `otel-env` (OTLP export from the `OTEL_*` variables) | crates.io | everything else |
+| `workspace-git` (makes git workspaces; runtimes run it, never link it) | `otel-env`, crates.io | everything else |
+| `thurbox` | `term-stream`, `otel-env`, crates.io, and `runtime-mux` until Fleet drives the runtimes | `fleet-*`, every other `runtime-*` |
 
 The file is `crates/architecture.toml`, and the `architecture` test of
 `arch-rules` checks it. Every crate that is not Fleet's is `role = "component"`: held
 to the crate graph from its manifest and its sources, but not to Fleet's own
 source rules.
 
-Components talk only through processes; `term-stream` is a wire format, not
-a component. A component can therefore later move
+Components talk only through processes. Two crates are shared and are not
+components: `term-stream`, a wire format, and `otel-env`, so every program
+reads the `OTEL_*` variables the same way. A component can therefore later move
 to a repository of its own with nothing to untangle.
 
 ### The contracts

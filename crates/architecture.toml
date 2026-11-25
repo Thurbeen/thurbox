@@ -1,36 +1,3 @@
-# Fleet's architecture rules, enforced by crates/arch-rules (its
-# `architecture` test) on every gate and CI run. docs/fleet/contracts.md explains
-# each rule; the arch-rules crate docs say what static checking cannot see.
-#
-# The graph, bottom up:
-#
-#   fleet-api            pure   types and ports
-#   fleet-controllers    pure   decisions          -> api
-#   fleet-exec           adapter the one process spawner
-#   fleet-store          adapter                   -> api
-#   fleet-runtime        adapter runtime, term-bridge -> api, exec, term-stream, otel-env
-#   fleet-forge          adapter                   -> api, exec
-#   fleet-gateway        adapter                   -> api, exec
-#   fleet-plugin         adapter                   -> api, exec
-#   fleet-manager        orchestration             -> api, controllers
-#   fleet-cli            edge   parse, wire, print -> api, manager, store, runtime, forge, plugin, gateway, exec, otel-env
-#   arch-rules, fleet-dev  tooling
-#
-# The other components share the workspace and none of the graph above:
-#
-#   term-stream          the terminal stream's frames: a wire format
-#   otel-env             OTLP export from the OTEL_* variables, off unless they ask
-#   runtime-mux          component the multiplexer runtime: tmux, psmux, rmux -> term-stream, otel-env
-#   runtime-herdr        component the herdr runtime: each session a herdr-core terminal -> term-stream
-#   workspace-git        component makes workspaces from git URLs; runtimes run its program -> otel-env
-#   thurbox              component the interface; reaches Fleet only by
-#                                  running its CLI   -> term-stream, otel-env, and
-#                                  runtime-mux until Fleet drives its sessions
-#
-# docs/README.md is the rule between components: no Rust dependency crosses
-# from one to another. Two crates are shared: term-stream, a wire format, and
-# otel-env, so every program reads the OTEL_* variables the same way.
-
 [crates.fleet-api]
 role = "pure"
 deps = []
@@ -43,8 +10,6 @@ deps = ["fleet-api"]
 external = ["serde_json"]
 probes = ["fleet-store", "fleet-runtime", "fleet-forge", "fleet-plugin", "fleet-manager", "fleet-exec", "fleet-gateway", "otel-env"]
 
-# The only crate that starts a process: bounded, its whole tree killed past
-# the bound.
 [crates.fleet-exec]
 role = "adapter"
 deps = []
@@ -57,17 +22,10 @@ deps = ["fleet-api"]
 role = "adapter"
 deps = ["fleet-api", "fleet-exec", "term-stream", "otel-env"]
 
-# The only crate that knows a forge CLI (`gh`, `glab`, `az`, `curl`) exists:
-# every forge call is one
-# bounded process through fleet-exec, and no forge-specific name appears
-# above the port.
 [crates.fleet-forge]
 role = "adapter"
 deps = ["fleet-api", "fleet-exec"]
 
-# The only crate that will know a chat platform's client exists: every
-# platform call is one bounded process through fleet-exec, the fake runs
-# none, and no platform name appears above the Gateway port.
 [crates.fleet-gateway]
 role = "adapter"
 deps = ["fleet-api", "fleet-exec"]
@@ -83,9 +41,7 @@ deps = ["fleet-api", "fleet-controllers"]
 [crates.fleet-cli]
 role = "edge"
 deps = ["fleet-api", "fleet-manager", "fleet-runtime", "fleet-store", "fleet-forge", "fleet-plugin", "fleet-gateway", "fleet-exec", "otel-env"]
-# The end-to-end tests speak the terminal stream to what `fleet attach` names.
 dev_deps = ["term-stream"]
-# Every write is the manager's: the CLI parses, calls a verb, and prints.
 forbidden_methods = [
   "create", "create_fenced", "update_spec", "update_status", "append_inbox", "resolve_inbox", "record_delivery",
   "record_relay", "remove_finalizer", "delete", "delete_fenced", "acquire_lease",
@@ -96,68 +52,33 @@ forbidden_methods = [
   "append_events",
 ]
 
-# Sessions on a terminal multiplexer, local or on a host over ssh or wsl.exe.
-# Knows nothing of thurbox: what it needs from settings and from where
-# thurbox keeps its files is passed in (`MuxSettings`). Its
-# module rules follow, then the boundary's shape: the adapters are peers, only
-# the factory names one, and the route and the contract know no launcher.
 [crates.runtime-mux]
 role = "component"
 deps = ["term-stream", "otel-env"]
-# The crate root only declares and re-exports; `main` is the `runtime-mux`
-# program's composition root, which calls the factory as an embedder does.
 exempt = ["lib", "main"]
 governed = ["tmux_compat"]
 
 [crates.runtime-mux.modules]
-# The host model a route names: pure data, the sink.
 host = { use = [] }
-# Pure values: the identity a window is stamped with, the hyperlink runs a
-# pane records and what the embedder injects.
 session_id = { use = [] }
 hyperlink = { use = [] }
 settings = { use = [] }
-# Process lookups: `PATH` and the WSL distro this process runs in.
 path_lookup = { use = [] }
-# How a command reaches a machine: quoting, ssh and `wsl.exe` launchers.
-# `host` for the one conversion from a host entry to its launcher.
 shell = { use = ["host"] }
-# A host's `PATH` and the multiplexers on it, probed once and cached.
 host_path = { use = ["host", "shell"] }
-# Whether the binaries a session needs are installed.
 preflight = { use = ["host", "path_lookup", "shell"] }
-# The contract every adapter implements and the values that cross it. Names
-# no adapter, no protocol helper and no host config: the bottom of the
-# boundary.
 contract = { use = [] }
-# Which window is whose (ADR-25), over the listing the contract defines.
 identity = { use = ["contract"] }
-# Which server an instance's sessions live on (ADR-12).
 instance = { use = ["host", "settings"] }
-# The pane machinery every backend's stream is wired into: the reader loop,
-# the vt100 parser, the signals it raises.
 pane = { use = ["contract", "hyperlink", "osc8", "output_wake", "session_id"] }
 osc8 = { use = ["hyperlink"] }
 output_wake = { use = [] }
-# A container of backends. Knows the contract and nothing that builds one.
 registry = { use = ["host", "contract"] }
-# The runtime protocol over the backend it is handed for a request's place:
-# the contract and nothing that builds one.
 protocol = { use = ["host", "contract", "identity", "place", "workspace"] }
-# A request's place: its table parsed into a host, and the commands run on a
-# remote place outside its multiplexer (readiness, `exec`, `workspace-git`,
-# `browse`, `branches`), through the place's launcher and with its `PATH`.
 place = { use = ["host", "shell", "host_path", "contract"] }
-# The `workspace` verb's side: the runtime's config, the workspace-git program
-# it runs, and its setup and teardown steps; on a remote place, through
-# `place`.
 workspace = { use = ["host", "place"] }
-# One pane as a terminal stream, over one backend it is handed.
 view = { use = ["contract"] }
-# What fills the registry: the only module that names an adapter.
 wiring = { use = ["host", "shell", "settings", "contract", "registry", "tmux", "psmux", "rmux"] }
-# The tmux command and control-mode protocol the adapters speak. Shared
-# grammar, not an adapter: its root only declares the modules below.
 tmux_compat = { use = [] }
 "tmux_compat::server" = { use = [
   "host", "shell", "settings", "path_lookup", "host_path", "preflight", "contract",
@@ -165,8 +86,6 @@ tmux_compat = { use = [] }
 ] }
 "tmux_compat::control_mode" = { use = ["shell", "contract", "tmux_compat::transport"] }
 "tmux_compat::transport" = { use = ["shell", "preflight"] }
-# The adapters are peers: each reaches the protocol helper and never the
-# other; nothing reaches one but the factory.
 tmux = { use = [
   "host", "shell", "settings", "contract",
   "tmux_compat::control_mode", "tmux_compat::server", "tmux_compat::transport",
@@ -180,10 +99,6 @@ rmux = { use = [
   "tmux_compat::control_mode", "tmux_compat::server", "tmux_compat::transport",
 ] }
 
-# The adapters are peers: none reaches another, and the protocol helper they
-# share reaches none, test code included. A quirk of one multiplexer is a body
-# in its own adapter, never a branch in code the other runs. Only the factory
-# names an adapter.
 [[crates.runtime-mux.restricted]]
 paths = ["runtime_mux::tmux"]
 allowed = ["tmux", "wiring"]
@@ -199,18 +114,11 @@ paths = ["runtime_mux::rmux"]
 allowed = ["rmux", "wiring"]
 why = "only the factory names an adapter, and the adapters are peers"
 
-# Nothing reaches the factory but the `runtime-mux` program's composition
-# root, as an embedder's does: every other module is handed the registry it
-# builds.
 [[crates.runtime-mux.restricted]]
 paths = ["runtime_mux::wiring"]
 allowed = ["wiring", "main"]
 why = "only a composition root builds the registry"
 
-# A specific multiplexer is named only where one is chosen: the route grammar
-# and its defaults (`host`), whether a binary is installed (`preflight`), the
-# factory, and the one adapter that is it. A multiplexer with no adapter is
-# not one the factory may serve. A test may name the one it pins.
 [[crates.runtime-mux.restricted]]
 paths = ["runtime_mux::host::multiplexer::Multiplexer::Tmux"]
 allowed = ["host", "preflight", "wiring", "tmux"]
@@ -235,10 +143,6 @@ allowed = ["host", "preflight"]
 production_only = true
 why = "no adapter serves Herdr, so the factory may not"
 
-# The route and the contract are the same for every host OS, launcher and
-# multiplexer (docs/runtime/runtime-mux.md): they reach no launcher, no host
-# entry and no adapter, and decide nothing by the OS this build is for. A test
-# simulates the other OS through `shell::simulate_local`.
 [[crates.runtime-mux.restricted]]
 paths = [
   "runtime_mux::shell", "runtime_mux::host::host_def",
@@ -250,59 +154,29 @@ applies_to = ["host::route", "contract"]
 production_only = true
 why = "the route and the contract know no launcher, adapter or build OS"
 
-# Sessions as herdr-core terminals, over herdr-core's JSON-RPC API. Runs
-# `workspace-git` for its workspaces; links no other runtime.
 [crates.runtime-herdr]
 role = "component"
 deps = ["term-stream"]
 
-# Makes a runtime's workspaces from git URLs: a worktree per URL, work
-# preserved on release (docs/runtime/README.md, "workspace-git"). A runtime
-# runs its program where its files belong; no crate links it.
 [crates.workspace-git]
 role = "component"
 deps = ["otel-env"]
 
-# The terminal stream's frames and codec: a wire format, not a component.
-# No process, no runtime, no transport; every component may depend on it.
 [crates.term-stream]
 role = "component"
 deps = []
 
-# The only crate that knows an OpenTelemetry SDK and exporter exist: it
-# installs them as the process's providers when the OTEL_* variables ask,
-# and carries trace context to a child as TRACEPARENT. Every other crate
-# records through the `opentelemetry` API alone, which is a no-op without a
-# provider. Shared like term-stream, so each program reads the variables the
-# same way (docs/observability.md).
 [crates.otel-env]
 role = "component"
 deps = []
 
-# The interface. Its module rules follow, then its restrictions: the runtime
-# gateways, session purity, the kernel's workers, concrete backends, multiplexer
-# naming and atomic writes.
-# Transitional: thurbox links the runtime directly until Fleet drives the
-# runtimes (step 5 of the v3 migration), when this edge goes.
 [crates.thurbox]
 role = "component"
 deps = ["runtime-mux", "term-stream", "otel-env"]
-# The crate roots: the library, `main` and the `thurbox-cli` binary.
-# `coordinator` is not exempt: it is `main`'s own body split across files, and
-# "wires everything" was never the same claim as "may reach anything".
 exempt = ["lib", "main", "thurbox-cli"]
-# Every file module of these, at any depth, is a module of its own, so a new
-# file there is a decision rather than something its parent's rule covers.
 governed = ["agent", "config", "update"]
 
-# `use` grants a module in any form; `path_only` only by a fully-qualified
-# path, never an import, so the crossing stays visible at each call site.
 [crates.thurbox.modules]
-# Pure data: the dependency sink. No crate-internal references at all.
-# It names only data formats and value types of other crates: a palette in
-# `ratatui` colours is a rendering decision, a `tokio` handle or a `rusqlite`
-# row someone else's runtime. The host model, the hyperlink table and
-# `SessionId` are the runtime's, which `session` re-exports.
 session = { use = [], external = [
   "chrono", "chrono_tz", "cron", "otel_env", "runtime_mux", "serde", "serde_json",
   "toml", "toml_edit", "unicode_width", "uuid",
@@ -310,92 +184,45 @@ session = { use = [], external = [
 agent = { use = [] }
 "agent::fetch" = { use = ["paths"] }
 "agent::input" = { use = [] }
-# thurbox's own config files beside config.toml. `config::file` is the one
-# loader: where a file lives, seeding it, parsing it with unknown keys
-# reported, and writing it back atomically. Each file is a module of its own
-# so a consumer names the config it reads; none reaches another, so a file's
-# degradation is its own.
 config = { use = [] }
 "config::file" = { use = ["paths"] }
-# What the interface remembers between runs (`interface.json`): data in, the
-# editor mode's type from `session`.
 "config::interface_state" = { use = ["session", "config::file"] }
 "config::settings" = { use = ["session", "config::file"] }
 "config::themes" = { use = ["theme", "config::file"] }
-# Self-update: whether a newer release exists, and installing it.
 update = { use = [] }
 "update::self_update" = { use = ["paths", "shell", "agent::fetch", "update::version_check"] }
 "update::version_check" = { use = ["paths", "agent::fetch"] }
-# The gateway to the multiplexer runtime (`runtime_mux`, ADR-41): its
-# re-exports, and what thurbox injects into it: `session` for the settings
-# type, `paths` for the data directory. Every crossing into the runtime is an edge to this
-# module, judged by the item it names (the concrete-backend check).
 backend = { use = ["session", "paths"] }
 git = { use = ["session", "paths", "shell"] }
-# The theme presets and the user's overrides, in `ratatui` colours: data, but
-# rendering data, which `session`'s `external` list keeps out of the sink.
 theme = { use = [] }
-# The interface's telemetry (ADR-38): `otel-env` from the OTEL_* variables
-# and the diagnostic-log bridge, built by `coordinator`, which hands it the
-# identity it exports under.
 telemetry = { use = [] }
 cli = { use = ["session", "paths", "notifications", "ui_control", "theme", "fleet_link", "shell"], path_only = [
   "kernel", "backend", "config::file", "config::interface_state",
   "config::settings", "config::themes", "update::self_update",
   "update::version_check",
 ] }
-# Live agent terminals: `kernel::terminal` adopts a session's real pane
-# through the backend contract and paints its vt100 screen. Those crossings
-# are path-only, as `cli`'s are, so every one into the side-effect layer is
-# visible at its call site.
 kernel = { use = ["session", "paths", "git", "notifications", "theme", "fleet_link"], path_only = [
   "agent::fetch", "backend", "config::interface_state", "config::settings",
   "config::themes", "update::self_update", "update::version_check",
 ] }
-# The one way to a Fleet's command line (ADR-41): every `fleet` call the
-# kernel and the CLI make becomes a process here, on this machine or through
-# `shell`'s launchers, so neither of them launches anything itself. `session`
-# for the `[fleets.<name>]` entry a link is built from.
 fleet_link = { use = ["session", "shell"] }
-# Leaf utilities.
 paths = { use = [] }
 ui_control = { use = ["paths"] }
-# The runtime's launchers and quoting rules, re-exported: a module of its own
-# so a grant still says which modules may launch anything.
 shell = { use = [] }
 workspace = { use = ["paths"] }
-# `main`'s own body, split across files: the loop, the workers and the
-# chrome. It is the one module whose job is to wire the layers together, so
-# its list is the widest; but it is a list, and a new layer reached from the
-# loop is a decision recorded here rather than an exemption. It reaches the
-# library by its crate name (`thurbox::`), the only spelling a binary has.
 coordinator = { use = [
   "clipboard", "fleet_link", "kernel", "notifications", "paths", "session", "shell", "telemetry",
   "ui_control", "agent::input", "backend", "config::interface_state",
 ] }
-# Leaf side-effect module: OS desktop notifications. Knows `session` (for
-# `SessionId`), `paths` (for `PATH` lookups) and `shell` (the shared quoting
-# rules; it grew a third copy of the PowerShell one before this was allowed).
 notifications = { use = ["session", "paths", "shell"] }
-# Leaf side-effect module: clipboard writes (native and OSC 52). Knows
-# `session` only for the `ClipboardProvider` setting; writes to the tty and
-# never reaches into agent or the interface.
 clipboard = { use = ["paths", "session"] }
 
-# The modules that may name `runtime_mux` itself: the `backend` gateway, and
-# the ones re-exporting a runtime type as their own: the shell grammar
-# (`shell`), the host model and `SessionId` (`session`), and the data
-# directory and binary lookup (`paths`). Everyone else reaches the runtime
-# through them, so the module rules see each crossing.
 [[crates.thurbox.restricted]]
 paths = ["runtime_mux"]
 allowed = ["backend", "shell", "session", "paths"]
 direct = true
 why = "reach the runtime through crate::backend or the module re-exporting it"
 
-# `session` is the dependency sink and pure data: it holds no process state,
-# in its tests either, and reads no environment. Settings are passed in by
-# whoever loaded them, and an environment variable is read by the caller.
 [[crates.thurbox.restricted]]
 paths = ["std::sync::OnceLock", "std::sync::LazyLock", "std::thread_local", "#static_mut"]
 allowed = []
@@ -409,9 +236,6 @@ applies_to = ["session"]
 production_only = true
 why = "session reads no environment; its caller does"
 
-# The kernel's two runtime stores start a thread only in a worker's own file:
-# the store and the paint side never block, so a job that reaches the world
-# without a worker shows up here rather than as a frozen frame.
 [[crates.thurbox.restricted]]
 paths = ["std::thread"]
 allowed = []
@@ -419,14 +243,11 @@ applies_to = ["kernel::snapshot", "kernel::terminal"]
 allowed_files = [
   "kernel/snapshot/fleet.rs", "kernel/snapshot/git.rs",
   "kernel/terminal/attach.rs", "kernel/terminal/shells.rs",
-  # A stream pane's reader: one per pane, as the backend's own.
   "kernel/terminal/stream_pane.rs",
 ]
 production_only = true
 why = "move it into the worker that owns it"
 
-# Only the snapshot store's git worker reaches `git`, so a slow `git` delays a
-# stat and never a frame.
 [[crates.thurbox.restricted]]
 paths = ["thurbox::git"]
 allowed = []
@@ -435,27 +256,16 @@ allowed_files = ["kernel/snapshot/git.rs"]
 production_only = true
 why = "only the git worker reaches git"
 
-# What of the runtime a consumer must never reach by name: one multiplexer's
-# adapter, or the protocol grammar only some multiplexers speak. Every verb a
-# consumer needs (lifecycle, pane I/O, status) goes through the
-# contract. The `backend` gateway re-exports them, and nothing else may.
 [[crates.thurbox.restricted]]
 paths = ["runtime_mux::tmux", "runtime_mux::psmux", "runtime_mux::rmux", "runtime_mux::tmux_compat"]
 allowed = ["backend"]
 why = "consumers reach the runtime through the contract, never a concrete backend"
 
-# The factory that fills the registry, reached only by the composition root
-# (`main`'s body): a consumer that builds its own registry sees a different set
-# of backends from the one the process was wired with.
 [[crates.thurbox.restricted]]
 paths = ["thurbox::backend::wiring", "runtime_mux::wiring"]
 allowed = ["backend", "coordinator"]
 why = "only the composition root builds the registry"
 
-# A specific multiplexer is named only where a route is decided (`session`,
-# the route grammar and its defaults). Anywhere else, `Multiplexer::Psmux`
-# is a consumer choosing behaviour, or an OS, by multiplexer. A test may name
-# the one it pins.
 [[crates.thurbox.restricted]]
 paths = [
   "runtime_mux::host::multiplexer::Multiplexer::Tmux",
@@ -525,29 +335,6 @@ clippy_guards = [
   "std::env::var", "std::fs::read", "std::thread::sleep",
 ]
 
-# Who may name each field manager. Naming one is how code writes as it, and
-# how a caller of the typed inbox mutations names itself: `Cli` appends to
-# `Task.status.inbox` through the manager's `send` verb and to a Board's log
-# through its `publish_event` verb, and owns nothing (a Board's status moves
-# only with the store's typed append); `TaskController` also appends to a
-# Board's log, as a session's Task, when the manager ingests its outbox
-# under the lease, and as itself for its `fleet.task.*` events on Board
-# `fleet`, and appends a subscription's notices to
-# `Task.status.inbox` with its own `Task.status.subscriptions` through the
-# manager's relay write;
-# `ForgeController` owns `Task.status.forge` and `GatewayController`
-# `Task.status.gateway`, each appending through the manager's relay write.
-# `Listener` is an account's listener program,
-# speaking through the manager's receive verb: it spools deliveries on a
-# Conversation and records beats on its Listener, and owns nothing;
-# `ConversationController` and `ListenerController` own the rest of those
-# two kinds and are named by the controllers alone; `ConversationController`
-# is also the one creator of a conversation Task, through the manager's
-# fenced create, and the only writer that may set the
-# `gateway.fleet.dev/conversation` labels. `CronTaskController` owns a
-# CronTask's status, is named by the controllers alone, and is the one
-# creator of a scheduled Task and the one writer of its
-# `crontask.fleet.dev/` labels.
 [status_writers]
 "fleet_api::store::FieldManager::Plugin" = ["fleet-api", "fleet-controllers"]
 "fleet_api::store::FieldManager::TaskController" = ["fleet-api", "fleet-controllers"]
@@ -562,12 +349,6 @@ clippy_guards = [
 "fleet_api::store::FieldManager::Cli" = ["fleet-api", "fleet-manager", "fleet-store"]
 "fleet_api::store::FieldManager::Listener" = ["fleet-api", "fleet-manager", "fleet-store"]
 
-# A restricted path binds the roles and crates its rule names in
-# `applies_to`, except the crates it allows. Fleet's rules name every role but
-# `component`: they are Fleet's, and another component keeps its own.
-
-# One crate starts processes, so every program fleet runs (a runtime, the
-# gate's tools) is bounded and has its tree killed the same way.
 [[restricted]]
 applies_to = ["pure", "adapter", "orchestration", "edge", "tooling"]
 path = "std::process::Command"
@@ -592,8 +373,6 @@ path = "process_wrap"
 allowed = ["fleet-exec"]
 why = "a second way to start a process would bypass fleet-exec's bounds"
 
-# Telemetry leaves the process through one crate, so what is exported, its
-# batching and its shutdown bound are decided in one place.
 [[restricted]]
 applies_to = ["pure", "adapter", "orchestration", "edge", "tooling"]
 path = "opentelemetry_sdk"
@@ -606,22 +385,12 @@ path = "opentelemetry_otlp"
 allowed = ["otel-env"]
 why = "the OTLP exporter, the one network client telemetry has, belongs to otel-env"
 
-# The Forge port carries Fleet's one forge write, `mark_ready`. The port is
-# defined by the API, implemented by fleet-forge, wired by the CLI and
-# performed by the manager alone, after the intent is written and the lease
-# renewed: no other adapter and no controller holds a handle that could
-# mutate a change.
 [[restricted]]
 applies_to = ["pure", "adapter", "orchestration", "edge", "tooling"]
 path = "fleet_api::forge::Forge"
 allowed = ["fleet-api", "fleet-manager", "fleet-forge", "fleet-cli"]
 why = "only the manager performs the mark-ready effect, through the port the CLI wired"
 
-# The Gateway port carries Fleet's chat writes, `open`, `post` and `react`. As the
-# Forge port, it is defined by the API, implemented by fleet-gateway, wired
-# by the CLI and performed by the manager alone, after the intent is written
-# and the lease renewed: no other adapter and no controller holds a handle
-# that could post in a thread.
 [[restricted]]
 applies_to = ["pure", "adapter", "orchestration", "edge", "tooling"]
 path = "fleet_api::gateway::Gateway"
