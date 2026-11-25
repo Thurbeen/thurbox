@@ -151,7 +151,9 @@ request`, and `s` resumes it like any paused session.
 
 `R` on the session list, or Restart in its menu, asks to restart the agent
 of a session that runs or is paused; on `y` thurbox runs `fleet restart
-<task>`, which stops the agent and starts it again on its conversation.
+<task>`, which stops the agent and starts it again on its conversation. Fleet
+starts a new conversation instead when it has none saved or the harness
+cannot resume one.
 Restart fresh in the menu runs `fleet restart --fresh <task>`, which starts
 the agent on a new conversation. A restart cuts a turn in progress. Fleet
 refuses a held or deleting Task, and one with no session to restart yet; the

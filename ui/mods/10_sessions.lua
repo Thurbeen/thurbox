@@ -1836,7 +1836,7 @@ pane = {
           question = "Restart " .. name .. "?",
           lines = {
             fresh and "Its agent stops and starts on a new conversation."
-              or "Its agent stops and resumes its conversation.",
+              or "Its agent stops and resumes its conversation if Fleet can.",
           },
           command = "restart",
           options = { session = id, fresh = fresh },

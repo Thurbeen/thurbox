@@ -264,6 +264,7 @@ fn default_effect(name: &str) -> &'static str {
         "sessions.delete"
         | "sessions.force_delete"
         | "sessions.restart"
+        | "sessions.restart_fresh"
         | "sessions.sync"
         | "sessions.move_up"
         | "sessions.move_down"
@@ -743,6 +744,7 @@ impl Registry {
                     "sessions.delete"
                         | "sessions.force_delete"
                         | "sessions.restart"
+                        | "sessions.restart_fresh"
                         | "sessions.sync"
                 ),
                 available: true,
@@ -774,6 +776,7 @@ impl Registry {
                     "sessions.delete"
                         | "sessions.force_delete"
                         | "sessions.restart"
+                        | "sessions.restart_fresh"
                         | "sessions.sync"
                 ),
                 available: true,

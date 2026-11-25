@@ -57,8 +57,8 @@ pub enum Command {
     Start { session: String },
     /// Ask Fleet to pause a running session's agent, keeping its conversation.
     Pause { session: String },
-    /// Ask Fleet to restart a session's agent: on its conversation, or on a
-    /// new one when `fresh`.
+    /// Ask Fleet to restart a session's agent: on its conversation when Fleet
+    /// can resume it, or on a new one when `fresh`.
     Restart { session: String, fresh: bool },
     /// Persist an explicit manual order, densely renumbered.
     ///

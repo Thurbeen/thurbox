@@ -993,7 +993,7 @@ function require(name) end
 ---@field force? boolean Restore what can be restored.
 
 --- Restart a session's agent in its session, as `fleet restart` does: on its
---- conversation, or on a new one when `fresh`. It cuts a turn in
+--- conversation when Fleet can resume it, or on a new one when `fresh`. It cuts a turn in
 --- progress and works on a paused session. Fleet refuses a held or deleting
 --- session, and one with no session to restart yet, as `command.failed`.
 ---@class (exact) thurbox.cmd.Restart

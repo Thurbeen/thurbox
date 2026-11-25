@@ -1102,6 +1102,7 @@ impl LuaHost {
                                 "sessions.delete"
                                     | "sessions.force_delete"
                                     | "sessions.restart"
+                                    | "sessions.restart_fresh"
                                     | "sessions.sync"
                             ))
                     {

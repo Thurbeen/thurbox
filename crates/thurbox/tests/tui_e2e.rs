@@ -7558,8 +7558,9 @@ fn fleet_restarting_napping(profile: &Profile, restart: &str) -> PathBuf {
     write_script(
         &profile.bin.join("fleet"),
         &format!(
-            "#!/bin/sh\necho \"$*\" >> '{calls}'\ncase \"$1\" in\n  watch) echo '{running}'; echo '{synced}'; while kill -0 $PPID 2>/dev/null; do sleep 1; done ;;\n  restart) {restart} ;;\n  attach) sleep 60 ;;\n  up) exit 6 ;;\n  version) echo '{{\"apiVersions\":[\"fleet/v1alpha1\"]}}' ;;\n  *) exit 1 ;;\nesac\n",
+            "#!/bin/sh\necho \"$*\" >> '{calls}'\ncase \"$1\" in\n  watch) echo '{running}'; echo '{synced}'; while kill -0 $PPID 2>/dev/null; do sleep 1; done ;;\n  get) echo '{task}' ;;\n  restart) {restart} ;;\n  attach) sleep 60 ;;\n  up) exit 6 ;;\n  version) echo '{{\"apiVersions\":[\"fleet/v1alpha1\"]}}' ;;\n  *) exit 1 ;;\nesac\n",
             calls = calls.display(),
+            task = running["object"],
         ),
     );
     calls
@@ -7610,6 +7611,53 @@ fn restart_fresh_in_a_sessions_menu_runs_fleet_restart_fresh() {
         log.lines().any(|call| call == "restart --fresh napping"),
         "{log}"
     );
+    assert!(tui.quit().success());
+}
+
+#[test]
+fn a_confirmed_ui_action_restarts_a_session_on_its_conversation_or_a_fresh_one() {
+    let profile = Profile::new();
+    let calls = fleet_restarting_napping(&profile, "echo 'Task/napping restart requested'");
+    let mut tui = Tui::spawn(&profile, 40, 160);
+    tui.wait_until("the napping row", |frame| frame.contains("napping"));
+    tui.wait_until_quiet();
+    let cli = |args: &[&str]| -> serde_json::Value {
+        let mut command = Command::new(env!("CARGO_BIN_EXE_thurbox-cli"));
+        profile.apply(&mut command);
+        let output = command
+            .args(["--json", "ui"])
+            .args(args)
+            .output()
+            .expect("ui cli");
+        serde_json::from_slice(&output.stdout).unwrap_or_else(|_| {
+            panic!(
+                "{}{}",
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr)
+            )
+        })
+    };
+    for (action, expected) in [
+        ("sessions.restart", "restart napping"),
+        ("sessions.restart_fresh", "restart --fresh napping"),
+    ] {
+        let asked = cli(&["action", action, "--session", "napping"]);
+        assert_eq!(
+            asked["result"]["error"]["code"], "confirmation_required",
+            "{action}: {asked}"
+        );
+        let ticket = asked["result"]["error"]["ticket"]
+            .as_str()
+            .expect("a ticket");
+        let confirmed = cli(&["confirm", ticket]);
+        assert_eq!(confirmed["result"]["ok"], true, "{action}: {confirmed}");
+        tui.wait_until(expected, |_| {
+            std::fs::read_to_string(&calls)
+                .unwrap_or_default()
+                .lines()
+                .any(|call| call == expected)
+        });
+    }
     assert!(tui.quit().success());
 }
 
