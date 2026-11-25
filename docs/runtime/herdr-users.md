@@ -259,10 +259,9 @@ session fleet.u5-e5fb0263df286e78 on herdr/local Running
 ```
 
 In herdr's app, the Task is a space of its own, named after the folder it
-works in, such as the repository's name. A Task in a worktree is listed
-under its repository, with its branch beside it. Its agent and its
-`fleet shell` are inside. On a place that sets `space`, the Task is a tab in that space,
-named after the key.
+works in, such as the repository's name, with the branch of its worktree
+beside it. Its agent and its `fleet shell` are inside. On a place that
+sets `space`, the Task is a tab in that space, named after the key.
 
 With `hc`, select the Task's terminals by label. `hc ls` does not print
 labels:

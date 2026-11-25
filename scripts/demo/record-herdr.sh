@@ -57,7 +57,7 @@ key_of() { fleet status task "$1" | awk '/^session / {print $2}'; }
 terminal_of() { hc ls --label "fleet.key=$1" | jq -r '[.terminals[] | .address][0] // empty'; }
 
 step "scratch dir $DEMO"
-mkdir -p "$DEMO/app" "$DEMO/src/greeter"
+mkdir -p "$DEMO/app" "$DEMO/src/greeter" "$DEMO/you"
 cat >"$FLEET_CONFIG" <<EOF
 version = 1
 
@@ -126,10 +126,10 @@ for _ in $(seq 1 90); do
 done
 
 step "the shell the viewer types in"
-you="$(hc run --bg --name you "$SHELL" | jq -r .address)"
+you="$(hc run --bg --name you --cwd "$DEMO/you" "$SHELL" | jq -r .address)"
 hc label "$you" herdr.space=you herdr.tab=you >/dev/null
 pause 2
-hc send "$you" "export FLEET_CONFIG=$FLEET_CONFIG PATH=$PATH USER=you; cd $DEMO/src/greeter; clear" >/dev/null
+hc send "$you" "export FLEET_CONFIG=$FLEET_CONFIG PATH=$PATH USER=you; clear" >/dev/null
 pause 2
 
 REQUEST="In git+file://$DEMO/src/greeter, dispatch two workers at once: one adds a --shout flag to greet.py that prints the greeting in capitals, the other adds tests for greet.py with unittest. Each one commits on its own branch and runs the tests. Local only: no push, no pull request."
@@ -190,8 +190,6 @@ app agent.focus --terminal "$(terminal_of "$vega_key")"
 pause 6
 app pane.focus --terminal "$you"
 hc send "$you" "clear; fleet list task" >/dev/null
-pause 3
-hc send "$you" "git branch --list" >/dev/null
 pause 6
 mark end
 kill -INT "$recorder"
