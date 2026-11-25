@@ -31,6 +31,54 @@ fleet apply ─▶ Fleet ─▶ runtime-herdr ─▶ herdr-core
 terminal with the labels herdr's app reads. Fleet's other runtime,
 `runtime-mux`, uses tmux instead. You can keep both.
 
+## Quick setup
+
+On Linux or macOS, with Rust and git installed, these commands install
+herdr-core, Fleet and `runtime-herdr`, and make herdr Fleet's default
+runtime. The steps below explain each one.
+
+```bash
+curl -fsSL https://releases.herdr.dev/core/install.sh | sh
+curl -fsSL https://raw.githubusercontent.com/Thurbeen/thurbox/main/scripts/install.sh | sh -s -- --fleet-only
+fleet init
+
+git clone https://github.com/Thurbeen/thurbox
+cargo install --locked --path thurbox/crates/runtime-herdr
+
+cat >> "${XDG_CONFIG_HOME:-$HOME/.config}/fleet/config.toml" <<'EOF'
+
+[runtimes.herdr]
+program = "runtime-herdr"
+default = true
+
+[runtimes.herdr.places.local]
+EOF
+
+fleet runtime places
+fleet doctor
+```
+
+`local` then names `herdr/local`, and `mux/local` stays available. On a
+Fleet that already runs Tasks on `local`, keep `runtime-mux` the default
+instead ([step 2](#herdr-beside-runtime-mux)). Then start `fleet up`, or
+restart it ([step 3](#3-check-it-and-restart-fleet-up)).
+
+### Or ask an agent
+
+Send this prompt to a coding agent on the machine:
+
+```text
+Set up Fleet to run my coding agents as Tasks in herdr, following
+https://thurbox.thurbeen.eu/docs/runtime/herdr-users.html.
+Install herdr-core and Fleet if they are missing, then build runtime-herdr
+from source. Add a [runtimes.herdr] runtime with a local place to my Fleet
+config. If Fleet already runs Tasks on another runtime, keep that runtime
+and its default. Check the result with `fleet runtime places`,
+`fleet doctor` and `fleet runtime check -- runtime-herdr`, then restart
+`fleet up` (or `fleet service restart`). Do not delete or change any
+existing Task. Tell me what you changed and what each check printed.
+```
+
 ## Prerequisites
 
 - Linux or macOS. `runtime-herdr` does not run on Windows yet.
