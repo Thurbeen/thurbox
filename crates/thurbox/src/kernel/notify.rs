@@ -156,6 +156,7 @@ mod tests {
             backend: "local:tmux".into(),
             backend_id: None,
             remote_host: None,
+            place: None,
             agent_session_id: None,
             parent_id: None,
             display_order: None,

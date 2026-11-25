@@ -2906,3 +2906,62 @@ fn each_runtimes_local_place_is_this_machine() {
         None
     );
 }
+
+#[test]
+fn a_session_row_names_the_place_its_task_runs_on() {
+    let Some(bin) = fleet_bin() else { return };
+    let fleet = Fleet::with(
+        bin,
+        "[runtimes.mux]\nprogram = 'runtime-absent'\ndefault = true\n\n\
+         [runtimes.mux.places.local]\n\n\
+         [runtimes.herdr]\nprogram = 'runtime-absent'\n\n\
+         [runtimes.herdr.places.local]\n",
+        "",
+    );
+    let mut on_herdr = task("on-herdr");
+    on_herdr["spec"]["host"] = json!("herdr/local");
+    fleet.apply(on_herdr);
+    let mut on_mux = task("on-mux");
+    on_mux["spec"]["host"] = json!("local");
+    fleet.apply(on_mux);
+    let mut store = store_over(&fleet);
+    until("both Tasks are rows", || names(&mut store).len() == 2);
+    let place = |id: &str| store.current().session(id).expect("the row").place.clone();
+    assert_eq!(place("local:on-herdr").as_deref(), Some("herdr/local"));
+    assert_eq!(place("local:on-mux").as_deref(), Some("local"));
+}
+
+#[test]
+fn a_session_row_names_the_place_its_task_config_gives_it() {
+    let Some(bin) = fleet_bin() else { return };
+    let fleet = Fleet::new(bin);
+    let mut inherits = task("inherits");
+    inherits["spec"]
+        .as_object_mut()
+        .expect("a spec")
+        .remove("host");
+    inherits["spec"]["dispatch"] = json!(true);
+    inherits["spec"]["configRef"] = json!({"name": "on-herdr"});
+    fleet.apply(json!([
+        {"apiVersion": "fleet/v1alpha1", "kind": "TaskConfig",
+         "metadata": {"name": "on-herdr"}, "spec": {"host": "herdr/local"}},
+        inherits,
+    ]));
+    fleet.run(&["reconcile"]).ok();
+    let stored = fleet.get("inherits").expect("the Task");
+    assert_eq!(
+        stored["status"]["execution"]["host"], "herdr/local",
+        "{stored:#}"
+    );
+    let mut store = store_over(&fleet);
+    until("the Task is a row", || !names(&mut store).is_empty());
+    assert_eq!(
+        store
+            .current()
+            .session("local:inherits")
+            .expect("the row")
+            .place
+            .as_deref(),
+        Some("herdr/local")
+    );
+}

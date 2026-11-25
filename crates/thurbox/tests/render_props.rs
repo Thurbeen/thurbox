@@ -50,6 +50,7 @@ fn row(name: &str, status: &str) -> SessionRow {
         backend_id: Some("%1".to_string()),
         agent_session_id: None,
         remote_host: None,
+        place: None,
         parent_id: None,
         display_order: None,
         worktree_count: 1,

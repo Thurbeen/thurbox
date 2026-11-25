@@ -639,6 +639,7 @@ fn build_sessions(
             "host",
             opt_lua_string(lua, row.remote_host.as_deref())?,
         )?;
+        set(&entry, "place", opt_lua_string(lua, row.place.as_deref())?)?;
         set(
             &entry,
             "parent",

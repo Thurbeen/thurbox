@@ -48,6 +48,7 @@ fn row(name: &str, status: &str) -> SessionRow {
         backend: "local:tmux".to_string(),
         backend_id: Some("%1".to_string()),
         remote_host: None,
+        place: None,
         agent_session_id: None,
         parent_id: None,
         display_order: None,
