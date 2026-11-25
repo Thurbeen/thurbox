@@ -5,10 +5,11 @@ desktop app. It sets up Fleet to run coding agents as Tasks in herdr-core
 terminals, so the agents show in herdr's app. thurbox is optional.
 How the runtime works inside is [runtime-herdr](herdr.md).
 
-![herdr's app while Fleet runs VEGA and two worker Tasks: each Task is a tab, and the agents list shows them working, then done](https://github.com/Thurbeen/thurbox/releases/download/media/herdr-fleet-vega.gif)
+![herdr's app while a request is typed into VEGA and Fleet runs the three worker Tasks it applies, each in a space of its own: backend, frontend and docs](https://github.com/Thurbeen/thurbox/releases/download/media/herdr-fleet-vega.gif)
 
-VEGA gets a request in the shell, applies two worker Tasks, and each one
-appears in herdr's app as a space of its own while it works. The
+A request is typed into VEGA. VEGA applies one worker Task per repository,
+and each one appears in herdr's app as a space of its own, `backend`,
+`frontend` and `docs`, when Fleet starts it. The
 [video](https://github.com/Thurbeen/thurbox/releases/download/media/herdr-fleet-vega.mp4)
 is the same recording, sharper.
 
