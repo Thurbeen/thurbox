@@ -284,15 +284,28 @@ local function place_label(flow)
   return flow.host
 end
 
---- Where the repositories of `place` are remembered: a Fleet's own machine
---- under one key whichever runtime's `local` names it, and any other place
---- under `<fleet>/<place>`, since none of its paths is a path here.
+--- Whether the chosen Fleet offers a `local` of its own, which a Task names
+--- with an empty backend.
+local function fleet_has_local()
+  for _, place in ipairs(hosts() or {}) do
+    if (place.backend or "") == "" then
+      return true
+    end
+  end
+  return false
+end
+
+--- Where the repositories of `place` are remembered, and read: a Fleet's own
+--- machine under one key whichever runtime's `local` names it, read through
+--- the Fleet's `local` while it offers one, and any other place under
+--- `<fleet>/<place>`, since none of its paths is a path here.
 local function repository_key(flow, place)
   local machine = flow.place == "" or place.here
   if not flow.elsewhere then
     return machine and "" or flow.place
   end
-  return flow.fleet .. "/" .. (machine and "local" or place.name)
+  local shared = machine and fleet_has_local()
+  return flow.fleet .. "/" .. (shared and "local" or place.name)
 end
 
 --- A typed `~` on a place elsewhere is that machine's home, never this one's.

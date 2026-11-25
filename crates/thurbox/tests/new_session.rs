@@ -1351,6 +1351,36 @@ fn another_runtimes_local_place_is_browsed_here() {
     assert!(browse.starts_with('\0'), "{browse:?}");
 }
 
+/// On a remote Fleet whose default runtime has no `local` place, another
+/// runtime's `local` is read through that place itself, never through a
+/// `local` the Fleet would refuse.
+#[test]
+fn a_remote_fleets_runtime_local_place_is_read_through_itself() {
+    let host = host();
+    let mut world = World::default();
+    let herdr_local = HostRow {
+        name: "herdr/local".into(),
+        detail: "box itself (herdr)".into(),
+        backend: "herdr/local".into(),
+        here: true,
+        ..HostRow::default()
+    };
+    world.snapshot.fleets = vec![fleet(
+        "box",
+        "ssh box",
+        FleetState::Up,
+        vec![herdr_local],
+        &["claude"],
+    )];
+    press(&host, &world, "ctrl+n");
+    press(&host, &world, "enter");
+    drawn(&host, &world);
+    assert_eq!(
+        host.shared_string("want_bookmarks").as_deref(),
+        Some("box/herdr/local")
+    );
+}
+
 #[test]
 fn escape_closes_the_flow_and_stops_asking() {
     let host = host();
