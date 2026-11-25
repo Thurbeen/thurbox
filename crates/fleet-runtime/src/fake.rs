@@ -28,7 +28,7 @@ pub struct Fault {
     /// `materialize`, `findWorkspace`, `cleanWorkspace` (the workspace
     /// port), `host`, `createDir`, `removeDir`, `spawn`, `find`, `list`, `events`, `ready`,
     /// `workspaceTrust`, `brief`, `briefDelivered`, `atRest`, `release`,
-    /// `lost`, `revive`, `paused`, `pause`, `resume`, `attach`.
+    /// `lost`, `revive`, `paused`, `pause`, `resume`, `restart`, `attach`.
     pub call: String,
     /// `unknown`, `fail` or `abort`.
     pub outcome: String,
@@ -45,6 +45,10 @@ pub struct Fault {
 
 fn one() -> u32 {
     1
+}
+
+fn is_zero(n: &u32) -> bool {
+    *n == 0
 }
 
 fn yes() -> bool {
@@ -118,9 +122,14 @@ pub struct FakeSession {
     /// The argv the harness profile launched the agent with.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub argv: Vec<String>,
-    /// Each argv a revive or a resume started it again with, in order.
+    /// Each argv a revive, a resume or a restart started it again with, in
+    /// order.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub restarts: Vec<Vec<String>>,
+    /// Conversations a restart started anew: the agent's prompt hook names
+    /// a new conversation id after each.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub new_conversations: u32,
     /// The environment the agent's last start gave it: the spawn's, or the
     /// last revive's or resume's.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
@@ -159,6 +168,8 @@ pub struct FakeState {
     /// reports every text it is given through its signal file, as a coding
     /// agent's prompt hook does.
     pub prompt_hook_silent: bool,
+    /// Whether the runtime declares no `pause`, so it restarts nothing.
+    pub pause_unsupported: bool,
     pub next_id: u64,
     /// One line per effect that happened, in order.
     pub log: Vec<String>,
@@ -405,6 +416,13 @@ impl FakeRuntime {
     }
 }
 
+fn conversation_id(x: &FakeSession) -> String {
+    match x.new_conversations {
+        0 => format!("conv-{}", x.id),
+        n => format!("conv-{}.{n}", x.id),
+    }
+}
+
 fn live<'a>(s: &'a FakeState, key: &str) -> Option<&'a FakeSession> {
     s.sessions.get(key).filter(|x| !x.gone)
 }
@@ -600,6 +618,7 @@ impl Runtime for FakeRuntime {
                 env: spec.env.clone(),
                 argv: argv.clone(),
                 restarts: Vec::new(),
+                new_conversations: 0,
             };
             s.log.push(format!("spawn {}", spec.key));
             let r = session_ref(&x);
@@ -675,8 +694,7 @@ impl Runtime for FakeRuntime {
             if !s.prompt_hook_silent
                 && let Some(file) = x.env.get(fleet_api::signal::SIGNAL_FILE_ENV)
             {
-                let payload =
-                    serde_json::json!({"prompt": text, "session_id": format!("conv-{}", x.id)});
+                let payload = serde_json::json!({"prompt": text, "session_id": conversation_id(x)});
                 let signal = fleet_api::signal::Signal::from_hook(
                     std::time::SystemTime::now()
                         .duration_since(std::time::UNIX_EPOCH)
@@ -825,6 +843,44 @@ impl Runtime for FakeRuntime {
                 s.log.push(format!("resume {key}"));
             }
             EffectOutcome::Resumed
+        })
+    }
+
+    fn restart(
+        &self,
+        session: &SessionRef,
+        conversation: Option<&str>,
+        launch: &SpawnSpec,
+    ) -> Observation<EffectOutcome> {
+        let key = session.key.clone();
+        let argv = match launch.launch_argv() {
+            Ok(argv) => profile(&launch.harness).resume(&argv, conversation),
+            Err(why) => return Observation::Known(EffectOutcome::Failed { why }),
+        };
+        let fresh = conversation.is_none();
+        let env = launch.env.clone();
+        self.effect("restart", move |s| {
+            if s.pause_unsupported {
+                return EffectOutcome::RestartUnsupported {
+                    why: "the fake runtime declares no pause".into(),
+                };
+            }
+            let ready = !s.spawn_not_ready;
+            let Some(x) = s.sessions.get_mut(&key).filter(|x| !x.gone && !x.lost) else {
+                return EffectOutcome::Failed {
+                    why: "no window holds the session".into(),
+                };
+            };
+            x.paused = false;
+            x.ready = ready;
+            x.at_rest = false;
+            x.env = env;
+            x.restarts.push(argv);
+            if fresh {
+                x.new_conversations += 1;
+            }
+            s.log.push(format!("restart {key}"));
+            EffectOutcome::Restarted
         })
     }
 }

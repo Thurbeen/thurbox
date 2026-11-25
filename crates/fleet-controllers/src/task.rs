@@ -1,8 +1,8 @@
 //! TaskController: spawns one agent session for one brief, briefs it once,
 //! delivers what is queued in the Task's inbox (amendments to the brief
 //! among it), records the worker's answer, pauses the session while its
-//! agent is idle and resumes it when work arrives, and releases the session
-//! when the Task is deleted.
+//! agent is idle and resumes it when work arrives, restarts it when `fleet
+//! restart` asks, and releases the session when the Task is deleted.
 //!
 //! Pure: it reads the Task and what the probes saw, and returns a Plan. The
 //! manager performs the plan.
@@ -18,7 +18,9 @@ use fleet_api::plan::{
 };
 use fleet_api::runtime::{Activity, WorkspaceTrust};
 use fleet_api::store::FieldManager;
-use fleet_api::task::{self, BriefRecord, Phase, SessionRef, SessionState, TaskSpec, TaskStatus};
+use fleet_api::task::{
+    self, BriefRecord, Phase, RestartRequest, SessionRef, SessionState, TaskSpec, TaskStatus,
+};
 use fleet_api::validate::typed;
 use fleet_api::{Observation, StoreError};
 
@@ -95,6 +97,9 @@ pub mod conditions {
     /// The runtime holds the session with its agent stopped: Fleet paused
     /// it while it was idle, or someone else stopped it.
     pub const PAUSED: &str = "Paused";
+    /// How the last `fleet restart` ended: the agent started again on its
+    /// conversation or on a new one, or nothing was restarted.
+    pub const RESTARTED: &str = "Restarted";
     /// Whether the workspace the runtime makes for the session is whole:
     /// True once made, False once cleaned or refused.
     pub const WORKSPACE_READY: &str = "WorkspaceReady";
@@ -126,6 +131,9 @@ const REVIVE: &str = "revive";
 const PAUSE: &str = "pause";
 const RESUME: &str = "resume";
 const CATCH_UP: &str = "catchup";
+const RESTART: &str = "restart";
+const REBRIEF: &str = "rebrief";
+const RESTART_UNCONFIRMED: &str = "RestartUnconfirmed";
 /// The NeedsAttention reason once revives keep leaving the session lost.
 const CANNOT_RESUME: &str = "CannotResume";
 const REVIVE_FAILED: &str = "ReviveFailed";
@@ -404,8 +412,13 @@ impl Pass<'_, '_> {
             Some(Observation::Unknown { .. }) if seen.is_some() => &unread,
             _ => return,
         };
-        if r.conversation.is_some() {
+        if r.conversation.is_some() && r.conversation != self.st.retired_conversation {
+            let fresh_start_seen =
+                self.st.conversation.is_none() && self.fresh_restart_unconfirmed();
             self.st.conversation = r.conversation.clone();
+            if fresh_start_seen {
+                self.restarted(true);
+            }
         }
         let merged = fleet_api::screen::merge(profile.authority, r, seen.as_ref());
         if agentless {
@@ -806,7 +819,7 @@ impl Pass<'_, '_> {
                 INTERACTIVE,
                 "no brief: the session waits for its user",
             );
-            if self.pause_state(&session) {
+            if self.restart_step(&session) || self.pause_state(&session) {
                 return;
             }
             self.deliver(session.clone());
@@ -1057,6 +1070,7 @@ impl Pass<'_, '_> {
         };
         if self.worker_gone()
             || self.lost(&session, true)
+            || self.restart_step(&session)
             || self.pause_state(&session)
             || self.catch_up(session.clone())
         {
@@ -1093,7 +1107,7 @@ impl Pass<'_, '_> {
             // paused. A pass that does not watch it breaks its idle time.
             match self.st.session.clone() {
                 Some(session) if watched(self.input.task, self.spec, &self.st) => {
-                    if !self.pause_state(&session) {
+                    if !self.restart_step(&session) && !self.pause_state(&session) {
                         self.pause_step(session);
                     }
                 }
@@ -1104,7 +1118,11 @@ impl Pass<'_, '_> {
         let Some(session) = self.st.session.clone() else {
             return;
         };
-        if self.worker_gone() || self.lost(&session, true) || self.pause_state(&session) {
+        if self.worker_gone()
+            || self.lost(&session, true)
+            || self.restart_step(&session)
+            || self.pause_state(&session)
+        {
             return;
         }
         if self.st.not_before.is_some_and(|t| t > self.now()) {
@@ -1419,12 +1437,20 @@ impl Pass<'_, '_> {
         attempt.idle_since = None;
         self.st.not_before = None;
         self.st.receipts.remove(key);
-        let inbox =
-            match &self.input.observations.signals {
-                Some(Observation::Known(r)) => fleet_api::harness::profile(&self.spec.harness)
-                    .inbox(r.inbox.as_deref(), r.conversation.as_deref(), &text),
-                _ => None,
-            };
+        let inbox = match &self.input.observations.signals {
+            Some(Observation::Known(r)) => {
+                let conversation = r
+                    .conversation
+                    .as_deref()
+                    .filter(|c| self.st.retired_conversation.as_deref() != Some(*c));
+                fleet_api::harness::profile(&self.spec.harness).inbox(
+                    r.inbox.as_deref(),
+                    conversation,
+                    &text,
+                )
+            }
+            _ => None,
+        };
         self.intend(
             key.to_string(),
             Action::Brief {
@@ -1659,6 +1685,9 @@ impl Pass<'_, '_> {
             .brief
             .as_ref()
             .map_or(self.generation, |b| b.generation);
+        if self.st.catch_up == Some(self.key(REBRIEF, Some(self.st.catch_ups))) {
+            return self.rebrief_text(generation);
+        }
         let head = "Fleet: your session was lost and restarted, and your conversation \
                     was resumed. Background shells, Monitors and loops you started did not \
                     survive; start again any you still need. Work you did not commit, push or declare may \
@@ -1676,6 +1705,161 @@ impl Pass<'_, '_> {
                     .assignment(&self.input.task.metadata.name, generation)
             )
         }
+    }
+
+    fn rebrief_text(&self, generation: u64) -> String {
+        let head = "Fleet: your session was restarted on request, in a new conversation: you \
+                    remember nothing of the previous one. Background shells, Monitors and loops \
+                    you started did not survive. Work you did not commit, push or declare may be \
+                    lost. Read your worktree, the changes you declared and your inbox";
+        let next = if self.st.phase == Phase::Concluded {
+            format!(
+                "then act on the messages that follow. Your result for generation \
+                 {generation} is already recorded; your brief is repeated below."
+            )
+        } else {
+            format!("then continue your brief, generation {generation}, repeated below.")
+        };
+        let questions: Vec<String> = self
+            .st
+            .declared
+            .iter()
+            .filter(|d| {
+                d.get("kind").and_then(serde_json::Value::as_str)
+                    == Some(fleet_api::talk::DECLARED_QUESTION)
+            })
+            .filter_map(|d| {
+                let id = fleet_api::talk::declared_id(d)?;
+                let text = d.get("text").and_then(serde_json::Value::as_str)?;
+                (!self.st.answered.contains_key(id)).then(|| format!("- {id}: {text}"))
+            })
+            .collect();
+        let open = if questions.is_empty() {
+            String::new()
+        } else {
+            format!(
+                "\n\nYou declared these Questions, and nobody has answered them yet:\n{}",
+                questions.join("\n")
+            )
+        };
+        format!(
+            "{head}, {next}{open}\n\n{}",
+            self.spec
+                .assignment(&self.input.task.metadata.name, generation)
+        )
+    }
+
+    fn restart_step(&mut self, session: &SessionRef) -> bool {
+        let key = self.key(RESTART, Some(self.st.restarts));
+        if effect_in_flight(&self.st, &key, RESTART) {
+            let outcome = self.st.receipts.get(&key).map(|r| r.outcome.clone());
+            self.st.intents.remove(&key);
+            self.st.receipts.remove(&key);
+            let fresh = self.st.restart_request_answered.is_some_and(|r| r.fresh);
+            let failed = ConditionStatus::False;
+            match outcome {
+                Some(Observation::Known(EffectOutcome::Restarted)) => self.restarted(fresh),
+                Some(Observation::Known(EffectOutcome::RestartUnsupported { why })) => {
+                    self.keep_the_conversation();
+                    self.cond(RESTARTED, failed, "Unsupported", why);
+                }
+                Some(Observation::Known(EffectOutcome::Failed { why })) => {
+                    self.keep_the_conversation();
+                    self.cond(RESTARTED, failed, "RestartFailed", why);
+                }
+                Some(Observation::Known(other)) => {
+                    let why = format!("unexpected outcome {other:?}");
+                    self.cond(RESTARTED, failed, "RestartFailed", why);
+                }
+                Some(Observation::Unknown { why }) => {
+                    self.cond(
+                        RESTARTED,
+                        ConditionStatus::Unknown,
+                        RESTART_UNCONFIRMED,
+                        why,
+                    );
+                }
+                None => self.cond(
+                    RESTARTED,
+                    ConditionStatus::Unknown,
+                    RESTART_UNCONFIRMED,
+                    "the restart's answer was never recorded",
+                ),
+            }
+            return false;
+        }
+        let Some(request) = restart_requested(&self.st) else {
+            return false;
+        };
+        if !self.spec.dispatch || !self.effects.is_empty() {
+            return false;
+        }
+        let resumable = self.st.conversation.is_some()
+            && fleet_api::harness::profile(&self.spec.harness).resumes();
+        let request = RestartRequest {
+            fresh: request.fresh || !resumable,
+            ..request
+        };
+        self.st.restart_request_answered = Some(request);
+        self.st.restarts += 1;
+        self.st.idle_since = None;
+        self.st.restart_retired = false;
+        let conversation = if request.fresh {
+            if let Some(old) = self.st.conversation.take() {
+                self.st.retired_conversation = Some(old);
+                self.st.restart_retired = true;
+            }
+            None
+        } else {
+            self.st.conversation.clone()
+        };
+        let key = self.key(RESTART, Some(self.st.restarts));
+        let launch = self.launch(session.host.clone());
+        self.intend(
+            key,
+            Action::Restart {
+                session: session.clone(),
+                conversation,
+                launch,
+            },
+        );
+        true
+    }
+
+    fn restarted(&mut self, fresh: bool) {
+        let (reason, message) = if fresh {
+            ("Fresh", "the agent started again on a new conversation")
+        } else {
+            ("Resumed", "the agent started again on its conversation")
+        };
+        self.cond(RESTARTED, ConditionStatus::True, reason, message);
+        if fresh && self.st.brief.is_some() {
+            if let Some(owed) = self.st.catch_up.take() {
+                self.forget_send(&owed);
+            }
+            self.st.catch_ups += 1;
+            self.st.catch_up = Some(self.key(REBRIEF, Some(self.st.catch_ups)));
+        }
+    }
+
+    fn keep_the_conversation(&mut self) {
+        if std::mem::take(&mut self.st.restart_retired) {
+            self.st.conversation = self.st.retired_conversation.take();
+        }
+    }
+
+    fn fresh_restart_unconfirmed(&self) -> bool {
+        self.st.restart_request_answered.is_some_and(|r| r.fresh)
+            && condition(&self.st.conditions, RESTARTED)
+                .is_some_and(|c| c.reason == RESTART_UNCONFIRMED)
+    }
+
+    fn forget_send(&mut self, key: &str) {
+        self.st.intents.remove(key);
+        self.st.receipts.remove(key);
+        self.st.delivery_attempts.remove(key);
+        self.st.prompts.remove(key);
+        self.st.loose_prompts.remove(key);
     }
 
     /// Where the session stands on pausing, from what is in flight and what
@@ -2416,12 +2600,13 @@ fn pausable(spec: &TaskSpec, st: &TaskStatus) -> bool {
             .any(|c| is_true(&st.conditions, c))
 }
 
-/// Whether a pause or a resume waits for its outcome.
+/// Whether a pause, a resume or a restart waits for its outcome.
 fn in_flight(obj: &Object, st: &TaskStatus) -> bool {
     let m = &obj.metadata;
     let key = |action, n| effect_key(task::KIND, &m.name, &m.uid, action, Some(n));
     effect_in_flight(st, &key(PAUSE, st.pauses), PAUSE)
         || effect_in_flight(st, &key(RESUME, st.resumes), RESUME)
+        || effect_in_flight(st, &key(RESTART, st.restarts), RESTART)
 }
 
 /// Whether `key` holds an intent of the effect `action`.
@@ -2434,7 +2619,7 @@ fn watched(obj: &Object, spec: &TaskSpec, st: &TaskStatus) -> bool {
         && (pause_candidate(spec, st)
             || (pause_requested(st) && pausable(spec, st))
             || in_flight(obj, st)
-            || (spec.dispatch && wake_requested(st)))
+            || (spec.dispatch && (wake_requested(st) || restart_requested(st).is_some())))
 }
 
 /// The activity probe: what the agent's own hooks reported through `fleet
@@ -2578,6 +2763,11 @@ fn pause_requested(st: &TaskStatus) -> bool {
     st.pause_requested_at
         .is_some_and(|asked| st.pause_request_answered.is_none_or(|a| asked > a))
         && pause_request_since_last_transition(st, st.pause_requested_at)
+}
+
+fn restart_requested(st: &TaskStatus) -> Option<RestartRequest> {
+    st.restart_requested
+        .filter(|asked| st.restart_request_answered.is_none_or(|a| asked.at > a.at))
 }
 
 /// Whether the pause in flight was planned for a request: one made after

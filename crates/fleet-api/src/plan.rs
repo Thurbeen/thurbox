@@ -127,6 +127,17 @@ pub enum Action {
         /// that starts a program starts the resume argv from it.
         launch: SpawnSpec,
     },
+    /// Stop the agent of a session, idle or not, and start it again in its
+    /// own workspace under the same identity: on `conversation` through the
+    /// harness profile's resume argv, or on its launch argv when `None`.
+    /// The agent's current turn ends. A stopped session is started.
+    Restart {
+        session: SessionRef,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        conversation: Option<String>,
+        /// What a start of the agent needs, as its spawn had it.
+        launch: SpawnSpec,
+    },
     /// Take a draft change out of draft, through the Forge port: the only
     /// forge write Fleet performs. `expect` is the head and state the
     /// decision was made against; the adapter re-reads both immediately
@@ -216,13 +227,14 @@ pub enum Action {
 }
 
 impl Action {
-    /// The start this action makes: a spawn's, or a revive's or a resume's
-    /// again. The manager completes each with the environment it froze.
+    /// The start this action makes: a spawn's, or a revive's, a resume's or
+    /// a restart's again. The manager completes each with the environment it froze.
     pub fn launch_mut(&mut self) -> Option<&mut SpawnSpec> {
         match self {
             Action::Spawn(spec)
             | Action::Revive { launch: spec, .. }
-            | Action::Resume { launch: spec, .. } => Some(spec),
+            | Action::Resume { launch: spec, .. }
+            | Action::Restart { launch: spec, .. } => Some(spec),
             _ => None,
         }
     }
@@ -237,6 +249,7 @@ impl Action {
             Action::Revive { .. } => "revive",
             Action::Pause { .. } => "pause",
             Action::Resume { .. } => "resume",
+            Action::Restart { .. } => "restart",
             Action::MarkReady { .. } => "markReady",
             Action::Post { .. } => "post",
             Action::Open { .. } => "open",
@@ -348,6 +361,13 @@ pub enum EffectOutcome {
     /// The runtime started the stopped session's agent again, or found it
     /// running.
     Resumed,
+    /// The runtime stopped the session's agent and started it again.
+    Restarted,
+    /// The runtime cannot pause a session, so it cannot restart one:
+    /// nothing was stopped.
+    RestartUnsupported {
+        why: String,
+    },
     /// The change is out of draft; `already` when the forge said it was no
     /// longer a draft by the time the mutation ran, inside the window
     /// between the adapter's fresh read and the mutation.

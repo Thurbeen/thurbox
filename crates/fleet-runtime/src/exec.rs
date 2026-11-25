@@ -52,12 +52,13 @@ pub const REQUIRED_VERBS: &[&str] = &["manifest", "start", "inspect", "stop"];
 /// is the largest.
 const ANSWER_CAP: usize = 4 * 1024 * 1024;
 
-/// The calls one port operation can make: `spawn` is a `start`, and nothing
-/// makes more than three. A call to a runtime whose version this process
-/// does not know yet is a `manifest` first; the operations that already ask
-/// the manifest learn it there. A restart on another host is the most: the
-/// manifest, the signal file's length through `exec`, then `start`.
-const MAX_CALLS_PER_OPERATION: u32 = 3;
+/// The calls one port operation can make: `spawn` is a `start`. A call to a
+/// runtime whose version this process does not know yet is a `manifest`
+/// first; the operations that already ask the manifest learn it there. A
+/// requested restart on another host is the most, six: the manifest twice
+/// and `pause`, then the manifest, the signal file's length through `exec`,
+/// and `start`.
+const MAX_CALLS_PER_OPERATION: u32 = 6;
 
 /// How long one capture answers the screen probe: a session's screen rules
 /// are for a view, so a screen this recent is current enough, and a sweep
@@ -701,7 +702,7 @@ impl ExecRuntime {
 
     /// Start the agent of `session` again on the harness profile's resume
     /// argv: a process still running is adopted, so nothing restarts it.
-    fn restart(
+    fn start_again(
         &self,
         session: &SessionRef,
         conversation: Option<&str>,
@@ -1401,7 +1402,7 @@ impl Runtime for ExecRuntime {
         conversation: Option<&str>,
         launch: &SpawnSpec,
     ) -> Observation<EffectOutcome> {
-        self.restart(session, conversation, launch, EffectOutcome::Revived)
+        self.start_again(session, conversation, launch, EffectOutcome::Revived)
     }
 
     /// Stopped under its key, as `inspect` answers it, on a runtime whose
@@ -1451,7 +1452,26 @@ impl Runtime for ExecRuntime {
         conversation: Option<&str>,
         launch: &SpawnSpec,
     ) -> Observation<EffectOutcome> {
-        self.restart(session, conversation, launch, EffectOutcome::Resumed)
+        self.start_again(session, conversation, launch, EffectOutcome::Resumed)
+    }
+
+    fn restart(
+        &self,
+        session: &SessionRef,
+        conversation: Option<&str>,
+        launch: &SpawnSpec,
+    ) -> Observation<EffectOutcome> {
+        bind(self.pausing(&session.host), |declared| {
+            if let Err(why) = declared {
+                return Observation::Known(EffectOutcome::RestartUnsupported { why });
+            }
+            bind(self.pause(session), |paused| match paused {
+                EffectOutcome::Paused => {
+                    self.start_again(session, conversation, launch, EffectOutcome::Restarted)
+                }
+                other => Observation::Known(other),
+            })
+        })
     }
 }
 
@@ -2162,17 +2182,15 @@ mod tests {
         ExecProgram::new("test", script.to_string_lossy())
     }
 
-    /// A restart on another host is three calls: the manifest, the file's
-    /// length through `exec`, then `start`. The lease covers all three.
     #[test]
     fn the_operation_bound_covers_a_remote_restart() {
         let mut rt = ExecProgram::new("mux", "runtime-mux");
         rt.call_timeout = Duration::from_secs(10);
         rt.workspace_timeout = Duration::from_millis(1);
         let runtime = ExecRuntime::new(BTreeMap::from([("mux/box".to_string(), rt)]));
-        let three = fleet_exec::worst_case(Duration::from_secs(10)) * 3;
+        let six = fleet_exec::worst_case(Duration::from_secs(10)) * 6;
         assert!(
-            u128::from(runtime.operation_bound()) >= three.as_millis(),
+            u128::from(runtime.operation_bound()) >= six.as_millis(),
             "{} ms",
             runtime.operation_bound()
         );
@@ -2348,6 +2366,82 @@ mod tests {
             delivering(Some(r#"{"known":{"timedOut":{"stdout":"","stderr":""}}}"#));
         assert!(outcome.is_unknown(), "{outcome:?}");
         assert_eq!(verbs_sent(&dir), ["exec"]);
+    }
+
+    fn restarting(pause: bool) -> (std::path::PathBuf, Observation<EffectOutcome>) {
+        use std::os::unix::fs::PermissionsExt;
+        let dir =
+            std::env::temp_dir().join(format!("fleet-exec-restart-{}-{pause}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("dir");
+        let script = dir.join("runtime.sh");
+        std::fs::write(
+            &script,
+            format!(
+                "#!/bin/sh\ncat > '{0}/'\"$1\".request\necho \"$1\" >> '{0}/calls'\nexec cat '{0}/'\"$1\"\n",
+                dir.display()
+            ),
+        )
+        .expect("script");
+        std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).expect("chmod");
+        let verbs = if pause {
+            r#"["manifest","start","inspect","stop","pause"]"#
+        } else {
+            r#"["manifest","start","inspect","stop"]"#
+        };
+        std::fs::write(
+            dir.join("manifest"),
+            format!(r#"{{"known":{{"protocol":2,"verbs":{verbs}}}}}"#),
+        )
+        .expect("answer");
+        std::fs::write(dir.join("pause"), r#"{"known":"paused"}"#).expect("answer");
+        std::fs::write(
+            dir.join("start"),
+            r#"{"known":{"started":{"id":"k","adopted":false}}}"#,
+        )
+        .expect("answer");
+        let runtime = ExecRuntime::new(BTreeMap::from([(
+            "local".to_string(),
+            ExecProgram::new("test", script.to_string_lossy()),
+        )]));
+        let launch = SpawnSpec {
+            host: "local".into(),
+            key: "k".into(),
+            harness: "claude-code".into(),
+            workspace: Workspace::default(),
+            ready: None,
+            model: None,
+            env: BTreeMap::new(),
+            environment_frozen: false,
+            telemetry_args: Vec::new(),
+        };
+        let session = runtime.session("local", "k");
+        let outcome = runtime.restart(&session, Some("c1"), &launch);
+        (dir, outcome)
+    }
+
+    #[test]
+    fn a_restart_pauses_the_agent_then_starts_it_on_its_conversation() {
+        let (dir, outcome) = restarting(true);
+        let started = std::fs::read_to_string(dir.join("start.request")).unwrap_or_default();
+        assert_eq!(outcome, Observation::Known(EffectOutcome::Restarted));
+        assert_eq!(verbs_sent(&dir), ["pause", "start"]);
+        let argv = serde_json::from_str::<Value>(&started).expect("start request")["argv"].clone();
+        let argv: Vec<String> = serde_json::from_value(argv).expect("argv");
+        assert_eq!(argv[argv.len() - 2..], ["--resume", "c1"]);
+    }
+
+    #[test]
+    fn a_restart_on_a_runtime_without_pause_stops_nothing() {
+        let (dir, outcome) = restarting(false);
+        assert!(
+            matches!(
+                outcome,
+                Observation::Known(EffectOutcome::RestartUnsupported { .. })
+            ),
+            "{outcome:?}"
+        );
+        assert!(verbs_sent(&dir).is_empty());
     }
 
     #[test]

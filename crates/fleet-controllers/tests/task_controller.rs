@@ -2546,3 +2546,332 @@ fn an_interactive_task_waits_to_be_pausable() {
         assert_eq!(st.pause_requested_at, Some(NOW - 5), "{why}: still pending");
     }
 }
+
+fn restart_requested(fresh: bool, extra: impl FnOnce(&mut TaskStatus)) -> Object {
+    pausable(&[], |st| {
+        st.restart_requested = Some(fleet_api::task::RestartRequest { at: NOW - 5, fresh });
+        extra(st);
+    })
+}
+
+fn restart_receipt(st: &mut TaskStatus, outcome: Observation<EffectOutcome>) {
+    st.receipts.insert(
+        "task/t/u7/restart/1".into(),
+        Receipt {
+            action: "restart".into(),
+            at: NOW,
+            outcome,
+        },
+    );
+}
+
+#[test]
+fn a_restart_request_restarts_a_working_session_on_its_conversation_once() {
+    let obj = restart_requested(false, |_| {});
+    assert!(probes(&obj).contains(&Probe::Paused { session: session() }));
+    let (plan, st) = run(&obj, pause_obs(working(), Observation::Known(false)));
+    assert_eq!(plan.effects.len(), 1, "{plan:#?}");
+    assert_eq!(plan.effects[0].key, "task/t/u7/restart/1");
+    assert!(
+        matches!(
+            &plan.effects[0].action,
+            Action::Restart { session: s, conversation: Some(c), launch }
+                if *s == session() && c == "conv-1" && launch.key == s.key
+        ),
+        "{plan:#?}"
+    );
+    assert_eq!(st.restarts, 1);
+    assert_eq!(st.restart_request_answered, st.restart_requested);
+    assert!(st.intents.contains_key("task/t/u7/restart/1"));
+
+    let mut st = st;
+    restart_receipt(&mut st, Observation::Known(EffectOutcome::Restarted));
+    let (plan, st) = run_at(
+        &with_status(&obj, &st),
+        pause_obs(not_asked(), Observation::Known(false)),
+        NOW + 1,
+    );
+    assert!(plan.effects.is_empty(), "{plan:#?}");
+    assert_eq!(cond(&st, "Restarted").status, ConditionStatus::True);
+    assert_eq!(cond(&st, "Restarted").reason, "Resumed");
+    assert_eq!(st.conversation.as_deref(), Some("conv-1"));
+    assert_eq!(
+        st.catch_up, None,
+        "a restart on its conversation types nothing"
+    );
+    assert!(st.intents.is_empty() && st.receipts.is_empty());
+
+    let (plan, _) = run_at(
+        &with_status(&obj, &st),
+        pause_obs(not_asked(), Observation::Known(false)),
+        NOW + 2,
+    );
+    assert!(plan.effects.is_empty(), "honoured once: {plan:#?}");
+}
+
+#[test]
+fn a_restart_waits_for_no_idle_time_and_no_inbox() {
+    let obj = pausable(&["task/t/u7/send/1"], |st| {
+        st.restart_requested = Some(fleet_api::task::RestartRequest {
+            at: NOW - 5,
+            fresh: false,
+        });
+    });
+    let (plan, _) = run(&obj, pause_obs(working(), Observation::Known(false)));
+    assert_eq!(plan.effects.len(), 1, "{plan:#?}");
+    assert_eq!(plan.effects[0].action.name(), "restart");
+}
+
+#[test]
+fn a_restart_starts_a_paused_session() {
+    let obj = restart_requested(false, |st| set_paused(st, "Requested"));
+    let (plan, _) = run(&obj, pause_obs(not_asked(), Observation::Known(true)));
+    assert_eq!(plan.effects.len(), 1, "{plan:#?}");
+    assert_eq!(plan.effects[0].action.name(), "restart");
+}
+
+#[test]
+fn a_held_task_is_not_restarted() {
+    let mut obj = restart_requested(false, |_| {});
+    obj.spec["dispatch"] = json!(false);
+    let (plan, _) = run(&obj, pause_obs(working(), Observation::Known(false)));
+    assert!(plan.effects.is_empty(), "{plan:#?}");
+}
+
+#[test]
+fn a_fresh_restart_starts_a_new_conversation_and_briefs_it_again_with_its_open_questions() {
+    let obj = restart_requested(true, |st| {
+        st.declared = vec![
+            json!({"kind": "Question", "id": "q1", "text": "Which branch?"}),
+            json!({"kind": "Question", "id": "q2", "text": "Answered already?"}),
+        ];
+        st.answered.insert(
+            "q2".into(),
+            fleet_api::talk::Answer {
+                key: "task/t/u7/send/9".into(),
+                from: "cli".into(),
+                at: 1,
+            },
+        );
+    });
+    let (plan, st) = run(&obj, pause_obs(working(), Observation::Known(false)));
+    assert!(
+        matches!(
+            &plan.effects[0].action,
+            Action::Restart {
+                conversation: None,
+                ..
+            }
+        ),
+        "{plan:#?}"
+    );
+    assert_eq!(st.conversation, None);
+    assert_eq!(st.retired_conversation.as_deref(), Some("conv-1"));
+
+    let mut st = st;
+    restart_receipt(&mut st, Observation::Known(EffectOutcome::Restarted));
+    let old_report = fleet_api::signal::Reported {
+        conversation: Some("conv-1".into()),
+        ..Default::default()
+    };
+    let (plan, st) = run_at(
+        &with_status(&obj, &st),
+        Observations {
+            signals: Some(Observation::Known(old_report)),
+            ..pause_obs(not_asked(), Observation::Known(false))
+        },
+        NOW + 1,
+    );
+    assert_eq!(cond(&st, "Restarted").reason, "Fresh");
+    assert_eq!(
+        st.conversation, None,
+        "the old conversation is never taken again"
+    );
+    assert_eq!(st.catch_up.as_deref(), Some("task/t/u7/rebrief/1"));
+    assert_eq!(plan.effects.len(), 1, "{plan:#?}");
+    let Action::Brief { text, .. } = &plan.effects[0].action else {
+        panic!("{plan:#?}");
+    };
+    assert!(text.contains("new conversation"), "{text}");
+    assert!(text.contains("- q1: Which branch?"), "{text}");
+    assert!(!text.contains("q2"), "{text}");
+    assert!(text.contains("do it"), "the brief: {text}");
+
+    let new_report = fleet_api::signal::Reported {
+        conversation: Some("conv-2".into()),
+        ..Default::default()
+    };
+    let (_, st) = run_at(
+        &with_status(&obj, &st),
+        Observations {
+            signals: Some(Observation::Known(new_report)),
+            ..pause_obs(not_asked(), Observation::Known(false))
+        },
+        NOW + 2,
+    );
+    assert_eq!(st.conversation.as_deref(), Some("conv-2"));
+}
+
+#[test]
+fn a_restart_that_did_not_happen_says_why_and_is_never_repeated() {
+    for (outcome, status, reason) in [
+        (
+            Observation::Known(EffectOutcome::RestartUnsupported {
+                why: "runtime r declares no pause".into(),
+            }),
+            ConditionStatus::False,
+            "Unsupported",
+        ),
+        (
+            Observation::Known(EffectOutcome::Failed {
+                why: "no process holds the session's key".into(),
+            }),
+            ConditionStatus::False,
+            "RestartFailed",
+        ),
+        (
+            Observation::unknown("the answer was lost"),
+            ConditionStatus::Unknown,
+            "RestartUnconfirmed",
+        ),
+    ] {
+        let obj = restart_requested(true, |_| {});
+        let (_, mut st) = run(&obj, pause_obs(working(), Observation::Known(false)));
+        restart_receipt(&mut st, outcome);
+        let (plan, st) = run_at(
+            &with_status(&obj, &st),
+            pause_obs(working(), Observation::Known(false)),
+            NOW + 1,
+        );
+        assert!(plan.effects.is_empty(), "{reason}: {plan:#?}");
+        assert_eq!(cond(&st, "Restarted").status, status, "{reason}");
+        assert_eq!(cond(&st, "Restarted").reason, reason);
+        assert_eq!(st.catch_up, None, "{reason}: nothing is briefed again");
+    }
+}
+
+#[test]
+fn a_fresh_restart_that_stopped_nothing_keeps_the_conversation() {
+    for outcome in [
+        EffectOutcome::RestartUnsupported {
+            why: "runtime r declares no pause".into(),
+        },
+        EffectOutcome::Failed {
+            why: "no process holds the session's key".into(),
+        },
+    ] {
+        let obj = restart_requested(true, |_| {});
+        let (_, mut st) = run(&obj, pause_obs(working(), Observation::Known(false)));
+        restart_receipt(&mut st, Observation::Known(outcome.clone()));
+        let (_, st) = run_at(
+            &with_status(&obj, &st),
+            pause_obs(working(), Observation::Known(false)),
+            NOW + 1,
+        );
+        assert_eq!(st.conversation.as_deref(), Some("conv-1"), "{outcome:?}");
+        assert_eq!(st.retired_conversation, None, "{outcome:?}");
+    }
+}
+
+#[test]
+fn a_fresh_restart_whose_answer_was_lost_briefs_the_new_conversation_once_it_reports() {
+    let obj = restart_requested(true, |_| {});
+    let (_, mut st) = run(&obj, pause_obs(working(), Observation::Known(false)));
+    restart_receipt(&mut st, Observation::unknown("the answer was lost"));
+    let (_, st) = run_at(
+        &with_status(&obj, &st),
+        pause_obs(working(), Observation::Known(false)),
+        NOW + 1,
+    );
+    assert_eq!(cond(&st, "Restarted").reason, "RestartUnconfirmed");
+    assert_eq!(st.catch_up, None);
+
+    let new_report = fleet_api::signal::Reported {
+        conversation: Some("conv-2".into()),
+        ..Default::default()
+    };
+    let (plan, st) = run_at(
+        &with_status(&obj, &st),
+        Observations {
+            signals: Some(Observation::Known(new_report)),
+            ..pause_obs(not_asked(), Observation::Known(false))
+        },
+        NOW + 2,
+    );
+    assert_eq!(st.conversation.as_deref(), Some("conv-2"));
+    assert_eq!(cond(&st, "Restarted").reason, "Fresh");
+    assert_eq!(st.catch_up.as_deref(), Some("task/t/u7/rebrief/1"));
+    assert!(
+        !plan
+            .effects
+            .iter()
+            .any(|e| matches!(e.action, Action::Restart { .. })),
+        "the restart is not repeated: {plan:#?}"
+    );
+}
+
+#[test]
+fn a_restart_with_no_conversation_to_resume_is_a_fresh_one() {
+    let obj = restart_requested(false, |st| st.conversation = None);
+    let (_, mut st) = run(&obj, pause_obs(working(), Observation::Known(false)));
+    assert!(st.restart_request_answered.is_some_and(|r| r.fresh));
+    restart_receipt(&mut st, Observation::Known(EffectOutcome::Restarted));
+    let (_, st) = run_at(
+        &with_status(&obj, &st),
+        pause_obs(not_asked(), Observation::Known(false)),
+        NOW + 1,
+    );
+    assert_eq!(cond(&st, "Restarted").reason, "Fresh");
+    assert_eq!(st.catch_up.as_deref(), Some("task/t/u7/rebrief/1"));
+}
+
+#[test]
+fn a_refused_restart_gives_back_only_the_conversation_it_retired() {
+    let obj = restart_requested(true, |st| {
+        st.conversation = None;
+        st.retired_conversation = Some("conv-0".into());
+    });
+    let (_, mut st) = run(&obj, pause_obs(working(), Observation::Known(false)));
+    restart_receipt(
+        &mut st,
+        Observation::Known(EffectOutcome::Failed {
+            why: "no process holds the session's key".into(),
+        }),
+    );
+    let (_, st) = run_at(
+        &with_status(&obj, &st),
+        pause_obs(working(), Observation::Known(false)),
+        NOW + 1,
+    );
+    assert_eq!(
+        st.conversation, None,
+        "conv-0 was retired by an earlier restart"
+    );
+    assert_eq!(st.retired_conversation.as_deref(), Some("conv-0"));
+}
+
+#[test]
+fn a_restart_with_no_conversation_whose_answer_was_lost_briefs_the_one_that_reports() {
+    let obj = restart_requested(false, |st| st.conversation = None);
+    let (_, mut st) = run(&obj, pause_obs(working(), Observation::Known(false)));
+    restart_receipt(&mut st, Observation::unknown("the answer was lost"));
+    let (_, st) = run_at(
+        &with_status(&obj, &st),
+        pause_obs(working(), Observation::Known(false)),
+        NOW + 1,
+    );
+    let report = fleet_api::signal::Reported {
+        conversation: Some("conv-2".into()),
+        ..Default::default()
+    };
+    let (_, st) = run_at(
+        &with_status(&obj, &st),
+        Observations {
+            signals: Some(Observation::Known(report)),
+            ..pause_obs(not_asked(), Observation::Known(false))
+        },
+        NOW + 2,
+    );
+    assert_eq!(cond(&st, "Restarted").reason, "Fresh");
+    assert_eq!(st.catch_up.as_deref(), Some("task/t/u7/rebrief/1"));
+}

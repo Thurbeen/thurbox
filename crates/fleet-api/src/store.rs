@@ -317,6 +317,21 @@ pub trait Store {
     ) -> Result<Object, StoreError> {
         Err(StoreError::Unsupported("request_pause".into()))
     }
+    /// `fleet restart`'s write, compare-and-swap on resourceVersion, as a
+    /// caller `kinds::may_request_restart` admits: set
+    /// `status.restartRequested` to `request`, which asks TaskController to
+    /// restart the session once. Refused on a deleting Task, a held one
+    /// (`dispatch: false`) and one with no session to restart: not Briefed,
+    /// Concluded, or an interactive Task in Spawned. No other field changes.
+    fn request_restart(
+        &self,
+        _name: &str,
+        _request: crate::task::RestartRequest,
+        _expected: u64,
+        _by: FieldManager,
+    ) -> Result<Object, StoreError> {
+        Err(StoreError::Unsupported("request_restart".into()))
+    }
     /// `fleet amend`'s write, compare-and-swap on resourceVersion, as
     /// `FieldManager::Cli` only: append `amendment` to `spec.amendments`,
     /// bump `metadata.generation` to the amendment's generation, and queue

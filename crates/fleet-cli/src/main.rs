@@ -27,8 +27,8 @@ use fleet_gateway::{GatewayAccounts, Platform, account_digest, listener_account}
 use fleet_manager::{
     AmendRequest, Amended, DeclareOutcome, GatewaySide, Manager, Resolution, RunOptions, Sent,
     amend, apply, apply_change_request, apply_conversation, beat, declare, declare_change_request,
-    delete, label, list_events, pause, publish_event, receive, record_result, resolve_inbox, send,
-    wake,
+    delete, label, list_events, pause, publish_event, receive, record_result, resolve_inbox,
+    restart, send, wake,
 };
 use fleet_runtime::{ExecProgram, ExecRuntime, FakeHost, FakeRuntime, FileSignals};
 use fleet_store::manager::{ManagerLock, ManagerRecord, ManagerState};
@@ -158,6 +158,14 @@ enum Command {
     },
     /// Ask the Task's controller to pause its session now; a message or `attach --wake` resumes it.
     Pause { task: String },
+    /// Ask the Task's controller to stop its agent now, mid-turn or paused,
+    /// and start it again in the same session on its conversation.
+    Restart {
+        task: String,
+        /// Start a new conversation instead, and brief it again.
+        #[arg(long)]
+        fresh: bool,
+    },
     /// Add to a Task's brief: the amendment is kept in its spec, delivered to the same session, and re-opens a Concluded Task.
     Amend {
         task: String,
@@ -846,6 +854,7 @@ fn subject(command: &Command) -> Vec<KeyValue> {
         | Command::Declare { task: name, .. }
         | Command::Send { task: name, .. }
         | Command::Pause { task: name }
+        | Command::Restart { task: name, .. }
         | Command::Amend { task: name, .. }
         | Command::Attach { task: name, .. }
         | Command::Shell { task: name, .. } => task(name),
@@ -1324,6 +1333,12 @@ fn run(cli: Cli) -> Result<(), Failure> {
         Command::Pause { task } => {
             pause(store, &SystemClock, &task)?;
             println!("Task/{task} pause requested");
+            Ok(())
+        }
+        Command::Restart { task, fresh } => {
+            restart(store, &SystemClock, &task, fresh)?;
+            let how = if fresh { "fresh restart" } else { "restart" };
+            println!("Task/{task} {how} requested");
             Ok(())
         }
         Command::Amend {

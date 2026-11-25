@@ -81,15 +81,18 @@ repositories.
 | `session` | TaskController | `{id, host, key}`: the session's runtime id, place and Fleet's key. See [Session](session.md). |
 | `sessionState` | TaskController | What the runtime last proved: `Running`, `Idle`, `Paused`, `Lost` or `Gone`. An Unknown answer keeps the last state. |
 | `agentState`, `activity` | TaskController | What the agent does (`working`, `attention`, `idle`, `unknown`) and where that came from: its hooks or a screen rule. See [Session](session.md#agent-state). |
-| `conversation` | TaskController | The harness's id of the session's conversation, as its hooks reported it. A revive or a resume names it. |
+| `conversation` | TaskController | The harness's id of the session's conversation, as its hooks reported it. A revive, a resume or a restart names it. A fresh restart clears it until the new agent reports its own. |
+| `retiredConversation` | TaskController | The conversation the last fresh restart left. A report that names it does not set `conversation` again. |
+| `restartRetired` | TaskController | Whether the last planned restart retired `retiredConversation`. A restart that stopped nothing gives back only that conversation. |
 | `workspace` | TaskController | The workspace the runtime made: `key`, `host` and `dirs`, one per URL. See [Workspace](workspace.md). |
 | `intents`, `receipts` | TaskController | Each effect's intent, written before it runs, and its outcome, written after. |
 | `prompts` | TaskController | Per send key, the digest of the text sent, until the agent's prompt hook proves delivery. |
 | `loosePrompts` | TaskController | Per send key in `prompts`, the loose digest of the same text, for a harness profile that names a paste tag. A report of either digest proves delivery. |
 | `brief` | TaskController | `{key, generation, recovered}`: the newest brief or amendment the worker received. A result names this generation. |
-| `spawnAttempts`, `briefSends`, `materializeAttempts`, `cleanAttempts`, `releaseAttempts`, `briefProbeFailures`, `revivals`, `reviveAttempts`, `pauses`, `resumes`, `resumeAttempts`, `catchUps`, `catchUp` | TaskController | Counters and keys of bounded retries. Three failures raise `NeedsAttention`. |
+| `spawnAttempts`, `briefSends`, `materializeAttempts`, `cleanAttempts`, `releaseAttempts`, `briefProbeFailures`, `revivals`, `reviveAttempts`, `pauses`, `resumes`, `resumeAttempts`, `restarts`, `catchUps`, `catchUp` | TaskController | Counters and keys of bounded retries. Three failures raise `NeedsAttention`. `restarts` counts the restarts planned, and names the next one's key. |
 | `idleSince`, `notBefore`, `sessionCheckedAt` | TaskController | When the agent became idle, the earliest next reconcile after a failure (30 s later), and the last session lookup of a Concluded Task (repeated every 5 minutes). |
 | `pauseRequestAnswered` | TaskController | The `pauseRequestedAt` it last planned a pause for. A request is acted on once. |
+| `restartRequestAnswered` | TaskController | The `restartRequested` it last planned a restart for. A request is acted on once. |
 | `deliveries`, `deliveryAttempts` | TaskController | Receipts of delivered inbox entries, and sends and probes per entry in delivery. `otherPromptSeq` is the latest place in the agent's signal file of a report of another prompt when the entry's send was planned. `idleSince` is when TaskController first read the agent idle with the entry typed and unreported. |
 | `outbox` | TaskController | `{offset, generation, skipped, lastSkipped, closed, discarding}`: how far the session's event outbox is ingested into the Boards. See [Board](board.md#publishing-from-a-session). |
 | `subscriptions` | TaskController | `{notices, cursors}`: the count of notices queued, and per subscription its Board, filter, `boardUid`, cursor (`after`) and the key of its last notice. See [Subscriptions](#subscriptions). |
@@ -102,6 +105,7 @@ repositories.
 | `answered` | nobody; inbox appends | Per Question id, the entry that answered it. First answer wins. |
 | `wakeRequestedAt` | nobody; `fleet attach --wake` and `fleet shell --wake` | When a wake last asked for the session. TaskController resumes a paused session for a request made at or after its pause. See [Pausing an idle session](../controllers/task.md#pausing-an-idle-session). |
 | `pauseRequestedAt` | nobody; `fleet pause` | When `fleet pause` last asked for a pause. TaskController pauses the session for a request made after the last `Paused` transition and after the last wake. See [Pausing on request](../controllers/task.md#pausing-on-request). |
+| `restartRequested` | nobody; `fleet restart` | `{at, fresh}`: when `fleet restart` last asked for a restart, and whether the agent starts on a new conversation. TaskController restarts the session once for a request newer than `restartRequestAnswered`. See [Restarting on request](../controllers/task.md#restarting-on-request). |
 
 ## Lifecycle
 

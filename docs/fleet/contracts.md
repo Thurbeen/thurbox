@@ -328,6 +328,21 @@ Guarantees, each with its test:
   is acted on once: TaskController records it in
   `status.pauseRequestAnswered` when it plans the pause, so a refused pause
   (`Paused=False/PauseFailed`) is not tried again.
+- `fleet restart` sets `status.restartRequested` to `{at, fresh}`. A request
+  newer than `status.restartRequestAnswered` plans one `Restart` under
+  `restart/<n>` on a Briefed or Concluded Task, or an interactive one in
+  Spawned, with `dispatch: true` whose
+  session is not known gone or lost. Idle time, the inbox and a pause do
+  not hold it back: a restart ends the agent's turn. The runtime's
+  `restart` stops the agent with `pause` and starts it again under the
+  same key, on `status.conversation`, or for `fresh` on the launch argv.
+  A fresh restart moves `status.conversation` to
+  `status.retiredConversation` and owes a catch-up note under
+  `rebrief/<n>`. The outcome is `Restarted=True/Resumed`,
+  `Restarted=True/Fresh`, `Restarted=False/Unsupported` (a runtime with no
+  `pause`; nothing stopped), `Restarted=False/RestartFailed` or
+  `Restarted=Unknown/RestartUnconfirmed`. A request is acted on once,
+  whatever its outcome.
 - **Resume.** An inbox entry for a paused Task plans one `Resume` under
   `resume/<n>`, and so does a `status.wakeRequestedAt` at or after the
   `Paused=True` transition; entries that arrive meanwhile wait in the inbox. Resumes
@@ -848,9 +863,9 @@ refused.
   Unknown and blocks writes to that name. A list with one bad record is
   Unknown as a whole.
 - Each status field has one owner, checked on every write, except
-  `Task.status.inbox`, `status.answered`, `status.wakeRequestedAt` and
-  `status.pauseRequestedAt`, which have none and which no status write
-  may change. A controller writes only under the current manager lease:
+  `Task.status.inbox`, `status.answered`, `status.wakeRequestedAt`,
+  `status.pauseRequestedAt` and `status.restartRequested`, which have none
+  and which no status write may change. A controller writes only under the current manager lease:
   an expired or superseded token is refused, and the token only grows.
   A new lease takes its token from `seq`, so the token grows even when
   `lease.json` is lost. A serving manager holds the OS lock on
@@ -891,6 +906,13 @@ refused.
   compare-and-swap under the lock: `request_pause` (`cli`, through the
   manager's `pause` verb, no lease) sets it to the time of the request and
   refuses a deleting Task. It changes no other field.
+- `status.restartRequested` is reached through one typed mutation,
+  compare-and-swap under the lock: `request_restart` (`cli`, through the
+  manager's `restart` verb, no lease) sets it to the request. It refuses a
+  deleting Task, a held Task and a Task that is not Briefed, Concluded or
+  an interactive Task in Spawned.
+  It changes no other field. After the write, it replaces `wake` as
+  `request_wake` does.
 - A Conversation's `status.received`, a Listener's `beats`, `refused`
   and `beatRevision`, and a Board's `status.head` and `status.oldest` have no
   owner either; only the store's typed `append_events` writes the Board's

@@ -12,7 +12,10 @@ the [Task resource](../../../docs/fleet/resources/task.md); inspect supported ki
 `spec.dispatch`, `spec.forge` and `spec.subscriptions` may change; `fleet
 event subscribe TASK` adds a subscription. `fleet amend TASK` adds to the
 brief and reaches the same session; `fleet send TASK TEXT` queues a message
-for it. Send only what the requester authorized, and never type into a busy
+for it. `fleet pause TASK` stops its session until a message or a view
+resumes it; `fleet restart TASK` stops its agent mid-turn and starts it again on
+its conversation, and `--fresh` starts a new conversation that is briefed
+again. Send only what the requester authorized, and never type into a busy
 worker's session. Deletion uses `fleet delete task NAME`; the finalizer holds the record
 until its session is released.
 
