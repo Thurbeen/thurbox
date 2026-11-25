@@ -69,7 +69,6 @@ async fn main() -> Result<(), Box<dyn Error>> {
     coordinator::boot::run().await
 }
 #[derive(clap::Parser)]
-
 #[command(
     about = "The interface takes no options: `--version`, `--help`, and a usage line for anything else. Scripts drive thurbox through `thurbox-cli`"
 )]
