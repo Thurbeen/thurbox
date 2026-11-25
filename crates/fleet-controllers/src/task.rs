@@ -133,6 +133,7 @@ const RESUME: &str = "resume";
 const CATCH_UP: &str = "catchup";
 const RESTART: &str = "restart";
 const REBRIEF: &str = "rebrief";
+const RESTART_UNCONFIRMED: &str = "RestartUnconfirmed";
 /// The NeedsAttention reason once revives keep leaving the session lost.
 const CANNOT_RESUME: &str = "CannotResume";
 const REVIVE_FAILED: &str = "ReviveFailed";
@@ -412,7 +413,12 @@ impl Pass<'_, '_> {
             _ => return,
         };
         if r.conversation.is_some() && r.conversation != self.st.retired_conversation {
+            let fresh_start_seen =
+                self.st.conversation.is_none() && self.fresh_restart_unconfirmed();
             self.st.conversation = r.conversation.clone();
+            if fresh_start_seen {
+                self.restarted(true);
+            }
         }
         let merged = fleet_api::screen::merge(profile.authority, r, seen.as_ref());
         if agentless {
@@ -1754,9 +1760,11 @@ impl Pass<'_, '_> {
             match outcome {
                 Some(Observation::Known(EffectOutcome::Restarted)) => self.restarted(fresh),
                 Some(Observation::Known(EffectOutcome::RestartUnsupported { why })) => {
+                    self.keep_the_conversation();
                     self.cond(RESTARTED, failed, "Unsupported", why);
                 }
                 Some(Observation::Known(EffectOutcome::Failed { why })) => {
+                    self.keep_the_conversation();
                     self.cond(RESTARTED, failed, "RestartFailed", why);
                 }
                 Some(Observation::Known(other)) => {
@@ -1767,14 +1775,14 @@ impl Pass<'_, '_> {
                     self.cond(
                         RESTARTED,
                         ConditionStatus::Unknown,
-                        "RestartUnconfirmed",
+                        RESTART_UNCONFIRMED,
                         why,
                     );
                 }
                 None => self.cond(
                     RESTARTED,
                     ConditionStatus::Unknown,
-                    "RestartUnconfirmed",
+                    RESTART_UNCONFIRMED,
                     "the restart's answer was never recorded",
                 ),
             }
@@ -1786,6 +1794,12 @@ impl Pass<'_, '_> {
         if !self.spec.dispatch || !self.effects.is_empty() {
             return false;
         }
+        let resumable = self.st.conversation.is_some()
+            && fleet_api::harness::profile(&self.spec.harness).resumes();
+        let request = RestartRequest {
+            fresh: request.fresh || !resumable,
+            ..request
+        };
         self.st.restart_request_answered = Some(request);
         self.st.restarts += 1;
         self.st.idle_since = None;
@@ -1824,6 +1838,19 @@ impl Pass<'_, '_> {
             self.st.catch_ups += 1;
             self.st.catch_up = Some(self.key(REBRIEF, Some(self.st.catch_ups)));
         }
+    }
+
+    fn keep_the_conversation(&mut self) {
+        if self.st.conversation.is_none() {
+            self.st.conversation = self.st.retired_conversation.take();
+        }
+    }
+
+    fn fresh_restart_unconfirmed(&self) -> bool {
+        self.st.retired_conversation.is_some()
+            && self.st.restart_request_answered.is_some_and(|r| r.fresh)
+            && condition(&self.st.conditions, RESTARTED)
+                .is_some_and(|c| c.reason == RESTART_UNCONFIRMED)
     }
 
     fn forget_send(&mut self, key: &str) {

@@ -489,6 +489,9 @@ resume does:
   says that the agent starts with no memory of the previous conversation,
   lists the declared Questions that have no answer, and repeats the brief
   and the amendments.
+- A restart without `--fresh` is fresh when the Task has no conversation to
+  resume: no reported `status.conversation`, or a harness profile with no
+  resume argv. `restartRequestAnswered` then records `fresh`.
 
 A restart differs from a pause:
 
@@ -512,9 +515,14 @@ The runtime must declare the `pause` verb
 The controller acts on a request once:
 
 - A refused restart sets `Restarted=False/RestartFailed`.
+- After `Unsupported` or `RestartFailed`, a fresh restart gives back
+  `status.conversation` from `status.retiredConversation`: no new
+  conversation started.
 - A lost answer sets `Restarted=Unknown/RestartUnconfirmed`. The agent may
   run, or may be stopped. A stopped session reads `Paused=True/External`,
-  and the next inbox entry or wake resumes it.
+  and the next inbox entry or wake resumes it. After a fresh restart, the
+  first report of a conversation other than the retired one sets
+  `Restarted=True/Fresh` and owes the catch-up note.
 - In each case, run `fleet restart` again to ask for another restart.
 
 A pending request waits while the session is lost or gone, and while the

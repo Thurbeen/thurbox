@@ -52,12 +52,13 @@ pub const REQUIRED_VERBS: &[&str] = &["manifest", "start", "inspect", "stop"];
 /// is the largest.
 const ANSWER_CAP: usize = 4 * 1024 * 1024;
 
-/// The calls one port operation can make: `spawn` is a `start`, and nothing
-/// makes more than three. A call to a runtime whose version this process
-/// does not know yet is a `manifest` first; the operations that already ask
-/// the manifest learn it there. A restart on another host is the most: the
-/// manifest, the signal file's length through `exec`, then `start`.
-const MAX_CALLS_PER_OPERATION: u32 = 3;
+/// The calls one port operation can make: `spawn` is a `start`. A call to a
+/// runtime whose version this process does not know yet is a `manifest`
+/// first; the operations that already ask the manifest learn it there. A
+/// requested restart on another host is the most, six: the manifest twice
+/// and `pause`, then the manifest, the signal file's length through `exec`,
+/// and `start`.
+const MAX_CALLS_PER_OPERATION: u32 = 6;
 
 /// How long one capture answers the screen probe: a session's screen rules
 /// are for a view, so a screen this recent is current enough, and a sweep
@@ -2181,17 +2182,15 @@ mod tests {
         ExecProgram::new("test", script.to_string_lossy())
     }
 
-    /// A restart on another host is three calls: the manifest, the file's
-    /// length through `exec`, then `start`. The lease covers all three.
     #[test]
     fn the_operation_bound_covers_a_remote_restart() {
         let mut rt = ExecProgram::new("mux", "runtime-mux");
         rt.call_timeout = Duration::from_secs(10);
         rt.workspace_timeout = Duration::from_millis(1);
         let runtime = ExecRuntime::new(BTreeMap::from([("mux/box".to_string(), rt)]));
-        let three = fleet_exec::worst_case(Duration::from_secs(10)) * 3;
+        let six = fleet_exec::worst_case(Duration::from_secs(10)) * 6;
         assert!(
-            u128::from(runtime.operation_bound()) >= three.as_millis(),
+            u128::from(runtime.operation_bound()) >= six.as_millis(),
             "{} ms",
             runtime.operation_bound()
         );
