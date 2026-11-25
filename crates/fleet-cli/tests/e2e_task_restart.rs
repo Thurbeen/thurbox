@@ -189,3 +189,32 @@ fn fleet_restart_names_a_missing_task() {
         .code(3)
         .stderr_has("Task/nope");
 }
+
+#[test]
+fn fleet_restart_starts_an_interactive_task_again_and_briefs_nothing() {
+    let env = Env::new("restart-interactive");
+    let mut t1 = support::task("t1", true);
+    t1["spec"].as_object_mut().unwrap().remove("brief");
+    env.apply(json!([t1])).ok();
+    env.reconcile().ok();
+    let st = env.status("t1");
+    assert_eq!(st["phase"], "Spawned", "{st:#}");
+    assert_condition(&st, "Briefed", "False", "Interactive");
+    let before = session(&env);
+
+    env.fleet(&["restart", "t1", "--fresh"]).ok();
+    env.reconcile().ok();
+
+    assert_eq!(env.calls("restart"), 1);
+    let after = session(&env);
+    assert_eq!(after.id, before.id, "the same session");
+    assert!(!after.paused);
+    let st = env.status("t1");
+    assert_eq!(st["phase"], "Spawned", "{st:#}");
+    assert_condition(&st, "Restarted", "True", "Fresh");
+    for _ in 0..3 {
+        env.reconcile().ok();
+    }
+    assert_eq!(env.calls("restart"), 1, "a request is honoured once");
+    assert!(session(&env).texts.is_empty(), "nothing to brief again");
+}

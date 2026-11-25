@@ -330,7 +330,8 @@ Guarantees, each with its test:
   (`Paused=False/PauseFailed`) is not tried again.
 - `fleet restart` sets `status.restartRequested` to `{at, fresh}`. A request
   newer than `status.restartRequestAnswered` plans one `Restart` under
-  `restart/<n>` on a Briefed or Concluded Task with `dispatch: true` whose
+  `restart/<n>` on a Briefed or Concluded Task, or an interactive one in
+  Spawned, with `dispatch: true` whose
   session is not known gone or lost. Idle time, the inbox and a pause do
   not hold it back: a restart ends the agent's turn. The runtime's
   `restart` stops the agent with `pause` and starts it again under the
@@ -908,7 +909,8 @@ refused.
 - `status.restartRequested` is reached through one typed mutation,
   compare-and-swap under the lock: `request_restart` (`cli`, through the
   manager's `restart` verb, no lease) sets it to the request. It refuses a
-  deleting Task, a held Task and a Task that is not Briefed or Concluded.
+  deleting Task, a held Task and a Task that is not Briefed, Concluded or
+  an interactive Task in Spawned.
   It changes no other field. After the write, it replaces `wake` as
   `request_wake` does.
 - A Conversation's `status.received`, a Listener's `beats`, `refused`

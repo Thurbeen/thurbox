@@ -813,7 +813,7 @@ impl Pass<'_, '_> {
                 INTERACTIVE,
                 "no brief: the session waits for its user",
             );
-            if self.pause_state(&session) {
+            if self.restart_step(&session) || self.pause_state(&session) {
                 return;
             }
             self.deliver(session.clone());

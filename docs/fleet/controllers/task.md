@@ -158,10 +158,10 @@ concludes nothing.
 | Briefed or Concluded | A catch-up note is owed | unchanged | Send the note as an inbox entry is sent, before any inbox entry. In Briefed, the note repeats the brief, the amendments the worker has, and their generation. The note of a fresh restart repeats them in Concluded too, and lists the declared Questions that have no answer. |
 | Briefed, interactive Spawned, or Concluded and watched | A pause setting; a harness with a resume argv and a reported conversation; the agent's hooks report Idle without a break for `pauseAfterMs`; the session observed running and not known lost; nothing to deliver or in flight | unchanged | Persist a pause intent and plan `Pause` under `pause/<n>`. See [pausing an idle session](#pausing-an-idle-session). |
 | Briefed, interactive Spawned, or Concluded and watched | A pending `pauseRequestedAt`; a harness with a resume argv and a reported conversation; the session observed running and not known lost; nothing to deliver or in flight | unchanged | Record the request in `pauseRequestAnswered`, persist a pause intent and plan `Pause` under `pause/<n>`. See [pausing on request](#pausing-on-request). |
-| Briefed, or Concluded and watched | A pending `restartRequested`; `dispatch: true`; the session not known gone or lost; nothing else planned in the pass | unchanged | Record the request in `restartRequestAnswered` and persist a restart intent. Plan `Restart` under `restart/<n>`, on `status.conversation`, or for `fresh` on no conversation: move `status.conversation` to `retiredConversation`. Idle time, the inbox and a pause do not hold it back. See [restarting on request](#restarting-on-request). |
-| Briefed or Concluded | Known Restarted receipt | unchanged | Set `Restarted=True/Resumed`, or `Restarted=True/Fresh` and owe a catch-up note under `rebrief/<n>`. |
-| Briefed or Concluded | Known RestartUnsupported or Failed restart receipt | unchanged | Set `Restarted=False/Unsupported` or `Restarted=False/RestartFailed`. A request is not tried again. |
-| Briefed or Concluded | Missing/Unknown restart receipt | unchanged | Set `Restarted=Unknown/RestartUnconfirmed`. A request is not tried again. |
+| Briefed, interactive Spawned, or Concluded and watched | A pending `restartRequested`; `dispatch: true`; the session not known gone or lost; nothing else planned in the pass | unchanged | Record the request in `restartRequestAnswered` and persist a restart intent. Plan `Restart` under `restart/<n>`, on `status.conversation`, or for `fresh` on no conversation: move `status.conversation` to `retiredConversation`. Idle time, the inbox and a pause do not hold it back. See [restarting on request](#restarting-on-request). |
+| Briefed, interactive Spawned, or Concluded | Known Restarted receipt | unchanged | Set `Restarted=True/Resumed`, or `Restarted=True/Fresh` and, when the Task has a brief, owe a catch-up note under `rebrief/<n>`. |
+| Briefed, interactive Spawned, or Concluded | Known RestartUnsupported or Failed restart receipt | unchanged | Set `Restarted=False/Unsupported` or `Restarted=False/RestartFailed`. A request is not tried again. |
+| Briefed, interactive Spawned, or Concluded | Missing/Unknown restart receipt | unchanged | Set `Restarted=Unknown/RestartUnconfirmed`. A request is not tried again. |
 | Briefed, interactive Spawned, or Concluded | Known Paused receipt, or a missing/Unknown receipt with the session observed stopped | unchanged | Set `Paused=True/Requested` for a pending `pauseRequestedAt`, else `Paused=True/Idle`. Raise no WorkerGone, SessionLost or revive. |
 | Briefed, interactive Spawned, or Concluded | Failed pause receipt, or a missing/Unknown receipt with the session observed running | unchanged | Set `Paused=False/PauseFailed`. The idle time starts again. A request is not tried again. |
 | Briefed, interactive Spawned, or Concluded with a delivery due or watched | Session observed stopped and Fleet did not stop it | unchanged | Set `Paused=True/External`. |
@@ -461,8 +461,10 @@ nothing, for one of these Tasks:
 
 - a deleting Task;
 - a held Task (`dispatch: false`);
-- a Task that is not Briefed or Concluded: it has no briefed session to
-  restart yet.
+- a Task that has no session to restart yet: one that is not Briefed,
+  Concluded, or an interactive Task in Spawned.
+
+An interactive Task has no brief, so a fresh restart of it sends no note.
 
 ```text
 fleet restart ──> restartRequested ──> Restart (pause, then start) ──> Restarted=True/Resumed

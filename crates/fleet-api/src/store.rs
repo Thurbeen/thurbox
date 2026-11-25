@@ -321,8 +321,8 @@ pub trait Store {
     /// caller `kinds::may_request_restart` admits: set
     /// `status.restartRequested` to `request`, which asks TaskController to
     /// restart the session once. Refused on a deleting Task, a held one
-    /// (`dispatch: false`) and one that is not Briefed or Concluded, which
-    /// has no briefed session to restart. No other field changes.
+    /// (`dispatch: false`) and one with no session to restart: not Briefed,
+    /// Concluded, or an interactive Task in Spawned. No other field changes.
     fn request_restart(
         &self,
         _name: &str,

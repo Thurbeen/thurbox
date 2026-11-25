@@ -1226,9 +1226,12 @@ impl Store for FileStore {
             )));
         }
         let mut st = task_status(&obj)?;
-        if st.session.is_none()
-            || !matches!(st.phase, task::Phase::Briefed | task::Phase::Concluded)
-        {
+        let restartable = match st.phase {
+            task::Phase::Briefed | task::Phase::Concluded => true,
+            task::Phase::Spawned => spec.is_interactive(),
+            _ => false,
+        };
+        if st.session.is_none() || !restartable {
             return Err(StoreError::Forbidden(format!(
                 "{} has no session to restart yet: it is {:?}",
                 obj.key(),
