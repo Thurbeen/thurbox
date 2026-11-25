@@ -82,7 +82,8 @@ the script, not the file itself, while editing it: bash reads a script as it
 runs.
 
 **The onboarding tutorial's screenshots are a fourth recorder.**
-`scripts/demo/record-tutorial.sh` writes `media/tutorial/*.png` — one still per
+`scripts/demo/record-tutorial.sh [OUTPUT_DIR]` writes `OUTPUT_DIR/*.png`
+(default `media/tutorial/`) — one still per
 step of `docs/thurbox/tutorial.md`, taken by driving the real TUI through the
 creation flow. The profile starts with **zero sessions, an empty repo
 memory and no Fleet config**, because the tutorial's subject is a first launch:

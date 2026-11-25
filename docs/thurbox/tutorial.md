@@ -296,5 +296,8 @@ the setup, `thurbox-cli config show` prints every resolved path,
 Regenerate every screenshot on this page with:
 
 ```bash
-scripts/demo/record-tutorial.sh
+scripts/demo/record-tutorial.sh [OUTPUT_DIR]
 ```
+
+The stills go to `OUTPUT_DIR`, by default `media/tutorial/` in the
+repository.

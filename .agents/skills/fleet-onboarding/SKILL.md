@@ -9,7 +9,8 @@ Read [the configuration page](../../../docs/fleet/configuration.md) first.
 Install Fleet only when the user asks for it. Check the release's supported
 target and checksum. Download that release's `install-release.sh` into a new
 directory, inspect it, then run it with `FLEET_VERSION` set to the tag the
-user chose. The repository's `scripts/fleet/install-release.sh` has no
+user chose. The copy published with a release defaults `FLEET_VERSION` to
+that release. The repository's `scripts/fleet/install-release.sh` has no
 default release and refuses to run without `FLEET_VERSION`.
 `FLEET_RELEASE_BASE` supports an offline release base.
 `FLEET_INSTALL_DIR` sets where `fleet` goes (default `$HOME/.local/bin`).
