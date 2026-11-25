@@ -1529,6 +1529,126 @@ fn the_slack_adapter_reads_identity_capabilities_and_a_thread_through_the_stub_c
 }
 
 #[test]
+fn the_slack_adapter_reads_a_bots_attachments_and_blocks_as_its_text() {
+    // An alert bot posts with no `text`, its body in a legacy attachment.
+    // Another bot replies in blocks, with `text` as the notification
+    // fallback. A person then mentions Fleet and shares a message: what
+    // they shared is not their words, so their text alone is read. A bot
+    // and then a person post tables, which no `text` carries.
+    const ALERT_TS: &str = "1730000200.000100";
+    const ISSUE_TS: &str = "1730000230.000200";
+    const ASK_TS: &str = "1730000260.000300";
+    const BOT_TABLE_TS: &str = "1730000290.000400";
+    const TABLE_TS: &str = "1730000320.000500";
+    let (env, curl, curl_config) = slack_env("slack-bot-bodies");
+    seed_slack(&env);
+    env.edit_stub(|s| {
+        let messages = s["slack"]["messages"][GATEWAY_CHANNEL]
+            .as_array_mut()
+            .unwrap();
+        messages.extend([
+            json!({"type": "message", "subtype": "bot_message", "ts": ALERT_TS, "bot_id": "B0ALERT001",
+                "username": "alerts", "text": "", "thread_ts": ALERT_TS, "reply_count": 2,
+                "attachments": [{
+                    "fallback": "Triggered: backend error rate",
+                    "color": "danger",
+                    "pretext": "Monitor triggered",
+                    "title": "[Triggered] backend error rate above 5%",
+                    "title_link": "https://monitoring.example.com/monitors/1",
+                    "text": "error rate 7.2% on service:backend",
+                    "fields": [{"title": "env", "value": "production", "short": true}],
+                    "footer": "monitoring",
+                }]}),
+            json!({"type": "message", "ts": ISSUE_TS, "bot_id": "B0ISSUES01", "username": "issues",
+                "text": "New issue", "thread_ts": ALERT_TS,
+                "blocks": [
+                    {"type": "header", "text": {"type": "plain_text", "text": "TypeError in transfer.create"}},
+                    {"type": "section", "text": {"type": "mrkdwn", "text": "Cannot read properties of undefined"},
+                     "fields": [{"type": "mrkdwn", "text": "*Events:* 42"}]},
+                    {"type": "divider"},
+                    {"type": "context", "elements": [{"type": "mrkdwn", "text": "release 1.2.3"}]},
+                    {"type": "rich_text", "elements": [{"type": "rich_text_section", "elements": [
+                        {"type": "text", "text": "see "},
+                        {"type": "link", "url": "https://issues.example.com/9"},
+                        {"type": "text", "text": " for "},
+                        {"type": "usergroup", "usergroup_id": "S0ONCALL01"},
+                        {"type": "text", "text": " "},
+                        {"type": "broadcast", "range": "here"}]}]},
+                ]}),
+            json!({"type": "message", "ts": ASK_TS, "user": ALEX_ID,
+                "text": format!("<@{SLACK_BOT}> what fired?"), "thread_ts": ALERT_TS,
+                "blocks": [{"type": "rich_text", "elements": [{"type": "rich_text_section", "elements": [
+                    {"type": "user", "user_id": SLACK_BOT}, {"type": "text", "text": " what fired?"}]}]}],
+                "attachments": [{"fallback": "[Triggered] backend error rate", "author_name": "alerts",
+                    "text": "the same alert, last week"}]}),
+            json!({"type": "message", "ts": BOT_TABLE_TS, "bot_id": "B0ISSUES01", "username": "issues",
+                "text": "Error rates", "thread_ts": ALERT_TS,
+                "blocks": [{"type": "table", "column_settings": [null, {"align": "right"}], "rows": [
+                    [{"type": "raw_text", "text": "service"}, {"type": "raw_text", "text": "rate"}],
+                    [{"type": "rich_text", "elements": [{"type": "rich_text_section", "elements": [
+                        {"type": "link", "text": "backend", "url": "https://monitoring.example.com/s/1"}]}]},
+                     {"type": "raw_number", "value": 7.2, "text": "7.2%"}],
+                    [{"type": "raw_text", "text": "a|b"}],
+                ]}]}),
+            json!({"type": "message", "ts": TABLE_TS, "user": ALEX_ID,
+                "text": "per env:", "thread_ts": ALERT_TS,
+                "blocks": [
+                    {"type": "rich_text", "elements": [{"type": "rich_text_section", "elements": [
+                        {"type": "text", "text": "per env:"}]}]},
+                    {"type": "table", "rows": [
+                        [{"type": "raw_text", "text": "env"}, {"type": "raw_text", "text": "errors"}],
+                        [{"type": "raw_text", "text": "production"}, {"type": "raw_number", "value": 42, "text": "42"}],
+                    ]},
+                ]}),
+        ]);
+    });
+    let g = slack_adapter(&curl, &curl_config, Duration::from_secs(30));
+    let h = g.history(
+        GATEWAY_ACCOUNT,
+        &thread(ALERT_TS),
+        &HistoryQuery::After {
+            id: None,
+            limit: 200,
+        },
+    );
+    assert_eq!(
+        ids(&h),
+        [ALERT_TS, ISSUE_TS, ASK_TS, BOT_TABLE_TS, TABLE_TS]
+    );
+    let known = h.known().unwrap();
+    let texts: Vec<&str> = known.messages.iter().map(|m| m.text.as_str()).collect();
+    let ask = format!("<@{SLACK_BOT}> what fired?");
+    assert_eq!(
+        texts,
+        [
+            "Monitor triggered\n\
+             [Triggered] backend error rate above 5% (https://monitoring.example.com/monitors/1)\n\
+             error rate 7.2% on service:backend\n\
+             env: production\n\
+             monitoring",
+            "TypeError in transfer.create\n\
+             Cannot read properties of undefined\n\
+             *Events:* 42\n\
+             release 1.2.3\n\
+             see https://issues.example.com/9 for <!subteam^S0ONCALL01> <!here>",
+            ask.as_str(),
+            "| service | rate |\n\
+             | --- | --- |\n\
+             | backend (https://monitoring.example.com/s/1) | 7.2% |\n\
+             | a\\|b |  |",
+            "per env:\n\
+             | env | errors |\n\
+             | --- | --- |\n\
+             | production | 42 |",
+        ],
+        "a bot's message reads as Slack shows it; a person's is their text, and a table reads as Markdown"
+    );
+    assert_eq!(known.messages[0].author.kind, AuthorKind::Bot);
+    assert!(!known.messages[0].mentions_fleet);
+    assert!(known.messages[2].mentions_fleet);
+}
+
+#[test]
 fn the_slack_adapter_opens_and_posts_keyed_mrkdwn_through_the_stub_curl() {
     let (env, curl, curl_config) = slack_env("slack-writes");
     seed_slack(&env);
