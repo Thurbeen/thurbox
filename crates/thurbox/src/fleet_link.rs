@@ -301,10 +301,7 @@ impl FleetLink {
                 Err(e) => return Err(format!("{}: {e}", self.program)),
             }
         };
-        // Exited: the answer is what each pipe gave. A pipe still held
-        // after the exit (a background job, ssh's ControlPersist master
-        // keeping stderr) is not a failure: each gets a short grace, then
-        // gives what it read so far.
+        // ssh's ControlPersist master can hold stderr open after the exit.
         let grace = std::time::Instant::now() + PIPE_GRACE;
         let (out, err) = (stdout.by(grace), stderr.by(grace));
         Ok(std::process::Output {
@@ -413,6 +410,7 @@ const PIPE_GRACE: std::time::Duration = std::time::Duration::from_millis(250);
 
 const PIPE_CAP: usize = 1024 * 1024;
 
+// Closing the pipe would SIGPIPE ssh's ControlPersist master, which outlives the call.
 struct Reading {
     kept: std::sync::Arc<std::sync::Mutex<Kept>>,
     done: std::sync::mpsc::Receiver<()>,
@@ -647,8 +645,7 @@ pub(crate) mod testing {
             std::fs::create_dir_all(&bin).expect("bin");
             std::fs::create_dir_all(&remote).expect("remote");
             let log = dir.path().join("ssh.log");
-            // Options and their values, then the destination, then the
-            // command line ssh hands the remote shell, which re-splits it.
+            // ssh hands its command line to the remote shell, which re-splits it.
             executable(
                 &bin.join("ssh"),
                 &format!(
@@ -893,7 +890,6 @@ mod tests {
         assert_eq!(answer["apiVersions"][0], "fleet/v1alpha1");
         assert!(started.elapsed() < std::time::Duration::from_secs(2));
 
-        // The same with a plain answer, read raw.
         std::fs::write(&fleet, "#!/bin/sh\nsleep 600 >/dev/null &\necho answered\n")
             .expect("fleet");
         let started = std::time::Instant::now();
@@ -953,9 +949,9 @@ mod tests {
             .expect_err("it never exits");
         assert!(why.contains("did not answer"), "{why}");
         assert!(started.elapsed() < std::time::Duration::from_secs(3));
-        // The kill is a signal: the sleep goes a moment later.
+        // kill delivers a signal: the process exits a moment later.
         let pid = std::fs::read_to_string(&pid).expect("pid");
-        // A zombie answers `kill -0` too: it is dead, waiting to be reaped.
+        // A zombie answers `kill -0` until it is reaped.
         let alive = || {
             let signalled = std::process::Command::new("kill")
                 .args(["-0", pid.trim()])
@@ -1024,10 +1020,10 @@ mod tests {
             words(argv(&stream)),
             ["/srv/my apps/runtime-mux", "view", "w 1"]
         );
-        // A bare name is left for the profile's `PATH` to find.
         assert_eq!(
             words(argv(&wsl("fleet", None).command(&["version", "--json"]))),
-            ["fleet", "version", "--json"]
+            ["fleet", "version", "--json"],
+            "a bare name is left for the profile's PATH to find"
         );
     }
 

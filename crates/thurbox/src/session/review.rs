@@ -134,8 +134,6 @@ pub fn validate_body(body: &str) -> Result<(), String> {
     Ok(())
 }
 
-// ── Diff model ───────────────────────────────────────────────────────────────
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DiffLineKind {
     Context,
@@ -213,7 +211,6 @@ pub fn parse_unified_diff(input: &str) -> Vec<DiffFile> {
 
     for line in input.lines() {
         if let Some(rest) = line.strip_prefix("diff --git ") {
-            // New file boundary: flush the pending hunk + file.
             push_hunk(&mut cur, &mut hunk);
             if let Some(f) = cur.take() {
                 files.push(f);
@@ -245,7 +242,6 @@ pub fn parse_unified_diff(input: &str) -> Vec<DiffFile> {
                 lines: Vec::new(),
             });
         } else if apply_file_metadata(f, line, hunk.is_some()) {
-            // A header/metadata line (mode / rename / `---` / `+++`) was consumed.
         } else if let Some(h) = hunk.as_mut() {
             push_body_line(h, line, &mut old_no, &mut new_no);
         }
@@ -284,7 +280,7 @@ pub fn parse_changed_files(numstat_z: &str, name_status_z: &str) -> Vec<ChangedF
         let Some(path) = numstat_path(parts.next().unwrap_or_default(), &mut fields) else {
             break;
         };
-        // `-` for a binary file: it changed, and it has no line counts.
+        // git numstat prints `-` for a binary file.
         let count = |field: &str| field.parse::<usize>().unwrap_or(0);
         let (status, old_path) = statuses
             .get(&path)
@@ -314,7 +310,6 @@ fn parse_name_status(
             _ => FileStatus::Modified,
         };
         let Some(first) = fields.next() else { break };
-        // A rename or copy names both sides; everything else names one.
         if matches!(status, FileStatus::Renamed) {
             let Some(new_path) = fields.next() else { break };
             statuses.insert(new_path.to_string(), (status, Some(first.to_string())));
@@ -348,8 +343,6 @@ fn apply_file_metadata(f: &mut DiffFile, line: &str, in_hunk: bool) -> bool {
         let p = p.trim();
         if p != "/dev/null" {
             let old = p.strip_prefix("a/").unwrap_or(p).to_string();
-            // Only record as old_path when it differs from the new path
-            // (renames already set it; identical paths leave it None).
             if f.old_path.is_none() && f.path != old {
                 f.old_path = Some(old);
             }
@@ -423,8 +416,6 @@ fn parse_start(s: &str) -> u32 {
         .unwrap_or(0)
 }
 
-// ── Side-by-side pairing ─────────────────────────────────────────────────────
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct SidePair {
     pub old: Option<usize>,
@@ -444,9 +435,7 @@ pub fn pair_hunk(hunk: &DiffHunk) -> Vec<SidePair> {
                 });
                 i += 1;
             }
-            // A change block: the run of deletions, then the run of additions
-            // immediately after it (git emits `-` lines before `+` within a
-            // contiguous change). Align them positionally.
+            // git emits a change block's `-` lines before its `+` lines.
             _ => {
                 let del_start = i;
                 while i < lines.len() && lines[i].kind == DiffLineKind::Del {
@@ -475,7 +464,6 @@ mod tests {
 
     #[test]
     fn changed_files_join_counts_and_status_including_a_rename() {
-        // Exactly what git emits, NULs included (see the doc comment on the parser).
         let numstat = "1\t0\tCargo.toml\x000\t0\t\x00README.md\x00GUIDE.md\x002\t1\tsrc.rs\x00";
         let name_status = "A\x00Cargo.toml\x00R100\x00README.md\x00GUIDE.md\x00M\x00src.rs\x00";
 
@@ -487,7 +475,6 @@ mod tests {
         assert_eq!((files[0].added, files[0].removed), (1, 0));
         assert!(files[0].old_path.is_none());
 
-        // The rename: keyed on the NEW path, carrying where it came from.
         assert_eq!(files[1].path, "GUIDE.md");
         assert_eq!(files[1].status, FileStatus::Renamed);
         assert_eq!(files[1].old_path.as_deref(), Some("README.md"));
@@ -559,7 +546,6 @@ mod tests {
         };
         assert!(file_anchor.anchors_file("a.rs"));
         assert!(!file_anchor.anchors_file("b.rs"));
-        // A file-level anchor never matches a specific line.
         assert!(!file_anchor.anchors_line("a.rs", Some(1), Some(1)));
 
         let new_line = CommentAnchor::Line {
@@ -567,11 +553,9 @@ mod tests {
             side: Side::New,
             line: 5,
         };
-        // Matches only the new-side number on the right file.
         assert!(new_line.anchors_line("a.rs", None, Some(5)));
         assert!(!new_line.anchors_line("a.rs", Some(5), None));
         assert!(!new_line.anchors_line("b.rs", None, Some(5)));
-        // A line anchor is not a file-level anchor.
         assert!(!new_line.anchors_file("a.rs"));
 
         let old_line = CommentAnchor::Line {
@@ -582,7 +566,6 @@ mod tests {
         assert!(old_line.anchors_line("a.rs", Some(5), None));
         assert!(!old_line.anchors_line("a.rs", None, Some(5)));
 
-        // The review summary anchors to neither a file nor a line.
         assert!(!CommentAnchor::Review.anchors_file("a.rs"));
         assert!(!CommentAnchor::Review.anchors_line("a.rs", Some(1), Some(1)));
     }
@@ -620,10 +603,8 @@ index 111..222 100644
         assert_eq!(h.old_start, 1);
         assert_eq!(h.new_start, 1);
         assert_eq!(h.header, "fn foo");
-        // First context line is numbered on both sides.
         assert_eq!(h.lines[0].old_no, Some(1));
         assert_eq!(h.lines[0].new_no, Some(1));
-        // The removed line has only an old number.
         let removed = h
             .lines
             .iter()
@@ -631,7 +612,6 @@ index 111..222 100644
             .unwrap();
         assert_eq!(removed.old_no, Some(2));
         assert_eq!(removed.new_no, None);
-        // The first added line has only a new number.
         let added = h
             .lines
             .iter()
@@ -716,16 +696,11 @@ index 1..2 100644
         let files = parse_unified_diff(diff);
         assert_eq!(files[0].added_count(), 1);
         assert_eq!(files[0].deleted_count(), 1);
-        // The `\ No newline` markers are not counted as diff lines.
         assert_eq!(files[0].hunks[0].lines.len(), 2);
     }
 
     #[test]
     fn body_lines_starting_with_dashes_or_pluses_are_not_misparsed_as_headers() {
-        // A removed SQL/Lua comment (`-- …`) renders as `--- …`; an added one as
-        // `+++ …`. Inside a hunk these must stay Add/Del body lines and not be
-        // mistaken for the file's old/new path header (which would drop the line
-        // and desync line numbers for the rest of the file).
         let diff = "\
 diff --git a/q.sql b/q.sql
 index 1..2 100644
@@ -747,7 +722,6 @@ index 1..2 100644
         assert_eq!(f.added_count(), 1);
         assert_eq!(f.deleted_count(), 1);
         let h = &f.hunks[0];
-        // Context + Del + Add, line numbers intact.
         assert_eq!(h.lines.len(), 3);
         let del = h
             .lines
@@ -811,7 +785,6 @@ index 1..2 100644
 
     #[test]
     fn pairs_context_with_itself() {
-        // Two context lines → two rows, each showing the same line on both sides.
         let pairs = pair_hunk(&hunk_of("cc"));
         assert_eq!(
             pairs,
@@ -830,7 +803,6 @@ index 1..2 100644
 
     #[test]
     fn pairs_even_change_block_positionally() {
-        // `c - - + + c` → context, then del[0]↔add[0], del[1]↔add[1], context.
         let pairs = pair_hunk(&hunk_of("c--++c"));
         assert_eq!(
             pairs,
@@ -857,7 +829,6 @@ index 1..2 100644
 
     #[test]
     fn uneven_block_leaves_remainder_half_blank() {
-        // 3 deletions, 1 addition: del[0]↔add[0], then two del-only rows.
         let pairs = pair_hunk(&hunk_of("---+"));
         assert_eq!(
             pairs,
@@ -880,7 +851,6 @@ index 1..2 100644
 
     #[test]
     fn pure_additions_and_deletions_pair_against_blanks() {
-        // Pure additions: every row is new-only (old blank).
         assert_eq!(
             pair_hunk(&hunk_of("++")),
             vec![
@@ -894,7 +864,6 @@ index 1..2 100644
                 },
             ]
         );
-        // Pure deletions: every row is old-only (new blank).
         assert_eq!(
             pair_hunk(&hunk_of("--")),
             vec![
@@ -916,8 +885,6 @@ index 1..2 100644
         let pairs = pair_hunk(&hunk);
         let mut seen = std::collections::HashSet::new();
         for p in &pairs {
-            // A context pair references the same line on both sides (old == new);
-            // an add/del pair references two distinct lines. Count distinct.
             let distinct: std::collections::HashSet<usize> =
                 [p.old, p.new].into_iter().flatten().collect();
             for li in distinct {

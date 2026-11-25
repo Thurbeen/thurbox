@@ -203,7 +203,6 @@ fn diagnose(test: bool, s: &Settings) -> CommandOutput {
         pairs.push(("last_error", err.clone()));
     }
 
-    // Lead with the most actionable line, then the detail block.
     let headline = diagnose_headline(feature_on, backend);
     let human = format!("{headline}\n\n{}", kv(&pairs));
 
@@ -318,9 +317,6 @@ mod tests {
 
     #[test]
     fn notify_default_reports_backend_fields() {
-        // The all-default config (feature on, backend auto); host probing runs
-        // against the real test host, so we only assert the shape, not the
-        // concrete backend.
         let out = diagnose(false, &Settings::default());
         assert!(out["feature_enabled"].is_boolean());
         assert!(out["resolved_backend"].is_string());

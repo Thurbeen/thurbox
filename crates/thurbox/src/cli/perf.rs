@@ -68,8 +68,6 @@ fn age(s: &Value) -> u64 {
 }
 
 fn render_human(s: &Value) -> String {
-    // One row per histogram, so the three costs of a frame stay side by side:
-    // painting, the table rebuild that precedes it, and the rest of the loop.
     let histogram = |key: &str| {
         format!(
             "{} / {} / {}  ({} samples)",
@@ -272,13 +270,9 @@ mod tests {
         assert!(out.human.contains("pid 42"));
         assert!(out.human.contains("interface_reload"));
         assert!(out.human.contains("320ms"));
-        // A slow op names the pane that spent it.
         assert!(out.human.contains("files"));
-        // republish is reported beside frame: telling the table rebuild apart
-        // from the paint is the whole reason it has its own histogram.
         assert!(out.human.contains("republish"));
         assert!(out.human.contains("ui 40ms"));
-        // The two skip counters: a skipped frame is invisible in anything else.
         assert!(out.human.contains("renders skipped"));
         assert!(out.human.contains("88"));
         assert!(out.human.contains("groups reused"));
@@ -296,8 +290,6 @@ mod tests {
 
     #[test]
     fn a_wide_pane_name_keeps_the_columns_after_it_aligned() {
-        // Two rows with identical numbers: whatever the names are made of, both
-        // lines must occupy the same terminal columns.
         let _env = isolated();
         let row =
             |name: &str| format!(r#"{{"name":"{name}","total_us":1200,"renders":3,"reused":1}}"#);

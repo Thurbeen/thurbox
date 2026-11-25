@@ -19,6 +19,7 @@ pub fn dropped_images(text: &str) -> Option<Vec<PathBuf>> {
         })
         .collect()
 }
+// Ghostty drops a macOS screenshot name with its U+202F unescaped, so only ASCII whitespace splits.
 fn split_words(text: &str) -> Option<Vec<String>> {
     let escapes = !cfg!(windows);
     let mut words = Vec::new();
@@ -82,8 +83,7 @@ fn file_uri_path(word: &str) -> Option<String> {
         }
     }
     let mut path = String::from_utf8(out).ok()?;
-    // A drive URI spells its path /C:/..., which Windows reads as rooted but
-    // not absolute. Strip the URI separator only for a drive's absolute path.
+    // Windows reads a drive URI's `/C:/...` as rooted but not absolute.
     if cfg!(windows)
         && path.as_bytes().get(..4).is_some_and(|prefix| {
             prefix[0] == b'/'
@@ -103,8 +103,7 @@ mod tests {
 
     #[test]
     fn a_drop_is_known_by_its_shape_without_touching_the_filesystem() {
-        // An absolute path is this platform's: a drive path on Windows,
-        // where a terminal's drop always names the drive.
+        // A terminal's drop on Windows always names the drive.
         let (gone, two) = if cfg!(windows) {
             (
                 r"C:\nonexistent-thurbox-dir\sub\shot.png",
@@ -121,8 +120,7 @@ mod tests {
         for text in ["shot.png", "/tmp/notes.txt", "hello /tmp/a.png", ""] {
             assert!(dropped_images(text).is_none(), "{text:?}");
         }
-        // A rooted path with no drive is not absolute on Windows, and no
-        // drop there spells one: it is text, typed as is.
+        // A rooted path with no drive is not absolute on Windows.
         if cfg!(windows) {
             assert!(dropped_images("/rooted/no-drive.png").is_none());
         }

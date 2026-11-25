@@ -412,32 +412,19 @@ macro_rules! field {
 
 pub const FIELDS: &[Field] = &[
     field!(Live, config_version),
-    // Every terminal's parser is built with it.
     field!(NextLaunch, scrollback_lines),
-    // The terminals read these once, when they are built.
     field!(NextLaunch, hidden_terminal_secs),
-    // The attach worker reads it once, when the terminals are built.
     field!(NextLaunch, stream_panes),
     field!(NextLaunch, two_panel_min_cols),
-    // Pruned once, at startup.
-    // The git-stat cache is built with it, and a cache that re-read it would
-    // also have to re-age every entry.
     field!(NextLaunch, git_poll_secs),
-    // The feature switches that only gate whether a surface is drawn, which is
-    // decided per frame.
     field!(Live, features.shell_pane),
     field!(Live, features.perf_hud),
-    // Capture is an escape already sent, the notifier is a thread already
-    // started (or not), and the update work ran at startup.
     field!(NextLaunch, features.mouse),
     field!(NextLaunch, features.notifications),
     field!(NextLaunch, features.version_check),
     field!(NextLaunch, features.auto_update),
-    // The dispatcher thread is started once with the backend it resolved.
     field!(NextLaunch, notifications),
-    // Read at every copy.
     field!(Live, clipboard),
-    // The engine's source and executor are chosen once, at boot (ADR-41).
     field!(NextLaunch, fleets),
     field!(NextLaunch, telemetry),
 ];
@@ -647,12 +634,10 @@ mod tests {
     fn restart_only_differs_ignores_live_flags_but_catches_restart_ones() {
         let base = Settings::default();
 
-        // A live UI-panel flag is not a restart-only difference.
         let mut live = base.clone();
         live.features.shell_pane = !live.features.shell_pane;
         assert!(!base.restart_only_differs(&live));
 
-        // A restart-only feature flag, a scalar, and a notification knob all are.
         let mut mouse = base.clone();
         mouse.features.mouse = !mouse.features.mouse;
         assert!(base.restart_only_differs(&mouse));
@@ -665,17 +650,11 @@ mod tests {
         notif.notifications.sound = !notif.notifications.sound;
         assert!(base.restart_only_differs(&notif));
 
-        // Identical settings never differ.
         assert!(!base.restart_only_differs(&base.clone()));
     }
 
     #[test]
     fn every_feature_flag_is_classified_restart_or_live() {
-        // Destructuring WITHOUT `..` makes a newly-added feature flag fail to
-        // compile here until it is explicitly classified below — the safety net
-        // that stops a startup-wired flag from defaulting to "applies live" by
-        // omission in `restart_only_differs` (which would wrongly toast "applied
-        // live"). Each binding is consumed by `cases`, so none goes unused.
         let FeatureFlags {
             shell_pane,
             perf_hud,
@@ -684,9 +663,6 @@ mod tests {
             version_check,
             auto_update,
         } = FeatureFlags::default();
-        // Consume every binding so the no-`..` destructure above stays a hard
-        // compile-time guard (an unused binding would otherwise be the only
-        // warning, not an error).
         let _ = (
             shell_pane,
             perf_hud,
@@ -696,9 +672,6 @@ mod tests {
             auto_update,
         );
 
-        // `live` flags gate UI panels read from `App.features` every frame, so
-        // flipping one is NOT a restart-only difference; the rest are read once
-        // at startup and MUST register as one.
         let live: [fn(&mut FeatureFlags); 2] = [
             |f| f.shell_pane = !f.shell_pane,
             |f| f.perf_hud = !f.perf_hud,
@@ -726,9 +699,6 @@ mod tests {
 
     #[test]
     fn every_field_has_exactly_one_row() {
-        // A field with no row is neither taken live nor reported as needing a
-        // restart: the silent half of #1638. Each top-level key is a row, or
-        // (for `[features]`) each of its keys is.
         let value = serde_json::to_value(Settings::default()).unwrap();
         let mut keys = Vec::new();
         for (key, inner) in value.as_object().unwrap() {
@@ -747,8 +717,6 @@ mod tests {
 
     #[test]
     fn a_next_launch_row_is_never_taken_and_a_live_one_always_is() {
-        // Two settings that disagree on every field: a row's `take` must make
-        // it agree, and only a live row may be taken.
         let base = Settings::default();
         let other: Settings = toml::from_str(
             "config_version = 2\nscrollback_lines = 1\n\

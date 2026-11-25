@@ -22,20 +22,15 @@ fn main() {
         toon: cli.toon,
     });
 
-    // Loaded once and handed to everything that reads one. Warnings go to the
-    // WARN-level stderr logger; `config validate` is the loud path.
     let (settings, _) = thurbox::config::settings::load_or_seed_with_warnings();
 
     match cli::run(cli, &settings) {
         Ok(cli::Outcome::Ok) => {}
-        // The report is already on stdout and is the answer; only the verdict
-        // is left to carry, and it carries as an exit code.
         Ok(cli::Outcome::Failed { message }) => {
             eprintln!("{message}");
             std::process::exit(EXIT_ERROR);
         }
-        // A runtime failure, not a bad invocation: clap already answered those
-        // with its own wording and exit 2.
+        // clap has already answered a bad invocation itself, with exit 2.
         Err(e) => {
             println!(
                 "{}",
@@ -63,8 +58,7 @@ fn exit_from_clap(e: &clap::Error) -> ! {
         std::process::exit(0)
     }
 
-    // Required argument names follow the opening line. Keep the problem's
-    // whole paragraph, without folding usage and hints into the error itself.
+    // clap renders required argument names on the lines after the opening one.
     let rendered = e.render().to_string();
     let message = rendered
         .lines()

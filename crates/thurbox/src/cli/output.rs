@@ -125,8 +125,6 @@ impl CommandOutput {
     }
 }
 
-// Deref to the inner `Value` so `run(...)` call sites in unit tests keep
-// indexing/method access (`out["id"]`, `out.as_array()`) unchanged.
 impl std::ops::Deref for CommandOutput {
     type Target = Value;
 
@@ -135,7 +133,6 @@ impl std::ops::Deref for CommandOutput {
     }
 }
 
-// Display the JSON form, so `format!("{out}")` in tests/diagnostics works.
 impl std::fmt::Display for CommandOutput {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "{}", self.json)
@@ -171,11 +168,8 @@ impl Format {
         } else if flags.toon {
             Format::Toon
         } else if flags.text || stdout_is_tty {
-            // Explicit --text, or auto-detected interactive terminal.
             Format::Human
         } else {
-            // Piped or redirected with no flag: the reader is almost certainly
-            // an agent, so answer in the format that costs it least.
             Format::Toon
         }
     }
@@ -193,9 +187,6 @@ impl Format {
 }
 
 fn render_toon(out: &CommandOutput) -> String {
-    // A single-value answer renders as that value in every format but JSON —
-    // see `CommandOutput::scalar`. Ahead of everything else here, because the
-    // whole point is that nothing is wrapped around it.
     if out.agent.scalar {
         return out.human.clone();
     }
@@ -212,8 +203,6 @@ fn render_toon(out: &CommandOutput) -> String {
 
     let rows = json.as_array();
     let body = match (&out.agent.label, rows) {
-        // A labelled list: an explicit field order, trimmed to what a list view
-        // is for. `--json` remains the way to get every field.
         (Some(label), Some(rows)) if !out.agent.fields.is_empty() => {
             let fields: Vec<&str> = out.agent.fields.iter().map(String::as_str).collect();
             crate::cli::toon::encode_table(label, &fields, rows)
@@ -227,12 +216,9 @@ fn render_toon(out: &CommandOutput) -> String {
         blocks.push(body);
     }
 
-    // AXI principle 5: an empty answer says so, and says what it looked in.
     if let Some(message) = &out.agent.empty {
         let is_empty = match json {
             Value::Array(items) => items.is_empty(),
-            // A document that *wraps* its collection is empty when the
-            // collection is: the surrounding fields are always there.
             Value::Object(map) => match out.agent.label.as_deref().and_then(|l| map.get(l)) {
                 Some(Value::Array(items)) => items.is_empty(),
                 _ => map.is_empty(),
@@ -328,7 +314,7 @@ fn fmt_row(cells: &[String], widths: &[usize]) -> String {
 pub fn kv(pairs: &[(&str, String)]) -> String {
     let width = pairs
         .iter()
-        .map(|(k, _)| k.chars().count() + 1) // +1 for the colon
+        .map(|(k, _)| k.chars().count() + ":".len())
         .max()
         .unwrap_or(0);
     pairs
@@ -384,7 +370,6 @@ mod tests {
             ("text", Format::Human),
         ] {
             assert_eq!(Format::resolve_with(flags(flag), false), want, "--{flag}");
-            // An explicit flag beats TTY detection in either direction.
             assert_eq!(
                 Format::resolve_with(flags(flag), true),
                 want,
@@ -430,8 +415,6 @@ mod tests {
     fn auto_detection_is_human_on_a_tty_and_toon_down_a_pipe() {
         let none = FormatFlags::default();
         assert_eq!(Format::resolve_with(none, true), Format::Human);
-        // The regression that matters: a pipe used to get JSON. The reader is
-        // an agent, so it gets the format that costs it least.
         assert_eq!(Format::resolve_with(none, false), Format::Toon);
     }
 
@@ -447,7 +430,6 @@ mod tests {
             Format::Toon.render(&out),
             "sessions[2]{name,id}:\n  one,a\n  two,b\nhelp[1]:\n  thurbox-cli session get <id>"
         );
-        // The dropped field is still in --json: trimming is the agent view only.
         assert!(Format::Json.render(&out).contains("\"extra\""));
     }
 
@@ -517,14 +499,11 @@ mod tests {
         let rendered = Format::Toon.render(&out);
         assert!(rendered.contains("truncated, 50 chars total"), "{rendered}");
         assert!(rendered.contains("--full"), "{rendered}");
-        // Uncapped formats are untouched, which is what `| jq -r .output` needs.
         assert!(Format::Json.render(&out).contains(&body));
     }
 
     #[test]
     fn truncation_cuts_on_a_character_boundary() {
-        // A captured pane is full of multi-byte glyphs; a byte slice through
-        // one panics, and this is the shape that would do it.
         let out = CommandOutput::new(json!({ "output": "▀".repeat(20) }), "human").truncate(5);
         assert!(Format::Toon
             .render(&out)
@@ -533,7 +512,6 @@ mod tests {
 
     #[test]
     fn an_unlabelled_output_still_renders_as_toon() {
-        // The baseline every command gets for free, with no agent view declared.
         let out = CommandOutput::new(json!({ "focused": true, "session_name": "flow" }), "ok");
         assert_eq!(
             Format::Toon.render(&out),
@@ -573,7 +551,6 @@ mod tests {
     fn from_summary_uses_summary_field() {
         let out = CommandOutput::from_summary(json!({ "ok": true, "summary": "Done it" }));
         assert_eq!(out.human, "Done it");
-        // Deref still exposes the JSON for callers/tests.
         assert_eq!(out["ok"], true);
     }
 
@@ -612,7 +589,6 @@ mod tests {
     fn failed_carries_the_exit_message() {
         let out = CommandOutput::failed(json!({}), "report", "boom");
         assert_eq!(out.failure.as_deref(), Some("boom"));
-        // Output still renders normally before the caller acts on `failure`.
         assert_eq!(Format::Human.render(&out), "report");
     }
 }

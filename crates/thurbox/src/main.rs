@@ -56,14 +56,8 @@ const ECHO_POLL: Duration = Duration::from_millis(1);
 const INPUT_FAILURE_LIMIT: u32 = 64;
 const STATUS_TTL: Duration = Duration::from_secs(5);
 
-// A tokio runtime is required, not decorative: adopting a session spawns its
-// reader on `spawn_blocking` and its writer on `tokio::spawn`. The render loop
-// below stays synchronous — as v1's does — and those tasks run on the worker
-// pool.
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn Error>> {
-    // Both before boot: it writes the interface's config and starts `fleet
-    // up`, which neither a flag nor a run that cannot draw may do.
     Args::parse();
     require_terminal();
     coordinator::boot::run().await

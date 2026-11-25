@@ -158,8 +158,6 @@ fn new(name: &str) -> Result<CommandOutput, String> {
     if file.exists() {
         return Err(format!("already exists: {}", file.display()));
     }
-    // The example names itself `example`; a scaffold should answer to the name it
-    // was asked for, including in its actions and its settings rows.
     let body = STARTER.replace("example", name);
     crate::paths::write_atomically(&file, body).map_err(|e| format!("{}: {e}", file.display()))?;
 
@@ -222,9 +220,6 @@ fn check() -> Result<CommandOutput, String> {
     let host = host_at(&dir);
     let loaded_names: Vec<String> = host.mods.iter().map(|loaded| loaded.name.clone()).collect();
 
-    // One error means the whole directory failed to load: the host reports the
-    // first file that would not compile and stops, because a half-loaded
-    // interface is not something to run.
     if let Some(error) = host.error.clone() {
         let human = format!("{}\n  ✗ {error}", dir.display());
         return Ok(CommandOutput::failed(
@@ -239,8 +234,6 @@ fn check() -> Result<CommandOutput, String> {
         ));
     }
 
-    // No panes is a real state — a user who removed them all — and the interface
-    // runs perfectly well like that, so it is reported rather than failed.
     let loads = if loaded_names.is_empty() {
         format!("{}\n  ✓ loads — no panes", dir.display())
     } else {
@@ -251,10 +244,6 @@ fn check() -> Result<CommandOutput, String> {
     let size = format!("{}x{}", reference.width, reference.height);
     let unplaced = match host.unplaced_slots(reference) {
         Ok(slots) => slots,
-        // A broken arrangement is survivable at runtime (the loop falls back to
-        // a centre-only screen) but it is still a defect, and it is the reason
-        // the verdict below cannot be reached — so it is reported as the failure
-        // rather than passed over in silence.
         Err(error) => {
             let human = format!("{loads}\n  ✗ {error}");
             return Ok(CommandOutput::failed(
@@ -302,11 +291,6 @@ fn check() -> Result<CommandOutput, String> {
         ));
     }
 
-    // Warnings, not failures. A pane that draws nothing because it shares a switch
-    // slot is a judgement call about discoverability, not a defect — it loads, it is
-    // placed, and the author may have meant it. Failing the exit on a judgement would
-    // make `check` unusable as a gate; saying nothing leaves the one install that
-    // cannot demonstrate itself completely silent.
     let mut warnings = Vec::new();
     let sources = crate::kernel::bundled::sources(&dir);
     for (index, loaded) in host.mods.iter().enumerate() {
@@ -329,7 +313,6 @@ fn check() -> Result<CommandOutput, String> {
             continue;
         }
         for handler in host.raw_gesture_handlers(index) {
-            // Key and wheel handlers have explicit addressed input operations.
             if handler == "on_key" || handler == "on_scroll" {
                 continue;
             }
@@ -340,12 +323,6 @@ fn check() -> Result<CommandOutput, String> {
             }));
         }
     }
-    // The other declaration with no symptom on screen. A pill whose action no
-    // chord resolves for is dropped by the action band — deliberately, so a chip
-    // never lights and then does nothing — and the two ways to earn that drop, a
-    // palette-only action and a misspelt one, look identical from the outside.
-    // Reported rather than failed: the pane still loads and still draws, and what
-    // is missing is one button.
     let registry = declared(&host);
     let catalog = registry.action_catalog();
     for loaded in &host.mods {
@@ -446,13 +423,6 @@ fn check() -> Result<CommandOutput, String> {
         }
     }
 
-    // The same registry answers the other clash with no symptom on screen: a chord
-    // two overlapping declarations both claim. Both panes load and both are placed,
-    // and one of them simply never fires. `detect_conflicts` has found these since
-    // it was written; this is the surface that asks. The shadowed claim is the one
-    // with something wrong with it, so it is the row's `file`; the winner is named
-    // beside it, because a clash is not a thing either author can fix knowing only
-    // their own half.
     for conflict in registry.conflicts() {
         warnings.push(json!({
             "file": file_of(&host, &conflict.shadowed_mod),
@@ -468,9 +438,6 @@ fn check() -> Result<CommandOutput, String> {
             warning["file"].as_str().unwrap_or_default(),
             warning["warning"].as_str().unwrap_or_default()
         ));
-        // A clash names actions, and an action id is not a file. The other half
-        // is spelled out so the reader has both files without going and grepping
-        // for whoever declared the winning action.
         if let Some(other) = warning["shadowed_by"].as_str() {
             human.push_str(&format!(" (declared in {other})"));
         }
@@ -509,10 +476,6 @@ fn list() -> Result<CommandOutput, String> {
     let sources = crate::kernel::bundled::sources(&dir);
     let registry = crate::kernel::registry::Registry::load();
     let lock = crate::kernel::packages::read_lock(&dir).unwrap_or_default();
-    // The name each managed file answers to. `name` below is what the pane calls
-    // itself — or, when it failed to load, its bare filename — and neither is a key
-    // `remove` or `update` accepts. A listing whose name column cannot be pasted
-    // into the next command is a listing that lies about being an index.
     let managed: std::collections::BTreeMap<String, String> =
         crate::kernel::packages::read_spec(&dir)
             .map(|spec| {
@@ -522,12 +485,6 @@ fn list() -> Result<CommandOutput, String> {
                     .collect()
             })
             .unwrap_or_default();
-    // Which occupant of a slot is *in front* needs a painted frame, so nothing is
-    // reported as drawn here. Placement does not: it is resolved at the stated
-    // reference size, the same way `check` resolves it. Passing an empty set
-    // instead read every pane out as `unplaced` — a state that means "its slot
-    // appears nowhere", i.e. a defect — so the whole shipped interface listed as
-    // broken.
     let placed = host
         .placed_slots(crate::kernel::layout::REFERENCE)
         .unwrap_or_default()
@@ -565,18 +522,9 @@ fn list() -> Result<CommandOutput, String> {
                 "name": row.name,
                 "kind": row.kind.as_str(),
                 "source": row.source.as_str(),
-                // Named separately from `source` so a script can match on the
-                // origin without parsing it out of a label: "installed" is the
-                // kind of file it is, and this is who it came from.
                 "installed_from": row.source.installed_from(),
-                // Present only for a file the spec manages: the name to pass to
-                // `mod remove` / `mod update`.
                 "entry": managed.get(&row.path),
                 "state": row.state.as_str(),
-                // What the file asks to be able to do. Reported because a
-                // capability is granted per file, so a script auditing an
-                // interface — "which panes here want to run programs?" — should
-                // not have to read Lua to find out.
                 "capabilities": row
                     .capabilities
                     .iter()
@@ -640,9 +588,6 @@ fn placement_hint(dir: &Path, file: &str) -> Option<String> {
             slot = loaded.slot
         ));
     }
-    // Placed, loaded, and still invisible: the alternate occupant of a switch slot.
-    // Said here because this is the moment the user is looking — afterwards they are
-    // looking at a screen that did not change, with no reason to suspect the install.
     if host.undiscoverable(index).is_some() {
         return Some(format!(
             "it shares the {slot:?} slot, so it is not shown by default, and ctrl+h/ctrl+l \
@@ -676,17 +621,11 @@ fn install(src: &str, as_file: Option<&str>, pin: Option<&str>) -> Result<Comman
     let dir = install_dir()?;
     let report = crate::kernel::packages::install(&dir, src, as_file, pin)?;
 
-    // Asked of every pane the package brought, not only the entry's: the one
-    // failure with no symptom is a pane that loads and draws nothing, and a second
-    // pane nothing places is that failure exactly.
     let panes = delivered_panes(&dir, &report.file);
     let per_pane: Vec<Option<String>> = panes
         .iter()
         .map(|pane| placement_hint(&dir, pane))
         .collect();
-    // `placement_hint` keeps its meaning for existing readers — the hint for
-    // `file`, the keyed pane, which `delivered_panes` puts first — and every pane's
-    // hint goes in `placement_hints`.
     let hint = per_pane.first().cloned().flatten();
     let hints: Vec<String> = per_pane.into_iter().flatten().collect();
     let repository = crate::kernel::packages::is_repository(&report.src);
@@ -791,8 +730,6 @@ fn update(name: Option<&str>) -> Result<CommandOutput, String> {
     let reports = crate::kernel::packages::update(&dir, name)?;
     let (lines, rows) = entry_rows(&reports);
 
-    // Nothing newer upstream is success, not a failure — a scheduled update that
-    // exits non-zero on "already current" is one nobody can schedule.
     let human = if reports.is_empty() {
         format!("{}\n  nothing installed", dir.display())
     } else if reports.iter().any(|report| report.from.is_some()) {
@@ -865,9 +802,7 @@ mod tests {
                }"#,
         )
         .expect("write");
-        // The override is the documented way to point the CLI at a directory,
-        // and nextest runs each test in its own process, so setting it here
-        // reaches nothing else.
+        // nextest runs each test in its own process, so this env var reaches nothing else.
         std::env::set_var("THURBOX_UI_DIR", dir.path());
         let output = check().expect("check runs");
         std::env::remove_var("THURBOX_UI_DIR");
@@ -905,8 +840,7 @@ mod tests {
 
     #[test]
     fn a_starter_is_named_to_load_after_the_bundled_panes() {
-        // Asserted by component rather than as one string: Windows joins with a
-        // backslash, and the native separator is the right one to write there.
+        // Windows joins path components with a backslash.
         let file = std::path::Path::new("mods").join(format!("{STARTER_ORDER}_notes.lua"));
         assert_eq!(file.parent().and_then(|p| p.to_str()), Some("mods"));
         assert_eq!(

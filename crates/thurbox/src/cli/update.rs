@@ -133,9 +133,6 @@ mod tests {
 
     #[test]
     fn update_when_flag_disabled_prints_enable_hint() {
-        // The flag is on by default for 1.0, so exercise the disabled path
-        // directly, with the flag passed in — no network or
-        // disk touch.
         let out = run(UpdateArgs { force: false }, false, &[]);
         assert_eq!(out["update_enabled"], false);
         assert!(out.human.contains("disabled"), "got: {}", out.human);

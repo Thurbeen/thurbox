@@ -408,8 +408,6 @@ impl App {
                 "destructive action needs only session_id".into(),
             ));
         }
-        // A session's id as the snapshot carries it (`<fleet>:<task>`), or a
-        // Task name only one Fleet holds.
         let given = object["session_id"]
             .as_str()
             .filter(|id| !id.is_empty())

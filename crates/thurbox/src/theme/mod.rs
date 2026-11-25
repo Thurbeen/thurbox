@@ -238,8 +238,6 @@ impl ThemePreset {
     }
 
     pub fn all() -> &'static [ThemePreset] {
-        // Dark presets first, then the light ones grouped at the end so the
-        // picker shows all dark themes together before the light section.
         &[
             Self::Default,
             Self::CatppuccinMocha,
@@ -662,8 +660,6 @@ fn default_palette() -> ThemePalette {
 
         inverted_fg: Color::Black,
 
-        // Named-colour preset: green/red fg with dim Indexed backgrounds that
-        // read on a dark terminal (the Default preset keeps app_bg = Reset).
         diff_added: Color::Green,
         diff_removed: Color::Red,
         diff_added_bg: Color::Indexed(22),
@@ -708,16 +704,9 @@ impl PaletteSlots {
             status_done: self.blue,
             status_idle: self.green,
             status_error: self.red,
-            // Muted grey: an unreachable placeholder is inert, not urgent.
             status_unreachable: self.text_muted,
-            // The accent: an agent IS there, which is worth seeing — but not
-            // the working colour, which would claim a turn is running.
             status_running: self.accent,
-            // Dimmest of all: "nothing reported" has no content to look at.
             status_unknown: self.text_muted,
-            // The palette's purple slot: a hue none of the other status words
-            // wear. A preset whose `role_name` collides with one of them
-            // overrides this after `build()`.
             status_background: self.role_name,
             text_primary: self.text_primary,
             text_secondary: self.text_secondary,
@@ -737,9 +726,6 @@ impl PaletteSlots {
             modal_bg: self.modal_bg,
             modal_border: self.modal_border,
             inverted_fg: self.base_bg,
-            // Diff fg = the theme's green/red; bg = that hue blended ~82% toward
-            // the app background for a subtle full-row tint that works on both
-            // dark and light presets (these all use RGB base colours).
             diff_added: self.green,
             diff_removed: self.red,
             diff_added_bg: blend_rgb(self.green, self.base_bg, 0.82),
@@ -781,8 +767,6 @@ mod tests {
     fn presets_have_distinct_accents() {
         let mut accents = std::collections::HashSet::new();
         for preset in ThemePreset::all() {
-            // Different presets should pick different accent colours so the
-            // theme picker preview swatch shows visible variation.
             assert!(
                 accents.insert(format!("{:?}", preset.palette().accent)),
                 "preset {preset:?} duplicates an existing accent colour",
@@ -801,9 +785,6 @@ mod tests {
 
     #[test]
     fn all_enumerates_every_preset_variant() {
-        // Exhaustive match: adding a variant fails to compile until it's listed
-        // here, and the EXPECTED guard ensures `all()` was also updated. Mirrors
-        // keybindings.rs's `all_enumerates_every_action_variant`.
         fn classify(p: ThemePreset) -> u8 {
             match p {
                 ThemePreset::Default => 0,
@@ -853,9 +834,6 @@ mod tests {
 
     #[test]
     fn dark_presets_precede_light_presets_in_all() {
-        // The picker renders presets in `all()` order; dark themes are grouped
-        // first and the light ones at the end. Guard the invariant so a new
-        // preset inserted in the wrong place can't scatter the light section.
         let mut seen_light = false;
         for preset in ThemePreset::all() {
             if preset.is_light() {
@@ -872,26 +850,17 @@ mod tests {
 
     #[test]
     fn override_array_covers_every_color_field() {
-        // Count the struct's colour-override fields (total serialized fields
-        // minus the five non-colour meta fields) and assert it equals the
-        // `fields` array length. A new `Option<String>` colour added to the
-        // struct but not to `resolve()`'s array would be silently
-        // un-overridable; this catches the omission.
         let json = serde_json::to_value(CustomThemeDef::default()).unwrap();
         let total = json.as_object().unwrap().len();
-        const META_FIELDS: usize = 5; // name, display_name, base, light, nerd_font
+        const META_FIELDS: usize = 5;
         assert_eq!(total - META_FIELDS, CustomThemeDef::COLOR_OVERRIDE_COUNT);
     }
 
     #[test]
     fn every_preset_defines_review_diff_colours() {
-        // The native code-review view relies on these, so no preset may leave
-        // them unset (the build()-derived presets get them from green/red).
         for preset in ThemePreset::all() {
             let p = preset.palette();
             assert_ne!(p.diff_added, p.diff_removed, "{preset:?}");
-            // The RGB presets blend the bg toward the base; it must differ from
-            // the plain fg so the tint reads as a background.
             if let Color::Rgb(..) = p.diff_added {
                 assert_ne!(p.diff_added, p.diff_added_bg, "{preset:?}");
             }
@@ -902,7 +871,6 @@ mod tests {
     fn blend_rgb_mixes_and_passes_through_named() {
         let mid = blend_rgb(Color::Rgb(0, 0, 0), Color::Rgb(100, 100, 100), 0.5);
         assert_eq!(mid, Color::Rgb(50, 50, 50));
-        // Non-RGB inputs return the first colour unchanged.
         assert_eq!(
             blend_rgb(Color::Green, Color::Rgb(0, 0, 0), 0.5),
             Color::Green
@@ -957,10 +925,6 @@ mod tests {
 
     #[test]
     fn every_preset_distinguishes_its_semantic_slots() {
-        // Cross-preset coherence: a copy-paste slip while adding a palette
-        // (leaving accent == accent_bright, or a status trio collapsed onto one
-        // colour) makes the UI read as broken rather than themed. Assert the
-        // pairs that must stay visually distinct in *every* preset.
         for preset in ThemePreset::all() {
             let p = preset.palette();
             assert_ne!(
@@ -979,7 +943,6 @@ mod tests {
                 p.text_primary, p.text_muted,
                 "{preset:?}: primary and muted text must differ"
             );
-            // The palette must actually contrast with its own background.
             assert_ne!(
                 p.text_primary, p.app_bg,
                 "{preset:?}: primary text is invisible on the app background"
@@ -993,20 +956,15 @@ mod tests {
 
     #[test]
     fn light_presets_are_light_and_dark_presets_are_dark() {
-        // `is_light` drives the picker's Dark/Light sections, so it must agree
-        // with the palette's actual background luminance — a mislabeled preset
-        // would sort into the wrong section and break the ordering invariant
-        // `dark_presets_precede_light_presets_in_all` relies on.
-        fn luminance(c: Color) -> Option<f32> {
+        fn rec601_luma(c: Color) -> Option<f32> {
             match c {
-                // Rec. 601 luma, good enough to separate light from dark bg.
                 Color::Rgb(r, g, b) => Some(0.299 * r as f32 + 0.587 * g as f32 + 0.114 * b as f32),
                 _ => None,
             }
         }
         for preset in ThemePreset::all() {
-            let Some(luma) = luminance(preset.palette().app_bg) else {
-                continue; // the Default preset keeps app_bg = Reset
+            let Some(luma) = rec601_luma(preset.palette().app_bg) else {
+                continue;
             };
             if preset.is_light() {
                 assert!(

@@ -303,19 +303,15 @@ pub fn save_settings(settings: &Settings) -> std::io::Result<()> {
         Err(e) => return Err(e),
     };
 
-    // A malformed file shouldn't block saving from the panel: fall back to the
-    // seed document (its comments are still useful) rather than erroring out.
     let mut doc = contents
         .parse::<DocumentMut>()
         .or_else(|_| SEED_SETTINGS_TOML.parse::<DocumentMut>())
         .unwrap_or_default();
 
-    // An earlier save wrote every key it knew, so a key since retired is in most
-    // files; dropping it here is what stops each launch naming it again.
     drop_older_telemetry(&mut doc);
     drop_retired_keys(&mut doc);
 
-    // Top-level scalars (cast to i64 — TOML's only integer type).
+    // toml_edit stores every integer as i64.
     doc["config_version"] = value(i64::from(settings.config_version.unwrap_or(1)));
     doc["scrollback_lines"] = value(settings.scrollback_lines as i64);
     doc["hidden_terminal_secs"] = value(settings.hidden_terminal_secs as i64);
@@ -343,7 +339,6 @@ pub fn save_settings(settings: &Settings) -> std::io::Result<()> {
         set_table_bool(notifications, "suppress_for_active", n.suppress_for_active);
         set_table_bool(notifications, "sound", n.sound);
         notifications["min_interval_secs"] = value(n.min_interval_secs as i64);
-        // Mirror serde's `rename_all = "lowercase"` on `NotificationBackend`.
         let backend = match n.backend {
             NotificationBackend::Auto => "auto",
             NotificationBackend::Dbus => "dbus",
@@ -489,7 +484,6 @@ mod tests {
     fn save_settings_round_trips() {
         let temp = tempfile::TempDir::new().unwrap();
         let _guard = crate::config::file::isolate(temp.path());
-        // Seed the documented file first, then save mutated settings.
         let (mut s, _) = load_or_seed_with_warnings();
         s.scrollback_lines = 4000;
         s.git_poll_secs = 7;
@@ -498,17 +492,12 @@ mod tests {
         s.features.auto_update = true;
         s.notifications.min_interval_secs = 30;
         s.notifications.suppress_for_active = false;
-        // A non-default backend must survive the save/reload round-trip; the
-        // full-Settings equality below would silently pass on the `Auto`
-        // default even if `backend` were dropped.
         s.notifications.backend = NotificationBackend::Off;
 
         save_settings(&s).unwrap();
 
         let (reloaded, warnings) = load_or_seed_with_warnings();
         assert!(warnings.is_empty(), "got: {warnings:?}");
-        // save_settings always stamps config_version = 1 (a migration marker);
-        // every other field must round-trip exactly.
         assert_eq!(reloaded.config_version, Some(1));
         assert_eq!(
             Settings {
@@ -566,7 +555,6 @@ mod tests {
 
         save_settings(&Settings::default()).unwrap();
 
-        // The file must now parse back cleanly.
         let (reloaded, warnings) = load_or_seed_with_warnings();
         assert!(warnings.is_empty(), "got: {warnings:?}");
         assert_eq!(

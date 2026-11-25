@@ -9,6 +9,7 @@ use base64::Engine as _;
 
 use crate::session::settings::ClipboardProvider;
 
+// OSC 52's conventional cap is a 100,000-byte sequence, and tmux drops an oversized one whole.
 pub const OSC52_MAX_BYTES: usize = 74_994;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -21,10 +22,7 @@ pub enum CopyRoute {
 impl CopyRoute {
     pub fn toast_suffix(self) -> &'static str {
         match self {
-            // The unremarkable cases: something verifiable took it.
             CopyRoute::Native | CopyRoute::Both => "",
-            // Named, so a user whose terminal drops OSC 52 can tell that this
-            // was the only path that ran.
             CopyRoute::Osc52 => " (OSC 52)",
         }
     }
@@ -48,6 +46,7 @@ impl std::fmt::Display for CopyError {
     }
 }
 
+// BEL is the terminator older terminals tolerate; tmux's DCS passthrough is off by default.
 pub fn osc52_sequence(text: &str) -> String {
     let encoded = base64::engine::general_purpose::STANDARD.encode(text.as_bytes());
     format!("\x1b]52;c;{encoded}\x07")
@@ -66,6 +65,7 @@ pub fn app_copy_text(target: &[u8], data: &[u8]) -> Option<String> {
     String::from_utf8(bytes).ok()
 }
 
+// A multiplexer intercepts OSC 52 on a child's stdout, so it goes to /dev/tty.
 fn write_osc52(text: &str) -> std::io::Result<()> {
     let seq = osc52_sequence(text);
 
@@ -95,10 +95,7 @@ pub fn copy(
 
     let mut detail = String::new();
 
-    // Native when permitted: the only transport that can confirm it worked, and
-    // the one a local clipboard manager sees. Its success is no longer the end
-    // of the story under `auto` — see the module docs for why a Windows host
-    // says yes to a clipboard nobody is looking at.
+    // A Windows clipboard nobody is looking at still accepts writes and reports success.
     let mut native_ok = false;
     if provider != ClipboardProvider::Osc52 {
         match native {
@@ -115,10 +112,7 @@ pub fn copy(
         }
     }
 
-    // OSC 52 carries the payload whole or not at all, so refuse oversized text
-    // rather than let tmux discard it silently. Text that big is still a
-    // successful copy when the local clipboard took it — only the far end
-    // misses out, and saying so beats reporting a failure that did not happen.
+    // tmux silently discards an OSC 52 payload it considers too large.
     if text.len() > OSC52_MAX_BYTES {
         return native_ok
             .then_some(CopyRoute::Native)
@@ -149,6 +143,7 @@ pub fn paste(native: Option<&mut arboard::Clipboard>) -> Option<String> {
 pub const PASTE_UNAVAILABLE_HINT: &str =
     "No local clipboard — use your terminal's paste (Ctrl+Shift+V)";
 
+// WSLg bridges only text: the X clipboard keeps stale text while Windows holds an image.
 #[derive(Default)]
 pub struct ImageProbe {
     channel: Option<(Sender<Verdict>, Receiver<Verdict>)>,
@@ -158,6 +153,7 @@ pub struct ImageProbe {
 const POWERSHELL: &str = "powershell.exe";
 const POWERSHELL_FALLBACK: &str = "/mnt/c/Windows/System32/WindowsPowerShell/v1.0/powershell.exe";
 
+// The OS PATH search reads an empty PATH entry as the current directory.
 fn powershell_candidates() -> Vec<PathBuf> {
     let mut found: Vec<PathBuf> = crate::paths::resolve_on_path(POWERSHELL)
         .into_iter()
@@ -170,11 +166,13 @@ fn powershell_candidates() -> Vec<PathBuf> {
 pub enum Verdict {
     Image,
     NotImage,
+    // WSL interop wedges intermittently, so "could not ask" is not "no image".
     Unknown,
 }
 
 static POWERSHELL_ABSENT_ROUNDS: AtomicUsize = AtomicUsize::new(0);
 
+// WSL interop publishes powershell.exe on PATH a moment after the distro starts.
 const ABSENT_ROUNDS_BEFORE_LATCH: usize = 2;
 
 fn powershell_is_absent() -> bool {
@@ -199,6 +197,7 @@ fn forget_powershell_absence() {
     POWERSHELL_ABSENT_ROUNDS.store(0, Ordering::Relaxed);
 }
 
+// Office apps and browsers put a bitmap beside the text on an ordinary copy.
 const CLIPBOARD_KIND: &str = "Add-Type -AssemblyName System.Windows.Forms; \
      $c = [System.Windows.Forms.Clipboard]; \
      if ($c::ContainsImage() -and -not $c::ContainsText()) { 'image' } else { 'other' }";
@@ -240,17 +239,11 @@ fn windows_clipboard_has_image() -> Verdict {
             .stdout(Stdio::piped())
             .stderr(Stdio::null())
             .spawn()?;
-        // Past the spawn, a failure is a failure of *this* attempt: the fallback
-        // below is for a `powershell.exe` that could not be found, and running a
-        // second one because the first wedged would be two wedged processes
-        // instead of one — with the person waiting through both deadlines.
         if !wait_bounded(&mut child, PROBE_TIMEOUT) {
             return Ok(Verdict::Unknown);
         }
         let mut answer = String::new();
         if let Some(mut out) = child.stdout.take() {
-            // A word, read after the child is gone: the pipe holds it, and
-            // nothing this small can fill the buffer and deadlock the wait.
             let _ = out.read_to_string(&mut answer);
         }
         Ok(match answer.trim() {
@@ -320,8 +313,6 @@ mod tests {
     fn the_probe_looks_only_at_absolute_path_entries() {
         use std::os::unix::fs::PermissionsExt;
 
-        // Relative to the working directory a unit test runs in — the package
-        // root — and inside the build directory, which is not tracked.
         let relative = std::path::Path::new("target").join("tbx-powershell-probe");
         std::fs::create_dir_all(&relative).unwrap();
         let planted = relative.join(POWERSHELL);
@@ -486,7 +477,7 @@ mod tests {
             waited < Duration::from_secs(5),
             "the wait ran past its deadline: {waited:?}"
         );
-        // Killed, not merely abandoned: an abandoned one holds the interop pipe.
+        // An abandoned powershell.exe keeps holding the WSL interop pipe.
         assert!(
             matches!(child.try_wait(), Ok(Some(_))),
             "the child outlived the wait that gave up on it"
@@ -518,8 +509,6 @@ mod tests {
              second one"
         );
 
-        // A second question was asked at the same moment as the first, so its
-        // answer would already be queued behind the one just taken.
         std::thread::sleep(Duration::from_millis(500));
         assert_eq!(
             probe.poll(),
@@ -527,8 +516,6 @@ mod tests {
             "a press made while a question was out asked Windows again"
         );
 
-        // And taking the answer frees the next question: the press that was
-        // refused above is asked for now, against the clipboard as it is now.
         assert!(
             probe.ask(),
             "no question could be put after the previous answer was taken; a \
@@ -538,7 +525,6 @@ mod tests {
 
     #[test]
     fn osc52_sequence_is_bel_terminated_base64() {
-        // "foo" -> Zm9v; BEL terminator, clipboard ('c') selection.
         assert_eq!(osc52_sequence("foo"), "\x1b]52;c;Zm9v\x07");
     }
 
@@ -564,7 +550,6 @@ mod tests {
 
     #[test]
     fn provider_native_does_not_fall_through_to_osc52() {
-        // No native handle available → error rather than an OSC 52 write.
         let err = copy("x", None, ClipboardProvider::Native).unwrap_err();
         match err {
             CopyError::NoTransport { detail } => assert!(detail.contains("native")),
@@ -586,8 +571,6 @@ mod tests {
     fn toast_suffix_names_only_the_unverifiable_route() {
         assert_eq!(CopyRoute::Native.toast_suffix(), "");
         assert!(CopyRoute::Osc52.toast_suffix().contains("OSC 52"));
-        // Both is the ordinary `auto` outcome, and something verifiable took
-        // it: naming a transport there would be noise on every copy.
         assert_eq!(CopyRoute::Both.toast_suffix(), "");
     }
 

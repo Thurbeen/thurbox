@@ -3,9 +3,6 @@ pub mod mod_spec;
 pub mod review;
 pub mod settings;
 
-// The host model a route names, the hyperlink table a pane fills and the
-// identity a window is stamped with are the multiplexer runtime's; a session
-// is described in its terms, so they are re-exported here.
 pub use runtime_mux::SessionId;
 pub use runtime_mux::{host_def, hyperlink, multiplexer, platform, route};
 

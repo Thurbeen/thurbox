@@ -16,6 +16,7 @@ pub(crate) struct PasteBurst {
 }
 
 impl PasteBurst {
+    // crossterm's Windows backend never emits `Event::Paste`, and ConPTY strips the paste markers.
     pub(crate) fn for_platform() -> Self {
         Self::new(cfg!(windows))
     }
@@ -50,18 +51,12 @@ impl PasteBurst {
         let gap = self.last.map(|last| at.saturating_duration_since(last));
         self.last = Some(at);
 
-        // Anything that is not a plain character cannot be part of a paste:
-        // end the run and pass the key on immediately, in order. This is the
-        // line that keeps arrows, Delete, Esc and every chord working —
-        // nothing here can hold one back.
         if paste_char(key).is_none() {
             let mut out = self.flush();
             out.push(Input::Key(key));
             return out;
         }
 
-        // A character that arrived slowly ends the previous run before starting
-        // its own; one that arrived fast continues the burst.
         let mut out = Vec::new();
         if gap.is_none_or(|gap| gap >= MACHINE_GAP) {
             out = self.flush();
@@ -93,6 +88,7 @@ impl PasteBurst {
     }
 }
 
+// A terminal's own bracketed paste puts CR between pasted lines.
 fn paste_char(key: KeyEvent) -> Option<char> {
     if key.kind == KeyEventKind::Release {
         return None;
@@ -194,7 +190,6 @@ mod tests {
                 Input::Key(release(KeyCode::Char('b'), none)),
             ]
         );
-        // With no run open there is nothing to wait behind.
         let x = release(KeyCode::Char('x'), none);
         assert_eq!(feed.burst.push(x, feed.now), vec![Input::Key(x)]);
     }
@@ -371,7 +366,6 @@ mod tests {
     fn a_gap_separates_two_pastes() {
         let mut feed = Feed::new(true);
         let mut out = feed.pasted("first line\rsecond");
-        // A human pause, then another paste.
         feed.now += Duration::from_millis(500);
         out.extend(feed.pasted("third line\rfourth"));
         out.extend(feed.settle());

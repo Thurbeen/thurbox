@@ -59,9 +59,6 @@ impl CommandError {
     }
 }
 
-// Deref to the message so `err.contains("…")` at a call site — overwhelmingly a
-// test asserting what the failure says — reads the sentence rather than the
-// struct, exactly as `CommandOutput` derefs to its JSON.
 impl std::ops::Deref for CommandError {
     type Target = str;
 
@@ -76,11 +73,7 @@ impl std::fmt::Display for CommandError {
     }
 }
 
-// `version` is spelled out rather than left bare: clap's implicit form reads
-// `CARGO_PKG_VERSION`, which is the static `0.0.0-dev` marker this project
-// never bumps, so `--version` reported a dev build on every release while the
-// `version` subcommand was right. Both now call the one
-// `version_check::current_version`.
+// clap's bare `version` reads CARGO_PKG_VERSION, which stays `0.0.0-dev` here.
 #[derive(Parser, Debug)]
 #[command(
     name = "thurbox-cli",
@@ -222,10 +215,6 @@ pub fn run(cli: Cli, settings: &Settings) -> Result<Outcome, CommandError> {
     }
 
     println!("{}", format.render(&output));
-    // A command can render normally yet still request a non-zero exit (e.g.
-    // `config validate` on an invalid file).
-    // Its report is the answer and is already on stdout, so the failure travels
-    // as an outcome rather than an `Err` the caller would print again.
     Ok(match output.failure {
         Some(message) => Outcome::Failed { message },
         None => Outcome::Ok,
@@ -293,8 +282,6 @@ fn dispatch(command: Command, settings: &Settings) -> Result<CommandOutput, Comm
         }
         Command::Ui { instance, action } => ui::run(instance, action)?,
         Command::Schema { instance } => ui::schema(instance)?,
-        // Reads the machine: what is installed is not something thurbox
-        // recorded.
         Command::Doctor => doctor::run(settings)?,
         Command::Migrate(args) => migrate::run(args, settings)?,
     })

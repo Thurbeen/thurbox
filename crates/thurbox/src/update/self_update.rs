@@ -32,9 +32,7 @@ pub enum UpdateOutcome {
 }
 
 pub fn target_triple(os: &str, arch: &str) -> Result<&'static str, String> {
-    // Accepts both Rust's spellings (`macos`/`aarch64`) and `uname`'s
-    // (`Darwin`/`arm64`), plus PowerShell's `AMD64`, because a *host's* platform
-    // arrives as whatever that host's shell printed.
+    // A host's platform arrives as its shell printed it: `uname` or PowerShell spellings.
     let os = os.to_ascii_lowercase();
     let arch = arch.to_ascii_lowercase();
     match (os.as_str(), arch.as_str()) {
@@ -207,13 +205,11 @@ impl ScratchDir {
         let base = data_base.clone().unwrap_or_else(std::env::temp_dir);
         std::fs::create_dir_all(&base)
             .map_err(|e| format!("create update scratch base {}: {e}", base.display()))?;
-        // The system temp fallback is shared with other programs.
         if data_base.is_some() {
             recover_scratch(&base);
         }
         loop {
-            // A random token avoids adopting an old process's sequence after
-            // pid reuse, including while another recovery pass is in flight.
+            // pids are reused, so a random token keeps an old process's staging apart.
             let path = base.join(format!(
                 ".update-{}-{}",
                 std::process::id(),
@@ -292,8 +288,6 @@ fn recover_scratch(base: &Path) {
     }
 }
 
-// An unsuccessful probe is not proof of death: permission errors and unknown
-// states must preserve a concurrent updater, however old its staging is.
 #[cfg(unix)]
 fn scratch_owner_exited(pid: u32) -> bool {
     let Ok(pid) = libc::pid_t::try_from(pid) else {
@@ -383,7 +377,6 @@ fn commit_binary(staged: &Path, dest: &Path) -> Result<Option<PathBuf>, String> 
 
 #[cfg(windows)]
 fn commit_binary(staged: &Path, dest: &Path) -> Result<Option<PathBuf>, String> {
-    // A program the install lacked has nothing to move aside.
     if !dest.exists() {
         std::fs::rename(staged, dest).map_err(|e| replace_failed(dest, e))?;
         return Ok(None);
@@ -460,9 +453,6 @@ fn install_programs(
         };
         staged.push((s, dest, name));
     }
-    // Phase 2: commit staged files back-to-back (`commit_binary` says how). A
-    // failure puts back every binary already swapped and removes every one it
-    // added, so the install is never left on two versions at once.
     let mut committed: Vec<(&Path, Option<PathBuf>, bool)> = Vec::new();
     for (i, (s, dest, _)) in staged.iter().enumerate() {
         let added = !dest.exists();
@@ -493,7 +483,6 @@ fn discard_staged(staged: &[(PathBuf, PathBuf, String)]) {
 pub fn perform_update(force: bool) -> Result<UpdateOutcome, String> {
     let current = current_version().to_string();
 
-    // Dev builds never auto-update (their version doesn't order against tags).
     if !force && crate::agent::fetch::is_dev_build() {
         return Ok(UpdateOutcome::SkippedDevBuild { current });
     }
@@ -769,7 +758,6 @@ fn perform_update_from(
     let target = current_target()?;
     let scratch = ScratchDir::new()?;
 
-    // Download checksums + this platform's archive (a tarball, or Windows' zip).
     let checksums_path = scratch.path.join(checksums_name(&latest));
     crate::agent::fetch::http_get_to_file(
         &checksums_url(&feed.download, &latest),
@@ -782,14 +770,12 @@ fn perform_update_from(
         &archive_path,
     )?;
 
-    // Verify the download BEFORE touching anything installed.
     let checksums =
         std::fs::read_to_string(&checksums_path).map_err(|e| format!("read checksums: {e}"))?;
     let expected = parse_checksum(&checksums, &archive)
         .ok_or_else(|| format!("no checksum for {archive} in release checksums"))?;
     verify_sha256(&archive_path, &expected)?;
 
-    // Extract and install.
     let extract_dir = scratch.path.join("extract");
     std::fs::create_dir_all(&extract_dir).map_err(|e| format!("create extract dir: {e}"))?;
     let (program, args) = extractor_for(&archive_path, &extract_dir);
@@ -970,7 +956,6 @@ mod tests {
     fn scratch_creation_does_not_reuse_an_existing_directory() {
         let root = tempfile::tempdir().unwrap();
         let _paths = crate::paths::TestPathGuard::new(root.path());
-        // Reserve several sequences so this also holds under the shared-process runner.
         for seq in 0..100 {
             let path = root
                 .path()
@@ -1099,7 +1084,6 @@ mod tests {
             target_triple("macos", "aarch64").unwrap(),
             "aarch64-apple-darwin"
         );
-        // A host's platform arrives as its shell spells it.
         assert_eq!(
             target_triple("Darwin", "arm64").unwrap(),
             "aarch64-apple-darwin"
@@ -1147,11 +1131,8 @@ mod tests {
 
     #[test]
     fn target_triple_rejects_unshipped_platforms() {
-        // Platforms `cd.yml` does NOT build an artifact for must error cleanly
-        // rather than resolve to a non-existent one.
         assert!(target_triple("windows", "arm64").is_err());
         assert!(target_triple("linux", "riscv64").is_err());
-        // Intel macOS is intentionally not shipped.
         assert!(target_triple("macos", "x86_64").is_err());
     }
 
@@ -1163,8 +1144,6 @@ mod tests {
 
     #[test]
     fn current_target_resolves_to_a_shipped_triple_or_errors() {
-        // On a release-built host `current_target` must name a shipped triple;
-        // on any other host it must error (never point at a missing download).
         match current_target() {
             Ok(triple) => assert!(
                 SHIPPED_TRIPLES.contains(&triple),
@@ -1180,16 +1159,13 @@ mod tests {
             tarball_name("0.114.0", "x86_64-unknown-linux-musl"),
             "thurbox-v0.114.0-x86_64-unknown-linux-musl.tar.gz"
         );
-        // Never `thurbox-v<V>-checksums.txt`: every 2.x updater fetches that
-        // name first, and a 3.x release leaves it out so they fail safe
-        // (docs/thurbox/releasing.md, "What a 3.x release must do").
+        // Every 2.x updater fetches `thurbox-v<V>-checksums.txt` first; a 3.x release must not ship it.
         assert_eq!(checksums_name("3.0.0"), "thurbox-3.0.0-sha256sums.txt");
         let url = archive_url(RELEASE_BASE, "0.114.0", "aarch64-apple-darwin");
         assert!(url.starts_with(RELEASE_BASE), "got: {url}");
         assert!(url.contains("/v0.114.0/"), "got: {url}");
         assert!(url.ends_with(".tar.gz"), "got: {url}");
         assert!(checksums_url(RELEASE_BASE, "0.114.0").contains("/v0.114.0/"));
-        // The URL follows the artifact, so Windows asks for the zip it is sent.
         let url = archive_url(RELEASE_BASE, "0.114.0", "x86_64-pc-windows-msvc");
         assert!(
             url.ends_with("/v0.114.0/thurbox-v0.114.0-x86_64-pc-windows-msvc.zip"),
@@ -1213,14 +1189,11 @@ mod tests {
             script.contains("-DestinationPath '/install/dir'"),
             "{script}"
         );
-        // An update overwrites what the last one extracted.
         assert!(script.contains("-Force"), "{script}");
-        // No progress bar drawn over the interface that shares the console.
         assert!(
             script.starts_with("$ProgressPreference='SilentlyContinue'; Expand-Archive"),
             "{script}"
         );
-        // No profile to source and nothing to prompt with: this runs headless.
         let flags: Vec<String> = args
             .iter()
             .map(|a| a.to_string_lossy().into_owned())
@@ -1228,7 +1201,6 @@ mod tests {
         assert!(flags.contains(&"-NoProfile".to_string()), "{flags:?}");
         assert!(flags.contains(&"-NonInteractive".to_string()), "{flags:?}");
 
-        // Everything else is the release tarball, and goes where it always did.
         let (program, args) = extractor_for(Path::new("/tmp/thurbox-v1.2.3-musl.tar.gz"), into);
         assert_eq!(program, "tar");
         let args: Vec<String> = args
@@ -1245,7 +1217,6 @@ mod tests {
             ]
         );
 
-        // The extension decides, not the case somebody wrote it in.
         assert_eq!(extractor_for(Path::new("a.ZIP"), into).0, "powershell.exe");
     }
 
@@ -1281,12 +1252,10 @@ cccc3333  thurbox-v0.114.0-aarch64-apple-darwin.tar.gz
         let install = tempfile::TempDir::new().unwrap();
         let extract = tempfile::TempDir::new().unwrap();
 
-        // Old installed binaries (non-executable, old contents).
         for name in BINARIES {
             let p = install.path().join(name);
             std::fs::write(&p, b"OLD").unwrap();
             std::fs::set_permissions(&p, std::fs::Permissions::from_mode(0o600)).unwrap();
-            // New extracted binaries with fresh contents.
             std::fs::write(extract.path().join(name), format!("NEW-{name}")).unwrap();
         }
 
@@ -1301,7 +1270,6 @@ cccc3333  thurbox-v0.114.0-aarch64-apple-darwin.tar.gz
             );
             let mode = std::fs::metadata(&dest).unwrap().permissions().mode();
             assert_eq!(mode & 0o777, 0o755, "binary should be executable");
-            // No staging files left behind.
             assert!(!install.path().join(format!(".{name}.new")).exists());
         }
     }
@@ -1362,7 +1330,6 @@ cccc3333  thurbox-v0.114.0-aarch64-apple-darwin.tar.gz
         let install = tempfile::TempDir::new().unwrap();
         let extract = tempfile::TempDir::new().unwrap();
         std::fs::write(install.path().join("thurbox"), b"OLD").unwrap();
-        // extract dir has neither binary
         let err = install_binaries(extract.path(), install.path(), "").unwrap_err();
         assert!(err.contains("missing"), "got: {err}");
     }
@@ -1384,10 +1351,7 @@ cccc3333  thurbox-v0.114.0-aarch64-apple-darwin.tar.gz
                 std::fs::read_to_string(install.path().join(&name)).unwrap(),
                 "NEW"
             );
-            // No staging files left behind.
             assert!(!install.path().join(format!(".{name}.new")).exists());
-            // On Windows the commit moves what it replaced aside rather than
-            // deleting it; this is where that path runs for real.
             #[cfg(windows)]
             assert_eq!(
                 std::fs::read_to_string(install.path().join(format!(".{name}.old"))).unwrap(),
@@ -1494,9 +1458,10 @@ cccc3333  thurbox-v0.114.0-aarch64-apple-darwin.tar.gz
             std::fs::write(extract.path().join(format!("{stem}.exe")), "NEW").unwrap();
         }
         // Opened without FILE_SHARE_DELETE, so no rename can move it.
+        const FILE_SHARE_READ: u32 = 1;
         let _lock = std::fs::OpenOptions::new()
             .read(true)
-            .share_mode(1) // FILE_SHARE_READ
+            .share_mode(FILE_SHARE_READ)
             .open(install.path().join("thurbox-cli.exe"))
             .unwrap();
 
@@ -1523,7 +1488,6 @@ cccc3333  thurbox-v0.114.0-aarch64-apple-darwin.tar.gz
         for name in ["thurbox", "thurbox-cli"] {
             std::fs::write(install.path().join(name), b"OLD").unwrap();
         }
-        // A non-empty directory where the last program goes: no rename lands.
         let blocked = install.path().join(BINARIES[BINARIES.len() - 1]);
         std::fs::create_dir_all(blocked.join("x")).unwrap();
 
@@ -1550,9 +1514,10 @@ cccc3333  thurbox-v0.114.0-aarch64-apple-darwin.tar.gz
         for name in ["thurbox.exe", "thurbox-cli.exe", last.as_str()] {
             std::fs::write(install.path().join(name), "OLD").unwrap();
         }
+        const FILE_SHARE_READ: u32 = 1;
         let _lock = std::fs::OpenOptions::new()
             .read(true)
-            .share_mode(1) // FILE_SHARE_READ
+            .share_mode(FILE_SHARE_READ)
             .open(install.path().join(&last))
             .unwrap();
 
@@ -1571,11 +1536,9 @@ cccc3333  thurbox-v0.114.0-aarch64-apple-darwin.tar.gz
         let dir = tempfile::TempDir::new().unwrap();
         let file = dir.path().join("empty");
         std::fs::write(&file, b"").unwrap();
-        // SHA256 of empty input — the canonical value.
         let empty = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855";
         crate::paths::with_path("", || {
             verify_sha256(&file, empty).expect("hashing must not depend on PATH");
-            // Compare is case-insensitive.
             assert!(verify_sha256(&file, &empty.to_uppercase()).is_ok());
             let err = verify_sha256(&file, &"0".repeat(64)).unwrap_err();
             assert!(err.contains("mismatch"), "got: {err}");
@@ -1899,7 +1862,6 @@ cccc3333  thurbox-v0.114.0-aarch64-apple-darwin.tar.gz
         let feed = Feed::new(&["4.0.0", "3.0.0"], "3.0.0");
         for force in [false, true] {
             let outcome = feed.update("3.0.0", force).unwrap();
-            // `--force` reinstalls the newest 3.x — here the running one.
             if let UpdateOutcome::Updated { to, .. } = &outcome {
                 assert_eq!(to, "3.0.0", "force={force}");
             }
@@ -1947,9 +1909,6 @@ cccc3333  thurbox-v0.114.0-aarch64-apple-darwin.tar.gz
 
     #[test]
     fn perform_update_skips_dev_build_without_force() {
-        // The dev-build guard must short-circuit before any network IO. Only
-        // assert when the test binary is itself a dev build (the normal case);
-        // a release-versioned test build would legitimately hit the network.
         if !crate::agent::fetch::is_dev_build() {
             return;
         }

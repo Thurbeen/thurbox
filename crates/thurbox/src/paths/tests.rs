@@ -24,8 +24,6 @@ fn executable_marker(dir: &Path, name: &str) -> PathBuf {
 #[test]
 fn which_on_path_finds_present_and_rejects_absent() {
     let dir = tempfile::TempDir::new().unwrap();
-    // The lookup is verbatim (no `.exe` munging), so a plain marker filename
-    // resolves identically on every platform.
     let marker = "tbx_which_probe_marker";
     executable_marker(dir.path(), marker);
 
@@ -57,8 +55,6 @@ fn resolve_on_path_declines_a_name_that_is_already_a_path() {
     let marker = "tbx_resolve_relative_marker";
     executable_marker(dir.path(), marker);
 
-    // A caller-supplied path is the caller's decision: re-resolving `./x`
-    // against PATH would name a different file.
     let found = with_path(dir.path(), || resolve_on_path(&format!("./{marker}")));
 
     assert_eq!(found, None);
@@ -123,11 +119,6 @@ fn default_strategy_is_xdg() {
 
 #[test]
 fn test_build_ignores_config_and_data_dir_override_env() {
-    // Regression: the unit-test harness often runs *inside* a live thurbox
-    // session whose env carries THURBOX_CONFIG_DIR/THURBOX_DATA_DIR pointing
-    // at the developer's real config/data. On the XDG strategy a test build
-    // must ignore those and stay under the per-process temp sandbox, so an
-    // unguarded config write can never clobber the user's live settings.
     reset_to_xdg();
     let saved_cfg = std::env::var_os(CONFIG_DIR_OVERRIDE_ENV);
     let saved_data = std::env::var_os(DATA_DIR_OVERRIDE_ENV);
@@ -154,10 +145,6 @@ fn test_build_ignores_config_and_data_dir_override_env() {
 
 #[test]
 fn a_data_dir_matching_the_default_is_not_a_relocation() {
-    // thurbox injects THURBOX_DATA_DIR into every session it spawns, pointing
-    // at whatever it resolved itself. A `thurbox-cli` inside such a session
-    // must still read as the default instance — otherwise every hook would
-    // look for its sessions on a socket nobody created.
     let default = Path::new("/home/u/.local/share/thurbox");
     assert_eq!(
         relocated_from(
@@ -166,7 +153,6 @@ fn a_data_dir_matching_the_default_is_not_a_relocation() {
         ),
         None
     );
-    // A trailing separator names the same directory.
     assert_eq!(
         relocated_from(
             Some(OsStr::new("/home/u/.local/share/thurbox/")),
@@ -174,7 +160,6 @@ fn a_data_dir_matching_the_default_is_not_a_relocation() {
         ),
         None
     );
-    // Unset, and empty-as-unset.
     assert_eq!(relocated_from(None, Some(default)), None);
     assert_eq!(relocated_from(Some(OsStr::new("")), Some(default)), None);
 }
@@ -186,8 +171,6 @@ fn a_data_dir_elsewhere_is_a_relocation() {
         relocated_from(Some(OsStr::new("/tmp/lab/data")), Some(default)),
         Some(PathBuf::from("/tmp/lab/data"))
     );
-    // No resolvable default (no HOME, no XDG) means there is no default
-    // instance to share with, so the override stands alone.
     assert_eq!(
         relocated_from(Some(OsStr::new("/tmp/lab/data")), None),
         Some(PathBuf::from("/tmp/lab/data"))
@@ -225,7 +208,6 @@ fn thread_local_isolation() {
 
     assert_eq!(config_file(), Some(base1.join("config.toml")));
 
-    // A fresh thread starts with the Xdg default, unaffected by this one.
     let handle =
         std::thread::spawn(|| PATH_STRATEGY.with(|s| matches!(*s.borrow(), PathStrategy::Xdg)));
 
@@ -426,7 +408,6 @@ fn complete_directory_path_with_real_dir() {
 
 #[test]
 fn complete_directory_path_trailing_slash() {
-    // A real directory with a trailing slash lists children — must not panic.
     let temp = tempfile::TempDir::new().unwrap();
     let result = complete_directory_path(&format!("{}/", temp.path().display()));
     assert!(result.is_some() || result.is_none());
@@ -443,7 +424,6 @@ fn complete_directory_path_exact_match() {
 
 #[test]
 fn complete_directory_path_root() {
-    // "/" is a valid directory — shouldn't panic.
     let result = complete_directory_path("/");
     assert!(result.is_some() || result.is_none());
 }
@@ -457,7 +437,6 @@ fn complete_directory_path_with_tempdir() {
     std::fs::create_dir(base.join("project_beta")).unwrap();
     std::fs::create_dir(base.join("other")).unwrap();
 
-    // Two matches, no completion beyond the typed prefix → None.
     let input = format!("{}/project_", base.display());
     let result = complete_directory_path(&input);
     assert_eq!(result, None);
@@ -546,8 +525,6 @@ fn expand_tilde_relative() {
 
 #[test]
 fn expand_tilde_no_home() {
-    // Temporarily unset the home var — use a thread to avoid interfering with
-    // other tests.
     let result = std::thread::spawn(|| {
         let orig = std::env::var_os(HOME_VAR);
         std::env::remove_var(HOME_VAR);
@@ -578,14 +555,13 @@ fn expand_tilde_empty() {
 
 #[test]
 fn expand_tilde_other_user() {
-    // ~otheruser is NOT expanded — only ~ and ~/ are handled.
     assert_eq!(expand_tilde("~otheruser"), PathBuf::from("~otheruser"));
 }
 
 #[cfg(windows)]
 #[test]
 fn expand_tilde_backslash_on_windows() {
-    // On Windows `~\foo` uses the native separator and must expand too.
+    // Windows accepts `\` as a path separator.
     let home = std::env::var(HOME_VAR).unwrap();
     assert_eq!(expand_tilde("~\\foo"), PathBuf::from(&home).join("foo"));
     assert_eq!(
@@ -597,8 +573,7 @@ fn expand_tilde_backslash_on_windows() {
 #[cfg(not(windows))]
 #[test]
 fn expand_tilde_backslash_literal_on_unix() {
-    // On Unix `\` is a legal filename character, not a separator, so
-    // `~\foo` is left untouched.
+    // On Unix `\` is a legal filename character, not a separator.
     assert_eq!(expand_tilde("~\\foo"), PathBuf::from("~\\foo"));
 }
 
@@ -629,7 +604,6 @@ fn complete_directory_path_tilde() {
 
 #[test]
 fn complete_directory_path_tilde_trailing_slash() {
-    // "~/" completions are relative suffixes, never absolute.
     if let Some(s) = complete_directory_path("~/") {
         assert!(!s.starts_with('/'));
     }
@@ -637,13 +611,10 @@ fn complete_directory_path_tilde_trailing_slash() {
 
 #[test]
 fn sanitize_workspace_segment_strips_separators_and_dots() {
-    // Slashes/backslashes/colons and whitespace → `-`; leading/trailing
-    // `.`/`-` trimmed.
     assert_eq!(sanitize_workspace_segment("a/b\\c:d"), "a-b-c-d");
     assert_eq!(sanitize_workspace_segment("  .git  "), "git");
     assert_eq!(sanitize_workspace_segment("my repo"), "my-repo");
     assert_eq!(sanitize_workspace_segment("--.hidden.--"), "hidden");
-    // A session-id UUID (the real workspace-dir input) is unchanged.
     assert_eq!(
         sanitize_workspace_segment("d5715d35-9599-4507-9901-ef33b9476358"),
         "d5715d35-9599-4507-9901-ef33b9476358"
@@ -652,8 +623,6 @@ fn sanitize_workspace_segment_strips_separators_and_dots() {
 
 #[test]
 fn unique_link_name_dedups_with_dash_two_suffix() {
-    // First collision is `-2`, then `-3`; an empty label falls back to
-    // `repo`.
     let mut used = std::collections::HashSet::new();
     assert_eq!(unique_link_name("webapp", &mut used), "webapp");
     assert_eq!(unique_link_name("webapp", &mut used), "webapp-2");
@@ -684,8 +653,6 @@ fn the_unit_test_sandbox_holds_written_config() {
 
 #[test]
 fn no_unit_test_temp_dir_outlives_the_test_process() {
-    // Named rather than discovered; a rename trips the "reported both dirs"
-    // assertion below instead of passing vacuously.
     const HELPERS: [&str; 2] = [
         "paths::tests::the_unit_test_sandbox_holds_written_config",
         "workspace::tests::the_workspace_test_base_holds_a_workspace",
@@ -704,11 +671,7 @@ fn no_unit_test_temp_dir_outlives_the_test_process() {
         String::from_utf8_lossy(&out.stderr)
     );
 
-    // Scanned as a substring rather than line-by-line: with --nocapture the
-    // harness's own "test <name> ... " / "ok" progress text shares stdout
-    // with the test's println! on the same fd, unsynchronized, so a marker
-    // can land mid-line (e.g. "...okTEMP_SANDBOX=/tmp/..." or "... ...
-    // TEMP_SANDBOX=/tmp/...\nok") rather than as a line of its own.
+    // The test harness's progress text shares stdout unsynchronized, so a marker can land mid-line.
     const MARKER: &str = "TEMP_SANDBOX=";
     let mut reported = 0;
     let mut rest: &str = &stdout;
@@ -823,7 +786,6 @@ fn the_wsl_distro_is_read_trimmed_and_an_empty_one_is_none() {
         assert_eq!(current_wsl_distro().as_deref(), Some("Ubuntu"));
     });
     with_wsl_distro(None, || assert_eq!(current_wsl_distro(), None));
-    // A distro that set the variable empty is no distro at all.
     with_wsl_distro(Some("  "), || assert_eq!(current_wsl_distro(), None));
 }
 

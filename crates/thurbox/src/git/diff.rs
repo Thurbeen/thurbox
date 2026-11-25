@@ -12,10 +12,7 @@ pub fn diff_against(worktree: &Path, base: &str) -> Option<String> {
     run_diff(worktree, &["diff", "--no-color", &range])
 }
 
-// The "working changes" target is [`working_diff`], below. There is
-// deliberately no diff-body-only counterpart to [`diff_against`] for it: one
-// would be `git diff HEAD`, which silently omits untracked files, and having it
-// available is how that omission happened.
+// `git diff HEAD` omits untracked files, so working changes go through `working_diff` alone.
 
 pub fn diff_numstat(worktree: &Path, base: Option<&str>) -> Option<String> {
     let range = base.map_or_else(|| "HEAD".to_string(), |base| format!("{base}..HEAD"));
@@ -34,6 +31,7 @@ pub fn diff_name_status(worktree: &Path, base: Option<&str>) -> Option<String> {
 }
 
 pub(super) fn run_diff(worktree: &Path, args: &[&str]) -> Option<String> {
+    // git quotes non-ASCII paths unless `core.quotepath=false`.
     let mut full = vec!["-c", "core.quotepath=false"];
     full.extend_from_slice(args);
     let output = git_command(worktree, &full).output().ok()?;
@@ -67,9 +65,6 @@ pub fn working_diff(worktree: &Path) -> Option<WorkingDiff> {
     let untracked = untracked_files(worktree)?;
     let mut shown = 0;
     for path in untracked.iter().take(UNTRACKED_FILE_CAP) {
-        // Counts and patch from one invocation — `--numstat --patch` prints the
-        // stat records first, split back apart below — where asking for each
-        // shape separately cost two processes per untracked file.
         let Some(combined) = untracked_diff(
             worktree,
             path,
@@ -78,8 +73,6 @@ pub fn working_diff(worktree: &Path) -> Option<WorkingDiff> {
             continue;
         };
         let (counts, patch) = split_untracked_diff(&combined);
-        // An empty patch means the file went away between the listing and here —
-        // an agent deleting its own scratch file, which costs nothing to skip.
         if patch.is_empty() {
             continue;
         }
@@ -88,9 +81,7 @@ pub fn working_diff(worktree: &Path) -> Option<WorkingDiff> {
         }
         body.push_str(patch);
         numstat_z.push_str(counts);
-        // `A\0<path>\0` is byte-identical to what `--name-status -z` prints for
-        // one of these — an untracked file is always an addition — so it is
-        // built rather than asked for, not run as a third process.
+        // `--name-status -z` prints exactly `A\0<path>\0` for an untracked file.
         name_status_z.push_str("A\0");
         name_status_z.push_str(path);
         name_status_z.push('\0');
@@ -275,6 +266,7 @@ fn same_tree_as(cwd: &Path, default: &str) -> Option<bool> {
     git_predicate(cwd, &["diff", "--quiet", default, "HEAD"])
 }
 
+// `git cherry` prefixes `-` to a commit whose patch is already upstream.
 fn every_commit_upstream(cwd: &Path, default: &str, base: &str) -> Option<bool> {
     let cherry = run_git_capture(&["cherry", default, "HEAD", base], cwd)?;
     let mut lines = cherry.lines().filter(|l| !l.trim().is_empty()).peekable();
@@ -329,7 +321,7 @@ pub(super) fn parse_status_v2(out: &str) -> StatusV2 {
     for line in out.lines() {
         if let Some(oid) = line.strip_prefix("# branch.oid ") {
             let oid = oid.trim();
-            // `(initial)` on an unborn branch: a placeholder, not a commit.
+            // git prints `(initial)` for an unborn branch.
             if !oid.is_empty() && oid != "(initial)" {
                 status.head = Some(oid.to_string());
             }
@@ -368,32 +360,15 @@ pub fn worktree_stats(
     cwd: &Path,
     known: Option<KnownMerge<'_>>,
 ) -> Option<crate::session::GitStats> {
-    // One status call carries dirty, the untracked count AND — via the
-    // `# branch.ab` header — ahead/behind, and doubles as the "is this a work
-    // tree" probe: outside one it fails, exactly as a `rev-parse` would.
     let status = run_git_capture(&["status", "--porcelain=v2", "--branch"], cwd)?;
     let status = parse_status_v2(&status);
-    // The second subprocess, and the status above already decides whether it
-    // can say anything: `diff HEAD` reports on tracked files, so with no
-    // tracked entry its output is empty and running it is a process spawn for a
-    // known answer. Worth skipping because this path is polled — see
-    // `StatusV2::tracked`.
     let (files_changed, insertions, deletions) = if status.tracked {
         let numstat = run_git_capture(&["diff", "--numstat", "HEAD"], cwd).unwrap_or_default();
         parse_numstat(&numstat)
     } else {
         (0, 0, 0)
     };
-    // `branch.ab` counts against the configured upstream — the same ref the
-    // probe chain would pick first. Only a branch without one (no upstream, or
-    // its ref gone) pays for [`ahead_behind`]'s resolution (`origin/HEAD` →
-    // `origin/main` → `origin/master`), preserving the old answer there.
     let (ahead, behind) = status.ahead_behind.unwrap_or_else(|| ahead_behind(cwd));
-    // Only a branch that *is* ahead has commits whose fate is in question, and
-    // the check costs several `git` runs — so nothing ahead pays nothing, and
-    // reports `None` rather than an answer nobody asked for. A worktree still
-    // sitting on the commit an answer was computed for skips it either way:
-    // see `known`.
     let settled = known.filter(|k| Some(k.head) == status.head.as_deref());
     let merged = match settled {
         Some(known) => Some(known.merged),
@@ -413,7 +388,6 @@ pub fn worktree_stats(
 }
 
 pub(super) fn resolve_base_ref(worktree_path: &Path) -> Option<String> {
-    // A branch with an explicit upstream rebases onto exactly that.
     if run_git_capture(
         &["rev-parse", "--verify", "--quiet", "@{upstream}"],
         worktree_path,
@@ -423,7 +397,6 @@ pub(super) fn resolve_base_ref(worktree_path: &Path) -> Option<String> {
         return Some("@{upstream}".to_string());
     }
 
-    // The remote's advertised HEAD (origin/HEAD → e.g. "origin/main").
     if let Some(out) = run_git_capture(
         &["symbolic-ref", "--short", "refs/remotes/origin/HEAD"],
         worktree_path,
@@ -434,7 +407,6 @@ pub(super) fn resolve_base_ref(worktree_path: &Path) -> Option<String> {
         }
     }
 
-    // Conventional fallbacks.
     ["origin/main", "origin/master"]
         .into_iter()
         .find(|r| {

@@ -126,8 +126,6 @@ fn dispatch_one(
         #[cfg(target_os = "macos")]
         DeliveryBackend::Macos => dispatch_macos(n),
         DeliveryBackend::None => Ok(()),
-        // A backend that isn't compiled for this target (e.g. Dbus on macOS):
-        // nothing to do. detect_backend never returns these combinations.
         #[allow(unreachable_patterns)]
         _ => Ok(()),
     }
@@ -143,9 +141,7 @@ fn dispatch_dbus(n: &Notification) -> Result<(), Box<dyn std::error::Error>> {
         .body(&n.body)
         .appname("thurbox")
         .hint(Hint::Category("im.received".into()))
-        // The "default" action fires when the user clicks the banner body
-        // itself, distinct from the explicit "open" button — both route the
-        // same way below.
+        // notify-rust reports a click on the banner body as the "default" action.
         .action("default", "Open")
         .action("open", "Open session");
     if !n.sound {
@@ -154,9 +150,7 @@ fn dispatch_dbus(n: &Notification) -> Result<(), Box<dyn std::error::Error>> {
 
     let handle = notif.show()?;
     let session_id = n.session_id.clone();
-    // wait_for_action blocks until the user clicks, dismisses, or the
-    // notification times out — run it on its own short-lived thread so the
-    // dispatcher can move on to the next queued notification.
+    // notify-rust's wait_for_action blocks until a click, a dismissal or a timeout.
     thread::Builder::new()
         .name("thurbox-notification-wait".into())
         .spawn(move || {
@@ -172,27 +166,8 @@ fn dispatch_dbus(n: &Notification) -> Result<(), Box<dyn std::error::Error>> {
 
 #[cfg(target_os = "macos")]
 fn dispatch_macos(n: &Notification) -> Result<(), Box<dyn std::error::Error>> {
-    // notify-rust's macOS backend (`mac-notification-sys`) uses the
-    // deprecated `NSUserNotificationCenter` API, which silently no-ops on
-    // macOS 12+ for unbundled CLIs — the cause of "thurbox notifications
-    // don't fire on Mac". Two viable replacements that need no `.app`
-    // bundle / no code signing:
-    //
-    //   1. `terminal-notifier` — a small signed helper distributed via
-    //      Homebrew. Banner attribution + icon belong to the helper (a
-    //      bell-on-terminal mark), so it looks like a normal app
-    //      notification. Opt-in: the user must `brew install terminal-notifier`.
-    //   2. `osascript` (`display notification`) — built into every macOS
-    //      release, so always available. Banner attribution is "Script
-    //      Editor" (Apple's Script Editor agent owns the notification
-    //      permission `display notification` rides on).
-    //
-    // Try (1) and fall back to (2). The first attempt also acts as a
-    // failure escape hatch: if `terminal-notifier` is in PATH but broken
-    // we still land on the `osascript` path.
-    //
-    // No action callbacks on either path: those need `UNUserNotificationCenter`
-    // (a signed `.app`), which thurbox is not.
+    // notify-rust's macOS backend no-ops on macOS 12+ for unbundled CLIs: use terminal-notifier, else osascript.
+    // macOS action callbacks need UNUserNotificationCenter, which needs a signed `.app`.
     if terminal_notifier_available() {
         match dispatch_macos_terminal_notifier(n) {
             Ok(()) => return Ok(()),
@@ -210,10 +185,7 @@ fn terminal_notifier_available() -> bool {
 
 #[cfg(target_os = "macos")]
 fn dispatch_macos_terminal_notifier(n: &Notification) -> Result<(), Box<dyn std::error::Error>> {
-    // `-group <id>` collapses repeat notifications for the same session
-    // into a single banner instead of stacking — the per-session dedup
-    // floor already bounds frequency, but if a long-running session fires
-    // across the floor we still want the latest one to replace the prior.
+    // terminal-notifier's `-group` replaces the previous banner of the same group.
     let mut cmd = Command::new("terminal-notifier");
     cmd.arg("-title")
         .arg(&n.title)
@@ -224,15 +196,7 @@ fn dispatch_macos_terminal_notifier(n: &Notification) -> Result<(), Box<dyn std:
     if n.sound {
         cmd.arg("-sound").arg("default");
     }
-    // Click-to-focus: `terminal-notifier -execute "<cmd>"` runs the command
-    // via `/bin/sh -c` when the user clicks the banner. We point it at
-    // `thurbox-cli ui action session.focus --session <id>`, which asks the
-    // running interface to focus it. We resolve
-    // an *absolute* `thurbox-cli` path from the running binary's directory
-    // — the click handler runs under launchd's environment, which has a
-    // very sparse PATH, so a bare `thurbox-cli` would often not resolve.
-    // If we can't locate the CLI binary the click is simply non-interactive
-    // (the banner still shows).
+    // `-execute` runs under launchd's sparse PATH, so the CLI path must be absolute.
     if let Some(focus_cmd) = thurbox_cli_focus_command(&n.session_id) {
         cmd.arg("-execute").arg(focus_cmd);
     }
@@ -278,9 +242,7 @@ fn sh_single_quote(s: &str) -> String {
 
 #[cfg(target_os = "macos")]
 fn dispatch_macos_osascript(n: &Notification) -> Result<(), Box<dyn std::error::Error>> {
-    // Arguments are passed via AppleScript's `argv` (rather than spliced
-    // into the script text) so the body/title can contain any characters —
-    // quotes, backslashes, newlines — with zero escaping.
+    // AppleScript's `argv` carries title and body with no escaping.
     let script = if n.sound {
         "on run argv\n\
          display notification (item 1 of argv) with title (item 2 of argv) \
@@ -385,13 +347,10 @@ pub(crate) fn powershell_escape(s: &str) -> String {
 pub(crate) fn build_powershell_toast_script(title: &str, body: &str, sound: bool) -> String {
     let title = powershell_escape(title);
     let body = powershell_escape(body);
-    // ToastText02 = one bold heading line + one wrapped body line.
-    // A generic AppUserModelID ("Windows Terminal") lets the toast show
-    // without registering a Start-menu shortcut.
+    // A generic AppUserModelID shows a toast without a registered Start-menu shortcut.
     let audio = if sound {
         String::new()
     } else {
-        // Suppress the default toast sound by appending a silent <audio> node.
         "$audio = $template.CreateElement('audio'); \
          $audio.SetAttribute('silent','true'); \
          $template.DocumentElement.AppendChild($audio) | Out-Null; "
@@ -453,19 +412,13 @@ fn resolve_auto(probe: HostProbe) -> DeliveryBackend {
         return DeliveryBackend::Macos;
     }
     if probe.is_windows {
-        // Native Windows: `powershell.exe` ships with the OS, so the WinRT
-        // toast path is always available. (Click-to-focus is not wired on
-        // Windows — the banner shows but is non-interactive.)
+        // powershell.exe ships with Windows, so the WinRT toast is always available.
         return toast_or_none(probe.has_powershell);
     }
     if !probe.is_linux {
         return DeliveryBackend::None;
     }
-    // Prefer dbus when a real notification daemon answers. The common WSL case
-    // has no daemon, so fall back to a Windows toast whenever interop
-    // (`powershell.exe`) is available — this also covers the unusual non-WSL
-    // Linux host with powershell on PATH, still better than dropping silently.
-    // Without either we have nothing (reported via `last_error`).
+    // WSL usually runs no notification daemon, but interop reaches powershell.exe.
     match probe.has_dbus_service {
         true => DeliveryBackend::Dbus,
         false => toast_or_none(probe.has_powershell),
@@ -484,7 +437,6 @@ pub fn probe_host() -> HostProbe {
 
 #[cfg(target_os = "linux")]
 fn detect_dbus_service() -> bool {
-    // Honour an explicit address first.
     if let Ok(addr) = std::env::var("DBUS_SESSION_BUS_ADDRESS") {
         if let Some(path) = addr
             .split(',')
@@ -493,12 +445,10 @@ fn detect_dbus_service() -> bool {
         {
             return std::path::Path::new(path).exists();
         }
-        // Non-unix transport (tcp, etc.) — assume reachable; let dbus try.
         if !addr.is_empty() {
             return true;
         }
     }
-    // Fall back to the conventional per-user bus socket location.
     if let Ok(runtime) = std::env::var("XDG_RUNTIME_DIR") {
         return std::path::Path::new(&runtime).join("bus").exists();
     }
@@ -621,8 +571,6 @@ mod tests {
 
     #[test]
     fn auto_falls_back_to_windows_toast_under_wsl_without_dbus() {
-        // The exact WSL failure case: linux + WSL marker + no dbus service,
-        // but powershell.exe is reachable.
         let p = probe(true, false, false, true);
         assert_eq!(
             resolve_backend(NotificationBackend::Auto, p),
@@ -641,7 +589,6 @@ mod tests {
 
     #[test]
     fn auto_prefers_dbus_even_under_wsl_if_a_daemon_answers() {
-        // A WSL setup that *does* run a notification daemon should still use it.
         let p = probe(true, false, true, true);
         assert_eq!(
             resolve_backend(NotificationBackend::Auto, p),
@@ -708,7 +655,6 @@ mod tests {
     #[test]
     fn powershell_escape_doubles_single_quotes_and_strips_controls() {
         assert_eq!(powershell_escape("it's fine"), "it''s fine");
-        // Newlines collapse to spaces; other control chars are dropped.
         assert_eq!(powershell_escape("a\nb\tc"), "a bc");
         assert_eq!(powershell_escape("plain"), "plain");
     }
@@ -717,10 +663,8 @@ mod tests {
     fn toast_script_embeds_escaped_title_and_body() {
         let script = build_powershell_toast_script("my-feat · claude", "can't proceed", true);
         assert!(script.contains("my-feat · claude"));
-        // The single quote in the body is doubled for PowerShell.
         assert!(script.contains("can''t proceed"));
         assert!(script.contains("ToastNotificationManager"));
-        // Sound on → no silent audio node.
         assert!(!script.contains("silent"));
     }
 

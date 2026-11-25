@@ -32,7 +32,7 @@ pub fn clone_mod(url: &str, dest: &Path, git_ref: Option<&str>) -> Result<()> {
     let mut cmd = git_program();
     non_interactive(&mut cmd);
     cmd.arg("clone").arg("--depth").arg("1");
-    // A commit id is not a `--branch`: clone the default tip, then go and get it.
+    // `git clone --branch` takes no commit id: clone the default tip, then fetch it.
     let commit = git_ref.filter(|git_ref| names_a_commit(git_ref));
     if let Some(name) = git_ref.filter(|git_ref| !names_a_commit(git_ref)) {
         cmd.arg("--branch").arg(name);
@@ -42,20 +42,10 @@ pub fn clone_mod(url: &str, dest: &Path, git_ref: Option<&str>) -> Result<()> {
 
     if let Some(commit) = commit {
         let fetched = fetch_ref(dest, commit);
-        // A fetch that failed on a ref shaped like a prefix is offered the reading
-        // the shape suggests, rather than the one below. The clone succeeded a
-        // moment ago, so an unreachable remote is the unlikely half — but it is
-        // not impossible, which is why the message says "unless git's own reason
-        // is a different one" and leaves git's in the chain to compare.
         let prefix = fetched.is_err() && abbreviated_object_id(commit);
-        // `FETCH_HEAD`, not the ref's own name: a shallow fetch writes no local
-        // ref, so a *name* the remote did serve still resolves to nothing here —
-        // and the object it handed over is `FETCH_HEAD` whichever the ref was.
-        // `converge_repository` checks the same thing out, for the same reason.
+        // A shallow fetch writes no local ref; the object it fetched is `FETCH_HEAD`.
         let obtained = fetched.and_then(|()| checkout_mod(dest, "FETCH_HEAD"));
         if let Err(e) = obtained {
-            // Clone succeeded, the pin did not: this working copy is at the wrong
-            // revision and nobody asked for that one.
             let _ = std::fs::remove_dir_all(dest);
             if prefix {
                 return Err(e).with_context(|| {
@@ -69,11 +59,6 @@ pub fn clone_mod(url: &str, dest: &Path, git_ref: Option<&str>) -> Result<()> {
                     )
                 });
             }
-            // Said distinctly from a failed clone, because the two have different
-            // fixes and the common cause is invisible: a rebase or squash merge
-            // *replaces* commits, so a pin taken from a pull request that has since
-            // been merged names an object the remote no longer has. Reachable
-            // without the pin, which is the actual next step.
             return Err(e).with_context(|| {
                 format!(
                     "the repository cloned, but commit {commit} could not be obtained \

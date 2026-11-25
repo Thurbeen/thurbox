@@ -12,13 +12,10 @@ impl App {
     pub(crate) fn reload_interface(&mut self, reason: super::events::ReloadReason) {
         let memory = reason == super::events::ReloadReason::Memory;
         if memory {
-            // Transactional edit reloads retain the last good VM. An exhausted
-            // VM cannot be that fallback: even reporting its error allocates.
+            // A Lua VM at its memory limit cannot even report its error.
             self.host = self.host.fresh_from(&self.ui_dir);
         } else {
             self.host.reload_from(&self.ui_dir);
-            // The window measures the VM a memory rebuild produced; one the user
-            // asked for is a fresh start.
             self.memory_rebuilt = None;
         }
         Counters::bump(&self.perf.reloads);
@@ -40,12 +37,6 @@ impl App {
         } else {
             reason
         });
-        // Mod indices are positions in a vector the rebuild just replaced, and
-        // `grabbed` and every click target are ones recorded during the previous
-        // paint. A reload between a paint and an input — a watcher firing on a
-        // deleted file — would leave them pointing past the end, or at whichever
-        // mod moved into that position, which then receives a press on a node
-        // it never painted (#1118). The next paint records them again.
         self.grabbed = None;
         self.holds.clear();
         self.click_targets.clear();
@@ -63,8 +54,6 @@ impl App {
         if embedded.error.is_some() {
             return false;
         }
-        // Recorded before the swap: the reason is the *user's* error, and the
-        // host that carries it is about to be replaced by one with none.
         self.floor_cause = self.host.error.clone();
         self.floor = Some(format!(
             "using the bundled interface — {} failed to load: {}",
@@ -78,8 +67,6 @@ impl App {
     fn floor_refilled_interface(&mut self, cause: String) {
         self.host.error = Some(cause.clone());
         if !self.install_bundled_floor() {
-            // The full VM must not stay, and the user's interface is what filled
-            // it: an empty VM, with the recovery keys in the kernel's chrome.
             self.host = self.host.retired(cause);
         }
         Counters::bump(&self.perf.reloads);
@@ -122,13 +109,6 @@ impl App {
         let key = absolute.to_string_lossy().into_owned();
         let outcome = if trusted {
             match std::fs::read_to_string(&absolute) {
-                // Trusted as it is *now*: the digest recorded here is what makes
-                // "trusted, and since modified" a state the list can report.
-                //
-                // For an INSTALLED file the `src@version` is recorded beside it, so
-                // the grant is a statement the user could actually have meant — "I
-                // trust atlas v0.3.1" — and lapses when the pin moves instead of
-                // reading as tampering after every ordinary release.
                 Ok(contents) => {
                     let lock =
                         thurbox::kernel::packages::read_lock(&self.ui_dir).unwrap_or_default();
@@ -193,8 +173,6 @@ impl App {
         };
         match outcome {
             Ok(message) => {
-                // Removal changes no file the watcher is waiting on, so the
-                // reload is asked for here.
                 self.refresh_sources();
                 self.reload_at = Some(Instant::now() + DEBOUNCE);
                 self.toast(message);
@@ -207,17 +185,10 @@ impl App {
         &mut self,
         act: impl FnOnce(&mut Modals, &mut thurbox::kernel::modals::World<'_>) -> T,
     ) -> T {
-        // The settings the modal shows, and the slot a save comes back through.
-        // What the *file* holds rather than what is in force: the panel edits the
-        // file, and a restart-only change lives only there until the next launch
-        // (`Config::on_disk`). Cloned because the modal needs it while
-        // `self.config` is borrowed mutably to apply whatever comes back.
         let on_disk = self.config.on_disk().clone();
         let mut saved = None;
         let mut edit = None;
         let mut run = None;
-        // Same reason as the settings clone: the modal reads it while `self` is
-        // borrowed mutably to apply whatever comes back.
         let inventory = std::mem::take(&mut self.inventory);
         let outcome = {
             let mut world = thurbox::kernel::modals::World {
@@ -236,7 +207,6 @@ impl App {
         if let Some(draft) = saved {
             self.apply_settings(draft);
         }
-        // The palette's choice, run after the modal has closed itself.
         if let Some(dispatch) = run {
             self.run_action(&dispatch.owner, &dispatch.action);
         }
@@ -284,8 +254,6 @@ impl App {
         } else {
             self.reload_interface(super::events::ReloadReason::Memory);
         }
-        // From when the replacement is in, not when it was asked for: a slow
-        // load must not use up the window before the new VM has run at all.
         self.memory_rebuilt = Some(Instant::now());
         self.collect_declarations();
         self.clamp_focus();
@@ -306,8 +274,6 @@ impl App {
                 Level::Error,
             );
         } else {
-            // An empty interface has no status band. Keep the outcome and the
-            // recovery keys in the kernel error panel as well as the log.
             let cause = self.host.error.take().unwrap_or_default();
             self.host.error = Some(format!(
                 "mod VM replaced; interface failed to load\n{cause}\nFix the interface and press F10 to reload; F6 opens settings."

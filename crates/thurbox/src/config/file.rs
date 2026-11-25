@@ -93,7 +93,6 @@ mod tests {
     #[test]
     fn an_absent_file_is_seeded_into_a_directory_it_creates() {
         let temp = tempfile::TempDir::new().unwrap();
-        // The config directory does not exist yet: seeding must create it.
         let _guard = isolate(&temp.path().join("absent"));
         let (probe, warnings) = load_or_seed::<Probe>("probe.toml", SEED, "using defaults");
         assert_eq!((probe, warnings), (Probe::default(), vec![]));
@@ -131,8 +130,6 @@ mod tests {
         let temp = tempfile::TempDir::new().unwrap();
         let _guard = isolate(temp.path());
         let dir = path("probe.toml").unwrap().parent().unwrap().to_path_buf();
-        // A file where the config directory should be: neither creating the
-        // directory nor writing the seed can succeed.
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(dir.parent().unwrap()).unwrap();
         std::fs::write(&dir, "").unwrap();

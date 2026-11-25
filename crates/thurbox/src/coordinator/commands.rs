@@ -44,24 +44,14 @@ impl App {
     ) -> bool {
         use thurbox::kernel::command::Command;
         match command {
-            // Theme is applied here rather than dispatched: it mutates in-process
-            // state a worker thread cannot reach. Storing it is queued
-            // (`store_chosen_theme`).
             Command::Theme { name } => {
                 if let Err(e) = self.themes.select(name) {
                     self.report(e, Level::Error);
                 }
                 self.store_chosen_theme();
             }
-            // Open a link, or copy it where nothing can open one — a remote
-            // session or a bare tty has no browser, and spawning an opener there
-            // goes nowhere.
             Command::OpenLink { url } => self.open_or_copy_link(url),
-            // Editing the interface's own files. Applied here because it is two
-            // file operations and the watcher turns the write into a reload — a
-            // worker would only add a race.
             Command::Mod { file, edit } => self.apply_mod_edit(file, *edit),
-            // Focus is the loop's own state, so it is applied here.
             Command::Focus { mod_name, toggle } => self.apply_focus_command(mod_name, *toggle),
             Command::Shell { session } => self.apply_shell_command(session),
             Command::Program {
@@ -72,27 +62,18 @@ impl App {
                 close,
                 keys,
             } => self.apply_program(owner, name, program, argv, *close, keys.as_deref()),
-            // The editor wants a controlling tty, which only this thread can hand
-            // it — see `Command::Editor` and `open_requested_editor`.
             Command::Editor { session } => self.editor_request = Some(session.clone()),
             Command::Diff { session } => {
-                // Drop the answer; the request at the top of the next iteration
-                // recomputes it on the worker.
                 self.diffs.invalidate(session);
                 self.dirty = true;
             }
-            // Copy needs the vt100 screen and the tty, neither of which a worker
-            // thread can reach.
             Command::Copy { session } => self.apply_copy_command(session),
-            // Settings live in the registry, which is in-process too.
             Command::Setting { key, value } => {
                 let (mod_name, id) = key.split_once('.').unwrap_or((key.as_str(), ""));
                 if let Err(e) = self.registry.set_setting(mod_name, id, value.clone()) {
                     self.report(e, Level::Error);
                 }
             }
-            // Repository memory is a read the flow also writes, so note the write
-            // and drop the cached rows when it lands. Still dispatched.
             Command::Bookmark { .. } => {
                 self.bookmark_in_flight = true;
                 return false;
@@ -114,10 +95,6 @@ impl App {
             }
             Command::Action { fallback, action } => {
                 let asked = self.fallback_pane(fallback);
-                // The handler runs for the chain the queue says made this —
-                // through any number of actions, starting with the pane that
-                // first asked — and what it issues extends that chain
-                // (`LuaHost::acting_for`).
                 let asker = command.runs_for(chain);
                 let previous = self.host.acting_for(asker);
                 self.run_clicked_action(action, asked);
@@ -157,9 +134,6 @@ impl App {
             .focusable()
             .iter()
             .position(|candidate| *candidate == index);
-        // Already here, and asked to toggle: go back where the last focus change
-        // came from. That memory is `focus_return`, which is the same one `Esc`
-        // uses — so a pane reached by its own key leaves by either.
         if toggle && position == Some(self.focus) {
             let back = self.focus_return;
             if self.host.focusable().get(back).is_some() {
@@ -211,7 +185,6 @@ impl App {
         };
         let state = thurbox::config::interface_state::load();
         let row = self.snapshots.current().session(&session);
-        // A Fleet Task on another host names directories there.
         if row.is_some_and(|row| !row.workspace_reachable()) {
             self.toast("this Task's workspace is on another machine; no editor opens here");
             return;
@@ -223,11 +196,6 @@ impl App {
                 Err(e) => e,
             },
         );
-        // The editor had the screen, and coming back clears it — so every cell
-        // the next frame prints is a fresh one, and a fresh cell carries none
-        // of the hyperlinks the terminal had attached. The frame can otherwise
-        // be identical to the one before the editor, which is exactly when the
-        // outer-terminal pass would say nothing and leave the links dead.
         self.last_link_paints.clear();
     }
 
@@ -258,18 +226,10 @@ impl App {
     }
 
     pub(crate) fn poll_command_bus(&mut self) {
-        // A completed command changes what the rows say, so refresh at once
-        // rather than waiting out the interval — that is what makes a
-        // delete feel immediate instead of arriving up to 400ms later.
         if self.commands.poll() {
-            // Before anything is drawn: the entry that hid a deleted row has
-            // just left the list.
             for id in self.commands.take_deleted() {
                 self.snapshots.hide_until_gone(id);
             }
-            // Wait for the last one: two adds in quick succession would
-            // otherwise re-read between them and publish a list missing the
-            // second.
             if self.bookmark_in_flight
                 && !self
                     .commands
@@ -280,14 +240,7 @@ impl App {
                 self.bookmark_in_flight = false;
                 self.repos.invalidate_bookmarks();
             }
-            // A failure is recorded now: the bus drops a failed command from
-            // its list after a linger, and one gone before the report below
-            // would read as a success.
             self.record_command_failures();
-            // Re-read BEFORE reporting: a `session.post_create` names the row
-            // the command made, which only exists here once the rows are.
-            // A creation is awaited by the id it will have: a source can
-            // publish its row later than the command finished.
             let live: std::collections::HashSet<u64> = self
                 .commands
                 .inflight()
@@ -309,9 +262,6 @@ impl App {
             if self.snapshots.fresh_since(ticket) {
                 self.report_after = None;
                 self.report_finished_commands();
-                // A finished creation is deliberately not acted on here: see
-                // `focus_on_session` for why a session that just spawned does
-                // not pull the view onto itself.
                 self.note_data_change();
             }
         }
@@ -342,10 +292,6 @@ impl App {
 
     pub(crate) fn report_finished_commands(&mut self) {
         self.record_command_failures();
-        // Anything that left the list without having failed is a command that
-        // worked. Reported because most of them change something the screen does
-        // not obviously show — a sync, a restart, a worktree — and silence after
-        // a keystroke reads as the key not having worked.
         let live: std::collections::HashSet<u64> = self
             .commands
             .inflight()
@@ -383,8 +329,6 @@ impl App {
             .session(&session)
             .map(|row| row.name.clone())
             .filter(|label| !label.is_empty());
-        // What `session.post_*` will need once the command has finished and its
-        // row is gone (a delete) or only just arrived (a create).
         let (name, fleet) = match &command {
             Command::Create { name, fleet, .. } => {
                 (Some(name.clone()).filter(|n| !n.is_empty()), fleet.clone())
@@ -411,13 +355,6 @@ impl App {
                 force,
             },
         );
-        // Accepting a command changes `thurbox.commands`, which panes draw from:
-        // the session list drops the row a `delete` names as soon as one is
-        // accepted. Such a pane is `pure`, so without moving the epoch here it
-        // is handed the tree built *before* the command existed, and the change
-        // waits for whatever moves a signal next — the animation clock 125ms
-        // later, or the completion. `poll_command_bus` already does this for the
-        // completion; this is the submission half.
         self.note_data_change();
     }
 
@@ -469,17 +406,10 @@ impl App {
                     self.refuse_program(name, error);
                     return;
                 }
-                // The start below begins in the state the keys were meant to
-                // produce — the editor opens the file it was given as an
-                // argument. Sending them anyway would race a program that is not
-                // yet reading its input.
                 KeysPlan::Start => {}
             }
         }
 
-        // Born at the rect it will be painted into where the last frame recorded
-        // one, so its first frame is already the right shape — a pane started a
-        // screen wide reflows everything it has printed on the next one.
         let (cols, rows) = crossterm::terminal::size().unwrap_or((80, 24));
         let rect = self.terminals.last_rect(&key.surface_id());
         let (rows, cols) = match rect {

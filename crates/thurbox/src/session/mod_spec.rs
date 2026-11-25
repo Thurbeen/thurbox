@@ -110,8 +110,7 @@ pub fn validate_destination(file: &str) -> Result<(), String> {
             "{file}: must be relative to the interface directory"
         ));
     }
-    // Both separators, because a spec written on Windows is a spec that has to
-    // load on Linux.
+    // A spec written on Windows separates paths with `\`.
     if file
         .split(['/', '\\'])
         .any(|part| part.is_empty() || part == "." || part == "..")
@@ -184,9 +183,6 @@ impl ModSpec {
         for entry in &spec.mods {
             entry.validate()?;
         }
-        // Two entries delivering to one path cannot both be honoured, and
-        // silently letting the last win would make the interface depend on
-        // file order in a way nothing reports.
         let mut seen = BTreeMap::new();
         for (index, entry) in spec.mods.iter().enumerate() {
             if let Some(first) = seen.insert(entry.file.clone(), index) {
@@ -244,10 +240,7 @@ where
 {
     use serde::de::Error;
 
-    // Through `toml::Value` rather than an untagged enum: when neither shape
-    // matches, untagged reports only "did not match any variant", while this names
-    // the field that is actually wrong — and a manifest is hand-written, so that
-    // field is most of the message.
+    // serde untagged enums only say "did not match any variant", so the shapes are matched by hand.
     let value = toml::Value::deserialize(deserializer)?;
     match value {
         toml::Value::Array(_) => Vec::<PackageFile>::deserialize(value).map_err(D::Error::custom),
@@ -414,8 +407,6 @@ pub fn insert_entry(text: &str, entry: &ModEntry) -> Result<String, String> {
         .as_array_of_tables_mut()
         .ok_or_else(|| format!("{SPEC_FILE}: `{ENTRIES_KEY}` is not a list of entries"))?;
 
-    // An install over an existing entry is an update to it, not a second copy —
-    // otherwise `install` twice leaves a spec that cannot be parsed.
     let existing = array
         .iter()
         .position(|table| table.get("file").and_then(|f| f.as_str()) == Some(&entry.file));
@@ -427,8 +418,7 @@ pub fn insert_entry(text: &str, entry: &ModEntry) -> Result<String, String> {
         table["pin"] = toml_edit::value(pin);
     }
     match existing {
-        // Assigning into the slot keeps the entry where the author put it, and
-        // keeps any comment attached to the surrounding document.
+        // toml_edit keeps the slot position and the comments around it on assignment.
         Some(index) => *array.get_mut(index).expect("index from position") = table,
         None => array.push(table),
     }
@@ -452,23 +442,15 @@ pub fn remove_entry(text: &str, key: &str) -> Result<(String, ModEntry), String>
         .get_mut(ENTRIES_KEY)
         .and_then(|item| item.as_array_of_tables_mut())
     {
-        // By destination rather than by the parsed index: `toml_edit` and `toml`
-        // agree on order here, but matching on the key that identifies an entry
-        // cannot drift if one day they do not.
         let at = array
             .iter()
             .position(|table| table.get("file").and_then(|f| f.as_str()) == Some(&removed.file));
         if let Some(at) = at {
             let carried = header_of(array.get(at));
             array.remove(at);
-            // Everything above the FIRST entry is attached to it, so removing that
-            // entry takes the file's own header with it — and the seeded spec is
-            // documented in comments, like `settings.toml`. Whatever stood above
-            // the last blank line was addressed to the file rather than to the
-            // entry, so it has to be put back.
+            // toml_edit attaches the file header to the first entry, so removing it must carry the header down.
             if at == 0 {
                 match (carried, array.get_mut(0)) {
-                    // Down onto whatever is first now.
                     (Some(header), Some(next)) => {
                         let decor = next.decor_mut();
                         let existing = decor
@@ -478,8 +460,6 @@ pub fn remove_entry(text: &str, key: &str) -> Result<(String, ModEntry), String>
                             .to_string();
                         decor.set_prefix(format!("{header}{existing}"));
                     }
-                    // Nothing left to attach it to. An emptied spec still keeps
-                    // what it says about itself, so the document holds it.
                     (Some(header), None) => orphaned_header = Some(header),
                     (None, _) => {}
                 }
@@ -495,8 +475,6 @@ pub fn remove_entry(text: &str, key: &str) -> Result<(String, ModEntry), String>
 
 fn header_of(table: Option<&toml_edit::Table>) -> Option<String> {
     let prefix = table?.decor().prefix()?.as_str()?;
-    // Splitting on the *raw* text rather than on parsed comments, because that is
-    // what has to be written back byte for byte.
     let cut = prefix.rfind("\n\n").map(|at| at + 2)?;
     Some(prefix[..cut].to_string())
 }
@@ -649,8 +627,6 @@ file = "mods/80_notes.lua"
                 "{key}"
             );
         }
-        // A URL source is named by the file it delivers, since nobody retypes a URL
-        // — minus the load-order prefix, which is a position and not a name.
         for key in ["notes", "80_notes", "mods/80_notes.lua"] {
             assert_eq!(
                 spec.find(key).map(|e| e.file.as_str()),
@@ -687,7 +663,6 @@ file = "mods/80_notes.lua"
 
     #[test]
     fn adding_the_same_destination_twice_updates_rather_than_duplicates() {
-        // Otherwise installing twice leaves a spec that will not parse.
         let once = insert_entry(
             SPEC,
             &ModEntry {
@@ -721,10 +696,6 @@ file = "mods/80_notes.lua"
 
     #[test]
     fn removing_the_first_entry_keeps_the_file_header_but_not_its_own_comment() {
-        // The spec is documented in comments, like `settings.toml`, and every byte
-        // above the first entry belongs to that entry as far as `toml_edit` is
-        // concerned — so without carrying the header down, one `mod remove`
-        // would delete the file's documentation.
         let (text, removed) = remove_entry(SPEC, "atlas").expect("remove");
         assert_eq!(removed.file, "mods/75_atlas.lua");
         assert!(
@@ -751,8 +722,6 @@ file = "mods/80_notes.lua"
 
     #[test]
     fn removing_the_only_entry_is_not_a_lost_header() {
-        // Nothing to carry the header down to. It stays where it is, because the
-        // document keeps its own trailing trivia.
         let one = "# mine\n\n[[mod]]\nsrc = \"atlas\"\nfile = \"mods/a.lua\"\n";
         let (text, _) = remove_entry(one, "atlas").expect("remove");
         assert!(text.contains("# mine"), "{text}");
@@ -785,8 +754,6 @@ file = "mods/80_notes.lua"
         let entry = again.entry("mods/75_atlas.lua").expect("entry");
         assert_eq!(entry.digest("mods/75_atlas.lua"), Some("aaaa"));
         assert_eq!(entry.pin_key(), "atlas@v0.3.1");
-        // A module the package brought is traceable to the entry that brought it,
-        // which is what stops it being reported as the user's own file.
         assert_eq!(
             again.covering("lib/atlas/util.lua").map(|e| e.src.as_str()),
             Some("atlas")
@@ -911,7 +878,6 @@ file = "mods/80_notes.lua"
             ),
             vec![some("mods/40_a.lua"), some("mods/41_b.lua")]
         );
-        // A declaration with no usable source still counts.
         assert_eq!(
             pane_sources_of(
                 "[[pane]]\nsource = \"mods/40_a.lua\"\n[[pane]]\nsource = \"\"\n[[pane]]\n"

@@ -36,15 +36,6 @@ pub enum Source {
 
 pub fn resolve_source_in(target: &str, folder: &str) -> Source {
     let t = target.trim();
-    // A repository, recognised EXPLICITLY and never guessed. Three unambiguous
-    // forms: a `git+` prefix, a `.git` suffix, or the scp-like `git@host:path`.
-    //
-    // A bare `https://github.com/owner/repo` deliberately does NOT clone. That
-    // spelling already means "a base URL to fetch manifest-named files from", and
-    // reinterpreting it by host would change the meaning of every existing install
-    // for one forge while leaving it alone for others. `git+` is the escape hatch
-    // for a repository URL with no `.git` suffix — cargo's spelling, for this
-    // reason.
     if let Some(url) = git_url(t) {
         return Source::Git(url);
     }
@@ -59,9 +50,7 @@ pub fn resolve_source_in(target: &str, folder: &str) -> Source {
         };
         return Source::Remote(format!("{scheme}{}", rest.trim_end_matches('/')));
     }
-    // Looks like a path (not a bare name)? Detect `/` and `.`/`~`
-    // prefixes, plus Windows forms: a `\` separator or an absolute drive path
-    // (`C:\…`), which carry neither a `/` nor a leading `.`.
+    // Windows paths carry a `\` separator or a drive prefix (`C:\…`), with no `/` or leading `.`.
     let looks_local = t.contains('/')
         || t.contains('\\')
         || t.starts_with('.')
@@ -81,8 +70,6 @@ pub fn git_url(target: &str) -> Option<String> {
     if t.ends_with(".git") {
         return Some(t.to_string());
     }
-    // scp-like: `git@host:path`. Required to have both a host and a path, so a bare
-    // `git@host` is not mistaken for one.
     if let Some(rest) = t.strip_prefix("git@") {
         if let Some((host, path)) = rest.split_once(':') {
             if !host.is_empty() && !path.is_empty() {
@@ -104,9 +91,6 @@ pub fn fetch_file(source: &Source, rel: &str) -> Result<String, String> {
             std::fs::read_to_string(&p).map_err(|e| format!("read {}: {e}", p.display()))
         }
         Source::Remote(base) => http_get(&format!("{base}/{rel}")),
-        // A repository is obtained as a working copy, not read file by file — that
-        // is the whole point of the form. Reaching here means a caller took the
-        // fetch path for a git source, which is a bug at that call site.
         Source::Git(url) => Err(format!(
             "{url} is a repository: it is cloned, not fetched file by file"
         )),
@@ -119,7 +103,6 @@ fn run_first_ok(attempts: &[(&str, Vec<&str>)]) -> Result<Vec<u8>, String> {
         match Command::new(bin).args(args).output() {
             Ok(out) if out.status.success() => return Ok(out.stdout),
             Ok(out) => {
-                // The tool ran but failed (404, DNS, refused…) — keep its stderr.
                 let stderr = String::from_utf8_lossy(&out.stderr);
                 let detail = stderr.trim();
                 let detail = if detail.is_empty() {
@@ -209,12 +192,9 @@ mod tests {
         assert_eq!(compare_versions("0.113.0", "0.113.0"), Ordering::Equal);
         assert_eq!(compare_versions("0.114.0", "0.113.0"), Ordering::Greater);
         assert_eq!(compare_versions("0.113.0", "0.114.0"), Ordering::Less);
-        // Numeric, not lexical: 0.20 > 0.9.
         assert_eq!(compare_versions("0.20.0", "0.9.0"), Ordering::Greater);
-        // Leading `v` and missing trailing components are tolerated.
         assert_eq!(compare_versions("v1.2", "1.2.0"), Ordering::Equal);
         assert_eq!(compare_versions("2.0.0", "1.99.99"), Ordering::Greater);
-        // Pre-release suffix is ignored for ordering.
         assert_eq!(compare_versions("0.113.0-rc1", "0.113.0"), Ordering::Equal);
     }
 
@@ -225,9 +205,6 @@ mod tests {
         assert_eq!(major_version("2"), Some(2));
         assert_eq!(major_version("2.0.0-rc1"), Some(2));
         assert_eq!(major_version("  v10.1.0 "), Some(10));
-        // Nothing numeric to read: report that rather than guessing a `0`,
-        // which `compare_versions` may do because ordering needs a number and a
-        // major-boundary decision needs a fact.
         assert_eq!(major_version(""), None);
         assert_eq!(major_version("main"), None);
     }
@@ -244,17 +221,14 @@ mod tests {
     #[test]
     fn a_repository_source_is_recognised_only_in_its_explicit_forms() {
         for (target, expected) in [
-            // `git+` prefix, stripped from what git is handed.
             (
                 "git+https://github.com/you/thurbox-widget",
                 "https://github.com/you/thurbox-widget",
             ),
-            // A `.git` suffix speaks for itself.
             (
                 "https://github.com/you/thurbox-widget.git",
                 "https://github.com/you/thurbox-widget.git",
             ),
-            // scp-like.
             (
                 "git@github.com:you/thurbox-widget.git",
                 "git@github.com:you/thurbox-widget.git",
@@ -266,7 +240,6 @@ mod tests {
             }
         }
 
-        // And these must keep the meanings they already have.
         assert!(matches!(
             resolve_source_in("https://github.com/you/thurbox-widget", "examples/panes"),
             Source::Remote(_)
@@ -283,12 +256,9 @@ mod tests {
 
     #[test]
     fn a_near_miss_is_not_a_repository() {
-        // `git@host` with no path, and a bare `git+`, are not sources.
         assert_eq!(git_url("git@github.com"), None);
         assert_eq!(git_url("git+"), None);
-        // A directory merely named `.github` is not a `.git` suffix.
         assert_eq!(git_url("./.github"), None);
-        // A path that happens to contain the word.
         assert_eq!(git_url("./my-git-panes"), None);
     }
 

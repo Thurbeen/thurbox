@@ -105,8 +105,6 @@ pub fn run(settings: &crate::session::settings::Settings) -> Result<CommandOutpu
     findings.extend(automation_timer_finding(
         automation_timer_state().as_deref(),
     ));
-    // Sessions of a Fleet on another machine run in that machine's
-    // multiplexer: this one needs none unless a Fleet runs here.
     if listed.iter().any(|(_, def)| def.transport.is_local()) {
         findings.push(multiplexer_finding());
     }
@@ -424,8 +422,6 @@ pub(super) struct FleetFacts {
 impl FleetFacts {
     pub(super) fn read(link: &crate::fleet_link::FleetLink) -> Self {
         let program = link.program();
-        // ssh's connect bound is inside the probe's: a slow handshake is not
-        // a Fleet that stalls.
         let timeout = link.probe_timeout();
         let answer = link.bounded_output(&["version", "--json"], timeout);
         let unreachable = answer.as_ref().ok().and_then(|out| link.unreachable(out));
@@ -443,7 +439,6 @@ impl FleetFacts {
                 }
             }),
         };
-        // A machine that cannot be reached is asked once.
         let hosts = match &unreachable {
             Some(why) => Err(why.clone()),
             None => link
@@ -569,7 +564,6 @@ impl FleetFacts {
                             .filter_map(|h| h.as_str())
                             .collect::<Vec<_>>()
                             .join(", "),
-                        // `null`: one runtime serves any place.
                         None => "any place (one runtime serves them all)".into(),
                     },
                 ),
@@ -789,7 +783,6 @@ mod tests {
         );
         let fix = finding.fix.expect("a fix");
         assert!(fix.contains(&path.display().to_string()), "{fix}");
-        // Fleet's CronTask is where a schedule goes now.
         assert!(fix.contains("CronTask"), "{fix}");
         assert!(fix.contains("docs/fleet/resources/cron-task.md"), "{fix}");
     }
@@ -1164,10 +1157,8 @@ mod tests {
             "definitely-not-a-fleet-xyz",
         ));
         assert_eq!(gone.findings(true)[0].level, Level::Fail);
-        // A listed Fleet the interface does not use only warns.
         assert_eq!(gone.findings(false)[0].level, Level::Warn);
 
-        // A Fleet that never answers is stopped and reported, not waited on.
         let stuck = dir.path().join("stuck");
         std::fs::write(&stuck, "#!/bin/sh\nexec sleep 60\n").unwrap();
         std::fs::set_permissions(&stuck, std::fs::Permissions::from_mode(0o755)).unwrap();

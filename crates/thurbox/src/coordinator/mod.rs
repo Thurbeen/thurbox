@@ -26,8 +26,6 @@ use crate::{
     PERF_WINDOW_TICKS, QUIESCENT_AFTER, TICK,
 };
 
-// The chrome helpers keep their bare names at every call site in this
-// directory, which is where all of them live.
 pub(crate) use chrome::*;
 
 pub(crate) struct EchoWait {
@@ -44,13 +42,9 @@ impl EchoWait {
 
 impl App {
     pub(crate) fn run(&mut self, mut terminal: DefaultTerminal) -> Result<(), Box<dyn Error>> {
-        // Consecutive input failures, reset by the first event that reads
-        // cleanly. See `drain_input` for why one is survivable.
         let mut input_failures: u32 = 0;
         while !self.quit {
             Counters::bump(&self.perf.iterations);
-            // One cached bool, so a default run pays nothing for the two
-            // `Instant` reads below (ADR-P11).
             let timing = self.perf_timing_active();
             self.host.set_perf_timing(timing);
             let tick_start = timing.then(Instant::now);
@@ -63,22 +57,14 @@ impl App {
             self.apply_external_requests();
             self.refresh_control_state(false);
             self.serve_ui_control();
-            // After everything above has published and before the paint, so a
-            // handler sees this iteration's state and its writes land in the
-            // frame about to be painted. A no-op while nothing is queued.
             self.dispatch_events(&mut terminal);
 
-            // Recorded BEFORE the paint so `tick` and `frame` decompose rather
-            // than nest: the iteration is roughly tick + republish + frame +
-            // the input wait, and a number that contained the paint could not
-            // tell those apart.
             if let Some(start) = tick_start {
                 self.timings.tick.record(start.elapsed());
             }
 
             self.paint_if_due(&mut terminal)?;
             self.rebuild_full_vm();
-            // After the paint, which is what says which surface has the focus.
             self.forward_app_copy();
             self.focus_terminal();
             self.report_perf();
@@ -93,6 +79,7 @@ impl App {
         self.terminals.focus(focused);
     }
 
+    // tmux never hands a control-mode client an OSC 52 selection.
     pub(crate) fn forward_app_copy(&mut self) {
         let takes_keys = !self.overlay_owns_input() && self.focused_wants_session_input();
         let focused = self.focused_surface.as_deref().filter(|_| takes_keys);
@@ -126,9 +113,6 @@ impl App {
         if self.watcher.changed() {
             self.reload_at = Some(Instant::now() + DEBOUNCE);
         }
-        // The settings file, edited from outside. A live change is already in
-        // force by the time this returns; the other two outcomes are the ones
-        // worth saying out loud.
         match self.config.poll() {
             Some(thurbox::kernel::config::Reloaded::Live) => {
                 self.toast("settings reloaded".to_string());
@@ -173,8 +157,6 @@ impl App {
             .map_or(current, |echo| echo.target_seq);
         Some(EchoWait {
             surface: surface.to_string(),
-            // A previous key may still be waiting when this one is sent. Its
-            // answer is not this key's answer, so reserve the following move.
             target_seq: current.max(after_queued).saturating_add(1),
             sent: Instant::now(),
         })
@@ -218,7 +200,6 @@ impl App {
         let Some(echo) = self.echo.front() else {
             return next_event(timeout);
         };
-        // Back in time to paint the held keystroke frame if no echo came.
         let now = Instant::now();
         let hold = echo.hold_until();
         let deadline = if hold > now {
@@ -245,15 +226,13 @@ impl App {
         &self,
         left: Duration,
     ) -> std::io::Result<Option<crossterm::event::Event>> {
-        // crossterm reads the terminal from stdin when stdin is one; polling
-        // any other descriptor would be polling the wrong thing.
+        // crossterm reads the terminal from stdin when stdin is a tty.
         // SAFETY: `isatty` only inspects a descriptor number.
         let tty = unsafe { libc::isatty(libc::STDIN_FILENO) } == 1;
         let Some(wake) = thurbox::backend::output_wake::read_fd().filter(|_| tty) else {
             return next_event(left.min(ECHO_POLL));
         };
-        // An event crossterm has already read and queued would not make stdin
-        // readable again.
+        // An event crossterm has already queued does not make stdin readable again.
         if let Some(event) = next_event(Duration::ZERO)? {
             return Ok(Some(event));
         }
@@ -269,7 +248,7 @@ impl App {
                 revents: 0,
             },
         ];
-        // Rounded up: a zero timeout would spin until the deadline.
+        // `poll` with a zero timeout returns at once, so round up.
         let ms = left.as_micros().div_ceil(1000).min(i32::MAX as u128) as i32;
         // SAFETY: `fds` is a valid array of two pollfds for the duration of the
         // call.
@@ -294,8 +273,6 @@ impl App {
         if !self.perf_timing_active() {
             return;
         }
-        // Mirrored from the host, which owns the two caches: the counters are
-        // the only way a skip is visible at all (`frame-cost`).
         self.perf.renders_skipped.store(
             self.host.skipped_renders(),
             std::sync::atomic::Ordering::Relaxed,
@@ -306,8 +283,6 @@ impl App {
         );
         let counters = self.perf.read();
 
-        // The window line: counter deltas plus this window's percentiles, then
-        // the timings reset so each window stands alone.
         if self.perf_log
             && counters.iterations.saturating_sub(self.perf_window_tick) >= PERF_WINDOW_TICKS
         {
@@ -346,8 +321,6 @@ impl App {
             self.host.reset_mod_perf();
         }
 
-        // The snapshot, on its own slower cadence: it is a database write, not
-        // a log line.
         let due = self
             .perf_published_at
             .is_none_or(|at| at.elapsed() >= PERF_PUBLISH_INTERVAL);
@@ -362,7 +335,6 @@ impl App {
             self.snapshots.current().sessions.len(),
             &self.host.mod_report(),
         );
-        // Off the loop: `thurbox-cli perf` reads the file whenever it is asked.
         let text = json.to_string();
         std::thread::spawn(move || {
             if let Err(e) = thurbox::kernel::perf::publish_snapshot(&text) {
@@ -391,24 +363,12 @@ impl App {
 
     pub(crate) fn advance_animation(&mut self) {
         let printing = self.terminals.printing();
-        let animating = self
-            .snapshots
-            .current()
-            .sessions
-            .iter()
-            .any(|row| {
-                row.status == thurbox::session::SessionState::Working
-                    // A `running` session animates only while its pane is
-                    // printing, so the clock has to run for that case too —
-                    // otherwise the spinner it gates freezes mid-turn.
-                    || (row.status == thurbox::session::SessionState::Running
-                        && printing.contains(&row.id))
-            })
-            || self.commands.has_inflight()
+        let animating = self.snapshots.current().sessions.iter().any(|row| {
+            row.status == thurbox::session::SessionState::Working
+                || (row.status == thurbox::session::SessionState::Running
+                    && printing.contains(&row.id))
+        }) || self.commands.has_inflight()
             || self.terminals.starting()
-            // The creation flow spins over the repo store's reads too, and it
-            // is a pure pane: without the clock its "listing…"/"fetching…"
-            // spinner freezes for the life of a slow remote read.
             || self.repos.in_flight();
         if !animating {
             return;
@@ -427,9 +387,6 @@ impl App {
 
     pub(crate) fn note_data_change(&mut self) {
         self.note_published_change();
-        // A worker result or a row another process wrote is the answer to
-        // something someone asked for, so it earns the tight floor. Only agent
-        // output — which arrives whether or not anyone is looking — does not.
         self.note_input();
         self.last_activity = Instant::now();
     }
@@ -452,9 +409,6 @@ impl App {
         }
         if let Some(id) = wanted {
             if let Some(row) = self.snapshots.current().session(&id) {
-                // Over ssh a diff is network bytes — up to MAX_DIFF_BYTES a
-                // read — so it is fetched only while a pane on screen reads
-                // it. The held answer stays, aging, for when one does again.
                 let shown = self.diffs_shown || !thurbox::kernel::diff::over_ssh(&row.backend);
                 if shown {
                     self.diffs.request_row(row);
@@ -464,19 +418,11 @@ impl App {
         if self.diffs.poll() {
             self.note_data_change();
         }
-        // Input a stream pane dropped is reported where a command's error
-        // is, not drawn into the pane's grid.
         for notice in self.terminals.take_input_notices() {
             self.report(notice, Level::Error);
         }
-        // The content search: dispatch what the strip asks for, fold in what
-        // the worker finished.
         self.serve_search();
 
-        // The creation flow's reads. It asks by leaving a key in `store`,
-        // which is written the moment its handler runs, so a request made
-        // on a keystroke is served on the very next iteration. Requesting
-        // is idempotent, so asking every iteration costs four lookups.
         let wants = self.repo_wants();
         self.repos.serve(&wants);
         self.snapshots.want_places(
@@ -488,21 +434,13 @@ impl App {
             self.note_data_change();
         }
 
-        // What Windows said about its clipboard, for a paste press that could
-        // not be answered when it happened (WSL only — `clipboard::ImageProbe`).
         self.poll_image_probe();
         self.poll_remote_drop();
 
-        // An update that replaced binaries is worth saying once; a check that
-        // merely found a release shows up in the header instead.
         if let Some(message) = self.updates.poll() {
             self.toast(message);
         }
 
-        // Machine and statusline metrics. Asked whether a sample is
-        // due before the subject list is built — `metric_subjects` clones two
-        // strings per session, which is worth paying once a second but not per
-        // iteration.
         if self.metrics.wants_sample() {
             self.metrics.sample(self.metric_subjects());
         }
@@ -512,33 +450,21 @@ impl App {
     }
 
     pub(crate) fn apply_external_requests(&mut self) {
-        // A clicked notification's action callback asks for its session.
         if let Some(id) = thurbox::notifications::take_focus_request() {
             self.focus_on_session(&id);
         }
 
-        // Notify on the blocked edge, observed where status is read so the
-        // rule cannot drift from what the list shows.
         self.notifier
             .observe(self.snapshots.current(), self.focused_session.as_deref());
     }
 
     pub(crate) fn sync_terminals_and_agents(&mut self) {
-        // Attach to any session that gained a pane, and drop the ones that
-        // went away. Sized to the screen as a starting point; each surface
-        // resizes its own pane to its real rect when it paints.
         let (cols, rows) = self.screen_size;
         self.terminals.sync(self.snapshots.current(), rows, cols);
-        // Only painted surfaces owe output frames. Hidden panes keep parsing,
-        // and their metadata still travels through the snapshot and meta gates.
         let output_gen = self.terminals.visible_output_generation();
         if output_gen != self.last_output_gen {
             self.last_output_gen = output_gen;
             self.last_activity = Instant::now();
-            // Deliberately NOT a data change: new agent output moves the vt100
-            // grid a surface paints from, not anything published. Treating it as
-            // one would move the epoch on every frame under a printing agent and
-            // make the whole gate worthless.
             self.dirty = true;
         }
         self.settle_echo();
@@ -567,8 +493,6 @@ impl App {
                 }
             }
         }
-        // Drained on every pass so the store never holds them; the host ignores
-        // them while timing is off.
         for event in self.runs.drain_events() {
             self.host.note_run(&event);
         }

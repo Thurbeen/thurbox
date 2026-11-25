@@ -39,7 +39,6 @@ pub fn decide_update(current: &str, latest: &str) -> Option<UpdateStatus> {
     if current.is_empty() || latest.is_empty() {
         return None;
     }
-    // Dev builds (0.0.0-dev) intentionally never flag an update.
     if is_dev_version(current) {
         return None;
     }
@@ -205,8 +204,6 @@ mod tests {
 
     #[test]
     fn the_newest_on_the_line_wins_whatever_the_list_order() {
-        // GitHub orders by creation date, so a 3.x hotfix of an older minor can
-        // come first; the version, not the position, decides.
         let body = serde_json::json!([release("v3.9.1"), release("v3.10.0")]).to_string();
         let r = parse_releases(&body).unwrap();
         assert_eq!(r.line.as_deref(), Some("3.10.0"));
@@ -235,8 +232,6 @@ mod tests {
 
     #[test]
     fn a_cache_from_before_the_line_rule_never_offers_another_major() {
-        // Builds before the line rule cached GitHub's "Latest". Reading a
-        // cached next major must not put its badge on an install of this line.
         assert_eq!(cached_status("3.0.1", "4.0.0"), None);
         assert_eq!(
             cached_status("3.0.1", "3.0.2").map(|s| s.latest),
@@ -249,13 +244,9 @@ mod tests {
         let tmp = tempfile::TempDir::new().unwrap();
         let _guard = crate::paths::TestPathGuard::new(tmp.path());
 
-        // No cache yet: stale, no status.
         assert!(cache_is_stale());
         assert!(read_cached_status().is_none());
 
-        // A freshly written newer release is fresh and (for a non-dev current
-        // version) drives a status. We can't override the compiled-in current
-        // version, so assert the cache file itself round-trips.
         write_cache("v9.9.9");
         assert!(!cache_is_stale(), "just-written cache is fresh");
         let cached = read_cache().expect("cache present");
@@ -267,7 +258,6 @@ mod tests {
         let tmp = tempfile::TempDir::new().unwrap();
         let _guard = crate::paths::TestPathGuard::new(tmp.path());
 
-        // Write a cache stamped at the epoch — far older than the TTL window.
         let path = cache_path().unwrap();
         std::fs::create_dir_all(path.parent().unwrap()).unwrap();
         let entry = CachedCheck {

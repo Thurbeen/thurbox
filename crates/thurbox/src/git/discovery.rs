@@ -68,8 +68,6 @@ pub fn list_dir_entries(dir: &str) -> DirListing {
         return DirListing::Missing;
     }
     let Ok(entries) = std::fs::read_dir(dir) else {
-        // Exists but unreadable (permissions): an empty listing keeps the
-        // browser usable; the path itself may still be committed.
         return DirListing::Entries(Vec::new());
     };
     let mut names: Vec<(String, bool)> = entries
@@ -128,9 +126,7 @@ pub fn fetch_origin(repo: &str, deadline: std::time::Duration) -> Result<(), Str
     if super::run_git_capture(&["remote", "get-url", "origin"], &repo).is_none() {
         return Ok(());
     }
-    // `followRemoteHEAD=always` moves `origin/HEAD` to what the upstream
-    // advertises in the same fetch, so an upstream that changed its default
-    // branch is followed (git 2.48+; an older git ignores it).
+    // `followRemoteHEAD=always` moves `origin/HEAD` to the upstream default (git 2.48+; older git ignores it).
     let mut fetch = super::git_command(
         &repo,
         &[
@@ -141,9 +137,6 @@ pub fn fetch_origin(repo: &str, deadline: std::time::Duration) -> Result<(), Str
             "origin",
         ],
     );
-    // A repository's own ssh command (`core.sshCommand`, `GIT_SSH_COMMAND`,
-    // `GIT_SSH`: a wrapper, a key, a proxy) is kept, so its fetch works as the
-    // user's own does; only one nothing configures gets thurbox's options.
     let own_ssh = std::env::var_os("GIT_SSH_COMMAND").is_some()
         || std::env::var_os("GIT_SSH").is_some()
         || super::run_git_capture(&["config", "--get", "core.sshCommand"], &repo)
@@ -163,8 +156,6 @@ pub fn fetch_origin(repo: &str, deadline: std::time::Duration) -> Result<(), Str
 
 pub fn branches(repo: &str) -> Result<Branches, BranchesUnread> {
     let repo = paths::expand_tilde(repo);
-    // Whether there is a repository is read from the filesystem, so a `git`
-    // that cannot run, or refuses the repository, never passes for none.
     let bare = repo.join("HEAD").is_file() && repo.join("objects").is_dir();
     if !bare && !repo.ancestors().any(|at| at.join(".git").exists()) {
         return Err(BranchesUnread::NotGit);
@@ -240,7 +231,6 @@ pub(super) fn repo_name_from_remote(path: &Path) -> Option<String> {
 }
 
 pub(super) fn parse_repo_name_from_url(url: &str) -> Option<String> {
-    // Split on the last '/' (HTTPS/SSH with path) or ':' (SSH shorthand).
     let after_sep = if url.contains('/') {
         url.rsplit('/').next()?
     } else {

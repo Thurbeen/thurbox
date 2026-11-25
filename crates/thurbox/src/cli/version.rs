@@ -18,8 +18,6 @@ pub fn run(
     let current = crate::update::version_check::current_version();
 
     if !args.check {
-        // Where this build's interface state lives and which tmux socket it
-        // names: what tells a sandbox apart from the real instance.
         return CommandOutput::new(
             json!({
                 "version": current,
@@ -112,8 +110,6 @@ mod tests {
 
     #[test]
     fn version_check_when_flag_disabled_prints_enable_hint() {
-        // The flag is on by default for 1.0, so exercise the disabled path
-        // directly, with the flag passed in — no network.
         let out = run(
             VersionArgs { check: true },
             false,

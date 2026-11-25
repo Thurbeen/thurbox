@@ -675,10 +675,6 @@ mod unix {
                 let _ = fs::remove_file(&path);
                 continue;
             }
-            // A socket that is not this interface's is not trusted, but the
-            // record is kept: a reader in another environment may only be
-            // unable to tell, and deleting it would hide a live interface
-            // until it restarts.
             if !endpoint_is_ours(&dir, &instance.endpoint, &instance.id, uid) {
                 continue;
             }
@@ -757,8 +753,7 @@ mod windows {
             fs::File::create(&path).map_err(|e| e.to_string())?;
         }
         OwnerAcl::new()?.protect(&path)?;
-        // LockFile requires GENERIC_READ or GENERIC_WRITE; append alone grants
-        // only FILE_APPEND_DATA on Windows.
+        // Windows LockFile needs GENERIC_READ or GENERIC_WRITE; append grants only FILE_APPEND_DATA.
         fs::OpenOptions::new()
             .read(true)
             .append(true)
@@ -808,8 +803,7 @@ mod windows {
         text.encode_wide().chain(std::iter::once(0)).collect()
     }
 
-    // OW grants only the object owner; SY keeps local system access. The same
-    // descriptor protects discovery and every pipe instance.
+    // SDDL: OW grants only the object owner; SY keeps local system access.
     struct OwnerAcl(*mut std::ffi::c_void);
 
     impl OwnerAcl {
@@ -888,10 +882,7 @@ mod windows {
             .map_err(|e| e.to_string())
     }
 
-    // No `max_instances`: tokio's default is already PIPE_UNLIMITED_INSTANCES
-    // (255), and `max_instances` asserts its argument is at most 254, so
-    // passing 255 to mean "unlimited" panics the server thread. Concurrency is
-    // bounded by the `clients` semaphore instead.
+    // tokio's `max_instances` panics above 254, and its default is already unlimited.
     fn create_instance(name: &std::path::Path, acl: &OwnerAcl) -> io::Result<NamedPipeServer> {
         let mut attrs = acl.attrs();
         unsafe {
@@ -944,7 +935,7 @@ mod windows {
                 .try_send(Pending {
                     request_id: request.request_id,
                     request: request.request,
-                    peer: 0, // The pipe ACL admits only its owner (and local system).
+                    peer: 0,
                     reply,
                     deadline: std::time::Instant::now() + WAIT,
                 })

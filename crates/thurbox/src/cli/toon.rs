@@ -33,8 +33,7 @@ impl Encoder {
         match value {
             Value::Object(map) if map.is_empty() => {}
             Value::Object(map) => {
-                // A root object of uniform objects takes the keyless keyed
-                // tabular header (§9.5).
+                // TOON §9.5: a root object of uniform objects takes the keyless tabular header.
                 match keyed_fields(map) {
                     Some(fields) => {
                         out.push(format!(
@@ -65,8 +64,7 @@ impl Encoder {
         let key = encode_key(key);
         match value {
             Value::Array(items) if items.is_empty() => {
-                // §9.1: an empty array in field position is `key: []`, never a
-                // zero-length header.
+                // TOON §9.1: an empty array in field position is `key: []`.
                 out.push(format!("{pad}{key}: []"));
             }
             Value::Array(items) => self.array_body(Some(&key), items, depth, out),
@@ -134,13 +132,7 @@ impl Encoder {
         match item {
             Value::Object(map) if map.is_empty() => out.push(format!("{pad}-")),
             Value::Object(map) => {
-                // §10: the object's first field rides the hyphen line and any
-                // scope it opens stays where it was. Emitting the whole object
-                // one level in and then rewriting the first line's indent to
-                // `- ` does exactly that — the hyphen occupies the two columns
-                // the extra indent level would have, so every deeper line
-                // (tabular rows at depth+2, sibling fields at depth+1) is
-                // already at the depth §10 requires.
+                // TOON §10: the first field rides the hyphen line, which takes the extra indent's two columns.
                 let mut lines = Vec::new();
                 self.object_body(map, depth + 1, &mut lines);
                 let inner = self.pad(depth + 1);
@@ -151,8 +143,7 @@ impl Encoder {
                 out.extend(lines);
             }
             Value::Array(inner) if inner.is_empty() => {
-                // §9.2: a list item's empty array keeps the header form; the
-                // `key: []` spelling is field-position only.
+                // TOON §9.2: a list item's empty array keeps the header form.
                 out.push(format!("{pad}- [0{}]:", self.marker()));
             }
             Value::Array(inner) if inner.iter().all(is_primitive) => {
@@ -165,8 +156,7 @@ impl Encoder {
                 ));
             }
             Value::Array(inner) => {
-                // A keyless tabular header is root-only (§6), so a nested array
-                // of objects stays in list form here however uniform it is.
+                // TOON §6: a keyless tabular header is root-only.
                 out.push(format!("{pad}- [{}{}]:", inner.len(), self.marker()));
                 for nested in inner {
                     self.list_item(nested, depth + 1, out);
@@ -264,9 +254,6 @@ fn columns(objects: &[&Map<String, Value>]) -> Option<Vec<Field>> {
             fields.push(Field::Leaf(key.clone()));
             continue;
         }
-        // A nested-uniform column: every value a non-empty object whose own
-        // columns classify. Anything else — a null beside an object, an array,
-        // an empty object — disqualifies the whole array.
         let nested: Vec<&Map<String, Value>> = column
             .iter()
             .map(|v| v.as_object().filter(|m| !m.is_empty()))
@@ -306,7 +293,6 @@ fn scalar(value: &Value, delim: char) -> String {
                 s.clone()
             }
         }
-        // Not reachable: callers classify containers before asking for a token.
         other => other.to_string(),
     }
 }
@@ -319,15 +305,14 @@ fn number(n: &serde_json::Number) -> String {
         return n.to_string();
     };
     if x == 0.0 {
-        // Covers -0.0, which §2 normalizes to 0.
+        // TOON §2 normalizes -0.0 to 0.
         return "0".to_string();
     }
     let magnitude = x.abs();
     if (1e-6..1e21).contains(&magnitude) {
         return format!("{x}");
     }
-    // Outside the canonical range the spec allows JSON exponent form; it asks
-    // for a lowercase `e` and an explicit sign, which Rust omits when positive.
+    // TOON's exponent form needs a lowercase `e` and an explicit sign, which Rust omits.
     let formatted = format!("{x:e}");
     match formatted.split_once('e') {
         Some((mantissa, exp)) if !exp.starts_with('-') => format!("{mantissa}e+{exp}"),

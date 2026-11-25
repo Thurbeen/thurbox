@@ -46,8 +46,6 @@ pub fn create_repo_dir(path: &Path, what: &NewRepo) -> Result<()> {
         }
     };
     if filled.is_err() && created {
-        // Best effort: the error being returned is the git one, and that is the
-        // one worth reporting.
         let _ = std::fs::remove_dir_all(path);
     }
     filled

@@ -22,7 +22,6 @@ pub fn run(
             if failed.is_empty() {
                 Ok(CommandOutput::new(report, human))
             } else {
-                // Exit non-zero so this is usable as a dotfiles CI gate.
                 Ok(CommandOutput::failed(
                     report,
                     human,
@@ -102,8 +101,6 @@ fn validate_mod_state() -> (Value, bool) {
 }
 
 fn validate() -> (Value, Vec<String>) {
-    // A key thurbox retired is reported at startup, never a failure here: a v2
-    // file stays valid.
     let (settings, settings_ok) = validate_file(
         crate::config::settings::settings_config_path(),
         crate::config::settings::unknown_keys,
@@ -159,7 +156,6 @@ fn render_validate(report: &Value, failed: &[String]) -> String {
 fn push_validate_file_lines(lines: &mut Vec<String>, label: &str, entry: &Value) {
     let exists = entry["exists"].as_bool().unwrap_or(false);
     let valid = entry["valid"].as_bool().unwrap_or(false);
-    // Absent files are valid (defaults/seeding apply), so flag them apart.
     let (mark, status) = match (exists, valid) {
         (false, _) => ("·", "absent"),
         (true, true) => ("✓", "ok"),
@@ -232,10 +228,6 @@ fn show(settings: &crate::session::settings::Settings) -> Value {
                 .map(|p| p.display().to_string()),
             "themes_toml": crate::config::themes::themes_config_path()
                 .map(|p| p.display().to_string()),
-            // The interface is config like the rest of it, and it was the one
-            // thing this command could not tell you the location of — which is
-            // exactly the question a dev build invites, since every path here
-            // swaps `thurbox` for `thurbox-dev`.
             "ui_dir": crate::kernel::bundled::user_ui_dir()
                 .map(|p| p.display().to_string()),
             "ui_json": crate::kernel::registry::overrides_file()
@@ -247,13 +239,8 @@ fn show(settings: &crate::session::settings::Settings) -> Value {
             "interface_json": crate::config::file::path("interface.json")
                 .map(|p| p.display().to_string()),
         },
-        // Not a path, but the same question: which instance is this? A
-        // relocated data dir gets a socket of its own, so the name is resolved
-        // rather than constant and worth reporting where the dirs are.
         "tmux_socket": crate::backend::instance::local_socket_name(),
         "settings": settings,
-        // Fleet runs every session (ADR-41): the one in force, and what it
-        // reads.
         "fleet": super::doctor::FleetFacts::read(&crate::fleet_link::FleetLink::in_force(settings)).document(),
         "editor": { "command": editor, "source": editor_source, "mode": state.editor_mode.as_db_value() },
         "theme": state.theme,
@@ -294,8 +281,6 @@ mod tests {
 
     #[test]
     fn validate_checks_the_interface_overrides_file() {
-        // `ui.json` is the one the interface actually reads on every launch, and it
-        // was the one `validate` did not look at.
         let tmp = tempfile::tempdir().unwrap();
         let _g = TestPathGuard::new(tmp.path());
         let path = crate::kernel::registry::overrides_file().expect("a ui.json path");
@@ -318,8 +303,6 @@ mod tests {
 
     #[test]
     fn validate_checks_the_mod_state_store() {
-        // Trust is granted from this file, so a broken one is reported rather
-        // than read as "nothing trusted" in silence.
         let tmp = tempfile::tempdir().unwrap();
         let _g = TestPathGuard::new(tmp.path());
         let path = crate::kernel::registry::decisions_file().expect("a store path");

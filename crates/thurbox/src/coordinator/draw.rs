@@ -27,16 +27,12 @@ impl App {
     ) -> Result<(), Box<dyn Error>> {
         let since_paint = self.last_paint.elapsed();
         let floor = if self.echo_due.is_some() {
-            // Someone is waiting on exactly this output (`ECHO_WINDOW`).
             Duration::ZERO
         } else if self.input_dirty {
             MIN_FRAME_INTERVAL
         } else {
             OUTPUT_FRAME_INTERVAL
         };
-        // A newer key may still be in its hold while an older key's echo is
-        // already due. The hold only suppresses the empty keystroke frame; it
-        // must never suppress output that has arrived.
         let held = self.echo_due.is_none()
             && self
                 .echo
@@ -73,9 +69,6 @@ impl App {
             self.timings.frame.record(took);
             self.host.note_frame(took);
         }
-        // Kept for the next echo frame only while someone is typing, and only
-        // when nothing in it covers a surface or forces a full print — see
-        // `paint_echo_frame`.
         let typing = self
             .last_keystroke
             .is_some_and(|at| at.elapsed() < KEEP_FRAME_WHILE_TYPING);
@@ -87,13 +80,6 @@ impl App {
             _ if reusable => self.last_frame = Some(painted.buffer.clone()),
             _ => self.last_frame = None,
         }
-        // While `painted` still borrows the terminal — it only needs `&self` and
-        // the cells, and this order is what lets the frame buffer be read in
-        // place instead of cloned whole (10,000 cells a frame) just to end the
-        // borrow. The backend has flushed by the time `draw` returns, so the
-        // escapes cannot interleave with ratatui's own output; the cursor
-        // corrections below come after, which also leaves the caret where the
-        // modal put it.
         self.paint_outer_hyperlinks(painted.buffer);
         self.place_modal_caret(terminal)?;
         self.last_paint = Instant::now();
@@ -101,8 +87,6 @@ impl App {
         self.frames += 1;
         Counters::bump(&self.perf.frames);
         self.log_first_frame();
-        // The frame just painted is what `selected_text` was read from, and
-        // ratatui has flushed it, so the OSC 52 write lands after it.
         if std::mem::take(&mut self.copy_after_paint) {
             self.copy_on_select();
         }
@@ -136,8 +120,6 @@ impl App {
             .iter()
             .flatten()
             .find_map(|tree| tree.session_surface(surface));
-        // Scrolled back, the key's own handler has just snapped the pane to
-        // the live end, which the tree this would reuse does not know yet.
         let Some((0, None)) = shown else {
             return Ok(false);
         };
@@ -151,8 +133,6 @@ impl App {
         };
         let painted = terminal.draw(|frame| {
             frame.buffer_mut().content.clone_from_slice(&kept.content);
-            // `render_session` answers `false` only for a surface with nothing
-            // live behind it, which `last_rect` has already ruled out.
             let _ = thurbox::kernel::paint::SurfaceProvider::render_session(
                 &self.terminals,
                 frame,
@@ -173,6 +153,7 @@ impl App {
         Ok(true)
     }
 
+    // A ratatui `Frame`'s cursor can be set but never unset, so the caret is fixed after the frame.
     fn place_modal_caret(&mut self, terminal: &mut DefaultTerminal) -> Result<(), Box<dyn Error>> {
         if !self.modals.is_open() {
             return Ok(());
@@ -214,14 +195,9 @@ impl App {
         self.changed_this_frame = false;
         self.click_targets.clear();
         self.band_targets.clear();
-        // Surface rects are recorded while painting, so they are cleared with the
-        // other per-frame hit-testing state rather than left to go stale.
         self.terminals.forget_rects();
         let area = frame.area();
         self.last_area = area;
-        // Taken before this frame's panes render, so the HUD's table reads a
-        // window whose renders and frame count agree: afterwards, the renders
-        // would include this frame while `note_frame` has not counted it yet.
         let mod_report = self.hud.then(|| self.host.mod_report());
 
         let region = match self.host.arrangement(area.width, area.height) {
@@ -238,26 +214,14 @@ impl App {
             }
         };
         let placed = resolve(&region, area);
-        // A reflow owes a full repaint — see `last_placed`. Marked as a change
-        // too, so this frame is the one that pays it rather than whichever one
-        // the redraw floor gets to next.
         let reflowed = self.last_placed != placed;
         if reflowed {
             self.last_placed = placed.clone();
             self.changed_this_frame = true;
-            // A reflow reprints every cell (`force_full_repaint` below), and a
-            // reprinted cell loses the hyperlink the terminal attached to it.
-            // So the outer-terminal pass may not skip this frame for looking
-            // like the last one — the links it drew are gone from the terminal
-            // even though the glyphs are identical.
+            // A reprinted cell loses the hyperlink the terminal attached to it.
             self.last_link_paints.clear();
         }
         self.visible_slots = placed.iter().map(|s| s.slot.clone()).collect();
-        // A focus request that named a slot this layout has only just placed —
-        // the search strip's, which shows itself and asks for focus in one
-        // action. Taken here because this is the first moment the slot exists,
-        // and before the guard below, which would otherwise read the pane as one
-        // focus cannot rest on and walk straight off it.
         self.apply_pending_focus();
         let focusable_now = self.host.focusable();
         if focusable_now
@@ -276,15 +240,6 @@ impl App {
         self.diffs_shown = self.host.take_diffs_read();
 
         if self.modals.is_open() {
-            // Given the area WITHOUT the chrome bands, for two reasons that are
-            // really one: a modal dims everything it is handed
-            // (`modals::chrome::modal_frame`), and the bands are the surfaces
-            // that must stay readable while it is up. The message band exists so
-            // an error is never hidden — dimming it works against its own
-            // purpose — and the footer's chips read as buttons only by their
-            // fill, so dimming turned every one of them into plain text until
-            // the modal closed. Centring inside this area also keeps a tall
-            // modal off the bands rather than merely darkening them.
             let content = self.content_area(area, &placed);
             let ui_dir = self.ui_dir.display().to_string();
             let inventory = std::mem::take(&mut self.inventory);
@@ -302,47 +257,23 @@ impl App {
             self.inventory = inventory;
         }
 
-        // The counters, above the floats: a diagnostic a modal could cover
-        // would be useless exactly when a modal is what you are diagnosing.
         if self.hud {
             let hud = hud_area(area);
             render_hud(frame, hud, &self.perf.read(), &self.timings);
             if let Some(report) = &mod_report {
                 render_mod_hud(frame, mod_hud_area(area, hud, report.rows.len()), report);
             }
-            // The counters move on every iteration, so the HUD is never
-            // settled — while it is up, the loop keeps painting.
             self.changed_this_frame = true;
         }
 
-        // The selection is painted last, over whatever is beneath — it is a
-        // highlight on cells that already exist, not a widget of its own.
-        // A press that nothing else consumed arms a selection so the *same*
-        // press can start a drag — but a press that never moved is a CLICK, and
-        // painting it would reverse the one cell under the pointer for no reason
-        // the user can see. So an unextended selection is armed but not drawn,
-        // and contributes no copyable text.
         if let Some(selection) = self
             .selection
             .clone()
             .filter(|selection| selection.anchor != selection.cursor)
         {
-            // v1's `apply_selection_highlight`: the theme's own selection pair,
-            // not reverse video. REVERSED inverts whatever each cell already
-            // had, so a selection over styled text came out a different colour
-            // per span and matched no theme; naming the roles means the
-            // selection looks the same everywhere and follows every palette.
             let style = self.themes.selection_style();
             thurbox::kernel::selection::highlight_buffer(frame.buffer_mut(), &selection, style);
-            // Deliberately NOT a change, for the reason the system modals below
-            // are not: the highlight is already in this frame's buffer, and it is
-            // re-applied on every later paint. Moving it takes a mouse event, which
-            // marks the screen dirty by itself -- so marking here only kept the
-            // loop at the frame cap for as long as anything stayed selected.
 
-            // Read here, not at copy time: outside a terminal the only record of
-            // what is selected is the frame we are holding. The grid half is
-            // shared with the mid-batch refresh — see `grid_selection_text`.
             let from_grid = self.grid_selection_text(&selection);
             let text = from_grid.unwrap_or_else(|| {
                 thurbox::kernel::selection::extract_text_from_buffer(frame.buffer_mut(), &selection)
@@ -352,10 +283,6 @@ impl App {
             self.selected_text = None;
         }
 
-        // An expired message is a change, so it is swept before the settle check
-        // below. Where a live one is DRAWN is the message band's business — it
-        // used to be painted over the centre pane's bottom border, because a
-        // Lua-owned arrangement left no other row spare.
         if self
             .status
             .as_ref()
@@ -368,8 +295,6 @@ impl App {
             .startup_notice_due
             .is_some_and(|due| Instant::now() >= due)
         {
-            // An active error gets its full display interval; ordinary status
-            // traffic cannot keep a boot warning hidden.
             let active_error = self.status.as_ref().and_then(|(_, level, at)| {
                 (*level == Level::Error && at.elapsed() < STATUS_TTL).then_some(*at + STATUS_TTL)
             });
@@ -385,8 +310,6 @@ impl App {
             }
         }
 
-        // Settled: nothing moved this frame, so stop repainting until
-        // something does or the floor elapses.
         self.dirty = self.changed_this_frame;
 
         if let Some(error) = self
@@ -400,11 +323,6 @@ impl App {
             paint::render_error(frame, error_area(area), "reload failed", &error);
         }
 
-        // Last, so all three cover every pane, float and toast painted above,
-        // and in this order: the width normalisation changes symbols and the
-        // background repaint reads styles, so neither can undo the other, and
-        // the reflow's forced print comes after both because it is the finished
-        // cells that have to reach the terminal.
         paint::normalize_ambiguous_width(frame.buffer_mut());
         self.repaint_theme_background(frame);
         if reflowed {
@@ -423,9 +341,6 @@ impl App {
                 self.render_band(frame, slot.rect, band);
                 continue;
             }
-            // Copied out: both draw paths take `&mut self`, which a borrow of
-            // the host's index list would forbid — and a slot holds a handful
-            // of occupants.
             let members = self.host.in_slot(&slot.slot).to_vec();
             if members.is_empty() {
                 continue;
@@ -483,9 +398,6 @@ impl App {
     pub(crate) fn draw_floats(&mut self, frame: &mut Frame, area: Rect) {
         self.grabbed = None;
         self.drawn_floats.clear();
-        // Copied out: the loop body mutates `self`, which a borrow of the
-        // host's index list would forbid — and a float list is a handful of
-        // entries.
         for index in self.host.floating().to_vec() {
             let probe = RenderContext {
                 width: area.width,
@@ -494,51 +406,26 @@ impl App {
                 elapsed: self.started.elapsed().as_secs_f64(),
                 frame: self.frames,
             };
-            // A failing float is not drawn and grabs nothing until it has
-            // rendered cleanly for `FAILURE_HOLD`: it has no rect of its own to
-            // fail in, and drawn on the frames it happened to succeed it covered
-            // most of the screen every other tick. The message band says why,
-            // once per failure rather than once per tick.
             let rendered = self.host.render(index, probe);
             let Ok(rendered) = self.hold_failure(index, rendered) else {
                 continue;
             };
             let Some(float) = rendered.float else {
-                // Not floating this frame: a closed modal draws nothing at all.
                 continue;
             };
             let rect = Self::float_rect(area, float);
-            // Dim what is beneath, so the float reads as above rather than
-            // merely drawn later.
             frame.render_widget(ratatui::widgets::Clear, rect);
             let mut hits = Vec::new();
-            // No cursor: a float takes its keys through its own Lua handlers,
-            // so none of its surfaces is where typing goes.
             let surfaces = self.terminals.cursor_on(None);
             paint::render_recording(frame, rect, &rendered.node, &surfaces, &mut hits);
-            // Recorded after every pane, so a float's targets win the overlap for
-            // the same reason its cells do. Its whole rect goes in first — a
-            // click that misses every button still lands on the modal rather than
-            // on the pane it covers.
             self.push_targets(index, Some(rect), hits);
             self.grabbed = Some(index);
-            // Settled like a pane, by comparing what it drew — not marked changed
-            // for simply being open. Unconditional, an open float held `dirty` set
-            // forever, so the whole interface rebuilt every Lua tree at the frame
-            // cap for as long as the creation wizard was up. A float that really
-            // does animate still repaints: the 250 ms floor paints it, its tree
-            // differs, and that marks the change.
             let unchanged = self.last_floats.get(&index).is_some_and(|(last, node)| {
-                // Pointer identity first: a pure-cache hit hands back the same
-                // `Rc`, which settles the question without walking the tree.
                 *last == rect
                     && (std::rc::Rc::ptr_eq(node, &rendered.node) || **node == *rendered.node)
             });
             if !unchanged {
                 self.changed_this_frame = true;
-                // Stored only on change: on the unchanged branch the held tree
-                // is already equal, and re-storing was a second tree-sized
-                // clone per float per frame (now a refcount bump either way).
                 self.last_floats
                     .insert(index, (rect, std::rc::Rc::clone(&rendered.node)));
             }
@@ -556,9 +443,6 @@ impl App {
         };
         Counters::bump(&self.perf.renders);
         let rendered = self.host.render(index, ctx);
-        // Counted here, before the hold: a clean render the hold answers with
-        // the held failure is not a failure, and counting it would report one
-        // per frame for as long as a recovered pane is held.
         if rendered.is_err() {
             Counters::bump(&self.perf.failures);
         }
@@ -576,16 +460,11 @@ impl App {
             return;
         }
         if focused {
-            // The session, for everything that is about sessions — the focus
-            // label, the info the bands show, `Ctrl+O`.
             self.focused_session = rendered.node.first_session_surface().map(str::to_string);
             self.focused_surface = rendered.node.first_live_surface().map(str::to_string);
             self.focused_typing = rendered.node.has_focused_input();
         }
 
-        // Decoration is the rare case, so the undecorated tree rides the
-        // render's own `Rc` — a decorator pays one deep clone, everyone else
-        // pays a refcount bump.
         let node = match self.decorate_tree(index, &rendered.node, ctx) {
             Some(decorated) => std::rc::Rc::new(decorated),
             None => std::rc::Rc::clone(&rendered.node),
@@ -593,12 +472,7 @@ impl App {
         if self.last_trees.len() <= index {
             self.last_trees.resize(index + 1, None);
         }
-        // Stamped unconditionally, before the tree comparison can short-circuit
-        // it: skipping the stamp on a frame whose tree changed would make the
-        // *next* frame see output that had already been painted.
         let surface_moved = self.surface_moved(&node);
-        // Pointer identity first: a pure-cache hit hands back the same `Rc`,
-        // which settles the question without a per-node walk.
         let tree_unchanged = self.last_trees[index]
             .as_ref()
             .is_some_and(|last| std::rc::Rc::ptr_eq(last, &node) || **last == *node);
@@ -607,13 +481,9 @@ impl App {
             self.changed_this_frame = true;
         }
         if !tree_unchanged {
-            // On the unchanged branch the held tree is already equal, and
-            // re-storing it was a second tree-sized clone per pane per frame.
             self.last_trees[index] = Some(std::rc::Rc::clone(&node));
         }
         let mut hits = Vec::new();
-        // A terminal paints its cursor only on the surface the keys go to: the
-        // focused pane's first live one, which is what input routes to.
         let input = if focused {
             node.first_live_surface()
         } else {
@@ -621,9 +491,6 @@ impl App {
         };
         let surfaces = self.terminals.cursor_on(input);
         paint::render_recording(frame, rect, &node, &surfaces, &mut hits);
-        // The pane's own rect is only a target when focus can rest on it. A
-        // footer click must reach the pill it landed on and nothing else — v1
-        // likewise records no `FocusPane` for panes that cannot hold focus.
         let fallback = self.host.mods[index].focusable.then_some(rect);
         self.push_targets(index, fallback, hits);
     }
@@ -676,7 +543,6 @@ impl App {
         if decorators.is_empty() {
             return None;
         }
-        // Copied out: `decorate` and the error sink both need `self` again.
         let decorators = decorators.to_vec();
         let mut node = node.clone();
         for decorator in decorators {
@@ -722,10 +588,7 @@ impl App {
     }
 
     pub(crate) fn repaint_theme_background(&self, frame: &mut Frame) {
-        // Crossterm suppresses colour values under NO_COLOR but still emits an
-        // empty SetColors sequence when a cell changes colour. That sequence
-        // resets attributes too, erasing a search mark's reverse video. With
-        // colours absent from the buffer, no SetColors is queued at all.
+        // Under NO_COLOR crossterm still emits an empty SetColors, which resets attributes.
         if crossterm::style::Colored::ansi_color_disabled_memoized() {
             for cell in &mut frame.buffer_mut().content {
                 cell.fg = ratatui::style::Color::Reset;
@@ -737,11 +600,6 @@ impl App {
         if palette.app_bg == ratatui::style::Color::Reset {
             return;
         }
-        // The buffer's storage is its area exactly, row-major, so walking it
-        // directly visits the same cells the coordinate loop did — minus a
-        // bounds-checked `cell_mut` per cell, on a pass that touches every
-        // cell of every painted frame (the same cut `normalize_ambiguous_width`
-        // took).
         for cell in frame.buffer_mut().content.iter_mut() {
             if cell.bg == ratatui::style::Color::Reset {
                 cell.bg = palette.app_bg;
@@ -759,10 +617,6 @@ impl App {
             .as_deref()
             .and_then(|id| snapshot.session(id))
             .map(|row| row.name.clone());
-        // The VIEW if the focused pane is showing one, else the pane itself —
-        // `focused_session` carries `<id>#shell` while the shell tab is up, and
-        // the centre pane paints before the footer band, so this is already
-        // resolved by the time the band draws.
         let focused_mod = self
             .host
             .focusable()
@@ -771,11 +625,6 @@ impl App {
             .map(|loaded| loaded.name.clone())
             .unwrap_or_default();
         let focus_label = bands::focus_label(self.focused_session.as_deref(), &focused_mod);
-        // Work in flight outranks a toast while it runs: creation phases
-        // routinely outlast the retention window, which is why they are progress
-        // rather than a message. `first_running` rather than the whole list,
-        // because progress outranking a message makes a *failed* entry hide the
-        // error explaining it — see [`CommandBus::first_running`].
         let progress = self
             .commands
             .first_running()
@@ -805,9 +654,6 @@ impl App {
             themes: &self.themes,
         };
         if !bands::occupies(band, &state) {
-            // A band that occupied the last frame and does not occupy this one
-            // HAS changed the frame — the message band finishing is the case —
-            // so forgetting it is itself the signal.
             if self.last_bands.remove(&band).is_some() {
                 self.changed_this_frame = true;
             }
@@ -877,8 +723,6 @@ impl App {
         if let Some(stamp) = stamp {
             self.last_output_painted.insert(surface.to_string(), stamp);
         }
-        // An unattached surface has no stamp and nothing to show, so it is
-        // settled rather than perpetually new.
         stamp.is_some() && previous != stamp
     }
 

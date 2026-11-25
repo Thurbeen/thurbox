@@ -60,8 +60,6 @@ impl App {
         if self.events.queue.is_empty() {
             return;
         }
-        // Handlers read the published tables, so they are made current once per
-        // batch — the same rule an input batch follows.
         self.republish();
         self.events.cascade_reported = false;
         self.time_op("event_dispatch", |app| {
@@ -83,8 +81,6 @@ impl App {
                 for failure in app.host.dispatch_event(&event) {
                     app.report_event_failure(failure, &event.name);
                 }
-                // What the handlers asked for, applied now rather than next
-                // iteration, so an emit lands in this dispatch.
                 app.apply_commands(terminal);
             }
         });
@@ -100,8 +96,6 @@ impl App {
     }
 
     fn derive_kernel_events(&mut self) {
-        // Focus: the selected session and the focused pane, each compared to
-        // what it was. Both are two `Option<String>` compares per iteration.
         let selected = self.host.shared_string("selected");
         let pane = self
             .host
@@ -150,7 +144,6 @@ impl App {
             );
         }
 
-        // The snapshot: one integer compare while nothing moved.
         let version = self.snapshots.version();
         let derived = self
             .events
@@ -173,10 +166,6 @@ impl App {
         );
         let event = match tracked.kind {
             "create" => {
-                // The command named no session; the row is found by the id
-                // its Task has in the Fleet the command went to, now that the
-                // snapshot has been re-read. Never by its name, which a
-                // session of another Fleet can share.
                 let row = tracked
                     .created
                     .as_deref()
@@ -359,7 +348,6 @@ mod tests {
         let mut memo = seen(&[&editor]);
         let ended = program_endings(
             &mut memo,
-            // The restarted pane, alive — what the walk alone would see.
             vec![(editor.clone(), "nvim".into(), false)],
             vec![
                 ProgramTransition::Replaced(editor.clone(), "nvim".into()),
@@ -423,7 +411,6 @@ mod tests {
         assert_eq!(names(&first), ["editor"], "the death itself must be told");
         let second = program_endings(
             &mut memo,
-            // The restart, alive.
             vec![(editor.clone(), "nvim".into(), false)],
             vec![
                 ProgramTransition::Replaced(editor.clone(), "nvim".into()),

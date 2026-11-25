@@ -85,7 +85,6 @@ impl App {
                 chosen_in_switch: None,
             };
         };
-        // A `switch` slot draws ONE of its occupants; the rest are alternatives.
         let chosen_in_switch =
             matches!(self.host.slot_mode(&loaded.slot), SlotMode::Switch).then(|| {
                 let members = self.host.in_slot(&loaded.slot);

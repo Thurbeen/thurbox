@@ -1,5 +1,3 @@
-// The name of this build's directories and its CLI, and the PATH and WSL
-// lookups, are the multiplexer runtime's as well: one definition, read here.
 pub use runtime_mux::instance::{app_dir_name, resolve_cli_binary};
 pub use runtime_mux::path_lookup::{
     current_wsl_distro, is_executable_file, path_dirs, resolve_on_path, which_on_path,
@@ -18,6 +16,7 @@ pub fn home_dir() -> Option<PathBuf> {
     std::env::var_os(var).map(PathBuf::from)
 }
 
+// On Windows std's rename replaces with POSIX semantics, where MoveFileExW denies an open file.
 pub(crate) fn write_atomically(path: &Path, contents: impl AsRef<[u8]>) -> std::io::Result<()> {
     static SAVES: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
     let path = write_destination(path)?;
@@ -81,6 +80,7 @@ fn open_staged(
     options.open(staged)
 }
 
+// A canonical parent gives Windows the extended-length path beyond MAX_PATH.
 fn write_destination(path: &Path) -> std::io::Result<PathBuf> {
     const MAX_LINKS: usize = 40;
 
@@ -135,8 +135,6 @@ pub(crate) fn with_wsl_distro<T>(distro: Option<&str>, f: impl FnOnce() -> T) ->
 #[cfg(test)]
 pub(crate) fn with_path<T>(path: impl AsRef<OsStr>, f: impl FnOnce() -> T) -> T {
     static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
-    // A test that panicked while holding it poisoned the lock; the value is
-    // `()`, so there is nothing to protect against and the next test may run.
     let _guard = LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let saved = std::env::var_os("PATH");
     std::env::set_var("PATH", path.as_ref());
@@ -148,7 +146,7 @@ pub(crate) fn with_path<T>(path: impl AsRef<OsStr>, f: impl FnOnce() -> T) -> T 
     out
 }
 
-#[cfg_attr(test, allow(dead_code))] // only used by the non-test XDG fallback
+#[cfg_attr(test, allow(dead_code))]
 fn config_base() -> Option<PathBuf> {
     if let Some(x) = std::env::var_os("XDG_CONFIG_HOME") {
         return Some(PathBuf::from(x));
@@ -163,7 +161,7 @@ fn config_base() -> Option<PathBuf> {
     }
 }
 
-#[cfg_attr(test, allow(dead_code))] // only used by the non-test XDG fallback
+#[cfg_attr(test, allow(dead_code))]
 fn data_base() -> Option<PathBuf> {
     if let Some(x) = std::env::var_os("XDG_DATA_HOME") {
         return Some(PathBuf::from(x));
@@ -550,9 +548,7 @@ pub fn complete_directory_path(input: &str) -> Option<String> {
     let expanded_str = expanded.to_str().unwrap_or(input);
     let path = Path::new(expanded_str);
 
-    // Determine parent directory and the prefix the user is typing. A trailing
-    // path separator (`/` everywhere, plus `\` on Windows — tilde expansion
-    // yields `C:\Users\me\`) means "list this directory's contents".
+    // A trailing separator (`/`, or `\` on Windows) lists the directory's contents.
     let ends_with_sep = expanded_str
         .chars()
         .next_back()
