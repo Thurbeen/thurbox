@@ -52,7 +52,25 @@ for it), and presses `f5`. Everything the clip keeps is timed from that press, s
 read the phase comments before changing any of the numbers — including which frame
 becomes the poster, since Doom flashes the whole view red when the player is hit.
 
-**The onboarding tutorial's screenshots are a third recorder.**
+**The herdr guide's clip is a GUI recording.** `scripts/demo/record-herdr.sh`
+writes `media/herdr-fleet-vega.{mp4,gif}`, the clip at the top of
+`docs/runtime/herdr-users.md`. It records herdr's desktop app on a private Xvfb
+display with ffmpeg's `x11grab` while a scratch Fleet runs VEGA and the worker
+Tasks it applies, on a throwaway repository, with the logged-in `claude`: the
+agents do real work and spend real quota. It keeps apart from the machine's own
+Fleet and herdr through a herdr-core session of its own (`HC_SESSION`), a
+scratch `FLEET_CONFIG` and store, a `HERDR_APP_HOME` with the welcome marked
+seen, and the key prefix `herdrdemo`, whose worktrees and start records it
+removes on exit. It does not move `XDG_DATA_HOME`: Claude Code installs its
+updates there and repoints `~/.local/bin/claude` at them, so a scratch data
+directory left the launcher dangling once removed; the run sets
+`DISABLE_AUTOUPDATER=1` as well. It answers Claude's folder-trust dialog (the
+default choice is "No, exit") and nothing else. The stretch while the agents
+work is sped up to `WORK_SECONDS`; the typing stays real time. Run a copy of
+the script, not the file itself, while editing it: bash reads a script as it
+runs.
+
+**The onboarding tutorial's screenshots are a fourth recorder.**
 `scripts/demo/record-tutorial.sh` writes `media/tutorial/*.png` — one still per
 step of `docs/thurbox/tutorial.md`, taken by driving the real TUI through the
 creation flow. The profile starts with **zero sessions, an empty repo
