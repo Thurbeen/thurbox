@@ -1,5 +1,3 @@
-//! Validation on write: every object the store accepts passes these.
-
 use serde::de::DeserializeOwned;
 use serde_json::Value;
 
@@ -16,9 +14,6 @@ use crate::store::StoreError;
 use crate::task::{self, TaskSpec};
 use std::collections::{BTreeMap, BTreeSet};
 
-/// DNS-subdomain-like: lowercase alphanumerics, `-` and `.`, at most 253,
-/// starting and ending with an alphanumeric. Names are file names in the
-/// store, so this is also what keeps a name from escaping its directory.
 pub fn validate_name(name: &str) -> Result<(), StoreError> {
     let ok_char = |c: char| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-' || c == '.';
     let edge = |c: Option<char>| c.is_some_and(|c| c.is_ascii_lowercase() || c.is_ascii_digit());
@@ -36,7 +31,6 @@ pub fn validate_name(name: &str) -> Result<(), StoreError> {
     Ok(())
 }
 
-/// Refuse a kind this build does not serve.
 pub fn validate_kind(kind: &str) -> Result<(), StoreError> {
     if is_served(kind) {
         Ok(())
@@ -164,9 +158,6 @@ pub fn validate_spec(kind: &str, spec: &Value) -> Result<(), StoreError> {
     Ok(())
 }
 
-/// Amendments: each says something, names its sender, creates a later
-/// generation than the one before, and declares only outputs not declared
-/// before it.
 pub fn validate_amendments(s: &TaskSpec) -> Result<(), StoreError> {
     let mut declared: BTreeSet<&str> = s.outputs.keys().map(String::as_str).collect();
     if s.is_interactive() && !s.amendments.is_empty() {
@@ -201,8 +192,6 @@ pub fn validate_amendments(s: &TaskSpec) -> Result<(), StoreError> {
     Ok(())
 }
 
-/// A CronTask's schedule parses, its limits fit, and its template is a Task
-/// `fleet apply` would take, with none of the labels only a controller sets.
 fn validate_cron_task_spec(spec: &Value) -> Result<(), StoreError> {
     let s: CronTaskSpec = typed(cron_task::KIND, spec)?;
     cron_task::Schedule::parse(&s.schedule).map_err(StoreError::Invalid)?;
@@ -240,10 +229,6 @@ fn validate_cron_task_spec(spec: &Value) -> Result<(), StoreError> {
         .map_err(|e| StoreError::Invalid(format!("spec.template.spec: {e}")))
 }
 
-/// A Task's spec is fixed once created, like a Pod's: only `dispatch`,
-/// `forge` and `subscriptions` may change, and `amendments` only through the store's amend
-/// mutation. A different brief is a different Task. A
-/// ChangeRequest, a Conversation and a Listener are fixed whole.
 pub fn validate_spec_update(kind: &str, old: &Value, new: &Value) -> Result<(), StoreError> {
     validate_spec(kind, new)?;
     if kind == change_request::KIND {
@@ -300,9 +285,6 @@ pub fn typed<T: DeserializeOwned>(kind: &str, spec: &Value) -> Result<T, StoreEr
     parse(&format!("{kind} spec"), spec).map_err(StoreError::Invalid)
 }
 
-/// `value` as a `T`. An error names `what`, the path in `value` that does
-/// not fit and what was expected there, never the value found: the value
-/// can be a brief, an environment value or a worker's result.
 pub fn parse<T: DeserializeOwned>(what: &str, value: &Value) -> Result<T, String> {
     serde_path_to_error::deserialize(value.clone()).map_err(|e| {
         let path = e.path().to_string();
@@ -331,8 +313,6 @@ fn without_value(e: &serde_json::Error) -> String {
     }
 }
 
-/// Status must parse as the kind's typed status: a writer cannot store a
-/// shape its readers would refuse.
 pub fn validate_status(kind: &str, status: &Value) -> Result<(), StoreError> {
     if status.is_null() {
         return Ok(());
@@ -369,7 +349,6 @@ pub fn validate_status(kind: &str, status: &Value) -> Result<(), StoreError> {
     }
 }
 
-/// A ChangeRequest names one change by URL and bounds its own cadence.
 fn validate_change_request_spec(spec: &Value) -> Result<(), StoreError> {
     let s: ChangeRequestSpec = typed(change_request::KIND, spec)?;
     let url = s.url.trim();
@@ -390,8 +369,6 @@ fn validate_change_request_spec(spec: &Value) -> Result<(), StoreError> {
     Ok(())
 }
 
-/// A Conversation names an account, a route and one thread by address; the
-/// adapter judges the address's parts, the structure is checked here.
 fn validate_conversation_spec(spec: &Value) -> Result<(), StoreError> {
     let s: ConversationSpec = typed(conversation::KIND, spec)?;
     validate_name(&s.account).map_err(|e| StoreError::Invalid(format!("spec.account: {e}")))?;
@@ -408,7 +385,6 @@ fn validate_conversation_spec(spec: &Value) -> Result<(), StoreError> {
     Ok(())
 }
 
-/// `pauseAfterMs`, where it is set, is at least 1.
 pub fn validate_pause_after(ms: Option<crate::Millis>) -> Result<(), StoreError> {
     if ms == Some(0) {
         return Err(StoreError::Invalid(
@@ -436,10 +412,6 @@ pub fn validate_execution(
     Ok(())
 }
 
-/// A workspace is a list of absolute URLs, `<scheme>://…`: Fleet checks
-/// that, and nothing else. Each reaches the runtime as an argument, so none
-/// holds whitespace or a NUL byte. The error starts with the path inside the
-/// workspace, such as `[0] …`, so a caller prefixes its own field.
 pub fn validate_workspace(workspace: &task::Workspace) -> Result<(), String> {
     for (i, url) in workspace.urls().iter().enumerate() {
         if task::url_scheme(url).is_none() || url.chars().any(|c| c.is_whitespace() || c == '\0') {
@@ -484,10 +456,6 @@ fn validate_absolute(path: &str) -> Result<(), StoreError> {
     Ok(())
 }
 
-/// Whether a path is absolute in either portable form, `/…` or `C:/…`,
-/// whatever this build's platform: a config file is read on one platform
-/// and names paths the adapters interpret, so the rule is the same
-/// everywhere. A NUL byte is never a path.
 pub fn is_absolute_path(path: &str) -> bool {
     let bytes = path.as_bytes();
     !path.contains('\0')

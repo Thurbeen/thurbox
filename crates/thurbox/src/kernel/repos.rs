@@ -1,119 +1,45 @@
-//! What the creation flow needs to know, computed off the render path.
-//!
-//! Two reads, both parameterised by something only the flow knows — which
-//! host, which directory — and neither of them cheap: a bookmark list is a
-//! query, and a directory listing is a readdir or an ssh round trip. So
-//! this is the fifth worker-backed store, after terminals, commands, diffs and
-//! metrics, and it follows [`crate::kernel::diff`]'s shape exactly: **requests
-//! are keyed and idempotent, work happens on a thread, and the result is
-//! published.**
-//!
-//! Requests reach here from the flow through `store`, which the loop reads. A
-//! mod cannot call something that waits, and a command is an at-most-once
-//! *act* — neither fits "tell me what is in this directory, and ask again as I
-//! type".
-//!
-//! Two consequences a mod renders rather than hides:
-//!
-//! - "not listed yet" is a state of its own, distinct from "nothing there" — a
-//!   slow host must not look like an empty directory;
-//! - a result is cached under the request that asked for it, so a listing
-//!   arriving for a step the user has left is inert rather than needing to be
-//!   dropped (v1 needed a generation stamp for this) — and a settled listing is
-//!   re-read after a few seconds, because a directory created later must not be
-//!   invisible for the life of the process.
-
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::{channel, Receiver, Sender};
 
-/// A repository the flow can offer, flattened for rendering.
-///
-/// One shape for every row, whatever produced it: a standalone bookmark, a
-/// parent folder, a child scanned live under a local parent, or a child
-/// persisted under a remote one. The flow builds headers and indentation from
-/// `parent`/`is_parent` and never learns which.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BookmarkRow {
-    /// Absolute path on the target host's filesystem.
     pub path: String,
-    /// Display name — the final component, which is what a row leads with.
     pub name: String,
-    /// The parent folder this row was imported under, if any.
     pub parent: Option<String>,
-    /// Whether this row *is* a parent folder: a header, never a member.
     pub is_parent: bool,
-    /// Whether the path is a git repo. `None` = never established, which stays
-    /// selectable *and* worktree-capable — creation reports the truth.
     pub is_git: Option<bool>,
-    /// A name to lead the row with instead of the path.
-    ///
-    /// `None` for anything the user bookmarked: they chose that path and it is
-    /// how they think of the repository. Set for a row the flow *offers* on its
-    /// own, where the path is an implementation detail the reader never typed —
-    /// the interface directory is a long, install-specific path whose leaf
-    /// (`ui`) says nothing about what picking it would do.
     pub label: Option<String>,
-    /// Whether the flow offered this row itself rather than reading it from
-    /// memory.
-    ///
-    /// An offered row is not a bookmark: it leads the list by construction, so
-    /// its position says nothing about when it was last used. The flow needs
-    /// the distinction because it finds a *just-added* path by recency — the
-    /// first row of memory — and an offered row ahead of memory is picked up as
-    /// that path instead.
     pub offered: bool,
 }
 
-/// One entry of the browse dropdown.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BrowseEntry {
     pub name: String,
     pub is_git: bool,
 }
 
-/// What is known about a directory.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Listing {
-    /// Asked for, not answered. Distinct from `Ready` with nothing in it.
     Pending,
     Ready(Vec<BrowseEntry>),
     Failed(String),
 }
 
-/// A host key as the flow spells it: `""` for local, else a backend name
-/// (`ssh:<name>` / `wsl:<name>`) — the same key `repo_bookmarks.host` uses.
 pub type HostKey = String;
 
-/// The keys a mod asks through, in `store`.
 pub const WANT_BOOKMARKS: &str = "want_bookmarks";
 pub const WANT_BROWSE: &str = "want_browse";
-/// A repository whose branches the flow offers for a worktree: its path,
-/// as the flow chose it, or `<host>\0<path>` on a place elsewhere.
 pub const WANT_BRANCHES: &str = "want_branches";
 
-/// What the flow is asking about right now.
-///
-/// Read off `store` each iteration. Absent means *not asking* —
-/// which is why the local machine is `Some("")` rather than an empty string
-/// standing in for both: a closed flow must cost nothing, and asking about local
-/// must be expressible.
-///
-/// The two path-bearing wants are written as `"<host>\0<path>"`. A NUL cannot
-/// occur in a path, so the split is unambiguous; the session list already keys
-/// its repo groups the same way.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Wants {
     pub bookmarks: Option<HostKey>,
     pub browse: Option<(HostKey, String)>,
-    /// A repository whose branches are asked for: its path on this
-    /// machine, or `<host>\0<path>` on a place elsewhere.
     pub branches: Option<String>,
 }
 
 impl Wants {
-    /// Build from the two raw store values, dropping one that is malformed
-    /// rather than guessing what a mod meant.
     pub fn new(bookmarks: Option<String>, browse: Option<String>) -> Self {
         Self {
             bookmarks,
@@ -122,70 +48,42 @@ impl Wants {
         }
     }
 
-    /// These wants, also asking for the branches of `repo`. An empty path is
-    /// no request.
     pub fn with_branches(mut self, repo: Option<String>) -> Self {
         self.branches = repo.filter(|repo| !repo.is_empty());
         self
     }
 }
 
-/// What is known about a repository's branches.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum BranchListing {
-    /// Asked for, not answered.
     Pending,
-    /// The directory is no git repository.
     NotGit,
-    /// It is one, and its branches could not be read: why.
     Failed(String),
     Ready(crate::git::Branches),
 }
 
-/// Split `"<host>\0<path>"`. An empty path is no request at all — that is what a
-/// flow leaves behind while its input is still empty.
 fn split_want(raw: &str) -> Option<(HostKey, String)> {
     let (host, path) = raw.split_once('\0')?;
     (!path.is_empty()).then(|| (host.to_string(), path.to_string()))
 }
 
-/// Cache key for anything asked about a path on a host.
 type PathKey = (HostKey, String);
 
-/// How long a directory listing is reused before it is read again.
-///
-/// A listing has to be cached — it is asked for on every keystroke — but caching
-/// it for the life of the process means a directory created after the first look
-/// never appears. Re-reading a settled listing after a few seconds bounds that
-/// without making typing chatty. A *pending* one is never re-requested, however
-/// long it takes: a slow ssh listing is still on its way.
 const LISTING_TTL: std::time::Duration = std::time::Duration::from_secs(5);
 
-/// A listing and when it arrived.
 struct Listed {
     at: std::time::Instant,
     listing: Listing,
 }
 
 impl Listed {
-    /// Whether this answer should be read again.
-    ///
-    /// A *pending* one never is, however old it has grown: a slow ssh listing is
-    /// still on its way, and asking twice would spawn a second worker for it.
     fn stale(&self) -> bool {
         !matches!(self.listing, Listing::Pending) && self.at.elapsed() >= LISTING_TTL
     }
 }
 
-/// How long a host's remembered repositories are trusted.
-///
-/// The flow leaves `want_bookmarks` set for as long as it is open, so this is
-/// asked for on every frame. Guarded only against a *concurrent* read, each answer
-/// simply started the next one: a new SQLite connection and a live scan of every
-/// parent folder's children, back to back, for the whole life of the flow.
 const BOOKMARKS_TTL: std::time::Duration = std::time::Duration::from_secs(5);
 
-/// A host's remembered repositories and when they were read.
 struct Remembered {
     at: std::time::Instant,
     rows: Vec<BookmarkRow>,
@@ -205,73 +103,43 @@ enum Done {
     Listing {
         key: PathKey,
         listing: Listing,
-        /// The directory the listing is of, when it is not the one asked
-        /// for as typed: a remote place's home asked for as `~`.
         dir: Option<String>,
     },
     Branches {
         repo: String,
         listing: BranchListing,
-        /// `None` when this read did not fetch; else why the fetch failed,
-        /// if it did.
         fetched: Option<Option<String>>,
     },
 }
 
-/// How long the picker waits on a fetch of `origin` before it lists the refs
-/// already there.
 const FETCH_DEADLINE: std::time::Duration = std::time::Duration::from_secs(10);
 
-/// A repository's branches and when they arrived.
 struct BranchesHeld {
     at: std::time::Instant,
     listing: BranchListing,
 }
 
 impl BranchesHeld {
-    /// Re-read after [`LISTING_TTL`], as a directory listing is: a branch
-    /// made after the first look must not stay invisible. A read on its way
-    /// is never asked twice ([`RepoStore::branches_inflight`]).
     fn stale(&self) -> bool {
         self.at.elapsed() >= LISTING_TTL
     }
 }
 
-/// Serves the creation flow's four reads, caching each under its request.
 pub struct RepoStore {
     bookmarks: HashMap<HostKey, Remembered>,
-    /// Hosts whose bookmark list is being (re)read, so asking every frame does
-    /// not queue a thread per frame.
     bookmarks_inflight: std::collections::HashSet<HostKey>,
     listings: HashMap<PathKey, Listed>,
     branches: HashMap<String, BranchesHeld>,
-    /// Repositories whose branches are being read.
     branches_inflight: std::collections::HashSet<String>,
-    /// Repositories whose `origin` was fetched since the flow last started
-    /// asking for them: the fetch is once per opening, and the
-    /// [`LISTING_TTL`] re-reads only list refs, so an open picker never
-    /// fetches every few seconds.
     fetched: std::collections::HashSet<String>,
-    /// Why the last fetch of a repository's `origin` failed, while its
-    /// branches are listed from the refs already there.
     fetch_notes: HashMap<String, String>,
-    /// The Fleets thurbox follows: a host key `<fleet>/<place>` naming a
-    /// place on another machine (any place of a Fleet elsewhere, or a place
-    /// of this machine's Fleet other than its `local`) is read on that place,
-    /// through that Fleet (`fleet runtime browse`, `branches`), never on this
-    /// machine's disk.
     fleets: Vec<crate::fleet_link::FleetLink>,
-    /// The absolute directory a listing answered for, where it was asked as
-    /// `~` of a place elsewhere whose home is not known here.
     resolved: HashMap<PathKey, String>,
     tx: Sender<Done>,
     rx: Receiver<Done>,
 }
 
 impl RepoStore {
-    /// A store that reads this machine only: the creation flow browses and
-    /// scans local folders, and a path remembered for another place is kept
-    /// as typed. [`Self::with_fleets`] also reads the places elsewhere.
     pub fn new() -> Self {
         let (tx, rx) = channel();
         Self {
@@ -289,8 +157,6 @@ impl RepoStore {
         }
     }
 
-    /// A store that also reads the places elsewhere of `fleets`, each
-    /// through its own link.
     pub fn with_fleets(fleets: &[crate::fleet_link::FleetLink]) -> Self {
         Self {
             fleets: fleets.to_vec(),
@@ -298,8 +164,6 @@ impl RepoStore {
         }
     }
 
-    /// The Fleet and its place a host key `<fleet>/<place>` names, or `None`
-    /// for a key of this machine: a local Fleet's `local` is read here.
     fn remote_place(&self, host: &str) -> Option<(crate::fleet_link::FleetLink, String)> {
         let (fleet, place) = host.split_once('/')?;
         let link = self.fleets.iter().find(|link| link.name() == fleet)?;
@@ -309,13 +173,6 @@ impl RepoStore {
         Some((link.clone(), place.to_string()))
     }
 
-    /// Whether any read is still on its way — a bookmark refresh or a pending
-    /// listing.
-    ///
-    /// The animation clock asks: the creation flow draws a spinner over each of
-    /// these, and a clock that moved only for in-flight *commands* would freeze
-    /// them mid-spin — the flow is a pure pane, so its tree is reused until the
-    /// epoch moves.
     pub fn in_flight(&self) -> bool {
         !self.bookmarks_inflight.is_empty()
             || self
@@ -328,23 +185,14 @@ impl RepoStore {
                 .any(|held| matches!(held.listing, BranchListing::Pending))
     }
 
-    /// What is known about the branches of `repo` on this machine.
     pub fn branches(&self, repo: &str) -> Option<&BranchListing> {
         self.branches.get(repo).map(|held| &held.listing)
     }
 
-    /// Why the last fetch of `repo`'s `origin` failed, while its branches
-    /// come from the refs already there.
     pub fn fetch_note(&self, repo: &str) -> Option<&str> {
         self.fetch_notes.get(repo).map(String::as_str)
     }
 
-    /// Ask for the branches of `repo` on this machine, unless a fresh answer
-    /// is held or one is on its way. Read on a worker: it runs `git`.
-    ///
-    /// The first read since the flow started asking fetches `origin` first and
-    /// reads `Pending` meanwhile, which is what the picker's spinner shows. A
-    /// later re-read only lists refs, so the list it replaces stays on screen.
     pub fn request_branches(&mut self, repo: &str) {
         if self.branches_inflight.contains(repo) {
             return;
@@ -411,40 +259,28 @@ impl RepoStore {
         });
     }
 
-    /// The rows for `host`, once they have been asked for.
     pub fn bookmarks(&self, host: &str) -> Option<&[BookmarkRow]> {
         self.bookmarks.get(host).map(|held| held.rows.as_slice())
     }
 
-    /// The absolute directory the listing of `dir` on `host` is of, when
-    /// `dir` was a remote place's `~` and the runtime named its home.
     pub fn resolved_dir(&self, host: &str, dir: &str) -> Option<&str> {
         self.resolved
             .get(&(host.to_string(), dir.to_string()))
             .map(String::as_str)
     }
 
-    /// Seed [`Self::resolved_dir`] directly, so a test can render a remote
-    /// home's listing.
     #[doc(hidden)]
     pub fn set_resolved_dir_for_test(&mut self, host: &str, dir: &str, resolved: &str) {
         self.resolved
             .insert((host.to_string(), dir.to_string()), resolved.to_string());
     }
 
-    /// What is known about `dir` on `host`.
     pub fn listing(&self, host: &str, dir: &str) -> Option<&Listing> {
         self.listings
             .get(&(host.to_string(), dir.to_string()))
             .map(|listed| &listed.listing)
     }
 
-    /// Ask for a host's remembered repositories.
-    ///
-    /// Idempotent while one is in flight, but *not* cached forever: the flow
-    /// asks again after a bookmark command lands, and re-reading a handful of
-    /// rows is what makes an added path appear. The scan of a local parent's
-    /// children is why this is a worker at all.
     pub fn request_bookmarks(&mut self, host: &str) {
         if self.bookmarks_inflight.contains(host) {
             return;
@@ -465,14 +301,10 @@ impl RepoStore {
         });
     }
 
-    /// Re-read a host's bookmarks on the next request, after something wrote
-    /// them.
     pub fn invalidate_bookmarks(&mut self) {
         self.bookmarks.clear();
     }
 
-    /// Ask what is in `dir` on `host`, unless a fresh answer is already held or
-    /// one is on its way.
     pub fn request_listing(&mut self, host: &str, dir: &str) {
         let key = (host.to_string(), dir.to_string());
         if self.listings.get(&key).is_some_and(|held| !held.stale()) {
@@ -511,7 +343,6 @@ impl RepoStore {
         });
     }
 
-    /// Hold a listing, stamped so [`LISTING_TTL`] can retire it.
     fn remember_listing(&mut self, key: PathKey, listing: Listing) {
         self.listings.insert(
             key,
@@ -522,7 +353,6 @@ impl RepoStore {
         );
     }
 
-    /// Fold finished work in. True when anything arrived, so the loop repaints.
     pub fn poll(&mut self) -> bool {
         let mut changed = false;
         while let Ok(done) = self.rx.try_recv() {
@@ -572,10 +402,6 @@ impl RepoStore {
         changed
     }
 
-    /// Ask for everything the flow is currently asking about.
-    ///
-    /// One call from the loop per iteration. Every request underneath is
-    /// idempotent, so this costs two hash lookups once the answers are in.
     pub fn serve(&mut self, wants: &Wants) {
         // Cloned rather than borrowed: each request takes `&mut self`, and the
         // wants are the loop's, not the store's.
@@ -595,8 +421,6 @@ impl RepoStore {
         }
     }
 
-    /// Seed a repository's branches directly, so a test can render the flow
-    /// without git.
     #[doc(hidden)]
     pub fn set_branches_for_test(&mut self, repo: &str, listing: BranchListing) {
         self.branches.insert(
@@ -608,13 +432,11 @@ impl RepoStore {
         );
     }
 
-    /// Seed why a repository's fetch failed, so a test can render the note.
     #[doc(hidden)]
     pub fn set_fetch_note_for_test(&mut self, repo: &str, why: &str) {
         self.fetch_notes.insert(repo.to_string(), why.to_string());
     }
 
-    /// Seed rows directly, so a test can render a flow without the file.
     #[doc(hidden)]
     pub fn set_bookmarks_for_test(&mut self, host: &str, rows: Vec<BookmarkRow>) {
         self.bookmarks.insert(
@@ -626,8 +448,6 @@ impl RepoStore {
         );
     }
 
-    /// Seed a listing directly, so a test can render the dropdown without a
-    /// filesystem.
     #[doc(hidden)]
     pub fn set_listing_for_test(&mut self, host: &str, dir: &str, listing: Listing) {
         self.remember_listing((host.to_string(), dir.to_string()), listing);
@@ -642,10 +462,6 @@ impl Default for RepoStore {
 
 use super::bookmarks::Bookmark;
 
-/// `fleet <args> --json`'s answer about a place elsewhere, bounded as a
-/// probe of its Fleet is, or why there is none: the place's own words, such
-/// as a runtime tool missing from its `PATH`. A runtime that does not offer the verb says
-/// so in plain words: the flow takes a typed path instead.
 fn ask_place(
     link: &crate::fleet_link::FleetLink,
     args: &[&str],
@@ -671,12 +487,6 @@ fn ask_place(
         .map_err(|e| format!("fleet runtime {verb} answered no JSON: {e}"))
 }
 
-/// The subdirectories of `dir` on a Fleet's `place` elsewhere
-/// (`fleet runtime browse`), each marked when it is a git work tree.
-///
-/// A bare `~` is a home not known here: the runtime is asked with no
-/// directory, which it answers with its own home, since it takes only an
-/// absolute one.
 fn remote_listing(
     link: &crate::fleet_link::FleetLink,
     place: &str,
@@ -701,7 +511,6 @@ fn remote_listing(
     }
 }
 
-/// The entries of a `fleet runtime browse --json` answer.
 fn listing_of(answer: &serde_json::Value) -> Listing {
     Listing::Ready(
         answer["entries"]
@@ -718,8 +527,6 @@ fn listing_of(answer: &serde_json::Value) -> Listing {
     )
 }
 
-/// The branches of the repository at `repo` on a Fleet's `place` elsewhere
-/// (`fleet runtime branches`), as that machine last fetched them.
 fn remote_branches(link: &crate::fleet_link::FleetLink, place: &str, repo: &str) -> BranchListing {
     match ask_place(
         link,
@@ -740,13 +547,6 @@ fn remote_branches(link: &crate::fleet_link::FleetLink, place: &str, repo: &str)
     }
 }
 
-/// Read a host's bookmarks and flatten them into rows. Called on a worker.
-///
-/// v1's `rebuild_repo_picker_rows`. This machine's folders are scanned right
-/// here, every time, because a `readdir` is free, so the rows are what a
-/// folder holds now rather than what it held at import. A place elsewhere
-/// has paths on that machine, browsed there but not scanned: they are
-/// offered as remembered.
 fn read_bookmarks(host: &str) -> Vec<BookmarkRow> {
     let bookmarks = super::bookmarks::list(host);
     if !host.is_empty() {
@@ -757,21 +557,6 @@ fn read_bookmarks(host: &str) -> Vec<BookmarkRow> {
     rows
 }
 
-/// Put the interface directory at the top of the local repository list.
-///
-/// Editing a pane is the one piece of work every thurbox user can do without
-/// cloning anything, and it was the one directory the list never offered — you
-/// had to know where the interface lives and type the path. Offered rather than
-/// persisted: it is wherever `bundled::resolve` says it is *now*, which changes
-/// with the working directory (a `./ui` beside it wins), so a remembered path
-/// would go stale the moment you started thurbox somewhere else.
-///
-/// Local only. The interface runs on this machine, so its directory is not a
-/// path on a host — the same reason a local home is not offered as a remote
-/// repository.
-///
-/// A user who bookmarked it themselves keeps their row: theirs may sit under a
-/// folder, and moving it would rearrange a list they arranged.
 fn offer_interface_dir(rows: &mut Vec<BookmarkRow>) {
     // `resolve(false)`: reading the list must not materialize an interface, or
     // opening the creation flow would write files as a side effect.
@@ -796,10 +581,6 @@ fn offer_interface_dir(rows: &mut Vec<BookmarkRow>) {
     rows.insert(0, offered);
 }
 
-/// Turn persisted bookmarks into the flat row list a flow renders.
-///
-/// Separated from the read so the shape — headers, their members, and what is
-/// suppressed as already covered — is testable without the file.
 fn flatten(bookmarks: &[Bookmark], scanned: &HashMap<PathBuf, Vec<PathBuf>>) -> Vec<BookmarkRow> {
     let persisted = group_persisted(bookmarks);
 
@@ -824,7 +605,6 @@ fn flatten(bookmarks: &[Bookmark], scanned: &HashMap<PathBuf, Vec<PathBuf>>) -> 
     rows
 }
 
-/// One repository not covered by any folder above it.
 fn push_standalone(
     rows: &mut Vec<BookmarkRow>,
     emitted: &mut std::collections::HashSet<PathBuf>,
@@ -836,7 +616,6 @@ fn push_standalone(
     rows.push(row(&bookmark.repo_path, None, false, bookmark.is_git));
 }
 
-/// A folder header followed by its members.
 fn push_folder(
     rows: &mut Vec<BookmarkRow>,
     emitted: &mut std::collections::HashSet<PathBuf>,
@@ -870,21 +649,6 @@ fn push_folder(
     }
 }
 
-/// The git repositories directly under each folder bookmark, scanned now.
-///
-/// A folder that cannot be **read** — deleted, permission denied, a path that is
-/// not a directory — is left out rather than reported empty, and the difference
-/// is the whole contract of the map: a key means a scan succeeded and is
-/// authoritative, its absence means there is no scan and what was persisted
-/// stands in.
-///
-/// A folder that reads as empty is empty, and that is deliberate — it is the
-/// same answer as "you deleted the last repository in it", which is half of what
-/// scanning on every read is for. The consequence is worth knowing: a mount point whose drive
-/// is not mounted is usually a readable empty directory, so a folder imported
-/// from one goes empty until it is mounted again, rather than holding its last
-/// contents. Nothing in a directory listing distinguishes the two, and guessing
-/// from "it used to have members" would keep a folder you really did empty.
 fn scan_parents(bookmarks: &[Bookmark]) -> HashMap<PathBuf, Vec<PathBuf>> {
     bookmarks
         .iter()
@@ -903,8 +667,6 @@ fn scan_parents(bookmarks: &[Bookmark]) -> HashMap<PathBuf, Vec<PathBuf>> {
         .collect()
 }
 
-/// Members grouped under the folder they were imported into. A member whose
-/// folder bookmark is gone is left out, so it falls back to standing alone.
 fn group_persisted(bookmarks: &[Bookmark]) -> HashMap<&PathBuf, Vec<&Bookmark>> {
     let folders: std::collections::HashSet<&PathBuf> = bookmarks
         .iter()
@@ -945,8 +707,6 @@ fn row(path: &Path, parent: Option<String>, is_parent: bool, is_git: Option<bool
 
 #[cfg(test)]
 mod tests {
-    /// A Fleet on this machine reads its `local` on this disk and every other
-    /// place of it through its link, as a Fleet elsewhere reads all of its.
     #[test]
     fn only_this_machines_local_place_is_read_here() {
         let store = super::RepoStore::with_fleets(&[crate::fleet_link::FleetLink::local("fleet")]);
@@ -960,10 +720,6 @@ mod tests {
         assert_eq!(place, "mux/box");
     }
 
-    /// A remote Fleet's place is listed and its branches read through that
-    /// Fleet's link (`fleet runtime browse` / `branches`), never from this
-    /// machine; a runtime that does not offer `browse` is said plainly, so
-    /// the flow falls back to a typed path.
     #[cfg(unix)]
     #[test]
     fn a_remote_fleets_place_is_read_through_its_link() {
@@ -1086,8 +842,6 @@ mod tests {
         assert_eq!(store.listing("", "/tmp"), Some(&Listing::Ready(Vec::new())));
     }
 
-    /// A held answer, back-dated so the age rule can be exercised without
-    /// waiting out the interval.
     fn held(listing: Listing, age: std::time::Duration) -> Listed {
         Listed {
             at: std::time::Instant::now() - age,
@@ -1154,7 +908,6 @@ mod tests {
         String::from_utf8_lossy(&out.stdout).trim().to_string()
     }
 
-    /// A commit on the upstream's `main`; returns it.
     fn advance(upstream: &std::path::Path, file: &str) -> String {
         std::fs::write(upstream.join(file), file).expect("write");
         git(upstream, &["add", file]);
@@ -1162,7 +915,6 @@ mod tests {
         git(upstream, &["rev-parse", "HEAD"])
     }
 
-    /// Poll until no branch read of `repo` is on its way.
     fn settle(store: &mut RepoStore, repo: &str) {
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
         while std::time::Instant::now() < deadline {
@@ -1175,16 +927,11 @@ mod tests {
         panic!("the branches of {repo} never arrived");
     }
 
-    /// Back-date the held branches of `repo` past [`LISTING_TTL`].
     fn age_branches(store: &mut RepoStore, repo: &str) {
         let held = store.branches.get_mut(repo).expect("held");
         held.at = std::time::Instant::now() - LISTING_TTL;
     }
 
-    /// The picker fetches `origin` once when it opens on a repository, behind
-    /// the spinner. The re-reads while it stays open list the refs only and
-    /// keep the list on screen; opening it again fetches again, however fresh
-    /// the list it left.
     #[test]
     fn branches_fetch_once_per_opening_and_rereads_only_list() {
         let dir = tempfile::tempdir().expect("tempdir");
@@ -1279,7 +1026,6 @@ mod tests {
         assert!(store.bookmarks("").is_none());
     }
 
-    /// A persisted bookmark, with the fields these tests care about.
     fn saved(path: &str, is_parent: bool, parent: Option<&str>) -> Bookmark {
         Bookmark {
             host: String::new(),
@@ -1291,13 +1037,10 @@ mod tests {
         }
     }
 
-    /// No folder was scanned — the shape a remote host's rows are built in, and
-    /// a local one's whenever the folder could not be read.
     fn no_scan() -> HashMap<PathBuf, Vec<PathBuf>> {
         HashMap::new()
     }
 
-    /// A folder scanned successfully, holding exactly `children`.
     fn scanned(folder: &str, children: &[&str]) -> HashMap<PathBuf, Vec<PathBuf>> {
         HashMap::from([(
             PathBuf::from(folder),
@@ -1305,8 +1048,6 @@ mod tests {
         )])
     }
 
-    /// `(path, parent, is_parent)` per row, which is the shape a flow renders
-    /// headers and indentation from.
     fn shape(rows: &[BookmarkRow]) -> Vec<(&str, Option<&str>, bool)> {
         rows.iter()
             .map(|row| (row.path.as_str(), row.parent.as_deref(), row.is_parent))

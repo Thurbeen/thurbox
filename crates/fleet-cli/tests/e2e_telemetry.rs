@@ -1,10 +1,3 @@
-//! Acceptance: OpenTelemetry export through the real `fleet` binary. The
-//! standard OTEL_* variables point it at an in-process OTLP/HTTP collector;
-//! the commands' and the manager's spans and metrics must arrive there with
-//! the resource's identity and outcome, and never a brief, a message or an
-//! environment value. Unset or disabled, nothing is sent; an unreachable
-//! collector changes nothing a command does.
-
 mod support;
 
 use std::collections::BTreeSet;
@@ -100,9 +93,6 @@ impl Drop for Running {
     }
 }
 
-/// The full lifecycle: spawn, brief, a message delivered, release. Every
-/// command is one trace; the reconcile commands carry their passes, objects
-/// and effects beneath them.
 #[test]
 fn a_task_lifecycle_exports_its_spans_and_metrics_to_the_collector() {
     let collector = Collector::start();
@@ -428,8 +418,6 @@ fn open_change() -> ChangeSnapshot {
     }
 }
 
-/// Every forge poll is a span and a counted call, and a throttle is its
-/// outcome.
 #[test]
 fn forge_polls_and_throttles_are_exported() {
     let collector = Collector::start();
@@ -486,8 +474,6 @@ fn forge_polls_and_throttles_are_exported() {
     }
 }
 
-/// Off unless asked: without an endpoint, or with the SDK disabled, a run
-/// sends nothing, prints nothing about telemetry, and behaves as before.
 #[test]
 fn nothing_is_exported_unless_an_endpoint_is_set_and_the_sdk_enabled() {
     let collector = Collector::start();
@@ -524,9 +510,6 @@ fn nothing_is_exported_unless_an_endpoint_is_set_and_the_sdk_enabled() {
     assert!(collector.paths().is_empty(), "{:?}", collector.paths());
 }
 
-/// A collector that refuses connections, or accepts and never answers,
-/// changes neither what a command does nor its exit, and delays it only
-/// within the shutdown bound.
 #[test]
 fn an_unreachable_collector_never_changes_a_command() {
     let refused = {
@@ -564,10 +547,6 @@ fn an_unreachable_collector_never_changes_a_command() {
     drop(silent);
 }
 
-/// The manager's telemetry identity is not a session's: no OTEL_* variable
-/// of the manager reaches the environment Fleet starts a session with. The
-/// OTEL_* variables the Task declares itself, from its spec, a TaskConfig or
-/// an EnvProvider, do.
 #[test]
 fn a_spawned_session_does_not_inherit_the_managers_otel_identity() {
     let mut e = Env::new("otel-session-env");
@@ -618,8 +597,6 @@ fn a_spawned_session_does_not_inherit_the_managers_otel_identity() {
     );
 }
 
-/// A caller's TRACEPARENT, as thurbox passes it, makes the command's root
-/// span its child; a malformed one is ignored and the command is a root.
 #[test]
 fn a_command_joins_the_trace_its_caller_names_in_traceparent() {
     let collector = Collector::start();
@@ -644,10 +621,6 @@ fn a_command_joins_the_trace_its_caller_names_in_traceparent() {
     assert!(get[0].parent.is_empty(), "{:#?}", get[0]);
 }
 
-/// A one-shot command answers a caller that bounds it (thurbox probes
-/// `fleet version --json` within seconds, `doctor` within 300 ms), so a
-/// collector that accepts and never answers adds at most the call bound to
-/// its exit, never the 2-second bound of `fleet up`.
 #[test]
 fn a_stalled_collector_adds_at_most_the_call_bound_to_a_command() {
     let silent = TcpListener::bind("127.0.0.1:0").unwrap();
@@ -668,11 +641,6 @@ fn a_stalled_collector_adds_at_most_the_call_bound_to_a_command() {
     drop(silent);
 }
 
-/// A command's root span names the object it acts on, so a trace view finds
-/// a Task's commands by `fleet.name` (docs/observability.md, *Turn it on*),
-/// with a built-in `fleet.kind` as the store serves it, whatever spelling the
-/// command took. A command that names no one object carries neither. A
-/// command whose export the call bound dropped is run again.
 #[test]
 fn a_command_span_names_the_kind_and_object_it_acts_on() {
     let collector = Collector::start();
@@ -783,9 +751,6 @@ fn a_command_span_names_the_kind_and_object_it_acts_on() {
     );
 }
 
-/// A slow forge cannot hold a pass: once a pass has spent its budget on
-/// change polls, the ChangeRequests still due wait for the next pass, and
-/// the run still polls every one.
 #[test]
 fn change_polls_on_a_slow_forge_spread_over_passes() {
     let collector = Collector::start();
@@ -819,9 +784,6 @@ fn change_polls_on_a_slow_forge_spread_over_passes() {
     );
 }
 
-/// A change due again before its poll ends cannot keep the budget: the
-/// change that has waited longest is polled first, so every due change is
-/// reached.
 #[test]
 fn a_change_due_again_at_once_does_not_starve_the_others() {
     let collector = Collector::start();
@@ -860,8 +822,6 @@ fn a_change_due_again_at_once_does_not_starve_the_others() {
     }
 }
 
-/// A host that asked to slow down is not asked again in the next pass: its
-/// other due changes take the deferral past the poll budget, at no call.
 #[test]
 fn a_throttle_past_the_budget_still_defers_the_rest_of_the_host() {
     let collector = Collector::start();
@@ -916,9 +876,6 @@ fn due_in_order(env: &Env, names: &[&str]) {
     }
 }
 
-/// A host's deferral reaches its changes after another host's in the due
-/// order, past the budget: the throttled host is not asked again in its
-/// wait.
 #[test]
 fn a_throttle_past_the_budget_defers_the_host_behind_another_hosts_change() {
     let collector = Collector::start();

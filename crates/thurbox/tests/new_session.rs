@@ -1,16 +1,3 @@
-//! The new-session flow, against the real bundled mod.
-//!
-//! What is worth testing here is not the pixels, but the two things v1 got
-//! wrong often enough to have grown machinery for:
-//! **which step the flow is on** after each keystroke, and **what the create
-//! command it finally issues actually carries**. Both are observable from
-//! outside: the step from what is drawn, the command from the queue it is pushed
-//! onto.
-//!
-//! The flow is driven exactly as the loop drives it — declared chords through
-//! the registry to `on_action`, everything else to `on_key` — so a binding that
-//! resolves to the wrong handler fails here rather than in the terminal.
-
 use ratatui::backend::TestBackend;
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
@@ -39,8 +26,6 @@ fn index_of(host: &LuaHost, name: &str) -> usize {
         .unwrap_or_else(|| panic!("no {name} plugin"))
 }
 
-/// Fleet's `local` host as the snapshot publishes it: this machine, with an
-/// empty backend.
 fn local_host() -> HostRow {
     HostRow {
         name: "local".into(),
@@ -64,7 +49,6 @@ fn snapshot() -> Snapshot {
     }
 }
 
-/// Where an installed interface lives, as `offered` reports it.
 const INTERFACE_DIR: &str = "/home/me/.config/thurbox/ui";
 
 fn bookmark(path: &str, is_git: Option<bool>) -> BookmarkRow {
@@ -79,8 +63,6 @@ fn bookmark(path: &str, is_git: Option<bool>) -> BookmarkRow {
     }
 }
 
-/// The interface directory, which the kernel offers at the top of the local list
-/// under a name of its own rather than reading it from memory.
 fn offered() -> BookmarkRow {
     BookmarkRow {
         label: Some("Thurbox interface — edit your panes".into()),
@@ -89,14 +71,12 @@ fn offered() -> BookmarkRow {
     }
 }
 
-/// A store holding the three reads, as if every worker had already answered.
 fn store_with(rows: Vec<BookmarkRow>) -> RepoStore {
     let mut repos = RepoStore::new();
     repos.set_bookmarks_for_test("", rows);
     repos
 }
 
-/// A world whose remembered repositories are `rows`.
 fn world_with(rows: Vec<BookmarkRow>) -> World {
     World {
         repos: store_with(rows),
@@ -104,7 +84,6 @@ fn world_with(rows: Vec<BookmarkRow>) -> World {
     }
 }
 
-/// A folder of repositories: the header row plus one member under it.
 fn folder_rows() -> Vec<BookmarkRow> {
     vec![
         BookmarkRow {
@@ -128,8 +107,6 @@ fn folder_rows() -> Vec<BookmarkRow> {
     ]
 }
 
-/// Everything the loop publishes, with the wants the flow is currently asking
-/// for — which is what makes the three reads visible to it.
 struct World {
     snapshot: Snapshot,
     repos: RepoStore,
@@ -158,8 +135,6 @@ fn publish(host: &LuaHost, world: &World) {
     publish_hovered(host, world, None);
 }
 
-/// Publish with the pointer over `hovered`, the identity the kernel resolved
-/// through the same hitboxes a click is routed by.
 fn publish_hovered(host: &LuaHost, world: &World, hovered: Option<&Identity>) {
     let themes = Themes::load(None);
     let mut registry = Registry::default();
@@ -194,8 +169,6 @@ fn publish_hovered(host: &LuaHost, world: &World, hovered: Option<&Identity>) {
     .expect("publish");
 }
 
-/// What the flow draws, as text. Empty when it is closed — a closed modal draws
-/// nothing at all, which is how the kernel knows it is not floating.
 fn drawn(host: &LuaHost, world: &World) -> String {
     match painted(host, world, None) {
         Some((buffer, _)) => screen_of(&buffer),
@@ -203,8 +176,6 @@ fn drawn(host: &LuaHost, world: &World) -> String {
     }
 }
 
-/// The flow painted into its own rect, with the hitboxes the paint recorded —
-/// what the loop routes a press through. `None` while the flow is closed.
 fn painted(
     host: &LuaHost,
     world: &World,
@@ -213,8 +184,6 @@ fn painted(
     painted_on(host, world, hovered, 120)
 }
 
-/// [`painted`] on a screen `screen_cols` wide: a float is told the screen's
-/// width, and one sized to its content may not outgrow it.
 fn painted_on(
     host: &LuaHost,
     world: &World,
@@ -224,7 +193,6 @@ fn painted_on(
     painted_sized(host, world, hovered, screen_cols, 40)
 }
 
-/// [`painted_on`] on a screen `screen_rows` tall as well.
 fn painted_sized(
     host: &LuaHost,
     world: &World,
@@ -286,7 +254,6 @@ fn screen_of(buffer: &Buffer) -> String {
         .join("\n")
 }
 
-/// The cell where `needle` starts, counted in cells rather than bytes.
 fn locate(buffer: &Buffer, needle: &str) -> (u16, u16) {
     let first = needle.chars().next().expect("a needle");
     for y in 0..buffer.area.height {
@@ -303,8 +270,6 @@ fn locate(buffer: &Buffer, needle: &str) -> (u16, u16) {
     panic!("{needle:?} is not on screen:\n{}", screen_of(buffer));
 }
 
-/// The identity the kernel resolves at a cell: the innermost hitbox, which is
-/// the last one recorded — `App::target_at`'s rule.
 fn identity_at(hits: &[Hit], x: u16, y: u16) -> Identity {
     let position = ratatui::layout::Position::new(x, y);
     hits.iter()
@@ -314,9 +279,6 @@ fn identity_at(hits: &[Hit], x: u16, y: u16) -> Identity {
         .unwrap_or_default()
 }
 
-/// A left press on the cell where `needle` is drawn, resolved against the
-/// paint's own hitboxes and delivered as the loop delivers it. `below` moves the
-/// press that many rows down, for a field whose label is its frame's title.
 fn click_on(host: &LuaHost, world: &World, needle: &str, below: u16) -> Identity {
     let (buffer, hits) = painted(host, world, None).expect("the flow is open");
     let (x, y) = locate(&buffer, needle);
@@ -333,8 +295,6 @@ fn click_on(host: &LuaHost, world: &World, needle: &str, below: u16) -> Identity
     identity
 }
 
-/// Press a key the way the loop does: a declared chord resolves through the
-/// registry to `on_action`, and anything else goes to `on_key`.
 fn press(host: &LuaHost, world: &World, chord: &str) {
     publish(host, world);
     let index = index_of(host, MOD);
@@ -375,7 +335,6 @@ fn key_press(chord: &str) -> KeyPress {
     key
 }
 
-/// Type a word, character by character, as a terminal delivers it.
 fn type_text(host: &LuaHost, world: &World, text: &str) {
     for ch in text.chars() {
         let mut key = KeyPress {
@@ -407,7 +366,6 @@ fn type_text(host: &LuaHost, world: &World, text: &str) {
     }
 }
 
-/// Open the flow and take the host step's first row, for tests of later steps.
 fn open(host: &LuaHost, world: &World) {
     press(host, world, "ctrl+n");
     if drawn(host, world).contains("Place") {
@@ -424,7 +382,6 @@ fn devbox() -> HostRow {
     }
 }
 
-/// A Fleet as the snapshot publishes it, with its own places and agents.
 fn fleet(
     name: &str,
     transport: &str,
@@ -451,9 +408,6 @@ fn fleet(
     }
 }
 
-/// Three Fleets, as the approved mock-up lists them: box (no manager
-/// running) with a place beside its `local`, gpu (unreachable) and this
-/// machine's laptop.
 fn three_fleets() -> Vec<FleetRow> {
     let box_local = HostRow {
         detail: "box itself (mux)".into(),
@@ -492,8 +446,6 @@ fn three_fleets() -> Vec<FleetRow> {
 
 // ── The Fleet step ─────────────────────────────────────────────────────────
 
-/// With one Fleet listed there is nothing to choose: the flow opens on that
-/// Fleet's places, and the create names it.
 #[test]
 fn a_single_listed_fleet_skips_the_fleet_step() {
     let host = host();
@@ -523,9 +475,6 @@ fn a_single_listed_fleet_skips_the_fleet_step() {
     );
 }
 
-/// A sole Fleet thurbox cannot speak to is refused where the flow opens,
-/// on the place step it starts on: the refusal is shown, enter goes no
-/// further, and no step waits on agents that will never come.
 #[test]
 fn a_sole_incompatible_fleet_is_refused_on_the_place_step() {
     let host = host();
@@ -556,8 +505,6 @@ fn a_sole_incompatible_fleet_is_refused_on_the_place_step() {
     assert!(host.drain_commands().is_empty());
 }
 
-/// A refused Fleet whose first ready place is not its first one still shows
-/// its refusal under the cursor: the list is the refusal alone.
 #[test]
 fn a_refusal_keeps_the_cursor_when_a_later_place_is_ready() {
     let host = host();
@@ -580,9 +527,6 @@ fn a_refusal_keeps_the_cursor_when_a_later_place_is_ready() {
     assert_ne!(fg_at(&buffer, "Select"), muted, "{screen}");
 }
 
-/// A Fleet refused after the flow left the place step says so on the step
-/// the flow is on: the agent step shows the refusal, not a wait for agents
-/// that will never come.
 #[test]
 fn a_fleet_refused_later_shows_the_refusal_on_the_agent_step() {
     let host = host();
@@ -620,12 +564,6 @@ fn a_fleet_refused_later_shows_the_refusal_on_the_agent_step() {
     assert!(host.drain_commands().is_empty());
 }
 
-/// With several Fleets, the Fleet step comes first: each Fleet, how it is
-/// reached and whether it is up, with why for the one under the cursor. An
-/// unreachable Fleet is not taken. The places and agents that follow are
-/// the chosen Fleet's, its repositories are remembered under
-/// `<fleet>/<place>` rather than as this machine's, and the create names
-/// the Fleet.
 #[test]
 fn the_fleet_step_lists_each_fleet_and_the_rest_follows_the_one_picked() {
     let host = host();
@@ -721,9 +659,6 @@ fn the_fleet_step_lists_each_fleet_and_the_rest_follows_the_one_picked() {
     );
 }
 
-/// A remote Fleet's path field starts at its own home, and a typed `~` is
-/// that home. Until the home is known the field starts empty, with a hint,
-/// rather than at a `~/` the Fleet would refuse.
 #[test]
 fn a_remote_fleets_path_starts_at_its_own_home() {
     let host = host();
@@ -804,9 +739,6 @@ fn a_remote_fleets_path_starts_at_its_own_home() {
     );
 }
 
-/// A remote Fleet's home is the home of its own `local` only: another
-/// place of it is another machine, whose path field starts empty until that
-/// place names its home.
 #[test]
 fn a_remote_fleets_home_prefills_only_its_own_local() {
     let mut world = World::default();
@@ -853,9 +785,6 @@ fn the_flow_draws_nothing_until_it_is_opened() {
     );
 }
 
-/// The host step is never skipped: this machine is a choice at once, and the
-/// hosts Fleet names later join the same open form, so a form opened before
-/// Fleet answers neither waits nor loses them.
 #[test]
 fn the_host_step_offers_this_machine_at_once_and_fleets_hosts_when_they_arrive() {
     let host = host();
@@ -871,8 +800,6 @@ fn the_host_step_offers_this_machine_at_once_and_fleets_hosts_when_they_arrive()
     assert!(drawn(&host, &world).contains("Select Repo"));
 }
 
-/// With no host list published at all, the step says it is asking rather than
-/// offering nothing, and the hosts appear once they arrive.
 #[test]
 fn a_host_list_not_yet_published_shows_the_wait() {
     let host = host();
@@ -886,8 +813,6 @@ fn a_host_list_not_yet_published_shows_the_wait() {
     assert!(screen.contains("devbox"), "{screen}");
 }
 
-/// Two places as the maintainer's screenshot listed them: `local`, and a
-/// place whose runtime says why it cannot run a session, at length.
 fn places_of_two_lengths() -> Vec<HostRow> {
     vec![
         HostRow {
@@ -909,15 +834,10 @@ fn places_of_two_lengths() -> Vec<HostRow> {
 const NOT_READY_WHY: &str =
     "place \"gpu-box\" cannot be reached: ssh: connect to host gpu-box port 22: Connection timed out";
 
-/// The cell column `needle` starts at on screen.
 fn column_of(buffer: &Buffer, needle: &str) -> u16 {
     locate(buffer, needle).0
 }
 
-/// The place picker is a table: each column starts at one cell on every row,
-/// whatever the names' lengths; a row's status is short and whole, and the
-/// selected place's reason reads on one line under the list, ellipsized,
-/// in a modal that fits the screen it opens on.
 #[test]
 fn the_place_picker_aligns_its_columns_and_gives_the_reason_one_line() {
     let frames: [(u16, &[&str]); 2] = [
@@ -1001,8 +921,6 @@ fn the_place_picker_aligns_its_columns_and_gives_the_reason_one_line() {
     }
 }
 
-/// The place under the cursor is ready: no line is held under the list for
-/// a reason it does not have, beyond the one line every place gets.
 #[test]
 fn a_ready_place_under_the_cursor_leaves_one_blank_reason_line() {
     let host = host();
@@ -1026,14 +944,11 @@ fn a_ready_place_under_the_cursor_leaves_one_blank_reason_line() {
     assert!(lines[place + 3].contains("[ Select ]"), "{screen}");
 }
 
-/// The foreground colour of the first cell of `needle` on screen.
 fn fg_at(buffer: &Buffer, needle: &str) -> ratatui::style::Color {
     let (x, y) = locate(buffer, needle);
     buffer[(x, y)].fg
 }
 
-/// A place that is not ready reads as muted on its whole row, not only in
-/// its status cell, while a ready place keeps the text colour.
 #[test]
 fn a_not_ready_place_is_dimmed() {
     let host = host();
@@ -1069,9 +984,6 @@ fn a_not_ready_place_is_dimmed() {
     assert_ne!(fg_at(&buffer, "mux/other"), muted, "{}", screen_of(&buffer));
 }
 
-/// `enter` on a place that is not ready stays on the place step and says
-/// why, as the Fleet step does for an unreachable Fleet; `Select` reads
-/// disabled while the cursor is on that place.
 #[test]
 fn a_not_ready_place_cannot_be_selected() {
     let host = host();
@@ -1102,8 +1014,6 @@ fn a_not_ready_place_cannot_be_selected() {
     assert!(screen.contains("mux/gpu-box is not ready"), "{screen}");
 }
 
-/// A disabled `Select` stays disabled under the pointer: hovering it does
-/// not light it as a button that would act.
 #[test]
 fn a_disabled_select_does_not_light_under_the_pointer() {
     let host = host();
@@ -1118,7 +1028,6 @@ fn a_disabled_select_does_not_light_under_the_pointer() {
     assert_eq!(resting[(x, y)], lit[(x, y)], "{}", screen_of(&lit));
 }
 
-/// The picker opens with the cursor on the first place that is ready.
 #[test]
 fn the_place_picker_opens_on_the_first_ready_place() {
     let host = host();
@@ -1139,9 +1048,6 @@ fn the_place_picker_opens_on_the_first_ready_place() {
     );
 }
 
-/// A name too long for its row never costs a row its status: the status
-/// column is always kept, the description gives up its cells first, and
-/// then the name is ellipsized. The Fleet picker keeps its state the same way.
 #[test]
 fn a_long_name_never_hides_a_pickers_status_column() {
     let long = "mux/a-place-whose-name-runs-on-and-on-and-on-x";
@@ -1188,8 +1094,6 @@ fn a_long_name_never_hides_a_pickers_status_column() {
     }
 }
 
-/// More places than the screen has rows: the modal stays inside the screen,
-/// the list scrolls with the cursor, and the row the cursor is on is drawn.
 #[test]
 fn a_long_place_list_scrolls_inside_a_short_screen() {
     let host = host();
@@ -1250,7 +1154,6 @@ fn a_long_place_list_scrolls_inside_a_short_screen() {
     );
 }
 
-/// A Fleet that defines no `local` host offers none.
 #[test]
 fn local_is_offered_only_when_fleet_defines_it() {
     let host = host();
@@ -1285,8 +1188,6 @@ fn opening_with_hosts_asks_where_to_run_first() {
     );
 }
 
-/// A Fleet whose `herdr` runtime has a `local` place beside the default
-/// runtime's.
 fn with_herdr_local() -> World {
     let mut world = World::default();
     let herdr_local = HostRow {
@@ -1306,9 +1207,6 @@ fn with_herdr_local() -> World {
     world
 }
 
-/// Another runtime's `local` place is this machine, as the default one is:
-/// it offers this machine's repositories, read on this disk, and the Task
-/// names the place.
 #[test]
 fn another_runtimes_local_place_is_this_machine() {
     let host = host();
@@ -1335,8 +1233,6 @@ fn another_runtimes_local_place_is_this_machine() {
     );
 }
 
-/// Another runtime's `local` place is browsed on this disk, never through
-/// its runtime.
 #[test]
 fn another_runtimes_local_place_is_browsed_here() {
     let host = host();
@@ -1351,9 +1247,6 @@ fn another_runtimes_local_place_is_browsed_here() {
     assert!(browse.starts_with('\0'), "{browse:?}");
 }
 
-/// On a remote Fleet whose default runtime has no `local` place, another
-/// runtime's `local` is read through that place itself, never through a
-/// `local` the Fleet would refuse. Its repositories stay the machine's.
 #[test]
 fn a_remote_fleets_runtime_local_place_is_read_through_itself() {
     let host = host();
@@ -1387,9 +1280,6 @@ fn a_remote_fleets_runtime_local_place_is_read_through_itself() {
     );
 }
 
-/// A remote Fleet's `local` that is not ready reads nothing: another
-/// runtime's ready `local` is read through itself, and its repositories
-/// stay the machine's whichever place reads them.
 #[test]
 fn a_remote_fleets_runtime_local_place_skips_a_local_that_is_not_ready() {
     let host = host();
@@ -1504,7 +1394,6 @@ fn search_filters_and_counts_what_it_matched() {
     assert!(!screen.contains("thurbox"), "{screen}");
 }
 
-/// The repository rows as drawn, top to bottom, without their checkboxes.
 fn listed(screen: &str) -> Vec<String> {
     screen
         .lines()
@@ -1840,7 +1729,6 @@ fn a_flow_picking_from_memory_asks_for_no_listing() {
     assert_eq!(host.shared_string("want_browse"), None);
 }
 
-/// What the path field holds once focus has moved into it.
 fn path_field(host: &LuaHost, world: &World) -> String {
     open(host, world);
     press(host, world, "tab");
@@ -2107,8 +1995,6 @@ fn a_path_just_added_is_the_row_that_gets_selected() {
 
 // ── A path that does not exist yet ─────────────────────────────────────────
 
-/// A world whose `/src` holds the two remembered repositories and nothing else,
-/// with that listing served — the directory the path field starts in.
 fn world_listing_src() -> World {
     let mut world = World::default();
     world.repos.set_listing_for_test(
@@ -2248,7 +2134,6 @@ fn escape_from_the_folder_question_keeps_what_was_typed() {
     assert!(host.drain_commands().is_empty());
 }
 
-/// Walk to the new-folder question for `/src/<name>` and pick "clone".
 fn to_the_clone_step(host: &LuaHost, world: &World, name: &str) {
     open(host, world);
     press(host, world, "tab");
@@ -2549,7 +2434,6 @@ fn a_member_of_a_folder_cannot_be_forgotten_on_its_own() {
 
 // ── Through to creation ────────────────────────────────────────────────────
 
-/// Walk a plain (no worktree) selection through to the create command.
 #[test]
 fn a_plain_selection_names_the_session_then_the_agent() {
     let host = host();
@@ -2588,8 +2472,6 @@ fn a_plain_selection_names_the_session_then_the_agent() {
     assert_eq!(drawn(&host, &world), "", "the flow closes when it commits");
 }
 
-/// A world whose repository `/src/thurbox` has the branches `listing`, and
-/// whose flow is asking for them, as the loop serves `store.want_branches`.
 fn world_with_branches(listing: thurbox::kernel::repos::BranchListing) -> World {
     let mut world = World::default();
     world.repos.set_branches_for_test("/src/thurbox", listing);
@@ -2605,8 +2487,6 @@ fn main_and_dev() -> thurbox::kernel::repos::BranchListing {
     })
 }
 
-/// The upstream's default branch is under the cursor and is the base sent,
-/// and a fetch that failed says so above the list it left as it was.
 #[test]
 fn the_base_branch_defaults_to_origin_and_says_when_the_fetch_failed() {
     let host = host();
@@ -2644,9 +2524,6 @@ fn the_base_branch_defaults_to_origin_and_says_when_the_fetch_failed() {
     );
 }
 
-/// v2's worktree flow: `alt+w` gives the repository a worktree (`[wt]`),
-/// then the base branch is picked (the default under the cursor), the session
-/// named, and its branch named, prefilled from the name.
 #[test]
 fn a_worktree_asks_the_base_branch_then_names_the_branch() {
     let host = host();
@@ -2691,9 +2568,6 @@ fn a_worktree_asks_the_base_branch_then_names_the_branch() {
     );
 }
 
-/// Every ticked repository goes into the one session: the worktrees first,
-/// the plain ones after, in the list's order. The first is where the agent
-/// starts and the base branch is asked for; the rest ride along as extras.
 #[test]
 fn ticked_repositories_all_go_into_the_session() {
     let host = host();
@@ -2720,8 +2594,6 @@ fn ticked_repositories_all_go_into_the_session() {
     ),);
 }
 
-/// A directory with no repository is refused a worktree, in v2's words, and
-/// stays ticked as a plain directory.
 #[test]
 fn a_directory_without_git_is_refused_a_worktree() {
     let host = host();
@@ -2734,8 +2606,6 @@ fn a_directory_without_git_is_refused_a_worktree() {
     assert!(!screen.contains("[wt]"), "{screen}");
 }
 
-/// A repository's existing worktrees open under it with `→`, and `enter` on
-/// one runs the session in it as it is, named after its directory.
 #[test]
 fn an_existing_worktree_opens_as_it_is() {
     let host = host();
@@ -2767,8 +2637,6 @@ fn an_existing_worktree_opens_as_it_is() {
     ),);
 }
 
-/// The same plain selection on the Fleet engine (ADR-41) becomes a Task.
-/// `fleet` here is a stand-in that records what it was asked.
 #[cfg(unix)]
 #[test]
 fn a_plain_selection_on_the_fleet_engine_applies_a_task() {
@@ -2801,9 +2669,6 @@ fn a_plain_selection_on_the_fleet_engine_applies_a_task() {
     assert_eq!(task["spec"]["host"], "local");
 }
 
-/// A `fleet` that answers what the executor asks before it applies (no Task
-/// yet, the harnesses with a profile, the hosts `hosts` names, as JSON) and
-/// records the rest, with what it read on its standard input.
 #[cfg(unix)]
 struct StubFleet {
     dir: tempfile::TempDir,
@@ -2838,8 +2703,6 @@ impl StubFleet {
         StubFleet { dir, program }
     }
 
-    /// Dispatch `commands` on the Fleet engine's bus, one by one, and
-    /// answer the first failure.
     fn run(&self, commands: Vec<Command>) -> Result<(), String> {
         let mut bus = thurbox::kernel::command::CommandBus::fleet(
             thurbox::fleet_link::FleetLink::local(self.program.to_string_lossy()),
@@ -2866,7 +2729,6 @@ impl StubFleet {
         Ok(())
     }
 
-    /// The Task the one `apply` carried.
     fn applied(&self) -> serde_json::Value {
         let asked =
             std::fs::read_to_string(self.dir.path().join("asked")).expect("fleet was asked");
@@ -2880,9 +2742,6 @@ impl StubFleet {
     }
 }
 
-/// A repository path typed into the flow is remembered before the session
-/// is made: on the Fleet engine too, since the bookmark is the interface's,
-/// not a session's.
 #[cfg(unix)]
 #[test]
 fn a_typed_repository_is_remembered_on_the_fleet_engine() {
@@ -2937,19 +2796,13 @@ fn a_typed_repository_is_remembered_on_the_fleet_engine() {
     }
 }
 
-/// What the stand-in `fleet` answers to `runtime browse` on any place: the
-/// place's home, `/home/box`, with a repository and a plain directory.
 #[cfg(unix)]
 const REMOTE_HOME_LISTING: &str =
     r#"{"dir":"/home/box","entries":[{"name":"app","repo":true},{"name":"notes","repo":false}]}"#;
 
-/// What it answers to `runtime branches`, except for `…/notes`, whose
-/// branches fail as a place without `workspace-git` fails them.
 #[cfg(unix)]
 const REMOTE_BRANCHES: &str = r#"{"default":"main","names":["dev","main"]}"#;
 
-/// Ask the store for what the flow asks, as the loop does each iteration,
-/// and wait until every read it started has answered.
 #[cfg(unix)]
 fn serve(host: &LuaHost, world: &mut World) {
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
@@ -2973,10 +2826,6 @@ fn serve(host: &LuaHost, world: &mut World) {
     }
 }
 
-/// The local Fleet's place `mux/box` is another machine. Its folders and
-/// branches are read there, through `fleet runtime browse` and `branches`,
-/// never on this machine's disk, and a worktree of a repository there is
-/// the runtime's to make: the Task names it `git+file://` on that path.
 #[cfg(unix)]
 #[test]
 fn a_place_on_another_machine_is_browsed_and_given_a_worktree_there() {
@@ -3083,9 +2932,6 @@ fn a_place_on_another_machine_is_browsed_and_given_a_worktree_there() {
     assert_eq!(task["spec"]["host"], "mux/box");
 }
 
-/// A typed `~` on a place elsewhere is that place's home, which its own
-/// `~` listing names: until it has, any `~…` asks for `~` first, and then
-/// both the listing and the remembered path are under that home.
 #[cfg(unix)]
 #[test]
 fn a_typed_home_on_a_place_elsewhere_is_that_places_home() {
@@ -3151,9 +2997,6 @@ fn a_typed_home_on_a_place_elsewhere_is_that_places_home() {
     );
 }
 
-/// Another login's home (`~user/…`) is not known on a place elsewhere: the
-/// flow says so rather than listing the login's own home, and remembers
-/// nothing.
 #[test]
 fn another_logins_home_on_a_place_elsewhere_is_refused() {
     let host = host();
@@ -3216,8 +3059,6 @@ fn another_logins_home_on_a_place_elsewhere_is_refused() {
     );
 }
 
-/// A place that cannot list a repository's branches says why in the
-/// dialog, in the place's own words.
 #[cfg(unix)]
 #[test]
 fn a_places_refusal_to_list_branches_is_shown() {
@@ -3259,8 +3100,6 @@ fn a_places_refusal_to_list_branches_is_shown() {
     );
 }
 
-/// The host picker names a route (`ssh:devbox`); Fleet names the same
-/// machine `devbox`, and refuses a host its config does not define.
 #[cfg(unix)]
 #[test]
 fn a_session_on_a_host_names_the_fleet_host() {
@@ -3293,8 +3132,6 @@ fn a_session_on_a_host_names_the_fleet_host() {
     assert!(!unknown.asked(), "nothing was applied");
 }
 
-/// A session on another Fleet host runs in the repository directory there,
-/// as it is: its Task names a `file://` URL of the path given.
 #[cfg(unix)]
 #[test]
 fn a_session_on_another_fleet_host_runs_in_its_directory() {
@@ -3320,9 +3157,6 @@ fn a_session_on_another_fleet_host_runs_in_its_directory() {
     );
 }
 
-/// A directory that is no git repository, such as the installed interface
-/// the picker offers to edit, has no worktree to make: its session runs in it
-/// as it is.
 #[cfg(unix)]
 #[test]
 fn a_directory_that_is_no_repository_runs_as_it_is() {
@@ -3348,9 +3182,6 @@ fn a_directory_that_is_no_repository_runs_as_it_is() {
     );
 }
 
-/// A bare repository is a repository: it has no `.git` beside its files, but
-/// its session still gets a worktree, never a run inside the bare
-/// repository.
 #[cfg(unix)]
 #[test]
 fn a_bare_repository_is_not_run_as_a_plain_directory() {
@@ -3379,8 +3210,6 @@ fn a_bare_repository_is_not_run_as_a_plain_directory() {
     );
 }
 
-/// Only an agent Fleet has a harness profile for becomes a Task: `shell`
-/// is a command of thurbox's registry, not a harness.
 #[cfg(unix)]
 #[test]
 fn an_agent_with_no_fleet_harness_is_refused_by_name() {
@@ -3546,9 +3375,6 @@ fn nothing_to_pick_locally_still_creates_a_session() {
     assert_eq!(repo, "~", "the home directory, as v1 does");
 }
 
-/// Fleet's agents arrive from a worker. A name confirmed before they have
-/// is not a choice of no agent: the flow waits on the agent step, issues
-/// nothing, and goes on once Fleet answers.
 #[test]
 fn a_name_confirmed_before_fleets_agents_arrive_waits_for_them() {
     let host = host();
@@ -4224,12 +4050,10 @@ fn clicking_a_browsed_folder_selects_it_as_the_arrows_do() {
     assert_eq!(command, issued(&keyed));
 }
 
-/// The flow as painted with the pointer over `hovered`, for its colours.
 fn colours(host: &LuaHost, world: &World, hovered: Option<&Identity>) -> Buffer {
     painted(host, world, hovered).expect("the flow is open").0
 }
 
-/// The identity drawn at `needle`, as the kernel would publish it on hover.
 fn identity_of(host: &LuaHost, world: &World, needle: &str, below: u16) -> Identity {
     let (buffer, hits) = painted(host, world, None).expect("the flow is open");
     let (x, y) = locate(&buffer, needle);

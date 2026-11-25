@@ -1,12 +1,3 @@
-//! The centre pane, after agent and shell became two tabs of ONE mod.
-//!
-//! v1's centre is a single pane with a tab strip on its border (`CentralTab`).
-//! v2 first modelled the two views as two mods taking turns in the `switch`
-//! slot, which cost the strip on every tab but the agent's, a second stop in
-//! the focus ring, and a slot arbitration that refereed nothing else
-//! (v2-system-modals D4). These assert the shape that replaced it, against the
-//! *real* bundled mods — so a mod edit that loses a tab fails here.
-
 use ratatui::backend::TestBackend;
 use ratatui::buffer::Buffer;
 use ratatui::Terminal;
@@ -126,8 +117,6 @@ fn index_of(host: &LuaHost, name: &str) -> usize {
         .unwrap_or_else(|| panic!("no plugin named {name}"))
 }
 
-/// Publish, then let the session list choose a session — the terminal reads its
-/// choice out of `store`, exactly as it does in the binary.
 fn with_a_selection() -> LuaHost {
     let host = host();
     publish(&host);
@@ -172,7 +161,6 @@ fn hits(node: &Node, width: u16, height: u16) -> Vec<Hit> {
     hits
 }
 
-/// Which column a label starts in, in cells rather than bytes.
 fn column_of(line: &str, needle: &str) -> u16 {
     let at = line
         .find(needle)
@@ -180,7 +168,6 @@ fn column_of(line: &str, needle: &str) -> u16 {
     u16::try_from(line[..at].chars().count()).expect("a column")
 }
 
-/// How far back the session surface this pane placed is scrolled.
 fn surface_scroll(node: &Node) -> u16 {
     fn walk(node: &Node) -> Option<u16> {
         match node {
@@ -196,7 +183,6 @@ fn surface_scroll(node: &Node) -> u16 {
     walk(node).expect("the pane places a session surface")
 }
 
-/// One wheel report over the middle of the pane.
 fn wheel(host: &LuaHost, up: bool) -> bool {
     host.on_scroll(index_of(host, TERMINAL), &Scroll { up, x: 30, y: 5 })
         .expect("the wheel")
@@ -615,19 +601,13 @@ fn typing_snaps_the_view_back_to_the_bottom() {
 
 // ── the scrollbar is a control ────────────────────────────────────────────
 
-/// The pane height every scrollbar case below is rendered at, and the scrollback
-/// they scroll. A 12-row pane leaves 10 inner rows: a cap, eight rows of track,
-/// a cap.
 const BAR_HEIGHT: u16 = 12;
 const BAR_TRACK_TOP: u16 = 1;
 const BAR_TRACK_BOTTOM: u16 = 8;
 const BAR_DEPTH: u16 = 20;
 
-/// The role the pane gives its scrollbar — the kernel's own spelling for "a
-/// press here takes hold of the pointer".
 const DRAG: &str = "drag";
 
-/// A press, or a move under one, on row `row` of the scrollbar column.
 fn bar_press(host: &LuaHost, row: u16, dragging: bool) -> bool {
     host.on_click(
         index_of(host, TERMINAL),
@@ -648,7 +628,6 @@ fn bar_press(host: &LuaHost, row: u16, dragging: bool) -> bool {
     .expect("press")
 }
 
-/// A session scrolled back far enough to have a bar to grab.
 fn with_a_scrollback() -> LuaHost {
     let host = with_a_selection();
     for _ in 0..BAR_DEPTH {

@@ -1,7 +1,3 @@
-//! thurbox's span around each Fleet call reaches the `fleet` it starts as
-//! `TRACEPARENT`, through every way the link runs it. Its own test binary:
-//! it installs the process's tracer provider, which no other test may see.
-
 #![cfg(unix)]
 
 use std::os::unix::fs::PermissionsExt;

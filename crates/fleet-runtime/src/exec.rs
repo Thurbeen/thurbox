@@ -1,18 +1,3 @@
-//! The `exec` runtime kind: any program that speaks the runtime protocol
-//! (docs/runtime/README.md), run as `<program> <verb>` through `fleet-exec`,
-//! one bounded process per call, a JSON request on stdin and
-//! `{"known": …}` or `{"unknown": {"why": …}}` on stdout.
-//!
-//! A host names its runtime in `fleet.toml`, so a Task's `spec.host` chooses
-//! the program. The adapter knows no runtime: what it sends and reads is the
-//! protocol, in serde types of its own. It shares none with any runtime's code;
-//! [`check`] and the end-to-end tests that run `runtime-mux` through this
-//! adapter are what hold the two to one protocol.
-//!
-//! Every failure to get a protocol answer (a program that is not there, a
-//! timeout, a non-zero exit, an answer that does not parse) is Unknown, and
-//! Unknown never concludes.
-
 use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -37,84 +22,40 @@ use serde_json::{Value, json};
 
 use crate::signals::{Boundary, FileSignals};
 
-/// The newest protocol version Fleet speaks. Every request carries the
-/// version the runtime's manifest named, and a runtime that speaks another
-/// answers Unknown.
 pub const PROTOCOL: u64 = 2;
 
-/// Every version Fleet speaks. Version 2 names a place on each request.
 pub const PROTOCOLS: &[u64] = &[1, 2];
 
-/// The verbs every runtime answers.
 pub const REQUIRED_VERBS: &[&str] = &["manifest", "start", "inspect", "stop"];
 
-/// The most of a runtime's stdout Fleet reads: a `capture` or an `exec` answer
-/// is the largest.
 const ANSWER_CAP: usize = 4 * 1024 * 1024;
 
-/// The calls one port operation can make: `spawn` is a `start`. A call to a
-/// runtime whose version this process does not know yet is a `manifest`
-/// first; the operations that already ask the manifest learn it there. A
-/// requested restart on another host is the most, six: the manifest twice
-/// and `pause`, then the manifest, the signal file's length through `exec`,
-/// and `start`.
 const MAX_CALLS_PER_OPERATION: u32 = 6;
 
-/// How long one capture answers the screen probe: a session's screen rules
-/// are for a view, so a screen this recent is current enough, and a sweep
-/// every second does not run a capture per session every second.
 pub const SCREEN_REUSE: Duration = Duration::from_secs(2);
 
-/// How long one `inspect` answer serves the probes of one reconcile, which
-/// ask it of one key one after the other.
 pub const INSPECT_REUSE: Duration = Duration::from_millis(500);
 
-/// What Fleet runs through a runtime's `exec` to read a session's signal
-/// file on another host: the `fleet` on that host, which `fleet signal`
-/// needs there anyway. One program on every platform, so a native-Windows
-/// place needs no `sh`, and it reads by seeking, never the whole file
-/// ([`crate::signals::read_split`]).
 const PLACE_READ: [&str; 2] = ["fleet", "signal-read"];
 
-/// What a restart learns of the length of the session's signal file on
-/// another host.
 enum Length {
     At(u64),
-    /// The runtime cannot read it there: it does not offer `exec`, or answers
-    /// that it cannot run one at the place.
     Unreadable,
-    /// The read may answer later: why it did not now.
     Unknown(String),
 }
 
-/// The bound on a `workspace` call when `[runtimes.<name>]` names none:
-/// a first clone of a repository can take minutes.
 pub const DEFAULT_WORKSPACE_TIMEOUT: Duration = Duration::from_secs(600);
 
-/// One program that speaks the protocol, as `[runtimes.<name>]` gives it.
 #[derive(Debug, Clone)]
 pub struct ExecProgram {
-    /// The runtime's name in the config, for messages.
     pub name: String,
-    /// The executable, a path or a name on PATH.
     pub program: String,
-    /// Arguments before the verb.
     pub args: Vec<String>,
-    /// The bound on every call but `workspace`.
     pub call_timeout: Duration,
-    /// The bound on a `workspace` call, which may clone a repository.
     pub workspace_timeout: Duration,
-    /// The first part of every key this Fleet gives the runtime: a second
-    /// Fleet on the same runtime takes its own.
     pub key_prefix: String,
-    /// The place each request names (ADR-42): `local` unless the Task names
-    /// another of the runtime's places.
     pub place: Place,
-    /// Every place of the runtime the config names, which `manifest` asks
-    /// about.
     pub places: Vec<Place>,
-    /// The protocol version the runtime's last manifest named, when Fleet
-    /// speaks it: what each request carries.
     spoken: Arc<Mutex<Option<u64>>>,
 }
 
@@ -133,7 +74,6 @@ impl ExecProgram {
         }
     }
 
-    /// The version this runtime speaks, as its last manifest named it.
     pub fn spoken(&self) -> Option<u64> {
         *self
             .spoken
@@ -148,9 +88,6 @@ impl ExecProgram {
             .unwrap_or_else(std::sync::PoisonError::into_inner) = protocol;
     }
 
-    /// The runtime's `manifest`, asked about each of its places. A runtime
-    /// of either version answers it, and the version it names is what later
-    /// requests carry.
     pub fn manifest(&self) -> Observation<Manifest> {
         let request = json!({ "protocol": PROTOCOL, "places": self.places });
         let manifest = self.ask::<Manifest>("manifest", request);
@@ -163,7 +100,6 @@ impl ExecProgram {
         manifest
     }
 
-    /// `fields` as a request of `protocol`: version 2 names the place.
     fn request(&self, protocol: u64, fields: Value) -> Value {
         let mut request = json!({ "protocol": protocol });
         if protocol >= 2 {
@@ -175,8 +111,6 @@ impl ExecProgram {
         request
     }
 
-    /// Why a runtime of `protocol` cannot serve `place`, if it cannot:
-    /// version 1 names no place, so it serves only `local`, with no config.
     pub fn unplaced(&self, protocol: u64, place: &Place) -> Option<String> {
         (protocol < 2 && (place.name != Place::LOCAL || !place.config.is_empty())).then(|| {
             format!(
@@ -188,7 +122,6 @@ impl ExecProgram {
         })
     }
 
-    /// The version to speak: the one learned, or the manifest's.
     fn protocol(&self) -> Observation<u64> {
         if let Some(protocol) = self.spoken() {
             return match self.unplaced(protocol, &self.place) {
@@ -210,9 +143,6 @@ impl ExecProgram {
         })
     }
 
-    /// `verb` with `fields`, in the version the runtime speaks. An Unknown
-    /// answer forgets the version, so a runtime replaced by one of another
-    /// version is asked its manifest again.
     fn send<T: DeserializeOwned>(&self, verb: &str, fields: Value) -> Observation<T> {
         let answer = bind(self.protocol(), |protocol| {
             self.ask(verb, self.request(protocol, fields))
@@ -223,12 +153,10 @@ impl ExecProgram {
         answer
     }
 
-    /// The answer to one call, or why there is none.
     pub fn call(&self, verb: &str, request: &Value) -> Answer {
         self.call_raw(verb, request.to_string().into_bytes())
     }
 
-    /// The bound on one call of `verb`.
     fn timeout(&self, verb: &str) -> Duration {
         if verb == "workspace" {
             self.workspace_timeout
@@ -277,9 +205,6 @@ impl ExecProgram {
         }
     }
 
-    /// `browse` at this program's place: the subdirectories of `dir`, the
-    /// place's home when `None`. Unknown when the runtime's manifest does
-    /// not offer the verb, which is then not asked.
     pub fn browse(&self, dir: Option<&str>) -> Observation<Browsed> {
         bind(self.offers("browse"), |()| {
             let fields = match dir {
@@ -290,16 +215,12 @@ impl ExecProgram {
         })
     }
 
-    /// `branches` at this program's place: the branches of the repository
-    /// at `repo`, and its default. Unknown when the runtime's manifest does
-    /// not offer the verb, which is then not asked.
     pub fn branches(&self, repo: &str) -> Observation<BranchesRead> {
         bind(self.offers("branches"), |()| {
             self.send("branches", json!({ "repo": repo }))
         })
     }
 
-    /// Whether the runtime's manifest offers the optional `verb`.
     fn offers(&self, verb: &str) -> Observation<()> {
         bind(self.manifest(), |m| {
             if m.verbs.iter().any(|v| v == verb) {
@@ -310,7 +231,6 @@ impl ExecProgram {
         })
     }
 
-    /// A known answer of verb's shape `T`, or Unknown.
     fn ask<T: DeserializeOwned>(&self, verb: &str, request: Value) -> Observation<T> {
         match self.call(verb, &request) {
             Answer::Known(value) => serde_json::from_value(value).map_or_else(
@@ -337,7 +257,6 @@ fn now() -> fleet_api::Millis {
         .map_or(0, |d| u64::try_from(d.as_millis()).unwrap_or(u64::MAX))
 }
 
-/// `f` on a Known value; Unknown stays Unknown.
 fn bind<T, U>(o: Observation<T>, f: impl FnOnce(T) -> Observation<U>) -> Observation<U> {
     match o {
         Observation::Known(v) => f(v),
@@ -345,7 +264,6 @@ fn bind<T, U>(o: Observation<T>, f: impl FnOnce(T) -> Observation<U>) -> Observa
     }
 }
 
-/// One call's result: the `known` value, or why it is unknown.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Answer {
     Known(Value),
@@ -359,59 +277,48 @@ enum Wire {
     Unknown { why: String },
 }
 
-/// `manifest`'s answer.
 #[derive(Debug, Clone, Deserialize)]
 pub struct Manifest {
     pub protocol: u64,
-    /// The runtime's own release, when it reports one.
     #[serde(default)]
     pub version: Option<String>,
     pub verbs: Vec<String>,
-    /// What a runtime that declares the `workspace` verb makes.
     #[serde(default)]
     pub workspace: Option<WorkspaceManifest>,
-    /// Each place the request asked about, from protocol version 2.
     #[serde(default)]
     pub places: Vec<PlaceReport>,
 }
 
-/// A `browse` answer (docs/runtime/README.md, "Browse and branches").
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 pub enum Browsed {
-    /// The subdirectories of `dir`, by name.
     Listing {
         dir: String,
         entries: Vec<BrowseEntry>,
     },
-    /// The runtime could not read the directory.
-    Failed { why: String },
+    Failed {
+        why: String,
+    },
 }
 
-/// One subdirectory a `browse` lists: `repo` when it is the top of a git
-/// work tree.
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, serde::Serialize)]
 pub struct BrowseEntry {
     pub name: String,
     pub repo: bool,
 }
 
-/// A `branches` answer (docs/runtime/README.md, "Browse and branches").
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 pub enum BranchesRead {
-    /// Each local and `origin/*` branch, and the one a new branch starts
-    /// from by default.
     Branches {
         names: Vec<String>,
         default: Option<String>,
     },
-    /// The runtime could not read the repository.
-    Failed { why: String },
+    Failed {
+        why: String,
+    },
 }
 
-/// The manifest's `workspace`: the URL schemes the runtime handles, and
-/// whether the files outlive the process.
 #[derive(Debug, Clone, Default, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct WorkspaceManifest {
@@ -422,8 +329,6 @@ pub struct WorkspaceManifest {
 }
 
 impl Manifest {
-    /// The first of `urls` this runtime does not make a directory for: it
-    /// lists no `workspace` verb, or not the URL's scheme.
     pub fn unsupported<'a>(&self, urls: &'a [String]) -> Option<&'a String> {
         let schemes = match (&self.workspace, self.verbs.iter().any(|v| v == "workspace")) {
             (Some(w), true) => &w.schemes,
@@ -443,23 +348,15 @@ pub enum Started {
     Failed { why: String },
 }
 
-/// `inspect`'s answer.
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub enum Inspected {
     None,
-    Running {
-        id: String,
-    },
-    Exited {
-        id: String,
-        code: Option<i64>,
-    },
-    /// Stopped by `pause`, the key kept.
+    Running { id: String },
+    Exited { id: String, code: Option<i64> },
     Paused,
 }
 
-/// `pause`'s answer.
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub enum PauseAnswer {
@@ -497,7 +394,6 @@ pub enum Executed {
     },
 }
 
-/// `attach`'s answer.
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "camelCase")]
 enum Attached {
@@ -506,7 +402,6 @@ enum Attached {
     None,
 }
 
-/// `capture`'s answer.
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub enum Captured {
@@ -516,37 +411,25 @@ pub enum Captured {
         cursor_row: Option<u64>,
         cursor_col: Option<u64>,
         foreground: Option<String>,
-        /// The title the program set; a runtime that predates it omits it.
         #[serde(default)]
         title: Option<String>,
     },
     None,
 }
 
-/// What an agent's screen shows before its first report.
 enum FirstScreen {
-    /// A workspace-trust dialog, which only a person answers.
     TrustDialog,
-    /// Codex's empty composer: it takes input, and reports nothing until
-    /// its first turn ends.
     CodexComposer,
-    /// Kimi Code's empty composer: it takes input, and reports nothing
-    /// until its first message starts its session.
     KimiComposer,
-    /// GitHub Copilot CLI's empty composer: it takes input, and reports
-    /// nothing until its first message starts its session.
     CopilotComposer,
     ClaudeComposer,
     Other,
 }
 
-/// The `exec` kind: one program per host.
 #[derive(Debug, Clone, Default)]
 pub struct ExecRuntime {
     hosts: BTreeMap<String, ExecProgram>,
     signals: Option<FileSignals>,
-    /// The last screen of each session, by session id, with when it was
-    /// captured.
     screens: Arc<Mutex<BTreeMap<String, (Instant, CapturedScreen)>>>,
     inspected: Arc<Mutex<Option<LastInspect>>>,
 }
@@ -556,8 +439,6 @@ type LastInspect = ((String, String), Instant, Observation<Inspected>);
 type CapturedScreen = Observation<Option<fleet_api::screen::Screen>>;
 
 impl ExecRuntime {
-    /// A verb answering how to open a stream on the key, `attach` or
-    /// `shell`, asked only when the runtime's manifest declares it.
     fn opener(&self, verb: &str, session: &SessionRef) -> Observation<Option<Attach>> {
         let rt = match self.program(&session.host) {
             Ok(rt) => rt,
@@ -576,8 +457,6 @@ impl ExecRuntime {
         })
     }
 
-    /// The program serving `host` when its manifest declares `pause`, else
-    /// why not.
     fn pausing(&self, host: &str) -> Observation<Result<&ExecProgram, String>> {
         let rt = match self.program(host) {
             Ok(rt) => rt,
@@ -592,7 +471,6 @@ impl ExecRuntime {
         })
     }
 
-    /// `hosts` maps each host name a Task may give to the program serving it.
     pub fn new(hosts: BTreeMap<String, ExecProgram>) -> ExecRuntime {
         ExecRuntime {
             hosts,
@@ -602,9 +480,6 @@ impl ExecRuntime {
         }
     }
 
-    /// Read what each agent reports through `fleet signal` from `signals`:
-    /// readiness, workspace trust and rest come from it, as no runtime
-    /// knows the agent.
     pub fn with_signals(mut self, signals: FileSignals) -> ExecRuntime {
         self.signals = Some(signals);
         self
@@ -661,8 +536,6 @@ impl ExecRuntime {
         )
     }
 
-    /// `start` of `argv` with `spec`'s environment and directory, under its
-    /// key: a spawn, a revive and a resume are each one.
     fn start(&self, spec: &SpawnSpec, argv: &[String]) -> Observation<Started> {
         let rt = match self.program(&spec.host) {
             Ok(rt) => rt,
@@ -700,8 +573,6 @@ impl ExecRuntime {
         rt.send("start", request)
     }
 
-    /// Start the agent of `session` again on the harness profile's resume
-    /// argv: a process still running is adopted, so nothing restarts it.
     fn start_again(
         &self,
         session: &SessionRef,
@@ -770,7 +641,6 @@ impl ExecRuntime {
         })
     }
 
-    /// The session's visible screen, through `capture`.
     fn capture(&self, session: &SessionRef) -> Observation<Captured> {
         let rt = match self.program(&session.host) {
             Ok(rt) => rt,
@@ -782,7 +652,6 @@ impl ExecRuntime {
         )
     }
 
-    /// What the agent's screen shows before its first report.
     fn first_screen(&self, session: &SessionRef) -> Observation<FirstScreen> {
         self.capture(session).map(|captured| {
             let Captured::Screen {
@@ -832,8 +701,6 @@ impl ExecRuntime {
         })
     }
 
-    /// What the agent's hooks reported through `fleet signal`: the file on
-    /// this machine, or on the session's host through the runtime's `exec`.
     fn reported(&self, session: &SessionRef) -> Observation<Reported> {
         let Some(signals) = &self.signals else {
             return Observation::unknown("no signal port: what the agent reports is not read");
@@ -903,9 +770,6 @@ impl ExecRuntime {
         )
     }
 
-    /// The session's outbox on its host from the offset `from`, through
-    /// the runtime's `exec`: `fleet signal-read --from` there prints where
-    /// its read starts, then the bytes. Exit 3 is a file never written.
     fn place_outbox(&self, session: &SessionRef, from: u64) -> Observation<Option<OutboxRead>> {
         let Some(signals) = &self.signals else {
             return Observation::unknown("no signal port: the outbox is not read");
@@ -940,8 +804,6 @@ impl ExecRuntime {
         })
     }
 
-    /// The length in bytes of the signal file `file` on `host`, 0 when it is
-    /// not there, through the runtime's `exec`.
     fn place_file_length(&self, host: &str, file: &str) -> Length {
         let rt = match self.program(host) {
             Ok(rt) => rt,
@@ -978,8 +840,6 @@ impl ExecRuntime {
         }
     }
 
-    /// The session's identity: the key's, which outlives each process a
-    /// revive or a resume starts under it.
     fn session(&self, host: &str, key: &str) -> SessionRef {
         let id = self
             .program(host)
@@ -1016,14 +876,10 @@ impl Runtime for ExecRuntime {
         crate::resolve_env_source(source)
     }
 
-    /// A session on another host than this machine reports to a file
-    /// there, read through the runtime's `exec`.
     fn signals(&self, session: &SessionRef) -> Option<Observation<Reported>> {
         (session.host != LOCAL_HOST).then(|| self.reported(session))
     }
 
-    /// A session on another host than this machine publishes to an outbox
-    /// there, read through the runtime's `exec`.
     fn outbox(&self, session: &SessionRef, from: u64) -> Option<Observation<Option<OutboxRead>>> {
         (session.host != LOCAL_HOST).then(|| self.place_outbox(session, from))
     }
@@ -1095,8 +951,6 @@ impl Runtime for ExecRuntime {
         )
     }
 
-    /// The runtime's `workspace` verb, asked only of a URL list its
-    /// manifest lists every scheme of.
     fn workspace(&self, host: &str, key: &str, urls: &[String]) -> Observation<EffectOutcome> {
         let rt = match self.program(host) {
             Ok(rt) => rt,
@@ -1123,8 +977,6 @@ impl Runtime for ExecRuntime {
         })
     }
 
-    /// The runtime's `stop` with `release`: the process goes, and the
-    /// workspace with it, its work kept as the runtime's rules say.
     fn release_workspace(&self, workspace: &WorkspaceRef) -> Observation<EffectOutcome> {
         let rt = match self.program(&workspace.host) {
             Ok(rt) => rt,
@@ -1159,10 +1011,6 @@ impl Runtime for ExecRuntime {
         })
     }
 
-    /// Ready once the agent reported anything but a wait for a person: its
-    /// start hook reports it before any prompt. Codex, Kimi Code and
-    /// GitHub Copilot CLI report nothing before their first message, so
-    /// before that their empty composer makes them ready.
     fn ready(&self, session: &SessionRef) -> Observation<bool> {
         bind(self.reported(session), |r| match r.state {
             Some(State::Blocked) => Observation::Known(false),
@@ -1181,9 +1029,6 @@ impl Runtime for ExecRuntime {
         })
     }
 
-    /// An agent that reported anything runs past any workspace-trust
-    /// dialog: hooks run only in a trusted workspace. Before that, a trust
-    /// dialog on its screen is Untrusted, and Fleet never answers it.
     fn workspace_trust(
         &self,
         session: &SessionRef,
@@ -1302,16 +1147,12 @@ impl Runtime for ExecRuntime {
         }
     }
 
-    /// A runtime cannot read a typed text back; the agent's prompt hook
-    /// proves it, which the manager reads from the signal port.
     fn brief_delivered(&self, _session: &SessionRef, _intent_key: &str) -> Observation<bool> {
         Observation::unknown(
             "an exec runtime cannot read a brief back; the agent's prompt hook can",
         )
     }
 
-    /// An agent that exited, or is gone, does no more work. A running one is
-    /// at rest once its hooks last reported it idle.
     fn at_rest(&self, session: &SessionRef) -> Observation<bool> {
         bind(
             self.inspect(&session.host, &session.key),
@@ -1341,7 +1182,6 @@ impl Runtime for ExecRuntime {
             .map(|Stopped::Stopped| EffectOutcome::Released)
     }
 
-    /// The runtime's `capture`, reused for [`SCREEN_REUSE`] by this process.
     fn screen(&self, session: &SessionRef) -> Observation<Option<fleet_api::screen::Screen>> {
         let screens = || {
             self.screens
@@ -1368,21 +1208,14 @@ impl Runtime for ExecRuntime {
         screen
     }
 
-    /// The runtime's `attach`, asked only when its manifest declares it: a
-    /// runtime without the verb offers no live view.
     fn attach(&self, session: &SessionRef) -> Observation<Option<Attach>> {
         self.opener("attach", session)
     }
 
-    /// The runtime's `shell`, asked only when its manifest declares it: a
-    /// runtime without the verb offers no shell.
     fn shell(&self, session: &SessionRef) -> Observation<Option<Attach>> {
         self.opener("shell", session)
     }
 
-    /// Lost when the runtime holds the key but its process exited: a `stop`
-    /// removes the key, so only the agent's own exit, or a crash, leaves
-    /// one. A key the runtime no longer holds proves nothing either way.
     fn lost(&self, session: &SessionRef) -> Observation<bool> {
         bind(
             self.inspect(&session.host, &session.key),
@@ -1405,9 +1238,6 @@ impl Runtime for ExecRuntime {
         self.start_again(session, conversation, launch, EffectOutcome::Revived)
     }
 
-    /// Stopped under its key, as `inspect` answers it, on a runtime whose
-    /// manifest declares `pause`; Unknown on any other, so Fleet never
-    /// pauses there.
     fn paused(&self, session: &SessionRef) -> Observation<bool> {
         bind(self.pausing(&session.host), |declared| {
             if let Err(why) = declared {
@@ -1428,7 +1258,6 @@ impl Runtime for ExecRuntime {
         })
     }
 
-    /// The runtime's `pause`: the process stops and the key stays.
     fn pause(&self, session: &SessionRef) -> Observation<EffectOutcome> {
         bind(self.pausing(&session.host), |declared| {
             let rt = match declared {
@@ -1475,16 +1304,12 @@ impl Runtime for ExecRuntime {
     }
 }
 
-/// One case of the conformance suite, and what went wrong if it failed.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Case {
     pub name: &'static str,
     pub result: Result<(), String>,
 }
 
-/// Whether `program` answers its `manifest` as Fleet speaks the protocol,
-/// and its place is ready as the manifest reports it: what `fleet doctor`
-/// asks of each place's runtime. [`check`]'s first case is the protocol half.
 pub fn reach(program: &ExecProgram) -> Result<(), String> {
     let manifest = program.manifest();
     speaks(&manifest)?;
@@ -1498,21 +1323,13 @@ pub fn reach(program: &ExecProgram) -> Result<(), String> {
     }
 }
 
-/// What `manifest` says of `place`, one of `program`'s places: the one rule
-/// `fleet doctor` and `fleet runtime places` read readiness by.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Readiness {
-    /// `None` when it is unknown: the runtime did not answer, or did not
-    /// report the place.
     pub ready: Option<bool>,
     pub why: Option<String>,
-    /// The runtime's own report, from protocol version 2.
     pub report: Option<PlaceReport>,
 }
 
-/// [`Readiness`] of `place` by `manifest`. A runtime of protocol version 1
-/// reports no place: it is ready at `local`, with no config, and serves no
-/// other.
 pub fn readiness(
     program: &ExecProgram,
     place: &Place,
@@ -1571,8 +1388,6 @@ fn speaks(manifest: &Observation<Manifest>) -> Result<(), String> {
     }
 }
 
-/// `fleet runtime check`: the conformance suite, run against `program`.
-/// Each case stands alone; the keys it uses are its own and stopped after.
 pub fn check(program: &ExecProgram) -> Vec<Case> {
     let run = std::process::id();
     let nanos = std::time::SystemTime::now()
@@ -1791,10 +1606,6 @@ pub fn check(program: &ExecProgram) -> Vec<Case> {
     cases
 }
 
-/// The pause rules a runtime that declares `pause` holds to: a pause stops
-/// the key's process and keeps the key, `list` names it, a second pause
-/// answers the same, a start runs the key again and a stop forgets it; a
-/// key nothing holds answers `none`.
 fn check_pause(program: &ExecProgram, protocol: u64, key: &str, listed: bool) -> Vec<Case> {
     let request = |fields: Value| program.request(protocol, fields);
     let pause = |k: &str| program.ask::<PauseAnswer>("pause", request(json!({ "key": k })));
@@ -1866,11 +1677,6 @@ fn check_pause(program: &ExecProgram, protocol: u64, key: &str, listed: bool) ->
     ]
 }
 
-/// The shell rules a runtime that declares `shell` holds to: how to open a
-/// shell for a key a process holds, on each call; `none` for a key nothing
-/// holds, as `attach` answers, and after a stop. That a second call reaches
-/// the same shell is not checked here: it needs a view typing into the
-/// answer, and a check runs processes only bounded, through `fleet-exec`.
 fn check_shell(program: &ExecProgram, protocol: u64, key: &str) -> Vec<Case> {
     let shell =
         |k: &str| program.ask::<Attached>("shell", program.request(protocol, json!({ "key": k })));
@@ -1930,7 +1736,6 @@ fn check_shell(program: &ExecProgram, protocol: u64, key: &str) -> Vec<Case> {
     ]
 }
 
-/// A directory of the check's own under the temporary directory, made anew.
 fn scratch(key: &str, what: &str) -> Result<std::path::PathBuf, String> {
     let dir = std::env::temp_dir().join(format!("{}-{what}", key.replace('.', "-")));
     let _ = std::fs::remove_dir_all(&dir);
@@ -1939,10 +1744,6 @@ fn scratch(key: &str, what: &str) -> Result<std::path::PathBuf, String> {
         .map_err(|e| format!("cannot make {}: {e}", dir.display()))
 }
 
-/// The browse rules a runtime that declares `browse` holds to: the
-/// subdirectories of a directory, by name, each marked when it is a git
-/// work tree (made with this machine's `git`), files left out; and a failed
-/// browse of one that is not there.
 fn check_browse(program: &ExecProgram, protocol: u64, key: &str) -> Vec<Case> {
     let browse = |dir: &std::path::Path| {
         program.ask::<Value>(
@@ -1984,10 +1785,6 @@ fn check_browse(program: &ExecProgram, protocol: u64, key: &str) -> Vec<Case> {
     ]
 }
 
-/// The branch rules a runtime that declares `branches` holds to: a
-/// repository's branches with its default, and a failed answer for a
-/// directory that is no repository, even inside one. The repository is
-/// made with this machine's `git`.
 fn check_branches(program: &ExecProgram, protocol: u64, key: &str) -> Vec<Case> {
     let branches = |repo: &std::path::Path| {
         program.ask::<Value>(
@@ -2054,9 +1851,6 @@ fn check_branches(program: &ExecProgram, protocol: u64, key: &str) -> Vec<Case> 
     ]
 }
 
-/// `git <args>` in `dir` for a check's fixture, through `fleet-exec`, with
-/// an identity of its own and the variables that would point git at another
-/// repository cleared.
 fn git_in(dir: &std::path::Path, args: &[&str]) -> Result<(), String> {
     let mut spec = Spec::new("git", Duration::from_secs(30))
         .args([
@@ -2101,7 +1895,6 @@ enum WorkspaceAnswer {
     Failed { why: String },
 }
 
-/// The workspace rules a runtime that declares `workspace` holds to.
 fn check_workspace(program: &ExecProgram, protocol: u64, key: &str) -> Vec<Case> {
     let dir = std::env::temp_dir().join(format!("{}-file", key.replace('.', "-")));
     if let Err(e) = std::fs::create_dir_all(&dir) {
@@ -2165,8 +1958,6 @@ fn check_workspace(program: &ExecProgram, protocol: u64, key: &str) -> Vec<Case>
 mod tests {
     use super::*;
 
-    /// A runtime that answers each verb with what the file of the verb's
-    /// name beside it holds, and fails when there is none.
     fn runtime(dir: &std::path::Path) -> ExecProgram {
         use std::os::unix::fs::PermissionsExt;
         let script = dir.join("runtime.sh");
@@ -2233,8 +2024,6 @@ mod tests {
     const MANIFEST_2: &str =
         r#"{"known":{"protocol":2,"verbs":["manifest","start","inspect","stop"]}}"#;
 
-    /// A runtime replaced by one of another version answers Unknown to the
-    /// version Fleet learned: the next request asks the manifest again.
     #[test]
     fn an_unknown_answer_forgets_the_version() {
         let dir = std::env::temp_dir().join(format!("fleet-exec-send-{}", std::process::id()));

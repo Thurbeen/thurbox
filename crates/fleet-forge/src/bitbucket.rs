@@ -1,10 +1,3 @@
-//! Bitbucket Cloud pull requests through an externally authenticated `curl`.
-//!
-//! Fleet constructs only HTTPS API reads. Credentials remain in curl's own
-//! configuration or netrc and never enter Fleet configuration, resources,
-//! arguments or logs. Bitbucket Server and Data Center use a different API
-//! and are deliberately not served here.
-
 use std::collections::{BTreeMap, BTreeSet};
 use std::ffi::OsString;
 use std::time::Duration;

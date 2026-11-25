@@ -1,7 +1,3 @@
-//! `runtime-herdr <verb>`: Fleet's runtime protocol (docs/runtime/README.md)
-//! over herdr-core. Each key's process is a herdr-core terminal labelled with
-//! the key, which herdr's desktop app shows (docs/runtime/herdr.md).
-
 mod core;
 mod exec;
 mod records;
@@ -34,7 +30,6 @@ const VERBS: &[&str] = &[
     "shell",
 ];
 
-/// One answer: `{"known": …}` or `{"unknown": {"why": …}}`.
 pub fn answer(verb: &str, request: &[u8]) -> Value {
     let request: Value = if request.iter().all(u8::is_ascii_whitespace) {
         json!({})
@@ -79,7 +74,6 @@ pub fn answer(verb: &str, request: &[u8]) -> Value {
     }
 }
 
-/// `{"unknown": {"why": …}}`: the request was not answered.
 pub fn unknown(why: impl std::fmt::Display) -> Value {
     json!({ "unknown": { "why": why.to_string() } })
 }

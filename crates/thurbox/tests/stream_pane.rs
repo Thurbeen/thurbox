@@ -1,12 +1,3 @@
-//! The stream pane end to end: thurbox opens a session's pane through
-//! `runtime-mux view`, a process speaking the terminal stream, and gets the
-//! chunks the control-mode pane gives — the screen as a snapshot, then its
-//! output — while what is typed goes up the stream.
-//!
-//! thurbox does not link the view: the program is found beside thurbox's own
-//! binaries in cargo's target directory (a workspace build makes it). Without it or
-//! without tmux the test says so and skips.
-
 #![cfg(unix)]
 
 use std::io::Write;

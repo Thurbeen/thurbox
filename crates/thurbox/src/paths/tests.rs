@@ -1,11 +1,5 @@
-//! `paths`'s tests, kept together (the `git/tests.rs` pattern): a sibling
-//! file of the same module, so private items stay reachable.
-
 use super::*;
 
-/// The env var `home_dir()` reads on this platform: `USERPROFILE` on
-/// Windows, `HOME` elsewhere. Tests that exercise tilde expansion source the
-/// home directory from the same var so they pass on every target.
 const HOME_VAR: &str = if cfg!(windows) { "USERPROFILE" } else { "HOME" };
 
 #[test]
@@ -16,7 +10,6 @@ fn display_path_uses_basename() {
     );
 }
 
-/// Write an executable marker file, the way a `PATH` lookup expects to find one.
 fn executable_marker(dir: &Path, name: &str) -> PathBuf {
     let p = dir.join(name);
     std::fs::write(&p, b"#!/bin/sh\n").unwrap();
@@ -71,8 +64,6 @@ fn resolve_on_path_declines_a_name_that_is_already_a_path() {
     assert_eq!(found, None);
 }
 
-/// A directory named like the binary, or a file nobody can execute, is not what
-/// `execvp` would have picked — so neither is what this may answer with.
 #[test]
 #[cfg(unix)]
 fn resolve_on_path_skips_what_cannot_be_executed() {
@@ -671,11 +662,6 @@ fn unique_link_name_dedups_with_dash_two_suffix() {
     assert_eq!(unique_link_name("", &mut used), "repo-2");
 }
 
-/// Config written by a test must land in the `cfg(test)` sandbox rather than
-/// the developer's real config dir, and that sandbox must not outlive the
-/// process that made it. Run in a child process by
-/// [`no_unit_test_temp_dir_outlives_the_test_process`], which checks the
-/// reported directory is gone once the child has exited.
 #[test]
 fn the_unit_test_sandbox_holds_written_config() {
     let cfg = config_file().expect("a config path in the test sandbox");
@@ -696,14 +682,6 @@ fn the_unit_test_sandbox_holds_written_config() {
     println!("TEMP_SANDBOX={}", base.display());
 }
 
-/// The unit-test suite must leave nothing behind in the system temp dir.
-///
-/// Both temp sandboxes — `paths`' `cfg(test)` config/data sandbox and
-/// `workspace`'s test base — are only observably cleaned up once the process
-/// that created them is gone, so this re-runs the two tests that create them
-/// in a child copy of this very test binary and asserts the paths they
-/// reported no longer exist. The system temp dir is tmpfs on many machines, so
-/// a per-run leak here is a per-run leak of RAM until reboot.
 #[test]
 fn no_unit_test_temp_dir_outlives_the_test_process() {
     // Named rather than discovered; a rename trips the "reported both dirs"
@@ -780,8 +758,6 @@ fn env_default_tokens_follow_the_given_environment() {
     assert!(env_token_names("~/.codex/hooks.json").is_empty());
 }
 
-/// A rename alone would give the replacement the staged file's default mode, so
-/// a private config would turn world-readable and a script lose its exec bit.
 #[cfg(unix)]
 #[test]
 fn a_replaced_file_keeps_its_permissions() {
@@ -800,8 +776,6 @@ fn a_replaced_file_keeps_its_permissions() {
     }
 }
 
-/// A file the user made read-only is a refusal: `fs::write` honoured it, and a
-/// rename, which needs only the directory to be writable, must not undo it.
 #[cfg(unix)]
 #[test]
 fn a_read_only_file_is_not_replaced() {
@@ -819,8 +793,6 @@ fn a_read_only_file_is_not_replaced() {
     assert_eq!(left.len(), 1, "a staged file was left behind");
 }
 
-/// The staged copy of a private file is private from its first byte: a crash
-/// before the final permissions are applied must not leave a readable sibling.
 #[cfg(unix)]
 #[test]
 fn a_staged_copy_starts_no_more_open_than_the_file_it_replaces() {
@@ -834,8 +806,6 @@ fn a_staged_copy_starts_no_more_open_than_the_file_it_replaces() {
     assert_eq!(mode & 0o077, 0, "staged file opened as {mode:o}");
 }
 
-/// A staged name a crashed process with the same pid left behind is ours to
-/// reuse, not a reason to fail the save.
 #[test]
 fn a_leftover_staged_file_does_not_block_the_next_save() {
     let dir = tempfile::tempdir().unwrap();

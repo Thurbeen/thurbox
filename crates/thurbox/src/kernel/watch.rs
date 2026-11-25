@@ -1,17 +1,9 @@
-//! Watches the mod directory and reports that something changed.
-//!
-//! Deliberately dumb: it answers "has anything changed since you last asked?"
-//! and the caller decides when to act. Editors save in bursts — write, then
-//! rename, then chmod — so the caller debounces rather than reloading three
-//! times per keystroke.
-
 use std::path::Path;
 use std::sync::mpsc::{channel, Receiver};
 
 use notify::{Event, EventKind, RecommendedWatcher, RecursiveMode, Watcher as _};
 
 pub struct Watcher {
-    /// Held so the watcher thread stays alive; never read.
     _watcher: RecommendedWatcher,
     events: Receiver<notify::Result<Event>>,
 }
@@ -31,11 +23,6 @@ impl Watcher {
         })
     }
 
-    /// Drain the queue and report whether anything happened.
-    ///
-    /// Drains fully rather than taking one event, so a burst collapses into a
-    /// single answer and the caller's debounce window starts from the last
-    /// event rather than the first.
     pub fn changed(&self) -> bool {
         let mut changed = false;
         while let Ok(event) = self.events.try_recv() {
@@ -50,11 +37,6 @@ impl Watcher {
     }
 }
 
-/// Events that never affect what is loaded.
-///
-/// An event carrying no paths is *not* noise: it is a backend telling us it
-/// lost track (an overflow or rescan), which is exactly when a reload matters
-/// most. `all()` on an empty iterator is `true`, so that case is handled first.
 fn is_noise(event: &Event) -> bool {
     if matches!(event.kind, EventKind::Access(_)) {
         return true;
@@ -175,7 +157,6 @@ mod live_tests {
     use super::*;
     use std::time::{Duration, Instant};
 
-    /// Does the watcher actually observe an edit to a nested file?
     #[test]
     fn an_edit_to_a_nested_file_is_observed() {
         let dir = tempfile::tempdir().expect("tempdir");

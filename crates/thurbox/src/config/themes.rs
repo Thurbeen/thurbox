@@ -1,17 +1,8 @@
-//! Loading and seeding of the custom-themes config file.
-//!
-//! `~/.config/thurbox/themes.toml` defines user themes as a base preset plus
-//! per-colour overrides (see [`crate::theme::CustomThemeDef`]).
-//! Seeded with a fully commented-out example, so a fresh install ships only
-//! the built-in presets. Resolution problems (bad colours, name collisions)
-//! degrade to warnings, never to a startup failure.
-
 use std::path::PathBuf;
 
 use crate::theme::ThemePreset;
 use crate::theme::{ThemeEntry, ThemesFile};
 
-/// Seed contents for `themes.toml` on first run.
 pub const SEED_THEMES_TOML: &str = r##"# Thurbox custom themes  —  ~/.config/thurbox/themes.toml
 #
 # Each [[themes]] entry defines a theme offered in the Ctrl+Y picker alongside
@@ -79,15 +70,10 @@ config_version = 1
 # selection_bg = "14"
 "##;
 
-/// Path to the custom-themes file: `~/.config/thurbox/themes.toml`.
 pub fn themes_config_path() -> Option<PathBuf> {
     super::file::path("themes.toml")
 }
 
-/// Load and resolve the custom themes, seeding the file when absent.
-/// Collisions with built-in preset names and duplicate custom names are
-/// skipped with a warning (the persisted `active_theme` must stay
-/// unambiguous).
 pub fn load_or_seed_with_warnings() -> (Vec<ThemeEntry>, Vec<String>) {
     let (file, warnings) = super::file::load_or_seed::<ThemesFile>(
         "themes.toml",
@@ -133,8 +119,6 @@ mod tests {
         assert_eq!(file.config_version, Some(1));
     }
 
-    /// Seed ships a minimal one-override example plus a fuller multi-override
-    /// one, both commented (the no-themes test above proves they don't load).
     #[test]
     fn seed_toml_documents_minimal_and_full_examples() {
         for marker in ["Minimal tweak", "Fuller theme", "my-mocha", "solar-soft"] {
@@ -145,9 +129,6 @@ mod tests {
         }
     }
 
-    /// The seeded `themes.toml` is the primary documentation users see, so it
-    /// must mention every overridable palette key. Guards against adding a
-    /// `ThemePalette` colour without documenting it here.
     #[test]
     fn seed_toml_documents_every_palette_key() {
         for field in [

@@ -1,9 +1,3 @@
-//! Acceptance: the runtime makes a Task's workspace, a list of URLs,
-//! through its `workspace` call before the first start; Fleet hands the
-//! spawn the ready `{host, dirs}`, and has the runtime release the workspace
-//! after the session. Every scenario runs the real `fleet` binary against
-//! the file store and the fake host, which keeps its workspaces as records.
-
 mod support;
 
 use std::fs;
@@ -165,8 +159,6 @@ fn a_refused_workspace_is_retried_then_stalls_and_spawns_nothing() {
     assert_eq!((env.calls("materialize"), env.calls("spawn")), (3, 0));
 }
 
-/// A `file://` URL is a directory the runtime uses as it is: it is made
-/// through the same call, and the session runs in it.
 #[test]
 fn a_file_url_is_its_directory_as_it_is() {
     let env = env("workspace-file");
@@ -202,8 +194,6 @@ fn an_empty_workspace_is_never_made() {
     );
 }
 
-/// A URL the host's runtime does not handle is refused before any spawn,
-/// spends no attempt, and waits for a runtime that handles it.
 #[test]
 fn a_url_the_runtime_does_not_handle_waits_and_spawns_nothing() {
     let env = env("workspace-unsupported");
@@ -223,8 +213,6 @@ fn a_url_the_runtime_does_not_handle_waits_and_spawns_nothing() {
     assert_eq!(env.calls("spawn"), 0);
 }
 
-/// A workspace is a list of absolute URLs. The shapes before it, and a list
-/// of paths, are refused when they are applied.
 #[test]
 fn a_workspace_that_is_not_a_list_of_urls_is_refused_at_apply() {
     let env = Env::new("workspace-old-shape");
@@ -241,8 +229,6 @@ fn a_workspace_that_is_not_a_list_of_urls_is_refused_at_apply() {
     }
 }
 
-/// The `[workspaces]` section is gone: each runtime makes its own
-/// workspaces, so a config that still has one is refused at load.
 #[test]
 fn a_workspaces_section_is_refused_at_load() {
     let env = Env::new("workspace-section");

@@ -1,32 +1,9 @@
-//! Per-session multi-repo **symlink workspaces**.
-//!
-//! When a session spans more than one directory (multiple repos, or a repo plus
-//! an extra access dir), the agent process can only be launched in a single
-//! `cwd`. Rather than teach every agent CLI a different `--add-dir`-style flag
-//! (many have none), thurbox builds one workspace directory full of symlinks —
-//! one per member dir — and launches the agent there. The agent then sees every
-//! repo as a subdirectory. Agents that check resolved symlink targets also
-//! receive their declarative directory-scope arguments at launch.
-//!
-//! ```text
-//! ~/.local/share/thurbox/workspaces/<agent_session_id>/
-//!     webapp  -> …/worktrees/<hash>/feat-x   (symlink)
-//!     infra   -> /home/me/repos/infra        (symlink)
-//! ```
-//!
-//! The directory only ever contains symlinks, so tearing it down (or rebuilding
-//! it) never touches the underlying repositories. The path is derived from the
-//! session's stable `agent_session_id`, so it is rebuilt idempotently on every
-//! launch and needs no separate persistence.
-
 use std::collections::HashSet;
 use std::io;
 use std::path::{Path, PathBuf};
 
 use crate::paths;
 
-/// Resolve the workspace directory for a session id, ensuring it stays a single
-/// segment under the workspaces root (defensive — the id is a UUID in practice).
 fn workspace_dir(id: &str) -> io::Result<PathBuf> {
     let base = paths::workspaces_directory().ok_or_else(|| {
         io::Error::new(
@@ -44,12 +21,6 @@ fn workspace_dir(id: &str) -> io::Result<PathBuf> {
     Ok(base.join(segment))
 }
 
-/// (Re)build the symlink workspace for `id` from `members` and return its path.
-///
-/// Idempotent: any existing workspace dir is removed first (it holds only
-/// symlinks, so targets are untouched) and recreated from scratch, so adding or
-/// removing a member between launches is reflected. Each member is symlinked
-/// under a sanitized, de-duplicated name (collisions get a `-2`, `-3`, … suffix).
 pub fn ensure_workspace(id: &str, members: &[(String, PathBuf)]) -> io::Result<PathBuf> {
     let dir = workspace_dir(id)?;
     remove_dir_under_root(&dir)?;
@@ -65,26 +36,15 @@ pub fn ensure_workspace(id: &str, members: &[(String, PathBuf)]) -> io::Result<P
     Ok(dir)
 }
 
-/// The workspace directory path for `id` **without building or touching it** —
-/// for callers that need where an existing workspace lives while an agent is
-/// still running in it (e.g. the companion shell pane): the destructive
-/// rebuild in [`ensure_workspace`] would delete the running agent's cwd inode
-/// out from under it.
 pub fn workspace_path(id: &str) -> io::Result<PathBuf> {
     workspace_dir(id)
 }
 
-/// Remove the workspace directory for `id`, if present. Only the symlinks are
-/// removed; the directories they point at are untouched. A missing workspace is
-/// not an error.
 pub fn remove_workspace(id: &str) -> io::Result<()> {
     let dir = workspace_dir(id)?;
     remove_dir_under_root(&dir)
 }
 
-/// Remove `dir` (recursively) only when it really sits under the workspaces
-/// root, so a bad id can never delete something outside it. `remove_dir_all`
-/// unlinks symlink entries without following them, so member repos are safe.
 fn remove_dir_under_root(dir: &Path) -> io::Result<()> {
     let Some(base) = paths::workspaces_directory() else {
         return Ok(());
@@ -99,20 +59,11 @@ fn remove_dir_under_root(dir: &Path) -> io::Result<()> {
     }
 }
 
-/// Create a directory link at `link` pointing to `target`.
-///
-/// Workspace members are always directories (a worktree checkout or a plain
-/// repo dir), so the Unix path uses a plain symlink and the Windows path uses a
-/// directory symlink.
 #[cfg(not(windows))]
 fn symlink(target: &Path, link: &Path) -> io::Result<()> {
     std::os::unix::fs::symlink(target, link)
 }
 
-/// Windows directory link. A directory symlink is preferred, but it requires
-/// privilege (Developer Mode or admin) on Windows; when that fails we fall back
-/// to an NTFS **junction** (`mklink /J`), which needs no special privilege and
-/// also links directories across volumes.
 #[cfg(windows)]
 fn symlink(target: &Path, link: &Path) -> io::Result<()> {
     match std::os::windows::fs::symlink_dir(target, link) {
@@ -144,10 +95,6 @@ mod tests {
     use super::*;
     use crate::paths::TestPathGuard;
 
-    /// A fresh base directory for one test, removed when the returned
-    /// [`tempfile::TempDir`] drops. It used to be a thread-named `PathBuf`
-    /// cleared at the *start* of a test, which only ever wiped the previous
-    /// run's directory and always left its own behind.
     fn temp_base() -> tempfile::TempDir {
         tempfile::Builder::new()
             .prefix("thurbox-ws-test-")
@@ -155,10 +102,6 @@ mod tests {
             .expect("temp base for a workspace test")
     }
 
-    /// The workspace tests' base must not outlive the process that made it.
-    /// Run in a child process by
-    /// `paths::tests::no_unit_test_temp_dir_outlives_the_test_process`, which
-    /// checks the reported directory is gone once the child has exited.
     #[test]
     fn the_workspace_test_base_holds_a_workspace() {
         let tmp = temp_base();

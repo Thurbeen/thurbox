@@ -1,24 +1,8 @@
-//! `lib.textinput`'s line editing, key by key.
-//!
-//! Every text field in the interface — search, rename, the new-session flow —
-//! edits through this one module, so a chord it drops is dropped everywhere.
-//! These hold each chord to the value and caret it leaves, written as the
-//! value with a `|` where the caret is.
-//!
-//! The chords are the ones a terminal actually delivers with a modifier flag:
-//! `alt+backspace` (`ESC DEL`), `alt`/`ctrl` + `delete`/`left`/`right`, and
-//! the `ESC b`/`ESC f`/`ESC d` a macOS terminal sends for option+arrow. Legacy
-//! `ctrl+backspace` is `^H`, which the kernel keeps for moving focus, so it
-//! reaches a field only under the kitty keyboard protocol — tested here as it
-//! arrives then.
-
 use thurbox::kernel::host::{KeyPress, LuaHost, Published, RenderContext};
 use thurbox::kernel::registry::Registry;
 use thurbox::kernel::snapshot::Snapshot;
 use thurbox::kernel::theme::Themes;
 
-/// A field holding `start` (caret at its `|`) inside a probe pane in a copy of
-/// the bundled interface, so the module under test is the one that ships.
 struct Field {
     host: LuaHost,
     _dir: tempfile::TempDir,
@@ -73,7 +57,6 @@ return {{
         Field { host, _dir: dir }
     }
 
-    /// Press `chord` (`alt+left`, `ctrl+delete`, `x`); whether it was consumed.
     fn press(&self, chord: &str) -> bool {
         let index = self.host.index_of("probe").expect("no probe");
         self.host.on_key(index, &key(chord)).expect("on_key")
@@ -148,8 +131,6 @@ fn publish(host: &LuaHost) {
     .expect("publish");
 }
 
-/// `start`, then each chord in turn, must read `expected` — and every chord
-/// must be consumed, so none of them falls through to the pane as well.
 fn edits(start: &str, chords: &[&str], expected: &str) {
     let field = Field::new(start);
     for chord in chords {

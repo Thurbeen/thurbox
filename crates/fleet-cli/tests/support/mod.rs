@@ -1,8 +1,3 @@
-//! Drives the real `fleet` binary against an isolated data directory and a
-//! fake host, each test in its own directory under cargo's per-target temp
-//! dir. The child environment is cleared, so no test reads the operator's
-//! config, queue or HOME; every child is bounded and killed past it.
-
 #![allow(dead_code)]
 
 pub mod otlp;
@@ -24,19 +19,13 @@ use serde_json::{Value, json};
 static SEQ: AtomicU32 = AtomicU32::new(0);
 const TIMEOUT: Duration = Duration::from_secs(60);
 
-/// The fake forge's host in a forge environment.
 pub const FORGE_HOST: &str = "forge.test";
-/// The fake gateway's account in a gateway environment, and the route over
-/// its channel.
 pub const GATEWAY_ACCOUNT: &str = "fake-main";
 pub const GATEWAY_ROUTE: &str = "eng";
-/// The route's channel, and the people on its allowlist, as platform ids.
 pub const GATEWAY_CHANNEL: &str = "C0123ABCD";
 pub const ALEX_ID: &str = "U0123ABCD";
 pub const SAM_ID: &str = "U0456EFGH";
-/// The route's brief, as `Env::gateway` writes it under `root/briefs`.
 pub const GATEWAY_BRIEF: &str = "Answer the thread. Declare what you want said.\n";
-/// The hosts the stub forge CLIs answer for.
 pub const GITHUB_HOST: &str = "github.test";
 pub const GITLAB_HOST: &str = "gitlab.test";
 pub const AZURE_DEVOPS_HOST: &str = "dev.azure.com";
@@ -48,9 +37,7 @@ pub struct Env {
     pub fake: PathBuf,
     pub config: PathBuf,
     tmp: PathBuf,
-    /// When set, children get this as their whole PATH.
     path: Option<PathBuf>,
-    /// Extra variables every child gets, on top of the cleared environment.
     vars: Vec<(String, String)>,
 }
 
@@ -84,8 +71,6 @@ impl Run {
         self
     }
 
-    /// The process died, rather than exiting with one of fleet's own codes
-    /// (0-7). A lease error (6) under load is not the crash a test arranged.
     pub fn crashed(&self) -> &Run {
         assert!(
             !matches!(self.code, Some(0..=7)),
@@ -146,8 +131,6 @@ impl Env {
         }
     }
 
-    /// An environment with a fake forge under `forge.test` beside the fake
-    /// runtime, with short retention defaults a test can still wait out.
     pub fn forge(name: &str) -> Env {
         let env = Env::new(name);
         let mut cfg = fs::read_to_string(&env.config).expect("config");
@@ -158,10 +141,6 @@ impl Env {
         env
     }
 
-    /// An environment whose forge hosts are the stub `gh` (`github.test`),
-    /// `glab` (`gitlab.test`), `az` (`dev.azure.com`) and authenticated `curl`
-    /// (`bitbucket.org`): the one stub binary, copied under each name, answers
-    /// in that forge's shapes.
     pub fn forge_stubs(name: &str) -> Env {
         let mut env = Env::new(name);
         let stub_dir = env.root.join("stub");
@@ -193,9 +172,6 @@ impl Env {
         env
     }
 
-    /// An environment whose PATH holds only the stub, copied under the name
-    /// of a service manager (`launchctl`, `schtasks`): it records each call
-    /// and answers what `service[<verb>]` in its state says.
     pub fn service_stub(name: &str, program: &str) -> Env {
         let mut env = Env::new(name);
         fs::create_dir_all(env.stub_dir()).expect("stub dir");
@@ -214,9 +190,6 @@ impl Env {
         env
     }
 
-    /// An environment with a `[gateway]` section beside the fake runtime:
-    /// one fake account, two people and one route, each path inside the
-    /// test's own directory. `gateway_section` is the text it appends.
     pub fn gateway(name: &str) -> Env {
         let env = Env::new(name);
         let mut cfg = fs::read_to_string(&env.config).expect("config");
@@ -227,7 +200,6 @@ impl Env {
         env
     }
 
-    /// The directory the gateway route's Tasks share.
     pub fn gateway_workspace(&self) -> String {
         format!(
             "{}/work/conversations",
@@ -235,24 +207,20 @@ impl Env {
         )
     }
 
-    /// Replace the config's `[gateway]` section with `section`.
     pub fn set_gateway(&self, section: &str) {
         let cfg = fs::read_to_string(&self.config).expect("config");
         let head = cfg.split("\n[gateway]\n").next().expect("head").to_string();
         fs::write(&self.config, format!("{head}{section}")).expect("config");
     }
 
-    /// The fake gateway of a `gateway` environment.
     pub fn fake_gateway(&self) -> FakeGateway {
         FakeGateway::open(GATEWAY_ACCOUNT, &self.root.join("gateway")).expect("fake gateway")
     }
 
-    /// The fake forge of a `forge` environment.
     pub fn fake_forge(&self) -> FakeForge {
         FakeForge::open(FORGE_HOST, &self.root.join("forge")).expect("fake forge")
     }
 
-    /// Every call the stub forges saw for `host`, as `{argv, envNames}`.
     pub fn forge_calls(&self, host: &str) -> Vec<Value> {
         self.stub_calls()
             .into_iter()
@@ -302,13 +270,10 @@ impl Env {
         .expect("write stub state");
     }
 
-    /// Arm a stub fault: `call` is the role the stub runs as (`gh`, `glab`,
-    /// `az`, `curl`).
     pub fn stub_fault(&self, call: &str, mode: &str, times: u32) {
         self.stub_fault_after(call, mode, times, 0);
     }
 
-    /// As `stub_fault`, letting the first `after` matching calls through.
     pub fn stub_fault_after(&self, call: &str, mode: &str, times: u32, after: u32) {
         self.edit_stub(|s| {
             if !s["faults"].is_array() {
@@ -321,8 +286,6 @@ impl Env {
         });
     }
 
-    /// Every call the stub saw, as `{argv, envNames}`.
-    /// Only complete lines count: a running `fleet up` may be appending one.
     pub fn stub_calls(&self) -> Vec<Value> {
         let log = fs::read_to_string(self.stub_dir().join("calls.jsonl")).unwrap_or_default();
         let complete = log.rfind('\n').map_or("", |end| &log[..end]);
@@ -332,7 +295,6 @@ impl Env {
             .collect()
     }
 
-    /// Pids of the grandchildren a hanging stub left behind.
     pub fn grandchildren(&self) -> Vec<u32> {
         fs::read_to_string(self.stub_dir().join("grandchildren"))
             .unwrap_or_default()
@@ -341,8 +303,6 @@ impl Env {
             .collect()
     }
 
-    /// Every file under the data directory and the stub's state, as text: a
-    /// secret value must appear in none of them.
     pub fn all_written_text(&self) -> String {
         fn walk(dir: &Path, out: &mut String) {
             for e in fs::read_dir(dir).into_iter().flatten().flatten() {
@@ -360,8 +320,6 @@ impl Env {
         out
     }
 
-    /// An environment with no program on PATH at all: no runtime program,
-    /// no fleet extension, no shell. The core must not need any of them.
     pub fn without_tools(name: &str) -> Env {
         let mut env = Env::new(name);
         let empty = env.root.join("empty-path");
@@ -370,8 +328,6 @@ impl Env {
         env
     }
 
-    /// Children get `dir` as their whole PATH: a test that wants a program
-    /// found by name finds only what it put there.
     pub fn only_on_path(&mut self, dir: &Path) {
         self.path = Some(dir.to_path_buf());
     }
@@ -420,8 +376,6 @@ impl Env {
         wait(self.spawn(args))
     }
 
-    /// Run `fleet` with `input` on its stdin, as a listener runs the receive
-    /// verb: one envelope or heartbeat per process.
     pub fn fleet_stdin(&self, args: &[&str], input: &str) -> Run {
         use std::io::Write;
         let mut cmd = self.command(args);
@@ -433,8 +387,6 @@ impl Env {
         wait(child)
     }
 
-    /// `fleet gateway receive --account fake-main` with one envelope whose
-    /// payload is the fake platform's `{"id", "event"}` shape.
     pub fn receive(&self, delivery_id: &str, event: Value) -> Run {
         let envelope = json!({
             "verified": "connection",
@@ -447,7 +399,6 @@ impl Env {
         )
     }
 
-    /// `fleet gateway receive --beat` with one heartbeat.
     pub fn beat(&self, instance: &str, state: &str, digest: &str) -> Run {
         let beat = json!({
             "instance": instance, "state": state, "digest": digest,
@@ -506,7 +457,6 @@ impl Env {
         self.fleet(&["status", "task", name, "--json"]).ok().json()
     }
 
-    /// The Task is readably absent.
     pub fn get_absent(&self, name: &str) {
         self.fleet(&["get", "task", name]).code(3);
     }
@@ -523,7 +473,6 @@ impl Env {
         self.host().calls(call).expect("calls")
     }
 
-    /// Nothing a write left behind: the store's temp directory is empty.
     pub fn assert_no_temp(&self) {
         let tmp = self.data.join("tmp");
         let left: Vec<_> = fs::read_dir(tmp)
@@ -532,12 +481,10 @@ impl Env {
         assert!(left.is_empty(), "temp files left behind: {left:?}");
     }
 
-    /// Let a Task's wait before its next attempt run out now, as time would.
     pub fn expire_wait(&self, name: &str) {
         self.expire_wait_of("Task", name);
     }
 
-    /// Let an object's `notBefore` run out now, as time would.
     pub fn expire_wait_of(&self, kind: &str, name: &str) {
         let path = self.object_path(kind, name);
         let mut obj: Value =
@@ -610,7 +557,6 @@ impl Env {
         }
     }
 
-    /// Let a Concluded Task's session recheck come due now, as time would.
     pub fn expire_session_check(&self, name: &str) {
         let path = self.object_path("Task", name);
         let mut obj: Value =
@@ -638,15 +584,10 @@ impl Drop for Env {
     }
 }
 
-/// Wait for a child within the bound; past it, kill it and fail. The pipes
-/// are drained on their own threads so a chatty child cannot block on a full
-/// pipe while we wait for it.
 pub fn wait(child: Child) -> Run {
     wait_within(child, TIMEOUT)
 }
 
-/// [`wait`] with an explicit bound, for a child that legitimately takes
-/// longer than one fleet command (a whole installer run).
 pub fn wait_within(mut child: Child, bound: Duration) -> Run {
     let drain = |pipe: Option<Box<dyn Read + Send>>| {
         thread::spawn(move || {
@@ -689,8 +630,6 @@ pub fn wait_within(mut child: Child, bound: Duration) -> Run {
     }
 }
 
-/// The resources a scenario needs besides its Tasks: none, since a Task
-/// carries everything it runs on.
 pub fn base_config() -> Value {
     json!([])
 }
@@ -732,7 +671,6 @@ pub fn stub_exe() -> PathBuf {
     PathBuf::from(env!("CARGO_BIN_EXE_fleet-test-stub"))
 }
 
-/// Whether a process is still alive, waiting up to `within` for it to go.
 pub fn alive_after(pid: u32, within: Duration) -> bool {
     let deadline = Instant::now() + within;
     loop {
@@ -773,7 +711,6 @@ pub fn object(kind: &str, name: &str, spec: Value) -> Value {
     json!({"apiVersion": "fleet/v1alpha1", "kind": kind, "metadata": {"name": name}, "spec": spec})
 }
 
-/// A ChangeRequest manifest with no name: `apply` derives it from the change.
 pub fn change_request(url: &str, extra: Value) -> Value {
     let mut spec = json!({"url": url});
     if let Some(o) = extra.as_object() {
@@ -782,7 +719,6 @@ pub fn change_request(url: &str, extra: Value) -> Value {
     json!({"apiVersion": "fleet/v1alpha1", "kind": "ChangeRequest", "metadata": {}, "spec": spec})
 }
 
-/// `cr-` and twelve hex digits of the SHA-256 of the canonical ref.
 pub fn derived_name(kind: &str, host: &str, project: &str, id: &str) -> String {
     use sha2::{Digest, Sha256};
     let canonical = format!("{kind}/{host}/{project}/{id}").to_lowercase();
@@ -794,9 +730,6 @@ pub fn derived_name(kind: &str, host: &str, project: &str, id: &str) -> String {
     format!("cr-{hex}")
 }
 
-/// The `[gateway]` section a gateway environment runs: a fake account under
-/// `root/gateway`, two people, and one route whose brief and workspace live
-/// under `root` too. A test edits the text to make each invalid case.
 pub fn gateway_section(root: &Path) -> String {
     let root = root.to_string_lossy().replace('\\', "/");
     format!(
@@ -809,8 +742,6 @@ taskConfig = \"conversation\"\nbrief = \"{root}/briefs/conversation.md\"\nworksp
     )
 }
 
-/// A person's message event on the fake platform, in the port's own shape:
-/// `thread` is the fake address `fake:<chat>:<thread>`.
 pub fn message_event(thread: &str, id: &str, author: &str, at: u64, text: &str) -> Value {
     let conversation = thread.split(':').collect::<Vec<_>>();
     let mut conv = json!({"platform": conversation[0], "chat": conversation[1]});
@@ -824,7 +755,6 @@ pub fn message_event(thread: &str, id: &str, author: &str, at: u64, text: &str) 
     })
 }
 
-/// `conv-` and twelve hex digits of the SHA-256 of `<account>/<address>`.
 pub fn conversation_name(account: &str, address: &str) -> String {
     use sha2::{Digest, Sha256};
     let hex: String = Sha256::digest(format!("{account}/{address}").as_bytes())
@@ -835,7 +765,6 @@ pub fn conversation_name(account: &str, address: &str) -> String {
     format!("conv-{hex}")
 }
 
-/// Unix milliseconds now, for bounds on `notBefore`.
 pub fn now_ms() -> u64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)

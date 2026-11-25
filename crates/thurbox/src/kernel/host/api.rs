@@ -48,11 +48,9 @@ pub(super) struct EnvParts {
 }
 
 pub(super) struct Env {
-    /// The `_ENV` its chunk, its modules and every function they define run in.
     pub table: Table,
     pub run: mlua::Function,
     pub run_forget: mlua::Function,
-    /// `files`, kept out of `table` the same way until granted.
     pub files: Table,
     pub thurbox: Table,
 }
@@ -230,10 +228,7 @@ const SEALED: [&str; 6] = ["string", "table", "math", "coroutine", "utf8", "text
 
 pub(super) const READ_TAKEN_AT: u8 = 1;
 pub(super) const READ_METRICS: u8 = 2;
-/// Not a cache key: read by the loop, which fetches a remote session's diff
-/// only while some pane drawn on screen reads `thurbox.diffs`.
 pub(super) const READ_DIFFS: u8 = 4;
-/// What iterating the published table reads: all of it.
 const READ_ALL: u8 = READ_TAKEN_AT | READ_METRICS | READ_DIFFS;
 const PUBLISHED_TABLES: &str = "__published_tables";
 
@@ -320,16 +315,6 @@ fn install_sample_reads(lua: &Lua, read: Rc<std::cell::Cell<u8>>) -> mlua::Resul
     install_frozen_meta(lua)
 }
 
-/// The metamethods every [`freeze`] proxy shares, so a published table costs
-/// one metatable rather than three Rust closures.
-///
-/// Each finds the table behind its proxy through [`FROZEN`] instead of
-/// capturing it. A captured table is a registry reference — a GC root the
-/// collector cannot see through — so a proxy could only free what it stood for
-/// one full collection after the proxy itself went, one nesting level per
-/// collection. A deep published group rebuilt every pass then outran the
-/// collector, and the emergency collection at the memory ceiling, which runs
-/// once, freed one level and failed the allocation anyway.
 fn install_frozen_meta(lua: &Lua) -> mlua::Result<()> {
     let shared = lua.create_table()?;
     shared.raw_set(
@@ -363,17 +348,12 @@ fn install_frozen_meta(lua: &Lua) -> mlua::Result<()> {
     lua.set_named_registry_value(FROZEN_META, shared)
 }
 
-/// Where [`install_frozen_meta`] keeps the shared metamethods.
 const FROZEN_META: &str = "__frozen_meta";
 
 const VIEWS: &str = "__thurbox_views";
 
-/// Every read-only proxy [`freeze`] made, mapped to the table it stands for.
 const FROZEN: &str = "__frozen";
 
-/// The metatable of a read-only view of `inner`: reads through, refuses a
-/// write naming `what`, iterates without handing out `inner`, and hides
-/// itself.
 fn read_only_meta(lua: &Lua, inner: Table, what: &str) -> mlua::Result<Table> {
     let meta = lua.create_table()?;
     meta.raw_set("__index", inner.clone())?;
@@ -429,8 +409,6 @@ pub(super) fn freeze(lua: &Lua, value: Value) -> mlua::Result<Value> {
     Ok(Value::Table(proxy))
 }
 
-/// [`freeze`] every table held by `table`, leaving `table` itself writable —
-/// for the top-level published table, which the kernel still fills.
 pub(super) fn freeze_fields(lua: &Lua, table: &Table) -> mlua::Result<()> {
     let entries = table
         .pairs::<Value, Value>()
@@ -519,7 +497,6 @@ fn install_clock(
     lua.set_named_registry_value(CTX_META, meta)
 }
 
-/// Give one render context its clock.
 pub(super) fn attach_clock(lua: &Lua, ctx: &Table) -> mlua::Result<()> {
     let meta: Table = lua.named_registry_value(CTX_META)?;
     ctx.set_metatable(Some(meta))
@@ -805,18 +782,6 @@ fn command_for(
     })
 }
 
-/// Globals that read files, load code, or write to the terminal.
-///
-/// Withholding `io`/`os`/`debug` at VM construction is not enough: Lua's *base*
-/// library is not optional, and it carries `dofile` and `loadfile`, which read
-/// arbitrary paths. `print` is just as unwelcome — stdout belongs to the TUI,
-/// so a stray `print` would corrupt the screen rather than log anything.
-///
-/// Removed rather than replaced with a stub that refuses, because the
-/// capability model is enforcement by *absence*: a mod should find nothing
-/// there at all.
-/// (`tests/kernel_mvp.rs` probes for each of these — that test is what found
-/// `dofile`/`loadfile` in the first place.)
 const WITHHELD_GLOBALS: [&str; 8] = [
     "dofile",     // reads and runs an arbitrary path
     "loadfile",   // reads an arbitrary path
@@ -1069,8 +1034,6 @@ fn view_contents(lua: &Lua, view: &Table) -> mlua::Result<Table> {
     Ok(copy)
 }
 
-/// A total order over table keys, for [`from_lua`]'s canonical order. Keys
-/// are almost always strings or integers; the rest only need to be consistent.
 fn canonical(a: &Persisted, b: &Persisted) -> std::cmp::Ordering {
     use std::cmp::Ordering;
     let rank = |p: &Persisted| match p {
@@ -1095,7 +1058,6 @@ fn canonical(a: &Persisted, b: &Persisted) -> std::cmp::Ordering {
     }
 }
 
-/// Trim mlua's wrapper noise so the pane shows the mod's own message.
 pub(super) fn clean_error(error: &mlua::Error) -> String {
     let text = error.to_string();
     // Before the memory check: arming fails on a full VM, and its cause reads
@@ -1124,18 +1086,12 @@ pub(super) fn clean_error(error: &mlua::Error) -> String {
 
 // ── Display width ───────────────────────────────────────────────────────────
 
-/// What a cut is marked with when the caller does not say.
 const ELLIPSIS: &str = "…";
 
 pub(crate) fn columns(s: &str) -> usize {
     UnicodeWidthStr::width(s)
 }
 
-/// The longest prefix of `s` that fits in `cols` columns.
-///
-/// A double-width glyph that would straddle the edge is left out rather than
-/// half-drawn, so the result is never *wider* than asked for — which is what
-/// lets a caller add its own marker and still fit.
 pub(crate) fn take_left(s: &str, cols: usize) -> &str {
     let mut used = 0;
     for (at, ch) in s.char_indices() {
@@ -1148,7 +1104,6 @@ pub(crate) fn take_left(s: &str, cols: usize) -> &str {
     s
 }
 
-/// The longest suffix of `s` that fits in `cols` columns.
 fn take_right(s: &str, cols: usize) -> &str {
     let mut used = 0;
     for (at, ch) in s.char_indices().rev() {
@@ -1161,7 +1116,6 @@ fn take_right(s: &str, cols: usize) -> &str {
     s
 }
 
-/// Which end of the text a truncation eats.
 enum Side {
     Right,
     Left,
@@ -1181,7 +1135,6 @@ impl Side {
     }
 }
 
-/// Cut `s` down to `cols` columns, marking the cut with `ellipsis`.
 fn truncate(s: &str, cols: usize, ellipsis: &str, side: &Side) -> String {
     if cols == 0 {
         return String::new();
@@ -1213,7 +1166,6 @@ fn truncate(s: &str, cols: usize, ellipsis: &str, side: &Side) -> String {
     }
 }
 
-/// Where the short side of a pad goes.
 enum Align {
     Left,
     Right,
@@ -1233,9 +1185,6 @@ impl Align {
     }
 }
 
-/// Spaces `s` out to `cols` columns. Text already that wide is returned as it
-/// is — a pad never truncates, because the two answers to "too long" are the
-/// caller's to choose between.
 fn pad(s: &str, cols: usize, align: &Align) -> String {
     let short = cols.saturating_sub(columns(s));
     if short == 0 {
@@ -1253,8 +1202,6 @@ fn pad(s: &str, cols: usize, align: &Align) -> String {
 
 const MAX_COLS: usize = 1 << 20;
 
-/// A column count as Lua spells it: any number, floored, never negative,
-/// and never past [`MAX_COLS`].
 fn cols_arg(n: f64) -> usize {
     if n.is_finite() && n > 0.0 {
         (n.floor() as usize).min(MAX_COLS)
@@ -1263,18 +1210,6 @@ fn cols_arg(n: f64) -> usize {
     }
 }
 
-/// `text.width(s)`, `text.truncate(s, cols, opts)` and `text.pad(s, cols, align)`.
-///
-/// The one measurement a mod cannot make for itself. Lua's `#` counts bytes
-/// and `utf8.len` counts codepoints; a terminal budget is columns, and no
-/// arithmetic over the other two recovers it. Every truncation and every pad in
-/// the interface rides on this, so it is the kernel's `unicode-width` — the
-/// painter's own measure — rather than an approximation per mod.
-///
-/// `opts` is the ellipsis, or `{ ellipsis = "…", side = "right"|"left"|"middle" }`
-/// for the cuts that keep the far end. An unknown `side` or `align` raises
-/// rather than being ignored: a misspelt option that silently means "left" is
-/// the trap `command`'s option list already documents.
 fn install_text(lua: &Lua) -> mlua::Result<()> {
     let table = lua.create_table()?;
 
@@ -1328,9 +1263,6 @@ mod tests {
         assert_eq!("修复终端宽度".chars().count(), 6);
     }
 
-    /// A double-width glyph that would straddle the budget's edge is dropped
-    /// rather than half-drawn: the result must never be wider than asked for,
-    /// or the caller's own marker pushes the row over.
     #[test]
     fn a_cut_never_returns_more_columns_than_it_was_given() {
         assert_eq!(take_left("修复终端", 3), "修");
@@ -1350,8 +1282,6 @@ mod tests {
         assert_eq!(truncate("abcdefgh", 6, ELLIPSIS, &Side::Middle), "ab…fgh");
     }
 
-    /// Below the mark's own width there is nothing to say but the mark, and it
-    /// is cut to the budget rather than overrunning the one it protects.
     #[test]
     fn a_budget_too_small_for_the_mark_holds_the_mark() {
         assert_eq!(truncate("abcdefgh", 1, ELLIPSIS, &Side::Right), "…");
@@ -1373,8 +1303,6 @@ mod tests {
         assert_eq!(pad("修复终端", 4, &Align::Left), "修复终端");
     }
 
-    /// A misspelt option means the caller asked for something; answering with
-    /// the default would draw a plausible frame and report nothing.
     #[test]
     fn an_unknown_side_or_align_is_refused() {
         assert!(Side::parse("centre").is_err());

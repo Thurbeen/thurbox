@@ -1,10 +1,3 @@
-//! thurbox on Fleet (ADR-41): the snapshot reads the Tasks through `fleet
-//! watch`, the commands act through `fleet apply`, `send` and `delete`, and
-//! thurbox starts no `fleet up`. The real `fleet` binary against an
-//! isolated store and Fleet's fake runtime; thurbox links no Fleet crate, so
-//! the binary is found beside `thurbox-cli`, as a workspace build leaves it.
-//!
-//! Unix only: the configured program is a shell script.
 #![cfg(unix)]
 
 use std::path::{Path, PathBuf};
@@ -40,8 +33,6 @@ fn fleet_bin() -> Option<PathBuf> {
     found
 }
 
-/// Make `dir` a git repository with one commit. Git's location variables
-/// are scrubbed, so a run under a commit hook never reaches the real one.
 fn git_init(dir: &Path) {
     for args in [
         &["init", "-q", "-b", "main"][..],
@@ -78,8 +69,6 @@ fn git_init(dir: &Path) {
     }
 }
 
-/// One isolated Fleet: a store, the fake runtime, and `program`, the script
-/// thurbox is configured with, which runs the real binary against them.
 struct Fleet {
     root: tempfile::TempDir,
     program: PathBuf,
@@ -90,8 +79,6 @@ impl Fleet {
         Fleet::with(bin, "[runtime]\nkind = \"fake\"\ndir = \"fake\"\n", "")
     }
 
-    /// A Fleet whose runtime is `runtime` (TOML), its program run with
-    /// `env` (`NAME='value' …`) and `<root>/bin` first on its `PATH`.
     fn with(bin: PathBuf, runtime: &str, env: &str) -> Fleet {
         let root = tempfile::Builder::new()
             .prefix("fleet-engine-")
@@ -128,7 +115,6 @@ impl Fleet {
         Fleet { root, program }
     }
 
-    /// The same, from the config `fleet init` writes, on the fake runtime.
     fn initialized(bin: PathBuf) -> Fleet {
         let fleet = Fleet::new(bin);
         let config = fleet.root.path().join("fleet.toml");
@@ -164,7 +150,6 @@ impl Fleet {
         self.root.path().join("data")
     }
 
-    /// Make `repo` a git repository, of which a session gets a worktree.
     fn map(&self, repo: &Path) {
         git_init(repo);
     }
@@ -220,7 +205,6 @@ impl Fleet {
         until("a manager holds the lease", || self.manager().is_some());
     }
 
-    /// The pid of the `fleet up` holding the lease, if one does.
     fn manager(&self) -> Option<u32> {
         let lease: Value =
             serde_json::from_slice(&std::fs::read(self.data().join("lease.json")).ok()?).ok()?;
@@ -262,11 +246,6 @@ impl Run {
 }
 
 #[cfg(unix)]
-/// `dir`, which holds a stand-in `ssh`, first on this process's `PATH` until
-/// the guard drops, and one test at a time. The library starts `ssh` by
-/// name from the process's `PATH`, so a child's own environment cannot
-/// carry it; nextest gives each test a process of its own, and the lock
-/// keeps a plain `cargo test`, whose tests share one, from interleaving.
 struct PathGuard {
     saved: Option<std::ffi::OsString>,
     _lock: std::sync::MutexGuard<'static, ()>,
@@ -396,8 +375,6 @@ fn a_held_task_on_a_remote_repository_groups_under_that_repository() {
     }
 }
 
-/// A store `fleet watch` cannot read is the snapshot's error while the
-/// watch runs, beside the last rows, and it clears once a read works again.
 #[test]
 fn an_unreadable_store_is_an_error_until_it_reads_again() {
     let Some(bin) = fleet_bin() else { return };
@@ -448,7 +425,6 @@ fn fleet_bus(program: &Path) -> CommandBus {
     CommandBus::fleet(link(program))
 }
 
-/// The Fleet `program` runs on this machine.
 fn link(program: &Path) -> thurbox::fleet_link::FleetLink {
     thurbox::fleet_link::FleetLink::local(program.to_string_lossy())
 }
@@ -545,8 +521,6 @@ fn the_commands_create_send_to_and_delete_fleet_tasks() {
     assert!(missing.contains("nobody"), "{missing}");
 }
 
-/// A session keeps the name it was given, which is what a finished creation
-/// finds its row by, while its Task is named as Fleet takes names.
 #[test]
 fn a_created_session_keeps_the_name_it_was_given() {
     let Some(bin) = fleet_bin() else { return };
@@ -580,8 +554,6 @@ fn a_created_session_keeps_the_name_it_was_given() {
     );
 }
 
-/// Two sessions whose names make the same Task name are two sessions: the
-/// second is refused, and the first is left as it was.
 #[test]
 fn a_name_already_taken_is_refused_and_the_task_left_alone() {
     let Some(bin) = fleet_bin() else { return };
@@ -608,10 +580,6 @@ fn a_name_already_taken_is_refused_and_the_task_left_alone() {
     );
 }
 
-/// A runtime's `tty` answer reaches the pane through `fleet term-bridge`,
-/// which has no screen to send first: the pane starts on a full grid and
-/// shows what follows. The `fleet` here answers `attach` itself and runs
-/// the real bridge.
 #[test]
 fn a_bridged_stream_with_no_snapshot_shows_its_output() {
     let Some(bin) = fleet_bin() else { return };
@@ -666,9 +634,6 @@ fn a_bridged_stream_with_no_snapshot_shows_its_output() {
     });
 }
 
-/// A confirmed delete (the local control API's) is checked against the Task
-/// as it is now: one that still matches what was confirmed is deleted, one
-/// that moved is not.
 #[test]
 fn a_confirmed_delete_is_checked_then_deletes_the_task() {
     let Some(bin) = fleet_bin() else { return };
@@ -695,7 +660,6 @@ fn a_confirmed_delete_is_checked_then_deletes_the_task() {
     assert!(fleet.get("alpha").unwrap()["metadata"]["deletionTimestamp"].is_u64());
 }
 
-/// A source the test feeds by hand.
 struct Fed(std::sync::mpsc::Receiver<SourceRead>);
 
 impl SnapshotSource for Fed {
@@ -716,9 +680,6 @@ fn row(name: &str, backend: &str, cwd: &Path) -> SessionRow {
     row
 }
 
-/// A session whose delete succeeded stays hidden while the source still
-/// lists it, and a session of the same name made after the source dropped
-/// it, or reported it removed, is shown again.
 #[test]
 fn a_deleted_session_stays_hidden_until_the_source_drops_it() {
     let (tx, rx) = std::sync::mpsc::channel();
@@ -753,9 +714,6 @@ fn a_deleted_session_stays_hidden_until_the_source_drops_it() {
     assert_eq!(names(&mut store), ["gone", "kept"], "the new one shows");
 }
 
-/// Deleting a stuck deletion again changes nothing in Fleet, which reports
-/// no removal for a Task already marked: its row stays listed as stuck rather
-/// than hidden for the rest of the run.
 #[test]
 fn a_stuck_deletion_deleted_again_stays_listed() {
     let (tx, rx) = std::sync::mpsc::channel();
@@ -777,10 +735,6 @@ fn a_stuck_deletion_deleted_again_stays_listed() {
     assert_eq!(names(&mut store), ["stuck"]);
 }
 
-/// Input a stream refused is said in the interface's own notices, not in
-/// the pane's grid, which an agent's full-screen interface would paint
-/// over. The stream: the real `fleet term-bridge` over a command that never
-/// reads, whose terminal fills and then stops taking input.
 // A Darwin pty discards what its program does not read instead of blocking the
 // writer, so the bridge never stops reading and no input is ever refused.
 #[cfg(not(target_os = "macos"))]
@@ -832,7 +786,6 @@ fn refused_input_is_a_notice_and_leaves_the_grid_alone() {
     );
 }
 
-/// A repository with an untracked file: a diff or a git stat of it says so.
 fn dirty_repo() -> tempfile::TempDir {
     let repo = tempfile::tempdir().expect("repo");
     let git = |args: &[&str]| {
@@ -861,8 +814,6 @@ fn dirty_repo() -> tempfile::TempDir {
     repo
 }
 
-/// A Fleet Task on another machine names a path there, so no git runs
-/// against it here; a local row beside it is examined as ever.
 #[test]
 fn a_fleet_row_elsewhere_is_not_examined_by_git() {
     let repo = dirty_repo();
@@ -889,7 +840,6 @@ fn a_fleet_row_elsewhere_is_not_examined_by_git() {
     assert_eq!(store.current().session("local:on-fleet").unwrap().git, None);
 }
 
-/// Nor is it diffed here: the diff is refused, and says where the Task is.
 #[test]
 fn a_fleet_row_elsewhere_is_not_diffed_here() {
     use thurbox::kernel::diff::{Diff, DiffStore};
@@ -944,8 +894,6 @@ fn thurbox_starts_no_fleet_up_and_says_which_command_does() {
     });
 }
 
-/// A private `TMUX_TMPDIR`, short enough for a socket path, whose server dies
-/// with it.
 struct Sockets(PathBuf);
 
 impl Sockets {
@@ -1277,8 +1225,6 @@ fn a_shell_asked_for_on_a_paused_session_opens_once_start_resumes_it() {
     });
 }
 
-/// An interactive session's row follows what its agent's hooks report:
-/// `fleet signal idle` makes it idle, `working` working, and idle again.
 #[test]
 fn an_interactive_rows_status_follows_its_agents_hooks() {
     use thurbox::session::SessionState;
@@ -1323,8 +1269,6 @@ fn an_interactive_rows_status_follows_its_agents_hooks() {
     });
 }
 
-/// The row shows the agent's finer state the way v2 did: working, then
-/// waiting on a person (blocked, v2's red diamond), then idle.
 #[test]
 fn an_interactive_rows_status_shows_working_attention_and_idle() {
     use thurbox::session::SessionState;
@@ -1369,11 +1313,6 @@ fn an_interactive_rows_status_shows_working_attention_and_idle() {
     });
 }
 
-/// A Task Fleet paused for idling after it concluded keeps the
-/// `sessionState` its agent last reported, and only its `Paused` condition
-/// says it is stopped. Its row is stopped all the same, says why, and
-/// `start` resumes it. The fake runtime offers no live view, so the attach
-/// `start` makes after the wake may fail on that alone.
 #[test]
 fn a_concluded_task_fleet_paused_is_a_stopped_row_that_start_resumes() {
     use thurbox::session::SessionState;
@@ -1497,11 +1436,6 @@ fn a_concluded_task_fleet_paused_is_a_stopped_row_that_start_resumes() {
     });
 }
 
-/// The link reaches a Fleet over ssh, though no config selects one yet: the
-/// real binary behind a stand-in `ssh` that logs each remote command line and
-/// runs it, as `tests/tui_e2e.rs`'s does. A Task goes in on stdin, free text
-/// arrives as the one word it was, a JSON answer reads back, and Fleet's exit
-/// 3 (no such Task) survives the hop.
 #[test]
 fn the_link_reaches_a_fleet_over_ssh() {
     use thurbox::fleet_link::FleetLink;
@@ -1572,11 +1506,6 @@ fn the_link_reaches_a_fleet_over_ssh() {
     );
 }
 
-/// `settings.toml` lists three Fleets, and `doctor` reports each: one on this
-/// machine, one on "box" reached over ssh with its own `config` (given as
-/// `fleet --config <path>` before the verb), and one on "gpu", whose ssh
-/// exits 255 and so is unreachable. Until the interface merges Fleets it
-/// uses the first by name, and `doctor` says which.
 #[test]
 fn doctor_reports_each_listed_fleet() {
     let Some(bin) = fleet_bin() else { return };
@@ -1691,12 +1620,6 @@ fn doctor_reports_each_listed_fleet() {
     );
 }
 
-/// Two Fleets, each with a Task named `review`: thurbox follows both, so the
-/// one list holds two rows, `box:review` and `laptop:review`, each naming its
-/// Fleet. "box" is a second sandboxed Fleet behind a stand-in `ssh`. When
-/// box's watch dies and its `ssh` exits 255 from then on, box's rows stay
-/// in the list, marked unreachable: a Fleet that cannot be asked has not
-/// lost its sessions.
 #[test]
 fn every_listed_fleet_is_followed_in_one_list() {
     use thurbox::fleet_link::FleetLink;
@@ -1837,10 +1760,6 @@ fn every_listed_fleet_is_followed_in_one_list() {
     });
 }
 
-/// A creation is found by the id its Task will have in the Fleet the
-/// commands go to, never by its name: with `laptop:review` listed and `box`
-/// in force, creating `review` awaits and reports `box:review`, not the
-/// laptop's session of the same name.
 #[test]
 fn a_creation_is_awaited_by_its_fleet_qualified_id() {
     use thurbox::fleet_link::FleetLink;
@@ -1900,8 +1819,6 @@ fn a_creation_is_awaited_by_its_fleet_qualified_id() {
     );
 }
 
-/// `doctor` reads whether a remote Fleet's manager runs from that Fleet's
-/// `fleet version --json`, over the link, and never starts one there.
 #[test]
 fn doctor_reports_whether_a_remote_fleets_manager_runs() {
     let Some(bin) = fleet_bin() else { return };
@@ -1998,11 +1915,6 @@ fn doctor_reports_whether_a_remote_fleets_manager_runs() {
     let _ = unit.wait();
 }
 
-/// Each command goes to its session's own Fleet: with `laptop` in force,
-/// a send to `box:review` reaches box over ssh and lands in box's inbox
-/// only, and a rename of `laptop:review` stays on the laptop. Once box's
-/// ssh exits 255, a confirmed delete of `box:review` is an error, never
-/// "the Task is gone", and leaves the Task alone.
 #[test]
 fn each_command_goes_to_its_sessions_fleet() {
     use thurbox::fleet_link::{FleetLink, Fleets};
@@ -2118,11 +2030,6 @@ fn each_command_goes_to_its_sessions_fleet() {
     assert!(remote.get("review").is_some(), "the Task is left alone");
 }
 
-/// A session of a Fleet on another machine has a pane: `fleet attach` and
-/// the stream it names both run over that Fleet's ssh, so typing reaches the
-/// agent there. When the link drops, the pane says the Fleet cannot be
-/// reached and is not asked for again at once; once the Fleet answers, the
-/// pane is attached again and takes typing.
 #[test]
 fn a_remote_fleets_session_pane_works_over_the_link() {
     use thurbox::fleet_link::FleetLink;
@@ -2282,10 +2189,6 @@ fn a_remote_fleets_session_pane_works_over_the_link() {
     });
 }
 
-/// A session of a Fleet on another machine has a companion shell: `fleet
-/// shell` and the stream it names both run over that Fleet's ssh, and the
-/// shell opens on that machine, in the Task's directory. thurbox keeps no
-/// route of its own to the machine.
 #[test]
 fn a_remote_fleets_companion_shell_opens_on_its_machine_through_fleet_shell() {
     use thurbox::fleet_link::FleetLink;
@@ -2415,10 +2318,6 @@ fn a_remote_fleets_companion_shell_opens_on_its_machine_through_fleet_shell() {
     );
 }
 
-/// A Fleet that does not speak the API thurbox writes its Tasks in is
-/// refused once its `fleet version --json` says so: the list shows it as
-/// incompatible, its watch is never started, and a command for one of its
-/// sessions is refused here. Nothing but `version` is ever sent to it.
 #[test]
 fn a_fleet_thurbox_cannot_speak_to_is_refused() {
     use thurbox::fleet_link::{FleetLink, Fleets};
@@ -2527,8 +2426,6 @@ mod an_update {
         make_executable(path);
     }
 
-    /// An install of thurbox with its `fleet`, an isolated Fleet store on the
-    /// fake runtime, and a release feed offering [`RELEASE`].
     struct Install {
         root: tempfile::TempDir,
         manager: Option<Child>,
@@ -2590,8 +2487,6 @@ mod an_update {
             self.path("install/fleet")
         }
 
-        /// The release archive, its checksums, and a `curl` that serves them by
-        /// file name: the list when asked for no file.
         fn publish(&self, fleet: &Path) {
             let stage = self.path("stage");
             for name in [
@@ -2703,7 +2598,6 @@ mod an_update {
                 .expect("JSON")
         }
 
-        /// The pid of the `fleet up` holding the lease, if one does.
         fn holder(&self) -> Option<u32> {
             let out = self.fleet_run(&["version", "--json"], None);
             let version: Value = serde_json::from_slice(&out.stdout).expect("JSON");
@@ -2750,7 +2644,6 @@ mod an_update {
                 .expect("thurbox-cli update")
         }
 
-        /// The `fleet up` processes running the program now installed.
         fn managers_on_installed_fleet(&self) -> Vec<u32> {
             let installed = self.fleet();
             std::fs::read_dir("/proc")

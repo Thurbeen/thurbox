@@ -1,9 +1,3 @@
-//! Mark-ready end to end: a declared draft change leaves draft through the
-//! real `fleet` binary, the file store, the fake host and the fake forge,
-//! under a configured ready policy, once and only once; every refusal,
-//! unknown outcome and stale observation the design names; and the same
-//! effect through the stub `gh`, `glab` and `az`, after a fresh read.
-
 mod support;
 
 use std::fs;
@@ -26,8 +20,6 @@ const URL_8: &str = "https://forge.test/acme/widgets/pull/8";
 const LOGIN: &str = "fleet-bot";
 const HEAD: &str = "aaa111";
 
-/// The three shipped policies as `fleet init` writes them, and one that
-/// waits on the forge's own answer.
 const POLICIES: &str = "[forge.readyPolicies.checks]\nchecksPassed = true\n\n[forge.readyPolicies.checks-and-bots]\nbotReviewsAddressed = true\nchecksPassed = true\n\n[forge.readyPolicies.strict]\nbotReviewsAddressed = true\nchecksPassed = true\nnoUnresolvedThreads = true\n\n[forge.readyPolicies.merge]\nforgeMergeable = true\n";
 
 fn note(id: &str, at: u64, author: &str, body: &str) -> Note {
@@ -59,7 +51,6 @@ fn bot_inline(id: &str, at: u64, thread: &str, resolved: bool) -> Note {
     }
 }
 
-/// A draft on head `aaa111` with the given checks and one person's note.
 fn draft(checks: Checks) -> ChangeSnapshot {
     change(
         ChangeState::Draft,
@@ -90,8 +81,6 @@ fn change(state: ChangeState, head: &str, checks: Checks, notes: Vec<Note>) -> C
     }
 }
 
-/// Give the forge environment a default policy, extra `[forge]` keys and
-/// the policies above.
 fn configure(env: &Env, policy: &str, extra: &str) {
     let cfg = fs::read_to_string(&env.config).unwrap();
     let cfg = cfg.replace(
@@ -101,8 +90,6 @@ fn configure(env: &Env, policy: &str, extra: &str) {
     fs::write(&env.config, format!("{cfg}\n{POLICIES}")).unwrap();
 }
 
-/// A briefed Task `t1` following change 7 on the fake forge, Fleet logged
-/// in as `fleet-bot`, under `policy`.
 fn setup(name: &str, policy: &str, snapshot: ChangeSnapshot) -> (Env, FakeForge, String) {
     setup_task(name, policy, snapshot, task("t1", true))
 }
@@ -134,7 +121,6 @@ fn declare(env: &Env, task: &str, url: &str) -> support::Run {
     env.fleet(&["declare", task, "--change-request", url])
 }
 
-/// The worker reports `shipped`; the Task concludes on the next pass.
 fn ship(env: &Env, task: &str) {
     env.fleet(&[
         "result",
@@ -182,7 +168,6 @@ fn poll(env: &Env, cr: &str) {
     env.reconcile().ok();
 }
 
-/// Let an entry's own wait after a failed mark-ready run out now.
 fn expire_entry_wait(env: &Env, task: &str, cr: &str) {
     let path = env.object_path("Task", task);
     let mut raw: Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
@@ -798,7 +783,6 @@ fn the_shipped_example_marks_a_declared_draft_ready_offline() {
     env.assert_no_temp();
 }
 
-/// A draft in the stub forges' model, checks green.
 fn stub_draft(head: &str) -> Value {
     json!({
         "state": "draft", "head": head, "title": "Draft: add it",

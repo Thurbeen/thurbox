@@ -1,17 +1,3 @@
-//! `workspace-git make|release|discard|inspect`: one JSON request on stdin,
-//! one answer on stdout (docs/runtime/README.md, "workspace-git").
-//!
-//! - `make` takes `{root, key, urls, preserveDays?}` and answers
-//!   `{"made": {dirs, adopted}}`, `{"unsupported": {url}}` or
-//!   `{"failed": {why}}`.
-//! - `release` takes `{root, key}` and answers `"released"`.
-//! - `discard` takes `{root, key}` and answers `"discarded"`.
-//! - `inspect` takes `{root, key}` and answers `{"workspace": {urls, dirs}}`
-//!   or `"none"`.
-//!
-//! Anything else is `{"unknown": {why}}`: the request was not answered, and
-//! the caller concludes nothing from it.
-
 use std::io::Read;
 use std::path::PathBuf;
 

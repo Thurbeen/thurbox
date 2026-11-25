@@ -1,8 +1,3 @@
-//! The repository is one Cargo workspace, and thurbox is the member at
-//! `crates/thurbox` (ADR-41): the components each live under `crates/`, and
-//! everything that is not a crate (`ui/`, `examples/`, `docs/`, `vendor/`)
-//! stays at the root, where the tooling that lints it looks.
-
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
@@ -58,8 +53,6 @@ fn the_repository_root_is_a_workspace_with_thurbox_under_crates() {
     );
 }
 
-/// The interface, its examples and the patched dependencies are not part of
-/// any one crate: they stay at the root, and the crate reaches them there.
 #[test]
 fn the_shared_trees_stay_at_the_repository_root() {
     let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
@@ -72,9 +65,6 @@ fn the_shared_trees_stay_at_the_repository_root() {
     assert!(!root.join("src").exists(), "no crate sources at the root");
 }
 
-/// thurbox installs nothing into an agent's own configuration: Fleet's
-/// harness profiles and `fleet signal` report a session's status (ADR-41), so
-/// the extension machinery, its embedded extensions and its skill are gone.
 #[test]
 fn thurbox_ships_no_extensions() {
     let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
@@ -94,9 +84,6 @@ fn thurbox_ships_no_extensions() {
     );
 }
 
-/// Fleet runs every session (ADR-41), so what served thurbox's own engine
-/// is gone: its session records, hook-driven status, lifecycle hooks, the
-/// restore list and the pane discovery that resolved rows from before routes.
 #[test]
 fn the_engine_leaves_no_code_behind() {
     let src = Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
@@ -124,14 +111,6 @@ fn the_engine_leaves_no_code_behind() {
     assert!(!restore.exists(), "the restore list is still shipped");
 }
 
-/// thurbox keeps no database of its own (ADR-41): SQLite is out of the tree
-/// of every target it builds.
-///
-/// The walk reads `Cargo.lock` rather than asking `cargo tree --target all`:
-/// that needs every target's crates in the local cache, and a cache filled for
-/// one host has only that host's. The lock records each package's resolved
-/// dependencies for all targets and edge kinds, so the walk covers at least as
-/// much and needs no network.
 #[test]
 fn rusqlite_is_not_in_thurboxs_dependency_tree() {
     let lock = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../Cargo.lock");
@@ -141,8 +120,6 @@ fn rusqlite_is_not_in_thurboxs_dependency_tree() {
     }
 }
 
-/// A registry crate and a Git copy of it can share a name and a version; the
-/// walk follows the copy each entry names.
 #[test]
 fn the_lock_walk_tells_sources_apart() {
     let lock = r#"
@@ -172,8 +149,6 @@ fn the_lock_walk_tells_sources_apart() {
     );
 }
 
-/// The names on a path through `lock`'s dependency graph from package `from`
-/// to package `to`, if there is one.
 fn path_in_lock(lock: &str, from: &str, to: &str) -> Option<Vec<String>> {
     let lock: toml::Table = lock.parse().expect("Cargo.lock is TOML");
     let packages = lock["package"]

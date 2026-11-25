@@ -1,8 +1,3 @@
-//! Pausing an idle agent session and resuming it when work arrives, end to
-//! end: the real `fleet` binary, its file store, TaskController and the fake
-//! host. The agent's activity is what its hooks report through `fleet
-//! signal`.
-
 mod support;
 
 use fleet_runtime::{FakeSession, Fault};
@@ -11,14 +6,12 @@ use support::{Env, assert_condition, object, wait};
 
 const PAUSE_AFTER_MS: u64 = 600_000;
 
-/// A Task whose TaskConfig pauses it when idle.
 fn task(name: &str) -> Value {
     let mut t = support::task(name, true);
     t["spec"]["configRef"] = json!({"name": "pausing"});
     t
 }
 
-/// A Task with no pause setting.
 fn plain_task(name: &str) -> Value {
     support::task(name, true)
 }
@@ -45,8 +38,6 @@ fn session(env: &Env) -> FakeSession {
         .expect("a session")
 }
 
-/// What the agent's hooks report: `idle`, `active` (working), or nothing,
-/// which leaves its report empty.
 fn set_activity(env: &Env, activity: Option<&str>) {
     let file = env
         .data
@@ -65,7 +56,6 @@ fn set_activity(env: &Env, activity: Option<&str>) {
     wait(cmd.spawn().expect("fleet signal")).ok();
 }
 
-/// Let the Task's idle time run past `pauseAfterMs` now, as time would.
 fn expire_idle(env: &Env, name: &str) {
     let path = env.object_path("Task", name);
     let mut obj: Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
@@ -79,7 +69,6 @@ fn expire_idle(env: &Env, name: &str) {
     std::fs::write(&path, obj.to_string()).unwrap();
 }
 
-/// Every text the session was given, in order.
 fn sent(env: &Env) -> Vec<String> {
     session(env).texts
 }
@@ -88,7 +77,6 @@ fn stopped(env: &Env) -> bool {
     session(env).paused
 }
 
-/// Brief the Task, then let it be seen idle for longer than `pauseAfterMs`.
 fn pause(env: &Env, name: &str) {
     env.reconcile().ok();
     assert_eq!(env.status(name)["phase"], "Briefed");

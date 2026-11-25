@@ -1,7 +1,3 @@
-//! An interactive Task: a Task with no brief spawns its session and waits
-//! for its user. Nothing is briefed, a message still reaches the session,
-//! and an amendment is refused. The real `fleet` binary on the fake host.
-
 mod support;
 
 use serde_json::json;
@@ -52,9 +48,6 @@ fn a_blank_brief_is_refused() {
     env.apply(json!([t])).code(1).stderr_has("spec.brief");
 }
 
-/// `--create-only` makes a new Task or nothing: a name already taken is
-/// refused, and the Task there is left as it was, however close together
-/// two clients apply it.
 #[test]
 fn a_create_only_apply_never_changes_a_task_already_there() {
     let env = Env::new("create-only");

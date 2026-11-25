@@ -1,10 +1,3 @@
-//! The forge contract served by `gh` for GitHub and GitHub Enterprise: one
-//! GraphQL query, paginated over reviews, comments and review threads with
-//! bounded `gh api graphql` processes, mapped onto Fleet's vocabulary by the
-//! adapter truth table in the ChangeRequest interface page; and one write,
-//! `markPullRequestReadyForReview`, after a fresh read of the head and the
-//! draft state.
-
 use std::ffi::OsString;
 use std::time::Duration;
 
@@ -21,8 +14,6 @@ use crate::cli::{self, Budget, Reply};
 
 pub const KIND: &str = "github";
 
-/// One query for everything; the `with*` flags let a continuation call fetch
-/// only the connections that still have pages.
 const QUERY: &str = "query($owner: String!, $name: String!, $number: Int!, $withCore: Boolean!, $withReviews: Boolean!, $withComments: Boolean!, $withThreads: Boolean!, $reviewsAfter: String, $commentsAfter: String, $threadsAfter: String) {
   repository(owner: $owner, name: $name) {
     pullRequest(number: $number) {
@@ -40,15 +31,12 @@ const QUERY: &str = "query($owner: String!, $name: String!, $number: Int!, $with
   }
 }";
 
-/// The fresh read before a mark-ready: only what the decision rests on.
 const HEAD_QUERY: &str = "query($owner: String!, $name: String!, $number: Int!) {
   repository(owner: $owner, name: $name) {
     pullRequest(number: $number) { id isDraft state headRefOid }
   }
 }";
 
-/// The one mutation. The intent key rides as `clientMutationId`, so the
-/// forge's own record of the mutation names Fleet's intent.
 const READY_MUTATION: &str = "mutation($id: ID!, $intent: String) {
   markPullRequestReadyForReview(input: {pullRequestId: $id, clientMutationId: $intent}) {
     clientMutationId
@@ -98,13 +86,10 @@ impl GithubForge {
 }
 
 enum Var {
-    /// A string variable (`-f`).
     Str(String),
-    /// A typed variable (`-F`): an integer or a boolean.
     Typed(String),
 }
 
-/// What one observation has read so far.
 #[derive(Default)]
 struct Pages {
     core: Option<Value>,
@@ -119,8 +104,6 @@ struct Pages {
     threads_done: bool,
 }
 
-/// The JSON of a GraphQL answer, or why it is Unknown; `Ok(None)` is proven
-/// absence of the pull request.
 fn body_of(reply: &Reply) -> Result<Option<Value>, (Uncertainty, String)> {
     if reply.throttled() {
         return Err((
@@ -199,8 +182,6 @@ impl Forge for GithubForge {
         cli::operation_bound(self.call_timeout)
     }
 
-    /// `https://<host>/<owner>/<repo>/pull/<number>`, fragments, queries and
-    /// trailing slashes dropped.
     fn parse(&self, url: &str) -> Observation<ChangeRef> {
         let Some((host, project, id)) = cli::parse_change_url(url) else {
             return Observation::unknown("the URL does not name a pull request");
@@ -338,11 +319,6 @@ impl Forge for GithubForge {
         }
     }
 
-    /// Read `isDraft`, `state` and `headRefOid` afresh; refuse with `Moved`
-    /// when they are not what the decision expected; else run the
-    /// ready-for-review mutation. Everything before the mutation that goes
-    /// wrong is a Known refusal, since nothing was mutated; past it, only an
-    /// answer the adapter can read is Known.
     fn mark_ready(
         &self,
         change: &ChangeRef,
@@ -393,8 +369,6 @@ fn failed(why: impl Into<String>) -> Observation<EffectOutcome> {
     Observation::Known(EffectOutcome::Failed { why: why.into() })
 }
 
-/// The state of a pull request. Only an open pull request is a draft: GitHub
-/// keeps `isDraft` on a draft that is closed without being marked ready.
 fn state_of(pr: &Value) -> Result<ChangeState, String> {
     match pr["state"].as_str() {
         Some("OPEN") if pr["isDraft"] == true => Ok(ChangeState::Draft),
@@ -405,7 +379,6 @@ fn state_of(pr: &Value) -> Result<ChangeState, String> {
     }
 }
 
-/// The head and state of a fresh read, by the same rule as the snapshot.
 fn head_and_state(pr: &Value) -> Result<(String, ChangeState), String> {
     let state = state_of(pr)?;
     let head = pr["headRefOid"]
@@ -415,9 +388,6 @@ fn head_and_state(pr: &Value) -> Result<(String, ChangeState), String> {
     Ok((head, state))
 }
 
-/// What the mutation's answer means. A refusal the forge spelled out is
-/// Known; an answer that cannot be read is Unknown, because the mutation
-/// may have landed.
 pub fn mutation_outcome(reply: &Reply) -> Observation<EffectOutcome> {
     if reply.throttled() {
         return failed(format!(
@@ -514,8 +484,6 @@ fn superseded(runs: &[Value], i: usize) -> Result<bool, String> {
     Ok(false)
 }
 
-/// The truth table: GitHub's answer in Fleet's words, or why it cannot be
-/// placed, which makes the whole observation Unknown.
 pub fn snapshot(
     core: &Value,
     reviews: &[Value],

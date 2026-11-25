@@ -1,31 +1,15 @@
-//! `thurbox-cli version [--check]` — print the running version and, with
-//! `--check`, query GitHub for the newest release of this binary's major line
-//! (and report, never offer, a newer major).
-//!
-//! `--check` is gated behind the `[features] version_check` flag (on by
-//! default for 1.0, since thurbox now keeps itself current). When the flag is
-//! off, `--check` prints a one-line hint on how to enable it instead of
-//! reaching the network.
-//! A successful check also refreshes the on-disk cache the TUI badge reads.
-
 use clap::Args;
 use serde_json::json;
 
 use super::output::{kv, CommandOutput};
 
-/// `version` subcommand arguments.
 #[derive(Args, Debug)]
 pub struct VersionArgs {
-    /// Check GitHub for a newer release (requires `[features] version_check`).
+    #[arg(help = "Check GitHub for a newer release (requires `[features] version_check`)")]
     #[arg(long)]
     pub check: bool,
 }
 
-/// Run the `version` command. Takes no database — it only reads the compiled-in
-/// version and (with `--check`) the network.
-///
-/// `enabled` is `[features] version_check` as the process loaded it, and
-/// `fleet` the Fleet in force, which it reports beside the version.
 pub fn run(
     args: VersionArgs,
     enabled: bool,

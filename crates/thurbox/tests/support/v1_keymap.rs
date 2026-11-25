@@ -1,39 +1,8 @@
-//! v1's keymap, kept as a **test oracle** and nothing else.
-//!
-//! Nothing in the binary reads this any more — the registry owns chords in v2,
-//! and `kernel::registry::migrate_v1_bindings` reads `keybindings.json`
-//! directly. What still matters is the *contract* v1 encoded: which chords are
-//! terminal passthrough, and what the defaults were. `tests/keymap.rs`
-//! iterates these tables and asserts v2's registry agrees, deliberately
-//! reading them out of v1's own code rather than a restatement. Moved out of
-//! `src/session/` because 1,900 lines of dead-in-production code were
-//! compiling into every release binary to serve one test.
-//!
-//! Each action the TUI exposes maps to one or more `KeyChord`s and carries a
-//! [`KeyContext`]. **Global** actions (quit, new session, copy/paste, …) are
-//! active everywhere; **scoped** actions (file viewer / session list nav,
-//! terminal scroll) fire only while their pane is focused — so single-letter
-//! keys like `j`/`k` can be rebound per-pane without stealing them from the
-//! terminal, which forwards everything to the PTY. Defaults reproduce the
-//! table in `AGENTS.md`; users override via the F1 editor or by hand-editing
-//! `~/.config/thurbox/keybindings.json`.
-//!
-//! A few stateful keys remain literal in `key_handlers.rs` and are *not*
-//! rebindable: modal-internal selectors (j/k/Enter/Esc), the automations/tasks
-//! panes, and the file-viewer search sub-mode.
-
 use std::collections::HashMap;
 
 use crossterm::event::{KeyCode, KeyModifiers};
 use serde::{Deserialize, Serialize};
 
-/// Every user-rebindable action.
-///
-/// Each action has a [`KeyContext`] (see [`Action::context`]). **Global**
-/// actions are active everywhere; **scoped** actions only fire while their
-/// pane is focused — which is why single-letter keys (`j`/`k`/`h`/`l`) can be
-/// rebound for the file viewer / session list without stealing them from the
-/// terminal (which forwards everything to the PTY).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum Action {
     // ── Global ──────────────────────────────────────────────────────────
@@ -44,7 +13,6 @@ pub enum Action {
     OpenAutomations,
     StartSync,
     ToggleShell,
-    /// Toggle the native code-review view for the active session.
     ToggleReview,
     ForkSession,
     RestartSession,
@@ -59,54 +27,34 @@ pub enum Action {
     ToggleInfoPanel,
     ToggleFileViewer,
     FocusTasks,
-    /// Toggle the session-list pane (the left column). The only panel toggle
-    /// without a `Ctrl+<letter>` primary — F9 is the sole chord, so it never
-    /// collides with readline and needs no `terminal_passthrough` deferral.
     ToggleSessionList,
     GlobalSearch,
-    /// Open the Settings panel (view/edit settings.toml in the TUI).
     OpenSettings,
-    /// Toggle the perf HUD overlay (live counters + frame/tick timing).
     TogglePerfHud,
-    /// Copy the active mouse selection. With no selection it copies the current
-    /// status-bar message instead — except in a focused terminal, where it falls
-    /// through to SIGINT (the status row stays click-to-copy there).
     Copy,
-    /// Paste the clipboard into the focused text input / terminal.
     Paste,
     // ── Session list (scoped) ───────────────────────────────────────────
     SessionListNext,
     SessionListPrev,
     SessionListOpen,
-    /// Move the selected session one row down (manual reordering).
     SessionListMoveDown,
-    /// Move the selected session one row up (manual reordering).
     SessionListMoveUp,
-    /// Sort sessions alphabetically by name within each repo group, preserving
-    /// group order and parent/child nesting (children sort among siblings).
     SessionListSortAlphabetically,
     // ── Automations pane (scoped) ───────────────────────────────────────
     AutomationsNew,
     AutomationsNext,
     AutomationsPrev,
-    /// Open the central-pane editor for the selected automation.
     AutomationsOpen,
-    /// Toggle the selected automation enabled/disabled.
     AutomationsToggle,
-    /// Run the selected automation now.
     AutomationsRun,
     AutomationsDelete,
     // ── Tasks pane (scoped) ─────────────────────────────────────────────
     TasksNew,
     TasksNext,
     TasksPrev,
-    /// Open the central-pane editor for the selected task.
     TasksOpen,
-    /// Cycle the selected task's status (Todo → InProgress → Done).
     TasksCycleStatus,
-    /// Open the trigger-time action picker (Send → session / Spawn new).
     TasksRun,
-    /// Open the selected task's related session.
     TasksOpenRelated,
     TasksDelete,
     TasksPreviewDown,
@@ -126,10 +74,6 @@ pub enum Action {
     TerminalPageDown,
 }
 
-/// The focus scope in which an [`Action`] is active. `Global` actions fire in
-/// any context; scoped actions fire only while their pane is focused, so the
-/// same chord can mean different things in different panes (and stays free for
-/// the terminal to forward to the PTY).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum KeyContext {
     Global,
@@ -141,7 +85,6 @@ pub enum KeyContext {
 }
 
 impl Action {
-    /// All actions in stable order — used by the help overlay and config codegen.
     pub fn all() -> &'static [Action] {
         &[
             Action::QuitApp,
@@ -208,7 +151,6 @@ impl Action {
         ]
     }
 
-    /// Short user-facing label used by the help overlay.
     pub fn label(self) -> &'static str {
         match self {
             Action::QuitApp => "Quit",
@@ -275,11 +217,6 @@ impl Action {
         }
     }
 
-    /// The focus scope in which this action is active. Exhaustive match —
-    /// adding a new `Action` variant without classifying it here is a compile
-    /// error, which is the entire point of this method. Drives both the
-    /// context-aware [`KeyBindings::lookup_in`] and the conflict rules in
-    /// [`KeyBindings::rebind`].
     pub fn context(self) -> KeyContext {
         match self {
             Action::SessionListNext
@@ -321,38 +258,6 @@ impl Action {
         }
     }
 
-    /// Whether this action should **defer to the agent CLI** when a session
-    /// terminal is focused, instead of running as a thurbox command.
-    ///
-    /// thurbox's global chords share the `Ctrl+<letter>` namespace with the
-    /// readline / shell line-editing chords users have in muscle memory
-    /// (`Ctrl+A` = start-of-line, `Ctrl+E` = end-of-line, `Ctrl+W` =
-    /// delete-word, `Ctrl+U` = kill-line, `Ctrl+R` = reverse-search, `Ctrl+D`
-    /// = EOF, …). For the actions below we let those keystrokes pass through to
-    /// the PTY while the terminal is focused, so the inner agent CLI behaves
-    /// normally; the thurbox command stays reachable from the session list (and
-    /// via its `F`-key alternate, where one exists). The deferral is gated on
-    /// the *bound chord* still being a bare `Ctrl+<letter>`, so rebinding an
-    /// action to a non-conflicting key keeps it working in the terminal. In v2
-    /// the flag rides on the registry binding (`kernel::registry::Binding::
-    /// passthrough`) and the gate is applied where a declared chord is
-    /// dispatched, in the loop's `dispatch_declared`.
-    ///
-    /// Navigation / app-control chords (`Ctrl+H/J/K/L` focus + session nav,
-    /// `Ctrl+Q` quit, `Ctrl+N` new, …) are deliberately **not** deferred: they
-    /// are the keyboard escape route out of the terminal, so they must keep
-    /// working there even though some collide with readline.
-    ///
-    /// `Ctrl+T` (`ToggleShell`) is a deliberate exception that is **not** in
-    /// this list even though it shadows readline's transpose-chars: transpose is
-    /// rarely used and the convenient shell toggle wins. It also carries an `F8`
-    /// alternate, so this is a considered choice — do not "fix" it by adding it
-    /// here.
-    ///
-    /// `Ctrl+X` (`ToggleReview`) **is** in the list: it is the emacs/readline
-    /// *prefix* key (`C-x C-e` edits the command line, `C-x C-s` saves, …), so
-    /// deferring it keeps that prefix working for the inner agent/shell. `F7` is
-    /// its in-terminal alternate.
     pub fn terminal_passthrough(self) -> bool {
         matches!(
             self,
@@ -370,26 +275,10 @@ impl Action {
         )
     }
 
-    /// Default key chord(s) bound to this action for the platform we were
-    /// compiled for. `cfg!(target_os)` is decided at exactly this one
-    /// callsite; everything else goes through [`Action::default_chords_for`]
-    /// so Linux CI can test both platform sets.
     pub fn default_chords(self) -> Vec<KeyChord> {
         self.default_chords_for(cfg!(target_os = "macos"))
     }
 
-    /// Default key chord(s) bound to this action. Exhaustive match —
-    /// adding a new `Action` variant without a default chord here is a
-    /// compile error.
-    ///
-    /// With `macos` set, a few Cmd alternates are **appended** after the
-    /// cross-platform chords (the primaries — and so the rendered hints —
-    /// are identical on every platform). The Cmd set is deliberately tiny:
-    /// macOS terminals claim most of the Cmd namespace at the GUI level
-    /// (Cmd+Q/W/N/T/C/V/F, Cmd+K clears, Cmd+H hides, Cmd+digits switch
-    /// tabs), and only kitty-protocol terminals deliver Cmd at all — so we
-    /// add one coherent pattern (Cmd mirrors the Ctrl primary, Shift
-    /// reverses) on letters no major terminal claims.
     pub fn default_chords_for(self, macos: bool) -> Vec<KeyChord> {
         let mut chords = match self {
             Action::QuitApp => vec![KeyChord::ctrl('q')],
@@ -535,10 +424,6 @@ impl Action {
         chords
     }
 
-    /// Rebindable actions in F1 help render order — the flattened
-    /// [`help_sections`]. The interactive help editor indexes its selection
-    /// into this list, so it must match the render order in
-    /// `render_help_overlay`.
     pub fn rebindable_in_order() -> Vec<Action> {
         help_sections()
             .into_iter()
@@ -547,11 +432,6 @@ impl Action {
     }
 }
 
-/// The F1 help overlay's editable sections, in render order: a section title
-/// and the actions shown under it. Global actions come first (grouped by
-/// theme), then the scoped panes (`… (when focused)`). This is the single
-/// source of truth for both [`Action::rebindable_in_order`] and the overlay
-/// renderer, so the editor's selection index and the rendered rows never drift.
 pub fn help_sections() -> Vec<(&'static str, Vec<Action>)> {
     use Action::*;
     vec![
@@ -652,7 +532,6 @@ pub fn help_sections() -> Vec<(&'static str, Vec<Action>)> {
     ]
 }
 
-/// A key chord: modifiers + key code.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct KeyChord {
     pub mods: KeyModifiers,
@@ -674,45 +553,30 @@ impl KeyChord {
         }
     }
 
-    /// A plain (unmodified) character key, e.g. `j` or `/`.
     pub fn plain(c: char) -> Self {
         Self::normalized(KeyModifiers::NONE, KeyCode::Char(c))
     }
 
-    /// A bare key code with no modifiers (e.g. `Enter`, `Down`).
     pub fn key(code: KeyCode) -> Self {
         Self::normalized(KeyModifiers::NONE, code)
     }
 
-    /// A `Shift`+key chord (e.g. `Shift+Up`).
     pub fn shift(code: KeyCode) -> Self {
         Self::normalized(KeyModifiers::SHIFT, code)
     }
 
-    /// An `Alt`+key chord (e.g. `Alt+PageUp`).
     pub fn alt(code: KeyCode) -> Self {
         Self::normalized(KeyModifiers::ALT, code)
     }
 
-    /// A `Cmd`+char chord (macOS Command key — crossterm's SUPER modifier).
-    /// Only deliverable by kitty-keyboard-protocol terminals.
     pub fn cmd(c: char) -> Self {
         Self::normalized(KeyModifiers::SUPER, KeyCode::Char(c))
     }
 
-    /// A `Cmd+Shift`+char chord.
     pub fn cmd_shift(c: char) -> Self {
         Self::normalized(KeyModifiers::SUPER | KeyModifiers::SHIFT, KeyCode::Char(c))
     }
 
-    /// Build a chord, normalizing the Shift+letter encoding ambiguity:
-    /// terminals deliver e.g. Shift+n as `Char('N')` (sometimes with the SHIFT
-    /// modifier, sometimes without), and `KeyChord::parse` lowercases letters.
-    /// We canonicalize every uppercase `Char` to `Shift` + the lowercase letter
-    /// so capture, lookup, and the JSON round-trip all agree. Modifiers are
-    /// also masked to the supported set (Ctrl/Alt/Shift/Super): under the kitty
-    /// keyboard protocol terminals may report extra bits (HYPER, META,
-    /// KEYPAD, …) that would otherwise make lookups silently fail.
     pub fn normalized(mods: KeyModifiers, code: KeyCode) -> Self {
         let mods = mods
             & (KeyModifiers::CONTROL
@@ -730,7 +594,6 @@ impl KeyChord {
         Self { mods, code }
     }
 
-    /// Render the chord using the same notation accepted by `parse`.
     pub fn display(&self) -> String {
         let mut parts: Vec<&str> = Vec::new();
         if self.mods.contains(KeyModifiers::CONTROL) {
@@ -777,9 +640,6 @@ impl KeyChord {
         parts.join("+")
     }
 
-    /// A compact one-token label for tight UI (footer pills, central-pane tabs):
-    /// `ctrl+<letter>` as `^X`, a bare F-key as `F7`, else the full
-    /// [`display`](Self::display) notation.
     pub fn compact(&self) -> String {
         if self.mods == KeyModifiers::CONTROL {
             if let KeyCode::Char(c) = self.code {
@@ -794,12 +654,6 @@ impl KeyChord {
         self.display()
     }
 
-    /// Parse `"ctrl+n"`, `"f1"`, `"shift+pageup"`, `"cmd+j"`. Case-insensitive.
-    /// `cmd`/`super`/`command`/`win` all mean the SUPER modifier (`cmd` is the
-    /// canonical display form). `space`/`plus` name the two keys that cannot be
-    /// written literally (see [`display`](Self::display)); a literal `" "` is
-    /// still accepted, because releases up to 1.8.6 wrote the Space chord that
-    /// way and those files must keep loading.
     pub fn parse(s: &str) -> Option<Self> {
         let lc = s.to_ascii_lowercase();
         // Split before trimming: a key token that *is* a space is meaningful,
@@ -863,20 +717,10 @@ impl KeyChord {
     }
 }
 
-/// Two actions' active scopes overlap (and so their chords would collide) when
-/// either is global, or they share the same scope. Distinct scoped contexts
-/// (e.g. session list vs file viewer) never collide — they are never focused
-/// at the same time.
 pub fn contexts_overlap(a: KeyContext, b: KeyContext) -> bool {
     a == KeyContext::Global || b == KeyContext::Global || a == b
 }
 
-/// The compact shortcut hint for an action's bound `chords`, preferring a bare
-/// **F-key** alternate over the primary chord — the F-key fits a tight footer
-/// and dispatches even from a focused terminal (where a `Ctrl+<letter>` is
-/// passed through to the agent CLI). Falls back to the first chord's
-/// [`compact`](KeyChord::compact) form; `None` when there is no binding. Shared
-/// by the footer pills and the central-pane tab strip so they never drift.
 pub fn compact_shortcut(chords: &[KeyChord]) -> Option<String> {
     chords
         .iter()
@@ -885,12 +729,6 @@ pub fn compact_shortcut(chords: &[KeyChord]) -> Option<String> {
         .map(KeyChord::compact)
 }
 
-/// A user-editable map from `Action` to one or more chords.
-///
-/// JSON shape:
-/// ```json
-/// { "QuitApp": ["ctrl+q"], "NewSession": ["ctrl+n"] }
-/// ```
 #[derive(Debug, Clone)]
 pub struct KeyBindings {
     map: HashMap<Action, Vec<KeyChord>>,
@@ -907,34 +745,18 @@ impl Default for KeyBindings {
 }
 
 impl KeyBindings {
-    /// First chord for the given action (used by hint rendering).
     pub fn chord_for(&self, action: Action) -> Option<&KeyChord> {
         self.map.get(&action).and_then(|v| v.first())
     }
 
-    /// All chords bound to the given action, in order. Empty slice if
-    /// the action has no binding (should not happen for built-in
-    /// actions, since `Default` covers every variant).
     pub fn chords_for(&self, action: Action) -> &[KeyChord] {
         self.map.get(&action).map(Vec::as_slice).unwrap_or(&[])
     }
 
-    /// Reverse lookup restricted to **global** actions (active in every
-    /// context). Used by the early clipboard routing and the global dispatch.
     pub fn lookup(&self, code: KeyCode, mods: KeyModifiers) -> Option<Action> {
         self.lookup_in(KeyContext::Global, code, mods)
     }
 
-    /// Context-aware reverse lookup: match a chord against actions that are
-    /// active in `context` — i.e. global actions plus those scoped to
-    /// `context`. The keypress is normalized first so Shift+letter encodings
-    /// match regardless of how the terminal delivered them.
-    ///
-    /// When a hand-edited config binds one chord to several overlapping actions
-    /// the match is resolved **deterministically**: a context-scoped action
-    /// wins over a global one (more specific intent), ties broken by the
-    /// earliest position in [`Action::all`]. Iterating the `HashMap` and
-    /// returning the first hit would otherwise pick nondeterministically.
     pub fn lookup_in(
         &self,
         context: KeyContext,
@@ -974,12 +796,6 @@ impl KeyBindings {
         best
     }
 
-    /// Replace all chords for `action` with the single `chord`. If the chord
-    /// was already bound to a *conflicting* action (one whose context overlaps
-    /// — see [`contexts_overlap`]), unbind it there and return that action so
-    /// the caller can report the reassignment. Bindings in non-overlapping
-    /// scopes are left untouched, so e.g. `j` can drive both the session list
-    /// and the file viewer.
     pub fn rebind(&mut self, action: Action, chord: KeyChord) -> Option<Action> {
         let chord = KeyChord::normalized(chord.mods, chord.code);
         let stolen = self.map.iter().find_map(|(a, chords)| {
@@ -1003,12 +819,10 @@ impl KeyBindings {
         stolen
     }
 
-    /// Restore `action`'s chords to its compiled-in defaults.
     pub fn reset(&mut self, action: Action) {
         self.map.insert(action, action.default_chords());
     }
 
-    /// Serialize to the JSON shape `~/.config/thurbox/keybindings.json` uses.
     pub fn to_json(&self) -> Result<String, String> {
         let mut out: HashMap<String, Vec<String>> = HashMap::new();
         for (action, chords) in &self.map {
@@ -1023,18 +837,10 @@ impl KeyBindings {
         serde_json::to_string_pretty(&out).map_err(|e| e.to_string())
     }
 
-    /// Parse from the JSON shape. Unknown actions are ignored; unknown chords
-    /// are silently dropped. Missing actions fall back to defaults.
     pub fn from_json(json: &str) -> Result<Self, String> {
         Self::from_json_with_warnings(json).map(|(bindings, _)| bindings)
     }
 
-    /// Parse from the JSON shape, reporting everything that would otherwise be
-    /// silently skipped: unknown action names, unparsable chord strings, and
-    /// chords bound to more than one action in overlapping contexts (lookup
-    /// order over a HashMap is arbitrary, so a conflict means one of the two
-    /// actions nondeterministically wins). Missing actions fall back to
-    /// defaults; the parse itself only fails on malformed JSON.
     pub fn from_json_with_warnings(json: &str) -> Result<(Self, Vec<String>), String> {
         let parsed: HashMap<String, Vec<String>> =
             serde_json::from_str(json).map_err(|e| e.to_string())?;
@@ -1063,9 +869,6 @@ impl KeyBindings {
         Ok((bindings, warnings))
     }
 
-    /// Chords bound to more than one action whose contexts overlap. The F1
-    /// editor prevents these by stealing chords; a hand-edited file can still
-    /// introduce them.
     fn conflict_warnings(&self) -> Vec<String> {
         let mut warnings = Vec::new();
         let mut entries: Vec<(&Action, &KeyChord)> = self
@@ -1439,13 +1242,6 @@ mod tests {
         }
     }
 
-    /// Compile-time check that `Action::all()` lists every variant.
-    ///
-    /// The match below is exhaustive: adding a new `Action` variant
-    /// without updating both this match AND `Action::all()` is a
-    /// compile error (non-exhaustive match) OR a test failure (length
-    /// mismatch). This is the last guard preventing a variant from
-    /// silently disappearing from the help overlay.
     #[test]
     fn all_enumerates_every_action_variant() {
         fn classify(a: Action) -> u8 {

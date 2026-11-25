@@ -1,6 +1,3 @@
-//! `cli`'s own tests — argument parsing and output-format selection over the
-//! dispatcher, kept in a sibling file (the `git/tests.rs` pattern).
-
 use super::*;
 use clap::Parser;
 

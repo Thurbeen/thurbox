@@ -1,4 +1,3 @@
-//! The workflow gate consumes parsed YAML; mutations exercise the same path as CI.
 use crate::{Result, gate};
 use serde_json::Value;
 use std::collections::{BTreeMap, BTreeSet};

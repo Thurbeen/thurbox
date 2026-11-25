@@ -1,8 +1,3 @@
-//! ConversationController as a pure function: a Conversation, the spooled
-//! deliveries, one history read and the tied Task go in; a plan comes out,
-//! whose status is the whole mirror with its spool drained. Each case is
-//! one transition of the mirror, or one reason nothing moves.
-
 use fleet_api::condition::{Condition, ConditionStatus};
 use fleet_api::conversation::{
     ConversationStatus, MESSAGE_CAP, Phase, Retiring, SEEN_EVENTS_CAP, StoredMessage, ThreadDir,
@@ -120,8 +115,6 @@ fn removed(id: &str, message_id: &str) -> Delivery {
     )
 }
 
-/// A message as the mirror stores it, numbered in `seq`, delivered by the
-/// listener.
 fn stored(m: Message, seq: u64) -> StoredMessage {
     StoredMessage {
         id: m.id,
@@ -156,7 +149,6 @@ fn object(status: Option<&ConversationStatus>) -> Object {
     serde_json::from_value(v).unwrap()
 }
 
-/// A mirror whose address is parsed, with `received` spooled.
 fn mirrored(received: Vec<Delivery>) -> ConversationStatus {
     ConversationStatus {
         reference: Some(thread()),
@@ -1019,8 +1011,6 @@ fn receipt(outcome: EffectOutcome) -> Receipt {
     }
 }
 
-/// A Task under the thread's name carrying this thread's uid label, or
-/// another's.
 fn conversation_task(uid: &str, conv_uid: &str) -> Object {
     let mut t = task_object(uid);
     t.metadata
@@ -1029,7 +1019,6 @@ fn conversation_task(uid: &str, conv_uid: &str) -> Object {
     t
 }
 
-/// A numbered Untied mirror holding `messages`, all judged.
 fn judged(messages: Vec<StoredMessage>) -> ConversationStatus {
     let revision = messages.iter().map(|m| m.seq).max().unwrap_or(0);
     let mut st = mirrored(Vec::new());
@@ -1793,7 +1782,6 @@ fn a_post_whose_outcome_is_unknown_is_resent_under_its_nonce_inside_the_window()
     assert!(plan.effects.is_empty(), "{plan:?}");
 }
 
-/// A pending tie whose create has `receipt`, with its trigger numbered.
 fn pending(receipt_: Option<Receipt>, attempts: u32) -> ConversationStatus {
     let mut st = judged(vec![
         stored(person(SAM, T0, "first"), 1),
@@ -2554,7 +2542,6 @@ mod reactions {
         }
     }
 
-    /// The reactions a plan asks for: message, reaction name, on.
     fn reacts(plan: &Plan) -> Vec<(String, String, bool)> {
         plan.effects
             .iter()

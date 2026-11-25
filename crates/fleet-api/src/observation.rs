@@ -1,10 +1,5 @@
 use serde::{Deserialize, Serialize};
 
-/// What fleet saw when it looked at something it does not own (P1).
-///
-/// `Unknown` is a value, not an error: a probe that timed out, a file that
-/// could not be read, an adapter that could not tell. It never counts as done,
-/// merged, empty or gone, so no caller may collapse it into `Known(None)`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub enum Observation<T> {

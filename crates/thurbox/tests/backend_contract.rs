@@ -1,8 +1,3 @@
-//! The session-backend contract, run against the tmux adapter and against the
-//! in-memory fake the routing tests register in its place. A fake that passes
-//! only its own tests would prove nothing about routing; one that passes the
-//! adapter's is a stand-in for it.
-
 use thurbox::backend::identity::WindowIndex;
 use thurbox::backend::rmux::Rmux;
 use thurbox::backend::tmux::TmuxBackend;
@@ -188,9 +183,6 @@ fn a_missing_tmux_window_never_borrows_a_live_panes_pid() {
     missing_window_pid::<thurbox::backend::tmux::Tmux>();
 }
 
-/// A client tmux does not take for UTF-8 has every control byte of a reply
-/// printed as `_`, which is what a thurbox started from a systemd unit, cron
-/// or a bare container is. Its pids must still be read.
 #[cfg(unix)]
 #[test]
 fn a_tmux_pane_pid_is_read_without_a_utf8_locale() {
@@ -201,7 +193,6 @@ fn a_tmux_pane_pid_is_read_without_a_utf8_locale() {
     missing_window_pid::<thurbox::backend::tmux::Tmux>();
 }
 
-/// The same locale, for the window listing `output_times` splits on tabs.
 #[cfg(unix)]
 #[test]
 fn a_tmux_output_time_is_read_without_a_utf8_locale() {
@@ -259,8 +250,6 @@ fn a_missing_rmux_window_never_borrows_a_live_panes_pid() {
     missing_window_pid::<Rmux>();
 }
 
-/// An unreachable machine answers nothing, and a fake that answered "empty"
-/// instead would make every teardown through it look finished.
 #[test]
 fn an_unreachable_fake_answers_nothing_rather_than_nothing_there() {
     let fake = RecordingBackend::new(&Route::local(Multiplexer::Rmux));
@@ -277,8 +266,6 @@ fn an_unreachable_fake_answers_nothing_rather_than_nothing_there() {
     );
 }
 
-/// Two unstamped windows of one name are ambiguous, and ambiguity never
-/// authorises a relaunch — the fake lists them the way a multiplexer would.
 #[test]
 fn an_ambiguous_fake_listing_never_permits_a_relaunch() {
     let fake = RecordingBackend::new(&Route::local(Multiplexer::Rmux));
@@ -290,8 +277,6 @@ fn an_ambiguous_fake_listing_never_permits_a_relaunch() {
     assert!(!liveness.permits_relaunch());
 }
 
-/// One session, one window per role: a second stamp for the same row retires
-/// the older window, as the tmux adapter's sweep does (ADR-25).
 #[test]
 fn a_stamp_two_windows_carry_is_kept_by_the_newer() {
     let fake = RecordingBackend::new(&Route::local(Multiplexer::Rmux));
@@ -303,9 +288,6 @@ fn a_stamp_two_windows_carry_is_kept_by_the_newer() {
     assert_eq!(panes, vec![new]);
 }
 
-/// An attached backend whose server stops answering reports that, rather than
-/// an empty server: a sweep reading "nothing there" clears its backoff and
-/// asks again every pass, and a relaunch reading it launches a second agent.
 #[cfg(unix)]
 #[test]
 fn an_attached_tmux_backend_does_not_read_an_unanswered_listing_as_empty() {
@@ -347,9 +329,6 @@ fn uid() -> String {
     .to_string()
 }
 
-/// A kill takes the window the pane is in, not only the pane: a session
-/// window someone split must not keep running a process in its other pane
-/// after a stop, restart or force delete — attached or not.
 #[test]
 fn killing_a_split_window_takes_the_whole_window() {
     use thurbox::backend::{Owner, WindowSpec};
@@ -389,15 +368,6 @@ fn killing_a_split_window_takes_the_whole_window() {
     }
 }
 
-/// A psmux host stamps nothing, so remembered pane ids cannot prove ownership
-/// among duplicate names, even when a split changes the selected pane. A
-/// restarted server can reissue an id to another same-name window.
-///
-/// The host is a stand-in: `ssh` runs its remote command here and `psmux`
-/// is this machine's tmux, so the adapter's psmux path runs for real against
-/// a private server. Its login shell is this machine's `sh`, so the entry
-/// says it is POSIX: a Windows one's commands are quoted for `cmd.exe` and
-/// PowerShell, which `sh` cannot run.
 #[cfg(unix)]
 #[test]
 fn a_psmux_hosts_duplicate_names_stay_unknown_even_with_a_remembered_pane() {
@@ -514,10 +484,6 @@ fn a_psmux_hosts_duplicate_names_stay_unknown_even_with_a_remembered_pane() {
     }
 }
 
-/// Input the tmux adapter must refuse or defer, on a real server: a pane whose
-/// program exited keeps its frame (`remain-on-exit`) and `send-keys` would
-/// exit 0 into it, and a deferred prompt runs on the pane's own server after
-/// the caller has gone.
 #[test]
 fn the_tmux_backend_refuses_an_exited_pane_and_delivers_a_deferred_prompt() {
     use std::collections::HashMap;
@@ -575,11 +541,6 @@ fn the_tmux_backend_refuses_an_exited_pane_and_delivers_a_deferred_prompt() {
     backend.kill(&live).expect("kill");
 }
 
-/// Every command written down a control connection is answered, and the reader
-/// hands each answer to the next command in line — so a line written with no
-/// place of its own (a keystroke) has its answer taken by the command after it.
-/// Over ssh that read a window listing as empty: the host held no windows, and
-/// every session on it read `Unreachable` while the link was fine.
 #[cfg(unix)]
 #[test]
 fn a_keystroke_never_answers_the_next_command() {
@@ -620,9 +581,6 @@ fn a_keystroke_never_answers_the_next_command() {
     );
 }
 
-/// A pane the multiplexer reports gone is never adopted: an agent that exits
-/// at spawn leaves an id behind, and adopting it would show the session as a
-/// quiet live one with nothing in it (#1433).
 #[cfg(unix)]
 #[test]
 fn a_pane_reported_gone_is_never_adopted() {

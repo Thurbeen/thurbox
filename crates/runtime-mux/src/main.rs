@@ -1,17 +1,3 @@
-//! `runtime-mux <verb>`: the runtime protocol's program (docs/runtime/README.md).
-//! Reads one JSON request on stdin and prints one answer on stdout. The
-//! composition root: it alone builds the backend, on the program's own tmux
-//! socket ([`runtime_mux::protocol::SOCKET`]), on this machine or on the
-//! remote place the request names.
-//!
-//! `runtime-mux view [--socket S] [--tmux-tmpdir D] [--scrollback N]
-//! [--place JSON] <key | --pane P>` is the
-//! other shape: one key's pane, or a pane by its id, as a terminal stream on
-//! stdin and stdout, for as long as the view stays. `attach` answers with it;
-//! thurbox's stream panes name the pane. With `--place`, the request's place
-//! as JSON, the pane is the remote place's, read through that place's
-//! backend over its launcher.
-
 use std::io::Read;
 use std::sync::{Arc, Mutex};
 
@@ -65,9 +51,6 @@ fn main() {
     telemetry.shutdown_within(otel_env::CALL_SHUTDOWN_BOUND);
 }
 
-/// Only this program's own targets: the exporter's HTTP stack logs through
-/// `tracing` too, and letting it through would feed each export back into
-/// the next.
 fn export_warnings(provider: &otel_env::SdkLoggerProvider) {
     use tracing_subscriber::layer::SubscriberExt;
     use tracing_subscriber::Layer;
@@ -78,7 +61,6 @@ fn export_warnings(provider: &otel_env::SdkLoggerProvider) {
     let _ = tracing::subscriber::set_global_default(tracing_subscriber::registry().with(bridge));
 }
 
-/// Answer one protocol verb with the request on stdin.
 fn serve(verb: &str) -> serde_json::Value {
     let mut request = Vec::new();
     if let Err(e) = std::io::stdin().read_to_end(&mut request) {
@@ -178,18 +160,12 @@ fn serve(verb: &str) -> serde_json::Value {
     answer
 }
 
-/// Cache each remote place's login `PATH` beside the locks of `socket`, so
-/// a call does not read it again over ssh.
 fn keep_cache(socket: &str) {
     if let (Ok(dir), prefix) = private_dir() {
         runtime_mux::place::keep_cache_in(dir, format!("{prefix}runtime-mux-{socket}@"));
     }
 }
 
-/// The backend serving `place`: this machine's default multiplexer, or the
-/// place's own on the host it names. A remote place's server runs on this
-/// program's socket unless the place names another. Each registry built is
-/// kept in `built`, for the caller to shut down.
 fn backend_for(
     settings: &MuxSettings,
     place: Option<&HostDef>,
@@ -224,15 +200,12 @@ fn backend_for(
     found
 }
 
-/// The lock file `name`, or the Unknown answer when it cannot be taken.
 fn take(name: &str) -> Result<std::fs::File, serde_json::Value> {
     lock(name).map_err(|e| {
         serde_json::json!({ "unknown": { "why": format!("cannot take the lock {name}: {e}") } })
     })
 }
 
-/// The request's key when it names a valid one: the runtime protocol's
-/// key, letters, digits, '.', '-' and '_', which a file name holds as it is.
 fn request_key(request: &[u8]) -> Option<String> {
     let value: serde_json::Value = serde_json::from_slice(request).ok()?;
     let key = value.get("key")?.as_str()?;
@@ -245,7 +218,6 @@ fn request_key(request: &[u8]) -> Option<String> {
     valid.then(|| key.to_string())
 }
 
-/// Whether a stop request releases the key's workspace.
 fn released(request: &[u8]) -> bool {
     serde_json::from_slice::<serde_json::Value>(request)
         .ok()
@@ -253,9 +225,6 @@ fn released(request: &[u8]) -> bool {
         .unwrap_or(false)
 }
 
-/// How a view reaches this server: this program's `view`, naming the socket
-/// and the directory tmux keeps it in, as the view runs with the viewer's
-/// environment.
 fn view_argv(settings: &MuxSettings) -> Vec<String> {
     let program = std::env::current_exe()
         .map(|p| p.to_string_lossy().into_owned())
@@ -270,7 +239,6 @@ fn view_argv(settings: &MuxSettings) -> Vec<String> {
     argv
 }
 
-/// `view`: the key's pane as a terminal stream until the view lets go.
 fn view(args: Vec<String>) -> Result<(), String> {
     let mut socket = SOCKET.to_string();
     let mut key = None;
@@ -324,8 +292,6 @@ fn view(args: Vec<String>) -> Result<(), String> {
     served
 }
 
-/// The view of `pane`, or of the pane holding `key`, on the backend of
-/// `place`.
 fn view_pane(
     settings: &MuxSettings,
     place: Option<&HostDef>,
@@ -413,8 +379,6 @@ fn sockets_digest(sockets: &std::path::Path) -> String {
     )
 }
 
-/// The lock file `name`, held until the returned file is dropped: the one
-/// serializing starts and stops on a server, or one key's.
 fn lock(name: &str) -> std::io::Result<std::fs::File> {
     let (dir, prefix) = private_dir();
     let path = dir?.join(format!("{prefix}{name}"));
@@ -430,13 +394,6 @@ fn lock(name: &str) -> std::io::Result<std::fs::File> {
     Ok(file)
 }
 
-/// The directory the locks sit in, and the prefix of their names. It is
-/// the private directory tmux keeps its sockets in,
-/// `<TMUX_TMPDIR or /tmp>/tmux-<uid>` and never under `TMPDIR`, so every
-/// caller reaching one server takes one lock, a server in another directory
-/// has its own, and no other user can plant a link at a name. The directory
-/// is made `0700` when missing and refused, as tmux refuses it, when another
-/// user owns it or can write to it.
 #[cfg(unix)]
 fn private_dir() -> (std::io::Result<std::path::PathBuf>, String) {
     (tmux_dir(), String::new())
@@ -468,8 +425,6 @@ fn tmux_dir() -> std::io::Result<std::path::PathBuf> {
     Ok(dir)
 }
 
-/// On a machine without tmux's private socket directory: the temporary
-/// directory, each name prefixed with the user's.
 #[cfg(not(unix))]
 fn private_dir() -> (std::io::Result<std::path::PathBuf>, String) {
     let user = std::env::var("USERNAME").unwrap_or_default();

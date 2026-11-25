@@ -1,7 +1,3 @@
-//! CronTask end to end: the real `fleet` binary takes, shows and deletes
-//! one, and the manager, on the file store with a test clock and the fake
-//! runtime, creates its Tasks at the scheduled times and no others.
-
 mod support;
 
 use std::sync::Arc;
@@ -14,7 +10,6 @@ use fleet_store::FileStore;
 use serde_json::{Value, json};
 use support::Env;
 
-/// 2026-11-16T03:00:00Z, a Monday.
 const MONDAY_3AM: u64 = 1_794_798_000_000;
 const MINUTE: u64 = 60_000;
 const DAY: u64 = 86_400_000;
@@ -28,7 +23,6 @@ impl Clock for TestClock {
     }
 }
 
-/// A store and a manager over `env`, both on one clock the test moves.
 struct World {
     // The directories the store and the fake runtime live in.
     _env: Env,
@@ -90,7 +84,6 @@ impl World {
         }
     }
 
-    /// The Tasks CronTask `name` created, oldest first, not being deleted.
     fn tasks_of(&self, name: &str) -> Vec<Value> {
         let Observation::Known(tasks) = self.store.list("Task") else {
             panic!("list Task");
@@ -109,8 +102,6 @@ impl World {
             .collect()
     }
 
-    /// Every agent on the fake runtime finishes its turn: what lets the
-    /// Task controller release a session.
     fn agents_rest(&self) {
         FakeHost::open(&self._env.fake)
             .expect("fake host")
@@ -118,8 +109,6 @@ impl World {
             .expect("agents at rest");
     }
 
-    /// Let the clock run from `from`, two minutes a sweep, until the old
-    /// Task's session is released and the replacement exists.
     fn until_released(&self, from: u64) {
         for step in 1..=60 {
             if names_of_all(self) == ["nightly-29914740"] {
@@ -130,15 +119,10 @@ impl World {
         }
     }
 
-    /// As if the manager wrote the create's intent for the scheduled time
-    /// `at` and died before the create: the record has no receipt, and no
-    /// Task exists.
     fn crash_before_create(&self, at: u64) {
         self.crash_with(at, 1, 0, None);
     }
 
-    /// The create's intent for `at`, after `attempts` attempts, the last
-    /// one answered with `receipt` (none: the manager died before it).
     fn crash_with(&self, at: u64, attempts: u32, unknowns: u32, receipt: Option<Value>) {
         let lease = self
             .store
@@ -174,8 +158,6 @@ impl World {
         self.store.release_lease(&lease).expect("release");
     }
 
-    /// What the TaskController does when a worker's result lands: the Task
-    /// is Concluded.
     fn conclude(&self, task: &str) {
         let lease = self
             .store
@@ -306,9 +288,6 @@ fn replace_retires_the_running_task_before_it_creates() {
     );
 }
 
-/// Replace never runs two agents at once: the old Task is only marked for
-/// deletion, its session is released when its agent is at rest, and the
-/// replacement is created only once the old Task is gone.
 #[test]
 fn replace_waits_until_the_old_task_is_gone() {
     let w = World::new("cron-replace-wait", MONDAY_3AM - MINUTE);
@@ -337,7 +316,6 @@ fn replace_waits_until_the_old_task_is_gone() {
     assert_eq!(names_of_all(&w), ["nightly-29914740"]);
 }
 
-/// Every Task in the store, by name.
 fn names_of_all(w: &World) -> Vec<String> {
     let Observation::Known(all) = w.store.list("Task") else {
         panic!("list Task");
@@ -345,8 +323,6 @@ fn names_of_all(w: &World) -> Vec<String> {
     all.into_iter().map(|t| t.metadata.name).collect()
 }
 
-/// A create recovered after a crash counts as running: Forbid skips the
-/// time that came while the manager was down.
 #[test]
 fn a_recovered_create_counts_as_running_under_forbid() {
     let w = World::new("cron-crash-forbid", MONDAY_3AM - MINUTE);
@@ -358,8 +334,6 @@ fn a_recovered_create_counts_as_running_under_forbid() {
     assert_eq!(names(&w.tasks_of("nightly")), ["nightly-29913300"]);
 }
 
-/// A pending create whose deadline passed is given up before Forbid looks
-/// at the current time, so it never blocks today's run.
 #[test]
 fn an_expired_pending_create_does_not_block_the_next_time() {
     let w = World::new("cron-crash-expired", MONDAY_3AM - MINUTE);
@@ -371,8 +345,6 @@ fn an_expired_pending_create_does_not_block_the_next_time() {
     assert_eq!(names(&w.tasks_of("nightly")), ["nightly-29914740"]);
 }
 
-/// A create whose outcome stayed Unknown is tried again, never dropped, and
-/// says so in `NeedsAttention` until it is settled.
 #[test]
 fn a_create_unknown_three_times_needs_attention_and_is_retried() {
     let w = World::new("cron-unknown", MONDAY_3AM - MINUTE);
@@ -400,7 +372,6 @@ fn a_create_unknown_three_times_needs_attention_and_is_retried() {
     support::assert_condition(&st, "NeedsAttention", "False", "Resolved");
 }
 
-/// A create recovered after a crash obeys the limits in force now.
 #[test]
 fn a_recovered_create_obeys_suspend_and_the_deadline() {
     let w = World::new("cron-crash-suspend", MONDAY_3AM - MINUTE);
@@ -590,11 +561,6 @@ fn the_cli_takes_shows_and_deletes_a_cron_task_and_refuses_a_bad_one() {
     env.fleet(&["get", "crontask", "nightly"]).code(3);
 }
 
-/// The OTLP half of `a_cron_tasks_create_and_retire_are_spans`: its parent
-/// runs this test alone in a process of its own, with the OTEL_* variables
-/// set, so the manager's spans reach the parent's collector. A Replace
-/// CronTask fires twice: the first time creates a Task, the second retires
-/// it before it creates the next.
 #[test]
 #[ignore = "run by a_cron_tasks_create_and_retire_are_spans with OTEL_* set"]
 fn cron_task_effects_under_otel() {
@@ -610,8 +576,6 @@ fn cron_task_effects_under_otel() {
     telemetry.shutdown();
 }
 
-/// A CronTask's create and retire are `effect` spans, counted in
-/// `fleet.effects` like a Task's effects.
 #[test]
 fn a_cron_tasks_create_and_retire_are_spans() {
     let collector = support::otlp::Collector::start();

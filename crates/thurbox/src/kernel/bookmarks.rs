@@ -1,30 +1,16 @@
-//! The repositories the creation flow remembers, per host, in
-//! `bookmarks.json` in the data directory: what the user picked, the folders
-//! they imported, and each folder's members as last scanned.
-//!
-//! Read and rewritten whole, under a lock every process takes ([`crate::paths`]'s
-//! file lock), so two interfaces or a CLI never lose each other's change: a list a person
-//! builds by hand stays small, and the writers are the command workers and
-//! the folder rescan. The newest use leads the list.
-
 use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
-/// One remembered path on one host (`""` is this machine).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Bookmark {
     pub host: String,
     pub repo_path: PathBuf,
-    /// Epoch milliseconds of the last pick, which orders the list.
     pub last_used_at: u64,
-    /// A folder of repositories, imported whole.
     #[serde(default)]
     pub is_parent: bool,
-    /// Whether the path is a git repository; `None` when never established.
     #[serde(default)]
     pub is_git: Option<bool>,
-    /// The folder this path was found under by a scan.
     #[serde(default)]
     pub parent_path: Option<PathBuf>,
 }
@@ -59,8 +45,6 @@ fn edit<T>(change: impl FnOnce(&mut Vec<Bookmark>) -> T) -> Result<T, String> {
     .map_err(|e| format!("lock bookmarks: {e}"))?
 }
 
-/// `host`'s bookmarks, the most recently used first. Read without the lock:
-/// a write replaces the file whole, so a read sees one version or the other.
 pub fn list(host: &str) -> Vec<Bookmark> {
     let mut rows: Vec<Bookmark> = load().into_iter().filter(|b| b.host == host).collect();
     rows.sort_by_key(|b| std::cmp::Reverse(b.last_used_at));
@@ -87,7 +71,6 @@ fn upsert(all: &mut Vec<Bookmark>, host: &str, path: &Path) -> usize {
     }
 }
 
-/// Remember a folder of repositories, or touch it.
 pub fn remember_folder(host: &str, path: &Path) -> Result<(), String> {
     edit(|all| {
         let at = upsert(all, host, path);
@@ -96,7 +79,6 @@ pub fn remember_folder(host: &str, path: &Path) -> Result<(), String> {
     })
 }
 
-/// Remember a path, or touch it, recording its git-ness when known.
 pub fn remember(host: &str, path: &Path, is_git: Option<bool>) -> Result<(), String> {
     edit(|all| {
         let at = upsert(all, host, path);
@@ -105,8 +87,6 @@ pub fn remember(host: &str, path: &Path, is_git: Option<bool>) -> Result<(), Str
     })
 }
 
-/// Replace a remembered folder's members with `children`, a fresh scan. A
-/// folder no longer remembered is left forgotten.
 pub fn replace_members(host: &str, parent: &Path, children: &[PathBuf]) -> Result<(), String> {
     edit(|all| {
         if !all
@@ -128,7 +108,6 @@ pub fn replace_members(host: &str, parent: &Path, children: &[PathBuf]) -> Resul
     })
 }
 
-/// Forget a path and, for a folder, its members. Whether it was remembered.
 pub fn forget(host: &str, path: &Path) -> Result<bool, String> {
     edit(|all| {
         let before = all.len();
@@ -162,8 +141,6 @@ mod tests {
         assert!(!forget("ssh:box", &folder).unwrap());
     }
 
-    /// Writers that each open the file on their own, as two processes do,
-    /// keep every path they remembered.
     #[test]
     fn interleaved_writers_lose_no_bookmark() {
         let dir = tempfile::tempdir().unwrap();

@@ -1,11 +1,3 @@
-//! The one-shot move of an interface's mods from their old names to their new
-//! ones: `plugins/` to `mods/`, `plugins.toml` to `mods.toml`, `plugins.lock` to
-//! `mods.lock`, and `plugin-state.json` to `mod-state.json`.
-//!
-//! Every composition root that reads those files calls [`migrate_in_force`]
-//! before it reads them. It is idempotent, writes atomically, deletes nothing a
-//! user wrote, and leaves a file in place when its new name is already taken.
-
 use std::path::{Path, PathBuf};
 
 use serde_json::Value;
@@ -14,27 +6,19 @@ use crate::session::mod_spec::{
     mod_destination, ModLock, LEGACY_MODS_DIR, LOCK_FILE, MODS_DIR, SPEC_FILE,
 };
 
-/// The spec's name before mods were mods.
 pub const LEGACY_SPEC_FILE: &str = "plugins.toml";
-/// The lock's name before mods were mods.
 pub const LEGACY_LOCK_FILE: &str = "plugins.lock";
-/// The store of trust grants and the disabled set, before mods were mods.
 pub const LEGACY_STATE_FILE: &str = "plugin-state.json";
-/// The store of trust grants and the disabled set.
 pub const STATE_FILE: &str = "mod-state.json";
 
-/// What one migration moved, what it left in place, and what failed.
 #[derive(Debug, Default, PartialEq, Eq)]
 pub struct Migration {
-    /// Each old name moved to its new one, as `old → new`.
     pub moved: Vec<String>,
-    /// Old paths left where they are because the new name was taken.
     pub kept: Vec<String>,
     pub errors: Vec<String>,
 }
 
 impl Migration {
-    /// The one line to show a person, or `None` when nothing happened.
     pub fn notice(&self) -> Option<String> {
         let mut parts = Vec::new();
         if !self.moved.is_empty() {
@@ -60,22 +44,12 @@ impl Migration {
     }
 }
 
-/// Migrate the interface directory in force and the config directory beside
-/// `settings.toml`.
 pub fn migrate_in_force() -> Migration {
     let ui_dir = super::bundled::resolve(false).ok().map(|(dir, _, _)| dir);
     let config_dir = config_dir();
     migrate(ui_dir.as_deref(), config_dir.as_deref())
 }
 
-/// Migrate `ui_dir`'s files and the state store in `config_dir`.
-///
-/// Every rewrite is written under its new name first, with the old files left
-/// where they are. Then the renames run: the state store's link, if it is one,
-/// and the panes. Each write and each rename is recorded, and any failure takes
-/// every recorded step back in reverse, so a migration that reports
-/// [`Migration::errors`] has left the old layout as it found it. Only after
-/// every step succeeded are the old files deleted.
 pub fn migrate(ui_dir: Option<&Path>, config_dir: Option<&Path>) -> Migration {
     let mut migration = Migration::default();
     let mut staged = Staged::default();
@@ -198,10 +172,6 @@ impl Staged {
     }
 }
 
-/// Old paths still present, each with the new path it should have become.
-///
-/// What `thurbox-cli doctor` warns about: a migration that kept a clash, or an
-/// interface no migration has run on yet.
 pub fn leftovers(ui_dir: Option<&Path>, config_dir: Option<&Path>) -> Vec<(PathBuf, PathBuf)> {
     let mut found = Vec::new();
     if let Some(ui_dir) = ui_dir {
@@ -223,7 +193,6 @@ pub fn leftovers(ui_dir: Option<&Path>, config_dir: Option<&Path>) -> Vec<(PathB
     found
 }
 
-/// The config directory, where the state store lives.
 pub fn config_dir() -> Option<PathBuf> {
     crate::paths::config_file().and_then(|file| file.parent().map(Path::to_path_buf))
 }
@@ -314,8 +283,6 @@ fn stage_text(
     staged.replaced.push(legacy);
 }
 
-/// The spec's text with `[[plugin]]` as `[[mod]]` and each `plugins/`
-/// destination under `mods/`, every comment kept.
 pub fn rewrite_spec(text: &str) -> Result<String, String> {
     let mut doc: toml_edit::DocumentMut = text
         .parse()
@@ -336,7 +303,6 @@ pub fn rewrite_spec(text: &str) -> Result<String, String> {
     Ok(doc.to_string())
 }
 
-/// The lock's text with every recorded path under `mods/`.
 pub fn rewrite_lock(text: &str) -> Result<String, String> {
     let mut lock = ModLock::parse(text)?;
     for entry in &mut lock.mods {

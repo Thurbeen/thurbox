@@ -1,14 +1,3 @@
-//! Acquiring a pane without a terminal.
-//!
-//! Every test installs from a **local** package directory, so the suite needs no
-//! network and nothing is pinned to what the repository's examples happen to
-//! contain today. Local, URL and bare-name sources resolve through the same function; what
-//! differs is only where a bare name points, which is covered by a unit test
-//! beside the resolver.
-//!
-//! `THURBOX_UI_DIR` is set per test. nextest runs a process per test, so the
-//! override cannot leak between them.
-
 use std::path::{Path, PathBuf};
 
 use thurbox::cli::mods::{run, Action};
@@ -21,8 +10,6 @@ fn interface(dir: &Path) -> PathBuf {
     ui
 }
 
-/// A package: a pane that requires a module of its own, so delivery, namespacing
-/// and `require` are all exercised by whether it loads.
 fn package(root: &Path, name: &str, version: &str, marker: &str) -> PathBuf {
     let dir = root.join(name);
     std::fs::create_dir_all(&dir).expect("mkdir");
@@ -76,16 +63,6 @@ fn install(src: &Path) -> thurbox::cli::output::CommandOutput {
 
 // ── what we distribute ─────────────────────────────────────────────────────
 
-/// Every example package in `examples/panes/` installs and loads.
-///
-/// Installed from the checkout rather than by bare name, which is the same code
-/// path with a local source — the suite must not need the network, and a bare name
-/// resolves to the *published* tag, which by definition does not yet contain what
-/// is being changed here.
-///
-/// `examples/panes/` is not bundled, so without this nothing notices it rotting: a
-/// renamed snapshot field would leave an example looking fine and failing the moment
-/// somebody installed it — and an example that does not work is worse than none.
 #[test]
 fn every_distributed_package_installs_and_loads() {
     let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../examples/panes");
@@ -986,11 +963,6 @@ fn mod_repo_in(root: &Path, marker: &str, object_format: &str) -> PathBuf {
     repo
 }
 
-/// A `file://` URL for `repo`, which is what makes `--depth 1` mean anything: git
-/// ignores the depth for a plain local path and hands over the whole history, tags
-/// and all, so a defect that only shows in a shallow clone cannot be reproduced
-/// from one. A Windows path starts at a drive letter rather than a slash, and the
-/// URL needs the empty authority's slash in front of it.
 fn file_url(repo: &Path) -> String {
     let path = repo.display().to_string().replace('\\', "/");
     match path.starts_with('/') {
@@ -999,8 +971,6 @@ fn file_url(repo: &Path) -> String {
     }
 }
 
-/// Run git in `repo`, scrubbing the location variables the pre-commit hook exports
-/// — without which a test's git call lands in the real repository.
 fn git_in(repo: &Path, args: &[&str]) -> String {
     let out = std::process::Command::new("git")
         .args(args)
@@ -1018,7 +988,6 @@ fn git_in(repo: &Path, args: &[&str]) -> String {
     String::from_utf8_lossy(&out.stdout).trim().to_string()
 }
 
-/// Add a commit to a source repository, returning the commit id it created.
 fn commit_more(repo: &Path, marker: &str) -> String {
     std::fs::write(
         repo.join("lib/util.lua"),
@@ -1030,11 +999,6 @@ fn commit_more(repo: &Path, marker: &str) -> String {
     git_in(repo, &["rev-parse", "HEAD"])
 }
 
-/// A pin that is a **commit id** is the one a lock writes, and `git clone
-/// --branch` rejects it: it takes a branch or a tag only. So the ref has to be
-/// fetched and checked out after cloning, and the install that names a commit —
-/// the reproducible one — used to fail outright with git's "Remote branch not
-/// found".
 #[test]
 fn installing_at_a_commit_pin_checks_out_that_commit() {
     let home = tempfile::tempdir().expect("tempdir");
@@ -1069,11 +1033,6 @@ fn installing_at_a_commit_pin_checks_out_that_commit() {
     );
 }
 
-/// A pin shorter than a full object id is the one shape that looks reproducible
-/// and cannot be served: `git fetch` answers with branches, tags and whole object
-/// ids, never a prefix of one. It failed under the context written for a
-/// *different* cause — a branch rebased, squashed or deleted away — which sends the
-/// author after a force-push that never happened.
 #[test]
 fn an_abbreviated_commit_pin_names_the_prefix_not_a_rebase() {
     let home = tempfile::tempdir().expect("tempdir");
@@ -1107,14 +1066,6 @@ fn an_abbreviated_commit_pin_names_the_prefix_not_a_rebase() {
     );
 }
 
-/// A ref name may be hex: `20240115` is a perfectly ordinary tag, and a remote
-/// serves it like any other. Nothing may read a pin's *shape* as a verdict — the
-/// characters that read as a truncated commit id are also a legal name, and only
-/// the remote can tell the two apart.
-///
-/// Installed **over `file://`**, so the clone is really shallow: a shallow fetch
-/// writes no local ref, which is what made checking the pin out by its own name
-/// fail here on everything but a local path.
 #[test]
 fn a_hex_named_tag_pin_still_installs() {
     let home = tempfile::tempdir().expect("tempdir");
@@ -1140,9 +1091,6 @@ fn a_hex_named_tag_pin_still_installs() {
     );
 }
 
-/// A **tag** pin is one of the three shapes that work, and the only one no other
-/// test installs at: `clone --branch` takes a tag as readily as a branch, so the
-/// clone itself lands on it.
 #[test]
 fn installing_at_a_tag_pin_checks_out_the_tag() {
     let home = tempfile::tempdir().expect("tempdir");
@@ -1169,11 +1117,6 @@ fn installing_at_a_tag_pin_checks_out_the_tag() {
     );
 }
 
-/// A **sha256** repository's object id is 64 characters, and it is a commit id
-/// like any other. Reading "a commit" as one of the two lengths rather than as
-/// "a full object id" sent it to `clone --branch`, which takes a branch or a tag
-/// and fails on a commit — the same pin working or not depending on which hash
-/// the author's repository happens to use.
 #[test]
 fn installing_at_a_sha256_commit_pin_checks_out_that_commit() {
     let home = tempfile::tempdir().expect("tempdir");
@@ -1199,8 +1142,6 @@ fn installing_at_a_sha256_commit_pin_checks_out_that_commit() {
     );
 }
 
-/// The lock's promise: the same spec applied where nothing is installed obtains
-/// the revision recorded, not whatever the name now points at.
 #[test]
 fn a_commit_pinned_spec_reproduces_on_a_fresh_machine() {
     let home = tempfile::tempdir().expect("tempdir");
@@ -1228,11 +1169,6 @@ fn a_commit_pinned_spec_reproduces_on_a_fresh_machine() {
     );
 }
 
-/// A pin is a pin: advancing an entry pinned to a commit holds it there even
-/// though the branch has moved on. What made this worth a test is that the
-/// advance path used to check out the pin's *name* after fetching the default
-/// branch — which for a commit is an object it never asked for, and for a branch
-/// is the stale local ref a fetch does not move.
 #[test]
 fn advancing_a_commit_pinned_entry_holds_its_pin() {
     let home = tempfile::tempdir().expect("tempdir");
@@ -1265,15 +1201,6 @@ fn advancing_a_commit_pinned_entry_holds_its_pin() {
     );
 }
 
-/// A pin that names a **branch** means "follow this branch", and advancing has to
-/// actually follow it.
-///
-/// This is the case the advance path got wrong: it fetched and then checked out the
-/// pin by *name*, and a fetch does not move the local branch a `--branch` clone left
-/// checked out — so the working copy stayed where it was while `update` reported
-/// success. Checking out what the fetch returned is what fixes it, and a branch pin
-/// is the only pin that can tell the two apart (a commit's object is already local,
-/// so checking it out by name happens to work).
 #[test]
 fn advancing_a_branch_pinned_entry_follows_the_branch() {
     let home = tempfile::tempdir().expect("tempdir");
@@ -1306,11 +1233,6 @@ fn advancing_a_branch_pinned_entry_follows_the_branch() {
     );
 }
 
-/// An install that cannot obtain what it was told to obtain leaves the interface
-/// exactly as it found it. Worth pinning because it is easy to regress by writing
-/// the spec entry before the fetch, or by leaving a half-clone where the pin
-/// failed — and an install command an agent may run unattended has to be safe to
-/// retry.
 #[test]
 fn a_clone_that_fails_leaves_nothing_behind() {
     let home = tempfile::tempdir().expect("tempdir");
@@ -1365,8 +1287,6 @@ fn a_clone_that_fails_leaves_nothing_behind() {
     }
 }
 
-/// The whole point: a repository install delivers Lua in the author's layout AND
-/// bytes beside it, and the pane loads.
 #[test]
 fn installing_a_repository_delivers_its_payload_and_loads_its_pane() {
     let home = tempfile::tempdir().expect("tempdir");
@@ -1433,8 +1353,6 @@ fn installing_a_repository_delivers_its_payload_and_loads_its_pane() {
     );
 }
 
-/// git owns "your edits are yours" for a working copy, and this is the property
-/// that makes keeping `.git` worth its cost.
 #[test]
 fn an_edit_inside_a_working_copy_survives_sync_and_update() {
     let home = tempfile::tempdir().expect("tempdir");
@@ -1589,9 +1507,6 @@ fn a_cloned_repository_takes_its_pane_from_its_own_manifest() {
     assert!(!loaded.contains("extra"), "{loaded}");
 }
 
-/// A repository's manifest declaring several panes is an ambiguity, not an answer:
-/// a pane inside a working copy loads only because the spec names it, and a spec
-/// entry names one. So it says which it found, and `--as` picks as it always has.
 #[test]
 fn a_cloned_repository_declaring_several_panes_asks_which_to_load() {
     let home = tempfile::tempdir().expect("tempdir");
@@ -1632,8 +1547,6 @@ fn a_cloned_repository_declaring_several_panes_asks_which_to_load() {
     assert_eq!(chosen.json["file"], "thurbox-widget/mods/50_extra.lua");
 }
 
-/// A declaration missing its `source` is still a declaration: dropping it would
-/// leave one pane looking unambiguous and silently omit the other.
 #[test]
 fn a_cloned_repository_with_a_malformed_second_pane_still_asks() {
     let home = tempfile::tempdir().expect("tempdir");

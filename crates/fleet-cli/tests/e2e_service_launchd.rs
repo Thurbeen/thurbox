@@ -1,6 +1,3 @@
-//! `fleet service` on macOS: Fleet writes and drives the one launchd agent
-//! that runs `fleet up`. The test stub stands in for `launchctl` on a
-//! private PATH, so no test touches the operator's launchd.
 #![cfg(target_os = "macos")]
 
 mod support;

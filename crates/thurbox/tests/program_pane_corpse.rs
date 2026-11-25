@@ -1,20 +1,3 @@
-//! A program window whose program has died is not re-adopted.
-//!
-//! What this guards is what "the editor hung" actually looked like. A window can
-//! outlive the program in it — tmux's `remain-on-exit` keeps the frame, and
-//! thurbox turns that option on for a dead agent's window to stay readable (with
-//! a twist: `set-option -t <session> remain-on-exit on` lands on the session's
-//! CURRENT window, measured on tmux 3.2a, so the option reaches whatever window
-//! happened to be current, which can be a program's). The corpse keeps the
-//! window's deterministic name, so the next run of the interface finds it and
-//! re-adopts it: a pane painting a frozen last screen, swallowing every
-//! keystroke, with `:q` going nowhere.
-//!
-//! Two runs of `Terminals` over one tmux server is the honest shape of it — the
-//! second is the restart, and it must not inherit the first one's corpse.
-//!
-//! Skipped when tmux is absent: a missing multiplexer is an environment fact.
-
 #![cfg(unix)]
 
 use std::process::Command;
@@ -22,7 +5,6 @@ use std::time::{Duration, Instant};
 
 use thurbox::kernel::terminal::{ProgramKey, Terminals};
 
-/// The guard every tmux server in this file is reaped by — see its own doc.
 #[path = "../../runtime-mux/tests/support/tmux_server.rs"]
 mod tmux_server;
 
@@ -49,12 +31,6 @@ fn tmux(args: &[&str]) -> std::process::Output {
         .expect("run tmux")
 }
 
-/// Every program window on the server: `(window_id, pane_id, pane_pid,
-/// pane_dead)`.
-///
-/// All of them, not the first — the deterministic name is supposed to address
-/// exactly one window, and a test that looked at one line could not tell a
-/// replaced corpse from a second window opened beside it.
 fn program_windows() -> Vec<(String, String, String, String)> {
     let out = tmux(&[
         "list-windows",
@@ -77,7 +53,6 @@ fn program_windows() -> Vec<(String, String, String, String)> {
         .collect()
 }
 
-/// The one program window, when there is exactly one.
 fn program_window() -> Option<(String, String, String, String)> {
     let mut all = program_windows();
     (all.len() == 1).then(|| all.remove(0))

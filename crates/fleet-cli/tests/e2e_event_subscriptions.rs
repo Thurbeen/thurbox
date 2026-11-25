@@ -1,9 +1,3 @@
-//! Board subscriptions end to end: `fleet event subscribe` writes a Task's
-//! `spec.subscriptions`, and on each pass TaskController reads each
-//! subscribed Board after the subscription's cursor in `status.subscriptions`
-//! and queues one `event-notice` digest in the Task's inbox, through the real
-//! `fleet` binary on a throwaway store and the fake host.
-
 mod support;
 
 use serde_json::{Value, json};

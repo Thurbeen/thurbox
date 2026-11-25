@@ -1,38 +1,14 @@
-//! One session, one window per role — and a server already holding two.
-//!
-//! A restart kills the session's window and then spawns its replacement, and
-//! in between the session is indistinguishable from one whose agent died —
-//! which is exactly what a repairer relaunches (the interface's
-//! `respawn_missing_agents`, a peer's `restart --if-missing`, extension
-//! self-heal). Both then spawn and stamp, and the pair they leave is what
-//! ADR-25 cannot answer: `stamped_match` returns `Located::Unknown` for two
-//! windows carrying one stamp, so the session can no longer be sent to,
-//! killed, captured or renamed (issue #1207).
-//!
-//! Two halves are asserted here and they are not the same claim. The stamp
-//! paths **retire** the loser, so the pair is never left behind; and a pair a
-//! server is already carrying — which no prevention reaches, because those
-//! windows exist — is repaired the first time something tries to act on the
-//! session. What is *not* done is teaching the resolver to pick one of two:
-//! `the_listing_itself_still_refuses_a_pair` is the guard on that, and it is
-//! the reason the repair is a write rather than a reading.
-//!
-//! Driven against a real tmux server on a private socket: the invariant is
-//! about what the server holds, and nothing in-process stands in for it.
-
 use std::collections::HashMap;
 use std::sync::{Arc, Barrier};
 
 use thurbox::backend::identity::Located;
 use thurbox::backend::tmux_compat::server as tmux;
 
-/// The guard every tmux server in this file is reaped by — see its own doc.
 #[path = "../../runtime-mux/tests/support/tmux_server.rs"]
 mod tmux_server;
 
 use tmux_server::TmuxServer;
 
-/// A socket of this test's own, so it can never see — or kill — a real session.
 const SOCKET: &str = "thurbox-one-window-per-stamp";
 
 const SESSION: &str = "11111111-2222-3333-4444-555555555555";
@@ -47,8 +23,6 @@ fn have_tmux() -> bool {
         .unwrap_or(false)
 }
 
-/// Type `text` into the session's own window, located the way every pane verb
-/// locates it: by the row, through the backend.
 fn send_to(session_id: &str, name: &str, text: &str) -> anyhow::Result<()> {
     use thurbox::backend::{PaneIo, WindowLifecycle};
     let backend = thurbox::backend::tmux::TmuxBackend::local(&thurbox::backend::mux_settings(
@@ -62,7 +36,6 @@ fn send_to(session_id: &str, name: &str, text: &str) -> anyhow::Result<()> {
     Ok(backend.send_text(&pane, text, false)?)
 }
 
-/// A window running a program that outlives the test's own commands.
 fn spawn(session_id: &str, name: &str) -> String {
     thurbox::backend::WindowLifecycle::create_window(
         &thurbox::backend::tmux::TmuxBackend::local(&thurbox::backend::mux_settings(
@@ -81,7 +54,6 @@ fn spawn(session_id: &str, name: &str) -> String {
     .into()
 }
 
-/// Every pane on the test's server with the window and stamp it carries.
 fn listing(server: &TmuxServer) -> String {
     String::from_utf8_lossy(
         &server
@@ -96,7 +68,6 @@ fn listing(server: &TmuxServer) -> String {
     .into_owned()
 }
 
-/// The panes of every window stamped as `SESSION`'s agent.
 fn stamped_panes(server: &TmuxServer) -> Vec<String> {
     listing(server)
         .lines()
@@ -105,11 +76,6 @@ fn stamped_panes(server: &TmuxServer) -> Vec<String> {
         .collect()
 }
 
-/// Give `pane`'s window `SESSION`'s agent stamp by hand.
-///
-/// By hand on purpose: a *spawn* retires the window it would have paired with,
-/// so the only way to plant the state an operator's server is already in is to
-/// write the option outside thurbox.
 fn plant_stamp(server: &TmuxServer, pane: &str) {
     for (option, value) in [
         (tmux::WINDOW_SESSION_OPTION, SESSION),
@@ -120,7 +86,6 @@ fn plant_stamp(server: &TmuxServer, pane: &str) {
     }
 }
 
-/// Every thurbox window on the private server, indexed.
 fn local_index() -> thurbox::backend::identity::WindowIndex {
     thurbox::backend::identity::WindowIndex::from_listing(
         thurbox::backend::WindowLifecycle::discover(&thurbox::backend::tmux::TmuxBackend::local(
@@ -130,7 +95,6 @@ fn local_index() -> thurbox::backend::identity::WindowIndex {
     )
 }
 
-/// Kill the session's agent window, found as every teardown finds it.
 fn kill_agent(session: &str, name: &str) -> anyhow::Result<()> {
     use thurbox::backend::WindowLifecycle;
     let backend = thurbox::backend::tmux::TmuxBackend::local(&thurbox::backend::mux_settings(

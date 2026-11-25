@@ -1,6 +1,3 @@
-//! A systemd user unit, driven through `systemctl --user`. The unit names
-//! its store in `X-Fleet-Store`, a key systemd keeps and ignores.
-
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
@@ -39,9 +36,6 @@ pub fn unit_store(path: &Path) -> Option<String> {
         .map(str::to_string)
 }
 
-/// How a unit Fleet did not write runs `fleet up`, read from its
-/// `ExecStart=` and `Environment=` lines and those of its drop-ins. `None`
-/// for a unit Fleet wrote, or one that does not run `fleet up`.
 pub fn invocation(path: &Path) -> Option<Invocation> {
     if path
         .file_name()
@@ -263,8 +257,6 @@ pub fn drive(unit: &Unit, verb: Verb, stop_bound: Duration) -> Result<(), Refusa
     .map(drop)
 }
 
-/// `systemctl --user status`: its text, and its exit code (0 active, 3
-/// inactive).
 pub fn status(unit: &Unit) -> Result<(String, i32), Refusal> {
     SYSTEMCTL.report(&["status", &unit.name, "--no-pager"])
 }

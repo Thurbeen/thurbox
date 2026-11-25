@@ -1,25 +1,3 @@
-//! The `PATH` an agent gets on an SSH host or inside a WSL distro.
-//!
-//! Every command thurbox runs on a host goes through a launcher that hands it
-//! a **non-login** environment: `wsl.exe -e sh -c …` bypasses the user's shell
-//! altogether (the distro's default `PATH` plus the translated Windows one),
-//! and sshd runs a command with its own compiled-in `PATH`. Neither reads
-//! `~/.profile`, `~/.zprofile` or — for `wsl.exe -e` — even `~/.zshenv`, which
-//! is where `~/.local/bin`, `~/.cargo/bin`, `~/.bun/bin` and the nvm/fnm shims
-//! go. A pane spawned with that environment pins it
-//! (`tmux_compat::server::path_prefix_args`), so an agent installed under
-//! `~/.local/bin` dies with `env: 'claude': No such file or directory`.
-//!
-//! So the host's own login `PATH` is read once per host — the user's `$SHELL
-//! -l` and `/bin/sh -l`, stdin closed, each under `timeout` — cached for the
-//! process, and spliced in front of what the launcher gives:
-//! `path_prepend` (the host entry), then the login shells', then the launcher's,
-//! de-duplicated in that order. The same `PATH` leads the multiplexer commands
-//! thurbox runs there (`TmuxTransport::with_path`), so a binary only a login
-//! shell finds — Homebrew's tmux on a Mac — runs as the probe offered it. A
-//! host whose shells cannot be read keeps today's `PATH` with a warning;
-//! nothing here can fail a session.
-
 use std::collections::HashMap;
 use std::io::Read;
 use std::process::Stdio;
@@ -31,47 +9,23 @@ use tracing::{debug, warn};
 use crate::shell::{posix_quote, HostLauncher, HostShell};
 use crate::{HostDef, Multiplexer};
 
-/// Each login shell's own budget on the host, enforced there by `timeout(1)`
-/// when the host has it.
 const SHELL_TIMEOUT_SECS: u32 = 5;
 
-/// The whole probe's budget on this side — launcher start, two login shells,
-/// and an ssh connection — after which the launcher is killed. Covers a host
-/// with no `timeout(1)`, where only this bounds an rc file waiting on a lock.
 const PROBE_TIMEOUT: Duration = Duration::from_secs(15);
 
 const POLL_INTERVAL: Duration = Duration::from_millis(20);
 
-/// How much of the probe's output is kept — far more than three `PATH`s.
 const MAX_PROBE_OUTPUT: u64 = 64 * 1024;
 
-/// What the probe read on a host.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct HostEnv {
-    /// `$HOME`, for expanding `~` in `path_prepend`.
     pub home: Option<String>,
-    /// The launcher's own `PATH` — what a delegated CLI inherits today.
     pub base: Vec<String>,
-    /// `$SHELL -lc` (the passwd shell when `$SHELL` is unset). `None` when it
-    /// could not be read.
     pub shell_login: Option<Vec<String>>,
-    /// `/bin/sh -lc`: `~/.profile`, the one login file every POSIX shell's
-    /// user is likely to have, and the fallback for an unreadable `$SHELL`.
     pub sh_login: Option<Vec<String>>,
-    /// The multiplexers found on `path_prepend` and the merged login `PATH`, in
-    /// [`Multiplexer::ALL`] order: what the new-session flow may offer here.
     pub multiplexers: Vec<Multiplexer>,
 }
 
-/// The probe, as one `sh -c` script.
-///
-/// Each login shell prints its `PATH` behind a sentinel and the part after the
-/// **last** sentinel is kept, so an rc file that echoes something on a login
-/// shell cannot end up as a `PATH` component. `-l` without `-i` and stdin on
-/// `/dev/null`: nothing here can print a prompt or wait for input. Last, each
-/// multiplexer found on `prepend` (the host entry's `path_prepend`), those `PATH`s
-/// and the launcher's — the order [`plan`] gives the commands that run it — is
-/// named on an `@mux` line: one probe answers both questions a host is asked.
 pub fn probe_script(prepend: &[String]) -> String {
     let names: Vec<&str> = Multiplexer::ALL.iter().map(|mux| mux.name()).collect();
     let names = names.join(" ");
@@ -96,8 +50,6 @@ pub fn probe_script(prepend: &[String]) -> String {
     )
 }
 
-/// Parse [`probe_script`]'s output. `None` when there is no `@base` line —
-/// the script never ran, so nothing it would have said is known.
 pub fn parse_probe(stdout: &str) -> Option<HostEnv> {
     let mut env = HostEnv::default();
     let mut saw_base = false;
@@ -125,9 +77,6 @@ pub fn parse_probe(stdout: &str) -> Option<HostEnv> {
     saw_base.then_some(env)
 }
 
-/// A `PATH` value's components, keeping only absolute ones. An empty or
-/// relative component resolves against the pane's working directory — the
-/// session's own worktree — for the reason `path_lookup::resolve_on_path` skips them.
 fn split_path(value: &str) -> Vec<String> {
     value
         .split(':')
@@ -136,30 +85,18 @@ fn split_path(value: &str) -> Vec<String> {
         .collect()
 }
 
-/// One component of the `PATH` being written.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum Component {
     Literal(String),
-    /// `~` or `~/<suffix>` from `path_prepend` on a host whose `$HOME` is not
-    /// known here: spelled `"$HOME"<suffix>` for the host's shell to expand.
     Home(String),
 }
 
-/// What to assign `PATH` to on the host.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum PathPlan {
-    /// The whole `PATH`, from a probe that read the launcher's own.
     Full(Vec<Component>),
-    /// Components to put in front of whatever `PATH` the host command already
-    /// has — the probe did not answer, but `path_prepend` still applies.
     Prepend(Vec<Component>),
 }
 
-/// Merge `prepend` (the host entry's `path_prepend`) with what the probe read.
-///
-/// Order: `prepend`, the user's login shell, `/bin/sh -l`, the launcher's
-/// `PATH`; each directory kept at its first position. `None` means "change
-/// nothing": no probe answer and nothing to prepend.
 pub fn plan(prepend: &[String], env: Option<&HostEnv>) -> Option<PathPlan> {
     let home = env.and_then(|e| e.home.as_deref());
     let mut components: Vec<Component> = prepend
@@ -180,9 +117,6 @@ pub fn plan(prepend: &[String], env: Option<&HostEnv>) -> Option<PathPlan> {
     Some(PathPlan::Full(components))
 }
 
-/// One `path_prepend` entry as a component: `~` expanded against `home` when
-/// it is known, deferred to the host's `$HOME` when not. Anything neither
-/// absolute nor `~`-rooted is dropped (see [`split_path`]).
 fn expand(entry: &str, home: Option<&str>) -> Option<Component> {
     let entry = entry.trim();
     let suffix = match entry.strip_prefix('~') {
@@ -204,9 +138,6 @@ fn dedup(components: &mut Vec<Component>) {
     components.retain(|c| seen.insert(c.clone()));
 }
 
-/// `plan` as `sh` text — `PATH=…; export PATH; ` — for the front of a script
-/// or a window command. `:` is not special to `sh`, so each component is
-/// quoted on its own and the pieces concatenate into one word.
 pub fn shell_assignment(plan: &PathPlan) -> String {
     let (components, keep_inherited) = match plan {
         PathPlan::Full(c) => (c, false),
@@ -229,13 +160,6 @@ pub fn shell_assignment(plan: &PathPlan) -> String {
     format!("PATH={value}; export PATH; ")
 }
 
-/// The assignment for a command on `host`, or `None` to leave its `PATH`
-/// alone: a native-Windows host (no `sh`), or nothing learned and nothing
-/// configured.
-///
-/// The probe runs on the first call per host and is cached for the life of
-/// the process, a failure included — a host whose shell hangs costs one
-/// probe timeout, not one per mirror tick.
 pub fn assignment_for(host: &HostDef) -> Option<String> {
     if HostShell::for_host(host) != HostShell::Posix {
         return None;
@@ -244,9 +168,6 @@ pub fn assignment_for(host: &HostDef) -> Option<String> {
     plan(&host.path_prepend, env.as_ref()).map(|p| shell_assignment(&p))
 }
 
-/// The assignment for a window on `host` whose Task names its own `PATH`:
-/// that `PATH`, with each of the host entry's `path_prepend` directories it
-/// lacks in front. `None` on a host with no `sh`.
 pub fn task_assignment_for(host: &HostDef, task_path: &str) -> Option<String> {
     if HostShell::for_host(host) != HostShell::Posix {
         return None;
@@ -291,10 +212,6 @@ fn cached_env(host: &HostDef) -> Option<HostEnv> {
     env
 }
 
-/// What `host`'s probe said, within `timeout`: the answer this process
-/// already has, else a probe bounded by `timeout`, whose answer is kept. A
-/// probe that runs out of time is not kept, so a later call with more time
-/// asks again.
 pub fn env_within(host: &HostDef, timeout: Duration) -> Option<HostEnv> {
     let key = host.backend_name();
     if let Some(hit) = cache().lock().ok().and_then(|c| c.get(&key).cloned()) {
@@ -312,15 +229,12 @@ pub fn env_within(host: &HostDef, timeout: Duration) -> Option<HostEnv> {
     Some(env)
 }
 
-/// Keep `env` as what `host`'s probe said, for the rest of the process: an
-/// answer read from somewhere else than a probe, such as a cache on disk.
 pub fn remember(host: &HostDef, env: HostEnv) {
     if let Ok(mut c) = cache().lock() {
         c.insert(host.backend_name(), Some(env));
     }
 }
 
-/// `env` as the probe prints it, which [`parse_probe`] reads back.
 pub fn render(env: &HostEnv) -> String {
     let mut out = String::new();
     if let Some(home) = &env.home {
@@ -339,26 +253,15 @@ pub fn render(env: &HostEnv) -> String {
     out
 }
 
-/// What a host's probe last said about its multiplexers.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum MuxProbe {
-    /// Not answered yet.
     Pending,
-    /// It will not answer: it failed, or the host is native Windows, which has
-    /// no `sh` to probe with.
     Unanswered,
-    /// Installed there, in [`Multiplexer::ALL`] order.
     Found(Vec<Multiplexer>),
 }
 
-/// How long a host's multiplexer answer stands before an open flow asks
-/// again — so a host that was down, or has since had one installed, is not
-/// read wrong for the rest of the process.
 const MUX_TTL: Duration = Duration::from_secs(60);
 
-/// What a probe found on `host`, without ever waiting for one. When `start`
-/// allows it, an answer that is missing or older than a minute is asked
-/// for again on a thread of its own; the last answer stands meanwhile.
 pub fn multiplexers_found(host: &HostDef, start: bool) -> MuxProbe {
     if HostShell::for_host(host) != HostShell::Posix {
         return MuxProbe::Unanswered;
@@ -376,7 +279,6 @@ pub fn multiplexers_found(host: &HostDef, start: bool) -> MuxProbe {
     }
 }
 
-/// Probe `host` in the background, once at a time per host.
 fn reprobe(host: &HostDef, key: String) {
     let started = in_flight()
         .lock()
@@ -399,12 +301,6 @@ fn reprobe(host: &HostDef, key: String) {
     });
 }
 
-/// Store what a background probe of the host keyed `key` said. Its `PATH`
-/// fills that cache only on success, and only where it is empty or holds a
-/// failure: that cache is never re-asked on its own, so a host that was down
-/// at the first ask — a multiplexer command at startup, typically — would
-/// otherwise run without its login `PATH` for the rest of the process. An
-/// answer already read is never replaced.
 fn record_probe(key: &str, env: Option<HostEnv>) {
     if let (Some(env), Ok(mut c)) = (env.as_ref(), cache().lock()) {
         let slot = c.entry(key.to_string()).or_insert(None);
@@ -432,8 +328,6 @@ fn in_flight() -> &'static Mutex<std::collections::HashSet<String>> {
     IN_FLIGHT.get_or_init(Default::default)
 }
 
-/// Record that a probe of `host` found `multiplexers` (`None`: it did not
-/// answer), for tests that must not reach one.
 #[cfg(any(test, feature = "test-support"))]
 pub fn seed_multiplexers(host: &HostDef, multiplexers: Option<Vec<Multiplexer>>) {
     mux_cache()
@@ -442,7 +336,6 @@ pub fn seed_multiplexers(host: &HostDef, multiplexers: Option<Vec<Multiplexer>>)
         .insert(host.backend_name(), (Instant::now(), multiplexers));
 }
 
-/// Record what a probe of `host` found, for tests that must not reach one.
 #[cfg(test)]
 pub fn seed(host: &HostDef, env: Option<HostEnv>) {
     cache().lock().unwrap().insert(host.backend_name(), env);
@@ -470,17 +363,6 @@ fn probe(host: &HostDef) -> Option<HostEnv> {
     env
 }
 
-/// Run `cmd` with stdin closed, giving up after `timeout`. `None` when it
-/// could not start, timed out, or printed nothing readable.
-///
-/// The deadline covers the **output** as well as the process: a login shell
-/// can leave a background job holding the pipe after the launcher exits, and
-/// waiting for EOF there would outlive any timeout. Only the first
-/// [`MAX_PROBE_OUTPUT`] bytes are kept — a `PATH` or three — and the rest is
-/// drained unread, so a chatty rc file costs neither memory nor a blocked
-/// writer. A line the cap cuts through is dropped whole: half a `PATH` would
-/// parse as a shorter, wrong one, where a missing line is an honest "not
-/// read".
 fn run_bounded(mut cmd: std::process::Command, timeout: Duration) -> Option<String> {
     let mut child = cmd
         .stdin(Stdio::null())
@@ -682,8 +564,6 @@ mod tests {
         );
     }
 
-    /// `path_prepend` leads the `PATH` a host's multiplexer commands run on,
-    /// so a multiplexer only it holds is one the new-session flow may offer.
     #[cfg(unix)]
     #[test]
     fn the_probe_script_finds_a_multiplexer_on_path_prepend() {
@@ -710,9 +590,6 @@ mod tests {
         );
     }
 
-    /// Multiplexer commands are the first to read a host's `PATH`, often at
-    /// startup: a host down then must not keep its login `PATH` out of them
-    /// once the new-session flow's probe reaches it.
     #[test]
     fn a_later_probe_replaces_a_cached_failure_but_not_an_answer() {
         let host = HostDef {
@@ -788,8 +665,6 @@ mod tests {
         );
     }
 
-    /// A background job keeping the pipe open after the launcher exits must
-    /// not hold the probe past its deadline.
     #[cfg(unix)]
     #[test]
     fn a_pipe_held_open_after_exit_does_not_outlive_the_timeout() {
@@ -811,7 +686,6 @@ mod tests {
         assert!(out.ends_with("0123456789\n"), "cut mid-line");
     }
 
-    /// A `PATH` line the cap cuts through is not read as a shorter `PATH`.
     #[cfg(unix)]
     #[test]
     fn a_path_line_cut_by_the_cap_is_dropped_not_shortened() {
@@ -835,8 +709,6 @@ mod tests {
         assert!(started.elapsed() < Duration::from_secs(5));
     }
 
-    /// The script itself, against a real `sh` with a login shell whose rc file
-    /// prints noise and whose profile adds a directory.
     #[cfg(unix)]
     #[test]
     fn the_probe_script_reads_a_login_shells_path_through_rc_noise() {

@@ -1,6 +1,3 @@
-//! The one configuration file: versioned, typed, read through this loader
-//! only. The one environment variable is the file's own location.
-
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
@@ -8,11 +5,8 @@ use fleet_api::follow::ReadyPolicy;
 use fleet_api::gateway::GatewayConfig;
 use serde::Deserialize;
 
-/// The config schema version this build reads (P9).
 pub const CONFIG_VERSION: u32 = 1;
 
-/// The one fleet setting read from the environment: where the config file
-/// is. (The default data directory follows the platform's own variables.)
 pub const CONFIG_ENV: &str = "FLEET_CONFIG";
 
 #[derive(Debug, Clone, Deserialize)]
@@ -21,47 +15,26 @@ pub struct Config {
     pub version: u32,
     #[serde(default)]
     pub data: Data,
-    /// The `[runtime]` section: the fake runtime, linked into Fleet for
-    /// tests and trials. Exclusive with `[runtimes]`.
     #[serde(default)]
     pub runtime: Option<RuntimeConfig>,
-    /// The `[runtimes.<name>]` sections: programs that speak the runtime
-    /// protocol.
     #[serde(default)]
     pub runtimes: BTreeMap<String, ProgramConfig>,
-    /// A `[hosts]` table, read only to refuse it by name: a host is a place
-    /// of a runtime (ADR-42), configured under `[runtimes.<name>.places]`.
     #[serde(default)]
     hosts: Option<toml::Value>,
-    /// A `[starter]` section, read only to refuse it by name: `fleet up`
-    /// needs no starter Task.
     #[serde(default)]
     starter: Option<toml::Value>,
     #[serde(default)]
     pub forge: Option<ForgeConfig>,
     #[serde(default)]
     pub plugins: BTreeMap<String, fleet_api::plugin::PluginConfig>,
-    /// The `[gateway]` section: chat accounts, people and routes. Its rules
-    /// are the API's ([`GatewayConfig::validate`]); the platform checks run
-    /// when the gateway opens.
     #[serde(default)]
     pub gateway: Option<GatewayConfig>,
-    /// Per `[gateway.routes]` entry, its brief as read from the file the
-    /// route names when the config loaded: what each Task the route
-    /// starts carries. An unreadable brief refuses the config.
     #[serde(skip)]
     pub gateway_briefs: BTreeMap<String, String>,
-    /// The `[telemetry]` section: what Fleet exports, and what it gives the
-    /// programs and sessions it starts (docs/observability.md).
     #[serde(default)]
     pub telemetry: Option<otel_env::TelemetryConfig>,
 }
 
-/// The `[telemetry]` table of the config file at `path`, for the export a
-/// command starts before it loads the whole config. `None` when there is no
-/// file or no table. An error when the file cannot be read as TOML or the
-/// table breaks a rule: the caller exports nothing, since what the table
-/// turns off is unknown.
 pub fn telemetry(path: &Path) -> Result<Option<otel_env::TelemetryConfig>, String> {
     let text = match std::fs::read_to_string(path) {
         Ok(text) => text,
@@ -102,36 +75,19 @@ fn check_telemetry_keys(table: &toml::Value) -> Result<(), String> {
     Ok(())
 }
 
-/// The `[forge]` section: the forges ChangeRequests are mirrored from, the
-/// relay and draft defaults a Task's `spec.forge` may override, and the
-/// ready policies a Task may select. A policy naming an unknown predicate
-/// is refused here, at load.
 #[derive(Debug, Clone, Default, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ForgeConfig {
-    /// The bound on every forge CLI call.
     pub call_timeout_ms: Option<u64>,
-    /// How long a closed change stays watched before it settles.
     pub closed_grace_ms: Option<u64>,
-    /// How long a settled ChangeRequest is retained before its controller
-    /// deletes it.
     pub settled_ttl_ms: Option<u64>,
-    /// Relay new notes to the worker (default true).
     pub relay_notes: Option<bool>,
-    /// Relay passed or failed checks to the worker (default true).
     pub relay_checks: Option<bool>,
-    /// Relay bot-authored notes to the worker (default false).
     pub relay_bots: Option<bool>,
-    /// How long `checksPassed` waits for a check to appear on a checkless
-    /// head before treating it as passed (default five minutes).
     pub no_check_grace_ms: Option<u64>,
-    /// The ready policy applied to a Task that names none; absent, a draft
-    /// is never taken out of draft unless the Task names a policy.
     pub draft_policy: Option<String>,
-    /// The ready policies, by name; each a set of the fixed predicates.
     #[serde(default)]
     pub ready_policies: BTreeMap<String, ReadyPolicy>,
-    /// One adapter per forge host; a URL on a host not listed is refused.
     #[serde(default)]
     pub hosts: BTreeMap<String, ForgeHostConfig>,
 }
@@ -139,11 +95,8 @@ pub struct ForgeConfig {
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ForgeHostConfig {
-    /// `azure-devops`, `bitbucket-cloud`, `github`, `gitlab` or `fake`.
     pub kind: String,
-    /// The CLI executable, a path or a name on PATH (`az`, `curl`, `gh`, `glab`).
     pub cli: Option<String>,
-    /// The fake forge's directory, relative to this file.
     pub dir: Option<PathBuf>,
 }
 
@@ -156,55 +109,33 @@ pub struct Data {
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct RuntimeConfig {
-    /// `fake`, for tests and trials.
     pub kind: String,
-    /// The fake host's directory.
     pub dir: Option<PathBuf>,
 }
 
-/// One `[runtimes.<name>]` section: a program that speaks the runtime
-/// protocol (docs/runtime/README.md).
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ProgramConfig {
-    /// The executable, a path or a name on PATH.
     pub program: String,
-    /// Arguments before the verb.
     #[serde(default)]
     pub args: Vec<String>,
-    /// The bound on every call but `workspace`.
     pub call_timeout_ms: Option<u64>,
-    /// The bound on a `workspace` call, which may clone a repository; 600000
-    /// when absent.
     pub workspace_timeout_ms: Option<u64>,
-    /// The first part of every key Fleet gives the runtime; give a second
-    /// Fleet on the same runtime its own.
     pub key_prefix: Option<String>,
-    /// The runtime whose `local` place `local` names, when the
-    /// config has several.
     #[serde(default)]
     pub default: bool,
-    /// The `[runtimes.<name>.places.<place>]` tables: where the runtime runs
-    /// a process. Fleet passes each table to the runtime and does not read
-    /// it. None means the one place `local`, with an empty config.
     #[serde(default)]
     pub places: BTreeMap<String, toml::Table>,
 }
 
-/// One place a Task may name, as `spec.host`.
 #[derive(Debug, Clone, PartialEq)]
 pub struct HostPlace {
-    /// `<runtime>/<place>`.
     pub id: String,
-    /// The `[runtimes.<name>]` serving it.
     pub runtime: String,
-    /// The place, with its table as JSON, as each request names it.
     pub place: fleet_api::runtime::Place,
-    /// The default runtime's `local` place, which `local` also names.
     pub local: bool,
 }
 
-/// The short place id: the default runtime's `local` place.
 pub const LOCAL: &str = fleet_api::runtime::Place::LOCAL;
 
 impl Config {
@@ -214,7 +145,6 @@ impl Config {
         Config::parse(&text, path)
     }
 
-    /// The config `text` read from `path`, validated as [`Config::load`] does.
     pub fn parse(text: &str, path: &Path) -> Result<Config, String> {
         let mut config = Config::parse_settings(text, path)?;
         config.read_briefs(path)?;
@@ -351,8 +281,6 @@ impl Config {
         Ok(())
     }
 
-    /// `[runtimes]` is well formed: names that make a place id, one default
-    /// when there are several, and no `[runtime]` beside it.
     fn check_runtimes(&self) -> Result<(), String> {
         if self.runtime.is_some() && !self.runtimes.is_empty() {
             return Err("[runtime] and [runtimes] exclude each other; keep one".into());
@@ -391,8 +319,6 @@ impl Config {
         Ok(())
     }
 
-    /// The runtime whose place `local` names: the one marked
-    /// `default`, or the only one.
     pub fn default_runtime(&self) -> Option<&str> {
         let marked: Vec<&String> = self
             .runtimes
@@ -407,9 +333,6 @@ impl Config {
         }
     }
 
-    /// Why `local` names no place, when it does not: the default
-    /// runtime has places and none of them is `local`, as a runtime of VMs
-    /// alone may.
     pub fn no_local(&self) -> Option<String> {
         let default = self.default_runtime()?;
         (!self.places().iter().any(|p| p.local)).then(|| {
@@ -419,7 +342,6 @@ impl Config {
         })
     }
 
-    /// Every place of every runtime, by its id `<runtime>/<place>`.
     pub fn places(&self) -> Vec<HostPlace> {
         let default = self.default_runtime();
         let mut places = Vec::new();
@@ -484,8 +406,6 @@ pub(crate) fn fleet_2_config(text: &str, path: &Path) -> Option<(String, PathBuf
     Some((why, store))
 }
 
-/// Explicit CLI path, then FLEET_CONFIG, then one native per-user location.
-/// No search through the current directory or its parents.
 pub fn discover(explicit: Option<PathBuf>) -> Option<PathBuf> {
     explicit
         .or_else(|| std::env::var_os(CONFIG_ENV).map(PathBuf::from))
@@ -504,8 +424,6 @@ pub fn default_config_path() -> Option<PathBuf> {
     std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".config/fleet/config.toml"))
 }
 
-/// A dedicated data directory per platform: `$XDG_DATA_HOME/fleet`, `~/.local/share/fleet`, or
-/// `%LOCALAPPDATA%\fleet`.
 pub fn default_data_dir() -> Option<PathBuf> {
     if cfg!(windows) {
         return std::env::var_os("LOCALAPPDATA").map(|d| PathBuf::from(d).join("fleet"));

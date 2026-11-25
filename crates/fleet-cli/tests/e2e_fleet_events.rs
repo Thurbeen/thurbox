@@ -1,10 +1,3 @@
-//! Board `fleet` end to end: `fleet init` ensures it, and TaskController
-//! publishes `fleet.task.phase`, `fleet.task.declared` and
-//! `fleet.task.result` to it, as the controller, after the write that
-//! caused each, through the real `fleet` binary on a throwaway store and
-//! the fake host. A publish that fails keeps its intent in the Task's
-//! status, and a retry appends each event once.
-
 mod support;
 
 use serde_json::{Value, json};

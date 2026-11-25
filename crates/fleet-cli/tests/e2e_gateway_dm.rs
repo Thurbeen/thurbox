@@ -1,11 +1,3 @@
-//! A route's DM entry end to end: `"dm:*"` in `channels` covers every
-//! one-to-one direct message between the bot and a person on the route's
-//! account. There a top-level message starts a Task without a mention, a
-//! reply in a tied DM thread is a turn for its Task, and a stranger's DM
-//! earns the route's one refusal. A config without the entry behaves as
-//! before, and the config refuses a second DM route on one account, the
-//! entry on a Discord account, and a questions route with no channel id.
-
 mod support;
 
 use std::fs;
@@ -19,7 +11,6 @@ use support::{
 
 const T0: u64 = 1_730_000_000_000;
 const BOT: &str = "B0FLEET001";
-/// A one-to-one DM channel that no route lists.
 const DM: &str = "D0123ALEX";
 const ROUTE: &str = "randy";
 const STRANGER: &str = "U0999ZZZZ";
@@ -28,8 +19,6 @@ fn root(env: &Env) -> String {
     env.root.to_string_lossy().replace('\\', "/")
 }
 
-/// A route over the fake account, with its own brief and base directory,
-/// covering `channels`.
 fn route(env: &Env, name: &str, channels: &str) -> String {
     let root = root(env);
     format!(
@@ -38,8 +27,6 @@ taskConfig = \"conversation\"\nbrief = \"{root}/briefs/randy.md\"\nworkspace = {
     )
 }
 
-/// The gateway environment's section with `channels` on the route `randy`
-/// beside the explicit route `eng`.
 fn section(env: &Env, channels: &str) -> String {
     format!(
         "{}{}",
@@ -61,8 +48,6 @@ fn dm_env(name: &str, channels: &str) -> Env {
     env
 }
 
-/// A message `id` in `thread`. It starts the thread when the thread's id is
-/// its own, as the payload says.
 fn said(thread: &str, id: u64, author: &str, text: &str) -> Value {
     let mut event = message_event(thread, &id.to_string(), author, id, text);
     if thread.ends_with(&format!(":{id}")) {
@@ -71,10 +56,6 @@ fn said(thread: &str, id: u64, author: &str, text: &str) -> Value {
     event
 }
 
-/// Hand `event` to the receive verb as the fake platform delivers it, with
-/// `direct` when the platform says the chat is a one-to-one DM. The message
-/// is put on the fake platform's thread first, as a real platform's history
-/// holds it.
 fn deliver(env: &Env, delivery: &str, event: Value, direct: bool) -> Value {
     let Event::Message {
         conversation,

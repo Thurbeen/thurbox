@@ -1,61 +1,27 @@
-//! The active colour scheme, resolved once and published as named roles.
-//!
-//! Resolution is a *contract* — every mod expresses colour by
-//! naming a role, so something must turn roles into colours before any pane can
-//! draw. Choosing a theme, by contrast, is presentation, and stays a mod.
-//!
-//! Nothing here is reimplemented. The top-level `theme` module is data and
-//! already reachable from the kernel: it carries all 36 presets and a 31-role
-//! palette, `config::themes` reads the user's `themes.toml`, and the
-//! choice lives in `interface.json` (`store_chosen_theme`).
-
 use std::collections::BTreeMap;
 
 use ratatui::style::{Modifier, Style};
 
 use crate::theme::{ThemeEntry, ThemePalette, ThemePreset};
 
-/// One selectable theme, flattened for publishing.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ThemeChoice {
-    /// Stable identifier, as persisted. Unchanged from v1.
     pub name: String,
     pub display_name: String,
     pub is_light: bool,
-    /// True for a theme defined in the user's `themes.toml`.
     pub is_custom: bool,
 }
 
-/// The resolved theme plus everything a picker needs.
 pub struct Themes {
     active: ThemeEntry,
     choices: Vec<ThemeChoice>,
-    /// The user's `themes.toml` entries, kept so a palette other than the
-    /// active one can be resolved without re-reading the file — the picker's
-    /// swatch previews the *highlighted* theme, which is a per-keystroke read.
     custom: Vec<ThemeEntry>,
-    /// Problems found while loading user themes. Surfaced, never fatal.
     pub warnings: Vec<String>,
-    /// Moves whenever the active palette or the set of choices does.
-    ///
-    /// Gates the published theme tables (`frame-cost`). Never restarts:
-    /// [`Self::refresh`] replaces the whole value, so it carries the old count
-    /// across rather than resetting to zero — a version that went backwards
-    /// could collide with one a reader had already seen and be mistaken for
-    /// "nothing changed".
     version: u64,
-    /// The last theme [`Self::select`] chose, until the loop takes it to be
-    /// stored ([`Self::take_chosen`]).
     chosen: Option<String>,
 }
 
 impl Themes {
-    /// Resolve from the presets, the user's `themes.toml` and `stored`, the
-    /// persisted choice (`interface.json`).
-    ///
-    /// Every failure degrades rather than aborts: an unparseable user theme is
-    /// skipped, and a recorded choice that no longer resolves falls back to the
-    /// default. Losing the interface over a colour would be absurd.
     pub fn load(stored: Option<&str>) -> Self {
         let (custom, warnings) = crate::config::themes::load_or_seed_with_warnings();
 
@@ -93,11 +59,6 @@ impl Themes {
         }
     }
 
-    /// Resolve any offered theme to its full entry, palette included.
-    ///
-    /// v1's picker reads `entry.palette` to draw the swatch for the row under
-    /// the cursor (`ui::theme_picker_modal::render_preview`), so previewing
-    /// requires a palette the user has *not* selected.
     pub fn entry(&self, name: &str) -> Option<ThemeEntry> {
         self.choices
             .iter()
@@ -105,7 +66,6 @@ impl Themes {
             .then(|| resolve(Some(name), &self.custom))
     }
 
-    /// The active theme's identifier.
     pub fn active_name(&self) -> &str {
         &self.active.name
     }
@@ -118,12 +78,6 @@ impl Themes {
         &self.choices
     }
 
-    /// Make `name` active, and leave it to be stored ([`Self::take_chosen`]).
-    ///
-    /// An unknown name is refused rather than silently ignored: the
-    /// alternative is a stored choice that never applies and cannot be
-    /// diagnosed. Storing it is the loop's: it writes `interface.json`
-    /// through `store_chosen_theme`.
     pub fn select(&mut self, name: &str) -> Result<(), String> {
         if !self.choices.iter().any(|choice| choice.name == name) {
             return Err(format!("unknown theme {name:?}"));
@@ -134,19 +88,10 @@ impl Themes {
         Ok(())
     }
 
-    /// The theme [`Self::select`] last chose, once, for the loop to store.
     pub fn take_chosen(&mut self) -> Option<String> {
         self.chosen.take()
     }
 
-    /// Make `name` active **without persisting it** — the live preview a picker
-    /// shows while you move through the list.
-    ///
-    /// Separate from [`Self::select`] because persistence is the difference
-    /// between trying a palette and choosing one: a preview that wrote to
-    /// `interface.json` would leak every theme the cursor passed over into every other
-    /// thurbox process, and leave the last one you glanced at active after you
-    /// pressed `Esc`.
     pub fn preview(&mut self, name: &str) -> Result<(), String> {
         if !self.choices.iter().any(|choice| choice.name == name) {
             return Err(format!("unknown theme {name:?}"));
@@ -156,7 +101,6 @@ impl Themes {
         Ok(())
     }
 
-    /// How many times the palette or the choices have changed.
     pub fn version(&self) -> u64 {
         self.version
     }
@@ -165,21 +109,10 @@ impl Themes {
         self.version = self.version.wrapping_add(1);
     }
 
-    /// The active palette as role name → colour string, ready to publish.
-    ///
-    /// Colours are emitted as `#rrggbb` (or a palette index) so Lua can hand
-    /// them straight back through the node vocabulary without the kernel
-    /// needing a second colour type on the boundary.
     pub fn roles(&self) -> BTreeMap<&'static str, String> {
         palette_roles(&self.active.palette)
     }
 
-    /// How a text selection is painted: the palette's own selection pair.
-    ///
-    /// v1's `apply_selection_highlight` uses exactly these two roles. Reverse
-    /// video is the fallback rather than the rule because it inverts whatever
-    /// each cell already had — so a selection over styled text came out a
-    /// different colour per span and matched no theme.
     pub fn selection_style(&self) -> Style {
         let roles = self.roles();
         let colour = |role: &str| {
@@ -202,7 +135,6 @@ impl Themes {
     }
 }
 
-/// Resolve a name against the presets and user themes, falling back sensibly.
 fn resolve(wanted: Option<&str>, custom: &[ThemeEntry]) -> ThemeEntry {
     let Some(name) = wanted else {
         return ThemeEntry::from_preset(ThemePreset::Default);
@@ -218,11 +150,6 @@ fn resolve(wanted: Option<&str>, custom: &[ThemeEntry]) -> ThemeEntry {
     }
 }
 
-/// Every role in a palette, named as a mod names it.
-///
-/// Listed explicitly rather than derived: the field set is a published contract,
-/// so adding a role should be a visible edit here, and a *removed* field becomes
-/// a compile error instead of a silently missing role.
 pub fn palette_roles(p: &ThemePalette) -> BTreeMap<&'static str, String> {
     let ThemePalette {
         accent,
@@ -304,11 +231,6 @@ pub fn palette_roles(p: &ThemePalette) -> BTreeMap<&'static str, String> {
     roles
 }
 
-/// Render a ratatui colour in the form [`super::node::parse_color`] accepts.
-///
-/// `Reset` is emitted as `"reset"` rather than dropped: a theme setting a role
-/// to the terminal's own colour is *defining* it, and a mod asking for that
-/// role should get an answer.
 pub fn color_to_string(color: &ratatui::style::Color) -> String {
     use ratatui::style::Color;
     match color {

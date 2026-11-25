@@ -1,12 +1,3 @@
-//! A session's outbox: the file `fleet event publish` appends to inside a
-//! session, beside the session's signal file, and Fleet's reads of it.
-//!
-//! ```text
-//! local:  fleet event publish ─▶ <data>/signals/<key>.jsonl.events ◀─read── Fleet
-//! remote: fleet event publish ─▶ ~/.local/state/fleet/signals/<key>.jsonl.events
-//!                                   ◀─runtime exec (fleet signal-read --from)── Fleet
-//! ```
-
 use std::fs::{self, OpenOptions};
 use std::io::{self, Read, Seek, SeekFrom, Write};
 use std::path::Path;
@@ -15,8 +6,6 @@ use fleet_api::event::{MAX_OUTBOX_READ, OutboxLine, OutboxRead};
 
 use crate::signals::expand_home;
 
-/// Make `dir` and its missing parents, each readable by its owner only:
-/// an outbox holds event payloads, which are private.
 pub fn create_private_dir_all(dir: &Path) -> io::Result<()> {
     let mut builder = fs::DirBuilder::new();
     builder.recursive(true);
@@ -25,10 +14,6 @@ pub fn create_private_dir_all(dir: &Path) -> io::Result<()> {
     builder.create(dir)
 }
 
-/// Append `line` to the outbox `file` (`~`-rooted on a place) in one write,
-/// so lines from publishes running at once never interleave. A new outbox
-/// and a new directory are its owner's only. Answers the offset the line
-/// starts at.
 pub fn append(file: &Path, line: &OutboxLine) -> io::Result<u64> {
     let bytes = line.encode().map_err(io::Error::other)?;
     let file = expand_home(file);
@@ -44,10 +29,6 @@ pub fn append(file: &Path, line: &OutboxLine) -> io::Result<u64> {
     Ok(f.stream_position()? - bytes.len() as u64)
 }
 
-/// The outbox `file` (`~`-rooted on a place) from the offset `from`, at
-/// most [`MAX_OUTBOX_READ`] bytes, as UTF-8 with no byte added or removed;
-/// from its start when it is shorter than `from`. `None` when it is not
-/// there; an error when it is not a regular file, a symlink included.
 pub fn read_from(file: &Path, from: u64) -> io::Result<Option<OutboxRead>> {
     let mut f = match open_regular(&expand_home(file)) {
         Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(None),
@@ -63,10 +44,6 @@ pub fn read_from(file: &Path, from: u64) -> io::Result<Option<OutboxRead>> {
     }))
 }
 
-/// Open `path` for reading only when it is a regular file. A session
-/// controls its outbox and signal file: a FIFO with no writer would block
-/// the open, and a symlink would point the read at another file this
-/// process can read. On Unix the open neither blocks nor follows a symlink.
 pub(crate) fn open_regular(path: &Path) -> io::Result<fs::File> {
     let mut options = OpenOptions::new();
     options.read(true);
@@ -86,10 +63,6 @@ pub(crate) fn open_regular(path: &Path) -> io::Result<fs::File> {
     Ok(f)
 }
 
-/// `bytes` with each byte that is not part of valid UTF-8 replaced by NUL:
-/// a place's read crosses the runtime as text, and this keeps every byte
-/// offset as it is in the file. JSON takes no raw NUL, in a string or out
-/// of one, so a line it touches no longer parses, and is skipped.
 fn with_invalid_utf8_as_nul(mut bytes: Vec<u8>) -> Vec<u8> {
     let mut at = 0;
     while let Err(e) = std::str::from_utf8(&bytes[at..]) {
@@ -101,24 +74,18 @@ fn with_invalid_utf8_as_nul(mut bytes: Vec<u8>) -> Vec<u8> {
     bytes
 }
 
-/// The key of the session whose outbox is `file`, read back from the name
-/// Fleet gave it: [`outbox_file`](fleet_api::event::outbox_file) of the
-/// session's `<key>.jsonl` signal file. `None` for any other name.
 pub fn outbox_session_key(file: &Path) -> Option<String> {
     let name = file.file_name()?.to_str()?;
     let key = name.strip_suffix(".jsonl.events")?;
     (!key.is_empty()).then(|| key.to_string())
 }
 
-/// What `fleet signal-read --from` prints of a read: the offset it starts
-/// at on a line of its own, then the bytes.
 pub fn encode_place_read(read: &OutboxRead) -> Vec<u8> {
     let mut out = format!("{}\n", read.start).into_bytes();
     out.extend_from_slice(&read.bytes);
     out
 }
 
-/// A read back from what `fleet signal-read --from` printed.
 pub fn decode_place_read(text: &str) -> Option<OutboxRead> {
     let (start, bytes) = text.split_once('\n')?;
     Some(OutboxRead {

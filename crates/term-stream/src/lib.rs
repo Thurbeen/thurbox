@@ -1,34 +1,17 @@
-//! The terminal stream (docs/runtime/README.md#the-terminal-stream): the
-//! frames a view and the process `fleet attach` names exchange over that
-//! process's stdin and stdout, and their codec.
-//!
-//! A frame is a type byte, a payload length as a big-endian `u32`, then the
-//! payload. Output, input and state are raw bytes; paste is UTF-8 text; every
-//! other payload is a JSON object. This crate is the wire format and nothing
-//! else: no process, no runtime, no transport.
-
 use std::io::{self, Read, Write};
 
 use serde::{Deserialize, Serialize};
 
-/// The stream protocol version a `hello` names.
 pub const VERSION: u32 = 1;
 
-/// The largest payload either side accepts: a snapshot with a long history
-/// is the largest frame.
 pub const MAX_PAYLOAD: usize = 64 * 1024 * 1024;
 
-/// What the end that keeps the screen can do, as `hello` lists it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Capability {
-    /// A `snapshot` follows `hello`, so a view never starts on an empty grid.
     Snapshot,
-    /// The snapshot carries history above the screen.
     Scrollback,
-    /// Several views may attach at once.
     Viewers,
-    /// A `resize` is honoured.
     Resize,
 }
 
@@ -44,18 +27,12 @@ impl Hello {
     }
 }
 
-/// The screen at one point of the output: every `output` before it is in
-/// it, and none after.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Snapshot {
     pub cols: u16,
     pub rows: u16,
-    /// `(column, row)` from the top-left of the screen.
     pub cursor: (u16, u16),
-    /// The normal screen's history, then its rows, one line each, styled
-    /// with SGR sequences.
     pub normal: Vec<String>,
-    /// The alternate screen's rows, when that is the one showing.
     pub alternate: Option<Vec<String>>,
 }
 
@@ -65,42 +42,30 @@ pub struct Size {
     pub cols: u16,
 }
 
-/// How the process ended.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Exit {
-    /// Its exit status, `None` for a signal.
     Known { code: Option<i64> },
-    /// The end that keeps the screen could not tell.
     Unknown { why: String },
 }
 
-/// A frame from the end that keeps the screen to the view.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Down {
     Hello(Hello),
     Snapshot(Snapshot),
     Output(Vec<u8>),
     Resized(Size),
-    /// Whether another view sizes the screen.
     SizedElsewhere(bool),
-    /// A snapshot replacing the view's grid after dropped output.
     Resync(Snapshot),
-    /// Title and input modes as terminal bytes: parsed, not counted as output.
     State(Vec<u8>),
     Exit(Exit),
 }
 
-/// A frame from the view.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Up {
-    /// Bytes, sent as typed.
     Input(Vec<u8>),
-    /// Text, bracketed when the program asked for it.
     Paste(String),
-    /// A request the end that keeps the screen arbitrates.
     Resize(Size),
-    /// Leave; the process keeps running.
     Detach,
 }
 
@@ -109,11 +74,8 @@ struct Elsewhere {
     elsewhere: bool,
 }
 
-/// A frame of either direction.
 pub trait Frame: Sized {
-    /// Its type byte and payload.
     fn encode(&self) -> (u8, Vec<u8>);
-    /// The frame a type byte and payload carry.
     fn decode(kind: u8, payload: Vec<u8>) -> io::Result<Self>;
 }
 
@@ -182,7 +144,6 @@ impl Frame for Up {
     }
 }
 
-/// `frame`'s bytes on the wire.
 pub fn to_bytes(frame: &impl Frame) -> Vec<u8> {
     let (kind, payload) = frame.encode();
     let mut out = Vec::with_capacity(5 + payload.len());
@@ -196,14 +157,11 @@ pub fn to_bytes(frame: &impl Frame) -> Vec<u8> {
     out
 }
 
-/// Write one frame and flush, so it reaches the other end now.
 pub fn write(w: &mut impl Write, frame: &impl Frame) -> io::Result<()> {
     w.write_all(&to_bytes(frame))?;
     w.flush()
 }
 
-/// Read one frame: `None` when the stream ended between two frames, an
-/// error when it ended inside one or carried one this version does not know.
 pub fn read<F: Frame>(r: &mut impl Read) -> io::Result<Option<F>> {
     let mut head = [0u8; 5];
     let mut got = 0;

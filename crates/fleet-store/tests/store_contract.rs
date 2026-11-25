@@ -1,7 +1,3 @@
-//! The store contract against the file store: exclusive create,
-//! compare-and-swap without lost updates, torn and crashed writes, field
-//! ownership, the manager lease and finalizers.
-
 use std::collections::BTreeMap;
 use std::fs;
 use std::path::PathBuf;
@@ -832,9 +828,6 @@ fn change_request(name: &str) -> Object {
     .unwrap()
 }
 
-/// A controller retires its own object by the uid and resourceVersion it
-/// decided from, under the lease: a recreated object under the same name, a
-/// rewritten one, a stale lease and another field manager all remove nothing.
 #[test]
 fn a_controllers_delete_is_fenced_by_uid_version_and_lease() {
     let dir = Dir::new("delete-fenced");
@@ -2506,9 +2499,6 @@ fn the_gateway_kinds_are_reserved_against_plugin_manifests_and_validated_on_writ
     ));
 }
 
-/// The Task a thread starts: created by the Conversation's controller alone,
-/// under the lease, as the one create that may carry the conversation
-/// labels; nobody sets or changes those labels otherwise.
 #[test]
 fn a_conversation_task_is_created_fenced_by_its_controller_and_its_labels_are_fixed() {
     use fleet_api::conversation::{CONVERSATION_LABEL, CONVERSATION_UID_LABEL};
@@ -2639,8 +2629,6 @@ fn a_conversation_task_is_created_fenced_by_its_controller_and_its_labels_are_fi
 
 // --- Answers: an append records what it answers, in the same write. ------
 
-/// A Task briefed as its controller would leave it, with two declared
-/// Questions as the worker would leave them.
 fn with_questions(store: &FileStore, name: &str, lease: &fleet_api::LeaseToken) -> Object {
     let t = store.create(task(name), FieldManager::Apply).unwrap();
     let t = store

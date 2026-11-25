@@ -1,5 +1,3 @@
-//! Dev/test builds retain source locations without duplicating full type information.
-
 #![cfg(debug_assertions)]
 
 fn default_debug_policy() -> bool {

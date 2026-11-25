@@ -1,18 +1,3 @@
-//! End-to-end test of the kernel against the *real* bundled mods.
-//!
-//! Loads `ui/` exactly as the binary does, publishes a snapshot, resolves the
-//! arrangement and renders every mod into its resolved rect — so this fails
-//! if the kernel breaks *or* if a shipped mod does.
-//!
-//! The properties under test are the load-bearing design decisions:
-//!
-//! - **D1** the kernel exposes four node kinds, and the panes are built from
-//!   them via `ui/lib/widgets.lua` rather than from kernel widgets
-//! - **D2** a mod is told its own resolved rect, not the screen's
-//! - **D3** the agent pane places a `surface` it does not paint
-//! - **D5** mod reads are served from a snapshot and never block
-//! - isolation: a throwing mod costs its own pane, not the frame
-
 use std::path::PathBuf;
 
 use ratatui::backend::TestBackend;
@@ -27,26 +12,20 @@ use thurbox::kernel::registry::Registry;
 use thurbox::kernel::snapshot::{SessionRow, Snapshot};
 use thurbox::kernel::theme::Themes;
 
-/// The theme every test publishes with: whatever the environment resolves,
-/// which keeps these tests independent of the user's active choice.
 fn themes() -> Themes {
     Themes::load(None)
 }
 
-/// Publish a snapshot with the defaults every test wants.
 fn publish(host: &LuaHost, snapshot: &Snapshot) {
     publish_with(host, snapshot, &Default::default(), &[]);
 }
 
-/// [`publish`], naming the sessions whose panes are producing output — the
-/// evidence a `running` indicator animates on.
 fn publish_printing(host: &LuaHost, snapshot: &Snapshot, printing: &[&str]) {
     let printing: std::collections::HashSet<String> =
         printing.iter().map(|s| (*s).to_string()).collect();
     publish_full(host, snapshot, &Default::default(), &[], &printing);
 }
 
-/// Publish with attach errors and in-flight commands spelled out.
 fn publish_with(
     host: &LuaHost,
     snapshot: &Snapshot,
@@ -236,11 +215,6 @@ fn paint(host: &LuaHost, index: usize, width: u16, height: u16) -> Vec<String> {
     paint_node(&node, width, height)
 }
 
-/// Like `paint_node`, but keeps each cell's colours and modifiers. v1 marks the
-/// selected row by STYLE (a highlighted background), never by a marker glyph —
-/// see `tests/snapshots/v1_recordings__v1_session_list.snap`, whose rows carry
-/// no cursor character — so a symbols-only comparison cannot see the cursor
-/// move at all.
 fn paint_styles(host: &LuaHost, index: usize, width: u16, height: u16) -> Vec<String> {
     let node = host
         .render(index, ctx(width, height, true))
@@ -378,11 +352,6 @@ fn the_session_list_renders_real_snapshot_rows() {
     assert!(!screen.contains("sessions · 4"), "{screen}");
 }
 
-/// R1 + R3, at the surface that had the bug. A session a driver launched an
-/// agent into reports nothing at all, and the interface drew the green hollow
-/// `idle` circle for it — "the agent says it is at rest" for an agent that was
-/// mid-turn. The three silences now each have their own glyph, and the agent
-/// found in the pane is named beside the one the row was created as.
 #[test]
 fn a_session_with_no_reported_status_never_draws_the_idle_dot() {
     let host = host();
@@ -419,14 +388,6 @@ fn a_session_with_no_reported_status_never_draws_the_idle_dot() {
     assert!(title.contains("Running"), "{title}");
 }
 
-/// A `running` indicator moves only on proof that something is moving.
-///
-/// The distinction the whole state exists to keep: no process listing can tell
-/// a turn in flight from a prompt waiting for input, so `running` on its own
-/// may not claim a spinner. Terminal output can tell them apart, and it is the
-/// same signal the stuck-`working` fallback already trusts — so the dot
-/// animates exactly while the pane is printing and is static the moment it
-/// stops.
 #[test]
 fn a_running_session_animates_only_while_its_pane_prints() {
     let host = host();
@@ -456,14 +417,6 @@ fn a_running_session_animates_only_while_its_pane_prints() {
     assert!(!busy.contains('◉'), "the static glyph survived:\n{busy}");
 }
 
-/// The blast radius of the evidence, checked at its edges: `running` is the
-/// only status output can set in motion.
-///
-/// `uncovered` and `unreported` are absences — one agent reports nothing, the
-/// other has not reported yet — and an absence that spun would be asserting
-/// exactly the knowledge it lacks. A pane can print under either (a shell
-/// echoing, a session still booting), so the printing set alone must not move
-/// them.
 #[test]
 fn output_animates_running_and_nothing_else() {
     let host = host();
@@ -492,9 +445,6 @@ fn output_animates_running_and_nothing_else() {
     assert!(screen.contains('○'), "no idle glyph in:\n{screen}");
 }
 
-/// `working` is the agent's own report that a turn is running, so it animates
-/// whatever the pane is doing — the half that must not regress while `running`
-/// gains its own, narrower rule.
 #[test]
 fn a_working_session_animates_without_needing_the_pane() {
     let host = host();
@@ -509,16 +459,10 @@ fn a_working_session_animates_without_needing_the_pane() {
     );
 }
 
-/// One frame of `theme.spinner`, whichever the elapsed clock landed on.
 fn is_spinner_frame(c: char) -> bool {
     "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏".contains(c)
 }
 
-/// The follow-up: an agent IS in the pane (status `running`), but two
-/// registered profiles share its executable, so `classify_foreground`
-/// publishes `detected_agent: None` rather than an arbitrary first match. The
-/// row must still say an agent is running — never fall silent the way an
-/// `unreported` row does — while naming no one.
 #[test]
 fn a_running_session_with_no_determined_agent_says_so_without_a_name() {
     let host = host();
@@ -1056,13 +1000,10 @@ fn a_session_backed_surface_falls_back_when_nothing_is_attached() {
 use thurbox::kernel::command::{Command, InFlight, Phase};
 use thurbox::session::SessionState;
 
-/// Press a key and route it exactly as the binary does: registry first
-/// (declared actions), then raw `on_key`. Returns whatever commands it issued.
 fn press_key(host: &LuaHost, mod_name: &str, ch: char) {
     press_chord(host, mod_name, ch, false);
 }
 
-/// The same, with Ctrl held.
 fn press_ctrl_key(host: &LuaHost, mod_name: &str, ch: char) {
     press_chord(host, mod_name, ch, true);
 }
@@ -1408,10 +1349,6 @@ fn the_theme_reaches_mods_as_roles() {
     );
 }
 
-/// Does this line contain a literal colour rather than a role name?
-///
-/// A quoted `#rrggbb`, or one of ratatui's colour names. Deliberately not
-/// looking for a bare `#`, which in Lua is the length operator.
 fn hardcodes_colour(line: &str) -> bool {
     const NAMES: [&str; 8] = [
         "light-cyan",
@@ -1457,7 +1394,6 @@ fn no_bundled_mod_hardcodes_a_colour() {
     );
 }
 
-/// Every uncommented line of `source` that names a colour, as `path:line: text`.
 fn colour_offenders(path: &std::path::Path, source: &str) -> Vec<String> {
     source
         .lines()
@@ -2142,7 +2078,6 @@ fn the_review_body_is_a_surface_not_a_tree() {
 
 // --- text fields -----------------------------------------------------------
 
-/// Paint a tree and report where the caret ended up, if anywhere.
 fn painted_caret(node: &Node, width: u16, height: u16) -> Option<(u16, u16)> {
     let mut terminal = Terminal::new(TestBackend::new(width, height)).expect("terminal");
     terminal

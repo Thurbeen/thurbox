@@ -1,9 +1,3 @@
-//! ForgeController as a pure function: a Task, the ChangeRequests it
-//! declared, Fleet's login and whether the session is at rest go in; a plan
-//! comes out, whose status is `status.forge`, whose appends are the inbox
-//! entries that land with it, and whose effects are the mark-ready actions.
-//! Each case is one transition of one entry, or one reason nothing moves.
-
 use std::collections::BTreeMap;
 
 use fleet_api::change_request::{ChangeRequestStatus, Head, Phase, Sequenced, StoredNote};
@@ -34,7 +28,6 @@ fn task(declared: Vec<Value>, forge: Option<ForgeStatus>, spec_forge: Value) -> 
     task_with(declared, forge, spec_forge, false)
 }
 
-/// A Task whose worker reported `shipped` and whose session is recorded.
 fn shipped_task(declared: Vec<Value>, forge: Option<ForgeStatus>, spec_forge: Value) -> Object {
     task_with(declared, forge, spec_forge, true)
 }
@@ -125,8 +118,6 @@ fn inline(id: &str, seq: u64, at: u64, author: &str, thread: &str, resolved: boo
     }
 }
 
-/// A mirror at `revision`, a reachable draft, head `h1` pending, with the
-/// given notes.
 fn mirror(revision: u64, notes: Vec<StoredNote>) -> ChangeRequestStatus {
     let mut conditions = Vec::new();
     set_condition(
@@ -192,7 +183,6 @@ fn seen(cr: &ChangeRequestStatus) -> ForgeObservations {
     observed(Observation::Known(Some(change_request(CR_UID, cr))))
 }
 
-/// `status.forge` as the controller leaves it after joining at `cursor`.
 fn following(cursor: u64) -> ForgeStatus {
     let obj = task(declared(), None, Value::Null);
     let (_, forge) = run(&obj, seen(&mirror(cursor, Vec::new())));
@@ -870,7 +860,6 @@ fn two_entries_are_independent_and_one_problem_stops_nothing_else() {
 
 // ---- Mark ready -----------------------------------------------------------
 
-/// The shipped policies, `checks` as the default.
 fn policies() -> ForgeDefaults {
     ForgeDefaults {
         draft_policy: Some("checks".into()),
@@ -879,7 +868,6 @@ fn policies() -> ForgeDefaults {
     }
 }
 
-/// A fresh draft mirror at revision 5 whose head `h1` passed its checks.
 fn ready_draft() -> ChangeRequestStatus {
     let mut cr = mirror(5, Vec::new());
     cr.head.as_mut().unwrap().checks = Checks::Passed;
@@ -899,8 +887,6 @@ fn key(head: &str) -> String {
     format!("task/t/{TASK_UID}/ready/{CR_UID}/{head}")
 }
 
-/// A following entry at cursor 5 whose mark-ready record is `pending` for
-/// `h1`, with an intent written at `at`, and the receipt, if any.
 fn pending(at: u64, receipt: Option<Observation<EffectOutcome>>) -> ForgeStatus {
     let mut forge = following(5);
     let e = forge.changes.get_mut(CR).unwrap();

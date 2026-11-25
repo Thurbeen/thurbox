@@ -10,19 +10,10 @@ use crate::kernel::registry::{Registry, Value as SettingValue};
 use crate::kernel::snapshot::{HostRow, Snapshot};
 use crate::kernel::theme::Themes;
 
-/// Set one key on a Lua table, mapping the error to a String — the shape
-/// `publish` otherwise repeats per field.
 fn set(table: &Table, key: &str, value: impl mlua::IntoLua) -> Result<(), String> {
     table.raw_set(key, value).map_err(|e| e.to_string())
 }
 
-/// FNV-1a over a sequence of byte strings, for group keys whose input has no
-/// version counter of its own (the interface inventory, a parameterised want).
-///
-/// The group cache compares keys exactly, so a collision here would hand back a
-/// stale table — but these keys pair the hash with a real version (or hash
-/// inputs a handful of short strings), which keeps the exposure to the same
-/// order as the `always_fresh` counter wrapping.
 fn fnv64<'a>(parts: impl IntoIterator<Item = &'a [u8]>) -> u64 {
     let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
     for part in parts {
@@ -300,11 +291,6 @@ impl LuaHost {
         set(&self.lua.globals(), "thurbox", observed)
     }
 
-    /// Publish the settings in force.
-    ///
-    /// Every switch is published, including ones the kernel does not act on: a
-    /// pane that owns its own surface is the only thing that can honour its own
-    /// switch, which is the point of publishing rather than gating centrally.
     fn publish_settings(
         &self,
         table: &Table,
@@ -389,9 +375,6 @@ impl LuaHost {
         Ok(())
     }
 
-    /// The branches of the repository `store.want_branches` names: empty
-    /// while nothing is asked, `loading` until git answers, and `is_git`
-    /// false for a directory that is no repository.
     fn build_repo_branches(
         &self,
         store: &crate::kernel::repos::RepoStore,
@@ -734,8 +717,6 @@ fn build_repos(lua: &Lua, snapshot: &Snapshot) -> Result<Value, String> {
     Ok(Value::Table(repos))
 }
 
-/// `nil` until Fleet has said which harnesses it has: a flow must tell a
-/// pending list from an empty one.
 fn build_agents(lua: &Lua, snapshot: &Snapshot) -> Result<Value, String> {
     let Some(known) = &snapshot.agents else {
         return Ok(Value::Nil);
@@ -749,8 +730,6 @@ fn build_agents(lua: &Lua, snapshot: &Snapshot) -> Result<Value, String> {
     Ok(Value::Table(agents))
 }
 
-/// `nil` until Fleet has said which places it defines: a flow must tell a
-/// pending list from one with no remote place.
 fn build_hosts(lua: &Lua, snapshot: &Snapshot) -> Result<Value, String> {
     hosts_table(lua, snapshot.hosts.as_deref())
 }
@@ -773,8 +752,6 @@ fn hosts_table(lua: &Lua, known: Option<&[HostRow]>) -> Result<Value, String> {
     Ok(Value::Table(hosts))
 }
 
-/// Every listed Fleet, each with its own agents and places, `nil` until
-/// that Fleet has answered.
 fn build_fleets(lua: &Lua, snapshot: &Snapshot) -> Result<Value, String> {
     let fleets = lua.create_table().map_err(|e| e.to_string())?;
     for (index, fleet) in snapshot.fleets.iter().enumerate() {
@@ -1137,7 +1114,6 @@ pub(super) fn run_to_lua(lua: &Lua, run: &crate::kernel::runs::Run) -> mlua::Res
     Ok(table)
 }
 
-/// Set a setting value on a table in whatever Lua type it actually is.
 fn set_value(table: &Table, key: &str, value: &SettingValue) -> Result<(), String> {
     match value {
         SettingValue::Bool(b) => table.set(key, *b),
@@ -1160,10 +1136,6 @@ fn opt_lua_string(lua: &Lua, value: Option<&str>) -> Result<Value, String> {
     }
 }
 
-/// An agent's statusline metrics as a Lua table.
-///
-/// Every field is optional on the way in and simply absent on the way out, so a
-/// pane renders the rows it has rather than zeroes for the ones it does not.
 fn agent_metrics_table(lua: &Lua, m: &crate::session::AgentMetrics) -> Result<Table, String> {
     let table = lua.create_table().map_err(|e| e.to_string())?;
     let set = |key: &str, value: Value| -> Result<(), String> {

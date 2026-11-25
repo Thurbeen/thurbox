@@ -1,10 +1,3 @@
-//! Every bundled screen rule against the agent screens it was written from.
-//!
-//! Each fixture under `fixtures/screens/<harness>/` is one real screen of
-//! that agent, captured through runtime-mux: its text and title, the state
-//! it shows and the rule that must say so. Every bundled rule is covered by
-//! at least one fixture, so a rule no real screen shows cannot ship.
-
 use std::collections::BTreeSet;
 
 use fleet_api::harness::profile;

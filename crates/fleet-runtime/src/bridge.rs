@@ -1,23 +1,9 @@
-//! `fleet term-bridge -- <argv>`: a runtime's raw interactive command (a
-//! `tty` answer to `attach`) as a terminal stream
-//! (docs/runtime/README.md#the-terminal-stream), so a view only ever speaks
-//! the stream.
-//!
-//! The command runs on a pseudo-terminal of its own through `fleet-exec`.
-//! The bridge relays: it keeps no screen, so it has no history from before
-//! it started and `hello` names no `snapshot`. The view's first `resize`
-//! sizes the terminal the command starts on, and a program redraws on a
-//! resize, which is how a view gets a screen. A `detach` ends the command
-//! (a `docker attach` client, a console), never the process it reaches.
-
 use std::io::{Read, Write};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
 use term_stream::{Capability, Down, Exit, Hello, Size, Up, VERSION};
 
-/// Serve `argv` to the view until it detaches, its input ends or the
-/// command exits.
 pub fn serve(
     argv: &[String],
     mut from_view: impl Read + Send + 'static,
@@ -103,9 +89,6 @@ pub fn serve(
     Ok(())
 }
 
-/// Whether the program asked for bracketed paste (`CSI ? 2004 h`, off with
-/// `l`), read off its output: the last switch wins, and a switch split
-/// across two reads is still seen.
 #[derive(Debug, Default)]
 struct Modes {
     tail: Vec<u8>,

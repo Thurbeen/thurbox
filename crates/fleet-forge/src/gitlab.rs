@@ -1,10 +1,3 @@
-//! The forge contract served by `glab` for GitLab, gitlab.com or
-//! self-hosted: bounded `glab api` processes read the merge request, its
-//! discussions with pagination and its approvals, mapped onto Fleet's
-//! vocabulary by the adapter truth table in the ChangeRequest interface
-//! page; and one write, the merge request's title with its draft marker
-//! removed, after a fresh read of the head and the draft state.
-
 use std::ffi::OsString;
 use std::time::Duration;
 
@@ -21,7 +14,6 @@ use crate::cli::{self, Budget, Reply};
 
 pub const KIND: &str = "gitlab";
 
-/// Discussions fetched per page.
 const PAGE: usize = 100;
 
 #[derive(Debug, Clone)]
@@ -44,7 +36,6 @@ impl GitlabForge {
         self.api_with(&[], endpoint, timeout)
     }
 
-    /// A call with extra flags before the endpoint: a method, a field.
     fn api_with(
         &self,
         extra: &[String],
@@ -63,8 +54,6 @@ impl GitlabForge {
     }
 }
 
-/// The JSON of a REST answer, or why it is Unknown. A 404 is handed back as
-/// `Ok(None)` for the caller to disambiguate.
 fn body_of(reply: &Reply) -> Result<Option<Value>, (Uncertainty, String)> {
     if reply.throttled() {
         return Err((
@@ -102,8 +91,6 @@ impl Forge for GitlabForge {
         cli::operation_bound(self.call_timeout)
     }
 
-    /// `https://<host>/<group>/<project>/-/merge_requests/<iid>`; the `/-`
-    /// is optional, fragments and queries are dropped.
     fn parse(&self, url: &str) -> Observation<ChangeRef> {
         let Some((host, project, id)) = cli::parse_change_url(url) else {
             return Observation::unknown("the URL does not name a merge request");
@@ -229,11 +216,6 @@ impl Forge for GitlabForge {
         }
     }
 
-    /// Read the merge request afresh; refuse with `Moved` when its head or
-    /// state is not what the decision expected; else update its title with
-    /// the draft marker removed, which is how GitLab takes a merge request
-    /// out of draft. Everything before the update that goes wrong is a Known
-    /// refusal; past it, only an answer the adapter can read is Known.
     fn mark_ready(
         &self,
         change: &ChangeRef,
@@ -287,8 +269,6 @@ fn failed(why: impl Into<String>) -> Observation<EffectOutcome> {
     Observation::Known(EffectOutcome::Failed { why: why.into() })
 }
 
-/// The state of a merge request. Only an open merge request is a draft:
-/// GitLab keeps the draft flag on a draft that is closed or merged.
 fn state_of(mr: &Value) -> Result<ChangeState, String> {
     let draft = mr["draft"] == true || mr["work_in_progress"] == true;
     match mr["state"].as_str() {
@@ -300,16 +280,12 @@ fn state_of(mr: &Value) -> Result<ChangeState, String> {
     }
 }
 
-/// The head and state of a fresh read, by the same rule as the snapshot.
 fn head_and_state(mr: &Value) -> Result<(String, ChangeState), String> {
     let state = state_of(mr)?;
     let head = mr["sha"].as_str().ok_or("no sha")?.to_string();
     Ok((head, state))
 }
 
-/// A merge request's title with GitLab's draft markers removed: `Draft:`,
-/// `[Draft]`, `(Draft)`, `Draft -` and the legacy `WIP:` forms, however
-/// cased, repeated, with the whitespace around them.
 pub fn without_draft_marker(title: &str) -> String {
     const MARKERS: &[&str] = &[
         "[draft]", "(draft)", "draft:", "draft -", "draft ", "[wip]", "(wip)", "wip:", "wip ",
@@ -324,8 +300,6 @@ pub fn without_draft_marker(title: &str) -> String {
     }
 }
 
-/// What the update's answer means: Known when the forge's answer can be
-/// read, Unknown otherwise, because the update may have landed.
 pub fn update_outcome(reply: &Reply) -> Observation<EffectOutcome> {
     if reply.throttled() {
         return failed(format!(
@@ -371,8 +345,6 @@ pub fn update_outcome(reply: &Reply) -> Observation<EffectOutcome> {
     }
 }
 
-/// Why one call left the observation Unknown: small, so the fetch closure's
-/// error stays small; the whole answer is built once, at the end.
 struct Unreached {
     kind: Uncertainty,
     why: String,
@@ -406,8 +378,6 @@ fn millis(v: &Value, field: &str) -> Result<Millis, String> {
         .ok_or_else(|| format!("{field} is not a timestamp"))
 }
 
-/// The truth table: GitLab's answer in Fleet's words, or why it cannot be
-/// placed, which makes the whole observation Unknown.
 pub fn snapshot(
     mr: &Value,
     discussions: &[Value],

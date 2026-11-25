@@ -14,40 +14,18 @@ use crate::kernel::registry::{
     Value as SettingValue,
 };
 
-/// Build a VM with the deliberate stdlib set and the memory ceiling.
 pub(super) fn new_vm() -> mlua::Result<Lua> {
     let lua = Lua::new_with(mod_stdlib(), mlua::LuaOptions::default())?;
     lua.set_memory_limit(memory_limit())?;
     Ok(lua)
 }
 
-/// How often the count hook fires. The budget is checked per batch rather than
-/// per instruction, because a hook on every instruction would dominate the
-/// frame cost.
 const HOOK_INTERVAL: u32 = 100_000;
 
-/// Marker in the abort error, so [`clean_error`] can recognise its own work
-/// rather than pattern-matching on VM prose.
 pub(super) const BUDGET_EXCEEDED: &str = "thurbox: instruction budget exceeded";
 
-/// Marker in the error [`Budget::arm`] returns when the hook cannot be
-/// installed, for [`clean_error`] in the same way.
 pub(super) const BUDGET_UNARMED: &str = "thurbox: instruction budget could not be armed";
 
-/// Arms the instruction-count hook for the duration of one mod call.
-///
-/// This is the Lua 5.4 half of the instruction bound. Luau donates
-/// `set_interrupt`; stock Lua does not, so the equivalent is a count hook that
-/// raises an error once the budget is spent — which unwinds the mod call
-/// and surfaces as an ordinary mod failure. It is what stops
-/// `while true do end` from taking the render loop with it.
-///
-/// Disarmed on drop, so the budget is per call rather than per VM.
-///
-/// Installing the hook allocates, so on a full VM it can fail. [`Budget::arm`]
-/// then returns the error and the caller does not make the call: an unbounded
-/// call that never returns would freeze the render loop, while a refused one
-/// is an ordinary mod failure the memory recovery can act on.
 pub(super) struct Budget<'a> {
     lua: &'a Lua,
 }
@@ -345,12 +323,6 @@ fn read_actions(def: &Table, mod_name: &str) -> Result<Vec<ActionDecl>, String> 
     Ok(out)
 }
 
-/// Read `events = { "session.status", … }` off a declaration.
-///
-/// Each name is checked against the kernel's enumeration (or the `user.` form)
-/// here, at load, because a subscription to a name nothing emits is a handler
-/// that never fires — the one failure with no symptom at all. Refused the way
-/// an unknown capability is, with the file named and the alternatives listed.
 fn read_events(def: &Table, file: &str) -> Result<Vec<String>, String> {
     let declared: Option<Vec<String>> = def
         .get("events")
@@ -366,11 +338,6 @@ fn read_events(def: &Table, file: &str) -> Result<Vec<String>, String> {
     Ok(out)
 }
 
-/// Read `commands = { { action = …, desc = … } }` — the palette's rows.
-///
-/// Same shape as a key without the chord: the action id is the one `on_action`
-/// is called back with, so a command and a key for one action are one thing
-/// reached two ways.
 fn read_commands(def: &Table, mod_name: &str) -> Result<Vec<CommandDecl>, String> {
     let raw: Value = def
         .get("commands")
@@ -399,11 +366,6 @@ fn read_commands(def: &Table, mod_name: &str) -> Result<Vec<CommandDecl>, String
     Ok(commands)
 }
 
-/// Read `capabilities = { "run" }` off a declaration.
-///
-/// An unknown name fails the load with the file named, which is the same
-/// treatment a malformed key or setting gets: a declaration the kernel cannot
-/// honour is a mistake to report, not one to route around.
 fn read_capabilities(def: &Table, file: &str) -> Result<Vec<Capability>, String> {
     let declared: Option<Vec<String>> = def
         .get("capabilities")

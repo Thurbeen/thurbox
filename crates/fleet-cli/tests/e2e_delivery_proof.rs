@@ -1,8 +1,3 @@
-//! A brief or an inbox entry counts as delivered only when the agent's
-//! prompt hook reports it through `fleet signal`, not when its runtime typed
-//! it. The real `fleet` binary, its file store and the fake host, whose
-//! agents report every text they are given unless a test silences them.
-
 mod support;
 
 use fleet_runtime::Fault;
@@ -28,7 +23,6 @@ fn signal_file(env: &Env) -> String {
         .expect("FLEET_SIGNAL_FILE")
 }
 
-/// The agent's prompt hook, reporting `text` as Claude Code gives it.
 fn prompt_hook(env: &Env, text: &str) {
     let payload = json!({"prompt": text, "session_id": "conv-1"}).to_string();
     let mut cmd = env.command(&["signal", "prompt", &payload]);

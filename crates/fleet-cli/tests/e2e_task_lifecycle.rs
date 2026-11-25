@@ -1,8 +1,3 @@
-//! Acceptance: the Task lifecycle through the real `fleet` binary, the file
-//! store and the fake host, across process restarts and injected faults.
-//! Every scenario goes CLI -> manager -> TaskController plan -> runtime
-//! effect -> receipt, with no step mocked out.
-
 mod support;
 
 use std::fs;
@@ -22,8 +17,6 @@ fn setup(name: &str, dispatch: bool) -> Env {
     env
 }
 
-/// A Task whose harness has no prompt hook, so the runtime's journal, not
-/// the agent, settles a delivery whose answer was lost.
 fn setup_unhooked(name: &str) -> Env {
     let env = Env::new(name);
     let mut t = task("t1", true);
@@ -965,7 +958,6 @@ fn a_runtime_section_is_the_fake_and_carries_no_repository_map() {
     );
 }
 
-/// The examples in docs/fleet/contracts.md are what the binary accepts.
 #[test]
 fn the_contract_examples_apply_as_written() {
     // A Windows checkout ends each line with CRLF.
@@ -1462,9 +1454,6 @@ mod relist {
         }
     }
 
-    /// The file store, counting each listing of the Tasks and moving the
-    /// clock on by `step` ms at each lease renewal: one per Task a pass
-    /// reconciles.
     struct Counting<'a> {
         inner: &'a FileStore,
         clock: &'a TestClock,
@@ -1587,8 +1576,6 @@ mod relist {
         }
     }
 
-    /// Task listings and passes of one run over [`TASKS`] waiting Tasks,
-    /// the clock moving `step` ms per Task reconciled.
     fn run(name: &str, step: u64) -> (u64, u64, u64) {
         let env = Env::new(name);
         let clock = Arc::new(TestClock(AtomicU64::new(1_794_798_000_000)));
@@ -1632,8 +1619,6 @@ mod relist {
         )
     }
 
-    /// A sweep lists the Tasks again to find new starts, but at most every
-    /// 250 ms: a store of many Tasks is not read once per Task.
     #[test]
     fn a_sweep_lists_the_tasks_again_at_most_every_250_ms() {
         let (lists, passes, _) = run("relist-frozen", 0);

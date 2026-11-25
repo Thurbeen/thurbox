@@ -1,21 +1,3 @@
-//! ForgeController: the second controller over a Task. It reads the
-//! ChangeRequests the Task's worker declared, joins each at the present
-//! with one message holding the whole snapshot, and from then on relays
-//! what is new above a cursor kept on the Task, into the Task's inbox. It
-//! owns `status.forge` and appends to `status.inbox`; it writes nothing
-//! else of the Task and never writes a ChangeRequest.
-//!
-//! Pure: it reads the Task, the ChangeRequests the manager fetched for it,
-//! Fleet's login on each forge host and, while a mark-ready is being
-//! evaluated, whether the session is at rest, and returns a Plan whose
-//! `status` is the desired `status.forge`, whose `appends` are the inbox
-//! entries to land in the same write, and whose `effects` are the
-//! `MarkReady` actions to perform afterwards. The relay is a status write,
-//! not an effect: no intent, no receipt, no runtime call. Mark-ready is the
-//! one effect: its intent is written with the status, its receipt lands on
-//! the entry, and an ambiguous outcome is answered by the change's next
-//! fresh observation, never by repeating it.
-
 use std::collections::{BTreeMap, BTreeSet};
 
 use fleet_api::change_request::{self, ChangeRequestSpec, ChangeRequestStatus, Phase, StoredNote};
@@ -38,66 +20,43 @@ use fleet_api::{Observation, StoreError};
 
 use crate::task::{MAX_ATTEMPTS, RETRY_DELAY_MS};
 
-/// What one reconcile of one Task's followed changes reads. Every outside
-/// fact arrives here as a value; nothing is read from the world inside.
 #[derive(Debug, Clone)]
 pub struct ForgeInput<'a> {
     pub task: &'a Object,
     pub observations: ForgeObservations,
     pub now: Millis,
-    /// The `[forge]` relay defaults `spec.forge` may override, and the
-    /// ready policies it may select.
     pub defaults: ForgeDefaults,
 }
 
-/// The answers to the probes; an absent key means "not asked".
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct ForgeObservations {
-    /// The answer to each `Probe::Object`, by ChangeRequest name:
-    /// `Known(None)` is readable absence.
     pub changes: BTreeMap<String, Observation<Option<Object>>>,
-    /// The answer to each `Probe::Whoami`, by forge host.
     pub whoami: BTreeMap<String, Observation<String>>,
-    /// The answer to `Probe::AtRest`, for the `workerIdle` predicate; asked
-    /// only while a mark-ready is being evaluated.
     pub at_rest: Option<Observation<bool>>,
-    /// Every Task's name by `uid`, so another worker's marked note can be
-    /// labelled with its Task's name. Optional: a uid not here is shown as is.
     pub workers: BTreeMap<String, String>,
 }
 
 #[derive(Debug, Clone, Copy, Default)]
 pub struct ForgeController;
 
-/// Condition types ForgeController writes, under `status.forge.conditions`.
 pub mod conditions {
-    /// At least one entry is not settled.
     pub const FOLLOWING: &str = "Following";
-    /// Every entry has settled.
     pub const SETTLED: &str = "Settled";
-    /// `RelayGap`, `ChangeGone`, `MarkReadyFailed` and `PolicyUnknown`.
     pub const NEEDS_ATTENTION: &str = "NeedsAttention";
 }
 use conditions::*;
 
 const RELAY_GAP: &str = "RelayGap";
 const CHANGE_GONE: &str = "ChangeGone";
-/// Three mark-ready attempts against one change failed.
 const MARK_READY_FAILED: &str = "MarkReadyFailed";
-/// The selected ready policy is not in the config.
 const POLICY_UNKNOWN: &str = "PolicyUnknown";
 
-/// The action name a mark-ready intent and receipt carry.
 const MARK_READY: &str = "markReady";
 
 impl ForgeController {
-    /// The kind this controller reconciles and the field manager it writes as.
     pub const KIND: &'static str = task::KIND;
     pub const MANAGER: FieldManager = FieldManager::ForgeController;
 
-    /// Whether the manager should run this controller on the Task now: a
-    /// declaration without an entry, or a following entry whose
-    /// `notBefore` is absent or due. A deleting Task is never due.
     pub fn due(task: &Object, now: Millis) -> bool {
         if task.is_deleting() {
             return false;
@@ -117,11 +76,6 @@ impl ForgeController {
                 .any(|e| e.state == EntryState::Following && e.not_before.is_none_or(|t| t <= now))
     }
 
-    /// What the next `reconcile` needs observed and does not have yet: the
-    /// object of every declared or following change, then Fleet's login on
-    /// each host those objects name, and whether the session is at rest
-    /// while some entry's mark-ready is being evaluated. The manager
-    /// answers what is asked and asks again until nothing is.
     pub fn probes(&self, input: &ForgeInput<'_>) -> Result<Vec<Probe>, StoreError> {
         if input.task.is_deleting() {
             return Ok(Vec::new());
@@ -244,9 +198,6 @@ impl ForgeController {
     }
 }
 
-/// The worker reported `shipped` for the generation it was last given:
-/// the `workerDone` predicate. A result an amendment has since superseded
-/// does not count.
 fn shipped(st: &TaskStatus) -> bool {
     st.result.as_ref().is_some_and(|r| {
         r.outcome == Outcome::Shipped
@@ -257,18 +208,14 @@ fn shipped(st: &TaskStatus) -> bool {
     })
 }
 
-/// A ChangeRequest's poll interval, from its spec.
 fn poll_ms_of(obj: &Object) -> Result<Millis, StoreError> {
     let spec: ChangeRequestSpec = typed(change_request::KIND, &obj.spec)?;
     Ok(spec.poll_ms())
 }
 
-/// The ready policy a Task selects, and whether the config defines it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum Policy {
-    /// `null`, or no default: mark-ready is off for this Task.
     None,
-    /// Named, but not under `[forge.readyPolicies]`.
     Unknown(String),
     Selected(String, ReadyPolicy),
 }
@@ -289,12 +236,6 @@ impl Policy {
     }
 }
 
-/// Whether an entry's mark-ready is being evaluated this pass, before the
-/// predicates: a policy is selected, the worker is done, the change is a
-/// draft that was never ready, the mirror is fresh, and the record is
-/// `none` with no `Moved` refusal for this head, or `failed` with attempts
-/// left and its wait over. Shared by `probes` (to ask `AtRest`) and the
-/// decision, so the two agree.
 fn evaluating(
     policy: &Policy,
     shipped: bool,
@@ -343,10 +284,6 @@ fn evaluating(
     }
 }
 
-/// Every predicate of the policy the snapshot alone can answer:
-/// `checksPassed`, `botReviewsAddressed`, `noUnresolvedThreads` and
-/// `forgeMergeable`. `workerDone` held for the evaluation to start;
-/// `workerIdle` is asked of the session afterwards, and only then.
 fn snapshot_predicates_hold(
     policy: &ReadyPolicy,
     cr: &ChangeRequestStatus,
@@ -380,9 +317,6 @@ fn snapshot_predicates_hold(
     true
 }
 
-/// `botReviewsAddressed`: every bot inline note is resolved or answered by
-/// this Task's worker in its thread, and no bot review on the current head
-/// requests changes.
 fn bots_addressed(cr: &ChangeRequestStatus, me: &str, mark: &str) -> bool {
     let Some(head) = &cr.head else {
         return false;
@@ -402,8 +336,6 @@ fn bots_addressed(cr: &ChangeRequestStatus, me: &str, mark: &str) -> bool {
     })
 }
 
-/// Only for an inline note with a non-null thread: a later note in that
-/// thread, by `seq` then `at`, is this Task's own marked reply.
 fn answered_in_thread(cr: &ChangeRequestStatus, note: &StoredNote, me: &str, mark: &str) -> bool {
     if note.kind != NoteKind::Inline {
         return false;
@@ -455,8 +387,6 @@ fn answered_through(cr: &ChangeRequestStatus, me: &str, mark: &str) -> Option<Mi
     Some(through.unwrap_or(0))
 }
 
-/// The names this controller looks at: every declared change, and every
-/// entry it already holds, each once, in a stable order.
 fn followed(declared: &[serde_json::Value], forge: &ForgeStatus) -> Vec<String> {
     let mut names: Vec<String> = declared_changes(declared)
         .into_iter()
@@ -493,9 +423,6 @@ fn decode_change(obj: &Object) -> Result<ChangeRequestStatus, StoreError> {
         .map_err(|e| StoreError::Invalid(format!("{}: status: {e}", obj.key())))
 }
 
-/// The open NeedsAttention reasons, one per (reason, entry), carried from
-/// pass to pass in the condition's message: an entry not observed this
-/// pass keeps what was recorded about it.
 struct Attention(BTreeMap<(String, String), String>);
 
 impl Attention {
@@ -545,13 +472,10 @@ impl Attention {
     }
 }
 
-/// One reconcile in progress.
 struct Pass<'a, 'b> {
     input: &'a ForgeInput<'b>,
     spec: ForgeSpec,
-    /// The ready policy this Task selects, resolved once.
     policy: Policy,
-    /// The worker reported `shipped`.
     shipped: bool,
     forge: ForgeStatus,
     attention: Attention,
@@ -559,7 +483,6 @@ struct Pass<'a, 'b> {
     effects: Vec<Effect>,
 }
 
-/// What the relay found above the cursor.
 #[derive(Default)]
 struct Delta<'c> {
     transitions: Vec<String>,
@@ -572,7 +495,6 @@ impl Pass<'_, '_> {
         (&m.name, &m.uid)
     }
 
-    /// One declared or followed change, by its ChangeRequest name.
     fn change(&mut self, name: &str) {
         let Some(observed) = self.input.observations.changes.get(name) else {
             // Not asked: settled, or the manager has nothing for it.
@@ -653,10 +575,6 @@ impl Pass<'_, '_> {
         }
     }
 
-    /// The mark-ready step for one following entry, after its relay: settle
-    /// a pending record from its receipt or from the mirror, then, when the
-    /// policy and every predicate hold, write the intent and plan the one
-    /// effect.
     fn mark_ready(
         &mut self,
         ctx: &Ctx<'_>,
@@ -758,10 +676,6 @@ impl Pass<'_, '_> {
         entry
     }
 
-    /// A `pending` record is a question. Its receipt answers it when the
-    /// manager wrote one; otherwise the change's next fresh observation
-    /// does: ready is a recovered receipt, still a draft is a failed
-    /// attempt. Nothing here repeats the effect.
     fn settle_pending(&mut self, ctx: &Ctx<'_>, entry: &mut ChangeEntry) {
         let cr = ctx.cr;
         let (task_name, uid) = self.task_meta();
@@ -825,8 +739,6 @@ impl Pass<'_, '_> {
         self.attention.clear(MARK_READY_FAILED, ctx.name);
     }
 
-    /// A refused attempt: wait on this entry's own `notBefore`; after
-    /// `MAX_ATTEMPTS`, raise attention and stop.
     fn failed(&mut self, ctx: &Ctx<'_>, entry: &mut ChangeEntry, key: &str, why: &str) {
         let record = &mut entry.mark_ready;
         record.state = MarkReadyState::Failed;
@@ -844,10 +756,6 @@ impl Pass<'_, '_> {
         }
     }
 
-    /// A bot note that stands between the change and the selected policy:
-    /// an unresolved inline note, or the body of a review on the current
-    /// head that requests changes. Relayed whatever `relayBots` says when
-    /// the policy waits on bots.
     fn bot_blocker(&self, ctx: &Ctx<'_>, note: &StoredNote) -> bool {
         if !note.bot {
             return false;
@@ -871,7 +779,6 @@ impl Pass<'_, '_> {
         entry
     }
 
-    /// A Following entry whose ChangeRequest settled is read no more.
     fn settled(&self, ctx: &Ctx<'_>, mut entry: ChangeEntry) -> ChangeEntry {
         if ctx.cr.phase == Phase::Settled {
             entry.state = EntryState::Settled;
@@ -879,7 +786,6 @@ impl Pass<'_, '_> {
         entry
     }
 
-    /// The first message to a follower: the snapshot as it stands.
     fn join(&mut self, ctx: &Ctx<'_>, entry: &ChangeEntry, rebound_from: Option<&str>) {
         let mut text = ctx.header();
         match rebound_from {
@@ -894,9 +800,6 @@ impl Pass<'_, '_> {
         self.send(ctx, entry, text);
     }
 
-    /// The relay, as the state machine has it: a gap notice and the whole
-    /// retained snapshot when notes were lost since the cursor, else the
-    /// filtered items and transitions above it; then the cursor advances.
     fn relay(&mut self, ctx: &Ctx<'_>, mut entry: ChangeEntry) -> ChangeEntry {
         let cr = ctx.cr;
         let name = ctx.name;
@@ -953,7 +856,6 @@ impl Pass<'_, '_> {
         entry
     }
 
-    /// Everything above the cursor that the filters let through.
     fn delta<'c>(&self, ctx: &Ctx<'c>, cursor: u64) -> Delta<'c> {
         let cr = ctx.cr;
         let defaults = &self.input.defaults;
@@ -1007,10 +909,6 @@ impl Pass<'_, '_> {
         delta
     }
 
-    /// The filters: this Task's own marked words are never relayed; a bot's
-    /// only where configured, or where the selected policy waits on bots
-    /// and the note blocks it; a resolved thread is answered; a thread this
-    /// Task already replied in is answered.
     fn relayable(&self, ctx: &Ctx<'_>, note: &StoredNote) -> bool {
         let (_, uid) = self.task_meta();
         let mark = worker_mark(uid);
@@ -1033,9 +931,6 @@ impl Pass<'_, '_> {
         answered_in_thread(ctx.cr, note, ctx.me, mark)
     }
 
-    /// The snapshot as the join and the gap notice render it: state, head
-    /// and checks, the forge's mergeability answer, the unresolved thread
-    /// count, and the retained notes through the relay's filters.
     fn snapshot(&self, ctx: &Ctx<'_>) -> String {
         let cr = ctx.cr;
         let mut out = String::new();
@@ -1095,9 +990,6 @@ impl Pass<'_, '_> {
         out
     }
 
-    /// One note, quoted as data: author, kind, place against the head it
-    /// was written on, URL and body, labelled when another Fleet worker
-    /// wrote it.
     fn render_note(&self, note: &StoredNote) -> String {
         let (_, uid) = self.task_meta();
         let mut head = format!("- {} ({}", note.author, word(note.kind));
@@ -1141,7 +1033,6 @@ impl Pass<'_, '_> {
         head
     }
 
-    /// Queue one message under its relay key, with `about` provenance.
     fn send(&mut self, ctx: &Ctx<'_>, entry: &ChangeEntry, text: String) {
         let (name, uid) = self.task_meta();
         let key = relay_key(name, uid, &entry.uid, ctx.cr.revision);
@@ -1232,7 +1123,6 @@ impl Pass<'_, '_> {
     }
 }
 
-/// One change under consideration.
 struct Ctx<'c> {
     name: &'c str,
     url: &'c str,
@@ -1241,8 +1131,6 @@ struct Ctx<'c> {
 }
 
 impl Ctx<'_> {
-    /// Every message opens the same way: what it is about, at which
-    /// revision, and that what follows is data.
     fn header(&self) -> String {
         let head = self
             .cr
@@ -1263,8 +1151,6 @@ impl Ctx<'_> {
     }
 }
 
-/// A vocabulary word as the resource pages spell it: the JSON string the
-/// port's enum serialises to.
 fn word<T: std::fmt::Debug>(value: T) -> String {
     // Every vocabulary enum is a unit variant list; its Debug name is the
     // CamelCase variant, and the pages spell it in kebab-case.

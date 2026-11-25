@@ -1,78 +1,38 @@
-//! OSC 8 hyperlink runs captured from an agent's output.
-//!
-//! Agent CLIs render a markdown link as an OSC 8 hyperlink: the escape carries
-//! the target and only the *label* is printed (`Github`, never
-//! `https://github.com`). The plain-text scan in thurbox's `kernel::terminal::links` therefore
-//! finds nothing on such a row and a `Ctrl+Click` has no target at all — the
-//! URL exists only in the escape sequence, which `vt100` discards. The parser
-//! callbacks record each run here instead (see `osc8`), and a
-//! click resolves against this table.
-//!
-//! A run is keyed by its **label text + start column**, not by screen row: the
-//! row a link sits on moves every time the agent's transcript scrolls, while
-//! the printed glyphs and the column they start at survive scrolling and
-//! redraws. Resolution re-checks that the label is still on screen at that
-//! column, so a row whose content has since been overwritten resolves to
-//! nothing rather than to a stale URL.
-
 use std::collections::{HashSet, VecDeque};
 
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
-/// Runs kept per session, oldest dropped first. A long transcript prints far
-/// more links than a click will ever target; the cap keeps the table bounded
-/// without needing to know when a run scrolls out of the scrollback.
 const MAX_RUNS: usize = 512;
 
-/// Newest runs scanned by [`HyperlinkTable::visible_runs`]. That runs once per
-/// painted frame, so the scan is bounded; a run older than this is many
-/// screenfuls back and cannot be on screen.
 const VISIBLE_SCAN_LIMIT: usize = 128;
 
-/// One OSC 8 hyperlink run, on one screen row.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct HyperlinkRun {
-    /// Target URL the escape carried.
     pub url: String,
-    /// Glyphs printed while the run was open (a run that wrapped contributes
-    /// one entry per row).
     pub label: String,
-    /// Screen column the label starts at.
     pub col: usize,
 }
 
 impl HyperlinkRun {
-    /// Cells the label occupies.
     fn width(&self) -> usize {
         UnicodeWidthStr::width(self.label.as_str())
     }
 
-    /// Whether display column `col` falls on the label.
     fn covers(&self, col: usize) -> bool {
         col >= self.col && col < self.col + self.width()
     }
 
-    /// Whether `row_text` still prints this label where it was captured — the
-    /// check that keeps a scrolled-away or repainted row from resolving to a
-    /// stale target.
     fn is_printed_in(&self, row_text: &str) -> bool {
         label_at_column(row_text, self.col, &self.label)
     }
 }
 
-/// Per-session table of captured hyperlink runs.
 #[derive(Clone, Debug, Default)]
 pub struct HyperlinkTable {
     runs: VecDeque<HyperlinkRun>,
 }
 
 impl HyperlinkTable {
-    /// Record a run's label.
-    ///
-    /// An agent repaints its transcript constantly, re-emitting the same runs:
-    /// a label already captured at that column is refreshed in place (its target
-    /// may have changed) rather than appended, so a redraw neither grows the
-    /// table nor allocates.
     pub fn record(&mut self, url: &str, label: &str, col: usize) {
         if url.is_empty() || label.is_empty() {
             return;
@@ -98,15 +58,6 @@ impl HyperlinkTable {
         }
     }
 
-    /// Target of the hyperlink under display column `col` of `row_text`, if
-    /// any. `row_text` is one screen row as
-    /// thurbox's `extract_screen_rows` renders it (one char per
-    /// glyph), so columns compare directly against a click's cell column.
-    ///
-    /// Newest run first, so a redrawn row resolves against what it prints now.
-    /// A label still has to be present at its recorded column for the run to
-    /// match — the guard against a row that has since scrolled other text into
-    /// that spot.
     pub fn resolve(&self, row_text: &str, col: usize) -> Option<&str> {
         self.runs
             .iter()
@@ -115,27 +66,14 @@ impl HyperlinkTable {
             .map(|run| run.url.as_str())
     }
 
-    /// Whether nothing has been captured — the state of a session whose agent
-    /// never printed a link, checked to keep the per-frame
-    /// [`Self::visible_runs`] pass off the render path entirely.
     pub fn is_empty(&self) -> bool {
         self.runs.is_empty()
     }
 
-    /// Captured runs, oldest first (tests / diagnostics).
     pub fn runs(&self) -> impl Iterator<Item = &HyperlinkRun> {
         self.runs.iter()
     }
 
-    /// Every run currently on screen, so the renderer can hand them to the
-    /// outer terminal (see [`osc8_open`]). `rows` is one screenful as
-    /// thurbox's `extract_screen_rows` renders it.
-    ///
-    /// Newest first, at most one run per starting cell — the same
-    /// "what does this cell print *now*" rule [`Self::resolve`] applies, so a
-    /// repainted row can't show a link that has scrolled away. Only the newest
-    /// `VISIBLE_SCAN_LIMIT` runs are considered: this drives a per-frame pass,
-    /// and anything older is many screenfuls back.
     pub fn visible_runs<'a>(&'a self, rows: &[String]) -> Vec<VisibleRun<'a>> {
         let mut claimed: HashSet<(usize, usize)> = HashSet::new();
         let mut visible = Vec::new();
@@ -155,7 +93,6 @@ impl HyperlinkTable {
     }
 }
 
-/// A run found on the screen as currently drawn.
 #[derive(Debug, PartialEq, Eq)]
 pub struct VisibleRun<'a> {
     pub row: usize,
@@ -164,22 +101,13 @@ pub struct VisibleRun<'a> {
     pub url: &'a str,
 }
 
-/// Opening half of an OSC 8 hyperlink: everything printed until
-/// [`OSC8_CLOSE`] becomes a link to `url` in the terminal thurbox itself runs
-/// in.
-///
-/// Control characters are stripped. The URL is **agent-controlled text being
-/// written back to the user's own terminal**, and an embedded `ESC` would end
-/// the sequence early and let the rest be interpreted as escapes of its own.
 pub fn osc8_open(url: &str) -> String {
     let safe: String = url.chars().filter(|c| !c.is_control()).collect();
     format!("\x1b]8;;{safe}\x07")
 }
 
-/// Closing half of an OSC 8 hyperlink (see [`osc8_open`]).
 pub const OSC8_CLOSE: &str = "\x1b]8;;\x07";
 
-/// Whether `row_text` prints `label` starting exactly at display column `col`.
 fn label_at_column(row_text: &str, col: usize, label: &str) -> bool {
     let mut width = 0;
     for (offset, ch) in row_text.char_indices() {

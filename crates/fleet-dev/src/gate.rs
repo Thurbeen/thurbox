@@ -1,4 +1,3 @@
-//! One gate command for contributors, hooks and every native CI runner.
 use crate::{Result, exec, workflow};
 use serde_json::Value;
 use std::fs;

@@ -1,12 +1,3 @@
-//! Each runtime call as a span and a measured call, through the
-//! OpenTelemetry API alone: a no-op until the CLI installs a provider.
-//!
-//! The call's span is a child of what is current (an effect, or a
-//! reconcile's probe), and the runtime program receives it as
-//! `TRACEPARENT`, so its own spans join the same trace. Attributes are the
-//! runtime's name, the verb and whether the answer was Known: never a
-//! request, an answer or an Unknown's text.
-
 use std::sync::OnceLock;
 use std::time::Instant;
 
@@ -17,9 +8,6 @@ use opentelemetry::{Context, ContextGuard, KeyValue, global};
 
 const SCOPE: &str = "fleet";
 
-/// The variables a runtime program never inherits from Fleet's own
-/// environment: Fleet's service name is not the runtime's, and a
-/// `TRACEPARENT` Fleet was started with is not the call's parent.
 const NOT_INHERITED: &[&str] = &["OTEL_SERVICE_NAME", otel_env::TRACEPARENT];
 
 fn duration() -> &'static Histogram<f64> {
@@ -33,7 +21,6 @@ fn duration() -> &'static Histogram<f64> {
     })
 }
 
-/// One call to a runtime, current until [`Call::end`].
 pub(crate) struct Call {
     attributes: [KeyValue; 2],
     started: Instant,
@@ -59,7 +46,6 @@ impl Call {
         }
     }
 
-    /// End the call: `known` is whether the runtime answered Known.
     pub(crate) fn end(self, known: bool) {
         let outcome = KeyValue::new("fleet.outcome", if known { "known" } else { "unknown" });
         let cx = Context::current();
@@ -77,8 +63,6 @@ impl Call {
     }
 }
 
-/// Give the runtime program the current span as its `TRACEPARENT`, the
-/// telemetry of Fleet's config file, and none of Fleet's own identity.
 pub(crate) fn carry(spec: &mut Spec) {
     spec.env_remove
         .extend(NOT_INHERITED.iter().map(|v| v.to_string()));

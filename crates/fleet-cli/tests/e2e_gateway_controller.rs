@@ -1,13 +1,3 @@
-//! The Gateway controller's third step end to end: a Task tied to a
-//! Conversation joins with the whole retained thread, later admitted
-//! messages are relayed into its inbox under a cursor that moves in the
-//! same write, messages from people off the allowlist wait for the next
-//! admitted one, Fleet's own posts are never relayed, `fleet send
-//! --answers` records `status.answered`, the parent labels are enforced by
-//! the store, and a child's declarations reach its parent's inbox. Task
-//! creation from a mention is step 2 and posting is step 4: here the tie is
-//! written into the records directly.
-
 mod support;
 
 use std::fs;
@@ -59,10 +49,6 @@ fn write_record(env: &Env, kind: &str, name: &str, obj: &Value) {
     fs::write(env.object_path(kind, name), obj.to_string()).unwrap();
 }
 
-/// A gateway environment with one mirrored thread (Sam's message, then
-/// Alex's mention) and the Task that mention started, tied to it by step
-/// 2's create. Returns the environment, the Conversation's name and the
-/// Task's.
 fn tied(name: &str) -> (Env, String, String) {
     let mut env = Env::gateway(name);
     env.set_var("USER", "tester");
@@ -102,7 +88,6 @@ fn receipts(env: &Env, task: &str) -> Vec<Value> {
         .unwrap_or_default()
 }
 
-/// The texts the fake session was given, the brief first.
 fn texts(env: &Env, task: &str) -> Vec<String> {
     env.host()
         .session(&env.session_key(task))

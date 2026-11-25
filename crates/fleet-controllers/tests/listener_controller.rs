@@ -1,7 +1,3 @@
-//! ListenerController as a pure function: a Listener with the beats and
-//! refusals the verb recorded, the account's configuration, and the
-//! platform's answers go in; the three conditions come out.
-
 use std::collections::BTreeMap;
 
 use fleet_api::condition::{Condition, ConditionStatus};

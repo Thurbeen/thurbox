@@ -1,20 +1,3 @@
-//! TOON encoder conformance, differential against the reference implementation.
-//!
-//! `tests/fixtures/toon-conformance.jsonl` is the official TOON v4.1 spec test
-//! suite (<https://github.com/toon-format/spec>, MIT) re-encoded by the
-//! reference JavaScript encoder `@toon-format/toon`: one JSON object per line
-//! carrying the input, the encoder options, and the reference output. The
-//! corpus covers every section of the spec — primitives and number
-//! canonicalization, quoting and escaping, objects, inline/list/tabular/keyed
-//! tabular arrays, all three delimiters and a non-default indent.
-//!
-//! Regenerate it with `node scripts/dev/gen-toon-fixtures.mjs <spec>/tests/
-//! fixtures/encode tests/fixtures/toon-conformance.jsonl` after cloning the
-//! spec repository. That script deep-sorts each input's keys before handing it
-//! to the reference encoder, because `serde_json::Map` is a `BTreeMap` and
-//! yields keys alphabetically; sorting both sides makes the comparison about
-//! encoding rather than about key order, which the spec leaves to the encoder.
-
 use serde_json::Value;
 use thurbox::cli::toon;
 

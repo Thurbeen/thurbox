@@ -1,20 +1,3 @@
-//! `thurbox-cli mod` — the headless half of what `F11` shows.
-//!
-//! Writing a mod needs three answers the interface only gives to a keyboard:
-//! which directory is actually being read, what a valid mod looks like, and
-//! whether the one you just wrote will load. A session driving thurbox through a
-//! pipe — increasingly, an agent — cannot press `F11`, so it guesses, and the
-//! usual outcome is a file edited in a directory nothing reads.
-//!
-//! Each subcommand is the same question `F11` answers, asked from outside.
-//!
-//! `cli` reaches `crate::kernel` here and in `cli::config`, and only by
-//! fully-qualified path (the rule `agent` already follows here): both drive the
-//! *interface's* own files, which is kernel-owned. `check` in particular has to
-//! load the real host, because the failures worth reporting are
-//! declaration-shaped — a mod with no `render`, a slot nothing places, a key
-//! that clashes — and a syntax check passes all of them.
-
 use std::path::{Path, PathBuf};
 
 use clap::Subcommand;
@@ -22,56 +5,53 @@ use serde_json::{json, Value};
 
 use super::output::CommandOutput;
 
-/// The starting point `new` writes, and the one the guide shows: one artifact, so
-/// a correct example and a broken scaffold cannot be the same release.
 const STARTER: &str = include_str!("../../../../examples/lua/mod.lua");
 
-/// Where a starter lands in the load order. Above every bundled pane (10–70), so
-/// a new mod never renders between two that expect to be neighbours.
 const STARTER_ORDER: &str = "90";
 
 #[derive(Subcommand, Debug)]
 pub enum Action {
-    /// Print the interface directory in force, and which rule chose it.
+    #[command(about = "Print the interface directory in force, and which rule chose it")]
     Dir,
-    /// Write a starter mod into that directory.
+    #[command(about = "Write a starter mod into that directory")]
     New {
-        /// Mod name — one path segment, no separators (e.g. `notes`).
+        #[arg(help = "Mod name — one path segment, no separators (e.g. `notes`)")]
         name: String,
     },
-    /// Load the interface the way the TUI does and report what failed.
+    #[command(about = "Load the interface the way the TUI does and report what failed")]
     Check,
-    /// List every file of the interface: where it came from, and whether it draws.
+    #[command(
+        about = "List every file of the interface: where it came from, and whether it draws"
+    )]
     List,
-    /// Install a mod from a source, recording it in `mods.toml`.
+    #[command(about = "Install a mod from a source, recording it in `mods.toml`")]
     Install {
-        /// A bare name from the examples in the repo, a URL, or a filesystem path.
+        #[arg(help = "A bare name from the examples in the repo, a URL, or a filesystem path")]
         src: String,
-        /// Where the pane lands — or, for a package declaring several panes, which
-        /// of their destinations the entry is keyed on; those are not moved.
-        /// Required for a single `.lua` source, which proposes no destination of
-        /// its own.
+        #[arg(
+            help = "Where the pane lands — or, for a package declaring several panes, which of their destinations the entry is keyed on; those are not moved. Required for a single `.lua` source, which proposes no destination of its own"
+        )]
         #[arg(long = "as", value_name = "FILE")]
         as_file: Option<String>,
-        /// The version to install, and to keep installing.
+        #[arg(help = "The version to install, and to keep installing")]
         #[arg(long)]
         pin: Option<String>,
     },
-    /// Bring the interface into agreement with `mods.toml`.
+    #[command(about = "Bring the interface into agreement with `mods.toml`")]
     Sync,
-    /// Advance an entry, or every entry, to what its source carries now.
+    #[command(about = "Advance an entry, or every entry, to what its source carries now")]
     Update {
-        /// The entry to advance. Omit for all of them.
+        #[arg(help = "The entry to advance. Omit for all of them")]
         name: Option<String>,
     },
-    /// Remove an installed mod, its spec entry and its record.
+    #[command(about = "Remove an installed mod, its spec entry and its record")]
     Remove {
-        /// The entry's name, or the file it delivered.
+        #[arg(help = "The entry's name, or the file it delivered")]
         name: String,
     },
-    /// List the example mods a bare name resolves to.
+    #[command(about = "List the example mods a bare name resolves to")]
     Available,
-    /// List every event a mod can subscribe to, with its payload fields.
+    #[command(about = "List every event a mod can subscribe to, with its payload fields")]
     Events,
 }
 
@@ -90,9 +70,6 @@ pub fn run(action: Action) -> Result<CommandOutput, String> {
     }
 }
 
-/// The events the kernel emits — the same table the loader validates a
-/// subscription against and the help modal renders, so what this prints is
-/// exactly what a mod may declare in `events = { … }`.
 fn events() -> Result<CommandOutput, String> {
     let specs = crate::kernel::events::KERNEL_EVENTS;
     let mut rows: Vec<Vec<String>> = specs
@@ -123,10 +100,6 @@ fn events() -> Result<CommandOutput, String> {
     ))
 }
 
-/// The directory the interface would load, without creating one.
-///
-/// `resolve(false)` deliberately does not materialize the user's copy: being
-/// *asked* where mods live must not write a profile as a side effect.
 fn resolve() -> Result<(PathBuf, crate::kernel::bundled::Chosen), String> {
     let (dir, chosen, _report) = crate::kernel::bundled::resolve(false)?;
     Ok((dir, chosen))
@@ -155,11 +128,6 @@ fn dir() -> Result<CommandOutput, String> {
     ))
 }
 
-/// Whether `name` is a single, safe path segment.
-///
-/// Refused rather than sanitised: a scaffold that quietly writes somewhere other
-/// than where it said is worse than one that stops. Same rule
-/// `paths::validate_safe_name` applies to anything that becomes a path.
 fn check_name(name: &str) -> Result<(), String> {
     crate::paths::validate_safe_name(name)
         .map_err(|e| format!("{e} — a mod name is one segment, like `notes`"))
@@ -216,19 +184,6 @@ fn new(name: &str) -> Result<CommandOutput, String> {
     ))
 }
 
-/// Build the host the way the running interface builds it — including the set of
-/// files the user turned off.
-///
-/// Loading everything on disk is not what the interface does, and the difference
-/// is the whole point of the switch: a mod turned off declares no key,
-/// occupies no slot and cannot fail to load, which is what makes turning one off
-/// the way back from a broken pane. A check that read it anyway would report a
-/// failure the interface does not have — and, once the arrangement is consulted,
-/// would fault a slot the user correctly removed along with the pane.
-///
-/// Mirrors `App::publish_disabled`: the paths are stored absolute and `build`
-/// compares them relative, through the one conversion between the two
-/// (`bundled::relative_to`).
 fn host_at(dir: &std::path::Path) -> crate::kernel::host::LuaHost {
     let mut host = crate::kernel::host::LuaHost::new(dir);
     let disabled: Vec<String> = crate::kernel::registry::Registry::load()
@@ -242,16 +197,6 @@ fn host_at(dir: &std::path::Path) -> crate::kernel::host::LuaHost {
     host
 }
 
-/// The file a claimant was declared in, or its own name when no file backs it —
-/// the kernel's modal and clipboard chords are declared in Rust.
-///
-/// A conflict carries the *name* each claim was declared under, and a name need not
-/// be unique: it defaults to the filename with the ordering prefix stripped, so
-/// `90_notes.lua` and `91_notes.lua` both answer to `notes` and nothing rejects the
-/// pair. Resolving by first match then named one file twice — a row saying a file
-/// clashed with itself, with the other author's file absent. Every file that answers
-/// to the name is named instead: less precise than a lie, and the reader can see
-/// which two to open.
 fn file_of(host: &crate::kernel::host::LuaHost, mod_name: &str) -> String {
     let files: Vec<&str> = host
         .mods
@@ -552,12 +497,6 @@ fn check() -> Result<CommandOutput, String> {
     ))
 }
 
-/// The registry the running interface would hold for this host.
-///
-/// `Registry::load` first, because the user's own decisions are part of the
-/// answer: a chord they bound to a chord-less command makes the pill that names
-/// it draw, and a check that read only the declarations would report a button
-/// that is on their screen as dropped.
 fn declared(host: &crate::kernel::host::LuaHost) -> crate::kernel::registry::Registry {
     let mut registry = crate::kernel::registry::Registry::load();
     crate::kernel::declare_interface(&mut registry, host);
@@ -653,12 +592,6 @@ fn list() -> Result<CommandOutput, String> {
     ))
 }
 
-/// The interface directory an install writes into.
-///
-/// `resolve(true)` here, unlike everywhere else in this file: installing a mod
-/// into a directory that is not an interface yet would deliver a pane with no
-/// `lib/` to require, which fails to load before it is ever looked at — the same
-/// reasoning `new` follows.
 fn install_dir() -> Result<PathBuf, String> {
     let (dir, chosen, _report) = crate::kernel::bundled::resolve(true)?;
     if !dir.join("lib").is_dir() {
@@ -675,12 +608,6 @@ fn install_dir() -> Result<PathBuf, String> {
     Ok(dir)
 }
 
-/// What to add to `ui/layout.lua` so `slot` is placed.
-///
-/// A strip's slot is placed by the bundled arrangement's strips loop, so when one
-/// is unplaced the arrangement is an older or hand-written one without it — and
-/// the fix is that loop, once, rather than a line per strip that would then pin
-/// a height the pane declares itself.
 fn layout_fix(host: &crate::kernel::host::LuaHost, slot: &str) -> String {
     let is_strip = host
         .mods
@@ -696,11 +623,6 @@ fn layout_fix(host: &crate::kernel::host::LuaHost, slot: &str) -> String {
     }
 }
 
-/// The line to add to `ui/layout.lua` so a slot is placed.
-///
-/// Printed at the moment of installing rather than left for `check` to discover:
-/// a pane that loads and draws nothing is the one failure with no symptom, so the
-/// instruction should arrive before anybody has to go looking for it.
 fn placement_hint(dir: &Path, file: &str) -> Option<String> {
     let host = host_at(dir);
     let index = host.mods.iter().position(|loaded| loaded.path == file)?;
@@ -732,13 +654,6 @@ fn placement_hint(dir: &Path, file: &str) -> Option<String> {
     None
 }
 
-/// Every pane this install delivered, the one the entry is keyed on first.
-///
-/// A package's panes and its modules share one record, and a module is forced under
-/// `lib/<name>/` by the manifest's own validation — so everything else the record
-/// delivered is a pane. Read from the lock rather than carried through
-/// [`crate::kernel::packages::EntryReport`] because reporting is the only thing that
-/// wants the distinction.
 fn delivered_panes(dir: &Path, file: &str) -> Vec<String> {
     let mut panes = vec![file.to_string()];
     if let Ok(lock) = crate::kernel::packages::read_lock(dir) {
@@ -824,7 +739,6 @@ fn install(src: &str, as_file: Option<&str>, pin: Option<&str>) -> Result<Comman
     ))
 }
 
-/// One report line, and the JSON beside it.
 fn entry_rows(reports: &[crate::kernel::packages::EntryReport]) -> (Vec<String>, Vec<Value>) {
     let mut lines = Vec::new();
     let mut rows = Vec::new();
@@ -936,9 +850,6 @@ fn available() -> Result<CommandOutput, String> {
 mod tests {
     use super::*;
 
-    /// A subscription to a name the kernel does not emit is the one failure
-    /// with no symptom at runtime — the handler simply never fires — so `check`
-    /// has to be the place it is caught, with the name in the message.
     #[test]
     fn check_refuses_a_subscription_to_an_unknown_event() {
         let dir = tempfile::tempdir().expect("tempdir");
@@ -969,8 +880,6 @@ mod tests {
         assert!(error.contains("session.status"), "{error}");
     }
 
-    /// The starter has to be a mod, not a snippet: the whole point is that a
-    /// new file loads before it is edited.
     #[test]
     fn the_starter_declares_what_a_mod_needs() {
         assert!(STARTER.contains("render = function"));
@@ -994,7 +903,6 @@ mod tests {
         assert!(!body.contains("example"), "no stale name is left behind");
     }
 
-    /// `mods/` is where the host looks, so that is where a starter goes.
     #[test]
     fn a_starter_is_named_to_load_after_the_bundled_panes() {
         // Asserted by component rather than as one string: Windows joins with a

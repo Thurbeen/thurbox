@@ -1,8 +1,3 @@
-//! Performance behaviour, asserted on counters rather than on the clock.
-//!
-//! A test that says "idle should be fast" is flaky on shared hardware, while
-//! one that says "an idle loop painted no frames" is exact.
-
 use std::time::{Duration, Instant};
 
 use thurbox::kernel::command::{Args, Command, CommandBus};
@@ -265,7 +260,6 @@ fn timing_costs_nothing_until_something_asks_for_it() {
     assert!(json["slow_ops"].as_array().expect("array").is_empty());
 }
 
-/// Enough Lua work to be measurable on any machine, and far inside the budget.
 const BUSY: &str = "local s = 0 for i = 1, 300000 do s = s + i end";
 
 fn interface() -> (tempfile::TempDir, LuaHost) {
@@ -359,7 +353,6 @@ fn publish(host: &LuaHost) {
     .expect("publish");
 }
 
-/// Paint `frames` frames the way the loop does: every pane, then the frame.
 fn paint(host: &LuaHost, frames: usize) {
     for _ in 0..frames {
         for index in 0..host.mods.len() {
@@ -542,7 +535,6 @@ fn a_run_is_counted_only_in_the_window_it_started_in() {
     assert_eq!((runs.started, runs.finished), (0, 0), "{runs:?}");
 }
 
-/// The key set an agent scripting `thurbox-cli perf --mods --json` relies on.
 const ROW_KEYS: [&str; 19] = [
     "closed_renders",
     "failures",
@@ -658,8 +650,6 @@ fn the_cli_prints_the_mod_table_sorted_with_a_stable_json_shape() {
 #[path = "../../runtime-mux/tests/support/tmux_server.rs"]
 mod tmux_server;
 
-/// Publish `json` where a running interface writes its perf snapshot, in a
-/// profile of the test's own.
 fn publish_perf(json: &str) -> tempfile::TempDir {
     let dir = tempfile::tempdir().expect("profile");
     thurbox::paths::set_test_dir(dir.path());

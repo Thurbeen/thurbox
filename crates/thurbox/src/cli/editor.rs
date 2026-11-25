@@ -1,6 +1,3 @@
-//! Editor command get/set subcommands, over `interface.json`
-//! ([`crate::config::interface_state`]).
-
 use clap::Subcommand;
 use serde_json::json;
 
@@ -9,20 +6,18 @@ use crate::session::settings::EditorMode;
 
 #[derive(Subcommand, Debug)]
 pub enum Action {
-    /// Print the configured editor command (or null).
+    #[command(about = "Print the configured editor command (or null)")]
     Get,
-    /// Set the editor command (pass empty string to clear).
+    #[command(about = "Set the editor command (pass empty string to clear)")]
     Set {
-        /// Command line template. The worktree path is appended as a final arg.
+        #[arg(help = "Command line template. The worktree path is appended as a final arg")]
         command: String,
     },
-    /// Print or set how `Ctrl+O` launches the editor (`auto`/`terminal`/`gui`).
-    /// `auto` (default) detects terminal vs GUI editors from the command name
-    /// and gives terminal editors (vim, nano, ttt, …) a real TTY. `terminal`
-    /// forces the TTY path for everything; `gui` forces the detached spawn.
-    /// With no argument, prints the current mode.
+    #[command(
+        about = "Print or set how `Ctrl+O` launches the editor (`auto`/`terminal`/`gui`). `auto` (default) detects terminal vs GUI editors from the command name and gives terminal editors (vim, nano, ttt, …) a real TTY. `terminal` forces the TTY path for everything; `gui` forces the detached spawn. With no argument, prints the current mode"
+    )]
     Mode {
-        /// `auto`, `terminal`, or `gui`. Omit to print the current value.
+        #[arg(help = "`auto`, `terminal`, or `gui`. Omit to print the current value")]
         mode: Option<String>,
     },
 }

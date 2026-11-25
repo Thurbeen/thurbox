@@ -1,34 +1,19 @@
-//! Companion shells: the stream `fleet shell` names, opened on a worker and
-//! installed on return.
-//!
-//! The shell lives with the session's runtime, on the Task's place, not with
-//! this interface: a second open, from this interface or the next one, finds
-//! the same shell, and Fleet's release of the Task closes it. So nothing here
-//! records a shell or closes one.
-
 use std::sync::Arc;
 
 use super::{shell_surface, Painted, Snapshot, Terminals};
 
-/// A shell worker's accepted answer for the coordinator to report.
 #[derive(Debug)]
 pub enum ShellResult {
     Ready { session: String },
     Failed { session: String, error: String },
 }
 
-/// What asking for a shell set going.
 #[derive(Debug, PartialEq, Eq)]
 pub enum ShellOpening {
-    /// The shell is open, or being opened.
     Opening,
-    /// The session is paused: it has no agent for a shell to stand beside.
-    /// The shell opens once a Start resumes it and its pane is back.
     AfterStart,
 }
 
-/// What a shell worker opened: the shell, and the stream's way up that its
-/// input and resize take.
 type Opened = (
     crate::backend::pane::ShellPane,
     Arc<dyn crate::backend::SessionBackend>,
@@ -47,10 +32,6 @@ pub(super) struct Shelling {
 }
 
 impl Terminals {
-    /// Open `row`'s companion shell, through `fleet shell` on the row's
-    /// Fleet. A shell already open, or one being opened for the same
-    /// attachment, is left as it is; one whose stream ended is opened again.
-    /// A paused row's shell waits for its pane ([`ShellOpening::AfterStart`]).
     pub fn open_shell(
         &mut self,
         row: &crate::kernel::snapshot::SessionRow,
@@ -122,8 +103,6 @@ impl Terminals {
         }
     }
 
-    /// Run `work`, which opens `session`'s shell, on a worker. Its answer is
-    /// installed only while the session is still attached as it is now.
     pub(super) fn start_shell(
         &mut self,
         session: &str,
@@ -194,7 +173,6 @@ impl Terminals {
         }
     }
 
-    /// Take accepted worker answers once, after sync has folded them in.
     pub fn drain_shell_results(&mut self) -> Vec<ShellResult> {
         std::mem::take(&mut self.shell_results)
     }
@@ -229,8 +207,6 @@ mod tests {
         }
     }
 
-    /// An answer for an attachment that was replaced while the worker ran is
-    /// not installed: the shell would belong to a session no longer shown.
     #[test]
     fn an_answer_for_a_replaced_attachment_is_dropped() {
         let (mut terminals, backend) = terminals_with_probe();
@@ -280,8 +256,6 @@ mod tests {
         assert!(terminals.shells_after_start.is_empty());
     }
 
-    /// A shell over `output`, through `backend`, as a stream pane opens one:
-    /// a blank first snapshot gives it its grid.
     fn shell_over(
         backend: &Arc<dyn crate::backend::SessionBackend>,
         rest: crate::backend::PaneOutput,
@@ -304,7 +278,6 @@ mod tests {
         crate::backend::Session::shell_over(adopted, backend, "probe#shell", 24, 80, 100)
     }
 
-    /// Output that never ends while its sender lives.
     struct Open(std::sync::mpsc::Receiver<()>);
 
     impl Iterator for Open {
@@ -315,7 +288,6 @@ mod tests {
         }
     }
 
-    /// Collect until `done` holds, within five seconds.
     fn collect_until(terminals: &mut Terminals, done: impl Fn(&Terminals) -> bool) {
         let snapshot = snapshot_with_probe();
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
@@ -326,8 +298,6 @@ mod tests {
         assert!(done(terminals), "never happened");
     }
 
-    /// A live shell is left as it is; one whose stream ended is opened again,
-    /// and the new one replaces it.
     #[tokio::test(flavor = "multi_thread")]
     async fn a_shell_whose_stream_ended_is_opened_again() {
         let (mut terminals, backend) = terminals_with_probe();
@@ -383,9 +353,6 @@ mod tests {
         });
     }
 
-    /// A shell opened over a stream starts without its grid, as an agent's
-    /// stream pane does: the stream's first snapshot is its screen. A shell
-    /// opened again, which already shows text, keeps that text.
     #[tokio::test(flavor = "multi_thread")]
     async fn a_shell_over_a_stream_takes_its_first_snapshot_as_its_screen() {
         let (_, backend) = terminals_with_probe();
@@ -417,7 +384,6 @@ mod tests {
         assert!(text.contains("kept-text"), "the screen: {text:?}");
     }
 
-    /// A failed open is reported, so the interface can say why.
     #[test]
     fn a_failed_open_is_reported() {
         let (mut terminals, _) = terminals_with_probe();

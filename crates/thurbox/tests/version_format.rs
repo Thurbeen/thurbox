@@ -1,13 +1,3 @@
-//! Verify that `build.rs` sets `THURBOX_VERSION` correctly.
-//!
-//! The version embedded at compile time must:
-//! - Never start with `v` (the UI prepends it: `concat!("v", env!("THURBOX_VERSION"))`)
-//! - Be a valid semver-ish string (digits and dots, optionally with a pre-release suffix)
-//!
-//! In dev builds (no `THURBOX_RELEASE_VERSION` env var), this equals the
-//! Cargo.toml version (`0.0.0-dev`).  In CI release builds the env var is
-//! stripped of its `v` prefix (e.g. `v0.7.0` → `0.7.0`).
-
 const VERSION: &str = env!("THURBOX_VERSION");
 
 #[test]

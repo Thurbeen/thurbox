@@ -1,13 +1,3 @@
-//! `runtime-mux view`: one pane as a terminal stream
-//! (docs/runtime/README.md#the-terminal-stream), its frames on the
-//! process's stdin and stdout.
-//!
-//! The server keeps the screen, so the stream is the backend's own control
-//! mode encoded as frames: the snapshot the backend puts at its place in the
-//! output, then the output, sizes and state in order. The view's first
-//! `resize` sizes the pane, and the stream starts once the size is known: a
-//! connection sizes the pane it attaches to.
-
 use std::io::{Read, Write};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
@@ -26,8 +16,6 @@ fn snapshot(s: PaneSnapshot) -> Snapshot {
     }
 }
 
-/// What the stream promises: a snapshot and its history only from a
-/// backend that can take one in step with the output.
 fn hello(snapshots: bool) -> Hello {
     let mut capabilities = vec![Capability::Viewers, Capability::Resize];
     if snapshots {
@@ -39,9 +27,6 @@ fn hello(snapshots: bool) -> Hello {
     }
 }
 
-/// The pane's chunks as frames. With snapshots, output before the first
-/// screen is in it, and the first screen is whichever snapshot comes first,
-/// a resync too: the saved title and modes follow it.
 struct Frames {
     shown: bool,
     state: Vec<u8>,
@@ -76,8 +61,6 @@ impl Frames {
     }
 }
 
-/// Serve `pane` until the view detaches, its input ends or the pane goes.
-/// `backend` is shared with the thread reading the view's frames.
 pub fn serve(
     backend: Arc<dyn SessionBackend>,
     pane: &str,

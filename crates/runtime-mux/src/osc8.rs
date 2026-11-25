@@ -1,33 +1,13 @@
-//! OSC 8 hyperlink capture from the agent's byte stream.
-//!
-//! `vt100` has no notion of a hyperlink: it drops the escape and keeps only the
-//! printed label, so the URL would be lost. The sequence is a *pair* — an
-//! opening `OSC 8 ; <params> ; <uri>`, the label's glyphs, then a closing
-//! `OSC 8 ; ; ` with no URI — and both halves arrive at
-//! [`vt100::Callbacks::unhandled_osc`] with the live screen. The label is
-//! therefore read straight off the screen between the cursor position at the
-//! open and the one at the close (the escape arrives *after* its label
-//! printed), and stored in the session's [`HyperlinkTable`] for a `Ctrl+Click`
-//! to resolve.
-
 use crate::hyperlink::HyperlinkTable;
 
-/// An OSC 8 run whose closing sequence has not arrived yet: its target plus the
-/// cursor position where its label started printing.
 #[derive(Clone, Debug)]
 pub(crate) struct PendingHyperlink {
     url: String,
     row: u16,
     col: u16,
-    /// See [`scroll_witness`].
     witness: String,
 }
 
-/// The URI an `OSC 8 ; <params> ; <uri>` sequence carries. `fields` are the OSC
-/// fields after the `8`: the first holds the link params (`id=…`) and
-/// everything after it is the URI — rejoined because `vte` splits fields on
-/// `;`, which a URI may legitimately contain. Empty (or absent) means the
-/// sequence closes the open run.
 pub(crate) fn uri_from_fields(fields: &[&[u8]]) -> String {
     let uri = fields
         .iter()
@@ -38,9 +18,6 @@ pub(crate) fn uri_from_fields(fields: &[&[u8]]) -> String {
     uri.trim().to_string()
 }
 
-/// Handle one OSC 8 sequence. `uri` empty closes the open run; a non-empty one
-/// closes it too (an unterminated run is still worth keeping) and opens the
-/// next.
 pub(crate) fn handle(
     screen: &vt100::Screen,
     pending: &mut Option<PendingHyperlink>,
@@ -61,8 +38,6 @@ pub(crate) fn handle(
     }
 }
 
-/// Record the label `open` printed, one entry per screen row it covers (a run
-/// long enough to wrap spans several).
 fn close_run(screen: &vt100::Screen, table: &mut HyperlinkTable, open: PendingHyperlink) {
     let (end_row, end_col) = screen.cursor_position();
     // The label is no longer where it printed — the screen scrolled under the
@@ -92,13 +67,6 @@ fn close_run(screen: &vt100::Screen, table: &mut HyperlinkTable, open: PendingHy
     }
 }
 
-/// The screen text a run's label cannot touch: the glyphs before it on its own
-/// row, plus the whole row above. A label only ever prints forward from its
-/// start, so that region holds still for the run's lifetime — unless the label
-/// wraps past the bottom row (or carries a newline) and scrolls the screen,
-/// which shifts other content into it. Comparing the witness at the close is
-/// how a run learns its recorded start no longer points at its own label; it is
-/// then dropped rather than anchored to whatever text now sits there.
 fn scroll_witness(screen: &vt100::Screen, row: u16, col: u16) -> String {
     let mut witness = row_glyphs(screen, row, 0, col);
     if row > 0 {
@@ -110,15 +78,6 @@ fn scroll_witness(screen: &vt100::Screen, row: u16, col: u16) -> String {
     witness
 }
 
-/// Glyphs printed in `row` between cell columns `from`..`to`. Wide-glyph
-/// continuation cells are skipped, so a captured label compares equal to the
-/// row strings thurbox's `kernel::terminal::links::extract_screen_rows` builds
-/// when a click or a repaint resolves it.
-///
-/// The two readers are deliberately separate: the runtime may not depend on
-/// thurbox's kernel, and the type they share these strings through —
-/// `hyperlink` — is vt100-free pure data. Keep them in step rather than
-/// merging them.
 fn row_glyphs(screen: &vt100::Screen, row: u16, from: u16, to: u16) -> String {
     let mut out = String::new();
     for col in from..to {
@@ -135,8 +94,6 @@ fn row_glyphs(screen: &vt100::Screen, row: u16, from: u16, to: u16) -> String {
 mod tests {
     use super::*;
 
-    /// Drive a parser the way [`crate::TermSignals`] does, so these
-    /// tests exercise the real escape → table path.
     #[derive(Default)]
     struct Capture {
         pending: Option<PendingHyperlink>,

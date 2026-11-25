@@ -1,12 +1,3 @@
-//! Writing a mod without a terminal.
-//!
-//! Each test is one of the questions a session asks before its first save — where
-//! do I write, what do I start from, will it load — answered the way a script or
-//! an agent would ask it: through the command, reading its output and its exit.
-//!
-//! `THURBOX_UI_DIR` is set per test. nextest runs a process per test, so the
-//! override cannot leak between them.
-
 use thurbox::cli::mods::{run, Action};
 
 fn at(dir: &std::path::Path) -> std::path::PathBuf {
@@ -21,7 +12,6 @@ fn json(action: Action) -> serde_json::Value {
     run(action).expect("command").json
 }
 
-/// The bundled interface, as the repo ships it.
 fn checkout_ui() -> std::path::PathBuf {
     std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../ui")
 }
@@ -289,14 +279,6 @@ fn a_pane_nothing_places_is_a_failure_that_says_what_to_add() {
     );
 }
 
-/// The listing must not call a working pane unplaced.
-///
-/// `unplaced` means "its slot appears nowhere in the arrangement" — a defect with
-/// no symptom, which is why `check` fails on it. The listing resolved placement
-/// with an empty set on the reasoning that the arrangement needs a terminal, so
-/// every pane in the shipped interface was reported as that defect. Placement is
-/// knowable without a frame (`check` resolves it at a reference size); what needs
-/// one is which occupant of a slot is in *front*.
 #[test]
 fn the_listing_does_not_report_working_panes_as_unplaced() {
     let home = tempfile::tempdir().expect("tempdir");
@@ -771,11 +753,6 @@ fn the_pane_that_draws_by_default_is_not_warned_about() {
     );
 }
 
-/// A pill the band drops is the one declaration with no symptom anywhere: no
-/// button, no warning, no log line, and the author's next move is reading
-/// `bands.rs`. The drop itself is right — a chip that lights and does nothing
-/// costs a press to discover — so what `check` owes them is which of the two
-/// mistakes they made.
 #[test]
 fn a_dropped_pill_says_whether_the_palette_has_its_action_or_nothing_does() {
     let home = tempfile::tempdir().expect("tempdir");
@@ -1134,8 +1111,6 @@ fn a_name_two_files_answer_to_names_both_of_them() {
     }
 }
 
-/// A pane that declares `strip = true` is placed by the arrangement thurbox
-/// ships, so a fresh install checks out with no edit to `layout.lua`.
 #[test]
 fn a_strip_checks_out_under_the_shipped_layout_with_no_edit() {
     let home = tempfile::tempdir().expect("tempdir");
@@ -1163,9 +1138,6 @@ fn a_strip_checks_out_under_the_shipped_layout_with_no_edit() {
     );
 }
 
-/// An arrangement written before strips existed has no loop for them. The fix
-/// is that loop, once — not a line per strip, which would pin a height the pane
-/// already declares — so that is what the failure says.
 #[test]
 fn a_strip_under_a_layout_without_the_loop_is_told_to_add_the_loop() {
     let home = tempfile::tempdir().expect("tempdir");

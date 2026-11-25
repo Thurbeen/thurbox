@@ -1,4 +1,3 @@
-//! Acceptance tests exercise the actual tooling binary against private files.
 use fleet_exec::{Outcome, Spec, run};
 use serde_json::json;
 use std::fs;
@@ -7,9 +6,6 @@ use std::sync::atomic::{AtomicU32, Ordering};
 use std::time::Duration;
 static SEQ: AtomicU32 = AtomicU32::new(0);
 
-/// The variables that point git at another repository than its working
-/// directory. A commit hook exports them, and a child keeping them would run
-/// its `git config` on this repository instead of its scratch one.
 const GIT_LOCATION: &[&str] = &[
     "GIT_DIR",
     "GIT_WORK_TREE",
@@ -21,7 +17,6 @@ const GIT_LOCATION: &[&str] = &[
     "GIT_NAMESPACE",
 ];
 
-/// A child of these tests: `program`, blind to git's location variables.
 fn scratch(program: impl Into<std::ffi::OsString>, timeout: Duration) -> Spec {
     let mut s = Spec::new(program, timeout);
     s.env_remove = GIT_LOCATION.iter().map(|v| v.to_string()).collect();
@@ -363,9 +358,6 @@ fn title_and_suite_validation_are_executable() {
     }
 }
 
-/// The installer runs on Linux and macOS only: the release builds no Windows
-/// target (`windows_is_not_a_release_target_and_no_workflow_runs_on_it`), and
-/// its script refuses one.
 #[cfg(unix)]
 fn installer(e: &Env, args: &[&str]) -> (bool, String) {
     installer_with(e, args, Some("v1.2.3"))
@@ -1044,8 +1036,6 @@ fn published_installer_installs_its_own_release() {
     assert!(e.0.join("bin/fleet").exists());
 }
 
-/// Runs one `run:` step of the repository's own cd.yml under bash, the way
-/// the runner does, with the real git and cog and a local fake for `gh`.
 #[cfg(unix)]
 fn release_step(e: &Env, job: &str, step: &str, env: &[(&str, &str)]) -> (bool, String) {
     use std::os::unix::fs::PermissionsExt;
@@ -1336,9 +1326,6 @@ fn claude_code_finds_the_repository_skills_through_a_tracked_link() {
     assert!(skills > 0, "the repository has no skills");
 }
 
-/// Run in a child by
-/// `a_git_helper_never_touches_the_repository_its_parent_names`, which
-/// passes it a `GIT_DIR` as a commit hook would.
 #[test]
 #[ignore = "run in a child by a_git_helper_never_touches_the_repository_its_parent_names"]
 fn git_helper_under_an_inherited_git_dir() {

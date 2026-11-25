@@ -1,33 +1,3 @@
-//! A program pane must notice that its program ended.
-//!
-//! The regression this guards was silent in every direction. tmux control mode
-//! announces a pane's death only as `%window-close` / `%unlinked-window-close`
-//! — by WINDOW — while output is streamed by PANE, and nothing related the two,
-//! so the notification was parsed as `Notification::Other` and dropped. The
-//! pane's channel then simply went quiet, which is indistinguishable from a
-//! program with nothing to say: `has_exited` stayed false for ever.
-//!
-//! Everything downstream is built on that flag. `program.exited` never fired,
-//! so a pane could not move on from a finished program; the surface kept
-//! painting the grid it left behind; and `start_program` — idempotent by
-//! design, because mods ask on every frame — kept answering `Ok(())` to
-//! every request to start it again. Quitting the editor with `:q` therefore
-//! made its pane unopenable for the rest of the session, with nothing in the
-//! log to say why.
-//!
-//! Driven through a real tmux pane because the thing that was wrong is the
-//! protocol reading, not the bookkeeping around it: a test that set the flag
-//! itself would have passed all along. Skipped when tmux is absent — a missing
-//! multiplexer is an environment fact, not a regression.
-//!
-//! The session is created with **`remain-on-exit on`**, which is not decoration:
-//! it is what thurbox sets for its own session (`SESSION_OPTS`), so that a dead
-//! agent leaves a readable window behind. With that option a window does NOT
-//! close when its program ends — the pane simply goes dead and stays — and the
-//! close notification never comes. The first version of this test used tmux's
-//! default (`off`), passed, and proved nothing about the machine it was written
-//! for. A test of this has to stand in the session the program actually runs in.
-
 #![cfg(unix)]
 
 use std::collections::HashMap;
@@ -39,17 +9,13 @@ use thurbox::backend::pane::ProgramPane;
 use thurbox::backend::tmux::TmuxBackend;
 use thurbox::backend::SessionBackend;
 
-/// The guard every tmux server in this file is reaped by — see its own doc.
 #[path = "../../runtime-mux/tests/support/tmux_server.rs"]
 mod tmux_server;
 
 use tmux_server::TmuxServer;
 
-/// A throwaway socket, so this never touches the real one.
 const SOCKET: &str = "thurbox-program-exit-e2e";
 
-/// Generous next to the notification, which arrives with the exit: the budget is
-/// for a loaded machine starting a tmux server, not for the signal itself.
 const DEADLINE: Duration = Duration::from_secs(10);
 
 fn have_tmux() -> bool {
@@ -69,8 +35,6 @@ fn start_session(server: &TmuxServer) -> std::process::Output {
     started
 }
 
-/// A tokio runtime is required, not decorative: wiring a pane spawns its writer
-/// task, and without one the spawn panics before anything can be observed.
 #[tokio::test(flavor = "multi_thread")]
 async fn a_program_that_ends_reports_that_it_ended() {
     if !have_tmux() {

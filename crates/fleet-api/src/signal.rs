@@ -1,23 +1,3 @@
-//! Signals: what an agent's own hooks report about it, through
-//! `fleet signal`.
-//!
-//! Fleet passes every session a file at start, as [`SIGNAL_FILE_ENV`]. The
-//! harness profile ([`crate::harness`]) installs hooks that run
-//! `fleet signal <state>`, and each run appends one [`Signal`] line to that
-//! file. Fleet reads the file back through the [`Signals`] port and folds it
-//! with [`Reported::fold`]: the agent's last state, every prompt it was
-//! given (by digest), and the conversation it runs.
-//!
-//! ```text
-//! agent hook ──fleet signal──▶ FLEET_SIGNAL_FILE ──Signals::read──▶ Reported
-//!                                                                    │
-//!                     status.sessionState, pause, delivery proof ◀───┘
-//! ```
-//!
-//! A runtime knows nothing of it: the file is one more variable in `start`.
-//! Unknown never concludes: a file Fleet cannot read is Unknown, and a file
-//! the agent never wrote is a session that reported nothing yet.
-
 use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
@@ -28,27 +8,17 @@ use crate::observation::Observation;
 use crate::runtime::Activity;
 use crate::session::SessionRef;
 
-/// The variable the session's file is passed in.
 pub const SIGNAL_FILE_ENV: &str = "FLEET_SIGNAL_FILE";
 
-/// The longest line `fleet signal` writes; a longer one is refused.
 pub const MAX_LINE: usize = 4096;
 
-/// What a hook says the agent is doing.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum State {
-    /// The agent works on a turn.
     Working,
-    /// The agent waits for a person to approve something: not idle.
     Blocked,
-    /// The agent finished its turn and waits for input.
     Idle,
-    /// The agent was given a prompt: a turn starts.
     Prompt,
-    /// The runtime started the agent again, and the agent has reported
-    /// nothing since: what the previous process reported says nothing of
-    /// this one. Written by Fleet, never by a hook.
     Started,
 }
 
@@ -64,40 +34,26 @@ impl State {
     }
 }
 
-/// One line of the signal file.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Signal {
     pub at: Millis,
     pub state: State,
-    /// The digests of the prompts this report proves the agent was given.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub prompts: Vec<String>,
-    /// The harness's own id of the conversation, for its resume.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub conversation: Option<String>,
-    /// The file's length when this line was appended, plus one: an order
-    /// of reports that no clock sets, since the file only grows. It is never
-    /// 0, which stands for no report at all.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub seq: Option<u64>,
-    /// Where the agent's own inbox takes a message: the value of its
-    /// profile's `[inbox] address` variable in the hook.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub inbox: Option<String>,
 }
 
 impl Signal {
-    /// The signal a hook's `payload` (its JSON, when it passed one) makes
-    /// for `state`, read with the default fields: Claude Code's `prompt`
-    /// and `session_id`, Codex's `input-messages` and `thread-id`.
     pub fn from_hook(at: Millis, state: State, payload: Option<&serde_json::Value>) -> Signal {
         Signal::from_hook_with(at, state, payload, &Payload::default())
     }
 
-    /// The signal a hook's `payload` makes for `state`, read with `fields`,
-    /// its harness profile's: the prompts it names, by digest, and its
-    /// conversation.
     pub fn from_hook_with(
         at: Millis,
         state: State,
@@ -169,26 +125,16 @@ impl Signal {
     }
 }
 
-/// What a session's signal file says, folded.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Reported {
-    /// The last state reported, when any was.
     pub state: Option<State>,
-    /// Every prompt digest reported, with when it was last reported: a
-    /// send is proven only by a report made after it.
     pub prompts: BTreeMap<String, Millis>,
-    /// Every prompt digest reported on a line that carries its place in the
-    /// file, with its latest place: the order of reports, by no clock.
     pub prompt_seqs: BTreeMap<String, u64>,
-    /// The last conversation id reported.
     pub conversation: Option<String>,
-    /// The last inbox address the running process reported.
     pub inbox: Option<String>,
 }
 
 impl Reported {
-    /// Fold the file's text. A line that does not parse, as one cut short
-    /// by a crash, is skipped: it proves nothing.
     pub fn fold(text: &str) -> Reported {
         let mut r = Reported::default();
         for line in text.lines() {
@@ -214,13 +160,6 @@ impl Reported {
         r
     }
 
-    /// [`Reported::fold`] of a file whose agent was started again when the
-    /// file held `before`: `after` is what was appended since. A state in
-    /// `before` is the previous process's, so until a state in `after` the
-    /// state is [`State::Started`]. Prompts and the conversation of both are
-    /// kept, as a `Started` line keeps them; an inbox is the new process's
-    /// alone, as after a `Started` line. No time is compared: a place's
-    /// clock need not agree with Fleet's.
     pub fn fold_restarted(before: &str, after: &str) -> Reported {
         let mut r = Reported::fold(&format!("{before}\n{after}"));
         let since = Reported::fold(after);
@@ -229,7 +168,6 @@ impl Reported {
         r
     }
 
-    /// What the agent is doing, when it reported anything.
     pub fn activity(&self) -> Option<Activity> {
         match self.state? {
             State::Idle => Some(Activity::Idle),
@@ -238,40 +176,24 @@ impl Reported {
         }
     }
 
-    /// Whether the agent reported anything since the runtime last started
-    /// it.
     pub fn reported(&self) -> bool {
         self.state.is_some_and(|s| s != State::Started)
     }
 
-    /// Whether the agent's prompt hook reported being given `text`.
     pub fn prompted(&self, text: &str) -> bool {
         self.prompts.contains_key(&prompt_digest(text))
     }
 
-    /// Whether the agent's prompt hook reported the prompt `digest` at or
-    /// after `since`, when the send it proves was intended.
     pub fn prompted_since(&self, digest: &str, since: Millis) -> bool {
         self.prompts.get(digest).is_some_and(|at| *at >= since)
     }
 }
 
-/// The digest a prompt is reported and matched by: FNV-1a over the text
-/// with its line endings and surrounding whitespace normalised, as a
-/// terminal may change both. Not a secret: it only matches a prompt Fleet
-/// sent to the one session that reports it.
 pub fn prompt_digest(text: &str) -> String {
     let normal = text.replace("\r\n", "\n");
     fnv(0xcbf2_9ce4_8422_2325, normal.trim().bytes())
 }
 
-/// The digest of a prompt as an agent may split it around a paste: FNV-1a
-/// over the text without its `<tag …>` and `</tag …>` wrappers and without
-/// whitespace, from a basis of its own, so it never equals a
-/// [`prompt_digest`]. Claude Code 2.1.327 took the start of a long brief as
-/// typed text and wrapped only the rest, and the line break at the split
-/// gained or lost blank lines (#1901). `tag` is the harness profile's
-/// `[payload] paste`.
 pub fn loose_prompt_digest(text: &str, tag: &str) -> String {
     let mut kept = String::with_capacity(text.len());
     let mut rest = text;
@@ -315,8 +237,6 @@ fn next_tag(text: &str, tag: &str) -> Option<(usize, usize)> {
     None
 }
 
-/// The text inside `<tag …>…</tag …>` when that wrapper is the whole of
-/// `text`; a tag inside it is part of the text.
 fn inside_tag<'a>(text: &'a str, tag: &str) -> Option<&'a str> {
     let named = |t: &'a str| t.strip_prefix(tag).filter(|r| r.starts_with([' ', '>']));
     let open = named(text.trim().strip_prefix('<')?)?;
@@ -326,24 +246,12 @@ fn inside_tag<'a>(text: &'a str, tag: &str) -> Option<&'a str> {
     (end.find('>')? == end.len() - 1).then(|| &body[..close])
 }
 
-/// The signal port: where a session's file is, and what it says.
 pub trait Signals {
-    /// The file to pass a session on `host` under `key`, as the session
-    /// sees it; `None` when this port cannot read one back from that host.
     fn file(&self, host: &str, key: &str) -> Option<String>;
-    /// The session's file, folded. A file never written is `Known` and
-    /// empty; a file that cannot be read is Unknown.
     fn read(&self, session: &SessionRef) -> Observation<Reported>;
-    /// How many bytes the session's file holds: each report the agent
-    /// makes moves it. `None` when this port cannot tell without a read
-    /// through the runtime.
     fn written(&self, _session: &SessionRef) -> Option<u64> {
         None
     }
-    /// The session's outbox ([`crate::event::outbox_file`] of its signal
-    /// file) from the byte offset `from`, at most
-    /// [`crate::event::MAX_OUTBOX_READ`] bytes. Known(None): never written.
-    /// A file that cannot be read is Unknown.
     fn outbox(
         &self,
         _session: &SessionRef,

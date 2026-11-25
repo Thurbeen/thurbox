@@ -1,9 +1,3 @@
-//! GatewayController as a pure function: a Task, the Conversation its
-//! labels name and the Tasks that name it as their parent go in; a plan
-//! comes out, whose status is `status.gateway` and whose appends are the
-//! inbox entries that land with it. Each case is one transition of the
-//! tie, one relay, or one reason nothing moves.
-
 use std::collections::BTreeMap;
 
 use fleet_api::condition::{Condition, ConditionStatus};
@@ -65,8 +59,6 @@ fn defaults() -> GatewayDefaults {
     }
 }
 
-/// A Task carrying the conversation labels, with `gateway` and the rest
-/// of its status as given.
 fn task(gateway: Option<GatewayStatus>, st: TaskStatus) -> Object {
     let st = TaskStatus { gateway, ..st };
     serde_json::from_value(json!({
@@ -81,7 +73,6 @@ fn task(gateway: Option<GatewayStatus>, st: TaskStatus) -> Object {
     .unwrap()
 }
 
-/// A Task with no labels at all.
 fn plain(name: &str, uid: &str, labels: Value, st: TaskStatus) -> Object {
     serde_json::from_value(json!({
         "apiVersion": "fleet/v1alpha1",
@@ -93,8 +84,6 @@ fn plain(name: &str, uid: &str, labels: Value, st: TaskStatus) -> Object {
     .unwrap()
 }
 
-/// A verified tie, as the controller leaves it: the `Tied` condition with
-/// it, so a pass that finds nothing new writes nothing.
 fn tied() -> Option<GatewayStatus> {
     let mut conditions = Vec::new();
     fleet_api::condition::set_condition(
@@ -157,7 +146,6 @@ fn person(id: u64, seq: u64, author: &str, text: &str) -> StoredMessage {
     msg(id, seq, author, AuthorKind::Person, text)
 }
 
-/// A Conversation Tied to the Task, at `revision`, holding `messages`.
 fn conversation(revision: u64, messages: Vec<StoredMessage>) -> Object {
     conversation_with(
         CONV_UID,
@@ -1416,15 +1404,12 @@ mod posting {
         format!("task/{TASK}/{TASK_UID}/gateway/{item}")
     }
 
-    /// The tied Conversation, with its parsed address, as the manager reads
-    /// it.
     fn thread_conv() -> Object {
         let mut c = conversation(1, vec![person(T0, 1, ALEX, "hi")]);
         c.status["ref"] = serde_json::to_value(ConversationRef::split(ADDRESS).unwrap()).unwrap();
         c
     }
 
-    /// The account's capabilities, as the probe's answer by account.
     fn caps(marker: Marker) -> BTreeMap<String, Observation<Capabilities>> {
         BTreeMap::from([(
             ACCOUNT.to_string(),
@@ -1465,7 +1450,6 @@ mod posting {
             .collect()
     }
 
-    /// A tied Task that read through `declared` and carries `posts`.
     fn speaking(
         declared: Vec<Value>,
         read: u64,
@@ -1665,7 +1649,6 @@ mod posting {
         assert_eq!(gw.posts[&key("comment/c1")].attempts, 2);
     }
 
-    /// `defaults()` with the log channel `fake:C0456EFGH` on the account.
     pub(super) fn logs_defaults() -> GatewayDefaults {
         GatewayDefaults {
             logs: Some(fleet_api::gateway::LogDestination {
@@ -1935,8 +1918,6 @@ mod posting {
         assert_eq!(gw.questions["q1"].at, NOW - 59_000);
     }
 
-    /// Fleet's post under `key`, or part `n` of `total` of it, as a
-    /// history read or the mirror reports it.
     fn fleet_message(id: &str, at: u64, marker: &str) -> fleet_api::gateway::Message {
         fleet_api::gateway::Message {
             id: id.into(),
@@ -2197,8 +2178,6 @@ mod logging {
         }
     }
 
-    /// A tied Task that declared one Comment and reported a result, with
-    /// `posts` already recorded.
     fn tied_with(posts: Vec<(String, EffectRecord)>, read: u64, posted: &[&str]) -> Object {
         let gw = tied_at(1).map(|g| GatewayStatus {
             declared: read,
@@ -2502,7 +2481,6 @@ mod reactions {
         ))
     }
 
-    /// The tied Conversation at `revision`, with its parsed address.
     fn conv(revision: u64, messages: Vec<StoredMessage>) -> Object {
         let mut c = conversation(revision, messages);
         c.status["ref"] = serde_json::to_value(ConversationRef::split(ADDRESS).unwrap()).unwrap();
@@ -2554,7 +2532,6 @@ mod reactions {
         }))
     }
 
-    /// The React effects a plan carries, as (key, reaction, on).
     fn reacts(plan: &Plan) -> Vec<(String, String, bool)> {
         plan.effects
             .iter()

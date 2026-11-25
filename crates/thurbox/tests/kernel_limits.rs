@@ -1,11 +1,3 @@
-//! Resource limits: the guarantees Luau would have donated and Lua 5.4 makes
-//! the kernel build.
-//!
-//! Separate from `kernel_mvp` because these tests mutate process-wide bounds,
-//! and running them beside the rest would change the limits under those tests.
-//! Within the file each holds [`limits`] for its whole run, so they run in
-//! sequence under any runner, restoring the defaults afterwards.
-
 use thurbox::kernel::host::{self, LuaHost, MemoryPressure, RenderContext};
 
 fn mod_dir(source: &str) -> tempfile::TempDir {
@@ -16,8 +8,6 @@ fn mod_dir(source: &str) -> tempfile::TempDir {
     dir
 }
 
-/// Held by every test here: the limits are process-wide, and `cargo test` runs
-/// a file's tests on parallel threads.
 fn limits() -> std::sync::MutexGuard<'static, ()> {
     static LIMITS: std::sync::Mutex<()> = std::sync::Mutex::new(());
     LIMITS
@@ -85,10 +75,6 @@ fn an_event_handler_that_never_returns_is_interrupted_and_reported() {
     );
 }
 
-/// Fills the VM to the byte on `interface.reloaded`, so the next subscriber's
-/// instruction hook cannot be installed. The last of it goes in as two-byte
-/// strings made by C functions, which leave no garbage: once one fails, no
-/// emergency collection can give the hook its room back.
 const FILLER: &str = r#"local held = {}
 for i = 1, 4096 do held[i] = false end
 return {
@@ -112,7 +98,6 @@ return {
   render = function() return { text = "" } end,
 }"#;
 
-/// Never returns from `interface.reloaded`.
 const SPINNER: &str = r#"return {
   name = "spinner", slot = "b",
   events = { "interface.reloaded" },
@@ -120,10 +105,6 @@ const SPINNER: &str = r#"return {
   render = function() return { text = "" } end,
 }"#;
 
-/// Dispatch `interface.reloaded` on a VM of `limit` bytes holding [`FILLER`]
-/// then [`SPINNER`], on a thread of its own: a call that runs without its
-/// instruction budget never comes back, and this one must not take the test
-/// with it.
 fn reload_beside_a_filler(limit: usize) -> Option<Vec<host::ModError>> {
     host::set_memory_limit(limit);
     let (sent, received) = std::sync::mpsc::channel();
@@ -162,8 +143,6 @@ fn a_call_whose_instruction_budget_cannot_be_armed_is_not_run() {
     );
 }
 
-/// A probe holding `chunks` of [`CHUNK`] bytes from load. `grow` holds one
-/// more; every render leaves garbage behind.
 fn resident_probe(chunks: usize) -> String {
     format!(
         r#"local held = {{}}
@@ -190,7 +169,6 @@ fn resident_probe(chunks: usize) -> String {
 
 const CHUNK: usize = 64 * 1024;
 
-/// Grow the probe one chunk at a time until the VM reports pressure.
 fn grow_until_pressure(host: &LuaHost) -> Option<MemoryPressure> {
     let probe = host.index_of("probe").expect("the probe loaded");
     for _ in 0..4096 {

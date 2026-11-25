@@ -1,16 +1,3 @@
-//! Configuring thurbox's tmux server leaves exactly one `*:clipboard` entry in
-//! `terminal-features`, however often it runs (issue #1278).
-//!
-//! The session config is applied on every spawn and every startup, and the
-//! server outlives thurbox, so an unconditional `set -as` grew the server-wide
-//! list by one entry per run, without bound.
-//!
-//! Driven through the real headless spawn path on a throwaway socket, because
-//! what is under test is what tmux ends up holding, not the string thurbox
-//! would send.
-//!
-//! Skipped when tmux is absent: a missing multiplexer is an environment fact.
-
 #![cfg(unix)]
 
 use std::collections::HashMap;
@@ -31,9 +18,6 @@ fn have_tmux() -> bool {
         .unwrap_or(false)
 }
 
-/// A tmux command that sets up the state a test is about, which must succeed:
-/// a staging step that failed silently would let the assertion after it pass
-/// against a state nobody staged.
 fn stage(server: &TmuxServer, args: &[&str]) {
     let out = server.tmux(args);
     assert!(
@@ -44,8 +28,6 @@ fn stage(server: &TmuxServer, args: &[&str]) {
     );
 }
 
-/// A server started the way a pre-fix thurbox or the operator's own config
-/// would leave it, before thurbox touches it.
 fn start_bare(server: &TmuxServer) {
     stage(
         server,
@@ -53,7 +35,6 @@ fn start_bare(server: &TmuxServer) {
     );
 }
 
-/// Every entry of the server's `terminal-features`, in order.
 fn terminal_features(server: &TmuxServer) -> Vec<String> {
     let out = server.tmux(&["show-options", "-sv", "terminal-features"]);
     String::from_utf8_lossy(&out.stdout)
@@ -132,9 +113,6 @@ async fn repeated_setup_adds_clipboard_once_and_keeps_every_other_feature() {
     );
 }
 
-/// The slot thurbox writes is one a user's `~/.tmux.conf` — which thurbox's
-/// server reads — could have claimed too. Theirs wins: thurbox's entry is only
-/// written into an empty slot.
 #[tokio::test(flavor = "multi_thread")]
 async fn a_slot_the_user_already_set_is_left_alone() {
     if !have_tmux() {
@@ -164,9 +142,6 @@ async fn a_slot_the_user_already_set_is_left_alone() {
     assert_eq!(terminal_features(&server), before);
 }
 
-/// A server a pre-fix thurbox already filled with duplicates is left as found:
-/// the entries are identical and harmless, and the list is shared server state
-/// thurbox does not own — so it stops growing rather than being rewritten.
 #[tokio::test(flavor = "multi_thread")]
 async fn existing_duplicates_stop_growing_and_are_not_removed() {
     if !have_tmux() {

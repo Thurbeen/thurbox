@@ -1,7 +1,3 @@
-//! TaskController as a pure function: a Task and what the probes saw go in;
-//! a plan comes out. Each case is one transition or one Unknown of the
-//! Task's lifecycle.
-
 use fleet_api::condition::ConditionStatus;
 use fleet_api::plan::{Action, EffectOutcome, Observations, Plan, Probe, Receipt};
 use fleet_api::runtime::{Activity, TrustGap, WorkspaceTrust};
@@ -64,7 +60,6 @@ fn probes(obj: &Object) -> Vec<Probe> {
     TaskController.probes(&input).unwrap()
 }
 
-/// What the runtime answers for a session whose agent trusts its workspace.
 fn trusted() -> Option<Observation<WorkspaceTrust>> {
     Some(Observation::Known(WorkspaceTrust::Trusted {
         how: "test".into(),
@@ -212,8 +207,6 @@ fn spawn_attempts_are_bounded() {
     assert_eq!(cond(&st, "NeedsAttention").reason, "Stalled");
 }
 
-/// One spawn as the manager performs it: the planned status, then the
-/// effect's receipt under the planned key, then the next pass.
 fn spawn_once(obj: &Object, outcome: EffectOutcome, now: u64) -> (Object, TaskStatus) {
     let host = Observations {
         host: Some(Observation::Known(true)),
@@ -822,7 +815,6 @@ fn intent(at: u64) -> fleet_api::plan::Intent {
     }
 }
 
-/// A Briefed Task with the given inbox and extra status.
 fn briefed_with(inbox: &[&str], extra: impl FnOnce(&mut TaskStatus)) -> Object {
     spawned(|st| {
         st.phase = Phase::Briefed;
@@ -1513,7 +1505,6 @@ fn a_brief_held_for_trust_holds_the_inbox_with_it() {
     }
 }
 
-/// A Briefed Task whose session the runtime still holds, as after a reboot.
 fn lost_obs(lost: bool) -> Observations {
     Observations {
         find: live(),
@@ -1748,7 +1739,6 @@ fn a_session_lost_before_its_brief_is_revived_and_briefed_once() {
 
 const PAUSE_AFTER: u64 = 60_000;
 
-/// A Briefed Task whose session may be paused.
 fn pausable(inbox: &[&str], extra: impl FnOnce(&mut TaskStatus)) -> Object {
     let mut obj = briefed_with(inbox, |st| {
         st.brief = Some(fleet_api::task::BriefRecord {
@@ -2304,10 +2294,6 @@ fn the_status_reports_what_the_runtime_proved_about_the_session() {
     assert_eq!(cond(&after, "SessionLost").status, ConditionStatus::True);
 }
 
-/// A harness with no hooks and no screen rules, such as a shell, has no
-/// agent state to report: it gets no `activity`, so a view draws its session
-/// as it did before screen rules. An agent with neither a report nor a
-/// matching rule is still `none`.
 #[test]
 fn a_harness_with_no_hooks_and_no_screen_rules_reports_no_source() {
     use fleet_api::screen::Source;
@@ -2350,9 +2336,6 @@ fn a_harness_with_no_hooks_and_no_screen_rules_reports_no_source() {
     assert_eq!(st.activity, None);
 }
 
-/// The screen is read for a harness Fleet has rules for, unless the last
-/// pass took the state from hooks whose authority is full; a screen rule's
-/// state then shows, below a full harness's hooks once they report.
 #[test]
 fn the_screen_is_read_only_where_the_hooks_do_not_say_the_state() {
     use fleet_api::screen::{AgentActivity, Screen, Source};

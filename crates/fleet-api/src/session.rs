@@ -1,36 +1,9 @@
-//! Session: one running agent, the unit the runtime port starts, observes,
-//! briefs, sends to and releases.
-//!
-//! A Session is not a stored kind. It is the thing a Task owns once spawned:
-//! the Task's `status.session` names it, and the Task's controller is the
-//! only writer of what Fleet knows about it. A Session has:
-//!
-//! - an identity, [`SessionRef`]: the runtime's `id`, the `host` it runs on
-//!   and Fleet's own `key`, deterministic per Task so a second spawn finds the
-//!   first Session instead of twinning it;
-//! - a lifecycle, [`SessionState`]: what the runtime last proved about it,
-//!   folded from the runtime port's answers by [`SessionState::observe`].
-//!
-//! The runtime port ([`crate::runtime::Runtime`]) is the only way Fleet
-//! reaches a Session. Fleet decides; the runtime runs the agent, holds its
-//! window and conversation, and its workspace unless Fleet made it (see
-//! [`crate::workspace`]), and answers Known or Unknown. Unknown
-//! never changes a Session's state: a state is a fact the runtime proved, and
-//! a doubt keeps the last one.
-//!
-//! One Task owns at most one Session, for its whole life: the Session starts
-//! with the Task's spawn and ends with the Task's release. A Session that the
-//! runtime holds but Fleet did not spawn belongs to no Task and is never
-//! adopted, because the key carries the Task's uid.
-
 use serde::{Deserialize, Serialize};
 
 use crate::Observation;
 use crate::plan::Observations;
 use crate::runtime::Activity;
 
-/// The identity of a Session: the runtime's `id`, the `host` it runs on and
-/// Fleet's `key`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct SessionRef {
@@ -39,27 +12,16 @@ pub struct SessionRef {
     pub key: String,
 }
 
-/// What the runtime last proved about a Session. Each state is one Known
-/// answer of the runtime port; a view reads it, nothing decides on it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum SessionState {
-    /// The runtime holds the Session and nothing proves its agent stopped,
-    /// lost or idle.
     Running,
-    /// The agent waits for input, with no background work to lose.
     Idle,
-    /// The agent is stopped, by Fleet or by anyone else; the row, workspace
-    /// and conversation are kept.
     Paused,
-    /// The runtime holds the Session, but its agent's window is gone, as
-    /// after a host reboot.
     Lost,
-    /// A readable session list no longer shows the Session under its key.
     Gone,
 }
 
 impl SessionState {
-    /// Every state: what a view or a metric counts over.
     pub const ALL: &[SessionState] = &[
         SessionState::Running,
         SessionState::Idle,
@@ -68,11 +30,6 @@ impl SessionState {
         SessionState::Gone,
     ];
 
-    /// Fold the runtime's answers about `session` into a state, or `None`
-    /// when nothing Known was answered. The strongest proof wins: gone over
-    /// lost, lost over paused, paused over the agent's activity, and any
-    /// proof of presence alone is `Running`. A session found under the key
-    /// that is not `session` counts as gone, as it does for `WorkerGone`.
     pub fn observe(session: &SessionRef, o: &Observations) -> Option<SessionState> {
         let found = match &o.find {
             Some(Observation::Known(Some(found))) => Some(found == session),
@@ -103,27 +60,16 @@ impl SessionState {
     }
 }
 
-/// What the agent is doing, finer than [`SessionState`]: a view tells an
-/// agent at work from one waiting on a person from one at rest. The agent's
-/// own report sets it, and below that a screen rule ([`crate::screen`]);
-/// nothing decides on it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum AgentState {
-    /// A turn is running: the agent was given a prompt, or works on one.
     Working,
-    /// The agent waits on a person: a permission to grant, or input it
-    /// asked for.
     Attention,
-    /// The turn finished, and the agent waits for its next prompt.
     Idle,
-    /// The agent has reported nothing since it last started. Not idle: a
-    /// silent agent may be at work.
     Unknown,
 }
 
 impl AgentState {
-    /// The state a session's folded signal file says.
     pub fn reported(r: &crate::signal::Reported) -> AgentState {
         use crate::signal::State;
         match r.state {
@@ -135,15 +81,10 @@ impl AgentState {
     }
 }
 
-/// The session key for a Task: deterministic, so a second spawn finds the
-/// first session instead of twinning it. The uid keeps a Task recreated under
-/// the same name from adopting a session it never owned.
 pub fn session_key(name: &str, uid: &str) -> String {
     format!("{name}.{uid}")
 }
 
-/// The uid part of a session key: `<name>.<uid>`, or a bare uid, which is
-/// what an adapter whose keys must be short hands back from `list`.
 pub fn uid_of_session_key(key: &str) -> &str {
     key.rsplit('.').next().unwrap_or(key)
 }
@@ -152,7 +93,6 @@ pub fn uid_of_session_key(key: &str) -> &str {
 mod tests {
     use super::*;
 
-    /// A new state fails to compile here until it is listed in `ALL`.
     #[test]
     fn every_session_state_is_in_all() {
         let listed = |s: SessionState| match s {

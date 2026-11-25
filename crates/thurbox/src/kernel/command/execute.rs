@@ -1,18 +1,10 @@
-//! The commands no session owns, run on a command worker: the settings file,
-//! the session list's manual order
-//! and the creation flow's repository memory. Sessions are Fleet's
-//! ([`super::fleet`]).
-
 use super::{BookmarkEdit, Command};
 
-/// What a command that succeeded did.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum Outcome {
-    /// What it was asked to do.
     Done,
 }
 
-/// Run `command` when it is one no session owns; `None` for any other.
 pub(super) fn local(command: &Command) -> Option<Result<Outcome, String>> {
     let done = match command {
         Command::Bookmark { host, path, edit } => bookmark(host, path, edit),
@@ -29,12 +21,6 @@ pub(super) fn local(command: &Command) -> Option<Result<Outcome, String>> {
     Some(done.map(|()| Outcome::Done))
 }
 
-/// Remember, forget or import a repository path.
-///
-/// Runs here rather than in the flow because every branch of it touches the
-/// filesystem: establishing whether a path is a repository, and scanning a
-/// folder. The refusal of a missing path is the point — catching a typo now
-/// beats failing minutes later when the session starts.
 fn bookmark(host: &str, path: &str, edit: &BookmarkEdit) -> Result<(), String> {
     // Removal names a path that is already remembered — an absolute one, since
     // the rows the flow offers come from the file — so it needs neither the
@@ -72,12 +58,6 @@ fn bookmark(host: &str, path: &str, edit: &BookmarkEdit) -> Result<(), String> {
     bookmark_add(host, &expanded)
 }
 
-/// Forget a remembered path.
-///
-/// Removal names a path that is already remembered — an absolute one, since the
-/// rows the flow offers come from the file — so it needs neither the
-/// filesystem nor the host. Done BEFORE the host is resolved, which is what lets
-/// a bookmark be forgotten after its host is no longer one Fleet lists.
 fn bookmark_remove(host: &str, path: &str) -> Result<(), String> {
     // Another host's paths were remembered as typed, so they are forgotten
     // as typed: this machine's home says nothing about that host's `~`.
@@ -92,11 +72,6 @@ fn bookmark_remove(host: &str, path: &str) -> Result<(), String> {
     }
 }
 
-/// Import a folder of repositories: remember the folder, then its members.
-///
-/// The members are not fixed here: the folder is re-scanned on every read of
-/// the bookmark list, so this is the first scan rather than the only one —
-/// nobody has to re-import a folder to see a repository they cloned into it.
 fn bookmark_parent(host: &str, expanded: &std::path::Path) -> Result<(), String> {
     if !expanded.is_dir() {
         return Err(format!("Path not found: {}", expanded.display()));
@@ -119,8 +94,6 @@ fn bookmark_parent(host: &str, expanded: &std::path::Path) -> Result<(), String>
     Ok(())
 }
 
-/// Remember one path: establish what it is, refuse what is not there, and record
-/// the git-ness so the flow knows whether worktree mode is even possible.
 fn bookmark_add(host: &str, expanded: &std::path::Path) -> Result<(), String> {
     if !expanded.is_dir() {
         return Err(format!("Path not found: {}", expanded.display()));
@@ -136,9 +109,6 @@ fn bookmark_add(host: &str, expanded: &std::path::Path) -> Result<(), String> {
 mod tests {
     use super::*;
 
-    /// A path remembered for another Fleet host is kept as typed, so it is
-    /// forgotten as typed: expanding its `~` against this machine's home
-    /// would name a path that was never remembered.
     #[test]
     fn a_path_remembered_for_another_host_is_forgotten_as_typed() {
         bookmark("devbox", "~/repo", &BookmarkEdit::Add).expect("remembered");

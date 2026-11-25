@@ -1,8 +1,3 @@
-//! The Forge controller end to end: `fleet declare` through the real
-//! binary, the ChangeRequest it ensures, the join message and the relay
-//! landing in the Task's inbox through the file store's typed mutation, and
-//! TaskController delivering them to the fake host, across process restarts.
-
 mod support;
 
 use std::fs;
@@ -70,8 +65,6 @@ fn draft(notes: Vec<Note>) -> ChangeSnapshot {
     }
 }
 
-/// A briefed Task on the fake host beside a fake forge holding change 7
-/// with one note, Fleet logged in as `fleet-bot`.
 fn setup(name: &str) -> (Env, FakeForge, String) {
     let mut env = Env::forge(name);
     env.set_var("USER", "tester");
@@ -111,7 +104,6 @@ fn delivered(status: &Value) -> Vec<Value> {
         .unwrap_or_default()
 }
 
-/// The texts the fake session was given, the brief first.
 fn texts(env: &Env, task: &str) -> Vec<String> {
     env.host()
         .session(&env.session_key(task))

@@ -1,34 +1,16 @@
-//! The runtime port: the calls a Task's lifecycle makes on an agent host.
-//! Every call answers Known or Unknown, and Unknown never concludes.
-//!
-//! Hosts are the runtime's names (`Task.spec.host`). Keys are fleet's session
-//! keys; an adapter may store them under its own prefix, and hands them back
-//! unprefixed.
-
 use crate::observation::Observation;
 use crate::plan::{EffectOutcome, SpawnSpec};
 use crate::task::{SessionRef, Workspace};
 
-/// Whether a session's agent trusts the workspace it runs in. Workspace
-/// trust is the agent's own gate on loading a folder's project settings; it
-/// is not a permission policy and approves no tool action.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum WorkspaceTrust {
-    /// The agent trusts its workspace, or its harness has no trust gate;
-    /// `how` says which, for people.
     Trusted { how: String },
-    /// The agent does not trust its workspace, and only a person can change
-    /// that; `why` says what to do.
     Untrusted { gap: TrustGap, why: String },
 }
 
-/// Why a workspace is known not to be trusted.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TrustGap {
-    /// The harness has no supported way to be trusted for one session.
     Unsupported,
-    /// The session is not the one the runtime would have started for this
-    /// workspace: another trust, none, or another directory.
     Mismatch,
 }
 
@@ -41,34 +23,19 @@ impl TrustGap {
     }
 }
 
-/// What the agent in a running session is doing, as its own hooks report
-/// it through `fleet signal` ([`crate::signal`]): a runtime knows nothing
-/// of it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Activity {
-    /// The agent works on a turn, or holds background work that a stop
-    /// would end.
     Active,
-    /// The agent waits for input, with no background work to lose.
     Idle,
 }
 
-/// How a view opens a session's terminal stream: the runtime's `attach`
-/// answer (docs/runtime/README.md#the-runtime-protocol). The argv runs where
-/// the view runs.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Attach {
-    /// The command speaks the terminal stream.
     Stream { argv: Vec<String> },
-    /// A raw interactive command, for a runtime with no screen keeper:
-    /// `fleet attach` bridges it into a stream.
     Tty { argv: Vec<String> },
 }
 
-/// A place of a runtime: where it runs a process, such as this machine, an
-/// ssh host or a VM (ADR-42). Fleet passes it with each request of protocol
-/// version 2 and does not read `config`, the place's table from its config.
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct Place {
     pub name: String,
@@ -77,10 +44,8 @@ pub struct Place {
 }
 
 impl Place {
-    /// The place of a runtime whose config names none.
     pub const LOCAL: &'static str = "local";
 
-    /// [`Place::LOCAL`], with an empty config.
     pub fn local() -> Place {
         Place {
             name: Place::LOCAL.into(),
@@ -89,22 +54,17 @@ impl Place {
     }
 }
 
-/// What a runtime's `manifest` says of one of its places.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct PlaceReport {
     pub name: String,
     pub platform: Platform,
-    /// Each key gets a new machine, such as a VM.
     #[serde(default)]
     pub dynamic: bool,
-    /// The runtime can run a process there now.
     pub ready: bool,
-    /// What the place lacks, when it is not ready.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub why: Option<String>,
 }
 
-/// The shell family a place runs commands in.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Platform {
@@ -113,7 +73,6 @@ pub enum Platform {
 }
 
 pub trait Runtime {
-    /// Resolve runtime model-variable selection into the frozen private environment.
     fn prepare_execution(
         &self,
         execution: &crate::config::Execution,
@@ -128,30 +87,12 @@ pub trait Runtime {
         Observation::unknown("environment sources unsupported by this runtime")
     }
 
-    /// The longest one call of this trait can take, every bound and grace
-    /// included: the manager's lease is sized to outlast it.
     fn operation_bound(&self) -> crate::Millis {
         0
     }
-    /// Whether the host answers. Unknown when the probe cannot tell.
     fn host(&self, host: &str) -> Observation<bool>;
-    /// Make the directory `dir` on `host`, with its missing parents, before
-    /// a Task names it: `Ok(true)` when this call made it, `Ok(false)` when
-    /// it was there already. `Err` says why the runtime cannot make it;
-    /// Unknown when it cannot tell whether it did. Repeating it is harmless.
     fn create_dir(&self, host: &str, dir: &str) -> Observation<Result<bool, String>>;
-    /// Remove the directory `dir` on `host` and everything in it. A
-    /// directory that is gone already is `Ok`. `Err` says why the runtime
-    /// cannot remove it; Unknown when it cannot tell whether it did.
-    /// Repeating it is harmless.
     fn remove_dir(&self, host: &str, dir: &str) -> Observation<Result<(), String>>;
-    /// Make the workspace of `urls` under `key` on `host`, whole or nothing:
-    /// `Materialized`, with `adopted` when a whole one already holds the key.
-    /// `Unsupported { url }` names a URL the runtime does not handle,
-    /// answered before anything is made. `Failed` is a refusal that left
-    /// nothing behind. Unknown when the runtime cannot tell: the call is
-    /// idempotent by key, so the next pass asks again. A runtime that makes
-    /// no workspace answers `Unsupported` for the first URL.
     fn workspace(&self, _host: &str, _key: &str, urls: &[String]) -> Observation<EffectOutcome> {
         Observation::Known(match urls.first() {
             Some(url) => EffectOutcome::Unsupported { url: url.clone() },
@@ -160,9 +101,6 @@ pub trait Runtime {
             },
         })
     }
-    /// The whole workspace of `urls` under `key` on `host`, after a
-    /// `workspace` call whose answer was lost: `Known(None)` when the runtime
-    /// proves it made none. Unknown when it cannot tell.
     fn find_workspace(
         &self,
         host: &str,
@@ -174,46 +112,27 @@ pub trait Runtime {
             _ => None,
         })
     }
-    /// Remove the workspace and everything the runtime made in it, keeping
-    /// the work it holds as the runtime's rules say. One already gone is
-    /// `Deleted`. Repeating it is harmless.
     fn release_workspace(
         &self,
         _workspace: &crate::workspace::WorkspaceRef,
     ) -> Observation<EffectOutcome> {
         Observation::Known(EffectOutcome::Deleted)
     }
-    /// `Spawned`, or `Spawned { adopted: true }` when a live session already
-    /// holds the key. Unknown on timeout: the next pass looks the key up with
-    /// `find` and never retries blindly.
     fn spawn(&self, spec: &SpawnSpec) -> Observation<EffectOutcome>;
-    /// The session holding `key`, `Known(None)` when a readable list shows
-    /// none, Unknown when the list cannot be read.
     fn find(&self, host: &str, key: &str) -> Observation<Option<SessionRef>>;
-    /// Ready when the agent can take a message now: a working turn can, a
-    /// dialog that holds the agent cannot.
     fn ready(&self, session: &SessionRef) -> Observation<bool>;
-    /// Whether the agent in `session` trusts the workspace the runtime made
-    /// (`ready`), so a brief cannot land in a trust prompt.
-    /// Unknown when the session cannot prove it.
     fn workspace_trust(
         &self,
         session: &SessionRef,
         workspace: &Workspace,
         ready: Option<&crate::workspace::WorkspaceRef>,
     ) -> Observation<WorkspaceTrust>;
-    /// Send the brief once under `intent_key`; the session stores the key, so
-    /// a second send of the same key is `Delivered { already: true }`.
     fn brief(
         &self,
         session: &SessionRef,
         text: &str,
         intent_key: &str,
     ) -> Observation<EffectOutcome>;
-    /// Send `text` under `intent_key` through `inbox`, the argv the
-    /// agent's harness profile rendered for its own inbox, run on the
-    /// session's place. A runtime that cannot run it there, or whose run
-    /// exits non-zero, types it, as [`Self::brief`].
     fn deliver(
         &self,
         session: &SessionRef,
@@ -224,56 +143,28 @@ pub trait Runtime {
         let _ = inbox;
         self.brief(session, text, intent_key)
     }
-    /// Read the intent key back: did a brief under it arrive?
     fn brief_delivered(&self, session: &SessionRef, intent_key: &str) -> Observation<bool>;
-    /// The agent finished its turn and waits. Nothing is deleted unless this
-    /// is Known(true).
     fn at_rest(&self, session: &SessionRef) -> Observation<bool>;
-    /// Delete the session once; repeating it is a no-op.
     fn release(&self, session: &SessionRef) -> Observation<EffectOutcome>;
-    /// Known(true) only when the runtime still holds the session but proves
-    /// that its agent's window is gone, as after a host reboot, and nobody
-    /// stopped it on purpose. A running or stopped session is Known(false).
     fn lost(&self, session: &SessionRef) -> Observation<bool>;
-    /// Start a lost session's agent again in its own workspace, resuming its
-    /// conversation under the same identity: the harness profile's resume
-    /// argv names `conversation`, when the agent's hooks reported one, and
-    /// `launch` is what its spawn started, for a runtime that starts the
-    /// argv itself. A running session is left alone, so repeating it is
-    /// harmless.
     fn revive(
         &self,
         session: &SessionRef,
         conversation: Option<&str>,
         launch: &SpawnSpec,
     ) -> Observation<EffectOutcome>;
-    /// The session's screen, as `capture` answers it: what Fleet's screen
-    /// rules read when the agent's hooks do not say its state. Known(None):
-    /// the runtime holds no process under the key.
     fn screen(&self, _session: &SessionRef) -> Observation<Option<crate::screen::Screen>> {
         Observation::unknown("this runtime reads no screen")
     }
-    /// How to open `session`'s terminal stream. Known(None): the runtime
-    /// offers no live view, or holds no process under the key.
     fn attach(&self, _session: &SessionRef) -> Observation<Option<Attach>> {
         Observation::Known(None)
     }
-    /// How to open an interactive shell beside `session`'s process, on its
-    /// place, in the shapes of [`Runtime::attach`]. Known(None): the runtime
-    /// offers no shell, or holds no process under the key.
     fn shell(&self, _session: &SessionRef) -> Observation<Option<Attach>> {
         Observation::Known(None)
     }
-    /// What the agent's hooks reported, when the session's signal file is
-    /// on a host only this runtime reaches. `None`: the signal port reads it
-    /// on this machine ([`crate::signal::Signals`]).
     fn signals(&self, _session: &SessionRef) -> Option<Observation<crate::signal::Reported>> {
         None
     }
-    /// The session's outbox from the byte offset `from`, as
-    /// [`crate::signal::Signals::outbox`] answers it, when the outbox is on
-    /// a host only this runtime reaches. `None`: the signal port reads it on
-    /// this machine.
     fn outbox(
         &self,
         _session: &SessionRef,
@@ -281,24 +172,14 @@ pub trait Runtime {
     ) -> Option<Observation<Option<crate::event::OutboxRead>>> {
         None
     }
-    /// Known(true) when the runtime holds the session and its agent is
-    /// stopped, by Fleet or by anyone else. A running or lost session is
-    /// Known(false). A runtime that cannot pause answers Unknown, so Fleet
-    /// never pauses a session on it.
     fn paused(&self, _session: &SessionRef) -> Observation<bool> {
         Observation::unknown("this runtime cannot tell a stopped session")
     }
-    /// Stop the agent of `session`, and keep its row, workspace and
-    /// conversation. A stopped session is left alone, so repeating it is
-    /// harmless.
     fn pause(&self, _session: &SessionRef) -> Observation<EffectOutcome> {
         Observation::Known(EffectOutcome::Failed {
             why: "this runtime cannot pause a session".into(),
         })
     }
-    /// Start the stopped agent of `session` again in its own workspace,
-    /// resuming `conversation` under the same identity, as for `revive`. A
-    /// running session is left alone, so repeating it is harmless.
     fn resume(
         &self,
         _session: &SessionRef,

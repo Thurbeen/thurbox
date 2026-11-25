@@ -1,51 +1,8 @@
-//! Self-update: download, verify, and install a thurbox release beside the
-//! running one.
-//!
-//! This is the auto-update feature (gated behind `[features] auto_update`, on
-//! by default for 1.0 — see [`crate::session::settings::FeatureFlags`]). It
-//! surfaces two ways, both calling [`perform_update`]:
-//!
-//! - **TUI** — a silent check on startup (`main::spawn_auto_update`), run on a
-//!   background thread so a slow download never blocks the first frame. A newer
-//!   release is downloaded and installed beside the running one (the running
-//!   process is untouched); the new version applies on the next launch, and the
-//!   result is surfaced as a status toast.
-//! - **CLI** — `thurbox-cli update` does the same on demand (`--force` bypasses
-//!   the up-to-date / dev-build guards).
-//!
-//! It reuses the version-check plumbing ([`fetch_releases`],
-//! [`decide_update`], [`current_version`]) so dev builds (`0.0.0-dev`) never
-//! auto-update and **only a release on this binary's own major line is ever
-//! installed** ([`crate::update::version_check::RELEASE_LINE`]) — not by the
-//! startup update, not by `--force`. Each major so far has been a different
-//! program under the same binary name (2.x replaced v1's interface, 3.x
-//! replaces its engine), so crossing one is a reinstall the user chooses, never
-//! a background download. It installs what
-//! `scripts/install.sh` installs — the same release artifacts, the same
-//! target-triple mapping, the same digest verified before anything is replaced.
-//! It does not reach for the same *tools*: downloads go through the
-//! `curl`/`wget` helpers and the unpacker is shelled out to, but the checksum is
-//! computed in process, so verification does not depend on what the local
-//! machine has on `PATH` (the installer's `sha256sum`/`shasum` do not exist on
-//! native Windows — issue #1182).
-//!
-//! **Windows.** This path used to refuse outright, which made a default-on
-//! `auto_update` silently mean nothing there (issue #1172). Two things make
-//! Windows different, and both are handled rather than refused:
-//!
-//! - the release artifact is the `.zip` `install.ps1` extracts, not a tarball,
-//!   so `extractor_for` picks the unpacker from the archive's own extension;
-//! - a rename cannot replace an executable a process is running from, so
-//!   `commit_binary` moves the old one aside first, which Windows allows. Its
-//!   doc comment is where the interrupted-swap guarantee is written down.
-
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use crate::update::version_check::{current_version, decide_update, fetch_releases, RELEASES_URL};
 
-/// GitHub release-download base for the thurbox repo (same repo as
-/// `scripts/install.sh`); the per-release directory is `<base>/v{version}/`.
 const RELEASE_BASE: &str = "https://github.com/Thurbeen/thurbox/releases/download";
 
 const BINARIES: [&str; 6] = [
@@ -57,39 +14,23 @@ const BINARIES: [&str; 6] = [
     "workspace-git",
 ];
 
-/// Outcome of an update attempt.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum UpdateOutcome {
-    /// Already on the newest release of the line; nothing was downloaded.
-    /// `next_major` is a later major line's newest release, reported for the
-    /// user to take on purpose.
     UpToDate {
         current: String,
         latest: String,
         next_major: Option<String>,
     },
-    /// Binaries were replaced; the new version applies on the next launch.
-    /// `next_major` as in [`UpdateOutcome::UpToDate`].
     Updated {
         from: String,
         to: String,
         next_major: Option<String>,
     },
-    /// A development build — skipped (its version doesn't order against tags).
-    /// Only returned when `force` is false.
-    SkippedDevBuild { current: String },
+    SkippedDevBuild {
+        current: String,
+    },
 }
 
-/// Map an OS/arch pair to the release artifact's Rust target triple. Mirrors
-/// `scripts/install.sh`'s `get_target`, and is restricted to the platforms
-/// `cd.yml`'s release matrix actually builds an archive for — Linux x86_64 and
-/// aarch64 (we pick the portable musl tarballs), Apple-silicon macOS and x86_64
-/// Windows — so an update never 404s on a missing artifact. Intel macOS has no
-/// build, so it errors cleanly here rather than pointing at a download that
-/// isn't there.
-/// Pure (takes os/arch) so it's testable; note Rust spells these
-/// `"macos"`/`"aarch64"` where `uname` says `darwin`/`arm64`, but they map to
-/// the same triples.
 pub fn target_triple(os: &str, arch: &str) -> Result<&'static str, String> {
     // Accepts both Rust's spellings (`macos`/`aarch64`) and `uname`'s
     // (`Darwin`/`arm64`), plus PowerShell's `AMD64`, because a *host's* platform
@@ -108,21 +49,10 @@ pub fn target_triple(os: &str, arch: &str) -> Result<&'static str, String> {
     }
 }
 
-/// True for **either** Windows triple.
-///
-/// `cd.yml` releases `-windows-msvc`, but `-windows-gnu` is the same platform
-/// with the same zip artifact and the same mapped-image problem, and a triple
-/// reaches this module from outside the running binary — [`fetch_archive`] takes
-/// a *peer host's*. The guard used to spell itself `-windows-msvc`, so a gnu
-/// target fell through into the tar path and asked the release for an artifact
-/// nothing builds (issue #1172); latent while the only release is msvc, and
-/// wrong the moment it is not.
 fn is_windows_target(target: &str) -> bool {
     target.contains("-windows-")
 }
 
-/// The release archive for `target`: a `.tar.gz` everywhere but Windows, whose
-/// artifact is the `.zip` `install.ps1` extracts.
 pub fn archive_name(version: &str, target: &str) -> String {
     if is_windows_target(target) {
         zip_name(version, target)
@@ -131,26 +61,13 @@ pub fn archive_name(version: &str, target: &str) -> String {
     }
 }
 
-/// A verified release archive on local disk, ready to be shipped somewhere.
 #[derive(Debug)]
 pub struct FetchedArchive {
-    /// The archive file, inside a scratch directory that is removed when this
-    /// value drops.
     pub path: PathBuf,
-    /// The artifact's file name (`thurbox-v1.2.3-<target>.tar.gz` / `.zip`).
     pub name: String,
     _scratch: ScratchDir,
 }
 
-/// Download the release archive of `version` for `target` and verify it
-/// against the release checksums, without extracting or installing anything.
-///
-/// This is [`perform_update`]'s download half, split out so a peer host can be
-/// provisioned with a **foreign** target — the host's platform rather than the
-/// running one — and with an exact version rather than "latest": a peer must
-/// speak this binary's JSON, so it is given this binary's release. A dev build
-/// has no release to fetch and is refused here; `host_cli` decides what a dev
-/// build ships instead.
 pub fn fetch_archive(version: &str, target: &str) -> Result<FetchedArchive, String> {
     if crate::agent::fetch::is_dev_version(version) {
         return Err(format!(
@@ -175,29 +92,22 @@ pub fn fetch_archive(version: &str, target: &str) -> Result<FetchedArchive, Stri
     })
 }
 
-/// The target triple for the running binary's platform.
 pub fn current_target() -> Result<&'static str, String> {
     target_triple(std::env::consts::OS, std::env::consts::ARCH)
 }
 
-/// Release tarball filename for `version` (no leading `v`) + `target`.
 fn tarball_name(version: &str, target: &str) -> String {
     format!("thurbox-v{version}-{target}.tar.gz")
 }
 
-/// Release zip filename for `version` (no leading `v`) + `target` — the Windows
-/// artifact `cd.yml` builds with `Compress-Archive`.
 fn zip_name(version: &str, target: &str) -> String {
     format!("thurbox-v{version}-{target}.zip")
 }
 
-/// Release sums filename for `version` (no leading `v`), as
-/// `scripts/ci/release-archive.sh --sums` writes it.
 fn checksums_name(version: &str) -> String {
     format!("thurbox-{version}-sha256sums.txt")
 }
 
-/// The download URL of whichever archive [`archive_name`] picks for `target`.
 fn archive_url(base: &str, version: &str, target: &str) -> String {
     format!("{base}/v{version}/{}", archive_name(version, target))
 }
@@ -206,10 +116,6 @@ fn checksums_url(base: &str, version: &str) -> String {
     format!("{base}/v{version}/{}", checksums_name(version))
 }
 
-/// Pull the expected SHA256 digest for `artifact` out of a checksums file.
-/// Each line is `<hex>␠␠<filename>`; find the line naming our tarball and take
-/// the first whitespace token. Pure, so it's unit-testable. Mirrors
-/// `install.sh`'s `get_checksum`.
 fn parse_checksum(checksums: &str, artifact: &str) -> Option<String> {
     checksums
         .lines()
@@ -218,14 +124,6 @@ fn parse_checksum(checksums: &str, artifact: &str) -> Option<String> {
         .map(str::to_string)
 }
 
-/// `file`'s SHA-256, lowercase hex.
-///
-/// Streamed through the hasher rather than read whole: a release archive is
-/// tens of megabytes and nothing here needs its bytes, only its digest.
-///
-/// Fed by hand rather than by `io::copy`: since `sha2` 0.11 the hasher is no
-/// longer an `io::Write` (that moved to the separate `digest-io` crate), and its
-/// output is a `hybrid_array::Array`, which has no `LowerHex`.
 fn sha256_of(file: &Path) -> Result<String, String> {
     use sha2::{Digest, Sha256};
     use std::fmt::Write as _;
@@ -252,17 +150,6 @@ fn sha256_of(file: &Path) -> Result<String, String> {
         }))
 }
 
-/// Verify `file`'s SHA256 against `expected`, case-insensitively.
-///
-/// Hashed **in process**. This shelled out to `sha256sum`, falling back to
-/// `shasum -a 256` — the tools `install.sh` uses — which made a checksum depend
-/// on what the *local* machine has on `PATH`. Native Windows has neither, so
-/// every verification there failed with `could not compute SHA256`, which
-/// skipped the WSL host mirror, left the host's socket unlearned, and put the
-/// teardown sweep in a 5-second re-probe loop for the life of the process
-/// (issue #1182). Hashing here answers identically on every platform, and
-/// leaves no tool output to parse — the escaped-line handling that #1168 needed
-/// went with it, because coreutils' escaping was the tool's, not the digest's.
 fn verify_sha256(file: &Path, expected: &str) -> Result<(), String> {
     let actual = sha256_of(file)?;
     if actual.eq_ignore_ascii_case(expected.trim()) {
@@ -274,22 +161,6 @@ fn verify_sha256(file: &Path, expected: &str) -> Result<(), String> {
     }
 }
 
-/// The program and arguments that unpack `archive` into `into`.
-///
-/// Chosen by the archive's **extension** rather than by the running platform,
-/// because the two are not always the same question: [`fetch_archive`] fetches a
-/// peer host's artifact, and a zip is a zip wherever it was downloaded.
-///
-/// A `.zip` goes to PowerShell's built-in `Expand-Archive`, which is what
-/// `install.ps1` uses and the only unpacker a native Windows box is guaranteed
-/// to have — `tar.exe` only arrived in Windows 10 1803, and `unzip` never did.
-/// `-LiteralPath` where `install.ps1` writes `-Path` because these are paths and
-/// not wildcards: a `[` in an install directory would otherwise be read as a
-/// character class. Progress is silenced because the child shares thurbox's
-/// console, and the startup update runs while the interface owns the screen:
-/// `Expand-Archive` would draw its progress bar over the frame, where `tar`
-/// prints nothing on success. Anything else is the release tarball and goes to
-/// `tar`, exactly as before.
 fn extractor_for(archive: &Path, into: &Path) -> (&'static str, Vec<std::ffi::OsString>) {
     if archive
         .extension()
@@ -323,8 +194,6 @@ fn extractor_for(archive: &Path, into: &Path) -> (&'static str, Vec<std::ffi::Os
     }
 }
 
-/// Download staging removed on drop; a later allocation recovers old staging
-/// whose owner died without running destructors.
 #[derive(Debug)]
 struct ScratchDir {
     path: PathBuf,
@@ -359,7 +228,6 @@ impl ScratchDir {
     }
 }
 
-/// Canonical decimal ownership only, including older releases' u32 sequences.
 fn scratch_owner(name: &std::ffi::OsStr) -> Option<u32> {
     let name = name.to_str()?;
     let (pid, token) = name.strip_prefix(".update-")?.split_once('-')?;
@@ -463,9 +331,6 @@ impl Drop for ScratchDir {
     }
 }
 
-/// Copy `src` into `dest`'s directory as a hidden `.{name}.new` staging file
-/// (same filesystem as `dest`, so the later rename is atomic), made executable.
-/// Returns the staged path, ready to commit.
 fn stage_binary(src: &Path, dest: &Path) -> Result<PathBuf, String> {
     let dir = dest
         .parent()
@@ -481,10 +346,6 @@ fn stage_binary(src: &Path, dest: &Path) -> Result<PathBuf, String> {
     Ok(staged)
 }
 
-/// `rwxr-xr-x`: only the owner may write, but everyone keeps read + execute,
-/// because a system-wide install (e.g. `/usr/local/bin`, updated as root) is
-/// run by other accounts. `chmod` is not masked by the umask, so this is the
-/// exact mode the binary ends up with.
 #[cfg(unix)]
 const INSTALLED_BINARY_MODE: u32 = 0o755;
 
@@ -501,10 +362,6 @@ fn set_executable(_path: &Path) -> Result<(), String> {
     Ok(())
 }
 
-/// Where to send someone whose install directory refused the replace. On
-/// Windows a refusal is as likely to be another thurbox holding the file as a
-/// permission problem, and only the reader can tell which, so the hint names
-/// both.
 #[cfg(windows)]
 const REINSTALL_HINT: &str =
     "the binary may be in use — close thurbox and try again, or re-run install.ps1";
@@ -518,36 +375,12 @@ fn replace_failed(dest: &Path, e: impl std::fmt::Display) -> String {
     )
 }
 
-/// Rename `staged` over `dest`.
-///
-/// Unix replaces a running binary happily — the running process keeps the inode
-/// it already opened — so this is the plain rename it has always been, and it
-/// keeps no backup to roll back to.
 #[cfg(not(windows))]
 fn commit_binary(staged: &Path, dest: &Path) -> Result<Option<PathBuf>, String> {
     std::fs::rename(staged, dest).map_err(|e| replace_failed(dest, e))?;
     Ok(None)
 }
 
-/// Move `dest` aside to a free backup name, then move `staged` in. Returns the
-/// backup, so [`install_binaries`] can put it back if a later binary fails.
-///
-/// **Why two renames.** Windows will not delete an image a process has mapped,
-/// and a rename *over* `dest` has to delete it. Renaming the mapped image
-/// itself is allowed, so it is moved aside first and the running process keeps
-/// its old image, as it keeps its inode on Unix — the same swap `install.ps1`
-/// and the host-CLI install use.
-///
-/// **Why a free name.** A process started before the last update is still
-/// running from that update's backup, and nothing can delete it until it
-/// exits. With one fixed backup name the swap then had nowhere to put `dest`,
-/// and the update stopped part-way (issue #1432); [`backup_path`] picks a name
-/// nothing holds instead.
-///
-/// **What an interrupted swap leaves.** Download, verification and staging all
-/// happen before this, so an interruption up to here leaves the installed
-/// binary untouched. Between the two renames `dest` is briefly absent; a failed
-/// second rename moves the backup straight back.
 #[cfg(windows)]
 fn commit_binary(staged: &Path, dest: &Path) -> Result<Option<PathBuf>, String> {
     // A program the install lacked has nothing to move aside.
@@ -564,14 +397,9 @@ fn commit_binary(staged: &Path, dest: &Path) -> Result<Option<PathBuf>, String> 
     Ok(Some(backup))
 }
 
-/// How many backups of one binary may be held by processes still running from
-/// them before an update gives up.
 #[cfg(windows)]
 const BACKUP_SLOTS: usize = 16;
 
-/// The first free name of `.{name}.old`, `.{name}.1.old`, … beside `dest`,
-/// deleting every backup no process still runs from on the way, so old ones do
-/// not pile up.
 #[cfg(windows)]
 fn backup_path(dest: &Path) -> Result<PathBuf, String> {
     let name = dest.file_name().unwrap_or_default().to_string_lossy();
@@ -590,21 +418,6 @@ fn backup_path(dest: &Path) -> Result<PathBuf, String> {
     free.ok_or_else(|| replace_failed(dest, "every backup name is held by a running thurbox"))
 }
 
-/// Replace the installed binaries in `install_dir` with the ones extracted into
-/// `extract_dir`. Two-phase to minimise the version-mismatch window: every
-/// binary is staged + verified first, then the renames run back-to-back.
-///
-/// `exe_suffix` is the platform's executable suffix appended to each
-/// [`BINARIES`] stem — `std::env::consts::EXE_SUFFIX`, passed in rather than
-/// read here so the Windows shape is reachable from a test on any platform.
-/// Windows spells the binaries `thurbox.exe` in both the zip and the install
-/// directory, and a suffix-blind version looked for a `thurbox` that is in
-/// neither, reporting the archive as missing it (issue #1172).
-///
-/// A program the install directory lacks is added, not skipped: the archive is
-/// the same verified one, and thurbox cannot start a session without `fleet`
-/// and the programs it runs. Returns the names installed. Unit-testable: takes
-/// plain dirs, no network.
 fn install_binaries(
     extract_dir: &Path,
     install_dir: &Path,
@@ -671,21 +484,12 @@ fn install_programs(
     Ok(staged.into_iter().map(|(_, _, name)| name).collect())
 }
 
-/// Remove staged `.new` files an update will not commit, so the next one does
-/// not find them.
 fn discard_staged(staged: &[(PathBuf, PathBuf, String)]) {
     for (s, _, _) in staged {
         let _ = std::fs::remove_file(s);
     }
 }
 
-/// Download, verify, extract, and install the newest release of this binary's
-/// major line in place.
-///
-/// `force` bypasses the up-to-date and dev-build guards (re-downloads + replaces
-/// regardless) but never the line: no flag installs another major. Staging may
-/// be recovered before verification; any failure before the swap leaves
-/// installed binaries untouched.
 pub fn perform_update(force: bool) -> Result<UpdateOutcome, String> {
     let current = current_version().to_string();
 
@@ -697,9 +501,6 @@ pub fn perform_update(force: bool) -> Result<UpdateOutcome, String> {
     perform_update_from(&ReleaseFeed::github(), &current, &install_dir()?, force)
 }
 
-/// The directory an update installs into: the one the programs are run
-/// from, `<prefix>/bin` for a release under `<prefix>/lib/thurbox/releases/`,
-/// otherwise the running executable's.
 fn install_dir() -> Result<PathBuf, String> {
     let exe = std::env::current_exe().map_err(|e| format!("resolve current executable: {e}"))?;
     bin_dir_of(&exe).ok_or_else(|| "running executable has no parent directory".to_string())
@@ -844,10 +645,6 @@ const PREVIOUS: &str = "previous";
 #[cfg(windows)]
 const PREVIOUS_VERSION: &str = "version";
 
-/// Copy the installed programs into `previous\` beside them, with the
-/// version they run, before an update replaces them: Windows has no
-/// symbolic link an ordinary user may make, so the release a rollback
-/// returns to is a copy.
 #[cfg(windows)]
 fn keep_previous(bin: &Path, from: &str) -> Result<(), String> {
     let previous = bin.join(PREVIOUS);
@@ -934,14 +731,10 @@ fn runs_from(dir: &Path) -> bool {
         .any(|exe| exe.starts_with(&dir))
 }
 
-/// The `fleet` an update installs, beside the running executable.
 pub fn installed_fleet() -> Result<PathBuf, String> {
     Ok(install_dir()?.join(format!("fleet{}", std::env::consts::EXE_SUFFIX)))
 }
 
-/// Where releases are listed and downloaded from: GitHub in production, a
-/// directory of fixture files under `file://` in the updater's own tests, which
-/// is how they drive the whole list-download-verify-install path offline.
 pub(crate) struct ReleaseFeed {
     releases: String,
     download: String,
@@ -956,8 +749,6 @@ impl ReleaseFeed {
     }
 }
 
-/// [`perform_update`] against an explicit feed, running version and install
-/// directory.
 fn perform_update_from(
     feed: &ReleaseFeed,
     current: &str,
@@ -1291,12 +1082,6 @@ mod tests {
         );
     }
 
-    /// The triples an update or a peer provisioning may download — the
-    /// artifacts `cd.yml` builds that `target_triple` actually selects (it
-    /// prefers musl over the also-built gnu tarball for Linux x86_64; the
-    /// Windows artifact is a `.zip`, served by `archive_name`). `target_triple`
-    /// / `current_target` must only ever resolve to one of these — anything
-    /// else would 404 on download.
     const SHIPPED_TRIPLES: [&str; 4] = [
         "x86_64-unknown-linux-musl",
         "aarch64-unknown-linux-musl",
@@ -1345,12 +1130,6 @@ mod tests {
         );
     }
 
-    /// The artifact shape is a property of Windows, not of one of its two
-    /// ABIs. The guard used to spell itself `-windows-msvc`, so a
-    /// `-windows-gnu` target fell through into the tar path and asked the
-    /// release for an artifact `cd.yml` does not build (issue #1172). Reachable
-    /// through [`fetch_archive`], which takes a *peer's* triple rather than
-    /// this binary's.
     #[test]
     fn archive_name_names_windows_not_one_triple() {
         for target in [
@@ -1418,10 +1197,6 @@ mod tests {
         );
     }
 
-    /// The zip is unpacked by the one thing a native Windows box is guaranteed
-    /// to have. Decided by the archive's extension rather than the running
-    /// platform because `fetch_archive` fetches a *peer's* artifact, which is
-    /// also why this is asserted on Linux.
     #[test]
     fn extractor_for_picks_expand_archive_for_a_zip() {
         let into = Path::new("/install/dir");
@@ -1532,9 +1307,6 @@ cccc3333  thurbox-v0.114.0-aarch64-apple-darwin.tar.gz
     }
 
     #[cfg(unix)]
-    /// An install that predates a program (only `thurbox` and `thurbox-cli`
-    /// beside each other) gains every program the release ships: thurbox
-    /// cannot start a session without `fleet` and the two it runs.
     #[test]
     fn install_binaries_adds_the_programs_the_install_lacks() {
         let install = tempfile::TempDir::new().unwrap();
@@ -1595,11 +1367,6 @@ cccc3333  thurbox-v0.114.0-aarch64-apple-darwin.tar.gz
         assert!(err.contains("missing"), "got: {err}");
     }
 
-    /// Windows spells both the archive entries and the installed binaries
-    /// `thurbox.exe`, so a suffix-blind install looked for a `thurbox` that is in
-    /// neither and called the archive incomplete (issue #1172). Driven by the
-    /// suffix rather than `cfg(windows)`, so the Windows shape is covered on the
-    /// platform CI actually runs.
     #[test]
     fn install_binaries_appends_the_platform_exe_suffix() {
         let install = tempfile::TempDir::new().unwrap();
@@ -1629,8 +1396,6 @@ cccc3333  thurbox-v0.114.0-aarch64-apple-darwin.tar.gz
         }
     }
 
-    /// A process killed on drop, so a failed assertion leaves nothing running
-    /// from the test's install directory.
     #[cfg(windows)]
     struct Running(std::process::Child);
 
@@ -1642,8 +1407,6 @@ cccc3333  thurbox-v0.114.0-aarch64-apple-darwin.tar.gz
         }
     }
 
-    /// Start `exe` and keep it running, so Windows holds its image mapped the
-    /// way it does for a `thurbox-cli.exe` a hook started.
     #[cfg(windows)]
     fn run_from(exe: &Path) -> Running {
         let child = Command::new(exe)
@@ -1656,12 +1419,6 @@ cccc3333  thurbox-v0.114.0-aarch64-apple-darwin.tar.gz
         Running(child)
     }
 
-    /// Issue #1432: the first update moves a running `thurbox-cli.exe` aside
-    /// to `.thurbox-cli.exe.old`, and the process keeps running from there.
-    /// The next update could not delete that backup, `ReplaceFile` refused to
-    /// reuse its name, and the update stopped after `thurbox.exe` — a TUI and
-    /// CLI on different versions and a stale `.new` behind. A real process
-    /// holds the image, because only the loader's mapping reproduces it.
     #[cfg(windows)]
     #[test]
     fn update_succeeds_while_a_process_runs_from_the_last_backup() {
@@ -1692,8 +1449,6 @@ cccc3333  thurbox-v0.114.0-aarch64-apple-darwin.tar.gz
         }
     }
 
-    /// Windows keeps the programs an update replaces in `previous\\`, with
-    /// their version, and a rollback puts them back in place.
     #[cfg(windows)]
     #[test]
     fn a_windows_update_keeps_the_previous_programs_to_roll_back_to() {
@@ -1727,9 +1482,6 @@ cccc3333  thurbox-v0.114.0-aarch64-apple-darwin.tar.gz
         assert!(why.contains("no previous release"), "{why}");
     }
 
-    /// When one binary cannot be committed the other is put back, so a failed
-    /// update leaves the install on one version rather than split across two,
-    /// and leaves no staged `.new` for the next update to trip over.
     #[cfg(windows)]
     #[test]
     fn a_failed_commit_rolls_back_the_binaries_already_swapped() {
@@ -1760,8 +1512,6 @@ cccc3333  thurbox-v0.114.0-aarch64-apple-darwin.tar.gz
         }
     }
 
-    /// A failed update removes the programs it had added, so the install is
-    /// not left with `fleet` from the new release beside the old thurbox.
     #[cfg(unix)]
     #[test]
     fn a_failed_commit_removes_the_programs_it_added() {
@@ -1786,8 +1536,6 @@ cccc3333  thurbox-v0.114.0-aarch64-apple-darwin.tar.gz
         }
     }
 
-    /// The Windows shape of the same: a later program held open, and the
-    /// programs the install lacked are gone again after the failure.
     #[cfg(windows)]
     #[test]
     fn a_failed_commit_removes_the_programs_it_added_on_windows() {
@@ -1818,11 +1566,6 @@ cccc3333  thurbox-v0.114.0-aarch64-apple-darwin.tar.gz
         }
     }
 
-    /// Hashing is in process, so an empty `PATH` — a machine with neither
-    /// `sha256sum` nor `shasum`, which is every native Windows one — must still
-    /// verify. Emptying `PATH` is how the platform that shipped issue #1182
-    /// gets reproduced on the platform CI runs, and it is why this test carries
-    /// no `cfg` gate: the version that did skipped the only platform it broke on.
     #[test]
     fn verify_sha256_needs_no_tool_on_path() {
         let dir = tempfile::TempDir::new().unwrap();
@@ -1839,8 +1582,6 @@ cccc3333  thurbox-v0.114.0-aarch64-apple-darwin.tar.gz
         });
     }
 
-    /// A digest of real content, not just the empty one, so a wrong hasher
-    /// cannot pass by returning a constant.
     #[test]
     fn verify_sha256_hashes_the_file_contents() {
         let dir = tempfile::TempDir::new().unwrap();
@@ -1853,8 +1594,6 @@ cccc3333  thurbox-v0.114.0-aarch64-apple-darwin.tar.gz
         .unwrap();
     }
 
-    /// A file larger than the read buffer is hashed whole, not just its first
-    /// chunk: the FIPS 180-2 one-million-`a` vector.
     #[test]
     fn verify_sha256_hashes_past_the_read_buffer() {
         let dir = tempfile::TempDir::new().unwrap();
@@ -1867,8 +1606,6 @@ cccc3333  thurbox-v0.114.0-aarch64-apple-darwin.tar.gz
         .unwrap();
     }
 
-    /// The programs a release archive ships: `BINARIES` in
-    /// `scripts/ci/release-archive.sh`, which packs every archive.
     fn shipped() -> Vec<String> {
         let packer = include_str!("../../../../scripts/ci/release-archive.sh");
         let list = packer
@@ -1879,15 +1616,11 @@ cccc3333  thurbox-v0.114.0-aarch64-apple-darwin.tar.gz
         list.split_whitespace().map(str::to_string).collect()
     }
 
-    /// The updater replaces what the release ships, so a v3 install's `fleet`,
-    /// `runtime-mux` and `workspace-git` move with thurbox.
     #[test]
     fn the_updater_replaces_every_program_the_release_ships() {
         assert_eq!(BINARIES.to_vec(), shipped());
     }
 
-    /// An update on an install of every shipped program leaves none of them on
-    /// the old version.
     #[cfg(unix)]
     #[test]
     fn an_update_moves_every_shipped_program_to_the_new_release() {
@@ -1903,13 +1636,6 @@ cccc3333  thurbox-v0.114.0-aarch64-apple-darwin.tar.gz
         }
     }
 
-    /// A release feed on disk, served to the real updater over `file://`.
-    ///
-    /// Each release gets the archive for this platform and a checksums file, the
-    /// same assets `cd.yml` publishes. The binaries inside are scripts that name
-    /// their version and record each call in `calls`; a file `exit-<version>`
-    /// holding `<code> <message>` makes that release's programs fail with it.
-    /// The install is a prefix whose `bin` holds the programs.
     #[cfg(unix)]
     struct Feed {
         root: tempfile::TempDir,
@@ -1919,7 +1645,6 @@ cccc3333  thurbox-v0.114.0-aarch64-apple-darwin.tar.gz
 
     #[cfg(unix)]
     impl Feed {
-        /// `releases` newest first, as GitHub lists them.
         fn new(releases: &[&str], installed: &str) -> Self {
             let root = tempfile::TempDir::new().unwrap();
             let prefix = tempfile::TempDir::new().unwrap();
@@ -2035,8 +1760,6 @@ cccc3333  thurbox-v0.114.0-aarch64-apple-darwin.tar.gz
             std::fs::read_link(self.home().join(name)).ok()
         }
 
-        /// The version every installed program now names, or `None` when
-        /// they disagree.
         fn installed(&self) -> Option<String> {
             let versions: std::collections::BTreeSet<String> = shipped()
                 .iter()
@@ -2170,9 +1893,6 @@ cccc3333  thurbox-v0.114.0-aarch64-apple-darwin.tar.gz
         assert!(home.path().join("releases/3.0.0").exists());
     }
 
-    /// A major boundary: 4.0.0 is GitHub's "Latest", and nothing a 3.x
-    /// updater does — the silent startup update or `thurbox-cli update --force`
-    /// — may put it on disk.
     #[cfg(unix)]
     #[test]
     fn an_install_offered_the_next_major_never_installs_it() {
@@ -2196,9 +1916,6 @@ cccc3333  thurbox-v0.114.0-aarch64-apple-darwin.tar.gz
         );
     }
 
-    /// A maintenance release cut after the next major is not GitHub's
-    /// "Latest" (`cd.yml` publishes it with `make_latest: false`), and an
-    /// install on its line must still find and take it.
     #[cfg(unix)]
     #[test]
     fn an_install_still_takes_a_release_on_its_line_cut_after_the_next_major() {

@@ -1,12 +1,8 @@
-//! The identity a window is stamped with (ADR-25): the session that owns it.
-
 use std::fmt;
 
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-/// A session's stable identity. Owned by the program that creates sessions;
-/// the runtime only stamps it on windows and reads it back.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct SessionId(Uuid);
 

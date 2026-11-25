@@ -1,12 +1,3 @@
-//! The Gateway's log channel end to end: a tied thread carries only what is
-//! useful to the person in it (a Comment, a Question, and one notice when a
-//! change is first ready for review), and every Task's Drafts, result and
-//! change news go to the one `gateway.logs` channel as top-level posts that
-//! name the Task and, for a tied Task, its thread. An untied Task and a
-//! child log there too. Without `gateway.logs`, Drafts, results and change
-//! news are posted nowhere; the thread's ready notice still is. A log post is
-//! a keyed effect recovered by its marker in the log channel's history.
-
 mod support;
 
 use std::fs;
@@ -25,15 +16,12 @@ use support::{
 
 const T0: u64 = 1_730_000_000_000;
 const THREAD: &str = "fake:C0123ABCD:1730000000000";
-/// The log channel: no route covers it.
 const LOGS: &str = "C0456EFGH";
 const LOGS_ADDRESS: &str = "fake:C0456EFGH";
 const BOT: &str = "B0FLEET001";
 const PROJECT: &str = "acme/widgets";
 const URL: &str = "https://forge.test/acme/widgets/pull/7";
 
-/// An environment with the fake forge and the fake gateway, and
-/// `gateway.logs` naming the log channel when `logs` is true.
 fn env(name: &str, logs: bool) -> Env {
     let mut env = Env::forge(name);
     env.set_var("USER", "tester");
@@ -76,7 +64,6 @@ fn person(id: &str, at: u64, text: &str) -> Message {
     }
 }
 
-/// The Task Alex's mention started in the mirrored thread, joined.
 fn tied(env: &Env) -> String {
     env.fake_gateway()
         .seed(
@@ -113,8 +100,6 @@ fn tied(env: &Env) -> String {
     task
 }
 
-/// The platform's clock reads like Fleet's, as a real one would: a
-/// recovery read asks for what was posted since the intent.
 fn clock(env: &Env) {
     env.fake_gateway()
         .set_clock(support::now_ms() + 60_000)
@@ -137,8 +122,6 @@ fn declare(env: &Env, task: &str, item: Value) {
         .ok();
 }
 
-/// Report generation 1 shipped. A Task made by `support::task` requires its
-/// `prUrl` output; a conversation Task declares none.
 fn result(env: &Env, task: &str, summary: &str) {
     let mut args = vec![
         "result",

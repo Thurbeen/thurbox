@@ -1,27 +1,7 @@
-//! What a pane may say, and what it may set off, outside its own rect.
-//!
-//! Two gaps this closes, both recorded in the panes themselves. The creation
-//! flow states one of them in a comment — "a mod cannot write the message
-//! band (it is kernel chrome), so a refusal this flow makes itself is shown on
-//! its own footer row instead" — and pays a row of every modal for it. The
-//! other is quieter: the kernel's own modals are reachable from a `role =
-//! "action:…"` node and therefore only from the *mouse*, so a pane could not
-//! open help from a key handler at all.
-//!
-//! Both are commands rather than globals, for the reason every write is one: a
-//! mod says what it wants and the loop does it on a later frame. The
-//! coordinator half — the band actually showing the text, the modal actually
-//! opening — is asserted on a real terminal in `tests/tui_e2e.rs`; what is
-//! pinned here is the vocabulary, and that a mistake in it is refused rather
-//! than swallowed.
-
 use thurbox::kernel::bands::Level;
 use thurbox::kernel::command::Command;
 use thurbox::kernel::host::{KeyPress, LuaHost, RenderContext};
 
-/// An interface of exactly the bundled `lib/` plus the panes given, so a test
-/// pane may `require` the component layer without the bundled panes' snapshot
-/// needs.
 fn interface(mods: &[(&str, &str)]) -> (tempfile::TempDir, std::path::PathBuf) {
     let home = tempfile::tempdir().expect("tempdir");
     let ui = home.path().join("ui");
@@ -32,7 +12,6 @@ fn interface(mods: &[(&str, &str)]) -> (tempfile::TempDir, std::path::PathBuf) {
     (home, ui)
 }
 
-/// A pane whose only job is to run `body` when `x` is pressed.
 fn presser(body: &str) -> String {
     format!(
         r#"return {{
@@ -117,9 +96,6 @@ fn a_pane_can_say_something_in_the_message_band() {
     );
 }
 
-/// The trap the `command` option list already documents: a name no verb reads
-/// is collected and ignored, so a verb whose required field is misspelt has to
-/// refuse rather than enqueue a no-op.
 #[test]
 fn a_message_with_no_text_and_a_level_nobody_badges_are_both_refused() {
     let error = issued(r#"command("message", { message = "oops" })"#).expect_err("refused");

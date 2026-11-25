@@ -1,77 +1,27 @@
-//! Cloning and updating a mod's working copy.
-//!
-//! A mod that carries more than Lua is a repository, and it arrives *only*
-//! by clone: the plain fetch path returns a `String` and decodes remote output
-//! lossily, so a binary through it would be corrupted rather than refused. The
-//! working copy keeps its `.git`, which is what makes `update` a fetch and lets
-//! git own "your edits are yours" — a dirty tree is never moved.
-
 use std::path::Path;
 
 use anyhow::{Context, Result};
 
 use super::{git_command, git_program, non_interactive, reportable_stderr, run_git};
 
-/// The length of a **full** object id in each of git's two hashes. Both are
-/// recognised rather than only the one this machine's repositories happen to use:
-/// the hash belongs to the repository being pinned, not to us.
 const SHA1_ID: usize = 40;
 const SHA256_ID: usize = 64;
 
-/// The shortest prefix read as an abbreviated object id rather than as a name.
-/// git's own default abbreviation, and below it a hex word (`feed`, `decade`) is
-/// likelier to be somebody's branch than a truncated id.
 const SHORTEST_ABBREVIATION: usize = 7;
 
 fn is_hex(git_ref: &str) -> bool {
     git_ref.chars().all(|c| c.is_ascii_hexdigit())
 }
 
-/// Does this ref name a commit rather than a branch or a tag?
-///
-/// The distinction is forced on us by git: `clone --branch` accepts a branch or a
-/// tag and **rejects a commit id**, so a pin that is one has to be obtained the
-/// long way round — clone the tip, fetch the ref, check out what came back.
-/// Ambiguity resolves toward the commit, and costs almost nothing: the long way
-/// round serves a tag or branch called `deadbeef` just as well, while `--branch`
-/// could never have served a commit. Almost, because git reads a refspec that
-/// parses as a full object id *for that repository's hash* as the object it is —
-/// so a ref named exactly 40 (or, in a sha256 repository, 64) hex characters is
-/// asked for as an id and not found as a name. `--branch` would have found it;
-/// that is the whole of what this route gives up, and a branch named after a
-/// complete object id is a curiosity beside pinning one.
-///
-/// Up to a full **sha256** id, not just sha1's length: a sha256 id is a commit
-/// like any other, and reading only 40 characters as one handed 64 to `--branch`,
-/// where it failed as a name that is not there.
 pub(super) fn names_a_commit(git_ref: &str) -> bool {
     (SHORTEST_ABBREVIATION..=SHA256_ID).contains(&git_ref.len()) && is_hex(git_ref)
 }
 
-/// Does this ref read as an **abbreviated** object id — hex, but neither of the
-/// full lengths?
-///
-/// Only the shape, which is all there is to go on: the same characters are a legal
-/// ref name, so a tag called `20240115` is indistinguishable from a truncated id
-/// until the remote answers. That is why this decides what to *say* about a
-/// failure rather than whether to try — a remote serves branches, tags and whole
-/// objects and never a prefix of one, so a ref of this shape that the remote has
-/// nothing under was a prefix, not a branch someone rebased away.
 pub(super) fn abbreviated_object_id(git_ref: &str) -> bool {
     let len = git_ref.len();
     (SHORTEST_ABBREVIATION..SHA256_ID).contains(&len) && len != SHA1_ID && is_hex(git_ref)
 }
 
-/// Clone `url` into `dest`, shallow, optionally at `git_ref`.
-///
-/// `--depth 1` because running a pane needs no history and a shallow clone is
-/// dramatically faster; the two properties keeping `.git` is *for* — refusing to
-/// overwrite a dirty tree, and `git diff` against the checkout — need none either.
-///
-/// `git_ref` may be a branch, a tag **or a commit id**; the last cannot be cloned
-/// directly, so it is fetched and checked out afterwards. A failure at either step
-/// takes the clone back, so a caller that has written nothing yet leaves nothing
-/// behind.
 pub fn clone_mod(url: &str, dest: &Path, git_ref: Option<&str>) -> Result<()> {
     if dest.exists() {
         anyhow::bail!("{} already exists", dest.display());
@@ -136,35 +86,23 @@ pub fn clone_mod(url: &str, dest: &Path, git_ref: Option<&str>) -> Result<()> {
     Ok(())
 }
 
-/// Fetch one ref — a commit id, a branch or a tag — into a shallow working copy.
-///
-/// What makes a recorded commit reproducible: a shallow clone has only the tip, so
-/// reproducing a spec elsewhere has to ask for the exact object the lock names.
-/// Checking out the result means checking out `FETCH_HEAD`, not the ref's name: a
-/// fetch does not move the local branch a `--branch` clone left checked out.
 pub fn fetch_ref(repo: &Path, git_ref: &str) -> Result<()> {
     let mut cmd = git_command(repo, &["fetch", "--depth", "1", "origin", git_ref]);
     non_interactive(&mut cmd);
     run_git(cmd, "git fetch")
 }
 
-/// Fetch whatever the remote's default branch now points at.
 pub fn fetch_tip(repo: &Path) -> Result<()> {
     let mut cmd = git_command(repo, &["fetch", "--depth", "1", "origin"]);
     non_interactive(&mut cmd);
     run_git(cmd, "git fetch")
 }
 
-/// Check out a revision in a working copy.
 pub fn checkout_mod(repo: &Path, rev: &str) -> Result<()> {
     let cmd = git_command(repo, &["checkout", "--detach", rev]);
     run_git(cmd, "git checkout")
 }
 
-/// The commit a working copy is on.
-///
-/// Recorded in the lock instead of the ref that was asked for: `main` moves, and a
-/// spec that reproduces "whatever main is now" reproduces nothing.
 pub fn head_commit(repo: &Path) -> Result<String> {
     let output = git_command(repo, &["rev-parse", "HEAD"])
         .output()
@@ -176,11 +114,6 @@ pub fn head_commit(repo: &Path) -> Result<String> {
     Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
 }
 
-/// Does this working copy have uncommitted changes?
-///
-/// The question that makes "your edits are yours" git's job rather than the
-/// delivery matrix's: a dirty copy is never moved, and the caller reports it as
-/// kept.
 pub fn is_dirty(repo: &Path) -> Result<bool> {
     let output = git_command(repo, &["status", "--porcelain"])
         .output()
@@ -192,7 +125,6 @@ pub fn is_dirty(repo: &Path) -> Result<bool> {
     Ok(!String::from_utf8_lossy(&output.stdout).trim().is_empty())
 }
 
-/// Whether `dir` is the root of a working copy.
 pub fn is_working_copy(dir: &Path) -> bool {
     dir.join(".git").exists()
 }

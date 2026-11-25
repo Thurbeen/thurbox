@@ -1,12 +1,3 @@
-//! The write side: draining what Lua asked for, and reporting what happened.
-//!
-//! A mod never acts; it queues a command and the answer arrives on a later
-//! frame (rule 3). This is where the queue is drained, the ones the loop owns
-//! are applied here, and everything that touches the world is handed to a worker
-//! (rule 5). `tracked_commands` is why a finished command can still be reported:
-//! a command simply *leaves* the in-flight list, so what it was about has to be
-//! captured while the row it names still exists.
-
 use ratatui::DefaultTerminal;
 
 use thurbox::kernel::bands::Level;
@@ -46,9 +37,6 @@ impl App {
         true
     }
 
-    /// The commands the loop applies itself, because they touch something no
-    /// worker thread can reach — in-process state, the tty, the interface's own
-    /// files. `true` = handled here; `false` = hand it to a worker.
     pub(crate) fn apply_local_command(
         &mut self,
         chain: &[String],
@@ -153,8 +141,6 @@ impl App {
         true
     }
 
-    /// The pane an undeclared action is offered to: the one whose code issued
-    /// it, else the focused one.
     fn fallback_pane(&self, fallback: &str) -> usize {
         self.host
             .name_of_path(fallback)
@@ -162,7 +148,6 @@ impl App {
             .unwrap_or(self.focus)
     }
 
-    /// `Command::Focus`: move focus, or return whence it came.
     pub(crate) fn apply_focus_command(&mut self, mod_name: &str, toggle: bool) {
         let Some(index) = self.host.index_of(mod_name) else {
             return;
@@ -188,7 +173,6 @@ impl App {
         self.dirty = true;
     }
 
-    /// `Command::Shell`: a companion shell beside a session's agent.
     pub(crate) fn apply_shell_command(&mut self, session: &str) {
         let (cols, rows) = crossterm::terminal::size().unwrap_or((80, 24));
         let Some(row) = self.snapshots.current().session(session).cloned() else {
@@ -221,8 +205,6 @@ impl App {
         }
     }
 
-    /// `Command::Editor`: hand the configured editor (`interface.json`) this
-    /// thread's tty.
     fn open_requested_editor(&mut self, terminal: &mut DefaultTerminal) {
         let Some(session) = self.editor_request.take() else {
             return;
@@ -249,7 +231,6 @@ impl App {
         self.last_link_paints.clear();
     }
 
-    /// `Command::Copy`: the named surface's screen to the clipboard.
     pub(crate) fn apply_copy_command(&mut self, session: &str) {
         match self.terminals.visible_text(session) {
             Some(text) => {
@@ -276,7 +257,6 @@ impl App {
         }
     }
 
-    /// The command bus, and the snapshot a finished command invalidates.
     pub(crate) fn poll_command_bus(&mut self) {
         // A completed command changes what the rows say, so refresh at once
         // rather than waiting out the interval — that is what makes a
@@ -337,15 +317,6 @@ impl App {
         }
     }
 
-    /// Surface a command that failed, once.
-    ///
-    /// A failure lingers in the in-flight list briefly so a pane can draw it,
-    /// which is not the same as telling the user: the row it appears on may not
-    /// even be visible. The message band is where a failure is *reported*, at
-    /// error severity, and each is reported once — the linger would otherwise
-    /// re-raise it on every poll.
-    /// Report each failed command once. The linger that lets a pane draw a
-    /// failed row would otherwise re-report it on every poll.
     pub(crate) fn record_command_failures(&mut self) {
         let failures: Vec<(u64, String)> = self
             .commands
@@ -402,19 +373,6 @@ impl App {
         self.reported_failures.retain(|id| live.contains(id));
     }
 
-    /// Dispatch a command, remembering what it was so its outcome can be
-    /// reported and its session let go of when it finishes.
-    ///
-    /// Tracked **here** rather than by sampling the in-flight list, because a
-    /// command that succeeds is removed from that list inside `CommandBus::poll`
-    /// — before anything gets to look at it. Sampling only caught commands that
-    /// happened to be running when some *other* command finished, which for the
-    /// common case (one restart, nothing else in flight) is never: the restart
-    /// was never tracked, so it was never seen to finish, so its pane was never
-    /// let go of and the session stayed frozen.
-    ///
-    /// It is also the only moment the subject can be resolved: a delete's row is
-    /// gone by the time it reports.
     pub(crate) fn dispatch_tracked(&mut self, command: thurbox::kernel::command::Command) {
         use thurbox::kernel::command::Command;
         let kind = command.kind();

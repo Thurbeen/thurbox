@@ -1,11 +1,7 @@
-//! CronTaskController decisions that the end-to-end tests cannot stage: a
-//! pass whose plan the manager never finished, fed back as the next input.
-
 use fleet_api::meta::Object;
 use fleet_controllers::{CronTaskController, CronTaskInput};
 use serde_json::{Value, json};
 
-/// 2026-11-16T03:00:00Z.
 const T: u64 = 1_794_798_000_000;
 const MINUTE: u64 = 60_000;
 
@@ -13,7 +9,6 @@ fn cron_task(status: Value) -> Object {
     cron_task_with(json!({}), status)
 }
 
-/// A CronTask whose spec has `extra` merged in.
 fn cron_task_with(extra: Value, status: Value) -> Object {
     let mut obj: Value = json!({
         "apiVersion": "fleet/v1alpha1",
@@ -32,7 +27,6 @@ fn cron_task_with(extra: Value, status: Value) -> Object {
     serde_json::from_value(obj).expect("a CronTask")
 }
 
-/// A Task of this CronTask, in `phase`.
 fn task(name: &str, uid: &str, phase: &str) -> Object {
     serde_json::from_value(json!({
         "apiVersion": "fleet/v1alpha1",
@@ -45,7 +39,6 @@ fn task(name: &str, uid: &str, phase: &str) -> Object {
     .expect("a Task")
 }
 
-/// The retires a plan asks for, as (uid, running).
 fn retires(plan: &fleet_api::plan::Plan) -> Vec<(String, bool)> {
     plan.effects
         .iter()
@@ -68,8 +61,6 @@ fn plan(obj: &Object, tasks: Vec<&Object>, now: u64) -> fleet_api::plan::Plan {
         .expect("a plan")
 }
 
-/// A history delete still waiting for its receipt, on a Task a person
-/// reopened.
 fn pending_history_delete() -> Value {
     json!({
         "observedGeneration": 1,
@@ -83,8 +74,6 @@ fn pending_history_delete() -> Value {
     })
 }
 
-/// A newer Replace decision widens a stored history delete: the Task it
-/// replaces is deleted though running, and asked for once.
 #[test]
 fn a_replace_decision_widens_a_pending_history_delete() {
     let obj = cron_task_with(
@@ -96,8 +85,6 @@ fn a_replace_decision_widens_a_pending_history_delete() {
     assert_eq!(retires(&plan), [("u-old".to_string(), true)]);
 }
 
-/// A retry narrows when the spec no longer says Replace: a delete decided
-/// under Replace never removes a running Task once the policy changed.
 #[test]
 fn a_retried_replace_delete_narrows_when_the_policy_changed() {
     let mut status = pending_history_delete();
@@ -108,8 +95,6 @@ fn a_retried_replace_delete_narrows_when_the_policy_changed() {
     assert_eq!(retires(&plan), [("u-old".to_string(), false)]);
 }
 
-/// A history delete the store refused (the Task was reopened) is decided
-/// again once the Task is Concluded again and still past the limit.
 #[test]
 fn a_refused_history_delete_is_decided_again() {
     let mut status = pending_history_delete();
@@ -123,7 +108,6 @@ fn a_refused_history_delete_is_decided_again() {
     assert_eq!(retires(&plan), [("u-old".to_string(), false)]);
 }
 
-/// A first delete looks again within a minute, as a first create does.
 #[test]
 fn a_first_history_delete_is_looked_at_again_within_a_minute() {
     let obj = cron_task_with(
@@ -159,9 +143,6 @@ fn attention(status: &Value) -> (String, String) {
     )
 }
 
-/// The doubt about a create lives on the pending create: a retry whose
-/// receipt never landed (the manager stopped again) keeps it in doubt,
-/// rather than reading as resolved because the latest receipt is gone.
 #[test]
 fn a_create_stays_in_doubt_when_its_retry_has_no_receipt() {
     let first = cron_task(json!({
@@ -191,9 +172,6 @@ fn a_create_stays_in_doubt_when_its_retry_has_no_receipt() {
     );
 }
 
-/// The doubt grows across passes: three attempts that each read Unknown,
-/// fed back as the manager would write them, raise `CreateUnknown`, though
-/// each retry clears the latest receipt.
 #[test]
 fn three_unknown_attempts_raise_create_unknown() {
     let unknown = json!({"action": "create", "at": T,
@@ -243,9 +221,6 @@ fn attention_of(status: &Value) -> Option<(String, String)> {
         })
 }
 
-/// The first create looks again soon, as a retry does: should it never land
-/// (the manager stops, or the store answers Unknown or no), the next look
-/// is within a minute, not at the next scheduled time.
 #[test]
 fn a_first_create_is_looked_at_again_within_a_minute() {
     let obj = cron_task(json!({"observedGeneration": 1, "notBefore": T}));
@@ -257,8 +232,6 @@ fn a_first_create_is_looked_at_again_within_a_minute() {
     assert_eq!(planned["notBefore"], T + MINUTE, "{planned:#}");
 }
 
-/// A history delete keeps the permission it was decided with: a Task that a
-/// person reopened since is never deleted as if Replace had asked.
 #[test]
 fn a_history_delete_retried_keeps_its_concluded_only_permission() {
     let obj = cron_task(json!({
@@ -297,9 +270,6 @@ fn a_history_delete_retried_keeps_its_concluded_only_permission() {
     }
 }
 
-/// A create decided under Allow, retried after the policy became Forbid
-/// while another Task of this CronTask runs, is given up: a retry obeys the
-/// policy in force, as a fresh decision would.
 #[test]
 fn a_retried_create_obeys_forbid_in_force() {
     let obj = cron_task_with(

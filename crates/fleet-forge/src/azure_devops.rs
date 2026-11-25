@@ -1,11 +1,3 @@
-//! Azure DevOps Services pull requests through the authenticated `az` CLI.
-//!
-//! The adapter accepts the hosted `dev.azure.com` URL and its supported
-//! `{organization}.visualstudio.com` aliases.  Its canonical host is the
-//! organization-specific legacy hostname: that keeps `whoami` scoped to the
-//! organization and keeps equal project/repository names in two organizations
-//! from sharing a ChangeRequest identity.
-
 use std::ffi::OsString;
 use std::time::Duration;
 

@@ -1,10 +1,3 @@
-//! The thirty-six built-in palettes, as data.
-//!
-//! Split from `theme_config`'s behaviour so [`super::ThemePreset::palette`]'s
-//! dispatch is the one visible seam: everything in this file is a colour
-//! table, and adding a preset means adding one function here plus its arm
-//! there. The enumeration order users see lives with the dispatch, not here.
-
 use ratatui::style::Color;
 
 use super::{PaletteSlots, ThemePalette};

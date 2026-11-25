@@ -1,21 +1,3 @@
-//! Installed integrations: the hooks Fleet writes into an agent's own config
-//! directory, for a harness that takes none at launch. `fleet integration`
-//! drives them; the adapter does the I/O (`fleet_runtime::integration`).
-//!
-//! Fleet touches only what it owns, as its profile's `[install]` table lists
-//! it ([`crate::harness::Install`]):
-//!
-//! - an **own file**, whole, in a directory the agent merges;
-//! - a **block** appended to a file the user shares, between a first and a
-//!   last comment line naming Fleet.
-//!
-//! A ledger in Fleet's data directory ([`LEDGER`]) records every file
-//! written, every block added and every directory created, with what was
-//! written. Uninstalling removes exactly those. Fleet never creates the
-//! agent's config directory itself.
-//!
-//! The format and the states are in docs/fleet/integration.md.
-
 use std::collections::{BTreeMap, BTreeSet};
 use std::ops::Range;
 
@@ -23,29 +5,20 @@ use serde::{Deserialize, Serialize};
 
 use crate::harness::{Authority, Install, OwnedBlock, Profile};
 
-/// The ledger's file name, under Fleet's data directory.
 pub const LEDGER: &str = "integrations.json";
 
-/// The ledger's format version.
 pub const LEDGER_VERSION: u32 = 1;
 
-/// What is installed for one agent.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum State {
-    /// The harness takes its hooks at launch.
     NotNeeded,
-    /// Fleet knows no hooks for the harness.
     Unsupported,
-    /// The integration is not checked on this machine's platform.
     UnsupportedPlatform,
-    /// The agent's config directory is not there.
     AgentMissing,
     NotInstalled,
     Current,
-    /// An older version, a missing file or block, or another directory.
     Outdated,
-    /// A file or block Fleet wrote holds something else now.
     Modified,
 }
 
@@ -64,7 +37,6 @@ impl State {
     }
 }
 
-/// Every integration Fleet installed on this machine.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Ledger {
@@ -78,18 +50,15 @@ fn ledger_version() -> u32 {
     LEDGER_VERSION
 }
 
-/// What Fleet wrote for one agent. Paths are relative to `dir`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Entry {
     pub version: u32,
-    /// The agent's config directory, absolute.
     pub dir: String,
     #[serde(default)]
     pub files: Vec<WrittenFile>,
     #[serde(default)]
     pub blocks: Vec<WrittenBlock>,
-    /// The directories Fleet created, outermost first.
     #[serde(default)]
     pub dirs: Vec<String>,
 }
@@ -105,18 +74,13 @@ pub struct WrittenFile {
 #[serde(rename_all = "camelCase")]
 pub struct WrittenBlock {
     pub path: String,
-    /// The hash of the block, its comment lines included.
     pub hash: String,
     pub comment: String,
-    /// What Fleet put between the user's last byte and the block.
     pub prefix: String,
-    /// Fleet created the file: once the block is gone and it is empty, it
-    /// goes too.
     pub created_file: bool,
 }
 
 impl Entry {
-    /// Every path the entry wrote, relative to its directory.
     pub fn paths(&self) -> BTreeSet<&str> {
         self.files
             .iter()
@@ -139,26 +103,18 @@ impl Entry {
     }
 }
 
-/// What the adapter found on disk, in the entry's directory when there is
-/// one, else in the directory the agent reads now.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Observed {
     pub dir_exists: bool,
-    /// For each path the entry wrote, the hash of what is there now: the
-    /// whole file, or Fleet's block in it. `None`: absent.
     pub found: BTreeMap<String, Option<String>>,
 }
 
-/// The platform `fleet integration` runs on, given by the adapter so the
-/// rule is tested on every platform.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Platform {
     Unix,
     Windows,
 }
 
-/// Whether `install` may be written on `platform`: on Windows only when the
-/// profile says its hooks run there.
 pub fn supported(install: &Install, platform: Platform) -> Result<(), String> {
     if platform == Platform::Windows && !install.windows {
         return Err(
@@ -169,7 +125,6 @@ pub fn supported(install: &Install, platform: Platform) -> Result<(), String> {
     Ok(())
 }
 
-/// A profile's `[install]` table, checked when the profile is parsed.
 pub fn check(install: &Install) -> Result<(), String> {
     if install.version == 0 {
         return Err("install.version starts at 1".into());
@@ -216,8 +171,6 @@ pub fn check(install: &Install) -> Result<(), String> {
     Ok(())
 }
 
-/// The agent's config directory: the first of its variables `env` gives,
-/// else its default under `home`. `None` when neither can name it.
 pub fn config_dir(
     install: &Install,
     env: impl Fn(&str) -> Option<String>,
@@ -238,7 +191,6 @@ pub fn config_dir(
     }
 }
 
-/// An own file's text, at `version`.
 pub fn file_text(text: &str, version: u32) -> String {
     text.replace("{version}", &version.to_string())
 }
@@ -251,7 +203,6 @@ fn close_marker(harness: &str, comment: &str) -> String {
     format!("{comment} <<< fleet integration {harness}")
 }
 
-/// A block, its comment lines included, ending in a newline.
 pub fn block_text(harness: &str, block: &OwnedBlock, version: u32) -> String {
     let body = file_text(block.text.trim_start_matches('\n'), version);
     let body = if body.ends_with('\n') {
@@ -266,10 +217,6 @@ pub fn block_text(harness: &str, block: &OwnedBlock, version: u32) -> String {
     )
 }
 
-/// Where Fleet's block for `harness` is in `text`: from the start of its
-/// first comment line to the end of its last, newline included. A first line
-/// with no last one after it, or a second block, is an error: removing from
-/// one first line to a later last line would take the user's lines between.
 pub fn find_block(
     text: &str,
     harness: &str,
@@ -307,8 +254,6 @@ pub fn find_block(
     Ok(found)
 }
 
-/// `current` with `block` appended after a blank line, and what was put
-/// between them: the user's bytes are left as they are.
 pub fn append_block(current: &str, block: &str) -> (String, String) {
     let prefix = match current {
         "" => "",
@@ -318,8 +263,6 @@ pub fn append_block(current: &str, block: &str) -> (String, String) {
     (format!("{current}{prefix}{block}"), prefix.to_string())
 }
 
-/// `text` without the block at `range`, and without the `prefix` Fleet put
-/// before it when that is still there.
 pub fn remove_block(text: &str, range: Range<usize>, prefix: &str) -> String {
     let start = if text[..range.start].ends_with(prefix) {
         range.start - prefix.len()
@@ -336,7 +279,6 @@ pub fn remove_block(text: &str, range: Range<usize>, prefix: &str) -> String {
     format!("{before}{joint}{after}")
 }
 
-/// A short, stable hash of what Fleet wrote (FNV-1a, 64 bits).
 pub fn hash(bytes: &[u8]) -> String {
     let mut h: u64 = 0xcbf2_9ce4_8422_2325;
     for b in bytes {
@@ -346,7 +288,6 @@ pub fn hash(bytes: &[u8]) -> String {
     format!("{h:016x}")
 }
 
-/// What the profile installs, relative to the config directory.
 pub fn paths(install: &Install) -> BTreeSet<&str> {
     install
         .files
@@ -356,9 +297,6 @@ pub fn paths(install: &Install) -> BTreeSet<&str> {
         .collect()
 }
 
-/// The state of `profile`'s integration on Unix: what the ledger says Fleet
-/// wrote, against what is on disk and what the agent reads now (`resolved`,
-/// its config directory).
 pub fn state(
     profile: &Profile,
     entry: Option<&Entry>,
@@ -368,7 +306,6 @@ pub fn state(
     state_on(profile, entry, resolved, observed, Platform::Unix)
 }
 
-/// As [`state`], on `platform`.
 pub fn state_on(
     profile: &Profile,
     entry: Option<&Entry>,

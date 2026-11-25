@@ -1,73 +1,26 @@
-//! The user's settings, and what happens when they change.
-//!
-//! `settings.toml` is one file with two kinds of value in it, and the difference
-//! is a fact about the code rather than a preference:
-//!
-//! - **live** — read every frame, so editing one takes effect at once (whether a
-//!   surface exists at all, whether deleting is soft);
-//! - **restart-only** — consumed once, at startup, by something that cannot be
-//!   un-done mid-run: the mouse capture escape the terminal was already sent, the
-//!   notifier thread, the scrollback a parser was built with, the audit prune.
-//!
-//! Which field is which is one table, [`crate::session::settings::FIELDS`], and
-//! this holds the line it draws: the live half lives here and is replaced on
-//! reload, the restart-only half stays as it was loaded at startup. Whatever
-//! consumes a restart-only value is handed it when it is built — the backends,
-//! the terminals, the snapshot store, the command bus — so [`Config::in_force`]
-//! is the one answer to "what is the user running with", and it is what gets
-//! published to mods. There is no process-wide copy: `session` holds no
-//! state (#1477).
-
 use std::path::PathBuf;
 use std::time::SystemTime;
 
 use crate::session::settings::Settings;
 
-/// How often the file is stat'ed for an outside edit. v1 polls its configs at the
-/// same cadence; a settings file is not edited often enough to want faster.
 const POLL_INTERVAL: std::time::Duration = std::time::Duration::from_millis(1000);
 
-/// What a reload turned out to be, for the caller to report.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Reloaded {
-    /// Only live settings moved: they are already in force, so there is nothing
-    /// to tell the user beyond that it happened.
     Live,
-    /// Something that cannot take effect until the next launch moved. Reported,
-    /// because the alternative is the user believing it is active.
     NeedsRestart,
-    /// The file could not be read or parsed. What was in force stays in force.
     Failed(String),
 }
 
-/// The settings in force, and the file they came from.
 pub struct Config {
-    /// What is in force *now*: the restart-only half as published at startup, the
-    /// live half as last read from disk.
     in_force: Settings,
-    /// What the *file* says, restart-only half included.
-    ///
-    /// Not the same document as [`in_force`](Self::in_force), and the difference
-    /// is the whole reason this field exists: a restart-only change is written to
-    /// the file and deliberately *not* taken into force, so anything that seeds an
-    /// edit from what is in force silently proposes reverting it. The settings
-    /// panel is exactly that — it edits the file — so it is handed this.
     on_disk: Settings,
     path: Option<PathBuf>,
-    /// Modification time the file had when it was last read, so an outside edit
-    /// can be noticed without re-parsing it every frame.
     stamp: Option<SystemTime>,
     last_poll: Option<std::time::Instant>,
 }
 
 impl Config {
-    /// Read the file and keep a live copy.
-    ///
-    /// Before anything that is built with a restart-only value, so at the top
-    /// of `main`: the rest of startup is handed [`Self::in_force`].
-    ///
-    /// Returns the warnings the loader produced (an unknown key, a value out of
-    /// range) so the caller can surface them as startup notices.
     pub fn load() -> (Self, Vec<String>) {
         let (settings, warnings) = crate::config::settings::load_or_seed_with_warnings();
         let path = crate::config::settings::settings_config_path();
@@ -84,8 +37,6 @@ impl Config {
         )
     }
 
-    /// Build over settings that were never written to a file — the shape a test
-    /// wants, and the fallback for a profile with no config directory.
     pub fn detached(settings: Settings) -> Self {
         Self {
             on_disk: settings.clone(),
@@ -96,27 +47,18 @@ impl Config {
         }
     }
 
-    /// Everything the user is running with, live half and restart-only half.
     pub fn in_force(&self) -> &Settings {
         &self.in_force
     }
 
-    /// The settings as the file has them — what an editor of the file must show
-    /// and seed its draft from. See the field's own note for why this is not
-    /// [`in_force`](Self::in_force).
     pub fn on_disk(&self) -> &Settings {
         &self.on_disk
     }
 
-    /// The feature switches, with the live ones as currently edited.
     pub fn features(&self) -> &crate::session::settings::FeatureFlags {
         &self.in_force.features
     }
 
-    /// Notice an outside edit and apply its live half.
-    ///
-    /// Throttled to once a second: this is a `stat`, and the loop runs a
-    /// hundred times a second. `None` means nothing changed.
     pub fn poll(&mut self) -> Option<Reloaded> {
         if self
             .last_poll
@@ -149,12 +91,6 @@ impl Config {
         Some(self.adopt(fresh))
     }
 
-    /// Take the live half of `fresh` into force, and say whether anything that
-    /// needs a restart moved.
-    ///
-    /// The restart-only half is deliberately *not* taken: it was consumed at
-    /// startup, and pretending otherwise is the misreport this whole split exists
-    /// to prevent.
     pub fn adopt(&mut self, fresh: Settings) -> Reloaded {
         let needs_restart = self.in_force.restart_only_differs(&fresh);
         // `fresh` is what the file holds — it was either just read from it or is
@@ -169,8 +105,6 @@ impl Config {
         }
     }
 
-    /// Note that *this* process wrote the file, so the write is not reported back
-    /// as somebody else's edit. v1's `mark_settings_saved`.
     pub fn mark_saved(&mut self) {
         self.stamp = self.path.as_deref().and_then(modified);
     }

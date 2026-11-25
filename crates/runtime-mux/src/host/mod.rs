@@ -1,8 +1,3 @@
-//! Where a session runs: a host entry (`host_def`), the route naming a
-//! machine and a multiplexer (`route`), the multiplexers a route can name
-//! (`multiplexer`) and a machine's OS (`platform`). Pure data, and one node:
-//! each is defined in terms of the others.
-
 pub mod host_def;
 pub mod multiplexer;
 pub mod platform;

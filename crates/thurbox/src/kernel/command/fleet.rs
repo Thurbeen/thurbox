@@ -1,16 +1,3 @@
-//! Fleet as the write side (ADR-41): each command that changes a session is
-//! one call of Fleet's command line, on the command worker that runs it.
-//!
-//! A session is a Task named as the session is. Creating one applies an
-//! interactive Task (dispatched, no brief); sending queues a message in its
-//! inbox; deleting marks it, and its controller releases the session. Fleet
-//! decides everything after that, so thurbox only reports what the command
-//! line answered. A session command Fleet has no verb for is refused by
-//! name, never dropped.
-//!
-//! Only sessions are Fleet's. The interface's settings and its repository
-//! memory are files of thurbox's ([`super::execute::local`]).
-
 use std::process::Stdio;
 use std::sync::mpsc::Sender;
 
@@ -22,9 +9,6 @@ use super::Command;
 use crate::kernel::snapshot::fleet::is_fleets_machine;
 
 pub(super) struct Fleet {
-    /// Every listed Fleet's command line: a command goes to its session's
-    /// own, a creation to the Fleet it names (the Fleet in force when it
-    /// names none).
     pub(super) fleets: crate::fleet_link::Fleets,
 }
 
@@ -180,9 +164,6 @@ impl super::Executor for Fleet {
     }
 }
 
-/// A session's name as a Task's: lowercase letters, digits, `-` and `.`,
-/// starting and ending with a letter or digit, which is what Fleet takes.
-/// Anything else becomes a `-`, and runs of them one.
 pub(crate) fn task_name(name: &str) -> String {
     let mut out = String::new();
     for c in name.chars().flat_map(char::to_lowercase) {
@@ -201,10 +182,6 @@ pub(crate) fn task_name(name: &str) -> String {
         .to_string()
 }
 
-/// The place a session on `route` runs on, of the Fleet `fleet` reaches:
-/// the picker's route (`ssh:devbox`) names the machine Fleet calls
-/// `devbox`, and no route is `local`. A place that Fleet's config does not
-/// define is refused.
 fn place(fleet: &crate::fleet_link::FleetLink, route: Option<&str>) -> Result<String, String> {
     let host = match route.filter(|route| !route.is_empty()) {
         None => "local".to_string(),
@@ -231,9 +208,6 @@ fn place(fleet: &crate::fleet_link::FleetLink, route: Option<&str>) -> Result<St
     Ok(host)
 }
 
-/// Refuse an agent the Fleet `fleet` reaches has no harness profile for:
-/// Fleet would run a program named as the agent, which is not the command
-/// thurbox's registry runs for it (`shell` is `bash -i`).
 fn harness(fleet: &crate::fleet_link::FleetLink, agent: &str) -> Result<(), String> {
     let answer = json(fleet, &["version", "--json"])?;
     let profiled: Vec<&str> = answer["harnesses"]
@@ -251,7 +225,6 @@ fn harness(fleet: &crate::fleet_link::FleetLink, agent: &str) -> Result<(), Stri
     ))
 }
 
-/// `fleet <args>`'s JSON answer, from the Fleet `fleet` reaches.
 fn json(fleet: &crate::fleet_link::FleetLink, args: &[&str]) -> Result<serde_json::Value, String> {
     let out = fleet
         .command(args)
@@ -271,22 +244,12 @@ fn json(fleet: &crate::fleet_link::FleetLink, args: &[&str]) -> Result<serde_jso
         .map_err(|e| format!("fleet {} answered no JSON: {e}", args.join(" ")))
 }
 
-/// Give the session `task` of the Fleet `link` reaches the name `name`: the
-/// Task's [`NAME_LABEL`], set with `fleet label`, which changes that label
-/// and nothing else of the Task, so a Task a Conversation made keeps the
-/// labels only Fleet writes. The name is checked by the rules a created
-/// session's name is.
-///
-/// [`NAME_LABEL`]: crate::kernel::snapshot::fleet::NAME_LABEL
 fn rename(link: &crate::fleet_link::FleetLink, task: &str, name: &str) -> Result<(), String> {
     crate::paths::validate_safe_name(name)?;
     let label = format!("{}={name}", crate::kernel::snapshot::fleet::NAME_LABEL);
     link.run(&["label", "task", task, &label], None)
 }
 
-/// `fleet get task <name>` of the Fleet `link` reaches: the Task, or `None`
-/// when Fleet says there is none (exit 3). Anything else is an error: a
-/// Fleet that cannot be reached (ssh's exit 255) has not lost the Task.
 fn get(
     link: &crate::fleet_link::FleetLink,
     name: &str,
@@ -308,39 +271,13 @@ fn get(
     }
 }
 
-/// What the creation flow chose for a session's workspace.
 #[derive(Debug, Clone, Copy, Default)]
 struct Choice<'a> {
-    /// A worktree (`git+file`) or the directory as it is (`file`). `None`:
-    /// a worktree for a git repository on this machine, the directory
-    /// otherwise.
     worktree: Option<bool>,
-    /// The worktree's branch. `None`: a new branch named after the session.
     branch: Option<&'a str>,
-    /// What a new branch starts from. `None`: the repository's default.
     base: Option<&'a str>,
 }
 
-/// The workspace URL of a session over `repo` on the place `host` of the
-/// Fleet `fleet` reaches.
-///
-/// Only a session on this machine (a Fleet here, on its `local` place) has
-/// its path read on this machine's disk: `~` expanded, and a git repository
-/// told from a directory. Anywhere else the path is the one given, which must
-/// be absolute, and with no choice made the directory is taken as it is,
-/// since this machine cannot tell whether that one is a repository.
-///
-/// A worktree is `git+file://<repo>?branch=<branch>#<base>`: the runtime
-/// makes the worktree on the branch, from the base when the branch is new.
-/// The directory as it is is `file://<repo>`. A path on another host must be
-/// absolute, because only that host could expand a `~`, and Fleet takes no
-/// relative URL. Whether a host's runtime makes worktrees at all is its own:
-/// Fleet refuses a scheme the runtime does not list.
-///
-/// A clone URL (`https://…`, `ssh://…`, git's `user@host:path`) is cloned
-/// by the runtime on the session's machine, always on a branch of its own:
-/// it is how a session on a place elsewhere starts from a repository that
-/// machine does not hold yet.
 fn workspace_url(
     fleet: &crate::fleet_link::FleetLink,
     host: &str,
@@ -403,11 +340,6 @@ fn workspace_url(
     ))
 }
 
-/// `repo` as the workspace URL that clones it, or `None` when it is a path:
-/// `https://…` is `git+https://…`; `ssh://…` and git's scp-like
-/// `user@host:path` are `git+ssh://…`. Fleet takes only an absolute URL, so
-/// the scp-like form is spelled as one: a relative path there is under the
-/// login's home, which an ssh URL writes `/~/`.
 fn clone_url(repo: &str) -> Option<String> {
     let repo = repo.trim();
     if let Some(rest) = repo.strip_prefix("https://") {
@@ -427,24 +359,17 @@ fn clone_url(repo: &str) -> Option<String> {
     })
 }
 
-/// Whether `dir` on this machine is a git repository or inside one. Decided
-/// from the filesystem, not from asking `git`, so a `git` that cannot run
-/// never passes for a directory with no repository. A bare repository keeps
-/// its files where a checkout keeps `.git`.
 fn is_git(dir: &std::path::Path) -> bool {
     let bare =
         dir.join("HEAD").is_file() && dir.join("objects").is_dir() && dir.join("refs").is_dir();
     bare || dir.ancestors().any(|at| at.join(".git").exists())
 }
 
-/// Whether `path` starts with a Windows drive, `C:\\` or `C:/`.
 fn has_drive(path: &str) -> bool {
     let b = path.as_bytes();
     b.len() >= 3 && b[0].is_ascii_alphabetic() && b[1] == b':' && matches!(b[2], b'/' | b'\\')
 }
 
-/// A path as a URL spells it: `/` separators, and a Windows drive after a
-/// leading `/` (`C:\\x` is `/C:/x`); Windows' `\\?\` prefix dropped.
 fn url_path(path: &str) -> String {
     let path = path.strip_prefix(r"\\?\").unwrap_or(path);
     if has_drive(path) {
@@ -454,8 +379,6 @@ fn url_path(path: &str) -> String {
     }
 }
 
-/// `<scheme>://<dir>`, with the bytes a URL reads apart (`%`, `?`, `#` and
-/// whitespace) percent-encoded, as the runtime decodes them.
 pub(crate) fn dir_url(scheme: &str, dir: &std::path::Path) -> String {
     let mut url = format!("{scheme}://");
     for c in url_path(&dir.to_string_lossy()).chars() {
@@ -466,8 +389,6 @@ pub(crate) fn dir_url(scheme: &str, dir: &std::path::Path) -> String {
     url
 }
 
-/// A branch or base as a query value or fragment: also `&` and `=`, which
-/// would end or split the value, are percent-encoded.
 pub(crate) fn worktree_url(
     dir: &std::path::Path,
     branch: Option<&str>,
@@ -510,10 +431,6 @@ fn push_char(out: &mut String, c: char, reserved: impl Fn(char) -> bool) {
 mod tests {
     use super::{task_name, workspace_url, Choice};
 
-    /// Every command the executor runs reaches Fleet through its link: the
-    /// reads a creation checks against (`runtime hosts`, `version`), the
-    /// Task on stdin, free text as one word, a rename, a delete, and a
-    /// confirmation's `get`, whose exit 3 still reads as a Task gone.
     #[cfg(unix)]
     #[test]
     fn every_command_reaches_fleet_through_its_link() {
@@ -601,8 +518,6 @@ mod tests {
         }
     }
 
-    /// A worktree names its branch, the session's by default, and its base
-    /// when one was chosen; the directory as it is takes neither.
     #[test]
     fn a_workspace_url_carries_the_branch_and_base_chosen() {
         let here = crate::fleet_link::FleetLink::local("fleet");
@@ -636,8 +551,6 @@ mod tests {
         );
     }
 
-    /// Another runtime's `local` place is this machine: its workspace is
-    /// read on this disk, as the default runtime's `local` is.
     #[test]
     fn another_runtimes_local_place_is_answered_from_this_disk() {
         let here = crate::fleet_link::FleetLink::local("fleet");
@@ -654,8 +567,6 @@ mod tests {
         );
     }
 
-    /// A directory with no repository has no worktree to make, and a path on
-    /// another host must be absolute: only that host knows its `~`.
     #[test]
     fn a_workspace_url_refuses_what_no_runtime_could_make() {
         let here = crate::fleet_link::FleetLink::local("fleet");
@@ -683,10 +594,6 @@ mod tests {
         );
     }
 
-    /// A Fleet on another machine is never answered from this machine's
-    /// disk: its `local` is that machine, so a git repository here does not
-    /// make a worktree there, `~` is not expanded here, and a worktree asked
-    /// for is taken as asked.
     #[test]
     fn a_remote_fleets_workspace_is_not_read_on_this_machine() {
         use crate::session::settings::{FleetDef, FleetTransport};
@@ -720,9 +627,6 @@ mod tests {
         );
     }
 
-    /// A clone URL is a workspace the runtime clones on the session's
-    /// machine, on the session's own branch: how a session on a Fleet whose
-    /// folders thurbox does not read starts from a repository.
     #[test]
     fn a_clone_url_is_cloned_on_the_sessions_machine() {
         let link = crate::fleet_link::FleetLink::local("fleet");
@@ -754,8 +658,6 @@ mod tests {
         assert_eq!(super::clone_url("C:/app"), None);
     }
 
-    /// A Windows path is spelled as a URL spells one, so a runtime reads it
-    /// back to the same directory.
     #[test]
     fn a_windows_path_is_spelled_with_its_drive_after_a_slash() {
         use super::{has_drive, url_path};
@@ -765,8 +667,6 @@ mod tests {
         assert!(has_drive("D:/w") && !has_drive("/srv"));
     }
 
-    /// Fleet's names forbid `..`, so a folder such as `app..backup` must not
-    /// make one.
     #[test]
     fn a_name_never_holds_two_dots_in_a_row() {
         assert_eq!(task_name("app..backup"), "app.backup");

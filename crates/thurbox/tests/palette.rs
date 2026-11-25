@@ -1,7 +1,3 @@
-//! The command palette against the real bundled mods: every action the
-//! registry knows is a row, typing filters them, and `Enter` runs the chosen one
-//! through the same path a key press takes.
-
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ratatui::backend::TestBackend;
 use ratatui::layout::Rect;
@@ -86,8 +82,6 @@ fn publish(host: &LuaHost, registry: &Registry) {
     .expect("publish");
 }
 
-/// Drive the modal layer the way the loop does, and hand back what the palette
-/// asked the loop to run, if anything.
 fn modal_key(
     modals: &mut Modals,
     key: KeyEvent,
@@ -348,7 +342,6 @@ fn a_key_and_a_command_for_one_action_are_one_row_with_the_chord() {
     );
 }
 
-/// The palette's frame, pinned cell for cell over a fixed registry.
 #[test]
 fn the_palette_frame_is_pinned() {
     let mut registry = Registry::default();

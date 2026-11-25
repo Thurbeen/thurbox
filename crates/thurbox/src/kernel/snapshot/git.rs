@@ -1,101 +1,32 @@
-//! The git-stat worker: each session's diffstat and merge answer, computed on
-//! a thread because `git` shells out and a refresh runs on the loop.
-
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
 use super::GitState;
 
-/// What a git-stat worker reports back: the session, its state when the path
-/// turned out to be a repository, and the merge answer that state carries with
-/// the commit it was computed for (`None` when the worktree reached no answer).
 type StatResult = (String, Option<GitState>, Option<(String, bool)>);
 
-/// The base interval a session's git stat is trusted for, from `settings.toml`;
-/// `None` when `git_poll_secs = 0` and the polling is off altogether.
-///
-/// v1 refreshes on the same ~5 s cadence (`GIT_REFRESH_TICKS`) for the same
-/// reason the default is that: `worktree_stats` shells out to `git`, which is
-/// far too expensive per frame — and answered only once, a session's diffstat
-/// freezes at whatever it was the first time it was looked at and never moves
-/// again.
-///
-/// A setting rather than the constant it was, because the number governs a cost
-/// that is **per session**: sixteen of them at five seconds is a `git` burst
-/// every 300ms for as long as the interface runs, most of it about rows nobody
-/// is reading. It is read once, when the store is built, so it takes effect on
-/// the next launch (issue #1167).
 pub(super) fn git_poll_interval(secs: u64) -> Option<Duration> {
     (secs > 0).then(|| Duration::from_secs(secs))
 }
 
-/// How far a session's own interval may stretch past the base, once its answer
-/// stops moving.
-///
-/// Twelve — a minute at the default — because that is about how long a diffstat
-/// may lag before it reads as broken rather than as stale, and because the
-/// backoff is what stops the cost tracking the session *list*: a dozen dormant
-/// sessions are statted as often as one active one. Any change at all resets
-/// it, so the session an agent is working in never leaves the base cadence.
 const GIT_STAT_BACKOFF: u32 = 12;
 
-/// How long an *unmerged* answer stands before it is computed again.
-///
-/// The one answer whose staleness is not bounded by HEAD: a branch lands
-/// upstream without the worktree moving at all, so `merged: false` has to be
-/// re-asked on a clock. A minute rather than the poll interval because the
-/// check is seven subprocesses, it is the dominant cost of a session with an
-/// open pull request, and nothing acts on the answer faster than a person can
-/// read it — `at_risk` warns before a delete.
-///
-/// A floor on the cadence, not a deadline. The recheck rides on a poll, so what
-/// actually bounds the answer's age is this **or the session's own interval,
-/// whichever is longer** — the same thing at the default, where the backoff
-/// caps at a minute, and `12 × git_poll_secs` for an operator who raised it.
-/// Deliberately so: raising that knob is asking for fewer subprocesses across
-/// the board, and a recheck forced ahead of the interval would spend the ones
-/// it was raised to save.
 const MERGE_RECHECK: Duration = Duration::from_secs(60);
 
-/// A [`crate::git::merged_into_default`] answer, the commit it was computed
-/// for, and when it was computed.
 struct MergeAnswer {
     head: String,
     merged: bool,
-    /// When the answer was last *computed* — not when it was last handed back,
-    /// which is every poll. Only [`MERGE_RECHECK`] reads it, and only for a
-    /// `false`.
     at: Instant,
 }
 
-/// One session's last git answer, and when it landed.
 struct Stat {
-    /// `None` when the path turned out not to be a repository.
-    ///
-    /// Recorded rather than dropped: a miss nobody remembers is asked again on
-    /// every single refresh, which is a thread and a `git` process per
-    /// non-repository session forever — and *every remote session* is a miss, its
-    /// worktree being on another machine entirely. A miss that keeps coming back
-    /// is also a stable answer, so it backs off like any other.
     state: Option<GitState>,
     at: Instant,
-    /// The merge answer this session last reached, kept so the next run can
-    /// skip the check that costs seven subprocesses.
     merge: Option<MergeAnswer>,
-    /// How long [`Self::state`] is trusted: the base interval, doubled for
-    /// every poll that changed nothing, capped at [`GIT_STAT_BACKOFF`] times it.
     interval: Duration,
 }
 
-/// Git stats computed off the render path.
-///
-/// `git::worktree_stats` shells out, so it cannot run during a refresh — that
-/// happens on the loop. Fourth instance of the worker pattern: touch the world
-/// on a thread, publish the result.
 pub(super) struct GitStats {
-    /// The base interval, held rather than read per request: it is a
-    /// restart-only setting, and a cache that reads a global is a cache a test
-    /// cannot put on a clock of its own.
     poll: Option<Duration>,
     known: std::collections::HashMap<String, Stat>,
     inflight: std::collections::HashSet<String>,
@@ -106,7 +37,6 @@ pub(super) struct GitStats {
 }
 
 impl GitStats {
-    /// `poll` is the base interval; `None` asks for nothing, ever.
     pub(super) fn new(poll: Option<Duration>) -> Self {
         Self {
             poll,
@@ -123,8 +53,6 @@ impl GitStats {
         self.channel.as_ref().expect("just created").0.clone()
     }
 
-    /// Ask for a session's stats, unless polling is off, a run is in flight, or
-    /// the last answer is still inside this session's own interval.
     pub(super) fn request(&mut self, session: &str, worktree: PathBuf) {
         if self.poll.is_none() || self.inflight.contains(session) {
             return;
@@ -230,14 +158,10 @@ impl GitStats {
         }
     }
 
-    /// The last answer for `session`; `None` until one landed, or when the
-    /// path is not a repository.
     pub(super) fn state(&self, session: &str) -> Option<GitState> {
         self.known.get(session).and_then(|stat| stat.state)
     }
 
-    /// Forget sessions that are no longer in the snapshot, so the cache tracks
-    /// what exists rather than everything that ever did.
     pub(super) fn retain(&mut self, present: &std::collections::HashSet<&str>) {
         self.known.retain(|id, _| present.contains(id.as_str()));
     }
@@ -247,8 +171,6 @@ impl GitStats {
 mod tests {
     use super::*;
 
-    /// A git answer to hand a cache, distinguishable from the next one by its
-    /// insertion count.
     fn git_state(insertions: usize) -> GitState {
         GitState {
             files_changed: 1,

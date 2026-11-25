@@ -1,15 +1,3 @@
-//! Acceptance for the Gateway's first step: the `[gateway]` section loads,
-//! validates and is refused for each invalid case the config page lists,
-//! the fake adapter is wired when the manager runs, and the build names the
-//! platforms it has. Then the mirror: `fleet gateway receive` creates a
-//! Conversation and spools events on it, ConversationController numbers
-//! them with the thread's history, dedupes, edits, orphans and retires, and
-//! `--beat`, `fleet gateway account` and `fleet gateway status` report each
-//! account's listener. And the fifth step: a Slack account is served by the
-//! Slack adapter, which reads and writes a thread through the stub `curl`
-//! with the operator's curl config named and no credential of its own.
-//! Admission, Task creation and GatewayController are later steps.
-
 mod support;
 
 use std::fs;
@@ -31,7 +19,6 @@ use support::{
     conversation_name, gateway_section, message_event, stub_exe,
 };
 
-/// The fake platform's clock, and the thread the scenarios mirror.
 const T0: u64 = 1_730_000_000_000;
 const THREAD: &str = "fake:C0123ABCD:1730000000000";
 const BOT: &str = "B0FLEET001";
@@ -53,12 +40,6 @@ fn person(id: &str, at: u64, text: &str) -> Message {
     }
 }
 
-/// A gateway environment whose fake platform holds one thread with one
-/// earlier message from Sam, with the route's TaskConfig applied so the
-/// Task an admitted mention starts can run, and the name its Conversation
-/// takes.
-/// `--create-only` holds for a Conversation too: the thread already
-/// mirrored is refused, not applied over.
 #[test]
 fn a_create_only_apply_never_reapplies_a_conversation() {
     let env = Env::gateway("create-only-conversation");
@@ -85,7 +66,6 @@ fn mirror(name: &str) -> (Env, String) {
     (env, conversation_name(GATEWAY_ACCOUNT, THREAD))
 }
 
-/// The TaskConfig the route names.
 fn task_config() -> Value {
     support::object(
         "TaskConfig",
@@ -94,8 +74,6 @@ fn task_config() -> Value {
     )
 }
 
-/// Let a conversation Task's session rest, delete the Task, and reconcile
-/// until it is released.
 fn delete_task(env: &Env, name: &str) {
     env.host()
         .set_at_rest(&env.session_key(name), true)
@@ -136,16 +114,9 @@ fn message_ids(st: &Value) -> Vec<(String, u64, u64, u64)> {
         .collect()
 }
 
-/// The Slack workspace the stub `curl` answers for, and Fleet's bot there.
 const SLACK_TEAM: &str = "T0123ABCD";
 const SLACK_BOT: &str = "U0BOT0001";
 
-/// A gateway environment with the stub binary copied as `curl` and a curl
-/// config file for the account to name. The stub finds its state through
-/// the `stub-dir` file beside it, since an adapter driven in-process sets no
-/// environment. That directory is the children's whole PATH, so an account
-/// without `cli` finds the stub and never a real curl. Fleet never reads
-/// the config file: the test asserts only that its path reaches curl.
 fn slack_env(name: &str) -> (Env, PathBuf, PathBuf) {
     let mut env = Env::gateway(name);
     let bin = env.root.join("slack-bin");
@@ -169,8 +140,6 @@ fn slack_env(name: &str) -> (Env, PathBuf, PathBuf) {
     (env, curl, curl_config)
 }
 
-/// The gateway section with the fake account replaced by a Slack one on the
-/// same name, served by `curl` with `curl_config`, delivering by `inbound`.
 fn slack_section(env: &Env, curl: &Path, curl_config: &Path, inbound: &str) -> String {
     let section = gateway_section(&env.root).replace(
         "platform = \"fake\"\nbot = \"B0FLEET001\"\ninbound = \"connection\"\ndir = \"gateway\"\n",
@@ -191,8 +160,6 @@ fn root(env: &Env) -> String {
     env.root.to_string_lossy().replace('\\', "/")
 }
 
-/// A second route over the fake account, with its own channel, brief and
-/// workspace; a case overrides one field to collide with the first.
 fn second_route(env: &Env, channel: &str, dir: &str) -> String {
     let root = root(env);
     format!(
@@ -532,8 +499,6 @@ fn a_redelivered_event_changes_nothing_and_edits_and_removals_move_the_mirror() 
     env.assert_no_temp();
 }
 
-/// Spool `(delivery id, fake event)` pairs on `conv` through the store, as
-/// `fleet gateway receive` would, without a process for each.
 fn spool_directly(env: &Env, conv: &str, events: impl Iterator<Item = (String, Value)>) {
     use fleet_api::gateway::{Delivery, Verified};
     use fleet_api::{FieldManager, Store};
@@ -1148,8 +1113,6 @@ fn a_slack_account_is_served_by_curl_and_refused_without_what_curl_needs() {
     );
 }
 
-/// The thread the stub Slack workspace starts with: Alex's mention and
-/// Sam's reply, beside an unrelated top-level post in the same channel.
 const PARENT_TS: &str = "1730000000.000100";
 const REPLY_TS: &str = "1730000060.000200";
 const OTHER_TS: &str = "1730000100.000000";
@@ -1169,8 +1132,6 @@ fn seed_slack(env: &Env) {
     });
 }
 
-/// The adapter as the manager would build it for the account, driven
-/// in-process against the stub `curl`.
 fn slack_adapter(curl: &Path, curl_config: &Path, timeout: Duration) -> SlackGateway {
     SlackGateway::new(
         GATEWAY_ACCOUNT,
@@ -2035,7 +1996,6 @@ fn the_slack_adapters_unknowns_carry_slacks_reasons() {
 // busy notice and the refusal post.
 // ----------------------------------------------------------------------
 
-/// A gateway environment ready to start Tasks.
 fn admitting(name: &str) -> (Env, String) {
     mirror(name)
 }
@@ -2243,8 +2203,6 @@ fn an_orphaned_thread_starts_the_next_task_on_any_admitted_message() {
     env.assert_no_temp();
 }
 
-/// The directory a thread's Tasks get on the gateway route: the route's
-/// base directory and the thread's Conversation name.
 fn thread_dir(env: &Env, conv: &str) -> String {
     format!("{}/{conv}", env.gateway_workspace())
 }
@@ -2417,11 +2375,8 @@ fn a_thread_directory_whose_creation_is_unknown_is_recovered_by_a_lookup_and_a_r
     env.assert_no_temp();
 }
 
-/// `gateway.retainMs` as the gateway environment leaves it: the default.
 const RETAIN_MS: u64 = 604_800_000;
 
-/// Let a thread's retention run out on its record, as time would: every
-/// clock it counts from moves back past `gateway.retainMs`.
 fn age_past_retention(env: &Env, conv: &str) {
     let path = env.object_path("Conversation", conv);
     let mut obj: Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
@@ -2437,7 +2392,6 @@ fn age_past_retention(env: &Env, conv: &str) {
     fs::write(&path, obj.to_string()).unwrap();
 }
 
-/// Start a thread's first Task with a mention and return its Conversation.
 fn start_thread(env: &Env, thread: &str, delivery: &str, at: u64) -> String {
     env.fake_gateway()
         .seed(
@@ -2463,7 +2417,6 @@ fn start_thread(env: &Env, thread: &str, delivery: &str, at: u64) -> String {
     conv
 }
 
-/// Conclude a thread's Task and let its agent rest.
 fn conclude(env: &Env, task: &str) {
     env.reconcile().ok();
     env.fleet(&["result", task, "--generation", "1", "--outcome", "shipped"])

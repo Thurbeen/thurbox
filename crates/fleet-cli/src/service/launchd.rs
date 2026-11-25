@@ -1,7 +1,3 @@
-//! A launchd agent in the user's GUI domain, driven through `launchctl`.
-//! The agent's property list names its store under `XFleetStore`, a key
-//! launchd ignores.
-
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
@@ -207,8 +203,6 @@ pub fn drive(unit: &Unit, verb: Verb, stop_bound: Duration) -> Result<(), Refusa
     }
 }
 
-/// `launchctl print` while launchd has the agent loaded: its report, and
-/// 0 while the agent runs, 3 while it does not.
 pub fn status(unit: &Unit) -> Result<(String, i32), Refusal> {
     Ok(match loaded(unit)? {
         Some(report) => {

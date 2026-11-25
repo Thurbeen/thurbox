@@ -1,12 +1,3 @@
-//! Painting a frame, and deciding whether one is owed.
-//!
-//! Demand-driven: a frame happens when something changed or the 250 ms floor
-//! elapsed. `draw` compares each mod's returned tree against the last one and
-//! only marks the frame changed when it differs; a float diffs its own tree and
-//! rect, and a chrome band — which has no tree — diffs the cells it just
-//! painted. Marking a band changed for having been *drawn* held `dirty` set
-//! after every frame and stopped the loop settling at all.
-
 use std::error::Error;
 use std::time::{Duration, Instant};
 
@@ -118,8 +109,6 @@ impl App {
         Ok(())
     }
 
-    /// Whether anything is drawn over the panes: a modal, a float, a text
-    /// selection, the perf HUD or an error panel.
     fn covered(&self) -> bool {
         self.modals.is_open()
             || !self.drawn_floats.is_empty()
@@ -131,20 +120,6 @@ impl App {
             || self.floor.is_some()
     }
 
-    /// Paint an echo: the last full frame again, with only the surface the echo
-    /// came from repainted. `false` when this frame cannot be one, and the
-    /// caller paints a full frame instead.
-    ///
-    /// A full frame republishes every table and walks every pane, which was
-    /// most of a keystroke's latency once nothing else stood in the way — and
-    /// an echo moves one grid and nothing else. What else moved since the last
-    /// full frame is still owed one: `dirty` is left set, so it follows at the
-    /// ordinary floor.
-    ///
-    /// Only a session surface at its live end, only on the frame it was
-    /// painted into last time, and only when nothing was or is drawn over it:
-    /// a highlighted row (`mark`), a float, a modal, a selection. Those are the
-    /// cells this would paint the grid over.
     fn paint_echo_frame(
         &mut self,
         terminal: &mut DefaultTerminal,
@@ -198,14 +173,6 @@ impl App {
         Ok(true)
     }
 
-    /// A modal captures input, so it owns the caret — or nothing does.
-    ///
-    /// The panes underneath still draw, and one with a text field claims the
-    /// cursor as it goes; a frame that ends with a cursor position SHOWS it, so
-    /// it would blink behind the modal, which reads as the screen refreshing
-    /// wrongly rather than as a misplaced cursor. Corrected after the frame
-    /// because a `Frame`'s cursor can be set but never unset, and the modal
-    /// draws last.
     fn place_modal_caret(&mut self, terminal: &mut DefaultTerminal) -> Result<(), Box<dyn Error>> {
         if !self.modals.is_open() {
             return Ok(());
@@ -220,8 +187,6 @@ impl App {
         Ok(())
     }
 
-    /// Stamp the first frame's startup time, once, and log every startup phase
-    /// when performance logging is on.
     fn log_first_frame(&mut self) {
         if self.first_frame_logged {
             return;
@@ -495,7 +460,6 @@ impl App {
         }
     }
 
-    /// Every occupant, stacked vertically by declared size.
     pub(crate) fn draw_stack_slot(
         &mut self,
         frame: &mut Frame,
@@ -724,7 +688,6 @@ impl App {
         Some(node)
     }
 
-    /// Place a float in `area`: centred, or opened at its `at` point.
     pub(crate) fn float_rect(area: Rect, float: thurbox::kernel::host::Float) -> Rect {
         let width = clamp_span(
             float
@@ -758,14 +721,6 @@ impl App {
         }
     }
 
-    /// Finish the frame's colours before the terminal backend sees them.
-    ///
-    /// v1 `App::repaint_theme_background`. Without it a theme only tints what a
-    /// pane explicitly styled, and every gap between panes keeps the user's own
-    /// terminal background — so 30 of the 36 presets rendered as a patchwork.
-    ///
-    /// Themes whose `app_bg` is `Reset` (the ANSI-based Default preset) skip
-    /// the fill deliberately, so they keep honouring the terminal palette.
     pub(crate) fn repaint_theme_background(&self, frame: &mut Frame) {
         // Crossterm suppresses colour values under NO_COLOR but still emits an
         // empty SetColors sequence when a cell changes colour. That sequence
@@ -868,11 +823,6 @@ impl App {
         }
     }
 
-    /// `area` minus the rows the chrome bands were placed on.
-    ///
-    /// Bands are only ever full-width single rows at the top or the bottom, so
-    /// this is a shrink rather than a general subtraction: a band placed between
-    /// two panes would not be excluded, and nothing places one there.
     pub(crate) fn content_area(
         &self,
         area: Rect,
@@ -899,8 +849,6 @@ impl App {
         }
     }
 
-    /// Rows the message band needs: one while there is a live message or work in
-    /// flight, none otherwise.
     pub(crate) fn status_rows(&self) -> u16 {
         let live_message = self
             .status
@@ -911,9 +859,6 @@ impl App {
         )
     }
 
-    /// What the message band says while no transient message is up: the
-    /// command that starts the manager of a Fleet on this machine that has
-    /// none ([`thurbox::fleet_link::FleetLink::not_running`]).
     pub(crate) fn fleet_down_notice(&self) -> Option<String> {
         self.snapshots
             .current()
@@ -923,15 +868,6 @@ impl App {
             .and_then(|fleet| fleet.why.clone())
     }
 
-    /// Whether this tree's session surface has printed since it was last
-    /// painted.
-    ///
-    /// A surface's cells live OUTSIDE the tree, so tree equality cannot tell
-    /// whether it changed. Its own output stamp can: a pane whose agent has said
-    /// nothing since the last paint is as settled as a pane of text, which is
-    /// what lets a screen with a live terminal on it idle at the redraw floor
-    /// instead of repainting at the frame cap forever. v1 gates the same way, off
-    /// the same atomic (`detect_output_redraw`).
     pub(crate) fn surface_moved(&mut self, node: &thurbox::kernel::node::Node) -> bool {
         let Some(surface) = node.first_session_surface() else {
             return false;
@@ -968,12 +904,6 @@ impl App {
     }
 }
 
-/// Where an anchored float starts on one axis: at the point, or ending on it
-/// when starting there would run past the area, then held inside the area.
-///
-/// Flip first, clamp second, so a menu opened in the bottom-right corner grows
-/// up and to the left — whole — rather than being shifted under the pointer.
-/// `span` never exceeds `len`: `float_rect` has already clamped it.
 fn anchor_span(at: u16, span: u16, start: u16, len: u16) -> u16 {
     let end = start.saturating_add(len);
     let at = at.clamp(start, end.saturating_sub(1).max(start));

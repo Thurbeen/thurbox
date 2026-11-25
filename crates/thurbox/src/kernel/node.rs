@@ -1,44 +1,20 @@
-//! The view vocabulary: **four** primitives and nothing else.
-//!
-//! `text`, `box`, `input`, `surface`. Lists, gauges, dividers, tables and
-//! titled panels are *not* here — they are composed in Lua from these four
-//! (`ui/lib/widgets.lua`). That is the whole point: a prior
-//! attempt froze a catalog at 6 kinds and watched it reach 16 without gaining
-//! the ability to express code review, because every new appearance had
-//! nowhere to live but a kernel enum variant. Adding a variant here costs a
-//! release; adding a widget in Lua costs a file save.
-//!
-//! `kinds()` is the tripwire — `tests/kernel_node_catalog.rs` pins it at four.
-//!
-//! Lua never holds a ratatui object. A mod returns a plain table, this
-//! module translates it, and that indirection is exactly why throwing the VM
-//! away on reload is safe.
-
 use std::collections::HashMap;
 
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 
-/// The complete node vocabulary. Four. See the module docs before adding one.
 pub const KINDS: [&str; 4] = ["text", "box", "input", "surface"];
 
-/// How a child asks for space along its parent's axis.
-///
-/// Resolution order is exact → percentage → share, each clamped by `min`/`max`.
-/// A child that asks for nothing gets an equal share of what is left, which is
-/// what makes a mod's root node work without declaring anything.
 #[derive(Debug, Clone, Copy, PartialEq, Default)]
 pub struct Size {
     pub len: Option<u16>,
     pub pct: Option<f64>,
-    /// Proportional share of the remainder. Defaults to 1 when nothing is set.
     pub fill: Option<f64>,
     pub min: Option<u16>,
     pub max: Option<u16>,
 }
 
 impl Size {
-    /// True when the child expressed no opinion and should share the remainder.
     fn is_flexible(&self) -> bool {
         self.len.is_none() && self.pct.is_none()
     }
@@ -59,12 +35,6 @@ impl Size {
     }
 }
 
-/// Optional targeting information carried by any node.
-///
-/// Present so that an input event can be attributed to the node under it, and
-/// so styling can one day be expressed separately from structure. The kernel
-/// stores and propagates it; it does **not** resolve selectors against it —
-/// that stays in userland until a real consumer exists.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct Identity {
     pub id: Option<String>,
@@ -77,73 +47,26 @@ impl Identity {
         self.id.is_none() && self.classes.is_empty() && self.role.is_none()
     }
 
-    /// The click verb this node declares, if any.
     pub fn click_verb(&self) -> Option<ClickVerb> {
         ClickVerb::parse(self.role.as_deref())
     }
 
-    /// Does a press here take hold of the pointer?
-    ///
-    /// A node saying so is handed the drags that follow the press, and no text
-    /// selection is armed over it — which is what makes a scrollbar, a slider or
-    /// a splitter possible from four node kinds. It is not a [`ClickVerb`]: the
-    /// verbs name something the *kernel* does, and here the kernel only keeps
-    /// routing the pointer to the pane, which decides what the movement means.
-    ///
-    /// Spelled as the bare role rather than `drag:<something>` so it composes
-    /// with the `id` a node already carries: a pane with two draggables tells
-    /// them apart the way it tells two rows apart.
     pub fn is_drag_handle(&self) -> bool {
         self.role.as_deref() == Some(DRAG_ROLE)
     }
 }
 
-/// The role a node carries to say a press on it grabs the pointer.
 pub const DRAG_ROLE: &str = "drag";
 
-/// What the kernel itself does when a painted node is clicked.
-///
-/// This is v1's `ClickAction` (`src/app/mod.rs`) reduced to the part the kernel
-/// can honour without knowing what any pane is: each variant names an entry
-/// point the *keyboard* already uses, so a click and a keypress cannot drift
-/// apart. Anything outside this vocabulary is handed to the owning mod as an
-/// ordinary click event instead.
-///
-/// It is spelled as a prefix on [`Identity::role`] rather than as a field of
-/// its own because identity already travels through `convert` and `paint`
-/// untouched — so a mod declares a click target by writing one string, and
-/// the node catalogue stays at four.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ClickVerb {
-    /// `action:<id>` — run a declared action, exactly as its chord would.
-    /// v1's `ClickAction::Global`, which the footer pills use.
     Action(String),
-    /// `key:<chord>` — replay a keystroke through the normal key path. v1's
-    /// `ClickAction::ModalButton`, which is why clicking a modal button and
-    /// pressing its letter cannot diverge.
     Key(String),
-    /// `focus:<mod>` — make that mod the focused one. v1's
-    /// `ClickAction::FocusPane` and `CentralTab`, which in v2 are the same act:
-    /// a `switch` slot shows whichever occupant holds focus.
     Focus(String),
-    /// `url:<link>` — open the link, through the very opener (and the same
-    /// copy-to-clipboard fallback) a `Ctrl+Click` on an agent's own OSC 8 run
-    /// rides, so a pane's link and a transcript's link cannot open in two
-    /// different places.
-    ///
-    /// The one verb whose value is not a name the kernel resolves, and the
-    /// reason it is a verb at all: the node's drawn cells are also re-printed
-    /// wrapped in OSC 8, which is what hands `Ctrl+Click` over them to the
-    /// terminal thurbox itself runs in — the only leg with a browser to reach
-    /// when the interface is on the far end of an ssh connection. A pane emits
-    /// no escapes of its own, so without this there is no route from painted
-    /// pane content to a link the outer terminal knows about.
     Url(String),
 }
 
 impl ClickVerb {
-    /// Read a verb off a role string. A role the kernel does not recognise
-    /// (`row`, `overflow`, …) is not a verb — the click goes to the mod.
     pub fn parse(role: Option<&str>) -> Option<Self> {
         let (verb, rest) = role?.split_once(':')?;
         let rest = rest.trim();
@@ -162,39 +85,15 @@ impl ClickVerb {
     }
 }
 
-/// Runs painted onto a frame's own border cells, after the block is drawn.
-///
-/// The border row is chrome a pane wants to *layer* — the session list puts its
-/// status-dot strip on the top border and a `▲ N` count over the right end of
-/// it, the agent pane puts a tab strip on the left of the same row and a
-/// scrollbar down the right border column. Every one of those costs zero
-/// content cells, which is the whole reason they live on the border; expressing
-/// them without this meant composing the border out of `text` nodes and
-/// re-drawing what a block already knows how to draw.
-///
-/// Each slot is clipped to the cells between the corners, so an over-long strip
-/// loses its tail rather than eating the corner that makes a pane read as one.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct Overlay {
-    /// Painted rightward from the cell after the top-left corner.
     pub top_left: Vec<Run>,
-    /// Painted leftward from the cell before the top-right corner.
     pub top_right: Vec<Run>,
     pub bottom_left: Vec<Run>,
     pub bottom_right: Vec<Run>,
-    /// One run per inner row, down the right border column. A shorter list
-    /// leaves the rows below it as border.
     pub right_column: Vec<Run>,
 }
 
-/// Which glyphs a frame's border is drawn with.
-///
-/// Three, because three is what the bundled panes distinguish: rounded is the
-/// program's normal chrome, square is what the agent pane's empty state draws,
-/// and thick is the pane holding focus — the one focus cue that is a SHAPE, so
-/// it survives a monochrome terminal and a reader who cannot tell the theme's
-/// two border colours apart. `Square` is what the panes call it; `Plain` is
-/// ratatui's name for the same corners and is accepted as a second spelling.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum BorderKind {
     #[default]
@@ -203,27 +102,15 @@ pub enum BorderKind {
     Thick,
 }
 
-/// A frame drawn around a node.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct Frame {
-    /// The title, as styled runs rather than a bare string.
-    ///
-    /// Runs because a title is often two facts at once — the agent pane's is a
-    /// session's name *and* its status — and one style for the whole string forced
-    /// them to share a colour. The status word then took the focused pane's accent,
-    /// which in a red-accented palette announced an idle session in the same colour
-    /// the list uses for *blocked*. `Run` and `to_line` already existed for text
-    /// nodes; this is the same treatment.
     pub title: Option<Vec<Run>>,
-    /// Where the title sits along the top border.
     pub title_align: Align,
     pub borders: Borders,
     pub border_type: BorderKind,
     pub border_style: Style,
     pub style: Style,
     pub padding: u16,
-    /// Boxed because a frame is carried by every node that has one and almost
-    /// none of them overlay anything, and [`Node`] is built afresh every frame.
     pub overlay: Option<Box<Overlay>>,
 }
 
@@ -240,30 +127,14 @@ pub enum Axis {
     Horizontal,
 }
 
-/// One styled run of text within a line.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Run {
     pub text: String,
     pub style: Style,
-    /// What this run alone can be targeted as, when it is not the whole node.
-    ///
-    /// Identity used to hang off [`Node`] only, so a clickable chip inside a
-    /// line had to become a `text` node of its own with a hand-computed `len` —
-    /// and a two-colour button (` ◀ F9 `: an accent chevron, a muted hint) came
-    /// out as two hitboxes with the pointer having to find one of them. The
-    /// paint walk already knows every run's column offset, so this is that
-    /// offset kept: adjacent runs sharing an identity coalesce into one [`Hit`],
-    /// which is what makes the two halves of that button one target.
-    ///
-    /// Boxed because it is absent from nearly every run, and a run is the
-    /// hottest allocation in the renderer — one per span per mod per frame.
-    ///
-    /// [`Hit`]: super::paint::Hit
     pub identity: Option<Box<Identity>>,
 }
 
 impl Run {
-    /// A run with no colour of its own, so it inherits whatever it is drawn into.
     pub fn plain(text: impl Into<String>) -> Self {
         Run {
             text: text.into(),
@@ -272,7 +143,6 @@ impl Run {
         }
     }
 
-    /// The columns this run occupies when painted.
     pub fn width(&self) -> u16 {
         use unicode_width::UnicodeWidthStr;
         u16::try_from(self.text.width()).unwrap_or(u16::MAX)
@@ -280,7 +150,6 @@ impl Run {
 }
 
 impl Frame {
-    /// A frame whose title is one unstyled run — the common case.
     pub fn titled(title: impl Into<String>) -> Self {
         Frame {
             title: Some(vec![Run::plain(title)]),
@@ -288,7 +157,6 @@ impl Frame {
         }
     }
 
-    /// The title's text, styling dropped: what a decorator matches on.
     pub fn title_text(&self) -> Option<String> {
         self.title
             .as_ref()
@@ -296,11 +164,6 @@ impl Frame {
     }
 }
 
-/// A node in the view tree.
-///
-/// Every variant carries `size` (what it asks of its parent) and `identity`
-/// (how it can be targeted). `Surface` carries no children by design — it is
-/// the geometry-first escape hatch.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Node {
     Text {
@@ -308,14 +171,6 @@ pub enum Node {
         align: Align,
         wrap: bool,
         scroll: u16,
-        /// The node's base style, painted over its whole rect before the runs
-        /// are drawn on top.
-        ///
-        /// This is what a selection bar is: a background that reaches the right
-        /// edge without the pane appending a spacer span sized by hand, and a
-        /// foreground every run that names none inherits. A run that DOES name
-        /// one keeps it — which is what lets a search hit stay accent-coloured
-        /// on the row the cursor is on, with the bar painting through it.
         style: Style,
         frame: Option<Frame>,
         size: Size,
@@ -333,30 +188,15 @@ pub enum Node {
         value: String,
         cursor: usize,
         placeholder: String,
-        /// Whether this field owns the terminal caret.
-        ///
-        /// A screen can hold several inputs — the creation flow's repo step
-        /// holds two — and there is exactly one caret, so ownership has to be
-        /// declared rather than guessed. It was guessed once, from the value
-        /// being non-empty, which put the caret in whichever field happened to
-        /// have text in it and took it away from an empty field you were
-        /// typing into: the cursor appeared on the first keystroke and vanished
-        /// on the last backspace.
         focused: bool,
         style: Style,
         frame: Option<Frame>,
         size: Size,
         identity: Identity,
     },
-    /// Pre-rendered cells the kernel paints. Fed by a live session's terminal
-    /// or by a mod that produces cells itself. `source` names which.
     Surface {
         source: SurfaceSource,
         scroll: u16,
-        /// A row of the surface to highlight, counted from its top — where a
-        /// pane that scrolled a terminal to a line points at it. Painted by the
-        /// kernel over whatever the source drew, so the terminal itself is not
-        /// touched.
         mark: Option<u16>,
         frame: Option<Frame>,
         size: Size,
@@ -364,19 +204,10 @@ pub enum Node {
     },
 }
 
-/// Where a surface's cells come from.
 #[derive(Debug, Clone, PartialEq)]
 pub enum SurfaceSource {
-    /// A live session, named by its id. The kernel resolves it to that
-    /// session's terminal grid.
     Session(String),
-    /// A program the declaring mod asked to run, named by the mod.
-    ///
-    /// Still a `surface` — four node kinds, forever. The kernel resolves the name
-    /// against the mod being rendered, so a mod can only ever name its own
-    /// (`kernel::terminal::ProgramKey`).
     Program(String),
-    /// Cells the mod produced itself, one entry per line.
     Cells(Vec<Vec<Run>>),
 }
 
@@ -416,7 +247,6 @@ impl Node {
         }
     }
 
-    /// The kind name, as a mod would have written it.
     pub fn kind(&self) -> &'static str {
         match self {
             Node::Text { .. } => "text",
@@ -426,10 +256,6 @@ impl Node {
         }
     }
 
-    /// The first session-backed surface in this tree, if any.
-    ///
-    /// Used to answer "which session is the focused pane showing?" without the
-    /// kernel knowing anything about which mod is the terminal.
     pub fn first_session_surface(&self) -> Option<&str> {
         match self {
             Node::Surface {
@@ -441,16 +267,6 @@ impl Node {
         }
     }
 
-    /// The first **live** surface in this tree, of either kind, with the id the
-    /// kernel resolves it by.
-    ///
-    /// This is what raw input is routed to. Keys already followed the returned
-    /// tree — `input = "session"` never meant "the selected session", it meant
-    /// "whatever this pane is showing" — and what was narrow was only the set of
-    /// things a surface could name. A mod's own program is now one of them.
-    ///
-    /// `Cells` is excluded: a mod drew those itself, so there is nothing behind
-    /// them to type at.
     pub fn first_live_surface(&self) -> Option<&str> {
         match self {
             Node::Surface {
@@ -462,8 +278,6 @@ impl Node {
         }
     }
 
-    /// The scroll and mark of the surface showing session `id` in this tree,
-    /// if one does.
     pub fn session_surface(&self, id: &str) -> Option<(u16, Option<u16>)> {
         match self {
             Node::Surface {
@@ -479,8 +293,6 @@ impl Node {
         }
     }
 
-    /// Whether this tree holds an input that owns the caret — a pane being
-    /// typed into, which is where a paste belongs.
     pub fn has_focused_input(&self) -> bool {
         match self {
             Node::Input { focused, .. } => *focused,
@@ -489,7 +301,6 @@ impl Node {
         }
     }
 
-    /// An empty placeholder, used where a mod produced nothing.
     pub fn empty() -> Self {
         Node::Text {
             lines: Vec::new(),
@@ -503,7 +314,6 @@ impl Node {
         }
     }
 
-    /// A single line of plain text — the building block for error panes.
     pub fn line(text: impl Into<String>, style: Style) -> Self {
         Node::Text {
             lines: vec![vec![Run {
@@ -522,16 +332,6 @@ impl Node {
     }
 }
 
-/// Divide `total` among `children` along one axis.
-///
-/// This is the arithmetic behind the promise that a mod is told
-/// its *own* rect: the parent resolves every child's length here, before any
-/// child is asked to render into it.
-///
-/// Exact and percentage requests are honoured first, then flexible children
-/// split the remainder by share. Over-subscription is handled by scaling the
-/// fixed requests down proportionally rather than by letting a child go
-/// negative — a spec requirement, since a mod can ask for more than exists.
 pub fn divide(total: u16, children: &[Size], gap: u16) -> Vec<u16> {
     if children.is_empty() {
         return Vec::new();
@@ -567,8 +367,6 @@ pub fn divide(total: u16, children: &[Size], gap: u16) -> Vec<u16> {
     lengths
 }
 
-/// What one child asks for out of `available`: its exact length or its
-/// percentage, clamped — and nothing yet for a flexible child.
 fn requested_length(size: &Size, available: u16) -> u16 {
     if let Some(len) = size.len {
         size.clamp(len)
@@ -580,8 +378,6 @@ fn requested_length(size: &Size, available: u16) -> u16 {
     }
 }
 
-/// Shrink the fixed requests, which sum to `fixed`, into `available`; flexible
-/// children get nothing.
 fn scale_fixed_to_fit(children: &[Size], lengths: &mut [u16], available: u16, fixed: u32) {
     let scale = f64::from(available) / fixed as f64;
     let mut used = 0u32;
@@ -616,7 +412,6 @@ fn scale_fixed_to_fit(children: &[Size], lengths: &mut [u16], available: u16, fi
     }
 }
 
-/// Split `remainder` among the flexible children by their `fill` weight.
 fn share_among_flexible(children: &[Size], lengths: &mut [u16], remainder: u16) {
     // Never NaN: every share is floored at zero, so this is "no weight at all".
     let total_share: f64 = children
@@ -656,7 +451,6 @@ fn share_among_flexible(children: &[Size], lengths: &mut [u16], remainder: u16) 
     }
 }
 
-/// Parse a colour written as a name, a `#rrggbb` hex string, or a palette index.
 pub fn parse_color(raw: &str) -> Option<Color> {
     let value = raw.trim();
     if value.is_empty() {
@@ -697,7 +491,6 @@ pub fn parse_color(raw: &str) -> Option<Color> {
     Some(named)
 }
 
-/// Build a ratatui `Style` from a table of style keys.
 pub fn style_from(fields: &HashMap<String, StyleField>) -> Style {
     let mut style = Style::default();
     for (key, value) in fields {
@@ -728,19 +521,12 @@ pub fn style_from(fields: &HashMap<String, StyleField>) -> Style {
     style
 }
 
-/// A single field inside a style table — either a colour string or a flag.
 #[derive(Debug, Clone, PartialEq)]
 pub enum StyleField {
     Text(String),
     Flag(bool),
 }
 
-/// Flatten runs into a ratatui `Line` borrowing the runs' text.
-///
-/// Borrowed, not cloned: this runs for every span of every pane on every
-/// painted frame, and the tree it reads outlives the paint — an owned
-/// `Line<'static>` was a `String` per span per frame for screens that had not
-/// changed at all.
 pub fn to_line(runs: &[Run]) -> Line<'_> {
     Line::from(
         runs.iter()
@@ -899,9 +685,6 @@ mod tests {
         );
     }
 
-    /// A url is the one verb value with structure of its own, and both halves
-    /// of that structure are colons the parse must not eat: the scheme's
-    /// separator and the `//` after it.
     #[test]
     fn a_url_verb_keeps_the_links_own_colons() {
         assert_eq!(

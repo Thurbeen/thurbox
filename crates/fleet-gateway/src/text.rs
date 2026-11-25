@@ -1,10 +1,3 @@
-//! Splitting a long post, shared by the platform adapters: each platform
-//! converts Fleet's Markdown subset itself, then splits under its own limit.
-
-/// Text as consecutive posts of at most `limit` characters each,
-/// split at line breaks where possible and inside a line otherwise. A
-/// fenced code block cut by a split is closed at the end of one chunk and
-/// reopened at the start of the next, so each chunk renders on its own.
 pub fn split(text: &str, limit: usize) -> Vec<String> {
     const FENCE: &str = "```";
     if text.chars().count() <= limit {
@@ -87,9 +80,6 @@ pub fn split(text: &str, limit: usize) -> Vec<String> {
 mod tests {
     use super::split;
 
-    /// A long line inside a fenced block is cut into pieces, and every chunk
-    /// after the first reopens the fence: each piece must leave room for the
-    /// reopening fence and the closing one, or the chunk exceeds the limit.
     #[test]
     fn a_long_line_in_a_fence_stays_within_the_limit() {
         let limit = 20;

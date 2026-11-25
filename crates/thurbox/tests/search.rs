@@ -1,16 +1,3 @@
-//! Global search: what it matches, where it lands, and what it puts back.
-//!
-//! The strip is easy to build and easy to build wrongly, and every way it goes
-//! wrong is invisible from a screenshot: a substring matcher looks like a search
-//! box until you type two letters of a hyphenated name, a preview that does not
-//! move the list looks like a preview until you press escape and find your
-//! selection changed anyway, and `j` navigating instead of typing looks fine
-//! until someone searches for a session with a `j` in its name.
-//!
-//! So these drive the mod the way the loop does — declared action first, raw
-//! key second — and assert on the two things that outlive the frame: the shared
-//! selection, and the commands it emits.
-
 use thurbox::kernel::command::Command;
 use thurbox::kernel::host::{Epoch, KeyPress, LuaHost, Published, RenderContext};
 use thurbox::kernel::registry::Registry;
@@ -63,8 +50,6 @@ fn row(id: &str, name: &str, agent: &str, branch: &str) -> SessionRow {
     }
 }
 
-/// Three sessions whose names do NOT share a substring with the queries below,
-/// so a substring matcher fails every fuzzy assertion here.
 fn snapshot() -> Snapshot {
     Snapshot {
         sessions: vec![
@@ -77,8 +62,6 @@ fn snapshot() -> Snapshot {
 }
 
 thread_local! {
-    /// The answer the kernel is currently publishing, so a keystroke's publish
-    /// carries the same one the render before it did — as the loop's would.
     static PUBLISHED: std::cell::RefCell<Option<Answer>> = const { std::cell::RefCell::new(None) };
 }
 
@@ -87,7 +70,6 @@ fn publish(host: &LuaHost) {
     publish_with(host, held.as_ref());
 }
 
-/// Publish with a content-search answer, as the loop does once one lands.
 fn publish_with(host: &LuaHost, search: Option<&Answer>) {
     publish_snapshot(host, &snapshot(), search);
 }
@@ -154,8 +136,6 @@ fn render(host: &LuaHost, mod_name: &str) {
     .expect("render");
 }
 
-/// One keystroke, routed exactly as the loop routes it: the registry resolves a
-/// declared chord to an action, and anything it does not claim is raw input.
 fn press(host: &LuaHost, chord: &str) {
     publish(host);
     let index = host.index_of(MOD).expect("no search plugin");
@@ -378,7 +358,6 @@ fn the_opening_chord_is_declared_so_help_lists_it_and_it_can_be_rebound() {
     );
 }
 
-/// The kernel's answer to `query`: one hit per `(session, line, scroll)`.
 fn answer(query: &str, hits: &[(&str, &str, usize)]) -> Answer {
     Answer {
         request: Request {
@@ -406,7 +385,6 @@ fn answer(query: &str, hits: &[(&str, &str, usize)]) -> Answer {
     }
 }
 
-/// Render with `search` as the kernel's published answer.
 fn render_answered(host: &LuaHost, search: Option<&Answer>) {
     PUBLISHED.with(|p| *p.borrow_mut() = search.cloned());
     let index = host.index_of(MOD).expect("no search plugin");
@@ -761,15 +739,6 @@ fn closing_the_strip_stops_the_terminals_being_read() {
     assert_eq!(host.shared_string("search.matches"), None);
 }
 
-/// Enough matches to overflow the strip, painted through the real kernel.
-///
-/// The strip's own arithmetic decides how many rows it asks the list for, and
-/// asking for one row more than the rect holds is not a clipped list: an
-/// over-subscribed box hands its whole rect to the FIRST child and nothing to the
-/// others, so one line paints and every result — selection marker included —
-/// disappears. It went wrong by subtracting the frame and the scope line but not
-/// the query row, which put the cliff at eight matches in a 12-row strip: a
-/// count reachable by having eight sessions and typing nothing.
 #[test]
 fn every_match_still_paints_when_the_results_fill_the_strip() {
     use ratatui::backend::TestBackend;
@@ -865,14 +834,6 @@ fn every_match_still_paints_when_the_results_fill_the_strip() {
     }
 }
 
-/// The pane draws the match, and the selection bar must not paint over it.
-///
-/// Previewing moves this list's cursor ONTO the result, so the row carrying the
-/// highlight is always the selected one — which made this the one row where the
-/// match was invisible: the bar patched `fg` over every span, leaving the matched
-/// characters in the selection's own colour with only their underline to show
-/// for it. v1 layered the two the other way round (`highlight_style` is built on
-/// top of the row's base style), and this pins that order.
 #[test]
 fn a_match_keeps_its_colour_under_the_selection_bar() {
     use ratatui::backend::TestBackend;
@@ -966,8 +927,6 @@ fn a_match_keeps_its_colour_under_the_selection_bar() {
     );
 }
 
-/// The strip as the kernel paints it, at `width`×`height`, after the query has
-/// settled with `search` published.
 fn painted_strip(host: &LuaHost, width: u16, height: u16, search: Option<&Answer>) -> String {
     use ratatui::backend::TestBackend;
     use ratatui::Terminal;
@@ -1133,10 +1092,8 @@ fn an_invalid_regex_says_why() {
 
 const MANY_SESSIONS: usize = 24;
 
-/// Where the counting `lib.fuzzy` leaves its tally.
 const CALLS: &str = "test.fuzzy_calls";
 
-/// `lib.fuzzy`, with every function counting its calls into `store`.
 const COUNTING_FUZZY: &str = r#"
 local real = require("lib.fuzzy_real")
 local calls = 0
@@ -1168,7 +1125,6 @@ fn copy_dir(from: &std::path::Path, to: &std::path::Path) {
     }
 }
 
-/// The real interface, with `lib.fuzzy` counting.
 fn counting_interface() -> (tempfile::TempDir, LuaHost) {
     let dir = tempfile::tempdir().expect("tempdir");
     copy_dir(
@@ -1223,7 +1179,6 @@ fn many_row(n: usize) -> SessionRow {
     }
 }
 
-/// A full answer: as many hits as the kernel ever publishes.
 fn full_answer(query: &str) -> Answer {
     Answer {
         request: Request {
@@ -1428,8 +1383,6 @@ fn settled_strip_keeps_the_list_cached() {
     );
 }
 
-/// The pointer bands the result a click would open, and only that one: the
-/// row under the cursor keeps its own look, and so does every other row.
 #[test]
 fn a_hovered_result_is_banded_and_the_others_are_not() {
     use ratatui::backend::TestBackend;

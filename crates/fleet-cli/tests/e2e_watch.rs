@@ -1,7 +1,3 @@
-//! `fleet watch --json`: one NDJSON event per changed Task, resumable from
-//! the store's write counter with `--since`. The real `fleet` binary against
-//! its file store; nothing is dispatched, so no runtime is involved.
-
 mod support;
 
 use std::io::{BufRead, BufReader};
@@ -88,9 +84,6 @@ fn watch_reports_each_changed_task_and_resumes_from_a_revision() {
     assert!(deleted["uid"].is_string(), "{deleted:#}");
 }
 
-/// A store that cannot be read is a warning while the watch runs, and the
-/// read that works again is reported as `synced`, so a view knows its rows
-/// are current once more.
 #[test]
 fn a_read_that_works_again_is_synced_again() {
     let env = Env::new("watch-unreadable");

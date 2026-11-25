@@ -1,7 +1,3 @@
-//! A Task Scheduler task that starts at the user's logon, driven through
-//! `schtasks`. Fleet keeps the task's XML, which names its store in the
-//! task's `Documentation`, under the local application data directory.
-
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
@@ -221,8 +217,6 @@ pub fn drive(unit: &Unit, verb: Verb, _stop_bound: Duration) -> Result<(), Refus
     }
 }
 
-/// `schtasks /Query /V`: its report, and 0 while the task runs, 3 while it
-/// does not.
 pub fn status(unit: &Unit) -> Result<(String, i32), Refusal> {
     let (report, code) = SCHTASKS.report(&["/Query", "/TN", &unit.name, "/V", "/FO", "LIST"])?;
     let code = match code {

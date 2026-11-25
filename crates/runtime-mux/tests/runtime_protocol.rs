@@ -1,7 +1,3 @@
-//! The `runtime-mux` binary speaking the runtime protocol
-//! (docs/runtime/README.md), end to end: the real binary, a real tmux, a
-//! private socket directory per test.
-
 #![cfg(unix)]
 
 use std::io::Write;
@@ -14,20 +10,16 @@ use serde_json::{json, Value};
 #[path = "support/tmux_server.rs"]
 mod tmux_server;
 
-/// The socket the runtime names when nothing overrides it.
 const SOCKET: &str = "runtime-mux";
 
-/// The interface's socket, which the guard pins and the runtime ignores.
 const INTERFACE_SOCKET: &str = "thurbox-interface";
 
 struct Runtime {
     server: tmux_server::TmuxServer,
-    /// Variables every call sets, such as the runtime's own config.
     env: Vec<(String, String)>,
 }
 
 impl Runtime {
-    /// `None`, and a note, where tmux is not installed.
     fn new() -> Option<Runtime> {
         if runtime_mux::path_lookup::resolve_on_path("tmux").is_none() {
             eprintln!("skipping: tmux is not installed");
@@ -115,7 +107,6 @@ impl Runtime {
         }
     }
 
-    /// The first `inspect` answer `done` accepts, within ten seconds.
     fn inspect_until(&self, key: &str, done: impl Fn(&Value) -> bool) -> Value {
         let deadline = Instant::now() + Duration::from_secs(10);
         loop {
@@ -156,7 +147,6 @@ fn the_manifest_names_the_protocol_and_the_verbs() {
     );
 }
 
-/// The place `local` as Fleet passes it when its config names no places.
 fn local() -> Value {
     json!({"name": "local", "config": {}})
 }
@@ -187,9 +177,6 @@ fn a_manifest_that_names_no_places_reports_local() {
     }
 }
 
-/// An ssh place nothing answers on, a place of a kind runtime-mux does not
-/// know and one with a key it does not take are each reported not ready,
-/// with why; `local` beside them stays ready.
 #[test]
 fn a_place_runtime_mux_cannot_serve_is_reported_not_ready_with_why() {
     let Some(rt) = Runtime::new() else { return };
@@ -225,9 +212,6 @@ fn a_place_runtime_mux_cannot_serve_is_reported_not_ready_with_why() {
     }
 }
 
-/// A place reached over an ssh that never answers: its proxy sleeps, and
-/// the place's own `ConnectTimeout`, which wins over runtime-mux's 5 s,
-/// gives up only after 30 s.
 fn silent_place(name: &str) -> Value {
     json!({"name": name, "config": {
         "kind": "ssh",
@@ -237,8 +221,6 @@ fn silent_place(name: &str) -> Value {
     }})
 }
 
-/// `exec`'s deadline starts with the call: a place whose `PATH` cannot be
-/// read spends the command's time, not time of its own before it.
 #[test]
 fn a_remote_exec_answers_by_its_deadline() {
     let Some(rt) = Runtime::new() else { return };
@@ -253,8 +235,6 @@ fn a_remote_exec_answers_by_its_deadline() {
     assert!(took < Duration::from_secs(4), "took {took:?}: {answer}");
 }
 
-/// A place that does not answer costs `manifest` a bounded wait, well
-/// inside Fleet's 15 s bound on a call, and leaves `local` its report.
 #[test]
 fn a_silent_place_does_not_hold_up_the_manifest() {
     let Some(rt) = Runtime::new() else { return };
@@ -276,9 +256,6 @@ fn a_silent_place_does_not_hold_up_the_manifest() {
     );
 }
 
-/// A remote place that does not answer leaves a workspace, a browse and a
-/// branches call Unknown: none of them answers about this machine instead,
-/// and none is a failure the caller would act on.
 #[test]
 fn a_remote_place_that_does_not_answer_leaves_its_reads_unknown() {
     let Some(rt) = Runtime::new() else { return };
@@ -708,8 +685,6 @@ fn input_reaches_the_process_and_capture_reads_it_back() {
     );
 }
 
-/// The title an agent sets with OSC 0 or 2 is part of its screen: Fleet's
-/// screen rules read it.
 #[test]
 fn capture_reads_the_title_the_process_sets() {
     let Some(rt) = Runtime::new() else { return };
@@ -853,8 +828,6 @@ fn exec_answers_by_its_deadline_when_an_escaped_child_holds_its_output() {
     assert_eq!(stdout, Some("hi\n"), "{ran}");
 }
 
-/// A server on the socket tmux derives with no `TMUX_TMPDIR`, killed when
-/// the test ends.
 struct DefaultDirServer(String);
 
 impl Drop for DefaultDirServer {
@@ -1005,8 +978,6 @@ fn the_lock_follows_no_link_planted_where_it_used_to_live() {
     assert!(!planted.exists(), "the lock opened through the link");
 }
 
-/// The `workspace-git` program cargo built beside this one, which
-/// runtime-mux runs; `None`, and a note, when the workspace has not built it.
 fn workspace_git() -> Option<std::path::PathBuf> {
     let found = std::path::Path::new(env!("CARGO_BIN_EXE_runtime-mux"))
         .parent()
@@ -1020,8 +991,6 @@ fn workspace_git() -> Option<std::path::PathBuf> {
     found
 }
 
-/// A git command for a fixture, with the variables a hook pins git with
-/// cleared.
 fn git(dir: &std::path::Path, args: &[&str]) -> String {
     let mut cmd = Command::new("git");
     for var in [
@@ -1058,8 +1027,6 @@ fn git(dir: &std::path::Path, args: &[&str]) -> String {
     String::from_utf8_lossy(&out.stdout).trim().to_string()
 }
 
-/// A runtime with a directory of its own for repositories, a workspace root
-/// and its config, which [`Workspaces::configure`] writes.
 struct Workspaces {
     rt: Runtime,
     base: std::path::PathBuf,
@@ -1068,7 +1035,6 @@ struct Workspaces {
 }
 
 impl Workspaces {
-    /// Configured with no steps.
     fn new() -> Option<Workspaces> {
         let mut ws = Workspaces::unconfigured()?;
         ws.configure("");
@@ -1088,7 +1054,6 @@ impl Workspaces {
         })
     }
 
-    /// The runtime's config: the root, the program, and `extra` TOML.
     fn configure(&mut self, extra: &str) {
         let config = self.base.join("runtime-mux.toml");
         std::fs::write(
@@ -1211,8 +1176,6 @@ fn setup_steps_run_in_a_new_workspace_and_a_failing_one_rolls_it_back() {
     assert!(!ws.base.join("root/w.broken").exists(), "rolled back");
 }
 
-/// A slow workspace call, such as a first clone or a long setup, holds only
-/// its own key: a start on another key goes on at once.
 #[test]
 fn a_slow_workspace_call_does_not_hold_up_a_start_on_another_key() {
     let Some(mut ws) = Workspaces::unconfigured() else {
@@ -1246,8 +1209,6 @@ fn a_slow_workspace_call_does_not_hold_up_a_start_on_another_key() {
     });
 }
 
-/// A releasing stop runs the workspace's teardown, which may be slow, under
-/// its key's lock only: a start on another key goes on at once.
 #[test]
 fn a_slow_releasing_stop_does_not_hold_up_a_start_on_another_key() {
     let Some(mut ws) = Workspaces::unconfigured() else {
@@ -1287,9 +1248,6 @@ fn a_slow_releasing_stop_does_not_hold_up_a_start_on_another_key() {
     });
 }
 
-/// A runtime that stopped after `workspace-git` made the workspace and
-/// before its setup finished leaves a workspace that is whole to
-/// `workspace-git`. The next call runs the setup steps before it answers.
 #[test]
 fn a_workspace_whose_setup_never_finished_runs_it_when_adopted() {
     let Some(mut ws) = Workspaces::unconfigured() else {
@@ -1326,8 +1284,6 @@ fn a_workspace_whose_setup_never_finished_runs_it_when_adopted() {
     );
 }
 
-/// A failed setup's discard that `workspace-git` could not finish is no
-/// known failure: what is left may still be adopted.
 #[cfg(unix)]
 #[test]
 fn a_discard_that_does_not_finish_leaves_the_workspace_unknown() {
@@ -1410,9 +1366,6 @@ fn a_missing_workspace_program_fails_the_workspace_by_name() {
     assert!(why.contains("workspace-git"), "{answer}");
 }
 
-/// `browse` lists a directory of the place: its subdirectories by name, each
-/// marked when it is a git checkout. Files are left out, and a directory
-/// the request names none of is the place's home.
 #[test]
 fn browse_lists_the_subdirectories_and_marks_a_repository() {
     let Some(mut rt) = Runtime::new() else { return };
@@ -1447,8 +1400,6 @@ fn browse_lists_the_subdirectories_and_marks_a_repository() {
     );
 }
 
-/// A directory that is not there is a failed browse, and a relative one is
-/// no request at all.
 #[test]
 fn browse_of_a_missing_or_relative_directory_is_refused() {
     let Some(rt) = Runtime::new() else { return };
@@ -1469,8 +1420,6 @@ fn browse_of_a_missing_or_relative_directory_is_refused() {
     assert!(relative["unknown"]["why"].is_string(), "{relative}");
 }
 
-/// `branches` lists a repository's branches on the place, local ones then
-/// `origin/*`, with the one a new branch starts from by default.
 #[test]
 fn branches_lists_a_repositorys_branches_and_its_default() {
     let Some(rt) = Runtime::new() else { return };
@@ -1499,8 +1448,6 @@ fn branches_lists_a_repositorys_branches_and_its_default() {
     assert!(refused["known"]["failed"]["why"].is_string(), "{refused}");
 }
 
-/// A local branch named like a remote one (`origin/main`) is not `origin`'s
-/// default: with no `origin`, the default is the branch checked out.
 #[test]
 fn a_local_branch_named_like_origins_is_not_its_default() {
     let Some(rt) = Runtime::new() else { return };
@@ -1521,9 +1468,6 @@ fn a_local_branch_named_like_origins_is_not_its_default() {
     );
 }
 
-/// `repo` marks the top of a git work tree, as git reads one: a checkout,
-/// or a linked worktree whose `.git` is a file. An empty `.git` directory
-/// is not one.
 #[test]
 fn browse_marks_a_work_tree_as_git_reads_one() {
     let Some(rt) = Runtime::new() else { return };
@@ -1560,8 +1504,6 @@ fn browse_marks_a_work_tree_as_git_reads_one() {
     );
 }
 
-/// `origin`'s default comes first: a clone's `origin/HEAD`, else
-/// `origin/main`, else `origin/master`, before the branch checked out.
 #[test]
 fn branches_defaults_to_origins_default() {
     let Some(rt) = Runtime::new() else { return };
@@ -1609,8 +1551,6 @@ fn branches_defaults_to_origins_default() {
     );
 }
 
-/// The names of the key windows on the runtime's own server, leaving out
-/// the window a new server starts with.
 fn windows(rt: &Runtime) -> Vec<String> {
     let out = Command::new("tmux")
         .env("TMUX_TMPDIR", rt.server.tmpdir())
@@ -1625,7 +1565,6 @@ fn windows(rt: &Runtime) -> Vec<String> {
         .collect()
 }
 
-/// A stream `argv` run as a view runs it, killed when dropped.
 struct Stream {
     child: std::process::Child,
     stdin: std::process::ChildStdin,
@@ -1633,9 +1572,6 @@ struct Stream {
 }
 
 impl Stream {
-    /// The stream, sized once its hello came and past its first screen,
-    /// within one deadline. A stream that ends or stalls first fails the
-    /// test, and the drop kills it.
     fn open(argv: &[String]) -> Stream {
         use std::sync::mpsc::RecvTimeoutError;
         use term_stream::{Down, Size, Up};
@@ -1695,7 +1631,6 @@ impl Drop for Stream {
     }
 }
 
-/// The text of `file` once it has some, within ten seconds.
 fn read_when_written(file: &std::path::Path) -> String {
     let deadline = Instant::now() + Duration::from_secs(10);
     loop {
@@ -1707,8 +1642,6 @@ fn read_when_written(file: &std::path::Path) -> String {
     }
 }
 
-/// A runtime-mux call that opens a shell runs `/bin/sh` with a home of the
-/// test's own: never the operator's shell, never the real home.
 fn shell_env(rt: &mut Runtime, home: &std::path::Path) {
     rt.env.push(("SHELL".into(), "/bin/sh".into()));
     rt.env.push(("HOME".into(), home.display().to_string()));
@@ -1793,7 +1726,6 @@ fn shell_opens_a_shell_in_the_keys_directory_and_a_stop_closes_it() {
     assert_eq!(shell()["known"], "none");
 }
 
-/// The clients attached to the runtime's own server.
 fn clients(rt: &Runtime) -> Vec<String> {
     String::from_utf8_lossy(&runtime_tmux(rt, &["list-clients", "-F", "#{client_pid}"]).stdout)
         .lines()
@@ -1835,7 +1767,6 @@ fn a_view_killed_by_its_viewer_takes_its_tmux_client_down_with_it() {
     );
 }
 
-/// `tmux <args>` on the runtime's own server.
 fn runtime_tmux(rt: &Runtime, args: &[&str]) -> std::process::Output {
     Command::new("tmux")
         .env("TMUX_TMPDIR", rt.server.tmpdir())
@@ -1954,11 +1885,6 @@ fn a_pause_cut_short_before_the_shell_closed_is_not_paused_until_a_pause_finishe
     assert_eq!(rt.inspect("sh.cut")["known"], "paused");
 }
 
-/// A session's environment reaches its window and no argv: the `tmux`
-/// client that makes the window, which every user of the machine can read,
-/// is given it on stdin. Names a shell keeps read-only (`UID`, `EUID`,
-/// `PPID`, `SHELLOPTS`, `BASHOPTS`) start the window as any other, under
-/// bash and dash, and as one token through the window's shell.
 #[test]
 fn a_sessions_environment_reaches_its_window_and_no_argv() {
     let Some(mut rt) = Runtime::new() else { return };
@@ -2034,10 +1960,6 @@ fn a_sessions_environment_reaches_its_window_and_no_argv() {
     }
 }
 
-/// #1909: a pane started by the runtime-mux of one release reaches the
-/// programs through the install's `current` link, so a later update moves
-/// the `fleet` its agent runs without the Task being recreated. The release
-/// is Fleet's alone: it ships no `thurbox-cli`.
 #[cfg(unix)]
 #[test]
 fn a_pane_reaches_the_programs_through_the_current_release_link() {

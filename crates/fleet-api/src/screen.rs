@@ -1,29 +1,3 @@
-//! Screen rules: an agent's state read off its screen, for an agent whose
-//! hooks do not say it.
-//!
-//! A runtime answers `capture` with the session's visible text and the
-//! title its program set (OSC 0 or 2), and knows no harness. Fleet reads
-//! that screen with the rules its harness profile names ([`Rules`]), and
-//! [`merge`] puts the result below the hooks' report:
-//!
-//! ```text
-//! hooks authoritative and reported since the last start?
-//!    ├── yes ─▶ hook state                 source = hook
-//!    └── no ──▶ a screen rule matched?
-//!                 ├── yes ─▶ screen state  source = screen
-//!                 └── no ──▶ unknown       source = none
-//! ```
-//!
-//! A screen state is for a view only: readiness, a pause and the proof of a
-//! delivery still read the hooks alone ([`crate::signal`]).
-//!
-//! A rule set is a TOML list of `[[rule]]` tables, each with an `id`, the
-//! `state` it shows (`working`, `idle` or `blocked`), a `priority` (the
-//! highest match wins, the first listed on a tie), the `region` of the
-//! screen it reads, and a matcher: `contains` (every string is there),
-//! `all`, `any` and `not` over nested matchers on the same region. The
-//! format is in docs/fleet/controllers/task.md, *Screen rules*.
-
 use std::sync::OnceLock;
 
 use serde::{Deserialize, Serialize};
@@ -35,22 +9,17 @@ use crate::signal::Reported;
 
 mod bundled;
 
-/// A session's screen, as a runtime's `capture` answers it.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Screen {
-    /// The visible text, one line per row.
     pub text: String,
-    /// The title the program set; empty when it set none.
     pub title: String,
 }
 
-/// The state a rule shows.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum ScreenState {
     Working,
     Idle,
-    /// The agent waits on a person.
     Blocked,
 }
 
@@ -64,14 +33,10 @@ impl ScreenState {
     }
 }
 
-/// The part of the screen a rule reads.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Region {
-    /// The last `n` lines of text, below which only blank rows follow.
     BottomLines(usize),
-    /// Every line of text.
     Whole,
-    /// The title.
     OscTitle,
 }
 
@@ -113,21 +78,15 @@ impl Region {
     }
 }
 
-/// What a region must hold. Every part given must hold; a matcher gives at
-/// least one.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Matcher {
-    /// Every string is in the region.
     #[serde(default)]
     pub contains: Vec<String>,
-    /// Every matcher holds.
     #[serde(default)]
     pub all: Vec<Matcher>,
-    /// At least one matcher holds.
     #[serde(default)]
     pub any: Vec<Matcher>,
-    /// The matcher does not hold.
     #[serde(default)]
     pub not: Option<Box<Matcher>>,
 }
@@ -158,7 +117,6 @@ impl Matcher {
     }
 }
 
-/// One rule.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Rule {
     pub id: String,
@@ -168,7 +126,6 @@ pub struct Rule {
     pub matcher: Matcher,
 }
 
-/// One `[[rule]]` table as written: the rule's fields and its matcher's.
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct RuleText {
@@ -193,24 +150,19 @@ struct RulesText {
     rule: Vec<RuleText>,
 }
 
-/// A harness's rule set.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Rules {
-    /// The set's name, which each rule id it reports starts with.
     pub name: String,
     pub rules: Vec<Rule>,
 }
 
-/// What a rule set saw on a screen.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Seen {
     pub state: ScreenState,
-    /// `<set>/<rule id>`.
     pub rule: String,
 }
 
 impl Rules {
-    /// Parse the rule set `name` from its TOML.
     pub fn parse(name: &str, text: &str) -> Result<Rules, String> {
         let parsed: RulesText = toml::from_str(text).map_err(|e| e.to_string())?;
         let mut rules: Vec<Rule> = Vec::new();
@@ -244,8 +196,6 @@ impl Rules {
         })
     }
 
-    /// The state the highest-priority matching rule shows, the first listed
-    /// on a tie; `None` when no rule matches.
     pub fn evaluate(&self, screen: &Screen) -> Option<Seen> {
         let mut best: Option<&Rule> = None;
         for r in &self.rules {
@@ -263,7 +213,6 @@ impl Rules {
     }
 }
 
-/// The rule sets Fleet ships.
 pub fn bundled() -> &'static [Rules] {
     static ALL: OnceLock<Vec<Rules>> = OnceLock::new();
     ALL.get_or_init(|| {
@@ -274,36 +223,25 @@ pub fn bundled() -> &'static [Rules] {
     })
 }
 
-/// The bundled rule set `name`.
 pub fn rules(name: &str) -> Option<&'static Rules> {
     bundled().iter().find(|r| r.name == name)
 }
 
-/// Where a session's agent state came from.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Source {
-    /// The agent's hooks, through `fleet signal`.
     Hook,
-    /// A screen rule.
     Screen,
-    /// Neither: the state is unknown.
     None,
 }
 
-/// The agent state of a session and where it came from.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Merged {
     pub state: AgentState,
     pub source: Source,
-    /// The screen rule, `<set>/<rule id>`, for a screen state.
     pub rule: Option<String>,
 }
 
-/// The agent state from what the hooks reported and what the screen showed.
-/// Hooks whose `authority` is full win while they reported since the last
-/// start; any other hooks report too little, so a screen rule that matched
-/// wins over them. With neither, the state is unknown, never idle.
 pub fn merge(authority: Authority, reported: &Reported, seen: Option<&Seen>) -> Merged {
     let hook = reported.reported().then(|| Merged {
         state: AgentState::reported(reported),
@@ -326,15 +264,12 @@ pub fn merge(authority: Authority, reported: &Reported, seen: Option<&Seen>) -> 
     })
 }
 
-/// `status.activity`: where `agentState` came from, and since when it holds.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct AgentActivity {
     pub source: Source,
-    /// The screen rule, `<set>/<rule id>`, for a screen state.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub rule: Option<String>,
-    /// When Fleet first saw this state from this source.
     pub at: Millis,
 }
 

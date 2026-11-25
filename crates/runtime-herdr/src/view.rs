@@ -19,9 +19,6 @@ const BRACKETED_OFF: &[u8] = b"\x1b[?2004l";
 
 type Upstream = Arc<Mutex<ChildStdin>>;
 
-/// `runtime-herdr view [--session S] <terminal>`: the terminal stream
-/// (docs/runtime/README.md, "The terminal stream") over herdr-core's framed
-/// `terminal.attach`.
 pub fn run(args: &[String]) -> i32 {
     match stream(args) {
         Ok(()) => 0,

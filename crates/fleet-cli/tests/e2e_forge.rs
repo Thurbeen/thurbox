@@ -1,9 +1,3 @@
-//! Acceptance: ChangeRequests through the real `fleet` binary, the file
-//! store and a forge, across process restarts and injected faults. The fake
-//! forge covers the controller's numbering, cadence and retention; the stub
-//! `gh` and `glab` cover the adapters' truth tables, pagination, rate limits,
-//! logins and bounded processes.
-
 mod support;
 
 use std::fs;
@@ -92,8 +86,6 @@ fn setup(name: &str) -> (Env, FakeForge, String) {
     (env, forge, cr)
 }
 
-/// Move a ChangeRequest's `status.<clock>` back by `ms` and its next poll
-/// to now, as time would.
 fn age(env: &Env, cr: &str, clock: &str, ms: u64) {
     let path = env.object_path("ChangeRequest", cr);
     let mut obj: Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
@@ -162,9 +154,6 @@ fn a_change_is_mirrored_by_url_under_a_derived_name_and_numbered_on_first_sight(
     env.assert_no_temp();
 }
 
-/// Two clients creating one name at once: the one whose read found nothing
-/// meets the other's object at its create, and is refused, not retried
-/// into an update.
 #[test]
 fn a_create_only_apply_that_loses_the_race_is_refused() {
     let env = Env::forge("create-only-race");
@@ -188,8 +177,6 @@ fn a_create_only_apply_that_loses_the_race_is_refused() {
     assert_eq!(env.get("t1")["metadata"]["labels"]["owner"], "first");
 }
 
-/// `--create-only` holds for a ChangeRequest too: the change already
-/// mirrored is refused, not applied over.
 #[test]
 fn a_create_only_apply_never_reapplies_a_change_request() {
     let (env, _forge, _cr) = setup("create-only-cr");
@@ -622,15 +609,10 @@ fn proven_absence_settles_as_gone_and_a_person_may_delete_at_any_time() {
     );
 }
 
-/// A store that, on the first list of ChangeRequests, deletes the listed
-/// object and recreates it under the same name: what another writer could do
-/// between the manager's read and its delete.
 struct Racing<'a> {
     inner: &'a FileStore,
     name: String,
     swapped: std::cell::Cell<bool>,
-    /// A name whose first read answers absent: another writer creates it
-    /// between that read and the create that follows.
     hidden: std::cell::Cell<Option<String>>,
 }
 
@@ -1898,9 +1880,6 @@ fn a_closed_draft_is_closed_on_every_forge() {
     }
 }
 
-/// A first sweep that never goes idle still reports the manager serving
-/// after its first pass: two changes due every 100 ms on a forge that takes
-/// longer than a pass's poll budget keep every pass busy.
 #[test]
 fn fleet_up_reports_serving_after_its_first_pass_while_the_sweep_stays_busy() {
     let env = Env::forge("serving-busy-sweep");

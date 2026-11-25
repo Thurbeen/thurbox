@@ -1,16 +1,3 @@
-//! The runtime protocol (docs/runtime/README.md) over one backend: what the
-//! `runtime-mux` program answers for each verb.
-//!
-//! Each call is one request in and one answer out, `{"known": …}` or
-//! `{"unknown": {"why": …}}`. A key is found again by its window's name
-//! (`name_of`), and its window answers for it while it is there.
-//!
-//! A process is the key's agent window. A pane kept after its program exits is
-//! how `inspect` reports an exit code; a `start` replaces it. Two things are
-//! kept outside the server ([`Kept`]): a paused key's mark, since a pause
-//! leaves no window to keep it on, and each started key until its `stop`,
-//! since a reboot takes the server and its windows with it.
-
 use std::collections::HashMap;
 use std::io::Read;
 use std::path::PathBuf;
@@ -29,15 +16,10 @@ use crate::HostDef;
 
 pub use crate::place::LOCAL;
 
-/// The newest protocol version this program speaks, which its manifest
-/// names. Version 2 carries a place on each request.
 pub const PROTOCOL: u64 = 2;
 
-/// Every version it answers. A version 1 request names no place and runs at
-/// `local`, this machine.
 pub const PROTOCOLS: &[u64] = &[1, 2];
 
-/// The verbs it answers, `manifest` first.
 pub const VERBS: &[&str] = &[
     "manifest",
     "start",
@@ -55,26 +37,18 @@ pub const VERBS: &[&str] = &[
     "branches",
 ];
 
-/// The tmux socket the program's server runs on when [`SOCKET_ENV`] names
-/// none: its own, never the interface's (`thurbox`), which it does not read.
 pub const SOCKET: &str = "runtime-mux";
 
-/// Names another socket, for an operator running two Fleets on one machine
-/// and for tests.
 pub const SOCKET_ENV: &str = "RUNTIME_MUX_SOCKET";
 
-/// The longest key: Fleet's are `<prefix>.<uid>`, well inside it.
 const MAX_KEY: usize = 128;
 
-/// Rows `capture` reads when the request names none.
 const DEFAULT_CAPTURE_LINES: u32 = 50;
 
-/// The most `exec` keeps of each stream when the request names no cap.
 const DEFAULT_OUTPUT_CAP: usize = 1024 * 1024;
 const MAX_OUTPUT_CAP: usize = 16 * 1024 * 1024;
 const MAX_EXEC_TIMEOUT_MS: u64 = 600_000;
 
-/// How long `exec` waits for its output past the deadline.
 const READ_GRACE: Duration = Duration::from_millis(200);
 
 fn known(value: Value) -> Value {
@@ -85,14 +59,9 @@ fn unknown(why: impl std::fmt::Display) -> Value {
     json!({ "unknown": { "why": why.to_string() } })
 }
 
-/// The backend serving a place: this machine's for `None`, else the one on
-/// the host the place names, or why there is none.
 pub type Backends<'a> =
     dyn Fn(Option<&HostDef>) -> Result<std::sync::Arc<dyn SessionBackend>, String> + Sync + 'a;
 
-/// The place a request runs at, parsed: `None` for `local`, for a version 1
-/// request, and for a request [`serve_with`] refuses, which it answers
-/// Unknown itself. The caller builds the backend and the locks for it.
 pub fn place_of(request: &[u8]) -> Option<HostDef> {
     let request: Value = serde_json::from_slice(request).ok()?;
     if request.get("protocol").and_then(Value::as_u64) != Some(2) {
@@ -101,12 +70,6 @@ pub fn place_of(request: &[u8]) -> Option<HostDef> {
     check_place(request.get("place")).ok().flatten()
 }
 
-/// The answer to `verb` with `request`, the JSON read from stdin. `backends`
-/// gives the backend of the request's place. `view` is the argv that runs
-/// this program's `view` against the same server, which `attach` answers
-/// with the key after it. `process_done` is called once a releasing stop
-/// has stopped the process and before it releases the workspace: the caller
-/// lets go of the server's lock there, so a slow teardown holds only its key.
 pub fn serve_with(
     backends: &Backends,
     kept: &Kept,
@@ -210,24 +173,17 @@ pub fn serve_with(
     result.unwrap_or_else(unknown)
 }
 
-/// `browse`: a directory of the place, its home when the request names none.
 #[derive(Deserialize)]
 struct Browse {
     dir: Option<PathBuf>,
 }
 
 impl Validate for Browse {
-    /// The directory is the place's: [`browse`] checks it by the place's
-    /// rules ([`absolute_on`]).
     fn validate(&self) -> Result<(), String> {
         Ok(())
     }
 }
 
-/// `browse`: the subdirectories of `dir`, by name, each marked when it is a
-/// git checkout, so a creation flow can pick a repository on the place.
-/// Files are left out. A directory that cannot be read is a failed browse.
-/// A remote place is read over its launcher ([`crate::place::browse`]).
 fn browse(place: Option<&HostDef>, request: Browse) -> Value {
     let platform = place.map_or(crate::Platform::local(), HostDef::platform);
     if let Some(dir) = &request.dir {
@@ -263,8 +219,6 @@ fn browse(place: Option<&HostDef>, request: Browse) -> Value {
     listing(dir.display().to_string(), entries)
 }
 
-/// A `browse` answer: `dir`, and its subdirectories sorted by name, each
-/// with whether it is a git work tree.
 fn listing(dir: String, mut entries: Vec<(String, bool)>) -> Value {
     entries.sort();
     let entries: Vec<Value> = entries
@@ -274,7 +228,6 @@ fn listing(dir: String, mut entries: Vec<(String, bool)>) -> Value {
     known(json!({ "listing": { "dir": dir, "entries": entries } }))
 }
 
-/// The home directory of the user this program runs as.
 fn home() -> Option<PathBuf> {
     let var = if cfg!(windows) { "USERPROFILE" } else { "HOME" };
     std::env::var_os(var)
@@ -282,10 +235,6 @@ fn home() -> Option<PathBuf> {
         .map(PathBuf::from)
 }
 
-/// Whether `dir` is the top of a git work tree, as git reads one, from the
-/// filesystem: a `.git` directory holding `HEAD`, `objects` and `refs`, or a
-/// `.git` file naming one (a linked worktree, a submodule). A `git` that
-/// cannot run never passes for none, and an empty `.git` is no work tree.
 fn is_repository(dir: &std::path::Path) -> bool {
     let dot = dir.join(".git");
     if dot.is_dir() {
@@ -296,25 +245,17 @@ fn is_repository(dir: &std::path::Path) -> bool {
     std::fs::read_to_string(&dot).is_ok_and(|text| text.starts_with("gitdir: "))
 }
 
-/// `branches`: a repository of the place.
 #[derive(Deserialize)]
 struct Branches {
     repo: PathBuf,
 }
 
 impl Validate for Branches {
-    /// The repository is the place's: [`branches`] checks it by the place's
-    /// rules ([`absolute_on`]).
     fn validate(&self) -> Result<(), String> {
         Ok(())
     }
 }
 
-/// `branches`: the repository `repo` is (not one it is inside of): its local
-/// branches, then its `origin/*` ones,
-/// as they are (no fetch), and the one a new branch starts from by default:
-/// `origin`'s default branch (`origin/HEAD`, else `origin/main`, else
-/// `origin/master`), else the branch checked out, else the first.
 fn branches(place: Option<&HostDef>, request: Branches) -> Value {
     let repo = &request.repo;
     let platform = place.map_or(crate::Platform::local(), HostDef::platform);
@@ -355,9 +296,6 @@ fn branches(place: Option<&HostDef>, request: Branches) -> Value {
     branch_list(&refs, upstream, checked_out)
 }
 
-/// The `branches` answer from what git printed: `refs`, the repository's
-/// refs under `refs/heads` and `refs/remotes/origin`; `upstream`,
-/// `origin/HEAD`'s target; `checked_out`, the branch checked out.
 fn branch_list(refs: &str, upstream: Option<String>, checked_out: Option<String>) -> Value {
     let mut local = Vec::new();
     let mut remote = Vec::new();
@@ -394,8 +332,6 @@ fn branch_list(refs: &str, upstream: Option<String>, checked_out: Option<String>
     known(json!({ "branches": { "names": names, "default": default } }))
 }
 
-/// `git <args>` in `repo`, its stdout, with the variables that would point
-/// git at another repository cleared.
 fn git_out(repo: &std::path::Path, args: &[&str]) -> Result<String, String> {
     let mut git = Command::new("git");
     for var in [
@@ -429,8 +365,6 @@ fn git_out(repo: &std::path::Path, args: &[&str]) -> Result<String, String> {
     Ok(String::from_utf8_lossy(&out.stdout).into_owned())
 }
 
-/// A version 2 request's `place`, checked and parsed: every request but
-/// `manifest` names one. `None` is `local`.
 pub fn check_place(place: Option<&Value>) -> Result<Option<HostDef>, String> {
     let place = place.ok_or("a version 2 request names its place")?;
     let place: Place =
@@ -438,16 +372,8 @@ pub fn check_place(place: Option<&Value>) -> Result<Option<HostDef>, String> {
     crate::place::parse(&place)
 }
 
-/// How long `manifest` waits for the places' readiness, all of them
-/// together: well inside Fleet's bound on a call (15 s unless configured),
-/// so one place that does not answer leaves the others their report.
 const READINESS_BUDGET: Duration = Duration::from_secs(8);
 
-/// The manifest's `places`: each place the request asks about, or `local`
-/// when it asks about none, with whether this program can run a process
-/// there now. Each place is probed on a thread of its own, and every probe
-/// shares [`READINESS_BUDGET`]: a place whose probe has not answered by
-/// then is not ready, and its probe is left to end on its own.
 fn places(backends: &Backends, request: &[u8]) -> Vec<Value> {
     let asked: Vec<Value> = serde_json::from_slice::<Value>(request)
         .ok()
@@ -513,7 +439,6 @@ fn places(backends: &Backends, request: &[u8]) -> Vec<Value> {
     reports
 }
 
-/// A request as its verb's shape, with every key it names checked.
 fn parse<T: for<'de> Deserialize<'de> + Validate>(request: Value) -> Result<T, String> {
     let parsed: T = serde_json::from_value(request).map_err(|e| format!("bad request: {e}"))?;
     parsed.validate()?;
@@ -524,8 +449,6 @@ trait Validate {
     fn validate(&self) -> Result<(), String>;
 }
 
-/// A key the program accepts: what Fleet makes, and nothing tmux would read
-/// as a target or a format.
 fn check_key(key: &str) -> Result<(), String> {
     if key.is_empty()
         || key.len() > MAX_KEY
@@ -554,7 +477,6 @@ impl Validate for Keyed {
 #[derive(Deserialize)]
 struct Stop {
     key: String,
-    /// Releases the key's workspace too, after the process.
     #[serde(default)]
     release: bool,
 }
@@ -657,11 +579,6 @@ impl Validate for Exec {
     }
 }
 
-/// The name a key's window is found by. A window name keeps only
-/// `[A-Za-z0-9_-]` and folds the rest to `_` ([`crate::identity`]), which
-/// would make `a.b` and `a_b` one window; escaping `_` and `.` keeps every key
-/// its own name, and [`key_of`] reads it back. Nothing but this program makes
-/// windows on its socket, so the name alone is the identity: no stamp.
 fn name_of(key: &str) -> String {
     let mut name = String::with_capacity(key.len() + 4);
     for c in key.chars() {
@@ -674,8 +591,6 @@ fn name_of(key: &str) -> String {
     name
 }
 
-/// The key a window name carries, or `None` for a name [`name_of`] never
-/// makes.
 fn key_of(name: &str) -> Option<String> {
     let mut key = String::with_capacity(name.len());
     let mut chars = name.chars();
@@ -696,7 +611,6 @@ fn owner(name: &str) -> Owner<'_> {
     Owner::new("", name)
 }
 
-/// The key's agent window, where one listing places it.
 fn locate(backend: &dyn SessionBackend, key: &str) -> Result<Located, String> {
     backend
         .locate(owner(&name_of(key)))
@@ -704,8 +618,6 @@ fn locate(backend: &dyn SessionBackend, key: &str) -> Result<Located, String> {
         .map_err(|e| e.to_string())
 }
 
-/// Whether the pane's program runs: `Some(code)` once it exited (`None` inside
-/// for a signal), `None` while it runs, `Err` when the server cannot tell.
 fn exited(backend: &dyn SessionBackend, pane: &str) -> Result<Option<Option<i64>>, String> {
     let mut state = backend.pane_state(pane).map_err(|e| e.to_string())?;
     if state.dead == Some(true) && state.reaped == Some(false) {
@@ -721,10 +633,6 @@ fn exited(backend: &dyn SessionBackend, pane: &str) -> Result<Option<Option<i64>
     }
 }
 
-/// Files kept outside the server, one per key, named `<prefix><key>`, in a
-/// directory only this user can write to. `what` names them in an error.
-/// `dir` is the reason none could be found, which makes every call that
-/// reads one Unknown.
 pub struct Marks {
     dir: Result<PathBuf, String>,
     prefix: String,
@@ -803,12 +711,6 @@ impl Marks {
     }
 }
 
-/// What this program keeps of a key outside the server, where a reboot
-/// leaves it. `paused` marks a paused key (the `pause` verb). `started`
-/// holds the pane of each key a `start` made until a `stop`: a key with no
-/// window reads as exited, never as stopped, so Fleet revives its session.
-/// `paused_beside_the_locks` is where an earlier `runtime-mux` keeps its
-/// marks, which a reboot takes and a rollback to it reads.
 pub struct Kept {
     pub paused: Marks,
     pub started: Marks,
@@ -816,8 +718,6 @@ pub struct Kept {
 }
 
 impl Kept {
-    /// The keys among `key`, or every key when `None`, that an earlier
-    /// `runtime-mux` marked paused and that are not marked here yet.
     pub fn pause_marks_to_copy(&self, key: Option<&str>) -> Result<Vec<String>, String> {
         let mut keys = match key {
             Some(key) if self.paused_beside_the_locks.holds(key)? => vec![key.to_string()],
@@ -833,9 +733,6 @@ impl Kept {
         Ok(keys)
     }
 
-    /// Copies each mark [`Kept::pause_marks_to_copy`] names here. The
-    /// caller holds the server's lock, so no `start` or `stop` clears a mark
-    /// while it is copied.
     pub fn copy_pause_marks(&self, key: Option<&str>) -> Result<(), String> {
         self.pause_marks_to_copy(key)?
             .iter()
@@ -943,9 +840,6 @@ fn start(
     known(json!({ "started": { "id": pane.as_str(), "adopted": false } }))
 }
 
-/// Whether `dir` is absolute on a machine of `platform`, read as a string:
-/// this machine's own path rules are not the place's. On POSIX a path
-/// starts at `/`; on Windows at a drive (`C:\`, `C:/`) or a UNC share.
 fn absolute_on(dir: &str, platform: crate::Platform) -> bool {
     match platform {
         crate::Platform::Posix => dir.starts_with('/'),
@@ -960,13 +854,6 @@ fn absolute_on(dir: &str, platform: crate::Platform) -> bool {
     }
 }
 
-/// A start on a remote place whose launch names a file of the directory
-/// Fleet passes as `FLEET_ASSET_DIR`, such as pi's hook extension: the
-/// directory is copied to the place, and every word of `argv` and every
-/// value of `env` that names it names the copy instead. A launch that names
-/// none of its files copies nothing, so it starts on any place. A directory
-/// that is not on this machine is left as it is: it may already be the
-/// place's.
 fn place_assets(host: &HostDef, request: &mut Start) -> Result<(), String> {
     place_profiles(host, request)?;
     let Some(local) = request
@@ -999,17 +886,10 @@ fn place_assets(host: &HostDef, request: &mut Start) -> Result<(), String> {
     Ok(())
 }
 
-/// The variable Fleet names its harness asset directory in.
 const ASSET_DIR_ENV: &str = "FLEET_ASSET_DIR";
 
-/// The variable Fleet names the user's harness profiles directory in, which
-/// `fleet signal` reads a profile's payload fields from.
 const HARNESS_DIR_ENV: &str = "FLEET_HARNESS_DIR";
 
-/// A start on a remote place with `FLEET_HARNESS_DIR` naming a
-/// directory on this machine: the user's profiles are copied to the place
-/// and the variable names the copy, so `fleet signal` there reads the
-/// profile's own payload fields (its conversation, its prompt).
 fn place_profiles(host: &HostDef, request: &mut Start) -> Result<(), String> {
     let Some(local) = request
         .env
@@ -1053,11 +933,6 @@ fn inspect(backend: &dyn SessionBackend, kept: &Kept, key: &str) -> Value {
     }
 }
 
-/// Stops the key's process and closes its [`shell`], which belongs to the
-/// key and would otherwise outlive it: `list` names agents only. Every
-/// window named as the key's shell goes, so two of them, which `shell`
-/// answers Unknown for, never keep a stop from concluding: nothing but this
-/// program makes windows on its socket, so the name alone is the key's.
 fn stop(backend: &dyn SessionBackend, kept: &Kept, key: &str) -> Value {
     let stopped = end(backend, key);
     if stopped.get("known").is_none() {
@@ -1072,8 +947,6 @@ fn stop(backend: &dyn SessionBackend, kept: &Kept, key: &str) -> Value {
     }
 }
 
-/// A marked key with no agent window: paused once no shell of the key is
-/// left, else a pause cut short, which the next `pause` finishes.
 fn paused(shell: &Located) -> Value {
     match shell {
         Located::Absent => known(json!("paused")),
@@ -1081,11 +954,6 @@ fn paused(shell: &Located) -> Value {
     }
 }
 
-/// Stops the key's process as [`stop`] does, and keeps the key. The shells
-/// close first and the agent's window last, with the mark between them: a
-/// pause cut short at any step leaves either the agent's window, which
-/// answers for the key while it is there, or a finished pause. A mark with
-/// a shell left, as an older order could leave, is finished here.
 fn pause(backend: &dyn SessionBackend, kept: &Kept, key: &str) -> Value {
     let agent = match locate(backend, key) {
         Err(why) => return unknown(why),
@@ -1111,7 +979,6 @@ fn pause(backend: &dyn SessionBackend, kept: &Kept, key: &str) -> Value {
     known(json!("paused"))
 }
 
-/// The key's agent window and every shell window of the key, gone.
 fn end(backend: &dyn SessionBackend, key: &str) -> Value {
     let stopped = match locate(backend, key) {
         Err(why) => return unknown(why),
@@ -1128,7 +995,6 @@ fn end(backend: &dyn SessionBackend, key: &str) -> Value {
     }
 }
 
-/// Every window named as the key's shell, gone.
 fn close_shells(backend: &dyn SessionBackend, key: &str) -> Result<(), String> {
     let shell = window_name_for(WindowRole::Shell, &name_of(key));
     let windows = backend.discover().map_err(|e| e.to_string())?;
@@ -1140,7 +1006,6 @@ fn close_shells(backend: &dyn SessionBackend, key: &str) -> Result<(), String> {
     Ok(())
 }
 
-/// The pane holding `key`: `None` when none does.
 pub fn pane_of(backend: &dyn SessionBackend, key: &str) -> Result<Option<String>, String> {
     check_key(key)?;
     match locate(backend, key)? {
@@ -1150,8 +1015,6 @@ pub fn pane_of(backend: &dyn SessionBackend, key: &str) -> Result<Option<String>
     }
 }
 
-/// The stream that views the key's pane: this program's `view`, the server
-/// keeping the screen.
 fn attach(backend: &dyn SessionBackend, key: &str, view: &[String]) -> Value {
     match pane_of(backend, key) {
         Err(why) => unknown(why),
@@ -1163,14 +1026,6 @@ fn attach(backend: &dyn SessionBackend, key: &str, view: &[String]) -> Value {
     }
 }
 
-/// A shell in the directory the key's process is in, viewed like
-/// [`attach`]: the key's shell window, opened on the first call and found
-/// again by the next, so a view that leaves and comes back finds what it
-/// typed. Its program is the machine's shell; its directory, the agent's
-/// current one as the server reads it, which the server itself falls back
-/// from (to its home) when it is gone: nothing here reads this machine's
-/// disk, which need not be the place's. It closes with its program, or at
-/// the key's [`stop`].
 fn shell(backend: &dyn SessionBackend, key: &str, view: &[String]) -> Value {
     let placed = match backend.locate(owner(&name_of(key))) {
         Ok(placed) => placed,
@@ -1271,13 +1126,6 @@ fn capture(backend: &dyn SessionBackend, request: Capture) -> Value {
     }}))
 }
 
-/// One bounded command at the place, on this machine or through the
-/// place's launcher (ssh, `wsl.exe`): its process group here is killed past
-/// the deadline, and once it exits, and each stream is kept up to the cap.
-/// The answer comes by the deadline even when a child that left the group
-/// holds a stream open: what was read by then is the output. On a remote
-/// place the group killed is the launcher's: a command there that ignores
-/// its closed connection can outlive the deadline.
 fn exec(place: Option<&HostDef>, request: Exec) -> Value {
     // The deadline starts here: on a remote place, reading its `PATH` is
     // part of the command's time.
@@ -1373,7 +1221,6 @@ fn exec(place: Option<&HostDef>, request: Exec) -> Value {
     }
 }
 
-/// Kill `child`, if it still runs, and the process group it leads.
 fn kill_tree(child: &mut std::process::Child) {
     #[cfg(unix)]
     if let Ok(pid) = i32::try_from(child.id()) {
@@ -1391,9 +1238,6 @@ fn kill_tree(child: &mut std::process::Child) {
 mod tests {
     use super::*;
 
-    /// A start's directory is checked by the rules of the place it runs
-    /// on, whatever machine this program runs on: a POSIX path for a POSIX
-    /// place (an ssh host, a WSL distro), a drive or UNC path for Windows.
     #[test]
     fn a_directory_is_absolute_by_its_places_rules() {
         use crate::Platform::{Posix, Windows};
@@ -1415,8 +1259,6 @@ mod tests {
         }
     }
 
-    /// A launch that names no file of Fleet's asset directory copies
-    /// nothing, on any place, a native-Windows one included.
     #[test]
     fn a_launch_that_names_no_asset_file_copies_nothing() {
         let assets = tempfile::tempdir().expect("an asset dir");

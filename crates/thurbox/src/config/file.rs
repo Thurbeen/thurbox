@@ -1,26 +1,12 @@
-//! The one loader for a config file thurbox owns: where it lives, seeding it
-//! on first run, parsing it with every unknown key reported, and writing it
-//! back atomically.
-//!
-//! Every file degrades the same way — a problem is a warning and the caller's
-//! fallback, never a refusal to start — so the only thing a file says for
-//! itself is its name, its seed and what it degrades to.
-
 use std::path::{Path, PathBuf};
 
 use serde::de::DeserializeOwned;
 
-/// Parse `contents` of `name`, with one warning per unknown key. `Err` is a
-/// syntax or type error, compacted for the status bar.
 pub fn parse<T: DeserializeOwned>(contents: &str, name: &str) -> Result<(T, Vec<String>), String> {
     parse_toml_reporting_unknown(contents, name)
         .map_err(|e| format!("{name}: {}", compact_toml_error(&e.to_string())))
 }
 
-/// Parse a TOML config document leniently, reporting every unknown field by
-/// path instead of failing on it. Stale keys from older thurbox versions and
-/// typos both surface as warnings without stranding the user on defaults; a
-/// real syntax/type error still fails the parse.
 pub fn parse_toml_reporting_unknown<T: DeserializeOwned>(
     contents: &str,
     file_label: &str,
@@ -33,10 +19,6 @@ pub fn parse_toml_reporting_unknown<T: DeserializeOwned>(
     Ok((value, warnings))
 }
 
-/// Collapse a (possibly multi-line) toml error to `<position>: <message>` for
-/// compact status-bar display. toml errors render as a header line with the
-/// position, a source snippet, then the message — keep the first and last
-/// meaningful lines and drop the snippet in between.
 pub fn compact_toml_error(s: &str) -> String {
     let lines: Vec<&str> = s
         .lines()
@@ -50,16 +32,10 @@ pub fn compact_toml_error(s: &str) -> String {
     }
 }
 
-/// `name` beside `config.toml`: `~/.config/thurbox/<name>`
-/// (`~/.config/thurbox-dev/<name>` on a dev build).
 pub fn path(name: &str) -> Option<PathBuf> {
     crate::paths::config_file().map(|p| p.with_file_name(name))
 }
 
-/// The contents of `name`, writing `seed` there first when the file is
-/// absent. `Ok(None)` is a file just seeded, so the caller's defaults are what
-/// it holds. `Err` is a warning: the contents could not be established (no
-/// path, no directory, a seed that could not be written, an unreadable file).
 pub fn read_or_seed(name: &str, seed: &str) -> Result<Option<String>, String> {
     let path = path(name).ok_or_else(|| format!("Could not resolve {name} path"))?;
     if !path.exists() {
@@ -72,8 +48,6 @@ pub fn read_or_seed(name: &str, seed: &str) -> Result<Option<String>, String> {
         .map_err(|e| format!("Failed to read {name}: {e}"))
 }
 
-/// [`read_or_seed`] then [`parse`], degrading to `T::default()` with a
-/// warning that ends in `degraded` (what the user is left with).
 pub fn load_or_seed<T: DeserializeOwned + Default>(
     name: &str,
     seed: &str,
@@ -88,8 +62,6 @@ pub fn load_or_seed<T: DeserializeOwned + Default>(
     }
 }
 
-/// Write `contents` to `path` atomically, creating its directory first: a
-/// crash mid-write leaves the previous file whole, never a truncated one.
 pub fn save(path: &Path, contents: impl AsRef<[u8]>) -> std::io::Result<()> {
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)?;
@@ -97,16 +69,10 @@ pub fn save(path: &Path, contents: impl AsRef<[u8]>) -> std::io::Result<()> {
     crate::paths::write_atomically(path, contents)
 }
 
-/// Run `change`, a read-change-write of `path`, holding the lock every
-/// process takes for that file, a lock on `<path>.lock`.
 pub fn locked<T>(path: &Path, change: impl FnOnce() -> T) -> std::io::Result<T> {
     crate::paths::with_file_lock(path, change)
 }
 
-/// Point every config path into `dir` until the guard drops. The tests of
-/// each config file isolate through here because the architecture rules hold
-/// test code to production's grants, and most of those files reach `paths`
-/// only through this loader.
 #[cfg(test)]
 pub(crate) fn isolate(dir: &Path) -> crate::paths::TestPathGuard {
     crate::paths::TestPathGuard::new(dir)

@@ -1,28 +1,12 @@
-//! Keys, actions and settings, declared by mods and collected in one place.
-//!
-//! Coherence has to be a property of the API, not a request in
-//! the docs. A mod declares its keys and settings as *data*, so the kernel
-//! can enumerate them without invoking anything — which is what makes a new
-//! mod's keys show up in help and become rebindable with no other file
-//! edited.
-//!
-//! The kernel collects, detects conflicts, applies persisted overrides and
-//! routes. It renders nothing: help and settings are mods reading what was
-//! collected.
-
 use serde::Serialize;
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::PathBuf;
 
 use super::host::KeyPress;
 
-/// Where a declared key is active.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Scope {
-    /// Fires wherever focus is.
     Global,
-    /// Fires only while the declaring mod holds focus, so two mods may
-    /// declare the same chord without conflicting.
     Mod,
 }
 
@@ -42,82 +26,32 @@ impl Scope {
     }
 }
 
-/// A key a mod responds to.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Binding {
-    /// Mod that declared it.
     pub owner: String,
-    /// Stable identifier the mod is called back with.
     pub action: String,
-    /// Chord as declared, canonicalised.
     pub default_chord: String,
-    /// Chord actually in force — the override when one exists.
     pub chord: String,
-    /// Whether [`chord`](Self::chord) came from a persisted override.
-    ///
-    /// Not derivable from `chord != default_chord` (rebinding an action to the
-    /// chord it already had is legal), and it decides who wins a clash: see
-    /// [`Registry::resolve`].
     pub overridden: bool,
     pub description: String,
     pub scope: Scope,
-    /// Whether a focused agent terminal keeps this chord instead.
-    ///
-    /// v1's `Action::terminal_passthrough` (`src/session/keybindings.rs`): the
-    /// global chords share the `Ctrl+<letter>` namespace with readline, so the
-    /// ones an agent CLI needs for line editing (`Ctrl+R` reverse-search,
-    /// `Ctrl+D` EOF, `Ctrl+W` delete-word, …) are forwarded to the pty while a
-    /// terminal has focus. The command stays reachable from every other pane
-    /// and from its F-key alternate. Navigation and app control (`Ctrl+H/J/K/L`,
-    /// `Ctrl+Q`, `Ctrl+N`) are deliberately not marked: they are the keyboard
-    /// escape route out of the terminal.
     pub passthrough: bool,
-    /// Whether the mod is also told when the key is let go.
-    ///
-    /// Such a binding is called `on_action(action, { event = "press" })` on the
-    /// press and `{ event = "release" }` on the release, and its auto-repeat is
-    /// swallowed rather than re-fired — a hold is one gesture, not a stream of
-    /// presses. A release needs a terminal that reports one (the kitty keyboard
-    /// protocol, or Windows), which `thurbox.keyboard.releases` says; without
-    /// one only the presses arrive. Outside Windows the repeat is swallowed
-    /// only on a chord that types nothing: kitty sends a held `v`, `shift+a`
-    /// or `space` as plain text, a fresh press each time, so such a binding
-    /// wants `ctrl`, `alt` or `super`. See `coordinator::input::Holds`.
     pub release: bool,
-    /// Section this key belongs to in help — "Navigation", "Sessions", …
-    ///
-    /// v1 grouped its help by *function* rather than by which module owned the
-    /// key, and that is the more useful grouping: you look for "how do I delete
-    /// a session", not "what does the session list offer". Defaults to the
-    /// mod's name so an undeclared key still lands somewhere sensible.
     pub group: String,
 }
 
-/// A setting a mod accepts.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Setting {
     pub owner: String,
     pub id: String,
     pub description: String,
     pub default: Value,
-    /// Effective value: the override when one exists, else the default.
     pub value: Value,
-    /// A text value holding a `;`-separated list of percent-escaped entries,
-    /// which the settings modal shows as a count rather than as the raw string.
     pub list: bool,
-    /// The only values a text setting may take, in the order the settings modal
-    /// steps through them. Empty means free text.
-    ///
-    /// Declared rather than validated by the mod, so the modal can offer a
-    /// pick instead of a text field and refuse a misspelt value before it is
-    /// persisted, and a stored value a newer mod no longer offers falls back
-    /// to the default instead of reaching the mod.
     pub choices: Vec<String>,
 }
 
 impl Setting {
-    /// Whether `value` is one this setting may take: the declared type, and one
-    /// of the choices when there are any.
     pub fn admits(&self, value: &Value) -> bool {
         if value.type_name() != self.default.type_name() {
             return false;
@@ -129,31 +63,14 @@ impl Setting {
     }
 }
 
-/// An action-band entry a mod contributes.
-///
-/// Declared as data, like a key or a setting, so a pane earns its place in the
-/// chrome by declaring one table field and knowing nothing about how the band
-/// draws. The band resolves the chord itself, from the registry, so an entry can
-/// never advertise a chord the keyboard does not honour.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Pill {
-    /// Mod that declared it.
     pub owner: String,
-    /// The action pressing it runs — the same identifier a key binds to.
     pub action: String,
     pub label: String,
-    /// Higher is kept longer when the band runs out of width, and drawn
-    /// further left. The mod declares it; `ui.json`'s `pills` section
-    /// replaces it, so ordering the band does not mean editing a mod.
     pub priority: i64,
 }
 
-/// An action a mod wants reachable **without** a chord.
-///
-/// The palette's row. Declared as data beside `keys`, with the same `action`
-/// namespace and the same `on_action` handler, so an action need not spend a
-/// chord to exist — and a user may give it one later through the ordinary
-/// rebinding surface, at which point it is a [`Binding`] like any other.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CommandDecl {
     pub owner: String,
@@ -161,18 +78,14 @@ pub struct CommandDecl {
     pub description: String,
 }
 
-/// One row of the command palette: an action, who owns it, and its chord if it
-/// has one.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PaletteRow {
     pub owner: String,
     pub action: String,
     pub description: String,
-    /// Every chord bound to the action, joined as help joins them.
     pub chords: Option<String>,
 }
 
-/// A setting's value. Deliberately small — a setting is a knob, not a document.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Value {
     Bool(bool),
@@ -190,29 +103,16 @@ impl Value {
     }
 }
 
-/// A chord claimed by two declarations whose scopes overlap.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Conflict {
     pub chord: String,
     pub kept: String,
     pub shadowed: String,
-    /// Who declared the claim that fires, and who declared the one that does not
-    /// — the names [`Binding::owner`] carries.
-    ///
-    /// The action ids do not identify a claimant on their own: nothing stops two
-    /// mods both declaring `toggle`, and a report naming only the actions
-    /// leaves a reader unable to tell which file to open.
     pub kept_mod: String,
     pub shadowed_mod: String,
 }
 
 impl Conflict {
-    /// One clash, in words: both claimants and the one that fires.
-    ///
-    /// Spelled here rather than at each reporting surface so `warnings()` and
-    /// `thurbox-cli mod check` cannot come to describe the same clash
-    /// differently — the check is a mod author's pre-flight for exactly the
-    /// diagnostic the running interface collects.
     pub fn message(&self) -> String {
         format!(
             "{} is claimed by both {} and {}; {} wins",
@@ -221,21 +121,10 @@ impl Conflict {
     }
 }
 
-/// The chord that quits, spelled once.
-///
-/// It is reserved (below), listed in help, and carried by the action band's Quit
-/// entry — three places that must agree about a chord *no binding backs*, since
-/// quit is handled before the registry is consulted. The other four reserved
-/// chords need no such constant: nothing outside this table spells them out.
 pub const QUIT_CHORD: &str = "ctrl+q";
 
-/// Chords the kernel keeps for itself.
-///
-/// The escape route: a mod that consumes every key it is offered must not be
-/// able to trap you inside it. Declaring or overriding one of these is refused.
 pub const RESERVED: [&str; 5] = [QUIT_CHORD, "f10", "ctrl+h", "ctrl+l", "f12"];
 
-/// Kernel shortcuts have stable action names even though no Lua pane owns them.
 pub const RESERVED_ACTIONS: [(&str, &str, &str); 5] = [
     (QUIT_CHORD, "core.quit", "quit the interface"),
     ("f10", "kernel.reload", "reload the interface"),
@@ -293,8 +182,6 @@ pub struct ActionArgument {
     pub required: bool,
 }
 
-/// The live UI action contract. All public catalog output is built from these
-/// descriptors, which also gate externally invoked actions.
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
 pub struct ActionDescriptor {
     pub name: String,
@@ -325,55 +212,32 @@ pub struct ActionDecl {
     pub destructive: bool,
 }
 
-/// Everything declared, plus what the user changed.
 #[derive(Default)]
 pub struct Registry {
     bindings: Vec<Binding>,
     settings: Vec<Setting>,
     pills: Vec<Pill>,
-    /// Chord-less commands, declared for the palette.
     commands: Vec<CommandDecl>,
     action_declarations: Vec<ActionDecl>,
     conflicts: Vec<Conflict>,
-    /// Persisted overrides: action → chord.
     binding_overrides: BTreeMap<String, String>,
     setting_overrides: BTreeMap<String, Value>,
     pill_overrides: BTreeMap<String, serde_json::Value>,
     disabled: BTreeSet<String>,
     trusted: BTreeMap<String, Granted>,
-    /// What would not load: a config file that failed to parse, a rejected
-    /// override. Conflicts are *not* kept here — see [`Registry::warnings`].
     load_warnings: Vec<String>,
-    /// Whether this registry's overrides came from `ui.json` and
-    /// `mod-state.json`, and so whether writing them back is an edit or an
-    /// erasure.
     origin: Origin,
-    /// Moves whenever anything published from this registry does — the
-    /// declarations, a rebinding, a setting, the disabled set, a trust grant.
-    ///
-    /// Bumped at the top of each mutator rather than on its success paths: over-
-    /// bumping costs one rebuild, while a path that returns early without
-    /// bumping publishes a stale answer (`frame-cost`).
     version: u64,
 }
 
 #[derive(Default, Clone, Copy, PartialEq, Eq, Debug)]
 enum Origin {
-    /// Never read: it has nothing of the user's to write back.
     #[default]
     Detached,
-    /// Read from `ui.json` and `mod-state.json` — a write back is an edit of
-    /// what was read.
     File,
 }
 
 impl Registry {
-    /// Load persisted overrides: `ui.json`'s chords, settings and pills, and
-    /// `mod-state.json`'s trust and disabled set.
-    ///
-    /// The one constructor that reads `ui.json` and `mod-state.json`, and so
-    /// the one whose registry may write them back — see the private `Origin`,
-    /// which carries that distinction so no caller has to remember it.
     pub fn load() -> Self {
         let mut registry = Self {
             origin: Origin::File,
@@ -398,12 +262,6 @@ impl Registry {
         registry
     }
 
-    /// Replace the declarations after a reload, keeping the overrides.
-    ///
-    /// Overrides survive because they belong to the *user*, not to the mod
-    /// set — an override naming a mod that is temporarily broken must come
-    /// back when the mod does.
-    /// How many times anything published from this registry has changed.
     pub fn version(&self) -> u64 {
         self.version
     }
@@ -417,11 +275,6 @@ impl Registry {
         self.declare_all(bindings, settings, Vec::new());
     }
 
-    /// [`Self::declare`] including the action-band entries.
-    ///
-    /// Separate rather than a third parameter on `declare` because most callers
-    /// — every test that only cares about keys — have no entries to pass, and a
-    /// two-argument call site reads better than one ending in `Vec::new()`.
     pub fn declare_all(
         &mut self,
         bindings: Vec<Binding>,
@@ -436,11 +289,6 @@ impl Registry {
         self.detect_conflicts();
     }
 
-    /// Replace the chord-less commands after a reload.
-    ///
-    /// Separate from [`Self::declare_all`] so the many callers that only care
-    /// about keys need not pass an empty list; the overrides are re-applied
-    /// because a command the user gave a chord to becomes a binding here.
     pub fn declare_commands(&mut self, commands: Vec<CommandDecl>) {
         self.mark_changed();
         self.commands = commands;
@@ -499,13 +347,6 @@ impl Registry {
         }
     }
 
-    /// Make a binding of every command the user bound a chord to.
-    ///
-    /// A command the user bound a chord to is a binding from then on, so it
-    /// resolves, appears in help and can be reset there. Synthesised on every
-    /// pass rather than kept, because `declare_all` replaces the list — and
-    /// recognisable by its empty default chord, so the previous pass's copies
-    /// are dropped before this one's are added.
     fn bind_overridden_commands(&mut self) {
         self.bindings
             .retain(|binding| !binding.default_chord.is_empty());
@@ -561,26 +402,12 @@ impl Registry {
         }
     }
 
-    /// Everything worth telling the user: what would not load, then every chord
-    /// two mods both claimed.
-    ///
-    /// Conflicts are rendered here on demand rather than appended during
-    /// `apply_overrides`. That ran on every `declare` — i.e. on every reload — and
-    /// appended without clearing, so each reload left one more copy of every
-    /// conflict behind, for the life of the process.
     pub fn warnings(&self) -> Vec<String> {
         let mut all = self.load_warnings.clone();
         all.extend(self.conflicts.iter().map(Conflict::message));
         all
     }
 
-    /// The action a keypress fires, given who has focus.
-    ///
-    /// A user's **override** outranks a declaration that merely defaults to the
-    /// same chord: rebinding an action onto a chord something else already
-    /// declared has to move the chord, or the help editor would accept a
-    /// binding that silently never fires. Between two equals, the earlier
-    /// declaration wins — load order, so it is stable across runs.
     pub fn resolve(&self, press: &KeyPress, focused_mod: Option<&str>) -> Option<&Binding> {
         let chord = canonical_chord(press);
         let active = |binding: &&Binding| {
@@ -596,21 +423,14 @@ impl Registry {
             .or_else(|| self.bindings.iter().find(active))
     }
 
-    /// Is this file present but deliberately not loaded?
     pub fn is_disabled(&self, path: &str) -> bool {
         self.disabled.contains(path)
     }
 
-    /// Every file the user turned off.
     pub fn disabled(&self) -> impl Iterator<Item = &str> {
         self.disabled.iter().map(String::as_str)
     }
 
-    /// Turn a mod off, or back on. Returns whether it is now off.
-    ///
-    /// Idempotent in both directions: the user asked for a state, not for a
-    /// transition, and a toggle they cannot predict is worse than one that does
-    /// nothing.
     pub fn set_disabled(&mut self, path: &str, off: bool) -> Result<bool, String> {
         self.mark_changed();
         if off {
@@ -622,18 +442,10 @@ impl Registry {
         Ok(off)
     }
 
-    /// The contents trusted, if any — so a caller can notice they have changed.
-    ///
-    /// A record is not a grant: whether it still holds the capabilities is
-    /// `packages::trust_of`, which also weighs the pin and the file on disk.
     pub fn trusted_digest(&self, path: &str) -> Option<&str> {
         self.trusted.get(path).map(Granted::digest)
     }
 
-    /// The `src@version` a grant was made against, for a file that was installed.
-    ///
-    /// `None` for an unmanaged file, whose grant is about its contents and nothing
-    /// else — which is the right answer for a file the user wrote themselves.
     pub fn trusted_pin(&self, path: &str) -> Option<&str> {
         match self.trusted.get(path) {
             Some(Granted::Managed { pin, .. }) => Some(pin.as_str()),
@@ -641,10 +453,6 @@ impl Registry {
         }
     }
 
-    /// Trust a file as it is right now.
-    ///
-    /// The digest is taken from the contents at this moment, which is what makes
-    /// "trusted, and since modified" a state the interface can report.
     pub fn trust(&mut self, path: &str, contents: &str) -> Result<(), String> {
         self.mark_changed();
         self.trusted.insert(
@@ -654,15 +462,6 @@ impl Registry {
         self.persist_decisions()
     }
 
-    /// Trust an **installed** file at the source and version it came from.
-    ///
-    /// Both halves are recorded, and both are load-bearing. The `src@version` is
-    /// what the user can actually mean — "I trust atlas v0.3.1" is a sentence; "I
-    /// trust this digest" is not — and it is what lets the grant lapse when the pin
-    /// moves instead of the row reading `trusted · modified` after every ordinary
-    /// release. The digest is what closes the hole that would otherwise open: a
-    /// source that re-tagged the same version with different contents would
-    /// silently keep a capability the user granted to what the version used to be.
     pub fn trust_installed(&mut self, path: &str, pin: &str, contents: &str) -> Result<(), String> {
         self.mark_changed();
         self.trusted.insert(
@@ -675,8 +474,6 @@ impl Registry {
         self.persist_decisions()
     }
 
-    /// Withdraw trust. Idempotent: revoking what was never trusted is not an
-    /// error, because the user asked for a state, not for a transition.
     pub fn revoke(&mut self, path: &str) -> Result<(), String> {
         self.mark_changed();
         self.trusted.remove(path);
@@ -687,8 +484,6 @@ impl Registry {
         &self.bindings
     }
 
-    /// Every declared action-band entry, in declaration order. The band orders
-    /// them by priority itself.
     pub fn pills(&self) -> &[Pill] {
         &self.pills
     }
@@ -697,14 +492,10 @@ impl Registry {
         &self.settings
     }
 
-    /// Every declared chord-less command, in declaration order.
     pub fn commands(&self) -> &[CommandDecl] {
         &self.commands
     }
 
-    /// Resolve the action surface from effective bindings and palette rows.
-    /// Reload replaces both source lists before this is called, so a removed
-    /// mod cannot leave stale catalog entries behind.
     pub fn action_catalog(&self) -> Vec<ActionDescriptor> {
         let mut actions = Vec::<ActionDescriptor>::new();
         for (chord, name, description) in RESERVED_ACTIONS {
@@ -865,13 +656,6 @@ impl Registry {
         actions
     }
 
-    /// Everything the palette lists: one row per action, from the bindings and
-    /// the chord-less commands alike, de-duplicated on `(mod, action)`.
-    ///
-    /// A binding's row carries its chords, joined the way help joins an action's
-    /// alternates; a command's row carries none unless the user bound one. The
-    /// order is declaration order — the mods' load order, then the kernel's —
-    /// which is what makes the unfiltered list stable across runs.
     pub fn palette_rows(&self) -> Vec<PaletteRow> {
         let mut rows: Vec<PaletteRow> = Vec::new();
         for binding in &self.bindings {
@@ -914,7 +698,6 @@ impl Registry {
         &self.conflicts
     }
 
-    /// Settings belonging to one mod, as `id → value`.
     pub fn settings_for(&self, mod_name: &str) -> BTreeMap<&str, &Value> {
         self.settings
             .iter()
@@ -923,7 +706,6 @@ impl Registry {
             .collect()
     }
 
-    /// Rebind an action, or clear the override when `chord` is `None`.
     pub fn rebind(&mut self, action: &str, chord: Option<&str>) -> Result<(), String> {
         self.mark_changed();
         match chord {
@@ -951,7 +733,6 @@ impl Registry {
         self.persist_overrides()
     }
 
-    /// Set a setting's value, or clear the override when `value` is `None`.
     pub fn set_setting(
         &mut self,
         mod_name: &str,
@@ -1033,12 +814,6 @@ impl Registry {
             .map_err(|e| format!("write {}: {e}", path.display()))
     }
 
-    /// Write trust and the disabled set to their own store.
-    ///
-    /// Apart from `ui.json` so the one file a capability is granted from is
-    /// written only when a grant or the disabled set changes — rebinding a chord
-    /// never rewrites it — and so a dotfiles-managed `ui.json` can be replaced
-    /// without taking the grants with it (#1467).
     fn persist_decisions(&self) -> Result<(), String> {
         if self.origin == Origin::Detached {
             return Ok(());
@@ -1059,8 +834,6 @@ impl Registry {
     }
 }
 
-/// Append `chord` to an action's chords, joined as help joins them, unless the
-/// action already lists it.
 fn add_chord(chords: &mut String, chord: &str) {
     if chords.split(" / ").any(|listed| listed == chord) {
         return;
@@ -1071,7 +844,6 @@ fn add_chord(chords: &mut String, chord: &str) {
     chords.push_str(chord);
 }
 
-/// Do two declarations compete for the same chord?
 fn scopes_overlap(a: &Binding, b: &Binding) -> bool {
     match (a.scope, b.scope) {
         (Scope::Mod, Scope::Mod) => a.owner == b.owner,
@@ -1079,13 +851,6 @@ fn scopes_overlap(a: &Binding, b: &Binding) -> bool {
     }
 }
 
-/// Canonical text for a keypress.
-///
-/// **This is where a real portability trap lives.** A terminal without the
-/// kitty protocol sends a bare `J` byte with no SHIFT modifier, while one with
-/// it sends `j` + SHIFT. Both must produce `shift+j`, or a capital binding
-/// works in one terminal and silently does nothing in the other — which is
-/// exactly the bug the session list hit when it matched on `key.shift`.
 pub fn canonical_chord(press: &KeyPress) -> String {
     let mut parts = Vec::new();
     if press.ctrl {
@@ -1131,10 +896,8 @@ pub fn canonical_chord(press: &KeyPress) -> String {
     parts.join("+")
 }
 
-/// Symbols that only exist as a shifted keystroke.
 const SHIFTED_SYMBOLS: [char; 11] = ['!', '@', '#', '$', '%', '^', '&', '*', '(', ')', '_'];
 
-/// Canonicalise a chord written by hand, so `Ctrl+D` and `ctrl+d` agree.
 pub fn normalise_chord(raw: &str) -> String {
     let mut modifiers: Vec<String> = Vec::new();
     let mut key = String::new();
@@ -1174,16 +937,10 @@ pub fn normalise_chord(raw: &str) -> String {
     parts.join("+")
 }
 
-/// Parse `ui.json` the way the kernel does, and report what it complained about.
-///
-/// For `thurbox-cli config validate`: the interface reads it on every launch
-/// for rebindings, settings and band order.
 pub fn validate_overrides() -> Vec<String> {
     read_overrides().3
 }
 
-/// Problems with `mod-state.json`, the store trust and the disabled set
-/// live in. Empty when it is absent: a fresh install has decided nothing yet.
 pub fn validate_decisions() -> Vec<String> {
     match read_decisions() {
         Decisions::Absent => Vec::new(),
@@ -1192,9 +949,6 @@ pub fn validate_decisions() -> Vec<String> {
     }
 }
 
-/// Where trust grants and the disabled set live: `<config>/mod-state.json`.
-///
-/// Public so `thurbox-cli config` can report it, like [`overrides_file`].
 pub fn decisions_file() -> Option<PathBuf> {
     decisions_path()
 }
@@ -1207,13 +961,9 @@ fn decisions_path() -> Option<PathBuf> {
     })
 }
 
-/// What `mod-state.json` held when it was read.
 enum Decisions {
-    /// No store yet: an install that predates it, or one that decided nothing.
     Absent,
-    /// The grants, the disabled set, and what was dropped while reading them.
     Read(BTreeMap<String, Granted>, BTreeSet<String>, Vec<String>),
-    /// Present but not readable, or not JSON.
     Unreadable(String),
 }
 
@@ -1236,11 +986,6 @@ fn read_decisions() -> Decisions {
     }
 }
 
-/// Where the user's interface decisions live: `<config>/ui.json`.
-///
-/// Public so `thurbox-cli config` can report it. It sits beside `settings.toml`
-/// and the rest, which means it follows the same `thurbox` / `thurbox-dev` split
-/// every other config path does — a dev build never reads the release file.
 pub fn overrides_file() -> Option<PathBuf> {
     overrides_path()
 }
@@ -1249,8 +994,6 @@ fn overrides_path() -> Option<PathBuf> {
     crate::paths::config_file().and_then(|config| config.parent().map(|dir| dir.join("ui.json")))
 }
 
-/// What `ui.json` carries: rebound chords, changed settings, reordered pills,
-/// and anything worth warning about.
 type Overrides = (
     BTreeMap<String, String>,
     BTreeMap<String, Value>,
@@ -1258,20 +1001,10 @@ type Overrides = (
     Vec<String>,
 );
 
-/// What was trusted at a path.
-///
-/// Untagged, and the bare-string form is listed **first**, because that is what
-/// earlier releases wrote: a form that could not read the old shape would forget
-/// every grant on upgrade — the same reasoning `bundled::Record` follows.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(untagged)]
 enum Granted {
-    /// The digest the contents had when trust was granted. An unmanaged file's
-    /// grant is about its contents and nothing else.
     Contents(String),
-    /// An installed file: the `src@version` the grant was made against, and the
-    /// digest that version delivered. Both are checked — see
-    /// [`Registry::trust_installed`].
     Managed { pin: String, digest: String },
 }
 
@@ -1283,8 +1016,6 @@ impl Granted {
     }
 }
 
-/// A path as it should read in a warning — the file's name, not the whole
-/// absolute path, which is long and mostly the same for every row.
 fn path_display(path: &str) -> &str {
     path.rsplit(['/', '\\']).next().unwrap_or(path)
 }
@@ -1314,7 +1045,6 @@ fn read_overrides() -> Overrides {
     )
 }
 
-/// The `bindings` half of `ui.json`: action id → chord, normalised.
 fn read_bindings(parsed: &serde_json::Value) -> BTreeMap<String, String> {
     let mut bindings = BTreeMap::new();
     let Some(map) = parsed.get("bindings").and_then(|v| v.as_object()) else {
@@ -1328,7 +1058,6 @@ fn read_bindings(parsed: &serde_json::Value) -> BTreeMap<String, String> {
     bindings
 }
 
-/// The `settings` half of `ui.json`: setting id → the value the user chose.
 fn read_settings(parsed: &serde_json::Value) -> BTreeMap<String, Value> {
     let mut settings = BTreeMap::new();
     let Some(map) = parsed.get("settings").and_then(|v| v.as_object()) else {
@@ -1342,17 +1071,6 @@ fn read_settings(parsed: &serde_json::Value) -> BTreeMap<String, Value> {
     settings
 }
 
-/// The `pills` half of `ui.json`: a pill's action → the priority it is given.
-///
-/// Every entry is kept, whatever shape it has, because `persist` writes this map
-/// back over the user's file — see [`Registry::pill_overrides`]. `apply_overrides`
-/// is what refuses one that is not a whole number; here it is only *reported*, as
-/// `read_trusted` reports a malformed grant, so `thurbox-cli config validate`
-/// names the typo on every run rather than once.
-///
-/// The section itself cannot be kept that way, since a map is not an array:
-/// `"pills": []` is as easy to write as `[]` is right for the neighbouring
-/// `disabled`, so that one is reported and the section ignored.
 fn read_pills(
     parsed: &serde_json::Value,
     warnings: &mut Vec<String>,
@@ -1376,8 +1094,6 @@ fn read_pills(
     pills
 }
 
-/// The `trusted` table of `mod-state.json`: path
-/// → the grant made to it.
 fn read_trusted(
     parsed: &serde_json::Value,
     warnings: &mut Vec<String>,
@@ -1402,8 +1118,6 @@ fn read_trusted(
     trusted
 }
 
-/// The `disabled` table of `mod-state.json`: the
-/// files present but not loaded.
 fn read_disabled(parsed: &serde_json::Value) -> BTreeSet<String> {
     let Some(list) = parsed.get("disabled").and_then(|v| v.as_array()) else {
         return BTreeSet::new();
@@ -1414,11 +1128,6 @@ fn read_disabled(parsed: &serde_json::Value) -> BTreeSet<String> {
         .collect()
 }
 
-/// One `trusted` entry, in either of the two forms the store carries.
-///
-/// A bare string is what every release before managed panes wrote, and is still
-/// what an unmanaged file gets. Read first so an upgrade cannot forget a grant the
-/// user already made. `None` = malformed, for the caller to report.
 fn read_grant(granted: &serde_json::Value) -> Option<Granted> {
     if let Some(digest) = granted.as_str() {
         return Some(Granted::Contents(digest.to_string()));
@@ -1451,7 +1160,6 @@ fn json_to_value(value: &serde_json::Value) -> Option<Value> {
     }
 }
 
-/// Build a binding from a mod's declaration table.
 pub fn binding_from(
     mod_name: &str,
     chord: &str,
@@ -1476,12 +1184,6 @@ pub fn binding_from(
     }
 }
 
-/// Is this chord a bare `Ctrl+<letter>` — the namespace readline owns?
-///
-/// v1's `is_ctrl_letter_chord` (`src/app/key_handlers.rs`), and it gates the
-/// deferral for the same reason: rebinding a passthrough action onto a key the
-/// agent does not want (an F-key, `Ctrl+,`) must make it work in the terminal
-/// again, so the test is on the *bound* chord rather than on the action.
 pub fn is_ctrl_letter_chord(chord: &str) -> bool {
     matches!(
         chord.strip_prefix("ctrl+"),
@@ -1489,10 +1191,6 @@ pub fn is_ctrl_letter_chord(chord: &str) -> bool {
     )
 }
 
-/// Help sections, in v1's order.
-///
-/// Anything a mod puts in a group not listed here follows, alphabetically —
-/// so a third-party mod appears without editing this list.
 pub const HELP_SECTIONS: [&str; 4] = ["Navigation", "Sessions", "Project", "UI"];
 
 #[cfg(test)]
@@ -1862,9 +1560,6 @@ mod tests {
         std::env::remove_var("THURBOX_CONFIG_DIR");
     }
 
-    /// A reload re-declares everything, so a conflict must be reported once
-    /// however many times that happens. Appending during `apply_overrides` left
-    /// one more copy of every conflict behind per reload, forever.
     #[test]
     fn a_conflict_is_reported_once_however_often_the_interface_reloads() {
         let mut registry = Registry::default();
@@ -1931,8 +1626,6 @@ mod tests {
         );
     }
 
-    /// The other half: a registry that *did* read the file still writes it, or
-    /// the guard above would have turned every real change into a silent no-op.
     #[test]
     fn a_registry_that_read_the_file_writes_its_changes_back() {
         let dir = tempfile::tempdir().expect("temp dir");
@@ -1965,9 +1658,6 @@ mod tests {
         }
     }
 
-    /// The kernel's Settings on F6 and a third-party Fleet on F3, declared with
-    /// the numbers the issue reported: 60 against 50, so the band prints them
-    /// F6 before F3.
     fn banded() -> (Vec<Binding>, Vec<Pill>) {
         (
             vec![
@@ -2023,10 +1713,6 @@ mod tests {
         assert_eq!(band_labels(&cleared), vec!["Settings", "Fleet"]);
     }
 
-    /// An override naming nothing is not a button. A binding may be synthesised
-    /// from an override because a bound command becomes a key; a pill has no
-    /// such source, and a chip that does nothing when pressed is what
-    /// `bands::entries` already drops declared entries to avoid.
     #[test]
     fn a_pill_override_for_an_unknown_action_is_ignored() {
         let home = tempfile::TempDir::new().expect("tempdir");
@@ -2043,11 +1729,6 @@ mod tests {
         assert_eq!(band_labels(&registry), vec!["Settings", "Fleet"]);
     }
 
-    /// A priority is a whole number. A string or a fraction is refused rather
-    /// than coerced, reported so `thurbox-cli config validate` can name it —
-    /// and **kept in the file**. Deleting it at read time would have `persist`
-    /// erase the user's own typo on the next unrelated write, leaving a clean
-    /// file, no warning and nothing to find.
     #[test]
     fn a_pill_priority_of_the_wrong_shape_is_refused_and_kept() {
         let home = tempfile::TempDir::new().expect("tempdir");
@@ -2085,8 +1766,6 @@ mod tests {
         );
     }
 
-    /// `disabled` beside it is a list, so `"pills": []` is the plausible typo,
-    /// and it loses the whole section rather than one line of it.
     #[test]
     fn a_pills_section_of_the_wrong_shape_is_ignored_and_reported() {
         let home = tempfile::TempDir::new().expect("tempdir");
@@ -2109,10 +1788,6 @@ mod tests {
         );
     }
 
-    /// `persist` writes a fresh object, so a section it does not know about is
-    /// dropped the next time anything at all is written back. A hand-written
-    /// `pills` section that survives only until the next rebind is worse than no
-    /// feature: it works, and then one day it does not.
     #[test]
     fn a_pill_override_survives_a_persist_triggered_by_something_else() {
         let home = tempfile::TempDir::new().expect("tempdir");

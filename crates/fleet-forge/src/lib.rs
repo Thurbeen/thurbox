@@ -1,26 +1,3 @@
-//! Implementations of the forge contract ([`fleet_api::forge::Forge`]).
-//!
-//! - [`GithubForge`]: pull requests through `gh`, on github.com or an
-//!   enterprise host.
-//! - [`GitlabForge`]: merge requests through `glab`, on gitlab.com or a
-//!   self-hosted instance.
-//! - [`AzureDevopsForge`]: pull requests through `az`, on Azure DevOps Services.
-//! - [`BitbucketCloudForge`]: pull requests on bitbucket.org through an
-//!   externally authenticated `curl`.
-//! - [`FakeForge`]: a file-backed forge for tests and trials. It runs no
-//!   process.
-//! - [`ForgeHosts`]: the adapters of a configuration's `[forge.hosts]`,
-//!   chosen by the host a URL or a reference names.
-//!
-//! This is the only crate that knows the forge clients (`az`, `curl`, `gh`
-//! and `glab`) exist. Every call is one bounded process through fleet-exec,
-//! its tree killed past the bound, and the clients' own configuration is the
-//! only credential source: Fleet passes none and stores none. Adapters that
-//! implement the one write, `mark_ready`, re-read the change's head and state
-//! immediately before mutation and refuse with `Moved` when either differs
-//! from what the caller expected. Providers without that guarantee fail
-//! closed.
-
 pub mod azure_devops;
 pub mod bitbucket;
 pub mod cli;
@@ -42,7 +19,6 @@ use fleet_api::{Millis, Observation};
 pub use github::GithubForge;
 pub use gitlab::GitlabForge;
 
-/// Which adapter serves a host.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum HostKind {
     AzureDevops,
@@ -75,18 +51,13 @@ impl HostKind {
     }
 }
 
-/// One `[forge.hosts]` entry.
 #[derive(Debug, Clone)]
 pub struct HostConfig {
     pub kind: HostKind,
-    /// The CLI executable, a path or a name on PATH; the kind's own name by
-    /// default. Unused by the fake.
     pub cli: Option<OsString>,
-    /// The fake's directory.
     pub dir: Option<PathBuf>,
 }
 
-/// The configured forges, one adapter per host.
 pub struct ForgeHosts {
     hosts: BTreeMap<String, Box<dyn Forge>>,
 }
@@ -100,7 +71,6 @@ impl std::fmt::Debug for ForgeHosts {
 }
 
 impl ForgeHosts {
-    /// Build one adapter per host. `call_timeout` bounds every CLI call.
     pub fn new(
         hosts: BTreeMap<String, HostConfig>,
         call_timeout: Duration,
@@ -176,7 +146,6 @@ impl ForgeHosts {
     }
 }
 
-/// The host part of a URL, lowercased.
 pub fn host_of(url: &str) -> Option<String> {
     let rest = url.trim().split_once("://")?.1;
     let host = rest.split(['/', '?', '#']).next()?.trim();

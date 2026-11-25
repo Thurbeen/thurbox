@@ -1,35 +1,12 @@
-//! Shared tmux control mode I/O infrastructure.
-//!
-//! Both halves of control mode live here: the transport-agnostic protocol
-//! (notification parsing, octal decoding, the per-pane reader/writer) and the
-//! live `ControlMode` connection itself (the `-C` child process, its reader
-//! thread, the FIFO response queue and the hook poller). A tmux-protocol
-//! backend drives one `ControlMode` across its local and SSH/WSL
-//! (`TmuxTransport`) transports — the wire protocol is identical over either.
-//! What a server can be expected to do on that wire is its adapter's to say
-//! ([`ControlPolicy`], [`PaneInput`]).
-
-/// What a multiplexer's refusal says is not there, in its adapter's reading
-/// (`TmuxCompatible::answered_absent`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Missing {
-    /// No server on the socket, or no thurbox session on it: the server holds
-    /// nothing, so a listing of it is empty rather than unanswered.
     Server,
-    /// The server is up, and the pane or window named is not on it.
     Target,
 }
 
-/// A multiplexer answered a control-mode command with `%error`.
-///
-/// Carried untyped out of control mode, which speaks to every adapter alike:
-/// only the adapter can say what its own words mean, so the backend reads
-/// `reply` (`Server::refusal`) before the error leaves it.
 #[derive(Debug)]
 pub(crate) struct Refusal {
-    /// The command refused.
     pub command: String,
-    /// The reply block, as the server printed it.
     pub reply: String,
 }
 
@@ -55,26 +32,11 @@ use tracing::{debug, warn};
 use super::transport::TmuxTransport;
 use crate::contract::{PaneChunk, PaneSize, PaneSnapshot};
 
-/// Per-pane output channel capacity. Sized large enough to buffer heavy output
-/// bursts; chunks are dropped (not blocked) when full to keep the reader thread alive.
 pub const PANE_CHANNEL_CAPACITY: usize = 4096;
 
-/// The format [`snapshot_commands`] asks `display-message` for, and
-/// [`parse_snapshot`] reads back.
 const SNAPSHOT_FORMAT: &str =
     "#{pane_width} #{pane_height} #{cursor_x} #{cursor_y} #{alternate_on}";
 
-/// The command list whose answer is a [`PaneSnapshot`] of `pane_id`, with at
-/// most `history` rows of history.
-///
-/// One list, so tmux runs it without returning to its event loop and reading
-/// the pane in between: the size, the cursor and both captures describe the
-/// same instant. The current grid is captured without `-a`, which is the
-/// alternate screen while one is up; `-a -q` then yields the normal screen
-/// behind it, or nothing at all when there is no alternate screen.
-///
-/// `styled` keeps the SGR sequences (`-e`), which a rebuilt grid needs and a
-/// reader of text does not: they are most of the bytes of a coloured history.
 pub fn snapshot_commands(pane_id: &str, history: usize, styled: bool) -> Vec<String> {
     let start = format!("-{history}");
     let e = if styled { " -e" } else { "" };
@@ -85,7 +47,6 @@ pub fn snapshot_commands(pane_id: &str, history: usize, styled: bool) -> Vec<Str
     ]
 }
 
-/// Boundaries let a one-block reply retain the three snapshot parts.
 fn snapshot_commands_one_block(pane_id: &str, history: usize, styled: bool) -> Vec<String> {
     let mut commands = snapshot_commands(pane_id, history, styled);
     let marker = format!("__thurbox_snapshot_{}__", uuid::Uuid::new_v4().simple());
@@ -94,8 +55,6 @@ fn snapshot_commands_one_block(pane_id: &str, history: usize, styled: bool) -> V
     commands
 }
 
-/// Read a snapshot from three reply blocks or one boundary-marked block.
-/// `None` for anything that is not that answer.
 pub fn parse_snapshot(mut blocks: Vec<Vec<String>>) -> Option<PaneSnapshot> {
     if blocks.len() == 1 {
         let lines = blocks.pop()?;
@@ -145,7 +104,6 @@ pub fn parse_snapshot(mut blocks: Vec<Vec<String>>) -> Option<PaneSnapshot> {
     })
 }
 
-/// A snapshot asked for with [`ControlMode::ask_snapshot`], not yet answered.
 pub(crate) struct PendingSnapshot {
     rx: Receiver<Reply>,
     cmd: String,
@@ -153,7 +111,6 @@ pub(crate) struct PendingSnapshot {
 }
 
 impl PendingSnapshot {
-    /// The answer, or the error the command ran into.
     pub(crate) fn wait(self) -> Result<PaneSnapshot> {
         let response = ControlMode::await_blocks(self.rx, &self.cmd, COMMAND_TIMEOUT)?;
         parse_snapshot(response.blocks)
@@ -161,58 +118,29 @@ impl PendingSnapshot {
     }
 }
 
-/// The one spelling of [`SIZER_OPTION`], so [`SIZED_BY`] can be built from it
-/// at compile time rather than restate it.
 macro_rules! sizer_option {
     () => {
         "@thurbox_sizer"
     };
 }
 
-/// The window option naming the client that sizes a window, when several
-/// thurbox instances show it — see `Server::resize`.
 pub const SIZER_OPTION: &str = sizer_option!();
 
-/// The format subscription reporting [`SIZED_BY`] per pane, so an instance can
-/// say its pane is being sized elsewhere.
 const SIZER_SUBSCRIPTION: &str = "thurbox-sizer";
 
-/// The pane **user option** a hook running in a tmux-protocol pane sets to
-/// report its state (`set-option -p @thurbox_state <working|blocked|done|idle>`):
-/// these adapters' status channel. The headless poll lists it, and an attached
-/// connection receives changes through [`REMOTE_HOOK_SUBSCRIPTION`] (tmux) or
-/// a poll (psmux). Protocol vocabulary, so it lives with the protocol: another
-/// backend's status channel need not be a pane option at all.
 pub const REMOTE_HOOK_STATE_OPTION: &str = "@thurbox_state";
 
-/// Name of the control-mode format subscription
-/// (`refresh-client -B <name>:%*:#{@thurbox_state}`) that pushes
-/// [`REMOTE_HOOK_STATE_OPTION`] changes as `%subscription-changed`
-/// notifications for every pane of the attached session.
 pub const REMOTE_HOOK_SUBSCRIPTION: &str = "thurbox-status";
 
-/// Prefix of the per-pane format subscription a pane whose output is held
-/// back reports through ([`ControlMode::hide_pane`]); the pane id follows.
 const HIDDEN_SUBSCRIPTION: &str = "thurbox-hidden";
 
-/// What a hidden pane reports, for everything the interface reads off a pane
-/// it is not showing: when its window last had output (the value moves, at
-/// tmux's ≤1/s report cadence, while it prints), its input modes, and its
-/// title — last, since only it may contain the separator. A flag a server does
-/// not know expands to nothing and is left as it was ([`hidden_state`]).
 const HIDDEN_FORMAT: &str = "#{window_activity}|\
      #{keypad_cursor_flag},#{keypad_flag},#{bracket_paste_flag},#{cursor_flag}|\
      #{mouse_standard_flag},#{mouse_button_flag},#{mouse_all_flag},#{mouse_any_flag},\
      #{mouse_sgr_flag},#{mouse_utf8_flag}|#{host_short}|#{pane_title}";
 
-/// Panes whose output this connection holds back, each with the activity
-/// value its subscription last reported (`None` before the first report).
 type HiddenPanes = Arc<Mutex<HashMap<String, Option<String>>>>;
 
-/// A [`HIDDEN_FORMAT`] report as `(activity, terminal bytes)`: the bytes set
-/// each mode the report names, on or off, and the title, so a two-cell parser
-/// fed them holds what the pane's own output would have left it holding.
-/// `None` for a value that is not one of these.
 pub(crate) fn hidden_state(value: &str) -> Option<(String, Vec<u8>)> {
     let mut fields = value.splitn(5, '|');
     let activity = fields.next()?.to_string();
@@ -242,21 +170,8 @@ pub(crate) fn hidden_state(value: &str) -> Option<(String, Vec<u8>)> {
     Some((activity, bytes))
 }
 
-/// Longest agent activity line replayed from a pane title at adopt time.
-///
-/// A title is one line in the session list, and the value comes back from a
-/// host: bounding it here means a pane whose title is a megabyte cannot make
-/// the seed one.
 pub(crate) const MAX_TITLE_SEED_BYTES: usize = 512;
 
-/// The DECSETs that put a parser in the mouse modes tmux reports for a pane,
-/// from six comma-separated flags: `mouse_standard_flag`, `mouse_button_flag`,
-/// `mouse_all_flag`, `mouse_any_flag`, `mouse_sgr_flag`, `mouse_utf8_flag`.
-///
-/// A flag is on only when it reads `1`: a format a server does not know
-/// expands to nothing, which is off. `mouse_any_flag` is set for every
-/// tracking mode, so when it is the only one on — a server that knows it but
-/// not the mode's own flag — plain `?1000` still gets the wheel through.
 pub(crate) fn mouse_seed_bytes(flags: &str) -> Vec<u8> {
     let on: Vec<bool> = flags.split(',').map(|f| f.trim() == "1").collect();
     let flag = |i: usize| on.get(i).copied().unwrap_or(false);
@@ -276,14 +191,6 @@ pub(crate) fn mouse_seed_bytes(flags: &str) -> Vec<u8> {
     out.into_bytes()
 }
 
-/// The OSC 2 that restores `title` as a pane's window title, or empty when
-/// there is nothing to restore.
-///
-/// Suppressed for a title equal to `host_short`, which is what tmux seeds a
-/// pane with and therefore means "no agent ever set one" — replaying it would
-/// put a hostname in the session list where the activity line goes. Control
-/// characters are dropped because the value is remote-controlled text and the
-/// sequence is terminated by one.
 pub(crate) fn title_seed_bytes(host_short: &str, title: &str) -> Vec<u8> {
     let title = title.trim();
     if title.is_empty() || title == host_short.trim() {
@@ -303,77 +210,40 @@ pub(crate) fn title_seed_bytes(host_short: &str, title: &str) -> Vec<u8> {
     format!("\x1b]2;{text}\x1b\\").into_bytes()
 }
 
-/// Who sizes a pane, as far as anybody else is concerned: the
-/// [`SIZER_OPTION`] while more than one client is attached, and nobody once a
-/// client is alone — an alone client may size any pane (`Server::resize`),
-/// so a name left behind by an instance that has gone no longer counts. tmux
-/// re-evaluates a subscription as clients come and go, which is what tells the
-/// instance left behind that the size is its own again.
 pub const SIZED_BY: &str = concat!("#{?#{==:#{session_attached},1},,#{", sizer_option!(), "}}");
 
-/// Maps pane IDs to sync senders for multi-instance output broadcast.
 pub type PaneSendersMap = HashMap<String, Vec<PaneSender>>;
 pub type PaneSendersMapShared = Arc<Mutex<PaneSendersMap>>;
 
-/// One reader of a pane: its channel, and — on a server that can snapshot a
-/// pane — how it is caught up after the channel overflowed (see `Resync`).
 pub struct PaneSender {
     tx: SyncSender<PaneChunk>,
     resync: Option<Arc<Resync>>,
 }
 
 impl From<SyncSender<PaneChunk>> for PaneSender {
-    /// A reader that is never caught up: output that finds its channel full
-    /// is lost.
     fn from(tx: SyncSender<PaneChunk>) -> Self {
         Self { tx, resync: None }
     }
 }
 
-/// A reader that is still there to take what it is handed, or not.
 enum Sent {
     Kept,
     Gone,
 }
 
-/// How a reader whose channel overflowed gets back in step with its pane.
-///
-/// The reader thread must never block, so output that finds a pane's channel
-/// full is dropped. What follows a gap cannot be parsed onto the grid either:
-/// the gap may have cut an escape sequence, and the grid is missing whatever
-/// the dropped bytes drew. So a reader that lost a chunk is *behind*: it is
-/// handed no more output, and one snapshot is asked for. Its answer is
-/// spliced into the stream where it arrives, as a [`PaneChunk::Resync`] —
-/// exact at that byte, the way every spliced snapshot is — and output flows
-/// again behind it.
-///
-/// A channel can still be full when that answer comes. The snapshot is then
-/// *parked* here, and the reader takes it once it has drained its channel —
-/// nothing queued after the snapshot was taken can be in the channel, since
-/// a reader that is behind is handed no output. Anything else handed to it
-/// meanwhile, or any output the pane prints, makes the parked snapshot stale,
-/// and another one is asked for.
 pub(crate) struct Resync {
     pane: String,
-    /// Rows of history a snapshot carries.
     history: usize,
     command_list_single_reply: bool,
-    /// Weak, so a reader's sender does not keep a closed connection's writer
-    /// thread waiting for lines.
     outbox: Weak<Mutex<Outbox>>,
     response_queue: Weak<Mutex<VecDeque<Waiter>>>,
-    /// Set only by the reader thread, which is the one that drops output, and
-    /// cleared under `state`'s lock. So that thread finds a reader in step
-    /// without taking a lock, which is every chunk of a pane's output.
     behind: AtomicBool,
     state: Mutex<ResyncState>,
 }
 
 #[derive(Default)]
 struct ResyncState {
-    /// A snapshot is asked for and not yet answered.
     asked: bool,
-    /// A snapshot that found the channel full, for the reader to take.
     parked: Option<Box<PaneSnapshot>>,
 }
 
@@ -382,7 +252,6 @@ impl Resync {
         self.behind.load(Ordering::Acquire)
     }
 
-    /// Ask for a snapshot unless one is already on its way.
     fn ask(&self, state: &mut ResyncState) {
         if state.asked {
             return;
@@ -405,8 +274,6 @@ impl Resync {
 }
 
 impl PaneSender {
-    /// Hand output over without blocking. A reader that is behind takes none,
-    /// and output that finds the channel full puts it behind.
     fn send_output(&self, chunk: PaneChunk) -> Sent {
         // Only this thread puts a reader behind, so one seen in step is.
         let in_step = self.resync.as_ref().is_none_or(|r| !r.is_behind());
@@ -440,8 +307,6 @@ impl PaneSender {
         Sent::Kept
     }
 
-    /// Hand over something that is not output, without blocking. Whether the
-    /// reader took it — or `Gone`.
     fn send_event(&self, event: PaneChunk) -> Result<bool, ()> {
         if let Some(resync) = self.resync.as_ref().filter(|r| r.is_behind()) {
             if let Ok(mut state) = resync.state.lock() {
@@ -457,19 +322,6 @@ impl PaneSender {
         }
     }
 
-    /// Hand over the answer to a spliced snapshot: as a resync to a reader
-    /// that is behind, parked when its channel has no room, and as a plain
-    /// snapshot to one in step. `None` for a snapshot that failed, which puts
-    /// a reader behind back in step — nothing will catch it up, and dropping
-    /// its output for good would be worse than the gap.
-    ///
-    /// Why a snapshot spliced in here is exact: tmux queues a pane's
-    /// `%output` in the same callback that parses those bytes into its own
-    /// screen, and queues a command's reply behind every block already queued
-    /// (`window.c`, `control.c`), so the reply to a capture sits in the stream
-    /// at the byte its capture describes. The reader thread sees both in that
-    /// order, which is why it — and not the thread that asked — puts the
-    /// snapshot into the pane's channel.
     fn send_snapshot(&self, snapshot: Option<&PaneSnapshot>) -> Sent {
         if let Some(resync) = self.resync.as_ref().filter(|r| r.is_behind()) {
             let Ok(mut state) = resync.state.lock() else {
@@ -509,84 +361,47 @@ impl PaneSender {
     }
 }
 
-/// Which window each registered pane lives in, so a window's closing can be
-/// turned into EOF for the readers of the panes that went with it.
-///
-/// tmux announces a death by WINDOW (`%window-close @3`) and streams output by
-/// PANE (`%output %7 …`), and nothing in the protocol relates the two: the
-/// `%window-add` that opened it carried no pane, and the panes are gone by the
-/// time the close arrives, so it cannot be asked afterwards either. Recorded
-/// when the pane is registered, which is the one moment both ids are in hand.
 pub type PaneWindowsMap = HashMap<String, String>;
 pub type PaneWindowsMapShared = Arc<Mutex<PaneWindowsMap>>;
 
-/// Where each registered pane's reader applies the sizes tmux reports, for a
-/// size its channel had no room for (see `ControlMode::dispatch_resize`).
 pub type PaneSizesMap = HashMap<String, PaneSize>;
 pub type PaneSizesMapShared = Arc<Mutex<PaneSizesMap>>;
 
-/// Response from a tmux control mode command.
 pub struct CommandResponse {
-    /// Every block's lines, in order: one block per command of a list.
     pub blocks: Vec<Vec<String>>,
     pub is_error: bool,
 }
 
 impl CommandResponse {
-    /// Every line of every block, as one list.
     fn lines(&self) -> Vec<String> {
         self.blocks.concat()
     }
 }
 
-/// A sent line waiting for its answer, and how many `%begin`/`%end` blocks that
-/// answer spans. tmux answers a command list (`a ; b ; c`) with one block per
-/// command it runs, and nothing on the wire says which blocks belong together —
-/// each carries a command number of its own (measured, tmux 3.2 and 3.7c) — so
-/// only the sender can know.
 struct Waiter {
     tx: SyncSender<Reply>,
     blocks: usize,
-    /// Its line's place on the wire (see [`Outbox`]).
     seq: u64,
-    /// For a [`snapshot_commands`] list: the pane whose output stream the
-    /// answer is put into, as a [`PaneChunk::Snapshot`], at the point it
-    /// arrived.
     splice: Option<String>,
 }
 
-/// The waiters, in the order their lines were written.
 type ResponseQueue = Arc<Mutex<VecDeque<Waiter>>>;
 
-/// What a waiter is handed: the answer, or the write error that kept its line
-/// from ever reaching the server. Only the second tells a caller that sending
-/// the command again cannot run it twice.
 type Reply = std::result::Result<CommandResponse, std::io::Error>;
 
-/// A line for the connection's writer thread, with its waiter's `seq`.
 struct Line {
     seq: u64,
     text: String,
 }
 
-/// The way into a connection. Taking a place in the reply queue and handing the
-/// line to the writer thread happen under this one lock, so lines go out in the
-/// order their waiters queued; the write happens on the writer thread, so
-/// nothing that holds this lock — a caller, the reader thread resuming a pane —
-/// ever waits on the pipe.
 struct Outbox {
-    /// `None` once the connection is closed or a write to it failed.
     lines: Option<std::sync::mpsc::Sender<Line>>,
     next: u64,
     written: Arc<Written>,
 }
 
-/// How far the writer thread has got, for a sender that must not overtake the
-/// lines queued before it by another route ([`ControlModeWriter`]'s paste).
 #[derive(Default)]
 struct Written {
-    /// Every line before this `seq` is written, and whether the thread has
-    /// stopped, after which nothing more will be.
     state: Mutex<(u64, bool)>,
     moved: Condvar,
 }
@@ -600,7 +415,6 @@ impl Written {
         self.moved.notify_all();
     }
 
-    /// Block until every line before `seq` is written or none will be.
     fn wait_for(&self, seq: u64) {
         let Ok(state) = self.state.lock() else {
             return;
@@ -614,18 +428,11 @@ impl Written {
 
 type SharedOutbox = Arc<Mutex<Outbox>>;
 
-/// A waiter whose command list has answered some of its blocks.
 struct Answer {
     waiter: Waiter,
     blocks: Vec<Vec<String>>,
 }
 
-/// The `<time> <number>` a `%begin`, `%end` or `%error` line carries.
-///
-/// tmux ends a block with the same two numbers it began it with, and that is
-/// the only way to tell a block's end from a line of its body: a command's
-/// output is written raw, so a captured screen line can read `%end …` or
-/// `%output …` as easily as anything else.
 fn block_tag(line: &str) -> Option<(&str, &str)> {
     let rest = line
         .strip_prefix("%begin ")
@@ -639,7 +446,6 @@ fn joined_tag((time, number): (&str, &str)) -> String {
     format!("{time} {number}")
 }
 
-/// Parsed notification from the tmux control mode protocol.
 #[derive(Debug, PartialEq)]
 pub enum Notification {
     Output {
@@ -652,32 +458,14 @@ pub enum Notification {
     Pause {
         pane_id: String,
     },
-    /// A window is gone, with every pane that was in it — the program in it
-    /// exited, or something killed it.
-    ///
-    /// tmux spells this two ways and means the same thing by both:
-    /// `%window-close` for a window of the session the client is attached to,
-    /// `%unlinked-window-close` for one that has already been unlinked from it.
-    /// Measured 2026-09-11 (tmux control mode, program exiting on its own): the
-    /// notification that actually arrives for a `new-window` of the attached
-    /// session is the UNLINKED one, because tmux unlinks before it announces.
-    /// Treating only the first spelling as a death is therefore the same as
-    /// treating none of them as one.
     WindowClose {
         window_id: String,
     },
-    /// A `refresh-client -B` format subscription reported a changed value
-    /// (tmux >= 3.2). Carries the remote hook state for
-    /// [`REMOTE_HOOK_SUBSCRIPTION`].
     SubscriptionChanged {
         name: String,
         pane_id: String,
         value: String,
     },
-    /// A window's size changed, whoever changed it — `%layout-change`, which
-    /// tmux sends to every control client for every `resize-window`, even one
-    /// that leaves the size where it was (measured, tmux 3.7c). The size is the
-    /// window's; thurbox's windows hold one pane each, so it is the pane's too.
     LayoutChange {
         window_id: String,
         rows: u16,
@@ -686,13 +474,9 @@ pub enum Notification {
     Other(String),
 }
 
-/// Per-pane reader that receives output via an mpsc channel: the pane's
-/// [`PaneOutput`](crate::contract::PaneOutput), as
-/// `Session::reader_loop` takes it.
 pub struct ControlModeReader {
     receiver: std::sync::mpsc::Receiver<PaneChunk>,
     size: PaneSize,
-    /// Where a snapshot that found this reader's channel full is parked.
     resync: Option<Arc<Resync>>,
 }
 
@@ -705,11 +489,6 @@ impl ControlModeReader {
         }
     }
 
-    /// The next chunk, blocking for it. A snapshot parked for this reader
-    /// ([`Resync`]) comes once the channel is drained, and is taken under the
-    /// lock it was parked under (see [`Self::take_parked`]), so one that finds
-    /// nothing parked can block: anything sent from then on lands in the
-    /// channel and wakes it.
     fn recv_chunk(&self) -> Result<PaneChunk, std::sync::mpsc::RecvError> {
         let Some(resync) = &self.resync else {
             return self.receiver.recv();
@@ -727,14 +506,6 @@ impl ControlModeReader {
         }
     }
 
-    /// The step of [`Self::recv_chunk`] that runs under the lock a snapshot is
-    /// parked under: the next chunk, the parked snapshot once there is none,
-    /// or `None` when neither is there.
-    ///
-    /// The channel is looked at again under that lock. Between the reader
-    /// finding it empty and taking the lock, the reader thread can fill it,
-    /// overflow and park a snapshot; what it queued then is older than the
-    /// snapshot, and must not be parsed onto the grid the snapshot rebuilds.
     fn take_parked(
         &self,
         resync: &Resync,
@@ -752,8 +523,6 @@ impl ControlModeReader {
         Some(Ok(PaneChunk::Resync(snapshot)))
     }
 
-    /// Where this reader leaves the sizes tmux reports for its pane, for the
-    /// loop that feeds the pane's grid.
     pub fn size(&self) -> PaneSize {
         self.size.clone()
     }
@@ -762,10 +531,6 @@ impl ControlModeReader {
 impl Iterator for ControlModeReader {
     type Item = PaneChunk;
 
-    /// The next chunk, blocking for it; `None` once the channel is closed. A
-    /// size is reported to [`Self::size`] as its chunk is handed over, so the
-    /// loop resizes its grid at exactly the point in the stream tmux resized
-    /// the pane. Who sizes the pane is only recorded.
     fn next(&mut self) -> Option<PaneChunk> {
         loop {
             match self.recv_chunk().ok()? {
@@ -782,38 +547,17 @@ impl Iterator for ControlModeReader {
     }
 }
 
-/// Max input bytes encoded into a single `send-keys` command. Each byte
-/// becomes 3 chars (` XX`) under `-H`, so the command line stays ≈ `prefix +
-/// 3·512` ≈ 1.6 KB — well under tmux's per-command line limit (which would
-/// truncate a longer line). Larger writes are split across several commands.
 pub const SEND_KEYS_CHUNK_BYTES: usize = 512;
 
-/// Split `buf` into the ordered `send-keys -H` command lines for `pane_id`.
-///
-/// The byte-exact hex flag (each byte → two hex digits), chunked at
-/// `SEND_KEYS_CHUNK_BYTES` so no single control-mode line gets over-long; the
-/// raw bytes span the chunks and the receiving pane reassembles them. tmux's
-/// encoding; a server without `-H` encodes its own way ([`PaneInput`]). A paste
-/// does not come here — see [`ControlModeWriter`].
 pub fn hex_send_keys_commands(pane_id: &str, buf: &[u8]) -> Vec<String> {
     buf.chunks(SEND_KEYS_CHUNK_BYTES)
         .map(|chunk| format_send_keys(pane_id, chunk))
         .collect()
 }
 
-/// The bracketed-paste markers a paste payload is wrapped in.
 const PASTE_START: &[u8] = b"\x1b[200~";
 const PASTE_END: &[u8] = b"\x1b[201~";
 
-/// The pasted text inside a bracketed-paste payload (`ESC[200~ … ESC[201~`), or
-/// `None` when `buf` is not exactly one such payload — ordinary keystrokes, a
-/// payload split across writes, a marker in the middle (two pastes, or pasted
-/// marker text), or non-UTF-8 bytes. [`ControlModeWriter`] refuses a write
-/// that opens with a marker and is not one, rather than typing it out.
-///
-/// The markers are stripped: the server is handed the bare text and re-adds
-/// them itself, only when the receiving app has bracketed paste on —
-/// [`PaneInput::paste`], or `tmux_paste_commands` where that declines.
 pub fn bracketed_paste_text(buf: &[u8]) -> Option<&str> {
     let inner = buf.strip_prefix(PASTE_START)?.strip_suffix(PASTE_END)?;
     let has_marker = |m: &[u8]| inner.windows(m.len()).any(|w| w == m);
@@ -823,31 +567,18 @@ pub fn bracketed_paste_text(buf: &[u8]) -> Option<&str> {
     std::str::from_utf8(inner).ok()
 }
 
-/// How a pane's input reaches it through control mode — the server's own
-/// encoding, chosen by its adapter.
 pub trait PaneInput: Send + Sync {
-    /// The ordered control-mode lines that type `buf` into `pane_id`.
     fn send_keys(&self, pane_id: &str, buf: &[u8]) -> Vec<String>;
 
-    /// Deliver `text`, a whole bracketed paste, to `pane_id` out of band, or
-    /// `None` where the server pastes through control mode itself
-    /// (`tmux_paste_commands`). An `Err` drops the paste: typing it out instead
-    /// would make every CR in it `Enter`.
     fn paste(&self, pane_id: &str, text: &str) -> Option<Result<()>>;
 
-    /// Whether [`Self::paste`] goes around the connection, where nothing orders
-    /// it after the keys queued before it but waiting for them to be written.
     fn pastes_out_of_band(&self) -> bool {
         false
     }
 }
 
-/// Max text bytes per `set-buffer` line of `tmux_paste_commands`. Every
-/// escape `tmux_quote` writes is at most four characters for one byte, so the
-/// line stays within the budget [`SEND_KEYS_CHUNK_BYTES`] keeps `send-keys` to.
 const SET_BUFFER_CHUNK_BYTES: usize = 384;
 
-/// Split `text` into pieces of at most `max` bytes, never inside a character.
 fn chunks_on_char_boundaries(text: &str, max: usize) -> Vec<&str> {
     let mut chunks = Vec::new();
     let mut start = 0;
@@ -862,10 +593,6 @@ fn chunks_on_char_boundaries(text: &str, max: usize) -> Vec<&str> {
     chunks
 }
 
-/// Double-quote `s` as one tmux command argument that survives a control-mode
-/// line: tmux's parser reads `\n`, `\r`, `\t` and `\NNN` inside `"…"` (since
-/// 3.0), so no raw line break ends the line early, and `$`/`~` are escaped
-/// because tmux expands them there. A C1 control is written as `\u00NN`.
 fn tmux_quote(s: &str) -> String {
     use std::fmt::Write as _;
     let mut out = String::with_capacity(s.len() + 2);
@@ -888,20 +615,6 @@ fn tmux_quote(s: &str) -> String {
     out
 }
 
-/// The control-mode lines that paste `text` into `pane_id` on a server that
-/// takes no paste out of band.
-///
-/// The text goes into a buffer and `paste-buffer -p` puts it in the pane, so it
-/// is **the server** that decides the markers: they are written only when the
-/// pane's app has mode 2004 on, from its own record of the pane. thurbox's grid
-/// cannot answer that — a pane adopted after a restart never showed this
-/// process the `ESC[?2004h` that turned the mode on. `-r` keeps line feeds as
-/// they are (tmux would turn each into a CR) and `-d` deletes the buffer once
-/// pasted.
-///
-/// The buffer is this paste's alone — process id and a sequence number — since
-/// two interfaces pasting into one pane over two connections would otherwise
-/// interleave their `set-buffer -a` and `paste-buffer -d` on one buffer.
 fn tmux_paste_commands(pane_id: &str, text: &str) -> Vec<String> {
     static PASTES: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
     let buffer = format!(
@@ -921,19 +634,6 @@ fn tmux_paste_commands(pane_id: &str, text: &str) -> Vec<String> {
     cmds
 }
 
-/// Per-pane writer that sends input via control-mode `send-keys` through the
-/// connection's outbox, encoded the way the server's adapter says
-/// ([`PaneInput`]).
-///
-/// A write that opens with `ESC[200~` is a paste, and a paste is never typed
-/// out: in a key encoding every CR is `Enter`, so a paste typed out runs each
-/// line it holds. It goes to the server's own paste path instead, which frames
-/// it only for an app that asked; one that is not a single clean frame, or that
-/// the server could not take, is dropped with a warning.
-///
-/// Every line it writes is a command the server answers, so each one takes its
-/// place in the connection's reply queue like any other — see
-/// `ControlMode::write_unanswered`.
 pub struct ControlModeWriter {
     outbox: SharedOutbox,
     replies: ResponseQueue,
@@ -987,7 +687,6 @@ impl Write for ControlModeWriter {
 }
 
 impl ControlModeWriter {
-    /// Wait for every line queued on this connection so far to be written.
     fn wait_written(&self) {
         let Ok(outbox) = self.outbox.lock() else {
             return;
@@ -998,11 +697,6 @@ impl ControlModeWriter {
     }
 }
 
-/// Decode tmux control mode octal escapes in `%output` data.
-///
-/// Scans for `\` followed by exactly 3 octal digits (0-7). Emits the decoded byte.
-/// All other bytes pass through unchanged — including raw bytes `>= 0x80`,
-/// which tmux does not escape.
 pub fn decode_octal(bytes: &[u8]) -> Vec<u8> {
     let mut result = Vec::with_capacity(bytes.len());
     let mut i = 0;
@@ -1030,7 +724,6 @@ fn is_octal(b: u8) -> bool {
     (b'0'..=b'7').contains(&b)
 }
 
-/// Parse a line from tmux control mode into a notification.
 pub fn parse_notification(line: &str) -> Notification {
     if let Some(output) = parse_output(line.as_bytes()) {
         return output;
@@ -1070,14 +763,6 @@ pub fn parse_notification(line: &str) -> Notification {
     Notification::Other(line.to_string())
 }
 
-/// `%output` and `%extended-output`: a pane's bytes.
-///
-/// Read from the raw line, never from text: tmux escapes only bytes below
-/// `0x20` and `\`, passes the rest through, and cuts a pane's output into lines
-/// wherever its read ended — often inside a multi-byte character. Decoding a
-/// line as UTF-8 on its own turns both halves of that character into U+FFFD,
-/// which vt100 drops; the reader's `carry` rejoins them only if they reach it
-/// as bytes (`tests/lazy_terminals.rs`).
 fn parse_output(line: &[u8]) -> Option<Notification> {
     if let Some(rest) = line.strip_prefix(b"%output ") {
         // Format: %output %<pane_id> <octal-encoded data>
@@ -1100,7 +785,6 @@ fn parse_output(line: &[u8]) -> Option<Notification> {
     })
 }
 
-/// `%window-close` and `%unlinked-window-close`, naming the window that went.
 fn parse_window_close(line: &str) -> Option<Notification> {
     let rest = line
         .strip_prefix("%window-close ")
@@ -1117,12 +801,6 @@ fn parse_window_close(line: &str) -> Option<Notification> {
     })
 }
 
-/// `%layout-change @<window> <layout> <visible-layout> <flags>`, as the window
-/// and the size its layout gives it.
-///
-/// A layout is `<checksum>,<cols>x<rows>,<x>,<y>…`, and its second field is the
-/// whole window's size whatever the panes inside it are, so nothing past that
-/// field is read.
 fn parse_layout_change(line: &str) -> Option<Notification> {
     let mut tokens = line.strip_prefix("%layout-change ")?.split_whitespace();
     let window_id = tokens.next()?;
@@ -1138,17 +816,6 @@ fn parse_layout_change(line: &str) -> Option<Notification> {
     })
 }
 
-/// Parse a `%subscription-changed` notification (tmux >= 3.2 format
-/// subscriptions, armed via `refresh-client -B`).
-///
-/// Wire format (tmux man page): `%subscription-changed name session-id
-/// window-id window-index pane-id ... : value` — "any arguments after pane-id
-/// up until a single ':' are for future use and should be ignored". Parsed
-/// positionally (name = token 0, pane id = token 4, validated) with the value
-/// being everything after the first ` : ` separator past the pane token,
-/// verbatim — it may legally be empty or contain spaces/colons. Any shape
-/// violation returns `None` (→ `Notification::Other`); wire data never
-/// panics.
 fn parse_subscription_changed(line: &str) -> Option<Notification> {
     let rest = line.strip_prefix("%subscription-changed ")?;
     let mut tokens = rest.splitn(6, ' ');
@@ -1182,31 +849,16 @@ fn parse_subscription_changed(line: &str) -> Option<Notification> {
     })
 }
 
-/// A tmux pane id is `%<digits>`. Pane ids are interpolated unquoted into
-/// control-mode commands (`send-keys -t`, `kill-pane -t`, …), so anything
-/// else must be rejected where ids enter the system (spawn/adopt/discover).
 pub fn is_valid_pane_id(s: &str) -> bool {
     s.strip_prefix('%')
         .is_some_and(|rest| !rest.is_empty() && rest.bytes().all(|b| b.is_ascii_digit()))
 }
 
-/// A tmux window id is `@<digits>`.
-///
-/// Checked for a different reason than the pane id: a window id is never
-/// interpolated into a command, only compared against the one `%window-close`
-/// carries. A value that is not an id would therefore never match and never
-/// complain — indistinguishable from a pane whose death is simply not
-/// announced, which is the failure this mapping exists to prevent.
 pub fn is_valid_window_id(s: &str) -> bool {
     s.strip_prefix('@')
         .is_some_and(|rest| !rest.is_empty() && rest.bytes().all(|b| b.is_ascii_digit()))
 }
 
-/// Parse `list-panes -F "#{pane_id} #{@thurbox_state}"` output into the
-/// `(pane_id, value)` pairs whose option is **set**: one `%<id> [value]` line
-/// per pane; empty values (option unset) and malformed lines are skipped —
-/// wire data never panics. Shared by the hook poller's diff below and the
-/// headless listing (`StatusChannel::hook_states`).
 pub fn parse_pane_hook_states(body: &str) -> Vec<(String, String)> {
     body.lines()
         .filter_map(|line| {
@@ -1221,9 +873,6 @@ pub fn parse_pane_hook_states(body: &str) -> Vec<(String, String)> {
         .collect()
 }
 
-/// Parse `list-panes -a -F "#{pane_id}"` output into the set of panes the
-/// server has, dead ones included. Malformed lines are skipped. Backs
-/// `WindowLifecycle::pane_ids`, the existence question a pid cannot answer.
 pub fn parse_pane_ids(body: &str) -> std::collections::HashSet<String> {
     body.lines()
         .map(str::trim)
@@ -1232,11 +881,6 @@ pub fn parse_pane_ids(body: &str) -> std::collections::HashSet<String> {
         .collect()
 }
 
-/// Parse `list-panes -a -F "#{pane_id} #{pane_pid}"` output into a
-/// `pane_id → pid` map — the same line shape [`parse_pane_hook_states`] reads,
-/// with a pid where the option value was. Malformed lines and non-numeric pids
-/// are skipped: wire data never panics. Backs the batched
-/// `WindowLifecycle::pane_pids` the metrics sampler uses.
 pub fn parse_pane_pids(body: &str) -> std::collections::HashMap<String, u32> {
     body.lines()
         .filter_map(|line| {
@@ -1249,16 +893,6 @@ pub fn parse_pane_pids(body: &str) -> std::collections::HashMap<String, u32> {
         .collect()
 }
 
-/// Diff one hook-poll result against the previous poll, returning the
-/// `(pane_id, value)` pairs to report — the poller-side equivalent of tmux's
-/// `%subscription-changed` edge semantics.
-///
-/// `body` is parsed by [`parse_pane_hook_states`]. Reported: a pane's
-/// **non-empty** value seen for the first time (parity with the
-/// subscription's arm-time catch-up report) or changed since the last poll.
-/// Not reported: an unchanged value (steady state stays silent), an empty
-/// value (option unset — also *clears* the pane's entry, like a vanished
-/// pane, so a respawned pane's state re-reports).
 pub fn diff_polled_hook_states(
     last: &mut std::collections::HashMap<String, String>,
     body: &str,
@@ -1275,9 +909,6 @@ pub fn diff_polled_hook_states(
     changed
 }
 
-/// Format a `send-keys -H` command for a pane.
-///
-/// Each byte is encoded as two hex digits.
 pub fn format_send_keys(pane_id: &str, bytes: &[u8]) -> String {
     use std::fmt::Write;
     // "send-keys -t %NN -H" + " XX" per byte + "\n"
@@ -1290,132 +921,52 @@ pub fn format_send_keys(pane_id: &str, bytes: &[u8]) -> String {
     cmd
 }
 
-/// Shell-escape a string for safe inclusion in a tmux control mode command.
-///
-/// Tmux control mode is line-delimited — each `\n` starts a new command.
-/// Literal newlines in arguments (e.g. `--append-system-prompt`) would split
-/// the command and corrupt the protocol, so they are replaced with spaces.
 pub fn shell_escape(s: &str) -> String {
     // Strip the protocol-breaking newlines, then apply standard POSIX
     // single-quote escaping (shared with the SSH/git paths).
     crate::shell::posix_quote(&s.replace('\n', " "))
 }
 
-/// Timeout for waiting for a control mode command response.
 const COMMAND_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
 
-/// How many times [`ControlMode::drop`] re-checks for a graceful child exit
-/// before force-killing, and how long it waits between checks. The product is
-/// the per-connection ceiling on a graceful detach (~50 ms); a control-mode
-/// client that has not exited by then is not going to, and killing it is
-/// harmless (see the rationale in `impl Drop for ControlMode`).
 const GRACEFUL_EXIT_POLLS: u32 = 10;
 const GRACEFUL_EXIT_POLL_INTERVAL: std::time::Duration = std::time::Duration::from_millis(5);
 
-/// How often a retiring connection checks whether anybody still holds it.
 const RETIRE_POLL: std::time::Duration = std::time::Duration::from_millis(20);
 
-/// A live tmux control mode connection.
-///
-/// Commands are written in order by one writer thread (see [`Outbox`]) and
-/// responses arrive in the same order. We use a FIFO queue instead of matching command numbers,
-/// so **every** line written takes a place in it, whether or not its answer is
-/// read: tmux answers each command, and an answer with no place of its own is
-/// handed to whichever command was queued after it.
 pub(crate) struct ControlMode {
     outbox: SharedOutbox,
     pub(crate) pane_senders: PaneSendersMapShared,
-    /// Where each registered pane lives, for turning `%window-close` into EOF.
-    /// Written by `register_pane`/`unregister_pane`, read by the reader thread.
     pub(crate) pane_windows: PaneWindowsMapShared,
-    /// Where each pane's reader applies a size — written and read as
-    /// `pane_windows` is, and only for a pane whose sizes are reported.
     pub(crate) pane_sizes: PaneSizesMapShared,
-    /// FIFO queue of waiters — one per command written, in the order written.
-    /// Every sender takes a place, including the ones that will not read the
-    /// answer (`send_command_detached`) or will stop waiting for it
-    /// (`send_command_within`): the place is what keeps the queue aligned with
-    /// the wire, not the caller's interest in what comes back.
     response_queue: ResponseQueue,
     command_list_single_reply: bool,
-    /// `(pane_id, state)` pairs from `%subscription-changed` notifications
-    /// (remote hook status — see [`REMOTE_HOOK_STATE_OPTION`]),
-    /// pushed by the reader thread and drained by the app tick via
-    /// [`Self::take_sub_events`]. Bounded (drop-oldest): a short-lived
-    /// connection (e.g. a headless spawn's) has no drainer.
     sub_events: Arc<Mutex<VecDeque<(String, String)>>>,
-    /// Whether this server pushes format subscriptions, which is what a pane
-    /// whose output is held back reports through.
     subscriptions: bool,
-    /// See [`HiddenPanes`]; shared with the reader thread, which reads
-    /// their reports and leaves them paused.
     hidden: HiddenPanes,
-    /// Held across each of [`Self::hide_pane`] and [`Self::show_pane`] — the
-    /// record in `hidden` and the commands it stands for — so the two cannot
-    /// interleave: a hide's pause landing after a concurrent show's resume
-    /// leaves a pane paused with no record, which nothing would ever resume.
-    /// Separate from `hidden`, which the reader thread takes on its way to
-    /// resume a pane, so holding it never stops stdout being read.
     visibility: Mutex<()>,
-    /// True while this connection lives; cleared on reader EOF and in `Drop`.
-    /// The hook poller checks it each cycle so a replaced connection's
-    /// poller winds down instead of writing into a dead pipe forever.
     alive: Arc<AtomicBool>,
     reader_handle: Mutex<Option<JoinHandle<()>>>,
     child: Mutex<Child>,
-    /// Set by the first [`Self::close`], so a connection closed explicitly is
-    /// not detached and waited for a second time when it drops.
     closed: AtomicBool,
 }
 
-/// Cap on queued subscription events. Status transitions are rare and the
-/// queue is drained every TUI tick — the cap only guards an undrained
-/// connection against unbounded growth.
 const SUB_EVENTS_CAP: usize = 256;
 
-/// How often a hook poller lists pane options — matches tmux's own ≤1/s
-/// subscription-report cadence, so both channels have the same worst-case
-/// status latency.
 const HOOK_POLL_INTERVAL: std::time::Duration = std::time::Duration::from_millis(1000);
 
-/// What a control-mode connection may expect of the server it talks to — its
-/// adapter's answer, measured, never a guess from the binary's name.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ControlPolicy {
-    /// Command that limits buffered pane output, when this control server
-    /// offers such a facility.
     pub flow_control_command: Option<&'static str>,
-    /// Whether the server answers the `attach-session` carried on argv with a
-    /// `%begin`/`%end` block of its own, which
-    /// `ControlMode::drain_implicit_attach_response` must consume before any
-    /// waiter exists. Waiting for one a server never sends never returns.
     pub implicit_attach_reply: bool,
-    /// Whether a reply block's `%end` carries its `%begin`'s tag, so a block
-    /// can hold any line a pane showed. Where it does not, any `%end` ends the
-    /// block, as before tags were read.
     pub tagged_blocks: bool,
-    /// Whether a command list answers with one block rather than one per command.
     pub command_list_single_reply: bool,
-    /// Whether the server pushes format subscriptions (`refresh-client -B`):
-    /// the remote-hook status and which client sizes each pane.
     pub subscriptions: bool,
-    /// Where status cannot be subscribed to but can be asked for: the command
-    /// listing every pane's hook-state option, polled each
-    /// `HOOK_POLL_INTERVAL` into the queue a subscription would feed.
     pub status_poll: Option<String>,
-    /// Where a `%window-close` is only a hint: the command listing every pane
-    /// the attached session still has, one `#{pane_id}` per line. A close then
-    /// ends only the readers of panes that listing no longer has, whatever
-    /// window it named (`ControlMode::confirm_closes`). `None` takes the
-    /// close at its word.
     pub confirm_close: Option<String>,
 }
 
 impl ControlMode {
-    /// Start a control mode connection to the thurbox tmux session over the
-    /// given transport (local or ssh).
-    /// `sizer` is this client's name in [`SIZER_OPTION`], so a pane named for
-    /// anybody else can be reported as sized elsewhere.
     pub(crate) fn start(
         transport: &TmuxTransport,
         socket: &str,
@@ -1564,22 +1115,6 @@ impl ControlMode {
         Ok(control)
     }
 
-    /// A server with no format subscriptions **polls** the remote-hook pane
-    /// option instead, where its adapter asks for it
-    /// ([`ControlPolicy::status_poll`]): a background thread runs `cmd` — a
-    /// listing of every pane of the session with its `@thurbox_state` — each
-    /// [`HOOK_POLL_INTERVAL`], diffs against the previous poll
-    /// ([`diff_polled_hook_states`]), and feeds changes into the same
-    /// `sub_events` queue the tmux subscription uses — everything downstream
-    /// (`take_hook_state_events` → the app's drain) is shared. Best-effort: a
-    /// command failure ends the thread (the connection is dying; a reconnect's
-    /// fresh `ControlMode` spawns a fresh poller), and an idle server pays one
-    /// cheap command per second on an already-persistent connection.
-    ///
-    /// The thread is deliberately **detached** (not joined in `Drop`): a poll
-    /// blocked in its command timeout when the connection dies would stall the
-    /// drop for [`COMMAND_TIMEOUT`]; instead it exits on its own via the
-    /// `alive` flag or the dead pipe shortly after.
     fn spawn_hook_poller(&self, cmd: String) {
         let outbox = Arc::clone(&self.outbox);
         let queue = Arc::clone(&self.response_queue);
@@ -1610,9 +1145,6 @@ impl ControlMode {
         }
     }
 
-    /// Append polled hook changes to the subscription queue, oldest dropped
-    /// first once it is full — the same bound the passive tmux subscription
-    /// honours.
     fn queue_sub_events(
         events: &Arc<Mutex<VecDeque<(String, String)>>>,
         changed: Vec<(String, String)>,
@@ -1631,9 +1163,6 @@ impl ControlMode {
         }
     }
 
-    /// One newline-terminated control-mode line into `line_buf`, without its
-    /// newline; `false` at EOF / on an I/O error (both of which end the
-    /// reader).
     fn read_control_line(reader: &mut impl BufRead, line_buf: &mut Vec<u8>) -> bool {
         line_buf.clear();
         match reader.read_until(b'\n', line_buf) {
@@ -1650,25 +1179,11 @@ impl ControlMode {
         true
     }
 
-    /// [`Self::read_control_line`] as text, or `None` where it returns `false`.
-    ///
-    /// Lossy, which is only safe for a line that holds whole characters. A
-    /// pane's output does not (see [`parse_output`]), so the reader takes
-    /// `%output` from the bytes before converting anything. A command's reply
-    /// does: tmux writes it in one piece, and a `capture-pane` line is a row
-    /// of whole cells.
     fn next_control_line(reader: &mut impl BufRead, line_buf: &mut Vec<u8>) -> Option<String> {
         Self::read_control_line(reader, line_buf)
             .then(|| String::from_utf8_lossy(line_buf).into_owned())
     }
 
-    /// Synchronously consume tmux's implicit `%begin`/`%end`(`%error`) reply
-    /// to the `-C attach-session` command carried on argv, before the reader
-    /// thread (and thus any `response_queue` waiter) exists — see the call
-    /// site in [`Self::start`] for why that ordering matters. Any notification
-    /// lines ahead of the block (tmux has been observed to send `%output` /
-    /// `%session-changed` first) are harmless to skip here: nothing is
-    /// registered to receive them yet.
     fn drain_implicit_attach_response(reader: &mut impl BufRead) -> Result<()> {
         let mut line_buf = Vec::new();
         while let Some(line) = Self::next_control_line(reader, &mut line_buf) {
@@ -1688,13 +1203,6 @@ impl ControlMode {
         bail!("control mode closed before sending its implicit attach response");
     }
 
-    /// Background thread that reads and dispatches control mode output.
-    ///
-    /// Responses arrive in FIFO order matching `send_command()` calls.
-    /// We track a single in-flight block at a time (`%begin` → collect
-    /// lines → `%end`/`%error`), then hand it to the waiter at the front of
-    /// the queue, which a command list keeps for as many blocks as it has
-    /// commands (see [`Self::deliver_response`]).
     #[allow(clippy::too_many_arguments)]
     fn reader_thread(
         mut reader: BufReader<std::process::ChildStdout>,
@@ -1835,7 +1343,6 @@ impl ControlMode {
         Self::drop_panes(&pane_senders, &pane_windows, &pane_sizes);
     }
 
-    /// Forget every pane this connection serves, which is EOF for their readers.
     fn drop_panes(
         pane_senders: &PaneSendersMapShared,
         pane_windows: &PaneWindowsMapShared,
@@ -1852,17 +1359,6 @@ impl ControlMode {
         }
     }
 
-    /// A window closed: drop the senders of every pane that was in it, which is
-    /// what gives those panes' `reader_loop`s their EOF.
-    ///
-    /// Without this the channel simply goes quiet, and quiet is indistinguishable
-    /// from a program that has nothing to say: `exited` stays false, so nothing
-    /// fires `program.exited`, the surface keeps painting the grid the program
-    /// left behind, and `start_program` keeps answering "already running" to
-    /// every request to open it again. That last one has no error path — it
-    /// returns `Ok(())` — so the symptom is a pane that cannot be reopened and a
-    /// log with nothing in it. (Found 2026-09-11: `:q` in the editor pane, and
-    /// no click or key would ever bring it back.)
     fn close_window_panes(
         pane_senders: &PaneSendersMapShared,
         pane_windows: &PaneWindowsMapShared,
@@ -1885,8 +1381,6 @@ impl ControlMode {
         debug!(window_id, panes = ?gone, "window closed, its pane readers get EOF");
     }
 
-    /// Drop the senders of `panes` and forget their windows: EOF for their
-    /// readers.
     fn close_panes(
         pane_senders: &PaneSendersMapShared,
         pane_windows: &PaneWindowsMapShared,
@@ -1904,7 +1398,6 @@ impl ControlMode {
         }
     }
 
-    /// Forget the size of every pane whose window is no longer known.
     fn forget_sizes(pane_sizes: &PaneSizesMapShared, pane_windows: &PaneWindowsMapShared) {
         if let Ok(mut sizes) = pane_sizes.lock() {
             let windows = pane_windows.lock().ok();
@@ -1912,21 +1405,6 @@ impl ControlMode {
         }
     }
 
-    /// A `%window-close` from a server whose closes are only hints
-    /// ([`ControlPolicy::confirm_close`]): list the session's panes and end the
-    /// readers of the registered panes it no longer has.
-    ///
-    /// The window the close names is not used to choose: psmux 3.3.7 was
-    /// measured naming `@2`, still alive, for the closes of `@6` and `@9`.
-    /// Ending readers on that word is what blanked live agents and had them
-    /// relaunched; ending none would leave a pane that did go read forever.
-    ///
-    /// Off the reader thread, which is the one that delivers the listing's
-    /// reply. The registered panes are taken before the listing is asked for,
-    /// so a pane registered while it is in flight is never judged by a listing
-    /// older than it. A listing that fails ends nothing: such a server's
-    /// liveness is polled as well (`needs_liveness_poll`), which still finds a
-    /// pane that went.
     fn spawn_close_check(
         outbox: &SharedOutbox,
         response_queue: &ResponseQueue,
@@ -1974,10 +1452,6 @@ impl ControlMode {
         }
     }
 
-    /// The `registered` panes a `#{pane_id}` listing of the session no longer
-    /// has. A listing with no pane at all is not believed: the session's own
-    /// server answered it, so the session still has a window, and reading it
-    /// as "every pane went" would end every reader on one bad reply.
     fn confirm_closes(registered: &[String], listing: &str) -> Vec<String> {
         let live = parse_pane_ids(listing);
         if live.is_empty() {
@@ -1990,17 +1464,6 @@ impl ControlMode {
             .collect()
     }
 
-    /// Tell the readers of every pane in `window_id` that it is now `rows` ×
-    /// `cols`, in line with the output around it (see [`PaneChunk`]).
-    ///
-    /// Only a pane registered with its window can be told, which is every pane
-    /// this connection wired up once it learnt the window
-    /// ([`crate::tmux`]'s `register_pane`). The reader thread must never
-    /// block, but a size must not be dropped the way output is when a channel is
-    /// full: a resident grid has nothing that would ever correct it. So a size
-    /// with no room in the channel goes straight to where the pane's reader
-    /// applies sizes, at its next read — early for the bytes still queued, and
-    /// the program repaints after a resize anyway.
     fn dispatch_resize(
         pane_senders: &PaneSendersMapShared,
         pane_windows: &PaneWindowsMapShared,
@@ -2027,9 +1490,6 @@ impl ControlMode {
         }
     }
 
-    /// Hand one event to every reader of `pane_id`, dropping it for a full
-    /// channel as output is dropped: the reader thread must never block.
-    /// Whether every reader took it.
     fn send_event(pane_senders: &PaneSendersMapShared, pane_id: &str, event: PaneChunk) -> bool {
         let Ok(mut senders) = pane_senders.lock() else {
             return false;
@@ -2056,11 +1516,6 @@ impl ControlMode {
         all
     }
 
-    /// Drop the senders at `gone` (ascending) from `pane_id`'s, and the pane's
-    /// entry once none is left: a sender whose reader was dropped would
-    /// otherwise stay registered for the life of the connection, still handed
-    /// every chunk of the pane's output, and still counted as a reader by a
-    /// window-close check ([`Self::spawn_close_check`]).
     fn prune_senders(senders: &mut PaneSendersMap, pane_id: &str, gone: &[usize]) {
         let Some(tx_vec) = senders.get_mut(pane_id) else {
             return;
@@ -2074,11 +1529,6 @@ impl ControlMode {
         debug!(pane_id = %pane_id, dropped = gone.len(), "unregistered readers that went away");
     }
 
-    /// Broadcast a `%output` payload to every reader registered for `pane_id`.
-    ///
-    /// Never blocks, which would deadlock `%pause` handling: a reader whose
-    /// channel is full loses the chunk, and is caught up by a snapshot
-    /// ([`Resync`]) where its server can take one.
     fn dispatch_output(pane_senders: &PaneSendersMapShared, pane_id: &str, data: Vec<u8>) {
         let Ok(mut senders) = pane_senders.lock() else {
             return;
@@ -2109,8 +1559,6 @@ impl ControlMode {
         }
     }
 
-    /// Hand the answer to a spliced snapshot of `pane_id` — `None` when it
-    /// failed — to every reader of it ([`PaneSender::send_snapshot`]).
     fn dispatch_snapshot(
         pane_senders: &PaneSendersMapShared,
         pane_id: &str,
@@ -2133,14 +1581,6 @@ impl ControlMode {
         }
     }
 
-    /// Add a completed `%begin`/`%end`(`%error`) block to the answer in
-    /// progress — the next waiter's, when none is — and hand the answer over
-    /// once its last block is in, or at an error: tmux drops the rest of a list
-    /// at its first failing command, so no more blocks of it will come.
-    ///
-    /// A response with no waiter in the queue is discarded. Every sender keeps
-    /// a place, so that is only a reply the connection was told nothing about
-    /// — never one belonging to a command that is still waiting.
     fn deliver_response(
         response_queue: &ResponseQueue,
         pane_senders: &PaneSendersMapShared,
@@ -2184,7 +1624,6 @@ impl ControlMode {
         }));
     }
 
-    /// Drain the queued `(pane_id, state)` remote-hook status events.
     pub(crate) fn take_sub_events(&self) -> Vec<(String, String)> {
         self.sub_events
             .lock()
@@ -2192,16 +1631,6 @@ impl ControlMode {
             .unwrap_or_default()
     }
 
-    /// Respond to a `%pause` by asking tmux to resume output for the pane.
-    ///
-    /// Written from the reader thread, which answers to nobody, but it is still
-    /// a command tmux answers — and a link slow enough to pause a pane is one
-    /// where other commands are in flight to take that answer. Only queued:
-    /// the reader must not wait on a write to go on reading.
-    ///
-    /// Only for a pane id as the server names one (`%3`), which is a bare word
-    /// every adapter's tokenizer reads alike, so the command needs no quoting
-    /// this connection could not choose for its server.
     fn resume_pane(outbox: &SharedOutbox, replies: &ResponseQueue, pane_id: &str) {
         if !is_valid_pane_id(pane_id) {
             warn!("not resuming output of a paused pane named {pane_id:?}");
@@ -2211,8 +1640,6 @@ impl ControlMode {
         let _ = Self::write_unanswered(outbox, replies, &[cmd]);
     }
 
-    /// A pane paused on purpose (`hide_pane`) stays paused; one the server
-    /// paused for falling behind is resumed.
     fn on_pause(
         outbox: &SharedOutbox,
         replies: &ResponseQueue,
@@ -2224,7 +1651,6 @@ impl ControlMode {
         }
     }
 
-    /// Route a `%subscription-changed` report by the subscription it is for.
     fn on_subscription(
         pane_senders: &PaneSendersMapShared,
         sub_events: &Arc<Mutex<VecDeque<(String, String)>>>,
@@ -2244,11 +1670,6 @@ impl ControlMode {
         }
     }
 
-    /// Hand a hidden pane's report to its reader: as output when its activity
-    /// moved since the last report, which is how a pane that streams nothing
-    /// still reads as printing, and as [`PaneChunk::State`] for the first,
-    /// which only says what the pane already was. A report for a pane no
-    /// longer hidden is one sent before it was shown, and is dropped.
     fn dispatch_hidden(
         pane_senders: &PaneSendersMapShared,
         hidden: &HiddenPanes,
@@ -2277,16 +1698,6 @@ impl ControlMode {
         Self::send_event(pane_senders, pane_id, chunk);
     }
 
-    /// Stop streaming `pane_id`'s output and have what the interface still
-    /// reads off it reported instead ([`HIDDEN_FORMAT`]). Answers whether it
-    /// was, which needs format subscriptions and a pane this connection is
-    /// the only reader of: a second reader of the same pane may be showing it.
-    ///
-    /// `pause`, not `off`: tmux stops *reading* a pane every client has turned
-    /// off, which would stall its program once the pty filled; a paused pane is
-    /// read and parsed as before and only its `%output` is dropped (measured,
-    /// tmux 3.7c). Both commands go as one list so nothing can come between
-    /// them, and neither answer is waited for.
     pub(crate) fn hide_pane(&self, pane_id: &str) -> Result<bool> {
         if !self.subscriptions || !is_valid_pane_id(pane_id) {
             return Ok(false);
@@ -2320,11 +1731,6 @@ impl ControlMode {
         Ok(true)
     }
 
-    /// Stream a pane [`Self::hide_pane`] held back again, from tmux's current
-    /// position — what was dropped meanwhile is what a snapshot asked for next
-    /// rebuilds. Nothing for a pane that is not held back. Also how a pane
-    /// that is let go stops being held back: tmux keeps a pane paused across
-    /// `on`/`off`, so a later adopt of it would otherwise stream nothing.
     pub(crate) fn show_pane(&self, pane_id: &str) -> Result<()> {
         let _visibility = self
             .visibility
@@ -2338,7 +1744,6 @@ impl ControlMode {
         self.send_command_detached(&[&unsubscribe, &resume], 2)
     }
 
-    /// Forget `pane_id` as held back; whether it was.
     fn unhide(&self, pane_id: &str) -> Result<bool> {
         Ok(self
             .hidden
@@ -2348,18 +1753,10 @@ impl ControlMode {
             .is_some())
     }
 
-    /// Send a command and wait for its response.
     pub(crate) fn send_command(&self, cmd: &str) -> Result<String> {
         Self::send_command_on(&self.outbox, &self.response_queue, cmd, 1)
     }
 
-    /// Send commands as one command list (`a ; b ; c`) and wait for the number
-    /// of reply blocks this server sends for the list.
-    ///
-    /// One line and not several because tmux runs a list without returning to
-    /// its event loop in between (what `birth_options` relies on). Each entry
-    /// must be a single command: an uncounted extra block reaches the next
-    /// waiter.
     pub(crate) fn send_command_list(&self, cmds: &[&str], blocks: usize) -> Result<String> {
         if cmds.is_empty() {
             bail!("an empty command list has nothing to send");
@@ -2372,10 +1769,6 @@ impl ControlMode {
         )
     }
 
-    /// [`Self::send_command`] without `&self`, so background threads holding
-    /// only the shared handles (the hook poller) can issue commands.
-    ///
-    /// `blocks` is how many commands `cmd` holds (see [`Waiter`]).
     fn send_command_on(
         outbox: &SharedOutbox,
         response_queue: &ResponseQueue,
@@ -2386,17 +1779,6 @@ impl ControlMode {
         Self::await_response(rx, cmd, COMMAND_TIMEOUT)
     }
 
-    /// Queue `cmd` for writing and take a place in the waiter queue, without
-    /// waiting.
-    ///
-    /// Split out of [`Self::send_command_on`] so a caller can decline the wait
-    /// ([`Self::send_command_detached`]) or shorten it
-    /// ([`Self::send_command_within`]) while every caller keeps the one
-    /// invariant that matters: a place in the queue per command written, in
-    /// the order written.
-    ///
-    /// `splice` names the pane whose output stream the answer is also put
-    /// into, for a [`snapshot_commands`] list (see [`Waiter::splice`]).
     fn enqueue_command_on(
         outbox: &SharedOutbox,
         response_queue: &ResponseQueue,
@@ -2410,11 +1792,6 @@ impl ControlMode {
         Self::enqueue_locked(&mut outbox, response_queue, cmd, blocks, splice)
     }
 
-    /// [`Self::enqueue_command_on`]'s push and hand-over, for a caller already
-    /// holding the outbox lock.
-    ///
-    /// A connection that can take no more lines refuses with a broken pipe,
-    /// as a write to it would have: the command never went out.
     fn enqueue_locked(
         outbox: &mut Outbox,
         response_queue: &ResponseQueue,
@@ -2455,16 +1832,6 @@ impl ControlMode {
         Ok(rx)
     }
 
-    /// Queue `cmds` — one command each, with or without a trailing newline —
-    /// as one burst no other sender can split, keeping a place in the reply
-    /// queue for each and waiting for none.
-    ///
-    /// For what is written without a caller to read the answer: keystrokes,
-    /// and the reader thread's own resume of a paused pane. Their answers used
-    /// to be left without a place, and the reader handed each one to the next
-    /// command in line — a pid lookup answered empty, a window listing that
-    /// said the host held nothing — and every later answer one command off
-    /// until the queue next ran dry.
     fn write_unanswered(
         outbox: &SharedOutbox,
         response_queue: &ResponseQueue,
@@ -2485,11 +1852,6 @@ impl ControlMode {
         Ok(())
     }
 
-    /// Start the thread that writes this connection's lines to `stdin`, the
-    /// only thing that ever does, and hand back the way in to it.
-    ///
-    /// The thread holds the outbox weakly: it ends once the last sender is
-    /// gone, which a strong hold would never let happen.
     fn spawn_writer(stdin: ChildStdin, replies: &ResponseQueue) -> Result<SharedOutbox> {
         let (tx, rx) = std::sync::mpsc::channel();
         let written = Arc::new(Written::default());
@@ -2530,11 +1892,6 @@ impl ControlMode {
         }
     }
 
-    /// A write failed, so nothing more goes out on this connection, and every
-    /// waiter from `seq` on is for a line the server never got. Each is handed
-    /// the error, which is how its caller knows the command did not run.
-    ///
-    /// Under the outbox lock, so no sender can queue behind the sweep.
     fn fail_unwritten(
         outbox: &Weak<Mutex<Outbox>>,
         replies: &ResponseQueue,
@@ -2564,7 +1921,6 @@ impl ControlMode {
         }
     }
 
-    /// A writer for `pane_id`'s keystrokes on this connection.
     pub(crate) fn writer(&self, pane_id: String, input: Arc<dyn PaneInput>) -> ControlModeWriter {
         ControlModeWriter {
             outbox: Arc::clone(&self.outbox),
@@ -2574,7 +1930,6 @@ impl ControlMode {
         }
     }
 
-    /// Wait for an enqueued command's answer, for at most `budget`.
     fn await_response(
         rx: Receiver<Reply>,
         cmd: &str,
@@ -2584,7 +1939,6 @@ impl ControlMode {
         Ok(response.lines().join("\n"))
     }
 
-    /// [`Self::await_response`], keeping each command's block apart.
     fn await_blocks(
         rx: Receiver<Reply>,
         cmd: &str,
@@ -2607,10 +1961,6 @@ impl ControlMode {
         Ok(response)
     }
 
-    /// [`Self::send_command`] on a budget of the caller's choosing.
-    ///
-    /// For the callers that are the interface's own loop, where the answer is
-    /// worth a short wait and nothing is worth a long one.
     pub(crate) fn send_command_within(
         &self,
         cmd: &str,
@@ -2620,9 +1970,6 @@ impl ControlMode {
         Self::await_response(rx, cmd, budget)
     }
 
-    /// Ask for a [`PaneSnapshot`] of `pane_id` and do not wait for it: it is
-    /// put into the pane's own output stream as a [`PaneChunk::Snapshot`], at
-    /// the byte it describes, for that pane's reader to take up in order.
     pub(crate) fn request_snapshot(&self, pane_id: &str, history: usize) -> Result<()> {
         Self::enqueue_snapshot(
             &self.outbox,
@@ -2633,8 +1980,6 @@ impl ControlMode {
         )
     }
 
-    /// [`Self::request_snapshot`], for the reader thread as well
-    /// ([`Resync::ask`]).
     fn enqueue_snapshot(
         outbox: &SharedOutbox,
         response_queue: &ResponseQueue,
@@ -2661,10 +2006,6 @@ impl ControlMode {
         .map(drop)
     }
 
-    /// A new reader of `pane_id`: the sender to register for it, and the
-    /// reader. `resync_history` is the rows of history a snapshot that catches
-    /// it up carries, when its server can take one ([`Resync`]); without, its
-    /// output is lost when its channel is full.
     pub(crate) fn pane_channel(
         &self,
         pane_id: &str,
@@ -2687,11 +2028,6 @@ impl ControlMode {
         (PaneSender { tx, resync }, reader)
     }
 
-    /// Ask for a [`PaneSnapshot`] of `pane_id` as unstyled text, handed back to
-    /// the caller rather than put into the stream — for a reader that wants the
-    /// text as it stands (the content search). Returns once asked; the answer
-    /// is [`PendingSnapshot::wait`]ed for separately, so several searches'
-    /// round trips overlap.
     pub(crate) fn ask_snapshot(&self, pane_id: &str, history: usize) -> Result<PendingSnapshot> {
         let cmds = if self.command_list_single_reply {
             snapshot_commands_one_block(pane_id, history, false)
@@ -2712,30 +2048,6 @@ impl ControlMode {
         })
     }
 
-    /// Send a command and never wait for its answer.
-    ///
-    /// The answer still comes — control mode replies to everything — so a place
-    /// is kept for it and the receiver dropped, which makes `deliver_response`
-    /// discard it (its `send` already tolerates a receiver that is gone). That
-    /// kept place is the whole difference from [`Self::send_command_nowait`],
-    /// whose documented hazard is exactly its absence: with no place of its
-    /// own, the answer is handed to whichever waiter is next in line and every
-    /// later response is delivered one command off for the life of the
-    /// connection.
-    ///
-    /// For a command whose *effect* is the point and whose answer nothing
-    /// reads — a resize tells the agent how to wrap, and no frame is waiting on
-    /// the confirmation.
-    ///
-    /// Takes a list for the same reason [`Self::send_command_list`] does: tmux
-    /// runs a list without returning to its event loop in between, and one list
-    /// is one enqueue under one lock. Two calls could take the lock separately
-    /// and have the second refused, leaving the first applied on its own.
-    ///
-    /// `blocks` is how many `%begin` blocks tmux answers the list with, which
-    /// is one per command **plus one per command an `if-shell` in it runs** —
-    /// those answer separately (measured, tmux 3.7c). A wrong count hands the
-    /// surplus to the next waiter and shifts every later answer.
     pub(crate) fn send_command_detached(&self, cmds: &[&str], blocks: usize) -> Result<()> {
         if cmds.is_empty() {
             bail!("an empty command list has nothing to send");
@@ -2758,15 +2070,6 @@ impl Drop for ControlMode {
 }
 
 impl ControlMode {
-    /// Take a replaced connection out of service without failing what is
-    /// already in flight on it.
-    ///
-    /// Its panes are let go at once — EOF for their readers, as a closed
-    /// connection gives — so it never streams alongside its replacement. Its
-    /// replies keep arriving: a command already sent may have run, and losing
-    /// its answer would leave the caller unable to tell. It is closed once no
-    /// caller holds it any more, or after `COMMAND_TIMEOUT`, the longest any
-    /// of them waits.
     pub(crate) fn retire(self: Arc<Self>) {
         Self::drop_panes(&self.pane_senders, &self.pane_windows, &self.pane_sizes);
         let spawned = std::thread::Builder::new()
@@ -2786,10 +2089,6 @@ impl ControlMode {
         }
     }
 
-    /// Detach and tear the connection down. Callable through a shared handle,
-    /// for a backend shutting down while a caller is still mid-command on it.
-    /// A caller still waiting for an answer is told at once that none is
-    /// coming, rather than left to wait out `COMMAND_TIMEOUT`.
     pub(crate) fn close(&self) {
         if self.closed.swap(true, Ordering::AcqRel) {
             return;
@@ -2844,7 +2143,6 @@ impl ControlMode {
     }
 }
 
-/// Check if an error is caused by a broken pipe (control mode stdin closed).
 pub(crate) fn is_broken_pipe(err: &anyhow::Error) -> bool {
     err.chain().any(|cause| {
         cause
@@ -2853,7 +2151,6 @@ pub(crate) fn is_broken_pipe(err: &anyhow::Error) -> bool {
     })
 }
 
-/// Check if an error is caused by a recv timeout (reader thread died, response never arrives).
 pub(crate) fn is_recv_timeout(err: &anyhow::Error) -> bool {
     err.chain().any(|cause| {
         cause

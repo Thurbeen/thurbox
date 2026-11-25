@@ -1,10 +1,3 @@
-//! The boot sequence: everything between process start and the loop.
-//!
-//! `main` itself stays a one-liner in `main.rs` beside the state it constructs;
-//! the order here is load-bearing and each step's comment says why it sits
-//! where it does — the panic hook before anything can panic, the settings
-//! before anything is built with one.
-
 use std::error::Error;
 use std::path::{Path, PathBuf};
 use std::time::Instant;
@@ -32,21 +25,8 @@ use crate::App;
 
 const V2_STATE_NOTICE: &str = "thurbox 2.x state found · thurbox-cli migrate --dry-run";
 
-/// Days of `thurbox.log.<date>` kept by the rolling appender.
 const LOG_FILES_KEPT: usize = 30;
 
-/// The log appender: one file per day in `dir`, the newest
-/// [`LOG_FILES_KEPT`] kept and the rest deleted as it is built.
-///
-/// Capped because `rolling::daily` never deletes anything — it opened a new
-/// `thurbox.log.<date>` every day and left every earlier one in the data dir
-/// for good, which on a machine thurbox runs on daily is an unbounded disk
-/// leak. A month still holds the log of whatever a user is reporting.
-///
-/// The name has to stay `thurbox.log.<date>`: that spelling is what
-/// `docs/thurbox/performance.md` tells a reader to open, and it is also what the
-/// pruning above matches on, so a different prefix would silently orphan every
-/// file written by an earlier release instead of retiring it.
 fn log_appender(dir: PathBuf) -> tracing_appender::rolling::RollingFileAppender {
     tracing_appender::rolling::Builder::new()
         .rotation(tracing_appender::rolling::Rotation::DAILY)
@@ -398,19 +378,6 @@ pub(crate) async fn run() -> Result<(), Box<dyn Error>> {
     result
 }
 
-/// Put the terminal back and exit when a signal ends the process.
-///
-/// Exits directly rather than asking the loop to quit: the loop is on the
-/// thread blocked in `app.run`, and after a `SIGHUP` its `event::poll` may be
-/// reading a pty that is already gone, so a request would be honoured late or
-/// never. Exiting from the runtime's thread skips the loop's drops, exactly as
-/// the panic path does — tmux keeps the sessions alive, so nothing is lost.
-/// The status is the shell's convention, `128 + signal`, so a wrapper script
-/// can tell a signal from a clean quit.
-///
-/// `restore_terminal` is idempotent and takes no lock, so racing the normal
-/// exit path — a `SIGTERM` that lands while `Ctrl+Q` is being honoured —
-/// costs a redundant escape and nothing else.
 fn install_signal_restore() {
     fn restore_and_exit(name: &str, number: i32) -> ! {
         restore_terminal();
@@ -489,14 +456,6 @@ fn resolve_ui_dir() -> Result<(PathBuf, Vec<String>, bool), Box<dyn Error>> {
 const RECOVERY_NOTICE: &str =
     "until the move to mods succeeds, trust, turned-off panes, mod settings and rebound keys changed here are not saved";
 
-/// Which interface just loaded — said only when there is a question.
-///
-/// Silent for a release build on its own copy, because there is nothing to
-/// disambiguate and a greeting on every launch is noise. It speaks when an
-/// override is in force (that is somebody's deliberate redirection, and the most
-/// likely thing to have been forgotten), when the embedded fallback had to be
-/// used, and on a **dev build** — where "which interface am I running" is a real
-/// question, since the checkout beside you contains one too.
 fn directory_notice(dir: &Path, chosen: thurbox::kernel::bundled::Chosen) -> Option<String> {
     use thurbox::kernel::bundled::Chosen;
     let shown = thurbox::paths::display_path(dir);
@@ -515,12 +474,6 @@ fn directory_notice(dir: &Path, chosen: thurbox::kernel::bundled::Chosen) -> Opt
     }
 }
 
-/// What an upgrade did that the user did not ask for and should know about.
-///
-/// Only the two outcomes that are about THEIR files: an edit of theirs kept
-/// where a newer version was available, and a file taken back because this
-/// binary no longer ships it. Writes and updates are the ordinary case and say
-/// nothing, so this stays a signal rather than a greeting.
 fn delivery_notice(report: &thurbox::kernel::bundled::Report) -> Option<String> {
     let mut parts = Vec::new();
     if !report.preserved.is_empty() {
@@ -538,8 +491,6 @@ fn delivery_notice(report: &thurbox::kernel::bundled::Report) -> Option<String> 
     (!parts.is_empty()).then(|| parts.join("; "))
 }
 
-/// The terminals, each local tmux pane opened through `runtime-mux view` when
-/// `stream_panes` is on and the program is there.
 fn terminals(
     backends: std::sync::Arc<thurbox::backend::BackendRegistry>,
     settings: &thurbox::session::settings::Settings,
@@ -565,15 +516,6 @@ fn terminals(
 mod tests {
     use super::*;
 
-    /// The log appender keeps a bounded number of days and names them the way
-    /// the docs say.
-    ///
-    /// Both halves are the bug: `rolling::daily` never deleted anything, so the
-    /// data dir grew a file per day for good; and the cap only retires a file it
-    /// recognises, so a prefix that stopped spelling `thurbox.log.<date>` would
-    /// leave every older file orphaned *and* break the path
-    /// `docs/thurbox/performance.md` hands the reader. Pruning happens as the appender
-    /// is built, which is what makes this observable without waiting a day.
     #[test]
     fn the_log_appender_keeps_a_months_worth_and_no_more() {
         use std::io::Write as _;
@@ -643,14 +585,6 @@ mod tests {
         );
     }
 
-    /// Startup says which interface loaded, but only when there is a question.
-    ///
-    /// The silent case is the one that matters: a release build on its own copy has
-    /// nothing to disambiguate, and a greeting on every launch is noise. Everything
-    /// else speaks, because it is either somebody's deliberate redirection (the most
-    /// likely thing to have been forgotten), a fallback the user did not choose, or
-    /// a dev build — where the checkout beside you contains an interface too and
-    /// "which one am I running" is a real question.
     #[test]
     fn the_interface_directory_is_announced_only_when_it_is_in_doubt() {
         use thurbox::kernel::bundled::Chosen;

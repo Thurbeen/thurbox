@@ -1,17 +1,3 @@
-//! `thurbox-cli notify` — diagnose OS desktop notifications.
-//!
-//! The default (no flags) prints which delivery backend thurbox would use on
-//! this host, whether it can actually deliver, whether click-to-focus is
-//! supported, and the last recorded delivery error (if any). This exists
-//! because the WSL failure mode used to be entirely silent — the dbus path
-//! errored and only logged a `warn!` to the file logger.
-//!
-//! With `--test`, it fires a sample notification *synchronously* so the user
-//! can confirm end-to-end that a banner/toast actually appears.
-//!
-//! `notify send` delivers one notification of the caller's own, from a script
-//! or a timer, with an optional dedupe key.
-
 use std::time::Duration;
 
 use clap::{Args, Subcommand};
@@ -23,17 +9,15 @@ use crate::session::settings::{NotificationBackend, Settings};
 use super::output::{kv, CommandOutput};
 use super::CommandError;
 
-/// `notify` arguments.
 #[derive(Args, Debug)]
 pub struct NotifyArgs {
-    /// Fire a sample notification to confirm delivery works end-to-end.
+    #[arg(help = "Fire a sample notification to confirm delivery works end-to-end")]
     #[arg(long)]
     pub test: bool,
     #[command(subcommand)]
     pub action: Option<Action>,
 }
 
-/// Run the `notify` command.
 pub fn run(args: NotifyArgs, settings: &Settings) -> Result<CommandOutput, CommandError> {
     match args.action {
         Some(Action::Send(send_args)) => send(send_args, settings),
@@ -41,25 +25,24 @@ pub fn run(args: NotifyArgs, settings: &Settings) -> Result<CommandOutput, Comma
     }
 }
 
-/// `notify` subcommands.
 #[derive(Subcommand, Debug)]
 pub enum Action {
-    /// Deliver one notification now, e.g. from a script or a timer. Exits 1
-    /// when delivery fails.
+    #[command(
+        about = "Deliver one notification now, e.g. from a script or a timer. Exits 1 when delivery fails"
+    )]
     Send(SendArgs),
 }
 
-/// `notify send` arguments.
 #[derive(Args, Debug)]
 pub struct SendArgs {
     #[arg(long)]
     pub title: String,
     #[arg(long)]
     pub body: String,
-    /// Drop a repeat of this key inside `--min-interval`, across processes.
+    #[arg(help = "Drop a repeat of this key inside `--min-interval`, across processes")]
     #[arg(long, requires = "min_interval")]
     pub key: Option<String>,
-    /// Seconds a delivered `--key` holds off its repeats; at most a year.
+    #[arg(help = "Seconds a delivered `--key` holds off its repeats; at most a year")]
     #[arg(
         long,
         requires = "key",
@@ -68,19 +51,13 @@ pub struct SendArgs {
     pub min_interval: Option<u64>,
 }
 
-/// The longest `--min-interval`: a year.
 const MAX_MIN_INTERVAL_SECS: u64 = 365 * 24 * 60 * 60;
 
-/// How long a send waits for the backend. The toast and macOS paths wait on a
-/// child process, and one that never returns must not hold up the script or
-/// the timer that sent it.
 const DELIVERY_TIMEOUT: Duration = Duration::from_secs(10);
 
-/// What became of a send.
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum Sent {
     Delivered,
-    /// `disabled` or `deduped`.
     Suppressed(&'static str),
     Failed(String),
 }
@@ -97,14 +74,6 @@ impl Sent {
     }
 }
 
-/// Deliver one notification, unless notifications are off or its key was
-/// delivered inside its interval.
-///
-/// The key is held in `notify-dedupe.json` in the data directory, under the
-/// file lock every process takes, before delivery: two processes racing on
-/// one key deliver once. A delivery that fails gives back the hold it took,
-/// and only that one, so the retry is not deduped against a notification
-/// nobody saw, and a newer hold of the same key survives a late failure.
 fn send(args: SendArgs, s: &Settings) -> Result<CommandOutput, CommandError> {
     if !s.features.notifications || s.notifications.backend == NotificationBackend::Off {
         return Ok(CommandOutput::new(
@@ -152,8 +121,6 @@ fn send(args: SendArgs, s: &Settings) -> Result<CommandOutput, CommandError> {
     })
 }
 
-/// Deliver on a thread of its own and wait at most [`DELIVERY_TIMEOUT`]. A
-/// backend that hangs is left behind; the process ends without it.
 fn deliver(n: Notification, backend: DeliveryBackend) -> Result<(), String> {
     let (tx, rx) = std::sync::mpsc::channel();
     std::thread::spawn(move || {
@@ -174,8 +141,6 @@ fn now_ms() -> u64 {
         .unwrap_or_default()
 }
 
-/// The dedupe keys: key → when its hold ends (unix millis), in
-/// `notify-dedupe.json`, rewritten whole under the file lock.
 mod dedupe {
     use std::collections::BTreeMap;
 
@@ -197,8 +162,6 @@ mod dedupe {
         .map_err(|e| format!("dedupe key lock: {e}"))?
     }
 
-    /// Hold `key` until `expires`, unless a hold of it is still running at
-    /// `now`. Whether this call took it.
     pub(super) fn take(key: &str, expires: u64, now: u64) -> Result<bool, String> {
         edit(|holds| {
             holds.retain(|_, until| *until > now);
@@ -210,8 +173,6 @@ mod dedupe {
         })
     }
 
-    /// Release the hold of `key` that ends at `expires`, if it is still that
-    /// one.
     pub(super) fn give_back(key: &str, expires: u64) -> Result<(), String> {
         edit(|holds| {
             if holds.get(key) == Some(&expires) {
@@ -221,8 +182,6 @@ mod dedupe {
     }
 }
 
-/// The report `notify` with no subcommand prints. Reads the settings (for the
-/// configured backend) and probes the host.
 fn diagnose(test: bool, s: &Settings) -> CommandOutput {
     let feature_on = s.features.notifications;
     let configured = s.notifications.backend;
@@ -319,7 +278,6 @@ fn run_test(feature_on: bool, backend: DeliveryBackend, sound: bool) -> CommandO
     }
 }
 
-/// One actionable summary line tailored to the resolved state.
 fn diagnose_headline(feature_on: bool, backend: DeliveryBackend) -> String {
     if !feature_on {
         return "Notifications are OFF ([features] notifications = false).".into();

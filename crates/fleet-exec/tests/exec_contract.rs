@@ -1,8 +1,3 @@
-//! fleet-exec's promises, proven with real processes on the OS that runs
-//! the test: the child is this test binary itself, re-entered in a role
-//! named by `FLEET_EXEC_ROLE`, so the same test runs natively on Linux,
-//! macOS and Windows with no shell and no helper program.
-
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
@@ -11,7 +6,6 @@ use std::time::{Duration, Instant};
 
 use fleet_exec::{Outcome, Spec, run};
 
-/// Not a test of its own: the body each child role runs.
 #[test]
 fn child_role() {
     let Ok(role) = std::env::var("FLEET_EXEC_ROLE") else {

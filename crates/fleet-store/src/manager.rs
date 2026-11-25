@@ -1,8 +1,3 @@
-//! The manager's own files in a data directory: `manager.lock`, which a
-//! serving manager holds for its whole life, and `manager.json`, the status
-//! it reports. The lock is the authority on whether a manager runs; the
-//! record never is.
-
 use std::fs::{File, OpenOptions, TryLockError};
 use std::io;
 use std::path::{Path, PathBuf};
@@ -15,9 +10,6 @@ use crate::{FileStore, durable, io_failure};
 pub const LOCK: &str = "manager.lock";
 pub const RECORD: &str = "manager.json";
 
-/// An exclusive OS lock on `manager.lock`. The OS releases it when the
-/// holder exits, however it exits; the descriptor is close-on-exec, so no
-/// child keeps it.
 #[derive(Debug)]
 pub struct ManagerLock {
     _file: File,
@@ -45,8 +37,6 @@ pub struct ManagerRecord {
 }
 
 impl FileStore {
-    /// Take `manager.lock` without waiting. `Ok(None)`: another process
-    /// holds it.
     pub fn lock_manager(&self) -> Result<Option<ManagerLock>, StoreError> {
         let (path, file) = self.open_manager_lock()?;
         match file.try_lock() {
@@ -56,8 +46,6 @@ impl FileStore {
         }
     }
 
-    /// Take `manager.lock`, waiting for as long as another process holds
-    /// it. `waiting` runs once, when the wait starts.
     pub fn wait_for_manager_lock(&self, waiting: impl FnOnce()) -> Result<ManagerLock, StoreError> {
         if let Some(lock) = self.lock_manager()? {
             return Ok(lock);
@@ -80,9 +68,6 @@ impl FileStore {
         Ok((path, file))
     }
 
-    /// Replace `manager.json`. Only the holder of `manager.lock` writes it.
-    /// On a full disk the record is overwritten in place instead, so a
-    /// paused manager still says so.
     pub fn record_manager(
         &self,
         _held: &ManagerLock,
@@ -100,8 +85,6 @@ impl FileStore {
         }
     }
 
-    /// The manager record of the store at `root`, read without opening the
-    /// store. `Ok(None)`: no manager has run.
     pub fn peek_manager(root: &Path) -> Result<Option<ManagerRecord>, StoreError> {
         let path = root.join(RECORD);
         match std::fs::read(&path) {

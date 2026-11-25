@@ -1,9 +1,3 @@
-//! `fleet integration`: the hooks Fleet installs for an agent that takes
-//! none at launch. Fleet writes only what it owns, under the agent's own
-//! config directory, keeps a ledger of it, and removes exactly that. The
-//! real `fleet` binary, a stub harness profile with an `[install]` table and
-//! a config directory of the test's own.
-
 mod support;
 
 use std::collections::BTreeMap;
@@ -13,8 +7,6 @@ use std::path::{Path, PathBuf};
 use serde_json::Value;
 use support::Env;
 
-/// A harness Fleet ships no profile for: an own file in a directory Fleet
-/// creates, and a block appended to the user's own config file.
 fn stub_profile(version: u32) -> String {
     format!(
         r#"name = "stub"
@@ -44,7 +36,6 @@ command = "fleet signal idle"
     )
 }
 
-/// Every file and directory under `dir`, a file with its bytes.
 fn tree(dir: &Path) -> BTreeMap<PathBuf, Option<Vec<u8>>> {
     let mut found = BTreeMap::new();
     let mut todo = vec![dir.to_path_buf()];
@@ -264,8 +255,6 @@ fn a_block_whose_closing_line_is_gone_is_modified_and_never_extended() {
     );
 }
 
-/// With no home and no override, the refusal names the variable this
-/// platform reads the home from: `USERPROFILE` on Windows, `HOME` elsewhere.
 #[test]
 fn an_install_without_a_home_names_the_variable_to_set() {
     let (env, _home) = setup("integration-no-home");
@@ -277,9 +266,6 @@ fn an_install_without_a_home_names_the_variable_to_set() {
         .stderr_has(&format!("set {home} or one of"));
 }
 
-/// The test process holds the lock through the standard library, which is
-/// `flock` on Unix and `LockFileEx` on Windows, so this runs everywhere,
-/// Windows included, where no `flock` program is.
 #[test]
 fn a_lock_held_by_another_process_stops_install_until_it_is_released() {
     let (env, home) = setup("integration-lock-std");
@@ -301,8 +287,6 @@ fn a_lock_held_by_another_process_stops_install_until_it_is_released() {
     assert_eq!(state(&env, "stub"), "current");
 }
 
-/// `flock` on PATH, which holds a lock the way a `fleet` process does; a
-/// system without it skips the test.
 fn flock() -> Option<PathBuf> {
     let found = std::env::var_os("PATH").and_then(|path| {
         std::env::split_paths(&path)

@@ -1,11 +1,7 @@
-//! `control_mode`'s tests, kept together (the `git/tests.rs` pattern): a
-//! sibling module of `mod.rs`, so private items stay reachable.
-
 use std::sync::mpsc::sync_channel;
 
 use super::*;
 
-/// The bytes of a reader's next chunk, which must be output.
 fn next_output(reader: &mut ControlModeReader) -> Vec<u8> {
     match reader.next() {
         Some(PaneChunk::Output(bytes)) => bytes,
@@ -183,10 +179,6 @@ fn decode_octal_overflow_wraps() {
 
 // --- window close → reader EOF ---
 
-/// The point of the notification: a closed window must give the readers of its
-/// panes an EOF, because EOF is the only thing that sets `exited`, and `exited`
-/// is what `program.exited` and `start_program`'s "replace a finished slot"
-/// both stand on.
 #[test]
 fn window_close_gives_its_panes_eof() {
     let senders: PaneSendersMapShared = Arc::new(Mutex::new(HashMap::new()));
@@ -209,8 +201,6 @@ fn window_close_gives_its_panes_eof() {
     assert!(windows.lock().unwrap().is_empty());
 }
 
-/// Somebody else's window closing must not take our panes with it — on a shared
-/// tmux server most closes are not ours.
 #[test]
 fn window_close_leaves_other_windows_alone() {
     let senders: PaneSendersMapShared = Arc::new(Mutex::new(HashMap::new()));
@@ -234,16 +224,12 @@ fn window_close_leaves_other_windows_alone() {
 
 // --- a close that is only a hint (psmux) ---
 
-/// The phantom close: psmux 3.3.7 announced `@2` closing while `@2` lived on.
-/// A pane the session's listing still has keeps its reader, whatever window
-/// the close named.
 #[test]
 fn a_close_hint_for_a_live_window_ends_no_reader() {
     let registered = vec!["%2".to_string(), "%8".to_string()];
     assert!(ControlMode::confirm_closes(&registered, "%2\n%8\n%10\n").is_empty());
 }
 
-/// The close that named the wrong window still ends the pane that did go.
 #[test]
 fn a_close_hint_ends_only_the_panes_the_session_lost() {
     let registered = vec!["%2".to_string(), "%6".to_string(), "%9".to_string()];
@@ -253,8 +239,6 @@ fn a_close_hint_ends_only_the_panes_the_session_lost() {
     );
 }
 
-/// A listing with no pane in it says nothing — the session's own server
-/// answered — and must not end every reader at once.
 #[test]
 fn an_empty_listing_confirms_no_close() {
     let registered = vec!["%2".to_string()];
@@ -262,9 +246,6 @@ fn an_empty_listing_confirms_no_close() {
     assert!(ControlMode::confirm_closes(&registered, "garbage\n").is_empty());
 }
 
-/// A reader that was dropped no longer holds a place: the next output for its
-/// pane unregisters its sender, and the pane's entry with it once no reader is
-/// left, so a close check never counts it as one.
 #[test]
 fn a_dropped_readers_sender_is_unregistered() {
     let senders: PaneSendersMapShared = Arc::new(Mutex::new(HashMap::new()));
@@ -286,10 +267,6 @@ fn a_dropped_readers_sender_is_unregistered() {
     assert!(senders.lock().unwrap().is_empty());
 }
 
-/// The reader thread with a close hint, end to end against a fake server that
-/// announces `%window-close @3` and then lists the session's panes as the
-/// test says: `%7` (in `@3`) keeps its reader while listed, and gets its EOF
-/// once it is not.
 #[cfg(unix)]
 #[test]
 fn a_window_close_is_confirmed_before_a_reader_ends() {
@@ -404,8 +381,6 @@ fn layout_change_reads_the_window_and_its_size() {
     }
 }
 
-/// A size reaches the readers of the window's panes as a chunk of its own,
-/// after the output queued before it — and only those readers.
 #[test]
 fn a_window_resize_reaches_its_panes_readers_in_order() {
     let senders: PaneSendersMapShared = Arc::new(Mutex::new(HashMap::new()));
@@ -451,10 +426,6 @@ fn a_window_resize_reaches_its_panes_readers_in_order() {
     );
 }
 
-/// A size is never dropped. A pane whose channel is full has its size put
-/// straight where its reader applies sizes, at the next read boundary — a
-/// little early for the bytes still queued, where dropping it left a resident
-/// grid at the old size with nothing to correct it.
 #[test]
 fn a_resize_into_a_full_channel_still_reaches_the_reader() {
     let senders: PaneSendersMapShared = Arc::new(Mutex::new(HashMap::new()));
@@ -481,8 +452,6 @@ fn a_resize_into_a_full_channel_still_reaches_the_reader() {
     assert_eq!(reader.size().last_reported(), Some((30, 100)));
 }
 
-/// Who sizes a pane is a hint, not a point in the stream: it is noted and the
-/// reader carries on to the next output.
 #[test]
 fn a_sizer_change_is_not_handed_to_the_reader() {
     let (tx, rx) = sync_channel(8);
@@ -523,9 +492,6 @@ fn parse_extended_output_notification() {
     );
 }
 
-/// tmux cuts a pane's output wherever its read ended, here inside the `и` of
-/// `мир` (`d0 b8`): each half must come out as the raw byte it was, so the two
-/// rejoin downstream, not as the U+FFFD a text decode would make of each.
 #[test]
 fn parse_output_keeps_a_character_split_across_two_lines() {
     let halves = [
@@ -583,10 +549,6 @@ fn parse_pause_notification() {
     );
 }
 
-/// Both spellings of a window's death mean the same thing, and the one that
-/// actually arrives when a program exits on its own is the UNLINKED one
-/// (measured against tmux control mode, 2026-09-11). Parsing only
-/// `%window-close` would leave every ordinary exit unnoticed.
 #[test]
 fn parse_window_close_both_spellings() {
     assert_eq!(
@@ -603,8 +565,6 @@ fn parse_window_close_both_spellings() {
     );
 }
 
-/// Some tmux versions append a layout to the close line; the id is the first
-/// token either way, and the rest is not ours to interpret.
 #[test]
 fn parse_window_close_ignores_trailing_fields() {
     assert_eq!(
@@ -615,8 +575,6 @@ fn parse_window_close_ignores_trailing_fields() {
     );
 }
 
-/// A close with no id is not a close: it names no window, so acting on it
-/// would mean guessing which one died.
 #[test]
 fn parse_window_close_without_an_id_is_other() {
     assert_eq!(
@@ -795,9 +753,6 @@ fn hex_send_keys_commands_empty_input_is_no_commands() {
     assert!(hex_send_keys_commands("%1", &[]).is_empty());
 }
 
-/// A large paste is split into multiple bounded `send-keys` commands whose
-/// concatenated bytes equal the original input — the property that keeps a
-/// big paste from being truncated by tmux's per-command line limit.
 #[test]
 fn hex_send_keys_commands_chunks_large_input_losslessly() {
     // 5 KB of bracketed-paste-wrapped content, like `send_paste_to_session`.
@@ -846,7 +801,6 @@ fn tmux_quote_keeps_a_line_on_one_line() {
     );
 }
 
-/// The buffer a paste's commands name, which every one of them must agree on.
 fn paste_buffer_of(cmds: &[String]) -> &str {
     let last = cmds.last().expect("a paste-buffer line");
     let name = last
@@ -900,9 +854,6 @@ fn a_long_tmux_paste_is_appended_on_char_boundaries() {
     assert_eq!(joined, text);
 }
 
-/// A server's input as a test sees it: keystrokes typed out one line per byte
-/// run, CR spelt `Enter` the way psmux's key-names spell it, and a paste
-/// answered with `paste`.
 #[cfg(unix)]
 struct FakeInput(Option<fn() -> Result<()>>);
 
@@ -924,10 +875,6 @@ impl PaneInput for FakeInput {
     }
 }
 
-/// What a [`ControlModeWriter`] wrote to its control connection for `buf` —
-/// the connection a `cat` standing in for the server copies to a file. Read
-/// once `cat` exits, which is once the writer thread has written everything
-/// and let go of the pipe.
 #[cfg(unix)]
 fn written_by(input: FakeInput, buf: &[u8]) -> String {
     let dir = tempfile::tempdir().expect("tempdir");
@@ -1042,11 +989,6 @@ const _: fn() = || {
 
 const _: () = assert!(PANE_CHANNEL_CAPACITY >= 1024);
 
-/// Property/fuzz tests proving the tmux control-mode **transport** is byte
-/// transparent: whatever the agent writes is exactly what comes out of
-/// [`decode_octal`] + [`ControlModeReader`], regardless of how tmux escapes it
-/// or how the byte stream is chunked. If these stay green, thurbox's transport
-/// layer cannot be the source of glitched/stray characters in the rendered pane.
 mod transport_proptests {
     use std::fmt::Write as _;
     use std::sync::mpsc::channel;
@@ -1058,12 +1000,6 @@ mod transport_proptests {
         decode_octal, format_send_keys, parse_notification, ControlModeReader, Notification,
     };
 
-    /// Reference encoder mirroring tmux's control-mode `%output` escaping:
-    /// printable ASCII passes through, backslash becomes `\134`, and every other
-    /// byte is emitted as a 3-digit `\ooo` octal escape. Because backslash is
-    /// always escaped, a bare `\` never appears in the payload except as the
-    /// start of a complete octal escape — exactly the input shape `decode_octal`
-    /// is meant to invert.
     fn tmux_octal_encode(bytes: &[u8]) -> String {
         let mut out = String::with_capacity(bytes.len());
         for &b in bytes {
@@ -1078,8 +1014,6 @@ mod transport_proptests {
         out
     }
 
-    /// Split `bytes` into contiguous, non-empty chunks at the given (wrapped)
-    /// offsets — models tmux emitting output across several `%output` lines.
     fn chunk_bytes(bytes: &[u8], split_points: &[usize]) -> Vec<Vec<u8>> {
         if bytes.is_empty() {
             return Vec::new();
@@ -1099,7 +1033,6 @@ mod transport_proptests {
             .collect()
     }
 
-    /// Every output byte a `ControlModeReader` hands over, to the stream's end.
     fn drain_reader(reader: ControlModeReader) -> Vec<u8> {
         reader
             .flat_map(|chunk| match chunk {
@@ -1109,8 +1042,6 @@ mod transport_proptests {
             .collect()
     }
 
-    /// Parse our own `send-keys -t %1 -H XX XX …` command back into the bytes it
-    /// encodes, to confirm the *input* (typed/pasted) path is lossless too.
     fn parse_send_keys_hex(cmd: &str) -> Vec<u8> {
         let cmd = cmd.strip_suffix('\n').expect("trailing newline");
         let rest = cmd
@@ -1122,17 +1053,12 @@ mod transport_proptests {
     }
 
     proptest! {
-        /// `decode_octal` is the exact inverse of tmux's octal escaping for any
-        /// byte sequence (all 256 values, escapes, and digit runs that merely
-        /// look like octal).
         #[test]
         fn decode_octal_inverts_tmux_encoding(bytes in prop::collection::vec(any::<u8>(), 0..512)) {
             let encoded = tmux_octal_encode(&bytes);
             prop_assert_eq!(decode_octal(encoded.as_bytes()), bytes);
         }
 
-        /// `ControlModeReader` hands a chunked byte stream over identically,
-        /// however the stream is chunked.
         #[test]
         fn control_mode_reader_reassembles_losslessly(
             chunks in prop::collection::vec(prop::collection::vec(any::<u8>(), 1..64), 0..32),
@@ -1147,10 +1073,6 @@ mod transport_proptests {
             prop_assert_eq!(got, expected);
         }
 
-        /// The full transport — agent bytes → tmux octal `%output` lines →
-        /// `parse_notification` → `decode_octal` → mpsc channel →
-        /// `ControlModeReader` — is the identity function on the byte stream,
-        /// for arbitrary bytes split across arbitrary `%output` boundaries.
         #[test]
         fn full_transport_is_byte_identity(
             bytes in prop::collection::vec(any::<u8>(), 0..512),
@@ -1175,8 +1097,6 @@ mod transport_proptests {
             prop_assert_eq!(got, bytes);
         }
 
-        /// `format_send_keys` (the `send-keys -H` hex encoding used for every
-        /// typed/pasted byte) round-trips losslessly.
         #[test]
         fn format_send_keys_round_trips(bytes in prop::collection::vec(any::<u8>(), 0..256)) {
             let cmd = format_send_keys("%1", &bytes);
@@ -1306,9 +1226,6 @@ fn a_single_reply_command_list_leaves_the_next_reply_aligned() {
     assert_eq!(next, "next");
 }
 
-/// A tmux server on a throwaway socket, killed on drop. Real tmux because what
-/// is pinned is how the server answers a command list — one `%begin`/`%end`
-/// block per command that runs — not the reader's bookkeeping.
 #[cfg(unix)]
 struct ThrowawayServer {
     socket: String,
@@ -1318,8 +1235,6 @@ struct ThrowawayServer {
 impl ThrowawayServer {
     const SESSION: &str = "lists";
 
-    /// `None` when tmux is absent or will not start a server: an environment
-    /// fact, not a regression.
     fn start(name: &str) -> Option<Self> {
         let socket = format!("thurbox-cm-{name}-{}", std::process::id());
         let started = TmuxTransport::local("tmux")
@@ -1478,10 +1393,6 @@ impl Drop for ThrowawayServer {
     }
 }
 
-/// The blocks after a list's first belong to the list. Here the middle one is
-/// held open by `run-shell`, so a reader that answered the list at its first
-/// `%end` has already let the next command queue up behind it — and that
-/// command would be answered with the `run-shell` block's empty body (#1120).
 #[cfg(unix)]
 #[test]
 fn a_command_list_is_answered_once_all_its_blocks_are_in() {
@@ -1511,9 +1422,6 @@ fn a_command_list_is_answered_once_all_its_blocks_are_in() {
     assert_eq!(list, "first\nthird");
 }
 
-/// tmux drops the rest of a list at its first error, so the list answers with
-/// fewer blocks than it has commands. The error is the list's, and the command
-/// after it still gets its own answer.
 #[cfg(unix)]
 #[test]
 fn a_command_list_cut_short_by_an_error_fails_and_keeps_later_answers_in_place() {
@@ -1544,8 +1452,6 @@ fn a_command_list_cut_short_by_an_error_fails_and_keeps_later_answers_in_place()
 
 // --- the implicit attach response (docs/runtime/runtime-mux.md) ---
 
-/// The drain takes the implicit block and **only** it: the bytes after `%end`
-/// are the connection's, and eating them would lose the first notification.
 #[test]
 fn the_drain_stops_at_the_end_of_the_implicit_block() {
     let stream = "\
@@ -1561,11 +1467,6 @@ fn the_drain_stops_at_the_end_of_the_implicit_block() {
     assert_eq!(rest.trim_end(), "%window-add @1");
 }
 
-/// What psmux actually puts on the wire after an attach: a blank line, then
-/// nothing until something is sent. Against a real pipe this is where the
-/// drain blocks forever; a closed one is the same answer arriving as an error,
-/// which is the "control mode closed before sending its implicit attach
-/// response" seen on Windows. Either way it must not be asked of psmux.
 #[test]
 fn a_psmux_shaped_stream_never_satisfies_the_drain() {
     let mut reader = std::io::Cursor::new(b"\n".as_slice());
@@ -1579,11 +1480,6 @@ fn a_psmux_shaped_stream_never_satisfies_the_drain() {
 
 // --- pane snapshots ---
 
-/// A command's output is written raw, so a pane showing a line that reads like
-/// the protocol — `%end …`, `%output …` — hands that line to whatever captures
-/// it. Inside a block it is the block's content: it must neither end the block
-/// early (every later answer would go to the wrong waiter) nor be dispatched
-/// as some pane's output.
 #[cfg(unix)]
 #[test]
 fn a_captured_line_that_reads_like_the_protocol_is_only_content() {
@@ -1705,8 +1601,6 @@ fn anything_but_a_snapshot_answer_is_not_read_as_one() {
     );
 }
 
-/// A snapshot reaches a pane's reader in the pane's own stream, between the
-/// bytes before it and the bytes after, as a chunk of its own.
 #[test]
 fn a_snapshot_comes_out_of_the_reader_between_the_bytes_around_it() {
     let (tx, rx) = sync_channel(16);
@@ -1733,9 +1627,6 @@ fn a_snapshot_comes_out_of_the_reader_between_the_bytes_around_it() {
 
 // --- catching up a reader whose channel overflowed (`Resync`) ---
 
-/// A reader of `%7` with a channel of `capacity` that is caught up after an
-/// overflow, on no connection: what it would ask for goes nowhere, and the
-/// tests hand it the answer themselves.
 fn resyncing_reader(capacity: usize) -> (PaneSendersMapShared, ControlModeReader, Arc<Resync>) {
     let (tx, rx) = sync_channel(capacity);
     let resync = Arc::new(Resync {
@@ -1770,8 +1661,6 @@ fn caught_up_snapshot() -> PaneSnapshot {
     }
 }
 
-/// Read one item: the bytes of an output chunk, or a snapshot with whether
-/// it is a resync.
 fn read_item(reader: &mut ControlModeReader) -> Result<Vec<u8>, (PaneSnapshot, bool)> {
     match reader.next() {
         Some(PaneChunk::Output(bytes)) => Ok(bytes),
@@ -1781,8 +1670,6 @@ fn read_item(reader: &mut ControlModeReader) -> Result<Vec<u8>, (PaneSnapshot, b
     }
 }
 
-/// Output after a gap is never handed over: only the snapshot that follows
-/// it, as a resync, and then the output behind that snapshot.
 #[test]
 fn a_reader_that_lost_output_takes_none_until_a_resync() {
     let (senders, mut reader, resync) = resyncing_reader(2);
@@ -1804,8 +1691,6 @@ fn a_reader_that_lost_output_takes_none_until_a_resync() {
     assert_eq!(read_item(&mut reader), Ok(b"after".to_vec()));
 }
 
-/// A resync with no room waits for the reader to drain its channel, and
-/// comes after everything that was in it.
 #[test]
 fn a_resync_that_finds_the_channel_full_comes_once_it_is_drained() {
     let (senders, mut reader, resync) = resyncing_reader(1);
@@ -1822,9 +1707,6 @@ fn a_resync_that_finds_the_channel_full_comes_once_it_is_drained() {
     assert_eq!(read_item(&mut reader), Ok(b"after".to_vec()));
 }
 
-/// The reader can find its channel empty, and the reader thread can then fill
-/// it, overflow and park a snapshot before the reader takes the lock. The
-/// output queued in that window is older than the snapshot, so it comes first.
 #[test]
 fn a_parked_resync_never_overtakes_output_queued_before_it() {
     let (senders, reader, resync) = resyncing_reader(1);
@@ -1845,8 +1727,6 @@ fn a_parked_resync_never_overtakes_output_queued_before_it() {
     }
 }
 
-/// Output the pane prints while a resync is parked is not in it, so the
-/// parked one is dropped rather than handed over stale.
 #[test]
 fn output_after_a_parked_resync_makes_it_stale() {
     let (senders, mut reader, resync) = resyncing_reader(1);
@@ -1864,10 +1744,6 @@ fn output_after_a_parked_resync_makes_it_stale() {
     ));
 }
 
-/// Anything else handed to a reader while a resync is parked — a resize, a
-/// state report — sits in the stream after the moment the snapshot shows, so
-/// the reader is handed the event, and the parked snapshot is dropped rather
-/// than handed over stale behind it; a fresh one is asked for instead.
 #[test]
 fn an_event_after_a_parked_resync_makes_it_stale() {
     let (senders, mut reader, resync) = resyncing_reader(1);
@@ -1896,8 +1772,6 @@ fn an_event_after_a_parked_resync_makes_it_stale() {
     assert!(resync.is_behind(), "still owed a fresh snapshot");
 }
 
-/// A snapshot that failed catches nothing up, so the reader goes back to
-/// taking output rather than losing all of it for good.
 #[test]
 fn a_failed_resync_puts_the_reader_back_in_step() {
     let (senders, mut reader, resync) = resyncing_reader(1);
@@ -1911,8 +1785,6 @@ fn a_failed_resync_puts_the_reader_back_in_step() {
     assert_eq!(read_item(&mut reader), Ok(b"after".to_vec()));
 }
 
-/// A reader in step is handed a spliced snapshot as it always was: a plain
-/// one, which a grid it already has ignores.
 #[test]
 fn a_reader_in_step_takes_a_plain_snapshot() {
     let (senders, mut reader, _) = resyncing_reader(4);
@@ -1923,7 +1795,6 @@ fn a_reader_in_step_takes_a_plain_snapshot() {
 
 // --- hidden panes (`ControlMode::hide_pane`) ---
 
-/// A two-cell parser fed a hidden pane's report.
 fn after_report(before: &[u8], value: &str) -> vt100::Parser {
     let (_, bytes) = hidden_state(value).expect("a report");
     let mut parser = vt100::Parser::new(2.try_into().unwrap(), 2.try_into().unwrap(), 0);
@@ -1961,8 +1832,6 @@ fn a_hidden_report_sets_the_modes_it_names_on_and_off() {
     assert_eq!(screen.mouse_protocol_mode(), vt100::MouseProtocolMode::None);
 }
 
-/// tmux 3.2 has no `bracket_paste_flag`: a flag that expands to nothing says
-/// nothing, so the mode the pane last set stands.
 #[test]
 fn a_flag_the_server_does_not_know_leaves_the_mode_alone() {
     let parser = after_report(b"\x1b[?2004h", "1792|0,0,,1|0,0,0,0,0,0|host|");
@@ -1982,8 +1851,6 @@ fn a_hidden_report_carries_its_activity_and_a_title_with_separators() {
     assert!(hidden_state("not a report").is_none());
 }
 
-/// The first report says what the pane already was; a report whose activity
-/// moved is output; a report for a pane no longer hidden is dropped.
 #[test]
 fn a_hidden_pane_reads_as_printing_only_when_its_activity_moves() {
     let (tx, rx) = sync_channel(16);
@@ -2013,9 +1880,6 @@ fn a_hidden_pane_reads_as_printing_only_when_its_activity_moves() {
 
 // --- a connection whose server stops reading ---
 
-/// A control server that stops reading its stdin, as one behind a stalled ssh
-/// link does: it reads nothing until `$0.go` exists, then pauses `%7` and
-/// streams a line of it, and reads again only once `$0.drain` exists.
 #[cfg(unix)]
 fn stalled_server(root: &std::path::Path) -> (ControlMode, std::path::PathBuf) {
     use std::os::unix::fs::PermissionsExt;
@@ -2050,8 +1914,6 @@ fn stalled_server(root: &std::path::Path) -> (ControlMode, std::path::PathBuf) {
     (control, mux)
 }
 
-/// Keystrokes enough to fill any pipe between thurbox and a server that has
-/// stopped reading, written from a thread of their own.
 #[cfg(unix)]
 fn flood_keys(control: &ControlMode) -> std::thread::JoinHandle<()> {
     let mut writer = control.writer("%7".to_string(), Arc::new(FakeInput(None)));
@@ -2122,10 +1984,6 @@ fn a_server_that_stops_reading_stalls_neither_output_nor_callers() {
     );
 }
 
-/// A line the writer thread could not write never reached the server, and its
-/// caller is told so as a broken pipe — what lets `Server::ctrl_command_list`
-/// send it again — at once, not after `COMMAND_TIMEOUT`. So is every caller
-/// after it.
 #[cfg(unix)]
 #[test]
 fn a_command_that_could_not_be_written_fails_as_a_broken_pipe() {
@@ -2172,10 +2030,6 @@ fn a_command_that_could_not_be_written_fails_as_a_broken_pipe() {
 #[cfg(unix)]
 static PASTED: AtomicBool = AtomicBool::new(false);
 
-/// An out-of-band paste (psmux's `send-paste`) does not go down the connection,
-/// so nothing orders it after the keys typed before it but waiting for them to
-/// be written: a paste run while they still sat in the queue reached the pane
-/// first.
 #[cfg(unix)]
 #[test]
 fn an_out_of_band_paste_waits_for_the_keys_typed_before_it() {
@@ -2203,9 +2057,6 @@ fn an_out_of_band_paste_waits_for_the_keys_typed_before_it() {
     assert!(PASTED.load(Ordering::SeqCst), "the paste never ran");
 }
 
-/// A paste that goes down the connection is ordered by the queue like any
-/// key, so it must not wait for the writer: on a stalled link that parked the
-/// pane's writer, and every key after it failed on a full input channel.
 #[cfg(unix)]
 #[test]
 fn a_paste_down_the_connection_does_not_wait_for_the_writer() {

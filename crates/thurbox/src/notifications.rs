@@ -1,43 +1,3 @@
-//! OS desktop notifications for the "agent needs you" event.
-//!
-//! Sends a notification when a session transitions into an attention-needing
-//! state (`Blocked`). Delivery picks a
-//! **backend** at startup ([`detect_backend`]):
-//!
-//! - **dbus** (`org.freedesktop.Notifications`) on a normal Linux desktop.
-//!   Click-to-focus works: the dbus action callback, a thread of the TUI's own
-//!   process, leaves the session for the loop to take
-//!   ([`take_focus_request`]).
-//! - **Windows toast** under WSL when no dbus notification daemon is reachable.
-//!   We shell out to `powershell.exe` and raise a WinRT toast, so notifications
-//!   appear in the Windows Action Center. Click-to-focus is *not* supported on
-//!   this path (a Windows toast can't call back into the WSL process), so the
-//!   banner is informational — the user alt-tabs back themselves.
-//! - **macOS** native banner via `terminal-notifier` if installed (own
-//!   bundle + icon, looks like a real app), falling back to `osascript`'s
-//!   `display notification` (always available, attributed to Apple's
-//!   Script Editor). Both paths are informational; the
-//!   `UNUserNotificationCenter` click API needs a signed app bundle,
-//!   which thurbox is not. `notify-rust`'s macOS backend
-//!   (`mac-notification-sys`) is intentionally not used: it rides the
-//!   deprecated `NSUserNotificationCenter` API, which silently no-ops on
-//!   macOS 12+ for unbundled CLIs.
-//!
-//! A previous silent-failure bug motivated this: under WSL the dbus path errors
-//! on connect, but the only signal was a `warn!` to the logfile — the user saw
-//! nothing. We now (a) auto-detect the working backend, (b) record the last
-//! delivery error so `thurbox-cli notify` can surface it, and (c) treat "no
-//! backend at all" as a reported condition rather than a silent drop.
-//!
-//! Notify-rust on Linux blocks on dbus, and `powershell.exe` is slow to spawn;
-//! dispatch therefore runs on a dedicated background thread fed by an mpsc
-//! channel, so the UI tick is never stalled by a slow/missing notification
-//! daemon.
-//!
-//! Architecture: leaf module. Depends only on `session` (the
-//! `NotificationBackend` type) and `paths`. Never reaches into `app` /
-//! `agent` / `ui`.
-
 use std::process::{Command, Output, Stdio};
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::sync::{Mutex, OnceLock};
@@ -48,25 +8,15 @@ use tracing::{debug, warn};
 
 use crate::session::settings::NotificationBackend;
 
-/// The resolved delivery mechanism, decided once at startup from the
-/// configured [`NotificationBackend`] plus host probing. This is the concrete
-/// transport, with no `Auto` ambiguity left.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DeliveryBackend {
-    /// freedesktop dbus (`notify-rust` → `org.freedesktop.Notifications`).
     Dbus,
-    /// WSL → Windows toast via `powershell.exe`.
     WindowsToast,
-    /// macOS native banner.
     Macos,
-    /// No working delivery path (e.g. `backend = "off"`, or WSL without
-    /// `powershell.exe`, or an unsupported OS). Notifications are dropped, but
-    /// the reason is reported via [`last_error`].
     None,
 }
 
 impl DeliveryBackend {
-    /// Short, user-facing label for the diagnostic output.
     pub fn label(self) -> &'static str {
         match self {
             DeliveryBackend::Dbus => "dbus (org.freedesktop.Notifications)",
@@ -76,17 +26,10 @@ impl DeliveryBackend {
         }
     }
 
-    /// Whether the backend can actually deliver a notification.
     pub fn is_deliverable(self) -> bool {
         !matches!(self, DeliveryBackend::None)
     }
 
-    /// Whether clicking the notification focuses the session in the TUI.
-    /// Linux dbus wires this up natively (action callback); macOS does too
-    /// when `terminal-notifier` is in PATH (its `-execute` flag shells back
-    /// into `thurbox-cli session focus <id>`). The `osascript` fallback
-    /// can't, so on macOS this flips to false when only the fallback path
-    /// is available.
     pub fn supports_click_to_focus(self) -> bool {
         match self {
             DeliveryBackend::Dbus => true,
@@ -97,58 +40,37 @@ impl DeliveryBackend {
     }
 }
 
-/// One notification to fire. Cheap to clone/move across the channel.
 #[derive(Debug, Clone)]
 pub struct Notification {
-    /// The session's id as the snapshot carries it (a Fleet Task's name) —
-    /// also what a click asks the loop to focus. Empty for a notification no
-    /// session raised (`thurbox-cli notify`), which a click focuses nothing for.
     pub session_id: String,
-    /// Title shown by the OS (e.g. `"my-feature · claude"`).
     pub title: String,
-    /// Body text (e.g. the agent's last OSC notification message, or a
-    /// generic "waiting for input").
     pub body: String,
-    /// Play the OS default notification sound.
     pub sound: bool,
 }
 
-/// Sends notifications to the background dispatcher thread. Cloned freely;
-/// dropping all senders shuts the thread down on the next recv.
 #[derive(Clone)]
 pub struct NotificationSender {
     tx: Sender<Notification>,
 }
 
 impl NotificationSender {
-    /// A sender whose notifications land on `tx` instead of a desktop, for a
-    /// test that reads what would have been delivered.
     #[cfg(test)]
     pub(crate) fn to(tx: Sender<Notification>) -> Self {
         Self { tx }
     }
 
-    /// Best-effort send. A full channel or a dead receiver drops the
-    /// notification silently (notifications are advisory; we never block
-    /// the UI tick on them).
     pub fn send(&self, n: Notification) {
         if let Err(e) = self.tx.send(n) {
             debug!("notification channel closed: {e}");
         }
     }
 
-    /// Test helper: build a sender around a caller-owned channel so tests
-    /// can construct `NotificationState` without spawning the dispatcher.
-    /// Not exported outside the crate.
     #[cfg(test)]
     pub fn __test_with_sender(tx: Sender<Notification>) -> Self {
         Self { tx }
     }
 }
 
-/// Process-wide record of the last delivery failure, so the diagnostic
-/// (`thurbox-cli notify`) and a future TUI warning can surface what would
-/// otherwise be a silent drop. `None` = no failure recorded yet.
 static LAST_ERROR: Mutex<Option<String>> = Mutex::new(None);
 
 fn record_error(msg: impl Into<String>) {
@@ -159,18 +81,10 @@ fn record_error(msg: impl Into<String>) {
     }
 }
 
-/// The most recent delivery error, if any. Used by the CLI diagnostic.
 pub fn last_error() -> Option<String> {
     LAST_ERROR.lock().ok().and_then(|s| s.clone())
 }
 
-/// Start the background dispatcher thread for the given backend. Returns a
-/// sender for the UI tick to push notifications into. The thread reads its DB
-/// path lazily on each click (we only write a single row, no persistent
-/// connection needed) so it is safe to spawn before the database file exists.
-///
-/// Only one dispatcher per process: re-entry returns the same sender and the
-/// backend chosen on the first call wins.
 pub fn start(backend: DeliveryBackend) -> NotificationSender {
     static SHARED: OnceLock<NotificationSender> = OnceLock::new();
     SHARED
@@ -194,12 +108,6 @@ fn dispatch_loop(rx: Receiver<Notification>, backend: DeliveryBackend) {
     debug!("notification dispatcher exiting (all senders dropped)");
 }
 
-/// Synchronously deliver a single notification over `backend`, blocking until
-/// the OS call returns. Used by the `thurbox-cli notify --test` diagnostic,
-/// which is a short-lived process with no dispatcher thread — it must complete
-/// the delivery before exiting. Returns an error string on failure (the dbus
-/// path's click-wait thread is still spawned but the process may exit before a
-/// click; that's fine for a one-shot test).
 pub fn send_blocking(n: &Notification, backend: DeliveryBackend) -> Result<(), String> {
     if !backend.is_deliverable() {
         return Err(format!("no deliverable backend ({})", backend.label()));
@@ -207,7 +115,6 @@ pub fn send_blocking(n: &Notification, backend: DeliveryBackend) -> Result<(), S
     dispatch_one(n, backend).map_err(|e| e.to_string())
 }
 
-/// Dispatch one notification over the resolved backend.
 fn dispatch_one(
     n: &Notification,
     backend: DeliveryBackend,
@@ -295,9 +202,6 @@ fn dispatch_macos(n: &Notification) -> Result<(), Box<dyn std::error::Error>> {
     dispatch_macos_osascript(n)
 }
 
-/// Cached check for `terminal-notifier` in `PATH`. We probe once per
-/// process (it won't appear mid-session) and reuse the answer so every
-/// notification doesn't pay a spawn.
 #[cfg(target_os = "macos")]
 fn terminal_notifier_available() -> bool {
     static AVAILABLE: OnceLock<bool> = OnceLock::new();
@@ -339,11 +243,6 @@ fn dispatch_macos_terminal_notifier(n: &Notification) -> Result<(), Box<dyn std:
     Ok(())
 }
 
-/// Build the shell command `terminal-notifier -execute` should run on click:
-/// `<thurbox-cli> session focus <session-id>`, with the thurbox-cli path
-/// quoted for `/bin/sh`. Returns `None` if we can't find a sibling
-/// `thurbox-cli` binary next to the running executable — the path probe
-/// is cached, the resolution is not, because `current_exe()` is cheap.
 #[cfg(target_os = "macos")]
 fn thurbox_cli_focus_command(session_id: &str) -> Option<String> {
     if session_id.is_empty() {
@@ -362,11 +261,6 @@ fn thurbox_cli_focus_command(session_id: &str) -> Option<String> {
     ))
 }
 
-/// POSIX single-quote a string so it survives `/bin/sh -c "<cmd>"`. The
-/// terminal-notifier `-execute` argument is interpreted by `sh`, and a user
-/// `HOME` containing a space or apostrophe would otherwise break the
-/// command. The trick: close the quote, emit an escaped quote, re-open
-/// (`'\''`).
 #[cfg(target_os = "macos")]
 fn sh_single_quote(s: &str) -> String {
     let mut out = String::with_capacity(s.len() + 2);
@@ -413,17 +307,8 @@ fn dispatch_macos_osascript(n: &Notification) -> Result<(), Box<dyn std::error::
     Ok(())
 }
 
-/// How long a notifier child (`powershell.exe`, `terminal-notifier`,
-/// `osascript`) may run. It is stopped, not abandoned, at the deadline: an
-/// abandoned one keeps running after the process that started it, one more per
-/// retry, and may still show its notification after the send reported failure.
 const NOTIFIER_TIMEOUT: Duration = Duration::from_secs(8);
 
-/// Run a notifier to completion or until `timeout` ([`NOTIFIER_TIMEOUT`]
-/// outside tests), killing and reaping it then. Its stdout is discarded;
-/// stderr is kept for the error, read on a thread of its own while it runs,
-/// so one that writes more than a pipe holds is not blocked into a false
-/// timeout.
 fn run_notifier(cmd: &mut Command, timeout: Duration) -> std::io::Result<Output> {
     use std::io::Read;
 
@@ -464,10 +349,6 @@ fn run_notifier(cmd: &mut Command, timeout: Duration) -> std::io::Result<Output>
     })
 }
 
-/// Deliver a Windows toast from WSL by invoking `powershell.exe` with a small
-/// WinRT script. This is the only path that crosses the WSL → Windows
-/// boundary; it needs WSL interop enabled (the default) and `powershell.exe`
-/// on `PATH` (also the default). Click-to-focus is not wired up here.
 fn dispatch_windows_toast(n: &Notification) -> Result<(), Box<dyn std::error::Error>> {
     let script = build_powershell_toast_script(&n.title, &n.body, n.sound);
     let output = run_notifier(
@@ -491,12 +372,6 @@ fn dispatch_windows_toast(n: &Notification) -> Result<(), Box<dyn std::error::Er
     Ok(())
 }
 
-/// Single-quote a string for safe interpolation into a PowerShell literal.
-/// The quoting rule is the shared [`crate::shell::powershell_quote`] (a
-/// doubled quote is the only escape); this wrapper additionally strips
-/// control characters that could break the one-liner — the body has already
-/// been length-bounded upstream — and hands back the *contents*, unwrapped,
-/// because the caller embeds them mid-literal.
 pub(crate) fn powershell_escape(s: &str) -> String {
     let cleaned: String = s
         .chars()
@@ -507,9 +382,6 @@ pub(crate) fn powershell_escape(s: &str) -> String {
     quoted[1..quoted.len() - 1].to_string()
 }
 
-/// Build the PowerShell script that raises a WinRT toast. Title/body are
-/// single-quote-escaped and embedded as XML text nodes (the WinRT API takes
-/// raw text, so XML-special characters are passed as-is by `CreateTextNode`).
 pub(crate) fn build_powershell_toast_script(title: &str, body: &str, sound: bool) -> String {
     let title = powershell_escape(title);
     let body = powershell_escape(body);
@@ -538,32 +410,19 @@ pub(crate) fn build_powershell_toast_script(title: &str, body: &str, sound: bool
     )
 }
 
-/// Decide the concrete delivery backend for this host from the configured
-/// preference. `Auto` probes the environment; the explicit variants force a
-/// path (or disable). Probing is delegated to [`probe_host`] so the decision
-/// table is pure and unit-testable.
 pub fn detect_backend(configured: NotificationBackend) -> DeliveryBackend {
     resolve_backend(configured, probe_host())
 }
 
-/// Observable facts about the host that drive backend selection. Kept as a
-/// plain struct so `resolve_backend` is a pure function of (config, facts).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct HostProbe {
-    /// Compiled for `target_os = "linux"`.
     pub is_linux: bool,
-    /// Compiled for `target_os = "macos"`.
     pub is_macos: bool,
-    /// Compiled for `target_os = "windows"` (native Windows, not WSL).
     pub is_windows: bool,
-    /// A reachable freedesktop notification service on the session bus.
     pub has_dbus_service: bool,
-    /// `powershell.exe` resolves on `PATH` (WSL interop available).
     pub has_powershell: bool,
 }
 
-/// Pure backend-selection table. Separated from probing so every branch is
-/// testable without a real host.
 pub fn resolve_backend(configured: NotificationBackend, probe: HostProbe) -> DeliveryBackend {
     match configured {
         NotificationBackend::Off => DeliveryBackend::None,
@@ -585,7 +444,6 @@ pub fn resolve_backend(configured: NotificationBackend, probe: HostProbe) -> Del
     }
 }
 
-/// The `auto` half of [`resolve_backend`]: pick from what the host offers.
 fn resolve_auto(probe: HostProbe) -> DeliveryBackend {
     let toast_or_none = |available: bool| match available {
         true => DeliveryBackend::WindowsToast,
@@ -614,11 +472,6 @@ fn resolve_auto(probe: HostProbe) -> DeliveryBackend {
     }
 }
 
-/// Gather host facts for [`detect_backend`]. The `cfg!` flags are
-/// compile-time; the dynamic probes (dbus service, powershell) are
-/// best-effort and never panic. WSL is not probed directly: routing keys off
-/// the absence of a dbus service plus the presence of `powershell.exe`, which
-/// is exactly the WSL case (and degrades correctly on any other host).
 pub fn probe_host() -> HostProbe {
     HostProbe {
         is_linux: cfg!(target_os = "linux"),
@@ -629,12 +482,6 @@ pub fn probe_host() -> HostProbe {
     }
 }
 
-/// Probe for a working freedesktop notification service. We deliberately do a
-/// cheap socket-existence check rather than a full dbus round-trip: the common
-/// failure (WSL) is that `DBUS_SESSION_BUS_ADDRESS` points at a socket path
-/// that does not exist, so even opening the bus fails. A present socket is a
-/// good-enough signal to attempt the dbus path (a misbehaving daemon then
-/// surfaces via `last_error`, no longer silent).
 #[cfg(target_os = "linux")]
 fn detect_dbus_service() -> bool {
     // Honour an explicit address first.
@@ -663,15 +510,12 @@ fn detect_dbus_service() -> bool {
     false
 }
 
-/// `powershell.exe` on `PATH` (WSL interop). Cheap PATH scan; no process spawn.
 fn detect_powershell() -> bool {
     crate::paths::which_on_path("powershell.exe")
 }
 
-/// The session a notification click asked to focus, until the loop takes it.
 static FOCUS_REQUEST: Mutex<Option<String>> = Mutex::new(None);
 
-/// Click handler: record the focus request from the wait-for-action thread.
 #[cfg(target_os = "linux")]
 fn write_focus_request(session_id: String) {
     if session_id.is_empty() {
@@ -682,7 +526,6 @@ fn write_focus_request(session_id: String) {
     }
 }
 
-/// The session the last notification click asked to focus, handed out once.
 pub fn take_focus_request() -> Option<String> {
     FOCUS_REQUEST.lock().ok()?.take()
 }
@@ -691,10 +534,6 @@ pub fn take_focus_request() -> Option<String> {
 mod tests {
     use super::*;
 
-    /// A notifier that never returns is given up on, and stopped: the tick
-    /// sends its alerts through this path, and a delivery that hangs would
-    /// stop every scheduled run behind it, or leave one more stuck process
-    /// per retry.
     #[cfg(unix)]
     #[test]
     fn a_notifier_that_hangs_is_given_up_on_and_stopped() {
@@ -730,7 +569,6 @@ mod tests {
         }
     }
 
-    /// A native-Windows host facts struct (no dbus, powershell present).
     fn probe_windows() -> HostProbe {
         HostProbe {
             is_linux: false,

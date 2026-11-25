@@ -1,9 +1,3 @@
-//! An in-process OTLP/HTTP collector for the telemetry acceptance: a plain
-//! TCP listener that answers every request `200 OK`, keeps the protobuf
-//! bodies by path, and decodes them into flat spans, data points and log
-//! records that a
-//! test can search. It speaks only what Fleet's exporter sends.
-
 use std::collections::BTreeMap;
 use std::io::{BufRead, BufReader, Read, Write};
 use std::net::{TcpListener, TcpStream};
@@ -18,7 +12,6 @@ use opentelemetry_proto::tonic::metrics::v1::metric;
 use prost::Message;
 
 type Attrs = BTreeMap<String, String>;
-/// Each request's path, headers (names lowercased) and body, in arrival order.
 type Received = Mutex<Vec<(String, Attrs, Vec<u8>)>>;
 
 pub struct Collector {
@@ -26,14 +19,12 @@ pub struct Collector {
     received: Arc<Received>,
 }
 
-/// One exported span, its attributes and its resource's, as strings.
 #[derive(Debug, Clone)]
 pub struct Span {
     pub name: String,
     pub trace_id: Vec<u8>,
     pub span_id: Vec<u8>,
     pub parent: Vec<u8>,
-    /// The span ids of the spans it links to.
     pub links: Vec<Vec<u8>>,
     pub error: bool,
     pub attrs: Attrs,
@@ -41,13 +32,11 @@ pub struct Span {
     pub duration_ms: u64,
 }
 
-/// One exported data point of a metric, with its point attributes.
 #[derive(Debug, Clone)]
 pub struct Point {
     pub metric: String,
     pub unit: String,
     pub attrs: Attrs,
-    /// The sum, gauge value or histogram count, as a number.
     pub value: f64,
     pub resource: Attrs,
 }
@@ -74,19 +63,16 @@ impl Collector {
         Collector { endpoint, received }
     }
 
-    /// Every request path received so far, in order.
     pub fn paths(&self) -> Vec<String> {
         let received = self.received.lock().unwrap();
         received.iter().map(|(p, _, _)| p.clone()).collect()
     }
 
-    /// Each request's headers, names lowercased, in arrival order.
     pub fn headers(&self) -> Vec<Attrs> {
         let received = self.received.lock().unwrap();
         received.iter().map(|(_, h, _)| h.clone()).collect()
     }
 
-    /// Every request body received so far, concatenated.
     pub fn raw(&self) -> Vec<u8> {
         let received = self.received.lock().unwrap();
         received.iter().flat_map(|(_, _, b)| b.clone()).collect()
@@ -221,7 +207,6 @@ fn value(v: Option<&AnyValue>) -> String {
     }
 }
 
-/// Answer each HTTP/1.1 request on one connection until the client closes it.
 fn serve(stream: TcpStream, sink: &Received) {
     let mut writer = stream.try_clone().expect("clone the stream");
     let mut reader = BufReader::new(stream);

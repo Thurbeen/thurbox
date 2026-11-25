@@ -1,12 +1,3 @@
-//! Diffs, branches, commits, and a worktree's stats.
-//!
-//! The working-tree diff folds in **untracked files** (`git diff --no-index --
-//! /dev/null <path>`, capped at [`UNTRACKED_FILE_CAP`]): `git diff HEAD` cannot
-//! show a file git has never been told about, which made the default review
-//! target report "no changes" after an agent wrote new ones. There is
-//! deliberately no body-only `git diff HEAD` helper — having one is how that
-//! omission happened in the first place.
-
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
@@ -16,13 +7,6 @@ use tracing::{debug, warn};
 
 use super::{git_command, reportable_stderr_line, run_git_capture, run_git_capture_env};
 
-/// Raw unified `git diff <base>..HEAD` output for a worktree, for the native
-/// code-review view.
-/// Returns `None` on failure (not a git dir, bad base, …); the caller falls
-/// back to a narrower range or surfaces a status.
-///
-/// `--no-color` keeps the output parseable; the result is fed to
-/// [`crate::session::review::parse_unified_diff`].
 pub fn diff_against(worktree: &Path, base: &str) -> Option<String> {
     let range = format!("{base}..HEAD");
     run_diff(worktree, &["diff", "--no-color", &range])
@@ -33,18 +17,6 @@ pub fn diff_against(worktree: &Path, base: &str) -> Option<String> {
 // would be `git diff HEAD`, which silently omits untracked files, and having it
 // available is how that omission happened.
 
-/// The **complete** list of changed files as `--numstat -M -z`, with exact counts.
-///
-/// Separate from the diff text because the two have different bounds: a diff body is
-/// capped (see `kernel::diff::MAX_DIFF_BYTES`) and this is not. Deriving the file
-/// list from the capped body made it silently short — on this repository's own diff,
-/// 310 files of 433 — so a reviewer navigating it could not tell it ended early, and
-/// the totals were a fraction of the truth. Twelve kilobytes for four hundred files
-/// is not worth capping.
-///
-/// `-z` rather than the human format: a rename in `--numstat` otherwise arrives as
-/// `old => new` (or a brace form) and has to be un-guessed. NUL-separated, a rename
-/// is an empty path field followed by two more records.
 pub fn diff_numstat(worktree: &Path, base: Option<&str>) -> Option<String> {
     let range = base.map_or_else(|| "HEAD".to_string(), |base| format!("{base}..HEAD"));
     run_diff(
@@ -53,10 +25,6 @@ pub fn diff_numstat(worktree: &Path, base: Option<&str>) -> Option<String> {
     )
 }
 
-/// Each changed file's status (`M`/`A`/`D`/`R…`) as `--name-status -M -z`.
-///
-/// The companion to [`diff_numstat`]: `--numstat` carries the counts and cannot
-/// tell a deletion from a rewrite. Cheap — a fraction of the cost of the diff itself.
 pub fn diff_name_status(worktree: &Path, base: Option<&str>) -> Option<String> {
     let range = base.map_or_else(|| "HEAD".to_string(), |base| format!("{base}..HEAD"));
     run_diff(
@@ -65,12 +33,6 @@ pub fn diff_name_status(worktree: &Path, base: Option<&str>) -> Option<String> {
     )
 }
 
-/// Run a `git` command and capture stdout, logging + returning `None` on
-/// failure. Shared by the review-view diff/log/listing helpers.
-///
-/// `core.quotepath=false` keeps non-ASCII paths verbatim (git otherwise
-/// C-quotes them, e.g. `"caf\303\251.rs"`), so the parser keys comments/marks on
-/// the real UTF-8 path.
 pub(super) fn run_diff(worktree: &Path, args: &[&str]) -> Option<String> {
     let mut full = vec!["-c", "core.quotepath=false"];
     full.extend_from_slice(args);
@@ -83,55 +45,16 @@ pub(super) fn run_diff(worktree: &Path, args: &[&str]) -> Option<String> {
     Some(String::from_utf8_lossy(&output.stdout).into_owned())
 }
 
-/// How many untracked files a working-tree diff represents.
-///
-/// Each costs a process, so an un-ignored build directory in a scratch worktree
-/// would otherwise turn one review into thousands of `git` invocations. The
-/// number *found* is reported alongside, so a list that stops early says so
-/// instead of reading as complete.
 pub const UNTRACKED_FILE_CAP: usize = 200;
 
-/// A worktree's uncommitted state, in the three shapes `kernel::diff` needs.
-///
-/// One type rather than three calls because untracked files have to be folded
-/// into all three, and gathering them once is what stops the body, the counts
-/// and the statuses disagreeing about which files they covered.
 pub struct WorkingDiff {
-    /// Unified diff text, tracked changes followed by one patch per untracked
-    /// file.
     pub body: String,
-    /// `--numstat -M -z` records, likewise extended.
     pub numstat_z: String,
-    /// `--name-status -M -z` records, likewise extended.
     pub name_status_z: String,
-    /// Untracked files found, before [`UNTRACKED_FILE_CAP`].
     pub untracked_total: usize,
-    /// How many of them the three fields above actually describe.
     pub untracked_shown: usize,
 }
 
-/// The uncommitted diff of a worktree — staged, unstaged **and untracked**.
-///
-/// `git diff HEAD` cannot show a file git has never been told about, and a new
-/// file is the most common thing a coding agent produces: a session with no base
-/// branch, which is exactly the scratch worktree someone watches an agent work
-/// in, reported "no changes" after three files had been written. So each
-/// untracked file is diffed against nothing
-/// (`git diff --no-index -- /dev/null <path>`), which emits an ordinary
-/// `new file mode` patch and needs nothing downstream to change.
-///
-/// The obvious one-process alternative — a temporary index (`GIT_INDEX_FILE`,
-/// `git add -A`, `git diff --cached`) — is refused: it writes loose objects into
-/// the repository being reviewed, and for a pane refreshing every few seconds
-/// against a worktree an agent is editing, that is a reader mutating what it
-/// reads. Nor would the mess stay small: an unreachable blob is younger than
-/// `gc.pruneExpire` for a fortnight, so `git gc --auto` cannot remove it and
-/// eventually gives up into `.git/gc.log`, which then suppresses auto-gc
-/// repo-wide — the failure `PROBE_IDENT` records below, at one blob per changed
-/// file per refresh rather than one commit per poll.
-///
-/// A directory outside any git work tree has no changes to show, so it gets an
-/// empty diff, noted once at debug level rather than warned about every refresh.
 pub fn working_diff(worktree: &Path) -> Option<WorkingDiff> {
     if worktree.is_dir() && work_tree(worktree) == WorkTree::Outside {
         note_outside_work_tree(worktree);
@@ -237,9 +160,6 @@ fn note_outside_work_tree(dir: &Path) {
     }
 }
 
-/// The worktree's untracked, non-ignored files. `--exclude-standard` is what
-/// keeps `.gitignore`d build output out; `-z` is what keeps a path with a space
-/// or a newline in it whole.
 pub(super) fn untracked_files(worktree: &Path) -> Option<Vec<String>> {
     let out = run_diff(
         worktree,
@@ -253,19 +173,6 @@ pub(super) fn untracked_files(worktree: &Path) -> Option<Vec<String>> {
     )
 }
 
-/// One untracked file's diff against nothing, with `extra` selecting the shape
-/// ([`working_diff`] asks for `--numstat` and `--patch` together and splits
-/// the result with [`split_untracked_diff`]).
-///
-/// `--no-index` exits **1** whenever the two paths differ, which for a file
-/// against `/dev/null` is always — so unlike every other git call here a
-/// non-zero status is the answer, not a failure. A file that vanished since the
-/// listing also exits 1, with empty output, which is why that race needs no
-/// handling beyond ignoring an empty patch. Anything above 1 is a real error
-/// (128 = not a repository) and drops the file.
-///
-/// `/dev/null` is understood by Git for Windows too, so this needs no platform
-/// branch.
 pub(super) fn untracked_diff(worktree: &Path, path: &str, extra: &[&str]) -> Option<String> {
     let mut args = vec!["-c", "core.quotepath=false", "diff", "--no-index"];
     args.extend_from_slice(extra);
@@ -282,11 +189,6 @@ pub(super) fn untracked_diff(worktree: &Path, path: &str, extra: &[&str]) -> Opt
     }
 }
 
-/// Split a combined `--numstat -z --patch` output into its numstat records and
-/// its patch. The stat records come first (NUL-terminated under `-z`), the
-/// patch begins at the first `diff --git` header — recognised only at the start
-/// or right after a terminator, so a path containing the literal text cannot
-/// split early.
 pub(super) fn split_untracked_diff(combined: &str) -> (&str, &str) {
     let mut from = 0;
     while let Some(rel) = combined[from..].find("diff --git ") {
@@ -299,8 +201,6 @@ pub(super) fn split_untracked_diff(combined: &str) -> (&str, &str) {
     (combined, "")
 }
 
-/// Sum `git diff --numstat` output into `(files_changed, insertions, deletions)`.
-/// Binary files (`-\t-\tpath`) count toward `files_changed` with zero lines.
 pub(super) fn parse_numstat(out: &str) -> (usize, usize, usize) {
     let (mut files, mut ins, mut dels) = (0usize, 0usize, 0usize);
     for line in out.lines() {
@@ -322,12 +222,6 @@ pub(super) fn parse_numstat(out: &str) -> (usize, usize, usize) {
     (files, ins, dels)
 }
 
-/// The ref a *delete* measures against: origin's default branch.
-///
-/// `origin/HEAD` when the remote advertised one, else the conventional
-/// `origin/main` / `origin/master`. Deliberately not [`resolve_base_ref`]'s
-/// chain, which prefers `@{upstream}` — the branch's own copy on the remote
-/// says whether it was pushed, never whether the work landed.
 fn remote_default_ref(cwd: &Path) -> Option<String> {
     if let Some(out) = run_git_capture(
         &["symbolic-ref", "--short", "refs/remotes/origin/HEAD"],
@@ -344,34 +238,6 @@ fn remote_default_ref(cwd: &Path) -> Option<String> {
         .map(str::to_string)
 }
 
-/// Whether origin's default branch already contains this worktree's work.
-///
-/// `Some(true)` = merged, `Some(false)` = it holds commits the default branch
-/// does not, `None` when the question cannot be answered (no `origin`, no
-/// default ref, a git failure) — never assumed, because the caller uses this
-/// to decide whether a delete needs confirming.
-///
-/// A merge is rarely a fast-forward, and each forge rewrites the work its own
-/// way, so no single comparison sees them all:
-///
-/// ```text
-///   origin/main   A ── U ── S        S = the branch, squashed or replayed
-///   feature        \── B ── C ── D    D is an ancestor of nothing
-/// ```
-///
-/// Four questions in ascending cost, each a different kind of evidence that
-/// the work is already upstream, and the first `true` is the answer:
-///
-/// 1. `reachable_from` — a merge commit, or a fast-forward.
-/// 2. `same_tree_as` — strategy-agnostic: however the content got there, a
-///    branch whose tree equals the default branch's loses nothing by going.
-/// 3. `every_commit_upstream` — rebase-and-merge, and GitLab's semi-linear
-///    merge: every commit replayed with a new sha but the same patch.
-/// 4. `squashed_upstream` — a squash merge: no commit of the branch is
-///    upstream, only the sum of them.
-///
-/// Local refs only — no network, and no forge CLI — so GitHub, GitLab,
-/// Bitbucket and a bare repository behind an SSH remote all answer alike.
 pub fn merged_into_default(cwd: &Path) -> Option<bool> {
     let default = remote_default_ref(cwd)?;
     if reachable_from(cwd, &default)? {
@@ -388,9 +254,6 @@ pub fn merged_into_default(cwd: &Path) -> Option<bool> {
     squashed_upstream(cwd, &default, base)
 }
 
-/// A git question answered by exit status: `Some` for the 0/1 the command
-/// documents, `None` for anything else, since git failing to answer must not
-/// read as "unmerged".
 fn git_predicate(cwd: &Path, args: &[&str]) -> Option<bool> {
     let status = git_command(cwd, args)
         .stdout(Stdio::null())
@@ -404,51 +267,20 @@ fn git_predicate(cwd: &Path, args: &[&str]) -> Option<bool> {
     }
 }
 
-/// Merge commit and fast-forward: the branch tip is still reachable, so no
-/// patch has to be compared at all.
 fn reachable_from(cwd: &Path, default: &str) -> Option<bool> {
     git_predicate(cwd, &["merge-base", "--is-ancestor", "HEAD", default])
 }
 
-/// Content rather than history: an identical tree means a delete walks away
-/// from nothing, whichever strategy — or hand reimplementation — put it there.
 fn same_tree_as(cwd: &Path, default: &str) -> Option<bool> {
     git_predicate(cwd, &["diff", "--quiet", default, "HEAD"])
 }
 
-/// Rebase-and-merge, and semi-linear merge: every commit is replayed upstream
-/// with a new sha, so identity says nothing and patch-ids say everything.
-/// `git cherry` prefixes `-` for a patch already upstream and `+` for one that
-/// is not — merged means no `+`, and at least one line, because an empty range
-/// is a question the check cannot answer rather than a yes.
 fn every_commit_upstream(cwd: &Path, default: &str, base: &str) -> Option<bool> {
     let cherry = run_git_capture(&["cherry", default, "HEAD", base], cwd)?;
     let mut lines = cherry.lines().filter(|l| !l.trim().is_empty()).peekable();
     Some(lines.peek().is_some() && lines.all(|l| l.trim_start().starts_with('-')))
 }
 
-/// The identity and timestamp [`squashed_upstream`]'s probe commit is written
-/// with. Fixed values, and that is the whole point of them.
-///
-/// `commit-tree` hashes the author and committer lines along with the tree, so
-/// left to inherit the ambient identity and *now*, the same question hashes to
-/// a new object every time it is asked — and it is asked again on every recheck
-/// of an unmerged answer, for as long as a session sits on unmerged work. Back
-/// when that was every poll and the answer was cached for no time at all, it
-/// wrote a dangling commit per poll: 28k loose objects in
-/// one repository here, well past `gc.auto`, at which point `git gc --auto`
-/// finds nothing it may prune (they are younger than `gc.pruneExpire`), gives
-/// up with "too many unreachable loose objects" into `.git/gc.log` — and that
-/// file then suppresses auto-gc repo-wide for a day and prints its warning on
-/// every command that would have run one.
-///
-/// Pinned, the probe is a pure function of `(tree, parent)`: the second ask
-/// rewrites the object it already wrote, so a repository accumulates one per
-/// commit a branch actually reaches rather than one per poll. `git cherry`
-/// compares patch ids, which carry neither identity nor date, so the answer is
-/// exactly the one an ambient identity gave. Pinning also frees the check from
-/// needing a configured `user.email`, which `commit-tree` would otherwise
-/// demand of a repository that has none.
 const PROBE_IDENT: [(&str, &str); 6] = [
     ("GIT_AUTHOR_NAME", "thurbox"),
     ("GIT_AUTHOR_EMAIL", "thurbox@invalid"),
@@ -458,12 +290,6 @@ const PROBE_IDENT: [(&str, &str); 6] = [
     ("GIT_COMMITTER_DATE", "@0 +0000"),
 ];
 
-/// Squash merge: the branch landed as one new commit, so none of its own
-/// commits is upstream — only the sum of them. `commit-tree` squares the
-/// branch off onto its merge base as a single dangling commit — no ref moves
-/// and nothing references it — and `git cherry` asks whether the default
-/// branch already carries that one patch. The commit is written with
-/// [`PROBE_IDENT`] so re-asking reuses it instead of writing another.
 fn squashed_upstream(cwd: &Path, default: &str, base: &str) -> Option<bool> {
     let squashed = run_git_capture_env(
         &["commit-tree", "HEAD^{tree}", "-p", base, "-m", "squash"],
@@ -474,9 +300,6 @@ fn squashed_upstream(cwd: &Path, default: &str, base: &str) -> Option<bool> {
     Some(cherry.trim_start().starts_with('-'))
 }
 
-/// Commits the worktree's HEAD is `(ahead, behind)` relative to its base ref,
-/// resolved by `resolve_base_ref` (upstream → `origin/HEAD` → `origin/main` →
-/// `origin/master`). Returns `(0, 0)` when no base can be resolved.
 pub fn ahead_behind(cwd: &Path) -> (usize, usize) {
     let Some(base) = resolve_base_ref(cwd) else {
         return (0, 0);
@@ -492,39 +315,15 @@ pub fn ahead_behind(cwd: &Path) -> (usize, usize) {
     (ahead, behind)
 }
 
-/// What one `git status --porcelain=v2 --branch` run carries for
-/// [`worktree_stats`]: dirtiness, the untracked count, and — when the branch
-/// has a usable upstream — the ahead/behind counts, sparing the
-/// `resolve_base_ref` probe chain entirely.
 #[derive(Debug, Default, PartialEq, Eq)]
 pub(super) struct StatusV2 {
-    /// Any changed, unmerged or untracked entry — the same "any output" rule
-    /// the v1 porcelain gave, minus v2's `#` headers.
     pub dirty: bool,
-    /// Any `1`, `2` or `u` entry: a tracked file that differs from HEAD, in the
-    /// index or in the worktree.
-    ///
-    /// Distinct from [`Self::dirty`], which an untracked file sets too, and the
-    /// difference is worth a field: `git diff --numstat HEAD` can only report
-    /// on these, so with none of them its output is empty by construction and
-    /// [`worktree_stats`] skips the subprocess rather than paying for a
-    /// foregone conclusion.
     pub tracked: bool,
-    /// `?` entries: files a worktree removal would lose but that `diff HEAD`
-    /// never reports.
     pub untracked: usize,
-    /// `(ahead, behind)` from the `# branch.ab` header. Absent when no upstream
-    /// is configured (or the upstream ref is gone), in which case the caller
-    /// falls back to [`ahead_behind`]'s base-ref resolution.
     pub ahead_behind: Option<(usize, usize)>,
-    /// The commit from the `# branch.oid` header — what every other field in
-    /// the same run describes. Absent on an unborn branch, where git prints
-    /// `(initial)` rather than a sha.
     pub head: Option<String>,
 }
 
-/// Parse `git status --porcelain=v2 --branch` output. Pure, so the header and
-/// record handling is testable without a repository.
 pub(super) fn parse_status_v2(out: &str) -> StatusV2 {
     let mut status = StatusV2::default();
     for line in out.lines() {
@@ -559,46 +358,12 @@ pub(super) fn parse_status_v2(out: &str) -> StatusV2 {
     status
 }
 
-/// A [`merged_into_default`] answer a caller already holds, and the commit it
-/// was computed for.
-///
-/// The key is the **commit**, not the worktree, and that is the whole of its
-/// correctness. `merged` is a fact about HEAD, and HEAD moves: a session that
-/// keeps working after its PR merged is unmerged again on its next commit.
-/// Keyed on the worktree the first `true` would latch — fed back in, handed
-/// back out, forever — and `at_risk` would stop warning about commits that
-/// exist nowhere else.
 #[derive(Debug, Clone, Copy)]
 pub struct KnownMerge<'a> {
-    /// The commit [`Self::merged`] was computed for.
     pub head: &'a str,
     pub merged: bool,
 }
 
-/// Compute combined git stats (uncommitted diff + dirty + ahead/behind) for a
-/// worktree. Returns `None` when the path is not a usable git worktree.
-///
-/// `known` short-circuits the merge check: pass what [`merged_into_default`]
-/// last answered and the commit it answered for, and while HEAD is still that
-/// commit the answer is reused instead of re-running the handful of `git`
-/// subprocesses it costs — one of which writes a dangling commit — on every
-/// restat.
-///
-/// **Both answers are reusable, and neither is reusable for long in the same
-/// way.** A `true` is a fact about the commit: once a squash has landed it
-/// never un-lands, so it stands for as long as HEAD does. A `false` is a fact
-/// about the commit *and the moment* — the branch lands without the worktree
-/// moving — so the caller is the one that ages it (`snapshot`'s
-/// `MERGE_RECHECK`) and simply stops offering it. That asymmetry is why the
-/// staleness is the caller's to bound rather than this function's: here, a key
-/// that matches HEAD is honoured.
-///
-/// Caching the `false` at all is the fix for issue #1167: it is the answer an
-/// open pull request gives, which is most of a session's life, and recomputing
-/// it every poll is seven subprocesses per session per interval. The exposure
-/// is bounded and one-directional — a stale `false` asks a question it needn't
-/// (`at_risk` warns about work that has in fact landed), where a stale `true`
-/// would hide work.
 pub fn worktree_stats(
     cwd: &Path,
     known: Option<KnownMerge<'_>>,
@@ -647,12 +412,6 @@ pub fn worktree_stats(
     })
 }
 
-/// The base ref a worktree's ahead/behind counts are measured against.
-///
-/// Prefers the branch's configured upstream (`@{upstream}`), then the remote's
-/// advertised default branch (`origin/HEAD`, e.g. `origin/main` or
-/// `origin/master` — whatever the repo actually uses), then the conventional
-/// `origin/main` / `origin/master`. `None` when none resolve.
 pub(super) fn resolve_base_ref(worktree_path: &Path) -> Option<String> {
     // A branch with an explicit upstream rebases onto exactly that.
     if run_git_capture(

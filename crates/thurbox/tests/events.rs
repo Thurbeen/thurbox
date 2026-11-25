@@ -1,12 +1,3 @@
-//! Mod events, through the real kernel: a mod declares what it listens
-//! for, the kernel derives what changed and hands each subscriber one call per
-//! change, and a handler that fails costs only itself.
-//!
-//! What lives in the loop — the dispatch point, the cascade bound, focus and
-//! command events, the reload — is the binary's and is asserted by its unit
-//! tests and the design; this file covers the kernel's half, which is the half
-//! a mod author can observe.
-
 use std::path::PathBuf;
 
 use thurbox::kernel::command::Command;

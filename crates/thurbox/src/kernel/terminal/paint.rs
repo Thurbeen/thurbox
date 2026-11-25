@@ -1,6 +1,3 @@
-//! Painting a surface: the per-surface memo of where it was drawn and at what
-//! size, and the [`SurfaceProvider`] that draws each grid with `tui_term`.
-
 use std::cell::Cell;
 
 use ratatui::layout::Rect;
@@ -11,39 +8,15 @@ use tui_term::widget::PseudoTerminal;
 use super::Terminals;
 use crate::kernel::paint::SurfaceProvider;
 
-/// Where one surface was last painted, and the size its pane was last told
-/// about.
-///
-/// **One per surface, never one per session.** A session shows up to two of
-/// them — the agent and its companion shell — and an arrangement may put both
-/// on screen at once, in slots of different sizes. Sharing one of these between
-/// the two is what made them fight: each frame set the memo from its own rect,
-/// found the other's there, and resized on a size that was never its own
-/// (#1220). A mod's program pane holds one of these too, for the same
-/// reason.
 #[derive(Default)]
 pub(super) struct Painted {
-    /// Last size pushed to the pane. A terminal that is not resized to its
-    /// visible rect renders at the wrong width, so this is tracked per surface
-    /// and pushed whenever that surface's rect changes.
     pub(super) size: Cell<(u16, u16)>,
-    /// Where the surface was last painted, so a mouse position can be converted
-    /// into a grid position. Cleared at the start of every frame
-    /// ([`Terminals::forget_rects`]), so only what actually painted can be hit.
     pub(super) rect: Cell<Rect>,
-    /// When the surface was last painted: how long it has been off screen,
-    /// which is what decides when its grid is dropped ([`Terminals::evict_hidden`]).
     pub(super) shown_at: Cell<Option<std::time::Instant>>,
-    /// The grid row painted at the rect's top edge: 0, except when the grid is
-    /// taller than the rect — another instance sizes the pane
-    /// ([`paint_sized_elsewhere`]) — and its bottom rows are the ones shown,
-    /// since that is where a terminal's newest output and its prompt are. Every
-    /// conversion from a screen row to a grid row adds it.
     pub(super) top: Cell<u16>,
 }
 
 impl Painted {
-    /// A surface that painted into a rect with room in it.
     pub(super) fn on_screen(&self) -> bool {
         let rect = self.rect.get();
         rect.width > 0 && rect.height > 0
@@ -51,16 +24,6 @@ impl Painted {
 }
 
 impl Terminals {
-    /// This provider painting a cursor on `input` alone: the same grids, and
-    /// the block only on the surface the keys go to.
-    ///
-    /// `PseudoTerminal` paints the cursor as a block on the grid, and every
-    /// terminal on screen painted one, so the block said nothing about where
-    /// the keys go. `input` is the focused pane's first live surface — the one
-    /// the keyboard routes to (`Node::first_live_surface`) — and `None` for a
-    /// pane without focus or a float, whose keys go to its Lua. Painted there
-    /// only, the cursor is the terminal's own focus cue, and one that needs no
-    /// colour to read.
     pub fn cursor_on<'a>(&'a self, input: Option<&'a str>) -> CursorOn<'a> {
         CursorOn {
             terminals: self,
@@ -180,14 +143,6 @@ impl Terminals {
     }
 }
 
-/// Say why a terminal is not the size of the rect it is painted into.
-///
-/// On a server several thurbox instances share, one of them sizes each pane
-/// (`tmux_compat::Server::resize`) and the others show that pane's screen as it is —
-/// with blank margins when their rect is bigger, cropped when it is smaller —
-/// rather than parsing its output into a grid of their own size. Without a word
-/// on it that reads as a rendering bug, so the bottom row says whose size this
-/// is and how to take it: typing into the pane hands the size over.
 pub(super) fn paint_sized_elsewhere(frame: &mut Frame, area: Rect, (rows, cols): (u16, u16)) {
     if area.width == 0 || area.height == 0 {
         return;
@@ -207,13 +162,10 @@ pub(super) fn paint_sized_elsewhere(frame: &mut Frame, area: Rect, (rows, cols):
     frame.render_widget(ratatui::widgets::Paragraph::new(text).style(style), row);
 }
 
-/// The grid row to paint at the top of `area`: the bottom rows of a grid
-/// taller than the rect, see [`Painted::top`].
 pub(super) fn grid_top(screen: &vt100::Screen, area: Rect) -> u16 {
     screen.size().0.get().saturating_sub(area.height)
 }
 
-/// A terminal grid as a widget, painting its cursor or not.
 pub(super) fn screen_widget<'a>(
     view: &'a FromRow<'a>,
     cursor: bool,
@@ -223,7 +175,6 @@ pub(super) fn screen_widget<'a>(
         .cursor(tui_term::widget::Cursor::default().visibility(cursor))
 }
 
-/// A grid read from row `top` down, so its bottom rows fill a shorter rect.
 pub(super) struct FromRow<'a> {
     pub(super) screen: &'a vt100::Screen,
     pub(super) top: u16,
@@ -262,7 +213,6 @@ impl SurfaceProvider for Terminals {
     }
 }
 
-/// [`Terminals`] with the cursor on one surface: see [`Terminals::cursor_on`].
 pub struct CursorOn<'a> {
     terminals: &'a Terminals,
     input: Option<&'a str>,

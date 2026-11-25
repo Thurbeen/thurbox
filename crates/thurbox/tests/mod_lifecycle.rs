@@ -1,13 +1,3 @@
-//! Adding, replacing and removing parts of the interface.
-//!
-//! Every one of these already worked, or nearly did, and none of them was held
-//! by anything: the bundled set changes pane by pane, so "you can drop a file
-//! in" is exactly the kind of promise that regresses without anyone noticing
-//! until a user's mod stops loading.
-//!
-//! The interface is built in a temporary directory the same way the binary
-//! builds the user's, so these exercise delivery and loading together.
-
 use std::collections::{BTreeMap, HashSet};
 use std::fs;
 use std::path::Path;
@@ -125,7 +115,6 @@ fn the_inventory_view_draws_what_the_kernel_computed() {
     );
 }
 
-/// Every cell of a rendered frame as one string.
 fn screen_text(backend: &ratatui::backend::TestBackend) -> String {
     backend
         .buffer()
@@ -372,14 +361,6 @@ fn a_broken_interface_loads_again_once_it_is_fixed() {
     let _ = fs::remove_dir_all(&floor);
 }
 
-/// Turning a pane off must not leave its column reserved and empty.
-///
-/// The interface's central promise is that the arrangement closes up around what
-/// is left, and it did not: `ui/layout.lua` gated the session column on the F9
-/// panel toggle alone, which is arrangement state, and knew nothing about the
-/// disabled set, which is delivery state. Disabling `10_sessions.lua` therefore
-/// produced a quarter-width rect with nothing in it — reproduced by a UI review
-/// and visible in the shipped demo recording.
 #[test]
 fn a_disabled_pane_does_not_reserve_its_column() {
     let dir = interface();
@@ -427,11 +408,6 @@ fn a_disabled_pane_does_not_reserve_its_column() {
     assert_eq!(center.rect.x, 0, "and starts at the left edge");
 }
 
-/// A float claiming a slot must not make the arrangement reserve one.
-///
-/// A float draws *above* the arrangement, so it never fills a rect carved out of
-/// the screen. Counting one as an occupant would put back exactly the bug this
-/// pair of tests exists for: a reserved column with nothing in it.
 #[test]
 fn a_float_does_not_make_its_slot_count_as_occupied() {
     let dir = interface();
@@ -461,13 +437,6 @@ fn a_float_does_not_make_its_slot_count_as_occupied() {
     );
 }
 
-/// A float that painted nothing must not be reported as being on screen.
-///
-/// The inventory exists to answer "which of these files is drawing", and for the
-/// two floats — the confirmation dialog and the creation wizard — it answered
-/// `on screen` permanently, because `focus::is_drawn` returned true for anything
-/// *allowed* to float rather than for what had floated. Being the screen a user
-/// reaches for when the interface looks wrong, that is the worst place for it.
 #[test]
 fn a_float_drawing_nothing_is_reported_on_demand_rather_than_on_screen() {
     let dir = interface();
@@ -519,12 +488,6 @@ fn a_float_drawing_nothing_is_reported_on_demand_rather_than_on_screen() {
     );
 }
 
-/// The interface ships its own README, and the inventory accounts for it.
-///
-/// This directory is the working copy an agent is pointed at when someone asks it
-/// to change a pane, and the rules that matter there — four node kinds, asking
-/// every frame being correct, `run` being absent rather than failing — are not
-/// guessable from the Lua beside it.
 #[test]
 fn the_interface_ships_guidance_and_lists_it_as_a_doc() {
     let dir = interface();
@@ -565,12 +528,6 @@ fn the_interface_ships_guidance_and_lists_it_as_a_doc() {
     assert_eq!(sources(dir.path())["README.md"], Source::Edited);
 }
 
-/// The distributed panes load, and the demo arrangement stacks them where it says.
-///
-/// `examples/panes/` is not bundled, so nothing else would notice it rotting: a renamed
-/// snapshot field or a changed `run` signature would leave the files looking fine
-/// and failing the moment somebody installed them. This builds the interface the
-/// install instructions produce and asserts the shape the header diagram promises.
 #[test]
 fn the_demo_examples_load_and_stack_where_the_layout_says() {
     let dir = interface();
@@ -747,8 +704,6 @@ fn strips_stack_in_load_order_and_default_to_one_row() {
     assert!(first.y < second.y, "load order, top to bottom: {placed:?}");
 }
 
-/// A float draws above the arrangement, so asking for a strip as well is asking
-/// for a reserved row nothing paints into — the bug `ctx.slots` exists to stop.
 #[test]
 fn a_float_is_not_a_strip() {
     let dir = interface();
@@ -765,7 +720,6 @@ fn a_float_is_not_a_strip() {
     );
 }
 
-/// Each pane's rect inside `slot`, split the way the stack draw path splits it.
 fn pane_heights(host: &LuaHost, placed: &[(String, Rect)], slot: &str) -> Vec<u16> {
     let sizes: Vec<_> = host
         .in_slot(slot)
@@ -778,8 +732,6 @@ fn pane_heights(host: &LuaHost, placed: &[(String, Rect)], slot: &str) -> Vec<u1
         .collect()
 }
 
-/// Nothing between the panes and the bars: every row the strips take is one
-/// the panes gave up, and none is left reserved for nothing.
 fn assert_no_blank_rows(placed: &[(String, Rect)], top: &str) {
     let center = rect_of(placed, "center");
     assert_eq!(
@@ -789,9 +741,6 @@ fn assert_no_blank_rows(placed: &[(String, Rect)], top: &str) {
     );
 }
 
-/// Two panes naming one strip slot share one rect. Listing the slot once per
-/// pane placed it once — the first entry wins — and left the second entry's
-/// rows reserved and blank, while the panes split a rect sized for one.
 #[test]
 fn two_strips_sharing_a_stack_slot_get_one_rect_with_both_heights() {
     let dir = interface();
@@ -818,7 +767,6 @@ fn two_strips_sharing_a_stack_slot_get_one_rect_with_both_heights() {
     assert_no_blank_rows(&placed, "ticker");
 }
 
-/// A switch slot shows one pane at a time, so it is as tall as the tallest.
 #[test]
 fn two_strips_sharing_a_switch_slot_get_the_tallest_height() {
     let dir = interface();
@@ -843,8 +791,6 @@ fn two_strips_sharing_a_switch_slot_get_the_tallest_height() {
     assert_no_blank_rows(&placed, "ticker");
 }
 
-/// A strip the user placed by hand keeps that placement, and the loop does not
-/// reserve a second, blank row for it.
 #[test]
 fn a_strip_placed_by_hand_is_not_placed_again_by_the_loop() {
     let dir = interface();
@@ -877,8 +823,6 @@ fn a_strip_placed_by_hand_is_not_placed_again_by_the_loop() {
     );
 }
 
-/// The same, for a placement written AFTER the loop: the loop cannot see it yet
-/// when it runs, so a guard that only looks back still reserves a blank row.
 #[test]
 fn a_strip_placed_by_hand_below_the_loop_is_not_placed_again() {
     let dir = interface();

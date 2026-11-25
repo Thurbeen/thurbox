@@ -1,10 +1,3 @@
-//! Reactions end to end: a person's mention starts a Task, and the message
-//! gets the "working" reaction when it is relayed into the Task's inbox;
-//! once Fleet posts in the thread for the Task, the message gets the
-//! "replied" reaction and loses "working". A reaction that fails holds
-//! back neither the relay nor the post and raises nothing, and
-//! `reactions = false` turns them off.
-
 mod support;
 
 use fleet_api::gateway::{Author, AuthorKind, ConversationRef, Message};
@@ -15,7 +8,6 @@ use support::{ALEX_ID, Env, GATEWAY_ACCOUNT, SAM_ID, conversation_name, message_
 const T0: u64 = 1_730_000_000_000;
 const THREAD: &str = "fake:C0123ABCD:1730000000000";
 const BOT: &str = "B0FLEET001";
-/// The id of Alex's mention, the message that starts the Task.
 const MENTION: &str = "1730000300000";
 const WORKING: &str = "eyes";
 const REPLIED: &str = "white_check_mark";
@@ -41,8 +33,6 @@ fn person(id: &str, at: u64, text: &str) -> Message {
     }
 }
 
-/// A gateway environment whose config `setup` may change first, with one
-/// thread and the Task Alex's mention started there, tied and joined.
 fn tied(name: &str, setup: impl FnOnce(&Env)) -> (Env, String) {
     let mut env = Env::gateway(name);
     env.set_var("USER", "tester");
@@ -84,7 +74,6 @@ fn tied(name: &str, setup: impl FnOnce(&Env)) -> (Env, String) {
     (env, task)
 }
 
-/// Put `line` at the head of the config's `[gateway]` section.
 fn gateway_line(env: &Env, line: &str) {
     let cfg = std::fs::read_to_string(&env.config).unwrap();
     let cfg = cfg.replacen("\n[gateway]\n", &format!("\n[gateway]\n{line}\n"), 1);
@@ -110,7 +99,6 @@ fn reacted(env: &Env, message: &str) -> Vec<String> {
     env.fake_gateway().reacted(&thread(), message).unwrap()
 }
 
-/// The texts the fake session was given, the brief first.
 fn texts(env: &Env, task: &str) -> Vec<String> {
     env.host()
         .session(&env.session_key(task))
@@ -317,7 +305,6 @@ fn a_reaction_name_that_is_not_one_emoji_name_is_refused() {
 
 const QUEUED: &str = "hourglass_flowing_sand";
 
-/// The adds of `reaction` Fleet made on `message`, in order.
 fn adds(env: &Env, message: &str, reaction: &str) -> usize {
     env.fake_gateway()
         .reactions()
@@ -331,7 +318,6 @@ fn conv() -> String {
     conversation_name(GATEWAY_ACCOUNT, THREAD)
 }
 
-/// The Conversation's reaction effect records, by key.
 fn conv_reactions(env: &Env) -> Vec<String> {
     env.conversation_status(&conv())["effects"]
         .as_object()
@@ -344,8 +330,6 @@ fn conv_reactions(env: &Env) -> Vec<String> {
         .unwrap_or_default()
 }
 
-/// Move the Conversation's reaction records ten minutes into the past, as
-/// time would, so a retry is due.
 fn age_reactions(env: &Env) {
     let path = env.object_path("Conversation", &conv());
     let mut obj: Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
@@ -364,7 +348,6 @@ fn age_reactions(env: &Env) {
     std::fs::write(&path, obj.to_string()).unwrap();
 }
 
-/// A gateway environment with one thread seeded and nothing received yet.
 fn admitting(name: &str) -> Env {
     let mut env = Env::gateway(name);
     env.set_var("USER", "tester");

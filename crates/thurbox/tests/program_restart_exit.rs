@@ -1,23 +1,3 @@
-//! A program that is restarted still reports that it ended.
-//!
-//! `program.exited` is derived by comparing the program panes held now against
-//! the ones held at the previous look: a key whose pane reports `has_exited` and
-//! was seen running before is an ending. The loop, though, applies the commands
-//! mods enqueued **before** it derives — and a mod that asks for its
-//! program on every frame (the documented pattern, which is what makes
-//! `start_program` idempotent) asks again on the very frame after its program
-//! died. `start_program` then replaces the finished slot, and the derivation
-//! that runs a few lines later is handed a *live* pane under the same key. No
-//! transition, no event: the mod that restarted the program is never told the
-//! old one finished, which is exactly the mod that most needs to know.
-//!
-//! So the ending is recorded where the slot is overwritten, and drained where
-//! the transition is derived. Asserted through the real restart path on a real
-//! pane, because the claim is that the replacement *reaches* the recording —
-//! setting the flag by hand would have passed before the fix too.
-//!
-//! Skipped when tmux is absent: a missing multiplexer is an environment fact.
-
 #![cfg(unix)]
 
 use std::process::Command;
@@ -25,7 +5,6 @@ use std::time::{Duration, Instant};
 
 use thurbox::kernel::terminal::{ProgramKey, ProgramTransition, Terminals};
 
-/// The guard every tmux server in this file is reaped by — see its own doc.
 #[path = "../../runtime-mux/tests/support/tmux_server.rs"]
 mod tmux_server;
 
@@ -33,8 +12,6 @@ use tmux_server::TmuxServer;
 
 const SOCKET: &str = "thurbox-program-restart-e2e";
 
-/// Generous next to the exit itself: the budget is for a loaded machine starting
-/// a tmux server, not for the notification.
 const DEADLINE: Duration = Duration::from_secs(10);
 
 fn have_tmux() -> bool {

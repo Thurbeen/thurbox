@@ -1,17 +1,3 @@
-//! Crash invariants of the render pipeline, as properties.
-//!
-//! The display bugs that hurt are the ones no example thought to write: a pane
-//! resolved one cell wide, a selection dragged past the grid, a screen full of
-//! double-width glyphs, a chord nobody expected in the pane it landed in. Each
-//! property here is a *class* of input the pipeline must survive whole, and
-//! the assertion is usually "does not error" — a Lua error blanks the pane in
-//! the running interface, a paint panic costs the frame, and a panic on a
-//! reader thread poisons the parser mutex for the life of the process.
-//!
-//! `tests/kernel_limits.rs` owns the instruction and memory ceilings;
-//! `backend::tmux_compat::control_mode`'s own proptests own byte transparency. This file is
-//! the geometry and the input: sizes, positions, glyph widths and keys.
-
 use proptest::prelude::*;
 use ratatui::backend::TestBackend;
 use ratatui::layout::Rect;
@@ -114,8 +100,6 @@ fn publish(host: &LuaHost, rows: Vec<SessionRow>) {
     .expect("publish");
 }
 
-/// A world with something in every column: a working spinner, a blocked dot,
-/// and a name wider than most panes.
 fn sample() -> Vec<SessionRow> {
     vec![
         row("fix-osc52", "working"),
@@ -203,9 +187,6 @@ fn the_arrangement_places_every_slot_inside_the_screen_and_apart() {
 
 // --- keys ------------------------------------------------------------------
 
-/// Any key a terminal can deliver: a printable character, or a named key,
-/// with any modifiers. Weighted toward the letters, which are where the
-/// single-letter chords live.
 fn any_key() -> impl Strategy<Value = KeyPress> {
     let named = prop::sample::select(vec![
         "esc",
@@ -313,9 +294,6 @@ fn no_key_sequence_makes_a_bundled_pane_throw() {
 
 // --- glyph widths and selection --------------------------------------------
 
-/// Arbitrary printable content, weighted toward the widths that break column
-/// math: ASCII, CJK (double-width), emoji, and the variation selector that
-/// `normalize_ambiguous_width` exists for.
 fn glyph_soup() -> impl Strategy<Value = String> {
     proptest::collection::vec(
         prop_oneof![
@@ -329,7 +307,6 @@ fn glyph_soup() -> impl Strategy<Value = String> {
     .prop_map(|chars| chars.into_iter().collect())
 }
 
-/// Paint `lines` one per row into a fresh buffer of the given size.
 fn buffer_of(lines: &[String], width: u16, height: u16) -> ratatui::buffer::Buffer {
     let mut terminal = Terminal::new(TestBackend::new(width, height)).expect("terminal");
     terminal
@@ -441,8 +418,6 @@ fn normalizing_ambiguous_width_strips_the_selector_and_nothing_else() {
 
 // --- the command palette ---------------------------------------------------
 
-/// Any keystroke the modal layer can be handed, as a `KeyEvent` rather than a
-/// `KeyPress`: the palette is chrome, so it takes the terminal's own events.
 fn any_modal_key() -> impl Strategy<Value = crossterm::event::KeyEvent> {
     use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
     let named = prop::sample::select(vec![

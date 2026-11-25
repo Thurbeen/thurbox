@@ -1,4 +1,3 @@
-//! Installed-artifact acceptance: no checkout, Git, shell or network tool.
 mod support;
 
 use std::fs;
@@ -39,8 +38,6 @@ fn installed(env: &Env, args: &[&str]) -> Command {
     cmd
 }
 
-/// `config` with `runtime` as its one `[runtime]`, in place of the
-/// `[runtimes]` that `init` writes.
 fn set_runtime(config: &mut toml::Value, runtime: toml::Value) {
     let table = config.as_table_mut().unwrap();
     table.remove("runtimes");
@@ -78,8 +75,6 @@ fn until(mut predicate: impl FnMut() -> bool) {
     }
 }
 
-/// `fleet init`, then point the generated config at the fake runtime and
-/// the test store.
 fn fake_bootstrap(name: &str) -> Env {
     let mut env = Env::new(name);
     env.set_var(
@@ -417,9 +412,6 @@ fn a_healthy_briefed_task_does_not_report_a_startup_failure() {
     );
 }
 
-/// `fleet up` exports each sweep as a trace of its own, and Ctrl-C flushes
-/// what is still batched before it exits: the run below ends before the
-/// batch's first scheduled export.
 #[cfg(unix)]
 #[test]
 fn up_flushes_its_sweeps_to_a_collector_when_interrupted() {
@@ -605,8 +597,6 @@ fn explicit_config_and_store_work_without_native_home_variables() {
     assert!(store.join("store.json").is_file());
 }
 
-/// `init` writes the native config and nothing else: no `[starter]`, no
-/// bundled workspace.
 #[test]
 fn init_writes_the_config_and_no_starter_workspace() {
     let env = Env::without_tools("init-config-only");
@@ -631,8 +621,6 @@ fn init_writes_the_config_and_no_starter_workspace() {
         .stderr_has("runtime-mux");
 }
 
-/// A home reached through a symlink is an ordinary home: `/home` is one on
-/// Fedora Atomic, and macOS's `/var` is one. `init` writes there.
 #[cfg(unix)]
 #[test]
 fn init_writes_a_config_under_a_symlinked_ancestor() {
@@ -651,8 +639,6 @@ fn init_writes_a_config_under_a_symlinked_ancestor() {
     assert!(text.contains("[runtimes.mux]"), "{text}");
 }
 
-/// A link where `init` would write is still refused: it is never an
-/// invitation to write its target.
 #[cfg(unix)]
 #[test]
 fn init_refuses_a_symlinked_config() {
@@ -678,8 +664,6 @@ fn init_refuses_a_symlinked_config() {
     assert!(!target.exists());
 }
 
-/// `init` says what it set up and what to do next: the place sessions run
-/// in, the coding agents found on PATH, and the two commands that follow.
 #[cfg(unix)]
 #[test]
 fn init_explains_the_setup_it_wrote() {
@@ -697,8 +681,6 @@ fn init_explains_the_setup_it_wrote() {
         .stdout_has("fleet doctor");
 }
 
-/// The agents `init` reports are the profiles `fleet doctor` checks: a
-/// user's own harness beside the config counts, by its program.
 #[cfg(unix)]
 #[test]
 fn init_counts_a_user_harness_as_an_agent() {
@@ -724,8 +706,6 @@ fn init_counts_a_user_harness_as_an_agent() {
     .stdout_has("coding agents found: vendor-cli");
 }
 
-/// After `init --config PATH`, every command it prints names that config,
-/// and it says how thurbox is pointed at it.
 #[test]
 fn init_with_a_config_names_it_in_every_next_step() {
     let env = Env::without_tools("init-explicit-config");
@@ -743,7 +723,6 @@ fn init_with_a_config_names_it_in_every_next_step() {
         .stdout_has("[fleets.");
 }
 
-/// With no coding agent on PATH, `init` says to install one.
 #[test]
 fn init_says_to_install_an_agent_when_none_is_found() {
     let env = Env::without_tools("init-no-agent");
@@ -752,7 +731,6 @@ fn init_says_to_install_an_agent_when_none_is_found() {
         .stdout_has("no coding agent");
 }
 
-/// Two inits racing write one config, never two halves.
 #[test]
 fn concurrent_init_writes_one_config() {
     let env = Env::without_tools("concurrent-init");
@@ -788,8 +766,6 @@ fn separate_configurations_get_separate_sessions_and_stores() {
     assert_ne!(a["data"]["dir"], b["data"]["dir"]);
 }
 
-/// A config written for the starter is refused by name, not as an unknown
-/// field, and the refusal names no page: the docs keep no starter section.
 #[test]
 fn a_starter_section_is_refused_at_load() {
     let env = Env::new("starter-refused");
@@ -801,9 +777,6 @@ fn a_starter_section_is_refused_at_load() {
     assert!(!run.stderr.contains("configuration page"), "{}", run.stderr);
 }
 
-/// A Fleet 2.x config left at the per-user path, where Fleet 3 looks too, is
-/// named as one with what to do about it, not reported as an unknown field
-/// of its `[runtime]`.
 #[test]
 fn a_fleet_2_config_is_named_with_what_to_do() {
     let env = Env::without_tools("fleet-2-config");
@@ -831,9 +804,6 @@ fn a_fleet_2_config_is_named_with_what_to_do() {
     );
 }
 
-/// `fleet version --json` reports the manager's lease under `manager`, and
-/// only reads it: no store is created, and the lease is neither taken nor
-/// renewed.
 #[cfg(target_os = "linux")]
 #[test]
 fn version_reports_the_manager_lease_without_taking_it() {

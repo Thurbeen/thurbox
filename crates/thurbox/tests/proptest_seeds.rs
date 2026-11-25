@@ -1,31 +1,6 @@
-//! Persisted proptest seeds still name live source files.
-
 use std::fs;
 use std::path::{Path, PathBuf};
 
-/// Every persisted proptest seed must still name a source file that exists.
-///
-/// Proptest's persisted failure-seed store has a layout that is a path contract
-/// rather than incidental, and the default `FileFailurePersistence::
-/// SourceParallel` writes to *two* places depending on the source file:
-///
-/// - It climbs the source file's ancestors for a directory holding `lib.rs` or
-///   `main.rs`. For anything under `src/` that directory is `src/` itself, so a
-///   proptest in `src/agent/backend.rs` persists to its sibling tree,
-///   `proptest-regressions/agent/backend.txt`.
-/// - An integration test under `tests/` has no such ancestor — there is no
-///   `tests/lib.rs`, and none above it — so the climb fails and proptest falls
-///   back to `WithSource`, writing a file *beside the source*: a proptest in
-///   `tests/render_props.rs` persists to
-///   `tests/render_props.proptest-regressions`.
-///
-/// Proptest resolves that path at run time and **says nothing when it misses** —
-/// a renamed or moved source file silently stops re-running its saved cases, so
-/// the regression a seed was written for quietly stops being covered. Both
-/// locations are swept here, since either kind of seed can be orphaned by a
-/// rename.
-///
-/// This is the check that a wide rename needs and that nothing else provides.
 #[test]
 fn every_proptest_seed_still_names_a_live_source_file() {
     let root = Path::new(env!("CARGO_MANIFEST_DIR"));
@@ -82,7 +57,6 @@ fn every_proptest_seed_still_names_a_live_source_file() {
     );
 }
 
-/// Every file under `dir` (recursively) with the given extension.
 fn collect_files_with_extension(dir: &Path, ext: &str) -> Vec<PathBuf> {
     let mut out = Vec::new();
     let entries = match fs::read_dir(dir) {

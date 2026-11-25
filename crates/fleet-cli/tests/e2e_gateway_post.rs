@@ -1,15 +1,3 @@
-//! The Gateway controller's fourth step end to end: what a tied Task
-//! declares for the person (a Question, a Comment) is posted in its
-//! thread, never a Draft or its result, in declaration order, as keyed
-//! effects that never post twice; a post with an unknown outcome is looked
-//! for by its marker, every part of a split included, resent under its
-//! nonce inside the window, and otherwise waits for a person under
-//! `NeedsAttention/PostUnconfirmed`, holding later posts back; recovery
-//! reads that cannot complete are named; a Question from an untied Task
-//! opens a thread tied to it, or abandons it when its opening post cannot
-//! reach the Conversation; an untied Task's other words and a child's words
-//! are never posted, and a child's reach its parent.
-
 mod support;
 
 use fleet_api::gateway::{Author, AuthorKind, Capabilities, ConversationRef, Marker, Message};
@@ -40,8 +28,6 @@ fn person(id: &str, at: u64, text: &str) -> Message {
     }
 }
 
-/// A gateway environment with one mirrored thread and the Task Alex's
-/// mention started there, joined. Returns the environment and the Task.
 fn tied(name: &str) -> (Env, String) {
     let mut env = Env::gateway(name);
     env.set_var("USER", "tester");
@@ -101,7 +87,6 @@ fn declare(env: &Env, task: &str, item: Value) {
         .ok();
 }
 
-/// Fleet's posts on the fake platform, the refusals and notices included.
 fn posts(env: &Env) -> Vec<PostRecord> {
     env.fake_gateway().posts().unwrap()
 }
@@ -471,10 +456,8 @@ fn a_child_and_an_untied_task_post_nothing() {
     assert_eq!(gw["children"]["c"]["declared"], 1, "read through: {gw:#}");
 }
 
-/// A Comment of twenty characters: three parts under a post limit of eight.
 const LONG: &str = "abcdefghijklmnopqrst";
 
-/// The derived keys of a post split into `total` parts.
 fn part_keys(key: &str, total: usize) -> Vec<String> {
     (1..=total).map(|n| format!("{key}/{n}/{total}")).collect()
 }

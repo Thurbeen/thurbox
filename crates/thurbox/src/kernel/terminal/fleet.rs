@@ -1,13 +1,3 @@
-//! A Fleet session's panes (ADR-41): the terminal stream `fleet attach
-//! <task> --json` names, and its companion shell, the one `fleet shell <task>
-//! --json` names, each opened as a [stream pane](super::stream_pane).
-//!
-//! The pane's backend is the stream itself, not one of the registry's
-//! multiplexers: a resize goes up as a `resize` frame, and everything a
-//! multiplexer would do to a window (create, kill, stamp, list) is Fleet's,
-//! through its command line, so it is refused here or does nothing. Killing
-//! the pane detaches from the stream; the agent keeps running.
-
 use std::collections::HashMap;
 use std::path::Path;
 use std::sync::Arc;
@@ -16,15 +6,8 @@ use term_stream::{Size, Up};
 
 use super::stream_pane::{adopt_with_upstream, Notices, Upstream};
 
-/// What a Fleet row's backend is named: [`crate::kernel::snapshot::fleet`]
-/// publishes every Task under it.
 pub(super) const BACKEND: &str = crate::kernel::snapshot::fleet::BACKEND;
 
-/// Open `task`'s pane at `rows` × `cols`: ask the Fleet `link` reaches for
-/// the Task's stream, and open it on that Fleet's machine: the argv names
-/// paths there, so it runs through the same link (over ssh, with no pty, so
-/// the stream's frames stay 8-bit clean). Input it refuses is said on
-/// `notices`.
 pub(super) fn open(
     link: &crate::fleet_link::FleetLink,
     task: &str,
@@ -48,11 +31,6 @@ pub(super) fn open(
     ))
 }
 
-/// Open `task`'s companion shell at `rows` × `cols`, as [`open`] opens its
-/// pane: the stream `fleet shell` names, run through the same link. The
-/// runtime keeps the shell, on the Task's place: a second open finds the one
-/// there, and Fleet's release of the Task closes it. The backend that comes
-/// back is the stream's way up, which the shell's input and resize take.
 pub(super) fn open_shell(
     link: &crate::fleet_link::FleetLink,
     task: &str,
@@ -114,7 +92,6 @@ fn refused(what: &str) -> crate::backend::BackendError {
     anyhow::anyhow!("a Fleet session's pane cannot {what}: Fleet owns the session").into()
 }
 
-/// The backend of one Fleet pane: its stream's way up.
 struct Stream(Upstream);
 
 impl crate::backend::PaneStream for Stream {
@@ -223,7 +200,6 @@ impl crate::backend::WindowLifecycle for Stream {
         Ok(false)
     }
 
-    /// A detach: deleting the session is a command, through Fleet.
     fn kill(&self, pane: &str) -> crate::backend::BackendResult<()> {
         crate::backend::PaneStream::detach(self, pane)
     }
@@ -295,8 +271,6 @@ impl crate::backend::SessionBackend for Stream {
 
 #[cfg(all(test, unix))]
 mod tests {
-    /// The attach is asked of the Fleet through its link, and its stream's
-    /// argv read from the answer.
     #[test]
     fn an_attach_goes_through_the_link() {
         let remote = crate::fleet_link::testing::Remote::new(
@@ -315,7 +289,6 @@ mod tests {
         );
     }
 
-    /// The companion shell is asked of the Fleet through its link too.
     #[test]
     fn a_shell_goes_through_the_link() {
         let remote = crate::fleet_link::testing::Remote::new(

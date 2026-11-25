@@ -1,5 +1,3 @@
-//! Instance-scoped commands for a running local interface.
-
 use clap::CommandFactory;
 use clap::Subcommand;
 use serde_json::{json, Value};
@@ -53,26 +51,26 @@ fn write_stream_line(out: &mut impl Write, value: &Value) -> Result<bool, Comman
 
 #[derive(Subcommand, Debug)]
 pub enum Action {
-    /// List reachable interface instances in this data profile.
+    #[command(about = "List reachable interface instances in this data profile")]
     Instances,
-    /// Read focus, selection and search state from the selected instance.
+    #[command(about = "Read focus, selection and search state from the selected instance")]
     State,
-    /// Stream instance-scoped UI changes as JSON lines.
+    #[command(about = "Stream instance-scoped UI changes as JSON lines")]
     Watch {
-        /// Resume after this revision; an expired cursor yields a resync snapshot.
+        #[arg(help = "Resume after this revision; an expired cursor yields a resync snapshot")]
         #[arg(long)]
         since: Option<u64>,
-        /// Return one batch, useful for polling clients.
+        #[arg(help = "Return one batch, useful for polling clients")]
         #[arg(long)]
         once: bool,
     },
-    /// Describe actions accepted by this running interface.
+    #[command(about = "Describe actions accepted by this running interface")]
     Actions,
-    /// Accept one pending destructive action ticket.
+    #[command(about = "Accept one pending destructive action ticket")]
     Confirm { ticket: String },
-    /// Send addressed key, text, or scroll input to an active modal or mod.
+    #[command(about = "Send addressed key, text, or scroll input to an active modal or mod")]
     Input {
-        /// `modal` or the name of the active mod.
+        #[arg(help = "`modal` or the name of the active mod")]
         target: String,
         #[arg(long)]
         key: Option<String>,
@@ -81,19 +79,20 @@ pub enum Action {
         #[arg(long)]
         scroll: Option<String>,
     },
-    /// Apply one typed action and wait for its acknowledgment.
+    #[command(about = "Apply one typed action and wait for its acknowledgment")]
     #[command(name = "action")]
     Apply {
-        /// A stable name from `ui actions`.
+        #[arg(help = "A stable name from `ui actions`")]
         name: String,
-        /// The session for `session.focus`: its id (`<fleet>:<task>`), or a
-        /// Task name only one Fleet holds.
+        #[arg(
+            help = "The session for `session.focus`: its id (`<fleet>:<task>`), or a Task name only one Fleet holds"
+        )]
         #[arg(long)]
         session: Option<String>,
-        /// Query to set for `search.open`.
+        #[arg(help = "Query to set for `search.open`")]
         #[arg(long)]
         query: Option<String>,
-        /// Typed action argument as NAME=VALUE; repeat for multiple arguments.
+        #[arg(help = "Typed action argument as NAME=VALUE; repeat for multiple arguments")]
         #[arg(long = "arg")]
         arguments: Vec<String>,
     },

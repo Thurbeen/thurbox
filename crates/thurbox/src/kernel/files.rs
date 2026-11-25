@@ -1,36 +1,13 @@
-//! Browsing a session's working directory, without giving mods a filesystem.
-//!
-//! This is the case the prior v2 attempt called the sharpest test of the
-//! capability model, and it goes the same way here: the file viewer needs
-//! directory entries and file text, so the *kernel* reads them and the mod
-//! only draws. Adding a filesystem capability to browse files would have been
-//! the easy wrong answer, and it would have handed every mod — including
-//! ones nobody has written — the ability to read anything on the machine.
-//!
-//! Every read is rooted at a session's working directory and refuses anything
-//! outside it.
-
 use std::path::{Component, Path, PathBuf};
 
-/// Largest file the viewer will read.
-///
-/// A cap rather than streaming: the viewer renders text, and a mod that
-/// asked for a 2GB core dump should get a clear refusal rather than an
-/// out-of-memory.
 pub const MAX_FILE_BYTES: u64 = 2 * 1024 * 1024;
 
-/// Most entries returned for one directory, so a node_modules cannot stall a
-/// frame.
 pub const MAX_ENTRIES: usize = 2_000;
 
-/// Session directory plus relative path: a changed root never reuses old text.
 pub type ReadKey = (PathBuf, String);
-/// Maximum distinct file-text dependencies a mod may retain.
 pub const MAX_READ_KEYS: usize = 16;
-/// The mod file-text store.
 pub type ReadStore = super::worker_store::WorkerStore<ReadKey, Result<String, String>>;
 
-/// Reads are refreshed on workers, including while a pure pane holds its tree.
 pub fn store() -> ReadStore {
     ReadStore::new(
         2,
@@ -40,18 +17,12 @@ pub fn store() -> ReadStore {
     )
 }
 
-/// One entry in a directory listing.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Entry {
     pub name: String,
     pub is_dir: bool,
 }
 
-/// Resolve `relative` inside `root`, refusing anything that escapes.
-///
-/// Both the lexical form (`../..`) and the resolved form are checked: a symlink
-/// pointing outside would pass a purely textual test, and a path that does not
-/// exist yet cannot be canonicalised at all — so neither check alone is enough.
 pub fn resolve(root: &Path, relative: &str) -> Result<PathBuf, String> {
     // Reject the lexical escape first, so a non-existent `../../etc/passwd`
     // fails the same way an existing one does.
@@ -95,12 +66,6 @@ pub fn resolve(root: &Path, relative: &str) -> Result<PathBuf, String> {
     }
 }
 
-/// Entries directly under `relative`, sorted directories-first then by name.
-///
-/// A symlink to a directory inside the served tree counts as a directory, so the
-/// flag agrees with what listing through that path and [`read`] already do with
-/// it. A mod has no filesystem of its own, so this flag is the only thing it
-/// can ask.
 pub fn list(root: &Path, relative: &str) -> Result<Vec<Entry>, String> {
     let path = resolve(root, relative)?;
     // Every link's type is answered against this, so the listing cannot report
@@ -134,7 +99,6 @@ fn links_to_directory_inside(root: &Path, link: &Path) -> bool {
     }
 }
 
-/// A file's text, bounded by [`MAX_FILE_BYTES`].
 pub fn read(root: &Path, relative: &str) -> Result<String, String> {
     let path = resolve(root, relative)?;
     let meta = std::fs::metadata(&path).map_err(|e| format!("{}: {e}", path.display()))?;

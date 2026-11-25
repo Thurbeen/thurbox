@@ -1,19 +1,3 @@
-//! Delivering events to the mods that subscribed to them.
-//!
-//! One dispatch point per iteration, after the worker stores and the command
-//! bus have published and before the paint — so a handler sees the iteration's
-//! fresh state and its `state`/`store` writes land in the frame about to be
-//! painted, with no extra frame. It is a `VecDeque::is_empty` check on every
-//! iteration with nothing queued, which is what keeps the settle test true
-//! (`frame-cost`): dispatch never marks the frame dirty itself. A handler that
-//! writes state bumps the state version, and one that enqueues a command goes
-//! through `dispatch_tracked` — both already mark it, exactly as a key handler's
-//! writes do.
-//!
-//! The kernel's own events are derived here from the signals the loop already
-//! has — the snapshot's version, the focus ring, the command bus — never raised
-//! by the code that mutates them. See `kernel::events`.
-
 use std::collections::VecDeque;
 
 use ratatui::DefaultTerminal;
@@ -25,17 +9,11 @@ use thurbox::kernel::terminal::{ProgramKey, ProgramTransition};
 
 use crate::{App, TrackedCommand};
 
-/// Why the interface was rebuilt, as `interface.reloaded` reports it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum ReloadReason {
-    /// The first build at startup. Not an event: nothing existed before it to
-    /// have missed anything.
     Boot,
-    /// `F10`, or the palette's reload entry.
     Key,
-    /// The directory watcher, or an edit this process made to the directory.
     Watch,
-    /// A switch or a trust change in the settings modal's Interface tab.
     Settings,
     Memory,
 }
@@ -52,29 +30,13 @@ impl ReloadReason {
     }
 }
 
-/// Everything the loop holds about events between iterations.
 pub(crate) struct Events {
     queue: VecDeque<Event>,
     deriver: Deriver,
-    /// The depth of the event whose handlers are running, so an emit from one
-    /// is queued one generation deeper. `None` outside a dispatch — a root
-    /// event and a handler's emit must not be told apart by whether the queue
-    /// happened to be empty, which is what an integer with a zero for "idle"
-    /// did: an emit from a depth-zero handler read as a root and cascaded
-    /// unbounded.
     current: Option<u8>,
     reported: std::collections::HashSet<(String, String)>,
-    /// The program panes seen RUNNING on the last iteration, by surface id.
-    ///
-    /// The memo `program.exited` is derived from: an entry here that now reports
-    /// `has_exited` is the transition, and firing on the state instead would
-    /// re-fire every iteration until the slot was reaped.
     programs: std::collections::HashSet<String>,
-    /// Whether the cascade bound has been reported this dispatch.
     cascade_reported: bool,
-    /// The selection and the focused pane as last observed, so a change is an
-    /// event. `None` until first observed: the first frame's focus is not a
-    /// change from anything.
     focus: Option<(Option<String>, Option<String>)>,
 }
 
@@ -93,12 +55,6 @@ impl Events {
 }
 
 impl App {
-    /// Derive what changed, and hand every queued event to its subscribers.
-    ///
-    /// Takes the terminal because a handler's commands are applied *inside* the
-    /// dispatch — that is what lets an `emit` from a handler be delivered in the
-    /// same call, and what makes the cascade bound a bound rather than a
-    /// per-iteration trickle.
     pub(crate) fn dispatch_events(&mut self, terminal: &mut DefaultTerminal) {
         self.derive_kernel_events();
         if self.events.queue.is_empty() {
@@ -135,11 +91,6 @@ impl App {
         self.events.current = None;
     }
 
-    /// Queue an event for the next dispatch.
-    ///
-    /// Depth is stamped from the dispatch in progress: an event queued while no
-    /// handler runs is a root, and one queued by a handler is a generation deeper
-    /// than the event it was handling.
     pub(crate) fn enqueue_event(&mut self, mut event: Event) {
         event.depth = self
             .events
@@ -148,7 +99,6 @@ impl App {
         self.events.queue.push_back(event);
     }
 
-    /// The kernel's own events, from the signals the loop already tracks.
     fn derive_kernel_events(&mut self) {
         // Focus: the selected session and the focused pane, each compared to
         // what it was. Both are two `Option<String>` compares per iteration.
@@ -211,13 +161,6 @@ impl App {
         }
     }
 
-    /// The events a finished command owes: `command.done`, and for the four
-    /// lifecycle operations the matching `session.post_*`.
-    ///
-    /// Named as `hooks.toml` names them so a user learns one vocabulary; the
-    /// shell hook already ran inside the operation on the worker, so "shell
-    /// post-hook, then Lua post-event" holds without the kernel knowing hooks
-    /// exist.
     pub(crate) fn note_command_done(&mut self, tracked: &TrackedCommand) {
         self.enqueue_event(
             Event::new("command.done")
@@ -352,7 +295,6 @@ mod tests {
         ended.iter().map(|(k, _)| k.name.clone()).collect()
     }
 
-    /// The ordinary transition: a pane seen running is now finished.
     #[test]
     fn a_pane_that_was_running_and_is_now_finished_has_ended() {
         let editor = key("editor");
@@ -369,7 +311,6 @@ mod tests {
         );
     }
 
-    /// And it ends once, not once per frame.
     #[test]
     fn a_pane_that_stays_dead_ends_only_once() {
         let editor = key("editor");
@@ -395,13 +336,6 @@ mod tests {
         assert!(ended.is_empty(), "{:?}", names(&ended));
     }
 
-    /// A program that starts and dies inside one iteration still ends.
-    ///
-    /// The loop applies commands, talks to tmux and serves its workers before it
-    /// derives; a program with a bad argument is gone by then and was never seen
-    /// running. Without the spawn being recorded, the gate above — written for
-    /// adopted corpses — drops it, and the pane paints a dead grid for ever with
-    /// nothing to say why.
     #[test]
     fn a_program_that_dies_before_the_first_look_still_ends() {
         let editor = key("editor");
@@ -419,7 +353,6 @@ mod tests {
         );
     }
 
-    /// An ending whose slot was already replaced is still an ending.
     #[test]
     fn a_restart_does_not_swallow_the_ending_it_replaced() {
         let editor = key("editor");

@@ -1,6 +1,3 @@
-//! The store port (P2, P3, Q15): get, exclusive create, compare-and-swap
-//! update and list, plus the one manager lease.
-
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use thiserror::Error;
@@ -8,41 +5,20 @@ use thiserror::Error;
 use crate::meta::{Millis, Object};
 use crate::observation::Observation;
 
-/// Who is writing. The store checks it against the kind's ownership table
-/// (`kinds::status_owner`) on every status write and finalizer change.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub enum FieldManager {
-    /// People and scripts writing spec through `fleet apply`.
     Apply,
-    /// The worker answering through `fleet result`; owns `Task.status.result`.
     Worker,
-    /// The one controller for Task; owns the rest of Task status.
     TaskController,
-    /// The one controller for ChangeRequest; owns all of its status.
     ChangeRequestController,
-    /// The second controller over Task; owns `Task.status.forge` and
-    /// appends to `Task.status.inbox`.
     ForgeController,
-    /// A person at the command line, through `fleet send`: appends to
-    /// `Task.status.inbox` and owns nothing.
     Cli,
-    /// The third controller over Task; owns `Task.status.gateway` and
-    /// appends to `Task.status.inbox`.
     GatewayController,
     Plugin(String),
-    /// The one controller for Conversation; owns all of its status but the
-    /// spool, `received`, which it drains.
     ConversationController,
-    /// The one controller for Listener; owns its status but the beats and
-    /// refusals the receive verb records.
     ListenerController,
-    /// The one controller for CronTask; owns all of its status, and creates
-    /// and retires the Tasks its schedule starts.
     CronTaskController,
-    /// An account's listener program, through `fleet gateway receive`:
-    /// creates Conversations and spools deliveries on them, and records
-    /// beats and refusals on its Listener. Owns nothing and needs no lease.
     Listener(String),
 }
 
@@ -65,7 +41,6 @@ impl FieldManager {
         .into()
     }
 
-    /// Controllers write only while they hold the manager lease (fencing).
     pub fn is_controller(&self) -> bool {
         matches!(
             self,
@@ -81,8 +56,6 @@ impl FieldManager {
     }
 }
 
-/// Proof of the manager lease. `token` increases every time the lease changes
-/// hands, so a writer that lost it is refused even if it does not know yet.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct LeaseToken {
@@ -115,25 +88,17 @@ pub enum StoreError {
     LeaseHeld { holder: String, expires_at: Millis },
     #[error("store busy: {0}")]
     Busy(String),
-    /// A caller's own precondition did not hold, such as `fleet amend
-    /// --if-generation`; retrying the same call cannot succeed.
     #[error("conflict: {0}")]
     Precondition(String),
-    /// The store could not tell: an unreadable or corrupt record. Never read
-    /// as absence.
     #[error("could not tell: {0}")]
     Unknown(String),
-    /// The disk holding the store has no room left (`ENOSPC`, `EDQUOT`):
-    /// nothing was written. Retrying succeeds once space returns.
     #[error("disk full at {0}")]
     Full(String),
 }
 
-/// What the store does to a delete request.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub enum DeleteOutcome {
-    /// Finalizers remain: the object is marked and its controller releases it.
     Marked,
     Removed,
 }
@@ -158,7 +123,6 @@ pub trait Store {
         Err(StoreError::Unsupported("plugin status".into()))
     }
 
-    /// Private immutable launch data, keyed by Task UID, never a resource/status.
     fn launch(&self, _task: &Object) -> Result<Option<crate::config::Execution>, StoreError> {
         Err(StoreError::Unsupported(
             "private launches unsupported".into(),
@@ -175,18 +139,9 @@ pub trait Store {
         ))
     }
 
-    /// `Known(None)` only when the store can prove absence.
     fn get(&self, kind: &str, name: &str) -> Observation<Option<Object>>;
-    /// Every object of a kind, or Unknown as a whole: never a partial list.
     fn list(&self, kind: &str) -> Observation<Vec<Object>>;
-    /// Exclusive: a second create of the same name is `AlreadyExists`. `by`
-    /// is `Apply`, or `listener/<account>` for a Conversation or a Listener
-    /// the receive verb creates.
     fn create(&self, obj: Object, by: FieldManager) -> Result<Object, StoreError>;
-    /// A controller's exclusive create, fenced by the lease: how
-    /// ConversationController's plan creates the Task a thread starts, the
-    /// one create that may carry the `gateway.fleet.dev/conversation`
-    /// labels. The same create as `create` otherwise.
     fn create_fenced(
         &self,
         _obj: Object,
@@ -195,10 +150,6 @@ pub trait Store {
     ) -> Result<Object, StoreError> {
         Err(StoreError::Unsupported("create_fenced".into()))
     }
-    /// Delete the conversation Task a retiring thread created: fenced on
-    /// the Task's `uid` and the lease, and refused unless the Task carries
-    /// `conversation_uid` as its conversation uid label and is Concluded.
-    /// Only ConversationController calls it. `NotFound` when it is gone.
     fn retire_conversation_task(
         &self,
         _name: &str,
@@ -209,11 +160,6 @@ pub trait Store {
     ) -> Result<DeleteOutcome, StoreError> {
         Err(StoreError::Unsupported("retire_conversation_task".into()))
     }
-    /// Delete a Task a CronTask created: fenced on the Task's `uid` and the
-    /// lease, and refused unless the Task carries `cron_uid` as its
-    /// `crontask.fleet.dev/uid` label and, unless `running` (the Replace
-    /// policy), is Concluded. Only CronTaskController calls it. `NotFound`
-    /// when it is gone.
     fn retire_scheduled_task(
         &self,
         _name: &str,
@@ -225,7 +171,6 @@ pub trait Store {
     ) -> Result<DeleteOutcome, StoreError> {
         Err(StoreError::Unsupported("retire_scheduled_task".into()))
     }
-    /// Replace spec (and labels); bumps generation when spec changed.
     fn update_spec(
         &self,
         kind: &str,
@@ -235,8 +180,6 @@ pub trait Store {
         expected: u64,
         by: FieldManager,
     ) -> Result<Object, StoreError>;
-    /// Compare-and-swap on resourceVersion; `by` may change only the status
-    /// fields it owns, and a controller must present the current lease.
     fn update_status(
         &self,
         kind: &str,
@@ -248,9 +191,6 @@ pub trait Store {
     ) -> Result<Object, StoreError>;
     fn delete(&self, kind: &str, name: &str, by: FieldManager)
     -> Result<DeleteOutcome, StoreError>;
-    /// Delete an object its own controller decided to remove: fenced by the
-    /// `uid` and `resourceVersion` the decision was made from and by the
-    /// lease, so a stale plan cannot remove a recreated object.
     fn delete_fenced(
         &self,
         kind: &str,
@@ -260,13 +200,6 @@ pub trait Store {
         by: FieldManager,
         lease: &LeaseToken,
     ) -> Result<DeleteOutcome, StoreError>;
-    /// Append one entry to a Task's `status.inbox`, compare-and-swap on
-    /// resourceVersion, as a caller `kinds::may_append_inbox` admits. Refused
-    /// when the key is already in `inbox` or `deliveries`, when more than
-    /// `inbox::MAX_INBOX` entries are still to deliver (`inbox::due`), on a deleting Task, or
-    /// when an `answers` id names no declared Question. The entry's
-    /// `answers` are recorded in `status.answered` in the same write, first
-    /// answer wins. No other status field changes.
     fn append_inbox(
         &self,
         name: &str,
@@ -275,12 +208,6 @@ pub trait Store {
         by: FieldManager,
         lease: Option<&LeaseToken>,
     ) -> Result<Object, StoreError>;
-    /// `fleet send --retry` and `--drop`, compare-and-swap on
-    /// resourceVersion, as `FieldManager::Cli` only: remove the entry under
-    /// `key`, which TaskController gave up on (`inbox::given_up`), and, for
-    /// a `retry`, queue its copy under the retry's key as
-    /// `inbox::check_retry` checks it, in one write. Refused on a deleting Task. No other field
-    /// changes: TaskController forgets the entry's attempt on its next pass.
     fn resolve_inbox(
         &self,
         _name: &str,
@@ -291,10 +218,6 @@ pub trait Store {
     ) -> Result<Object, StoreError> {
         Err(StoreError::Unsupported("resolve_inbox".into()))
     }
-    /// `fleet attach`'s and `fleet shell`'s write, compare-and-swap on
-    /// resourceVersion, as a caller `kinds::may_request_wake` admits: set
-    /// `status.wakeRequestedAt` to `at`, which asks TaskController to resume
-    /// a paused session. Refused on a deleting Task. No other field changes.
     fn request_wake(
         &self,
         _name: &str,
@@ -304,10 +227,6 @@ pub trait Store {
     ) -> Result<Object, StoreError> {
         Err(StoreError::Unsupported("request_wake".into()))
     }
-    /// `fleet pause`'s write, compare-and-swap on resourceVersion, as a
-    /// caller `kinds::may_request_pause` admits: set
-    /// `status.pauseRequestedAt` to `at`, which asks TaskController to pause
-    /// the session. Refused on a deleting Task. No other field changes.
     fn request_pause(
         &self,
         _name: &str,
@@ -317,12 +236,6 @@ pub trait Store {
     ) -> Result<Object, StoreError> {
         Err(StoreError::Unsupported("request_pause".into()))
     }
-    /// `fleet restart`'s write, compare-and-swap on resourceVersion, as a
-    /// caller `kinds::may_request_restart` admits: set
-    /// `status.restartRequested` to `request`, which asks TaskController to
-    /// restart the session once. Refused on a deleting Task, a held one
-    /// (`dispatch: false`) and one with no session to restart: not Briefed,
-    /// Concluded, or an interactive Task in Spawned. No other field changes.
     fn request_restart(
         &self,
         _name: &str,
@@ -332,13 +245,6 @@ pub trait Store {
     ) -> Result<Object, StoreError> {
         Err(StoreError::Unsupported("request_restart".into()))
     }
-    /// `fleet amend`'s write, compare-and-swap on resourceVersion, as
-    /// `FieldManager::Cli` only: append `amendment` to `spec.amendments`,
-    /// bump `metadata.generation` to the amendment's generation, and queue
-    /// `entry` (whose `amends` names that generation, under
-    /// `inbox::amend_key`) as `append_inbox` checks an entry, in one write.
-    /// Refused on a deleting or Stalled Task, for an amendment the spec
-    /// refuses, and when the inbox refuses the entry. No other field changes.
     fn amend_task(
         &self,
         _name: &str,
@@ -349,11 +255,6 @@ pub trait Store {
     ) -> Result<Object, StoreError> {
         Err(StoreError::Unsupported("amend_task".into()))
     }
-    /// TaskController's status write that also records one delivery: the
-    /// receipt goes into `status.deliveries` and its entry leaves
-    /// `status.inbox`, in the same compare-and-swap write as `status`, which
-    /// is checked for ownership exactly as in `update_status` (so it cannot
-    /// change `inbox` itself). Refused when no entry holds the receipt's key.
     fn record_delivery(
         &self,
         name: &str,
@@ -363,14 +264,6 @@ pub trait Store {
         by: FieldManager,
         lease: &LeaseToken,
     ) -> Result<Object, StoreError>;
-    /// A relaying controller's status write: replace the writer's own Task
-    /// status field (`kinds::relay_field`: `status.forge` for
-    /// ForgeController, `status.gateway` for GatewayController,
-    /// `status.subscriptions` for TaskController's notices) with
-    /// `status` and append `appends` to `status.inbox`, each checked as
-    /// `append_inbox` checks one and its `answers` recorded, in the same
-    /// compare-and-swap write under the lease. The cursors and the entries
-    /// land together or not at all; no other field changes.
     fn record_relay(
         &self,
         name: &str,
@@ -380,12 +273,6 @@ pub trait Store {
         by: FieldManager,
         lease: &LeaseToken,
     ) -> Result<Object, StoreError>;
-    /// Spool one delivery on a Conversation's `status.received`, as
-    /// `listener/<account>` for the account its spec names, compare-and-swap
-    /// on resourceVersion. A delivery id already spooled or numbered is
-    /// `Duplicate` and changes nothing; the spool past
-    /// `conversation::RECEIVED_CAP` and a deleting Conversation are refused.
-    /// No other status field changes.
     fn receive_event(
         &self,
         _name: &str,
@@ -395,10 +282,6 @@ pub trait Store {
     ) -> Result<(Object, crate::conversation::Spooled), StoreError> {
         Err(StoreError::Unsupported("receive_event".into()))
     }
-    /// ConversationController's status write: `status` is checked for
-    /// ownership as in `update_status`, except that `received`, which nobody
-    /// owns, may have lost the entries the controller numbered and gained
-    /// nothing, in the same compare-and-swap write under the lease.
     fn record_received(
         &self,
         _name: &str,
@@ -409,9 +292,6 @@ pub trait Store {
     ) -> Result<Object, StoreError> {
         Err(StoreError::Unsupported("record_received".into()))
     }
-    /// Record one heartbeat on a Listener as `listener/<account>` for the
-    /// account its spec names: the instance's `beats` entry replaced and
-    /// `beatRevision` moved, nothing else.
     fn record_beat(
         &self,
         _name: &str,
@@ -422,8 +302,6 @@ pub trait Store {
     ) -> Result<Object, StoreError> {
         Err(StoreError::Unsupported("record_beat".into()))
     }
-    /// Count one refused or unreadable envelope on a Listener as
-    /// `listener/<account>`: `refused` and `beatRevision` move, nothing else.
     fn record_refusal(
         &self,
         _name: &str,
@@ -435,18 +313,6 @@ pub trait Store {
     ) -> Result<Object, StoreError> {
         Err(StoreError::Unsupported("record_refusal".into()))
     }
-    /// Append events to a Board's log as `source`, under the store lock,
-    /// as a caller `kinds::may_append_events` admits: a controller only
-    /// under the lease, `cli` with none. Each publish is checked as
-    /// `event::validate_publish_from` checks it for `source` against the
-    /// Board's `maxDataBytes`, and the batch is refused whole if one fails. A
-    /// publish whose key the same publisher (`Source::same_publisher`) used
-    /// for an event the log still holds appends nothing and answers that
-    /// event. The others get the next `seq`s and the store's time. In the
-    /// same write, retention drops the oldest whole segments and the
-    /// Board's `status.head` and `status.oldest` move; nothing else of the
-    /// Board changes. Retention runs first, so a key whose event aged out
-    /// can be used again.
     fn append_events(
         &self,
         _board: &str,
@@ -457,9 +323,6 @@ pub trait Store {
     ) -> Result<Vec<crate::event::Appended>, StoreError> {
         Err(StoreError::Unsupported("append_events".into()))
     }
-    /// At most `limit` events of a Board's log with a `seq` above `after`,
-    /// oldest first; `Expired` when events after `after` are gone. Takes no
-    /// lock. `NotFound` when the Board does not exist.
     fn read_events(
         &self,
         _board: &str,
@@ -468,13 +331,9 @@ pub trait Store {
     ) -> Result<crate::event::Page, StoreError> {
         Err(StoreError::Unsupported("read_events".into()))
     }
-    /// The last `seq` a Board's log holds, or its `status.head` when that is
-    /// later: a crash between an append and its status write leaves the log
-    /// ahead. Takes no lock. `NotFound` when the Board does not exist.
     fn event_head(&self, _board: &str) -> Result<u64, StoreError> {
         Err(StoreError::Unsupported("event_head".into()))
     }
-    /// Only the kind's controller, holding the lease, removes a finalizer.
     fn remove_finalizer(
         &self,
         kind: &str,
@@ -484,22 +343,17 @@ pub trait Store {
         by: FieldManager,
         lease: &LeaseToken,
     ) -> Result<DeleteOutcome, StoreError>;
-    /// Validate an object as the store would before writing it.
     fn validate(&self, obj: &Object) -> Result<(), StoreError> {
         crate::validate::validate_object(obj)
     }
     fn acquire_lease(&self, holder: &str, ttl: Millis) -> Result<LeaseToken, StoreError>;
     fn renew_lease(&self, lease: &LeaseToken, ttl: Millis) -> Result<LeaseToken, StoreError>;
-    /// Renew `lease` even when it has expired, as long as nobody took it
-    /// since: the holder and the token are unchanged. Only a manager that
-    /// holds `manager.lock` calls it, after a pause.
     fn reclaim_lease(&self, lease: &LeaseToken, ttl: Millis) -> Result<LeaseToken, StoreError> {
         self.renew_lease(lease, ttl)
     }
     fn release_lease(&self, lease: &LeaseToken) -> Result<(), StoreError>;
 }
 
-/// The clock port: time is an input to pure code, read here by an adapter.
 pub trait Clock {
     fn now(&self) -> Millis;
 }

@@ -1,5 +1,3 @@
-//! `fleet init`: the native config, written once, offline. The store and the
-//! Tasks are the store's, not this module's.
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -19,10 +17,6 @@ pub fn absolute(path: &Path) -> Result<PathBuf, String> {
     std::path::absolute(path).map_err(|e| e.to_string())
 }
 
-/// Refuse a symlink at a path `init` writes: a link is never an invitation
-/// to write its target. Its ancestors are where the user keeps their files,
-/// and a link among them is ordinary layout (`/home` on Fedora Atomic, `/var`
-/// on macOS, a dotfiles manager's `~/.config`), so they are not checked.
 fn checked(path: &Path) -> Result<(), String> {
     match fs::symlink_metadata(path) {
         Ok(meta) if meta.file_type().is_symlink() => {
@@ -34,9 +28,6 @@ fn checked(path: &Path) -> Result<(), String> {
     }
 }
 
-/// The config `init` writes for `config_path`, with its store at
-/// `store_dir`. `[runtimes.mux]` takes a key prefix of its own per config
-/// path, so two configs on one machine never share a session.
 pub(crate) fn native(config_path: &Path, store_dir: &Path) -> Result<String, String> {
     let instance = &hash(config_path.to_string_lossy().as_bytes())[..24];
     let mut config: toml::Value = toml::from_str(&format!(
@@ -61,9 +52,6 @@ pub(crate) fn native(config_path: &Path, store_dir: &Path) -> Result<String, Str
     toml::to_string_pretty(&config).map_err(|e| e.to_string())
 }
 
-/// Write the config at `config_path` when it does not exist, and answer
-/// whether it did. An existing config is the user's: it is validated and
-/// kept as it is.
 pub fn init(
     config_path: &Path,
     data_root: &Path,

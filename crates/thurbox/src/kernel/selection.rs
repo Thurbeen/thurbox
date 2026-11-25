@@ -1,22 +1,11 @@
-//! Mouse text selection over a terminal pane.
-//!
-//! Pure: screen positions in, highlighted cells and extracted text out. It
-//! lived in `session` while v1's mouse layer and the kernel both needed it;
-//! v1 is gone, and every consumer — [`super::terminal`], the coordinator's
-//! draw and mouse paths — is kernel/main side, so it lives here now.
-
 use ratatui::layout::{Position, Rect};
 
-/// A position on screen (absolute coordinates, 0-indexed).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct TermPos {
     pub row: usize,
     pub col: usize,
 }
 
-/// Rectangular bounds of the pane a selection is confined to.
-///
-/// Wraps a `Rect` and adds selection-specific helpers (clamping, hit-testing).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct PaneBounds(Rect);
 
@@ -29,16 +18,6 @@ impl PaneBounds {
         self.0
     }
 
-    /// The content area of a **bordered** pane, when `(x, y)` is inside it.
-    ///
-    /// `None` for a point on the border itself, or for a pane too small to have
-    /// content — which is what stops a press on the chrome from arming a
-    /// selection. v1 draws the same line by intersecting the click with
-    /// `border_block.inner(pane_rect)`.
-    ///
-    /// Confinement is the point: a selection anchored to a pane cannot smear
-    /// across the interface, however far the pointer is dragged, because
-    /// [`Self::clamp`] holds every later position inside this rect.
     pub fn content_at(pane: Rect, x: u16, y: u16) -> Option<Self> {
         let inner = Rect {
             x: pane.x.saturating_add(1),
@@ -54,7 +33,6 @@ impl PaneBounds {
             .then(|| Self::from_rect(inner))
     }
 
-    /// Clamp a screen-absolute position to within this pane.
     pub fn clamp(&self, x: u16, y: u16) -> (u16, u16) {
         let r = self.0;
         let cx = x.max(r.x).min(r.x + r.width.saturating_sub(1));
@@ -67,16 +45,11 @@ impl PaneBounds {
     }
 }
 
-/// Active text selection state.
 #[derive(Debug, Clone)]
 pub struct Selection {
-    /// Where the mouse button was first pressed.
     pub anchor: TermPos,
-    /// Current drag position (updated on MouseDrag, finalized on MouseUp).
     pub cursor: TermPos,
-    /// Whether the selection is still being dragged (vs finalized).
     pub dragging: bool,
-    /// The pane this selection is confined to.
     pub pane: PaneBounds,
 }
 
@@ -90,7 +63,6 @@ impl Selection {
         }
     }
 
-    /// Returns (start, end) in reading order (top-left to bottom-right).
     pub fn ordered(&self) -> (TermPos, TermPos) {
         if self.anchor.row < self.cursor.row
             || (self.anchor.row == self.cursor.row && self.anchor.col <= self.cursor.col)
@@ -101,7 +73,6 @@ impl Selection {
         }
     }
 
-    /// Check whether a given (row, col) falls within the selection.
     pub fn contains(&self, row: usize, col: usize) -> bool {
         let (start, end) = self.ordered();
         if row < start.row || row > end.row {
@@ -118,8 +89,6 @@ impl Selection {
         }
     }
 
-    /// Iterate over (row, col_start, col_end_exclusive) spans in the selection,
-    /// clamped to pane bounds.
     fn row_spans(&self) -> impl Iterator<Item = (usize, usize, usize)> + '_ {
         let (start, end) = self.ordered();
         let pane = self.pane.rect();
@@ -141,7 +110,6 @@ impl Selection {
     }
 }
 
-/// Apply a style to all buffer cells within the selection.
 pub fn highlight_buffer(
     buf: &mut ratatui::buffer::Buffer,
     selection: &Selection,
@@ -160,29 +128,6 @@ pub fn highlight_buffer(
     }
 }
 
-/// Extract selected text from a vt100 screen (the terminal pane's own grid)
-/// rather than the rendered frame buffer.
-///
-/// Two things this buys over [`extract_text_from_buffer`], which reads the
-/// painted cells:
-///
-/// - **Scrollback.** [`vt100::Screen::cell`] resolves through the current
-///   scrollback offset, so a selection made after scrolling up copies the
-///   history the user is actually looking at.
-/// - **Soft-wrap joining.** A line longer than the pane is stored by vt100 as
-///   several rows with the wrap flag set on all but the last. Those are one
-///   logical line, so they are rejoined with no `\n` — a wrapped URL or code
-///   line pastes intact instead of acquiring a break at the pane edge.
-///
-/// `pane_origin` is the top-left of the pane's *inner* (border-excluded) area;
-/// `PseudoTerminal` paints the screen 1:1 there, so subtracting it converts a
-/// screen position to a parser position. A selection reaching past the last
-/// grid row stops there.
-///
-/// A hard newline still separates logical lines, and trailing whitespace is
-/// trimmed per logical line (not per visual row — trimming a wrapped row's tail
-/// would eat the space that belongs mid-line). Wholly-blank trailing lines are
-/// dropped.
 pub fn extract_text_from_screen(
     screen: &vt100::Screen,
     selection: &Selection,
@@ -191,9 +136,6 @@ pub fn extract_text_from_screen(
     extract_text_from_rows(screen, selection, pane_origin, 0)
 }
 
-/// [`extract_text_from_screen`] for a grid painted from row `top` down, which
-/// is how a grid taller than its pane is shown (the terminal kernel's
-/// `Painted::top`).
 pub fn extract_text_from_rows(
     screen: &vt100::Screen,
     selection: &Selection,
@@ -266,14 +208,6 @@ pub fn extract_text_from_rows(
         .join("\n")
 }
 
-/// Extract selected text from a ratatui frame buffer.
-///
-/// Used for non-terminal panes (session list, info panel), which have no vt100
-/// grid behind them. Terminal panes go through [`extract_text_from_screen`],
-/// which also sees scrollback and rejoins soft-wrapped lines.
-///
-/// Reads cell symbols within the selection, clamped to pane bounds.
-/// Trailing whitespace is trimmed per line, lines joined with `\n`.
 pub fn extract_text_from_buffer(buf: &ratatui::buffer::Buffer, selection: &Selection) -> String {
     let buf_right = buf.area.x + buf.area.width;
     let mut lines = Vec::new();
@@ -380,7 +314,6 @@ mod tests {
         }
     }
 
-    /// Fill a buffer region with known text for extraction tests.
     fn fill_buffer(buf: &mut ratatui::buffer::Buffer, rows: &[&str]) {
         for (row_idx, text) in rows.iter().enumerate() {
             for (col_idx, ch) in text.chars().enumerate() {
@@ -494,7 +427,6 @@ mod tests {
         assert_eq!(text, "content here...\nmore content!");
     }
 
-    /// Feed `input` to a fresh parser sized `rows`x`cols` with scrollback.
     fn screen_with(rows: u16, cols: u16, scrollback: usize, input: &str) -> vt100::Parser {
         let mut p = vt100::Parser::new(
             rows.try_into().unwrap(),

@@ -1,11 +1,3 @@
-//! What every `SessionBackend` must do, as one suite each implementation runs.
-//!
-//! `TmuxBackend` runs it under a private server and the in-memory
-//! `RecordingBackend` runs it always, so the fake the routing tests trust is
-//! held to the behaviour of the adapter it stands in for. A check here is about
-//! what a caller can observe through the trait — a window's identity, whether a
-//! listing places it, whether a kill sticks — never about how a backend does it.
-
 #![allow(dead_code)]
 
 use std::collections::HashMap;
@@ -13,14 +5,11 @@ use std::collections::HashMap;
 use runtime_mux::identity::{Located, WindowIndex};
 use runtime_mux::{Key, Owner, Placed, SessionBackend, WindowRole, WindowSpec};
 
-/// Three rows, as their stamps. Uuid-shaped, as a real row's are.
 const OWNER_A: &str = "00000000-0000-4000-8000-00000000000a";
 const OWNER_B: &str = "00000000-0000-4000-8000-00000000000b";
 const OWNER_C: &str = "00000000-0000-4000-8000-00000000000c";
 const OWNER_D: &str = "00000000-0000-4000-8000-00000000000d";
 
-/// Run the contract against `backend`, which must hold no thurbox window
-/// named after `contract` when called.
 pub fn suite(backend: &dyn SessionBackend) {
     backend.ensure_ready().expect("the backend readies");
     let env = HashMap::new();
@@ -97,10 +86,6 @@ pub fn suite(backend: &dyn SessionBackend) {
     backend.kill(&b).expect("kill the namesake");
 }
 
-/// The headless half of the contract: what `session_ops` drives a session's
-/// lifecycle with, through a backend nothing has attached to — so, for a
-/// multiplexer, without opening a connection that would bring a server into
-/// being where a teardown found none.
 pub fn lifecycle(backend: &dyn SessionBackend) {
     let env = HashMap::new();
     let args = ["300".to_string()];
@@ -188,8 +173,6 @@ pub fn lifecycle(backend: &dyn SessionBackend) {
     );
 }
 
-/// Pane I/O: what reaches a pane through the verbs every caller shares —
-/// located by its owner, then addressed by pane.
 pub fn pane_io(backend: &dyn SessionBackend) {
     let env = HashMap::new();
     let owner = Owner::new(OWNER_C, "io");
@@ -258,9 +241,6 @@ pub fn pane_io(backend: &dyn SessionBackend) {
     );
 }
 
-/// Status delivery, for a backend that has a status channel: a state recorded
-/// on a pane is what the headless listing reads back for that pane and no
-/// other, and the hook command it hands out can be spliced into a hook file.
 pub fn status(backend: &dyn SessionBackend) {
     let env = HashMap::new();
     let open = |owner: &'static str| {
@@ -311,8 +291,6 @@ pub fn status(backend: &dyn SessionBackend) {
     }
 }
 
-/// Shutdown is final: a worker still holding the registry when the process
-/// quits must not open a connection `shutdown_all` just closed.
 pub fn shutdown_is_final(backend: &dyn SessionBackend) {
     backend.ensure_ready().expect("the backend readies");
     backend.shutdown();

@@ -1,7 +1,3 @@
-//! What `fleet up` tells the service manager that runs it: systemd's
-//! `sd_notify` protocol, one datagram to the socket `NOTIFY_SOCKET` names
-//! (sd_notify(3)). Without that variable it tells nothing.
-
 pub enum Phase<'a> {
     Waiting(&'a str),
     Ready,

@@ -1,17 +1,3 @@
-//! The session list's contract with the rest of the interface.
-//!
-//! Three things every other pane depends on and none of which is visible in what
-//! the list draws: `Enter` goes to the session you picked; the selection is
-//! **steerable** — a pane that writes `store.selected` moves the cursor rather
-//! than being overwritten on the next frame; and the selection is a **session**
-//! rather than a row, so a snapshot that opens or closes a session above the
-//! cursor leaves the highlight where it was. v1 has one `App::select_session` for
-//! the first two; here it is a value two mods share, so the rule has to be
-//! asserted. The third is issue #1211, and the assertion that catches it has to
-//! be the painted frame: the list published the right value to `store.selected`
-//! after a steer and after a create all along, and still moved the bar on an
-//! ordinary rebuild.
-
 use std::collections::HashMap;
 
 use ratatui::backend::TestBackend;
@@ -720,8 +706,6 @@ fn publish_in(host: &LuaHost, snapshot: &Snapshot) {
     publish_with(host, snapshot, &registry_for(host));
 }
 
-/// A `create` the kernel has accepted and no snapshot has answered yet: it
-/// names no session, only the repo its row will land in.
 fn creating(repo: &str) -> InFlight {
     InFlight {
         id: 1,
@@ -799,7 +783,6 @@ fn publish_full(
     .expect("publish");
 }
 
-/// Render the list, which is also what publishes the selection.
 fn render(host: &LuaHost) {
     render_in(host, &snapshot());
 }
@@ -934,8 +917,6 @@ fn a_session_that_went_away_does_not_freeze_the_selection() {
 
 // --- the selection is a session, not the row it happens to sit on -----------
 
-/// Three rows in one repo, so the rendered order is the snapshot's order and a
-/// row prepended to that lands ABOVE the cursor.
 fn three() -> Snapshot {
     Snapshot {
         sessions: vec![
@@ -947,9 +928,6 @@ fn three() -> Snapshot {
     }
 }
 
-/// The same list with one more session above it — a create this interface did
-/// not perform, so no `session.post_create`, no follow, nothing but a snapshot
-/// carrying one more row.
 fn and_one_above(world: &Snapshot) -> Snapshot {
     let mut sessions = vec![row("000", "newcomer")];
     sessions.extend(world.sessions.iter().cloned());
@@ -959,8 +937,6 @@ fn and_one_above(world: &Snapshot) -> Snapshot {
     }
 }
 
-/// The same list with one session gone — a delete this interface did not
-/// perform either.
 fn without(world: &Snapshot, id: &str) -> Snapshot {
     Snapshot {
         sessions: world
@@ -973,10 +949,6 @@ fn without(world: &Snapshot, id: &str) -> Snapshot {
     }
 }
 
-/// The painted frame is the only evidence that catches this file's selection
-/// bug: the list published the right `store.selected` after a steer and after a
-/// create all along, so a test reading that value alone stays green whether or
-/// not a plain rebuild keeps the cursor where it was.
 fn paint(host: &LuaHost, mod_name: &str, width: u16, height: u16) -> Buffer {
     let node = host
         .render(
@@ -999,12 +971,6 @@ fn paint(host: &LuaHost, mod_name: &str, width: u16, height: u16) -> Buffer {
     terminal.backend().buffer().clone()
 }
 
-/// The text of the row wearing the selection bar. The selection is a full-width
-/// background rather than a marker glyph, so the row carrying one is the body row
-/// whose first *inner* cell stops sharing the background of the border cell
-/// beside it. Read as a difference rather than against a literal colour, so the
-/// assertion holds under any preset; the border rows are skipped because a
-/// focused pane's title wears a highlight of its own.
 fn selection_bar(buffer: &Buffer) -> Option<String> {
     let band = selection_bg();
     (1..buffer.area.height.saturating_sub(1))
@@ -1016,27 +982,18 @@ fn selection_bar(buffer: &Buffer) -> Option<String> {
         })
 }
 
-/// The selection role as the painter draws it. A host row is a band too, so a
-/// background that merely differs from the border's no longer singles out the
-/// bar.
 fn selection_bg() -> ratatui::style::Color {
     let role = Themes::load(None).roles()["selection_bg"].clone();
     role.parse::<ratatui::style::Color>()
         .unwrap_or_else(|_| panic!("selection_bg {role} is not a colour"))
 }
 
-/// A pane's top border, which is where a title is drawn.
 fn title(buffer: &Buffer) -> String {
     (0..buffer.area.width)
         .map(|x| buffer[(x, 0)].symbol())
         .collect()
 }
 
-/// The three readings of the selection must name the same session: the value the
-/// list published, the bar it painted, and the title of the agent pane that
-/// draws whatever was published. One write moved all three, so one assertion
-/// reads all three — and the list is painted first, because painting it is what
-/// publishes.
 #[track_caller]
 fn assert_every_reading_names(host: &LuaHost, id: &str, name: &str) {
     let highlighted = selection_bar(&paint(host, MOD, 40, 12));
@@ -1056,9 +1013,6 @@ fn assert_every_reading_names(host: &LuaHost, id: &str, name: &str) {
     );
 }
 
-/// Put the cursor on the middle row and leave it there, with nothing chasing
-/// it: no follow, no foreign `store.selected`, no `session.post_create`. This is
-/// the state the bug needs — a plain cursor over a plain list.
 fn on_the_middle_row(host: &LuaHost, world: &Snapshot) {
     render_in(host, world);
     press_in(host, world, "j");
@@ -1161,8 +1115,6 @@ fn the_last_session_of_all_going_away_publishes_nothing_rather_than_a_dead_id() 
     );
 }
 
-/// What the kernel hands the list when a create or a fork this interface asked
-/// for has landed, with the row already resolved in the snapshot.
 fn post_create(id: &str, name: &str) -> Event {
     Event::new("session.post_create")
         .with("session", Some(id))
@@ -1264,7 +1216,6 @@ fn only_a_create_this_interface_made_is_subscribed_to() {
     );
 }
 
-/// A worktree with nothing in it that a delete could not put back.
 fn clean() -> GitState {
     GitState {
         files_changed: 0,
@@ -1278,8 +1229,6 @@ fn clean() -> GitState {
     }
 }
 
-/// Render the confirmation float and return what it drew, so a test can ask
-/// whether a question was put at all — and what it itemised.
 fn confirm_tree(host: &LuaHost, snapshot: &Snapshot) -> String {
     publish_in(host, snapshot);
     let index = host.index_of("confirm").expect("no confirm plugin");
@@ -1488,10 +1437,6 @@ fn shift_s_sorts_each_group_by_name() {
     );
 }
 
-/// Issue #1200: `Shift+S` took the pane down whenever a creation was in flight
-/// in a group that already held a session. A placeholder is its own root block
-/// with no `session` behind it, and a group of two blocks is the first one that
-/// invokes the comparator at all — which is why one session was never enough.
 #[test]
 fn sorting_with_a_creation_in_flight_does_not_take_the_pane_down() {
     let host = host();
@@ -1511,13 +1456,6 @@ fn sorting_with_a_creation_in_flight_does_not_take_the_pane_down() {
     );
 }
 
-/// `lib.order`'s own answer, read off a pane that calls it.
-///
-/// The sort's output reaches the screen through nothing: the list is rebuilt
-/// from `session_model.build` every frame, and `persist_order` keeps only the
-/// rows carrying a session id. So where it puts a block is asserted here, on
-/// the function, rather than inferred from a pane that would draw the same
-/// list either way.
 fn sorted_by_order_lua(items: &str) -> String {
     let dir = tempfile::tempdir().expect("tempdir");
     let mods = dir.path().join("mods");
@@ -1592,8 +1530,6 @@ fn the_sort_puts_a_nameless_block_at_its_groups_end() {
 
 // --- the hierarchy (issue #1551) ---------------------------------------------
 
-/// The painted pane as rows of text, read as a terminal shows it: a
-/// double-width glyph owns the cell after it, so that cell is skipped.
 fn frame_at(host: &LuaHost, width: u16, height: u16) -> Vec<String> {
     use unicode_width::UnicodeWidthStr;
     let buffer = paint(host, MOD, width, height);
@@ -1639,8 +1575,6 @@ fn child(id: &str, name: &str, parent: &str) -> SessionRow {
     row
 }
 
-/// A lead with two workers, one of them waiting for an answer, and a session
-/// of its own beside them.
 fn family() -> Snapshot {
     let mut waiting = child("worker-b", "worker-b", "lead");
     waiting.status = SessionState::Blocked;
@@ -2092,7 +2026,6 @@ fn rgb(colour: &str) -> Option<(u8, u8, u8)> {
     Some((channel(0)?, channel(2)?, channel(4)?))
 }
 
-/// WCAG contrast ratio between two colours.
 fn contrast(a: (u8, u8, u8), b: (u8, u8, u8)) -> f64 {
     fn luminance((r, g, b): (u8, u8, u8)) -> f64 {
         let linear = |c: u8| {
@@ -2116,11 +2049,6 @@ fn cell_rgb(colour: ratatui::style::Color) -> Option<(u8, u8, u8)> {
     }
 }
 
-/// A tint may cost a colour some of the contrast it has on the preset's own
-/// background, never most of it: it keeps 70% of it, and still clears WCAG's
-/// 3:1 for bold UI text wherever the preset's colours give 4:1 on the plain
-/// background. An absolute 3:1 everywhere is not a floor a tint can meet: a few
-/// presets put these colours under 3:1 on their background already.
 #[track_caller]
 fn assert_readable(
     preset: &str,
@@ -2302,10 +2230,6 @@ fn each_grouping_level_indents_sessions_once() {
     );
 }
 
-/// Only an agent can be unknown. A shell's Task carries no `activity`, as
-/// Fleet writes it for a harness with no hooks and no screen rules, so its
-/// row keeps the glyph of what the runtime proved, with no unknown detail;
-/// an agent that has said nothing draws `?`. In every theme.
 #[test]
 fn a_shell_row_keeps_its_glyph_and_only_an_agent_is_unknown() {
     let host = host();
@@ -2375,10 +2299,6 @@ fn a_shell_row_keeps_its_glyph_and_only_an_agent_is_unknown() {
     }
 }
 
-/// A Fleet session's status says where it came from: the agent's hooks draw
-/// the state's glyph, a screen rule draws it dimmed (blocked's diamond
-/// hollow), and neither draws `?`. The detail after the name names the
-/// source, and a state keeps its colour whatever the source, in every theme.
 #[test]
 fn a_fleet_status_draws_its_source_in_every_theme() {
     let host = host();

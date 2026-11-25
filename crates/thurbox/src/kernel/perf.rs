@@ -1,23 +1,3 @@
-//! Wall-clock-free counters for the render loop.
-//!
-//! v1 learned to assert on counters rather than timings: a test that says
-//! "idle should be fast" is flaky on shared hardware, while one that says "an
-//! idle loop painted no frames" is exact. These are the v2 equivalents of
-//! `MetricsState::perf`, and they exist so the demand-driven redraw is
-//! provable rather than hoped for.
-//!
-//! On top of them sits the **observability layer** of ADR-P11: fixed-bucket
-//! duration histograms, a ring of named slow operations, and the startup phase
-//! breakdown. Those are wall-clock, so they are display and logging only and
-//! are never CI-asserted — the counters above remain the sole regression gate.
-//! They are populated only while timing is active (`THURBOX_PERF_LOG` or an
-//! open perf HUD), so a default run pays one cached bool per iteration.
-//!
-//! The **per-mod** half (ADR-P23) answers which pane spent the time:
-//! [`ModTable`] is recorded by the Lua host under the same gate, and
-//! [`mod_report`] turns it into the one ranked, hinted [`ModReport`] the
-//! HUD, the snapshot and `thurbox-cli perf --mods` all read.
-
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};
@@ -27,29 +7,17 @@ use serde_json::{json, Value};
 use super::node::{Node, SurfaceSource};
 use super::runs::RunEvent;
 
-/// One counter per thing worth knowing about the loop.
 #[derive(Default)]
 pub struct Counters {
-    /// Times round the loop, painted or not.
     pub iterations: AtomicU64,
-    /// Frames actually painted.
     pub frames: AtomicU64,
-    /// Frames skipped because nothing had changed.
     pub skipped: AtomicU64,
-    /// Mod render calls.
     pub renders: AtomicU64,
-    /// Mod failures, of any phase.
     pub failures: AtomicU64,
-    /// Whole-VM reloads.
     pub reloads: AtomicU64,
-    /// Pane renders served from a pure pane's tree cache instead of run.
     pub renders_skipped: AtomicU64,
-    /// Published `thurbox.*` groups reused instead of rebuilt.
     pub groups_reused: AtomicU64,
-    /// Keystroke echoes painted with no frame floor (ADR-P28).
     pub echoes: AtomicU64,
-    /// Of those, the ones painted as the last frame with only the echoing
-    /// surface redrawn, rather than as a full frame.
     pub echo_frames: AtomicU64,
 }
 
@@ -62,7 +30,6 @@ impl Counters {
         counter.load(Ordering::Relaxed)
     }
 
-    /// A snapshot of every counter, for a HUD or a test.
     pub fn read(&self) -> Snapshot {
         Snapshot {
             iterations: Self::get(&self.iterations),
@@ -79,7 +46,6 @@ impl Counters {
     }
 }
 
-/// The counters at one instant.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct Snapshot {
     pub iterations: u64,
@@ -95,8 +61,6 @@ pub struct Snapshot {
 }
 
 impl Snapshot {
-    /// Difference from an earlier reading, for asserting on a window rather
-    /// than on absolute totals.
     pub fn since(&self, earlier: &Snapshot) -> Snapshot {
         Snapshot {
             iterations: self.iterations.saturating_sub(earlier.iterations),
@@ -117,19 +81,13 @@ fn micros(d: Duration) -> u64 {
     u64::try_from(d.as_micros()).unwrap_or(u64::MAX)
 }
 
-/// Upper bounds (µs) of the fixed histogram buckets: powers of two from 250µs
-/// to ~1s, with a final bucket catching everything slower. Coarse on purpose —
-/// this answers "is a frame 1ms or 30ms", not microbenchmarks.
 const HISTO_BUCKETS_US: [u64; 13] = [
     250, 500, 1_000, 2_000, 4_000, 8_000, 16_000, 33_000, 66_000, 100_000, 250_000, 500_000,
     1_000_000,
 ];
 
-/// Fixed-bucket duration histogram — display/logging only, never asserted in
-/// CI (ADR-P2: wall-clock stats are observability, counters are the gate).
 #[derive(Default, Clone, Copy, Debug)]
 pub struct DurationHistogram {
-    /// One count per [`HISTO_BUCKETS_US`] bound, plus a final overflow bucket.
     counts: [u64; HISTO_BUCKETS_US.len() + 1],
     total: u64,
     max_us: u64,
@@ -149,9 +107,6 @@ impl DurationHistogram {
         self.sum_us = self.sum_us.saturating_add(us);
     }
 
-    /// Approximate percentile (0–100) as the upper bound (µs) of the bucket
-    /// holding that rank, clamped to the observed max so a high percentile can
-    /// never read above the max printed beside it.
     pub fn percentile_us(&self, p: u8) -> u64 {
         if self.total == 0 {
             return 0;
@@ -188,25 +143,16 @@ impl DurationHistogram {
     }
 }
 
-/// One measured slow operation: a named synchronous UI-thread op that took
-/// long enough to be felt.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct SlowOp {
     pub name: &'static str,
     pub ms: u64,
-    /// The mod whose single call was the longest inside the op, when the op
-    /// called any. Without it `input_dispatch 120ms` names the symptom and not
-    /// the pane.
     pub owner: Option<String>,
 }
 
-/// A sample lands in the ring at this threshold.
 pub const SLOW_OP_RING_MS: u64 = 5;
-/// And is additionally logged as a warning at this one, so an interactive
-/// stall is attributable even when nobody was watching a HUD.
 pub const SLOW_OP_WARN_MS: u64 = 100;
 
-/// Fixed-capacity ring of the most recent [`SlowOp`]s (newest first on read).
 #[derive(Default, Clone, Debug)]
 pub struct SlowOps {
     ops: std::collections::VecDeque<SlowOp>,
@@ -222,8 +168,6 @@ impl SlowOps {
         self.ops.push_back(op);
     }
 
-    /// Newest first — the HUD, the log line and the JSON all show recent ops
-    /// first.
     pub fn iter_recent(&self) -> impl Iterator<Item = &SlowOp> {
         self.ops.iter().rev()
     }
@@ -237,26 +181,15 @@ impl SlowOps {
     }
 }
 
-/// Wall-clock stats for the hot paths, plus the slow-op ring.
-///
-/// `republish` has a histogram of its own because it is the one per-frame cost
-/// that is neither the draw nor the rest of the tick: it rebuilds every
-/// `thurbox.*` table, so telling it apart from painting is the difference
-/// between "frames are expensive" and knowing why.
 #[derive(Default)]
 pub struct Timings {
-    /// `terminal.draw` duration per painted frame.
     pub frame: DurationHistogram,
-    /// One whole loop iteration.
     pub tick: DurationHistogram,
-    /// `App::republish` — the per-frame rebuild of the published tables.
     pub republish: DurationHistogram,
-    /// Recent named synchronous UI-thread operations.
     pub slow_ops: SlowOps,
 }
 
 impl Timings {
-    /// Clear per-window state after a report, so each window stands alone.
     pub fn reset_window(&mut self) {
         self.frame.reset();
         self.tick.reset();
@@ -264,8 +197,6 @@ impl Timings {
         self.slow_ops.clear();
     }
 
-    /// Record a named op, returning whether it crossed the warn threshold so
-    /// the caller can log it (this module does no logging of its own).
     pub fn record_op(
         &mut self,
         name: &'static str,
@@ -284,7 +215,6 @@ impl Timings {
     }
 }
 
-/// Write `json` where `thurbox-cli perf` reads it, whole or not at all.
 pub fn publish_snapshot(json: &str) -> std::io::Result<()> {
     let path = crate::paths::perf_snapshot_file()
         .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::NotFound, "no data directory"))?;
@@ -294,18 +224,12 @@ pub fn publish_snapshot(json: &str) -> std::io::Result<()> {
     crate::paths::write_atomically(&path, json)
 }
 
-/// How long each startup phase took, and when the first frame landed.
-///
-/// The phases are v2's own, not v1's: there is no `restore_ms` because v2 has
-/// no synchronous restore phase, and there is a `ui_build_ms` because building
-/// the Lua interface is a startup cost v1 did not have.
 #[derive(Default, Clone, Copy, Debug)]
 pub struct Startup {
     pub config_init_ms: u64,
     pub snapshot_open_ms: u64,
     pub theme_activate_ms: u64,
     pub ui_build_ms: u64,
-    /// Process start to first painted frame; filled in by the loop.
     pub first_frame_ms: u64,
 }
 
@@ -321,7 +245,6 @@ impl Startup {
     }
 }
 
-/// Time spent in one kind of mod handler.
 #[derive(Default, Clone, Copy, Debug, PartialEq, Eq)]
 pub struct HookStat {
     pub calls: u64,
@@ -342,21 +265,16 @@ impl HookStat {
     }
 }
 
-/// Which handler a call was.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Hook {
     Key,
     Action,
-    /// `on_click`, `on_context` and `on_outside`: the same payload, from the same
-    /// pointer.
     Click,
     Scroll,
     Event,
-    /// A decorator's `decorate`, which runs on every frame its slot paints.
     Decorate,
 }
 
-/// Handler time by hook.
 #[derive(Default, Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Hooks {
     pub key: HookStat,
@@ -404,10 +322,6 @@ impl Hooks {
     }
 }
 
-/// The programs one mod had `run` start, timed on the worker that ran them.
-///
-/// Kept apart from UI-thread time: a slow program costs a stale answer, never a
-/// frame, so it is reported beside a pane's cost and not added to it.
 #[derive(Default, Clone, Copy, Debug, PartialEq, Eq)]
 pub struct RunTiming {
     pub started: u64,
@@ -425,34 +339,21 @@ impl RunTiming {
     }
 }
 
-/// What one mod cost while timing was on.
 #[derive(Default, Clone, Debug)]
 pub struct ModStats {
-    /// Lua render calls, failed ones included.
     pub renders: u64,
-    /// Renders served from a pure pane's cached tree, which run no Lua.
     pub reused: u64,
-    /// Failed calls, of any phase.
     pub failures: u64,
     pub render: DurationHistogram,
     pub hooks: Hooks,
-    /// `run` asks issued — one per call, whether or not a fresh answer made it
-    /// free.
     pub asked: u64,
-    /// `store`/`state` assignments made while this mod was rendering.
     pub store_writes: u64,
-    /// Of those, the ones assigning a table, which is converted in full on
-    /// every write even when it compares equal to what was there.
     pub store_table_writes: u64,
     pub last_nodes: u64,
     pub last_spans: u64,
     pub max_nodes: u64,
-    /// Lua renders while the loop had seen no input for a while.
     pub idle_renders: u64,
-    /// Renders of a float that returned no float: nothing drawn, Lua paid.
     pub closed_renders: u64,
-    /// Programs this mod had `run` start in the window, and those of them
-    /// that finished.
     pub runs: RunTiming,
 }
 
@@ -464,14 +365,11 @@ impl ModStats {
         self.max_nodes = self.max_nodes.max(nodes);
     }
 
-    /// UI-thread time: renders plus every handler. Programs are excluded — see
-    /// [`RunTiming`].
     pub fn total_us(&self) -> u64 {
         self.render.sum_us().saturating_add(self.hooks.total_us())
     }
 }
 
-/// Nodes and styled runs in a tree — what conversion and painting scale with.
 pub fn tree_size(node: &Node) -> (u64, u64) {
     let runs = |lines: &[Vec<super::node::Run>]| lines.iter().map(|l| l.len() as u64).sum();
     match node {
@@ -489,32 +387,21 @@ pub fn tree_size(node: &Node) -> (u64, u64) {
     }
 }
 
-/// `name` cut and padded to exactly `cols` terminal columns, for a table cell.
-///
-/// Columns rather than characters: a CJK or emoji pane name takes the width it
-/// is drawn at, so the columns after it stay aligned. The same measure the
-/// painter and `text.width` use.
 pub fn fit_columns(name: &str, cols: usize) -> String {
     let cut = super::host::take_left(name, cols);
     let pad = cols.saturating_sub(super::host::columns(cut));
     format!("{cut}{}", " ".repeat(pad))
 }
 
-/// How many terminal columns `s` occupies.
 pub fn text_columns(s: &str) -> usize {
     super::host::columns(s)
 }
 
-/// The per-mod stats of one measuring window, keyed by mod path.
 #[derive(Default, Debug)]
 pub struct ModTable {
-    /// Frames painted in the window, and their summed `terminal.draw` time —
-    /// the denominator of every "renders every frame" and "share" below.
     pub frames: u64,
     pub frame_total_us: u64,
     stats: HashMap<String, ModStats>,
-    /// When the window opened; `None` for one that was never cleared, which
-    /// counts everything. What decides which window a run belongs to.
     opened_at: Option<Instant>,
 }
 
@@ -532,11 +419,6 @@ impl ModTable {
         self.frame_total_us = self.frame_total_us.saturating_add(micros(took));
     }
 
-    /// Count a run, but only in the window that saw it start.
-    ///
-    /// A finish whose start predates the window belongs to an earlier one:
-    /// counting it would show a program finishing that this window never saw
-    /// begin — a run in flight when the HUD opened, or across a window roll.
     pub fn note_run(&mut self, event: &RunEvent) {
         let opened = self.opened_at;
         let inside = |at: Instant| opened.is_none_or(|opened| at >= opened);
@@ -563,11 +445,8 @@ impl ModTable {
     }
 }
 
-/// Below this many frames (or renders) a "every frame" claim is noise.
 pub const HINT_MIN_FRAMES: u64 = 10;
 
-/// A likely cause, named from the stats — the mistakes `ui/AGENTS.md` warns
-/// about, detected rather than left for the reader to spot in the numbers.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Hint {
     NotPure,
@@ -605,7 +484,6 @@ impl Hint {
     }
 }
 
-/// What the report needs to know about a loaded mod besides its stats.
 pub struct ModMeta<'a> {
     pub name: &'a str,
     pub path: &'a str,
@@ -613,17 +491,14 @@ pub struct ModMeta<'a> {
     pub floats: bool,
 }
 
-/// One mod's line in the report.
 #[derive(Clone, Debug)]
 pub struct ModRow {
     pub name: String,
-    /// Relative to the interface directory, like every other mod identity.
     pub file: String,
     pub pure: bool,
     pub floats: bool,
     pub stats: ModStats,
     pub total_us: u64,
-    /// Render time over painted-frame time, clamped to 1.
     pub frame_share: f64,
     pub hints: Vec<Hint>,
 }
@@ -694,7 +569,6 @@ impl ModRow {
     }
 }
 
-/// Every loaded mod, most expensive first.
 #[derive(Clone, Debug, Default)]
 pub struct ModReport {
     pub frames: u64,
@@ -703,8 +577,6 @@ pub struct ModReport {
 }
 
 impl ModReport {
-    /// A compact one-line summary of the costliest panes, for the
-    /// `perf_window` log line.
     pub fn summary(&self, top: usize) -> String {
         self.rows
             .iter()
@@ -727,10 +599,6 @@ impl ModReport {
     }
 }
 
-/// Rank the loaded mods by UI-thread time and attach their hints.
-///
-/// Every loaded mod gets a row, measured or not, so a pane that cost nothing
-/// is visibly cheap rather than absent.
 pub fn mod_report<'a>(table: &ModTable, mods: impl IntoIterator<Item = ModMeta<'a>>) -> ModReport {
     let empty = ModStats::default();
     let mut rows: Vec<ModRow> = mods
@@ -767,8 +635,6 @@ pub fn mod_report<'a>(table: &ModTable, mods: impl IntoIterator<Item = ModMeta<'
     }
 }
 
-/// One histogram as the `{p50_us, p95_us, max_us, samples}` object the CLI and
-/// the HUD both read.
 fn histogram_json(h: &DurationHistogram) -> Value {
     json!({
         "p50_us": h.percentile_us(50),
@@ -778,11 +644,6 @@ fn histogram_json(h: &DurationHistogram) -> Value {
     })
 }
 
-/// The JSON `thurbox-cli perf` reads, published into the `metadata` table while
-/// timing is active.
-///
-/// Built here rather than in the loop so the shape has one owner: the CLI
-/// renders whatever this produces, and `tests/kernel_perf.rs` pins the keys.
 pub fn snapshot_json(
     counters: &Snapshot,
     timings: &Timings,

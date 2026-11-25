@@ -1,32 +1,16 @@
-//! Fetching from a source, and the release this binary is: what the mod
-//! installer and the updater share.
-//!
-//! A source is a base URL, a local directory or a git repository. The official
-//! repository's sets are pinned to this binary's release tag, so what they hand
-//! over matches the binary asking for it. Downloads go through `curl`, falling
-//! back to `wget`, with a timeout.
-
 use std::path::PathBuf;
 use std::process::Command;
 
-/// Raw-content root of the thurbox repo (no git ref).
 const OFFICIAL_REPO_RAW: &str = "https://raw.githubusercontent.com/Thurbeen/thurbox";
 
-/// The running binary's version string (e.g. `0.113.0`, or `0.0.0-dev` for a
-/// development build), injected at compile time by `build.rs`.
 pub fn binary_version() -> &'static str {
     env!("THURBOX_VERSION")
 }
 
-/// Whether this is an unstable development build (its version doesn't order
-/// against release tags, so version checks are skipped for it).
 pub fn is_dev_build() -> bool {
     cfg!(dev_build) || is_dev_version(binary_version())
 }
 
-/// The git ref to fetch the official sets from: the running binary's release
-/// tag (`v0.7.0`), so what is fetched matches the binary that reads it. Dev
-/// builds track `main`.
 pub fn official_ref() -> String {
     if is_dev_build() {
         "main".to_string()
@@ -35,46 +19,21 @@ pub fn official_ref() -> String {
     }
 }
 
-/// Base URL for one of the repo's officially-distributed sets, pinned to this
-/// binary's release tag.
-///
-/// A pane reads `thurbox.*`, a contract that moves, so what the official source
-/// hands over should match the binary asking for it.
 pub fn official_set_base(folder: &str) -> String {
     official_set_base_at(folder, &official_ref())
 }
 
-/// [`official_set_base`] at an explicit git ref.
-///
-/// What a lockfile needs: an entry recorded at `v2.0.0` has to keep resolving to
-/// `v2.0.0` after the binary moves on, or applying the same spec elsewhere would
-/// deliver whatever is newest — which is the property a lock exists to provide.
 pub fn official_set_base_at(folder: &str, git_ref: &str) -> String {
     format!("{OFFICIAL_REPO_RAW}/{git_ref}/{folder}")
 }
 
-/// Where files come from.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Source {
-    /// A base URL (no trailing slash); files fetched via `<base>/<rel>`.
     Remote(String),
-    /// A local directory holding the files, read by their relative path.
     Local(PathBuf),
-    /// A version-control repository, obtained as a working copy rather than
-    /// fetched file by file.
-    ///
-    /// The only form that can deliver bytes: [`fetch_file`] returns a `String` and
-    /// decodes remote output lossily, so a binary through it is corrupted rather
-    /// than refused. A clone carries whatever the repository holds, preserves its
-    /// layout, and identifies exactly what it delivered.
     Git(String),
 }
 
-/// Resolve an install target into a source:
-/// - a repository (`git+…`, `….git`, `git@host:path`) → a working copy,
-/// - `http(s)://…` → that base URL,
-/// - a path-like target (`/abs`, `./rel`, `~/x`, anything with a `/`) → local dir,
-/// - a bare name → `<name>` in the official repository's `folder`.
 pub fn resolve_source_in(target: &str, folder: &str) -> Source {
     let t = target.trim();
     // A repository, recognised EXPLICITLY and never guessed. Three unambiguous
@@ -114,10 +73,6 @@ pub fn resolve_source_in(target: &str, folder: &str) -> Source {
     Source::Remote(format!("{}/{t}", official_set_base(folder)))
 }
 
-/// The repository URL a target names, or `None` when it does not name one.
-///
-/// The `git+` prefix is stripped: it is thurbox's marker, not part of the URL git
-/// is handed.
 pub fn git_url(target: &str) -> Option<String> {
     let t = target.trim();
     if let Some(rest) = t.strip_prefix("git+") {
@@ -138,15 +93,10 @@ pub fn git_url(target: &str) -> Option<String> {
     None
 }
 
-/// Expand a leading `~/` (or bare `~`) to the user's home directory. Shared by
-/// the source resolver and the installer so both agree on home expansion.
-/// Delegates to [`crate::paths::expand_tilde`] — the single implementation —
-/// which additionally honours `~\` on Windows.
 pub fn expand_tilde(path: &str) -> PathBuf {
     crate::paths::expand_tilde(path)
 }
 
-/// Fetch one file's text content from a source (`<source>/<rel>`).
 pub fn fetch_file(source: &Source, rel: &str) -> Result<String, String> {
     match source {
         Source::Local(dir) => {
@@ -163,11 +113,6 @@ pub fn fetch_file(source: &Source, rel: &str) -> Result<String, String> {
     }
 }
 
-/// Run the first of `attempts` (a `(binary, args)` list) that succeeds,
-/// returning its raw stdout. On failure the aggregated cause is surfaced: a
-/// missing tool is distinguished from a tool that ran but failed (e.g. HTTP 404
-/// for a misspelled name), whose last stderr line is included. Shared by the
-/// `curl`-then-`wget` downloaders below; the caller adds the URL context.
 fn run_first_ok(attempts: &[(&str, Vec<&str>)]) -> Result<Vec<u8>, String> {
     let mut errors = Vec::new();
     for (bin, args) in attempts {
@@ -190,11 +135,6 @@ fn run_first_ok(attempts: &[(&str, Vec<&str>)]) -> Result<Vec<u8>, String> {
     Err(errors.join("; "))
 }
 
-/// HTTP GET to stdout via `curl` (falling back to `wget`) — same dependency-free
-/// approach as the shell installer, both run with a timeout.
-///
-/// Note: the body is decoded as UTF-8 (lossy); what is fetched this way is
-/// expected to be text, not binaries.
 pub fn http_get(url: &str) -> Result<String, String> {
     let attempts: [(&str, Vec<&str>); 2] = [
         ("curl", vec!["-fsSL", "--max-time", "30", url]),
@@ -205,10 +145,6 @@ pub fn http_get(url: &str) -> Result<String, String> {
         .map_err(|e| format!("failed to fetch {url} ({e})"))
 }
 
-/// Download a URL's raw bytes to `dest` via `curl` (falling back to `wget`) —
-/// the bytes sibling of [`http_get`], for binary artifacts (release tarballs)
-/// that must not be UTF-8-decoded. Same approach, but a longer timeout (a
-/// tarball is larger than a text file).
 pub fn http_get_to_file(url: &str, dest: &std::path::Path) -> Result<(), String> {
     let dest_str = dest
         .to_str()
@@ -225,19 +161,10 @@ pub fn http_get_to_file(url: &str, dest: &std::path::Path) -> Result<(), String>
         .map_err(|e| format!("failed to download {url} ({e})"))
 }
 
-/// Whether a version string denotes an unstable dev build (`0.0.0-dev`, or any
-/// version carrying a `-dev`/pre-release suffix). Such builds skip update checks
-/// because their version doesn't order against releases.
 pub fn is_dev_version(v: &str) -> bool {
     v.contains("-dev") || v.trim_start_matches('v').starts_with("0.0.0")
 }
 
-/// The major component of a dotted version string (optional leading `v`, any
-/// `-suffix` ignored), or `None` when there is no leading number to read.
-///
-/// Split out from [`compare_versions`] because a *major* difference is not just
-/// a bigger ordering: thurbox's 2.x line changed the whole interface, so
-/// crossing that boundary is a decision rather than a newer patch.
 pub fn major_version(v: &str) -> Option<u64> {
     v.trim()
         .trim_start_matches('v')
@@ -249,11 +176,6 @@ pub fn major_version(v: &str) -> Option<u64> {
         .ok()
 }
 
-/// Compare two dotted version strings (`a.b.c`, optional leading `v`, any
-/// `-suffix` ignored) numerically, component by component. Missing trailing
-/// components count as `0` (so `1.2` == `1.2.0`). Non-numeric components sort as
-/// `0`. A dependency-free stand-in for the `semver` crate, sufficient for the
-/// `major.minor.patch` tags thurbox ships.
 pub fn compare_versions(a: &str, b: &str) -> std::cmp::Ordering {
     let parts = |s: &str| -> Vec<u64> {
         s.trim_start_matches('v')
@@ -319,12 +241,6 @@ mod tests {
         assert!(!is_dev_version("v1.2.3"));
     }
 
-    /// The three repository forms, and — the load-bearing half — that nothing else
-    /// became one.
-    ///
-    /// A bare `https://…` URL silently reinterpreted as a clone would change the
-    /// meaning of every install that works today, which is why recognition is
-    /// explicit rather than guessed from the host.
     #[test]
     fn a_repository_source_is_recognised_only_in_its_explicit_forms() {
         for (target, expected) in [
@@ -376,8 +292,6 @@ mod tests {
         assert_eq!(git_url("./my-git-panes"), None);
     }
 
-    /// A repository must never be read through the text fetch path: that is where a
-    /// binary is corrupted rather than refused, so the mistake is made loud.
     #[test]
     fn fetching_a_file_from_a_repository_is_refused() {
         let error = fetch_file(

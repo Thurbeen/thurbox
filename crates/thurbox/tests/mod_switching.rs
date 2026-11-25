@@ -1,15 +1,3 @@
-//! Turning a mod off without losing it.
-//!
-//! The state that was missing is the one people want most: a mod present,
-//! intact, and not loaded. Without it, the only key that read like "not right
-//! now" deleted the file — and for a mod the user wrote there is no embedded
-//! copy to restore, so the work was simply gone.
-//!
-//! What is asserted here is that disabling is *absence*, not a half-loaded
-//! in-between. Every one of these is a consequence of the same decision — a
-//! disabled file is not read — so they would all break together, which is
-//! exactly why they are worth pinning separately.
-
 use std::collections::HashSet;
 
 #[cfg(unix)]
@@ -20,8 +8,6 @@ use thurbox::kernel::host::LuaHost;
 use thurbox::kernel::inventory::{self, State, Trust};
 use thurbox::kernel::registry::Registry;
 
-/// A pane that declares a key, a setting and a slot, so its absence is testable
-/// from several directions at once.
 fn pane(name: &str) -> String {
     format!(
         r#"return {{

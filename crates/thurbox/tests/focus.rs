@@ -1,23 +1,3 @@
-//! Reaching the view of the interface's own files.
-//!
-//! It used to be a pane sharing the centre `switch` slot, and it was unreachable
-//! twice over. The focus ring skipped every switch alternate by design, and its
-//! own `F11` was undone a frame later by the guard that stops focus stranding on
-//! a closed column — that guard runs before the switch slot records which
-//! occupant it drew, so a pane focused by its opening chord is still an
-//! alternate when the guard looks at it. On top of that, `F11` is the one F-key
-//! terminal emulators commonly claim for fullscreen.
-//!
-//! Both were fixed, and then the view stopped being a pane at all: it is a tab of
-//! the settings modal, because a recovery tool that is itself a mod can be the
-//! thing that is broken. So what is asserted here is what survived that move —
-//! that the view is reachable without a chord of its own, and that no file in the
-//! interface can take it away.
-//!
-//! The focus rule itself is unit-tested in `kernel::focus`, and stays relevant:
-//! the centre is still a `switch` slot, so the next pane to share it inherits the
-//! fix rather than the bug.
-
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
 use thurbox::kernel::host::LuaHost;

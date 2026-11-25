@@ -49,7 +49,7 @@ const AGENT_KEYS: [&str; 6] = [
 
 #[derive(Debug, clap::Args)]
 pub struct Args {
-    /// Print the plan and change nothing.
+    #[arg(help = "Print the plan and change nothing")]
     #[arg(long)]
     pub dry_run: bool,
 }

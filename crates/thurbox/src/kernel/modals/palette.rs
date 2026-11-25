@@ -1,15 +1,3 @@
-//! The command palette: every action the registry knows, one query away.
-//!
-//! An action used to be reachable only by its chord, in a `Ctrl+<letter>`
-//! namespace that readline, the agents and v1's muscle memory have already
-//! spent; help could *list* an action but not run it. The palette lists every
-//! mod's keys, every chord-less `commands` declaration and the kernel's own,
-//! filters them as you type, and runs the chosen one through the same
-//! `on_action` path a key press takes — so a mod cannot tell the two apart.
-//!
-//! Chrome like help and settings: mods contribute rows by declaring data,
-//! the kernel draws and dispatches.
-
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::style::Style;
@@ -21,21 +9,15 @@ use super::chrome::{self, Chrome, Hits, Pill, Replay};
 use super::ModalKind;
 use crate::kernel::registry::{PaletteRow, Registry};
 
-/// Non-list rows the modal always spends: both borders, the query line, the
-/// footer and one spacer.
 const CHROME: u16 = 5;
 const MAX_FRAME_PCT: u16 = 80;
 const MIN_HEIGHT: u16 = 8;
 const WIDTH_PCT: u16 = 60;
 const RIGHT_GUTTER: usize = 1;
 
-/// Two actions the kernel handles before the registry is consulted, and so has
-/// no binding for — listed here so the palette can still run them.
 pub const RELOAD_ACTION: &str = "kernel.reload";
 pub const QUIT_ACTION: &str = "kernel.quit";
 
-/// What `Enter` chose: the owner and the action id, exactly as a resolved key
-/// carries them.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Dispatch {
     pub owner: String,
@@ -44,16 +26,9 @@ pub struct Dispatch {
 
 pub enum Outcome {
     Stay(Option<String>),
-    /// An action was chosen; the layer closes the modal *before* the loop runs
-    /// it, so the action sees the focus state a key press would have.
     Run(Dispatch),
 }
 
-/// Every row the palette offers, in listing order.
-///
-/// The live catalog supplies rows, including reserved kernel actions. The
-/// palette omits actions that need caller-supplied arguments or would reopen
-/// itself. The sessions pane supplies the selected session to its own actions.
 pub fn rows(registry: &Registry) -> Vec<PaletteRow> {
     let mut actions: Vec<_> = registry
         .action_catalog()
@@ -87,10 +62,6 @@ pub fn rows(registry: &Registry) -> Vec<PaletteRow> {
         .collect()
 }
 
-/// Subsequence match, case-folded: the query's characters in order, not
-/// necessarily together. The same rule `ui/lib/fuzzy.lua` applies to the
-/// session list and the search strip, so the three cannot disagree about what
-/// `thm` finds.
 fn subsequence(query: &[char], haystack: &str) -> bool {
     if query.is_empty() {
         return true;
@@ -107,7 +78,6 @@ fn subsequence(query: &[char], haystack: &str) -> bool {
     false
 }
 
-/// Indices of the rows a query keeps, in listing order.
 pub fn matches(rows: &[PaletteRow], query: &str) -> Vec<usize> {
     let needle: Vec<char> = query.chars().flat_map(char::to_lowercase).collect();
     rows.iter()
@@ -124,9 +94,7 @@ pub fn matches(rows: &[PaletteRow], query: &str) -> Vec<usize> {
 #[derive(Default)]
 pub struct PaletteModal {
     query: String,
-    /// Cursor within the *matches*, not the full list.
     selected: usize,
-    /// Rows the list showed last frame, so `PgUp`/`PgDn` step a screenful.
     page: usize,
     hits: Hits,
 }
@@ -192,9 +160,6 @@ impl PaletteModal {
         self.selected = next.clamp(0, total as isize - 1) as usize;
     }
 
-    /// Keep the cursor on the same action across a query edit, when it
-    /// survived — the cursor indexes matches, so holding the index would run a
-    /// different action than the one that was highlighted.
     fn keep_highlighted(&mut self, rows: &[PaletteRow], highlighted: Option<usize>) {
         let matched = matches(rows, &self.query);
         self.selected = highlighted
@@ -202,7 +167,6 @@ impl PaletteModal {
             .unwrap_or(0);
     }
 
-    /// A click selects the row under it; `Enter` still runs.
     pub fn on_click(&mut self, x: u16, y: u16) {
         if let Some(index) = self.hits.row_at(x, y) {
             self.selected = index;
@@ -386,7 +350,6 @@ impl PaletteModal {
     }
 }
 
-/// Keep the selection visible, roughly centred.
 fn scroll_for(total: usize, height: usize, selected: usize) -> usize {
     if total <= height || height == 0 {
         return 0;

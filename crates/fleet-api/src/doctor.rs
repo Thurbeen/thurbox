@@ -1,24 +1,14 @@
-//! `fleet doctor`: what each check found, classified as ok, info, warn or
-//! fail, with the one command or step that fixes it. The CLI observes; this
-//! module decides. Only a fail makes the command exit non-zero.
-//!
-//! The checks are in docs/fleet/contracts.md, "The command line".
-
 use serde::Serialize;
 
 use crate::harness::Profiles;
 use crate::integration::{Ledger, State};
 
-/// How much a finding matters.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Level {
     Ok,
-    /// Worth knowing, nothing is broken: an agent the user did not install.
     Info,
-    /// Works now, but needs a step: an outdated or modified integration.
     Warn,
-    /// Something Fleet needs does not work.
     Fail,
 }
 
@@ -33,20 +23,15 @@ impl Level {
     }
 }
 
-/// One check's finding.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct Check {
-    /// `integration`, `harness` or `runtime`.
     pub area: &'static str,
-    /// The agent, harness or host checked.
     pub name: String,
     pub level: Level,
     pub detail: String,
-    /// The fix, when one is needed.
     pub hint: Option<String>,
 }
 
-/// An installed integration's state: outdated and modified are warnings.
 pub fn integration(agent: &str, state: State) -> Check {
     let (level, hint) = match state {
         State::Current | State::NotNeeded | State::Unsupported => (Level::Ok, None),
@@ -81,9 +66,6 @@ pub fn integration(agent: &str, state: State) -> Check {
     }
 }
 
-/// Each ledger entry no profile installs any more: the profile was removed,
-/// or lost its `[install]` table. Its files stay on disk until uninstalled,
-/// and the ledger lists exactly what to remove.
 pub fn left_behind(ledger: &Ledger, profiles: &Profiles) -> Vec<Check> {
     ledger
         .integrations
@@ -107,7 +89,6 @@ pub fn left_behind(ledger: &Ledger, profiles: &Profiles) -> Vec<Check> {
         .collect()
 }
 
-/// A ledger that cannot be read: no integration's state is known.
 pub fn integration_unknown(agent: &str, why: &str) -> Check {
     Check {
         area: "integration",
@@ -118,11 +99,8 @@ pub fn integration_unknown(agent: &str, why: &str) -> Check {
     }
 }
 
-/// Below this many bytes free on the disk of the data directory, `fleet
-/// doctor` warns: the manager pauses when the store cannot write.
 pub const FREE_SPACE_FLOOR: u64 = 256 * 1024 * 1024;
 
-/// The room left on the disk of the data directory `dir`.
 pub fn free_space(dir: &str, free: Result<u64, String>) -> Check {
     let check = |level, detail, hint| Check {
         area: "store",
@@ -155,8 +133,6 @@ pub fn free_space(dir: &str, free: Result<u64, String>) -> Check {
     }
 }
 
-/// A harness's program, where it was found on PATH. A missing one is
-/// information only: a user installs the agents they run.
 pub fn harness(name: &str, program: &str, found: Option<&str>) -> Check {
     match found {
         Some(path) => Check {
@@ -176,8 +152,6 @@ pub fn harness(name: &str, program: &str, found: Option<&str>) -> Check {
     }
 }
 
-/// A host's runtime program and whether its `manifest` answered as Fleet
-/// speaks it.
 pub fn runtime(host: &str, runtime: &str, answer: Result<(), String>) -> Check {
     match answer {
         Ok(()) => Check {
@@ -199,8 +173,6 @@ pub fn runtime(host: &str, runtime: &str, answer: Result<(), String>) -> Check {
     }
 }
 
-/// Fleet's own export: what it sends where, and where each value in force
-/// comes from, as the CLI describes it, or why it is off.
 pub fn telemetry(described: Result<String, String>) -> Check {
     match described {
         Ok(detail) => Check {
@@ -223,8 +195,6 @@ pub fn telemetry(described: Result<String, String>) -> Check {
     }
 }
 
-/// The `[runtime]` table: the fake, which Fleet opens only with its `dir`.
-/// Any other kind is refused when a command opens the runtime.
 pub fn fake_runtime(kind: &str, has_dir: bool) -> Check {
     let (level, detail, hint) = match (kind, has_dir) {
         ("fake", true) => (Level::Ok, "the fake runtime serves every host".into(), None),
@@ -248,7 +218,6 @@ pub fn fake_runtime(kind: &str, has_dir: bool) -> Check {
     }
 }
 
-/// No runtime in the config: no session can start.
 pub fn no_runtime() -> Check {
     Check {
         area: "runtime",
@@ -259,8 +228,6 @@ pub fn no_runtime() -> Check {
     }
 }
 
-/// `local` names no place, for `why`: a warning, since a config
-/// of other places alone is whole.
 pub fn no_local_place(why: &str) -> Check {
     Check {
         area: "runtime",
@@ -271,8 +238,6 @@ pub fn no_local_place(why: &str) -> Check {
     }
 }
 
-/// Each program of the release that runs another version than the CLI:
-/// the serving manager, then each runtime-mux by its runtime's name.
 pub fn skew(cli: &str, manager: Option<&str>, runtimes: &[(String, String)]) -> Vec<String> {
     manager
         .filter(|v| *v != cli)
@@ -287,10 +252,6 @@ pub fn skew(cli: &str, manager: Option<&str>, runtimes: &[(String, String)]) -> 
         .collect()
 }
 
-/// The versions the CLI, the serving manager and each runtime-mux run: a
-/// warning when one differs, since an update moves them together, and when
-/// one is unknown. `manager` is `Ok(None)` when no manager runs; a runtime's
-/// `None` is a version it did not report.
 pub fn versions(
     cli: &str,
     manager: Result<Option<&str>, String>,
@@ -335,7 +296,6 @@ pub fn versions(
     }
 }
 
-/// How many checks failed.
 pub fn failed(checks: &[Check]) -> usize {
     checks.iter().filter(|c| c.level == Level::Fail).count()
 }

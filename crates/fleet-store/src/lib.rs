@@ -1,28 +1,3 @@
-//! Fleet's file-backed store: one JSON file per object in a data directory
-//! (Q9), written through [`durable`]'s primitives under one store lock.
-//!
-//! Layout of a data directory:
-//!
-//! ```text
-//! store.json                  format marker: {"format": "fleet-store", "version": 1}
-//! lock                        the store lock (an OS file lock)
-//! seq                         the last resourceVersion handed out
-//! lease.json                  the manager lease, if one is held
-//! manager.lock                held by a serving manager for its life (an OS file lock)
-//! manager.json                the serving manager's status record
-//! children/<pid>@<boot>/<n>   a run of a lease holder: its process group (fleet-exec)
-//! objects/<Kind>/<name>.json  one object, spec and status together (Q6)
-//! boards/<name>/<seq>.jsonl   one segment of a Board's log, named by its first seq
-//! boards/<name>/<seq>.keys    the (source, key, seq) of each keyed event in it
-//! tmp/                        temp files; anything here at open is a crashed write
-//! ```
-//!
-//! Reads take no lock: every record is replaced atomically, so a read sees a
-//! whole old or whole new file. A board log is the one exception: it is
-//! appended to, and a reader skips a last line that is not complete. Every
-//! write takes the store lock, re-reads, checks, then writes; that is what
-//! makes create exclusive and update a compare-and-swap across processes.
-
 pub mod durable;
 mod event_log;
 pub mod holder;
@@ -61,7 +36,6 @@ const FORMAT_VERSION: u32 = 1;
 const LAUNCH_CAP: usize = 1024 * 1024;
 const WAKE: &str = "wake";
 
-/// Wall-clock milliseconds: the store stamps records and expires leases.
 #[derive(Debug, Clone, Copy, Default)]
 pub struct SystemClock;
 
@@ -96,9 +70,6 @@ impl std::fmt::Debug for FileStore {
 }
 
 impl FileStore {
-    /// Open the store at `root`, creating it when the directory is absent or
-    /// empty. A non-empty directory that is not a fleet store is refused, so
-    /// a mistyped path never turns someone's files into a store.
     pub fn open(root: &Path) -> Result<FileStore, StoreError> {
         FileStore::open_with_clock(root, Arc::new(SystemClock))
     }
@@ -145,8 +116,6 @@ impl FileStore {
         &self.root
     }
 
-    /// Create the store under its lock, so two processes opening the same
-    /// fresh directory at once agree on one marker.
     fn init(&self) -> Result<(), StoreError> {
         match fs::read_dir(&self.root) {
             Ok(entries) => {
@@ -194,8 +163,6 @@ impl FileStore {
         Ok(())
     }
 
-    /// A temp file present while nobody holds the lock belongs to a writer
-    /// that died before linking it; it was never visible, so it goes.
     fn clean_temp(&self) -> Result<(), StoreError> {
         let _guard = self.lock()?;
         let dir = self.tmp_dir();
@@ -277,7 +244,6 @@ impl FileStore {
         read_object(self, &self.object_path(kind, name), kind, name)
     }
 
-    /// Read under the lock for a write: Unknown is an error, absence NotFound.
     fn read_existing(&self, kind: &str, name: &str) -> Result<Object, StoreError> {
         match self.read(kind, name) {
             Observation::Known(Some(o)) => Ok(o),
@@ -316,10 +282,6 @@ impl FileStore {
         FileStore::peek_lease(&self.root)
     }
 
-    /// The manager lease recorded in the store at `root`, read without
-    /// opening the store or taking its lock: a reader never creates the
-    /// store, takes the lease or renews it. `Ok(None)`: no lease is recorded.
-    /// The record is replaced whole, so a read sees one version or the next.
     pub fn peek_lease(root: &Path) -> Result<Option<LeaseToken>, StoreError> {
         let path = root.join("lease.json");
         match fs::read(&path) {
@@ -331,9 +293,6 @@ impl FileStore {
         }
     }
 
-    /// The `resourceVersion` of the last wake request written to this
-    /// store, which `fleet up` watches so that it sweeps at once instead of
-    /// at its next poll. `None`: no request is recorded.
     pub fn last_wake(&self) -> Option<u64> {
         fs::read_to_string(self.root.join(WAKE))
             .ok()?
@@ -354,7 +313,6 @@ impl FileStore {
         durable::replace(&self.tmp_dir(), &path, &bytes).map_err(|e| io_failure(&path, e))
     }
 
-    /// Mark `obj` deleted; it stays while a finalizer holds it.
     fn mark_deleted(&self, mut obj: Object) -> Result<DeleteOutcome, StoreError> {
         if obj.metadata.deletion_timestamp.is_none() {
             obj.metadata.deletion_timestamp = Some(self.now());
@@ -364,7 +322,6 @@ impl FileStore {
         self.remove_if_done(&obj)
     }
 
-    /// An object marked for deletion goes once it has no finalizer.
     fn remove_if_done(&self, obj: &Object) -> Result<DeleteOutcome, StoreError> {
         if !obj.is_deleting() || !obj.metadata.finalizers.is_empty() {
             return Ok(DeleteOutcome::Marked);
@@ -440,8 +397,6 @@ fn io_failure(path: &Path, e: io::Error) -> StoreError {
     StoreError::Unknown(format!("{}: {e}", path.display()))
 }
 
-/// The bytes this user may still write on the disk holding `dir`, or its
-/// nearest existing ancestor. `None` where the platform does not say.
 pub fn free_space(dir: &Path) -> io::Result<Option<u64>> {
     let existing = dir.ancestors().find(|d| d.exists()).unwrap_or(dir);
     #[cfg(unix)]
@@ -463,8 +418,6 @@ fn disk_full(e: &io::Error) -> bool {
     )
 }
 
-/// `by` may change only the status fields it owns; a field nobody owns
-/// (`Task.status.inbox`) may not change through a status write at all.
 fn check_owned(kind: &str, old: &Value, new: &Value, by: FieldManager) -> Result<(), StoreError> {
     let empty = serde_json::Map::new();
     let old = old.as_object().unwrap_or(&empty);
@@ -517,9 +470,6 @@ fn encode_listener(st: &ListenerStatus) -> Result<Value, StoreError> {
     serde_json::to_value(st).map_err(|e| StoreError::Invalid(format!("Listener status: {e}")))
 }
 
-/// Append one entry under the inbox's checks, and record what it answers.
-/// Every append path lands through here, so `answers` is checked and
-/// recorded the same way for `fleet send`, a relay and a plugin.
 fn push_entry(obj: &Object, st: &mut TaskStatus, entry: InboxEntry) -> Result<(), StoreError> {
     if entry.amends.is_some() {
         return Err(StoreError::Forbidden(format!(
@@ -531,7 +481,6 @@ fn push_entry(obj: &Object, st: &mut TaskStatus, entry: InboxEntry) -> Result<()
     push_checked(obj, st, entry)
 }
 
-/// [`push_entry`] without the amendment guard: the amend mutation's own.
 fn push_checked(obj: &Object, st: &mut TaskStatus, entry: InboxEntry) -> Result<(), StoreError> {
     fleet_api::inbox::check_append(&st.inbox, &st.delivery_attempts, &st.deliveries, &entry)
         .map_err(|why| inbox_refusal(obj, why))?;
@@ -542,10 +491,6 @@ fn push_checked(obj: &Object, st: &mut TaskStatus, entry: InboxEntry) -> Result<
     Ok(())
 }
 
-/// Each inbox appender names its source with its own prefix: `cli/<user>`
-/// for `fleet send`, `forge/<change>` for the Forge controller,
-/// `gateway/<conversation>` or `gateway/child/<child>` for the Gateway
-/// controller.
 fn check_source(by: FieldManager, entry: &InboxEntry) -> Result<(), StoreError> {
     let Some(prefix) = kinds::inbox_source_prefix(by.clone()) else {
         return Ok(());
@@ -560,7 +505,6 @@ fn check_source(by: FieldManager, entry: &InboxEntry) -> Result<(), StoreError> 
     Ok(())
 }
 
-/// A refused append: a repeated key is `AlreadyExists`, the rest Forbidden.
 fn inbox_refusal(obj: &Object, why: String) -> StoreError {
     if why.ends_with("already exists") {
         StoreError::AlreadyExists(format!("{}: {why}", obj.key()))
@@ -569,15 +513,12 @@ fn inbox_refusal(obj: &Object, why: String) -> StoreError {
     }
 }
 
-/// The Task status field a relay write replaces, decoded for its writer.
 enum RelayField {
     Forge(Option<ForgeStatus>),
     Gateway(Option<Box<GatewayStatus>>),
     Subscriptions(fleet_api::subscription::SubscriptionsStatus),
 }
 
-/// A Task is created with its brief alone: only the amend mutation adds an
-/// amendment, each creating a later generation.
 fn check_no_amendments(obj: &Object) -> Result<(), StoreError> {
     let carries = obj
         .spec
@@ -593,10 +534,6 @@ fn check_no_amendments(obj: &Object) -> Result<(), StoreError> {
     Ok(())
 }
 
-/// The amend mutation's one write, for `fleet amend` and a plugin's
-/// `amends[]` alike: append the amendment to `spec.amendments`, bump the
-/// generation and queue its inbox entry. Refused on a deleting or Stalled
-/// Task, for an output name already declared, and on a full inbox.
 fn apply_amendment(
     obj: &mut Object,
     amendment: task::Amendment,
@@ -1812,11 +1749,6 @@ impl Store for FileStore {
 }
 
 impl FileStore {
-    /// A Task being created may name a parent only with both labels, only
-    /// from a writer that may already append to the parent's inbox, and
-    /// only for a parent that exists with that `uid` and is not being
-    /// deleted. Called under the store lock, before the insert: a parent
-    /// the store cannot read is Unknown, to be retried, never a refusal.
     fn check_parent(&self, obj: &Object, by: &FieldManager) -> Result<(), StoreError> {
         if obj.kind != task::KIND {
             return Ok(());
@@ -1868,7 +1800,6 @@ impl FileStore {
         Ok(())
     }
 
-    /// The writer is the listener of the account the object's spec names.
     fn check_listener_of(&self, obj: &Object, by: &FieldManager) -> Result<(), StoreError> {
         let account = obj.spec["account"].as_str().unwrap_or_default();
         if !kinds::is_listener_of(by, account) {
@@ -1881,8 +1812,6 @@ impl FileStore {
         Ok(())
     }
 
-    /// Create under the store lock the caller holds: validation, exclusive
-    /// name, live owners, then the store's own metadata.
     fn insert(&self, mut obj: Object, creator: Option<&str>) -> Result<Object, StoreError> {
         self.validate(&obj)?;
         let m = &obj.metadata;
@@ -1945,8 +1874,6 @@ impl FileStore {
     }
 }
 
-/// The `gateway.fleet.dev/conversation` labels name the thread a Task was
-/// created for, so only that thread's controller may set them.
 fn check_conversation_labels(obj: &Object, by: &FieldManager) -> Result<(), StoreError> {
     for label in obj.metadata.labels.keys() {
         if cron_task::is_controller_label(label) && !kinds::may_set_cron_task_labels(by) {
@@ -1965,9 +1892,6 @@ fn check_conversation_labels(obj: &Object, by: &FieldManager) -> Result<(), Stor
     Ok(())
 }
 
-/// Unique beyond this store: the sequence number orders, the random part keeps
-/// two stores (a re-initialised data directory, a trial) from ever handing
-/// out the same uid, which runtimes key sessions by.
 fn new_uid(rv: u64) -> String {
     use std::hash::{BuildHasher, Hasher};
     let mut h = std::collections::hash_map::RandomState::new().build_hasher();

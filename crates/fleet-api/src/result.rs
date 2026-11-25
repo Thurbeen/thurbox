@@ -1,6 +1,3 @@
-//! The worker's answer (Q5, R6): validated when written, never trusted as the
-//! outcome of anything beyond its own Task.
-
 use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
@@ -19,13 +16,11 @@ pub enum Outcome {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct TaskResult {
     pub outcome: Outcome,
-    /// The brief generation this answer is for (generation fencing).
     pub generation: u64,
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub summary: String,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub artifacts: Vec<String>,
-    /// Structured outputs a parent can read, checked against `spec.outputs`.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub outputs: BTreeMap<String, Value>,
 }
@@ -41,7 +36,6 @@ pub enum OutputType {
     Array,
 }
 
-/// One declared output.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct OutputDecl {
@@ -51,7 +45,6 @@ pub struct OutputDecl {
     pub required: bool,
 }
 
-/// Every reason a result fails its Task's declared outputs, in name order.
 pub fn validate_outputs(
     declared: &BTreeMap<String, OutputDecl>,
     outputs: &BTreeMap<String, Value>,

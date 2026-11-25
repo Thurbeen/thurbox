@@ -1,30 +1,3 @@
-//! System modals: help, settings and the theme picker.
-//!
-//! These three are not panes and not mods. A pane shows
-//! your work and belongs in the layout; these are **system chrome** — they are
-//! about thurbox itself, they overlay, they are modal, and they are the same in
-//! every install. Making them mods bought no extensibility (nobody replaces
-//! the help pane wholesale) while costing the layout, the focus ring, and a
-//! contribution mechanism nobody could reach.
-//!
-//! So the kernel draws them, in Rust, above the arrangement and above mod
-//! floats — the same place the perf HUD and the error panel already draw. The
-//! consequences are the reasons:
-//!
-//! - **Not in the layout.** No slot, so a modal can neither shrink a pane nor
-//!   be shrunk by one.
-//! - **Not in the focus ring.** `focusable()` never contains one, so `Tab`
-//!   keeps its short ring.
-//! - **Captures input.** While open, keys reach the modal and no mod is
-//!   offered them. `Esc` closes; the opening chord toggles.
-//! - **One at a time.** Opening one closes another, so there is no z-order
-//!   question because there is no stack.
-//!
-//! Modularity lives one level down: mods contribute **data** —
-//! `Registry::bindings` for help, `Registry::settings` for settings — and the
-//! kernel renders it. The theme picker deliberately takes no contribution;
-//! there is nothing a mod could add to a list of palettes.
-
 pub mod chrome;
 pub mod help;
 pub mod interface;
@@ -40,29 +13,17 @@ use self::chrome::{Chrome, Hits, Hover};
 use super::registry::{binding_from, Binding, Pill, Registry};
 use super::theme::Themes;
 
-/// The declaring "mod" of a modal's chord.
-///
-/// The bindings go through the ordinary registry so the modals appear in help
-/// and can be rebound like anything else — but no Lua mod owns them, so the
-/// loop routes this name to the modal layer instead of to `host.on_action`.
 pub const OWNER: &str = "kernel";
 
-/// Which modal is open, and what its chords are called.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ModalKind {
     Help,
     Settings,
     Theme,
-    /// The command palette — every action in the registry, one query away.
     Palette,
 }
 
 impl ModalKind {
-    /// The registry action that toggles this modal.
-    ///
-    /// Named as the mods that used to own these panes named them, because
-    /// the footer pills and v1's own key table both reach them by action id —
-    /// moving the code should not move the vocabulary.
     pub fn action(self) -> &'static str {
         match self {
             ModalKind::Help => "help.open",
@@ -84,12 +45,6 @@ impl ModalKind {
     }
 }
 
-/// Every chord that opens a system modal, as a registry declaration.
-///
-/// Collected alongside the mods' own declarations, so help lists them, the
-/// conflict detector sees them, and the editor can rebind them. Each keeps v1's
-/// pair — the `Ctrl` chord plus an F-key alternate, which exists because a
-/// focused terminal passes a bare `Ctrl+<letter>` through to the agent.
 pub fn bindings() -> Vec<Binding> {
     [
         ("f1", ModalKind::Help, "open keybindings help"),
@@ -121,17 +76,6 @@ pub fn bindings() -> Vec<Binding> {
     .collect()
 }
 
-/// The action-band entries the system modals contribute.
-///
-/// The kernel declares these the same way a mod declares its own: the band
-/// resolves the chord from the registry, so an entry cannot advertise a chord
-/// the keyboard does not honour, and rebinding one moves its entry with it.
-///
-/// v1's footer also carries `Quit`, and this list deliberately does not: quit is
-/// not a declared action — `ctrl+q` is handled before the registry is consulted,
-/// so it has no binding for an entry to resolve against, and giving it one would
-/// make it rebindable, which is exactly what the reserved chord exists to
-/// prevent. The band carries that entry itself instead (`bands::quit_entry`).
 pub fn pills() -> Vec<Pill> {
     [
         (ModalKind::Help, "Help", 90),
@@ -148,32 +92,13 @@ pub fn pills() -> Vec<Pill> {
     .collect()
 }
 
-/// Everything a modal may write to. Assembled per keystroke by the loop, which
-/// owns all three.
 pub struct World<'a> {
     pub registry: &'a mut Registry,
     pub themes: &'a mut Themes,
-    /// The settings **as the file has them**, which the settings modal shows
-    /// beside what mods declared and seeds its draft from.
-    ///
-    /// Deliberately not the settings in force — the panel edits the file, and the
-    /// two documents differ by exactly the restart-only half: see
-    /// [`crate::kernel::config::Config::on_disk`].
     pub settings_on_disk: &'a crate::session::settings::Settings,
-    /// Where a saved draft is left for the loop: it has to write the file (off
-    /// the render path) and take the live half into force, neither of which is a
-    /// modal's business. `None` on the way in, `Some` when a save was asked for.
     pub save_settings: &'a mut Option<crate::session::settings::Settings>,
-    /// Every file the interface is made of, as of the last painted frame — what
-    /// the settings modal's Interface tab lists.
     pub inventory: &'a [crate::kernel::inventory::Row],
-    /// Where a restore or a remove is left for the loop, which owns the one code
-    /// path that writes an interface file and asks for the reload. Same shape as
-    /// `save_settings`, for the same reason.
     pub interface_edit: &'a mut Option<interface::Edit>,
-    /// Where the palette's choice is left for the loop, which owns the one path
-    /// that runs an action. Same shape as `save_settings`, for the same reason
-    /// — and the modal has closed itself by the time the loop reads it.
     pub run_action: &'a mut Option<palette::Dispatch>,
 }
 
@@ -185,15 +110,10 @@ enum Open {
     Palette(palette::PaletteModal),
 }
 
-/// The modal layer: at most one modal, above everything.
 #[derive(Default)]
 pub struct Modals {
     open: Option<Open>,
-    /// Where the pointer is, handed to the chrome each frame so a pill or a row
-    /// under it lights up.
     pointer: Option<Position>,
-    /// What that pointer last resolved to. Kept so a move *within* one row or
-    /// pill is known to change nothing — see [`Modals::on_hover`].
     hovered: Hover,
 }
 
@@ -221,8 +141,6 @@ impl Modals {
         }
     }
 
-    /// The palette's query as typed so far, for the loop's tests and for a
-    /// caller that wants to know whether typing is going anywhere.
     pub fn palette_query(&self) -> Option<&str> {
         match &self.open {
             Some(Open::Palette(modal)) => Some(modal.query()),
@@ -230,19 +148,10 @@ impl Modals {
         }
     }
 
-    /// Whether the open modal is swallowing *everything*, the kernel's reserved
-    /// chords included.
-    ///
-    /// True only while help is capturing a chord: binding
-    /// `ctrl+q` has to be possible, and it is possible precisely because the
-    /// kernel knows it is capturing and for exactly one keystroke. A mod
-    /// could never be trusted with that.
     pub fn captures_everything(&self) -> bool {
         matches!(&self.open, Some(Open::Help(help)) if help.capturing())
     }
 
-    /// Take a drag with the left button held. `true` when the open modal took
-    /// it — help, while its scrollbar holds the pointer.
     pub fn on_drag(&mut self, y: u16) -> bool {
         match &mut self.open {
             Some(Open::Help(help)) => help.on_drag(y),
@@ -250,8 +159,6 @@ impl Modals {
         }
     }
 
-    /// Take one wheel report as a scroll of the open modal's text. `false` when
-    /// the open modal has no text to scroll, and the wheel steps its selection.
     pub fn on_wheel(&mut self, up: bool) -> bool {
         match &mut self.open {
             Some(Open::Help(help)) => {
@@ -262,10 +169,6 @@ impl Modals {
         }
     }
 
-    /// Open `kind`, or close it when it is already the open one.
-    ///
-    /// Opening replaces whatever was open, which is what "one at a time" means:
-    /// there is no stack to unwind.
     pub fn toggle(&mut self, kind: ModalKind) {
         // The resolved hover indexes the hitboxes of the modal that recorded
         // them, so it cannot outlive that modal: a row index means nothing to
@@ -288,23 +191,12 @@ impl Modals {
         self.hovered = Hover::Nothing;
     }
 
-    /// Undo anything the open modal applied on the way to being closed without a
-    /// choice.
-    ///
-    /// Only the theme picker has any: it previews on every move, so leaving it
-    /// has to restore what was active when it opened. Help and settings apply
-    /// nothing until asked, so they have nothing to take back.
     pub fn abandon(&mut self, world: &mut World<'_>) {
         if let Some(Open::Theme(modal)) = self.open.as_mut() {
             modal.revert(world.themes);
         }
     }
 
-    /// Take a key while a modal is open. Returns a message to report.
-    ///
-    /// `chord` is the canonical spelling of the same keystroke — the help
-    /// editor stores what the registry will later match, rather than what this
-    /// particular terminal happened to send.
     pub fn on_key(&mut self, key: &KeyEvent, chord: &str, world: &mut World<'_>) -> Option<String> {
         // `Esc` closes, but only once the modal's own sub-mode has had it: a
         // filter or a text edit is what `Esc` cancels first, exactly as v1's
@@ -359,7 +251,6 @@ impl Modals {
         }
     }
 
-    /// Whether the open modal has a sub-mode that owns `Esc` this keystroke.
     fn sub_mode_open(&self) -> bool {
         match &self.open {
             Some(Open::Help(modal)) => modal.capturing(),
@@ -371,10 +262,6 @@ impl Modals {
         }
     }
 
-    /// Take a click while a modal is open.
-    ///
-    /// Every click is swallowed — the mouse half of capturing input — so a
-    /// press that misses a row cannot reach the pane the modal covers.
     pub fn on_click(&mut self, x: u16, y: u16, world: &mut World<'_>) -> Option<String> {
         // A footer pill re-enters through `on_key`, the very handler the
         // keyboard uses (v1's `try_modal_button_click`, and the same rule as
@@ -405,14 +292,6 @@ impl Modals {
         }
     }
 
-    /// Track the pointer while a modal is open. `true` when the frame must be
-    /// repainted.
-    ///
-    /// Resolved against last frame's hitboxes rather than compared as a raw
-    /// cell, because motion reporting delivers one event per cell crossed: a
-    /// pointer travelling the width of a row would otherwise repaint the whole
-    /// interface a few dozen times to arrive at the same picture. Same rule as
-    /// `App::hover`, which compares the identity under the pointer.
     pub fn on_hover(&mut self, x: u16, y: u16) -> bool {
         self.pointer = Some(Position::new(x, y));
         let hovered = self
@@ -425,28 +304,10 @@ impl Modals {
         true
     }
 
-    /// Where the open modal wants the terminal's caret, if anywhere.
-    ///
-    /// A modal captures input, so while one is up the caret belongs to *it* or
-    /// to nobody. It must not be left wherever the pane underneath put it: a
-    /// frame either shows the cursor at a position or hides it, so a pane that
-    /// claimed it keeps a caret blinking behind the modal — which reads as the
-    /// screen refreshing wrongly rather than as a misplaced cursor.
-    ///
-    /// `None` for all three, and correctly so: the two that take typing paint
-    /// their own caret as a **glyph** (a block appended to the text) rather than
-    /// asking for the terminal's cursor, and help takes a single chord with no
-    /// text to put a caret in. A painted caret survives being drawn over, needs
-    /// no arbitration with the panes, and can be themed.
-    ///
-    /// The seam is kept because the *decision* has to live somewhere: something
-    /// must claim the caret while a modal is up, even if the claim is "nobody".
-    /// A modal that later wants the real cursor returns it here.
     pub fn caret(&self) -> Option<Position> {
         None
     }
 
-    /// The open modal's hitboxes, as its last frame recorded them.
     fn hits(&self) -> Option<&Hits> {
         Some(match self.open.as_ref()? {
             Open::Help(modal) => modal.hits(),
@@ -456,7 +317,6 @@ impl Modals {
         })
     }
 
-    /// Draw the open modal over `area`. Nothing is drawn when none is open.
     pub fn render(
         &mut self,
         frame: &mut Frame,
@@ -487,12 +347,6 @@ impl Modals {
     }
 }
 
-/// The chords the loop must keep working even while a modal is open.
-///
-/// A modal that could trap you is a bug, so quit, reload and the perf HUD stay
-/// reachable. Everything else belongs to the modal — including `Tab`, which the
-/// settings editor uses to move between rows and which would otherwise cycle a
-/// focus ring nobody can see.
 pub fn escapes(key: &KeyEvent) -> bool {
     let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
     matches!(key.code, KeyCode::Char('q') if ctrl)
@@ -508,8 +362,6 @@ mod tests {
         KeyEvent::new(code, KeyModifiers::NONE)
     }
 
-    /// A world over default settings, with a save slot nothing reads: these tests
-    /// are about the layer, not about what a saved draft does.
     fn world<'a>(
         registry: &'a mut Registry,
         themes: &'a mut Themes,

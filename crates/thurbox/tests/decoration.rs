@@ -1,17 +1,3 @@
-//! Decoration must not cost a pane its styling.
-//!
-//! Regression: `to_lua` deliberately dropped each run's `Style` on the way out
-//! to a decorator, on the reasoning that a decorator "sets the styles it
-//! wants". But a decorator is handed the tree and returns one, so whatever the
-//! boundary drops is dropped from the pane — and the common case is a
-//! decorator that returns its input *untouched* (search, whenever its query is
-//! empty). The session list is decorated by search, so every colour it drew was
-//! being thrown away on every frame: it rendered in the terminal's default
-//! foreground while every undecorated pane was themed correctly.
-//!
-//! The bug was invisible to the existing tests because they render a mod
-//! directly, which never crosses the decoration boundary.
-
 use ratatui::style::{Color, Modifier, Style};
 
 use thurbox::kernel::convert::{to_lua, to_node};
@@ -48,7 +34,6 @@ fn styled_tree() -> Node {
     }
 }
 
-/// The round trip a decorator sits inside: Node → Lua → Node.
 fn round_trip(node: &Node) -> Node {
     let lua = mlua::Lua::new();
     let value = to_lua(&lua, node).expect("to_lua");

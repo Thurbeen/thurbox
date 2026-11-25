@@ -1,7 +1,3 @@
-//! ChangeRequestController as a pure function: a ChangeRequest and one
-//! observation of its change go in; a plan comes out. Each case is one
-//! transition or one Unknown of the mirror's lifecycle.
-
 use fleet_api::change_request::{
     ChangeRequestDefaults, ChangeRequestStatus, DEFAULT_POLL_MS, NOTE_CAP, Phase, Sequenced,
 };
@@ -118,7 +114,6 @@ fn run(obj: &Object, obs: ChangeRequestObservations) -> (Plan, ChangeRequestStat
     run_at(obj, obs, NOW)
 }
 
-/// The status after a first complete poll of an open change at NOW.
 fn watched() -> ChangeRequestStatus {
     let (_, st) = run(&object(None), seen(snapshot(ChangeState::Open)));
     st

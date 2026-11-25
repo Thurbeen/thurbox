@@ -1,8 +1,3 @@
-//! `git`'s tests, kept together.
-//!
-//! They were one module before the file was split and they stay one: the
-//! helpers that build scratch repositories serve every file's tests.
-
 use super::*;
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -27,7 +22,6 @@ fn git_program_scrubs_inherited_location_env() {
     }
 }
 
-/// A throwaway repository with one commit, to clone from.
 fn seed_repo(dir: &Path, file: &str, contents: &str) -> String {
     std::fs::create_dir_all(dir.parent().unwrap_or(dir)).ok();
     run_git(
@@ -54,8 +48,6 @@ fn seed_repo(dir: &Path, file: &str, contents: &str) -> String {
     head_commit(dir).expect("head")
 }
 
-/// A clone delivers whatever the repository holds — including bytes no text
-/// path could carry — and reports the commit, not the ref.
 #[test]
 fn cloning_a_mod_delivers_its_files_and_reports_the_commit() {
     let tmp = tempfile::tempdir().expect("tempdir");
@@ -97,14 +89,6 @@ fn cloning_over_something_that_exists_is_refused() {
     assert!(dest.join("mine.lua").is_file(), "and leaves it alone");
 }
 
-/// The two questions asked of a pin, and what each is for.
-///
-/// `names_a_commit` picks the route, and everything hex from git's own
-/// abbreviation up to a full **sha256** id takes the long one: a sha256 id is a
-/// commit like any other, and reading only sha1's length as one handed 64
-/// characters to `clone --branch` as a name that is not there.
-/// `abbreviated_object_id` picks the *explanation* for a failure — a shape, not a
-/// verdict, since `20240115` is both a plausible prefix and an ordinary tag.
 #[test]
 fn a_pin_is_routed_by_length_and_explained_by_shape() {
     let sha1 = "0123456789abcdef0123456789abcdef01234567";
@@ -136,7 +120,6 @@ fn a_pin_is_routed_by_length_and_explained_by_shape() {
     }
 }
 
-/// The property that makes git the right owner of "your edits are yours".
 #[test]
 fn an_edited_working_copy_reports_itself_dirty() {
     let tmp = tempfile::tempdir().expect("tempdir");
@@ -153,8 +136,6 @@ fn an_edited_working_copy_reports_itself_dirty() {
     );
 }
 
-/// A clone must never be able to sit waiting for a passphrase: an install runs
-/// from the command drain, so a prompt is a frozen interface.
 #[test]
 fn git_operations_refuse_to_prompt() {
     let mut cmd = git_program();
@@ -397,7 +378,6 @@ fn git_command_local_uses_git_with_args() {
     assert_eq!(cmd.get_current_dir(), Some(Path::new("/repo")));
 }
 
-/// A Windows host, declared the only way thurbox declares one.
 fn windows_host() -> HostDef {
     HostDef {
         name: "winbox".into(),
@@ -407,7 +387,6 @@ fn windows_host() -> HostDef {
     }
 }
 
-/// The advisory OpenSSH ≥ 10 prints on stderr for every non-PQ connection.
 const PQ_ADVISORY: &str = "\
 ** WARNING: connection is not using a post-quantum key exchange algorithm.
 ** This session may be vulnerable to \"store now, decrypt later\" attacks.
@@ -584,7 +563,6 @@ fn parse_url_trailing_slash() {
 
 // ── listing the worktrees a repo already has ───────────────────────────────
 
-/// Run `git` in `dir`, failing the test on anything but a clean exit.
 fn git_in(dir: &Path, args: &[&str]) {
     let out = git_program()
         .args(args)
@@ -598,20 +576,12 @@ fn git_in(dir: &Path, args: &[&str]) {
     );
 }
 
-/// Write `file` with `contents` and commit it.
 fn commit_file(dir: &Path, file: &str, contents: &str, msg: &str) {
     std::fs::write(dir.join(file), contents).unwrap();
     git_in(dir, &["add", "-A"]);
     git_in(dir, &["commit", "-qm", msg]);
 }
 
-/// A scratch repo with a bare `origin`: `main` at one commit and a `feature`
-/// branch three commits ahead, pushed with tracking the way an open pull
-/// request leaves it. Checked out on `feature`.
-///
-/// A caller lands the branch however its forge would — never by moving
-/// `feature` itself, because a forge squashes or replays on its own copy and
-/// the worktree keeps the commits it always had — then calls [`land`].
 fn pr_repo(tmp: &Path) -> PathBuf {
     let remote = tmp.join("remote.git");
     let work = tmp.join("work");
@@ -639,10 +609,6 @@ fn pr_repo(tmp: &Path) -> PathBuf {
     work
 }
 
-/// Publish local `main` and delete the branch on the remote — what a forge
-/// does once a pull request merges, and what strips the worktree's upstream so
-/// its ahead count starts counting against the default branch. Leaves the
-/// worktree back on `feature`.
 fn land(work: &Path) {
     git_in(work, &["push", "-q", "origin", "main"]);
     git_in(work, &["push", "-q", "origin", "--delete", "feature"]);
@@ -650,10 +616,6 @@ fn land(work: &Path) {
     git_in(work, &["fetch", "-q", "--prune", "origin"]);
 }
 
-/// [`pr_repo`] with the branch squash-merged and the default branch moved on
-/// afterwards: the shape every merged PR leaves behind here — the work is on
-/// `origin/main` as one new commit, and the branch's own commits are ancestors
-/// of nothing.
 fn squash_merged_repo(tmp: &Path) -> PathBuf {
     let work = pr_repo(tmp);
     git_in(&work, &["checkout", "-q", "main"]);
@@ -687,8 +649,6 @@ fn an_unmerged_branch_reports_itself_unmerged() {
     assert_eq!(merged_into_default(&work), Some(false));
 }
 
-/// How many loose objects the repository at `dir` holds. `git count-objects`
-/// counts exactly those — the ones a probe commit adds and a pack never holds.
 fn loose_objects(dir: &Path) -> usize {
     let out = run_git_capture(&["count-objects"], dir).expect("count-objects");
     out.split_whitespace()
@@ -742,9 +702,6 @@ fn re_statting_an_unmerged_worktree_writes_no_further_objects() {
     );
 }
 
-/// Sleep just past the next whole second, so a git timestamp taken after this
-/// returns differs from one taken before it. Under half a second on average,
-/// rather than the flat second a fixed sleep would cost.
 fn sleep_past_the_second() {
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -828,10 +785,6 @@ fn a_squash_landed_after_the_default_moved_reports_itself_merged() {
     assert_eq!(merged_into_default(&work), Some(true));
 }
 
-/// Replay `feature` onto `main` under a throwaway branch name, the way a forge
-/// does the work on its own copy: every commit gets a new sha and the
-/// worktree's `feature` never moves. Leaves the replayed branch checked out as
-/// `landing` for the caller to merge.
 fn replay_feature_onto_main(work: &Path) {
     git_in(work, &["checkout", "-q", "main"]);
     // Something for the replay to land on, or the rebase is a fast-forward
@@ -1180,14 +1133,6 @@ fn an_untracked_file_reports_dirty_with_no_diff_of_its_own() {
     );
 }
 
-/// Run `f` with a counting shim ahead of the real `git` on `PATH`, and report
-/// how many `git` processes it started.
-///
-/// The cost this path is judged on is a **process count** — that is what an
-/// endpoint-protection agent scans and what issue #1167 measured with `ps` —
-/// so it is counted directly rather than inferred from the code. The shim
-/// delegates to the real binary, so the answers under measurement are the real
-/// ones.
 #[cfg(unix)]
 fn count_git<T>(at: &Path, f: impl FnOnce() -> T) -> (T, usize) {
     use std::os::unix::fs::PermissionsExt;
@@ -1361,9 +1306,6 @@ fn an_existing_empty_directory_is_used_and_kept_when_the_clone_fails() {
     );
 }
 
-/// A repository git cannot read, here one whose `.git` names no repository,
-/// is a failure to show, not a directory with no repository: the flow must
-/// keep its worktree choices.
 #[test]
 fn a_repository_git_cannot_read_is_a_failure_not_a_plain_directory() {
     let dir = tempfile::tempdir().expect("tempdir");
@@ -1377,9 +1319,6 @@ fn a_repository_git_cannot_read_is_a_failure_not_a_plain_directory() {
     );
 }
 
-/// A clone of a new upstream, and the upstream moved on past it: both the
-/// clone's `main` and its `origin/main` are behind. Returns the upstream, the
-/// clone, and the upstream's new `main`.
 fn behind_clone(dir: &Path, branch: &str) -> (PathBuf, PathBuf, String) {
     let upstream = dir.join("upstream");
     seed_repo(&upstream, "README", "one\n");
@@ -1400,9 +1339,6 @@ fn behind_clone(dir: &Path, branch: &str) -> (PathBuf, PathBuf, String) {
     (upstream, clone, moved)
 }
 
-/// A new worktree starts from the upstream as it is now: the fetch brings the
-/// upstream's new tip, and the default is the remote-tracking `origin/main`,
-/// not the clone's own `main`, which the upstream has moved past.
 #[test]
 fn the_default_base_is_the_freshly_fetched_origin_default_branch() {
     let dir = tempfile::tempdir().expect("tempdir");
@@ -1419,8 +1355,6 @@ fn the_default_base_is_the_freshly_fetched_origin_default_branch() {
     assert_eq!(fetched.trim(), moved, "origin/main is the fetched tip");
 }
 
-/// An upstream that changed its default branch is followed: the fetch moves
-/// `origin/HEAD`, so the default is the upstream's new one.
 #[test]
 fn the_default_follows_an_upstream_that_changed_its_default_branch() {
     let dir = tempfile::tempdir().expect("tempdir");
@@ -1438,7 +1372,6 @@ fn the_default_follows_an_upstream_that_changed_its_default_branch() {
     assert_eq!(read.default.as_deref(), Some("origin/develop"), "{read:?}");
 }
 
-/// With no `origin/HEAD`, the default is `origin/main`, else `origin/master`.
 #[test]
 fn without_origin_head_the_default_is_origin_main_then_master() {
     for branch in ["main", "master"] {
@@ -1454,8 +1387,6 @@ fn without_origin_head_the_default_is_origin_main_then_master() {
     }
 }
 
-/// A fetch from an origin that accepts the connection and never answers gives
-/// up at its deadline, so the picker falls back to the refs already there.
 #[test]
 fn a_fetch_from_an_origin_that_never_answers_gives_up() {
     let silent = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
@@ -1481,8 +1412,6 @@ fn a_fetch_from_an_origin_that_never_answers_gives_up() {
     drop(silent);
 }
 
-/// A repository's own `core.sshCommand` (a wrapper, a key, a proxy) is the one
-/// the picker's fetch runs: thurbox's ssh options never replace it.
 #[cfg(unix)]
 #[test]
 fn a_fetch_keeps_the_repositorys_own_ssh_command() {
@@ -1514,7 +1443,6 @@ fn a_fetch_keeps_the_repositorys_own_ssh_command() {
     assert!(marker.exists(), "the configured ssh command was not run");
 }
 
-/// A repository with no `origin` has nothing to fetch, and that is no error.
 #[test]
 fn a_repository_with_no_origin_fetches_nothing() {
     let dir = tempfile::tempdir().expect("tempdir");
@@ -1525,8 +1453,6 @@ fn a_repository_with_no_origin_fetches_nothing() {
     );
 }
 
-/// A repository with no `origin` lists its own branches and defaults to the
-/// one checked out, as before.
 #[test]
 fn a_repository_with_no_origin_defaults_to_its_checked_out_branch() {
     let dir = tempfile::tempdir().expect("tempdir");

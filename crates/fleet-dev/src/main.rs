@@ -1,4 +1,3 @@
-//! Repository-only gate and release tooling. The installed binary has no tooling dependency.
 mod gate;
 mod release;
 mod workflow;
@@ -18,7 +17,7 @@ struct Cli {
 }
 #[derive(Debug, Subcommand)]
 enum Command {
-    /// Run the same gate as CI. Example: cargo xtask check rust-test
+    #[command(about = "Run the same gate as CI. Example: cargo xtask check rust-test")]
     Check {
         #[arg(long)]
         fix: bool,
@@ -26,13 +25,13 @@ enum Command {
         list: bool,
         areas: Vec<String>,
     },
-    /// Validate every workflow in this checkout, without running it.
+    #[command(about = "Validate every workflow in this checkout, without running it")]
     Workflow,
-    /// Require success from every declared CI job ($NEEDS is GitHub JSON).
+    #[command(about = "Require success from every declared CI job ($NEEDS is GitHub JSON)")]
     Verdict,
-    /// Validate an actual nextest JSON listing (also used by rust-test).
+    #[command(about = "Validate an actual nextest JSON listing (also used by rust-test)")]
     Suites { listing: PathBuf },
-    /// Plan and package releases without a Python interpreter.
+    #[command(about = "Plan and package releases without a Python interpreter")]
     Release {
         #[command(subcommand)]
         command: release::Command,
@@ -58,8 +57,6 @@ fn run(cli: Cli) -> Result {
         Command::Release { command } => release::run(command),
     }
 }
-/// All external programs use the runtime's tree-bounded process seam. A hung
-/// compiler or a fixture child cannot outlive a timed-out gate.
 fn exec(program: &str, args: &[&str], env: &[(&str, &str)]) -> Result<String> {
     let mut spec = Spec::new(program, Duration::from_secs(1800)).args(args.iter().copied());
     spec.env = env

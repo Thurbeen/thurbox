@@ -18,11 +18,8 @@ pub use platform::Platform;
 pub use review::FileStatus;
 pub use route::{host_of_key, Place, Route, RouteError, Via, SSH_PREFIX, WSL_PREFIX};
 
-/// The session meta keys published to interface mods as `session.meta`
-/// (ADR-40).
 pub const PUBLISHED_META_PREFIX: &str = "ui.";
 
-/// Agent metrics collected from the Claude CLI statusline mechanism.
 #[derive(Debug, Clone, Default)]
 pub struct AgentMetrics {
     pub model_id: Option<String>,
@@ -44,11 +41,6 @@ pub struct AgentMetrics {
 }
 
 impl AgentMetrics {
-    /// Parse metrics out of a statusline JSON payload.
-    ///
-    /// Written by the agent's own statusline hook (Claude's shape), read by
-    /// whichever front end is drawing the info panel — so it lives on the type
-    /// rather than in either UI.
     pub fn from_statusline_json(raw: &serde_json::Value) -> Self {
         Self {
             model_id: raw
@@ -105,30 +97,15 @@ impl AgentMetrics {
     }
 }
 
-/// Real git state for a session's worktree(s), computed by the app/git layer
-/// and surfaced in the info panel. Aggregated across all of a session's
-/// worktrees. Agent-neutral (derived from git, not the agent CLI).
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct GitStats {
-    /// Tracked files with staged/unstaged changes vs HEAD (excludes untracked).
     pub files_changed: usize,
     pub insertions: usize,
     pub deletions: usize,
-    /// Untracked files (git status `??`), which a worktree removal would lose.
     pub untracked: usize,
-    /// Whether the worktree has uncommitted changes (tracked or untracked).
     pub dirty: bool,
-    /// Commits ahead of the upstream/base branch.
     pub ahead: usize,
-    /// Commits behind the upstream/base branch.
     pub behind: usize,
-    /// Whether origin's default branch already holds this worktree's work,
-    /// however the forge landed it (see `git::merged_into_default`). `None`
-    /// when the question was not asked (nothing ahead) or could not be
-    /// answered.
     pub merged: Option<bool>,
-    /// The commit these stats describe. It is what `merged` is an answer
-    /// *about*, so a caller caching that answer keys it on this rather than on
-    /// the worktree — see `git::worktree_stats`. `None` on an unborn branch.
     pub head: Option<String>,
 }

@@ -1,21 +1,3 @@
-//! The Gateway port: how Fleet reads and writes one chat thread, on Slack
-//! or any platform an adapter maps onto these types, and the `[gateway]`
-//! configuration the controllers decide over. Every answer is Known or
-//! Unknown, and a refused write is `Known(EffectOutcome::Failed { why })`.
-//!
-//! Nothing above this port names a platform. One address format names a
-//! conversation everywhere above it, `<platform>:<chat>[:<thread>]`, and
-//! only the adapter reads its parts. The
-//! [interface](../../../docs/fleet/controllers/gateway.md) defines the
-//! port, the [adapters page](../../../docs/fleet/controllers/gateway-adapters.md)
-//! maps each platform onto it, and the
-//! [config page](../../../docs/configuration/fleet-toml.md#the-gateway-section)
-//! defines the section.
-//!
-//! Every call runs on the machine the manager runs on. Fleet passes no
-//! credential and stores none: an account names the external client's own
-//! configuration, and the listener holds the platform connection itself.
-
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 
@@ -28,30 +10,20 @@ use crate::plan::EffectOutcome;
 use crate::task::Workspace;
 use crate::validate::{is_absolute_path, validate_name};
 
-/// How many messages the first `history` read of a thread takes: the
-/// newest 200.
 pub const HISTORY_FIRST_READ: u32 = 200;
 
-/// The refusal a route posts when it gives none of its own.
 pub const DEFAULT_REFUSAL: &str = "Sorry, I only take requests from people on this channel's list.";
 
-/// What the adapter parsed an address into, in Fleet's words. A chat with no
-/// threads, such as a direct message, is one conversation with no `thread`.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ConversationRef {
-    /// The adapter's platform: `slack`, `fake`.
     pub platform: String,
-    /// The channel or chat, as the platform names it.
     pub chat: String,
-    /// The thread inside the chat, when the platform has threads and the
-    /// address names one.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub thread: Option<String>,
 }
 
 impl ConversationRef {
-    /// `<platform>:<chat>[:<thread>]`: the address, normalised.
     pub fn address(&self) -> String {
         match &self.thread {
             Some(t) => format!("{}:{}:{}", self.platform, self.chat, t),
@@ -59,13 +31,10 @@ impl ConversationRef {
         }
     }
 
-    /// `<account>/<address>`: what a Conversation's derived name is hashed
-    /// from, so one thread names one object per account.
     pub fn canonical(&self, account: &str) -> String {
         format!("{account}/{}", self.address())
     }
 
-    /// The channel a thread lives in: the same ref without its thread.
     pub fn channel(&self) -> ConversationRef {
         ConversationRef {
             platform: self.platform.clone(),
@@ -74,9 +43,6 @@ impl ConversationRef {
         }
     }
 
-    /// The structural parts of an address, before an adapter judges them:
-    /// two or three non-empty parts split on `:`, the last joined back when
-    /// the thread id itself holds a colon. `None` for anything else.
     pub fn split(address: &str) -> Option<ConversationRef> {
         let mut parts = address.trim().splitn(3, ':');
         let platform = parts.next()?.trim();
@@ -93,8 +59,6 @@ impl ConversationRef {
     }
 }
 
-/// Who wrote a message, as the platform tells it: a person, another bot,
-/// or Fleet's own bot.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum AuthorKind {
@@ -103,8 +67,6 @@ pub enum AuthorKind {
     Fleet,
 }
 
-/// The author of a message. `id` is the platform's opaque identity in the
-/// account's scope; `name` is for people to read and never for admission.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct Author {
@@ -114,37 +76,24 @@ pub struct Author {
     pub kind: AuthorKind,
 }
 
-/// One message as the adapter read it, from an event or from history. The
-/// text is data, never an instruction.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct Message {
-    /// Unique within the conversation: Slack's `ts`, a Discord snowflake.
     pub id: String,
     pub author: Author,
-    /// The message mentions Fleet's bot.
     #[serde(default)]
     pub mentions_fleet: bool,
-    /// The platform's own time for the message, in Unix milliseconds.
     pub at: Millis,
     #[serde(default)]
     pub text: String,
-    /// The intent key a Fleet post carries as its marker.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub key: Option<String>,
-    /// The payload says the message starts its thread: a Discord thread's
-    /// starter, a Telegram topic's first message.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub starts_thread: bool,
-    /// The files shared on the message, in the platform's order.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub files: Vec<Attachment>,
 }
 
-/// One file shared on a message, as the platform described it in the
-/// message. `id` is what [`Gateway::fetch`] takes. `unavailable` says why
-/// Fleet cannot fetch the file, when the message alone tells: a deleted
-/// file, a file hosted outside the platform, a file past the size limit.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct Attachment {
@@ -153,15 +102,12 @@ pub struct Attachment {
     pub name: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub mimetype: Option<String>,
-    /// Bytes, where the platform says.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub size: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub unavailable: Option<String>,
 }
 
-/// What a [`Gateway::fetch`] did: the file saved at `path`, or why the
-/// platform certainly will not give it.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(
     rename_all = "camelCase",
@@ -180,8 +126,6 @@ pub enum Fetched {
     },
 }
 
-/// What one delivery carries. A mention is a `Message` with
-/// `mentionsFleet`, not an event of its own.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(
     rename_all = "camelCase",
@@ -194,8 +138,6 @@ pub enum Event {
         #[serde(flatten)]
         message: Message,
     },
-    /// A newer edit replaces the text; an older one delivered late changes
-    /// nothing.
     Edited {
         conversation: ConversationRef,
         id: String,
@@ -217,7 +159,6 @@ impl Event {
         }
     }
 
-    /// The message the event is about.
     pub fn message_id(&self) -> &str {
         match self {
             Event::Message { message, .. } => &message.id,
@@ -226,17 +167,12 @@ impl Event {
     }
 }
 
-/// How a delivery was authenticated.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Verified {
-    /// An authenticated socket, such as Slack's Socket Mode.
     Connection,
-    /// A verified webhook signature.
     Signature,
-    /// Fleet's own opening post, recorded by the manager.
     Fleet,
-    /// Read by the history backstop.
     History,
 }
 
@@ -251,9 +187,6 @@ impl Verified {
     }
 }
 
-/// What a listener writes to the receive verb, one per delivery: how it
-/// authenticated the delivery, when it received it, and the platform's raw
-/// event, which only the adapter reads.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct Envelope {
@@ -262,55 +195,36 @@ pub struct Envelope {
     pub payload: Value,
 }
 
-/// What `event` read out of an envelope.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct Delivery {
-    /// The same on every redelivery of one event, different for an edit or
-    /// removal of the same message: the platform's event id where one
-    /// exists, else derived by the adapter.
     pub id: String,
     pub verified: Verified,
     pub received_at: Millis,
     pub event: Event,
-    /// The platform says the event's chat is a one-to-one direct message
-    /// between Fleet's bot and one other user. Absent means `false`: a
-    /// channel, a group chat, or a payload that does not say.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub direct: bool,
 }
 
-/// How an adapter recognises Fleet's own posts again.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", rename_all_fields = "camelCase")]
 pub enum Marker {
-    /// The post carries the intent key as metadata the platform reads back.
     Metadata,
-    /// A nonce the platform honours for `windowMs`: a retry inside the
-    /// window returns the existing post.
     Nonce { window_ms: Millis },
-    /// Nothing: an Unknown post outcome can never be recovered.
     None,
 }
 
-/// What the platform offers on an account.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct Capabilities {
-    /// Bots can read a thread's history.
     pub history: bool,
     pub marker: Marker,
-    /// Messages without a mention reach Fleet.
     pub unmentioned: bool,
-    /// The platform has threads inside a chat.
     pub threads: bool,
-    /// Fleet can add and remove its own reactions on a message. Absent in
-    /// an older record: `false`.
     #[serde(default)]
     pub reactions: bool,
 }
 
-/// Fleet's bot identity, as the platform reports it.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct Identity {
@@ -319,7 +233,6 @@ pub struct Identity {
     pub name: Option<String>,
 }
 
-/// Which messages a `history` read asks for.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(
     rename_all = "camelCase",
@@ -327,15 +240,10 @@ pub struct Identity {
     tag = "type"
 )]
 pub enum HistoryQuery {
-    /// The messages after `id`, or the whole thread when `None`; at most
-    /// `limit`, the newest ones, with a count of those left out.
     After { id: Option<String>, limit: u32 },
-    /// Every message at or after `at`. A Known answer is complete: a read
-    /// that cannot page through everything is Unknown, never partial.
     Since { at: Millis },
 }
 
-/// The thread's first message, as a history read found it.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct Starter {
@@ -343,10 +251,8 @@ pub struct Starter {
     pub id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub kind: Option<AuthorKind>,
-    /// The marker on the starter, when Fleet posted it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub key: Option<String>,
-    /// The platform reports the first message deleted.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub removed: bool,
 }
@@ -371,36 +277,25 @@ impl Starter {
     }
 }
 
-/// A Known `history` answer.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct History {
-    /// Oldest first.
     #[serde(default)]
     pub messages: Vec<Message>,
-    /// How many older messages an `After` read left out under its limit.
     #[serde(default)]
     pub left_out: u64,
-    /// The thread's first message; absent for a chat without threads.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub starter: Option<Starter>,
 }
 
-/// Why a read could not be made.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub enum Uncertainty {
-    /// A call ran past its bound and its process tree was killed.
     Timeout,
-    /// The bound ran out before every page was read.
     Incomplete,
-    /// The platform asked Fleet to slow down.
     Throttled,
-    /// The answer could not be parsed.
     Unreadable,
-    /// The platform answered no, for a reason that is not proven absence.
     Refused,
-    /// The client could not be started on this machine.
     Unavailable,
 }
 
@@ -417,17 +312,13 @@ impl Uncertainty {
     }
 }
 
-/// The answer to `history`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum HistoryObservation {
     Known(History),
-    /// Bots cannot read history on this platform.
     Unsupported,
     Unknown {
         kind: Uncertainty,
         why: String,
-        /// How long the platform asked Fleet to wait, in milliseconds, when
-        /// it said.
         retry_after: Option<Millis>,
     },
 }
@@ -453,16 +344,10 @@ impl HistoryObservation {
     }
 }
 
-/// The derived key of part `n` of `total` of a post an adapter split:
-/// `<key>/<n>/<total>`. Every part names the count, so a read that finds
-/// the parts tells a whole post from one that landed in part.
 pub fn part_key(key: &str, n: usize, total: usize) -> String {
     format!("{key}/{n}/{total}")
 }
 
-/// Which part of the post under `key` a marker names: `(n, total)`, with
-/// `(1, 1)` for a post that was not split, or `None` for the marker of
-/// some other post.
 pub fn part_of(marker: &str, key: &str) -> Option<(usize, usize)> {
     if marker == key {
         return Some((1, 1));
@@ -473,19 +358,12 @@ pub fn part_of(marker: &str, key: &str) -> Option<(usize, usize)> {
     (n >= 1 && n <= total).then_some((n, total))
 }
 
-/// What a read of a thread holds of Fleet's post under one key.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum PostFound {
-    /// The post, or the first part of a split whose every part is there:
-    /// what the post's receipt names.
     Whole { message: String, at: Millis },
-    /// A split with parts missing: the parts found, of the total.
     Partial { found: Vec<usize>, total: usize },
 }
 
-/// Fleet's own post under `key` among `messages`: the post itself, every
-/// part of a split, or the parts of it that are there. A post is found
-/// whole only when every part is.
 pub fn find_post<'m>(
     messages: impl IntoIterator<Item = &'m Message>,
     key: &str,
@@ -522,40 +400,18 @@ pub fn find_post<'m>(
     Some(PostFound::Partial { found, total })
 }
 
-/// The port. Text is Fleet's Markdown subset: paragraphs, emphasis, code,
-/// links, lists and quotes. The adapter converts it and splits a long text
-/// into consecutive posts under derived keys that name the part and the
-/// count (`<key>/1/3`, `<key>/2/3`, `<key>/3/3`, see [`part_key`]). There
-/// is no edit, delete or merge method: Fleet never changes a post it made.
 pub trait Gateway {
-    /// The longest one call of this trait can take, every bound and grace
-    /// included: the manager's lease is sized to outlast it.
     fn operation_bound(&self) -> Millis;
-    /// The normalised reference for an address on an account. Unknown for an
-    /// account that is not configured, or an address the adapter cannot
-    /// read.
     fn parse(&self, account: &str, address: &str) -> Observation<ConversationRef>;
-    /// What an envelope carries: a delivery, `None` for a payload the
-    /// Gateway ignores (a reaction, a presence change), or Unknown for one
-    /// the adapter cannot read. Pure, so the receive verb runs it without
-    /// the lease.
     fn event(&self, account: &AccountConfig, envelope: &Envelope) -> Observation<Option<Delivery>>;
-    /// Fleet's bot identity on the account, as the platform reports it.
     fn whoami(&self, account: &str) -> Observation<Identity>;
-    /// What the platform offers on the account.
     fn capabilities(&self, account: &str) -> Observation<Capabilities>;
-    /// The messages the query asks for, oldest first, and the thread's first
-    /// message as `starter`. `Unsupported` where bots cannot read history.
     fn history(
         &self,
         account: &str,
         conversation: &ConversationRef,
         query: &HistoryQuery,
     ) -> HistoryObservation;
-    /// Open a thread in `channel` whose first post is `text`, carrying
-    /// `intent_key` as its marker: `Opened { conversation, message, at }`.
-    /// An open that takes two platform calls keys both from the one key and
-    /// finishes a half-done open on retry.
     fn open(
         &self,
         account: &str,
@@ -563,10 +419,6 @@ pub trait Gateway {
         text: &str,
         intent_key: &str,
     ) -> Observation<EffectOutcome>;
-    /// Post `text` in the conversation, carrying `intent_key` as its marker:
-    /// `Posted { message, at }`, with `at` the platform's own time. To a
-    /// channel address (no `thread`), every part is a top-level post in the
-    /// channel, and no thread is started.
     fn post(
         &self,
         account: &str,
@@ -574,11 +426,6 @@ pub trait Gateway {
         text: &str,
         intent_key: &str,
     ) -> Observation<EffectOutcome>;
-    /// Add (`on`) or remove Fleet's own `reaction` on `message` in the
-    /// conversation: `Reacted { already }`, where `already` says the
-    /// reaction was already there, or already absent. A reaction is set, not
-    /// counted, so a repeat changes nothing. `reaction` is the platform's
-    /// emoji name, as `[gateway] reactions` gives it.
     fn react(
         &self,
         account: &str,
@@ -587,17 +434,10 @@ pub trait Gateway {
         reaction: &str,
         on: bool,
     ) -> Observation<EffectOutcome>;
-    /// A URL that opens the thread, or `None` where the adapter cannot make
-    /// one without a platform call. Pure: it calls no platform.
     fn link(&self, account: &str, thread: &ConversationRef) -> Option<String> {
         let _ = (account, thread);
         None
     }
-    /// Download the file `file`, shared in `conversation`, into a directory
-    /// made fresh for the call under `dir`, which only this user can enter:
-    /// `Saved` with the path written, `Refused`
-    /// when the platform certainly will not give it, Unknown when the
-    /// answer cannot be read. An adapter that fetches no file refuses.
     fn fetch(
         &self,
         account: &str,
@@ -616,24 +456,16 @@ pub trait Gateway {
 // The `[gateway]` section.
 // ----------------------------------------------------------------------
 
-/// How an account's listener receives deliveries, which fixes how each is
-/// authenticated. An envelope claiming another method is refused.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum Inbound {
-    /// Slack Socket Mode: an authenticated connection.
     SocketMode,
-    /// Slack's Events API: a signed HTTPS delivery.
     EventsApi,
-    /// The fake's listener: an authenticated connection.
     Connection,
-    /// Discord's Gateway WebSocket, held by the listener: an authenticated
-    /// connection.
     DiscordGateway,
 }
 
 impl Inbound {
-    /// The one `verified` an envelope on this account may claim.
     pub fn verified(self) -> Verified {
         match self {
             Inbound::SocketMode | Inbound::Connection | Inbound::DiscordGateway => {
@@ -653,84 +485,51 @@ impl Inbound {
     }
 }
 
-/// `[gateway.accounts.<name>]`: one chat account.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct AccountConfig {
-    /// `slack`, `discord`, or `fake` with a `dir`.
     pub platform: String,
-    /// The platform's workspace identity: a Slack team or enterprise id, a
-    /// Discord guild id.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub team: Option<String>,
-    /// Fleet's bot id there, checked against the platform's `whoami`.
     pub bot: String,
     pub inbound: Inbound,
-    /// Discord only: the bot holds the privileged message content intent,
-    /// so its listener asks for it and unmentioned messages reach Fleet.
-    /// Absent means `false`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub message_content: Option<bool>,
-    /// The client executable, a path or a name on PATH.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cli: Option<String>,
-    /// An absolute path Fleet passes to `curl -K` and never reads: the
-    /// operator's file holding the bot token header.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub curl_config: Option<PathBuf>,
-    /// The fake's directory, relative to the config file.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub dir: Option<PathBuf>,
 }
 
-/// When an `Admitted` message in an untied thread starts a Task.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum Mention {
-    /// The message mentions Fleet.
     #[default]
     Required,
-    /// The message starts a thread: every top-level post is a request.
     TopLevel,
 }
 
-/// `[gateway.routes.<name>]`: the channels one set of admission rules and
-/// one Task template cover.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct RouteConfig {
     pub account: String,
-    /// Platform channel ids; `"*"`, the wildcard: every other channel of
-    /// the account; and `"dm:*"`, the DM entry: every one-to-one direct
-    /// message with the bot that no route lists. A channel id belongs to at
-    /// most one route, and an account has at most one wildcard route and at
-    /// most one DM route.
     #[serde(default)]
     pub channels: Vec<String>,
     #[serde(default)]
     pub mention: Mention,
-    /// Names under `[gateway.people]`.
     #[serde(default)]
     pub allow: Vec<String>,
-    /// Bot or app ids whose messages count as a person's.
     #[serde(default)]
     pub allow_bots: Vec<String>,
-    /// The TaskConfig a new conversation Task references.
     pub task_config: String,
-    /// An absolute path the manager reads when it loads the config and
-    /// copies into each Task it creates.
     pub brief: PathBuf,
-    /// The Task's workspace: `{base}`, a base directory, of which each
-    /// thread's Tasks get `<base>/<conversation>`, so no thread waits for
-    /// another; or a URL list each Task gets as it is (a `git+` URL already
-    /// gives each Task a worktree of its own).
     pub workspace: RouteWorkspace,
-    /// The one polite refusal; `DEFAULT_REFUSAL` when absent.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub refusal: Option<String>,
 }
 
-/// A route's workspace (see [`RouteConfig::workspace`]).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(
     untagged,
@@ -741,7 +540,6 @@ pub enum RouteWorkspace {
     Base(BaseWorkspace),
 }
 
-/// `{base}`: the directory under which each thread gets its own.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct BaseWorkspace {
@@ -749,12 +547,10 @@ pub struct BaseWorkspace {
 }
 
 impl RouteWorkspace {
-    /// A `{base}` route workspace.
     pub fn base(dir: impl Into<String>) -> RouteWorkspace {
         RouteWorkspace::Base(BaseWorkspace { base: dir.into() })
     }
 
-    /// The base directory, when the route has one.
     pub fn base_dir(&self) -> Option<&str> {
         match self {
             RouteWorkspace::Base(b) => Some(&b.base),
@@ -763,21 +559,14 @@ impl RouteWorkspace {
     }
 }
 
-/// The `channels` entry that covers every channel of the route's account
-/// that no other route lists and that is not the log channel.
 pub const ANY_CHANNEL: &str = "*";
 
-/// The `channels` entry that covers every one-to-one direct message
-/// between the bot and a person on the route's account that no other route
-/// lists. There a top-level message starts a Task without a mention.
 pub const ANY_DM: &str = "dm:*";
 
-/// The route that covers a chat, and how.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Covered<'a> {
     pub name: &'a str,
     pub route: &'a RouteConfig,
-    /// The route covers the chat by its DM entry, `"dm:*"`.
     pub direct: bool,
 }
 
@@ -786,18 +575,14 @@ impl RouteConfig {
         self.refusal.as_deref().unwrap_or(DEFAULT_REFUSAL)
     }
 
-    /// Whether `channels` holds the wildcard.
     pub fn is_wildcard(&self) -> bool {
         self.channels.iter().any(|c| c == ANY_CHANNEL)
     }
 
-    /// Whether `channels` holds the DM entry.
     pub fn covers_dms(&self) -> bool {
         self.channels.iter().any(|c| c == ANY_DM)
     }
 
-    /// The channel ids the route lists, the wildcard and the DM entry left
-    /// out.
     pub fn channel_ids(&self) -> impl Iterator<Item = &str> {
         self.channels
             .iter()
@@ -805,40 +590,26 @@ impl RouteConfig {
             .filter(|c| *c != ANY_CHANNEL && *c != ANY_DM)
     }
 
-    /// The first channel id the route lists: where a Question opens a
-    /// thread. `None` for a route that lists only the wildcard or the DM
-    /// entry.
     pub fn first_channel(&self) -> Option<&str> {
         self.channel_ids().next()
     }
 }
 
-/// `[gateway.people.<name>]`: one platform id per account name.
 pub type Person = BTreeMap<String, String>;
 
-/// The whole `[gateway]` section as the config file gives it.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct GatewayConfig {
-    /// Bound for each adapter call.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub call_timeout_ms: Option<Millis>,
-    /// The history backstop interval for a Tied thread, and the cadence of
-    /// the other periodic reads.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub poll_ms: Option<Millis>,
-    /// How long after a Tied thread's last message its backstop keeps
-    /// polling.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub active_ms: Option<Millis>,
-    /// An Untied or Orphaned Conversation's retention.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub retain_ms: Option<Millis>,
-    /// The longest a listener goes between beats; stale after three.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub beat_ms: Option<Millis>,
-    /// The route whose first channel id takes a Question from an untied,
-    /// unlabelled Task.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub questions: Option<String>,
     #[serde(default)]
@@ -847,25 +618,16 @@ pub struct GatewayConfig {
     pub people: BTreeMap<String, Person>,
     #[serde(default)]
     pub routes: BTreeMap<String, RouteConfig>,
-    /// Where every Task's result and change news are posted, as top-level
-    /// posts. Absent: they are posted nowhere.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub logs: Option<LogsConfig>,
-    /// The reactions that mark a person's message: `false` turns them off,
-    /// a table names them. Absent: on, with the default names.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reactions: Option<ReactionsConfig>,
 }
 
-/// The default "working" reaction: Slack's name for 👀.
 pub const DEFAULT_WORKING: &str = "eyes";
-/// The default "replied" reaction: Slack's name for ✅.
 pub const DEFAULT_REPLIED: &str = "white_check_mark";
-/// The default "queued" reaction: Slack's and Discord's name for ⏳.
 pub const DEFAULT_QUEUED: &str = "hourglass_flowing_sand";
 
-/// `[gateway] reactions`: `false` (or `true`), or
-/// `{ queued = "<name>", working = "<name>", replied = "<name>" }`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(untagged)]
 pub enum ReactionsConfig {
@@ -873,7 +635,6 @@ pub enum ReactionsConfig {
     Names(ReactionNames),
 }
 
-/// The names of the three reactions, each the platform's emoji name.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ReactionNames {
@@ -885,15 +646,10 @@ pub struct ReactionNames {
     pub queued: Option<String>,
 }
 
-/// The three reactions as the controllers read them.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Reactions {
-    /// Added while a Task works on a message.
     pub working: String,
-    /// Added once Fleet replied in the thread; `working` is removed then.
     pub replied: String,
-    /// Added when admission accepts a message that must wait for its Task;
-    /// replaced by `working` once the Task exists.
     pub queued: String,
 }
 
@@ -908,7 +664,6 @@ impl Default for Reactions {
 }
 
 impl ReactionsConfig {
-    /// The reactions in force, or `None` when they are off.
     pub fn reactions(&self) -> Option<Reactions> {
         match self {
             ReactionsConfig::Enabled(false) => None,
@@ -925,25 +680,19 @@ impl ReactionsConfig {
     }
 }
 
-/// `[gateway] logs = { account, channel }`: the log destination.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct LogsConfig {
-    /// A name under `[gateway.accounts]`.
     pub account: String,
-    /// One channel id on that account. No route covers it.
     pub channel: String,
 }
 
-/// The log destination as the controllers read it: the account and the
-/// channel's address.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LogDestination {
     pub account: String,
     pub channel: ConversationRef,
 }
 
-/// The thread a log post names: the tied thread and the account it is on.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct LogThread {
@@ -951,9 +700,6 @@ pub struct LogThread {
     pub conversation: ConversationRef,
 }
 
-/// What the controllers decide over, as values: the `[gateway]` timings,
-/// and the part of the config the object in hand names. The manager fills
-/// the per-object part; the controllers read no configuration themselves.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct GatewayDefaults {
     pub call_timeout_ms: Millis,
@@ -961,41 +707,21 @@ pub struct GatewayDefaults {
     pub active_ms: Millis,
     pub retain_ms: Millis,
     pub beat_ms: Millis,
-    /// For a Conversation: the route its spec names, while the config has
-    /// it. `None`: the route left the config.
     pub route: Option<RouteConfig>,
-    /// For a Conversation: the route's brief, as the manager read the file
-    /// when it loaded the config. `None` while the route is.
     pub brief: Option<String>,
-    /// The people table, for admission.
     pub people: BTreeMap<String, Person>,
-    /// For a Listener: the account its spec names, while the config has it.
-    /// `None`: the account left the config.
     pub account: Option<ListenerAccount>,
-    /// For a Task: every route by name, so the controller finds the one
-    /// its Conversation's spec names.
     pub routes: BTreeMap<String, RouteConfig>,
-    /// For a Task: the route whose first channel takes a Question from an
-    /// untied Task without the route label.
     pub questions: Option<String>,
-    /// For a Task: every account's platform by account name, so the
-    /// controller names the channel a Question opens a thread in.
     pub platforms: BTreeMap<String, String>,
-    /// For a Task: where its result and change news are logged. `None`:
-    /// nowhere.
     pub logs: Option<LogDestination>,
-    /// For a Task: the reactions that mark a person's message. `None`: off.
     pub reactions: Option<Reactions>,
 }
 
-/// The account a Listener reports on, as the loaded config has it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ListenerAccount {
     pub config: AccountConfig,
-    /// The digest `fleet gateway account NAME --json` prints, which a
-    /// listener's beats carry.
     pub digest: String,
-    /// Some route uses the account.
     pub routed: bool,
 }
 
@@ -1021,8 +747,6 @@ impl Default for GatewayDefaults {
 }
 
 impl GatewayDefaults {
-    /// The same timings and people, for the Conversation whose spec names
-    /// `route`, with the route's brief text.
     pub fn for_route(&self, route: Option<RouteConfig>, brief: Option<String>) -> GatewayDefaults {
         GatewayDefaults {
             brief: brief.filter(|_| route.is_some()),
@@ -1032,7 +756,6 @@ impl GatewayDefaults {
         }
     }
 
-    /// The same timings, for the Listener of `account`.
     pub fn for_account(&self, account: Option<ListenerAccount>) -> GatewayDefaults {
         GatewayDefaults {
             route: None,
@@ -1044,7 +767,6 @@ impl GatewayDefaults {
 }
 
 impl GatewayConfig {
-    /// The timing values, each the file's or the default.
     pub fn defaults(&self) -> GatewayDefaults {
         let base = GatewayDefaults::default();
         GatewayDefaults {
@@ -1082,26 +804,15 @@ impl GatewayConfig {
         }
     }
 
-    /// Whether some route uses the account.
     pub fn is_routed(&self, account: &str) -> bool {
         self.routes.values().any(|r| r.account == account)
     }
 
-    /// The route a channel on an account belongs to, if any: the route
-    /// that lists the channel id, else the account's wildcard route. The
-    /// wildcard never covers the log channel.
     pub fn route_of(&self, account: &str, channel: &str) -> Option<(&str, &RouteConfig)> {
         self.route_for(account, channel, false)
             .map(|c| (c.name, c.route))
     }
 
-    /// The route a chat on an account belongs to, if any, when `direct`
-    /// says whether the platform calls the chat a one-to-one DM:
-    ///
-    /// 1. the route that lists the chat's id;
-    /// 2. none, for the log channel;
-    /// 3. for a DM, the account's DM route, by its DM entry;
-    /// 4. the account's wildcard route.
     pub fn route_for(&self, account: &str, chat: &str, direct: bool) -> Option<Covered<'_>> {
         let routes = || self.routes.iter().filter(|(_, r)| r.account == account);
         let (found, direct) =
@@ -1121,7 +832,6 @@ impl GatewayConfig {
         })
     }
 
-    /// Whether some route of the account holds the DM entry.
     pub fn has_dm_route(&self, account: &str) -> bool {
         self.routes
             .values()
@@ -1134,10 +844,6 @@ impl GatewayConfig {
             .is_some_and(|l| l.account == account && l.channel == channel)
     }
 
-    /// Every rule the config page states, each refused with the entry it
-    /// names. Platform-specific checks (a platform this build lacks, an
-    /// `inbound` the platform has no listener for, a fake without a dir)
-    /// belong to the adapters and run when the gateway opens.
     pub fn validate(&self) -> Result<(), String> {
         for (field, value) in [
             ("callTimeoutMs", self.call_timeout_ms),
@@ -1370,21 +1076,14 @@ impl GatewayConfig {
 // Admission.
 // ----------------------------------------------------------------------
 
-/// How admission sorts a message.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Admission {
-    /// Fleet's own post: never relayed.
     Own,
-    /// A person under `allow`, or a bot under `allowBots`: a turn.
     Admitted,
-    /// Anyone else: relayed with the next admitted message, starts no turn.
     Context,
 }
 
-/// Sort a message by the route and the people table. A person is admitted
-/// when some name under `route.allow` maps to the author's id on the
-/// route's account; a bot when its id is under `route.allowBots`.
 pub fn admit(
     route: &RouteConfig,
     people: &BTreeMap<String, Person>,
@@ -1415,10 +1114,6 @@ pub fn admit(
     }
 }
 
-/// Whether an admitted message in an untied thread starts a Task. In a
-/// thread the route covers by its DM entry (`direct`), a message that
-/// starts the thread or mentions Fleet does. Elsewhere the message meets
-/// the route's mention rule.
 pub fn starts_task(
     route: &RouteConfig,
     direct: bool,
@@ -1436,9 +1131,6 @@ pub fn starts_task(
         }
 }
 
-/// Whether a message earns the route's refusal: a person who is not on the
-/// allowlist and mentions Fleet, or, in a thread the route covers by its
-/// DM entry (`direct`), starts the thread. An unlisted bot gets none.
 pub fn earns_refusal(direct: bool, admission: Admission, message: &Message) -> bool {
     admission == Admission::Context
         && message.author.kind == AuthorKind::Person

@@ -1,4 +1,3 @@
-//! Atomic plugin verbs: rights and identity are rechecked under the write lock.
 use super::*;
 use fleet_api::plugin::{CREATOR, Mutation, TaskAccess};
 use serde_json::json;

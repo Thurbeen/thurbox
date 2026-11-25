@@ -1,30 +1,7 @@
-//! Events a mod can subscribe to, and how the kernel's own are derived.
-//!
-//! A mod used to learn that the world changed only by being rendered and
-//! diffing the snapshot itself — once per frame, in every pane that cared. This
-//! is the push: the loop hands each subscriber one call per change, off the
-//! render path.
-//!
-//! The kernel's events are **derived by diffing published state**, never raised
-//! by the code that mutates it. A session created by `fleet`, a schedule
-//! or a second interface looks exactly like one the creation flow made, and no
-//! mutation site anywhere can forget to fire — the failure mode of the other
-//! design, which would have put a kernel concern inside Fleet.
-//!
-//! The set is a closed enumeration ([`KERNEL_EVENTS`]) with one reader for each
-//! of its three uses: the loader validates a subscription against it, the help
-//! modal renders it, and `thurbox-cli mod events` prints it. One list, so a
-//! name a mod can subscribe to is always one the kernel can emit.
-
 use std::collections::BTreeSet;
 
 use super::snapshot::{SessionRow, Snapshot};
 
-/// A value carried in an event's payload.
-///
-/// Deliberately small: a payload is a handful of facts a handler can branch on,
-/// not a document. A session's whole row is already readable from the published
-/// tables by the id the payload names.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Field {
     Text(String),
@@ -45,26 +22,11 @@ impl From<String> for Field {
     }
 }
 
-/// One thing that happened, ready to be handed to every subscriber.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Event {
     pub name: String,
     pub payload: Vec<(String, Field)>,
-    /// How many handler generations deep this event was emitted.
-    ///
-    /// Zero for anything the kernel derived. A user event emitted from a handler
-    /// is one deeper than the event that handler was running for, which is what
-    /// bounds a ping-pong between two mods — see [`MAX_DEPTH`].
     pub depth: u8,
-    /// The one mod this event is addressed to, by path, or `None` for every
-    /// subscriber.
-    ///
-    /// Almost nothing needs this: an event about a session is about a thing
-    /// every pane can already see. A **program** pane is the exception — it
-    /// belongs to the mod that started it and no other mod can even name
-    /// it, so the news that it ended has the same owner. Two mods may both
-    /// call their pane `editor`, and a broadcast would have each of them acting
-    /// on the other's.
     pub only: Option<String>,
 }
 
@@ -78,14 +40,11 @@ impl Event {
         }
     }
 
-    /// Address this event to one mod, by path.
     pub fn to(mut self, mod_name: impl Into<String>) -> Self {
         self.only = Some(mod_name.into());
         self
     }
 
-    /// Add a field. A `None` is left out rather than published as an empty
-    /// string, so a handler can test for presence.
     pub fn with(mut self, key: &str, value: Option<impl Into<Field>>) -> Self {
         if let Some(value) = value {
             self.payload.push((key.to_string(), value.into()));
@@ -93,7 +52,6 @@ impl Event {
         self
     }
 
-    /// The text value of a field, for tests and for the loop's own reads.
     pub fn text(&self, key: &str) -> Option<&str> {
         self.payload.iter().find_map(|(k, v)| match v {
             Field::Text(text) if k == key => Some(text.as_str()),
@@ -102,18 +60,10 @@ impl Event {
     }
 }
 
-/// How many generations of user events one dispatch may cascade through.
-///
-/// A handler for `user.a` emits `user.b`, whose handler emits `user.a` again —
-/// two mods can do that to each other without either being wrong on its
-/// own. The fifth generation is dropped and reported once, so the loop keeps
-/// its frame cadence whatever two mods agree to do.
 pub const MAX_DEPTH: u8 = 4;
 
-/// The prefix every mod-emitted event carries.
 pub const USER_PREFIX: &str = "user.";
 
-/// One event the kernel emits: its name, when it fires, and its payload fields.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct EventSpec {
     pub name: &'static str,
@@ -121,8 +71,6 @@ pub struct EventSpec {
     pub fields: &'static [&'static str],
 }
 
-/// Every event the kernel emits. **Closed**: a subscription to a name not here
-/// (and not of the `user.` form) refuses to load.
 pub const KERNEL_EVENTS: &[EventSpec] = &[
     EventSpec {
         name: "session.created",
@@ -188,12 +136,10 @@ pub const KERNEL_EVENTS: &[EventSpec] = &[
     },
 ];
 
-/// Is this a name the kernel emits?
 pub fn is_kernel_event(name: &str) -> bool {
     KERNEL_EVENTS.iter().any(|spec| spec.name == name)
 }
 
-/// The characters a user event's name may be made of.
 fn is_identifier(name: &str) -> bool {
     !name.is_empty()
         && name
@@ -201,11 +147,6 @@ fn is_identifier(name: &str) -> bool {
             .all(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '-' | '.'))
 }
 
-/// Check a name a mod subscribes to.
-///
-/// Refused rather than ignored: a subscription to a name nothing emits is a
-/// handler that never fires, which is the one failure with no symptom. The
-/// message names what was available, the way an unknown capability's does.
 pub fn validate_subscription(name: &str) -> Result<(), String> {
     if is_kernel_event(name) {
         return Ok(());
@@ -225,11 +166,6 @@ pub fn validate_subscription(name: &str) -> Result<(), String> {
     ))
 }
 
-/// The full name a mod's emit is delivered under, or why it may not be.
-///
-/// A mod writes `command("emit", { text = "refresh" })` and subscribers see
-/// `user.refresh`. A kernel name is refused outright, and so is one already
-/// spelled with the prefix — `user.user.x` would be a name nobody subscribed to.
 pub fn user_event_name(name: &str) -> Result<String, String> {
     if is_kernel_event(name) {
         return Err(format!(
@@ -249,7 +185,6 @@ pub fn user_event_name(name: &str) -> Result<String, String> {
     Ok(format!("{USER_PREFIX}{name}"))
 }
 
-/// The facts about a session the derived events are defined over.
 #[derive(Debug, Clone, PartialEq)]
 struct Facts {
     name: String,
@@ -274,8 +209,6 @@ impl Facts {
         }
     }
 
-    /// The fields other than status that differ from `before`, spelled the way
-    /// a `session.changed` subscriber reads them.
     fn changed_since(&self, before: &Facts) -> Vec<String> {
         let mut fields = Vec::new();
         if before.name != self.name {
@@ -294,14 +227,8 @@ impl Facts {
     }
 }
 
-/// Turns one snapshot into the events that separate it from the last.
-///
-/// Keyed on `SnapshotStore::version`, so asking on every iteration costs one
-/// integer compare while nothing moves — and the first snapshot after a load
-/// **seeds** silently: the rows that existed before a mod did are not news.
 #[derive(Debug, Default)]
 pub struct Deriver {
-    /// Rows as last observed, in published order.
     rows: Vec<(String, Facts)>,
     version: Option<u64>,
 }
@@ -311,9 +238,6 @@ impl Deriver {
         Self::default()
     }
 
-    /// Everything that changed since the last call, in the order a subscriber
-    /// should hear it: departures, arrivals, status changes, other changes —
-    /// each in published row order.
     pub fn observe(&mut self, snapshot: &Snapshot, version: u64) -> Vec<Event> {
         if self.version == Some(version) {
             return Vec::new();
@@ -343,18 +267,12 @@ impl Deriver {
         events
     }
 
-    /// Forget everything, so the next snapshot seeds again.
-    ///
-    /// For a reload: the mods that would have heard about the rows since the
-    /// last observation no longer exist, and the ones that replaced them are
-    /// told `interface.reloaded` instead.
     pub fn reset(&mut self) {
         self.rows.clear();
         self.version = None;
     }
 }
 
-/// `session.deleted` for every row of `before` that `after` no longer holds.
 fn push_departures(events: &mut Vec<Event>, before: &[(String, Facts)], after: &[(String, Facts)]) {
     let remaining: BTreeSet<&str> = after.iter().map(|(id, _)| id.as_str()).collect();
     for (id, facts) in before {
@@ -368,7 +286,6 @@ fn push_departures(events: &mut Vec<Event>, before: &[(String, Facts)], after: &
     }
 }
 
-/// `session.created` for every row of `after` that `old` did not hold.
 fn push_arrivals(
     events: &mut Vec<Event>,
     old: &std::collections::HashMap<&str, &Facts>,
@@ -387,9 +304,6 @@ fn push_arrivals(
     }
 }
 
-/// For every row both snapshots hold: its `session.status`, and then — once
-/// every status has been pushed — a `session.changed` naming whatever else
-/// moved.
 fn push_changes(
     events: &mut Vec<Event>,
     old: &std::collections::HashMap<&str, &Facts>,
@@ -428,8 +342,6 @@ mod tests {
     use crate::session::SessionState;
     use std::path::PathBuf;
 
-    /// The list is closed, so a name that is not in it refuses to load — which
-    /// makes "is it in the list" the whole of the subscription contract.
     #[test]
     fn a_program_can_report_that_it_ended() {
         assert!(is_kernel_event("program.exited"));

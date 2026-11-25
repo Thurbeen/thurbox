@@ -1,24 +1,3 @@
-//! ConversationController: the mirror of one chat thread. From the stored
-//! mirror, the deliveries the receive verb spooled, one read of the thread's
-//! history and the Task the thread is tied to, it numbers what is new,
-//! keeps the tie honest, admits each message by the route's rules, starts
-//! one Task for an admitted message that meets the mention rule, refuses a
-//! stranger once, marks an admitted request queued or working with a
-//! best-effort reaction, and retires the object after its retention.
-//!
-//! Pure: it reads the Conversation and what the probes saw, and returns a
-//! Plan whose `status` is the whole Conversation status with the spool
-//! drained of what was numbered and the intent of every effect it asks
-//! for, whose `creates` is the Task a thread starts in the thread's own
-//! directory under the `exclusive: {workspace}` precondition, whose
-//! `effects` are the refusal and busy-notice posts and the reactions, and
-//! whose `delete`
-//! retires the object. The manager performs the plan through
-//! `record_received`, the fenced create, the Gateway port and the fenced
-//! delete, and writes each receipt back under its key. A key that has a receipt is never performed again; a
-//! missing or Unknown receipt is answered by looking for the Task, or for
-//! the post in the mirror, never by repeating the effect blindly.
-
 use std::collections::{BTreeMap, BTreeSet};
 
 use fleet_api::condition::{ConditionStatus, condition, set_condition, settle_transitions};
@@ -47,75 +26,45 @@ use serde_json::json;
 
 use crate::task::{MAX_ATTEMPTS, RETRY_DELAY_MS};
 
-/// What one reconcile of one Conversation reads. Every outside fact arrives
-/// here as a value; nothing is read from the world inside the controller.
 #[derive(Debug, Clone)]
 pub struct ConversationInput<'a> {
     pub object: &'a Object,
     pub observations: ConversationObservations,
     pub now: Millis,
-    /// The `[gateway]` timings, the people table, and the route the spec
-    /// names with its brief while the config has it.
     pub defaults: GatewayDefaults,
 }
 
-/// The answers to the probes; `None` means "not asked".
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct ConversationObservations {
-    /// The adapter's parse of `spec.address`, supplied before the first
-    /// pass while `status.ref` is still absent.
     pub parsed: Option<Observation<ConversationRef>>,
-    /// The answer to `Probe::History`.
     pub history: Option<HistoryObservation>,
-    /// The answer to `Probe::Object` for the Task the tie names, created or
-    /// pending: `Known(None)` is readable absence.
     pub task: Option<Observation<Option<Object>>>,
-    /// The answer to `Probe::Object` for the Task the starter's marker
-    /// names, when the thread is one Fleet opened for a Question.
     pub opener: Option<Observation<Option<Object>>>,
-    /// The answer to `Probe::Capabilities` for the account.
     pub capabilities: Option<Observation<Capabilities>>,
 }
 
 #[derive(Debug, Clone, Copy, Default)]
 pub struct ConversationController;
 
-/// Condition types ConversationController writes.
 pub mod conditions {
-    /// The platform's history answered.
     pub const REACHABLE: &str = "Reachable";
-    /// A live Task is tied.
     pub const TIED: &str = "Tied";
-    /// `TaskCreateFailed`, `WorkspaceBusy`, `RouteUnknown`, `MentionsOnly`,
-    /// `PostFailed`, `PostUnconfirmed`, `RetireFailed`.
     pub const NEEDS_ATTENTION: &str = "NeedsAttention";
 }
 use conditions::*;
 
-/// The route the spec names left the config.
 const ROUTE_UNKNOWN: &str = "RouteUnknown";
-/// The platform delivers only mentions, so only mentions are relayed.
 const MENTIONS_ONLY: &str = "MentionsOnly";
-/// Three creates of the thread's Task were refused.
 const TASK_CREATE_FAILED: &str = "TaskCreateFailed";
-/// The create waits for the route's workspace.
 const WORKSPACE_BUSY: &str = "WorkspaceBusy";
-/// Three attempts at one post were refused.
 const POST_FAILED: &str = "PostFailed";
-/// Three attempts at one step of the thread's retirement were refused.
 const RETIRE_FAILED: &str = "RetireFailed";
-/// A post's outcome stays unknown on a platform where Fleet cannot find it
-/// again; it waits for a person.
 const POST_UNCONFIRMED: &str = "PostUnconfirmed";
 
 impl ConversationController {
-    /// The kind this controller reconciles and the field manager it writes as.
     pub const KIND: &'static str = conversation::KIND;
     pub const MANAGER: FieldManager = FieldManager::ConversationController;
 
-    /// Whether the manager should run this controller on the object now:
-    /// the thread has unread events, `notBefore` passed, or the create the
-    /// tie waits on has its receipt. A deleting Conversation is never due.
     pub fn due(object: &Object, now: Millis) -> bool {
         if object.is_deleting() {
             return false;
@@ -131,11 +80,6 @@ impl ConversationController {
             || opened_unjudged(&st)
     }
 
-    /// What the next `reconcile` needs observed and does not have yet: the
-    /// tied or pending Task, the Task a Fleet-opened thread's marker
-    /// names, then, when a history read is due, the account's capabilities
-    /// and the read itself. The manager answers what is asked and asks
-    /// again until nothing is.
     pub fn probes(&self, input: &ConversationInput<'_>) -> Result<Vec<Probe>, StoreError> {
         if input.object.is_deleting() {
             return Ok(Vec::new());
@@ -247,10 +191,6 @@ impl ConversationController {
     }
 }
 
-/// Whether this pass may mark a message or retry a reaction, so it needs
-/// the account's capabilities: a create is pending or waits for the
-/// thread's directory, a message is marked queued, or a reaction record is
-/// left.
 fn reactions_due(st: &ConversationStatus, input: &ConversationInput<'_>) -> bool {
     if input.defaults.reactions.is_none() {
         return false;
@@ -268,8 +208,6 @@ fn is_react_key(key: &str) -> bool {
     key.contains("/react/")
 }
 
-/// Which history read this pass wants, if any: the first read of the
-/// thread, or the backstop while the thread is Tied and active.
 fn history_due(
     spec: &ConversationSpec,
     st: &ConversationStatus,
@@ -306,9 +244,6 @@ fn history_due(
     })
 }
 
-/// The recovery read a post with an unknown outcome wants: everything
-/// since its intent, so the marker is found or proven absent. Only where
-/// the platform reads markers back.
 fn recovery_due(st: &ConversationStatus, obs: &ConversationObservations) -> Option<HistoryQuery> {
     let readable = match &obs.capabilities {
         Some(Observation::Known(caps)) => caps.history && caps.marker == Marker::Metadata,
@@ -326,8 +261,6 @@ fn recovery_due(st: &ConversationStatus, obs: &ConversationObservations) -> Opti
         .map(|at| HistoryQuery::Since { at })
 }
 
-/// The post records whose outcome is not known and whose marker the mirror
-/// does not hold.
 fn unconfirmed_posts(st: &ConversationStatus) -> Vec<(&String, &EffectRecord)> {
     st.effects
         .iter()
@@ -339,7 +272,6 @@ fn unconfirmed_posts(st: &ConversationStatus) -> Vec<(&String, &EffectRecord)> {
         .collect()
 }
 
-/// Some post's last send was refused, so a retry may be due.
 fn has_refused_post(st: &ConversationStatus) -> bool {
     st.effects.iter().any(|(key, record)| {
         is_post_key(key)
@@ -354,8 +286,6 @@ fn is_post_key(key: &str) -> bool {
     key.contains("/refuse/") || key.contains("/busy/")
 }
 
-/// Fleet's own post carrying `key` as its marker, or a split of it, if the
-/// mirror holds one.
 fn find_post<'a>(st: &'a ConversationStatus, key: &str) -> Option<&'a StoredMessage> {
     let split = format!("{key}/");
     st.messages.iter().find(|m| {
@@ -366,7 +296,6 @@ fn find_post<'a>(st: &'a ConversationStatus, key: &str) -> Option<&'a StoredMess
     })
 }
 
-/// The tie waits on a create whose receipt has landed and is not judged.
 fn create_receipt_waiting(uid: &str, st: &ConversationStatus) -> bool {
     st.task
         .as_ref()
@@ -375,7 +304,6 @@ fn create_receipt_waiting(uid: &str, st: &ConversationStatus) -> bool {
         .is_some_and(|r| r.receipt.is_some())
 }
 
-/// The Task the starter's marker names, for a thread Fleet opened.
 fn opener_of(st: &ConversationStatus) -> Option<&str> {
     let starter = st.starter.as_ref()?;
     if starter.removed {
@@ -384,14 +312,10 @@ fn opener_of(st: &ConversationStatus) -> Option<&str> {
     task_of_key(starter.key.as_deref()?).map(|(name, _)| name)
 }
 
-/// A thread Fleet opened whose messages wait to be judged: the pass that
-/// numbered its opening post could not yet ask for the Task its marker
-/// names, so the next pass ties it.
 fn opened_unjudged(st: &ConversationStatus) -> bool {
     st.task.is_none() && opener_of(st).is_some() && !unjudged(st).is_empty()
 }
 
-/// The messages numbered since the last judgement, oldest first.
 fn unjudged(st: &ConversationStatus) -> Vec<&StoredMessage> {
     st.messages
         .iter()
@@ -410,8 +334,6 @@ fn decode(obj: &Object) -> Result<(ConversationSpec, ConversationStatus), StoreE
     Ok((spec, st))
 }
 
-/// The open NeedsAttention reasons, each with its message, carried from
-/// pass to pass in the condition's message.
 struct Attention(BTreeMap<String, String>);
 
 impl Attention {
@@ -455,43 +377,31 @@ impl Attention {
     }
 }
 
-/// One reconcile in progress.
 struct Pass<'a, 'b> {
     input: &'a ConversationInput<'b>,
     spec: &'a ConversationSpec,
     st: ConversationStatus,
     attention: Attention,
-    /// What the platform asked Fleet to wait after an Unknown read.
     retry_after: Option<Millis>,
-    /// The earliest moment a retry or a recovery wants another pass.
     wake: Option<Millis>,
-    /// A post was planned: look at its receipt on the next pass.
     post_wake: bool,
     delete: bool,
     creates: Vec<Create>,
     effects: Vec<Effect>,
-    /// The Task was tied on this pass.
     tied_now: bool,
-    /// The message that started the Task tied on this pass.
     started: Option<String>,
 }
 
-/// A message first seen this pass, before it is numbered.
 struct Fresh {
     message: Message,
     via: Via,
     edited_at: Option<Millis>,
 }
 
-/// Whether a message reached the mirror from the listener: what admission
-/// judges. A message read from history alone is context, never a trigger:
-/// a mention lost in an untied thread is not recovered.
 fn delivered(via: &Via) -> bool {
     matches!(via.verified, Verified::Connection | Verified::Signature)
 }
 
-/// A stored message in the port's shape, for admission: it starts its
-/// thread when it is the thread's starter.
 fn as_message(m: &StoredMessage, starter: Option<&Starter>) -> Message {
     Message {
         id: m.id.clone(),
@@ -559,7 +469,6 @@ impl Pass<'_, '_> {
         self.conditions();
     }
 
-    /// Whether the tied Task is observed being deleted.
     fn tied_task_deleting(&self) -> bool {
         let Some(tie) = &self.st.task else {
             return false;
@@ -571,8 +480,6 @@ impl Pass<'_, '_> {
             )
     }
 
-    /// When the thread's retention runs out: `gateway.retainMs` after the
-    /// later of its last message, its orphaning and its creation.
     fn retained_until(&self) -> Millis {
         let now = self.now();
         let orphaned_at = (self.st.phase == Phase::Orphaned).then(|| {
@@ -595,9 +502,6 @@ impl Pass<'_, '_> {
         since.saturating_add(self.input.defaults.retain_ms)
     }
 
-    /// The thread's end of life, decided before the conditions are, so a
-    /// condition it raises is written: never while a create is pending or
-    /// waits for the thread's directory.
     fn retirement(&mut self) {
         let waiting = self
             .st
@@ -613,9 +517,6 @@ impl Pass<'_, '_> {
         }
     }
 
-    /// The tie, as the Task's observation leaves it: a readably absent
-    /// Task, or another Task under its name, orphans the thread. Unknown
-    /// changes nothing.
     fn tie(&mut self) {
         let Some(tie) = self.st.task.clone() else {
             return;
@@ -666,15 +567,11 @@ impl Pass<'_, '_> {
         }
     }
 
-    /// Whether this pass's history read, if any, was a post's recovery
-    /// read rather than the first read or the backstop.
     fn read_was_recovery(&self) -> bool {
         self.input.observations.history.is_some()
             && history_due(self.spec, &self.input.object_status(), self.input).is_none()
     }
 
-    /// The history read, when one was made: Known numbers below and marks
-    /// the thread Reachable; Unknown leaves the mirror untouched and waits.
     fn history(&mut self) -> Option<History> {
         let recovery = self.read_was_recovery();
         match self.input.observations.history.clone()? {
@@ -708,10 +605,6 @@ impl Pass<'_, '_> {
         }
     }
 
-    /// Number what is new: the history's messages and the spooled
-    /// deliveries, in one revision, oldest first by the platform; an edit
-    /// moves a message's number, a removal takes it out. The drained
-    /// delivery ids are remembered so a redelivery is still a no-op.
     fn number(&mut self, history: Option<History>, spooled: Vec<Delivery>) {
         let next = self.st.revision + 1;
         // Only an untied thread judges a message to start a Task; a tied
@@ -887,7 +780,6 @@ impl Pass<'_, '_> {
         }
     }
 
-    /// The thread's first message as a history read reports it.
     fn starter(&mut self, starter: Starter) -> bool {
         let merged = match &self.st.starter {
             Some(current) if current.removed => return false,
@@ -916,8 +808,6 @@ impl Pass<'_, '_> {
         }
     }
 
-    /// Write a fresh intent under `key`: the first, or one more attempt
-    /// (`counted`) under the same key.
     fn renew_intent(&mut self, key: &str, action: &str, counted: bool) {
         let intent = self.intent(action);
         let record = self
@@ -937,7 +827,6 @@ impl Pass<'_, '_> {
         }
     }
 
-    /// Record a receipt this controller recovered itself, by observation.
     fn recover_receipt(&mut self, key: &str, action: &str, outcome: EffectOutcome) {
         let receipt = Receipt {
             action: action.to_string(),
@@ -949,8 +838,6 @@ impl Pass<'_, '_> {
         }
     }
 
-    /// The window a resent nonce is honoured for, where the platform
-    /// recognises posts by nonce.
     fn nonce_window(&self) -> Option<Millis> {
         match &self.input.observations.capabilities {
             Some(Observation::Known(Capabilities {
@@ -961,10 +848,6 @@ impl Pass<'_, '_> {
         }
     }
 
-    /// A planned post is looked at again on the next pass, not at the next
-    /// poll, unless this pass knows the platform's marker is not a nonce: on
-    /// a nonce platform an Unknown receipt can only be resent while the
-    /// window is open, and the window is shorter than a poll.
     fn wake_for_receipt(&mut self) {
         let other_marker = matches!(
             &self.input.observations.capabilities,
@@ -975,9 +858,6 @@ impl Pass<'_, '_> {
         }
     }
 
-    /// Send a post with an unknown outcome again under its key, keeping its
-    /// intent, so a nonce derived from the key is the same and the window
-    /// still counts from the first send.
     fn resend_post(&mut self, key: &str, text: String) {
         let Some(reference) = self.st.reference.clone() else {
             return;
@@ -997,7 +877,6 @@ impl Pass<'_, '_> {
         self.wake_for_receipt();
     }
 
-    /// Ask the manager to post `text` under `key`, intent first.
     fn plan_post(&mut self, key: &str, text: String, counted: bool) {
         let Some(reference) = self.st.reference.clone() else {
             return;
@@ -1014,8 +893,6 @@ impl Pass<'_, '_> {
         self.wake_for_receipt();
     }
 
-    /// The next Task number: past every one the tie or the effect records
-    /// name, so a key never repeats.
     fn next_n(&self) -> u64 {
         let recorded = self
             .st
@@ -1031,9 +908,6 @@ impl Pass<'_, '_> {
         self.st.task.as_ref().map_or(0, |t| t.n).max(recorded) + 1
     }
 
-    /// The thread's own workspace: on a `{base}` route, the `file://` URL
-    /// of the route's base directory and this Conversation's name, the same
-    /// for every Task the thread starts; a URL list as the route gives it.
     fn workspace(&self, route: &RouteConfig) -> task::Workspace {
         match &route.workspace {
             RouteWorkspace::Base(b) => {
@@ -1043,7 +917,6 @@ impl Pass<'_, '_> {
         }
     }
 
-    /// The Task the thread starts, as the interface page gives it.
     fn task_object(&self, name: &str, route: &RouteConfig, brief: &str) -> Object {
         Object {
             api_version: API_VERSION.to_string(),
@@ -1070,10 +943,6 @@ impl Pass<'_, '_> {
         }
     }
 
-    /// Ask the manager to create the tie's Task under its key, intent
-    /// first, with the thread's own directory as the precondition on a
-    /// `{base}` route. A URL list route shares no directory Fleet made, so
-    /// its create has none.
     fn plan_create(&mut self, counted: bool) {
         let (Some(route), Some(brief)) = (
             self.input.defaults.route.clone(),
@@ -1106,7 +975,6 @@ impl Pass<'_, '_> {
         self.wake_at(self.now().saturating_add(poll));
     }
 
-    /// Start the thread's next Task for `trigger`.
     fn start(&mut self, trigger: &str) {
         let n = self.next_n();
         self.st.task = Some(Tie {
@@ -1119,10 +987,6 @@ impl Pass<'_, '_> {
         self.plan_create(true);
     }
 
-    /// The create's receipt, as the manager or a recovery left it: Created
-    /// ties the thread; WorkspaceBusy holds it, with one notice; Failed is
-    /// tried again, three times; a missing or Unknown receipt is answered
-    /// by looking for the Task, never by creating it again.
     fn settle_create(&mut self) {
         let Some(tie) = self.st.task.clone() else {
             return;
@@ -1178,7 +1042,6 @@ impl Pass<'_, '_> {
         }
     }
 
-    /// A refused create: one more attempt after the delay, up to the cap.
     fn failed_create(&mut self, key: &str, attempts: u32, at: Millis, why: &str) {
         if attempts >= MAX_ATTEMPTS {
             self.attention.raise(
@@ -1196,10 +1059,6 @@ impl Pass<'_, '_> {
         }
     }
 
-    /// A create whose outcome is not known: the Task under the name, with
-    /// this thread's uid label, is adopted; one with another is a refusal;
-    /// readable absence means the create never happened, so it is tried
-    /// once more under the same key; an unreadable store waits.
     fn recover_create(&mut self, key: &str, attempts: u32) {
         match self.input.observations.task.clone() {
             Some(Observation::Known(Some(obj))) => {
@@ -1250,7 +1109,6 @@ impl Pass<'_, '_> {
         }
     }
 
-    /// The Task exists: the thread is tied to it.
     fn tied(&mut self, uid: &str) {
         if let Some(t) = self.st.task.as_mut() {
             t.uid = uid.to_string();
@@ -1262,11 +1120,6 @@ impl Pass<'_, '_> {
         self.attention.clear(TASK_CREATE_FAILED);
     }
 
-    /// Each post's receipt: Posted settles it; Failed is tried again,
-    /// three times; a missing or Unknown outcome is looked for in the
-    /// mirror, then resent under its nonce inside the window where the
-    /// platform honours one, or found by one recovery read where the
-    /// platform reads markers back, and otherwise waits for a person.
     fn settle_posts(&mut self) {
         let keys: Vec<String> = self
             .st
@@ -1411,7 +1264,6 @@ impl Pass<'_, '_> {
         }
     }
 
-    /// The `since` the recovery read asked for, as `probes` derived it.
     fn recovery_since(&self) -> Millis {
         match recovery_due(&self.input.object_status(), &self.input.observations) {
             Some(HistoryQuery::Since { at }) => at,
@@ -1419,7 +1271,6 @@ impl Pass<'_, '_> {
         }
     }
 
-    /// What a post under `key` says, derived again for a retry.
     fn post_text(&self, key: &str) -> Option<String> {
         let route = self.input.defaults.route.as_ref()?;
         if key.contains("/refuse/") {
@@ -1439,9 +1290,6 @@ impl Pass<'_, '_> {
         Some(busy_notice(&holder))
     }
 
-    /// A busy tie whose trigger message is gone from the mirror, removed
-    /// or rotated out, is withdrawn: nothing starts for a request nobody
-    /// can read any more.
     fn withdraw(&mut self) {
         let Some(tie) = self.st.task.clone() else {
             return;
@@ -1463,24 +1311,6 @@ impl Pass<'_, '_> {
     // Reactions: an admitted request is marked queued or working.
     // ------------------------------------------------------------------
 
-    /// The marks admission makes before a Task has the thread's messages,
-    /// each a best-effort reaction:
-    ///
-    /// - a create that waits for the thread's directory marks its trigger,
-    ///   and every admitted message after it, queued;
-    /// - the Task tied on this pass marks its trigger working, and every
-    ///   queued message working in place of queued, in the write the join
-    ///   reads; the working reaction is tried this once, never again, so it
-    ///   cannot land after the Task replied;
-    /// - a queued message the tie pass could not mark loses its queued
-    ///   reaction later, and the join adds the working one;
-    /// - a wait withdrawn, or a queued message that left the mirror, loses
-    ///   the queued reaction;
-    /// - a tie that ends forgets the working marks, which GatewayController
-    ///   then owns.
-    ///
-    /// Reactions off, or a platform without them, forget every mark.
-    /// Unknown capabilities change no mark and wait.
     fn react(&mut self) {
         if self.input.defaults.reactions.is_none() || self.st.retiring.is_some() {
             self.st.reactions = Default::default();
@@ -1563,8 +1393,6 @@ impl Pass<'_, '_> {
             .collect()
     }
 
-    /// The messages a waiting create holds: its trigger, and every
-    /// admitted message the listener delivered since.
     fn waiting_messages(&self) -> Vec<String> {
         let Some(trigger) = self.st.task.as_ref().and_then(|t| t.trigger.clone()) else {
             return Vec::new();
@@ -1595,8 +1423,6 @@ impl Pass<'_, '_> {
             .collect()
     }
 
-    /// Move a message to `mark`, with the reactions that takes: queued is
-    /// added; working is added, and a queued reaction removed.
     fn mark(&mut self, id: &str, mark: Mark) {
         let before = self.st.reactions.marks.insert(id.to_string(), mark);
         self.plan_react(id, mark, true);
@@ -1605,7 +1431,6 @@ impl Pass<'_, '_> {
         }
     }
 
-    /// The reaction effect on `message`, under its key, intent first.
     fn plan_react(&mut self, message: &str, mark: Mark, on: bool) {
         let Some(action) = self.react_action(message, mark, on) else {
             return;
@@ -1632,11 +1457,6 @@ impl Pass<'_, '_> {
         })
     }
 
-    /// Reaction records: one that landed, is given up, or that a later mark
-    /// made pointless is dropped; one refused, or whose outcome is unknown,
-    /// is performed again under its key after the delay, at most three
-    /// times in all, since a reaction is set, not counted. None of it holds
-    /// anything back or raises a condition.
     fn retry_reactions(&mut self) {
         let uid = self.uid().to_string();
         let keys: Vec<String> = self
@@ -1690,8 +1510,6 @@ impl Pass<'_, '_> {
         }
     }
 
-    /// A busy tie is planned again: the manager checks the directory under
-    /// the lease, and a refusal is not an attempt.
     fn retry_busy(&mut self) {
         let Some(tie) = self.st.task.clone() else {
             return;
@@ -1711,9 +1529,6 @@ impl Pass<'_, '_> {
         self.plan_create(false);
     }
 
-    /// Whether the thread may start a Task from a message that meets the
-    /// mention rule: not while it belongs to a Question's Task that still
-    /// exists, and not while Fleet cannot tell whose it is.
     fn opener_allows(&self) -> bool {
         let Some(starter) = &self.st.starter else {
             return true;
@@ -1736,8 +1551,6 @@ impl Pass<'_, '_> {
         }
     }
 
-    /// A thread Fleet opened for a Question is tied to that Task while it
-    /// exists with the uid the marker names.
     fn tie_by_marker(&mut self) {
         if self.st.task.is_some() {
             return;
@@ -1762,16 +1575,6 @@ impl Pass<'_, '_> {
         }
     }
 
-    /// Admission over the messages numbered since the last judgement:
-    ///
-    /// - A stranger's mention earns one refusal per author. In a DM thread
-    ///   (`spec.direct`), so does the stranger's top-level message.
-    /// - In an Untied thread, an admitted message that meets the mention
-    ///   rule starts a Task. In a DM thread, the DM rule replaces it.
-    /// - In an Orphaned thread, any admitted message starts a Task.
-    ///
-    /// Judging waits for the thread's starter where the account has
-    /// history, and for the route while it is not in the config.
     fn admit(&mut self) {
         let (Some(route), Some(_)) = (
             self.input.defaults.route.clone(),
@@ -1842,7 +1645,6 @@ impl Pass<'_, '_> {
         self.st.judged = self.st.revision;
     }
 
-    /// One refusal per author and thread, up to the cap.
     fn refuse(&mut self, author: &str, route: &RouteConfig) {
         if self.st.refusals.iter().any(|a| a == author) {
             return;
@@ -1855,7 +1657,6 @@ impl Pass<'_, '_> {
         self.plan_post(&key, route.refusal().to_string(), true);
     }
 
-    /// Every unsettled record stays; of the settled, the newest 100.
     fn trim_effects(&mut self) {
         let mut settled: Vec<(String, Millis)> = self
             .st
@@ -1921,11 +1722,6 @@ impl Pass<'_, '_> {
         }
     }
 
-    /// When to look again: the backstop interval while Tied, one interval
-    /// while a create is pending or waits for the workspace, the end of
-    /// the retention while Untied or Orphaned, and past it the delete; an
-    /// Unknown read's `retryAfter`, or one interval, before either; and
-    /// never later than a retry or a recovery wants.
     fn schedule(&mut self) {
         let now = self.now();
         let poll = self.spec.poll_ms(self.input.defaults.poll_ms);
@@ -1994,20 +1790,6 @@ impl Pass<'_, '_> {
 }
 
 impl Pass<'_, '_> {
-    /// A thread's one end of life, once it had no message for its
-    /// retention. Started only for an Untied or Orphaned thread, or one
-    /// whose Task is Concluded; a message numbered since ends it, and so
-    /// does a Task that is no longer Concluded. Each step is a keyed effect
-    /// under the retirement's start, so a crash between two steps resumes
-    /// at the first one without a settled receipt:
-    ///
-    /// 1. the Task the thread created is deleted, fenced on its uid; the
-    ///    thread then orphans as it does for any Task readably gone;
-    /// 2. the directory the manager recorded making is removed, while no
-    ///    Task names it;
-    /// 3. the Conversation is deleted, fenced, as retention always did.
-    ///
-    /// An Unknown read waits; it never counts as absence.
     fn retire(&mut self, idle: bool) {
         let now = self.now();
         if let Some(r) = self.st.retiring {
@@ -2102,11 +1884,6 @@ impl Pass<'_, '_> {
         self.delete = self.creates.is_empty() && self.effects.is_empty();
     }
 
-    /// One keyed step of a retirement: planned once; Deleted settles it; a
-    /// Task that still names the directory waits, uncounted; a refusal is
-    /// tried again after the delay, three times, then `RetireFailed` holds
-    /// the thread for a person; an Unknown outcome is performed again,
-    /// which is harmless: a deleted Task and a removed directory stay so.
     fn retire_step(&mut self, key: &str, action: Action) {
         let name = action.name();
         let record = self.st.effects.get(key).cloned();
@@ -2173,14 +1950,11 @@ impl Pass<'_, '_> {
 }
 
 impl ConversationInput<'_> {
-    /// The status as stored, before this pass changed anything.
     fn object_status(&self) -> ConversationStatus {
         decode(self.object).map(|(_, st)| st).unwrap_or_default()
     }
 }
 
-/// A message the mirror holds, read again: its text or marker as the
-/// platform has it now. A change moves its number.
 fn refresh(stored: &mut StoredMessage, seen: &Message, next: u64) -> bool {
     let mut changed = false;
     if stored.text != seen.text {

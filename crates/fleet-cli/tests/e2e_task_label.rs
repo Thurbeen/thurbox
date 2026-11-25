@@ -1,7 +1,3 @@
-//! `fleet label` end to end: a Task's labels set through the real binary,
-//! its spec and generation untouched, and the labels only Fleet's own
-//! controllers write left alone and refused.
-
 mod support;
 
 use fleet_api::conversation::{CONVERSATION_LABEL, CONVERSATION_UID_LABEL};
@@ -62,8 +58,6 @@ fn a_label_only_fleet_writes_is_refused() {
     env.fleet(&["label", "task", "nobody", "a=b"]).code(3);
 }
 
-/// A Task a Conversation made carries the labels `apply` refuses; a label
-/// set on it keeps them.
 #[test]
 fn a_task_a_conversation_made_keeps_its_labels() {
     let env = with_task("label-conversation");

@@ -1,11 +1,3 @@
-//! Settings a mod declares are real knobs, not decoration.
-//!
-//! The contribution API (`Registry::settings`) existed from the start and no
-//! bundled mod used it, so the settings modal rendered an empty pane. That
-//! is the failure mode these guard against: a declaration that nothing reads is
-//! worse than none, because it puts a row in front of the user that does not do
-//! anything when they change it.
-
 use ratatui::backend::TestBackend;
 use ratatui::Terminal;
 
@@ -55,22 +47,17 @@ fn row(name: &str, repo: &str) -> SessionRow {
     }
 }
 
-/// `row`, moved by hand to `position` in the manual order.
 fn ordered(mut row: SessionRow, position: i64) -> SessionRow {
     row.display_order = Some(position);
     row
 }
 
-/// `row`, running on another machine. Both fields, as a real remote row
-/// carries them: the backend is how the session was started and `remote_host`
-/// is the bare name the session list is published and grouped by.
 fn on_host(mut row: SessionRow, machine: &str) -> SessionRow {
     row.backend = format!("ssh:{machine}");
     row.remote_host = Some(machine.into());
     row
 }
 
-/// Where each of `names` lands in the rendered list, top to bottom.
 fn rendered_order<'a>(drawn: &str, names: &[&'a str]) -> Vec<&'a str> {
     let mut found: Vec<(usize, &str)> = names
         .iter()
@@ -85,7 +72,6 @@ fn rendered_order<'a>(drawn: &str, names: &[&'a str]) -> Vec<&'a str> {
     found.into_iter().map(|(_, name)| name).collect()
 }
 
-/// Render the session list with `registry` in force.
 fn session_list(host: &LuaHost, registry: &Registry) -> String {
     session_list_of(
         host,
@@ -94,7 +80,6 @@ fn session_list(host: &LuaHost, registry: &Registry) -> String {
     )
 }
 
-/// The same, over a session set the caller chose.
 fn session_list_of(host: &LuaHost, registry: &Registry, sessions: Vec<SessionRow>) -> String {
     let snapshot = Snapshot {
         sessions,
@@ -342,8 +327,6 @@ fn local_host_row_follows_the_host_grouping_setting() {
 
 // --- a text setting with declared choices -----------------------------------
 
-/// The bundled interface plus one pane declaring a setting with choices, and
-/// reading back what the registry publishes for it.
 fn host_with_choices() -> (tempfile::TempDir, LuaHost) {
     let dir = tempfile::tempdir().expect("tempdir");
     copy_ui(
@@ -511,8 +494,6 @@ fn the_choices_are_published_to_lua() {
     );
 }
 
-/// A pane declaring one setting row, loaded beside the bundled interface: the
-/// load error it causes, if any.
 fn load_error_for(setting: &str) -> Option<String> {
     let dir = tempfile::tempdir().expect("tempdir");
     copy_ui(

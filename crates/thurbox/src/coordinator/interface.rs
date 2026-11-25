@@ -1,13 +1,3 @@
-//! Reloading the interface, and the user's decisions about it.
-//!
-//! Trust, the disabled set and a switch slot's selection are all *user*
-//! decisions (`mod-state.json` and `ui.json`), distinct from the delivery
-//! facts in `.bundled.json`.
-//! Each of the four Interface-tab keys reloads, because a mod's capabilities
-//! are installed when its environment is built: revoking has to rebuild it, so
-//! the capability is *absent* on the next frame rather than present and
-//! refusing.
-
 use std::time::{Duration, Instant};
 
 use thurbox::kernel::bands::Level;
@@ -43,7 +33,6 @@ impl App {
         self.settle_reload(reason);
     }
 
-    /// What every reload ends with, whichever interface it put in.
     fn settle_reload(&mut self, reason: super::events::ReloadReason) {
         let memory = reason == super::events::ReloadReason::Memory;
         self.note_reload(if memory && self.host.error.is_some() {
@@ -66,8 +55,6 @@ impl App {
         self.forget_unloaded_mods();
     }
 
-    /// Swap in the bundled interface because the user's will not load, saying why.
-    /// Whether it went in.
     fn install_bundled_floor(&mut self) -> bool {
         let Ok(dir) = thurbox::kernel::bundled::fallback_dir() else {
             return false;
@@ -88,8 +75,6 @@ impl App {
         true
     }
 
-    /// Replace a full VM with the bundled interface without building the
-    /// user's again: it filled the last fresh VM it was given (`cause`).
     fn floor_refilled_interface(&mut self, cause: String) {
         self.host.error = Some(cause.clone());
         if !self.install_bundled_floor() {
@@ -177,12 +162,6 @@ impl App {
         }
     }
 
-    /// Take a saved draft into force and write it to the file.
-    ///
-    /// Two halves, in this order: the live flags apply now (that is what makes
-    /// them live), and the file is written on a worker like everything else that
-    /// touches the world — so a read-only filesystem surfaces as a reported
-    /// failure rather than a silent one.
     pub(crate) fn apply_settings(&mut self, draft: thurbox::session::settings::Settings) {
         let outcome = self.config.adopt(draft.clone());
         self.config.mark_saved();
@@ -276,7 +255,6 @@ impl App {
         outcome
     }
 
-    /// Report what just happened, for [`STATUS_TTL`], at informational level.
     pub(crate) fn toast(&mut self, message: impl Into<String>) {
         self.report(message, Level::Info);
     }
@@ -344,9 +322,6 @@ impl App {
         }
     }
 
-    /// Report at a chosen severity. The message band badges the three
-    /// differently, as v1 does — an error that reads like a confirmation is an
-    /// error nobody notices.
     pub(crate) fn report(&mut self, message: impl Into<String>, level: Level) {
         self.status = Some((message.into(), level, Instant::now()));
         self.dirty = true;

@@ -1,34 +1,3 @@
-//! Discord through an externally authenticated `curl`: the REST API behind
-//! the Gateway port, as the [Discord adapter page] maps it.
-//!
-//! - An address is `discord:<channel>:<thread>` for a thread, or
-//!   `discord:<channel>` for the channel a thread is opened in. A thread
-//!   started from a message has that message's id, so a top-level message
-//!   `M` in channel `C` is the conversation `discord:C:M` before its thread
-//!   exists.
-//! - [`read_event`] reads the listener's envelope, `{dispatch, parentId}`,
-//!   and is pure: a thread message is told by its `channel_type` or the
-//!   `parentId` the listener adds, Fleet's own posts by the account's bot
-//!   user id, a mention by the `mentions` array.
-//! - `whoami` asks `GET /users/@me` and checks the guild; `capabilities`
-//!   reads the application's message content flags. `history` pages a
-//!   thread forward under a budget of calls, with the message it started
-//!   from, and answers Unknown rather than a partial list.
-//! - `post` sends `POST /channels/<thread>/messages`, and starts the thread
-//!   from its message when Discord does not know it yet. `open` posts in the
-//!   channel and starts a thread from that post. Every post carries a nonce
-//!   derived from the intent key with `enforce_nonce`, so a resend inside
-//!   Discord's window returns the post that landed, and mentions nobody.
-//!   Fleet's Markdown subset is Discord's own; the text is split at
-//!   [`POST_LIMIT`] characters under derived keys.
-//!
-//! Every call is one bounded `curl` process through fleet-exec, killed with
-//! its process tree past the bound. Fleet never constructs an Authorization
-//! header: the bot token lives in the operator's curl config file, which
-//! Fleet names with `--config` and never reads.
-//!
-//! [Discord adapter page]: ../../../docs/fleet/controllers/gateway-adapters.md
-
 use std::collections::BTreeSet;
 use std::ffi::OsString;
 use std::path::PathBuf;
@@ -49,55 +18,36 @@ use crate::curl::{Budget, Reply, landed, send_failure};
 use crate::text::split;
 
 pub const KIND: &str = "discord";
-/// Every call is `https://discord.com/api/v10/<path>`.
 pub const API: &str = "https://discord.com/api/v10";
-/// The client an account runs without a `cli` of its own.
 pub const DEFAULT_CLI: &str = "curl";
-/// The most characters one message's `content` takes.
 pub const POST_LIMIT: usize = 2_000;
-/// The most posts one text is split into; a longer text is refused.
 pub const MAX_CHUNKS: usize = 10;
-/// The most calls one operation makes.
 pub const MAX_CALLS_PER_OPERATION: u32 = 10;
-/// How long Fleet trusts Discord to return a post for a resent nonce.
-/// Discord documents "the past few minutes"; Fleet takes one.
 pub const NONCE_WINDOW_MS: Millis = 60_000;
-/// Discord's documented maximum nonce length.
 pub const NONCE_LEN: usize = 25;
-/// Messages per history page, Discord's maximum.
 const PAGE: usize = 100;
-/// The first millisecond of 2015, where snowflake time starts.
 pub const EPOCH: Millis = 1_420_070_400_000;
-/// `SUPPRESS_EMBEDS`: Fleet's links never unfurl.
 const SUPPRESS_EMBEDS: u64 = 1 << 2;
 
-/// Gateway intents a listener identifies with.
 pub const INTENT_GUILDS: u64 = 1 << 0;
 pub const INTENT_GUILD_MESSAGES: u64 = 1 << 9;
 pub const INTENT_MESSAGE_CONTENT: u64 = 1 << 15;
-/// Application flags that grant the message content intent.
 const APP_MESSAGE_CONTENT: u64 = (1 << 18) | (1 << 19);
 
-/// Discord's JSON error codes the adapter acts on.
 const UNKNOWN_CHANNEL: u64 = 10_003;
 const UNKNOWN_MESSAGE: u64 = 10_008;
 const THREAD_EXISTS: u64 = 160_004;
 
-/// Message types read as messages: `DEFAULT` and `REPLY`. Every other type
-/// is a system note, such as a thread's starter reference.
 fn is_message_type(t: Option<u64>) -> bool {
     matches!(t, Some(0 | 19))
 }
 
-/// Channel types of a public thread, in an announcement or a text channel.
 fn is_public_thread(t: u64) -> bool {
     matches!(t, 10 | 11)
 }
 
 const PRIVATE_THREAD: u64 = 12;
 
-/// The intents a listener identifies with: guild and message events, and
-/// message content when the account holds it.
 pub fn intents(message_content: bool) -> u64 {
     let base = INTENT_GUILDS | INTENT_GUILD_MESSAGES;
     if message_content {
@@ -107,7 +57,6 @@ pub fn intents(message_content: bool) -> u64 {
     }
 }
 
-/// One Discord guild, served by `curl` with the operator's config file.
 #[derive(Debug, Clone)]
 pub struct DiscordGateway {
     account: String,
@@ -120,9 +69,6 @@ pub struct DiscordGateway {
 }
 
 impl DiscordGateway {
-    /// The adapter for an account, or why its configuration cannot be
-    /// served: an `inbound` other than `discord-gateway`, no guild in
-    /// `team`, or no `curlConfig`.
     pub fn new(
         account: &str,
         config: &AccountConfig,
@@ -156,9 +102,6 @@ impl DiscordGateway {
         })
     }
 
-    /// One bounded call: `curl --include … --config <file> --request <verb>
-    /// --url <API>/<path>`, with a JSON body on stdin for a POST, so neither
-    /// the text nor anything from the config file is on a command line.
     fn call(
         &self,
         verb: &str,
@@ -240,9 +183,6 @@ impl DiscordGateway {
         self.call(verb, path, body, timeout)
     }
 
-    /// Every message of `channel` after the snowflake `after`, paged
-    /// forward. `None` when Discord does not know the channel: a thread not
-    /// started yet.
     fn read_channel(
         &self,
         channel: &str,
@@ -274,8 +214,6 @@ impl DiscordGateway {
         }
     }
 
-    /// The newest `limit` messages of `channel` at least, paged backward
-    /// from the newest. `None` when Discord does not know the channel.
     fn read_newest(
         &self,
         channel: &str,
@@ -312,8 +250,6 @@ impl DiscordGateway {
         }
     }
 
-    /// A thread's or channel's messages for `query`: the newest ones for a
-    /// first read, else every one after its bound.
     fn read(
         &self,
         channel: &str,
@@ -399,7 +335,6 @@ impl DiscordGateway {
         })
     }
 
-    /// One message in `channel` under `key`'s nonce: its id and time.
     fn send(
         &self,
         channel: &str,
@@ -430,8 +365,6 @@ impl DiscordGateway {
         Ok((id.to_string(), at))
     }
 
-    /// Start the thread whose id is `message`'s, in `channel`. A thread that
-    /// already exists is the one wanted: its id is the message's.
     fn start_thread(
         &self,
         channel: &str,
@@ -451,11 +384,6 @@ impl DiscordGateway {
         }
     }
 
-    /// Post `text` as one or more chunks, the first under `key` alone when
-    /// it is the only one, else each under `<key>/<n>/<total>`. With a `thread`,
-    /// every chunk goes there, and the thread is started from its message
-    /// first when Discord does not know it yet. Without one, the first chunk
-    /// goes to the channel and starts a thread the rest go to.
     fn post_chunks(
         &self,
         chat: &str,
@@ -517,9 +445,6 @@ impl DiscordGateway {
         Observation::Known(landed(KIND, chat, thread, message, at))
     }
 
-    /// Post `text` at the top level of `chat`: every chunk a message in the
-    /// channel, and no thread started. The first chunk's id and time come
-    /// back as `Posted`.
     fn post_channel(&self, chat: &str, text: &str, key: &str) -> Observation<EffectOutcome> {
         let chunks = split(text, POST_LIMIT);
         if chunks.len() > MAX_CHUNKS {
@@ -554,11 +479,6 @@ impl DiscordGateway {
         Observation::Known(EffectOutcome::Posted { message, at })
     }
 
-    /// Create or delete Fleet's own reaction on the message: `PUT` or
-    /// `DELETE /channels/{channel}/messages/{message}/reactions/{emoji}/@me`,
-    /// with the emoji URL-encoded. A thread is a channel, so a reply's
-    /// channel is the thread; a thread started from a message keeps that
-    /// starter message in the parent channel.
     fn react_on(
         &self,
         conversation: &ConversationRef,
@@ -593,8 +513,6 @@ impl DiscordGateway {
         }
     }
 
-    /// The link Discord copies for a thread: the guild, then the thread's
-    /// channel id.
     fn thread_link(&self, thread: &ConversationRef) -> Option<String> {
         let id = thread.thread.as_deref()?;
         Some(format!("https://discord.com/channels/{}/{id}", self.guild))
@@ -633,9 +551,6 @@ impl DiscordGateway {
         })
     }
 
-    /// History, the nonce window and threads are Discord's own; unmentioned
-    /// messages reach Fleet only when the account says it holds the message
-    /// content intent and the application has it.
     fn offers(&self) -> Observation<Capabilities> {
         let app = match self.call("GET", "applications/@me", None, self.call_timeout) {
             Ok(v) => v,
@@ -658,8 +573,6 @@ impl DiscordGateway {
 // Addresses, snowflakes, nonces and times.
 // ----------------------------------------------------------------------
 
-/// The emoji names Fleet maps to Unicode for Discord: Slack's names for
-/// the default reactions, and a few common ones besides.
 const EMOJI: &[(&str, &str)] = &[
     ("eyes", "\u{1F440}"),
     ("white_check_mark", "\u{2705}"),
@@ -673,9 +586,6 @@ const EMOJI: &[(&str, &str)] = &[
     ("x", "\u{274C}"),
 ];
 
-/// The emoji a reaction name means on Discord: a name Fleet maps, a custom
-/// emoji as `name:id`, or a Unicode emoji as it is. `None` for any other
-/// ASCII name.
 pub fn emoji(name: &str) -> Option<String> {
     let name = name.trim_matches(':');
     if let Some((_, e)) = EMOJI.iter().find(|(n, _)| *n == name) {
@@ -687,8 +597,6 @@ pub fn emoji(name: &str) -> Option<String> {
     (!name.is_empty() && !name.is_ascii()).then(|| name.to_string())
 }
 
-/// Percent-encode every byte outside the unreserved set; `:` of a custom
-/// emoji included.
 fn url_encode(s: &str) -> String {
     let mut out = String::new();
     for b in s.bytes() {
@@ -701,7 +609,6 @@ fn url_encode(s: &str) -> String {
     out
 }
 
-/// `discord:<channel>[:<thread>]`, each a snowflake.
 pub fn parse_address(address: &str) -> Result<ConversationRef, String> {
     let parsed = ConversationRef::split(address)
         .ok_or_else(|| format!("{address:?} is not <platform>:<chat>[:<thread>]"))?;
@@ -724,7 +631,6 @@ fn check_ref(r: &ConversationRef) -> Result<(), String> {
     Ok(())
 }
 
-/// A snowflake: an unsigned 64-bit integer in decimal.
 pub fn is_snowflake(s: &str) -> bool {
     !s.is_empty() && s.len() <= 20 && s.parse::<u64>().is_ok()
 }
@@ -733,19 +639,15 @@ fn snowflake(v: &Value) -> Option<u64> {
     v.as_str().and_then(|s| s.parse().ok())
 }
 
-/// The Unix milliseconds a snowflake was made at.
 pub fn snowflake_millis(id: &str) -> Option<Millis> {
     let n: u64 = id.parse().ok()?;
     (n >> 22).checked_add(EPOCH)
 }
 
-/// The snowflake just before every id made at or after `at`, for `after`.
 fn snowflake_before(at: Millis) -> u64 {
     (at.saturating_sub(EPOCH) << 22).saturating_sub(1)
 }
 
-/// Where a history read starts: after a message, the thread's start, or a
-/// time.
 fn after_of(query: &HistoryQuery) -> u64 {
     match query {
         HistoryQuery::After { id: Some(id), .. } => id.parse().unwrap_or(0),
@@ -754,8 +656,6 @@ fn after_of(query: &HistoryQuery) -> u64 {
     }
 }
 
-/// The nonce a post under `key` carries: the first 25 hex characters of the
-/// key's SHA-256, so every resend of one key carries the same one.
 pub fn nonce(key: &str) -> String {
     Sha256::digest(key.as_bytes())
         .iter()
@@ -764,8 +664,6 @@ pub fn nonce(key: &str) -> String {
         .to_string()
 }
 
-/// A thread's name: the text's first non-empty line, at most 100
-/// characters, or `Fleet`.
 pub fn thread_name(text: &str) -> String {
     let line = text.lines().map(str::trim).find(|l| !l.is_empty());
     match line {
@@ -774,8 +672,6 @@ pub fn thread_name(text: &str) -> String {
     }
 }
 
-/// An ISO 8601 time as Discord writes it (`2024-10-27T03:33:20.000000+00:00`)
-/// as Unix milliseconds.
 pub fn iso_millis(s: &str) -> Option<Millis> {
     let b = s.as_bytes();
     if b.len() < 19 || b[4] != b'-' || b[7] != b'-' || b[10] != b'T' {
@@ -822,9 +718,6 @@ pub fn iso_millis(s: &str) -> Option<Millis> {
 // Reading messages and events, pure.
 // ----------------------------------------------------------------------
 
-/// One Discord message object in the port's words. The account's `bot` is
-/// the one author that is Fleet, and its own posts mention nobody; another
-/// bot, or a webhook, is a `bot` author. The time is the snowflake's.
 pub fn message_of(bot: &str, item: &Value, starts_thread: bool) -> Result<Message, String> {
     let id = item["id"]
         .as_str()
@@ -867,8 +760,6 @@ pub fn message_of(bot: &str, item: &Value, starts_thread: bool) -> Result<Messag
     })
 }
 
-/// The messages the query covers, each once, oldest first, and how many
-/// older ones an `After` read left out under its limit.
 fn collect(all: Vec<Message>, query: &HistoryQuery) -> (Vec<Message>, u64) {
     let mut seen = BTreeSet::new();
     let mut messages: Vec<Message> = all
@@ -894,15 +785,6 @@ fn collect(all: Vec<Message>, query: &HistoryQuery) -> (Vec<Message>, u64) {
     (messages, left_out)
 }
 
-/// What an envelope carries, read without any call. The payload is
-/// `{dispatch, parentId}`: the raw Gateway dispatch, and the parent channel
-/// the listener adds for a message in a thread, `null` in a channel. `MESSAGE_CREATE`,
-/// `MESSAGE_UPDATE` and `MESSAGE_DELETE` are read; other dispatches, other
-/// guilds, direct messages, private threads, system message types and an
-/// update without new text are ignored. A payload without its dispatch,
-/// a message without its `id` or `channel_id`, an envelope without its
-/// `parentId` key, or a public thread's message with a `null` one is
-/// Unknown.
 pub fn read_event(account: &AccountConfig, envelope: &Envelope) -> Observation<Option<Delivery>> {
     let Some(outer) = envelope.payload.as_object() else {
         return Observation::unknown("the payload is not an object");
@@ -1032,25 +914,13 @@ fn str_of<'a>(m: &'a Map<String, Value>, k: &str) -> Option<&'a str> {
 // One call's answer.
 // ----------------------------------------------------------------------
 
-/// Why a call gave no usable answer.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum CallError {
-    /// HTTP 429: nothing was done; `retry_after` in milliseconds.
-    Throttled {
-        retry_after: Option<Millis>,
-    },
-    /// A 4xx answer: the request was not performed. `code` is Discord's
-    /// JSON error code, 0 when it gave none.
-    Refused {
-        code: u64,
-        why: String,
-    },
-    /// No answer that tells whether the request was performed: an
-    /// unreadable body, or a 5xx.
+    Throttled { retry_after: Option<Millis> },
+    Refused { code: u64, why: String },
     Unreadable(String),
     Timeout(String),
     Incomplete(String),
-    /// `curl` could not start, so nothing was sent.
     Unavailable(String),
 }
 
@@ -1080,8 +950,6 @@ impl CallError {
         }
     }
 
-    /// Discord said no, asked Fleet to slow down, or curl never ran: the
-    /// write was certainly not made.
     fn certain_failure(&self) -> bool {
         matches!(
             self,
@@ -1101,7 +969,6 @@ impl CallError {
     }
 }
 
-/// The REST API's answer: its JSON on a 2xx, else why not.
 pub fn answer(reply: &Reply, what: &str) -> Result<Value, CallError> {
     // `204 No Content`, as a reaction's create and delete answer.
     if (200..=299).contains(&reply.status) && reply.body.trim().is_empty() && reply.exit == Some(0)

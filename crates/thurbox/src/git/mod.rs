@@ -1,13 +1,3 @@
-//! Every `git` invocation thurbox makes, all of them on this machine.
-//!
-//! Split by concern — `command` builds the process (and scrubs the inherited
-//! `GIT_*` that would silently retarget it), `mod_repo` clones a mod's working
-//! copy, `stderr` keeps what a failure printed readable, `discovery` answers
-//! "what is here", `newrepo` makes a directory for a repository that does not
-//! exist yet, and `diff` produces diffs and a worktree's stats. Fleet creates
-//! and removes the worktrees sessions live in.
-//! `git::*` is one flat surface; no caller names a submodule.
-
 mod command;
 mod diff;
 mod discovery;

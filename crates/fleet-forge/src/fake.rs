@@ -1,14 +1,3 @@
-//! A fake forge that keeps its changes in one JSON file, so the CLI under
-//! test and the test itself see the same forge across processes. It runs no
-//! process and reaches no network.
-//!
-//! Faults are queued per call and consumed in order. They model the Unknown
-//! cases of the forge contract: a lost answer, a timeout, a throttled answer
-//! with `retryAfter`, an incomplete read, a malformed answer, and proven
-//! absence; and for `markReady`, the three outcomes a real forge can give
-//! besides success: `moved`, `failed`, and `lost` (Unknown, nothing mutated)
-//! or `lost-applied` (Unknown, but the mutation landed).
-
 use std::collections::BTreeMap;
 use std::fs::{self, File, OpenOptions};
 use std::io;
@@ -26,16 +15,10 @@ pub const KIND: &str = "fake";
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ForgeFault {
-    /// `change`, `parse`, `whoami` or `markReady`.
     pub call: String,
-    /// For `change`: `lost`, `timeout`, `throttle`, `incomplete`,
-    /// `malformed` or `absent`. For `markReady`: `moved`, `failed`, `lost`
-    /// or `lost-applied`.
     pub mode: String,
-    /// For `throttle`: what the forge says to wait, in milliseconds.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub retry_after_ms: Option<Millis>,
-    /// How many calls this fault applies to.
     #[serde(default = "one")]
     pub times: u32,
 }
@@ -68,27 +51,21 @@ impl ForgeFault {
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", default, deny_unknown_fields)]
 pub struct FakeForgeState {
-    /// Changes by `<project>/<id>`.
     pub changes: BTreeMap<String, ChangeSnapshot>,
     pub faults: Vec<ForgeFault>,
     pub calls: BTreeMap<String, u64>,
-    /// What `whoami` answers.
     pub login: Option<String>,
-    /// The intent key of every mark-ready that mutated a change, in order.
     pub marked_ready: Vec<String>,
-    /// How long each `change` call takes to answer, as a slow forge would.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub change_delay_ms: Option<Millis>,
 }
 
-/// The fake forge's directory, shared by every process that opens it.
 #[derive(Debug, Clone)]
 pub struct FakeForge {
     host: String,
     dir: PathBuf,
 }
 
-/// `<project>/<id>`: the key a change is stored under.
 pub fn change_key(project: &str, id: &str) -> String {
     format!("{project}/{id}")
 }
@@ -106,7 +83,6 @@ impl FakeForge {
         self.dir.join("state.json")
     }
 
-    /// Read-modify-write under the forge's lock.
     pub fn update<T>(&self, f: impl FnOnce(&mut FakeForgeState) -> T) -> io::Result<T> {
         let _lock = Lock::acquire(&self.dir.join("lock"))?;
         let mut state = self.read_unlocked()?;
@@ -141,7 +117,6 @@ impl FakeForge {
         self.update(|s| s.faults.push(fault))
     }
 
-    /// Put a change on the forge, replacing what was there.
     pub fn set_change(&self, project: &str, id: &str, change: ChangeSnapshot) -> io::Result<()> {
         self.update(|s| {
             s.changes.insert(change_key(project, id), change);
@@ -162,13 +137,10 @@ impl FakeForge {
         Ok(self.state()?.calls.get(call).copied().unwrap_or(0))
     }
 
-    /// The intent keys of every mark-ready that mutated a change, in order.
     pub fn marked_ready(&self) -> io::Result<Vec<String>> {
         Ok(self.state()?.marked_ready)
     }
 
-    /// Take the change out of draft, recording the intent key. `None` when
-    /// there is no such change.
     fn apply_ready(&self, change: &ChangeRef, intent_key: &str) -> io::Result<Option<()>> {
         self.update(|s| {
             let c = s
@@ -182,7 +154,6 @@ impl FakeForge {
         })
     }
 
-    /// Count the call and take its fault, if one is queued.
     fn begin(&self, call: &str) -> Result<Option<ForgeFault>, String> {
         self.update(|s| {
             *s.calls.entry(call.to_string()).or_default() += 1;
@@ -309,11 +280,6 @@ impl Forge for FakeForge {
         }
     }
 
-    /// A fresh read of the change's head and state, `Moved` when either is
-    /// not what was expected, else the change leaves draft. Faults: `moved`
-    /// refuses as if the fresh read disagreed, `failed` is the forge saying
-    /// no, `lost` is Unknown with nothing mutated, `lost-applied` is Unknown
-    /// with the mutation landed.
     fn mark_ready(
         &self,
         change: &ChangeRef,

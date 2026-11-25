@@ -1,8 +1,3 @@
-//! The Task inbox end to end: `fleet send` through the real binary, the
-//! file store's typed mutations, TaskController's delivery and the runtime's
-//! journal, against the fake host, across process restarts and injected
-//! faults.
-
 mod support;
 
 use std::fs;
@@ -13,13 +8,10 @@ use fleet_runtime::Fault;
 use serde_json::{Value, json};
 use support::{Env, assert_condition, base_config, task};
 
-/// A Task briefed on the fake host, sent by a known user.
 fn briefed(name: &str) -> Env {
     briefed_as(name, "claude-code")
 }
 
-/// Briefed, on `harness`: one with no prompt hook leaves a lost answer to
-/// the runtime's journal.
 fn briefed_as(name: &str, harness: &str) -> Env {
     let mut env = Env::new(name);
     env.set_var("USER", "tester");
@@ -50,7 +42,6 @@ fn concluded(name: &str) -> Env {
     env
 }
 
-/// `fleet send --json`: the entry as appended, and its key.
 fn send(env: &Env, text: &str) -> Value {
     env.fleet(&["send", "t1", text, "--json"]).ok().json()
 }

@@ -1,12 +1,3 @@
-//! A Discord account end to end: the listener's Gateway dispatches go
-//! through `fleet gateway receive` into a Conversation on the thread's
-//! address, an admitted mention starts a Task, and a refusal reaches
-//! Discord through the stub `curl`: the thread is started from the
-//! mention, the post carries a nonce with `enforce_nonce` and mentions
-//! nobody, and a post whose answer was lost is recovered by resending the
-//! same nonce inside the window. Fleet names the operator's curl config and
-//! never builds an Authorization header.
-
 mod support;
 
 use std::fs;
@@ -31,17 +22,12 @@ const ALEX: &str = "1220000000000000000";
 const STRANGER: &str = "1240000000000000000";
 const CHANNEL: &str = "1230000000000000000";
 const EPOCH: u64 = 1_420_070_400_000;
-/// GUILDS | GUILD_MESSAGES: what a listener identifies with when the
-/// account does not hold MESSAGE_CONTENT.
 const INTENTS: u64 = (1 << 0) | (1 << 9);
 
-/// The snowflake of a message sent at `ms`.
 fn snowflake(ms: u64) -> String {
     ((ms - EPOCH) << 22).to_string()
 }
 
-/// A gateway environment whose one account is on Discord, served by the
-/// stub copied as `curl`, which is all the children's PATH holds.
 fn discord_env(name: &str) -> (Env, PathBuf) {
     let mut env = Env::new(name);
     let bin = env.root.join("discord-bin");
@@ -86,7 +72,6 @@ taskConfig = \"conversation\"\nbrief = \"{root}/briefs/conversation.md\"\nworksp
     (env, curl_config)
 }
 
-/// A top-level message in the route's channel, in Discord's shape.
 fn message(id: &str, author: &str, at: u64, content: &str, mentions_bot: bool) -> Value {
     json!({
         "id": id, "channel_id": CHANNEL, "type": 0,
@@ -97,7 +82,6 @@ fn message(id: &str, author: &str, at: u64, content: &str, mentions_bot: bool) -
     })
 }
 
-/// Seed the stub guild with `messages` in the route's channel.
 fn seed(env: &Env, messages: &[Value]) {
     let stored: Vec<Value> = messages
         .iter()
@@ -118,8 +102,6 @@ fn seed(env: &Env, messages: &[Value]) {
     });
 }
 
-/// `fleet gateway receive` with the listener's envelope: the raw Gateway
-/// dispatch, and a `null` parentId for a message in a text channel.
 fn receive(env: &Env, seq: u64, m: &Value) -> support::Run {
     let mut d = m.clone();
     let at = d["_at"].as_u64().unwrap();
@@ -334,8 +316,6 @@ fn a_discord_mention_reaches_a_conversation_and_the_reply_starts_its_thread() {
     env.assert_no_temp();
 }
 
-/// The adapter as the manager builds it, driven in-process against the
-/// stub `curl` that `discord_env` placed.
 fn adapter(env: &Env, curl_config: &std::path::Path) -> DiscordGateway {
     let exe = if cfg!(windows) { ".exe" } else { "" };
     DiscordGateway::new(

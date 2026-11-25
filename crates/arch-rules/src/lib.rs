@@ -1,62 +1,3 @@
-//! Fleet's architecture rules, checked from source.
-//!
-//! The rules live in `crates/architecture.toml`: each crate's role, the
-//! workspace crates it may depend on, the external crates a pure crate may
-//! use, the paths a pure crate may not reach, which crates may name each
-//! status-writing field manager, which methods the CLI may not call, and,
-//! for a crate that declares them, its module rules: each module and the
-//! modules it may use, judged on resolved references, test code included,
-//! with production code alone deciding whether a grant is used.
-//!
-//! The checker reads two things and compares them with the rules:
-//!
-//! - **Manifests.** Every `[dependencies]`, `[build-dependencies]` and
-//!   `[dev-dependencies]` table, target-specific ones included, with
-//!   `package =` renames resolved. The declared graph and the actual graph
-//!   must both be acyclic, and every actual edge must be declared.
-//! - **Sources.** Every `src/**/*.rs` file, parsed with `syn`. Each path in
-//!   the code is resolved the way the compiler would start to: through `use`
-//!   aliases and renames, `extern crate .. as ..`, `crate::`/`self::`/`super::`,
-//!   glob imports, and re-exports (`pub use`) inside this crate and across
-//!   workspace crates, to a fixpoint. The resolved path is what is judged, so
-//!   `use std::fs as f; f::read(..)` and a `pub use` chain that reaches a
-//!   forbidden crate are both caught.
-//!
-//! What static resolution cannot see, stated plainly:
-//!
-//! - Code produced by macros: a `macro_rules!` body or a proc macro's output
-//!   is not expanded. A macro's own path is resolved (`env!`, `println!`), and
-//!   arguments that parse as comma-separated expressions are judged
-//!   (`format!`, `vec![a, b]`, `assert!`); any other macro input is not.
-//! - Method calls have no types here, so the CLI's forbidden methods are
-//!   matched by name, on every receiver, and as paths whose segment before
-//!   the method is a type or trait (`Store::update_status(..)`). The
-//!   qualified-self form `<FileStore>::update_status(..)` is not caught.
-//! - Glob imports are resolved conservatively: a name that could come from a
-//!   forbidden glob is judged as if it did, unless the name is read as a
-//!   module (a path's prefix, a glob's base) and the module declares a `mod`
-//!   of that name, which shadows every glob.
-//! - Which namespaces an import fills is not known, so a macro call is
-//!   judged both through any import of its name and as the macro a glob or
-//!   the prelude brings. The other way round is not handled: a macro imported
-//!   under a module, type or value name hides that name's glob meaning.
-//! - `cfg` is ignored: code behind any `cfg` is judged too. So a module
-//!   behind one shadows no glob, and an import behind one, like an import in
-//!   a function body, adds a meaning to its name without removing the others.
-//! - Each target (the library, `main.rs`, each `src/bin/` binary) is its own
-//!   module tree, found by following `mod` declarations, `#[path]` included;
-//!   a file two targets declare is a module of each. A file no target
-//!   declares is placed by where it is.
-//! - Tests and examples (`tests/`, `benches/`, `#[cfg(test)]` modules inside
-//!   `src/` excepted) are not under the source rules; their manifests are.
-//!
-//! The compiler and clippy cover parts of the same ground at build time: an
-//! undeclared crate does not compile (the `compile_fail` probes in the pure
-//! crates prove it for each forbidden edge), and each pure crate's
-//! `clippy.toml` disallows the I/O types and functions on resolved paths.
-//! This checker is what proves the rules hold across re-exports and is what
-//! the negative fixtures exercise.
-
 use std::cell::{Cell, RefCell};
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::fmt;
@@ -67,17 +8,13 @@ use serde::Deserialize;
 use syn::visit::{self, Visit};
 use syn::{Item, UseTree};
 
-/// The rules file.
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Rules {
     pub crates: BTreeMap<String, CrateRule>,
     pub pure: PureRules,
-    /// Field-manager path -> the crates whose sources may name it.
     #[serde(default)]
     pub status_writers: BTreeMap<String, Vec<String>>,
-    /// Paths the crates a rule applies to may not reach, except the ones it
-    /// allows.
     #[serde(default)]
     pub restricted: Vec<Restricted>,
 }
@@ -85,9 +22,6 @@ pub struct Rules {
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Restricted {
-    /// The roles and crates the rule binds, by name. Required, and checked
-    /// against the roles and the crates of the rules file: a scope naming
-    /// nothing would bind nothing.
     pub applies_to: Vec<String>,
     pub path: String,
     #[serde(default)]
@@ -99,58 +33,39 @@ pub struct Restricted {
 #[serde(deny_unknown_fields)]
 pub struct CrateRule {
     pub role: Role,
-    /// Workspace crates this crate may depend on (normal and build).
     pub deps: Vec<String>,
-    /// Workspace crates allowed as dev-dependencies only.
     #[serde(default)]
     pub dev_deps: Vec<String>,
-    /// For pure crates: the external crates allowed.
     #[serde(default)]
     pub external: Vec<String>,
-    /// Methods this crate's sources may not call, by name.
     #[serde(default)]
     pub forbidden_methods: Vec<String>,
-    /// Workspace crates this crate's `compile_fail` doc probes must name.
+
     #[serde(default)]
     pub probes: Vec<String>,
-    /// The crate's modules, each with the modules it may use. A crate with
-    /// none is held to the crate graph only.
     #[serde(default)]
     pub modules: BTreeMap<String, ModuleRule>,
-    /// Modules whose every file module, at any depth, has a rule of its own,
-    /// so a file added there is a decision rather than its parent's.
     #[serde(default)]
     pub governed: Vec<String>,
-    /// Target roots with no module rule: `lib`, `main`, or a binary's name.
     #[serde(default)]
     pub exempt: Vec<String>,
-    /// Paths only some of the crate's modules may reach.
     #[serde(default)]
     pub restricted: Vec<ModuleRestricted>,
 }
 
-/// Paths of a crate that only the modules `allowed` may reach, resolved as
-/// any reference is.
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ModuleRestricted {
     pub paths: Vec<String>,
     pub allowed: Vec<String>,
-    /// The module paths the rule binds, each with every module under it;
-    /// every module when empty.
     #[serde(default)]
     pub applies_to: Vec<String>,
-    /// Files, relative to `src/`, the rule leaves free, whatever they reach.
     #[serde(default)]
     pub allowed_files: Vec<String>,
-    /// Judge what a module names itself: a path through the crate's own
-    /// module that re-exports another crate's item is that module's.
     #[serde(default)]
     pub direct: bool,
-    /// Judge production code only: a test may name what it pins.
     #[serde(default)]
     pub production_only: bool,
-    /// Files, relative to `src/`, allowed exactly this many reaches.
     #[serde(default)]
     pub exceptions: Vec<Exception>,
     pub why: String,
@@ -164,25 +79,18 @@ pub struct Exception {
     pub why: String,
 }
 
-/// One module's rule: the modules it may reference, in any form. A grant
-/// names exactly one module and never its children.
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ModuleRule {
     #[serde(rename = "use")]
     pub uses: Vec<String>,
-    /// Modules it may reach by a fully-qualified path but never import, so
-    /// the crossing stays visible at each site.
     #[serde(default)]
     pub path_only: Vec<String>,
-    /// The external crates the module may name itself, if it is limited:
-    /// `std`, `core` and `alloc` are always allowed.
     #[serde(default)]
     pub external: Option<Vec<String>>,
 }
 
 impl ModuleRule {
-    /// Every module the rule grants, in any form or by path only.
     fn grants(&self) -> impl Iterator<Item = &String> {
         self.uses.iter().chain(&self.path_only)
     }
@@ -196,15 +104,10 @@ pub enum Role {
     Orchestration,
     Edge,
     Tooling,
-    /// Another component of the repository (thurbox, a runtime): held to
-    /// the crate graph from its manifest and its sources, since components
-    /// meet only through processes, and bound by no rule written for Fleet's
-    /// roles.
     Component,
 }
 
 impl Role {
-    /// The role as `architecture.toml` spells it.
     pub fn name(self) -> &'static str {
         match self {
             Role::Pure => "pure",
@@ -227,7 +130,6 @@ impl Role {
 }
 
 impl Restricted {
-    /// Whether the rule binds `krate`, whose role is `role`.
     fn binds(&self, krate: &str, role: Role) -> bool {
         self.applies_to
             .iter()
@@ -238,9 +140,7 @@ impl Restricted {
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct PureRules {
-    /// Path prefixes a pure crate may not reach, e.g. `std::fs`.
     pub forbidden_paths: Vec<String>,
-    /// Types and functions each pure crate's clippy.toml must disallow.
     #[serde(default)]
     pub clippy_guards: Vec<String>,
 }
@@ -272,9 +172,7 @@ pub enum DepKind {
 
 #[derive(Debug, Clone)]
 pub struct Dep {
-    /// The package depended on.
     pub package: String,
-    /// The name code uses for it (the dependency key, `-` as `_`).
     pub alias: String,
     pub kind: DepKind,
 }
@@ -287,7 +185,6 @@ pub struct CrateInfo {
     pub deps: Vec<Dep>,
 }
 
-/// Every member crate of a workspace, with its manifest dependencies.
 #[derive(Debug, Clone)]
 pub struct Workspace {
     pub root: PathBuf,
@@ -305,8 +202,6 @@ fn read_toml(path: &Path) -> Result<toml::Table, String> {
 }
 
 impl Workspace {
-    /// Load the workspace at `root`. `manifest` is `Cargo.toml` for the real
-    /// workspace; fixtures use another name so cargo never sees them.
     pub fn load(root: &Path, manifest: &str) -> Result<Workspace, String> {
         let top = read_toml(&root.join(manifest))?;
         let ws = top
@@ -379,9 +274,6 @@ impl Workspace {
     }
 }
 
-/// `inherited` is the root's `[workspace.dependencies]`: a member's
-/// `name.workspace = true` takes its `package` from there, so a renamed
-/// workspace crate is still recognised as that crate.
 fn collect_deps(table: &toml::Table, inherited: &toml::Table, out: &mut Vec<Dep>) {
     for (key, kind) in [
         ("dependencies", DepKind::Normal),
@@ -415,13 +307,10 @@ fn collect_deps(table: &toml::Table, inherited: &toml::Table, out: &mut Vec<Dep>
     }
 }
 
-/// Run every check. Violations are sorted; an empty list is a pass.
 pub fn check(ws: &Workspace, rules: &Rules) -> Vec<Violation> {
     check_with(ws, rules, true)
 }
 
-/// [`check`] with every name resolved afresh for each reference: what the
-/// cache must agree with, for the tests that prove it does.
 #[doc(hidden)]
 pub fn check_uncached(ws: &Workspace, rules: &Rules) -> Vec<Violation> {
     check_with(ws, rules, false)
@@ -458,11 +347,8 @@ pub fn load_rules(path: &Path) -> Result<Rules, String> {
     toml::from_str(&text).map_err(|e| format!("{}: {e}", path.display()))
 }
 
-/// Declares [`Code`]: each variant once, with the name a report prints.
 macro_rules! codes {
     ($($variant:ident = $name:literal,)*) => {
-        /// Every code a [`Violation`] can carry. docs/constitution.md's table of
-        /// what `arch-rules` checks names each one, and a test holds it to that.
         #[derive(Debug, Clone, Copy, PartialEq, Eq)]
         pub enum Code {
             $($variant,)*
@@ -471,7 +357,6 @@ macro_rules! codes {
         impl Code {
             pub const ALL: &[Code] = &[$(Code::$variant,)*];
 
-            /// The code as a report prints it.
             pub fn as_str(self) -> &'static str {
                 match self {
                     $(Code::$variant => $name,)*
@@ -576,7 +461,6 @@ fn check_governance(ws: &Workspace, rules: &Rules, v: &mut Vec<Violation>) {
     }
 }
 
-/// A cycle in `edges`, as the list of its nodes, if there is one.
 pub fn find_cycle(edges: &BTreeMap<String, BTreeSet<String>>) -> Option<Vec<String>> {
     fn visit(
         n: &str,
@@ -690,7 +574,6 @@ fn check_graphs(ws: &Workspace, rules: &Rules, v: &mut Vec<Violation>) {
     }
 }
 
-/// A reference found in source, before resolution.
 #[derive(Debug, Clone)]
 struct Ref {
     module: Vec<String>,
@@ -698,43 +581,25 @@ struct Ref {
     global: bool,
     macro_call: bool,
     location: String,
-    /// The reference is test code: under `#[cfg(test)]`, or in a module a
-    /// `#[cfg(test)] mod x;` declares.
     test: bool,
-    /// The reference is an import (`use`), not a path written where it is
-    /// used.
     in_use: bool,
-    /// The reference's place among its file's references: the same in every
-    /// tree a file is walked in, so one source site counts once.
     site: u32,
 }
 
 #[derive(Debug, Clone, Default)]
 struct Scope {
-    /// Local name -> the use path it stands for, unresolved, in this module.
     aliases: BTreeMap<String, Vec<Alias>>,
-    /// Glob imports, unresolved.
     globs: Vec<(Vec<String>, bool)>,
-    /// The modules this module declares (`mod x`). A declared module
-    /// shadows every glob import of its name wherever a module is read: as a
-    /// path's prefix or as a glob's base. Other items are not recorded, so
-    /// they shadow nothing, and a glob stays a possible source.
     modules_declared: BTreeSet<String>,
 }
 
-/// One import of a name. A module may hold several for one name (under
-/// different `cfg`s), and each is a possible meaning.
 #[derive(Debug, Clone)]
 struct Alias {
     target: Vec<String>,
     global: bool,
-    /// The import may not be in force where the name is read: it is inside a
-    /// block (a function body) or behind a `cfg`. The name may then also mean
-    /// what it would without the import.
     weak: bool,
 }
 
-/// One crate's sources, indexed for resolution.
 #[derive(Debug)]
 struct CrateIndex {
     name: String,
@@ -744,13 +609,9 @@ struct CrateIndex {
     refs: Vec<Ref>,
     methods: Vec<(String, String)>,
     lib_doc: String,
-    /// Dependency keys that rename a package: alias -> the package's lib name.
     renames: BTreeMap<String, String>,
-    /// The module path of every file walked.
     file_modules: BTreeSet<Vec<String>>,
-    /// Every source file, relative to `src/`.
     files: BTreeSet<String>,
-    /// Modules a `#[cfg(test)] mod x;` declares: test code, file and all.
     test_modules: BTreeSet<Vec<String>>,
 }
 
@@ -868,11 +729,6 @@ fn rs_files(dir: &Path, out: &mut Vec<PathBuf>) {
     }
 }
 
-/// Each file's module paths, found by following `mod` declarations, `#[path]`
-/// included, from every target's root: the library's root is the empty path,
-/// a binary's one segment no Rust name can spell (`#main`, `#bin:<name>`). A
-/// file two targets declare is a module of each, so a binary's modules never
-/// share a scope with the library's.
 fn module_paths(
     src: &Path,
     files: &[(PathBuf, String, syn::File)],
@@ -939,10 +795,6 @@ fn module_paths(
     out
 }
 
-/// The files the `mod x;` declarations in `items` may name, each with its
-/// module path and the directory its own children live in. `dir` is where a
-/// child without `#[path]` lives; `file_dir`, the declaring file's directory,
-/// is what a top-level `#[path]` is relative to.
 fn declared_files(
     items: &[Item],
     file_dir: &Path,
@@ -996,8 +848,6 @@ fn declared_files(
     }
 }
 
-/// `src/lib.rs` and `src/main.rs` are the root; `src/a/b.rs` and
-/// `src/a/b/mod.rs` are `a::b`. A file under `src/bin/` is its own root.
 fn module_of(src: &Path, file: &Path) -> Vec<String> {
     let rel = file.strip_prefix(src).unwrap_or(file);
     let mut parts: Vec<String> = rel
@@ -1037,16 +887,10 @@ struct Walker<'a> {
     idx: &'a mut CrateIndex,
     module: Vec<String>,
     file: String,
-    /// How many blocks (function bodies and the like) enclose the walk: what
-    /// is declared in one is local to it, so it hides nothing outside.
     blocks: u32,
-    /// The `use` being walked is behind a `cfg`.
     cfg_use: bool,
-    /// How many `#[cfg(test)]` items enclose the walk.
     tests: u32,
-    /// References recorded so far in this file.
     sites: u32,
-    /// The attributes already read, by where they start.
     attrs_seen: HashSet<(usize, usize)>,
 }
 
@@ -1069,8 +913,6 @@ impl Walker<'_> {
         }
     }
 
-    /// Walk with `attrs` in force: what a `#[cfg(test)]` among them holds is
-    /// test code.
     fn under_attrs(&mut self, attrs: &[syn::Attribute], walk: impl FnOnce(&mut Self)) {
         let test = u32::from(attrs.iter().any(is_cfg_test));
         self.tests += test;
@@ -1078,7 +920,6 @@ impl Walker<'_> {
         self.tests -= test;
     }
 
-    /// A reference to a path no source spells: a `cfg` name or a `static mut`.
     fn synthetic(&mut self, segments: Vec<String>, span: proc_macro2::Span) {
         let location = self.location(span);
         let site = self.next_site();
@@ -1115,7 +956,6 @@ impl Walker<'_> {
         self.idx.modules.entry(self.module.clone()).or_default()
     }
 
-    /// Record a `use` tree: each leaf is both an import and a reference.
     fn use_tree(
         &mut self,
         tree: &UseTree,
@@ -1235,9 +1075,6 @@ impl<'ast> Visit<'ast> for Walker<'_> {
         }
     }
 
-    /// A `cfg` predicate reads as `#cfg::<name>` for each name in it, so a
-    /// restriction can keep a build target's `cfg` out of a module. Nothing
-    /// else in an attribute is a reference.
     fn visit_attribute(&mut self, a: &'ast syn::Attribute) {
         // Every item's attributes are read in `visit_item`, and syn's own walk
         // reaches some of them again: each attribute counts once.
@@ -1467,30 +1304,17 @@ impl<'ast> Visit<'ast> for Walker<'_> {
     }
 }
 
-/// Resolves paths across every crate's index.
-///
-/// A resolution is remembered, keyed by everything it reads, once it
-/// completed without hitting the depth limit or the budget: such a result
-/// does not depend on where in a reference's resolution it was asked for.
-/// Without it, each bare name under nested globs (`use super::*` in a test
-/// module) re-resolves every glob on the way up, for every reference.
 struct Resolver<'a> {
     indexes: &'a [CrateIndex],
     budget: Cell<u32>,
     exhausted: Cell<bool>,
-    /// Set when the resolution under way hit the depth limit or the budget,
-    /// so its result is partial and must not be remembered.
     cut: Cell<bool>,
     cache: bool,
-    /// Stop at the crate's own module that re-exports another crate's item,
-    /// rather than follow it out: where a module graph needs a name to land.
     local: bool,
     resolved: Memo<ResolveKey>,
     exported: Memo<(Vec<String>, Read)>,
 }
 
-/// Finished results, and the keys whose resolution is under way: asking
-/// for one of those again is a cycle through globs or re-exports.
 struct Memo<K> {
     done: RefCell<HashMap<K, Vec<Vec<String>>>>,
     active: RefCell<HashSet<K>>,
@@ -1505,24 +1329,15 @@ impl<K> Default for Memo<K> {
     }
 }
 
-/// What a path being followed through re-exports is read as. Rust keeps
-/// macros in a namespace of their own, and a module is read only from the
-/// type namespace.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 enum Read {
-    /// A module or enum: a glob's base.
     Module,
-    /// A macro call.
     Macro,
-    /// Anything else, from any namespace.
     Any,
 }
 
-/// The crate, module, path and flags a [`Resolver::resolve`] call reads.
 type ResolveKey = (String, Vec<String>, Vec<String>, bool, bool, bool);
 
-/// Resolution steps one reference may take before it is reported as
-/// unresolvable instead of judged.
 const RESOLVE_BUDGET: u32 = 4_096;
 
 impl<'a> Resolver<'a> {
@@ -1539,10 +1354,6 @@ impl<'a> Resolver<'a> {
         }
     }
 
-    /// Run `compute`, remembering its result under `key` in `memo` unless
-    /// it was cut short. Asked for again while it runs, `key` answers
-    /// `on_cycle`, what the depth limit would: the uncached walk goes round
-    /// the cycle until that limit, adding no path the first pass did not.
     fn remembered<K: std::hash::Hash + Eq + Clone>(
         &self,
         memo: &Memo<K>,
@@ -1578,11 +1389,6 @@ impl<'a> Resolver<'a> {
         self.indexes.iter().find(|i| i.lib == lib)
     }
 
-    /// Every absolute path a reference may stand for, after aliases and
-    /// re-exports. More than one only through globs.
-    /// `globs`: whether an unresolved name may come through the module's glob
-    /// imports. A glob's own base is resolved without them, so a glob can
-    /// never expand through itself.
     #[allow(clippy::too_many_arguments)]
     fn resolve(
         &self,
@@ -1742,10 +1548,6 @@ impl<'a> Resolver<'a> {
         out
     }
 
-    /// Follow re-exports: if `a::b::c` names an item that module `a::b` of
-    /// crate `a` imports (or glob-imports), replace that prefix by what it
-    /// imports, until nothing changes.
-    /// `read`: what the whole path is read as.
     fn through_exports(&self, path: Vec<String>, read: Read, depth: u32) -> Vec<Vec<String>> {
         let again = path.clone();
         self.remembered(
@@ -1847,8 +1649,6 @@ impl<'a> Resolver<'a> {
         vec![path]
     }
 
-    /// One unit of the per-reference resolution budget. Past it, the
-    /// reference is reported as unresolvable rather than left to grow.
     fn spend(&self) -> bool {
         let left = self.budget.get();
         if left == 0 {
@@ -1861,7 +1661,6 @@ impl<'a> Resolver<'a> {
     }
 }
 
-/// The attributes of an item, for the kinds that carry any.
 fn item_attrs(i: &Item) -> &[syn::Attribute] {
     match i {
         Item::Const(x) => &x.attrs,
@@ -1883,7 +1682,6 @@ fn item_attrs(i: &Item) -> &[syn::Attribute] {
     }
 }
 
-/// The attributes of a pattern.
 fn pat_attrs(p: &syn::Pat) -> &[syn::Attribute] {
     use syn::Pat as P;
     match p {
@@ -1908,7 +1706,6 @@ fn pat_attrs(p: &syn::Pat) -> &[syn::Attribute] {
     }
 }
 
-/// The attributes of an expression.
 fn expr_attrs(e: &syn::Expr) -> &[syn::Attribute] {
     use syn::Expr as E;
     match e {
@@ -1955,9 +1752,6 @@ fn expr_attrs(e: &syn::Expr) -> &[syn::Attribute] {
     }
 }
 
-/// Whether an attribute is a `cfg` only ever true under test: `test`, or an
-/// `all(..)` with `test` among its operands. `any(windows, test)` builds into
-/// a Windows release and `not(test)` into every release, so neither is.
 fn is_cfg_test(a: &syn::Attribute) -> bool {
     let syn::Meta::List(list) = &a.meta else {
         return false;
@@ -1993,16 +1787,12 @@ fn is_cfg_test(a: &syn::Attribute) -> bool {
     operands.contains(&"test")
 }
 
-/// Whether `attrs` hold a `cfg` or a `cfg_attr`: something the checker,
-/// which ignores `cfg`, cannot rely on being in force.
 fn has_cfg(attrs: &[syn::Attribute]) -> bool {
     attrs
         .iter()
         .any(|a| a.path().is_ident("cfg") || a.path().is_ident("cfg_attr"))
 }
 
-/// The root of the target `module` belongs to: empty for the library, a
-/// binary's own first segment otherwise.
 fn target_root(module: &[String]) -> &[String] {
     match module.first() {
         Some(first) if first.starts_with('#') => &module[..1],
@@ -2298,7 +2088,6 @@ fn check_sources(
     }
 }
 
-/// The file of a `file:line` location, relative to its crate's `src/`.
 fn src_file(location: &str) -> String {
     let file = location.rsplit_once(':').map_or(location, |(f, _)| f);
     file.split_once("/src/")
@@ -2306,7 +2095,6 @@ fn src_file(location: &str) -> String {
         .to_string()
 }
 
-/// One reference from a module into another.
 struct ModEdge {
     from: String,
     to: String,
@@ -2316,15 +2104,9 @@ struct ModEdge {
     in_use: bool,
 }
 
-/// A crate's module graph as its references draw it, judged against its
-/// module rules. A module path belongs to the deepest module with a rule that
-/// contains it; a binary's tree is read without its root segment, so its
-/// modules are named as the library's are.
 struct ModuleGraph<'r> {
     rule: &'r CrateRule,
     nodes: BTreeMap<Vec<String>, &'r str>,
-    /// Every edge between two modules: `(from, to)`, and whether production
-    /// code draws it.
     drawn: BTreeMap<(String, String), bool>,
     edges: Vec<ModEdge>,
 }
@@ -2349,7 +2131,6 @@ impl<'r> ModuleGraph<'r> {
         }
     }
 
-    /// The module with a rule that holds `module`, if any.
     fn node_of(&self, module: &[String]) -> Option<&'r str> {
         let module = without_target(module);
         (1..=module.len())
@@ -2357,8 +2138,6 @@ impl<'r> ModuleGraph<'r> {
             .find_map(|n| self.nodes.get(&module[..n]).copied())
     }
 
-    /// One resolved reference into this crate: `target` is the path after the
-    /// crate's name.
     fn record(&mut self, r: &Ref, target: &[String], shown: &str) {
         let (Some(from), Some(to)) = (self.node_of(&r.module), self.node_of(target)) else {
             return;
@@ -2516,7 +2295,6 @@ impl<'r> ModuleGraph<'r> {
     }
 }
 
-/// A module path without a binary's root segment (`#main`, `#bin:<name>`).
 fn without_target(module: &[String]) -> &[String] {
     match module.first() {
         Some(first) if first.starts_with('#') => &module[1..],
@@ -2524,8 +2302,6 @@ fn without_target(module: &[String]) -> &[String] {
     }
 }
 
-/// The target a module path is in, as `exempt` names it: `lib`, `main`, or a
-/// binary's name.
 fn target_name(module: &[String]) -> &str {
     match module.first().map(String::as_str) {
         Some("#main") => "main",
@@ -2534,7 +2310,6 @@ fn target_name(module: &[String]) -> &str {
     }
 }
 
-/// A module path as a message names it.
 fn module_label(module: &[String]) -> String {
     match without_target(module) {
         [] => format!("the {} root", target_name(module)),
@@ -2542,9 +2317,6 @@ fn module_label(module: &[String]) -> String {
     }
 }
 
-/// Each pure crate keeps its compile-time guards: `compile_fail` doc probes
-/// naming every forbidden workspace crate, and a clippy.toml disallowing
-/// the I/O types and functions.
 fn check_pure_guards(
     ws: &Workspace,
     rules: &Rules,
@@ -2596,7 +2368,6 @@ fn check_pure_guards(
     }
 }
 
-/// The crate names `use`d inside ```` ```compile_fail ```` blocks of a doc.
 fn compile_fail_uses(doc: &str) -> BTreeSet<String> {
     let mut out = BTreeSet::new();
     let mut in_probe = false;

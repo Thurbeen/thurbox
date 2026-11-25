@@ -1,12 +1,3 @@
-//! What a frame is allowed to recompute — the `frame-cost` rule, named
-//! wherever the kernel's change-signals are explained and enforced here.
-//!
-//! The change-signals these assert on gate both the published tables and the
-//! pure-pane tree cache, so a source that moves without its signal moving is
-//! not a slow interface but a **stale** one — a pane that stops updating, with
-//! no error anywhere. That failure is invisible to every other test in the
-//! suite, which is why it gets its own file.
-
 use thurbox::kernel::snapshot::SnapshotStore;
 use thurbox::kernel::theme::Themes;
 
@@ -222,18 +213,6 @@ fn probe(host: &LuaHost) -> String {
     format!("{node:?}")
 }
 
-/// What is printing changes with an agent's output, and the session rows must
-/// not move with it.
-///
-/// This is the cost that decided the shape: the `sessions` group is a table per
-/// session with ~30 named fields, so gating it on the printing set would rebuild
-/// all of that every time a pane started or stopped producing output — many
-/// times a second under a working agent. The fact travels in a group of its own
-/// instead, and this pins that it stayed one group wide.
-///
-/// Counted against a control rather than against a literal, so the assertion
-/// survives the next group anyone adds: a republish at an unchanged epoch reuses
-/// everything, and bumping `printing` may reuse exactly one fewer.
 #[test]
 fn a_change_of_what_is_printing_rebuilds_one_group_and_no_others() {
     let (_dir, host) = interface();
@@ -360,12 +339,6 @@ fn a_theme_change_reaches_lua_through_its_own_version() {
 
 // --- the purity declaration -------------------------------------------------
 
-/// Two panes over the same data: one declaring its render pure, one not.
-///
-/// Skipping is observed by *lying* — publishing new data under an unchanged
-/// epoch. A pane that re-renders shows the new data; one that was skipped shows
-/// what it showed before. Nothing else can tell the two apart from outside,
-/// which is the point: a skip is meant to be invisible when the epoch is honest.
 fn two_panes() -> (tempfile::TempDir, LuaHost) {
     let dir = tempfile::tempdir().expect("tempdir");
     let mods = dir.path().join("mods");
@@ -910,14 +883,6 @@ fn reading_attach_failures_is_not_itself_a_change() {
 
 // --- the animation clock, scoped to whoever reads it -------------------------
 
-/// Two pure panes over the same data: one that reads the clock, one that does
-/// not.
-///
-/// The clock advances eight times a second for as long as any session is
-/// `working`, so on a working machine it is the most frequent thing in the
-/// cache key. A pane whose tree cannot depend on it must not pay for it — the
-/// scoping every other TUI gets by construction, because there the animating
-/// widget is the one that asks to be redrawn.
 fn clock_panes() -> (tempfile::TempDir, LuaHost) {
     let dir = tempfile::tempdir().expect("tempdir");
     let mods = dir.path().join("mods");

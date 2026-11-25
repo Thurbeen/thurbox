@@ -1,16 +1,3 @@
-//! The read side: an in-memory picture of the session engine that mods
-//! read from, refreshed on the kernel's own schedule.
-//!
-//! One rule: **Lua never blocks and never awaits.** A mod
-//! renders on the UI thread ~20×/s, so a read that could touch SQLite, git, a
-//! subprocess or an unreachable SSH host would stall the loop — and would do
-//! so for mods nobody has written yet. Serving every read from a snapshot
-//! removes the whole class.
-//!
-//! The cost is staleness, and the spec requires that be *visible* rather than
-//! denied: every snapshot carries the instant it was taken, so a mod can
-//! render freshness instead of misrepresenting it.
-
 use std::path::PathBuf;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
@@ -21,25 +8,12 @@ use crate::session::settings::Settings;
 use crate::session::{SessionId, SessionState};
 use git::{git_poll_interval, GitStats};
 
-/// How often the snapshot is rebuilt. A read never waits on this; it only
-/// determines how out of date the answer may be.
 pub const REFRESH_INTERVAL: Duration = Duration::from_millis(400);
 
-/// How long a refresh asked of a [`SnapshotSource`] waits for its answer.
-/// A source speaks only when something moved, so after a command that moved
-/// nothing no answer comes: past this, the rows stand as fresh. `fleet
-/// watch` reads the store every 500 ms, so a write is seen well within it.
 const SOURCE_SETTLE: Duration = Duration::from_secs(1);
 
-/// How long a refresh awaiting a created session waits for its row: a
-/// creation Fleet refused late, or a watch that is down, must not hold the
-/// creation's report for good.
 const SOURCE_AWAIT: Duration = Duration::from_secs(10);
 
-/// A session's git working tree, when it has been computed.
-///
-/// `None` on a row means *not computed yet*, which is deliberately distinct
-/// from a clean tree — a stat that has not run must not read as "no changes".
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct GitState {
     pub files_changed: usize,
@@ -49,226 +23,95 @@ pub struct GitState {
     pub dirty: bool,
     pub ahead: usize,
     pub behind: usize,
-    /// Whether origin's default branch already holds this branch's work — see
-    /// [`crate::git::merged_into_default`]. `None` is "not known", which a
-    /// delete must not read as "safe to throw away".
     pub merged: Option<bool>,
 }
 
-/// One session, flattened to what a mod needs to draw it.
-///
-/// Deliberately a plain owned struct rather than a borrow of engine state:
-/// mods read it on the UI thread while the engine mutates elsewhere.
 #[derive(Debug, Clone, PartialEq)]
 pub struct SessionRow {
     pub id: String,
     pub name: String,
     pub agent: String,
-    /// What to draw, derived from the hook columns and the terminal by
-    /// [`crate::session::SessionState`]'s read-time folds — never the raw
-    /// column, which is [`Self::hook_state`].
     pub status: SessionState,
     pub cwd: Option<PathBuf>,
     pub repo: Option<String>,
-    /// Every repository the session spans, in member order — one entry for a
-    /// single-repo session. A multi-repo session's group is labelled with all
-    /// of them (`a + b`), which `repo` alone cannot express.
     pub repos: Vec<String>,
-    /// The directories those repositories are checked out in, in the same order.
-    ///
-    /// A worktree's *checkout*, not the repository root: opening a session in an
-    /// editor has to land on the branch it is working, and `cwd` alone names
-    /// only the first of them.
     pub member_dirs: Vec<PathBuf>,
     pub branch: Option<String>,
-    /// The branch this session's work is measured *against* — `sessions.base_branch`,
-    /// written once at spawn.
-    ///
-    /// Emphatically not [`Self::branch`], which is the session's own worktree
-    /// branch. Confusing the two is not a cosmetic error: a diff taken against a
-    /// session's own branch is empty, and an empty diff that reports itself ready
-    /// is a wrong answer rather than a missing one. `None` means no base was ever
-    /// recorded, and the diff falls back to uncommitted changes.
     pub base_branch: Option<String>,
     pub backend: String,
-    /// Backend pane identifier (a tmux `%N`). `None` until the session has a
-    /// pane; this is what a live terminal attaches to.
     pub backend_id: Option<String>,
-    /// Bare host name for a remote session; `None` when local.
     pub remote_host: Option<String>,
-    /// The place a Fleet session's Task runs on, as its Fleet names it:
-    /// `local` or `<runtime>/<place>`. Fleet's resolved `status.execution.host`
-    /// (the Task's own, else its TaskConfig's), else the Task's `spec.host`.
-    /// `None` for a row of thurbox's own engine, or a Task not yet resolved
-    /// that names none.
     pub place: Option<String>,
-    /// The agent's own session id, which names its statusline metrics file.
     pub agent_session_id: Option<String>,
     pub parent_id: Option<String>,
     pub display_order: Option<i64>,
     pub worktree_count: usize,
-    /// Working-tree state, once it has been computed off the render path.
     pub git: Option<GitState>,
-    /// The pane id of this session's companion shell, if it had one.
-    ///
-    /// Persisted because the shell's tmux window outlives the interface: without
-    /// it, restarting forgets the shell you had open and leaves its window
-    /// orphaned, and the next `shell` key spawns a second one beside it.
     pub shell_backend_id: Option<String>,
-    /// Whether this session was **parked on purpose** — its pane was killed by
-    /// `session stop`, and its row and checkout are intact.
-    ///
-    /// The interface relaunches a surveyed session that has no pane, because
-    /// normally that means its agent died. A stopped session looks identical
-    /// from the outside and is the opposite case: relaunching it would undo the
-    /// very thing the operator asked for. Nothing distinguishes the two but
-    /// this flag, which is why it is published rather than derived.
     pub stopped: bool,
-    /// The raw hook state Fleet reported, before it is read into `status`.
-    ///
-    /// Kept beside the derived `status` because the two answer different
-    /// questions: `status` is what to draw, this is what the agent last
-    /// reported — and a remote hook event has to be compared against the latter,
-    /// or an acknowledged `done` (derived `idle`) would be written back and
-    /// resurrected on every reconnect.
     pub hook_state: Option<String>,
-    /// The session's key (issue #1408): the address its driver gave it, for a
-    /// pane that wants to tell a role apart from a label the user can rename.
     pub key: Option<String>,
-    /// The agent a driver **declared** this session runs (`session reports-as`),
-    /// when it declared one. A durable statement about the row.
     pub reports_as: Option<String>,
-    /// The agent **observed** holding this session's pane, when it is not the
-    /// one the row was created with.
-    ///
-    /// The third of three names, and the reason all three are published: `agent`
-    /// is what the row was created as, `reports_as` is what a driver declared,
-    /// and this is what is running right now. A driver that asks for a bare
-    /// shell and starts an agent in it is otherwise a row labelled `zsh` with
-    /// nothing to say about the claude in front of the user.
-    ///
-    /// A live reading with a short life (see `PANE_PROBE_TTL`) and no claim
-    /// about what the agent is *doing* — that is `status`, which stays
-    /// [`SessionState::Running`] precisely because no process inspection can
-    /// tell a turn in flight from a prompt waiting for input. Published only
-    /// for a row nothing has reported for (`assess`'s gate on `hook.state`),
-    /// so it is never attached to a row that is already speaking for itself,
-    /// regardless of what a stale probe answer still says.
-    ///
-    /// `None` also when an agent is demonstrably in the pane but *which* one
-    /// is not determined — several registered profiles sharing one executable,
-    /// which the shipped `agents.toml` teaches the user to create. The status
-    /// still reads [`SessionState::Running`], because presence is observed;
-    /// only the name is withheld.
     pub detected_agent: Option<String>,
-    /// The session's `ui.*` meta keys (issue #1523), cleaned for publishing
-    /// ([`crate::kernel::lua_api::clean_meta_value`]) and capped at
-    /// [`crate::kernel::lua_api::META_KEYS`]; empty when it has none. Every
-    /// other key is a driver's or thurbox's own and never reaches a mod.
     pub meta: std::collections::BTreeMap<String, String>,
-    /// Where a Fleet row's status came from (the Task's `status.activity`);
-    /// `None` for a row whose status Fleet's agent state did not decide.
     pub status_source: Option<StatusSource>,
-    /// A deletion Fleet has not finished: set on a published row only once it
-    /// has run past [`fleet::DELETION_STUCK_AFTER`], since one that has not is
-    /// not published at all.
     pub deleting: Option<Deleting>,
-    /// Why a Fleet session is stopped, lost or gone, or why Fleet gave up on
-    /// it: read off the Task's conditions. `None` for a session that runs.
     pub state_why: Option<String>,
 }
 
-/// Where a session's agent state came from: the agent's hooks, a screen
-/// rule Fleet read it with, or neither.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct StatusSource {
-    /// `hook`, `screen` or `none`.
     pub source: String,
-    /// The screen rule, `<set>/<rule id>`, for a screen state.
     pub rule: Option<String>,
-    /// When Fleet first saw this state from this source, in ms since the
-    /// epoch.
     pub since_ms: Option<i64>,
 }
 
-/// A Task Fleet marked for deletion and still lists.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Deleting {
-    /// When Fleet marked it, in ms since the epoch.
     pub since_ms: i64,
-    /// Why Fleet has not let it go: its `Released` condition's message.
     pub why: Option<String>,
 }
 
 impl SessionRow {
-    /// Whether this machine reaches the session's directories at all: its
-    /// own, or a host thurbox's routes reach. A Fleet Task elsewhere
-    /// (`remote_host` set: a Fleet on another machine, or a place other than
-    /// `local`) names a path there, which no route of thurbox's reaches, so
-    /// its files, diff and git state are not read here, even where the same
-    /// path exists locally.
     pub fn workspace_reachable(&self) -> bool {
         self.backend != fleet::BACKEND || self.remote_host.is_none()
     }
 
-    /// The Fleet a Fleet row's Task belongs to: a row's id is
-    /// `<fleet>:<task>` (M1), since two Fleets can each hold a Task of one
-    /// name. `None` for a row whose id names no Fleet.
     pub fn fleet(&self) -> Option<&str> {
         self.id.split_once(':').map(|(fleet, _)| fleet)
     }
 
-    /// The name of the row's Task in its Fleet: what every `fleet` command
-    /// takes. The whole id for a row whose id names no Fleet.
     pub fn task(&self) -> &str {
         task_of(&self.id)
     }
 
-    /// Whether the session's directories are on this machine, so its own
-    /// filesystem reads them: reachable, and on no remote route.
     pub fn workspace_on_this_machine(&self) -> bool {
         self.workspace_reachable() && !crate::session::Route::is_remote_key(&self.backend)
     }
 }
 
-/// Something a session can be created against.
 #[derive(Debug, Clone, PartialEq)]
 pub struct RepoRow {
     pub path: String,
     pub name: String,
 }
 
-/// An agent a session can be launched with.
-///
-/// The command is published beside the name because v1's picker shows it — two
-/// entries wrapping the same CLI are otherwise indistinguishable, which is the
-/// whole reason a rebranded agent is a supported thing to configure.
 #[derive(Debug, Clone, PartialEq)]
 pub struct AgentRow {
     pub name: String,
 }
 
-/// A place a Fleet defines, as the creation flow offers it: its name, the
-/// detail shown beside it, and the `backend` a created Task names (empty for
-/// the Fleet's own `local`).
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct HostRow {
     pub name: String,
     pub detail: String,
     pub backend: String,
-    /// Whether the place's runtime says it can run a session now; `None`
-    /// when it did not say (`fleet runtime places --json`).
     pub ready: Option<bool>,
-    /// Why the place is not ready.
     pub why: Option<String>,
-    /// Whether the place is the machine its Fleet runs on: a runtime's
-    /// `local` place.
     pub here: bool,
 }
 
 impl HostRow {
-    /// The `local` place of a Fleet whose runtime names no places: the
-    /// machine the Fleet runs on, `machine` as the flow shows it.
     pub fn local(machine: &str) -> Self {
         Self {
             name: "local".to_string(),
@@ -279,27 +122,18 @@ impl HostRow {
     }
 }
 
-/// Whether a Fleet can take a session now, as the creation flow shows it.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub enum FleetState {
-    /// Not asked yet.
     #[default]
     Connecting,
-    /// Its manager holds the lease.
     Up,
-    /// It answers, but no manager holds the lease: its Tasks wait.
     Down,
-    /// It cannot be asked: ssh or WSL failed, or its watch ended.
     Unreachable,
-    /// It answers, but cannot say whether its manager runs.
     Unknown,
-    /// It answers, but does not speak the API thurbox writes its Tasks in:
-    /// nothing more is asked of it.
     Incompatible,
 }
 
 impl FleetState {
-    /// The state as the interface reads it.
     pub fn as_str(self) -> &'static str {
         match self {
             Self::Connecting => "connecting",
@@ -312,50 +146,26 @@ impl FleetState {
     }
 }
 
-/// A Fleet thurbox lists, as the creation flow offers it: how it is
-/// reached, whether it is up, and the agents and places a session on it can
-/// have. Each list is `None` until that Fleet has answered.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct FleetRow {
     pub name: String,
-    /// How thurbox reaches it: `local Fleet`, `ssh <destination>` or
-    /// `wsl <distro>`.
     pub transport: String,
-    /// Whether it runs on another machine, whose disk thurbox does not read.
     pub remote: bool,
     pub state: FleetState,
-    /// Why it is not up.
     pub why: Option<String>,
-    /// The home directory of a remote Fleet's machine, once it has said:
-    /// where a path there starts, and what a typed `~` there is.
     pub home: Option<String>,
     pub agents: Option<Vec<AgentRow>>,
     pub places: Option<Vec<HostRow>>,
 }
 
-/// An immutable picture of the engine at one instant.
 #[derive(Debug, Clone, Default)]
 pub struct Snapshot {
     pub sessions: Vec<SessionRow>,
-    /// Repositories a new session can be created against.
     pub repos: Vec<RepoRow>,
-    /// The harnesses Fleet has profiles for (`fleet version --json`): the
-    /// agents a session can run. `None` until Fleet has answered, which is
-    /// not the same as no agents.
     pub agents: Option<Vec<AgentRow>>,
-    /// Every place the Fleet in force defines (`fleet runtime places
-    /// --json`), `local` included when Fleet defines it, with an empty
-    /// `backend`. `None` until Fleet has answered, which is not the same as
-    /// no places.
     pub hosts: Option<Vec<HostRow>>,
-    /// Every Fleet thurbox lists, by name, with its own agents and places.
     pub fleets: Vec<FleetRow>,
-    /// Epoch milliseconds this snapshot represents. Readable by mods so
-    /// they can render staleness.
     pub taken_at_ms: i64,
-    /// Set when the last refresh failed, and the previous rows are retained;
-    /// or when only the session meta could not be read, and the new rows carry
-    /// the labels from before.
     pub error: Option<String>,
 }
 
@@ -364,9 +174,6 @@ impl Snapshot {
         self.sessions.iter().find(|row| row.id == id)
     }
 
-    /// The row `given` names: its id (`box:review`), or a bare Task name
-    /// (`review`) when exactly one Fleet holds a Task of that name. A bare
-    /// name several Fleets hold is refused with the ids it could mean.
     pub fn resolve(&self, given: &str) -> Result<&SessionRow, Unresolved> {
         if let Some(row) = self.session(given) {
             return Ok(row);
@@ -386,17 +193,13 @@ impl Snapshot {
     }
 }
 
-/// Why [`Snapshot::resolve`] found no one row.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Unresolved {
-    /// No row has that id or Task name.
     Missing,
-    /// Several Fleets hold a Task of that name: the ids it could mean.
     Ambiguous(Vec<String>),
 }
 
 impl Unresolved {
-    /// What to tell whoever named `given`.
     pub fn message(&self, given: &str) -> String {
         match self {
             Self::Missing => format!("no session {given} in this interface"),
@@ -408,91 +211,46 @@ impl Unresolved {
     }
 }
 
-/// The Task a session id names: what follows `<fleet>:`, or the whole id.
 pub fn task_of(id: &str) -> &str {
     id.split_once(':').map_or(id, |(_, task)| task)
 }
 
-/// The id of the row of `task` in the Fleet `fleet` (M1).
 pub fn row_id(fleet: &str, task: &str) -> String {
     format!("{fleet}:{task}")
 }
 
-/// Where a store's session rows come from: Fleet's Tasks, through
-/// [`fleet::FleetWatch`] (ADR-41).
-///
-/// Polled on the store's refresh schedule, on the UI thread, so it never
-/// blocks: the source reads on a worker of its own and hands over what it
-/// has.
 pub trait SnapshotSource: Send {
-    /// What moved since the last call, or `None` when nothing did.
     fn poll(&mut self) -> Option<SourceRead>;
 
-    /// Read the places and agents of the Fleet `fleet` again, on a worker:
-    /// the creation flow's place picker opened on it. Its answer arrives
-    /// through [`Self::poll`].
     fn refresh_places(&mut self, _fleet: &str) {}
 }
 
-/// The `store` key the creation flow names a Fleet in while its place
-/// picker is open: see [`SnapshotStore::want_places`].
 pub const WANT_PLACES: &str = "want_places";
 
-/// One answer of a [`SnapshotSource`]: every session row, and what is wrong
-/// with the source, if anything is. The rows stand while the error does.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct SourceRead {
     pub sessions: Vec<SessionRow>,
     pub error: Option<String>,
-    /// The harnesses Fleet has profiles for, once it has said.
     pub harnesses: Option<Vec<String>>,
-    /// The places Fleet defines, once it has said.
     pub hosts: Option<Vec<HostRow>>,
-    /// Each Fleet the source follows.
     pub fleets: Vec<FleetRow>,
-    /// The sessions that went since the source's last answer, though one of
-    /// the same id may be listed again: a Task deleted and made anew between
-    /// two answers.
     pub removed: Vec<String>,
 }
 
-/// Owns the snapshot and decides when to rebuild it.
-///
-/// Refresh happens on the kernel's schedule, never inside a mod call, and
-/// the source reads on a worker of its own, so a slow source shows up as stale
-/// rows, never as a loop that stops painting.
 pub struct SnapshotStore {
-    /// Where the session rows come from; see [`SnapshotSource`]. `None` is a
-    /// store with no sessions (tests of the other rows).
     source: Option<Box<dyn SnapshotSource>>,
-    /// Answers applied from the source, and when a refresh was last asked of
-    /// it: what [`Self::request_refresh`]'s ticket counts.
     source_reads: u64,
     source_asked: Instant,
-    /// The ids of the sessions the last refresh awaits: see
-    /// [`Self::request_refresh_awaiting`].
     awaited: Vec<String>,
-    /// Sessions deleted here that the source may still list: see
-    /// [`Self::hide_until_gone`].
     gone: std::collections::HashSet<String>,
     git: GitStats,
     current: Snapshot,
     last_refresh: Option<Instant>,
-    /// The Fleet the place picker is open on, as last asked: a new opening
-    /// is what reads its places again.
     places_wanted: Option<String>,
-    /// Moves whenever anything in [`Self::current`] does.
-    ///
-    /// What gates the published tables and the pure-pane tree cache: a reader
-    /// that saw this value and sees it again knows nothing it could read has
-    /// changed. It is bumped **inside** each mutation rather than by callers,
-    /// because a mutation that forgets to bump is the one failure here that is
-    /// silent — see `tests/kernel_frame_cost.rs`.
     version: u64,
 }
 
 impl SnapshotStore {
-    /// Build a store whose session rows come from `source`.
     pub fn with_source(source: Box<dyn SnapshotSource>, settings: &Settings) -> Self {
         let mut store = Self::build(settings);
         store.source = Some(source);
@@ -500,12 +258,10 @@ impl SnapshotStore {
         store
     }
 
-    /// A store with no session source: no sessions, agents or hosts.
     pub fn without_sessions(settings: &Settings) -> Self {
         Self::build(settings)
     }
 
-    /// Apply what the source has, returning whether anything moved.
     fn poll_source(&mut self) -> bool {
         let Some(read) = self.source.as_mut().and_then(|source| source.poll()) else {
             return false;
@@ -556,10 +312,6 @@ impl SnapshotStore {
         }
     }
 
-    /// The Fleet the creation flow's place picker is open on, read off
-    /// `store.want_places` each iteration. Each opening (none before, or
-    /// another Fleet) reads that Fleet's places and agents again, so a
-    /// place's readiness is the one at that opening.
     pub fn want_places(&mut self, fleet: Option<String>) {
         if fleet == self.places_wanted {
             return;
@@ -570,14 +322,10 @@ impl SnapshotStore {
         self.places_wanted = fleet;
     }
 
-    /// The current snapshot. Always immediate.
-    /// How many times the snapshot has changed. See [`Self::version`]'s field.
     pub fn version(&self) -> u64 {
         self.version
     }
 
-    /// Record that the snapshot changed. Every write to `current` goes through
-    /// a call to this in the same breath.
     fn mark_changed(&mut self) {
         self.version = self.version.wrapping_add(1);
     }
@@ -586,15 +334,10 @@ impl SnapshotStore {
         &self.current
     }
 
-    /// Apply what the source has answered and, when the refresh interval has
-    /// elapsed, fold in the git stats and the preflight answers. Called from
-    /// the event loop, never from a mod. Returns whether rows from the
-    /// source were applied by this call.
     pub fn refresh_if_due(&mut self) -> bool {
         self.refresh_if_due_at(Instant::now())
     }
 
-    /// Poll using the caller's monotonic clock.
     pub fn refresh_if_due_at(&mut self, now: Instant) -> bool {
         let applied = self.poll_source();
         let due = self
@@ -614,13 +357,6 @@ impl SnapshotStore {
         applied
     }
 
-    /// Stop publishing the row of `id`, a session whose delete succeeded,
-    /// until the source reports it removed or no longer lists it. A source
-    /// reads on a schedule of its own, so its next answers can still hold the
-    /// session as it was.
-    ///
-    /// A row already marked as a stuck deletion stays: deleting it again
-    /// changes nothing in Fleet, so no removal would ever lift the hiding.
     pub fn hide_until_gone(&mut self, id: String) {
         if self
             .current
@@ -637,28 +373,18 @@ impl SnapshotStore {
         self.gone.insert(id);
     }
 
-    /// [`Self::request_refresh`], for commands that created the sessions
-    /// whose ids are `created` (`box:review`: a name another Fleet's session
-    /// can share). The ticket is fresh once a row of each id is published,
-    /// or 10 seconds after the request: a source answers when it sees a
-    /// write, which can be later than the second a quiet source is given.
     pub fn request_refresh_awaiting(&mut self, created: Vec<String>) -> u64 {
         let ticket = self.request_refresh();
         self.awaited = created;
         ticket
     }
 
-    /// Ask for every row now, without waiting for the interval. Returns a
-    /// ticket [`Self::fresh_since`] accepts once the source has answered
-    /// since, or a second has passed.
     pub fn request_refresh(&mut self) -> u64 {
         self.awaited.clear();
         self.source_asked = Instant::now();
         self.source_reads + 1
     }
 
-    /// Whether the rows published now were read after `ticket` was handed out.
-    /// Always true without a source: there is nothing further to wait for.
     pub fn fresh_since(&self, ticket: u64) -> bool {
         if self.source.is_none() {
             return true;
@@ -674,14 +400,6 @@ impl SnapshotStore {
         self.source_reads >= ticket || asked >= SOURCE_SETTLE
     }
 
-    /// Attach whatever git stats are known and ask for anything stale.
-    ///
-    /// Asking on every refresh is free — `GitStats::request` is the one place that
-    /// decides whether a stat is worth running, by its age. Asking only for rows
-    /// with no answer yet is what froze every session's diffstat at its first
-    /// reading for the life of the process.
-    /// Returns whether any row's stats actually changed, so a caller that is
-    /// deciding whether the snapshot moved can ask rather than assume.
     fn attach_git_stats(&mut self) -> bool {
         self.git.drain();
         let present: std::collections::HashSet<&str> = self
@@ -720,8 +438,6 @@ impl SnapshotStore {
         moved
     }
 
-    /// Apply what the source has now and fold in the git stats, without
-    /// waiting on the interval. Start-up and tests.
     pub fn refresh(&mut self) {
         self.last_refresh = Some(Instant::now());
         self.poll_source();
@@ -731,13 +447,6 @@ impl SnapshotStore {
     }
 }
 
-/// A remote session's host name — `ssh:devbox:rmux` → `devbox`.
-///
-/// A session's machine is published to the interface bare while the host
-/// picker carries the prefixed backend name, and the two have to answer as one
-/// vocabulary: the session list groups rows by the former and
-/// creations-in-flight by the latter, so a second spelling put a creation under
-/// a machine that did not exist.
 pub(super) fn remote_host_of(backend: &str) -> Option<String> {
     crate::session::host_of_key(backend).map(str::to_string)
 }
@@ -760,7 +469,6 @@ fn now_ms() -> i64 {
         .unwrap_or(0)
 }
 
-/// Parse a session id the way a mod would have written it.
 pub fn parse_id(raw: &str) -> Option<SessionId> {
     raw.parse().ok()
 }
@@ -769,8 +477,6 @@ pub fn parse_id(raw: &str) -> Option<SessionId> {
 mod tests {
     use super::*;
 
-    /// A session is named by its id, or by a bare Task name only one Fleet
-    /// holds; a name two Fleets hold is refused with both ids.
     #[test]
     fn a_bare_task_name_resolves_only_when_one_fleet_holds_it() {
         let row = |fleet: &str, task: &str| {
@@ -863,9 +569,6 @@ mod tests {
         }
     }
 
-    /// A refresh asked of a source is fresh once the source answers after it
-    /// (or, since a source speaks only when something moved, once it had time
-    /// to): a creation is reported with the row it made, not before it.
     #[test]
     fn a_refresh_ticket_waits_for_the_source_to_answer() {
         let (tx, mut store) = fed();
@@ -882,9 +585,6 @@ mod tests {
         assert!(store.fresh_since(quiet), "a source that has nothing to say");
     }
 
-    /// A creation is reported with its row: a refresh that awaits a created
-    /// session stays owed until the source publishes it, however late, and
-    /// not past a bound.
     #[test]
     fn a_refresh_awaiting_a_created_session_waits_for_its_row() {
         let (tx, mut store) = fed();

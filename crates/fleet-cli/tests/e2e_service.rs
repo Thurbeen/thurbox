@@ -1,6 +1,3 @@
-//! `fleet service`: Fleet writes and drives the one systemd user unit that
-//! runs `fleet up`. A fake `systemctl` on a private PATH records each call,
-//! so no test touches the operator's service manager.
 #![cfg(target_os = "linux")]
 
 mod support;

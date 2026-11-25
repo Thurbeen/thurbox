@@ -1,4 +1,3 @@
-//! Resolve passive launch configuration before the first runtime effect.
 use fleet_api::config::{
     ConfigSource, DEFAULT_TASK_CONFIG, ENV_PROVIDER, EnvProviderSpec, Execution, TASK_CONFIG,
     TaskConfigSpec, merge_env,
@@ -34,7 +33,6 @@ fn source(
     Ok(obj)
 }
 
-/// Whether the store holds the TaskConfig a Task with no `configRef` takes.
 pub(crate) fn default_config(store: &dyn Store) -> Result<bool, StoreError> {
     match store.get(TASK_CONFIG, DEFAULT_TASK_CONFIG) {
         Observation::Known(found) => Ok(found.is_some_and(|o| !o.is_deleting())),
@@ -127,7 +125,6 @@ pub(crate) fn resolve(
     }
 }
 
-/// Resolve the same explicit provider sources for plugin observers, once per sweep.
 pub(crate) fn resolve_providers(
     store: &dyn Store,
     runtime: &dyn Runtime,

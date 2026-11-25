@@ -1,10 +1,3 @@
-//! The context menu: the generic float (`ui/mods/64_menu.lua`) and the
-//! sessions pane that opens it.
-//!
-//! Driven through the host's hooks with the bundled interface, so what is
-//! pinned is the Lua contract — `store.menu` in, `command("action")` out. The
-//! road from the terminal is `tests/tui_e2e.rs`'s.
-
 use std::path::{Path, PathBuf};
 
 use ratatui::backend::TestBackend;
@@ -19,7 +12,6 @@ use thurbox::kernel::snapshot::{SessionRow, Snapshot};
 use thurbox::kernel::theme::Themes;
 use thurbox::session::SessionState;
 
-/// Opens a menu of three entries and a rule at its right press.
 const OPENER: &str = r#"
 return {
   name = "opener",
@@ -54,8 +46,6 @@ fn copy_dir(from: &Path, to: &Path) {
     }
 }
 
-/// The bundled `lib/` and the menu float, plus `OPENER` — nothing else, so no
-/// bundled pane can answer for the menu.
 fn menu_host() -> (tempfile::TempDir, LuaHost) {
     let home = tempfile::tempdir().expect("tempdir");
     let source = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../ui");
@@ -164,7 +154,6 @@ fn key(name: &str) -> KeyPress {
     }
 }
 
-/// The menu's text, painted into its own rect, one line per row.
 fn menu_text(host: &LuaHost) -> Option<String> {
     let rendered = host.render(index_of(host, "menu"), ctx()).expect("render");
     let float = rendered.float?;
@@ -239,8 +228,6 @@ fn the_menu_opens_at_the_press_sized_to_its_entries() {
     }
 }
 
-/// The hint is read from the registry, so it follows a rebind; an action with
-/// no chord shows none.
 #[test]
 fn an_entry_shows_the_chord_its_action_is_bound_to() {
     let (_home, host) = menu_host();
@@ -253,8 +240,6 @@ fn an_entry_shows_the_chord_its_action_is_bound_to() {
     assert!(first.trim_end_matches(['│', ' ']).ends_with('x'), "{first}");
 }
 
-/// Closed before the action runs, so an action that opens a float of its own is
-/// never drawn under a menu that is still up.
 #[test]
 fn enter_closes_the_menu_and_runs_the_highlighted_entry() {
     let (_home, host) = menu_host();
@@ -298,7 +283,6 @@ fn escape_closes_the_menu_and_runs_nothing() {
     assert!(actions(&host).is_empty());
 }
 
-/// A modal takes every key while it is up; one it does not know is swallowed.
 #[test]
 fn an_unknown_key_is_swallowed_while_the_menu_is_up() {
     let (_home, host) = menu_host();
@@ -336,8 +320,6 @@ fn clicking_an_entry_runs_it() {
     assert!(menu_text(&host).is_none());
 }
 
-/// The background of each menu row's first label cell, with the pointer over
-/// `hovered`.
 fn row_backgrounds(host: &LuaHost, hovered: Option<&Identity>) -> Vec<ratatui::style::Color> {
     publish_hovered(host, &Snapshot::default(), &[], hovered);
     let rendered = host.render(index_of(host, "menu"), ctx()).expect("render");
@@ -359,8 +341,6 @@ fn row_backgrounds(host: &LuaHost, hovered: Option<&Identity>) -> Vec<ratatui::s
     (1..rows - 1).map(|y| buffer[(2, y)].bg).collect()
 }
 
-/// The pointer bands the entry it is over, the one a click would run, and
-/// leaves the highlighted entry and the rest as they were.
 #[test]
 fn a_hovered_entry_is_banded_and_the_others_are_not() {
     let (_home, host) = menu_host();
@@ -377,8 +357,6 @@ fn a_hovered_entry_is_banded_and_the_others_are_not() {
     assert_eq!(resting[3], lit[3], "an entry not pointed at is untouched");
 }
 
-/// The rule, and the frame around the entries, are part of the menu: a press
-/// on them is the menu's and does nothing.
 #[test]
 fn clicking_the_rule_does_nothing() {
     let (_home, host) = menu_host();
@@ -433,7 +411,6 @@ fn two_sessions() -> Snapshot {
     }
 }
 
-/// The bundled interface, published two sessions and rendered once.
 fn sessions_host() -> LuaHost {
     let host = LuaHost::new(PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../ui"));
     assert!(host.error.is_none(), "{:?}", host.error);
@@ -473,8 +450,6 @@ fn a_right_press_on_a_session_opens_its_menu_at_the_pointer() {
     assert!(!text.contains("Sort"), "sort targets no session:\n{text}");
 }
 
-/// The entries run the pane's own actions on the SELECTED session, so the
-/// press has to select the row it landed on.
 #[test]
 fn the_right_press_selects_the_session_it_landed_on() {
     let host = sessions_host();
@@ -507,8 +482,6 @@ fn the_right_press_selects_the_session_it_landed_on() {
     );
 }
 
-/// Empty space and a repo fold row are about no
-/// session, so it opens the pane's own menu of general actions.
 #[test]
 fn a_right_press_off_the_rows_opens_the_panes_menu() {
     let host = sessions_host();
@@ -712,7 +685,6 @@ fn a_right_press_on_an_empty_list_opens_nothing() {
 
 // ── review follow-ups ───────────────────────────────────────────────────────
 
-/// The node carrying `id`, anywhere in the tree.
 fn node_with_id<'a>(
     node: &'a thurbox::kernel::node::Node,
     id: &str,
@@ -725,8 +697,6 @@ fn node_with_id<'a>(
     }
 }
 
-/// `ui/AGENTS.md`: a highlight is a node style, so the bar covers the row and a
-/// run that names its own colour (the chord hint) keeps it.
 #[test]
 fn the_highlight_is_the_row_nodes_style_not_its_runs() {
     use thurbox::kernel::node::Node;
@@ -743,8 +713,6 @@ fn the_highlight_is_the_row_nodes_style_not_its_runs() {
     );
 }
 
-/// On a screen shorter than the menu the entries scroll, so the one `enter`
-/// would run is always on screen.
 #[test]
 fn a_menu_taller_than_the_screen_keeps_the_highlight_in_view() {
     let (_home, host) = menu_host();
@@ -767,8 +735,6 @@ fn a_menu_taller_than_the_screen_keeps_the_highlight_in_view() {
     );
 }
 
-/// The entries act on the session that was pressed, not on whatever row the
-/// cursor fell back to: if that session is gone, nothing runs.
 #[test]
 fn a_menu_entry_does_not_act_on_a_session_other_than_the_one_pressed() {
     let host = sessions_host();
@@ -883,8 +849,6 @@ fn a_second_sessions_pane_cannot_shadow_the_bundled_delete_action() {
         .is_some_and(|error| error.to_string().contains("declared by both")));
 }
 
-/// And while the pressed session is still there, its entry acts on it even if
-/// the cursor has moved since.
 #[test]
 fn a_menu_entry_acts_on_the_pressed_session_after_the_cursor_moved() {
     let host = sessions_host();
@@ -935,8 +899,6 @@ fn a_preserved_menu_can_pass_its_target_to_the_updated_sessions_pane() {
     assert!(format!("{:?}", rename.node).contains("beta"));
 }
 
-/// A creation in flight draws a placeholder row, but a placeholder is not a
-/// session: there is still nothing to sort.
 #[test]
 fn a_creation_in_flight_is_not_something_to_sort() {
     use thurbox::kernel::command::{InFlight, Phase};
@@ -1003,7 +965,6 @@ return {
 }
 "#;
 
-/// The bundled interface plus `CONTRIBUTOR`, published two sessions.
 fn contributed_host() -> (tempfile::TempDir, LuaHost) {
     let home = tempfile::tempdir().expect("tempdir");
     let source = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../ui");
@@ -1088,8 +1049,6 @@ fn contributions_are_not_offered_off_the_rows() {
     assert!(!text.contains("Auto-continue"), "{text}");
 }
 
-/// One contributor's malformed label must not cost the row menu: the entry
-/// falls back to its action's name, as `64_menu` draws an unlabelled one.
 #[test]
 fn a_contributed_label_that_is_not_text_falls_back_to_its_action() {
     let (_home, host) = contributed_host();

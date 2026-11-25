@@ -1,11 +1,3 @@
-//! `notify send` and its dedupe key, driven through the real binary in an
-//! isolated instance.
-//!
-//! Delivery is asserted against a private bus with a stand-in notification
-//! daemon (`support/notification_bus.rs`); every command here points the bus
-//! at that socket or at one that does not exist, so nothing reaches the
-//! user's desktop.
-
 use std::path::PathBuf;
 use std::process::{Command, Output};
 
@@ -25,8 +17,6 @@ struct Instance {
 }
 
 impl Instance {
-    /// An instance with `features` added to `[features]` and `notifications`
-    /// as `[notifications]`.
     fn new(features: &str, notifications: &str) -> Self {
         let root = tempfile::TempDir::new().expect("isolated instance");
         for sub in ["home", "config", "data", "tmux", "runtime"] {
@@ -43,7 +33,6 @@ impl Instance {
         Self { root }
     }
 
-    /// An instance whose notifications go to the configured `backend`.
     fn with_backend(backend: &str, extra: &str) -> Self {
         Self::new(
             "",
@@ -55,8 +44,6 @@ impl Instance {
         self.root.path().join(sub)
     }
 
-    /// `thurbox-cli --json <args>` against this instance, its bus at `bus`
-    /// (`None`: no bus address at all, only `XDG_RUNTIME_DIR`).
     fn command(&self, bus: Option<&str>, args: &[&str]) -> Command {
         let mut cmd = Command::new(env!("CARGO_BIN_EXE_thurbox-cli"));
         cmd.arg("--json").args(args);
@@ -85,7 +72,6 @@ impl Instance {
         self.command(bus, args).output().expect("run thurbox-cli")
     }
 
-    /// Run `args`, assert it succeeded, and return its one JSON document.
     fn ok(&self, bus: Option<&str>, args: &[&str]) -> Value {
         let out = self.run(bus, args);
         assert!(out.status.success(), "{args:?} failed:\n{}", describe(&out));
@@ -143,8 +129,6 @@ fn notify_send_honours_backend_off() {
     assert_disabled(&instance.send(Some(NO_BUS), DEDUPED));
 }
 
-/// A dedupe key needs its interval and the other way round: either alone is a
-/// usage error, not a silently undeduplicated send.
 #[test]
 fn a_key_and_its_interval_come_together() {
     let instance = Instance::with_backend("off", "");
@@ -160,8 +144,6 @@ fn a_key_and_its_interval_come_together() {
     }
 }
 
-/// An interval too long to hold as a lease expiry is refused rather than
-/// wrapped into one that has already passed, which would turn dedupe off.
 #[test]
 fn an_interval_beyond_a_year_is_refused() {
     let instance = Instance::with_backend("off", "");
@@ -213,9 +195,6 @@ fn notification_bus_keeps_serving_between_cli_processes() {
         .all(|n| n.app_name == "thurbox" && n.body == "Inspect the run log"));
 }
 
-/// A hook or a timer may run without
-/// `DBUS_SESSION_BUS_ADDRESS`; the per-user bus at `XDG_RUNTIME_DIR/bus` is
-/// still found.
 #[cfg(target_os = "linux")]
 #[test]
 fn notify_send_finds_the_runtime_bus_without_a_bus_address() {
@@ -227,7 +206,6 @@ fn notify_send_finds_the_runtime_bus_without_a_bus_address() {
     assert_eq!(bus.shown().len(), 1);
 }
 
-/// The same key inside its interval is dropped, between separate processes.
 #[cfg(target_os = "linux")]
 #[test]
 fn notify_send_dedupes_a_key_across_processes() {
@@ -251,9 +229,6 @@ fn notify_send_dedupes_a_key_across_processes() {
     assert_eq!(bus.shown().len(), 4);
 }
 
-/// A delivery that fails says so, exits non-zero, and does not spend its key:
-/// the retry is delivered rather than deduped against a notification nobody
-/// saw.
 #[cfg(target_os = "linux")]
 #[test]
 fn a_failed_delivery_reports_its_error_and_keeps_the_key() {
@@ -296,8 +271,6 @@ fn fake_toast(instance: &Instance, body: &str) -> String {
     )
 }
 
-/// A notifier that fails loudly is reported as failing, with its own error,
-/// rather than blocked on a full stderr pipe until the deadline kills it.
 #[cfg(unix)]
 #[test]
 fn a_loud_failing_notifier_is_not_mistaken_for_a_hung_one() {
@@ -325,8 +298,6 @@ fn a_loud_failing_notifier_is_not_mistaken_for_a_hung_one() {
     );
 }
 
-/// A delivery that fails after its key's interval ran out gives back only its
-/// own hold: a newer delivery of the same key keeps the one it took.
 #[cfg(target_os = "linux")]
 #[test]
 fn a_late_failure_keeps_a_newer_hold() {

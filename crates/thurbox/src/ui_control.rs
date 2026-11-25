@@ -1,5 +1,3 @@
-//! Local, instance-scoped control transport for a running interface.
-
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::path::PathBuf;
@@ -105,7 +103,6 @@ pub struct Reply {
 }
 
 impl Reply {
-    /// Whether this reply fits the local control transport's frame limit.
     pub fn exceeds_limit(&self) -> bool {
         serde_json::to_vec(self).map_or(true, |bytes| bytes.len() > MAX_REPLY)
     }
@@ -114,7 +111,6 @@ impl Reply {
 pub struct Pending {
     pub request_id: String,
     pub request: Request,
-    /// The transport has already authenticated this local peer.
     pub peer: u32,
     pub reply: mpsc::Sender<Reply>,
     pub deadline: std::time::Instant,
@@ -178,8 +174,6 @@ fn audit_worker() -> Result<SyncSender<AuditJob>, String> {
         .clone()
 }
 
-/// Record an action before a destructive command or ticket can be issued.
-/// The bounded wait keeps a slow audit device from freezing the interface.
 pub fn audit(
     instance: &str,
     peer: u32,
@@ -205,7 +199,6 @@ pub fn audit(
         .map_err(|error| error.to_string())?
 }
 
-/// Non-destructive telemetry never holds up a user action.
 pub fn audit_best_effort(
     instance: &str,
     peer: u32,
@@ -227,8 +220,6 @@ pub fn audit_best_effort(
     }
 }
 
-/// Persist only metadata; query text, input, and terminal content never enter
-/// the worker's job.
 fn write_audit(
     instance: &str,
     peer: u32,
@@ -282,22 +273,14 @@ mod unix {
         secure(directory()?)
     }
 
-    /// The longest socket path `bind()` takes: `sun_path` is 104 bytes on
-    /// macOS (108 on Linux), the terminating NUL included.
     const SOCKET_PATH_MAX: usize = 103;
 
-    /// `/<uuid>.sock`, the name every instance's socket has.
     const SOCKET_NAME_LEN: usize = 1 + 36 + ".sock".len();
 
     fn socket_fits(dir: &Path) -> bool {
         dir.as_os_str().len() + SOCKET_NAME_LEN <= SOCKET_PATH_MAX
     }
 
-    /// Where an instance's socket lives: beside its record, unless that path
-    /// is too long to bind (a data dir deep in a checkout's `target/`). Then
-    /// a private directory under the short runtime directory, else `/tmp`,
-    /// named after the records directory, so a reader derives the same one
-    /// and still refuses a record whose endpoint points anywhere else.
     pub(super) fn socket_dir_for(records: &Path, runtime: Option<&Path>, uid: u32) -> PathBuf {
         if socket_fits(records) {
             return records.to_path_buf();
@@ -309,8 +292,6 @@ mod unix {
             .unwrap_or_else(|| Path::new("/tmp").join(name))
     }
 
-    /// The name of the private directory a records directory too deep to
-    /// bind puts its sockets in: the user and a digest of the records path.
     fn fallback_name(records: &Path, uid: u32) -> String {
         use sha2::Digest;
         let digest = sha2::Sha256::digest(records.as_os_str().as_encoded_bytes());
@@ -318,11 +299,6 @@ mod unix {
         format!("thurbox-ui-{uid}-{tag}")
     }
 
-    /// Whether `endpoint` is the socket the interface `id` of `records`
-    /// would bind: `<id>.sock` beside the records, or in a directory named
-    /// for them ([`fallback_name`]) that this user owns, mode 0700. Where
-    /// that directory sits is not checked: the interface chose it from its
-    /// own `XDG_RUNTIME_DIR`, which a reader started elsewhere need not share.
     pub(super) fn endpoint_is_ours(records: &Path, endpoint: &Path, id: &str, uid: u32) -> bool {
         if endpoint.file_name() != Some(std::ffi::OsStr::new(&format!("{id}.sock"))) {
             return false;
@@ -411,10 +387,6 @@ mod unix {
         assert!(socket_dir_for(&deep, None, 1000).starts_with("/tmp"));
     }
 
-    /// A record whose socket an interface placed under another runtime
-    /// directory than this reader's (the TUI had `XDG_RUNTIME_DIR`, the CLI
-    /// not) is still that interface's: the directory's name, owner and mode
-    /// say so. A directory with another name, or one others can read, is not.
     #[cfg(test)]
     #[test]
     fn a_socket_placed_under_another_runtime_dir_is_still_ours() {

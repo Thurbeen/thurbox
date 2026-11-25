@@ -1,5 +1,3 @@
-//! Apply local control requests on the event loop that owns App and Lua.
-
 use serde_json::{json, Value};
 use thurbox::kernel::command::Command;
 use thurbox::kernel::registry::ActionDescriptor;

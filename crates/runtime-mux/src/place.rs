@@ -1,16 +1,3 @@
-//! A request's place (docs/runtime/README.md, "Places"): `local`, this
-//! machine, or a machine reached over ssh or into a WSL distro. The place's
-//! table in Fleet's config is parsed here into the host model the backends
-//! are built from ([`HostDef`]). The commands runtime-mux runs on a remote
-//! place outside its multiplexer run here too: the readiness probe, the
-//! check for a binary on the place's `PATH`, `exec`, `workspace-git`,
-//! `browse` and `branches`.
-//!
-//! ```text
-//! request.place ──parse──▶ None (local) ──▶ this machine's backend
-//!                     └──▶ Some(HostDef) ──▶ the place's backend (ssh / wsl.exe)
-//! ```
-
 use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
@@ -24,42 +11,23 @@ use crate::contract::SessionBackend;
 use crate::shell::HostLauncher;
 use crate::{HostDef, HostKind, Platform};
 
-/// The place that is this machine. It takes no config.
 pub const LOCAL: &str = "local";
 
-/// The bound on one probe of a place: an ssh connect, a login shell and a
-/// `command -v`. ssh's own `ConnectTimeout` (5 s) ends an unreachable one
-/// first.
 const PROBE_TIMEOUT: Duration = Duration::from_secs(10);
 
-/// The most a command run on a place may print on a stream: a `browse` of
-/// a large directory or a `branches` of a repository with many refs fits
-/// well inside it. Past it the run is an error, never a cut answer.
 const PROBE_OUTPUT: u64 = 8 * 1024 * 1024;
 
-/// How long a place's login `PATH`, read once, is used from the cache on
-/// disk before it is read again. Each `runtime-mux` call is a process of its
-/// own, and reading it costs an ssh connection and two login shells.
 const PATH_CACHE_TTL: Duration = Duration::from_secs(600);
 
-/// Where the place's `PATH` is cached: a directory only this user can write
-/// to, and the prefix of the file names in it. Set once by the program.
 static CACHE: OnceLock<(PathBuf, String)> = OnceLock::new();
 
-/// Cache each place's login `PATH` in `dir`, under names starting with
-/// `prefix`.
 pub fn keep_cache_in(dir: PathBuf, prefix: String) {
     let _ = CACHE.set((dir, prefix));
 }
 
-/// Where the place's copies of Fleet's files are made, under its home: one
-/// directory per key ([`copy_dir`]), for the harness asset files and for
-/// the user's harness profiles.
 pub const ASSETS_DIR: &str = ".local/state/fleet/assets";
 pub const HARNESSES_DIR: &str = ".local/state/fleet/harnesses";
 
-/// A place as a request names it: the name, and its table from Fleet's
-/// config.
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Place {
@@ -68,7 +36,6 @@ pub struct Place {
     pub config: Map<String, Value>,
 }
 
-/// How a remote place is reached.
 #[derive(Debug, Clone, Copy, Deserialize)]
 #[serde(rename_all = "lowercase")]
 enum Kind {
@@ -76,8 +43,6 @@ enum Kind {
     Wsl,
 }
 
-/// A remote place's table: the keys of a v2 `hosts.toml` entry that still
-/// mean something to a runtime. Any other key is refused by name.
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct Config {
@@ -94,8 +59,6 @@ struct Config {
     path_prepend: Vec<String>,
 }
 
-/// The place, parsed: `None` for `local`, else the host it names. A place
-/// this program cannot serve is refused with why.
 pub fn parse(place: &Place) -> Result<Option<HostDef>, String> {
     let name = &place.name;
     if name == LOCAL {
@@ -168,8 +131,6 @@ pub fn parse(place: &Place) -> Result<Option<HostDef>, String> {
     }))
 }
 
-/// How the place is reached, for a message: the command that shows whether
-/// it answers.
 fn reach(host: &HostDef) -> String {
     match HostLauncher::for_host(host) {
         HostLauncher::Ssh {
@@ -183,18 +144,13 @@ fn reach(host: &HostDef) -> String {
     }
 }
 
-/// What a finished probe printed, and how it ended.
 struct Ran {
     ok: bool,
-    /// The launcher's own failure: ssh exits 255 when it cannot connect.
     unreached: bool,
     stdout: String,
     stderr: String,
 }
 
-/// The cache file of `host`'s `PATH`, and the line that says which
-/// launcher and `path_prepend` it was read with: a place whose table
-/// changed is read again.
 fn cache_file(host: &HostDef) -> Option<(PathBuf, String)> {
     let (dir, prefix) = CACHE.get()?;
     let file = dir.join(format!("{prefix}{}.path", host.name));
@@ -202,9 +158,6 @@ fn cache_file(host: &HostDef) -> Option<(PathBuf, String)> {
     Some((file, identity.replace('\n', " ")))
 }
 
-/// What the place's probe says ([`crate::host_path`]), within `budget`: the
-/// answer this process has, else a fresh one from the cache on disk, else a
-/// probe bounded by `budget`, which the cache then keeps.
 fn env(host: &HostDef, budget: Duration) -> Option<crate::host_path::HostEnv> {
     let cached = cache_file(host);
     if let Some((file, identity)) = &cached {
@@ -234,16 +187,12 @@ fn env(host: &HostDef, budget: Duration) -> Option<crate::host_path::HostEnv> {
     Some(env)
 }
 
-/// Read the place's `PATH` now, within the probe's budget, so the backend's
-/// own commands find it without a probe of their own.
 pub fn warm(host: &HostDef) {
     if host.platform() == Platform::Posix {
         let _ = env(host, PROBE_TIMEOUT);
     }
 }
 
-/// The place's `PATH` as an `sh` assignment, read within `budget`:
-/// `path_prepend` alone when the login `PATH` was not read in time.
 fn assignment(host: &HostDef, budget: Duration) -> String {
     let env = env(host, budget);
     crate::host_path::plan(&host.path_prepend, env.as_ref())
@@ -251,9 +200,6 @@ fn assignment(host: &HostDef, budget: Duration) -> String {
         .unwrap_or_default()
 }
 
-/// `script` through `sh -c` on the place, with the place's `PATH`
-/// ([`crate::host_path`]), `args` as its positional parameters, all of it
-/// by `deadline`. `Err` when it did not finish in time or could not start.
 fn run_script(
     host: &HostDef,
     script: &str,
@@ -269,9 +215,6 @@ fn run_script(
     )
 }
 
-/// The `PATH` assignment a window on `host` gets: the Task's `task_path`
-/// when it names one ([`crate::host_path::task_assignment_for`]), else the
-/// place's.
 fn window_path(host: &HostDef, task_path: Option<&str>, budget: Duration) -> String {
     match task_path {
         Some(path) => crate::host_path::task_assignment_for(host, path).unwrap_or_default(),
@@ -279,7 +222,6 @@ fn window_path(host: &HostDef, task_path: Option<&str>, budget: Duration) -> Str
     }
 }
 
-/// [`run_script`] with `path`, a `PATH` assignment, in place of the place's.
 fn run_script_with(
     host: &HostDef,
     path: &str,
@@ -302,8 +244,6 @@ fn run_script_with(
     })
 }
 
-/// A PowerShell `script` on a native-Windows place, after its
-/// `path_prepend`, by `deadline`.
 fn run_powershell(host: &HostDef, script: &str, deadline: Instant) -> Result<Ran, String> {
     let script = format!(
         "$ProgressPreference = 'SilentlyContinue'\n{}{script}",
@@ -319,8 +259,6 @@ fn run_powershell(host: &HostDef, script: &str, deadline: Instant) -> Result<Ran
     })
 }
 
-/// The PowerShell that prints `@missing <name>` for each of `programs` the
-/// place's `Path` does not find.
 fn windows_lookup(programs: &[&str]) -> String {
     programs
         .iter()
@@ -331,32 +269,21 @@ fn windows_lookup(programs: &[&str]) -> String {
         .collect()
 }
 
-/// `script` through `sh -c` on the place, after `path`, the place's `PATH`
-/// as an assignment, with `args` as its positional parameters.
 fn script_command(host: &HostDef, path: &str, script: &str, args: &[&str]) -> Command {
     let mut words = vec!["sh"];
     words.extend_from_slice(args);
     HostLauncher::for_host(host).shell_c_args(&format!("{path}{script}"), &words)
 }
 
-/// The probe that `fleet` is on the place's `PATH`, which its agents' hooks
-/// run to report.
 const FLEET_PROBE: &str = "command -v fleet >/dev/null 2>&1 || echo @missing";
 
-/// On a WSL place, the probe also looks for `flock`, which the waiter that
-/// keeps the distro running needs ([`run_detached`]).
 const FLOCK_PROBE: &str = "; command -v flock >/dev/null 2>&1 || echo @noflock";
 
-/// The readiness probe of `host`.
 fn probe_script(host: &HostDef) -> String {
     let flock = if host.is_wsl() { FLOCK_PROBE } else { "" };
     format!("{FLEET_PROBE}{flock}")
 }
 
-/// Why the place cannot run a session now, if it cannot: the launcher does
-/// not reach it, its multiplexer is missing or too old, or `fleet` is not on
-/// its `PATH`, so its agents' hooks cannot report. Each reason names the
-/// command that fixes it.
 pub fn readiness(
     host: &HostDef,
     backend: &dyn SessionBackend,
@@ -419,8 +346,6 @@ pub fn readiness(
     })
 }
 
-/// Why `program` cannot start on the place, if it is not on the `PATH` its
-/// window gets: the Task's `task_path` when it names one, else the place's.
 pub fn missing_program(host: &HostDef, program: &str, task_path: Option<&str>) -> Option<String> {
     let name = &host.name;
     if host.platform() != Platform::Posix {
@@ -456,11 +381,6 @@ pub fn missing_program(host: &HostDef, program: &str, task_path: Option<&str>) -
     }
 }
 
-/// `argv` on the place, in `dir` when given, with the place's `PATH`: what
-/// `exec` runs there. The `PATH` is read by `deadline`, the command's own,
-/// and when it is not, only `path_prepend` leads it. A native-Windows place
-/// runs it from an encoded PowerShell script, with `path_prepend` first on
-/// its `Path` ([`crate::shell::windows_program_script`]).
 pub fn exec_command(
     host: &HostDef,
     argv: &[String],
@@ -493,13 +413,8 @@ pub fn exec_command(
     ))
 }
 
-/// How long a `workspace-git` call on a place may take: a first clone of a
-/// repository can take minutes. Fleet's own bound on a `workspace` call
-/// (600 s unless configured) ends it first.
 const WORKSPACE_TIMEOUT: Duration = Duration::from_secs(600);
 
-/// `workspace-git <verb>` on the place, with `request` on its stdin: its
-/// exit code and what it printed. `Err` when the place did not answer.
 pub fn workspace_git(
     host: &HostDef,
     verb: &str,
@@ -511,9 +426,6 @@ pub fn workspace_git(
     run_fed(cmd, request, WORKSPACE_TIMEOUT)
 }
 
-/// The directories a workspace of `file://` URLs only names on the place,
-/// each checked to be there: what a place without `workspace-git` makes.
-/// `None` when a URL is not `file://`, which only `workspace-git` makes.
 pub fn file_dirs(host: &HostDef, urls: &[String]) -> Option<Reading<Vec<String>>> {
     let mut dirs = Vec::new();
     for url in urls {
@@ -543,8 +455,6 @@ pub fn file_dirs(host: &HostDef, urls: &[String]) -> Option<Reading<Vec<String>>
     ))
 }
 
-/// A URL path's `%XX` escapes decoded; `None` when one is malformed or the
-/// result is not UTF-8.
 fn percent_decode(path: &str) -> Option<String> {
     let bytes = path.as_bytes();
     let mut out = Vec::with_capacity(bytes.len());
@@ -562,7 +472,6 @@ fn percent_decode(path: &str) -> Option<String> {
     String::from_utf8(out).ok()
 }
 
-/// The place's home directory, as its login shell reads it.
 pub fn home(host: &HostDef) -> Result<String, String> {
     if host.platform() != Platform::Posix {
         // Spelled with `/`, which Windows takes, so a path built under it
@@ -594,8 +503,6 @@ pub fn home(host: &HostDef) -> Result<String, String> {
         })
 }
 
-/// `command` through `sh -c` in `dir` on the place, with the place's `PATH`:
-/// a workspace step. `Err` names why it did not succeed.
 pub fn run_in(host: &HostDef, dir: &str, command: &str) -> Result<(), String> {
     let ran = run_script(
         host,
@@ -613,19 +520,14 @@ pub fn run_in(host: &HostDef, dir: &str, command: &str) -> Result<(), String> {
     ))
 }
 
-/// Whether `path` is a file on the place; `Err` when the place cannot
-/// tell.
 pub fn is_file(host: &HostDef, path: &str) -> Result<bool, String> {
     test_path(host, "-f", path)
 }
 
-/// Whether anything is at `path` on the place; `Err` when the place cannot
-/// tell.
 pub fn exists(host: &HostDef, path: &str) -> Result<bool, String> {
     test_path(host, "-e", path)
 }
 
-/// `test <flag> path` on the place.
 fn test_path(host: &HostDef, flag: &str, path: &str) -> Result<bool, String> {
     let ran = run_script(
         host,
@@ -644,21 +546,12 @@ fn test_path(host: &HostDef, flag: &str, path: &str) -> Result<bool, String> {
     Ok(ran.stdout.contains("@file"))
 }
 
-/// An empty file at `path` on the place. Best effort.
 pub fn touch(host: &HostDef, path: &str) {
     let _ = run_script(host, ": > \"$1\"", &[path], Instant::now() + PROBE_TIMEOUT);
 }
 
-/// What a read of the place answers: `Ok(Ok(_))` the reading, `Ok(Err(why))`
-/// a reading that failed there, `Err(why)` a place that did not answer.
 pub type Reading<T> = Result<Result<T, String>, String>;
 
-/// The subdirectories of `dir`, or of the place's home when `None`, each
-/// with whether it is a git work tree by the rule `browse` reads one with
-/// on this machine: a `.git` directory holding `HEAD`, `objects` and
-/// `refs`, or a `.git` file naming one. The directory as read, and its
-/// entries unsorted. Each entry is one NUL-ended record, so any name
-/// arrives whole.
 pub fn browse(host: &HostDef, dir: Option<&str>) -> Reading<(String, Vec<(String, bool)>)> {
     if let Some(why) = posix_only(host, "browse") {
         return Ok(Err(why));
@@ -690,9 +583,6 @@ pub fn browse(host: &HostDef, dir: Option<&str>) -> Reading<(String, Vec<(String
     Ok(Ok((dir, entries)))
 }
 
-/// What `branches` reads of a repository on the place: its refs under
-/// `refs/heads` and `refs/remotes/origin`, `origin/HEAD`'s target and the
-/// branch checked out, each as git prints it, or why there is none.
 pub fn git_refs(host: &HostDef, repo: &str) -> Reading<[String; 3]> {
     if let Some(why) = posix_only(host, "branches") {
         return Ok(Err(why));
@@ -721,8 +611,6 @@ pub fn git_refs(host: &HostDef, repo: &str) -> Reading<[String; 3]> {
     Ok(Ok([next(), next(), next()]))
 }
 
-/// Why `verb` cannot run on `host`, a native-Windows place: it reads the
-/// place with an `sh` script.
 fn posix_only(host: &HostDef, verb: &str) -> Option<String> {
     (host.platform() != Platform::Posix).then(|| {
         format!(
@@ -732,8 +620,6 @@ fn posix_only(host: &HostDef, verb: &str) -> Option<String> {
     })
 }
 
-/// A read-only script's stdout on the place: `Ok(Err(_))` when it failed
-/// there, `Err(_)` when the place did not answer.
 fn read(host: &HostDef, script: &str, args: &[&str]) -> Reading<String> {
     let name = &host.name;
     let ran = run_script(host, script, args, Instant::now() + PROBE_TIMEOUT)
@@ -750,13 +636,6 @@ fn read(host: &HostDef, script: &str, args: &[&str]) -> Reading<String> {
     Ok(Ok(ran.stdout))
 }
 
-/// Run `cmd`, a server's waiter ([`WindowLifecycle::server_waiter`](crate::contract::WindowLifecycle::server_waiter)), left
-/// to run after this program exits: on a WSL place it is the `wsl.exe`
-/// client that keeps the distro, and so the server, running. WSL stops a
-/// distro, and every process in it, soon after its last `wsl.exe` client
-/// exits, and each `runtime-mux` call is one such client that exits at once.
-/// Best effort: a waiter that cannot start leaves the server to WSL's idle
-/// stop.
 pub fn run_detached(mut cmd: Command) {
     cmd.stdin(Stdio::null())
         .stdout(Stdio::null())
@@ -769,7 +648,6 @@ pub fn run_detached(mut cmd: Command) {
             fn GetStdHandle(which: u32) -> *mut std::ffi::c_void;
             fn SetHandleInformation(handle: *mut std::ffi::c_void, mask: u32, flags: u32) -> i32;
         }
-        /// `STD_INPUT_HANDLE`, `STD_OUTPUT_HANDLE`, `STD_ERROR_HANDLE`.
         const STD_HANDLES: [u32; 3] = [-10i32 as u32, -11i32 as u32, -12i32 as u32];
         const HANDLE_FLAG_INHERIT: u32 = 1;
         // A child inherits every inheritable handle of its parent, and this
@@ -782,8 +660,6 @@ pub fn run_detached(mut cmd: Command) {
                 SetHandleInformation(GetStdHandle(which), HANDLE_FLAG_INHERIT, 0);
             }
         }
-        /// No window, a process group of its own, and out of the caller's
-        /// job, which a caller may kill whole when it ends.
         const CREATE_NO_WINDOW: u32 = 0x0800_0000;
         const CREATE_NEW_PROCESS_GROUP: u32 = 0x0000_0200;
         const CREATE_BREAKAWAY_FROM_JOB: u32 = 0x0100_0000;
@@ -797,16 +673,10 @@ pub fn run_detached(mut cmd: Command) {
     let _ = cmd.spawn();
 }
 
-/// The time left until `deadline`.
 fn left(deadline: Instant) -> Duration {
     deadline.saturating_duration_since(Instant::now())
 }
 
-/// The place's own copy of the directory `local`, for the session under
-/// `key`: `local` copied, whole, to `~/<under>/<key>` on the place
-/// ([`ASSETS_DIR`], [`HARNESSES_DIR`]), replacing what an earlier start left
-/// there. Its absolute path on the place, which the caller names in place
-/// of `local`.
 pub fn copy_dir(host: &HostDef, key: &str, local: &Path, under: &str) -> Result<String, String> {
     let name = &host.name;
     let home = home(host)?;
@@ -858,9 +728,6 @@ pub fn copy_dir(host: &HostDef, key: &str, local: &Path, under: &str) -> Result<
     }
 }
 
-/// Remove the key's copies of Fleet's files on the place, if any are
-/// there. Best effort: a copy left behind is replaced by the key's next
-/// start.
 pub fn remove_assets(host: &HostDef, key: &str) {
     if host.platform() != Platform::Posix {
         let dirs = [ASSETS_DIR, HARNESSES_DIR]
@@ -891,8 +758,6 @@ fn last_line(text: &str) -> String {
     }
 }
 
-/// `cmd` run to its end or killed at `timeout`: its exit code and what it
-/// printed.
 fn run_bounded(
     mut cmd: Command,
     timeout: Duration,
@@ -901,9 +766,6 @@ fn run_bounded(
     run_piped(cmd, timeout)
 }
 
-/// [`run_piped`] with `input` written to `cmd`'s piped stdin, from a thread
-/// of its own so a command that answers before it reads all of it never
-/// blocks the writer against the reader.
 fn run_fed(
     mut cmd: Command,
     input: &[u8],
@@ -923,7 +785,6 @@ fn run_fed(
     wait_bounded(child, timeout)
 }
 
-/// [`run_bounded`] with the stdin `cmd` already has.
 fn run_piped(mut cmd: Command, timeout: Duration) -> Result<(Option<i32>, String, String), String> {
     let child = cmd
         .stdout(Stdio::piped())
@@ -933,8 +794,6 @@ fn run_piped(mut cmd: Command, timeout: Duration) -> Result<(Option<i32>, String
     wait_bounded(child, timeout)
 }
 
-/// `child` waited for to its end or killed at `timeout`: its exit code and
-/// what it printed on its piped stdout and stderr.
 fn wait_bounded(
     mut child: std::process::Child,
     timeout: Duration,
@@ -1021,9 +880,6 @@ mod tests {
         serde_json::from_value(json!({ "name": name, "config": config })).unwrap()
     }
 
-    /// A WSL place's readiness looks for `fleet` inside the distro, on the
-    /// `PATH` its sessions get: `wsl.exe` enters it and runs the probe after
-    /// the place's `PATH` assignment.
     #[test]
     fn a_wsl_place_looks_for_fleet_on_its_own_path() {
         let host = parse(&place("dev", json!({"kind": "wsl", "distro": "Ubuntu"})))
@@ -1052,7 +908,6 @@ mod tests {
         assert_eq!(argv, want);
     }
 
-    /// Output past the cap is an error, never a cut answer passed as whole.
     #[cfg(unix)]
     #[test]
     fn output_past_the_cap_is_an_error_not_a_cut_answer() {
@@ -1079,7 +934,6 @@ mod tests {
         .unwrap()
     }
 
-    /// The text of the `-EncodedCommand` a command carries.
     fn encoded_script(cmd: &Command) -> String {
         use base64::Engine as _;
         let args: Vec<String> = cmd
@@ -1102,9 +956,6 @@ mod tests {
         String::from_utf16_lossy(&units)
     }
 
-    /// On a native-Windows place `exec` is an encoded PowerShell script over
-    /// ssh: the place's `path_prepend` first on `Path`, the directory as the
-    /// program's working directory, and the program looked up by name.
     #[test]
     fn a_windows_exec_runs_its_program_in_its_directory_with_the_places_path() {
         let host = windows_place();
@@ -1119,7 +970,6 @@ mod tests {
         assert!(script.contains("$v=@('signal-read')"), "{script}");
     }
 
-    /// A Windows place's readiness looks each program up on its `Path`.
     #[test]
     fn a_windows_lookup_names_each_missing_program() {
         let lookup = windows_lookup(&["fleet", "o'x"]);
@@ -1130,8 +980,6 @@ mod tests {
         );
     }
 
-    /// `browse` and `branches` read a place with `sh`, so a native-Windows
-    /// place refuses them by name, without asking it anything.
     #[test]
     fn a_windows_place_refuses_browse_and_branches_by_name() {
         let host = windows_place();

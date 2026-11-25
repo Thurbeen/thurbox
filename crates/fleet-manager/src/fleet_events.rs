@@ -1,10 +1,3 @@
-//! The Board `fleet` step: TaskController appends the `fleet.task.*` events
-//! a Task is owed (`task_event::FleetEvents::owed`) to Board `fleet`, as
-//! itself, under the lease, then writes the record that says they are
-//! published. A stop between the two appends them again under the same
-//! keys, which append nothing. A Board that cannot be written keeps every
-//! event owed, for the next pass.
-
 use fleet_api::board::FLEET;
 use fleet_api::event::{ControllerSource, Source};
 use fleet_api::task::{self, TaskStatus};
@@ -17,8 +10,6 @@ use crate::{Manager, RunReport};
 const RECORD_WRITE_TRIES: u32 = 5;
 
 impl Manager<'_> {
-    /// Publish what `task` is owed. Answers the Task as written, when its
-    /// record moved.
     pub(crate) fn publish_fleet_events(
         &self,
         task: &Object,
@@ -49,9 +40,6 @@ impl Manager<'_> {
         self.write_record(task, &st, &next, lease, report)
     }
 
-    /// Append `owed` in one call, else one at a time when the Board refuses
-    /// the batch, counting each refused event in `next`. The inner error
-    /// is one that leaves the events unknown: nothing is recorded.
     fn append_owed(
         &self,
         owed: Vec<fleet_api::event::Publish>,
@@ -89,10 +77,6 @@ impl Manager<'_> {
             .map(|_| ())
     }
 
-    /// Write `next` to `status.fleetEvents`, re-reading the Task when
-    /// another writer wrote first. `None` when the Task is gone, when its
-    /// record moved under this step, or after `RECORD_WRITE_TRIES`: the
-    /// next pass owes the same events, and their keys append nothing.
     fn write_record(
         &self,
         task: &Object,

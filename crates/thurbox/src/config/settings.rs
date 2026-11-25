@@ -1,18 +1,9 @@
-//! Loading and seeding of the settings config file.
-//!
-//! `~/.config/thurbox/settings.toml` holds the user-tunable scalars and
-//! feature flags (see [`crate::session::settings::Settings`]). On first run the file is seeded
-//! fully commented-out, so a fresh install runs on the built-in defaults. A
-//! malformed file degrades to the defaults with a startup warning.
-
 use std::path::PathBuf;
 
 use crate::session::settings::{
     retired_key, NotificationBackend, Settings, IGNORED_KEYS, RETIRED_KEYS,
 };
 
-/// Seed contents for `settings.toml` on first run: every knob documented with
-/// its default, all commented out.
 pub const SEED_SETTINGS_TOML: &str = r#"# Thurbox settings  —  ~/.config/thurbox/settings.toml
 #
 # Scalar tuning knobs. Every entry below is commented out and shows its
@@ -173,15 +164,10 @@ config_version = 1
 # auto_update = false
 "#;
 
-/// Path to the settings file: `~/.config/thurbox/settings.toml`.
 pub fn settings_config_path() -> Option<PathBuf> {
     super::file::path("settings.toml")
 }
 
-/// Load the settings, seeding the config file with commented-out defaults
-/// when it is absent. Any read/parse error degrades gracefully to the
-/// defaults; warnings are returned for the TUI status bar and logged by
-/// headless callers.
 pub fn load_or_seed_with_warnings() -> (Settings, Vec<String>) {
     let loaded =
         super::file::read_or_seed("settings.toml", SEED_SETTINGS_TOML).and_then(
@@ -200,8 +186,6 @@ pub fn load_or_seed_with_warnings() -> (Settings, Vec<String>) {
     (settings, warnings)
 }
 
-/// Whether `warning` is only the notice that a retired key is in the file:
-/// worth saying at startup, and no reason to refuse a reload.
 pub fn is_retired_notice(warning: &str) -> bool {
     reported_key(warning).is_none() && warning.contains("` is no longer read: ")
 }
@@ -252,9 +236,6 @@ fn parse_current(contents: &str) -> Result<(Settings, Vec<String>), String> {
     Ok((settings, warnings))
 }
 
-/// The unknown keys of `contents` that are not retired ones: what makes the
-/// file invalid for `thurbox-cli config validate`, with a `[telemetry]`
-/// table that breaks its rules.
 pub fn unknown_keys(contents: &str) -> Result<Vec<String>, String> {
     let (contents, _) = without_older_telemetry(contents);
     let (settings, warnings) =
@@ -273,14 +254,11 @@ pub fn unknown_keys(contents: &str) -> Result<Vec<String>, String> {
         .collect())
 }
 
-/// The key an unknown-field warning names (between its backticks).
 fn reported_key(warning: &str) -> Option<&str> {
     let (_, rest) = warning.split_once("unknown field `")?;
     rest.split_once('`').map(|(key, _)| key)
 }
 
-/// An unknown-field warning about a retired key, reworded to say why the key
-/// is no longer read; any other warning as it is.
 fn name_retired(warning: String) -> String {
     match reported_key(&warning).and_then(retired_key) {
         Some((key, why)) => format!("settings.toml: `{key}` is no longer read: {why} (ignored)"),
@@ -288,7 +266,6 @@ fn name_retired(warning: String) -> String {
     }
 }
 
-/// Set a boolean key on a `toml_edit` table.
 fn set_table_bool(table: &mut toml_edit::Table, key: &str, v: bool) {
     table[key] = toml_edit::value(v);
 }
@@ -311,18 +288,6 @@ pub fn drop_retired_keys(doc: &mut toml_edit::DocumentMut) -> Vec<&'static str> 
     dropped
 }
 
-/// Write `settings` back to `settings.toml`, **preserving comments and
-/// layout**.
-///
-/// The existing file (or, when absent, the documented [`SEED_SETTINGS_TOML`])
-/// is parsed into a `toml_edit::DocumentMut` and each value is set in place, so
-/// the surrounding documentation survives a round-trip. A malformed file falls
-/// back to the seed text rather than blocking the save.
-///
-/// Note: the seed ships every knob as a *commented* `# key = …` line, which
-/// `toml_edit` cannot see. The first save therefore **adds real, uncommented
-/// keys** (below the documentation comments, which remain as reference); from
-/// then on those keys are edited in place.
 pub fn save_settings(settings: &Settings) -> std::io::Result<()> {
     use toml_edit::{value, DocumentMut};
 
@@ -408,8 +373,6 @@ mod tests {
         assert_eq!(s.config_version, Some(1));
     }
 
-    /// The seeded `settings.toml` is the primary documentation users see, so
-    /// it must mention every field.
     #[test]
     fn seed_toml_documents_every_field() {
         for field in [
@@ -443,8 +406,6 @@ mod tests {
         }
     }
 
-    /// The seed documents only what thurbox reads: a key that does nothing
-    /// must not be offered as a switch.
     #[test]
     fn seed_toml_offers_no_dropped_key() {
         for key in [
@@ -463,8 +424,6 @@ mod tests {
         }
     }
 
-    /// The seed carries a "common recipes" block of copy-pasteable settings,
-    /// kept commented so `seed_toml_parses_to_defaults` still holds.
     #[test]
     fn seed_documents_common_recipes() {
         for marker in [
@@ -634,8 +593,6 @@ mod tests {
         assert!(s.features.perf_hud, "untouched flags stay enabled");
     }
 
-    /// An earlier save wrote every key it knew, retired ones included, so a
-    /// save is what clears them: otherwise each launch names them again.
     #[test]
     fn save_settings_drops_retired_keys() {
         let temp = tempfile::TempDir::new().unwrap();
@@ -672,9 +629,6 @@ mod tests {
         assert_eq!(names, vec!["settings.toml".to_string()]);
     }
 
-    /// An older `[telemetry]` table, the one with `enabled` and an inline
-    /// headers map, is dropped whole: it neither resets the rest of the file
-    /// nor turns the interface's export on, and a save removes it.
     #[test]
     fn an_older_telemetry_table_is_not_read_and_never_turns_export_on() {
         let temp = tempfile::TempDir::new().unwrap();
@@ -706,8 +660,6 @@ mod tests {
         }
     }
 
-    /// A v2 `settings.toml` keeps loading: each key 3.0 no longer reads is
-    /// named as such on startup, and `config validate` passes the file.
     #[test]
     fn a_retired_key_loads_with_a_warning_naming_it_and_validates() {
         let temp = tempfile::TempDir::new().unwrap();
@@ -753,8 +705,6 @@ mod tests {
         );
     }
 
-    /// Each `[fleets.<name>]` key is known, a misspelt one is reported, and
-    /// the old `[fleet]` table is named as replaced rather than unknown.
     #[test]
     fn a_fleets_table_validates_and_the_old_fleet_table_is_retired() {
         let listed = "[fleets.laptop]\ntransport = \"local\"\n\

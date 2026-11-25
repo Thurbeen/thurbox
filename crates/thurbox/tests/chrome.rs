@@ -1,10 +1,3 @@
-//! The chrome around the panes: the banner row, the left column's split, and
-//! the central pane's border strip.
-//!
-//! These are the parts of v1 a user reads without looking at any one pane —
-//! and the parts that make v2 recognisable as the same program. Each test
-//! names the v1 function it is holding v2 to.
-
 use ratatui::backend::TestBackend;
 use ratatui::layout::Rect;
 use ratatui::Terminal;
@@ -61,7 +54,6 @@ fn session(name: &str, branch: &str) -> SessionRow {
     }
 }
 
-/// The two-session world the v1/v2 captures were taken against.
 fn world() -> Snapshot {
     Snapshot {
         sessions: vec![
@@ -76,8 +68,6 @@ fn publish(host: &LuaHost, snapshot: &Snapshot, themes: &Themes) {
     publish_with(host, snapshot, themes, &[], 0);
 }
 
-/// [`publish`], with the two inputs the message band moves with: what is in
-/// flight, and the row `App::status_rows` reserved for it.
 fn publish_with(
     host: &LuaHost,
     snapshot: &Snapshot,
@@ -125,10 +115,6 @@ fn index_of(host: &LuaHost, mod_name: &str) -> usize {
         .unwrap_or_else(|| panic!("no mod {mod_name}"))
 }
 
-/// A pane rendered but not painted, purely so it publishes into `store` — the
-/// bus a neighbour reads to learn which session is selected.
-/// Given a column of its own, because a pane too small to draw returns early
-/// before it publishes anything.
 fn prime(host: &LuaHost, mod_name: &str) {
     host.render(
         index_of(host, mod_name),
@@ -198,7 +184,6 @@ fn slots(host: &LuaHost, snapshot: &Snapshot, width: u16, height: u16) -> Vec<Sl
     slots_with(host, snapshot, &[], 0, width, height)
 }
 
-/// [`slots`] for a frame the message band is reporting work on.
 fn slots_with(
     host: &LuaHost,
     snapshot: &Snapshot,
@@ -223,7 +208,6 @@ fn rect_of(placed: &[SlotRect], slot: &str) -> Option<Rect> {
 
 // ── Chrome bands (kernel-rendered, arrangement-placed) ─────────────────────
 
-/// Place a band and paint it, returning the row it drew.
 fn band_row(band: thurbox::kernel::bands::Band, state: &BandState<'_>, width: u16) -> String {
     let mut terminal = Terminal::new(TestBackend::new(width, 1)).expect("terminal");
     terminal
@@ -365,7 +349,6 @@ fn the_action_band_carries_the_focus_the_counts_and_the_entries() {
     );
 }
 
-/// Paint the action band and return both the row and the hitboxes it recorded.
 fn action_band(state: &BandState<'_>, width: u16) -> (String, Vec<thurbox::kernel::bands::Hit>) {
     let mut hits = Vec::new();
     let mut terminal = Terminal::new(TestBackend::new(width, 1)).expect("terminal");
@@ -685,14 +668,10 @@ fn hiding_the_session_list_gives_the_centre_the_whole_width() {
 
 // ── Focus (v1 `ui::FocusLevel`) ─────────────────────────────────────────────
 
-/// A dark default, a light theme, a low-contrast one and a high-contrast one:
-/// the focus cue has to survive all four, not just the palette it was drawn in.
 const FOCUS_THEMES: [&str; 4] = ["default", "github-light", "zenburn", "oxocarbon"];
 
-/// Every bundled pane that can hold focus and frames itself.
 const FOCUSABLE: [&str; 3] = ["sessions", "agent", "search"];
 
-/// `pane` painted into a 60x10 buffer under `theme`, holding focus or not.
 fn framed(host: &LuaHost, pane: &str, focused: bool, theme: &str) -> ratatui::buffer::Buffer {
     let mut themes = Themes::load(None);
     themes.preview(theme).expect("a shipped theme");
@@ -751,8 +730,6 @@ fn top_row(buffer: &ratatui::buffer::Buffer) -> String {
         .collect()
 }
 
-/// The role's colour under `theme`, spelled the way `color_to_string` spells a
-/// painted cell's.
 fn role(theme: &str, name: &str) -> String {
     let mut themes = Themes::load(None);
     themes.preview(theme).expect("a shipped theme");
@@ -1025,7 +1002,6 @@ return {
 
 // ── The central pane's border strip (v1 `App::render_central_pane`) ─────────
 
-/// The agent pane's top border row.
 fn agent_border(host: &LuaHost, width: u16) -> String {
     screen(host, &world(), &["sessions"], "agent", width, 10)
         .lines()
@@ -1108,9 +1084,6 @@ fn the_welcome_screen_draws_no_strip() {
     assert!(!border.contains("Agent"), "{border}");
 }
 
-/// The full cells a band paints, not just its symbols: the loop's settle check
-/// compares cells, so a band that repainted the same text in a different style
-/// would still keep it awake.
 fn band_cells(
     band: thurbox::kernel::bands::Band,
     state: &BandState<'_>,

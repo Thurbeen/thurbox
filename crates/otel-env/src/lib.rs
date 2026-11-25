@@ -1,38 +1,3 @@
-//! OpenTelemetry export from the standard OTEL_* variables, the same in
-//! every program the repository ships (`fleet`, `runtime-mux`,
-//! `workspace-git`, the thurbox interface): the SDK and its OTLP exporter,
-//! installed as the process's global providers when the variables ask for
-//! them, and nothing at all otherwise. docs/observability.md is the
-//! interface this crate implements.
-//!
-//! A program with a config file gives its `[telemetry]` table to [`adopt`]
-//! first: the table stands for the variables it names, and a variable set in
-//! the environment wins over it ([`TelemetryConfig`]), except
-//! `OTEL_LOGS_EXPORTER` for a program whose logs follow the table alone
-//! ([`Logs::Config`]). The process
-//! environment itself is never changed; [`child_env`] is what a child
-//! process must be given on top of the environment it inherits.
-//!
-//! Every other crate records through the `opentelemetry` API alone, which
-//! does nothing until this crate installs a provider. A signal is exported
-//! when its endpoint (`OTEL_EXPORTER_OTLP_ENDPOINT`, or the signal's own
-//! `OTEL_EXPORTER_OTLP_{TRACES,METRICS,LOGS}_ENDPOINT`) is set, its
-//! `OTEL_{TRACES,METRICS}_EXPORTER` is unset or `otlp` (logs need
-//! `OTEL_LOGS_EXPORTER=otlp` set explicitly, or the table's `logs = true`
-//! alone under [`Logs::Config`]), and `OTEL_SDK_DISABLED` is not
-//! `true`. The transport is OTLP over HTTP with
-//! protobuf; the exporter itself reads the headers, timeout and compression
-//! variables, and the resource reads `OTEL_SERVICE_NAME` and
-//! `OTEL_RESOURCE_ATTRIBUTES`.
-//!
-//! Trace context crosses a process boundary as the W3C `TRACEPARENT`
-//! environment variable: [`traceparent`] writes it for a child, and
-//! [`root`] starts a program's root span under the one it was given.
-//!
-//! Export never decides anything: spans, points and records are batched on
-//! the SDK's own threads into bounded queues that drop when full, a failed
-//! export is dropped, and shutdown waits at most [`SHUTDOWN_BOUND`].
-
 mod file;
 
 use std::sync::{mpsc, OnceLock};
@@ -45,8 +10,6 @@ use opentelemetry::trace::{
 };
 use opentelemetry::{global, Context, ContextGuard, Key};
 
-/// The attribute type every caller passes, so a program needs no
-/// `opentelemetry` dependency of its own to name one.
 pub use opentelemetry::KeyValue;
 use opentelemetry_otlp::{MetricExporter, SpanExporter, WithExportConfig, WithHttpConfig};
 use opentelemetry_sdk::metrics::SdkMeterProvider;
@@ -54,7 +17,6 @@ use opentelemetry_sdk::trace::SdkTracerProvider;
 use opentelemetry_sdk::Resource;
 
 pub use file::{HeadersSource, Source, TelemetryConfig};
-/// The severity a caller of [`log`] names.
 pub use opentelemetry::logs::Severity;
 pub use opentelemetry_sdk::logs::SdkLoggerProvider;
 
@@ -68,17 +30,10 @@ static LOGS_FROM_CONFIG: OnceLock<()> = OnceLock::new();
 
 const LOGS_EXPORTER: &str = "OTEL_LOGS_EXPORTER";
 
-/// Whether a program records logs, and what turns their export on.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Logs {
-    /// The program records no logs and reads no logs variable.
     Off,
-    /// `OTEL_LOGS_EXPORTER=otlp`, or the adopted table's `logs = true` when
-    /// the variable is unset.
     Environment,
-    /// The adopted table's `logs = true` alone: `OTEL_LOGS_EXPORTER` in the
-    /// environment is ignored, and [`child_env`] gives a child the table's
-    /// choice in its place.
     Config,
 }
 
@@ -101,11 +56,6 @@ fn without_logs_exporter(
     }
 }
 
-/// Take the program's `[telemetry]` table for the rest of the process,
-/// before [`init`]: read its headers file and stand it for the variables
-/// it names. Only the first call takes effect. On an error the process and
-/// the programs it starts export nothing, whatever the environment says, so
-/// a setting the table turns off never comes back; the caller reports it.
 pub fn adopt(config: &TelemetryConfig) -> Result<(), String> {
     match config.vars() {
         Ok(vars) => {
@@ -119,9 +69,6 @@ pub fn adopt(config: &TelemetryConfig) -> Result<(), String> {
     }
 }
 
-/// Export nothing for the rest of the process, nor from the programs it
-/// starts, whatever the environment says: for a program whose `[telemetry]`
-/// table cannot be read, so a setting it turns off never comes back.
 pub fn disable() {
     let _ = FILE.set(FileVars::disabled());
 }
@@ -141,11 +88,6 @@ fn merged() -> Merged<'static, impl Fn(&str) -> Option<String>> {
     }
 }
 
-/// The adopted table's variables a child process must be given: those in
-/// force that the environment it inherits lacks. A program another one
-/// starts reads no config file of its own. After [`init`] with
-/// [`Logs::Config`], it always names `OTEL_LOGS_EXPORTER`, so a child never
-/// turns logs on from a variable this program ignored.
 pub fn child_env() -> Vec<(String, String)> {
     let mut vars = merged().child_env();
     if LOGS_FROM_CONFIG.get().is_some() && !vars.iter().any(|(name, _)| name == LOGS_EXPORTER) {
@@ -154,49 +96,30 @@ pub fn child_env() -> Vec<(String, String)> {
     vars
 }
 
-/// The longest a program waits at exit for its last batches to leave.
 pub const SHUTDOWN_BOUND: Duration = Duration::from_secs(2);
 
-/// The same bound for a program that answers one call of another (a
-/// runtime, `workspace-git`, a one-shot `fleet` command): it writes its
-/// answer first, then waits no more than this, so a stalled collector stays
-/// far inside its caller's deadline.
 pub const CALL_SHUTDOWN_BOUND: Duration = Duration::from_millis(100);
 
-/// The environment variable that carries trace context to a child process
-/// (W3C Trace Context, as the OpenTelemetry environment carrier spells it).
 pub const TRACEPARENT: &str = "TRACEPARENT";
 
-/// The one protocol the exporter speaks.
 pub(crate) const PROTOCOL: &str = "http/protobuf";
 
-/// The installed providers, flushed by [`Telemetry::shutdown`]; all `None`
-/// when nothing is exported.
 #[derive(Debug, Default)]
 pub struct Telemetry {
     traces: Option<SdkTracerProvider>,
     metrics: Option<SdkMeterProvider>,
     logs: Option<SdkLoggerProvider>,
-    /// Why the logs signal is off although it was asked for.
     logs_off: Option<String>,
 }
 
-/// Which signals the environment asks to export.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 struct Signals {
     traces: bool,
     metrics: bool,
     logs: bool,
-    /// Why logs are off although the program asked for them.
     logs_off: Option<String>,
 }
 
-/// Read the signals from the variables `var` answers; the logs signal only
-/// when the program records logs (`logs`), so a program that records none
-/// never reads a logs variable. An unsupported protocol or exporter of
-/// traces or metrics is an error, so a misconfiguration is reported rather
-/// than silently exporting nothing. One of logs turns logs off alone: a log
-/// setting never changes what traces and metrics do.
 fn signals(var: impl Fn(&str) -> Option<String>, logs: bool) -> Result<Signals, String> {
     let set = |name: &str| var(name).filter(|v| !v.trim().is_empty());
     if set("OTEL_SDK_DISABLED").is_some_and(|v| v.trim().eq_ignore_ascii_case("true")) {
@@ -250,21 +173,13 @@ fn signals(var: impl Fn(&str) -> Option<String>, logs: bool) -> Result<Signals, 
     })
 }
 
-/// Where this program's own export goes, for the agents a program starts
-/// to export to as well (docs/observability.md, *Coding agents*): the base
-/// endpoint `OTEL_EXPORTER_OTLP_ENDPOINT`, without a trailing `/`, and
-/// `OTEL_EXPORTER_OTLP_HEADERS`. `None` unless traces or metrics are
-/// exported and the base endpoint is set: a signal's own endpoint names no
-/// collector for the other signals.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Collector {
     pub endpoint: String,
-    /// Always `http/protobuf`: the one protocol the programs speak.
     pub protocol: &'static str,
     pub headers: Option<String>,
 }
 
-/// This process's [`Collector`], from its environment.
 pub fn collector() -> Option<Collector> {
     let merged = merged();
     collector_from(|name| merged.var(name))
@@ -289,11 +204,6 @@ fn collector_from(var: impl Fn(&str) -> Option<String>) -> Option<Collector> {
     })
 }
 
-/// Install the providers the environment asks for, under the resource
-/// `service` (unless `OTEL_SERVICE_NAME` names another) at `version`, with
-/// the `attributes` the environment does not set itself; the logs signal
-/// as `logs` says. On an error nothing is installed, and the caller reports
-/// it and runs on without telemetry.
 pub fn init(
     service: &str,
     version: &str,
@@ -379,10 +289,6 @@ pub fn init(
     Ok(telemetry)
 }
 
-/// Record `text` as one log record at `severity` through the logs signal
-/// [`init`] installed; nothing when logs are not exported. For a program
-/// that records its own lines rather than `tracing` events (`fleet`): the
-/// caller passes only text it also prints, never a value it was given.
 pub fn log(severity: Severity, text: &str) {
     use opentelemetry::logs::{LogRecord, Logger};
     let Some(logger) = LOGGER.get() else {
@@ -419,10 +325,6 @@ fn configured<B: WithExportConfig + WithHttpConfig>(
     builder
 }
 
-/// What a program with the `[telemetry]` table `config` exports under this
-/// process's environment, and where each value in force comes from, for a
-/// doctor: never a header's value. An error is why nothing is exported.
-/// `logs` as for [`init`].
 pub fn describe(config: &TelemetryConfig, logs: Logs) -> Result<String, String> {
     describe_in(config, logs, |name| std::env::var(name).ok())
 }
@@ -487,8 +389,6 @@ fn describe_in(
     Ok(parts.join("; "))
 }
 
-/// The environment's resource, named `service` unless it names itself, with
-/// `version` and `attributes` unless it sets them.
 fn resource(service: &str, version: &str, attributes: &[KeyValue]) -> Resource {
     let detected = Resource::builder().build();
     let mut builder = Resource::builder();
@@ -507,8 +407,6 @@ fn resource(service: &str, version: &str, attributes: &[KeyValue]) -> Resource {
     builder.build()
 }
 
-/// The context `TRACEPARENT` names, or the empty context when it is unset
-/// or not a valid version `00` traceparent.
 fn inherited() -> Context {
     std::env::var(TRACEPARENT)
         .ok()
@@ -518,7 +416,6 @@ fn inherited() -> Context {
         })
 }
 
-/// A W3C `traceparent` value: `00-<trace id>-<span id>-<flags>`.
 fn parse(value: &str) -> Option<SpanContext> {
     let mut parts = value.trim().split('-');
     let (version, trace, span, flags) =
@@ -542,8 +439,6 @@ fn parse(value: &str) -> Option<SpanContext> {
     sc.is_valid().then_some(sc)
 }
 
-/// The current span's context as a `TRACEPARENT` value, for a child
-/// process; `None` when no span is current, as when nothing is exported.
 pub fn traceparent() -> Option<String> {
     let cx = Context::current();
     let sc = cx.span().span_context().clone();
@@ -557,23 +452,16 @@ pub fn traceparent() -> Option<String> {
     })
 }
 
-/// A program's root span, current until dropped and then ended. Its parent
-/// is the span `TRACEPARENT` names, so a program another one runs is part of
-/// its caller's trace.
 #[derive(Debug)]
 pub struct Root {
     cx: Context,
     _guard: ContextGuard,
 }
 
-/// Start the root span `name` with `attributes`, recorded under `scope`,
-/// the instrumentation scope of the program's own spans.
 pub fn root(scope: &'static str, name: String, attributes: Vec<KeyValue>) -> Root {
     start(scope, name, attributes, inherited())
 }
 
-/// Start the root span `name` as [`root`] does, but as a trace of its own:
-/// whatever `TRACEPARENT` names is not its parent.
 pub fn own_trace(scope: &'static str, name: String, attributes: Vec<KeyValue>) -> Root {
     start(scope, name, attributes, Context::new())
 }
@@ -596,8 +484,6 @@ impl Root {
         self.cx.span().set_attribute(kv);
     }
 
-    /// Mark the span failed with `why`: a kind or an exit code, never an
-    /// error's text.
     pub fn fail(&self, why: String) {
         self.cx.span().set_status(Status::error(why));
     }
@@ -610,25 +496,18 @@ impl Drop for Root {
 }
 
 impl Telemetry {
-    /// The logger provider, when the logs signal is exported.
     pub fn logs(&self) -> Option<&SdkLoggerProvider> {
         self.logs.as_ref()
     }
 
-    /// Why the logs signal is off although the program asked for it: an
-    /// unsupported logs exporter or protocol.
     pub fn logs_off(&self) -> Option<&str> {
         self.logs_off.as_deref()
     }
 
-    /// Flush and stop every provider, together, for at most
-    /// [`SHUTDOWN_BOUND`]: an unreachable collector delays exit by no more.
     pub fn shutdown(self) {
         self.shutdown_within(SHUTDOWN_BOUND);
     }
 
-    /// Flush and stop every provider, together, for at most `bound`. What
-    /// is still unsent then is dropped.
     pub fn shutdown_within(self, bound: Duration) {
         let mut stops: Vec<Box<dyn FnOnce() + Send>> = Vec::new();
         if let Some(traces) = self.traces {
@@ -680,7 +559,6 @@ mod tests {
         )
     }
 
-    /// As a program that records logs reads them, with logs opted in.
     fn read(vars: &[(&str, &str)]) -> Result<Signals, String> {
         let mut vars = vars.to_vec();
         if !vars.iter().any(|(k, _)| *k == "OTEL_LOGS_EXPORTER") {

@@ -1,21 +1,3 @@
-//! The chrome bands: what the application says about itself.
-//!
-//! Three single-row surfaces — who is running (`identity`), what just happened
-//! (`message`), and what can be pressed (`action`). They are the non-modal half
-//! of the rule `kernel::modals` states for the modal half: **system chrome is
-//! kernel-owned, and mods contribute data to it**.
-//!
-//! Two properties follow from that, and both are the point:
-//!
-//! * **Drawing a band runs no Lua.** Contributions are collected once, at load
-//!   and reload, and every value that changes while running is read from state
-//!   the kernel already holds. A mod that throws, hangs or fails to load
-//!   costs its own pane and its own entries — never the chrome.
-//! * **The arrangement decides placement, the kernel decides contents.** A band
-//!   is named as a slot in `ui/layout.lua` exactly as a pane's region is, so the
-//!   bars stay movable in the file whose whole purpose is deciding what the
-//!   screen looks like. A band the arrangement omits simply does not draw.
-
 use ratatui::layout::Rect;
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
@@ -25,7 +7,6 @@ use ratatui::Frame;
 use super::registry::{Pill, Registry, QUIT_CHORD};
 use super::theme::Themes;
 
-/// How severe a message is. v1's `StatusLevel`, and the same three.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Level {
     Info,
@@ -34,12 +15,6 @@ pub enum Level {
 }
 
 impl Level {
-    /// The name a mod writes in `command("message", { level = … })`.
-    ///
-    /// `None` for anything else, so a level nobody badges is refused at parse
-    /// time rather than quietly read as `Info` — a misspelt severity that
-    /// renders as an ordinary message is a message nobody notices, which is
-    /// the failure the three levels exist to prevent.
     pub fn parse(name: &str) -> Option<Self> {
         match name {
             "info" => Some(Level::Info),
@@ -49,7 +24,6 @@ impl Level {
         }
     }
 
-    /// The badge v1 prints in front of the text.
     fn badge(self) -> &'static str {
         match self {
             Level::Info => " INFO ",
@@ -58,7 +32,6 @@ impl Level {
         }
     }
 
-    /// The theme role the badge and the text take.
     fn role(self) -> &'static str {
         match self {
             Level::Info => "accent",
@@ -68,10 +41,6 @@ impl Level {
     }
 }
 
-/// Which band a slot names.
-///
-/// A slot the arrangement placed that is not one of these belongs to mods,
-/// and is not this module's business.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Band {
     Identity,
@@ -89,7 +58,6 @@ impl Band {
         }
     }
 
-    /// The slot name this band is placed under.
     pub fn slot(self) -> &'static str {
         match self {
             Band::Identity => "header",
@@ -98,40 +66,18 @@ impl Band {
         }
     }
 
-    /// Order bands are surrendered in when the screen is too short.
-    ///
-    /// Identity first: it is the least urgent row on screen, and the pane area
-    /// is what the user is working in. The message band goes last, because a
-    /// hidden error is the failure this chrome exists to prevent. v1 drops its
-    /// header below 20 rows for the same reason.
     pub const DROP_ORDER: [Band; 3] = [Band::Identity, Band::Action, Band::Message];
 }
 
-/// Everything the bands draw from, gathered before any of them paints.
-///
-/// Borrowed rather than owned so assembling it costs nothing: the caller
-/// already holds every field.
 pub struct BandState<'a> {
     pub version: &'a str,
     pub theme_label: &'a str,
-    /// The newer release, when one is known to exist.
     pub update_available: Option<&'a str>,
-    /// The selected session's name, when there is one.
     pub session: Option<&'a str>,
     pub session_count: usize,
-    /// The focused surface's name, for the action band's left cluster.
     pub focus_label: &'a str,
-    /// What just happened, and how severe. `None` leaves the message band with
-    /// nothing to say, which is what keeps it from occupying a row.
     pub message: Option<(&'a str, Level)>,
-    /// Work in flight, described. Outlives a message deliberately: creation
-    /// phases routinely run past the retention window, so they are progress
-    /// rather than a toast.
     pub progress: Option<&'a str>,
-    /// The identity under the pointer, so an entry can light. Resolved by the
-    /// loop from the hitboxes this module returned on the previous frame — the
-    /// same list clicks are routed through, so a lit entry and a pressed one can
-    /// never be different entries.
     pub hovered: Option<&'a super::node::Identity>,
     pub registry: &'a Registry,
     pub themes: &'a Themes,
@@ -153,11 +99,6 @@ impl BandState<'_> {
     }
 }
 
-/// Whether this band has anything to occupy a row with.
-///
-/// Only the message band can be empty: the other two always have something to
-/// report. An arrangement can therefore place all three unconditionally and the
-/// message row costs nothing while there is nothing to say.
 pub fn occupies(band: Band, state: &BandState<'_>) -> bool {
     match band {
         Band::Message => state.message.is_some() || state.progress.is_some(),
@@ -165,32 +106,21 @@ pub fn occupies(band: Band, state: &BandState<'_>) -> bool {
     }
 }
 
-/// Where an entry was drawn, and what pressing it means.
-///
-/// Bands are painted by the kernel rather than walked as a node tree, so they do
-/// not pass through the hit recording the panes get. They return their hitboxes
-/// instead, and the loop routes clicks and hover through them — which is what
-/// makes an entry a button rather than a picture of one.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Hit {
     pub rect: Rect,
     pub identity: super::node::Identity,
 }
 
-/// An entry resolved for drawing: its label, and the chord in force.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Entry {
     pub label: String,
-    /// The chord actually bound, which is what the user must press. `None` when
-    /// the action is reachable but unbound. The Quit entry's is *reserved* rather
-    /// than bound — see [`quit_entry`], the one entry no binding backs.
     pub chord: Option<String>,
     pub action: String,
     pub priority: i64,
 }
 
 impl Entry {
-    /// `Help · F1`, or just `Help` when nothing is bound to it.
     pub fn display(&self) -> String {
         match &self.chord {
             Some(chord) => format!("{} · {}", self.label, chord),
@@ -199,12 +129,6 @@ impl Entry {
     }
 }
 
-/// Resolve declared pills into drawable entries, highest priority first.
-///
-/// An entry naming an action the registry does not know is **dropped**. A chip
-/// that lights on hover and then does nothing costs a press to discover, which
-/// is worse than never offering it — learned from the tab strip, which kept
-/// advertising a review pane after that mod was deleted.
 pub fn entries(pills: &[Pill], registry: &Registry) -> Vec<Entry> {
     let mut out: Vec<Entry> = pills
         .iter()
@@ -227,25 +151,13 @@ pub fn entries(pills: &[Pill], registry: &Registry) -> Vec<Entry> {
     out
 }
 
-/// Why a declared pill never becomes an [`Entry`].
-///
-/// The drop is deliberate — see [`entries`] — but its two causes are different
-/// mistakes and the band cannot tell them apart on screen, because both look
-/// like an absent button. Whatever reports a drop reports this beside it, so an
-/// action that only the palette can reach is never confused with one nobody
-/// declared.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DropReason {
-    /// The action is declared, as a chord-less `commands` entry, and nothing
-    /// binds a key to it. Reachable from the palette; not from the band.
     PaletteOnly,
-    /// Nothing loaded declares the action at all — a misspelling, or a mod
-    /// that is turned off or gone.
     Unknown,
 }
 
 impl DropReason {
-    /// The name a machine reads it by.
     pub fn as_str(self) -> &'static str {
         match self {
             DropReason::PaletteOnly => "palette-only",
@@ -253,7 +165,6 @@ impl DropReason {
         }
     }
 
-    /// What to tell the author: what the band found, and what to do about it.
     pub fn explain(self, action: &str) -> String {
         match self {
             DropReason::PaletteOnly => format!(
@@ -269,10 +180,6 @@ impl DropReason {
     }
 }
 
-/// Every declared pill [`entries`] drops, and why.
-///
-/// The same resolution read the other way round, so a diagnostic can never
-/// describe a drop the band did not make — or stay quiet about one it did.
 pub fn dropped<'a>(pills: &'a [Pill], registry: &Registry) -> Vec<(&'a Pill, DropReason)> {
     pills
         .iter()
@@ -292,12 +199,6 @@ pub fn dropped<'a>(pills: &'a [Pill], registry: &Registry) -> Vec<(&'a Pill, Dro
         .collect()
 }
 
-/// The chord to advertise for an action, or `None` when nothing declares it.
-///
-/// An F-key alternate wins over a `ctrl+<letter>` primary, which is what both
-/// v1's footer and the agent pane's tab strip show. It is not cosmetic: a bare
-/// `ctrl+<letter>` is handed to the agent while a terminal has focus, so the
-/// F-key is the one that works from where the user usually is.
 fn chord_for(action: &str, registry: &Registry) -> Option<String> {
     let mut first = None;
     for binding in registry.bindings() {
@@ -318,8 +219,6 @@ fn is_function_key(chord: &str) -> bool {
         .is_some_and(|rest| !rest.is_empty() && rest.chars().all(|c| c.is_ascii_digit()))
 }
 
-/// `ctrl+t` → `^T`, `f8` → `F8`. The spelling the rest of the interface uses,
-/// so one action reads the same wherever it is offered.
 fn compact_chord(chord: &str) -> String {
     let mut modifiers = String::new();
     let mut key = chord;
@@ -342,12 +241,9 @@ fn compact_chord(chord: &str) -> String {
     format!("{modifiers}{key}")
 }
 
-/// Two cells of padding either side of a label, as v1's pills carry.
 const ENTRY_PADDING: usize = 2;
-/// One blank cell between neighbouring entries.
 const ENTRY_GAP: usize = 1;
 
-/// Width a run of entries occupies.
 pub fn entries_width(entries: &[Entry]) -> usize {
     entries
         .iter()
@@ -356,10 +252,6 @@ pub fn entries_width(entries: &[Entry]) -> usize {
         + entries.len().saturating_sub(1) * ENTRY_GAP
 }
 
-/// Drop entries until the run fits, lowest priority first.
-///
-/// Dropped rather than truncated: half a label is not a smaller button, it is an
-/// unreadable one. v1's footer sheds the same way.
 pub fn fit(mut entries: Vec<Entry>, width: usize) -> Vec<Entry> {
     while !entries.is_empty() && entries_width(&entries) > width {
         entries.pop();
@@ -367,23 +259,8 @@ pub fn fit(mut entries: Vec<Entry>, width: usize) -> Vec<Entry> {
     entries
 }
 
-/// The action the Quit entry runs.
-///
-/// Quit is **reserved, not declared**: `ctrl+q` is handled before the registry is
-/// consulted (`dispatch_reserved`), so no binding exists for an entry to resolve
-/// against — and none may, because a *rebindable* quit is what the reserved chord
-/// exists to prevent. So the band carries this entry itself and the loop routes a
-/// press on it directly, which is why the action name lives here rather than in a
-/// declaration table.
 pub const QUIT_ACTION: &str = "core.quit";
 
-/// v1's rightmost footer pill, and the only entry with no binding behind it.
-///
-/// The chord is [`QUIT_CHORD`] — the very string the reserved table
-/// refuses to rebind — put through `compact_chord` like every other entry's, so
-/// the one action the registry cannot resolve still reads identically to the ones
-/// it can. Its priority is below any declared entry's so it renders last, which
-/// is v1's `FOOTER_BUTTONS` order.
 pub fn quit_entry() -> Entry {
     Entry {
         label: "Quit".to_string(),
@@ -393,13 +270,6 @@ pub fn quit_entry() -> Entry {
     }
 }
 
-/// The action band's left cluster, in v1's four parts
-/// (`ui::status_bar::footer_left_spans`): the focused surface as a badge, the
-/// counts, and the informational chords.
-///
-/// The chords are hints, not buttons: `^H`/`^L` and `^O` have no single hitbox
-/// because they are not one target — v1 draws them the same way, and the
-/// pressable things live in the right-hand block.
 fn left_spans(state: &BandState<'_>) -> Vec<Span<'static>> {
     // v1 `Theme::focused_title()`: a badge, not coloured text — the same
     // treatment a focused pane's own title gets, so the two agree about what has
@@ -435,11 +305,6 @@ fn left_spans(state: &BandState<'_>) -> Vec<Span<'static>> {
     spans
 }
 
-/// Fit a span row to `budget` columns, v1's `fit_spans_to_budget`.
-///
-/// Trailing spans are dropped whole until the prefix fits, so the focus badge is
-/// the last thing to give up its space; only when that badge alone still
-/// overflows is anything truncated.
 fn fit_to_budget(mut spans: Vec<Span<'static>>, budget: usize) -> Vec<Span<'static>> {
     if budget == 0 {
         return Vec::new();
@@ -458,17 +323,6 @@ fn fit_to_budget(mut spans: Vec<Span<'static>>, budget: usize) -> Vec<Span<'stat
     spans
 }
 
-/// What the focus badge says: the view being shown, or the pane showing it.
-///
-/// A pane in a switch slot can show more than one thing, and the badge has to
-/// name what you are actually looking at — v1 labels its centre pane "Shell"
-/// rather than "Terminal" while the shell view is up
-/// (`view.rs`: `InputFocus::Terminal if is_shell_view`).
-///
-/// `surface` is the session surface the focused pane painted, which the kernel
-/// already resolves from its tree. A surface named `<id>#<view>` is a sub-view,
-/// and the part after the `#` is what it is called — so a pane that adds a view
-/// gets a correct badge with no change here.
 pub fn focus_label(surface: Option<&str>, mod_name: &str) -> String {
     let view = surface
         .and_then(|surface| surface.split_once('#'))
@@ -477,11 +331,6 @@ pub fn focus_label(surface: Option<&str>, mod_name: &str) -> String {
     capitalise(view.unwrap_or(mod_name))
 }
 
-/// A pane's own name, title-cased for the badge.
-///
-/// v1 names the centre pane "Terminal" because its focus is a fixed enum; here
-/// the label falls back to the pane's own name, which is the only thing that
-/// generalises to a pane v1 never had.
 fn capitalise(name: &str) -> String {
     let mut chars = name.chars();
     match chars.next() {
@@ -490,7 +339,6 @@ fn capitalise(name: &str) -> String {
     }
 }
 
-/// Draw a band into its resolved rect.
 pub fn render(frame: &mut Frame, area: Rect, band: Band, state: &BandState<'_>) -> Vec<Hit> {
     if area.width == 0 || area.height == 0 {
         return Vec::new();
@@ -508,17 +356,13 @@ pub fn render(frame: &mut Frame, area: Rect, band: Band, state: &BandState<'_>) 
     }
 }
 
-/// The role an entry carries, and the verb a click on it performs.
 fn entry_role(action: &str) -> String {
     format!("action:{action}")
 }
 
-/// An action-band entry resolved, formatted and measured, ready to paint.
 struct PreparedEntry {
-    /// ` Help · F1 ` — padded as painted, so its width is the hitbox width.
     label: String,
     width: u16,
-    /// [`entry_role`]'s answer, precomputed: hover compares it per frame.
     role: String,
 }
 
@@ -534,7 +378,6 @@ thread_local! {
         const { std::cell::RefCell::new(None) };
 }
 
-/// [`entries`] → [`fit`] around a reserved Quit, then format and measure once.
 fn prepare_action(registry: &Registry, width: u16) -> Vec<PreparedEntry> {
     let all = entries(registry.pills(), registry);
     // The left cluster is bounded by what the entries leave, so it can never run
@@ -561,8 +404,6 @@ fn prepare_action(registry: &Registry, width: u16) -> Vec<PreparedEntry> {
         .collect()
 }
 
-/// v1 `ui::status_bar::render_header`: brand, tagline, version, then the
-/// optional update notice; the session and theme right-aligned over the top.
 fn render_identity(frame: &mut Frame, area: Rect, state: &BandState<'_>) {
     let mut spans = vec![
         Span::styled(
@@ -601,9 +442,6 @@ fn render_identity(frame: &mut Frame, area: Rect, state: &BandState<'_>) {
     );
 }
 
-/// The message, badged by severity. Progress outranks it: work in flight is the
-/// more useful thing to say while it runs, and it is the thing that outlives the
-/// retention window.
 fn render_message(frame: &mut Frame, area: Rect, state: &BandState<'_>) {
     let spans = if let Some(progress) = state.progress {
         vec![
@@ -626,9 +464,6 @@ fn render_message(frame: &mut Frame, area: Rect, state: &BandState<'_>) {
     frame.render_widget(Paragraph::new(Line::from(spans)), area);
 }
 
-/// v1 `ui::status_bar::render_footer`: the left cluster, then the entries
-/// right-aligned and shed lowest-priority-first when the width runs out — around
-/// a Quit entry that never sheds.
 fn render_action(frame: &mut Frame, area: Rect, state: &BandState<'_>) -> Vec<Hit> {
     ACTION_CACHE.with_borrow_mut(|cache| {
         let current = (
@@ -653,8 +488,6 @@ fn render_action(frame: &mut Frame, area: Rect, state: &BandState<'_>) -> Vec<Hi
     })
 }
 
-/// Paint prepared entries: the left cluster in what they leave, then each chip
-/// with its hitbox.
 fn paint_action(
     frame: &mut Frame,
     area: Rect,
@@ -884,8 +717,6 @@ mod tests {
         );
     }
 
-    /// Binding a chord to a chord-less command is how it stops being one, so the
-    /// pill that names it draws and there is nothing left to report.
     #[test]
     fn a_command_the_user_bound_a_chord_to_is_no_longer_a_dropped_pill() {
         let mut registry = registry_with(Vec::new(), vec![pill("notes.open", "Notes", 9)]);

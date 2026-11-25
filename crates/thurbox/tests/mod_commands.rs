@@ -1,12 +1,3 @@
-//! Running a program on a mod's behalf: who may, where it runs, and what
-//! comes back.
-//!
-//! The parts that fail invisibly are the gate and the attribution. A capability
-//! that is *present and refusing* looks identical to one that is absent until
-//! you read the error; a run attributed to the wrong mod looks like nothing
-//! at all until two mods pick the same key. Both are asserted here rather
-//! than trusted to review.
-
 use thurbox::kernel::host::{Capability, LuaHost, RenderContext};
 use thurbox::kernel::runs::{Ask, Run, Target};
 
@@ -20,11 +11,6 @@ fn interface(mods: &[(&str, &str)]) -> (tempfile::TempDir, std::path::PathBuf) {
     (home, ui)
 }
 
-/// Point `THURBOX_CONFIG_DIR` at `home` for as long as the guard lives.
-///
-/// The variable is process-wide and trust is read from it, so tests that set
-/// it hold one lock: under a threaded `cargo test`, another test could move it
-/// between a test granting trust and reading the grant back.
 fn configure(home: &std::path::Path) -> std::sync::MutexGuard<'static, ()> {
     static CONFIG: std::sync::Mutex<()> = std::sync::Mutex::new(());
     let guard = CONFIG
@@ -34,8 +20,6 @@ fn configure(home: &std::path::Path) -> std::sync::MutexGuard<'static, ()> {
     guard
 }
 
-/// Publish an empty snapshot the way the running interface does every frame,
-/// which is what puts the published `thurbox` table in place.
 fn publish(host: &LuaHost) {
     publish_snapshot(host, &Default::default());
 }
@@ -88,7 +72,6 @@ fn render(host: &LuaHost, name: &str) {
     .expect("render");
 }
 
-/// A pane that asks for a program the moment it draws.
 fn asker(name: &str, key: &str, declares: bool) -> String {
     format!(
         r#"return {{
@@ -397,7 +380,6 @@ fn an_ask_names_a_session_that_must_exist() {
     assert_eq!(ask.target, Target::Session("nope".into()));
 }
 
-/// A trusted pane asking with the given options table, verbatim.
 fn asking_with(name: &str, opts: &str) -> String {
     format!(
         r#"return {{
@@ -597,7 +579,6 @@ fn a_machine_nobody_knows_is_refused_not_guessed() {
 
 // ── the two capabilities are two decisions ─────────────────────────────────
 
-/// A pane declaring exactly the capabilities named.
 fn declares(name: &str, capabilities: &[&str]) -> String {
     let list: Vec<String> = capabilities
         .iter()
@@ -642,12 +623,6 @@ fn a_misspelled_capability_is_refused_and_names_what_exists() {
     );
 }
 
-/// The load-bearing property: neither grant confers the other.
-///
-/// `run` is bounded on every axis that matters — capped output, a timeout, four at
-/// a time — and an interactive program has none of those and holds the keyboard
-/// too. If one grant covered both, trusting a pane to poll `top` would silently
-/// have granted it a process held open on your keystrokes.
 #[test]
 fn trusting_a_file_for_one_capability_does_not_grant_the_other() {
     let (_home, ui) = interface(&[
@@ -743,7 +718,6 @@ fn deliver_package(ui: &std::path::Path, file: &str, version: &str, contents: &s
     lock.covering(file).expect("covered").pin_key()
 }
 
-/// The grant the host enforces, computed the way the running interface does.
 fn enforce(host: &LuaHost, ui: &std::path::Path) {
     let registry = thurbox::kernel::registry::Registry::load();
     host.set_trusted(thurbox::kernel::packages::granted(
@@ -824,10 +798,6 @@ fn editing_your_own_trusted_file_keeps_run() {
     assert_eq!(host.drain_runs().len(), 1);
 }
 
-/// Trust an installed file, change it, damage the lock with `damage`, and assert
-/// the grant is gone. A record that carries a pin is a grant to an installed
-/// version; without a lock entry to match it, the file would be judged as the
-/// user's own and a changed one would keep `run`.
 fn changed_installed_file_without_its_lock_entry(damage: impl FnOnce(&std::path::Path)) {
     let (home, ui) = interface(&[]);
     let _config = configure(home.path());
@@ -870,8 +840,6 @@ fn a_lock_without_the_files_entry_grants_nothing_to_it() {
     });
 }
 
-/// A pane holding no grant that replaces the shared `type` with one that asks
-/// for a program and sends to a session, then calls the real one.
 const LURE: &str = r#"local real = type
 type = function(value)
   if run then
@@ -884,13 +852,11 @@ return { name = "lure", slot = "sessions", render = function()
   return { type = "text", text = "" }
 end }"#;
 
-/// A pane trusted with `run` that calls `type` as it draws, as any pane does.
 const VICTIM: &str = r#"return { name = "victim", slot = "sessions", capabilities = { "run" },
   render = function()
     return { type = "text", text = type(state) }
   end }"#;
 
-/// Load the lure before the victim, trust the victim, and draw both.
 fn lured() -> (tempfile::TempDir, LuaHost) {
     let (home, ui) = interface(&[("91_lure.lua", LURE), ("92_victim.lua", VICTIM)]);
     let _config = configure(home.path());
@@ -923,8 +889,6 @@ fn a_pane_cannot_write_a_command_as_another_pane() {
     }
 }
 
-/// A pane that issues every command that drives an agent or destroys
-/// something, plus a plain delete, the moment it draws.
 fn driver(declares: &str) -> String {
     format!(
         r#"return {{
@@ -942,7 +906,6 @@ fn driver(declares: &str) -> String {
     )
 }
 
-/// Which of the driver's commands the coordinator would refuse, by kind.
 fn refused_kinds(host: &LuaHost) -> Vec<(&'static str, bool)> {
     host.drain_issued()
         .iter()
@@ -1014,8 +977,6 @@ fn trusting_a_pane_for_run_does_not_let_it_drive_sessions() {
     );
 }
 
-/// A pane that reports whether `files` is reachable, through the one channel a
-/// test can read back: the command it issues.
 fn file_reader(declares: &str) -> String {
     format!(
         r#"return {{
@@ -1133,16 +1094,12 @@ end }"#;
     );
 }
 
-/// A run-trusted pane that builds its command line with `string.format`, and
-/// with a value read from `store`, as it draws.
 const FORMATTER: &str = r#"return { name = "victim", slot = "sessions", capabilities = { "run" },
   render = function()
     run("k", string.format("echo %s", "hi") .. tostring(store.extra or ""), { session = "s1" })
     return { type = "text", text = "" }
   end }"#;
 
-/// Load `lure` before [`FORMATTER`], trust the victim, draw both, and return
-/// the program the victim asked for.
 fn victim_program_after(lure: &str) -> String {
     let source = format!(
         "{lure}\nreturn {{ name = 'lure', slot = 'sessions', render = function() return {{ type = 'text', text = '' }} end }}"
@@ -1260,8 +1217,6 @@ fn an_edited_shipped_pane_loses_sessions_until_it_is_trusted() {
     assert!(host.may_path("mods/60_confirm.lua", Capability::Sessions));
 }
 
-/// A pane holding no grant that leaves the shipped confirmation a question
-/// ending in `kind`, then answers it `y`, and what was issued.
 fn confirmed_through_the_shipped_pane(
     kind: &str,
 ) -> Vec<(String, thurbox::kernel::command::Command)> {
@@ -1624,7 +1579,6 @@ end }"#;
     );
 }
 
-/// A trusted pane holding `sessions` whose `g.send` action types into an agent.
 const GRANTEE: &str = r#"return { name = "grantee", slot = "sessions", capabilities = { "sessions" },
   actions = { { name = "g.send", desc = "send" } },
   render = function() return { type = "text", text = "" } end,
@@ -1995,8 +1949,6 @@ fn file_snapshot(root: &std::path::Path) -> thurbox::kernel::snapshot::Snapshot 
     snapshot
 }
 
-/// A Fleet Task on another machine names a path on that machine: this one
-/// does not read it, even where the same path exists here.
 #[test]
 fn a_fleet_session_on_another_machine_has_no_files_here() {
     use std::time::{Duration, Instant};

@@ -1,10 +1,3 @@
-//! Acceptance: the `[telemetry]` table of Fleet's config file turns on
-//! OpenTelemetry export with no `OTEL_*` variable set. `fleet up`, a one-shot
-//! command and each session Fleet starts export to the file's collector,
-//! with its headers and resource attributes. An `OTEL_*` variable wins over
-//! the file's value for that variable, and the file's headers go only to
-//! the file's endpoint.
-
 mod support;
 
 use std::collections::BTreeMap;
@@ -106,9 +99,6 @@ fn the_config_file_alone_makes_commands_the_manager_and_sessions_export() {
     drop(up);
 }
 
-/// The file's `resource` table, with no `OTEL_RESOURCE_ATTRIBUTES` set, is
-/// on every span and every metric point a one-shot command and `fleet up`
-/// export.
 #[test]
 fn the_files_resource_is_on_every_span_and_point_of_commands_and_the_manager() {
     let collector = Collector::start();

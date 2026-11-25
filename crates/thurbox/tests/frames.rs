@@ -1,32 +1,3 @@
-//! The bundled panes' frames, pinned cell for cell.
-//!
-//! The other surface files assert substrings and single cells, which is precise
-//! but sparse: a misaligned border, a broken group header, a name that shears
-//! its row because a double-width glyph was counted as one, a selection that
-//! stopped being painted — every one of those passes a `contains`. Here the
-//! whole painted frame is the assertion.
-//!
-//! The expected frames are literals in this file rather than snapshot files:
-//! a change to a pane is reviewed in the same diff as the code that made it,
-//! and there is no tool to learn and no accept-all to reach for. When a frame
-//! changes on purpose, a failing test prints the new one as a literal to paste
-//! (`assert_frame`). Everything that could move is pinned — the `default`
-//! preset by name, a fixed `elapsed` for the spinner, a fixed snapshot — so a
-//! frame that changes did so because a pane did.
-//!
-//! Deliberately absent: the floats (creation flow, confirm, restore), which
-//! open through state a real interaction writes and are covered by their own
-//! interaction tests; and the arrangement as a whole, which is the binary's
-//! `draw` and is asserted on a real terminal in `tests/tui_e2e.rs`.
-//!
-//! One thing outside this repository's tests reads these frames: the landing
-//! page's interface mockup (`.ui-lab__screen` in `website/index.html`) is built
-//! to match them - the title in the top border, the status cluster beside it,
-//! the group rows, the selection band, the agent border's tab run. It depicts
-//! the `doom` preset rather than `default`, because that preset's slots are the
-//! site's own palette. Nothing enforces the match, so a frame that changes on
-//! purpose here is a frame to check there too.
-
 use std::collections::HashMap;
 
 use ratatui::backend::TestBackend;
@@ -52,8 +23,6 @@ fn host() -> LuaHost {
     host
 }
 
-/// The `default` preset by name, never the environment's active choice: the
-/// styled frame below records real colours.
 fn themes() -> Themes {
     let mut themes = Themes::load(None);
     themes
@@ -167,9 +136,6 @@ fn row(name: &str, repo: &str, status: &str) -> SessionRow {
     }
 }
 
-/// The same row, running on a remote host — the one fact the host grouping
-/// reads. `backend` and `remote_host` are set together because the interface
-/// derives reachability from the former and the group label from the latter.
 fn remote_row(name: &str, repo: &str, status: &str, host: &str) -> SessionRow {
     let mut row = row(name, repo, status);
     row.backend = format!("ssh:{host}");
@@ -185,8 +151,6 @@ fn snapshot(rows: Vec<SessionRow>) -> Snapshot {
     }
 }
 
-/// The one sample most frames draw from: two repo groups, every status, and a
-/// parent → child pair so the tree prefix is on record.
 fn sample() -> Snapshot {
     let mut rows = vec![
         row("fix-osc52", "thurbox", "working"),
@@ -216,8 +180,6 @@ fn index_of(host: &LuaHost, name: &str) -> usize {
         .unwrap_or_else(|| panic!("no plugin named {name}"))
 }
 
-/// Press a key the way the loop does: a declared chord resolves through the
-/// registry to `on_action`, anything else goes to `on_key`.
 fn press(host: &LuaHost, mod_name: &str, ch: char) {
     let key = KeyPress {
         name: ch.to_lowercase().to_string(),
@@ -236,7 +198,6 @@ fn press(host: &LuaHost, mod_name: &str, ch: char) {
 
 // --- painting ---------------------------------------------------------------
 
-/// Render one pane at a size and paint it into a fresh buffer.
 fn paint(host: &LuaHost, name: &str, width: u16, height: u16, focused: bool) -> Buffer {
     paint_over(host, name, width, height, focused, &PlaceholderSurfaces)
 }
@@ -260,11 +221,6 @@ fn paint_over(
     terminal.backend().buffer().clone()
 }
 
-/// The buffer as rows of text, trailing blanks trimmed, and read as a
-/// terminal shows it: a double-width glyph owns the blank cell after it, so
-/// the cell is skipped rather than printed as a space — which is what keeps a
-/// literal aligned in a monospace view and a CJK row the same length as its
-/// neighbours.
 fn text(buffer: &Buffer) -> Vec<String> {
     use unicode_width::UnicodeWidthStr;
     let area = buffer.area;
@@ -286,10 +242,6 @@ fn text(buffer: &Buffer) -> Vec<String> {
         .collect()
 }
 
-/// One row of the buffer as style *runs*: consecutive cells sharing a style
-/// collapse into `⟨fg/bg/mods⟩text`. Compact enough to read, precise enough
-/// that a lost selection highlight, a dropped dim or a recoloured status dot
-/// changes it.
 fn style_runs(buffer: &Buffer, y: u16) -> String {
     let mut line = String::new();
     let mut last: Option<String> = None;
@@ -305,8 +257,6 @@ fn style_runs(buffer: &Buffer, y: u16) -> String {
     line.trim_end().to_string()
 }
 
-/// Compare rows of text with the expected literal; on a mismatch, print the
-/// actual rows as a literal ready to paste over the old one.
 #[track_caller]
 fn assert_frame(actual: &[String], expected: &[&str]) {
     if actual
@@ -803,8 +753,6 @@ fn an_overlay_never_paints_over_a_corner() {
     );
 }
 
-/// A one-off pane in a materialized copy of the bundled interface, so a `lib/`
-/// widget can be held to its painted output without a bundled pane adopting it.
 fn paint_probe(render_body: &str, hovered: Option<&str>, width: u16, height: u16) -> Buffer {
     let dir = tempfile::tempdir().expect("tempdir");
     let report = thurbox::kernel::bundled::materialize(dir.path());
@@ -997,9 +945,6 @@ fn the_agent_pane_explains_an_attach_failure() {
     );
 }
 
-/// A provider with a real vt100 screen behind one session, painted the way
-/// `Terminals` paints a live pane — so the frame shows where the agent's
-/// output lands inside the pane's chrome.
 struct LiveScreen {
     session: String,
     parser: vt100::Parser,

@@ -1,9 +1,3 @@
-//! The CronTask step of a sweep: each due CronTask is decided by
-//! CronTaskController from the store's Tasks that carry its uid label, then
-//! its plan is performed in the contract's order: the status carrying each
-//! create's and retire's intent first (compare-and-swap, under the lease),
-//! then the effect, then its receipt under the same key.
-
 use fleet_api::cron_task::{self, CronTaskStatus};
 use fleet_api::plan::{Action, CREATE_ACTION, EffectOutcome, Receipt};
 use fleet_api::task;
@@ -13,7 +7,6 @@ use fleet_controllers::{CronTaskController, CronTaskInput};
 use crate::{Manager, RunReport, Step, telemetry};
 
 impl Manager<'_> {
-    /// Every due CronTask. Returns whether anything changed.
     pub(crate) fn sweep_cron_tasks(
         &self,
         lease: &mut LeaseToken,
@@ -138,10 +131,6 @@ impl Manager<'_> {
         Ok(step)
     }
 
-    /// The fenced create of a scheduled Task: one already under the name is
-    /// adopted when it carries this CronTask's uid, since an earlier
-    /// attempt's receipt may have been lost; one without it is a refusal.
-    /// The store's doubt is Unknown, never a refusal.
     fn create_scheduled(
         &self,
         obj: &Object,
@@ -193,9 +182,6 @@ impl Manager<'_> {
         }
     }
 
-    /// A scheduled Task deleted through the store, fenced on its uid: gone
-    /// already is done; one that is another Task now, or not this
-    /// CronTask's, or running when history asked, is a refusal.
     fn retire_scheduled(
         &self,
         name: &str,
@@ -223,9 +209,6 @@ impl Manager<'_> {
         }
     }
 
-    /// The effect happened (or may have): its receipt must land under its
-    /// key even if the CronTask moved meanwhile, so this re-reads and
-    /// retries on a conflict.
     fn write_cron_task_receipt(
         &self,
         current: &Object,

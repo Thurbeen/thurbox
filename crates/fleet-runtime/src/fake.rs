@@ -1,12 +1,3 @@
-//! A fake host that keeps its state in one JSON file, so the CLI under test
-//! and the test itself see the same sessions across processes.
-//!
-//! Faults are queued per call and consumed in order. They model the failure
-//! cases of the runtime contract: a lost answer (`unknown`, with or without
-//! the effect having happened), a refusal (`fail`), a delay, and a crash of
-//! the caller right after the effect (`abort`), which is how a test puts the
-//! manager between an effect and its receipt.
-
 use std::collections::BTreeMap;
 use std::fs::{self, File, OpenOptions};
 use std::io;
@@ -25,20 +16,12 @@ use serde::{Deserialize, Serialize};
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct Fault {
-    /// `materialize`, `findWorkspace`, `cleanWorkspace` (the workspace
-    /// port), `host`, `createDir`, `removeDir`, `spawn`, `find`, `list`, `events`, `ready`,
-    /// `workspaceTrust`, `brief`, `briefDelivered`, `atRest`, `release`,
-    /// `lost`, `revive`, `paused`, `pause`, `resume`, `restart`, `attach`.
     pub call: String,
-    /// `unknown`, `fail` or `abort`.
     pub outcome: String,
-    /// For `unknown`: whether the effect happened before the answer was lost.
     #[serde(default)]
     pub perform: bool,
-    /// Sleep this long before answering.
     #[serde(default)]
     pub delay_ms: u64,
-    /// How many calls this fault applies to.
     #[serde(default = "one")]
     pub times: u32,
 }
@@ -90,59 +73,39 @@ pub struct FakeSession {
     pub key: String,
     pub harness: String,
     pub workspace: fleet_api::task::Workspace,
-    /// The workspace Fleet made and the spawn ran the session in.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub materialized: Option<WorkspaceRef>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub model: Option<String>,
     pub ready: bool,
-    /// Whether its agent trusts its workspace; a session that does not
-    /// waits for a person, as an agent with no supported trust interface.
     #[serde(default = "yes")]
     pub trusted: bool,
     pub at_rest: bool,
-    /// Intent keys of every brief delivered, in order.
     pub briefs: Vec<String>,
-    /// The text of each, in the same order, for tests to read back.
     #[serde(default)]
     pub texts: Vec<String>,
-    /// Set when the session vanished or was deleted.
     pub gone: bool,
-    /// Set while its window is gone and the row is kept, as after a host
-    /// reboot; a revive clears it.
     #[serde(default)]
     pub lost: bool,
-    /// Set once the Task released (deleted) it.
     #[serde(default)]
     pub released: bool,
-    /// Set while its agent is stopped and the row is kept; a resume clears
-    /// it.
     #[serde(default)]
     pub paused: bool,
-    /// The argv the harness profile launched the agent with.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub argv: Vec<String>,
-    /// Each argv a revive, a resume or a restart started it again with, in
-    /// order.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub restarts: Vec<Vec<String>>,
-    /// Conversations a restart started anew: the agent's prompt hook names
-    /// a new conversation id after each.
     #[serde(default, skip_serializing_if = "is_zero")]
     pub new_conversations: u32,
-    /// The environment the agent's last start gave it: the spawn's, or the
-    /// last revive's or resume's.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub env: BTreeMap<String, String>,
 }
 
-/// A workspace the fake runtime made: a record, no files.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct FakeWorkspace {
     pub workspace: WorkspaceRef,
     pub urls: Vec<String>,
-    /// Set once Fleet cleaned it; a cleaned workspace is not found.
     #[serde(default)]
     pub cleaned: bool,
 }
@@ -150,32 +113,21 @@ pub struct FakeWorkspace {
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", default, deny_unknown_fields)]
 pub struct FakeState {
-    /// Workspaces by key.
     pub workspaces: BTreeMap<String, FakeWorkspace>,
-    /// URLs the fake runtime does not handle.
     pub unsupported: Vec<String>,
-    /// `up`, `down` or `unknown`; a host not listed is up.
     pub hosts: BTreeMap<String, String>,
     pub sessions: BTreeMap<String, FakeSession>,
     pub calls: BTreeMap<String, u64>,
     pub faults: Vec<Fault>,
-    /// Whether a new session is ready for input at once.
     pub spawn_not_ready: bool,
-    /// Whether a new session's agent waits for a person to trust its
-    /// workspace.
     pub spawn_untrusted: bool,
-    /// Whether the agents' prompt hooks stay silent. Otherwise each agent
-    /// reports every text it is given through its signal file, as a coding
-    /// agent's prompt hook does.
     pub prompt_hook_silent: bool,
     /// Whether the runtime declares no `pause`, so it restarts nothing.
     pub pause_unsupported: bool,
     pub next_id: u64,
-    /// One line per effect that happened, in order.
     pub log: Vec<String>,
 }
 
-/// The fake host's directory, shared by every process that opens it.
 #[derive(Debug, Clone)]
 pub struct FakeHost {
     dir: PathBuf,
@@ -193,7 +145,6 @@ impl FakeHost {
         self.dir.join("state.json")
     }
 
-    /// Read-modify-write under the host's lock.
     pub fn update<T>(&self, f: impl FnOnce(&mut FakeState) -> T) -> io::Result<T> {
         let _lock = HostLock::acquire(&self.dir.join("lock"))?;
         let mut state = self.read_unlocked()?;
@@ -234,7 +185,6 @@ impl FakeHost {
         })
     }
 
-    /// Silence, or restore, every agent's prompt hook.
     pub fn set_prompt_hook_silent(&self, silent: bool) -> io::Result<()> {
         self.update(|s| s.prompt_hook_silent = silent)
     }
@@ -243,7 +193,6 @@ impl FakeHost {
         self.update(|s| s.spawn_not_ready = not_ready)
     }
 
-    /// The worker finished its turn (or started another one).
     pub fn set_at_rest(&self, key: &str, at_rest: bool) -> io::Result<()> {
         self.update(|s| {
             if let Some(x) = s.sessions.get_mut(key) {
@@ -260,7 +209,6 @@ impl FakeHost {
         })
     }
 
-    /// The session disappears from the host, as a crashed agent's would.
     pub fn vanish(&self, key: &str) -> io::Result<()> {
         self.update(|s| {
             if let Some(x) = s.sessions.get_mut(key) {
@@ -269,7 +217,6 @@ impl FakeHost {
         })
     }
 
-    /// The host reboots: every session keeps its row and loses its window.
     pub fn reboot(&self) -> io::Result<()> {
         self.update(|s| {
             for x in s.sessions.values_mut().filter(|x| !x.gone) {
@@ -288,8 +235,6 @@ impl FakeHost {
     }
 }
 
-/// The host's lock is held for one read-modify-write; a fault's delay and an
-/// abort run outside it, so a crashing caller never leaves it held.
 struct HostLock(File);
 
 impl HostLock {
@@ -313,19 +258,14 @@ impl Drop for HostLock {
     }
 }
 
-/// The runtime contract served by a [`FakeHost`].
 #[derive(Debug, Clone)]
 pub struct FakeRuntime {
     host: FakeHost,
 }
 
-/// What a queued fault tells a call to do.
 enum Plan {
     Normal,
-    /// Answer Unknown; perform the effect first when `perform`.
-    Unknown {
-        perform: bool,
-    },
+    Unknown { perform: bool },
     Fail,
     Abort,
 }
@@ -335,7 +275,6 @@ impl FakeRuntime {
         FakeRuntime { host }
     }
 
-    /// Count the call and take its fault, if one is queued.
     fn begin(&self, call: &str) -> Result<Plan, String> {
         let taken = self
             .host
@@ -365,7 +304,6 @@ impl FakeRuntime {
         })
     }
 
-    /// Run an effect under the plan the fault chose.
     fn effect(
         &self,
         call: &str,
@@ -398,7 +336,6 @@ impl FakeRuntime {
         }
     }
 
-    /// Run a probe; any fault on a probe makes it Unknown.
     fn probe<T>(
         &self,
         call: &str,
@@ -436,10 +373,6 @@ fn session_ref(x: &FakeSession) -> SessionRef {
 }
 
 impl Runtime for FakeRuntime {
-    /// Workspaces are records on the fake host, in the same state file as
-    /// its sessions, with the same injectable faults. A `file://` URL is its
-    /// directory, as it is; any other gets one under the key, named after
-    /// the URL's last segment, as `workspace-git` lays them out.
     fn workspace(&self, host: &str, key: &str, urls: &[String]) -> Observation<EffectOutcome> {
         let (host, key, urls) = (host.to_string(), key.to_string(), urls.to_vec());
         let root = self.host.dir.join("workspaces").join(&key);
@@ -528,9 +461,6 @@ impl Runtime for FakeRuntime {
         })
     }
 
-    /// The fake host is this machine: the directory is made here, and the
-    /// effect is logged. `fail` refuses it, `unknown` loses the answer
-    /// (after making it when `perform`).
     fn create_dir(&self, host: &str, dir: &str) -> Observation<Result<bool, String>> {
         let made = |s: &mut FakeState| -> EffectOutcome {
             let existed = Path::new(dir).is_dir();
@@ -559,9 +489,6 @@ impl Runtime for FakeRuntime {
         }
     }
 
-    /// The fake host is this machine: the directory is removed here, and
-    /// the effect is logged. `fail` refuses it, `unknown` loses the answer
-    /// (after removing it when `perform`).
     fn remove_dir(&self, host: &str, dir: &str) -> Observation<Result<(), String>> {
         let removed = |s: &mut FakeState| -> EffectOutcome {
             match fs::remove_dir_all(dir) {
@@ -885,7 +812,6 @@ impl Runtime for FakeRuntime {
     }
 }
 
-/// A URL's last path segment without `.git`: the name its directory gets.
 fn url_name(url: &str) -> String {
     let path = url.split(['?', '#']).next().unwrap_or(url);
     let last = path

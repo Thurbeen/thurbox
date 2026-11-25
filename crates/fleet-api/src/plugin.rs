@@ -1,4 +1,3 @@
-//! Process-independent protocol and registration values for external controllers.
 use crate::{Millis, Object, StoreError};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -63,7 +62,6 @@ pub struct Registration {
     pub config: PluginConfig,
 }
 
-/// A call failure is distinct from a successful observer's Unknown answer.
 pub trait Plugins {
     fn available(&self, _plugin: &str) -> bool {
         true
@@ -109,7 +107,6 @@ pub fn validate_manifest(manifest: &Manifest, name: &str) -> Result<(), StoreErr
     Ok(())
 }
 
-/// Every spelling the CLI accepts, including a simple plural.
 pub fn kind_aliases(kind: &str) -> [String; 2] {
     let lower = kind.to_ascii_lowercase();
     [lower.clone(), format!("{lower}s")]
@@ -161,13 +158,9 @@ pub struct Append {
     pub uid: String,
     pub key: String,
     pub text: String,
-    /// The declared Questions the entry answers, recorded in the Task's
-    /// `status.answered` by the store, first answer wins.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub answers: Vec<String>,
 }
-/// `fleet amend` on a Task's behalf, from `plugin/<name>`. `if_generation`
-/// is required: a repeated or recovered pass cannot append twice.
 #[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct Amend {
@@ -221,12 +214,10 @@ impl Probe {
     }
 }
 
-/// Ownership lookup for stores; the manager uses the gate's admitted writer.
 pub fn writer_for_store(name: &str) -> crate::FieldManager {
     crate::FieldManager::Plugin(name.into())
 }
 
-/// Typed verb executed atomically by a store while holding the manager lease.
 #[derive(Debug, Clone)]
 pub enum Mutation {
     Create(Object),

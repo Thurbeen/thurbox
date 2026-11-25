@@ -1,41 +1,3 @@
-//! A fake chat platform that keeps one account's threads in one JSON file,
-//! so the CLI under test and the test itself see the same platform across
-//! processes. It runs no process and reaches no network.
-//!
-//! The fake models what differs between real platforms, through the
-//! `capabilities` a test sets:
-//!
-//! - **history** on or off: off answers `Unsupported`, as Telegram would.
-//! - **marker** `metadata`, `nonce { windowMs }` or `none`: with a nonce,
-//!   a repeated key inside the window returns the existing post; with
-//!   metadata or nothing, a repeat makes a second post, as Slack would, and
-//!   only a metadata marker is readable back from history.
-//! - **unmentioned** and **threads**: reported as set; the fake delivers
-//!   whatever a test feeds its `event`, so a suite models a mentions-only
-//!   platform by feeding only mentions.
-//!
-//! Its addresses are `fake:<chat>[:<thread>]`. A payload for `event` is
-//! `{"id": "<delivery id>", "event": {…}}` in the port's own event shape;
-//! a payload without `event` is one the Gateway ignores. Faults are queued
-//! per call and consumed in order, as on the fake forge: `lost`, `timeout`,
-//! `throttle`, `incomplete` and `malformed` for reads; `failed`, `lost`,
-//! `lost-applied` and `lost-partly` (the first part of a split landed, the
-//! rest did not) for `open` and `post`; `failed`, `lost` and
-//! `lost-applied` for `react`.
-//!
-//! **reactions** on or off: off refuses every `react`, as a platform
-//! without reactions would. On, a reaction is set, not counted: adding one
-//! twice leaves one, and removing an absent one changes nothing. Every
-//! `react` call is recorded in order, so a test reads what Fleet did, and
-//! `reacted` gives a message's reactions as they stand.
-//!
-//! **files**: a file a test puts at `<dir>/files/<id>` is what `fetch`
-//! saves for that id. Any other id is refused, as a deleted file would be.
-//!
-//! The platform's clock is the state's `clock`, which a test sets: every
-//! post takes the clock as its `at` and advances it one second, so `at`
-//! orders posts the way a platform's own timestamps would.
-
 use std::collections::BTreeMap;
 use std::fs::{self, File, OpenOptions};
 use std::io;
@@ -53,23 +15,15 @@ use serde_json::Value;
 
 pub const KIND: &str = "fake";
 
-/// What the fake's bot is called when a test sets nothing.
 pub const DEFAULT_BOT: &str = "B0FLEET001";
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct GatewayFault {
-    /// `parse`, `event`, `whoami`, `capabilities`, `history`, `open`,
-    /// `post` or `react`.
     pub call: String,
-    /// For reads: `lost`, `timeout`, `throttle`, `incomplete` or
-    /// `malformed`. For `open` and `post`: `failed`, `lost`, `lost-applied`
-    /// or `lost-partly`. For `react`: `failed`, `lost` or `lost-applied`.
     pub mode: String,
-    /// For `throttle`: what the platform says to wait, in milliseconds.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub retry_after_ms: Option<Millis>,
-    /// How many calls this fault applies to.
     #[serde(default = "one")]
     pub times: u32,
 }
@@ -99,22 +53,16 @@ impl GatewayFault {
     }
 }
 
-/// One thread, or one chat without threads, on the fake platform.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", default, deny_unknown_fields)]
 pub struct FakeConversation {
-    /// In the order they were added; `history` sorts by `at`.
     pub messages: Vec<Message>,
-    /// The platform reports the thread's first message deleted.
     pub starter_removed: bool,
 }
 
-/// One post Fleet made, in order: what a test checks posting against.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct PostRecord {
-    /// The key the post carries as its marker: the intent key, or a derived
-    /// `<key>/<n>/<total>` of a split text.
     pub key: String,
     pub conversation: ConversationRef,
     pub message: String,
@@ -122,14 +70,12 @@ pub struct PostRecord {
     pub text: String,
 }
 
-/// One `react` call Fleet made that the platform performed, in order.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ReactionRecord {
     pub conversation: ConversationRef,
     pub message: String,
     pub reaction: String,
-    /// Added, or removed.
     pub on: bool,
 }
 
@@ -158,18 +104,11 @@ fn default_clock() -> Millis {
 #[serde(rename_all = "camelCase", default, deny_unknown_fields)]
 pub struct FakeGatewayState {
     pub capabilities: Capabilities,
-    /// What `whoami` answers.
     pub identity: Identity,
-    /// The platform's clock, in Unix milliseconds: the `at` of the next
-    /// post.
     pub clock: Millis,
-    /// The longest text one post takes; a longer one is split into
-    /// consecutive posts under derived keys. `None`: never split.
     pub post_limit: Option<usize>,
-    /// Threads by address.
     pub conversations: BTreeMap<String, FakeConversation>,
     pub posts: Vec<PostRecord>,
-    /// Every `react` the platform performed, in order.
     pub reactions: Vec<ReactionRecord>,
     pub faults: Vec<GatewayFault>,
     pub calls: BTreeMap<String, u64>,
@@ -191,7 +130,6 @@ impl Default for FakeGatewayState {
     }
 }
 
-/// One fake account's directory, shared by every process that opens it.
 #[derive(Debug, Clone)]
 pub struct FakeGateway {
     account: String,
@@ -215,7 +153,6 @@ impl FakeGateway {
         self.dir.join("state.json")
     }
 
-    /// Read-modify-write under the platform's lock.
     pub fn update<T>(&self, f: impl FnOnce(&mut FakeGatewayState) -> T) -> io::Result<T> {
         let _lock = Lock::acquire(&self.dir.join("lock"))?;
         let mut state = self.read_unlocked()?;
@@ -258,7 +195,6 @@ impl FakeGateway {
         self.update(|s| s.identity = identity)
     }
 
-    /// Move the platform's clock, for the `at` of the next post.
     pub fn set_clock(&self, at: Millis) -> io::Result<()> {
         self.update(|s| s.clock = at)
     }
@@ -267,7 +203,6 @@ impl FakeGateway {
         self.update(|s| s.post_limit = limit)
     }
 
-    /// Put messages on a thread, creating it, as if people wrote them.
     pub fn seed(&self, conversation: &ConversationRef, messages: Vec<Message>) -> io::Result<()> {
         self.update(|s| {
             s.conversations
@@ -278,7 +213,6 @@ impl FakeGateway {
         })
     }
 
-    /// Remove one message from a thread, as a person deleting it would.
     pub fn remove_message(&self, conversation: &ConversationRef, id: &str) -> io::Result<()> {
         self.update(|s| {
             if let Some(c) = s.conversations.get_mut(&conversation.address()) {
@@ -287,7 +221,6 @@ impl FakeGateway {
         })
     }
 
-    /// Mark the thread's first message deleted, as the platform reports it.
     pub fn remove_starter(&self, conversation: &ConversationRef) -> io::Result<()> {
         self.update(|s| {
             s.conversations
@@ -308,18 +241,14 @@ impl FakeGateway {
             .cloned())
     }
 
-    /// Every post Fleet made, in order.
     pub fn posts(&self) -> io::Result<Vec<PostRecord>> {
         Ok(self.state()?.posts)
     }
 
-    /// Every `react` the platform performed, in order.
     pub fn reactions(&self) -> io::Result<Vec<ReactionRecord>> {
         Ok(self.state()?.reactions)
     }
 
-    /// The reactions Fleet has on `message` in `conversation` now, in the
-    /// order they were first added.
     pub fn reacted(
         &self,
         conversation: &ConversationRef,
@@ -353,7 +282,6 @@ impl FakeGateway {
         Ok(self.state()?.calls.get(call).copied().unwrap_or(0))
     }
 
-    /// Count the call and take its fault, if one is queued.
     fn begin(&self, call: &str) -> Result<Option<GatewayFault>, String> {
         self.update(|s| {
             *s.calls.entry(call.to_string()).or_default() += 1;
@@ -378,7 +306,6 @@ impl FakeGateway {
         })
     }
 
-    /// A read fault, in the history vocabulary.
     fn read_fault(f: &GatewayFault) -> HistoryObservation {
         match f.mode.as_str() {
             "lost" => HistoryObservation::unknown(Uncertainty::Refused, "injected: answer lost"),
@@ -405,8 +332,6 @@ impl FakeGateway {
         }
     }
 
-    /// The parts `text` takes under `key`: one, or consecutive chunks past
-    /// `post_limit` under derived keys that name the part and the count.
     fn parts(s: &FakeGatewayState, text: &str, key: &str) -> Vec<(String, String)> {
         let chunks: Vec<String> = match s.post_limit {
             Some(limit) if limit > 0 && text.chars().count() > limit => text
@@ -432,12 +357,6 @@ impl FakeGateway {
             .collect()
     }
 
-    /// Append Fleet's post(s) of `text` under `key` to the thread at
-    /// `address` and return the first message's id and time. With a nonce
-    /// marker, a part the platform already holds for its key inside the
-    /// window is returned, not made again, as Discord's `enforce_nonce`
-    /// does; so a resend finishes a split that landed in part. With
-    /// `partly`, only the first part lands.
     fn land(
         s: &mut FakeGatewayState,
         conversation: &ConversationRef,
@@ -491,8 +410,6 @@ impl FakeGateway {
         first.expect("at least one chunk")
     }
 
-    /// With a nonce marker, the post the platform already holds for a key
-    /// inside the window, if any.
     fn existing_within_window<'a>(s: &'a FakeGatewayState, key: &str) -> Option<&'a PostRecord> {
         let Marker::Nonce { window_ms } = s.capabilities.marker else {
             return None;
@@ -503,9 +420,6 @@ impl FakeGateway {
             .find(|p| p.key == key && s.clock.saturating_sub(p.at) <= window_ms)
     }
 
-    /// Perform a write under its fault, with `land` doing the mutation when
-    /// one is due. `apply` receives the state, and whether only the first
-    /// part of a split is to land, and answers the outcome.
     fn write(
         &self,
         call: &str,
@@ -579,7 +493,6 @@ impl Drop for Lock {
     }
 }
 
-/// The fake's address: `fake:<chat>[:<thread>]`, each part one token.
 pub(crate) fn parse_address(address: &str) -> Result<ConversationRef, String> {
     let parsed = ConversationRef::split(address)
         .ok_or_else(|| format!("{address:?} is not <platform>:<chat>[:<thread>]"))?;
@@ -616,10 +529,6 @@ impl Gateway for FakeGateway {
         }
     }
 
-    /// The payload is `{"id", "event", "direct"?}` in the port's shape, or
-    /// something the Gateway ignores; `direct: true` says the chat is a
-    /// one-to-one DM. The account's `bot` tells Fleet's own posts and
-    /// mentions apart, whatever the payload claimed.
     fn event(&self, account: &AccountConfig, envelope: &Envelope) -> Observation<Option<Delivery>> {
         if account.platform != KIND {
             return Observation::unknown(format!(
@@ -874,8 +783,6 @@ impl Gateway for FakeGateway {
         })
     }
 
-    /// `https://fake.invalid/<chat>/<thread>`: a link in a reserved domain,
-    /// so a test sees where a log post names its thread.
     fn link(&self, account: &str, thread: &ConversationRef) -> Option<String> {
         if self.other_account(account).is_some() || thread.platform != KIND {
             return None;

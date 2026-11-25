@@ -1,20 +1,3 @@
-//! Desktop notifications when an agent needs you.
-//!
-//! The rule is v1's, and so is the delivery: `crate::notifications` already
-//! resolves a backend and dispatches on its own thread. What lives here is only
-//! the *edge detection* — noticing that a session became blocked — because that
-//! is the part that has to watch the snapshot.
-//!
-//! Observing the edge in one place is deliberate. v1 learned that computing
-//! "should we notify" anywhere other than where status is derived lets the rule
-//! drift from the icon in the list.
-//!
-//! Every `[notifications]` setting is honoured here, because a setting that is
-//! offered and ignored is worse than one that does not exist: whether the
-//! session in view is skipped, whether a sound plays, and the floor between two
-//! notifications for one session. The one edge is into `blocked`: Fleet reports
-//! no finished state, so v1's opt-in for that edge went with it.
-
 use std::collections::HashMap;
 use std::time::{Duration, Instant};
 
@@ -22,21 +5,14 @@ use super::snapshot::{SessionRow, Snapshot};
 use crate::session::settings::NotificationSettings;
 use crate::session::SessionState;
 
-/// Watches for sessions becoming blocked and raises one notification each time.
 pub struct Notifier {
-    /// Sender into the dispatcher thread. `None` when notifications are off,
-    /// in which case nothing is ever attempted — not even a resolve.
     sender: Option<crate::notifications::NotificationSender>,
-    /// Last status seen per session, so a transition can be told from a state.
     previous: HashMap<String, SessionState>,
-    /// When each session last had a notification raised for it, for the
-    /// per-session floor.
     last_raised: HashMap<String, Instant>,
     settings: NotificationSettings,
 }
 
 impl Notifier {
-    /// Build from the user's settings. Disabled means no thread is started.
     pub fn new(enabled: bool, settings: NotificationSettings) -> Self {
         let sender = if enabled {
             Some(crate::notifications::start(
@@ -53,23 +29,14 @@ impl Notifier {
         }
     }
 
-    /// Whether any delivery will be attempted at all.
     pub fn is_enabled(&self) -> bool {
         self.sender.is_some()
     }
 
-    /// Observe a snapshot, raising a notification per session that just became
-    /// blocked.
-    ///
-    /// Returns the sessions notified about, so a caller can assert on it
-    /// without a desktop.
     pub fn observe(&mut self, snapshot: &Snapshot, active: Option<&str>) -> Vec<String> {
         self.observe_at(snapshot, active, Instant::now())
     }
 
-    /// [`Self::observe`] with the clock passed in, so the per-session floor is
-    /// testable without waiting it out. v1 threads `now` through for the same
-    /// reason.
     pub fn observe_at(
         &mut self,
         snapshot: &Snapshot,
@@ -111,19 +78,11 @@ impl Notifier {
         raised
     }
 
-    /// Whether this transition is one the user asked to hear about.
-    ///
-    /// Only blocked notifies. A notification for the session you are already
-    /// looking at is noise, so it is suppressed when configured.
     fn worth_raising(&self, row: &SessionRow, active: Option<&str>) -> bool {
         row.status == SessionState::Blocked
             && !(self.settings.suppress_for_active && active == Some(row.id.as_str()))
     }
 
-    /// Hand one notification to the delivery layer.
-    ///
-    /// Keyed on the row's id as the snapshot carries it: a Fleet session's id
-    /// is its Task's name, not a UUID.
     fn deliver(&self, row: &SessionRow) {
         let Some(sender) = &self.sender else {
             return;
@@ -183,7 +142,6 @@ mod tests {
         }
     }
 
-    /// A notifier that never touches a desktop.
     fn quiet(suppress_active: bool) -> Notifier {
         with(NotificationSettings {
             suppress_for_active: suppress_active,
@@ -191,7 +149,6 @@ mod tests {
         })
     }
 
-    /// A notifier over given settings, still touching no desktop.
     fn with(settings: NotificationSettings) -> Notifier {
         Notifier {
             sender: None,
@@ -215,8 +172,6 @@ mod tests {
             .is_empty());
     }
 
-    /// A Fleet session's id is its Task's name, not a UUID: its notification
-    /// is still delivered, naming that id for a click to focus.
     #[test]
     fn a_fleet_sessions_notification_is_delivered_under_its_task_name() {
         let (tx, rx) = std::sync::mpsc::channel();

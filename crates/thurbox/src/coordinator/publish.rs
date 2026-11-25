@@ -1,11 +1,3 @@
-//! Rebuilding the `thurbox.*` tables mods read.
-//!
-//! `republish` runs once per painted frame and once per input *batch*, not once
-//! per event — a held-down key otherwise paid for it per repeat. Within it every
-//! group is gated on a change-signal, so a group whose inputs did not move is
-//! not rebuilt at all (ADR-P16), and the three reads that touch a screen or the
-//! disk carry an age rather than a "we have an answer" flag (ADR-P14).
-
 use std::time::Instant;
 
 use thurbox::kernel::metrics::Subject;
@@ -126,9 +118,6 @@ impl App {
         self.inventory = inventory;
     }
 
-    /// Publish the world for this batch of input, unless it already was.
-    ///
-    /// See the drain loop for why once per batch is enough.
     pub(crate) fn publish_for_batch(&mut self, published: &mut bool) {
         if !*published {
             self.republish();
@@ -136,10 +125,6 @@ impl App {
         }
     }
 
-    /// Re-read where each file of the interface came from.
-    ///
-    /// On reload, and after this process edits one — the two moments the answer
-    /// can have changed. Not per frame: it digests every file.
     pub(crate) fn refresh_sources(&mut self) {
         self.sources = thurbox::kernel::bundled::sources(&self.ui_dir);
         // Delivery just re-read the directory, so whatever the cached trust
@@ -147,8 +132,6 @@ impl App {
         self.trust_stale = true;
     }
 
-    /// Scan `id`'s screen for links, recording the stamp and instant it was
-    /// scanned at, and publish what it found if that differs.
     fn scan_links(&mut self, id: &str, stamp: u64, now: Instant) {
         self.link_stamps.insert(id.to_string(), stamp);
         self.link_scans.insert(id.to_string(), now);
@@ -205,17 +188,6 @@ impl App {
         self.link_scans.retain(|id, _| known.contains(id.as_str()));
     }
 
-    /// Hand the content search whatever the strip is asking for.
-    ///
-    /// The reading and matching happen on the search worker; this only compares
-    /// the request against the one last answered and, when a run is due, clones
-    /// each terminal's parser handle. The answer comes back through
-    /// `poll`, a frame or two later.
-    ///
-    /// Called every loop iteration rather than from `republish`: the output
-    /// re-run is paced by the clock, and a republish only happens when a frame
-    /// is owed — an agent that printed a match and went quiet inside the pacing
-    /// interval would otherwise never have it searched.
     pub(crate) fn serve_search(&mut self) {
         use thurbox::kernel::search::{Request, WANT_CONTENT, WANT_SESSIONS};
         let request = self.host.shared_string(WANT_CONTENT).map(|query| Request {
@@ -252,14 +224,6 @@ impl App {
         }
     }
 
-    /// Re-read where each file of the interface stands with the user.
-    ///
-    /// Answering it reads and digests every file in the directory and parses
-    /// `mods.lock`, so it is done when something says the answer moved rather
-    /// than per publish. Trust is keyed by absolute path, and drift is answered by
-    /// reading the file; an INSTALLED file is judged differently (its
-    /// `src@version` as well as its contents), and `trust_of` owns that split so
-    /// no caller can check only one half of it.
     pub(crate) fn refresh_trust(&mut self) {
         if !self.trust_stale {
             return;
@@ -295,11 +259,6 @@ impl App {
         self.host.set_disabled(disabled);
     }
 
-    /// What the creation flow is asking about, read off the shared `store`.
-    ///
-    /// Absent means not asking, which is why the local machine is an *empty*
-    /// host rather than an absent one: a closed flow must cost nothing, and
-    /// asking about local has to be expressible (`kernel::repos::Wants`).
     pub(crate) fn repo_wants(&self) -> thurbox::kernel::repos::Wants {
         use thurbox::kernel::repos::{Wants, WANT_BOOKMARKS, WANT_BRANCHES, WANT_BROWSE};
         Wants::new(
@@ -328,38 +287,17 @@ impl App {
     }
 }
 
-/// Whether a surface whose screen has moved is due another link scan.
-///
-/// The output stamp answers "could the answer have changed"; this answers "is it
-/// worth asking again yet". Split out as a function because the failure it
-/// guards is invisible from any frame: without it a printing agent rescanned its
-/// whole grid per frame and published a *changed* answer each time — the URLs
-/// sit on new rows as the screen scrolls — which moved the data epoch and so
-/// rebuilt every published group and dropped every pure pane's cached tree,
-/// undoing ADR-P16's gating for anyone whose agent prints a URL. Nothing about
-/// the rendered frame looks wrong while that happens; only the CPU does.
 fn link_scan_due(last_scan: Option<Instant>, now: Instant) -> bool {
     last_scan.is_none_or(|at| now.duration_since(at) >= LINK_SCAN_INTERVAL)
 }
 
-/// What a publish owes the links of one surface that is on screen.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum LinkScan {
-    /// Unchanged since the last scan, or moved but scanned too recently: the
-    /// answer stands.
     Keep,
-    /// Moved and due: scan, and record this stamp.
     Scan(u64),
-    /// No live pane, so no screen and no links.
     Gone,
 }
 
-/// Decide [`LinkScan`] for the on-screen surface `id`, whose output stamp is
-/// `stamp`, against the stamp and instant of its last scan.
-///
-/// A screen that moved but was scanned too recently does NOT record its stamp,
-/// so the next publish after the interval does the scan — a screen that has
-/// settled converges on `Keep` and costs nothing again.
 fn plan_link_scan(
     id: &str,
     stamp: Option<u64>,

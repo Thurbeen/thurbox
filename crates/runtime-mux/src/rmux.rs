@@ -1,5 +1,3 @@
-//! The opt-in RMUX adapter over the shared tmux-compatible server.
-
 use std::sync::Arc;
 
 use anyhow::{bail, Result};
@@ -65,11 +63,6 @@ impl TmuxCompatible for Rmux {
         Vec::new()
     }
 
-    /// tmux's replies and RMUX's own `session not found: `, bare as a one-shot
-    /// prints them or wrapped as control mode does:
-    /// `invalid target '%9': can't find pane: %9`. A wrapped reply counts only
-    /// when both copies of the target agree, rather than any refusal that
-    /// happens to mention a missing pane.
     fn answered_absent(answer: &str) -> Option<Missing> {
         let Some((target, reply)) = answer
             .strip_prefix("invalid target '")
@@ -100,7 +93,6 @@ impl TmuxCompatible for Rmux {
     const HOOK_STATUS: bool = true;
 }
 
-/// One bare RMUX reply ([`Rmux::answered_absent`]).
 fn rmux_answered_absent(answer: &str) -> Option<Missing> {
     tmux_answered_absent(answer).or_else(|| {
         answer
@@ -145,8 +137,6 @@ mod tests {
         );
     }
 
-    /// RMUX 0.10.0's own replies, captured on a scratch socket: bare as a one-shot
-    /// prints them, and wrapped in `invalid target '…': ` as control mode does.
     #[cfg(unix)]
     #[test]
     fn rmuxs_own_absence_replies_read_as_absence() {

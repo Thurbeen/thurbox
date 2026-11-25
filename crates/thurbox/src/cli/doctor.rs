@@ -1,17 +1,8 @@
-//! `thurbox-cli doctor` — whether this machine has what a session needs
-//! *before* anyone tries to create one.
-//!
-//! It reads; it never installs. Each `fail`/`warn` carries the one thing to do,
-//! and where the answer depends on a distribution it names the package and
-//! links the project's own install page rather than guessing an invocation.
-
 use serde_json::{json, Value};
 
 use crate::cli::output::CommandOutput;
 use crate::cli::CommandError;
 
-/// Whether a check found a problem, and how bad.
-///
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 enum Level {
     Ok,
@@ -37,16 +28,11 @@ impl Level {
     }
 }
 
-/// A single thing checked, and what was found.
 struct Finding {
-    /// Short stable key, so a script branches on the problem rather than
-    /// parsing the sentence.
     key: String,
     level: Level,
     detail: String,
-    /// The Fleet the check is of, when it is one Fleet's.
     fleet: Option<String>,
-    /// The command or step that fixes a check that is not ok.
     fix: Option<String>,
 }
 
@@ -61,20 +47,12 @@ impl Finding {
         }
     }
 
-    /// The same finding, with the one thing to do about it.
     fn fix(mut self, fix: impl Into<String>) -> Self {
         self.fix = Some(fix.into());
         self
     }
 }
 
-/// Report on this machine's readiness to run a session, and on each Fleet
-/// `settings.toml` lists.
-///
-/// Exits non-zero only when something that must work does not: the Fleet the
-/// interface uses, or, when a Fleet runs on this machine, the multiplexer. A
-/// listed Fleet the interface does not use yet only warns. The agents are
-/// Fleet's harnesses, reported with Fleet.
 pub fn run(settings: &crate::session::settings::Settings) -> Result<CommandOutput, CommandError> {
     let listed = settings.fleets();
     let (in_force, _) = settings.fleet_in_force();
@@ -154,9 +132,6 @@ pub fn run(settings: &crate::session::settings::Settings) -> Result<CommandOutpu
     })
 }
 
-/// A warning for a `hosts.toml` an earlier thurbox read, at `path`: nothing
-/// reads it any more, and saying so is all this does. `None` when there is
-/// no such file.
 fn retired_hosts_finding(path: Option<&std::path::Path>) -> Option<Finding> {
     let path = path.filter(|path| path.is_file())?;
     Some(
@@ -217,9 +192,6 @@ fn mod_leftovers_finding(
     )
 }
 
-/// A warning for an `automations.json` an earlier thurbox fired: nothing
-/// reads it any more, and saying so is all this does. `None` when there is
-/// no such file.
 fn retired_automations_finding(path: Option<&std::path::Path>) -> Option<Finding> {
     let path = path.filter(|path| path.is_file())?;
     Some(
@@ -238,15 +210,10 @@ fn retired_automations_finding(path: Option<&std::path::Path>) -> Option<Finding
     )
 }
 
-/// The window an earlier thurbox kept on its tmux server to fire automations.
 const HEARTBEAT_WINDOW: &str = "automation-heartbeat";
 
-/// The systemd user timer an earlier thurbox shipped for the same purpose.
 const AUTOMATION_TIMER: &str = "thurbox-automations.timer";
 
-/// This instance's local tmux server, as a `tmux` command names it: the
-/// socket, and the socket directory when thurbox chooses it rather than an
-/// inherited `TMUX_TMPDIR`.
 struct LocalServer {
     socket: String,
     tmpdir: Option<String>,
@@ -263,8 +230,6 @@ impl LocalServer {
         }
     }
 
-    /// `tmux …` against this server, as a person would paste it: every word
-    /// shell-quoted, so a data directory with a space stays one word.
     fn command_line(&self, args: &[&str]) -> String {
         let q = crate::shell::posix_quote;
         let env = self
@@ -280,8 +245,6 @@ impl LocalServer {
         format!("{env}{}", words.join(" "))
     }
 
-    /// Every window on the server as `session:window`. `None` when there is
-    /// no server or tmux could not be asked: nothing to report either way.
     fn windows(&self) -> Option<String> {
         let mut cmd = std::process::Command::new("tmux");
         cmd.args(["-L", &self.socket, "list-windows", "-a", "-F"])
@@ -298,9 +261,6 @@ impl LocalServer {
     }
 }
 
-/// A warning for a keeper window an earlier thurbox armed: it runs the gone
-/// `thurbox-cli automation tick` every minute until it is killed. `None`
-/// when the server has none.
 fn heartbeat_finding(server: &LocalServer) -> Option<Finding> {
     heartbeat_in(server, server.windows().as_deref())
 }
@@ -323,8 +283,6 @@ fn heartbeat_in(server: &LocalServer, windows: Option<&str>) -> Option<Finding> 
     )
 }
 
-/// What `systemctl --user is-enabled` answers for the old timer, or `None`
-/// when it could not be asked. Only Linux had the timer.
 fn automation_timer_state() -> Option<String> {
     if !cfg!(target_os = "linux") {
         return None;
@@ -338,8 +296,6 @@ fn automation_timer_state() -> Option<String> {
     Some(String::from_utf8_lossy(&out.stdout).trim().to_string())
 }
 
-/// A warning for the old systemd timer while it is enabled: it runs the
-/// gone `thurbox-cli automation tick` every minute.
 fn automation_timer_finding(state: Option<&str>) -> Option<Finding> {
     (state? == "enabled").then(|| {
         Finding::new(
@@ -373,11 +329,6 @@ fn telemetry_finding(described: Result<String, String>) -> Finding {
     }
 }
 
-/// Whether the multiplexer every local session's window is made of is there.
-///
-/// The one check that fails the report: without it nothing can be created at
-/// all, so an `Unknown` here is treated as a failure too — the only way the
-/// lookup answers that for a bare name is a `PATH` it could not read.
 fn multiplexer_finding() -> Finding {
     let mux = crate::backend::preflight::local_multiplexer();
     match crate::backend::preflight::look_up(mux) {
@@ -415,8 +366,6 @@ fn render(findings: &[Finding], verdict: Level) -> String {
     human
 }
 
-/// The same report as one JSON document, for a script that branches on `key`
-/// and `level` rather than parsing the sentences.
 fn document(findings: &[Finding], verdict: Level) -> Value {
     json!({
         "verdict": verdict.as_str(),
@@ -438,7 +387,6 @@ fn document(findings: &[Finding], verdict: Level) -> Value {
     })
 }
 
-/// The one-line install, which installs Fleet and runtime-mux with thurbox.
 fn installer() -> &'static str {
     if cfg!(windows) {
         "irm https://raw.githubusercontent.com/Thurbeen/thurbox/main/scripts/install.ps1 | iex"
@@ -447,11 +395,6 @@ fn installer() -> &'static str {
     }
 }
 
-/// ` (3.4)` when the multiplexer answers `-V`, empty when it does not.
-///
-/// Best-effort and never fatal: a version that cannot be read says nothing
-/// about whether the binary works, and thurbox's own requirement (tmux >= 3.2)
-/// is stated by the install advice rather than enforced here.
 fn version_suffix(mux: &str) -> String {
     let Ok(out) = std::process::Command::new(mux).arg("-V").output() else {
         return String::new();
@@ -466,29 +409,15 @@ fn version_suffix(mux: &str) -> String {
     }
 }
 
-/// What a Fleet, which manages sessions (ADR-41), answers about itself: the
-/// program, its version and harness profiles, and the config and data
-/// directory it reads. thurbox links no Fleet crate, so this is Fleet's
-/// command line and its documented config rule.
 pub(super) struct FleetFacts {
-    /// The Fleet's name in `settings.toml`.
     pub(super) name: String,
     pub(super) program: String,
-    /// Whether the Fleet runs on this machine: only then are its config,
-    /// data directory and `runtime-mux` this machine's to check.
     local: bool,
-    /// Why the machine the Fleet runs on could not be reached: ssh's own
-    /// failure, exit 255.
     pub(super) unreachable: Option<String>,
-    /// `fleet version --json`, or why it could not be read.
     pub(super) version: Result<serde_json::Value, String>,
-    /// The config file Fleet reads, and what named it.
     pub(super) config: Option<(std::path::PathBuf, &'static str)>,
-    /// The command that starts its manager ([`crate::fleet_link::FleetLink::start_manager`]).
     start_manager: String,
     restart_manager: String,
-    /// `fleet runtime hosts --json`: the places a session can run in, or why
-    /// they could not be read.
     pub(super) hosts: Result<serde_json::Value, String>,
 }
 
@@ -565,9 +494,6 @@ impl FleetFacts {
             .unwrap_or_default()
     }
 
-    /// The Fleet data directory, for a Fleet on this machine: the config's
-    /// `[data] dir`, relative to the config's own directory, else Fleet's
-    /// per-user default.
     pub(super) fn data_dir(&self) -> Option<std::path::PathBuf> {
         if !self.local {
             return None;
@@ -594,14 +520,10 @@ impl FleetFacts {
         })
     }
 
-    /// Why thurbox cannot write this Fleet's Tasks: the shared rule,
-    /// [`crate::fleet_link::incompatible`].
     fn incompatible(&self) -> Option<String> {
         crate::fleet_link::incompatible(self.version.as_ref().ok()?)
     }
 
-    /// The checks of this Fleet. `in_force`: the interface uses it, so a
-    /// Fleet that does not answer fails the report; any other only warns.
     fn findings(&self, in_force: bool) -> Vec<Finding> {
         let broken = if in_force { Level::Fail } else { Level::Warn };
         let name = &self.name;
@@ -678,10 +600,6 @@ impl FleetFacts {
         findings
     }
 
-    /// Whether the Fleet's manager runs, from the `manager` of its `fleet
-    /// version --json`. thurbox never starts a manager: a user systemd unit
-    /// runs `fleet up`, and the row names the command that starts it. A
-    /// Fleet that did not answer has no such row: its `fleet` row says why.
     fn manager_finding(&self, broken: Level) -> Option<Finding> {
         let version = self.version.as_ref().ok()?;
         let manager = &version["manager"];
@@ -739,8 +657,6 @@ impl FleetFacts {
         })
     }
 
-    /// The checks only a Fleet on this machine has: its config file and the
-    /// runtime it runs here.
     fn local_findings(&self) -> Vec<Finding> {
         let config = match &self.config {
             Some((path, from)) if path.is_file() => Finding::new(
@@ -781,8 +697,6 @@ impl FleetFacts {
         vec![config, runtime]
     }
 
-    /// The facts as one JSON object, for `doctor`, `config show` and
-    /// `version --json`.
     pub(super) fn document(&self) -> Value {
         json!({
             "name": self.name,
@@ -833,8 +747,6 @@ mod tests {
         );
     }
 
-    /// A `hosts.toml` left by an earlier thurbox is reported as unread, with
-    /// the fix; none at all reports nothing.
     #[test]
     fn a_left_over_hosts_toml_is_a_warning_with_its_fix() {
         let dir = tempfile::tempdir().expect("dir");
@@ -856,8 +768,6 @@ mod tests {
         assert!(fix.contains(&path.display().to_string()), "{fix}");
     }
 
-    /// An `automations.json` left by an earlier thurbox is reported as
-    /// unread, with the fix; none at all reports nothing.
     #[test]
     fn a_left_over_automations_json_is_a_warning_with_its_fix() {
         let dir = tempfile::tempdir().expect("dir");
@@ -884,8 +794,6 @@ mod tests {
         assert!(fix.contains("docs/fleet/resources/cron-task.md"), "{fix}");
     }
 
-    /// The keeper window is found on any session and named with the command
-    /// that kills it; a server without one, or none at all, reports nothing.
     #[test]
     fn a_left_over_heartbeat_window_is_a_warning_with_its_fix() {
         let server = LocalServer {
@@ -907,7 +815,6 @@ mod tests {
         );
     }
 
-    /// A path with a space stays one word in the printed command.
     #[test]
     fn the_heartbeat_fix_quotes_its_paths() {
         let server = LocalServer {
@@ -925,7 +832,6 @@ mod tests {
         );
     }
 
-    /// Only an enabled timer is reported, with the command that stops it.
     #[test]
     fn an_enabled_automation_timer_is_a_warning_with_its_fix() {
         for quiet in [None, Some("disabled"), Some("not-found"), Some("")] {
@@ -938,7 +844,6 @@ mod tests {
         ),);
     }
 
-    /// A Fleet's facts with every field given, for the cases below.
     fn facts(
         local: bool,
         unreachable: Option<&str>,
@@ -959,8 +864,6 @@ mod tests {
         }
     }
 
-    /// Every check that is not ok carries the command or step that fixes it,
-    /// in the JSON and on its own line of the report.
     #[test]
     fn every_failing_check_names_its_fix() {
         let empty = tempfile::tempdir().expect("an empty PATH dir");
@@ -1109,7 +1012,6 @@ mod tests {
         );
     }
 
-    /// `doctor`'s probes reach Fleet through its link.
     #[test]
     fn doctor_probes_fleet_through_its_link() {
         let remote = crate::fleet_link::testing::Remote::new(
@@ -1129,8 +1031,6 @@ mod tests {
         );
     }
 
-    /// A remote Fleet too old to report its manager is a warning to update
-    /// it, never "not running".
     #[test]
     fn doctor_warns_when_a_remote_fleet_does_not_report_its_manager() {
         let remote = crate::fleet_link::testing::Remote::new(
@@ -1154,8 +1054,6 @@ mod tests {
         assert_eq!(manager.fix.as_deref(), Some("update Fleet on that machine"));
     }
 
-    /// `doctor` lists the hosts Fleet defines, which are where a session can
-    /// run.
     #[cfg(unix)]
     #[test]
     fn doctor_reports_fleets_hosts() {
@@ -1180,8 +1078,6 @@ mod tests {
         assert!(hosts.detail.contains("local, devbox"), "{}", hosts.detail);
     }
 
-    /// A Fleet whose `apiVersions` lack the one thurbox writes its Tasks in
-    /// is refused by name (M6).
     #[test]
     fn doctor_refuses_a_fleet_that_does_not_speak_the_task_api() {
         use std::os::unix::fs::PermissionsExt;
@@ -1207,8 +1103,6 @@ mod tests {
         );
     }
 
-    /// The interface's export is reported from its own table, with where
-    /// each value comes from; a table against the rules warns.
     #[test]
     fn doctor_reports_the_interfaces_telemetry_table() {
         let table: otel_env::TelemetryConfig =
@@ -1228,8 +1122,6 @@ mod tests {
         );
     }
 
-    /// `doctor` names the Fleet that runs every session, its harnesses and
-    /// the config it reads.
     #[cfg(unix)]
     #[test]
     fn doctor_reports_the_fleet_in_force() {

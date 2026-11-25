@@ -1,4 +1,3 @@
-//! Plugin registration and sweeps. All untrusted plans pass pure admission first.
 use crate::{Manager, RunReport, Step};
 use fleet_api::plugin::{
     Manifest, Mutation, Plan, PluginConfig, Plugins, Probe, RESERVED, Registration,

@@ -1,19 +1,3 @@
-//! The multiplexer runtime: agent sessions as windows of a terminal
-//! multiplexer (tmux, psmux, RMUX), on this machine or on a host reached over
-//! ssh or `wsl.exe`.
-//!
-//! The session-backend boundary: the contract every multiplexer adapter
-//! implements, the pane machinery a backend's stream is wired into, the
-//! registry that holds the adapters, and the adapters themselves — with the
-//! host model a route names (`host_def`, `route`, `multiplexer`, `platform`),
-//! how a command reaches a host (`shell`, `host_path`), whether the binaries
-//! it needs are there (`preflight`).
-//!
-//! Consumers name the contract; only the registry's factory names an adapter.
-//! Its rules in `crates/architecture.toml` hold each module to that. The crate knows
-//! nothing of the program embedding it: the settings it honours and where that
-//! program keeps its data are passed in ([`MuxSettings`]).
-
 pub mod contract;
 pub mod host;
 pub mod host_path;

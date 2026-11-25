@@ -1,10 +1,3 @@
-//! The record of the process groups a lease holder's [`crate::run`] calls
-//! lead, so that a process taking over the lease of a holder that died on
-//! this boot stops them first. One file per run in the directory
-//! [`record_in`] names: written empty before the spawn, then
-//! `<pgid> <leader start time>` once the group exists, and removed when the
-//! run returns. An empty file is a run whose group cannot be known.
-
 use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
@@ -15,11 +8,8 @@ use std::time::{Duration, Instant};
 static DIR: OnceLock<PathBuf> = OnceLock::new();
 static SEQ: AtomicU64 = AtomicU64::new(0);
 
-/// How long [`stop_recorded`] waits for a killed group to be gone.
 pub const STOP_BOUND: Duration = Duration::from_secs(10);
 
-/// Record every later run of this process in `dir`, which is created now.
-/// The first directory named wins.
 pub fn record_in(dir: &Path) -> io::Result<()> {
     fs::create_dir_all(dir)?;
     let _ = DIR.set(dir.to_path_buf());
@@ -61,9 +51,6 @@ impl Drop for Record {
     }
 }
 
-/// Kill every group recorded in `dir`, wait until each is gone, and remove
-/// its record. An empty record, a group that outlives [`STOP_BOUND`] or a
-/// platform with no `/proc` is an error, and leaves its record in place.
 pub fn stop_recorded(dir: &Path) -> io::Result<()> {
     let entries = match fs::read_dir(dir) {
         Ok(entries) => entries,

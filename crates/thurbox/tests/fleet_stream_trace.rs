@@ -1,10 +1,3 @@
-//! Opening a Task's pane is one client span, `fleet attach` or `fleet
-//! shell`, and both the `fleet` it asks and the stream it then runs join
-//! that span's trace (docs/observability.md, *Trace propagation*). Its own
-//! test binary: it installs the process's tracer provider, which no other
-//! test may see.
-//!
-//! Unix only: the stand-in programs are shell scripts.
 #![cfg(unix)]
 
 #[path = "support/otlp_collector.rs"]

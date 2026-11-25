@@ -1,33 +1,11 @@
-//! Where a session runs: the one parser and the one formatter of a route key.
-//!
-//! A route has two independent halves. The **place** is the machine and how it
-//! is reached (this one, an ssh host, a WSL distro); the **multiplexer** is
-//! which implementation serves the session there. Neither implies the other,
-//! and neither says what OS the machine runs — that is the host's own
-//! configuration, never something read off a route.
-//!
-//! | key | place | multiplexer |
-//! |---|---|---|
-//! | `local:<mux>` | local | `<mux>` |
-//! | `ssh:<host>:<mux>` / `wsl:<host>:<mux>` | remote | `<mux>` |
-//!
-//! A key always names its multiplexer. A **host key** — `ssh:<host>` or
-//! `wsl:<host>`, what the host picker carries — names a machine only; its
-//! multiplexer is the host's own, which its host entry holds
-//! ([`HostRegistry::resolve`](super::HostRegistry::resolve)).
-
 use std::fmt;
 
 use super::Multiplexer;
 
-/// The prefix of a key whose machine is reached over ssh.
 pub const SSH_PREFIX: &str = "ssh:";
-/// The prefix of a key whose machine is a WSL distro.
 pub const WSL_PREFIX: &str = "wsl:";
-/// The prefix of a local key.
 pub const LOCAL_PREFIX: &str = "local:";
 
-/// How a remote machine is reached.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub enum Via {
     Ssh,
@@ -43,26 +21,21 @@ impl Via {
     }
 }
 
-/// The machine a session runs on.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub enum Place {
     Local,
     Remote { via: Via, host: String },
 }
 
-/// A parsed route key.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct Route {
     pub place: Place,
     pub mux: Multiplexer,
 }
 
-/// A key that names no route.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum RouteError {
-    /// `ssh:` or `wsl:` with no host after it.
     NoHost(String),
-    /// No place prefix, or no multiplexer known by the name after it.
     Unknown(String),
 }
 
@@ -77,8 +50,6 @@ impl fmt::Display for RouteError {
 
 impl std::error::Error for RouteError {}
 
-/// The host a host key or a route key names — `ssh:devbox` and
-/// `ssh:devbox:rmux` both name `devbox` — or `None` for any other key.
 pub fn host_of_key(key: &str) -> Option<&str> {
     let rest = [SSH_PREFIX, WSL_PREFIX]
         .iter()
@@ -135,7 +106,6 @@ impl Route {
         matches!(self.place, Place::Remote { .. })
     }
 
-    /// Whether `key` is a remote route. A key naming no route is not one.
     pub fn is_remote_key(key: &str) -> bool {
         Self::parse(key).is_ok_and(|route| route.is_remote())
     }
@@ -144,7 +114,6 @@ impl Route {
         self.place == Place::Local
     }
 
-    /// Whether this route is tmux on this machine.
     pub fn is_local_tmux(&self) -> bool {
         self.is_local() && self.mux == Multiplexer::Tmux
     }
@@ -156,7 +125,6 @@ impl Route {
         }
     }
 
-    /// The host's bare name — `ssh:devbox:rmux` → `devbox` — or `None` locally.
     pub fn host(&self) -> Option<&str> {
         match &self.place {
             Place::Local => None,
@@ -164,12 +132,10 @@ impl Route {
         }
     }
 
-    /// Whether two routes are on one machine, whatever serves each.
     pub fn same_machine(&self, other: &Self) -> bool {
         self.place == other.place
     }
 
-    /// The same machine served by `mux`.
     pub fn with_mux(&self, mux: Multiplexer) -> Self {
         Self {
             place: self.place.clone(),
@@ -177,7 +143,6 @@ impl Route {
         }
     }
 
-    /// The key this route is written as.
     pub fn format(&self) -> String {
         let name = self.mux.name();
         match &self.place {
@@ -287,14 +252,11 @@ mod tests {
     }
 
     proptest! {
-        /// Every route reads back as itself.
         #[test]
         fn a_route_round_trips_through_its_key(route in route()) {
             prop_assert_eq!(Route::parse(&route.format()).unwrap(), route);
         }
 
-        /// Place and multiplexer are independent: any multiplexer can be named
-        /// on any machine, and naming one changes nothing about the machine.
         #[test]
         fn place_and_multiplexer_vary_independently(place in place(), a in mux(), b in mux()) {
             let one = Route { place: place.clone(), mux: a };

@@ -1,10 +1,3 @@
-//! A wildcard route end to end: `channels = ["*"]` covers every channel of
-//! its account that no other route lists and that is not the log channel.
-//! The admission rules still hold there, chatter in an unmirrored thread
-//! still costs no object, an explicit route still wins its own channels, and
-//! the config refuses a second wildcard on one account, a top-level
-//! wildcard, and a questions route with no channel id.
-
 mod support;
 
 use std::fs;
@@ -18,9 +11,7 @@ use support::{
 
 const T0: u64 = 1_730_000_000_000;
 const BOT: &str = "B0FLEET001";
-/// The log channel: no route lists it, and the wildcard never covers it.
 const LOGS: &str = "C0456EFGH";
-/// A channel that no route lists.
 const ELSEWHERE: &str = "C0999WILD";
 const WILDCARD_ROUTE: &str = "anywhere";
 
@@ -28,8 +19,6 @@ fn root(env: &Env) -> String {
     env.root.to_string_lossy().replace('\\', "/")
 }
 
-/// The wildcard route over the fake account, with its own brief and base
-/// directory, covering `channels`.
 fn wildcard_route(env: &Env, name: &str, channels: &str) -> String {
     let root = root(env);
     format!(
@@ -38,8 +27,6 @@ taskConfig = \"conversation\"\nbrief = \"{root}/briefs/anywhere.md\"\nworkspace 
     )
 }
 
-/// The gateway environment's section with a log channel and the wildcard
-/// route beside the explicit route `eng`.
 fn section(env: &Env) -> String {
     let base = gateway_section(&env.root).replacen(
         "[gateway]\n",
@@ -76,8 +63,6 @@ fn mention(thread: &str, author: &str, at: u64) -> Value {
     )
 }
 
-/// Put the event's message on the fake platform's thread, as a real
-/// platform's history holds it, then hand the event to the receive verb.
 fn deliver(env: &Env, delivery: &str, event: Value) -> Value {
     let Event::Message {
         conversation,

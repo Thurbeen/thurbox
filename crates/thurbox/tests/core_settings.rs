@@ -1,20 +1,7 @@
-//! What `settings.toml` controls in v2.
-//!
-//! The bug this file exists to prevent is not a wrong value — it is a setting
-//! that is *read nowhere*. `thurbox2` used to never publish what it loaded, so
-//! a process-wide copy handed out defaults and the entire file was ignored
-//! however carefully it had been written. Nothing about that failure was visible:
-//! every switch looked honoured because every default matched.
-//!
-//! So these tests assert the reach of a setting rather than its parsing: that the
-//! file is what is in force, that a change to it lands where it has to, and that a
-//! mod can see it.
-
 use thurbox::kernel::config::{Config, Reloaded};
 use thurbox::session::settings::Settings;
 use thurbox::session::SessionState;
 
-/// Isolate config and data into a tempdir, process-wide so a worker sees it too.
 fn isolate() -> tempfile::TempDir {
     let home = tempfile::tempdir().expect("tempdir");
     let config = home.path().join("config");
@@ -165,14 +152,6 @@ fn our_own_write_is_not_reported_as_an_outside_edit() {
     );
 }
 
-/// The settings panel edits the *file*, so it drafts from the file.
-///
-/// The bug: it drafted from what was in force, and a restart-only change is
-/// deliberately never taken into force. So one visit saved `mouse = false`
-/// correctly, and the next visit — any visit, changing anything — carried the
-/// stale `mouse = true` back into the document and reverted it. Two thirds of
-/// the panel's core rows are restart-only, which made "my settings do not
-/// survive a restart" the everyday symptom.
 #[test]
 fn a_saved_restart_only_change_is_not_reverted_by_the_next_save() {
     let _home = isolate();
@@ -202,8 +181,6 @@ fn a_saved_restart_only_change_is_not_reverted_by_the_next_save() {
     assert!(!next_launch.features.shell_pane, "and the live one landed");
 }
 
-/// The other half of the same rule: what is *in force* still refuses the
-/// restart-only change, or the split this all rests on would be gone.
 #[test]
 fn the_file_moves_ahead_of_what_is_in_force() {
     let _home = isolate();
@@ -242,7 +219,6 @@ fn saving_preserves_the_files_comments() {
 
 // ── What the switches do to the interface ──────────────────────────────────
 
-/// The bundled interface, loaded from the repo's own `ui/`.
 fn host() -> thurbox::kernel::host::LuaHost {
     let dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../ui");
     let host = thurbox::kernel::host::LuaHost::new(dir);
@@ -250,7 +226,6 @@ fn host() -> thurbox::kernel::host::LuaHost {
     host
 }
 
-/// One session with work at risk, so a confirmation has something to itemise.
 fn session_row() -> thurbox::kernel::snapshot::SessionRow {
     thurbox::kernel::snapshot::SessionRow {
         id: "11111111-1111-1111-1111-111111111111".into(),
@@ -356,7 +331,6 @@ fn press(host: &thurbox::kernel::host::LuaHost, mod_name: &str, chord: &str) {
     host.on_key(index, &key).expect("on_key");
 }
 
-/// Whether the confirmation is up, and what it says.
 fn confirmation(host: &thurbox::kernel::host::LuaHost, settings: &Settings) -> Option<String> {
     publish_with(host, settings);
     let index = host.index_of("confirm").expect("no confirm plugin");
@@ -528,8 +502,6 @@ fn a_raised_column_threshold_leaves_only_the_central_pane() {
     assert!(placed.iter().any(|slot| slot == "sessions"), "{placed:?}");
 }
 
-/// A v2 file names a key 3.0 no longer reads on every load. That notice must
-/// not stop a reload: a later edit to a live switch still applies.
 #[test]
 fn a_retired_key_does_not_block_a_live_reload() {
     let _home = isolate();
@@ -555,9 +527,6 @@ fn a_retired_key_does_not_block_a_live_reload() {
     assert!(!config.features().shell_pane, "the edit is in force");
 }
 
-/// The settings that drew v1's panels and the notification edges Fleet never
-/// reports are gone from thurbox 3.0. A file that still sets them keeps
-/// loading, says once per key that it is no longer read, and stays valid.
 #[test]
 fn a_file_setting_a_dropped_key_still_loads() {
     let _home = isolate();

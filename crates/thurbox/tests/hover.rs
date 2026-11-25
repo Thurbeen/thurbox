@@ -1,19 +1,3 @@
-//! Hovering an affordance lights it.
-//!
-//! v1 highlights whatever the pointer is over (`App::mouse_hover`); v2 enabled
-//! motion reporting and then did nothing with it — paying the whole cost of the
-//! firehose for no visible effect.
-//!
-//! The subject is the **agent pane's tab strip**, which is where the surviving
-//! hoverable affordances live: the footer pills these tests used to read went
-//! with the footer mod.
-//!
-//! The rule these pin down is the one that keeps it honest: the kernel
-//! publishes the identity it resolved through the SAME hitboxes it routes
-//! clicks through, so what lights up and what a click activates cannot drift
-//! apart. A test that only checked "some style changed" would miss that, so
-//! these assert the pointer lands on the pill it is actually over.
-
 use ratatui::backend::TestBackend;
 use ratatui::style::Color;
 use ratatui::Terminal;
@@ -32,8 +16,6 @@ fn host() -> LuaHost {
     host
 }
 
-/// Paint the agent pane's top border with `hovered` in force, returning each
-/// cell's background. Its chips are the affordances a pointer can land on.
 fn chip_backgrounds(host: &LuaHost, hovered: Option<&Identity>) -> Vec<(String, Color)> {
     let themes = Themes::load(None);
     let mut registry = Registry::default();
@@ -131,8 +113,6 @@ fn chip_backgrounds(host: &LuaHost, hovered: Option<&Identity>) -> Vec<(String, 
 
 const WIDTH: u16 = 120;
 
-/// One session, so the pane draws its border and title rather than an empty
-/// state.
 fn one_session() -> Snapshot {
     Snapshot {
         sessions: vec![thurbox::kernel::snapshot::SessionRow {
@@ -170,7 +150,6 @@ fn one_session() -> Snapshot {
     }
 }
 
-/// The background of the first cell of the chip whose label starts at `label`.
 fn background_of(cells: &[(String, Color)], label: &str) -> Color {
     let text: String = cells.iter().map(|(symbol, _)| symbol.as_str()).collect();
     let at = text
@@ -382,8 +361,6 @@ fn a_role_that_matches_no_affordance_lights_nothing() {
     );
 }
 
-/// A chip built with `ui.row():button`, the lib's in-line click target. It
-/// lights on the identity a press on it resolves to, and only that chip does.
 #[test]
 fn a_hovered_row_button_lights_and_its_neighbour_does_not() {
     const PANE: &str = r#"

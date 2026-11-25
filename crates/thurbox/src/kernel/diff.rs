@@ -1,60 +1,26 @@
-//! A session's changes, computed off the render path.
-//!
-//! A diff shells out to git, so it cannot be built during a snapshot refresh —
-//! that runs on the loop. This computes per session on a background thread and
-//! publishes when ready, which is the same shape as attaching a terminal and
-//! as the command bus: **anything that touches the world runs on a worker, and
-//! the UI reads the result.** Third instance of the pattern.
-//!
-//! The consequence a mod must render is that "not computed yet" is a real
-//! state, distinct from "no changes" — a diff that is merely slow must not look
-//! like a clean worktree.
-
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::{channel, Receiver, Sender};
 
-/// Largest diff read, in bytes. Beyond this the cap is *reported*, because a
-/// silently truncated diff is a review that quietly omits things.
 pub const MAX_DIFF_BYTES: usize = 4 * 1024 * 1024;
 
-/// One changed file, flattened for rendering.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FileSummary {
     pub path: String,
     pub added: usize,
     pub removed: usize,
-    /// `M` / `A` / `D` / `R`, as the parser determined it.
-    ///
-    /// Carried because the parser already knew: dropping it made a pane re-read
-    /// the whole body to recover a glyph, which for a capped diff is ~99,000 lines
-    /// of Lua to learn something the kernel had in hand.
     pub status: &'static str,
-    /// The path a rename came from, when it differs.
     pub old_path: Option<String>,
 }
 
-/// What is known about a session's changes.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Diff {
-    /// Requested, not finished. Distinct from `Ready` with nothing in it.
     Pending,
     Ready {
         files: Vec<FileSummary>,
-        /// The rendered body, one entry per line.
         body: Vec<String>,
-        /// Set when the diff was larger than the cap.
         truncated: bool,
-        /// The diff's size before any cut, in bytes, so a truncation banner can be
-        /// specific about what is missing.
         raw_bytes: usize,
-        /// Untracked files found but not represented, because there were more
-        /// than `git`'s per-file cap allows.
-        ///
-        /// Distinct from [`truncated`](Self::Ready::truncated), which is about
-        /// bytes: a short *list* and a cut *body* are different failures and read
-        /// differently. `0` when everything is accounted for, which is the
-        /// ordinary case.
         untracked_omitted: usize,
     },
     Failed(String),
@@ -66,50 +32,22 @@ struct Computed {
     diff: Diff,
 }
 
-/// Whether a session's backend is reached over ssh. Such a session's diff is
-/// asked for only while a pane shows it ([`DiffStore::request`]'s caller):
-/// thurbox reads diffs on this machine only, so its answer is a refusal.
 pub fn over_ssh(backend: &str) -> bool {
     crate::session::Route::parse(backend)
         .is_ok_and(|route| route.via() == Some(crate::session::Via::Ssh))
 }
 
-/// How long a settled diff is trusted before a request recomputes it, and how
-/// soon a failure is retried.
-///
-/// Five seconds, the same figure the git stat beside it starts from
-/// (`snapshot`'s `git_poll_interval`): both shell out to git about the same
-/// worktree. Fixed rather than settable, and not backed off, because this one
-/// is asked for **one session** — the selection, which is what the loop
-/// requests a diff for — where the stat is asked for every session there is.
-/// A cost bounded by the selection does not track the session list, which is
-/// the whole of what `git_poll_secs` exists to bound. This was the last
-/// cache without an age — once `Ready`, an entry stood for the life of the process
-/// unless something explicitly invalidated it, so a pane watching an agent that
-/// was still writing code showed the diff it first saw. A *failure* retries
-/// sooner (mirroring `repos`' `BRANCHES_RETRY`): held for the full TTL, one
-/// unreachable moment kept an error on screen well after the host came back.
 const DIFF_TTL: std::time::Duration = std::time::Duration::from_secs(5);
 const DIFF_RETRY: std::time::Duration = std::time::Duration::from_secs(3);
 
-/// A diff and when it arrived — the age every cache here carries.
 struct Held {
     request: u64,
     at: std::time::Instant,
     diff: Diff,
-    /// A recompute is in flight while `diff` stays published. Replacing a
-    /// stale `Ready` with `Pending` would blank the pane every TTL, so the old
-    /// answer stands until the fresh one lands in [`DiffStore::poll`] — the
-    /// same old-value-while-refreshing shape the git stats use.
     refreshing: bool,
 }
 
 impl Held {
-    /// Whether this answer should be computed again.
-    ///
-    /// Never while one is on its way — a `Pending` first answer or a settled
-    /// one already `refreshing` — however old it has grown: asking again would
-    /// spawn a second worker for the same session.
     fn stale(&self) -> bool {
         if self.refreshing {
             return false;
@@ -122,7 +60,6 @@ impl Held {
     }
 }
 
-/// Computes the selected session's diff, retaining its old answer during refresh.
 pub struct DiffStore {
     next_request: u64,
     version: u64,
@@ -143,7 +80,6 @@ impl DiffStore {
         }
     }
 
-    /// Generation of the published answers; unrelated workers never move it.
     pub fn version(&self) -> u64 {
         self.version
     }
@@ -155,8 +91,6 @@ impl DiffStore {
         self.version = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     }
 
-    /// Keep only the selected session's answer. Late workers are discarded
-    /// by their request serial, including a selection that leaves and returns.
     pub fn retain_selected(&mut self, selected: Option<&str>) -> bool {
         let before = self.diffs.len();
         self.diffs.retain(|id, _| Some(id.as_str()) == selected);
@@ -167,17 +101,10 @@ impl DiffStore {
         changed
     }
 
-    /// What is known about `session`, if anything has been asked for.
     pub fn get(&self, session: &str) -> Option<&Diff> {
         self.diffs.get(session).map(|held| &held.diff)
     }
 
-    /// [`Self::request`] for `row`: its directory, against its base branch
-    /// (never its own branch, against which a session diffs to nothing).
-    /// A Fleet Task on another host is not diffed here: its path is there
-    /// ([`SessionRow::workspace_reachable`]), and the diff says so.
-    ///
-    /// [`SessionRow::workspace_reachable`]: crate::kernel::snapshot::SessionRow::workspace_reachable
     pub fn request_row(&mut self, row: &crate::kernel::snapshot::SessionRow) {
         if !row.workspace_reachable() {
             let why = format!(
@@ -192,14 +119,6 @@ impl DiffStore {
         }
     }
 
-    /// Ask for a session's diff, unless a fresh answer is held or one is in
-    /// flight.
-    ///
-    /// Idempotent by design: this is called from the loop with whatever session
-    /// is selected, so it happens every frame and must cost nothing while the
-    /// held answer is fresh. Once it is older than `DIFF_TTL` (or
-    /// `DIFF_RETRY` for a failure) the recompute is dispatched — with the old
-    /// answer still published, per `Held::refreshing`.
     pub fn request(
         &mut self,
         session: &str,
@@ -259,7 +178,6 @@ impl DiffStore {
         });
     }
 
-    /// Fold current computations in, returning whether a published answer changed.
     pub fn poll(&mut self) -> bool {
         let mut changed = false;
         while let Ok(done) = self.rx.try_recv() {
@@ -282,13 +200,11 @@ impl DiffStore {
         changed
     }
 
-    /// Seed a diff directly, so a test can render a known one without git.
     #[doc(hidden)]
     pub fn set_for_test(&mut self, session: &str, diff: Diff) {
         self.hold(session, diff);
     }
 
-    /// Hold `diff` as the session's settled answer.
     fn hold(&mut self, session: &str, diff: Diff) {
         if self.get(session) == Some(&diff) {
             return;
@@ -305,9 +221,6 @@ impl DiffStore {
         );
     }
 
-    /// Forget a session's diff, so the next request recomputes it — the
-    /// immediate route, for a caller that *knows* the worktree changed rather
-    /// than waiting out `DIFF_TTL`.
     pub fn invalidate(&mut self, session: &str) {
         if self.diffs.remove(session).is_some() {
             self.mark_changed();
@@ -321,7 +234,6 @@ impl Default for DiffStore {
     }
 }
 
-/// Run the diff on this machine and render it. Called on a worker thread.
 fn compute(worktree: &Path, base: Option<&str>) -> Diff {
     let sources = match read_sources(worktree, base) {
         Ok(sources) => sources,
@@ -388,7 +300,6 @@ fn compute(worktree: &Path, base: Option<&str>) -> Diff {
     }
 }
 
-/// The three raw git outputs a diff is rendered from, plus what was left out.
 struct Sources {
     raw: String,
     numstat: String,
@@ -396,19 +307,6 @@ struct Sources {
     untracked_omitted: usize,
 }
 
-/// Read the diff, the counts and the statuses for whichever target is asked for.
-///
-/// Against the base branch when there is one, else the uncommitted changes —
-/// which is what a session with no base branch has to show. The two are gathered
-/// differently: `base..HEAD` is committed history, so its body and file list are
-/// independent commands, while the working tree has to fold in **untracked
-/// files** and therefore comes back from [`crate::git::working_diff`] as one
-/// consistent set. Asking for them separately there would let the body describe a
-/// file the list omitted.
-///
-/// `Err` carries the message to report, keeping "could not read the diff" and
-/// "could not list the changed files" distinct — the second means the cheap
-/// commands failed after the expensive one worked, which is worth telling apart.
 fn read_sources(worktree: &Path, base: Option<&str>) -> Result<Sources, &'static str> {
     let Some(base) = base else {
         let working = crate::git::working_diff(worktree).ok_or("could not read the diff")?;
@@ -444,8 +342,6 @@ mod tests {
         assert!(store.get("nobody").is_none());
     }
 
-    /// The *immediate* refresh route: `Command::Diff` need not wait out the
-    /// TTL when the caller knows the worktree changed.
     #[test]
     fn invalidating_lets_the_next_request_recompute() {
         let mut store = DiffStore::new();
@@ -511,7 +407,6 @@ mod tests {
         assert_eq!(store.get("s1").cloned(), first);
     }
 
-    /// An empty `Ready`, for tests that need a settled answer without git.
     fn empty_ready() -> Diff {
         Diff::Ready {
             files: Vec::new(),
@@ -522,8 +417,6 @@ mod tests {
         }
     }
 
-    /// A held answer, back-dated so the age rule can be exercised without
-    /// waiting out the interval.
     fn held(diff: Diff, age: std::time::Duration) -> Held {
         Held {
             request: 0,
@@ -681,18 +574,6 @@ mod tests {
         assert!(!over_ssh("wsl:Ubuntu:tmux"));
     }
 
-    /// The property the file list was changed for: **the body is capped and the list
-    /// is not.**
-    ///
-    /// Built against a real repository, because it is git's own output that has to be
-    /// complete. The body here is deliberately pushed past `MAX_DIFF_BYTES`, and every
-    /// file must still be listed with its true counts — derived from the capped text,
-    /// this listed only the files that fit.
-    /// Run `git` in `repo` with the location variables scrubbed.
-    ///
-    /// The pre-commit hook exports `GIT_DIR` and friends, so an unscrubbed call
-    /// from the suite lands in the real repository (see the `GIT_*` scrub rule in
-    /// `.agents/skills/thurbox-testing/SKILL.md`).
     fn git_in(repo: &Path, args: &[&str]) {
         let out = std::process::Command::new("git")
             .args(args)
@@ -709,7 +590,6 @@ mod tests {
         assert!(out.status.success(), "git {args:?}");
     }
 
-    /// A repository with one commit on `main`, ready to be dirtied.
     fn repo_with_a_base_commit(home: &tempfile::TempDir) -> PathBuf {
         let repo = home.path().join("repo");
         std::fs::create_dir_all(&repo).expect("mkdir");
@@ -779,11 +659,6 @@ mod tests {
         }
     }
 
-    /// The bug this exists for: **a new file is the most common thing an agent
-    /// produces, and `git diff HEAD` cannot show one.**
-    ///
-    /// A session with no base branch — the scratch worktree someone watches an
-    /// agent work in — reported "no changes" after three files had been written.
     #[test]
     fn an_untracked_file_is_in_the_body_and_the_file_list() {
         let home = tempfile::tempdir().expect("tempdir");

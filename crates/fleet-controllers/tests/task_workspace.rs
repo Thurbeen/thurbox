@@ -1,7 +1,3 @@
-//! TaskController with a workspace: the runtime makes a Task's URL list
-//! before the first start and releases it after the session. Each case is
-//! one transition or one Unknown of the workspace's lifecycle.
-
 use fleet_api::condition::ConditionStatus;
 use fleet_api::plan::{Action, EffectOutcome, Observations, Plan, Probe, Receipt};
 use fleet_api::task::{Phase, SessionRef, TaskStatus};
@@ -86,8 +82,6 @@ fn cond(st: &TaskStatus, t: &str) -> (ConditionStatus, String) {
     (c.status, c.reason.clone())
 }
 
-/// The status after the first materialize was planned, with `outcome` as
-/// its receipt (None: the manager stopped before the receipt).
 fn materializing(outcome: Option<Observation<EffectOutcome>>) -> Object {
     let (_, mut st) = run(&task(None), host_up());
     if let Some(outcome) = outcome {
@@ -274,7 +268,6 @@ fn a_file_url_is_made_through_the_runtime_too() {
     assert_eq!(plan.effects[0].key, MATERIALIZE_1);
 }
 
-/// A released Task whose workspace the runtime made.
 fn released() -> TaskStatus {
     let mut st = TaskStatus {
         phase: Phase::Releasing,

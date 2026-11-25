@@ -1,14 +1,3 @@
-//! The system modals — help, settings and the theme picker — against the real
-//! bundled mods.
-//!
-//! What is under test is the shape rather than the pixels: that these three are
-//! *not* mods, that they overlay the interface instead of replacing a pane,
-//! that they capture input while open, and that a mod reaches them by
-//! declaring data and nothing else.
-//!
-//! Renders the modals through the same entry point the binary uses
-//! (`Modals::render`), so a modal that stopped drawing would fail here.
-
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ratatui::backend::TestBackend;
 use ratatui::layout::Rect;
@@ -23,7 +12,6 @@ use thurbox::kernel::snapshot::{SessionRow, Snapshot};
 use thurbox::kernel::theme::Themes;
 use thurbox::session::SessionState;
 
-/// Where a test keeps the theme the loop would store in `interface.json`.
 type Database = std::cell::RefCell<Option<String>>;
 
 const WIDTH: u16 = 150;
@@ -184,7 +172,6 @@ fn screen(
         .collect()
 }
 
-/// Paint only the modal layer, on a screen of the given size.
 fn modal_screen(
     modals: &mut Modals,
     registry: &Registry,
@@ -219,12 +206,6 @@ fn modal_screen(
         .join("\n")
 }
 
-/// What a modal does to a cell it does not cover.
-///
-/// Regression: opening a modal stripped the footer band's chip fills, so every
-/// button in the bottom band lost its background and read as plain text until
-/// the modal closed. The dim pass is meant to *darken* what it covers, not
-/// discard the colours underneath.
 #[test]
 fn a_modal_dims_the_chrome_beneath_it_rather_than_erasing_its_colours() {
     use ratatui::style::{Color, Style};
@@ -277,7 +258,6 @@ fn a_modal_dims_the_chrome_beneath_it_rather_than_erasing_its_colours() {
     );
 }
 
-/// The chord column must never touch the description beside it.
 #[test]
 fn a_long_chord_list_widens_the_column_instead_of_running_into_its_description() {
     // Regression: the column was a fixed 16 and `pad` only ever ADDS spaces, so
@@ -331,7 +311,6 @@ fn a_long_chord_list_widens_the_column_instead_of_running_into_its_description()
     );
 }
 
-/// Moving through the theme picker applies as it goes, and leaving puts it back.
 #[test]
 fn the_theme_picker_previews_as_you_move_and_reverts_when_abandoned() {
     let dir = tempfile::tempdir().expect("temp dir");
@@ -459,8 +438,6 @@ fn closing_the_picker_by_its_own_chord_also_reverts() {
     assert_eq!(themes.active_name(), opened_with);
 }
 
-/// What the loop does with a theme the picker chose: store it, in
-/// `interface.json` there and in a cell here.
 fn store_chosen(themes: &mut Themes, db: Option<&Database>) {
     if let (Some(db), Some(name)) = (db, themes.take_chosen()) {
         *db.borrow_mut() = Some(name);
@@ -471,7 +448,6 @@ fn press(code: KeyCode) -> KeyEvent {
     KeyEvent::new(code, KeyModifiers::NONE)
 }
 
-/// Feed a key to the modal layer, the way the binary does.
 fn send(
     modals: &mut Modals,
     key: KeyEvent,
@@ -809,8 +785,6 @@ fn settings_renders_what_the_bundled_mods_declare() {
     assert!(screen.contains(&first.id), "{screen}");
 }
 
-/// The settings modal drawn over a screen already full of `#`, so a cell the
-/// modal fails to paint shows up as one.
 fn settings_over_noise(
     modals: &mut Modals,
     registry: &Registry,
@@ -851,8 +825,6 @@ fn settings_over_noise(
         .collect()
 }
 
-/// The text between a modal line's two side borders, or `None` for a line the
-/// modal does not span.
 fn inside_borders(line: &str) -> Option<String> {
     let chars: Vec<char> = line.chars().collect();
     let left = chars.iter().position(|c| *c == '│')?;
@@ -860,10 +832,6 @@ fn inside_borders(line: &str) -> Option<String> {
     (right > left).then(|| chars[left + 1..right].iter().collect())
 }
 
-/// Regression: the value column was sized to the widest value of all, so one
-/// long text value — the session list's `folded_repos`, a few hundred
-/// characters once a handful of repos are folded — pushed every other row's
-/// value past the modal's edge and left each description a lone `…`.
 #[test]
 fn a_long_value_stays_in_its_column_and_every_other_value_stays_visible() {
     let host = host();
@@ -935,11 +903,6 @@ fn a_long_value_stays_in_its_column_and_every_other_value_stays_visible() {
     }
 }
 
-/// The session list keeps its fold state in two text settings, each a `;` list
-/// of percent-escaped keys. Shown raw that is `repo%3Ahost%01project;…` cut at
-/// the column, which says nothing to a reader. A row declared as a list shows
-/// how many entries it holds, and the selected one spells them out, decoded, in
-/// the footer.
 #[test]
 fn a_fold_list_reads_as_a_count_and_spells_its_entries_out_when_selected() {
     let host = host();
@@ -1182,8 +1145,6 @@ fn enter_applies_the_highlighted_theme_and_persists_it_where_v1_does() {
 
 // --- the mouse -------------------------------------------------------------
 
-/// Paint only the modal layer and keep the buffer, so a test can ask what
-/// *colour* a cell ended up — which is all a hover affordance is.
 fn modal_buffer(
     modals: &mut Modals,
     registry: &Registry,
@@ -1210,11 +1171,6 @@ fn modal_buffer(
     terminal.backend().buffer().clone()
 }
 
-/// Where `label` was painted, as the coordinates of its first cell.
-///
-/// A pill is drawn as ` Label `, so this is how a test finds a button to click
-/// without the modal exposing its hitboxes — and it fails when the label is not
-/// on screen, which is itself the assertion that the pill was drawn.
 fn locate(buffer: &ratatui::buffer::Buffer, width: u16, height: u16, label: &str) -> (u16, u16) {
     for y in 0..height {
         let row: String = (0..width)
@@ -1594,7 +1550,6 @@ fn help_and_settings_page_and_jump_through_their_rows() {
     }
 }
 
-/// The keypress a chord names, for `Registry::resolve`.
 fn key_press(chord: &str) -> KeyPress {
     let mut press = KeyPress::default();
     for part in chord.split('+') {

@@ -1,11 +1,8 @@
-//! Admission of untrusted plugin plans. No I/O and no execution capability.
 use fleet_api::plugin::{CREATOR, Plan, RESERVED, Registration, TaskAccess};
 use fleet_api::{FieldManager, Object, StoreError};
 use serde_json::Value;
 use std::collections::BTreeMap;
 
-/// Amendments per plan. Each one is a new generation of a Task's brief,
-/// so a plan carries a few, never a stream.
 pub const MAX_AMENDS: usize = 8;
 
 #[derive(Debug)]

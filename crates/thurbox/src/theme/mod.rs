@@ -1,9 +1,3 @@
-//! Theme palettes for the Thurbox TUI.
-//!
-//! A `ThemePalette` is the runtime, swappable palette. Widgets read the active
-//! palette via `crate::kernel::theme`; users pick one via the theme
-//! picker modal or by setting `active_theme` in the SQLite metadata table.
-
 mod palettes;
 
 use palettes::{
@@ -20,11 +14,6 @@ use palettes::{
 
 use ratatui::style::Color;
 
-/// Colour values + glyph preferences for the entire TUI.
-///
-/// Palettes are never persisted directly — only the preset *name* is stored
-/// in the SQLite `metadata.active_theme` row. The runtime palette is
-/// reconstructed from `ThemePreset::palette()` on load.
 #[derive(Debug, Clone, PartialEq)]
 pub struct ThemePalette {
     pub accent: Color,
@@ -35,23 +24,9 @@ pub struct ThemePalette {
     pub status_done: Color,
     pub status_idle: Color,
     pub status_error: Color,
-    /// Colour of the "unreachable" status glyph (a remote host that is down /
-    /// offline). Muted grey by default so a placeholder row reads as inert, not
-    /// urgent.
     pub status_unreachable: Color,
-    /// Colour of the "running" status glyph: an agent demonstrably holds the
-    /// pane and has reported nothing. Deliberately **not** `status_working` —
-    /// the observation says an agent is there, never that a turn is in flight,
-    /// and wearing the working colour would make it a claim.
     pub status_running: Color,
-    /// Colour of the "no signal" status glyph, shared by `uncovered` (this
-    /// agent is wired to report nothing) and `unreported` (it can report and
-    /// has not yet). Muted, because the honest content of both is an absence.
     pub status_unknown: Color,
-    /// Colour of the "background" status glyph: the turn is at rest and
-    /// sub-work it started is still running. Its own hue — not `status_done`,
-    /// which would say the work is finished, and not `status_working`, which
-    /// would say the pane is busy.
     pub status_background: Color,
 
     pub text_primary: Color,
@@ -80,22 +55,13 @@ pub struct ThemePalette {
 
     pub inverted_fg: Color,
 
-    /// Code-review diff colours: foreground for added / removed lines and a
-    /// subtle full-row background tint for each (GitHub-style). Used by the
-    /// native review view (`ui::code_review`).
     pub diff_added: Color,
     pub diff_removed: Color,
     pub diff_added_bg: Color,
     pub diff_removed_bg: Color,
 
-    /// Background colour painted under the entire app (chrome + PTY cells
-    /// that don't set their own bg). Use `Color::Reset` to keep the
-    /// terminal's native background — required for the `Default` preset
-    /// which uses ANSI named colours that adapt to user terminal themes.
     pub app_bg: Color,
 
-    /// When true, widgets that have nerd-font glyph alternatives use them.
-    /// Defaults to `false` to stay readable on terminals without nerd fonts.
     pub nerd_font_enabled: bool,
 }
 
@@ -105,87 +71,47 @@ impl Default for ThemePalette {
     }
 }
 
-/// Built-in theme presets. The string names are the values stored in the
-/// SQLite `metadata.active_theme` row and accepted by the MCP `set_theme`
-/// tool.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ThemePreset {
-    /// The original cyan-accented palette that shipped first.
     Default,
-    /// Catppuccin Mocha — warm dark palette with mauve accents.
     CatppuccinMocha,
-    /// Tokyo Night — cool blue-purple palette popular in Neovim configs.
     TokyoNight,
-    /// Gruvbox Dark — earthy, high-contrast retro palette.
     GruvboxDark,
-    /// Catppuccin Latte — light counterpart to Mocha.
     CatppuccinLatte,
-    /// Tokyo Night Day — light counterpart to Tokyo Night.
     TokyoNightDay,
-    /// Gruvbox Light — earthy retro palette on a cream background.
     GruvboxLight,
-    /// Solarized Light — Ethan Schoonover's classic light palette.
     SolarizedLight,
-    /// Doom — dark hellish palette inspired by Doom Eternal with bright red and neon green.
     Doom,
-    /// Nord — cool arctic blue palette from the Nord project.
     Nord,
-    /// Dracula — iconic dark palette with purple, pink, and cyan accents.
     Dracula,
-    /// One Dark — Atom's signature dark palette.
     OneDark,
-    /// Rosé Pine Moon — soft, muted dark palette with iris and rose accents.
     RosePineMoon,
-    /// Everforest — comfortable green-tinted dark palette.
     Everforest,
-    /// Kanagawa — muted, ink-wash dark palette inspired by Hokusai.
     Kanagawa,
-    /// Solarized Dark — Ethan Schoonover's classic dark palette.
     SolarizedDark,
-    /// Monokai — the high-saturation classic from Sublime Text.
     Monokai,
-    /// Ayu Dark — deep navy with warm orange accents.
     AyuDark,
-    /// Ayu Mirage — Ayu's mid-tone slate variant.
     AyuMirage,
-    /// Material — the Material Theme "Darker" palette.
     Material,
-    /// Rosé Pine — the main (dark) Rosé Pine variant.
     RosePine,
-    /// Oxocarbon — IBM Carbon-derived dark palette.
     Oxocarbon,
-    /// GitHub Dark — GitHub's own dark interface palette.
     GithubDark,
-    /// Nightfox — the Nightfox Neovim colourscheme.
     Nightfox,
-    /// Sonokai — a vivid Monokai Pro descendant.
     Sonokai,
-    /// Melange — warm, low-saturation dark palette.
     Melange,
-    /// Zenburn — the low-contrast classic.
     Zenburn,
-    /// Iceberg — cool bluish dark palette.
     Iceberg,
-    /// Vesper — near-monochrome dark palette with amber accents.
     Vesper,
-    /// Synthwave — neon retrowave palette on deep purple.
     Synthwave,
-    /// Nightfly — dark navy palette with bright accents.
     Nightfly,
-    /// Tomorrow Night — the Tomorrow theme's dark variant.
     TomorrowNight,
-    /// Ayu Light — Ayu's cream-background light variant.
     AyuLight,
-    /// One Light — Atom's light counterpart to One Dark.
     OneLight,
-    /// Rosé Pine Dawn — Rosé Pine's light variant.
     RosePineDawn,
-    /// GitHub Light — GitHub's own light interface palette.
     GithubLight,
 }
 
 impl ThemePreset {
-    /// Stable identifier used for storage / MCP / config files.
     pub fn as_str(self) -> &'static str {
         match self {
             Self::Default => "default",
@@ -227,7 +153,6 @@ impl ThemePreset {
         }
     }
 
-    /// Human-readable label shown in pickers and the status bar.
     pub fn display_name(self) -> &'static str {
         match self {
             Self::Default => "Default",
@@ -355,7 +280,6 @@ impl ThemePreset {
         ]
     }
 
-    /// Materialise this preset's colours.
     pub fn palette(self) -> ThemePalette {
         match self {
             Self::Default => default_palette(),
@@ -397,8 +321,6 @@ impl ThemePreset {
         }
     }
 
-    /// Whether this preset is intended for terminals with a light background.
-    /// Used by the picker to group dark and light themes.
     pub fn is_light(self) -> bool {
         matches!(
             self,
@@ -414,13 +336,9 @@ impl ThemePreset {
     }
 }
 
-/// A selectable theme — a built-in preset or a user-defined custom theme —
-/// flattened to what the picker and the apply path need.
 #[derive(Debug, Clone, PartialEq)]
 pub struct ThemeEntry {
-    /// Stable identifier persisted in `metadata.active_theme`.
     pub name: String,
-    /// Human-readable label shown in the picker and status bar.
     pub display_name: String,
     pub palette: ThemePalette,
     pub is_light: bool,
@@ -437,24 +355,15 @@ impl ThemeEntry {
     }
 }
 
-/// A user-defined theme from `themes.toml`: a base preset plus per-colour
-/// overrides. Colours accept anything ratatui parses — `#rrggbb`, ANSI names
-/// (`red`, `lightcyan`), indexed (`14`), or `reset`.
 #[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct CustomThemeDef {
-    /// Stable identifier (what `metadata.active_theme` stores). Must not
-    /// collide with a built-in preset name.
     pub name: String,
-    /// Picker label; defaults to `name`.
     #[serde(default)]
     pub display_name: Option<String>,
-    /// Built-in preset the palette starts from; defaults to `default`.
     #[serde(default)]
     pub base: Option<String>,
-    /// Whether the theme targets light terminals; defaults to the base's.
     #[serde(default)]
     pub light: Option<bool>,
-    /// Nerd-font glyph opt-in; defaults to the base's.
     #[serde(default)]
     pub nerd_font: Option<bool>,
     #[serde(default)]
@@ -527,18 +436,14 @@ pub struct CustomThemeDef {
     pub app_bg: Option<String>,
 }
 
-/// `themes.toml` document shape.
 #[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct ThemesFile {
-    /// Config-format version, for future migrations. Currently `1`.
     #[serde(default)]
     pub config_version: Option<u32>,
     #[serde(default)]
     pub themes: Vec<CustomThemeDef>,
 }
 
-/// Apply one colour override, recording a warning instead of failing when the
-/// value doesn't parse (the base colour stays in effect).
 fn apply_color(
     warnings: &mut Vec<String>,
     theme: &str,
@@ -556,16 +461,8 @@ fn apply_color(
 }
 
 impl CustomThemeDef {
-    /// Number of per-colour override fields wired into [`Self::resolve`]'s
-    /// `fields` array. Tied to the array's length at compile time; a test
-    /// (`override_array_covers_every_color_field`) asserts it matches the
-    /// struct's colour-field count, so a forgotten row can't silently make a
-    /// colour un-overridable.
     const COLOR_OVERRIDE_COUNT: usize = 34;
 
-    /// Materialise the theme: base preset palette + overrides. Unparsable
-    /// colours and an unknown base degrade to warnings, never to a hard
-    /// failure — a half-styled theme beats no theme.
     pub fn resolve(&self) -> (ThemeEntry, Vec<String>) {
         let mut warnings = Vec::new();
         let base = match self.base.as_deref() {
@@ -778,12 +675,6 @@ fn default_palette() -> ThemePalette {
     }
 }
 
-/// Compact intermediate representation used to construct the seven RGB-based
-/// palettes without restating the 27-field `ThemePalette` literal in each one.
-///
-/// `build()` derives the symmetric fields (status_idle = text_muted,
-/// border_focused = accent, inverted_fg = app_bg) so each preset only specifies
-/// the colours that actually vary between themes.
 struct PaletteSlots {
     accent: Color,
     accent_bright: Color,
@@ -859,10 +750,6 @@ impl PaletteSlots {
     }
 }
 
-/// Linear-blend `a` toward `b` by `t` (0.0 = all `a`, 1.0 = all `b`). Only
-/// meaningful for `Color::Rgb`; if either side isn't RGB it returns `a`
-/// unchanged (the `Default` preset, which is named-colour, sets diff bgs
-/// explicitly instead).
 fn blend_rgb(a: Color, b: Color, t: f32) -> Color {
     match (a, b) {
         (Color::Rgb(ar, ag, ab), Color::Rgb(br, bg, bb)) => {
@@ -1034,10 +921,6 @@ mod tests {
         assert_eq!(entry.palette.diff_added, Color::Rgb(0, 0xff, 0));
     }
 
-    /// `background` has to read as its own word next to every status a row
-    /// can hold beside it, in every preset: equal colours are the obvious
-    /// failure, and two RGB colours a few steps apart are the same one on
-    /// screen. 40 is a little under the closest pair the presets ship.
     #[test]
     fn every_preset_draws_background_apart_from_the_other_statuses() {
         fn distance(a: Color, b: Color) -> Option<f64> {

@@ -1,30 +1,3 @@
-//! workspace-git: a runtime's workspace made from a list of URLs
-//! (docs/runtime/README.md, "Workspaces" and "workspace-git").
-//!
-//! ```text
-//! <root>/<key>/<name>/                  one worktree per git URL
-//! <root>/<key>/.fleet-workspace.json    written last; without it the workspace is partial
-//! <root>/<key>/.fleet-sources           the repositories the key's worktrees belong to
-//! <root>/.sources/<digest>.git          a bare source per remote repository, fetched before each make
-//! <root>/.sources/<digest>.lock         one lock per repository a worktree is made from
-//! <root>/.checkouts                     the local checkouts worktrees were made from
-//! ```
-//!
-//! A `git+file` URL naming a local checkout (a repository with a working
-//! tree) gets a worktree of that checkout itself: its branches are the
-//! user's own, a commit made in the worktree is in the checkout at once, and
-//! the preserved work of a release is `refs/fleet/preserved/<key>/<name>` in
-//! the checkout. No branch of a checkout is ever deleted. The checkout's
-//! `origin` is fetched before each make, so a new branch with no base starts
-//! from the upstream's default branch as it is now.
-//!
-//! Any other git URL, a remote or a bare repository, gets a bare source of
-//! its own. A source fetches its remote's branches into
-//! `refs/remotes/origin/*`, so a fetch never moves a branch a worktree has
-//! checked out. Every branch under its `refs/heads/` is one this program
-//! made; the preserved work of a release is
-//! `refs/fleet/preserved/<key>/<name>`, in the same source.
-
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -33,37 +6,22 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
-/// The URL schemes this program makes a directory for.
 pub const SCHEMES: &[&str] = &["git+https", "git+ssh", "git+file", "file"];
 
-/// The days preserved work is kept when the runtime names no other.
 pub const DEFAULT_PRESERVE_DAYS: u64 = 30;
 
-/// The file that marks a workspace whole.
 const RECORD: &str = ".fleet-workspace.json";
 
-/// The file, in the key's directory, naming each repository the key's
-/// worktrees were added to, written before each one: a rollback of a partial
-/// workspace finds a checkout's worktrees through it.
 const KEY_SOURCES: &str = ".fleet-sources";
 
-/// The file, in the root, naming each local checkout a worktree was made
-/// from, so the retention reaches the preserved work kept there.
 const CHECKOUTS: &str = ".checkouts";
 
-/// Where preserved work is kept, per key and repository name.
 const PRESERVED: &str = "refs/fleet/preserved";
 
-/// How long a make waits on a fetch of a checkout's `origin` before it uses
-/// the refs already there.
 const FETCH_DEADLINE: std::time::Duration = std::time::Duration::from_secs(30);
 
-/// The longest key: what the runtime protocol accepts.
 const MAX_KEY: usize = 128;
 
-/// The ambient variables that pin git to another repository than the one a
-/// call names: a hook exports them, and a runtime started under one inherits
-/// them.
 const GIT_LOCATION_ENV: [&str; 10] = [
     "GIT_DIR",
     "GIT_WORK_TREE",
@@ -77,7 +35,6 @@ const GIT_LOCATION_ENV: [&str; 10] = [
     "GIT_CONFIG_COUNT",
 ];
 
-/// Where workspaces are made, and how long preserved work is kept.
 #[derive(Debug, Clone)]
 pub struct Config {
     pub root: PathBuf,
@@ -93,26 +50,17 @@ impl Config {
     }
 }
 
-/// The answer to a make, as the runtime protocol's `workspace` verb gives it.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub enum Answer {
-    /// One directory per URL, in order; `adopted` when the key's workspace
-    /// already existed.
     Made { dirs: Vec<String>, adopted: bool },
-    /// This program makes nothing for that URL.
     Unsupported { url: String },
-    /// Nothing was made, or what was made was rolled back.
     Failed { why: String },
 }
 
-/// What one URL asks for.
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum Request {
-    /// A directory, used as it is.
     Dir(PathBuf),
-    /// A worktree of `remote`. `local` when the URL names a path on this
-    /// machine (`git+file`).
     Git {
         remote: String,
         name: String,
@@ -122,7 +70,6 @@ enum Request {
     },
 }
 
-/// The record of a whole workspace.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct Record {
@@ -131,7 +78,6 @@ struct Record {
     trees: Vec<Tree>,
 }
 
-/// One worktree the workspace holds.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct Tree {
@@ -140,8 +86,6 @@ struct Tree {
     path: String,
 }
 
-/// Make the key's workspace, or adopt it. `Err` is an answer this program
-/// cannot give: a rollback that did not finish.
 pub fn make(cfg: &Config, key: &str, urls: &[String]) -> Result<Answer, String> {
     if let Err(why) = check_key(key) {
         return Ok(Answer::Failed { why });
@@ -227,12 +171,6 @@ pub fn make(cfg: &Config, key: &str, urls: &[String]) -> Result<Answer, String> 
     })
 }
 
-/// Release the key's workspace: work that exists nowhere else is preserved,
-/// then its worktrees go. A directory it did not make is left as it is, and
-/// no branch is deleted. A key with no workspace is released already. A
-/// worktree an earlier attempt began removing has a `.git` that is gone or
-/// names a git directory that is gone: that attempt preserved its work, so
-/// what is left goes without git.
 pub fn release(cfg: &Config, key: &str) -> Result<(), String> {
     check_key(key)?;
     let dir = cfg.root.join(key);
@@ -251,22 +189,17 @@ pub fn release(cfg: &Config, key: &str) -> Result<(), String> {
     remove_dir(&dir)
 }
 
-/// Undo a workspace no session has worked in, such as one whose runtime's
-/// setup failed: its worktrees go with nothing preserved. A `file://`
-/// directory is left as it is.
 pub fn discard(cfg: &Config, key: &str) -> Result<(), String> {
     check_key(key)?;
     rollback(cfg, key)
 }
 
-/// A whole workspace: its URLs, and the directories made for them.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Workspace {
     pub urls: Vec<String>,
     pub dirs: Vec<String>,
 }
 
-/// The key's whole workspace, or `None` when the key holds none.
 pub fn inspect(cfg: &Config, key: &str) -> Result<Option<Workspace>, String> {
     check_key(key)?;
     Ok(read_record(&cfg.root.join(key))?.map(|r| Workspace {
@@ -324,11 +257,6 @@ fn read_record(dir: &Path) -> Result<Option<Record>, String> {
     }
 }
 
-/// Undo whatever of the key's workspace exists: the worktrees under the
-/// key's directory, in each repository the key names, then the directory.
-/// Only those repositories are locked, so another key's fetch never holds
-/// a rollback up. Nothing is preserved: a partial workspace was never
-/// answered, so no session worked in it.
 fn rollback(cfg: &Config, key: &str) -> Result<(), String> {
     let dir = cfg.root.join(key);
     if !dir.exists() {
@@ -406,8 +334,6 @@ fn sources(cfg: &Config) -> Vec<PathBuf> {
         .unwrap_or_default()
 }
 
-/// The paths a list file names, one per line, each once; none when the file
-/// is missing.
 fn listed_paths(file: &Path) -> Vec<PathBuf> {
     let mut paths: Vec<PathBuf> = Vec::new();
     for line in fs::read_to_string(file).unwrap_or_default().lines() {
@@ -419,7 +345,6 @@ fn listed_paths(file: &Path) -> Vec<PathBuf> {
     paths
 }
 
-/// Add `path` to the list file unless it names it already.
 fn list_path(file: &Path, path: &Path) -> Result<(), String> {
     use std::io::Write;
     if listed_paths(file).iter().any(|p| p == path) {
@@ -436,13 +361,6 @@ fn list_path(file: &Path, path: &Path) -> Result<(), String> {
         .map_err(|e| format!("cannot write {}: {e}", file.display()))
 }
 
-/// The main checkout a repository at `repo` belongs to, from the common git
-/// directory `git rev-parse --git-common-dir` printed there. git before 2.31
-/// prints it relative to where it ran (`.git`, `../.git`), so it is read
-/// against `repo`, then canonicalized: one checkout has one identity
-/// whichever directory of it a URL names. A common directory named `.git`
-/// belongs to the directory holding it; any other is a git directory kept
-/// apart from its working tree, and git runs in it.
 fn main_checkout(repo: &Path, common: &str) -> Result<PathBuf, String> {
     let joined = repo.join(common);
     let common = joined
@@ -459,9 +377,6 @@ fn main_checkout(repo: &Path, common: &str) -> Result<PathBuf, String> {
     }
 }
 
-/// `path` as git reads it back: without the verbatim prefix Windows'
-/// `canonicalize` adds. A drive path `\\?\C:\x` is `C:\x`; a network share
-/// `\\?\UNC\server\share\x` keeps its UNC form, `\\server\share\x`.
 fn plain(path: PathBuf) -> PathBuf {
     let Some(text) = path.to_str() else {
         return path;
@@ -475,15 +390,6 @@ fn plain(path: PathBuf) -> PathBuf {
     }
 }
 
-/// The local checkout a `git+file` URL names, when it is one: a repository
-/// with a working tree. `None` for a bare repository, which gets a source
-/// of its own, and for a path that is no directory, whose source then fails
-/// by name. A linked worktree or a subdirectory names its main checkout
-/// ([`main_checkout`]): one repository has one identity, so one lock, and a
-/// linked worktree removed later never leaves a release running git in a
-/// missing directory. A directory git cannot read as a repository, or a
-/// checkout whose main checkout cannot be found, fails the make: a local
-/// checkout never falls back to a copy of itself.
 fn checkout(remote: &str) -> Result<Option<PathBuf>, String> {
     let path = PathBuf::from(remote);
     if !path.is_dir() {
@@ -501,9 +407,6 @@ fn checkout(remote: &str) -> Result<Option<PathBuf>, String> {
         .map_err(|why| format!("cannot find the checkout {remote} belongs to: {why}"))
 }
 
-/// Commit the worktree's uncommitted work, untracked files included, onto
-/// `refs/fleet/preserved/<key>/<name>` through a temporary index. A clean
-/// worktree preserves nothing: its branch already holds its commits.
 fn preserve(tree: &Path, key: &str, name: &str) -> Result<(), String> {
     let status = git(
         tree,
@@ -554,8 +457,6 @@ fn preserve(tree: &Path, key: &str, name: &str) -> Result<(), String> {
     result
 }
 
-/// Make one worktree at `<root>/<key>/<name>`: of the checkout itself when
-/// a `git+file` URL names one, else of the remote's bare source.
 fn worktree(
     cfg: &Config,
     key: &str,
@@ -640,16 +541,6 @@ fn worktree(
     })
 }
 
-/// Fetch a checkout's `origin`, so a base read from `refs/remotes/origin/*`,
-/// `origin/HEAD` included (`followRemoteHEAD=always`, git 2.48+), is the
-/// upstream as it is now, not as the user last fetched it. A checkout
-/// with no `origin`, or one that cannot be reached, is made from what it
-/// already holds: an offline machine still gets its worktree.
-///
-/// Bounded by `deadline`: an http `origin` gives up when it has moved no
-/// bytes for that long, and [`git`]'s default ssh (used when the user
-/// configured none) has a connect timeout and keepalives, so an `origin`
-/// that never answers cannot hold the make.
 fn fetch_upstream(checkout: &Path, deadline: std::time::Duration) {
     let secs = deadline.as_secs().max(1).to_string();
     let _ = git(
@@ -668,13 +559,6 @@ fn fetch_upstream(checkout: &Path, deadline: std::time::Duration) {
     );
 }
 
-/// The commit a new branch starts from: the fragment, as a branch, a tag or
-/// a ref or commit as given, else the default branch (`origin/HEAD`, else
-/// `origin/main`, else `origin/master`). A checkout reads its own branches
-/// first, then its remote's; a source, its remote's first; `origin/<b>`
-/// is always the remote's.
-/// `named` is the directory a checkout's URL names: with no remote default,
-/// its HEAD is the start.
 fn resolve_base(
     source: &Path,
     named: Option<&Path>,
@@ -749,7 +633,6 @@ fn checked_out(source: &Path, branch: &str) -> Result<bool, String> {
     Ok(listed.lines().any(|l| l == line))
 }
 
-/// `<branch>-<n>` for the first `n` from 2 that names no branch.
 fn free_branch(source: &Path, branch: &str) -> Result<String, String> {
     (2..1000)
         .map(|n| format!("{branch}-{n}"))
@@ -757,7 +640,6 @@ fn free_branch(source: &Path, branch: &str) -> Result<String, String> {
         .ok_or_else(|| format!("no free branch name after {branch}"))
 }
 
-/// A short digest of `text`, which names a source or a lock in `.sources`.
 fn digest(text: &str) -> String {
     Sha256::digest(text.as_bytes())
         .iter()
@@ -766,7 +648,6 @@ fn digest(text: &str) -> String {
         .collect()
 }
 
-/// Where the bare source for `remote` is kept.
 fn source_dir(cfg: &Config, remote: &str) -> PathBuf {
     cfg.root
         .join(".sources")
@@ -788,11 +669,6 @@ fn lock_file(cfg: &Config, repository: &Path) -> Result<fs::File, String> {
         .map_err(|e| format!("cannot open {}: {e}", path.display()))
 }
 
-/// An exclusive lock on one repository a worktree is made from, a source
-/// or a checkout, released when the file is dropped or the process ends.
-/// Makes, releases, rollbacks and the retention of one repository take it,
-/// and two runtimes that share a root take the same one, so none removes a
-/// source, a worktree or a ref another is using.
 fn lock_repository(cfg: &Config, repository: &Path) -> Result<fs::File, String> {
     let file = lock_file(cfg, repository)?;
     file.lock()
@@ -800,16 +676,12 @@ fn lock_repository(cfg: &Config, repository: &Path) -> Result<fs::File, String> 
     Ok(file)
 }
 
-/// The lock on `repository` when no one holds it; `None` when another
-/// does, or it cannot be taken.
 fn try_lock_repository(cfg: &Config, repository: &Path) -> Option<fs::File> {
     let file = lock_file(cfg, repository).ok()?;
     file.try_lock().ok()?;
     Some(file)
 }
 
-/// Make the bare source at `dir` for `remote` on first use, and fetch it
-/// every time. The caller holds [`lock_repository`] on `dir`.
 fn fill_source(dir: &Path, remote: &str) -> Result<(), String> {
     let fresh = !dir.join("HEAD").is_file();
     let made = (|| {
@@ -834,11 +706,6 @@ fn fill_source(dir: &Path, remote: &str) -> Result<(), String> {
     Ok(())
 }
 
-/// The retention, run on each make: preserved work older than
-/// `preserve_days`, in sources and in checkouts, and a source's branches not
-/// checked out whose head the remote already has. A checkout's branches are
-/// the user's and are never deleted. A repository another call holds is
-/// left for the next make.
 fn prune(cfg: &Config) {
     let now = SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -915,8 +782,6 @@ fn prune(cfg: &Config) {
     }
 }
 
-/// One git command in `dir`, its trimmed stdout, or its stderr as the error.
-/// Never waits for a person: no prompt for a password, ssh in batch mode.
 fn git(dir: &Path, args: &[&str], env: &[(&str, &str)]) -> Result<String, String> {
     let mut cmd = Command::new("git");
     for var in GIT_LOCATION_ENV {
@@ -957,16 +822,11 @@ fn git(dir: &Path, args: &[&str], env: &[(&str, &str)]) -> Result<String, String
     }
 }
 
-/// Whether a call can reach a remote: the calls the default ssh command and
-/// its check in [`own_ssh_command`] are for.
 fn reaches_remote(args: &[&str]) -> bool {
     args.iter()
         .any(|arg| matches!(*arg, "fetch" | "set-head" | "clone" | "ls-remote"))
 }
 
-/// Whether the user configured how git runs ssh (`GIT_SSH_COMMAND`, `GIT_SSH`
-/// or `core.sshCommand` for `dir`): a wrapper, a key or a proxy git must keep,
-/// so the default ssh command is not set over it.
 fn own_ssh_command(dir: &Path) -> bool {
     if std::env::var_os("GIT_SSH_COMMAND").is_some() || std::env::var_os("GIT_SSH").is_some() {
         return true;
@@ -981,7 +841,6 @@ fn own_ssh_command(dir: &Path) -> bool {
         .is_ok_and(|out| out.status.success() && !out.stdout.trim_ascii().is_empty())
 }
 
-/// A key this program accepts: the runtime protocol's.
 fn check_key(key: &str) -> Result<(), String> {
     if key.is_empty()
         || key.len() > MAX_KEY
@@ -1003,8 +862,6 @@ enum Parsed {
     Bad(String),
 }
 
-/// What a URL asks for. Only the scheme decides whether this program handles
-/// it.
 fn parse(url: &str) -> Parsed {
     let Some((scheme, rest)) = url.split_once("://") else {
         return Parsed::Bad(format!("{url} is not an absolute URL"));
@@ -1058,8 +915,6 @@ fn parse(url: &str) -> Parsed {
     })
 }
 
-/// The worktree's directory name: the URL path's last segment, without
-/// `.git`.
 fn repo_name(path: &str) -> String {
     let last = path
         .trim_end_matches('/')
@@ -1086,7 +941,6 @@ fn repo_name(path: &str) -> String {
     }
 }
 
-/// Two URLs of one repository name get `<name>-2`, `<name>-3`.
 fn dedupe_names(requests: &mut [Request]) {
     let mut seen: Vec<String> = Vec::new();
     for request in requests.iter_mut() {
@@ -1103,9 +957,6 @@ fn dedupe_names(requests: &mut [Request]) {
     }
 }
 
-/// The local path a decoded `file`/`git+file` URL path names here. On
-/// Windows a URL spells `C:\\dir` as `/C:/dir`: the leading `/` goes and the
-/// separators become `\\`.
 fn local_path(path: &str) -> String {
     if cfg!(windows) {
         windows_path(path)
@@ -1122,7 +973,6 @@ fn windows_path(path: &str) -> String {
     path.replace('/', "\\")
 }
 
-/// `%XX` decoded; anything else as it is.
 fn decode(s: &str) -> String {
     let bytes = s.as_bytes();
     let mut out = Vec::with_capacity(bytes.len());
@@ -1147,8 +997,6 @@ fn decode(s: &str) -> String {
 mod tests {
     use super::*;
 
-    /// A checkout's own `core.sshCommand` is the one its fetch runs: the
-    /// default ssh options never replace it.
     #[cfg(unix)]
     #[test]
     fn a_fetch_keeps_the_checkouts_own_ssh_command() {
@@ -1187,8 +1035,6 @@ mod tests {
         assert!(marker.exists(), "the configured ssh command was not run");
     }
 
-    /// An `origin` that accepts the connection and never answers costs the
-    /// make the deadline, not forever: the checkout's refs are used as they are.
     #[test]
     fn a_fetch_from_an_origin_that_never_answers_gives_up() {
         let silent = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
@@ -1209,7 +1055,6 @@ mod tests {
         drop(silent);
     }
 
-    /// A URL spells a Windows path with a leading `/` and `/` separators.
     #[test]
     fn a_windows_drive_path_is_read_from_its_url_spelling() {
         assert_eq!(windows_path("/C:/Users/me/app"), "C:\\Users\\me\\app");
@@ -1259,9 +1104,6 @@ mod tests {
         dedupe_names(&mut requests);
         assert!(matches!(&requests[1], Request::Git { name, .. } if name == "app-2"));
     }
-    /// git before 2.31 has no `--path-format`, and prints the common
-    /// directory relative to where it ran: `.git` at the top, `../.git` in a
-    /// subdirectory. Both name the same checkout.
     #[test]
     fn a_relative_common_dir_resolves_to_the_main_checkout() {
         let tmp = tempfile::tempdir().unwrap();
@@ -1277,8 +1119,6 @@ mod tests {
             main_checkout(&repo.join("sub"), &repo.join(".git").display().to_string()).unwrap();
         assert_eq!(absolute, top, "an absolute answer names it the same way");
     }
-    /// `canonicalize` on Windows adds `\\?\`, and `\\?\UNC\` for a network
-    /// share: a drive path loses the prefix, a share keeps its `\\` form.
     #[test]
     fn a_verbatim_path_reads_back_as_git_reads_it() {
         assert_eq!(

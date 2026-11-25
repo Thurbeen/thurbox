@@ -1,13 +1,3 @@
-//! The examples in `docs/fleet/resources/` and the example plugin in
-//! `examples/fleet/plugin/` do what the documentation says.
-//!
-//! Each resource page has an `## Example` section. Every JSON block in it is
-//! applied, as written, to a Fleet configured as the pages assume: a GitLab
-//! host, a Slack account and the example plugin. The Listener page's
-//! manifest is the one `apply` refuses, and the page says so.
-//!
-//! The plugin is a Python program, so this file runs where `python3` is on
-//! PATH: the Linux and macOS jobs.
 #![cfg(unix)]
 
 mod support;
@@ -22,8 +12,6 @@ const PLUGIN: &str = concat!(
     "/../../examples/fleet/plugin/files.py"
 );
 
-/// An environment with the example plugin registered, its files under
-/// `root/files`.
 fn plugin_env(name: &str) -> Env {
     let env = Env::new(name);
     let files = env.root.join("files");
@@ -37,7 +25,6 @@ fn plugin_env(name: &str) -> Env {
     env
 }
 
-/// The JSON blocks of a page's `## Example` section.
 fn examples(page: &str) -> Vec<Value> {
     let section = page
         .split("\n## Example\n")

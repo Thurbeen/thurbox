@@ -1,5 +1,3 @@
-//! Thurbox — multi-session TUI orchestrator for coding-agent CLIs.
-
 pub mod agent;
 pub mod backend;
 pub mod cli;

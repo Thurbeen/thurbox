@@ -1,8 +1,3 @@
-//! `fleet amend` end to end: an amendment appended to a Task's spec through
-//! the real binary, delivered to the same session through TaskController's
-//! inbox protocol, and the result rules that tie a result to what was
-//! added, against the fake host, across restarts and injected faults.
-
 mod support;
 
 use std::thread;
@@ -19,7 +14,6 @@ fn fresh(name: &str) -> Env {
     env
 }
 
-/// A Task briefed on the fake host at generation 1.
 fn briefed(name: &str) -> Env {
     let env = fresh(name);
     env.apply(task("t1", true)).ok();

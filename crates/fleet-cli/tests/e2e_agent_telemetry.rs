@@ -1,9 +1,3 @@
-//! Acceptance: when Fleet exports OpenTelemetry, each agent it starts
-//! exports its own telemetry to the same collector, as its harness profile's
-//! `[telemetry]` table says, tagged with its Task. Fleet's own identity and
-//! trace context never reach the session. Export off, or `agentTelemetry`
-//! false on the Task or its TaskConfig, the session gets none of it.
-
 mod support;
 
 use std::collections::BTreeMap;
@@ -24,7 +18,6 @@ fn exporting(env: &mut Env, endpoint: &str) {
     );
 }
 
-/// The session the Task's spawn started: its environment and argv.
 fn session(env: &Env, name: &str) -> (BTreeMap<String, String>, Vec<String>) {
     let s = env
         .host()
@@ -34,7 +27,6 @@ fn session(env: &Env, name: &str) -> (BTreeMap<String, String>, Vec<String>) {
     (s.env, s.argv)
 }
 
-/// Every variable of the agent's own telemetry that Fleet can set.
 fn agent_vars(env: &BTreeMap<String, String>) -> Vec<&String> {
     env.keys()
         .filter(|k| {
@@ -179,8 +171,6 @@ fn agent_telemetry_false_on_the_task_or_its_task_config_turns_it_off() {
     assert_eq!(vars["CLAUDE_CODE_ENABLE_TELEMETRY"], "1", "{vars:#?}");
 }
 
-/// A Task's own OTLP endpoint names another collector: Fleet gives that
-/// session none of its own collector, so Fleet's headers never reach it.
 #[test]
 fn a_task_with_its_own_otlp_endpoint_gets_none_of_fleets_collector() {
     let collector = Collector::start();
@@ -219,8 +209,6 @@ fn a_task_with_its_own_otlp_endpoint_gets_none_of_fleets_collector() {
     }
 }
 
-/// A revive and a resume start the agent again with Fleet's collector as
-/// it is then: a changed endpoint and headers reach the new start.
 #[test]
 fn a_revive_and_a_resume_take_fleets_collector_as_it_is_then() {
     let first = Collector::start();
@@ -298,7 +286,6 @@ fn a_revive_and_a_resume_take_fleets_collector_as_it_is_then() {
     );
 }
 
-/// The agent's hooks report it idle, as `fleet signal` writes it.
 fn signal_idle(env: &Env, name: &str) {
     let file = env
         .data
@@ -309,7 +296,6 @@ fn signal_idle(env: &Env, name: &str) {
     support::wait(cmd.spawn().expect("fleet signal")).ok();
 }
 
-/// Let the Task's idle time run past `pauseAfterMs` now.
 fn expire_idle(env: &Env, name: &str) {
     let path = env.object_path("Task", name);
     let mut obj: serde_json::Value =
