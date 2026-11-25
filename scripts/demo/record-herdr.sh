@@ -233,7 +233,23 @@ for w in "${workers[@]}"; do
   [ -n "$t" ] && { app agent.focus --terminal "$t"; pause 4; }
 done
 app agent.focus --terminal "$vega_terminal"
-pause 10
+vega_idle() {
+  fleet get task vega | jq -e '.status.agentState == "idle" and ((.status.inbox // []) | length) == 0' >/dev/null
+}
+summarised=
+for _ in $(seq 1 60); do
+  if vega_idle; then
+    pause 5
+    if vega_idle; then summarised=1; break; fi
+  fi
+  pause 5
+done
+if [ -z "$summarised" ]; then
+  KEEP=1
+  step "VEGA did not read its workers' results and go idle in 5 minutes: no clip written"
+  exit 1
+fi
+pause 6
 mark end
 kill -INT "$recorder"
 wait "$recorder" 2>/dev/null || true
