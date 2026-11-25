@@ -2824,3 +2824,54 @@ fn a_restart_with_no_conversation_to_resume_is_a_fresh_one() {
     assert_eq!(cond(&st, "Restarted").reason, "Fresh");
     assert_eq!(st.catch_up.as_deref(), Some("task/t/u7/rebrief/1"));
 }
+
+#[test]
+fn a_refused_restart_gives_back_only_the_conversation_it_retired() {
+    let obj = restart_requested(true, |st| {
+        st.conversation = None;
+        st.retired_conversation = Some("conv-0".into());
+    });
+    let (_, mut st) = run(&obj, pause_obs(working(), Observation::Known(false)));
+    restart_receipt(
+        &mut st,
+        Observation::Known(EffectOutcome::Failed {
+            why: "no process holds the session's key".into(),
+        }),
+    );
+    let (_, st) = run_at(
+        &with_status(&obj, &st),
+        pause_obs(working(), Observation::Known(false)),
+        NOW + 1,
+    );
+    assert_eq!(
+        st.conversation, None,
+        "conv-0 was retired by an earlier restart"
+    );
+    assert_eq!(st.retired_conversation.as_deref(), Some("conv-0"));
+}
+
+#[test]
+fn a_restart_with_no_conversation_whose_answer_was_lost_briefs_the_one_that_reports() {
+    let obj = restart_requested(false, |st| st.conversation = None);
+    let (_, mut st) = run(&obj, pause_obs(working(), Observation::Known(false)));
+    restart_receipt(&mut st, Observation::unknown("the answer was lost"));
+    let (_, st) = run_at(
+        &with_status(&obj, &st),
+        pause_obs(working(), Observation::Known(false)),
+        NOW + 1,
+    );
+    let report = fleet_api::signal::Reported {
+        conversation: Some("conv-2".into()),
+        ..Default::default()
+    };
+    let (_, st) = run_at(
+        &with_status(&obj, &st),
+        Observations {
+            signals: Some(Observation::Known(report)),
+            ..pause_obs(not_asked(), Observation::Known(false))
+        },
+        NOW + 2,
+    );
+    assert_eq!(cond(&st, "Restarted").reason, "Fresh");
+    assert_eq!(st.catch_up.as_deref(), Some("task/t/u7/rebrief/1"));
+}

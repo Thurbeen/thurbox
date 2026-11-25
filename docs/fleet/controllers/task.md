@@ -515,13 +515,14 @@ The runtime must declare the `pause` verb
 The controller acts on a request once:
 
 - A refused restart sets `Restarted=False/RestartFailed`.
-- After `Unsupported` or `RestartFailed`, a fresh restart gives back
-  `status.conversation` from `status.retiredConversation`: no new
-  conversation started.
+- After `Unsupported` or `RestartFailed`, a fresh restart gives back the
+  conversation it moved to `status.retiredConversation`
+  (`status.restartRetired`): no new conversation started. A conversation
+  that an earlier restart retired stays retired.
 - A lost answer sets `Restarted=Unknown/RestartUnconfirmed`. The agent may
   run, or may be stopped. A stopped session reads `Paused=True/External`,
   and the next inbox entry or wake resumes it. After a fresh restart, the
-  first report of a conversation other than the retired one sets
+  first report of a conversation, other than a retired one, sets
   `Restarted=True/Fresh` and owes the catch-up note.
 - In each case, run `fleet restart` again to ask for another restart.
 

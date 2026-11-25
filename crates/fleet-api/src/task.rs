@@ -536,6 +536,10 @@ pub struct TaskStatus {
     /// previous agent's, so `conversation` never takes it again.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub retired_conversation: Option<String>,
+    /// Whether the last planned restart retired `retiredConversation`: a
+    /// restart that stopped nothing gives back only what it retired.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub restart_retired: bool,
     /// Catch-up notes queued over the Task's life; the next one's key.
     #[serde(default, skip_serializing_if = "is_zero")]
     pub catch_ups: u32,

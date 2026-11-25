@@ -1803,9 +1803,11 @@ impl Pass<'_, '_> {
         self.st.restart_request_answered = Some(request);
         self.st.restarts += 1;
         self.st.idle_since = None;
+        self.st.restart_retired = false;
         let conversation = if request.fresh {
             if let Some(old) = self.st.conversation.take() {
                 self.st.retired_conversation = Some(old);
+                self.st.restart_retired = true;
             }
             None
         } else {
@@ -1841,14 +1843,13 @@ impl Pass<'_, '_> {
     }
 
     fn keep_the_conversation(&mut self) {
-        if self.st.conversation.is_none() {
+        if std::mem::take(&mut self.st.restart_retired) {
             self.st.conversation = self.st.retired_conversation.take();
         }
     }
 
     fn fresh_restart_unconfirmed(&self) -> bool {
-        self.st.retired_conversation.is_some()
-            && self.st.restart_request_answered.is_some_and(|r| r.fresh)
+        self.st.restart_request_answered.is_some_and(|r| r.fresh)
             && condition(&self.st.conditions, RESTARTED)
                 .is_some_and(|c| c.reason == RESTART_UNCONFIRMED)
     }

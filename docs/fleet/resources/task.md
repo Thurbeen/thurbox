@@ -83,6 +83,7 @@ repositories.
 | `agentState`, `activity` | TaskController | What the agent does (`working`, `attention`, `idle`, `unknown`) and where that came from: its hooks or a screen rule. See [Session](session.md#agent-state). |
 | `conversation` | TaskController | The harness's id of the session's conversation, as its hooks reported it. A revive, a resume or a restart names it. A fresh restart clears it until the new agent reports its own. |
 | `retiredConversation` | TaskController | The conversation the last fresh restart left. A report that names it does not set `conversation` again. |
+| `restartRetired` | TaskController | Whether the last planned restart retired `retiredConversation`. A restart that stopped nothing gives back only that conversation. |
 | `workspace` | TaskController | The workspace the runtime made: `key`, `host` and `dirs`, one per URL. See [Workspace](workspace.md). |
 | `intents`, `receipts` | TaskController | Each effect's intent, written before it runs, and its outcome, written after. |
 | `prompts` | TaskController | Per send key, the digest of the text sent, until the agent's prompt hook proves delivery. |
