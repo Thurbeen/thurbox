@@ -19,6 +19,7 @@ local SCROLL_UP, SCROLL_DOWN = "terminal.scroll_up", "terminal.scroll_down"
 local SCROLL_LINES = 10
 local FOCUS = "terminal.focus"
 local REVEAL = "terminal.reveal"
+local SURFACE_SCROLL_MAX = 65535
 
 local function selected()
   local id = store.selected
@@ -89,9 +90,11 @@ local function scroll_by(id, lines)
     return false
   end
   scroll_surface(id, lines)
+  -- MUST KILL: rename — `scroll_agent_tab_keeping_key_from_pty` would say why the key is claimed even when nothing moved
   return true
 end
 
+-- MUST KILL: type — a `RevealRequest` table in `store` instead of the packed `"[-]<surface> <offset> <row>;…"` string would carry its own shape
 local function reveal()
   local spec = store[REVEAL]
   if type(spec) ~= "string" then
@@ -109,7 +112,7 @@ local function reveal()
           set_tab(id, AGENT_TAB)
         end
       elseif not shell or shell_enabled() then
-        local scroll = math.min(tonumber(offset) or 0, 65535)
+        local scroll = math.min(tonumber(offset) or 0, SURFACE_SCROLL_MAX)
         set_tab(id, shell and SHELL_TAB or AGENT_TAB)
         set_scroll(surface, scroll, math.max(scroll_max, scroll))
         state["mark:" .. surface] = tonumber(row)
@@ -288,6 +291,7 @@ local COLLAPSE_CHEVRON_CELLS = 3
 local COLLAPSE_TOGGLE_MIN_WIDTH = 5
 local COLLAPSE_HINT_MIN_WIDTH = 40
 
+-- MUST KILL: rearchitect — the kernel publishing each binding's compact spelling would retire this mirror of `KeyChord::compact`
 local function compact_chord(chord)
   local modifiers, key = "", chord
   while true do

@@ -151,7 +151,7 @@ local function ordered_groups(rows, grouping, by_host)
     local repo_key = key
     local host = by_host and host_of(session) or nil
     if host then
-      key = host .. "\1" .. key
+      key = group_slot(host, key)
     end
     local group = by_key[key]
     if not group then
@@ -432,6 +432,7 @@ function session_model.build(rows, folded, reveal, host_rows, folded_repos, fold
       items[#items + 1] = {
         kind = "pending",
         command = item,
+        -- MUST KILL: type — a `PendingItem` type with a required integer `depth` and no `session` would pin what lib.order's comparisons rely on
         depth = 0,
         header = first and group_header or nil,
         host = group.host,

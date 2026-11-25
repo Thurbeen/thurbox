@@ -1930,6 +1930,10 @@ Interface tab restores it, so there is nothing here you cannot undo. It is copie
 rather than installed on purpose: the manager never writes your arrangement (see
 below).
 
+To keep the shipped arrangement instead, give the installed pane `slot = "center"`
+and `slot_mode = "switch"`. It then shares the center with the agent, and `F5` or
+`F7` brings it forward.
+
 Two things they are chosen to show. `tasks.lua` draws the `input` node kind, which
 is the one of the four nothing bundled uses. And `top.lua` reads the machine **the
 selected session runs on**, because `run` executes in that session's directory on

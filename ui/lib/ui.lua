@@ -244,10 +244,10 @@ function ui.cursor(key, items, opts)
       state[key .. ".follow"] = steered
     end
   end
-  local at = row_of(items, self.key_of, state[key .. ".follow"])
+  local row_by_identity = row_of(items, self.key_of, state[key .. ".follow"])
     or row_of(items, self.key_of, state[key .. ".selected"])
-  if at then
-    self.index = at
+  if row_by_identity then
+    self.index = row_by_identity
   end
   self:_settle()
   return self

@@ -2,7 +2,7 @@ local modal = require("lib.modal")
 local theme = require("lib.theme")
 local widgets = require("lib.widgets")
 
-local FORWARDS = { delete = true, pause = true, restart = true }
+local CONFIRMABLE_COMMANDS = { delete = true, pause = true, restart = true }
 
 local function session_name(id)
   for _, row in ipairs(thurbox.sessions or {}) do
@@ -26,11 +26,11 @@ local function consequence(command, options)
   return "Delete " .. session_name(options.session) .. " for good"
 end
 
-local shown = nil
+local request_on_screen = nil
 
 local function pending()
   local ask = store.confirm
-  if type(ask) ~= "table" or not ask.question or not FORWARDS[ask.command] then
+  if type(ask) ~= "table" or not ask.question or not CONFIRMABLE_COMMANDS[ask.command] then
     return nil
   end
   return ask
@@ -38,7 +38,7 @@ end
 
 local function clear()
   store.confirm = nil
-  shown = nil
+  request_on_screen = nil
 end
 
 return {
@@ -55,7 +55,7 @@ return {
 
   render = function(_)
     local ask = pending()
-    shown = ask
+    request_on_screen = ask
     if not ask then
       return { type = "text", text = "" }
     end
@@ -120,7 +120,7 @@ return {
   end,
 
   on_key = function(key)
-    local ask = pending() and shown
+    local ask = pending() and request_on_screen
     if not ask then
       return false
     end
@@ -130,6 +130,7 @@ return {
     end
     if key.key == "y" or key.key == "enter" then
       local kind, options = ask.command, ask.options
+      -- MUST KILL: extract — a `take_answered_request` that clears and returns the request would stop a reorder inviting a second yes
       clear()
       command(kind, type(options) == "table" and options or {})
       return true

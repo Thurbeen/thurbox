@@ -279,6 +279,7 @@ end
 
 local function want_content(ask, scope)
   if not ask then
+    -- MUST KILL: rename — a `WARM_SCROLLBACK_CACHE` constant would say the empty query asks the kernel to pre-read every terminal
     store[WANT_CONTENT] = scope ~= "names" and "" or nil
     store[WANT_SESSIONS] = nil
     return
@@ -556,6 +557,7 @@ return {
     { key = "tab", action = SCOPE, desc = "search everything / text / names", group = "Search" },
     { key = "esc", action = CANCEL, desc = "close and put back", group = "Search" },
   },
+  -- MUST KILL: rearchitect — moving the `want_content` and `MATCHES` writes out of render would let this pane be `pure`
   render = function(ctx)
     local width, height = ctx.width or 0, ctx.height or 0
     local search = load()
@@ -584,7 +586,8 @@ return {
       status_line(search, rows, info),
     }
 
-    local consumed = 2
+    local panel_border_rows = 2
+    local consumed = panel_border_rows
     for _, child in ipairs(children) do
       consumed = consumed + (child.len or 0)
     end

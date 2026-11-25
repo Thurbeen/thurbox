@@ -112,6 +112,7 @@ function order.move_block(items, at, down)
   return moved
 end
 
+-- MUST KILL: rename — `sort_name_or_nil_for_pending` would say why a creation in flight sorts as nil, not "", and so stays last
 local function block_name(block)
   local session = block[1].session
   return session and (session.name or ""):lower() or nil

@@ -4,6 +4,7 @@ local theme = require("lib.theme")
 local widgets = {}
 
 function widgets.panel(title, focused)
+  -- MUST KILL: rearchitect — breaking the chrome/widgets require cycle would let this require move to the top
   local chrome = require("lib.chrome")
   local level = chrome.level(focused)
   return {

@@ -1,6 +1,6 @@
 local fuzzy = {}
 
-local function chars(text)
+local function ascii_folded_chars(text)
   local out = {}
   for _, code in utf8.codes(text or "") do
     out[#out + 1] = utf8.char(code):lower()
@@ -9,11 +9,11 @@ local function chars(text)
 end
 
 function fuzzy.compile(query)
-  return chars(query)
+  return ascii_folded_chars(query)
 end
 
 function fuzzy.match(query, haystack)
-  local needle = type(query) == "table" and query or chars(query)
+  local needle = type(query) == "table" and query or ascii_folded_chars(query)
   if #needle == 0 then
     return {}
   end
@@ -35,7 +35,7 @@ function fuzzy.match(query, haystack)
 end
 
 function fuzzy.first(query, fields)
-  local needle = type(query) == "table" and query or chars(query)
+  local needle = type(query) == "table" and query or ascii_folded_chars(query)
   for _, field in ipairs(fields) do
     local positions = fuzzy.match(needle, field.text)
     if positions then
@@ -149,7 +149,7 @@ function fuzzy.query(text)
   q.needles = {}
   for _, word in ipairs(q.words) do
     q.needles[#q.needles + 1] =
-      { text = fold(word), chars = q.case and nil or chars(word), exact = false }
+      { text = fold(word), chars = q.case and nil or ascii_folded_chars(word), exact = false }
   end
   for _, phrase in ipairs(q.phrases) do
     q.needles[#q.needles + 1] = { text = fold(phrase), exact = true }

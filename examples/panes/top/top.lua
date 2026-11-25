@@ -85,13 +85,13 @@ local function processes(out)
 end
 
 local function meter(label, ratio, detail, width)
-  local LABEL, PCT, GAP, INDENT, BORDERS = 5, 6, 3, 2, 2
+  local LABEL, PCT, GAP, INDENT, BORDERS, MIN_BAR = 5, 6, 3, 2, 2, 6
   local inner = math.max(0, width - BORDERS)
   local fixed = INDENT + LABEL + PCT
   local shown = nil
   if detail then
     local wanted = GAP + widgets.len(detail)
-    if inner - fixed - wanted >= 6 then
+    if inner - fixed - wanted >= MIN_BAR then
       shown = detail
     end
   end

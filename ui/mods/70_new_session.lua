@@ -131,6 +131,7 @@ local function fresh()
     elsewhere = false,
     fleet_index = 1,
     host = "",
+    -- MUST KILL: type — a `Place` with an explicit local variant would say "" names the Fleet's own `local`
     place = "",
     cursor = 1,
     focus = "search",
@@ -1263,6 +1264,7 @@ return {
   order = 70,
   floats = true,
   focusable = false,
+  -- MUST KILL: rearchitect — moving the `ask` wants and the `select_newest` tick out of render would make `pure` safe on its face
   pure = true,
 
   keys = {
@@ -1307,6 +1309,7 @@ return {
       group = "New session",
     },
     {
+      -- A terminal sends ctrl+enter only under the kitty keyboard protocol; alt+enter is the portable spelling.
       key = "ctrl+enter",
       action = "new_session.confirm",
       desc = "go on with the ticked repositories, or the one under the cursor",

@@ -67,6 +67,7 @@ local STATUS_GLYPHS = {
   idle = "○",
   error = "✗",
   unreachable = "⊘",
+  -- Not U+25CD: monospace fonts often lack it and draw a fallback box.
   running = "◉",
   uncovered = "◌",
   unreported = "◌",
@@ -97,10 +98,12 @@ end
 
 theme.spinner = { "⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏" }
 
+local KERNEL_ANIMATION_HZ = 8
+
 ---@param elapsed number?
 ---@return string
 function theme.spinner_frame(elapsed)
-  local frame = math.floor((elapsed or 0) * 8) % #theme.spinner + 1
+  local frame = math.floor((elapsed or 0) * KERNEL_ANIMATION_HZ) % #theme.spinner + 1
   return theme.spinner[frame]
 end
 

@@ -7,6 +7,8 @@ local theme = require("lib.theme")
 local ui = require("lib.ui")
 local widgets = require("lib.widgets")
 
+local LOCAL_HOST_KEY = "\0local"
+
 local function current_action(session)
   local activity = session.activity
   activity = activity and activity:match("^%s*(.-)%s*$")
@@ -114,6 +116,7 @@ local function search_query()
   return text
 end
 
+-- MUST KILL: type — a `NameHits` result (no match / matched off the name / positions) would say what `false` means apart from nil
 local function name_hits(session, search)
   if not search then
     return nil
@@ -637,11 +640,12 @@ local function model(reveal_selected)
       end
     end
     if wanted_session then
-      local host = wanted_session.host or "\0local"
+      local host = wanted_session.host or LOCAL_HOST_KEY
       if host_is_folded(host) then
         set_host_folded(host, false)
       end
-      if wanted_session.status ~= "blocked" then
+      local shown_even_when_folded = wanted_session.status == "blocked"
+      if not shown_even_when_folded then
         local ancestor, seen = parent_of[wanted], { [wanted] = true }
         while ancestor and not seen[ancestor] do
           seen[ancestor] = true
@@ -854,8 +858,8 @@ pane = {
     local repo = selected and (selected.kind == "repo" and selected.target or selected.repo_target)
     return {
       selected_row = state["sessions.selected"],
-      selected_host = host == "\0local" and "local" or host,
-      host_is_local = host == "\0local",
+      selected_host = host == LOCAL_HOST_KEY and "local" or host,
+      host_is_local = host == LOCAL_HOST_KEY,
       host_collapsed = host and host_is_folded(host) or false,
       folded_host_count = folded_count,
       repo_collapsed = repo and repo_is_folded(repo) or false,
@@ -1115,6 +1119,7 @@ pane = {
       return
     end
     ui.follow("sessions", id)
+    -- MUST KILL: rearchitect — `ui.follow` publishing the selection itself would stop a pane drawn earlier showing the previous session for a frame
     store.selected = id
     command("focus", { text = "agent" })
   end,
@@ -1128,6 +1133,7 @@ pane = {
       if hit.clicks ~= 2 then
         local cursor = ui.cursor("sessions", model(), CURSOR_OPTS)
         local selected = cursor:id()
+        -- MUST KILL: extract — a `cursor:end_follow()` would say why re-selecting the current row is not a no-op
         cursor:select(cursor.index)
         set_parent_folded(parent, not parent_is_folded(parent))
         for _, item in ipairs(model(false)) do
@@ -1199,7 +1205,7 @@ pane = {
 
     local requested_host = type(args) == "table" and args.host or nil
     if requested_host then
-      local host = requested_host == "" and "\0local" or requested_host
+      local host = requested_host == "" and LOCAL_HOST_KEY or requested_host
       if cursor:select_by_id(":host:" .. host) == nil then
         command("message", { text = "that host has no group", level = "error" })
         return true

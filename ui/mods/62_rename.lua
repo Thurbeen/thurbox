@@ -37,9 +37,10 @@ return {
     elseif ask.waiting then
       note = " renaming…"
     end
+    local border_rows, field_rows, note_rows, footer_rows = 2, 3, 1, 1
     return modal.frame("Rename session", {
       cols = 72,
-      rows = 7,
+      rows = border_rows + field_rows + note_rows + footer_rows,
       children = {
         textinput.node(field_of(ask), { label = "Name", focused = not ask.waiting }),
         { type = "text", len = 1, text = { { { text = note, style = note_style } } } },
@@ -53,6 +54,7 @@ return {
     if not ask then
       return false
     end
+    -- MUST KILL: extract — a `locked_while_renaming(ask)` would say esc too is swallowed until the command answers
     if ask.waiting then
       return true
     end

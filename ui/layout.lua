@@ -16,7 +16,7 @@ local function status_rows()
   return (thurbox and thurbox.chrome and thurbox.chrome.status_rows) or 0
 end
 
-local function filled(ctx, slot)
+local function filled_or_unknown(ctx, slot)
   local slots = ctx and ctx.slots
   if type(slots) ~= "table" then
     return true
@@ -45,14 +45,14 @@ return function(ctx)
     children[#children + 1] = { slot = "center" }
   else
     local columns = {}
-    if panels.shown("sessions") and filled(ctx, "sessions") then
+    if panels.shown("sessions") and filled_or_unknown(ctx, "sessions") then
       columns[#columns + 1] = { slot = "sessions", pct = 25, min = 20 }
     end
     columns[#columns + 1] = { slot = "center" }
     children[#children + 1] = { axis = "horizontal", children = columns }
   end
 
-  if panels.shown("search") and filled(ctx, "search") then
+  if panels.shown("search") and filled_or_unknown(ctx, "search") then
     children[#children + 1] =
       { slot = "search", len = math.min(SEARCH_ROWS, math.max(3, height - 6)) }
   end
@@ -66,6 +66,7 @@ return function(ctx)
     children[#children + 1] = { slot = "footer", len = 1 }
   end
 
+  -- MUST KILL: extract — `place_unplaced_strips(children, strips_at)` called last would say it must see every other placement
   for _, strip in ipairs(ctx.strips or {}) do
     if not places(children, strip.slot) then
       table.insert(children, strips_at, { slot = strip.slot, len = strip.len })
