@@ -299,9 +299,6 @@ pub fn modal_frame_tabs(
 
     let mut spans = Vec::with_capacity(tabs.len() * 2 + 1);
     let mut rects = Vec::with_capacity(tabs.len());
-    // The title starts one cell in from the corner, and every span before a tab
-    // shifts it — tracked as it is built rather than recomputed, so the hitbox
-    // and the glyphs cannot disagree.
     let mut x = area.x + 1;
     for (nth, (label, active)) in tabs.iter().enumerate() {
         if nth > 0 {

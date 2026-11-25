@@ -48,11 +48,8 @@ impl Terminals {
             return crate::kernel::paint::ProgramPaint::Exited(slot.program.clone());
         }
 
-        // Recorded so a click and a wheel can be resolved against this rect, the
-        // same way a session surface's is.
         slot.painted.rect.set(area);
-        // Matched to the rect on change only: a program told its size every frame
-        // is a program sent a SIGWINCH every frame.
+        // Resized on change only: each resize sends the program a SIGWINCH.
         let wanted = (area.height, area.width);
         if slot.painted.size.get() != wanted && slot.pane.resize(area.height, area.width) {
             slot.painted.size.set(wanted);
@@ -84,13 +81,6 @@ impl Terminals {
         scroll: u16,
         cursor: bool,
     ) -> bool {
-        // A session's shell is addressed as `<id>#shell`, so it is a second
-        // surface over the same primitive rather than a second node kind — and
-        // ONE path paints either of them, parameterised by which pane the name
-        // asked for. It was two, and the two disagreed: each recorded its rect
-        // and its size in the same pair of cells, so whichever painted second
-        // resized both panes to its own rect and the pane painted first spent
-        // the next frame undoing it (#1220).
         let Some(pane) = self.pane(session) else {
             return false;
         };
@@ -99,10 +89,6 @@ impl Terminals {
         };
         let painted = pane.painted();
 
-        // The pane must match the rect it is painted into, or its program wraps
-        // at the wrong width. The memo is this surface's own, so the comparison
-        // keeps a tmux round-trip off every frame without ever reading a size
-        // that belongs to the other pane.
         painted.rect.set(area);
         painted.shown_at.set(Some(std::time::Instant::now()));
         let wanted = (area.height, area.width);
@@ -111,9 +97,6 @@ impl Terminals {
         }
         pane.retake_size();
 
-        // Restore is asynchronous. Until its ordered snapshot lands, paint
-        // blank rather than either the dormant grid or a stale first frame
-        // (#1242). The reader moves the output generation when it installs it.
         if !pane.is_resident() {
             pane.live.session.restore_pane(pane.shell);
             if !pane.is_resident() {

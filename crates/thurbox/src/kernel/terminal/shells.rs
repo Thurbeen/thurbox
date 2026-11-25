@@ -121,7 +121,6 @@ impl Terminals {
         let tx = self.shelled.0.clone();
         let runtime = self.runtime.clone();
         std::thread::spawn(move || {
-            // The stream's reader and writer run on the process's runtime.
             let _guard = runtime.as_ref().map(|handle| handle.enter());
             let _ = tx.send(Shelled {
                 session,
@@ -147,8 +146,6 @@ impl Terminals {
                     .live
                     .get(&done.session)
                     .is_some_and(|live| Arc::ptr_eq(&live.session.parser, &done.owner));
-            // An answer for an attachment that went: dropping its stream
-            // detaches from the shell, which the runtime keeps.
             if !wanted {
                 continue;
             }
@@ -215,7 +212,6 @@ mod tests {
             let _ = rx.recv();
             Err("the stream did not start".into())
         });
-        // The session is attached again before the worker answers.
         terminals.live.get_mut("probe").unwrap().session =
             crate::backend::Session::stub("probe", &backend);
         tx.send(()).unwrap();
@@ -310,7 +306,6 @@ mod tests {
                 .map(|shell| Arc::clone(&shell.parser))
         };
 
-        // A live shell.
         let (keep_open, open) = std::sync::mpsc::channel::<()>();
         let first = Arc::clone(&backend);
         terminals.start_shell("probe", move || {
@@ -326,8 +321,6 @@ mod tests {
             "no second open while the shell lives"
         );
 
-        // Its stream ends: the shell exited, and the next open asks for one
-        // again (here refused, since the row names no listed Fleet).
         drop(keep_open);
         collect_until(&mut terminals, |t| {
             t.live["probe"]
@@ -343,7 +336,6 @@ mod tests {
             "an ended shell is opened again"
         );
 
-        // The new shell replaces the ended one.
         let second = Arc::clone(&backend);
         terminals.start_shell("probe", move || {
             Ok((shell_over(&second, Box::new(std::iter::empty())), second))

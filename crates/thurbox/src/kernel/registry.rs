@@ -36,6 +36,7 @@ pub struct Binding {
     pub description: String,
     pub scope: Scope,
     pub passthrough: bool,
+    // Outside Windows, kitty sends a held printable chord as fresh presses, so only a chord that types nothing can hold.
     pub release: bool,
     pub group: String,
 }
@@ -254,7 +255,6 @@ impl Registry {
                 registry.disabled = disabled;
                 warnings.extend(notes);
             }
-            // `config validate` names the file.
             Decisions::Unreadable(note) => warnings.push(note),
         }
 
@@ -308,15 +308,9 @@ impl Registry {
     fn apply_overrides(&mut self) {
         self.bind_overridden_commands();
         for binding in &mut self.bindings {
-            // A synthesised binding has no default to fall back to; it exists
-            // only while its override does.
             if binding.default_chord.is_empty() {
                 continue;
             }
-            // The default is restored when no override remains, so clearing one
-            // takes effect on the next keystroke rather than on the next reload
-            // — which is what "reset this action" has to mean in the help
-            // editor.
             match self.binding_overrides.get(&binding.action) {
                 Some(chord) => {
                     binding.chord = chord.clone();
@@ -381,8 +375,6 @@ impl Registry {
             if let Some((_, first)) = seen.iter().find(|(chord, other)| {
                 chord == &binding.chord && scopes_overlap(&self.bindings[*other], binding)
             }) {
-                // Named the way `resolve` decides it, so the diagnostic and the
-                // routing can never disagree about who actually fires.
                 let earlier = &self.bindings[*first];
                 let (kept, shadowed) = if binding.overridden && !earlier.overridden {
                     (binding, earlier)
@@ -677,8 +669,6 @@ impl Registry {
                 .iter_mut()
                 .find(|row| row.owner == command.owner && row.action == command.action);
             match bound {
-                // The key's row already exists; a command's description wins
-                // when the key declared none.
                 Some(row) if row.description.is_empty() => {
                     row.description = command.description.clone();
                 }
@@ -714,8 +704,6 @@ impl Registry {
                 if RESERVED.contains(&chord.as_str()) {
                     return Err(format!("{chord} is reserved and cannot be rebound"));
                 }
-                // A chord-less command is a legal target: binding one is how it
-                // becomes a key, which `apply_overrides` then synthesises.
                 if !self.bindings.iter().any(|b| b.action == action)
                     && !self.commands.iter().any(|c| c.action == action)
                 {
@@ -770,8 +758,6 @@ impl Registry {
                 self.setting_overrides.remove(&key);
             }
         }
-        // Reset to defaults before reapplying, or a cleared override would keep
-        // its old value until the next reload.
         for setting in &mut self.settings {
             setting.value = setting.default.clone();
         }
@@ -780,9 +766,6 @@ impl Registry {
     }
 
     fn persist_overrides(&self) -> Result<(), String> {
-        // Nothing was read, so there is nothing to write back: this registry's
-        // empty tables are not the user's decisions (see `Origin`). Reported as
-        // success because the caller asked for a state, and in memory it has it.
         if self.origin == Origin::Detached {
             return Ok(());
         }
@@ -862,12 +845,7 @@ pub fn canonical_chord(press: &KeyPress) -> String {
 
     let mut key = press.name.to_lowercase();
 
-    // Ctrl+/ reaches a terminal as one of three things: the kitty protocol
-    // reports it literally, while a legacy terminal sends the raw 0x1F byte,
-    // which crossterm surfaces as ctrl+7 or ctrl+_ depending on the emulator.
-    // Folding them here means a mod declares one chord and it works
-    // everywhere — the same argument as the capital-letter case below. v1
-    // instead bound all three, in three places.
+    // Ctrl+/ arrives literally under kitty, or as 0x1F, which crossterm surfaces as ctrl+7 or ctrl+_.
     if press.ctrl && matches!(key.as_str(), "7" | "_" | "/") {
         return "ctrl+/".to_string();
     }
@@ -876,8 +854,7 @@ pub fn canonical_chord(press: &KeyPress) -> String {
             .ch
             .is_some_and(|c| c.is_ascii_uppercase() || SHIFTED_SYMBOLS.contains(&c));
     if shifted && key != "tab" {
-        // A shifted symbol is its own key ("!"), not "shift+1"; only letters
-        // and named keys take the prefix.
+        // A terminal reports a shifted symbol as its own key ("!"), not "shift+1".
         if press.ch.is_none_or(|c| c.is_ascii_alphabetic()) {
             parts.push("shift".to_string());
         } else if let Some(c) = press.ch {
@@ -887,8 +864,6 @@ pub fn canonical_chord(press: &KeyPress) -> String {
     if key == "backtab" {
         return "shift+tab".to_string();
     }
-    // Last modifier, matching `normalise_chord`'s order — the two spellings have
-    // to agree or a declared `cmd+c` never matches the press that made it.
     if press.cmd {
         parts.push("cmd".to_string());
     }
@@ -907,22 +882,16 @@ pub fn normalise_chord(raw: &str) -> String {
             "ctrl" | "control" => modifiers.push("ctrl".into()),
             "alt" | "meta" | "option" => modifiers.push("alt".into()),
             "shift" => modifiers.push("shift".into()),
-            // v1 accepted these spellings for the Command key.
             "cmd" | "command" | "super" | "win" => modifiers.push("cmd".into()),
             other => key = other.to_string(),
         }
     }
-    // Fixed order, so the same chord always reads the same way.
     let mut parts: Vec<String> = Vec::new();
     for wanted in ["ctrl", "alt", "shift", "cmd"] {
         if modifiers.iter().any(|m| m == wanted) {
             parts.push(wanted.to_string());
         }
     }
-    // A capital letter written on its own means shift — "J" is shift+j. Only
-    // when nothing else was written, though: "Ctrl+D" conventionally means
-    // ctrl+d, not ctrl+shift+d, and reading it the other way would silently
-    // move every hand-written binding.
     if parts.is_empty()
         && key.chars().count() == 1
         && raw
@@ -1106,9 +1075,6 @@ fn read_trusted(
         if let Some(grant) = read_grant(granted) {
             trusted.insert(path.clone(), grant);
         } else if granted.is_object() {
-            // A half-written grant is not one. Dropped rather than guessed at,
-            // since guessing here means granting a capability on the strength of
-            // a malformed file.
             warnings.push(format!(
                 "{}: trusted[{path}] is not a grant; ignoring it",
                 path_display(path)
@@ -1278,9 +1244,7 @@ mod tests {
 
     #[test]
     fn both_terminal_encodings_of_a_capital_agree() {
-        // The portability trap: a legacy terminal sends a bare "J" with no
-        // modifier; a kitty-protocol one sends "j" + SHIFT. Both must be
-        // shift+j, or a capital binding works in one and not the other.
+        // A legacy terminal sends a bare "J"; a kitty-protocol one sends "j" + SHIFT.
         let legacy = press("j", Some('J'), false, false);
         let kitty = press("j", Some('j'), false, true);
         assert_eq!(canonical_chord(&legacy), "shift+j");
@@ -1289,9 +1253,7 @@ mod tests {
 
     #[test]
     fn every_encoding_of_ctrl_slash_agrees() {
-        // A legacy terminal sends the raw 0x1F byte, surfaced as ctrl+7 or
-        // ctrl+_; a kitty-protocol one reports ctrl+/ literally. A mod
-        // declares one chord and gets all three.
+        // A legacy terminal sends 0x1F (crossterm: ctrl+7 or ctrl+_); kitty reports ctrl+/.
         for name in ["7", "_", "/"] {
             assert_eq!(
                 canonical_chord(&press(name, name.chars().next(), true, false)),
@@ -1323,7 +1285,6 @@ mod tests {
         assert_eq!(normalise_chord("CONTROL+d"), "ctrl+d");
         assert_eq!(normalise_chord("J"), "shift+j");
         assert_eq!(normalise_chord("shift+j"), "shift+j");
-        // Modifier order is fixed, so one chord has one spelling.
         assert_eq!(normalise_chord("shift+ctrl+a"), "ctrl+shift+a");
     }
 
@@ -1383,7 +1344,6 @@ mod tests {
         let conflict = &registry.conflicts()[0];
         assert_eq!(conflict.kept, "a.go");
         assert_eq!(conflict.shadowed, "b.go");
-        // The earlier declaration keeps the chord, every time.
         let key = press("g", Some('g'), true, false);
         assert_eq!(
             registry.resolve(&key, None).map(|b| b.action.as_str()),
@@ -1513,8 +1473,6 @@ mod tests {
 
     #[test]
     fn trust_is_recorded_with_the_contents_it_was_granted_for() {
-        // Granting, reading back, and the digest that makes drift detectable —
-        // the three halves of what the Interface tab shows.
         let home = tempfile::TempDir::new().expect("tempdir");
         std::env::set_var("THURBOX_CONFIG_DIR", home.path());
 
@@ -1530,12 +1488,10 @@ mod tests {
             .expect("a digest is recorded");
         assert_eq!(recorded, super::super::bundled::digest("return {}"));
 
-        // Trusting one file says nothing about another.
         assert!(!registry.trusted_digest("/ui/mods/other.lua").is_some());
 
         registry.revoke("/ui/mods/mine.lua").expect("revoke");
         assert!(!registry.trusted_digest("/ui/mods/mine.lua").is_some());
-        // Revoking what was never trusted is a state, not a transition.
         registry.revoke("/ui/mods/never.lua").expect("idempotent");
 
         std::env::remove_var("THURBOX_CONFIG_DIR");
@@ -1546,8 +1502,6 @@ mod tests {
         let home = tempfile::TempDir::new().expect("tempdir");
         std::env::set_var("THURBOX_CONFIG_DIR", home.path());
 
-        // Loaded rather than default, because only a registry that read the
-        // file writes it back — see `Origin`.
         let mut written = Registry::load();
         written.trust("/ui/mods/mine.lua", "body").expect("trust");
 
@@ -1601,8 +1555,6 @@ mod tests {
             vec![binding("sessions", "d", "sessions.delete", Scope::Mod)],
             Vec::new(),
         );
-        // Each of the four writers, all reporting success: the state asked for
-        // is held in memory, which is what a caller of a detached registry wants.
         registry
             .rebind("sessions.delete", Some("x"))
             .expect("rebind");
@@ -1644,7 +1596,6 @@ mod tests {
         let written = std::fs::read_to_string(&path).expect("the store was not written");
         assert!(written.contains("65_search.lua"), "{written}");
 
-        // And it comes back on the next launch, which is the whole point.
         let reloaded = Registry::load();
         assert!(reloaded.is_disabled("/ui/mods/65_search.lua"));
     }
@@ -1752,7 +1703,6 @@ mod tests {
             );
         }
 
-        // The write that used to take the evidence with it.
         registry
             .rebind("fleetqueue.toggle", Some("f4"))
             .expect("rebind");
@@ -1777,9 +1727,6 @@ mod tests {
         registry.declare_all(bindings, Vec::new(), pills);
 
         assert_eq!(band_labels(&registry), vec!["Settings", "Fleet"]);
-        // One warning for the section, not one per entry it might have held:
-        // the per-entry message carries a `pills[...]` and this one must not be
-        // confusable with it.
         let warnings = registry.warnings();
         assert_eq!(warnings.len(), 1, "{warnings:?}");
         assert!(

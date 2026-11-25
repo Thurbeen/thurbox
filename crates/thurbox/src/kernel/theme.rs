@@ -37,7 +37,6 @@ impl Themes {
                 }
             })
             .collect();
-        // User themes come after the built-ins, as v1's picker orders them.
         for entry in &custom {
             choices.push(ThemeChoice {
                 name: entry.name.clone(),
@@ -127,7 +126,6 @@ impl Themes {
         if let Some(fg) = colour("selection_fg") {
             style = style.fg(fg);
         }
-        // A palette defining neither still has to show a selection.
         if style == Style::default() {
             style = style.add_modifier(Modifier::REVERSED);
         }
@@ -139,8 +137,6 @@ fn resolve(wanted: Option<&str>, custom: &[ThemeEntry]) -> ThemeEntry {
     let Some(name) = wanted else {
         return ThemeEntry::from_preset(ThemePreset::Default);
     };
-    // A user theme may shadow a preset name; v1 lets the custom one win, so a
-    // user who overrode "default" keeps their override.
     if let Some(entry) = custom.iter().find(|entry| entry.name == name) {
         return entry.clone();
     }
@@ -273,8 +269,6 @@ mod tests {
 
     #[test]
     fn preset_identifiers_still_resolve() {
-        // A persisted v1 choice must stay valid, or every user loses their theme
-        // on upgrade.
         let (custom, _) = crate::config::themes::load_or_seed_with_warnings();
         for preset in ThemePreset::all() {
             let name = ThemeEntry::from_preset(*preset).name;
@@ -303,8 +297,6 @@ mod tests {
 
     #[test]
     fn a_user_theme_shadows_a_preset_of_the_same_name() {
-        // v1 lets a custom theme win, so someone who overrode "default" keeps
-        // their override.
         let mut mine = ThemeEntry::from_preset(ThemePreset::Default);
         mine.display_name = "Mine".to_string();
         let resolved = resolve(Some(&mine.name.clone()), std::slice::from_ref(&mine));
@@ -313,7 +305,6 @@ mod tests {
 
     #[test]
     fn the_role_table_covers_every_palette_field() {
-        // 34 colours; nerd_font_enabled is a flag, not a role.
         let palette = ThemePreset::Default.palette();
         let roles = palette_roles(&palette);
         assert_eq!(
@@ -401,7 +392,6 @@ mod tests {
             .expect("the choice is left to be stored");
         assert_eq!(themes.take_chosen(), None, "handed out once");
 
-        // A fresh load — as a restart or another instance would do — sees it.
         let reloaded = Themes::load(Some(&chosen));
         assert_eq!(reloaded.active_name(), other);
     }

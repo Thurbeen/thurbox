@@ -48,8 +48,6 @@ impl SurfaceProvider for PlaceholderSurfaces {
 }
 
 fn render_notice(frame: &mut Frame, area: Rect, title: &str, detail: &str) {
-    // Clears its own rect: it stands in for a surface and paints only the few
-    // centred rows, so whatever the layout left underneath would show through.
     frame.render_widget(Clear, area);
     let mut lines = Vec::new();
     let blank = usize::from(area.height).saturating_sub(2) / 2;
@@ -70,7 +68,6 @@ fn render_notice(frame: &mut Frame, area: Rect, title: &str, detail: &str) {
 }
 
 fn render_detached(frame: &mut Frame, area: Rect, session: &str) {
-    // Clears its own rect, for the reason `render_notice` does.
     frame.render_widget(Clear, area);
     let mut lines = Vec::new();
     let blank = usize::from(area.height).saturating_sub(3) / 2;
@@ -113,10 +110,6 @@ pub fn render_recording(
     if area.width == 0 || area.height == 0 {
         return;
     }
-    // The OUTER rect, before any border is subtracted: v1's on-border
-    // affordances (the collapse chevron, the tab strip) are painted on the
-    // frame's own cells, so a hitbox that stopped at the inner rect could never
-    // catch them.
     if !node.identity().is_empty() {
         hits.push(Hit {
             rect: area,
@@ -141,9 +134,7 @@ pub fn render_recording(
             ..
         } => {
             let text: Vec<Line> = lines.iter().map(|runs| to_line(runs)).collect();
-            // The node's style is the paragraph's base: ratatui fills the rect
-            // with it and each run patches over, so a bar reaches the right
-            // edge and a run that names a colour keeps it.
+            // ratatui fills the rect with the paragraph style and each run patches over it.
             let paragraph = Paragraph::new(text).style(*style).scroll((*scroll, 0));
             let paragraph = match align {
                 Align::Left => paragraph.left_aligned(),
@@ -262,14 +253,6 @@ fn paint_input(
         Paragraph::new(Line::from(text.to_string()).style(line_style)),
         inner,
     );
-    // A real caret, in the one field that claims it — empty or not. A field
-    // showing its placeholder is still the field being typed into: keying the
-    // caret on the value being non-empty instead, as this did, made the cursor
-    // blink into existence on the first keystroke and out of it on the last
-    // backspace, and handed it to whichever *other* field on screen happened to
-    // hold text. The placeholder is dim, so a caret at its start cannot be
-    // mistaken for one. Clamped into the rect so a cursor past the end cannot
-    // paint outside it.
     if !focused {
         return;
     }
@@ -289,13 +272,7 @@ fn paint_surface(
     scroll: u16,
     surfaces: &dyn SurfaceProvider,
 ) {
-    // No blanket `Clear` here. `swap_buffers` resets the frame buffer before
-    // every draw, so nothing stale survives to be erased, and a live terminal
-    // covers its rect itself — clearing first was a second full-grid write of
-    // ~9,000 cells for a frame about to overwrite them (ADR-P17). Whatever does
-    // *not* cover its rect clears itself instead: the paragraph below,
-    // `render_notice`/`render_detached`, and `clear_uncovered` for a grid still
-    // catching up to a resize.
+    // ratatui's `swap_buffers` resets the buffer before every draw, so no blanket `Clear` is needed.
     match source {
         SurfaceSource::Cells(cells) => {
             frame.render_widget(Clear, inner);
@@ -312,8 +289,6 @@ fn paint_surface(
             ProgramPaint::NotStarted => {
                 render_notice(frame, inner, "program surface", "nothing started here yet")
             }
-            // Said rather than shown: the grid a finished program left behind
-            // looks exactly like one that is still running.
             ProgramPaint::Exited(program) => render_notice(frame, inner, &program, "exited"),
         },
     }
@@ -343,11 +318,9 @@ const VARIATION_SELECTOR_16: char = '\u{FE0F}';
 
 const VARIATION_SELECTOR_16_LEN: usize = VARIATION_SELECTOR_16.len_utf8();
 
+// Terminals disagree with `unicode-width` on U+FE0F sequences: Windows Terminal and Ghostty draw many in one column.
 pub fn normalize_ambiguous_width(buf: &mut Buffer) {
-    // The buffer's storage is its area exactly, row-major, so walking it
-    // directly visits the same cells the coordinate loop did — minus a
-    // bounds-checked `cell_mut` per cell, on a pass that touches ~10k of them
-    // every painted frame.
+    // ratatui's buffer storage is its area exactly, row-major.
     for cell in buf.content.iter_mut() {
         let symbol = cell.symbol();
         if symbol.len() < VARIATION_SELECTOR_16_LEN || !symbol.contains(VARIATION_SELECTOR_16) {
@@ -358,8 +331,6 @@ pub fn normalize_ambiguous_width(buf: &mut Buffer) {
             .chars()
             .filter(|c| *c != VARIATION_SELECTOR_16)
             .collect();
-        // A cell holding nothing but the selector would print nothing at
-        // all, which is the leftover this exists to prevent.
         cell.set_symbol(if stripped.is_empty() { " " } else { &stripped });
     }
 }
@@ -389,17 +360,6 @@ fn build_block(spec: &NodeFrame) -> Block<'_> {
         Borders::None => block.borders(RatBorders::NONE),
     };
     if let Some(title) = &spec.title {
-        // A run carrying no colour of its own takes the border's. An unstyled title
-        // took the TERMINAL's default foreground, which is somebody else's palette:
-        // under the light themes that came out cream on cream, and panel titles —
-        // the labels a newcomer navigates by — were the one thing on screen you
-        // could not read. A title and the border it sits in are one piece of
-        // chrome, so the default is shared and it is always a theme role. A run
-        // that does set a colour keeps it, which is how the agent pane paints its
-        // status word without the rest of the title changing.
-        //
-        // Spans borrow the runs' text (the reason `to_line` borrows), so the
-        // patched style is the only thing built per frame.
         let spans: Vec<_> = title
             .iter()
             .map(|run| {
@@ -426,8 +386,6 @@ fn paint_overlay(buf: &mut Buffer, area: Rect, overlay: &Overlay, hits: &mut Vec
     if area.width < 2 || area.height < 1 {
         return;
     }
-    // The corners are never painted over: they are what makes a pane read as a
-    // pane, and v1's strips stop one cell short of each.
     let left = i32::from(area.x) + 1;
     let right = i32::from(area.right()) - 1;
     let top = area.y;
@@ -664,8 +622,7 @@ mod tests {
         normalize_ambiguous_width(&mut buffer);
 
         assert_eq!(buffer[(0, 0)].symbol(), "⚠");
-        // The blank ratatui reserved beside it stays, so nothing after the glyph
-        // moves: the row is the width it was measured at.
+        // ratatui reserves a blank beside a wide glyph; it stays, so nothing after the glyph moves.
         assert_eq!(buffer[(1, 0)].symbol(), " ");
         assert_eq!(buffer[(2, 0)].symbol(), "a");
     }
@@ -673,7 +630,6 @@ mod tests {
     #[test]
     fn multi_byte_glyphs_without_the_selector_are_left_alone() {
         let mut buffer = Buffer::empty(Rect::new(0, 0, 8, 1));
-        // 2 bytes (below the threshold), 3 bytes (exactly at it), 4 bytes (above).
         buffer[(0, 0)].set_symbol("é");
         buffer[(1, 0)].set_symbol("中");
         buffer[(2, 0)].set_symbol("𝄞");
@@ -804,7 +760,6 @@ mod tests {
 
     #[test]
     fn a_zero_height_rect_paints_nothing_rather_than_panicking() {
-        // Guards the responsive case where a slot is squeezed out entirely.
         let lines = screen("{ text = \"x\" }", 10, 0);
         assert!(lines.is_empty());
     }

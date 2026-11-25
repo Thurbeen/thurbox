@@ -458,7 +458,6 @@ mod tests {
                 .map(|(_, v)| v),
             Some(&Field::List(vec!["name".into(), "branch".into()]))
         );
-        // And nothing fires again for the same version.
         assert!(deriver.observe(&snapshot(vec![]), 2).is_empty());
     }
 

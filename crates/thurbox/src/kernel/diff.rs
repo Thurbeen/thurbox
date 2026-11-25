@@ -85,8 +85,6 @@ impl DiffStore {
     }
 
     fn mark_changed(&mut self) {
-        // Generations are unique across stores too: tests and benchmarks may
-        // replace the store while retaining the Lua host's published groups.
         static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
         self.version = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     }
@@ -133,8 +131,6 @@ impl DiffStore {
         self.next_request = self.next_request.wrapping_add(1);
         let request = self.next_request;
         match self.diffs.get_mut(session) {
-            // A settled answer past its age: keep publishing it, mark the
-            // recompute in flight, and dispatch below.
             Some(held) => {
                 held.refreshing = true;
                 held.request = request;
@@ -153,10 +149,6 @@ impl DiffStore {
             }
         }
 
-        // The worktree is a path on the session's own machine, and thurbox
-        // reads diffs on this one only: running the local `git` against a
-        // remote path either fails or diffs something else entirely, so a
-        // remote route is a failed diff rather than a silent local read.
         let unreachable = crate::session::Route::is_remote_key(backend);
 
         let tx = self.tx.clone();
@@ -247,18 +239,9 @@ fn compute(worktree: &Path, base: Option<&str>) -> Diff {
     } = sources;
 
     let truncated = raw.len() > MAX_DIFF_BYTES;
-    // The size before the cut, so a pane can say "4.0 of 20.3 MB" rather than
-    // "some changes are not shown". The file *count* is deliberately not offered:
-    // knowing it would mean parsing the whole diff, which is what the cap exists
-    // to avoid.
     let raw_bytes = raw.len();
     let raw = if truncated {
-        // Cut on a line boundary so the parser is not handed half a hunk. Searched
-        // over the *bytes* rather than by slicing the string first: a `String` is
-        // indexed by byte offset and slicing one mid-codepoint panics, which a
-        // 4 MiB cap landing inside any multi-byte character is enough to do. A
-        // newline byte is always a character boundary, so the offset it finds is
-        // safe to slice at.
+        // Cut at a newline byte: slicing a `String` mid-codepoint panics.
         match raw.as_bytes()[..MAX_DIFF_BYTES]
             .iter()
             .rposition(|byte| *byte == b'\n')
@@ -270,16 +253,6 @@ fn compute(worktree: &Path, base: Option<&str>) -> Diff {
         raw
     };
 
-    // The file list comes from git, not from the body above, and this is the whole
-    // point: the body is capped and the list is not. Derived from the capped text it
-    // was silently short — 310 files of 433 on this repository's own diff — with
-    // totals to match, and nothing said so. `truncated` is about bytes; a reviewer
-    // scrolling a list that ends early has no way to know.
-    //
-    // A failure reading them fails the diff rather than falling back to the body's
-    // own files (see `read_sources`). These are the cheap commands: if they cannot
-    // run, the expensive one that just did was luck, and reporting a partial list as
-    // complete is the fault this exists to remove.
     let files = crate::session::review::parse_changed_files(&numstat, &name_status)
         .into_iter()
         .map(|file| FileSummary {
@@ -327,7 +300,6 @@ fn read_sources(worktree: &Path, base: Option<&str>) -> Result<Sources, &'static
         raw,
         numstat,
         name_status,
-        // `base..HEAD` is committed history; nothing untracked can be in it.
         untracked_omitted: 0,
     })
 }
@@ -356,7 +328,6 @@ mod tests {
         ask(&mut store);
         assert_eq!(store.get("s1"), Some(&Diff::Pending));
 
-        // Asking again is a no-op while an answer is held — that is the cache.
         ask(&mut store);
         assert_eq!(store.get("s1"), Some(&Diff::Pending));
 
@@ -371,7 +342,6 @@ mod tests {
 
     #[test]
     fn requesting_marks_it_pending_immediately() {
-        // The property that matters: asking does not wait for git.
         let mut store = DiffStore::new();
         let started = std::time::Instant::now();
         store.request(
@@ -386,7 +356,6 @@ mod tests {
 
     #[test]
     fn pending_is_distinct_from_empty() {
-        // A slow diff must not look like a clean worktree.
         let pending = Diff::Pending;
         let empty = Diff::Ready {
             files: Vec::new(),
@@ -428,20 +397,14 @@ mod tests {
 
     #[test]
     fn a_settled_diff_is_computed_again_once_it_is_old() {
-        // Without this an agent still writing code showed the diff first seen,
-        // forever, unless something explicitly invalidated it.
         assert!(!held(empty_ready(), std::time::Duration::ZERO).stale());
         assert!(held(empty_ready(), DIFF_TTL).stale());
-        // A failure retries sooner — and, above all, retries at all.
         assert!(!held(Diff::Failed("gone".into()), std::time::Duration::ZERO).stale());
         assert!(held(Diff::Failed("gone".into()), DIFF_RETRY).stale());
     }
 
     #[test]
     fn an_in_flight_diff_is_never_asked_for_twice() {
-        // However slow git is: a second request would spawn a second worker
-        // for an answer already on its way — first computation and refresh
-        // alike.
         assert!(!held(Diff::Pending, DIFF_TTL * 10).stale());
         let mut refreshing = held(empty_ready(), DIFF_TTL * 10);
         refreshing.refreshing = true;
@@ -471,12 +434,9 @@ mod tests {
             None,
             "local:tmux",
         );
-        // The old answer stays published while the recompute is in flight —
-        // replacing it with `Pending` would blank the pane every TTL.
         assert_eq!(store.get("s1"), Some(&empty_ready()));
         assert!(store.diffs.get("s1").unwrap().refreshing);
 
-        // And the recompute really was dispatched: its (failing) answer lands.
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
         while std::time::Instant::now() < deadline {
             store.poll();
@@ -613,12 +573,8 @@ mod tests {
         git(&["config", "user.name", "T"]);
         git(&["commit", "-q", "--allow-empty", "-m", "base"]);
 
-        // On a BRANCH, or `main..HEAD` is empty — which is precisely the bug this
-        // whole change exists to fix, and it caught this fixture first.
         git(&["checkout", "-q", "-b", "work"]);
 
-        // Enough text that the diff is past the cap several times over, spread over
-        // more files than the cap can hold.
         let filler = "x".repeat(200);
         let files = 400;
         for index in 0..files {
@@ -663,8 +619,6 @@ mod tests {
     fn an_untracked_file_is_in_the_body_and_the_file_list() {
         let home = tempfile::tempdir().expect("tempdir");
         let repo = repo_with_a_base_commit(&home);
-        // A tracked edit alongside, so the fix cannot work by replacing the
-        // tracked half rather than adding to it.
         std::fs::write(repo.join("tracked.txt"), "one\ntwo\n").expect("write");
         std::fs::write(repo.join("new.txt"), "alpha\nbeta\ngamma\n").expect("write");
 
@@ -704,8 +658,7 @@ mod tests {
 
     #[test]
     fn an_ignored_file_is_not_smuggled_in_as_untracked() {
-        // `--exclude-standard` is what keeps build output out; without it a
-        // scratch worktree's `target/` would drown the review.
+        // git's `--exclude-standard` keeps ignored build output out.
         let home = tempfile::tempdir().expect("tempdir");
         let repo = repo_with_a_base_commit(&home);
         std::fs::write(repo.join(".gitignore"), "ignored.txt\n").expect("write");
@@ -723,9 +676,7 @@ mod tests {
 
     #[test]
     fn an_untracked_path_with_a_space_and_a_binary_file_both_survive() {
-        // git appends a TAB to a `+++` path containing a space, which looks like
-        // corruption the first time you meet it, and a binary file has counts of
-        // `-` rather than numbers.
+        // git appends a TAB to a `+++` path containing a space, and counts a binary file as `-`.
         let home = tempfile::tempdir().expect("tempdir");
         let repo = repo_with_a_base_commit(&home);
         std::fs::create_dir_all(repo.join("sub dir")).expect("mkdir");
@@ -754,8 +705,6 @@ mod tests {
 
     #[test]
     fn a_base_branch_diff_is_committed_history_and_gains_no_untracked_files() {
-        // `base..HEAD` cannot contain an uncommitted file, and folding one in
-        // would make the review claim work was committed that was not.
         let home = tempfile::tempdir().expect("tempdir");
         let repo = repo_with_a_base_commit(&home);
         git_in(&repo, &["checkout", "-q", "-b", "work"]);
@@ -782,8 +731,6 @@ mod tests {
 
     #[test]
     fn more_untracked_files_than_the_cap_reports_what_it_left_out() {
-        // A short LIST is a different failure from a cut BODY, so it gets its own
-        // signal: silently stopping at the cap would read as a complete review.
         let home = tempfile::tempdir().expect("tempdir");
         let repo = repo_with_a_base_commit(&home);
         let extra = 3;
@@ -811,9 +758,6 @@ mod tests {
 
     #[test]
     fn a_remote_session_is_reported_rather_than_diffed_locally() {
-        // The path is on another machine. Running the local `git` against it
-        // either fails or, on a collision, diffs something else entirely — so a
-        // remote session is a reported failure, not a fallback.
         let mut store = DiffStore::new();
         store.request(
             "s1",

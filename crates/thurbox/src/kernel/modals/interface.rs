@@ -88,23 +88,15 @@ struct Reading {
 
 fn state_of(row: &Row, culprit: Option<&Row>) -> Reading {
     let (rank, glyph, word, fault) = match row.state {
-        // Its own load error outranks the state: the inventory calls a broken
-        // `layout.lua` or module present, since only a pane is expected to load.
         _ if row.error.is_some() => (1, "✗", "failed", true),
-        // Not its own fault: drawn plainly, so the one red row is the file to fix.
         FileState::Failed if held_back(row, culprit) => (2, "◇", "not loaded", false),
         FileState::Failed => (1, "✗", "failed", true),
         FileState::Removed => (2, "⊘", "deleted", true),
         FileState::Unplaced => (3, "◌", "not placed", false),
-        // Between the faults and the healthy: it is not a problem, but it is the
-        // answer to "where did my pane go", so it should not be buried.
         FileState::Disabled => (4, "◍", "off", false),
         FileState::Visible => (5, "●", "on screen", false),
-        // Neither drawing nor waiting on anything: a modal at rest.
         FileState::OnDemand => (6, "◐", "on demand", false),
         FileState::Hidden => (7, "○", "hidden", false),
-        // Not a state so much as what the file is for; the group header already
-        // says what kind it is, so this says what it does.
         FileState::Present => (
             8,
             "·",
@@ -200,7 +192,6 @@ fn reason(row: &Row, culprit: Option<&Row>) -> (String, Option<String>) {
                 "fix the file and press F10 to reload, or space turns it off",
             )),
         ),
-        // A support file has no `space` to offer, so its fix line is the reload.
         _ if row.error.is_some() => (
             row.error.clone().unwrap_or_default(),
             Some(why("fix the file and press F10 to reload")),
@@ -209,9 +200,6 @@ fn reason(row: &Row, culprit: Option<&Row>) -> (String, Option<String>) {
             why("you deleted this shipped file"),
             Some(why("r puts it back")),
         ),
-        // Hedged, because the inventory cannot tell the two apart: the shipped
-        // layout places the search strip's slot only while it is open, so a
-        // default install reports that pane unplaced while it works as shipped.
         FileState::Unplaced => (
             format!(
                 "layout.lua places no slot \"{}\" at this size, or only while it is open",
@@ -398,10 +386,6 @@ impl InterfaceTab {
         hits: &Hits,
     ) -> (Option<String>, Option<Edit>) {
         if key.code == KeyCode::Char('a') {
-            // Before the empty-list return: with nothing but untouched support
-            // files, `a` is the only key that lists anything. The cursor stays
-            // on its file — `following` — when that file is still listed;
-            // otherwise `follow` clamps it.
             self.all = !self.all;
             self.armed = None;
             return (None, None);
@@ -442,7 +426,6 @@ impl InterfaceTab {
             KeyCode::Char('d') => return self.remove(inventory),
             KeyCode::Char('t') => return self.trust(inventory),
             KeyCode::Char(' ') => return self.switch(inventory),
-            // The armed question says any other key cancels it.
             _ => self.armed = None,
         }
         self.following = ordered.get(self.selected).map(|row| row.path.clone());
@@ -461,8 +444,6 @@ impl InterfaceTab {
         };
         if let Some(src) = row.source.installed_from() {
             self.armed = None;
-            // Nothing to restore *to* either, and the fix is a different command:
-            // an installed file is put back by the manager that put it there.
             return (
                 Some(format!(
                     "{} came from {src}; `thurbox-cli mod sync` puts it back",
@@ -473,8 +454,6 @@ impl InterfaceTab {
         }
         if row.source.is_theirs() {
             self.armed = None;
-            // Nothing to restore *to*: we never shipped it, so there is no
-            // shipped version to put back.
             return (
                 Some(format!(
                     "{} is yours; thurbox ships no version of it",
@@ -613,10 +592,6 @@ impl InterfaceTab {
             words.push((edited.to_string(), quiet));
         }
 
-        // 2 pointer + glyph + 1 space, then the name, a gap of at least 2, the
-        // words. The name keeps at least its floor; the words that do not fit
-        // beside that are dropped from the end, the state cut only as a last
-        // resort.
         let name = label(row);
         let lead = 2 + state.glyph.chars().count() + 1;
         let floor = name.chars().count().min(PATH_FLOOR);
@@ -669,8 +644,6 @@ impl InterfaceTab {
         };
         let (why, fix) = reason(row, culprit);
         let asks = asks(row);
-        // A load error may take the fix's line too: the error is what a broken
-        // file is fixed from, and the fix only says to fix it.
         let spare = DETAILS as usize - 1 - usize::from(asks.is_some());
         let text = width.saturating_sub(1);
         let mut lines = vec![Line::from(Span::styled(
@@ -710,8 +683,6 @@ impl InterfaceTab {
             .filter(|row| row.kind == Kind::Pane && row.state != FileState::Removed)
             .count();
         let count = |pick: &dyn Fn(&Row) -> bool| inventory.iter().filter(|row| pick(row)).count();
-        // Failed, not merely drawn as a fault: a deleted shipped file is red too,
-        // and counting it would send the reader looking for an error.
         let failed = count(&|row| state_of(row, culprit).word == "failed");
         let ungranted = count(&|row| grant_word(row).is_some_and(|(_, granted)| !granted));
         let off = count(&|row| row.state == FileState::Disabled);
@@ -751,9 +722,6 @@ impl InterfaceTab {
 
     pub fn footer<'a>(&self, inventory: &[Row], width: usize, chrome: Chrome<'a>) -> Line<'a> {
         if let Some((path, armed)) = &self.armed {
-            // The two removals are different acts and must not be worded alike:
-            // one can be undone from the binary, the other cannot be undone at
-            // all. A reflex learned on the first must not carry to the second.
             let name = path.rsplit('/').next().unwrap_or(path);
             let (question, consequence) = match armed {
                 Armed::Remove { ours: true } => (
@@ -778,9 +746,6 @@ impl InterfaceTab {
                         .find(|row| row.path == *path)
                         .map(capability_names)
                         .unwrap_or_default();
-                    // Gives way in order: the aside, then the file name — never
-                    // what is granted or the key that grants it. The question is
-                    // drawn padded by a space each side.
                     let fixed = format!("grant : {caps}?").chars().count() + 2;
                     let mut consequence = " t again to grant · any other key cancels";
                     if fixed + name.chars().count() + consequence.chars().count() > width {
@@ -803,8 +768,6 @@ impl InterfaceTab {
                 Span::styled(consequence, chrome.muted()),
             ]);
         }
-        // The descriptions carry their own spacing: `hint_line` joins the spans
-        // as they are, so a bare word runs into the next key.
         let mut hints: Vec<(&str, &str)> = vec![("j/k", " move  ")];
         if let Some(row) = self.current(inventory) {
             if row.kind == Kind::Pane && row.state != FileState::Removed {
@@ -888,8 +851,6 @@ impl InterfaceTab {
         self.follow(&rows);
         let culprit = culprit(inventory);
 
-        // The details are pinned under the list; on a screen too short for both,
-        // the list keeps its rows and the details give way.
         let details = DETAILS.min(area.height.saturating_sub(2));
         let list = Rect::new(
             area.x,
@@ -913,8 +874,6 @@ impl InterfaceTab {
             return;
         }
 
-        // Group headers are lines of their own and never selectable, so the
-        // window is built over lines and each carries the row it selects.
         let mut lines: Vec<Option<usize>> = Vec::with_capacity(rows.len() + 4);
         let mut group = None;
         for (index, row) in rows.iter().enumerate() {
@@ -932,8 +891,6 @@ impl InterfaceTab {
 
         let viewport = list.height as usize;
         let (body, track) = chrome::reserve_track(list, lines.len(), viewport);
-        // Keep the cursor on screen — and its group's header with it, when the
-        // cursor is the first row under one.
         let first = at
             .saturating_sub(viewport.saturating_sub(1))
             .min(lines.len().saturating_sub(viewport));
@@ -959,7 +916,6 @@ impl InterfaceTab {
                     hits.rows.push((rect, *index));
                 }
                 None => {
-                    // The header of the group the next row belongs to.
                     let next = lines[first + nth + 1..]
                         .iter()
                         .flatten()
@@ -1095,14 +1051,8 @@ mod tests {
         panic!("{path} is never selected");
     }
 
-    // ── what a row says ─────────────────────────────────────────────────────
-
     #[test]
     fn an_installed_row_names_its_package_and_keeps_its_state_in_view() {
-        // The source used to be printed whole. A package installed from a
-        // directory has a long absolute path, which pushed the state and the
-        // trust words off the end of the row: the one pane that asks to run
-        // programs could not show that it was untrusted, nor why it drew nothing.
         let rows = [installed_top()];
         let lines = paint(&mut InterfaceTab::default(), &rows, 72, 12);
         assert!(
@@ -1127,12 +1077,10 @@ mod tests {
             "10_sessions.lua",
         );
         assert!(edited.contains("edited"), "{edited}");
-        // Your own file says so once, in its group's header, not on each row.
         let mine = lines(row("mods/90_mine.lua", Source::User, FileState::Visible));
         assert!(mine.iter().any(|line| line.trim() == "YOURS"), "{mine:#?}");
         assert!(!row_of(&mine, "90_mine.lua").contains("yours"));
 
-        // A trusted file that changed since says both halves.
         let mut drifted = installed_top();
         drifted.source = Source::InstalledEdited {
             src: "git+https://github.com/someone/thurbox-top.git".into(),
@@ -1149,8 +1097,6 @@ mod tests {
         assert!(line.contains("edited"), "{line}");
         assert!(line.contains("run granted, changed"), "{line}");
 
-        // Silence is the right answer for the shipped, unmodified default: a
-        // word on every bundled row would bury the one row that differs.
         let plain = row_of(
             &lines(row(
                 "mods/20_agent.lua",
@@ -1178,10 +1124,6 @@ mod tests {
 
     #[test]
     fn each_state_reads_as_one_word_that_nothing_else_on_the_row_uses() {
-        // `removed` was both a source and a state, `modified` and `edited` meant
-        // the same thing, `on/off` was a key while `off` was a state, and
-        // `no slot` said nothing about what to do. One word per state, and none
-        // of the old overlapping ones.
         let states = [
             FileState::Failed,
             FileState::Removed,
@@ -1282,8 +1224,6 @@ mod tests {
 
     #[test]
     fn a_support_file_that_fails_to_load_reads_failed_and_is_counted() {
-        // The inventory calls `layout.lua` present whether it loaded or not;
-        // its error is what says it did not.
         let mut layout = file("layout.lua", Kind::Arrangement);
         layout.error = Some("layout.lua: unexpected symbol near <eof>".into());
         let rows = [layout];
@@ -1324,8 +1264,6 @@ mod tests {
 
     #[test]
     fn panes_held_back_by_a_failed_reload_are_not_called_failed() {
-        // A reload is all-or-nothing: one broken file leaves every other one
-        // unloaded. Only the file the error names is the fault.
         let mut broken = row("mods/93_broken.lua", Source::User, FileState::Failed);
         broken.error = Some("93_broken: syntax error near <eof>".into());
         let rows = [
@@ -1353,7 +1291,6 @@ mod tests {
         let text = paint(&mut tab, &rows, 90, 14).join("\n");
         assert!(text.contains("mods/93_broken.lua failed to load"), "{text}");
 
-        // With nothing named, a pane that did not load is still its own fault.
         let alone = [row("mods/92_fine.lua", Source::User, FileState::Failed)];
         let line = row_of(
             &paint(&mut InterfaceTab::default(), &alone, 90, 12),
@@ -1380,7 +1317,6 @@ mod tests {
         assert!(asked.contains("grant 85_top.lua: run?"), "{asked}");
         assert!(asked.contains("t again to grant"), "{asked}");
 
-        // Any other key withdraws the question.
         tab.on_key(&press(KeyCode::Char('x')), &rows, &Hits::default());
         assert!(tab.armed().is_none());
         tab.on_key(&press(KeyCode::Char('t')), &rows, &Hits::default());
@@ -1423,8 +1359,6 @@ mod tests {
         assert!(!lines[0].contains("failed"), "{}", lines[0]);
         assert_eq!(truncate_front("/a/long/dir/ui", 8), "…/dir/ui");
 
-        // A shipped pane you deleted is drawn as a fault, but it did not fail:
-        // counting it would send the reader looking for an error that is not there.
         let gone = [row(
             "mods/20_agent.lua",
             Source::Removed,
@@ -1471,8 +1405,6 @@ mod tests {
         assert!(text.contains("thurbox-cli mod install"), "{text}");
     }
 
-    // ── what the selected row explains ──────────────────────────────────────
-
     #[test]
     fn the_details_say_why_a_pane_is_not_on_screen_and_what_fixes_it() {
         let top = installed_top();
@@ -1486,10 +1418,6 @@ mod tests {
             text.contains("/home/user/code/thurbox/examples/panes/top"),
             "the full source is in the details, where there is room: {text}"
         );
-        // The shipped search strip is placed only while it is open, so a
-        // default install reports it unplaced. The reason must not claim the
-        // layout never places it, or the fix reads as "edit your layout" for a
-        // pane that is working as shipped.
         assert!(
             text.contains("or only while it is open"),
             "the reason allows for a pane placed on demand: {text}"
@@ -1536,8 +1464,6 @@ mod tests {
         assert!(!text.contains("asks to"), "{text}");
     }
 
-    // ── which keys are offered ──────────────────────────────────────────────
-
     fn footer(tab: &InterfaceTab, rows: &[Row]) -> String {
         let palette = crate::theme::ThemePreset::Default.palette();
         tab.footer(rows, 200, Chrome::new(&palette))
@@ -1576,7 +1502,6 @@ mod tests {
         let keys = footer(&tab, &[trusted]);
         assert!(keys.contains("revoke"), "{keys}");
 
-        // Changed under its pin: it holds nothing, so `t` grants rather than revokes.
         let mut replaced = installed_top();
         replaced.trust = FileTrust::Replaced;
         let keys = footer(&tab, std::slice::from_ref(&replaced));
@@ -1595,8 +1520,6 @@ mod tests {
             })
         );
 
-        // The binary's own copy holds its grant with no record to revoke, so `t`
-        // explains rather than writing a decision that would change nothing.
         let mut shipped = row("mods/60_confirm.lua", Source::Bundled, FileState::Present);
         shipped.capabilities = vec![Capability::Sessions];
         shipped.trust = FileTrust::Shipped;
@@ -1614,12 +1537,8 @@ mod tests {
         assert!(!keys.contains("turn"), "a doc does not draw: {keys}");
     }
 
-    // ── confirming what cannot be taken back ────────────────────────────────
-
     #[test]
     fn restoring_an_edited_file_asks_first_and_says_the_edit_is_lost() {
-        // A restore writes the shipped copy over the file. For a pane nothing
-        // keeps the edit, so a stray `r` used to cost it without a word.
         let rows = [row(
             "mods/10_sessions.lua",
             Source::Edited,
@@ -1670,9 +1589,6 @@ mod tests {
 
     #[test]
     fn the_cursor_stays_on_its_file_when_an_action_reorders_the_list() {
-        // Turning a pane off moves it within the list (trouble sorts first), so
-        // a cursor kept as an index was left on whichever file slid into its
-        // place — and the next key acted on that one.
         let before = [
             row("mods/10_sessions.lua", Source::Bundled, FileState::Visible),
             row("mods/90_notes.lua", Source::User, FileState::Visible),
@@ -1724,8 +1640,6 @@ mod tests {
 
     #[test]
     fn turning_a_mod_off_asks_nothing() {
-        // Nothing is at risk, and a confirmation on a reversible action is what
-        // teaches people to confirm without reading.
         let mut tab = InterfaceTab::default();
         let rows = [row("mods/90_mine.lua", Source::User, FileState::Visible)];
         let (_, edit) = tab.on_key(&press(KeyCode::Char(' ')), &rows, &Hits::default());
@@ -1735,8 +1649,6 @@ mod tests {
 
     #[test]
     fn deleting_says_whether_it_can_be_undone() {
-        // The two removals are different acts. A reflex learned on the
-        // restorable one must not carry to the permanent one.
         let ours = [row("mods/90_mine.lua", Source::User, FileState::Visible)];
         let mut tab = InterfaceTab::default();
         tab.on_key(&press(KeyCode::Char('d')), &ours, &Hits::default());

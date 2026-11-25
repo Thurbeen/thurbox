@@ -18,8 +18,6 @@ const SNIPPET_LEAD: usize = 24;
 
 pub const RESCAN_INTERVAL: Duration = Duration::from_secs(1);
 
-// ── Query ───────────────────────────────────────────────────────────────────
-
 #[derive(Debug, Clone)]
 enum Term {
     Word(String),
@@ -205,8 +203,7 @@ fn find_str(haystack: &str, needle: &str) -> Option<(usize, usize, i32)> {
 }
 
 fn in_order(haystack: &str, needle: &str) -> bool {
-    // `str::find` with a `char` is a memchr, so this skips from one wanted
-    // character to the next instead of stepping through every one between.
+    // `str::find` with a `char` is a memchr.
     let mut rest = haystack;
     for c in needle.chars() {
         match rest.find(c) {
@@ -253,8 +250,6 @@ fn merge(mut ranges: Vec<(usize, usize)>) -> Vec<(usize, usize)> {
     }
     out
 }
-
-// ── History ─────────────────────────────────────────────────────────────────
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct HistoryLine {
@@ -389,7 +384,6 @@ impl Reading {
         }
         reading.lines = cached.lines[..keep].to_vec();
         reading.next = cached.lines[keep].row;
-        // The rows just above `next`, newest first, out of the lines kept.
         let mut above = reading
             .lines
             .iter()
@@ -409,6 +403,7 @@ impl Reading {
             (holds, rows_read, widest, restarts);
     }
 
+    // vt100 exposes scrollback only through the viewport, and keeps none on the alternate screen.
     fn step(&mut self, screen: &mut vt100::Screen, budget: usize) -> bool {
         self.holds += 1;
         let offset = screen.scrollback();
@@ -425,12 +420,6 @@ impl Reading {
         }
         let (rows, cols) = (usize::from(self.size.0), self.size.1);
         let total = scrollback + rows;
-        // The screen is read whole, in the same hold as the last of the
-        // scrollback: scrollback rows only move, so a chunk of them can be
-        // found again, but the screen can be redrawn in place. And a read that
-        // stopped at the edge of the scrollback would, against an agent that
-        // prints between every hold, spend each one catching up on the rows
-        // just printed and never reach the screen at all.
         let end = if self.next.saturating_add(budget) >= scrollback {
             total
         } else {
@@ -439,9 +428,6 @@ impl Reading {
         let from = self.next;
         let mut start = from;
         while start < end && rows > 0 {
-            // At offset `k` the viewport's first row is history row
-            // `scrollback - k`; in the scrollback that is `start` itself, so
-            // no row is built only to be skipped.
             let k = scrollback.saturating_sub(start);
             screen.set_scrollback(k);
             let base = scrollback - k;
@@ -482,8 +468,6 @@ impl Reading {
         let Some((first, texts)) = self.anchor.take() else {
             return true;
         };
-        // Rows with text first: a wrong shift is then turned away by the
-        // first comparison instead of after a run of matching blank rows.
         let mut order: Vec<usize> = (0..texts.len()).collect();
         order.sort_by_key(|&i| texts[i].trim().is_empty());
         let mut found = (0..=MAX_SHIFT.min(first)).filter(|&shift| {
@@ -492,16 +476,10 @@ impl Reading {
                     == Some(texts[i].as_str())
             })
         });
-        // The rows must be found at exactly one place. Repeated output can
-        // match at two, and picking the nearest would carry on from the wrong
-        // row as surely as not looking at all.
         let (Some(shift), None) = (found.next(), found.next()) else {
             return false;
         };
         if shift > 0 {
-            // Rows pushed out of the top are gone. A line that lost its first
-            // rows keeps the rest, starting where they now start — which is
-            // what a read from scratch would make of them.
             self.lines.retain_mut(|line| line.drop_rows(shift));
             for line in &mut self.lines {
                 line.row -= shift;
@@ -577,8 +555,6 @@ impl HistoryLine {
             .collect()
     }
 }
-
-// ── Hits ────────────────────────────────────────────────────────────────────
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Hit {
@@ -663,8 +639,6 @@ fn found_in(query: &Query, source: usize, history: &History) -> Vec<Found> {
         .enumerate()
         .filter_map(|(index, line)| {
             let matched = query.match_folded(&line.text, &line.folded)?;
-            // The row the first hit is on, not the row the line starts on: a
-            // wrapped line's match can be rows further down.
             let row = line.row_of(matched.ranges.first().map_or(0, |r| r.0));
             Some(Found {
                 source,
@@ -697,8 +671,6 @@ fn hits_in(query: &Query, session: &str, shell: bool, history: &History) -> Vec<
         .map(|found| found.hit(&sources, &histories))
         .collect()
 }
-
-// ── The worker ──────────────────────────────────────────────────────────────
 
 #[derive(Clone)]
 pub struct Source {
@@ -757,9 +729,6 @@ pub fn run_until(
     cancelled: &(dyn Fn() -> bool + Sync),
 ) -> Answer {
     let started = Instant::now();
-    // A query with no terms still reads: it is how an open strip warms the
-    // cache before anything is typed, so the first keystroke is matched
-    // against histories already read.
     let query = match Query::parse(&request.query) {
         Ok(query) => query,
         Err(error) => {
@@ -771,8 +740,6 @@ pub fn run_until(
         }
     };
 
-    // Most recent output first, per session: the agent and its shell count as
-    // one session, and the later of the two says when it was last busy.
     let mut recency: HashMap<&str, u64> = HashMap::new();
     for source in sources {
         let at = recency.entry(source.session.as_str()).or_default();
@@ -783,8 +750,6 @@ pub fn run_until(
         .map_or(1, |n| n.get() / 2)
         .clamp(1, MAX_THREADS)
         .min(sources.len().max(1));
-    // Interleaved rather than in runs, so the sessions that printed most (and
-    // so hold the most to read) do not all land on one thread.
     let searched: Vec<Option<Searched>> = if threads <= 1 {
         (0..sources.len())
             .map(|index| search_one(query.as_ref(), index, sources, cache, cancelled))
@@ -907,9 +872,6 @@ fn search_one(
     let key = (source.session.clone(), source.shell);
     let cached = cache.lock().ok().and_then(|c| c.get(&key).cloned());
     let mut stats = ReadStats::default();
-    // A read that failed keeps whatever the cache held, and is not stored:
-    // stored under this stamp, it would be taken for a good read until the
-    // pane printed again.
     let history = match history_of(source, cached.clone(), &mut stats) {
         Some(history) => {
             if let Ok(mut cache) = cache.lock() {
@@ -942,9 +904,6 @@ fn history_of(
     stats: &mut ReadStats,
 ) -> Option<Arc<History>> {
     if let Some((stamp, history)) = &cached {
-        // A pane with no grid has no size here to compare, and none that
-        // changes while it is off screen: its stamp alone says whether it
-        // printed since.
         let unchanged = *stamp == source.stamp
             && (source.restore.is_some()
                 || source.parser.lock().ok().map(|p| screen_size(p.screen()))
@@ -1013,10 +972,6 @@ impl SearchStore {
             if !self.holding {
                 return false;
             }
-            // Nobody is searching: let go of every history read, so a closed
-            // strip does not hold thousands of lines per session. Again on
-            // every call until the last run has landed, since it caches the
-            // terminal it was reading when it was told to stop.
             if self.running.is_some() {
                 self.ticket.fetch_add(1, Ordering::Relaxed);
             } else {
@@ -1066,7 +1021,6 @@ impl SearchStore {
         while let Ok(answer) = self.rx.try_recv() {
             self.running = None;
             if answer.cancelled {
-                // Due again at once: what superseded it is still waiting.
                 self.dispatched = None;
                 continue;
             }
@@ -1106,7 +1060,6 @@ mod tests {
 
     #[test]
     fn the_tightest_subsequence_wins_wherever_it_is() {
-        // The first `c` starts a match too loose to count; a later one is tight.
         assert!(q("cnfg").match_line("c.......... config").is_some());
         assert_eq!(
             tight_subsequence(
@@ -1119,7 +1072,6 @@ mod tests {
 
     #[test]
     fn a_subsequence_spread_across_a_line_is_not_a_match() {
-        // Every letter is there, in order, but nowhere near each other.
         assert!(q("cfg").match_line("cat foo | grep bar").is_none());
         assert!(q("cfg").match_line("config").is_some());
     }
@@ -1151,7 +1103,6 @@ mod tests {
         let query = q("\"run the tests\"");
         assert!(query.match_line("please run the tests now").is_some());
         assert!(query.match_line("the tests run").is_none());
-        // Not fuzzily, either.
         assert!(query.match_line("run thetests").is_none());
     }
 
@@ -1195,9 +1146,7 @@ mod tests {
         let history = History::read(parser.screen_mut());
         assert_eq!(history.lines[0].text, "needle here");
         assert_eq!(history.lines[0].row, 0);
-        // 51 printed lines and the empty one the cursor sits on, less a screen.
         assert_eq!((history.scrollback, history.rows), (42, 10));
-        // The viewport is put back where it was found.
         assert_eq!(parser.screen().scrollback(), 3);
     }
 
@@ -1221,7 +1170,6 @@ mod tests {
         let hits = hits_in(&q("needle"), "s", false, &history);
         assert_eq!(hits.len(), 1);
         let hit = &hits[0];
-        // Scrolling to that offset puts the line on screen.
         parser.screen_mut().set_scrollback(hit.scroll);
         let visible: Vec<String> = parser.screen().rows(0, 20).collect();
         assert_eq!(visible[hit.row], "needle", "{visible:?}");
@@ -1230,8 +1178,6 @@ mod tests {
 
     #[test]
     fn a_hit_on_a_wrapped_rows_continuation_lands_on_that_row() {
-        // One logical line over three rows; the needle is on the second. The
-        // hit must point at the row the needle is on, not the line's first.
         let long = "a".repeat(30) + "NEEDLE" + &"b".repeat(10);
         let mut text = format!("{long}\r\n");
         for n in 0..50 {
@@ -1345,7 +1291,6 @@ mod tests {
         assert!(settle(&mut store), "the first answer is news");
         assert_eq!(store.answer().map(|a| a.hits.len()), Some(1));
 
-        // Asked again with nothing printed: no second run.
         store.serve(Some(request.clone()), 1, |_| {
             asked += 1;
             sources.clone()
@@ -1361,7 +1306,6 @@ mod tests {
         assert_eq!(asked, 2);
         assert!(!settle(&mut store), "an identical answer is not a change");
 
-        // Asked for nothing: the answer is let go, and saying so is news.
         assert!(store.serve(None, 1, |_| Vec::new()));
         assert!(store.answer().is_none());
     }
@@ -1446,14 +1390,9 @@ mod tests {
 
     #[test]
     fn a_read_never_holds_a_terminal_for_more_than_a_chunk() {
-        // The lock is the one the terminal's reader feeds output through and
-        // its paint draws from: however long one hold lasts is how long that
-        // session can stall. Counted in rows, not time, so it holds on any
-        // machine (ADR-P5); a row is ~1.7µs, so a chunk is well under 1ms.
         let source = filled(50, 80, 10_000, 9_000);
         let mut stats = ReadStats::default();
         let history = History::read_locked(&source.parser, None, &mut stats).unwrap();
-        // A chunk, and the screen with the last of the scrollback.
         assert!(stats.widest <= CHUNK_ROWS + 50, "{stats:?}");
         assert!(stats.holds >= history.scrollback / CHUNK_ROWS, "{stats:?}");
         assert_eq!(history, read_whole(&source));
@@ -1476,14 +1415,10 @@ mod tests {
 
     #[test]
     fn a_terminal_that_prints_between_chunks_is_still_read_as_it_stands() {
-        // Full scrollback: every printed line pushes the oldest out and moves
-        // every row up, so a read that did not find its place again would skip
-        // or repeat rows and place every hit after them wrongly.
         let source = filled(20, 60, 2_000, 3_000);
         let history = read_while_printing(&source, 7, 60);
         assert_eq!(history, read_whole(&source));
 
-        // Not yet full: rows are added below and nothing moves.
         let source = filled(20, 60, 5_000, 1_500);
         let history = read_while_printing(&source, 7, 60);
         assert_eq!(history, read_whole(&source));
@@ -1491,9 +1426,6 @@ mod tests {
 
     #[test]
     fn runs_of_blank_rows_do_not_pass_for_the_place_a_read_left_off() {
-        // Blank rows all look alike, so a read that left off in a run of them
-        // would find "its" rows unmoved however far the terminal scrolled, and
-        // carry on from the wrong row.
         let source = Source {
             session: "s".into(),
             shell: false,
@@ -1534,8 +1466,6 @@ mod tests {
 
     #[test]
     fn a_rescan_reads_only_what_was_printed_since() {
-        // A strip left open re-runs its query once a second while an agent
-        // prints; re-reading the whole history each time kept a core busy.
         let source = filled(30, 60, 5_000, 6_000);
         let mut stats = ReadStats::default();
         let first = History::read_locked(&source.parser, None, &mut stats).unwrap();
@@ -1544,8 +1474,6 @@ mod tests {
         let mut stats = ReadStats::default();
         let again = History::read_locked(&source.parser, Some(&first), &mut stats).unwrap();
         assert_eq!(again, read_whole(&source));
-        // What was printed (some of it wrapped), the screen, and the line
-        // that straddled it — not the 5,000 rows above.
         assert!(stats.rows < 40 * 2 + 30 * 2, "{stats:?}");
     }
 
@@ -1554,7 +1482,6 @@ mod tests {
         let source = filled(10, 40, 1_000, 500);
         let mut stats = ReadStats::default();
         let first = History::read_locked(&source.parser, None, &mut stats).unwrap();
-        // Clear the screen and the scrollback, then print something new.
         source
             .parser
             .lock()
@@ -1581,8 +1508,6 @@ mod tests {
 
     #[test]
     fn an_empty_query_reads_every_history_and_matches_nothing() {
-        // What an open strip asks before anything is typed, so the first
-        // keystroke matches text already read.
         let sources = vec![source("a", 1, "needle\r\n"), source("b", 1, "hay\r\n")];
         let cache: Mutex<CacheMap> = Mutex::default();
         let answer = run(Request::default(), &sources, &cache);
@@ -1593,17 +1518,12 @@ mod tests {
 
     #[test]
     fn closing_mid_run_still_lets_go_of_every_history() {
-        // The run on the worker finishes the terminal it is reading after the
-        // strip closes, and caches it. Clearing the cache once, at the close,
-        // left that history held for as long as the strip stayed closed.
         let sources: Vec<Source> = (0..8)
             .map(|n| filled(50, 80, 10_000, 9_000).renamed(&format!("s{n}")))
             .collect();
         let mut store = SearchStore::new();
         store.serve(Some(Request::default()), 1, |_| sources.clone());
         assert!(store.running());
-        // Into its first terminals, each of which takes several milliseconds;
-        // the assertion below holds however the timing falls.
         std::thread::sleep(Duration::from_millis(5));
         store.serve(None, 1, |_| Vec::new());
         settle(&mut store);

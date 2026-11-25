@@ -1040,20 +1040,21 @@ mod tests {
             clean_meta_value("waiting\non CI\u{1b}[31m"),
             "waitingon CI[31m"
         );
-        // Invisible format characters: a right-to-left override, zero-width
-        // space and joiner, a bidi isolate, a byte-order mark.
         assert_eq!(
             clean_meta_value("ab\u{202e}c\u{200b}d\u{200d}e\u{2066}f\u{feff}g"),
-            "abcdefg"
+            "abcdefg",
+            "bidi overrides, zero-width characters, isolates and a BOM are stripped"
         );
-        // An Arabic letter mark, a soft hyphen, the Mongolian vowel separator,
-        // interlinear annotation and tag characters — hidden text — and a
-        // Hangul filler and a shorthand format control, which draw as nothing.
         assert_eq!(
             clean_meta_value("a\u{061c}b\u{00ad}c\u{180e}d\u{fff9}e\u{e0001}f\u{e0041}g"),
-            "abcdefg"
+            "abcdefg",
+            "letter marks, soft hyphens, annotation and tag characters are stripped"
         );
-        assert_eq!(clean_meta_value("a\u{3164}b\u{1bca0}c"), "abc");
+        assert_eq!(
+            clean_meta_value("a\u{3164}b\u{1bca0}c"),
+            "abc",
+            "characters that draw as nothing are stripped"
+        );
         let long = "é".repeat(META_VALUE_CHARS + 10);
         assert_eq!(clean_meta_value(&long).chars().count(), META_VALUE_CHARS);
     }

@@ -142,7 +142,6 @@ pub fn entries(pills: &[Pill], registry: &Registry) -> Vec<Entry> {
             })
         })
         .collect();
-    // Descending priority, then by label so the order is total and stable.
     out.sort_by(|a, b| {
         b.priority
             .cmp(&a.priority)
@@ -271,9 +270,6 @@ pub fn quit_entry() -> Entry {
 }
 
 fn left_spans(state: &BandState<'_>) -> Vec<Span<'static>> {
-    // v1 `Theme::focused_title()`: a badge, not coloured text — the same
-    // treatment a focused pane's own title gets, so the two agree about what has
-    // focus.
     let badge = state
         .style("inverted_fg")
         .bg(state
@@ -285,8 +281,6 @@ fn left_spans(state: &BandState<'_>) -> Vec<Span<'static>> {
         badge,
     )];
 
-    // `session(s)` rather than a pluralised word: v1's spelling, and it stays
-    // right for every count without a branch.
     spans.push(Span::styled(
         format!(" {} session(s) ", state.session_count),
         state.style("text_secondary"),
@@ -380,13 +374,7 @@ thread_local! {
 
 fn prepare_action(registry: &Registry, width: u16) -> Vec<PreparedEntry> {
     let all = entries(registry.pills(), registry);
-    // The left cluster is bounded by what the entries leave, so it can never run
-    // underneath them.
     let budget = usize::from(width).saturating_sub(2);
-    // Quit's cells come off the top rather than being left to `fit`: v1 sheds
-    // Theme → Settings → Help around it and keeps Quit at every width, because
-    // the button that gets you out must not be the one that disappears. The
-    // declared entries then fit into what is left instead of competing with it.
     let quit = quit_entry();
     let reserved = entries_width(std::slice::from_ref(&quit)) + ENTRY_GAP;
     let mut fitted = fit(all, budget.saturating_sub(reserved));
@@ -506,9 +494,6 @@ fn paint_action(
         frame.render_widget(Paragraph::new(Line::from(left)), area);
     }
 
-    // Placed left-to-right from where the right-aligned block starts, so the
-    // hitbox of each entry is known exactly rather than inferred from a
-    // paragraph's own alignment arithmetic.
     let start = area.x + area.width.saturating_sub(block as u16);
     let mut cursor = start;
     let mut hits = Vec::new();
@@ -528,9 +513,6 @@ fn paint_action(
             classes: Vec::new(),
             role: Some(entry.role.clone()),
         };
-        // v1's button hover: brighten the fill to the accent and force the
-        // foreground, so a chip stays legible whatever its resting pair was. A
-        // *row* takes a background band instead; an entry here is a button.
         let hovered = state
             .hovered
             .and_then(|identity| identity.role.as_deref())
@@ -543,9 +525,6 @@ fn paint_action(
                     .unwrap_or(ratatui::style::Color::Reset))
                 .add_modifier(Modifier::BOLD)
         } else {
-            // v1 `ui::button_style(primary = false)`: the neutral selection pair
-            // every palette guarantees is legible, and BOLD — a chip reads as a
-            // button by its fill and its weight together.
             state
                 .style("selection_fg")
                 .bg(state
@@ -611,10 +590,6 @@ mod tests {
 
     #[test]
     fn an_entry_shows_the_chord_in_force_not_the_default() {
-        // Rebound through the registry rather than by hand: `declare` re-applies
-        // the stored overrides, so a `chord` set directly on a `Binding` is
-        // normalised straight back to its default — which is the registry doing
-        // its job, and the reason this goes through `rebind`.
         let mut registry = registry_with(
             vec![binding("help.open", "f1")],
             vec![pill("help.open", "Help", 10)],
@@ -649,9 +624,6 @@ mod tests {
 
     #[test]
     fn an_f_key_alternate_is_advertised_over_a_ctrl_letter() {
-        // Not cosmetic: a bare ctrl+<letter> is handed to the agent while a
-        // terminal has focus, so the F-key is the one that works from where the
-        // user usually is. v1's footer shows the same.
         let registry = registry_with(
             vec![binding("shell.open", "ctrl+t"), binding("shell.open", "f8")],
             vec![pill("shell.open", "Shell", 10)],
@@ -664,8 +636,6 @@ mod tests {
 
     #[test]
     fn an_entry_naming_an_unknown_action_is_dropped() {
-        // The tab strip's lesson: a chip pointing at a removed pane lit on hover
-        // and did nothing.
         let registry = registry_with(
             vec![binding("help.open", "f1")],
             vec![pill("help.open", "Help", 10), pill("gone.open", "Gone", 9)],
@@ -678,9 +648,6 @@ mod tests {
 
     #[test]
     fn a_dropped_pill_tells_a_palette_only_action_from_one_nobody_declared() {
-        // Both are dropped, and that stays. What they are not is the same
-        // mistake: one action runs from the palette and wants a chord, the other
-        // is a typo, and the band shows the same absent button for each.
         let mut registry = registry_with(
             vec![binding("help.open", "f1")],
             vec![
@@ -754,21 +721,16 @@ mod tests {
         let order: Vec<&str> = resolved.iter().map(|e| e.label.as_str()).collect();
         assert_eq!(order, ["Aaa", "Bbb", "Ccc"], "highest priority first");
 
-        // Wide enough for two but not three.
         let two = entries_width(&resolved[..2]);
         let fitted = fit(resolved.clone(), two);
         let kept: Vec<&str> = fitted.iter().map(|e| e.label.as_str()).collect();
         assert_eq!(kept, ["Aaa", "Bbb"], "the lowest priority sheds first");
 
-        // Nothing fits: an empty run rather than a truncated label.
         assert!(fit(resolved, 3).is_empty());
     }
 
     #[test]
     fn quit_is_advertised_with_the_reserved_chord_and_renders_last() {
-        // The one entry not resolved from the registry, because quit has no
-        // binding to resolve — but it must read like every other entry, and sort
-        // behind them the way v1's footer puts `Quit` last.
         let quit = quit_entry();
         assert_eq!(quit.display(), "Quit · ^Q");
         assert_eq!(quit.action, QUIT_ACTION);
@@ -815,8 +777,6 @@ mod tests {
 
     #[test]
     fn the_badge_names_the_view_being_shown_not_just_the_pane() {
-        // v1 labels its centre pane "Shell" while the shell view is up. The
-        // surface name carries the view, so the badge follows it.
         assert_eq!(
             focus_label(Some("abc-123#shell"), "agent"),
             "Shell",
@@ -832,9 +792,7 @@ mod tests {
             "Sessions",
             "a pane with no session surface is named by the pane"
         );
-        // A view a future pane invents needs no change here.
         assert_eq!(focus_label(Some("abc-123#logs"), "agent"), "Logs");
-        // A malformed surface must not produce an empty badge.
         assert_eq!(focus_label(Some("abc-123#"), "agent"), "Agent");
     }
 
@@ -849,7 +807,6 @@ mod tests {
 
     #[test]
     fn the_message_band_is_surrendered_last() {
-        // A hidden error is the failure this chrome exists to prevent.
         assert_eq!(Band::DROP_ORDER.last(), Some(&Band::Message));
         assert_eq!(Band::DROP_ORDER.first(), Some(&Band::Identity));
     }

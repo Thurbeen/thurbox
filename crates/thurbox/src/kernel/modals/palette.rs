@@ -118,8 +118,6 @@ impl PaletteModal {
         let highlighted = matched.get(self.selected).copied();
 
         match key.code {
-            // Typing is the primary mode, so a bare letter is query text and
-            // navigation lives on the keys that cannot be typed.
             KeyCode::Char(c) if !key.modifiers.contains(KeyModifiers::CONTROL) => {
                 self.query.push(c);
                 self.keep_highlighted(&rows, highlighted);
@@ -292,8 +290,6 @@ impl PaletteModal {
         let height = usize::from(rows_area.height);
         let start = scroll_for(matched.len(), height, self.selected);
         let width = usize::from(rows_area.width);
-        // The owner column is as wide as the widest owner on screen, so the
-        // descriptions line up; the chord is right-aligned against the border.
         let owner_width = matched
             .iter()
             .filter_map(|index| rows.get(*index))
@@ -322,8 +318,6 @@ impl PaletteModal {
             } else {
                 row.description.clone()
             };
-            // Two columns of air before the chord, so a truncated description
-            // never runs into it.
             let fixed = marker.chars().count() + owner.chars().count() + chord.chars().count() + 3;
             let room = width.saturating_sub(fixed);
             let description = chrome::truncate(&description, room);
@@ -443,8 +437,6 @@ mod tests {
             modal.on_key(&press(KeyCode::Char(c)), &registry);
         }
         modal.on_key(&press(KeyCode::Down), &registry);
-        // Both still match; the cursor must stay on "delete all" rather than
-        // snapping back to the first match.
         for c in " a".chars() {
             modal.on_key(&press(KeyCode::Char(c)), &registry);
         }

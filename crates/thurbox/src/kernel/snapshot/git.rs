@@ -57,21 +57,13 @@ impl GitStats {
         if self.poll.is_none() || self.inflight.contains(session) {
             return;
         }
-        // The merge answer to offer the worker, if it is still worth offering.
-        // Withholding one *is* the decision to recheck, which is why the stamp
-        // moves here: the answer that comes back will be a fresh one.
         let known = match self.known.get_mut(session) {
             Some(stat) => {
                 if stat.at.elapsed() < stat.interval {
                     return;
                 }
                 match &mut stat.merge {
-                    // A landed commit never un-lands, so a `true` stands for
-                    // exactly as long as HEAD does.
                     Some(answer) if answer.merged => Some((answer.head.clone(), true)),
-                    // A `false` is true of a moment as well as of a commit —
-                    // the branch lands without the worktree moving — so it is
-                    // offered only until it ages out.
                     Some(answer) if answer.at.elapsed() < MERGE_RECHECK => {
                         Some((answer.head.clone(), false))
                     }
@@ -93,8 +85,6 @@ impl GitStats {
                 merged: *merged,
             });
             let stats = crate::git::worktree_stats(&worktree, known);
-            // The answer and the commit it belongs to, so the next run can skip
-            // the check. Neither half means anything without the other.
             let merge = stats.as_ref().and_then(|s| s.head.clone().zip(s.merged));
             let state = stats.map(|s| GitState {
                 files_changed: s.files_changed,
@@ -116,13 +106,6 @@ impl GitStats {
         while let Ok((session, stats, merge)) = rx.try_recv() {
             self.inflight.remove(&session);
             let previous = self.known.remove(&session);
-            // An answer that did not move is one this session did not need, so
-            // it is asked for less often until something changes. A miss is an
-            // answer too — see `Stat::state` — and backs off the same way.
-            // Saturating because both operands are reachable from
-            // `settings.toml`: a `git_poll_secs` big enough to overflow a
-            // `Duration` would otherwise panic the loop on the first answer
-            // that came back, which is a config file crashing the interface.
             let interval = match &previous {
                 Some(prev) if prev.state == stats => prev
                     .interval
@@ -131,9 +114,6 @@ impl GitStats {
                 _ => base,
             };
             let merge = match (previous.and_then(|prev| prev.merge), merge) {
-                // The same answer about the same commit: keep the stamp it was
-                // computed with, or a `false` re-offered every poll would reset
-                // its own recheck and stand forever.
                 (Some(prev), Some((head, merged)))
                     if prev.head == head && prev.merged == merged =>
                 {
@@ -186,12 +166,6 @@ mod tests {
 
     #[test]
     fn a_session_whose_answer_stops_moving_is_asked_less_often() {
-        // The scaling issue #1167 reports: the cost of this cache is one
-        // `git` burst per session per interval, so a fixed interval makes an
-        // instance's git load linear in how many sessions it holds — including
-        // the ones nobody has touched in hours. An answer that keeps coming
-        // back identical is one nobody needs at five-second resolution, so the
-        // interval doubles until it caps, and the first change resets it.
         let base = Duration::from_secs(5);
         let mut git = GitStats::new(Some(base));
         let tx = git.ensure_channel();
@@ -223,8 +197,6 @@ mod tests {
 
     #[test]
     fn a_backed_off_session_is_not_asked_again_inside_its_interval() {
-        // The interval above is only a number until `request` honours it: this
-        // is the gate that decides whether a `git` process is spawned at all.
         let base = Duration::from_secs(5);
         let dir = tempfile::tempdir().expect("tempdir");
         let mut git = GitStats::new(Some(base));
@@ -252,12 +224,6 @@ mod tests {
 
     #[test]
     fn the_merge_recheck_rides_on_a_poll_rather_than_outpacing_it() {
-        // Deliberate, and asserted so that a later reading of `MERGE_RECHECK`
-        // as a deadline does not "fix" it: the recheck happens on the first
-        // poll that finds the answer stale, so a session polled every six
-        // minutes rechecks every six minutes. An operator who raised
-        // `git_poll_secs` asked for fewer subprocesses, and a recheck forced
-        // ahead of their interval would spend exactly the ones they saved.
         let base = Duration::from_secs(30);
         let dir = tempfile::tempdir().expect("tempdir");
         let mut git = GitStats::new(Some(base));
@@ -272,7 +238,6 @@ mod tests {
             interval: base * GIT_STAT_BACKOFF,
         };
 
-        // Well past MERGE_RECHECK, nowhere near this session's own interval.
         git.known.insert("s1".to_string(), aged(MERGE_RECHECK * 2));
         git.request("s1", dir.path().to_path_buf());
         assert!(
@@ -280,8 +245,6 @@ mod tests {
             "an overdue merge answer must not pull the whole stat forward"
         );
 
-        // And on the poll that is due, the answer is withheld from the worker —
-        // which is the recheck being issued, and is stamped as such.
         git.known
             .insert("s1".to_string(), aged(base * GIT_STAT_BACKOFF * 2));
         git.request("s1", dir.path().to_path_buf());
@@ -299,9 +262,6 @@ mod tests {
 
     #[test]
     fn git_polling_turned_off_asks_for_nothing() {
-        // `git_poll_secs = 0`: the escape hatch for a machine where every
-        // subprocess is scanned by an endpoint-protection agent before it may
-        // run. Nothing is asked, and nothing is remembered to publish.
         let dir = tempfile::tempdir().expect("tempdir");
         let mut git = GitStats::new(None);
         git.request("s1", dir.path().to_path_buf());

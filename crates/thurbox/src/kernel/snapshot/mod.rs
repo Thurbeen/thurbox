@@ -299,9 +299,6 @@ impl SnapshotStore {
             gone: std::collections::HashSet::new(),
             git: GitStats::new(git_poll_interval(settings.git_poll_secs)),
             current: Snapshot {
-                // This machine until Fleet lists its hosts, so a Fleet that is
-                // slow or absent never holds the creation flow on a host step
-                // with nothing to choose; Fleet's answer replaces it.
                 hosts: Some(vec![HostRow::local("this machine")]),
                 taken_at_ms: taken_at_stamp(),
                 ..Snapshot::default()
@@ -348,8 +345,6 @@ impl SnapshotStore {
         }
         self.last_refresh = Some(now);
         self.current.taken_at_ms = taken_at_stamp();
-        // Git stats landing rewrite rows here, so this changes more than the
-        // timestamp, and the snapshot moved if they did.
         let git_moved = self.attach_git_stats();
         if git_moved {
             self.mark_changed();
@@ -418,14 +413,10 @@ impl SnapshotStore {
                 row.git = stats;
                 moved = true;
             }
-            // A Fleet Task on another host: no route of thurbox's reaches
-            // it with git (see `SessionRow::workspace_reachable`).
             if !row.workspace_reachable() {
                 continue;
             }
             if let Some(cwd) = row.cwd.clone() {
-                // A remote session's `cwd` is a path on its host, and thurbox
-                // reads git on this machine only.
                 if crate::session::Route::is_remote_key(&row.backend) {
                     continue;
                 }

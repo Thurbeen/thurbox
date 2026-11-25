@@ -63,9 +63,7 @@ pub enum MemoryPressure {
 }
 
 fn mod_stdlib() -> StdLib {
-    // UTF8 is pure computation with no capability risk, and text handling
-    // needs it: Lua's `#` counts bytes, so without it a mod measuring a name
-    // like "Rosé Pine" pads it one column short.
+    // Lua's `#` counts bytes: `utf8` is what measures display text.
     StdLib::STRING | StdLib::TABLE | StdLib::MATH | StdLib::COROUTINE | StdLib::UTF8
 }
 
@@ -208,6 +206,7 @@ pub struct KeyPress {
     pub ctrl: bool,
     pub alt: bool,
     pub shift: bool,
+    // crossterm's `SUPER`: the macOS Command key, reported only under the kitty keyboard protocol.
     pub cmd: bool,
 }
 
@@ -409,6 +408,7 @@ pub struct LuaHost {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+// Releases need the kitty keyboard protocol, except on Windows, whose console always reports them.
 pub enum KeyReleases {
     #[default]
     Unsupported,
@@ -451,8 +451,6 @@ impl ModIndex {
                 Some(slot) => index.decorators.entry(slot.clone()).or_default().push(i),
                 None => index.slots.entry(loaded.slot.clone()).or_default().push(i),
             }
-            // `slot_mode` is a static declaration, read once here instead of
-            // through the Lua table on every placement query.
             if let Ok(Value::String(mode)) = loaded.def.get::<Value>("slot_mode") {
                 if mode.to_string_lossy() == "switch" {
                     index.modes.insert(loaded.slot.clone(), SlotMode::Switch);
@@ -541,10 +539,6 @@ impl LuaHost {
     pub fn reload(&mut self) {
         match self.build() {
             Ok((lua, mods, layout)) => {
-                // Before the VM they point into is dropped: a cached group is a
-                // handle into `self.lua`, so carrying one across a reload would
-                // hand the next publish a value belonging to a Lua that no
-                // longer exists.
                 self.forget_groups();
                 self.file_wants.borrow_mut().clear();
                 self.lua = lua;
@@ -592,7 +586,6 @@ impl LuaHost {
             .filter_map(|entry| entry.ok().map(|entry| entry.path()))
             .filter(|path| path.extension().is_some_and(|ext| ext == "lua"))
             .collect();
-        // Sorted so `order` ties break by filename, deterministically.
         files.sort();
 
         let nested: Vec<String> = super::packages::read_spec(&self.ui_dir)
@@ -626,12 +619,6 @@ impl LuaHost {
             mods.push(load_mod(&lua, &parts, &path, &relative)?);
         }
         drop(disabled);
-        // An EMPTY directory is not an error: removing every pane is something
-        // a user may do, and faulting here would summon the recovery floor,
-        // which would deliver the bundled interface again — the system undoing
-        // the removal it was just asked to make (design D6). A *missing*
-        // directory still is one: delivery always creates it, so its absence
-        // means the interface directory is not one.
         mods.sort_by(|a, b| a.order.total_cmp(&b.order));
         let mut actions = std::collections::HashMap::<String, (String, String)>::new();
         for loaded in &mods {
@@ -810,10 +797,6 @@ impl LuaHost {
     pub fn dispatch_event(&self, event: &Event) -> Vec<ModError> {
         let subscribers = match &event.only {
             None => self.subscribers(&event.name),
-            // Addressed. Filtered on `path` because that is the identity a
-            // program pane is keyed by — trust, the disabled set and `run`'s
-            // attribution all use the same one, and a declared `name` is
-            // neither unique nor stable.
             Some(path) => self
                 .subscribers(&event.name)
                 .into_iter()
@@ -880,8 +863,7 @@ impl LuaHost {
                     Value::String(self.lua.create_string(text).map_err(|e| e.to_string())?)
                 }
                 Field::Bool(flag) => Value::Boolean(*flag),
-                // An integral number goes in as an integer, or `count = 2` reads
-                // back as `2.0` — the same care `state` takes with its values.
+                // An integral number goes in as a Lua integer, or `count = 2` reads back as `2.0`.
                 Field::Number(n) if n.fract() == 0.0 && n.abs() < (i64::MAX as f64) => {
                     Value::Integer(*n as i64)
                 }
@@ -1022,7 +1004,6 @@ impl LuaHost {
     }
 
     pub fn set_published_selection(&self, selection: &str) {
-        // Into the backing table: the published proxy refuses every write.
         if let Some(table) = api::published_backing(&self.lua) {
             let _ = table.raw_set("selection", selection);
         }
@@ -1226,15 +1207,12 @@ impl LuaHost {
         key: GroupKey,
         build: impl FnOnce() -> Result<Value, String>,
     ) -> Result<Value, String> {
-        // Scoped so `build` can touch the cache without a double borrow.
         if let Some((built_at, value)) = self.groups.borrow().get(name) {
             if *built_at == key {
                 self.reused_groups.set(self.reused_groups.get() + 1);
                 return Ok(value.clone());
             }
         }
-        // Frozen before it is cached: a group is reused across frames, so a
-        // write into it would outlive the frame and reach every reader.
         let value = api::freeze(&self.lua, build()?).map_err(|e| e.to_string())?;
         self.groups.borrow_mut().insert(name, (key, value.clone()));
         Ok(value)
@@ -1259,8 +1237,9 @@ impl LuaHost {
 
     pub fn memory_pressure(&self) -> Option<MemoryPressure> {
         let ceiling = memory_limit();
+        let exhaustion_margin = ceiling - ceiling / 32;
         let assess = |used: usize| {
-            if used >= ceiling - ceiling / 32 {
+            if used >= exhaustion_margin {
                 Some(MemoryPressure::Exhausted)
             } else if used >= ceiling / 10 * 9
                 && used >= self.resident.get().saturating_add(ceiling / 20)
@@ -1272,17 +1251,12 @@ impl LuaHost {
         };
         let used = self.lua.used_memory();
         assess(used)?;
-        // A live heap parked just under the growth threshold would otherwise
-        // buy a full collection on every frame: the next waits for a share of
-        // new garbage. Never inside the exhaustion margin, though: there a
-        // failing allocation leaves no garbage to move the gate, so pacing
-        // would hide a full VM for good.
-        if used < ceiling - ceiling / 32 && used < self.collected.get().saturating_add(ceiling / 64)
-        {
+        let outside_exhaustion_margin = used < exhaustion_margin;
+        let too_little_new_garbage = used < self.collected.get().saturating_add(ceiling / 64);
+        if outside_exhaustion_margin && too_little_new_garbage {
             return None;
         }
-        // A collection can itself fail on a full heap; what is left is then
-        // what gets measured, which is the answer either way.
+        // A collection can itself fail on a full Lua heap; what is left is measured either way.
         let _ = self.lua.gc_collect();
         self.pressure_collections
             .set(self.pressure_collections.get() + 1);
@@ -1406,11 +1380,6 @@ impl LuaHost {
             self.file_rendered.borrow_mut().insert(loaded.path.clone());
         }
 
-        // A pure pane asked at the same epoch, in the same rect, with the same
-        // focus, would return what it returned last time — so return that,
-        // skipping both the Lua call and the conversion. Measured, this is the
-        // largest single cost in a frame: the session list rebuilt a
-        // byte-identical tree on every frame under load (`frame-cost`).
         let key = self.published_epoch().map(|epoch| {
             (
                 epoch,
@@ -1489,8 +1458,6 @@ impl LuaHost {
         table
             .set("focused", ctx.focused)
             .map_err(|e| fail(e.to_string()))?;
-        // NOT set as a field: `elapsed` is served through the metatable installed
-        // below, so that reading it is observable. See `CachedTree`.
         self.clock.set(ctx.elapsed);
         self.clock_read.set(false);
         self.sample_read.set(0);
@@ -1515,8 +1482,6 @@ impl LuaHost {
         let value = result.map_err(|e| fail(clean_error(&e)))?;
         let float = read_float(&value).map_err(fail)?;
         let node = convert::to_node(&value, &loaded.path).map_err(fail)?;
-        // Behind the `Rc` from birth, so caching it and every later hand-out
-        // is a refcount bump — see [`Rendered`].
         let rendered = Rendered {
             node: std::rc::Rc::new(node),
             float,
@@ -1528,9 +1493,6 @@ impl LuaHost {
                     CachedTree {
                         key,
                         rendered: rendered.clone(),
-                        // Read from the render that just produced this tree, so
-                        // the flag and the tree can never describe different
-                        // versions of the pane.
                         reads_clock: self.clock_read.get(),
                         reads_sample: self.sample_read.get(),
                     },
@@ -1685,13 +1647,6 @@ impl LuaHost {
     }
 
     pub fn arrangement(&self, width: u16, height: u16) -> Result<std::rc::Rc<Region>, String> {
-        // The dynamic arrangement is a Lua call plus a node-by-node conversion,
-        // and the static one a whole-Region clone — per frame, from inputs
-        // that move rarely. Everything the Lua function can consult is in the
-        // key: `store` through the state version, the published tables through
-        // the epoch, `chrome.status_rows` (a bare scalar with no version)
-        // recorded at publish, and the occupied slots through the reload
-        // counter.
         let key: LayoutKey = (
             width,
             height,
@@ -1712,8 +1667,6 @@ impl LuaHost {
 
     fn resolve_arrangement(&self, width: u16, height: u16) -> Result<Region, String> {
         match &self.layout {
-            // No layout.lua: everything to the centre, with a one-line footer.
-            // A missing file is a fresh checkout, not an error.
             Arrangement::Missing => Ok(Region {
                 children: vec![
                     Region {
@@ -1838,7 +1791,6 @@ impl LuaHost {
         if self.slot_mode(&loaded.slot) != SlotMode::Switch {
             return None;
         }
-        // The first occupant of a switch slot is the one that draws.
         if self.in_slot(&loaded.slot).first() == Some(&index) {
             return None;
         }

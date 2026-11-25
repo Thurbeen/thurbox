@@ -140,7 +140,6 @@ pub fn divide_slot(area: Rect, axis: Axis, sizes: &[Size], gap: u16) -> Vec<Rect
 
 pub fn region_from_lua(value: &Value, path: &str) -> Result<Region, String> {
     match value {
-        // A bare string names a slot — the terse form for a one-slot screen.
         Value::String(name) => Ok(Region {
             slot: Some(name.to_string_lossy()),
             ..Region::default()
@@ -187,7 +186,6 @@ fn region_from_table(table: &Table, path: &str) -> Result<Region, String> {
     };
     let gap = opt_u16(table, "gap", path)?.unwrap_or(0);
 
-    // Children live under `children`, or in the array part.
     let list = match table.get::<Value>("children") {
         Ok(Value::Table(t)) => Some(t),
         Ok(Value::Nil) => {
@@ -279,7 +277,6 @@ mod tests {
         let placed = resolve(&region, area(100, 30));
         assert_eq!(rect_of(&placed, "sessions").unwrap().width, 25);
         assert_eq!(rect_of(&placed, "center").unwrap().width, 75);
-        // Columns must abut, leaving no unpainted gutter.
         assert_eq!(rect_of(&placed, "center").unwrap().x, 25);
     }
 
@@ -294,8 +291,6 @@ mod tests {
 
     #[test]
     fn a_slot_named_nowhere_gets_no_rect() {
-        // This is how a responsive arrangement hides a column: it simply stops
-        // naming the slot below a threshold.
         let placed = resolve(&region_of("{ slot = \"center\" }"), area(60, 20));
         assert!(rect_of(&placed, "sessions").is_none());
         assert!(rect_of(&placed, "center").is_some());
@@ -337,7 +332,6 @@ mod tests {
 
     #[test]
     fn a_slot_is_divided_among_its_occupants_by_declared_size() {
-        // The session list slot holding a list plus a one-line summary.
         let sizes = [
             Size::default(),
             Size {
@@ -364,7 +358,6 @@ mod tests {
 
     #[test]
     fn the_narrow_arrangement_drops_the_side_column() {
-        // The behaviour v1 hardcoded in compute_layout, now a Lua branch.
         let lua = Lua::new();
         let arrange: mlua::Function = lua
             .load(

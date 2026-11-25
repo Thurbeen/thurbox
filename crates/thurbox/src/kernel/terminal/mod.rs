@@ -29,6 +29,7 @@ use programs::ProgramSlot;
 
 const SHELL_SUFFIX: &str = "#shell";
 
+// xterm's Cb before the +32 offset: 0 left button, 32 a move with it held, 64/65 the wheel.
 fn mouse_report(
     encoding: vt100::MouseProtocolEncoding,
     button: u32,
@@ -264,7 +265,6 @@ impl Terminals {
     pub fn sync(&mut self, snapshot: &Snapshot, rows: u16, cols: u16) {
         self.collect_attached(rows, cols);
         self.drop_lost_panes(snapshot);
-        // A surface that lost its parser takes its cached rows with it.
         self.rows_cache
             .borrow_mut()
             .retain(|surface, _| self.surface_parser(surface).is_some());
@@ -273,10 +273,6 @@ impl Terminals {
         self.settle_starts(snapshot);
         self.evict_hidden();
 
-        // Anything no longer in the snapshot has been deleted; dropping the
-        // Session detaches it without touching the pane. An attach still in
-        // flight is left to finish and discarded on arrival — a worker cannot
-        // be cancelled, and its result is matched against the live rows.
         let present: std::collections::HashSet<&str> = snapshot
             .sessions
             .iter()
@@ -335,11 +331,6 @@ impl Terminals {
 
     #[must_use = "the caller decides whether the keystroke was consumed from this"]
     pub fn send(&self, session: &str, bytes: Vec<u8>) -> bool {
-        // A shell surface is addressed `<id>#shell`, the same spelling
-        // `render_session` resolves — so the pane you are looking at is the one
-        // your keystrokes reach. Without this leg the shell drew but could not
-        // be typed into, which only became visible once it stopped being a pane
-        // of its own and became a tab of the terminal.
         match self.pane(session) {
             Some(pane) => pane.send(bytes).is_ok(),
             None => false,
@@ -394,13 +385,9 @@ impl Terminals {
             Some(key) => self.programs.get(key).map(|slot| &*slot.pane),
             None => self.pane(surface).and_then(|pane| pane.wired()),
         };
-        // A surface with no pane yet — focused before it attached — is asked
-        // again next time rather than marked as handed its size.
         let Some(wired) = wired else {
             return;
         };
-        // Keyed on the pane as well as the surface: a restart replaces the pane
-        // under a name that keeps the focus, and the new pane has never had it.
         if self
             .size_focus
             .as_ref()
@@ -424,8 +411,6 @@ impl Terminals {
     }
 
     pub fn visible_text(&self, session: &str) -> Option<String> {
-        // A pane off screen long enough holds two cells rather than its
-        // screen; "nothing to copy" is the honest answer, not two blank rows.
         if !self.pane(session)?.is_resident() {
             return None;
         }
@@ -497,9 +482,6 @@ impl Terminals {
     }
 
     pub fn last_rect(&self, session: &str) -> Option<Rect> {
-        // A program surface keeps its rect on its own slot, so the one accessor
-        // answers for all three kinds — callers ask about "a surface", not about
-        // a session.
         if let Some(key) = self.program_key(session) {
             return self
                 .programs
@@ -595,7 +577,7 @@ impl Terminals {
         let Some((_, pane)) = self.pane_at(x, y) else {
             return false;
         };
-        // 35 is "motion, no button": 3 under the 32 move flag.
+        // xterm: 35 is "motion, no button", 3 under the 32 move flag.
         self.forward_button(pane, x, y, 35, true, |mode| {
             mode == vt100::MouseProtocolMode::AnyMotion
         })
@@ -634,8 +616,6 @@ impl Terminals {
             return false;
         };
 
-        // The rect is the surface's own content area, as for the wheel; a
-        // surface no longer painted has an empty one and gets nothing.
         if !pane.on_screen() {
             return false;
         }
@@ -772,11 +752,6 @@ impl Terminals {
         for (id, live) in &mut self.live {
             if let Some((activity, notification)) = live.session.sync_agent_meta() {
                 let entry = self.meta.entry(id.clone()).or_default();
-                // Compared before assigning, not assigned blind. This runs on
-                // every publish, and a write that changed nothing would still
-                // move the version below and invalidate every cached tree —
-                // which is how a change-signal quietly becomes worthless
-                // (`frame-cost`).
                 if entry.activity != activity || entry.notification != notification {
                     entry.activity = activity;
                     entry.notification = notification;
@@ -784,7 +759,6 @@ impl Terminals {
                 }
             }
         }
-        // A session that went away keeps no stale title.
         let before = self.meta.len();
         self.meta.retain(|id, _| self.live.contains_key(id));
         if moved || self.meta.len() != before {
@@ -923,8 +897,6 @@ mod tests {
         let reused = host.reused_groups();
         for _ in 0..3 {
             for row in &snapshot.sessions {
-                // Expire each retry without sleeping: completed worker results
-                // must refresh the private timer without invalidating Lua.
                 terminals.attach.failed.get_mut(&row.id).unwrap().at -= ATTACH_RETRY_INTERVAL;
                 complete(&mut terminals, &row.id, "host unreachable");
                 assert!(render(&terminals).contains("host unreachable"));
@@ -1057,30 +1029,25 @@ mod tests {
             mouse_report(E::Sgr, 65, 12, 3, true).expect("sgr"),
             b"\x1b[<65;12;3M".to_vec()
         );
-        // SGR keeps the button on a release — the final letter is what flips.
+        // SGR keeps the button on a release; the final letter is what flips.
         assert_eq!(
             mouse_report(E::Sgr, 0, 12, 3, false).expect("sgr"),
             b"\x1b[<0;12;3m".to_vec()
         );
-        // The original encoding offsets every field by 32. A program that asks
-        // for the mouse without asking for SGR used to be handed nothing, and
-        // its alternate screen leaves no scrollback to fall back on.
+        // The original `CSI M` encoding offsets every field by 32.
         assert_eq!(
             mouse_report(E::Default, 64, 12, 3, true).expect("default"),
             vec![0x1b, b'[', b'M', 96, 44, 35]
         );
-        // ...and it spells every release button 3, whatever went down.
+        // The original encoding spells every release button 3.
         assert_eq!(
             mouse_report(E::Default, 0, 12, 3, false).expect("default"),
             vec![0x1b, b'[', b'M', 35, 44, 35]
         );
-        // Past 223 there is no legal report, and a truncated one would land
-        // the event on the wrong cell.
+        // Past 223 the original encoding has no legal report.
         assert_eq!(mouse_report(E::Default, 64, 224, 3, true), None);
         assert!(mouse_report(E::Default, 64, 223, 223, true).is_some());
-        // `?1005` is the default encoding with each field a UTF-8 character,
-        // so a small coordinate reads the same and a large one takes two bytes
-        // instead of running out at 223.
+        // `?1005` writes each field as a UTF-8 character, so the 223 cap lifts.
         assert_eq!(
             mouse_report(E::Utf8, 64, 12, 3, true).expect("utf8"),
             b"\x1b[M`,#"
@@ -1355,7 +1322,6 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let marker = dir.path().join("viewed");
         let program = dir.path().join("runtime-mux");
-        // A stand-in view: it notes how it ran and closes without a hello.
         std::fs::write(
             &program,
             format!("#!/bin/sh\nprintf '%s ' \"$@\" > '{}'\n", marker.display()),
@@ -1380,7 +1346,6 @@ mod tests {
         let row = row("a", &route.format(), Some("%1"));
         assert_eq!(row.backend, "local:tmux");
         terminals.start_attach(&row, "%1".into(), 24, 80);
-        // The control-mode path would reach the fake's `adopt`, which panics.
         let _ = terminals
             .attach
             .attached
@@ -1409,8 +1374,6 @@ mod tests {
         terminals.sync(&snapshot(vec![row("a", "local:tmux", None)]), 24, 80);
         assert!(!terminals.is_attached("a"));
         assert_eq!(terminals.failure("a"), Some("session has no pane yet"));
-        // And the attempt is recorded as "there was no pane", which is what lets
-        // a window appearing later be picked up instead of latched out.
         assert_eq!(terminals.attach.failed["a"].pane, None);
     }
 

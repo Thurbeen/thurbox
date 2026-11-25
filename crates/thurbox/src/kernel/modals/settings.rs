@@ -38,7 +38,6 @@ impl CoreField {
         let altered = match (self.get)(&base) {
             Value::Bool(on) => Value::Bool(!on),
             Value::Number(n) => Value::Number(n + 1.0),
-            // Any name but the current one, so the write is always a change.
             Value::Text(current) => {
                 Value::Text(if current == "off" { "auto" } else { "off" }.to_string())
             }
@@ -185,10 +184,6 @@ const CORE_FIELDS: &[CoreField] = &[
         id: "git_poll_secs",
         description: "seconds between git stats of a session; 0 is off",
         get: |s| Value::Number(s.git_poll_secs as f64),
-        // Floored at 0 and nowhere else: 0 is the off switch, and a machine
-        // where every process launch is scanned is exactly where someone wants
-        // it. Every other value is the operator's trade of freshness for
-        // subprocesses.
         set: |s, v| {
             if let Value::Number(n) = v {
                 s.git_poll_secs = n.max(0.0) as u64;
@@ -240,8 +235,6 @@ fn core_rows(draft: &Settings) -> Vec<Setting> {
         .map(|field| Setting {
             owner: CORE_OWNER.to_string(),
             id: field.id.to_string(),
-            // The marker rides in the description because a row is one line and
-            // this is the same information v1 puts in its own column.
             description: if field.restart_required() {
                 format!("{RESTART_MARK} {}", field.description)
             } else {
@@ -350,8 +343,6 @@ impl SettingsModal {
         on_disk: &Settings,
         inventory: &[FileRow],
     ) -> Outcome {
-        // Tab switching outranks both halves, but not a text edit: while a value
-        // is being typed into, `[` is a bracket.
         if self.editing.is_none() {
             match key.code {
                 KeyCode::Char(']') => {
@@ -382,8 +373,6 @@ impl SettingsModal {
         if self.editing.is_some() {
             return Outcome::Stay(self.edit_key(key, registry, on_disk));
         }
-        // The core half is a document, so it is saved rather than applied per
-        // keystroke — and only when there is something to save.
         if key.code == KeyCode::Char('s') && key.modifiers.contains(KeyModifiers::CONTROL) {
             return match self.draft.clone() {
                 Some(draft) if self.dirty(on_disk) => Outcome::Save(Box::new(draft)),
@@ -397,9 +386,6 @@ impl SettingsModal {
             KeyCode::Char('k') | KeyCode::Up | KeyCode::BackTab => {
                 self.selected = (self.selected + total - 1) % total;
             }
-            // A screenful is however many rows the last frame fitted, which is
-            // exactly the number of row hitboxes it recorded. These clamp
-            // rather than wrap: paging past the end means "the end".
             KeyCode::PageDown => self.selected = (self.selected + self.page()).min(total - 1),
             KeyCode::PageUp => self.selected = self.selected.saturating_sub(self.page()),
             KeyCode::Home => self.selected = 0,
@@ -442,8 +428,6 @@ impl SettingsModal {
         let setting = self.current(registry, on_disk)?;
         match &setting.value {
             Value::Number(n) => self.put(registry, on_disk, &setting, Value::Number(n + by)),
-            // A bool has two states, so a horizontal step is the same act as a
-            // toggle.
             Value::Bool(on) => self.put(registry, on_disk, &setting, Value::Bool(!on)),
             Value::Text(name) if setting.owner == CORE_OWNER => {
                 let next = next_backend(name, by >= 0.0);
@@ -460,8 +444,6 @@ impl SettingsModal {
     fn reset(&mut self, registry: &mut Registry, on_disk: &Settings) -> Option<String> {
         let setting = self.current(registry, on_disk)?;
         if setting.owner == CORE_OWNER {
-            // Back to what an untouched file would hold — still a draft, so the
-            // file is not written until save.
             let value = setting.default.clone();
             return self.write_core(on_disk, &setting.id, value);
         }
@@ -566,8 +548,6 @@ impl SettingsModal {
 
         let (lines, rows) = self.build_rows(settings, inner_width, chrome);
         let footer = self.footer(settings, self.dirty(on_disk), inner_width, chrome);
-        // Sized to the real content — headers, separators and rows — then
-        // clamped to the screen, exactly as v1 sizes its panel.
         let height = (lines.len() + footer.len() + 2)
             .try_into()
             .unwrap_or(u16::MAX)
@@ -576,7 +556,6 @@ impl SettingsModal {
         let modal = chrome::centered_fixed_rect(width, height, area);
         let inner = self.frame_with_tabs(frame, modal, chrome);
 
-        // The footer is pinned; the rows scroll-window around the active one.
         let visible = usize::from(inner.height).saturating_sub(footer.len());
         let active_line = rows
             .iter()
@@ -628,8 +607,6 @@ impl SettingsModal {
             primary: !self.dirty(on_disk),
             key: Replay::ESC,
         });
-        // Extended, never assigned: the tab headings are already in here, and
-        // replacing the list would leave them drawn but unclickable.
         let placed = chrome::button_bar(frame, footer_row, &pills, chrome);
         self.hits.buttons.extend(placed);
     }
@@ -659,10 +636,6 @@ impl SettingsModal {
         files: Files<'_>,
         chrome: Chrome,
     ) {
-        // Sized to its content the way the settings half is: the directory line,
-        // a line per file and per group header up to the cap, the selected
-        // file's details, the footer, and the border. A fixed height left blank
-        // rows under a short list.
         let listed = self
             .interface
             .listed(files.rows)
@@ -697,7 +670,6 @@ impl SettingsModal {
             primary: true,
             key: Replay::ESC,
         }];
-        // The pill's label and its padding, plus a space before it.
         let room = footer_row
             .width
             .saturating_sub(pills[0].label.len() as u16 + 3);
@@ -716,8 +688,6 @@ impl SettingsModal {
         width: usize,
         chrome: Chrome,
     ) -> (Vec<Line<'a>>, Vec<Row>) {
-        // The widest value across every row, so the value column aligns —
-        // v1's `value_width` — up to the cap a long text value is cut to.
         let value_width = value_column(settings);
         let id_width = settings
             .iter()
@@ -768,16 +738,12 @@ impl SettingsModal {
             Some(setting) if setting.owner == CORE_OWNER => footer.push(Line::from(vec![
                 Span::styled("  settings.toml  ", chrome.muted()),
                 Span::styled(setting.id.clone(), chrome.muted()),
-                // Said here rather than left to be inferred: the mark is the only
-                // thing distinguishing a row that applies now from one that waits,
-                // and an unexplained glyph carries none of that.
                 Span::styled(format!("   {RESTART_MARK} needs restart"), chrome.muted()),
             ])),
             Some(setting) => {
                 let key = format!("  key  {}.{}", setting.owner, setting.id);
                 let used = key.chars().count();
                 let mut line = vec![Span::styled(key, chrome.muted())];
-                // A pick says what it picks among, since the row shows one.
                 if !setting.choices.is_empty() {
                     line.push(Span::styled(
                         chrome::truncate(
@@ -787,8 +753,6 @@ impl SettingsModal {
                         chrome.muted(),
                     ));
                 }
-                // The row only has room for a count, so the selected list is
-                // spelled out here, cut to the line.
                 if let (true, Value::Text(text)) = (setting.list, &setting.value) {
                     line.push(Span::styled(
                         chrome::truncate(
@@ -812,7 +776,6 @@ impl SettingsModal {
                 ("Esc", " discard"),
             ]
         } else if dirty {
-            // The restart mark is on the rows themselves; this says what the key is.
             &[
                 ("j/k", " move  "),
                 ("Space", " toggle  "),
@@ -847,7 +810,6 @@ fn display(value: &Value) -> String {
     match value {
         Value::Bool(true) => "on".to_string(),
         Value::Bool(false) => "off".to_string(),
-        // Whole numbers are the common case and `30` reads better than `30.0`.
         Value::Number(n) if n.fract() == 0.0 => format!("{n:.0}"),
         Value::Number(n) => format!("{n}"),
         Value::Text(text) => text.clone(),
@@ -919,11 +881,7 @@ fn desired_width(settings: &[Setting]) -> u16 {
     let longest = |f: fn(&Setting) -> usize| settings.iter().map(f).max().unwrap_or(0);
     let id = longest(|s| s.id.chars().count());
     let value = value_column(settings);
-    // The restart mark rides in the description of a restart-only row, so the
-    // column has to allow for it or the mark is what pushes a description over
-    // the edge.
     let description = longest(|s| s.description.chars().count()) + 2;
-    // 2 frame + 2 pointer + id + 1 + description + 1 gap + value.
     u16::try_from(2 + 2 + id + 1 + description + 1 + value).unwrap_or(MODAL_WIDTH_MAX)
 }
 
@@ -962,7 +920,6 @@ fn setting_line<'a>(
     };
     let changed = setting.value != setting.default;
     let value_style = match (&setting.value, changed) {
-        // A knob you moved should be visible at a glance among thirty defaults.
         (_, true) => chrome.selected_item(),
         (Value::Bool(true), _) => chrome
             .muted()
@@ -972,9 +929,6 @@ fn setting_line<'a>(
     };
 
     let value = match editing {
-        // A block caret, so an open edit is unmistakably where the keys go. The
-        // tail is what shows when the buffer outgrows the column: that is where
-        // the caret is, and an edit is the one place the whole value is reached.
         Some(buffer) => {
             let text: Vec<char> = format!("{buffer}█").chars().collect();
             if text.len() > value_width {
@@ -997,8 +951,6 @@ fn setting_line<'a>(
         .saturating_sub(block + description.chars().count() + right)
         .max(1);
 
-    // The value is right-justified in its column, as v1 justifies it, so every
-    // row's value ends on the same screen column however long its id is.
     let value_pad = right.saturating_sub(value.chars().count());
     Line::from(vec![
         Span::styled(format!("{pointer}{id} "), id_style),
@@ -1146,8 +1098,6 @@ mod tests {
         assert_eq!(registry.settings()[0].value, Value::Bool(false));
     }
 
-    // ── the core half ──────────────────────────────────────────────────────
-
     fn core_row(id: &str) -> usize {
         CORE_FIELDS
             .iter()
@@ -1204,8 +1154,6 @@ mod tests {
         assert!(modal.dirty(&on_disk));
         assert!(on_disk.features.shell_pane, "and the file has not moved");
 
-        // Saving hands the whole draft over; the file and the live half are the
-        // loop's business, not the modal's.
         match modal.on_key(&ctrl(KeyCode::Char('s')), &mut registry, &on_disk, &[]) {
             Outcome::Save(draft) => assert!(!draft.features.shell_pane),
             other => panic!(
@@ -1237,8 +1185,6 @@ mod tests {
             on_disk.notifications.min_interval_secs + 1
         );
 
-        // The backend is an enum: typing a fifth spelling would be ignored, so it
-        // is stepped through the four that exist.
         modal.selected = core_row("notifications.backend");
         message(modal.on_key(&press(KeyCode::Right), &mut registry, &on_disk, &[]));
         assert_eq!(
@@ -1328,11 +1274,6 @@ mod tests {
 
     #[test]
     fn an_open_edit_paints_its_own_caret() {
-        // The caret is a GLYPH, not the terminal's cursor: a modal is drawn over
-        // whatever it covers, and a painted caret survives that without having
-        // to arbitrate the real cursor with the panes underneath. Asserted
-        // because a field with no caret still accepts input — the loss only
-        // shows up later, as "where am I typing?".
         let mut registry =
             registry_with(vec![setting("plugin", "label", Value::Text("hi".into()))]);
         let on_disk = Settings::default();
@@ -1350,10 +1291,8 @@ mod tests {
     fn the_restart_marker_agrees_with_what_the_reload_does() {
         let base = Settings::default();
         for field in CORE_FIELDS {
-            // What the row claims.
             let claimed = field.restart_required();
 
-            // What a reload would actually do with that field changed.
             let mut changed = base.clone();
             let altered = match (field.get)(&base) {
                 Value::Bool(on) => Value::Bool(!on),

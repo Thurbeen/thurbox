@@ -172,11 +172,11 @@ impl Command {
             | Command::Diff { session }
             | Command::Editor { session }
             | Command::Shell { session } => session,
-            Command::ActionTarget { argument, value, .. } if argument == "session_id" => value,
+            Command::ActionTarget {
+                argument, value, ..
+            } if argument == "session_id" => value,
             Command::ActionTarget { .. } => "",
-            // Names no session yet — that is the point of creating one.
             Command::Create { .. } => "",
-            // Global, not per-session.
             Command::Theme { .. }
             | Command::Mod { .. }
             | Command::Bookmark { .. }
@@ -186,8 +186,6 @@ impl Command {
             | Command::Order { .. }
             | Command::Program { .. }
             | Command::Emit { .. }
-            // Chrome, not a row: an action names a verb and a message a
-            // sentence.
             | Command::Action { .. }
             | Command::Message { .. }
             | Command::Focus { .. } => "",
@@ -224,17 +222,11 @@ impl Command {
             | Command::Restart { .. }
             | Command::Create { .. }
             | Command::Mod { .. }
-            // Fleet has no undo window, so every delete is for good.
             | Command::Delete { .. } => Some(Capability::Sessions),
-            // Arrange, name or resume what already exists; nothing is typed
-            // into an agent and nothing is lost.
             Command::Order { .. }
             | Command::Rename { .. }
             | Command::Start { .. }
             | Command::Bookmark { .. } => None,
-            // The interface's own state, or something the user then drives
-            // themselves: a pane focused, a shell or editor opened beside a
-            // session, a theme, a setting, a message, a screen copied.
             Command::Focus { .. }
             | Command::Shell { .. }
             | Command::Editor { .. }
@@ -244,10 +236,6 @@ impl Command {
             | Command::Setting { .. }
             | Command::Message { .. }
             | Command::Emit { .. } => None,
-            // The kernel's paste types the clipboard into the focused agent, so
-            // a pane may not press it for the user. Any other action runs its
-            // owner's handler, and what that issues is checked as this pane's
-            // request (`LuaHost::acting_for`).
             Command::Action { action, .. } | Command::ActionTarget { action, .. }
                 if action == super::clipboard::PASTE_ACTION =>
             {
@@ -316,15 +304,9 @@ impl Command {
         }
     }
 
+    // MUST KILL: type — a `HostName` newtype would settle the bare vs `ssh:`-prefixed spelling once
     pub fn host(&self) -> Option<String> {
         match self {
-            // Bare, because that is how a session's machine is published and
-            // the two are compared. A create carries whichever spelling its
-            // caller had — the interface's host picker passes the prefixed
-            // backend name (`ssh:devbox`), `thurbox-cli --host` the bare one —
-            // and `resolve_host` takes either, so only this side needs to
-            // settle on one. Left prefixed, the session list drew a creation
-            // under a machine named `ssh:devbox` beside the real `devbox`.
             Command::Create { host, .. } => host.as_deref().map(|name| {
                 crate::session::host_of_key(name)
                     .unwrap_or(name)
@@ -337,16 +319,12 @@ impl Command {
     pub fn parse(kind: &str, args: Args) -> Result<Self, String> {
         match kind {
             "emit" => Self::parse_emit(args),
-            // Chrome a pane contributes to. Neither names a session: one names a
-            // verb the registry already knows, the other a sentence.
             "action" => Self::parse_action(args),
             "message" => Self::parse_message(args),
             "mod" | "plugin" => Self::parse_mod(args),
             "set" => Self::parse_setting(args),
-            // Creation names a repository, not a session.
             "create" => Self::parse_create(args),
             "bookmark" => Self::parse_bookmark(args),
-            // Focus names a pane, not a session.
             "focus" => match args.text.filter(|t| !t.is_empty()) {
                 Some(mod_name) => Ok(Command::Focus {
                     mod_name,
@@ -354,20 +332,14 @@ impl Command {
                 }),
                 None => Err("command \"focus\" needs a mod name".to_string()),
             },
-            // A link names a url, not a session.
             "open" => match args.text.filter(|t| !t.is_empty()) {
                 Some(url) => Ok(Command::OpenLink { url }),
-                // Names the field, because the field is what goes wrong:
-                // `{ url = ... }` is what "needs a url" invites, and it parses
-                // to no text and so to no visible effect at all.
                 None => Err("command \"open\" needs a url in text".to_string()),
             },
-            // Theme is global.
             "theme" => match args.text {
                 Some(name) if !name.is_empty() => Ok(Command::Theme { name }),
                 _ => Err("command \"theme\" needs a name".to_string()),
             },
-            // An explicit order names every session at once rather than one.
             "order" => {
                 if args.list.is_empty() {
                     Err("command \"order\" needs a list of session ids".to_string())
@@ -376,7 +348,6 @@ impl Command {
                 }
             }
             "program" => Self::parse_program(args),
-            // Every other command acts on one session.
             _ => Self::parse_session_command(kind, args),
         }
     }
@@ -395,10 +366,6 @@ impl Command {
 
     fn parse_action(args: Args) -> Result<Self, String> {
         let Some(action) = args.text.filter(|t| !t.is_empty()) else {
-            // Names the field, because the field is what goes wrong:
-            // `{ action = … }` is what this verb invites, and an option no
-            // verb reads is collected and ignored — so it would enqueue a
-            // no-op with nothing to report.
             return Err("command \"action\" needs an action id in text".to_string());
         };
         if !args.session.is_empty() {
@@ -502,8 +469,6 @@ impl Command {
             Some("create") => BookmarkEdit::Create,
             Some("init") => BookmarkEdit::Init,
             Some("clone") => match args.text.as_deref().map(str::trim) {
-                // A leading `-` is refused rather than left to `git clone --`:
-                // the flow's field takes any text, and this says why it failed.
                 Some(url) if !url.is_empty() && !url.starts_with('-') => BookmarkEdit::Clone {
                     url: url.to_string(),
                 },
@@ -527,10 +492,6 @@ impl Command {
         super::terminal::validate_program_name(&name)?;
         let close = matches!(args.action.as_deref(), Some("close") | Some("stop"));
         let program = args.repo.unwrap_or_default();
-        // Typing is checked before the program is required: `keys` alone
-        // names a pane that is already running, so asking for `repo` as well
-        // would be asking what to start something already started with. Both
-        // together are legal and mean "type, or start if it is not there".
         let keys = args.keys.filter(|keys| !keys.is_empty());
         if keys.is_some() && close {
             return Err(
@@ -574,8 +535,6 @@ impl Command {
                 None => Err("command \"send\" needs text".to_string()),
             },
 
-            // An empty name is still a rename: the worker refuses it with the
-            // reason the CLI gives, which a parse error here could not match.
             "rename" => Ok(Command::Rename {
                 session,
                 name: text.unwrap_or_default(),
@@ -647,9 +606,7 @@ mod tests {
         };
         assert_eq!(asked("ssh:devbox").as_deref(), Some("devbox"));
         assert_eq!(asked("wsl:Ubuntu").as_deref(), Some("Ubuntu"));
-        // Already bare, and left alone.
         assert_eq!(asked("devbox").as_deref(), Some("devbox"));
-        // Nothing to name: this machine.
         assert_eq!(
             Command::parse(
                 "create",
@@ -695,7 +652,6 @@ mod tests {
                 text: "hi".into()
             })
         );
-        // No name at all still parses: the worker's refusal carries the reason.
         for (text, name) in [(Some("renamed"), "renamed"), (None, "")] {
             let parsed = Command::parse(
                 "rename",
@@ -1281,8 +1237,6 @@ mod tests {
                 action: "help.open".into(),
             })
         );
-        // Names the field, because the field is what goes wrong: `{ action = … }`
-        // is what the verb invites, and it parses to no text at all.
         let error = Command::parse("action", Args::default()).unwrap_err();
         assert!(error.contains("text"), "{error}");
     }
@@ -1316,8 +1270,6 @@ mod tests {
                 level: crate::kernel::bands::Level::Error,
             })
         );
-        // Refused rather than quietly read as info: a level nobody badges is a
-        // typo, and a typo that renders as a normal message is invisible.
         let error = Command::parse(
             "message",
             Args {
@@ -1388,7 +1340,6 @@ mod tests {
         assert_eq!(command.kind(), "diff");
         assert_eq!(command.session(), "s1");
         assert!(matches!(command, Command::Diff { .. }));
-        // And it is refused without one, like every session-scoped command.
         assert!(Command::parse("diff", Args::default()).is_err());
     }
 
@@ -1424,7 +1375,6 @@ mod tests {
             }
         )
         .is_err());
-        // A verb no engine runs any more is no command at all.
         for gone in ["reorder", "restore", "fork", "sync", "task", "automation"] {
             assert!(Command::parse(
                 gone,
@@ -1469,11 +1419,8 @@ mod tests {
 
     #[test]
     fn dispatch_returns_immediately_and_reports_the_command_in_flight() {
-        // The property that matters: accepting a command does not wait for it.
         let bus = CommandBus::fleet(crate::fleet_link::FleetLink::local("thurbox-test-no-fleet"));
         let started = std::time::Instant::now();
-        // No fleet to run fails fast in the worker, which is fine — what is asserted
-        // here is that *dispatch* did not block on any of it.
         bus.dispatch(Command::Delete {
             session: "not-a-uuid".into(),
             force: false,
@@ -1495,7 +1442,6 @@ mod tests {
             force: false,
         });
 
-        // Poll until the worker reports back.
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
         while std::time::Instant::now() < deadline {
             bus.poll();
@@ -1519,9 +1465,6 @@ mod tests {
 
     #[test]
     fn a_failed_command_is_not_reported_as_work_in_flight() {
-        // The progress line is derived from this, and it outranks the message
-        // band. A failure lingers longer than a message is retained, so counting
-        // it as progress hid the error for exactly as long as the error existed.
         let mut bus =
             CommandBus::fleet(crate::fleet_link::FleetLink::local("thurbox-test-no-fleet"));
         let id = bus.dispatch(Command::Delete {
@@ -1540,9 +1483,6 @@ mod tests {
 
     #[test]
     fn a_failure_is_skipped_to_find_the_work_still_running_behind_it() {
-        // The failure is FIRST in the list, so a `first()` would stop there and
-        // report nothing in flight while a creation was genuinely running — the
-        // band would go quiet mid-spawn.
         let mut bus =
             CommandBus::fleet(crate::fleet_link::FleetLink::local("thurbox-test-no-fleet"));
         let failed = bus.dispatch(Command::Delete {
@@ -1563,12 +1503,6 @@ mod tests {
 
     #[test]
     fn a_worker_announcing_itself_cannot_revive_a_finished_row() {
-        // The worker sets `Running` from its own thread, so that write races
-        // whatever resolved the row first. Losing the race used to overwrite
-        // `Failed` — which put the failure back on the progress line, hiding the
-        // error that explains it, and made
-        // `a_failure_is_skipped_to_find_the_work_still_running_behind_it` fail
-        // about one run in twenty.
         let mut entry = InFlight {
             id: 1,
             kind: "delete",
@@ -1581,7 +1515,6 @@ mod tests {
         entry.started();
         assert_eq!(entry.phase, Phase::Failed, "a phase only moves forward");
 
-        // A queued row is exactly what the announcement is for.
         let mut queued = InFlight {
             phase: Phase::Queued,
             ..entry
@@ -1592,8 +1525,6 @@ mod tests {
 
     #[test]
     fn work_in_flight_is_reported_as_running() {
-        // The other half of the contract: an ordinary in-flight command must
-        // still drive the progress line.
         let bus = CommandBus::fleet(crate::fleet_link::FleetLink::local("thurbox-test-no-fleet"));
         assert!(bus.first_running().is_none(), "nothing dispatched yet");
         let id = bus.dispatch(Command::Rename {
@@ -1626,13 +1557,6 @@ mod tests {
 
     #[test]
     fn a_command_that_succeeds_is_gone_from_the_list_by_the_time_poll_returns() {
-        // The property that made "watch the in-flight list for completions"
-        // wrong, and that cost two attempts at fixing a frozen restart: a
-        // successful command is retired INSIDE `poll`, so anything sampling the
-        // list afterwards never sees it. Only a failure lingers, for the panes.
-        //
-        // Anything that needs to know a command finished must therefore have
-        // recorded it when it was DISPATCHED.
         let mut bus =
             CommandBus::fleet(crate::fleet_link::FleetLink::local("thurbox-test-no-fleet"));
         let id = bus.dispatch(Command::Focus {
@@ -1644,8 +1568,6 @@ mod tests {
             "it is in the list while it is running"
         );
 
-        // Focus is applied on the UI thread and never reaches a worker, so drive
-        // the same retirement the worker path uses.
         bus.finish_for_test(id, None);
         assert!(bus.poll(), "poll reports that something finished");
         assert!(
@@ -1684,8 +1606,6 @@ mod tests {
         };
         assert_eq!(program.session(), "");
         assert_eq!(program.kind(), "program");
-        // Applied by the loop: the pane is wired into the `!Send` world the
-        // agent's terminal lives in, exactly as a shell's is.
         assert!(program.applied_on_ui_thread());
     }
 
@@ -1704,10 +1624,7 @@ mod tests {
             )
         };
         assert!(ask("watch", None).is_ok());
-        // Closing needs no program — the pane is being given up.
         assert!(ask("", Some("close")).is_ok());
-        // Starting nothing is a mistake worth reporting, not an empty command line
-        // handed to the multiplexer.
         let error = ask("", None).expect_err("should refuse");
         assert!(error.contains("program"), "{error}");
     }
@@ -1740,17 +1657,12 @@ mod tests {
             other => panic!("expected a program command, got {other:?}"),
         }
 
-        // Empty keys are nothing to say, not a request to start something with no
-        // program — so they fall through to the ordinary refusal.
         let error = ask(Some(b""), "", None).expect_err("should refuse");
         assert!(error.contains("program"), "{error}");
 
-        // Two different things to do to one pane in one call.
         let error = ask(Some(b"q"), "", Some("close")).expect_err("should refuse");
         assert!(error.contains("close"), "{error}");
 
-        // Keys AND a program is the fallback form: both survive parsing, and
-        // `apply_program` is what chooses between them from the pane's liveness.
         let both = ask(Some(b":e /tmp/x\r"), "nvim", None).expect("keys may carry a fallback");
         match both {
             Command::Program {

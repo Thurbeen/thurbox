@@ -164,7 +164,6 @@ impl CommandBus {
                         entry.started();
                     }
                 }
-                // A panic must not strand the remaining commands for this session.
                 let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                     executor.execute(&command, id, &progress)
                 }))
@@ -173,8 +172,6 @@ impl CommandBus {
                 if session.is_empty() {
                     break;
                 }
-                // Retire an empty queue under the dispatch lock, so a new command
-                // either joins this worker or starts its successor, never both.
                 let mut queues = pending.lock().unwrap();
                 next = queues.get_mut(&session).and_then(VecDeque::pop_front);
                 if next.is_none() {
@@ -191,8 +188,6 @@ impl CommandBus {
     }
 
     pub fn poll(&mut self) -> bool {
-        // Phase changes first, so a command that reports and then finishes in
-        // the same window does not show a stale stage.
         let mut changed = self.drain_progress();
         changed |= self.drain_finished();
         changed |= self.sweep_expired_failures();
@@ -221,8 +216,6 @@ impl CommandBus {
                 continue;
             };
             match done.error {
-                // Success: the effect is in Fleet now, so the entry has
-                // nothing left to say.
                 None => {
                     if let Some(entry) = list
                         .iter()

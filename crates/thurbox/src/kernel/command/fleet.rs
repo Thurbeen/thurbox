@@ -26,8 +26,6 @@ impl super::Executor for Fleet {
         _progress: &Sender<Progress>,
     ) -> Result<Outcome, String> {
         match command {
-            // A confirmation is checked against the Task as it is now, the
-            // way thurbox's engine checks it against the row.
             Command::Guarded {
                 inner,
                 session,
@@ -75,8 +73,6 @@ impl super::Executor for Fleet {
                     },
                     &session,
                 )?];
-                // Every other repository is on the same branch, from its own
-                // default: the base asked for is the first repository's.
                 for extra in extras {
                     urls.push(workspace_url(
                         fleet,
@@ -106,14 +102,8 @@ impl super::Executor for Fleet {
                     "metadata": {"name": task_name},
                     "spec": spec,
                 });
-                // The name as given, which the row is published under and a
-                // finished creation finds it by.
                 task["metadata"]["labels"][crate::kernel::snapshot::fleet::NAME_LABEL] =
                     json!(name);
-                // Create-only: a plain apply would update a Task already
-                // there, so two names that make one Task name (`Review`,
-                // `review`) are refused rather than merged, by Fleet's
-                // exclusive create even when two interfaces race.
                 fleet.run(
                     &["apply", "--create-only", "-f", "-"],
                     Some(&task.to_string()),
@@ -144,13 +134,10 @@ impl super::Executor for Fleet {
                 let (link, task) = self.fleets.route(session)?;
                 rename(link, task, name)?
             }
-            // Fleet has no undo window: a delete is for good.
             Command::Delete { session, .. } => {
                 let (link, task) = self.fleets.route(session)?;
                 link.run(&["delete", "task", task], None)?
             }
-            // Everything else is a file of thurbox's, or a command no engine
-            // runs: refused by name, never dropped.
             _ => {
                 return super::execute::local(command).unwrap_or_else(|| {
                     Err(format!(
@@ -170,7 +157,6 @@ pub(crate) fn task_name(name: &str) -> String {
         if c.is_ascii_alphanumeric() {
             out.push(c);
         } else if c == '.' {
-            // Fleet's names forbid `..`, so a run of dots is one.
             if !out.ends_with('.') {
                 out.push(c);
             }
@@ -188,14 +174,12 @@ fn place(fleet: &crate::fleet_link::FleetLink, route: Option<&str>) -> Result<St
         Some(route) if crate::session::Route::parse(route).is_ok_and(|r| r.is_local()) => {
             "local".to_string()
         }
-        // The flow's host rows carry Fleet's own host names.
         Some(route) if !route.contains(':') => route.to_string(),
         Some(route) => crate::session::host_of_key(route)
             .ok_or_else(|| format!("not a host: {route}"))?
             .to_string(),
     };
     let answer = json(fleet, &["runtime", "hosts", "--json"])?;
-    // `null`: one runtime serves any host.
     if let Some(hosts) = answer["hosts"].as_array() {
         if !hosts.iter().any(|known| known == host.as_str()) {
             let known: Vec<&str> = hosts.iter().filter_map(|h| h.as_str()).collect();
@@ -305,9 +289,7 @@ fn workspace_url(
     } else {
         std::path::PathBuf::from(repo)
     };
-    // A path elsewhere is read as that machine reads it, which need not be
-    // this machine's way: `/srv/app` is absolute on a Linux host even when
-    // thurbox runs on Windows.
+    // `/srv/app` is absolute on a Linux host even when thurbox runs on Windows.
     let absolute = if local {
         dir.is_absolute()
     } else {
@@ -355,6 +337,7 @@ fn clone_url(repo: &str) -> Option<String> {
     }
     Some(match path.strip_prefix('/') {
         Some(absolute) => format!("git+ssh://{login}/{absolute}"),
+        // An ssh URL writes the login's home as `/~/`.
         None => format!("git+ssh://{login}/~/{path}"),
     })
 }
@@ -370,6 +353,7 @@ fn has_drive(path: &str) -> bool {
     b.len() >= 3 && b[0].is_ascii_alphabetic() && b[1] == b':' && matches!(b[2], b'/' | b'\\')
 }
 
+// A URL spells a Windows drive after a slash (`C:\x` is `/C:/x`) and drops `\\?\`.
 fn url_path(path: &str) -> String {
     let path = path.strip_prefix(r"\\?\").unwrap_or(path);
     if has_drive(path) {
@@ -635,8 +619,7 @@ mod tests {
             url("https://github.com/o/r.git", Choice::default()),
             "git+https://github.com/o/r.git?branch=wt"
         );
-        // git's scp-like form: a relative path is under the login's home,
-        // an absolute one is not.
+        // git's scp-like form: a relative path is under the login's home, an absolute one is not.
         assert_eq!(
             url("me@box:repos/app.git", Choice::default()),
             "git+ssh://me@box/~/repos/app.git?branch=wt"

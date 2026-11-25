@@ -7,7 +7,6 @@ pub fn done(kind: &str, label: Option<&str>) -> Option<String> {
         "pause" => "pausing",
         "restart" => "restarting",
         "bookmark" => "remembered",
-        // Visible where it happened, or housekeeping nobody asked for.
         _ => return None,
     };
     Some(match label {
@@ -37,7 +36,6 @@ mod tests {
             done("send", Some("fix-osc52")).as_deref(),
             Some("sent to fix-osc52")
         );
-        // A command with nothing to name still says what it did.
         assert_eq!(done("create", None).as_deref(), Some("created"));
     }
 

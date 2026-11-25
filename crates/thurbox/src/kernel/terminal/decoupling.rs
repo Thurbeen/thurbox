@@ -6,9 +6,6 @@ use ratatui::backend::TestBackend;
 use ratatui::layout::Rect;
 use ratatui::Terminal;
 
-// Nothing from `crate::agent` is imported here, by rule rather than by
-// accident: the kernel reaches it by fully-qualified path only, never by `use`
-// (`crates/architecture.toml`), and a test is not an exception to it.
 use super::{shell_surface, Live, Painted, Terminals};
 use crate::kernel::layout::{resolve, Region};
 use crate::kernel::node::{Axis, Node, Size, SurfaceSource};
@@ -366,8 +363,6 @@ impl Harness {
                 shell: Painted::default(),
             },
         );
-        // Both panes were born at the terminal's size; the arrangement is what
-        // the assertions are about, so the record starts here.
         recorder.resizes.lock().expect("resizes").clear();
         Self {
             terminals,
@@ -529,7 +524,6 @@ async fn each_pane_is_the_size_of_its_own_slot() {
         "the fixture is only a reproduction while the two slots differ"
     );
 
-    // The report, as an assertion: the agent rendered at the SHELL's size.
     assert_eq!(
         harness.grid(false),
         (agent.height, agent.width),
@@ -541,9 +535,6 @@ async fn each_pane_is_the_size_of_its_own_slot() {
         "the shell's grid must be its own slot's size"
     );
 
-    // And neither pane was ever sent the other's dimensions — a grid that
-    // happens to end up right after being told the wrong thing twice is the
-    // flashing, not the fix.
     assert_eq!(
         harness.backend.sizes(AGENT_PANE),
         vec![(agent.height, agent.width)],
@@ -567,9 +558,6 @@ async fn a_settled_arrangement_stops_resizing() {
         harness.frame(&arrangement, WIDTH, HEIGHT);
     }
 
-    // The flashing, as a number: two panes taking turns claiming one size memo
-    // resize each other on every frame forever. Each pane owning its own means
-    // the second frame has nothing to say.
     assert_eq!(
         harness.backend.count(),
         after_first,
@@ -600,8 +588,6 @@ async fn the_shell_draws_itself_with_the_agent_nowhere_on_screen() {
         (HEIGHT, WIDTH),
         "a shell alone on the screen takes the screen"
     );
-    // The agent is not on screen, so nothing sized it — its grid is where the
-    // attach left it rather than wherever the shell went.
     assert_eq!(harness.backend.sizes(AGENT_PANE), Vec::new());
 }
 
@@ -610,9 +596,6 @@ async fn the_agent_is_untouched_by_a_shell_that_appears_beside_it() {
     let harness = Harness::new(HEIGHT, WIDTH);
     harness.print(false, "AGENT-SCREEN");
 
-    // A frame with the agent alone, then one with the shell placed beside it —
-    // the operator's second symptom, which is "opening the shell changed the
-    // agent pane".
     let alone = harness.frame(&one_pane("center"), WIDTH, HEIGHT);
     let agent_grid = harness.grid(false);
     let agent_resizes = harness.backend.sizes(AGENT_PANE);
@@ -624,8 +607,6 @@ async fn the_agent_is_untouched_by_a_shell_that_appears_beside_it() {
 
     let both = harness.frame(&shell_under_the_session_list(), WIDTH, HEIGHT);
 
-    // The agent moved because the ARRANGEMENT moved it, to its own new slot —
-    // and to nothing else. The shell appearing contributes no size of its own.
     let agent = both.rect("center");
     assert_eq!(harness.grid(false), (agent.height, agent.width));
     assert_eq!(
@@ -642,8 +623,6 @@ async fn the_panes_are_independent_with_the_columns_swapped() {
     harness.print(false, "AGENT-SCREEN");
     harness.print(true, "SHELL-SCREEN");
 
-    // Nobody runs this arrangement. It is the one that finds anything still
-    // assuming which of the two owns the centre.
     let screen = harness.frame(&agent_under_the_session_list(), WIDTH, HEIGHT);
 
     let agent = screen.rect("agent");
@@ -669,14 +648,9 @@ async fn a_point_resolves_to_the_pane_it_landed_in() {
     let agent = screen.rect("center");
     let shell = screen.rect("shell");
 
-    // Each surface reports where IT was painted. One rect per session is what
-    // sent a click in one pane to the other's grid.
     assert_eq!(harness.terminals.last_rect(&harness.id), Some(agent));
     assert_eq!(harness.terminals.last_rect(&harness.shell()), Some(shell));
 
-    // A wheel tick goes to the pane under the pointer. Only the shell asked for
-    // the mouse, so the agent's rect must decline the tick rather than answer
-    // for a pane the pointer is nowhere near.
     harness.print(true, "\x1b[?1000h\x1b[?1006h");
     assert!(
         harness
@@ -698,7 +672,6 @@ async fn a_surface_that_stopped_drawing_cannot_be_hit() {
     harness.frame(&shell_under_the_session_list(), WIDTH, HEIGHT);
     assert!(harness.terminals.last_rect(&harness.shell()).is_some());
 
-    // The shell's slot left the arrangement; the agent's did not.
     let screen = harness.frame(&one_pane("center"), WIDTH, HEIGHT);
     assert_eq!(
         harness.terminals.last_rect(&harness.id),
@@ -735,10 +708,6 @@ async fn a_press_is_captured_by_the_pane_it_landed_in() {
     let agent = screen.rect("center");
     let shell = screen.rect("shell");
 
-    // Only the shell's program tracks the mouse. A press is a GESTURE: the
-    // surface that takes it owns the button until the release, so the name
-    // handed back has to say which of the two panes that was — the agent may
-    // well be on screen beside it.
     harness.print(true, "\x1b[?1002h\x1b[?1006h");
     assert_eq!(
         harness.terminals.forward_press(shell.x + 1, shell.y + 1),
@@ -750,15 +719,12 @@ async fn a_press_is_captured_by_the_pane_it_landed_in() {
         "a press over the agent was answered by the shell"
     );
 
-    // And the moves that follow reach the pane that took it, whether the
-    // pointer is still over that pane or has wandered onto the other one.
     assert!(harness
         .terminals
         .forward_motion(&harness.shell(), shell.x + 2, shell.y + 2));
     assert!(harness
         .terminals
         .forward_motion(&harness.shell(), agent.x + 2, agent.y + 2));
-    // The agent asked for nothing, so nothing is sent on its behalf.
     assert!(!harness
         .terminals
         .forward_motion(&harness.id, shell.x + 2, shell.y + 2));
@@ -770,10 +736,6 @@ async fn a_search_reads_both_of_a_sessions_screens() {
     harness.print(false, "AGENT-SCREEN");
     harness.print(true, "SHELL-SCREEN");
 
-    // A search asks which SESSION holds the text, so both panes answer under
-    // the session's own id: the shell is a screen of that session whether or
-    // not it is the pane on screen. Scanning only whichever one happened to be
-    // painted made a search's answer depend on the arrangement.
     let sources = harness
         .terminals
         .search_sources(std::slice::from_ref(&harness.id));
@@ -806,9 +768,6 @@ async fn links_are_found_on_the_surface_that_printed_them() {
     harness.print(false, "https://example.invalid/agent");
     harness.print(true, "https://example.invalid/shell");
 
-    // Unlike a search, links are per SURFACE: a link is clicked in the rect
-    // that drew it, so an answer that mixed the two panes would offer the
-    // shell's URLs at coordinates inside the agent.
     let agent: Vec<String> = harness
         .terminals
         .links(&harness.id)
@@ -827,9 +786,6 @@ async fn links_are_found_on_the_surface_that_printed_them() {
 
 #[tokio::test]
 async fn only_the_surface_that_takes_the_keys_paints_a_cursor() {
-    // Keys reach the focused pane's FIRST live surface, so that is the one
-    // cursor on screen. A pane showing both of a session's surfaces used to
-    // paint a cursor in each, one of them a pane nothing could type into.
     let harness = Harness::new(4, 10);
     for shell in [false, true] {
         let live = harness.terminals.live.get(&harness.id).expect("live");
@@ -859,7 +815,6 @@ async fn only_the_surface_that_takes_the_keys_paints_a_cursor() {
         paint(Some(&harness.shell())),
         (" ".into(), "\u{2588}".into())
     );
-    // A pane without focus, or a float whose keys go to Lua, paints none.
     assert_eq!(paint(None), (" ".into(), " ".into()));
 }
 

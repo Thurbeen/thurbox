@@ -335,9 +335,6 @@ fn install_frozen_meta(lua: &Lua) -> mlua::Result<()> {
                 .map_or(0, |inner| inner.raw_len()))
         })?,
     )?;
-    // The proxy itself is the iteration state: the `next` installed above
-    // reads a frozen proxy as what it stands for, so the table behind it is
-    // never handed out.
     shared.raw_set(
         "__pairs",
         lua.create_function(|lua, proxy: Table| {
@@ -435,8 +432,6 @@ pub(super) fn observe_samples(
     let proxy = lua.create_table()?;
     let tables: Table = lua.named_registry_value(PUBLISHED_TABLES)?;
     tables.raw_set(proxy.clone(), backing)?;
-    // Neither closure captures `backing`: each finds it through
-    // `PUBLISHED_TABLES`, for the reason `install_frozen_meta` gives.
     let meta = lua.create_table()?;
     let reads = read.clone();
     meta.raw_set(
@@ -459,9 +454,6 @@ pub(super) fn observe_samples(
             )))
         })?,
     )?;
-    // The proxy is the iteration state: the installed `next` reads it as the
-    // backing table and notes the read, so the table itself is never handed
-    // out.
     meta.raw_set(
         "__pairs",
         lua.create_function(move |lua, proxy: Table| {
@@ -535,8 +527,6 @@ fn run_for(
                 };
                 Ok(crate::kernel::runs::Target::Session(session))
             };
-            // A fallback could run the program on a machine the pane did not
-            // ask for, so invalid routing options are refused before queueing.
             let machine = match &opts {
                 Some(t) => t.get::<Value>("machine")?,
                 None => Value::Nil,
@@ -701,8 +691,6 @@ fn command_for(
             worktree: get_bool("worktree"),
             branch: get_string("branch"),
             base: get_string("base"),
-            // `create`'s other repositories, each `{ path, worktree }`. An
-            // entry with no path is dropped rather than guessed at.
             extras: opts
                 .as_ref()
                 .and_then(|t| t.get::<Option<Table>>("extras").ok().flatten())
@@ -761,9 +749,6 @@ fn command_for(
         };
 
         let parsed = Command::parse(&kind, args).map_err(mlua::Error::runtime)?;
-        // Edited confirmation panes forward `options` but may not know the new
-        // top-level handoff. Store the undo target when the command is actually
-        // issued, so cancelling an old float cannot create a phantom undo.
         if matches!(&parsed, Command::Delete { force: false, .. }) {
             if let Some(remember) = opts
                 .as_ref()
@@ -783,12 +768,12 @@ fn command_for(
 }
 
 const WITHHELD_GLOBALS: [&str; 8] = [
-    "dofile",     // reads and runs an arbitrary path
-    "loadfile",   // reads an arbitrary path
+    "dofile",
+    "loadfile",
     "load",       // loads code, including bytecode that can crash the VM
     "loadstring", // Lua 5.1 spelling of the same
-    "print",      // stdout is the TUI's
-    "warn",       // and stderr is usually the same terminal
+    "print",
+    "warn",
     "collectgarbage",
     "rawset",
 ];
@@ -808,7 +793,6 @@ fn require_for(lua: &Lua, ui_dir: &Path, env: Table) -> mlua::Result<mlua::Funct
         if let Ok(Value::Table(module)) = cache.get::<Value>(name.clone()) {
             return Ok(Value::Table(module));
         }
-        // `lib.theme` → `lib/theme.lua`, and nothing may escape the root.
         if name.contains("..") || name.starts_with('/') {
             return Err(mlua::Error::runtime(format!(
                 "require({name:?}): only modules inside the mod directory can be required"
@@ -857,11 +841,6 @@ fn install_store(
         lua.create_function(move |lua, (_, key, value): (Table, String, Value)| {
             count_write(&writes, &value);
             let mut slot = write.borrow_mut();
-            // Compared before storing. A pane may write the same value on every
-            // frame — the search strip re-states how many panes it is showing —
-            // and treating that as a change would move the version 40 times a
-            // second and invalidate every cached tree, which is the difference
-            // between this mechanism working and doing nothing at all.
             let moved = match from_lua(lua, &value) {
                 Some(persisted) => {
                     if slot.get(&key) == Some(&persisted) {
@@ -915,7 +894,6 @@ fn state_for(
             count_write(&writes, &value);
             let ns = ns.clone();
             let mut slot = write.borrow_mut();
-            // Same rule as `store`: only a value that actually moved counts.
             let moved = match from_lua(lua, &value) {
                 Some(persisted) => {
                     if slot.get(&(ns.clone(), key.clone())) == Some(&persisted) {
@@ -977,13 +955,7 @@ fn from_lua(lua: &Lua, value: &Value) -> Option<Persisted> {
                     entries.push((key, entry));
                 }
             }
-            // In a canonical order, not the order `pairs` walked it in: that
-            // depends on the VM's string-hash seed and on how the table was
-            // built, so two copies of one table walk differently — and a write
-            // is compared with what is held to decide whether it moved. Held in
-            // `pairs` order, a pane re-stating an unchanged table every frame
-            // moved the state version on most of them, and every pure pane's
-            // cached tree went with it.
+            // Lua's `pairs` order depends on the VM's string-hash seed, so entries are held in canonical order.
             entries.sort_by(|(a, _), (b, _)| canonical(a, b));
             Some(Persisted::Table(entries))
         }
@@ -1060,8 +1032,6 @@ fn canonical(a: &Persisted, b: &Persisted) -> std::cmp::Ordering {
 
 pub(super) fn clean_error(error: &mlua::Error) -> String {
     let text = error.to_string();
-    // Before the memory check: arming fails on a full VM, and its cause reads
-    // "not enough memory" too, but the call never started.
     if let Some(at) = text.find(BUDGET_UNARMED) {
         let cause = text[at + BUDGET_UNARMED.len()..].trim_start_matches(':');
         let cause = cause.lines().next().unwrap_or_default().trim();
@@ -1083,8 +1053,6 @@ pub(super) fn clean_error(error: &mlua::Error) -> String {
         .trim()
         .to_string()
 }
-
-// ── Display width ───────────────────────────────────────────────────────────
 
 const ELLIPSIS: &str = "…";
 
@@ -1143,9 +1111,6 @@ fn truncate(s: &str, cols: usize, ellipsis: &str, side: &Side) -> String {
         return s.to_string();
     }
     let mark = columns(ellipsis);
-    // No room for both the mark and any text: the mark alone is the whole
-    // answer, itself cut to fit rather than overrunning the budget it was
-    // meant to respect.
     if mark >= cols {
         return take_left(ellipsis, cols).to_string();
     }
@@ -1154,8 +1119,6 @@ fn truncate(s: &str, cols: usize, ellipsis: &str, side: &Side) -> String {
         Side::Right => format!("{}{ellipsis}", take_left(s, budget)),
         Side::Left => format!("{ellipsis}{}", take_right(s, budget)),
         Side::Middle => {
-            // The tail gets the larger share of an odd remainder: for a path it
-            // carries the leaf, which is the half that identifies the thing.
             let head = budget / 2;
             format!(
                 "{}{ellipsis}{}",
@@ -1278,7 +1241,6 @@ mod tests {
         assert_eq!(truncate("abcdefgh", 5, ELLIPSIS, &Side::Right), "abcd…");
         assert_eq!(truncate("abcdefgh", 5, ELLIPSIS, &Side::Left), "…efgh");
         assert_eq!(truncate("abcdefgh", 5, ELLIPSIS, &Side::Middle), "ab…gh");
-        // The tail takes the larger share of an odd remainder.
         assert_eq!(truncate("abcdefgh", 6, ELLIPSIS, &Side::Middle), "ab…fgh");
     }
 

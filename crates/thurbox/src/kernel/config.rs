@@ -73,19 +73,13 @@ impl Config {
         if self.stamp == Some(stamp) {
             return None;
         }
-        // Stamped before the read, so a file that fails to parse is not re-read
-        // on every poll until it is fixed.
         self.stamp = Some(stamp);
 
         let (fresh, warnings) = crate::config::settings::load_or_seed_with_warnings();
-        // A key 3.0 no longer reads was reported at startup; the file still
-        // loads, so a later edit beside it applies.
         if let Some(first) = warnings
             .iter()
             .find(|warning| !crate::config::settings::is_retired_notice(warning))
         {
-            // The loader falls back to defaults per bad key rather than failing,
-            // so this is a report, not a refusal.
             return Some(Reloaded::Failed(first.clone()));
         }
         Some(self.adopt(fresh))
@@ -93,9 +87,6 @@ impl Config {
 
     pub fn adopt(&mut self, fresh: Settings) -> Reloaded {
         let needs_restart = self.in_force.restart_only_differs(&fresh);
-        // `fresh` is what the file holds — it was either just read from it or is
-        // about to be written to it — so it is the whole document that is kept,
-        // not only the half taken into force.
         self.in_force = self.in_force.with_live_from(&fresh);
         self.on_disk = fresh;
         if needs_restart {
@@ -133,8 +124,6 @@ mod tests {
 
     #[test]
     fn a_restart_only_flag_is_reported_and_not_taken() {
-        // Turning mouse capture off mid-run would mean not sending an escape the
-        // terminal was already sent, so the value in force stays as it was.
         let mut config = Config::detached(settings());
         let mut edited = settings();
         edited.features.mouse = false;
@@ -159,7 +148,6 @@ mod tests {
 
     #[test]
     fn a_notification_knob_is_restart_only() {
-        // The dispatcher thread is started once with the backend it resolved.
         let mut config = Config::detached(settings());
         let mut edited = settings();
         edited.notifications.sound = !edited.notifications.sound;
@@ -169,7 +157,6 @@ mod tests {
 
     #[test]
     fn every_live_flag_survives_a_round_trip() {
-        // Flipping every live flag must change every one of them.
         let mut config = Config::detached(settings());
         let mut edited = settings();
         edited.features.shell_pane = false;
@@ -183,8 +170,6 @@ mod tests {
 
     #[test]
     fn the_split_matches_what_v1_calls_restart_only() {
-        // `adopt` keeps a value when `restart_only_differs` names it, so
-        // flipping one must always be reported *and* ignored.
         let base = settings();
         let mut edited = settings();
         edited.features.mouse = false;
@@ -207,7 +192,6 @@ mod tests {
 
     #[test]
     fn a_clipboard_edit_is_taken_into_force() {
-        // Issue #1638: reported `Live`, and the booted provider stayed in force.
         let mut config = Config::detached(settings());
         let mut edited = settings();
         edited.clipboard.provider = crate::session::settings::ClipboardProvider::Osc52;

@@ -36,6 +36,7 @@ pub fn is_program_surface(id: &str) -> bool {
     id.starts_with(PROGRAM_SURFACE_PREFIX)
 }
 
+// The name becomes a tmux window name, which tmux parses as part of a target string.
 pub fn validate_program_name(name: &str) -> Result<(), String> {
     if name.is_empty() {
         return Err("a program pane needs a name".to_string());
@@ -113,8 +114,6 @@ impl Terminals {
         cols: u16,
     ) -> Result<(), String> {
         if let Some(slot) = self.programs.get(key) {
-            // Already running, or finished and not yet reaped. A finished one is
-            // replaced, which is what makes "ask again to restart it" work.
             if !slot.pane.has_exited() {
                 return Ok(());
             }
@@ -127,8 +126,6 @@ impl Terminals {
         admit_program(&key.owner, self.program_count(&key.owner), program)?;
 
         let backend = Arc::clone(self.backends.default_backend());
-        // This local-only spawn still runs inline; a companion shell opens
-        // through Fleet, on a worker of its own.
         if let Err(e) = backend.ensure_ready() {
             return Err(format!("could not reach the local multiplexer: {e:#}"));
         }
@@ -140,9 +137,6 @@ impl Terminals {
         let env: HashMap<String, String> = HashMap::new();
         let (rows, cols) = (rows.max(1), cols.max(1));
 
-        // An existing window of that name is this same pane from a previous run of
-        // the interface: the name is deterministic, so finding it IS the
-        // re-adoption path — there is no stored pane id that could go stale.
         let existing = self.find_program_window(&backend, &window);
         let adopted = existing.is_some();
         let pane = match existing {
@@ -181,15 +175,6 @@ impl Terminals {
             },
         );
         if !adopted {
-            // Spawned here, so this loop knows it ran — which is what lets its
-            // ending be announced even if it dies before anything looks again.
-            // An *adopted* window is deliberately not recorded: it belongs to a
-            // previous run of the interface, and a corpse found on startup ended
-            // before there was anything to tell.
-            //
-            // After the spawn, not before: a spawn that failed leaves no pane to
-            // die, and claiming one started would make the *next* restart's
-            // replacement look like a fresh death.
             self.program_transitions
                 .push(ProgramTransition::Started(key.clone()));
         }
@@ -201,10 +186,6 @@ impl Terminals {
         backend: &Arc<dyn crate::backend::SessionBackend>,
         window: &str,
     ) -> Option<String> {
-        // `window_panes`, not `discover`: a program window has no session id to
-        // resolve by, only its deterministic name. Discovery does list it, but
-        // stamped `@thurbox_role=program` and unowned, so it can never be
-        // adopted as a session's agent (ADR-25).
         let mut live = None;
         for (backend_id, dead) in backend.window_panes(window).unwrap_or_default() {
             if dead {
@@ -212,15 +193,7 @@ impl Terminals {
                     debug!("could not clear the dead program window {window}: {e:#}");
                 }
             } else if live.is_none() {
-                // Normalised on the way, not taken as found: this window was
-                // made by an earlier interface, possibly one that set
-                // `remain-on-exit` for a whole session and landed it on
-                // whichever window happened to be current. Left as it stood, a
-                // program window carrying `on` is a pane whose exit can never be
-                // announced — the corpse comes straight back on the first
-                // restart after an upgrade, which is the one moment this is
-                // about. One round trip, and only here, where the answer is
-                // known from the name we looked the window up by.
+                // An earlier interface may have left tmux `remain-on-exit` on; a pane carrying it never announces its exit.
                 if let Err(e) = backend.set_pane_retention(&backend_id, false) {
                     debug!("could not clear remain-on-exit on {window}: {e:#}");
                 }
@@ -311,7 +284,6 @@ mod tests {
             std::sync::Arc::new(crate::backend::registry::inert()),
             &crate::session::settings::Settings::default(),
         );
-        // Nothing is running, so nothing resolves — including a well-formed id.
         let key = ProgramKey::new("mods/90_watch.lua", "watch");
         assert!(terminals.program_key(&key.surface_id()).is_none());
         assert!(terminals.program_key("not-a-program").is_none());
@@ -346,7 +318,6 @@ mod tests {
 
     #[test]
     fn a_pane_with_no_program_named_is_refused() {
-        // Otherwise the pane spawns the backend's idea of an empty command line.
         assert!(admit_program("mods/90_watch.lua", 0, "   ").is_err());
         assert!(admit_program("mods/90_watch.lua", 0, "").is_err());
     }
@@ -393,14 +364,12 @@ mod tests {
         let gone = ProgramKey::new("mods/91_deleted.lua", "top");
         let keys = [watch.clone(), gone.clone()];
 
-        // Both still loaded: nothing is released.
         let live = vec![
             "mods/90_watch.lua".to_string(),
             "mods/91_deleted.lua".to_string(),
         ];
         assert!(stale_program_keys(keys.iter(), &live).is_empty());
 
-        // One edited away, renamed or turned off: only its pane goes.
         let live = vec!["mods/90_watch.lua".to_string()];
         assert_eq!(stale_program_keys(keys.iter(), &live), vec![gone]);
 

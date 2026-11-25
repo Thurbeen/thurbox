@@ -11,6 +11,7 @@ struct Chords {
     action: &'static str,
     description: &'static str,
     ctrl: &'static str,
+    // Ctrl+C means interrupt on a terminal, so macOS also binds Cmd; Cmd arrives only under the kitty keyboard protocol.
     cmd: &'static str,
 }
 
@@ -48,11 +49,6 @@ fn bindings_for(macos: bool) -> Vec<Binding> {
                     row.action,
                     row.description,
                     Some("global"),
-                    // Never deferred to the agent. `Ctrl+C` reaching the agent
-                    // is a *fall-through* decided per press by whether there is
-                    // a selection, not a property of the binding: marking it
-                    // passthrough would give the agent the chord even with one,
-                    // and copying is the one case where thurbox wins it back.
                     false,
                     Some(GROUP),
                 )

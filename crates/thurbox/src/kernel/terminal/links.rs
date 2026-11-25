@@ -71,10 +71,8 @@ pub fn detect_urls(screen_rows: &[String]) -> Vec<DetectedLink> {
             while url.ends_with(['.', ',', ';', ':', ')', ']']) {
                 url = &url[..url.len() - 1];
             }
-            // Skip bare scheme-only matches like "http://" with no host
             if url.len() > "https://".len() {
-                // Convert the match's byte offset to cell columns using display
-                // width: a wide glyph before the URL shifts it two cells, not one.
+                // A wide glyph before the URL shifts it two cells, not one.
                 let start_col = UnicodeWidthStr::width(&row[..start]);
                 let end_col = start_col + UnicodeWidthStr::width(url);
                 links.push(DetectedLink {
@@ -168,15 +166,10 @@ impl Terminals {
         let Ok(parser) = parser.lock() else {
             return Vec::new();
         };
-        // A session showing no link of either kind pays one bool check and one
-        // slice length per frame, and nothing else.
         let runs_empty = parser.callbacks().hyperlinks().is_empty();
         if runs_empty && scanned.is_empty() {
             return Vec::new();
         }
-        // This surface's own rect: the runs are re-printed over the cells that
-        // drew them, which is only the right place while the rect belongs to
-        // the pane whose grid they were read from.
         let inner = painted.rect.get();
         if inner.width == 0 || inner.height == 0 {
             return Vec::new();
@@ -205,17 +198,8 @@ impl Terminals {
                 }
             }
         }
-        // The runs claim their cells first, and the plain leg is checked
-        // against exactly those: two scanned URLs cannot collide with each
-        // other (`Self::links` gives each row's runs disjoint columns and drops
-        // a plain match underneath a visible OSC 8 one), so nothing is gained
-        // by re-scanning what this loop itself appends.
         let claimed = paints.len();
         for (url, row, col) in scanned {
-            // Counted on what goes OUT, not on what is read: `Self::links`
-            // lists the OSC 8 runs first, and every one of them is declined a
-            // few lines below, so a prefix cap would spend the whole budget on
-            // entries that emit nothing and drop the bare URLs behind them.
             if paints.len() - claimed >= SCANNED_LINK_LIMIT {
                 break;
             }
@@ -227,22 +211,11 @@ impl Terminals {
             }
             let x = inner.x.saturating_add(*col as u16);
             let y = inner.y.saturating_add(shown as u16);
-            // Overlap, not an equal start. A run that opened PART-WAY through
-            // printed URL text leaves the bare text in `scanned` starting to
-            // its left, so comparing only the first cell let the plain leg
-            // print over a run's cells — and, printed second, win. Whichever
-            // link the escape declared is the one thurbox's own click resolves,
-            // so the outer terminal must not be told a different one.
             if paints[..claimed].iter().any(|paint| {
                 paint.y == y && paint.overlaps(x, UnicodeWidthStr::width(url.as_str()))
             }) {
                 continue;
             }
-            // A plain-text link's label is the URL itself: it is on the screen
-            // as text, which is how it was found. An OSC 8 entry in `scanned`
-            // whose label is NOT its target fails this and is skipped, having
-            // been served by the loop above; one whose label IS its target — an
-            // autolink — is what the overlap check above catches instead.
             if let Some(cells) = drawn_url_cells(buf, inner, x, y, url, || {
                 parser.screen().row_wrapped(*row as u16)
             }) {
@@ -307,8 +280,6 @@ fn drawn_url_cells(
 ) -> Option<Vec<(String, Style)>> {
     let cells = drawn_label_cells(buf, inner, x, y, url)?;
     let end = x.saturating_add(UnicodeWidthStr::width(url) as u16);
-    // Clipped: `drawn_label_cells` stops at the pane's edge, so fewer cells
-    // than the URL needs means the rest of it is not on this row.
     if end > inner.right() {
         return None;
     }
@@ -362,14 +333,10 @@ pub fn drawn_link_paints(buf: &Buffer, rect: Rect, url: &str) -> Vec<HyperlinkPa
         let mut cells: Vec<(String, Style)> = Vec::new();
         let mut x = rect.left();
         while x < rect.right() {
-            // Outside the frame entirely: nothing further along this row is
-            // drawn either.
             let Some(cell) = buf.cell(Position::new(x, y)) else {
                 break;
             };
             let symbol = cell.symbol();
-            // A width of zero is a cell a wide glyph already covered, so it
-            // cannot advance the walk on its own.
             let width = UnicodeWidthStr::width(symbol).max(1) as u16;
             x = x.saturating_add(width);
             if symbol.is_empty() {
@@ -381,8 +348,6 @@ pub fn drawn_link_paints(buf: &Buffer, rect: Rect, url: &str) -> Vec<HyperlinkPa
             start.get_or_insert(x.saturating_sub(width));
             cells.push((symbol.to_string(), cell_style(cell)));
         }
-        // Trailing padding, trimmed the way the leading padding was skipped.
-        // It cannot empty `cells`: the cell that set `start` is not blank.
         while cells
             .last()
             .is_some_and(|(symbol, _)| symbol.trim().is_empty())
@@ -500,7 +465,6 @@ mod tests {
         let rows = vec!["Visit https://example.com for info".to_string()];
         let links = detect_urls(&rows);
         assert_eq!(url_at_position(&links, 0, 6), Some("https://example.com"));
-        // last char of URL (end_col is exclusive)
         assert_eq!(url_at_position(&links, 0, 24), Some("https://example.com"));
     }
 
@@ -588,7 +552,6 @@ mod tests {
 
     #[test]
     fn non_ascii_before_url_uses_char_offsets() {
-        // '•' is 3 bytes in UTF-8 but 1 screen cell — byte offset would be 4, char offset is 2
         let rows = vec!["• https://example.com".to_string()];
         let links = detect_urls(&rows);
         assert_eq!(links.len(), 1);
@@ -600,8 +563,6 @@ mod tests {
 
     #[test]
     fn wide_chars_before_url_use_display_width() {
-        // Each CJK glyph spans two cells; the URL therefore starts at column 5
-        // (漢=2 + 字=2 + space=1), not column 3 as a per-char count would give.
         let rows = vec!["漢字 https://example.com".to_string()];
         let links = detect_urls(&rows);
         assert_eq!(links.len(), 1);
@@ -609,13 +570,11 @@ mod tests {
         assert_eq!(links[0].start_col, 5);
         assert_eq!(links[0].end_col, 5 + "https://example.com".len());
         assert_eq!(url_at_position(&links, 0, 5), Some("https://example.com"));
-        // The trailing cell of 字 (column 4) is not part of the URL.
         assert_eq!(url_at_position(&links, 0, 4), None);
     }
 
     #[test]
     fn emoji_before_url_uses_display_width() {
-        // 🚀 is one char but two cells wide; URL starts at column 3 (🚀=2 + space).
         let rows = vec!["🚀 https://example.com".to_string()];
         let links = detect_urls(&rows);
         assert_eq!(links.len(), 1);
@@ -625,8 +584,6 @@ mod tests {
 
     #[test]
     fn wide_chars_through_parser_match_cell_columns() {
-        // End-to-end over the real screen path: extract_screen_rows must agree
-        // with the cell columns that a mouse click reports.
         let mut parser = vt100::Parser::new(1.try_into().unwrap(), 40.try_into().unwrap(), 0);
         parser.process("漢字 https://example.com".as_bytes());
         let rows = extract_screen_rows(parser.screen());
@@ -782,15 +739,8 @@ mod tests {
             cells: drawn_label_cells(&buf, Rect::new(0, 0, 40, 1), x, 0, label).expect("cells"),
         };
 
-        // The autolink — label equal to target, so the glyph match accepts it
-        // and only this covers it. An equal-start check would have caught this
-        // one too.
         assert!(paint(bare.0, "https://example.test/a").overlaps(bare.0, bare.1));
-        // The run opened PART-WAY through the printed URL, which an equal-start
-        // check would not have: it claims from column 12 while the bare text
-        // the scan found starts at 4.
         assert!(paint(12, "example.test/a").overlaps(bare.0, bare.1));
-        // And the neighbours either side, which genuinely do not touch it.
         assert!(!paint(27, "now").overlaps(bare.0, bare.1));
         assert!(!paint(0, "see").overlaps(bare.0, bare.1));
     }
@@ -813,7 +763,6 @@ mod tests {
     #[test]
     fn a_blank_row_yields_no_link() {
         let buf = buffer_with(20, 2, &["   ", "  x"]);
-        // Row 0 is blank: only row 1 contributes.
         let paints = drawn_link_paints(&buf, Rect::new(0, 0, 20, 2), "https://example.test");
         assert_eq!(paints.len(), 1);
         assert_eq!((paints[0].x, paints[0].y), (2, 1));
@@ -835,8 +784,6 @@ mod tests {
             .map(|(symbol, _)| symbol.as_str())
             .collect();
         assert_eq!(printed, "docs 漢字 x");
-        // The genuine space between the glyphs and `x` survives: only the cells
-        // a wide glyph already covers are skipped.
         assert_eq!(paints[0].cells.len(), "docs 漢字 x".chars().count());
     }
 

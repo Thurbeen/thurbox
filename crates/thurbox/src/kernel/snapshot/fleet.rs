@@ -83,7 +83,6 @@ fn publish_state(
     let Ok(mut last) = published.lock() else {
         return false;
     };
-    // Incompatible is final: a later probe's answer never replaces it.
     if last.as_ref() == Some(&next)
         || last
             .as_ref()
@@ -103,14 +102,10 @@ impl FleetWatch {
     #[doc(hidden)]
     pub fn spawn_every(link: FleetLink, cadence: Cadence) -> Self {
         let (tx, updates) = channel();
-        // The first poll publishes the Fleet, connecting, before it answers.
         let _ = tx.send(Update::State(FleetState::Connecting, None));
         let alive = Arc::new(());
         let published = Published::default();
         let reading_home = Arc::new(std::sync::atomic::AtomicBool::new(!link.is_local()));
-        // The Fleet's own `local` until it lists its places, so a Fleet that
-        // is slow or absent never holds the creation flow on a place step
-        // with nothing to choose; its answer replaces it.
         let fleet = FleetRow {
             name: link.name().to_string(),
             transport: link.transport(),
@@ -178,18 +173,12 @@ impl FleetWatch {
 impl SnapshotSource for FleetWatch {
     fn refresh_places(&mut self, fleet: &str) {
         use std::sync::atomic::Ordering;
-        // Nothing is asked of a Fleet before it is admitted, nor ever of one
-        // thurbox cannot speak to.
         if fleet != self.name
             || !self.admitted.load(Ordering::Acquire)
             || self.refreshing.swap(true, Ordering::AcqRel)
         {
             return;
         }
-        // A home not read at startup is asked for again with the places, on
-        // a worker of its own: a slow one must not hold the next refresh.
-        // Once read it is kept; it is not asked of a Fleet that cannot be
-        // reached, nor again while one ask is on its way.
         if !self.link.is_local()
             && self.fleet.home.is_none()
             && self.fleet.state != FleetState::Unreachable
@@ -214,8 +203,6 @@ impl SnapshotSource for FleetWatch {
         std::thread::spawn(move || {
             let places = ask(&link, &["runtime", "places", "--json"]);
             let (state, answer) = probe(&link);
-            // Done before anything is sent: an opening that follows what
-            // this one reads is a new refresh, never one skipped as running.
             refreshing.store(false, Ordering::Release);
             if let Some(places) = places {
                 let _ = tx.send(Update::Places(places_from(&places, &machine(&link))));
@@ -241,7 +228,6 @@ impl SnapshotSource for FleetWatch {
                     self.lost &= error.is_some();
                     self.watch_error = error;
                 }
-                // Incompatible is final: nothing said after replaces it.
                 Update::Lost(_) | Update::State(..)
                     if self.fleet.state == FleetState::Incompatible => {}
                 Update::Lost(why) => {
@@ -274,8 +260,6 @@ impl SnapshotSource for FleetWatch {
                 }
             }
         }
-        // The interface's own file, read again only when this process wrote
-        // it: what it holds is changed from this interface alone.
         let generation = crate::config::interface_state::generation();
         if self
             .interface
@@ -283,7 +267,6 @@ impl SnapshotSource for FleetWatch {
             .is_none_or(|(seen, _)| *seen != generation)
         {
             self.interface = Some((generation, crate::config::interface_state::load()));
-            // Before the first rows there is nothing to lay it over.
             moved |= self.rows_seen;
         }
         let now = now_ms();
@@ -303,14 +286,9 @@ impl SnapshotSource for FleetWatch {
         self.read.sessions = self
             .tasks
             .iter()
-            // A Task marked for deletion is going: its controller is
-            // releasing the session. It is shown again only once that has
-            // taken longer than a release does.
             .filter(|row| stuck_at(row).is_none_or(|at| at <= now))
             .cloned()
             .map(|mut row| {
-                // A Fleet that cannot be asked has not lost its sessions: an
-                // unknown observation never means absence.
                 if self.lost {
                     row.status = SessionState::Unreachable;
                 }
@@ -326,8 +304,6 @@ impl SnapshotSource for FleetWatch {
             .collect();
         self.read.error.clone_from(&self.watch_error);
         let mut fleet = self.fleet.clone();
-        // A watch that ended says more than the last `version`: the Fleet
-        // cannot be asked now.
         if self.lost {
             fleet.state = FleetState::Unreachable;
             fleet.why.clone_from(&self.watch_error);
@@ -515,8 +491,6 @@ fn read_version(
     let mut harnesses = None;
     while alive.strong_count() > 0 {
         let (next, answer) = probe(link);
-        // Not admitted yet and no answer: the list says why, as it would of
-        // a watch that ended, so a Fleet that never answers is not silent.
         if answer.is_none() && admitted.is_some() {
             let why = next
                 .1
@@ -566,8 +540,6 @@ fn harnesses_of(answer: &Value) -> Vec<String> {
 }
 
 fn probe(link: &FleetLink) -> ((FleetState, Option<String>), Option<Value>) {
-    // Within the Fleet's probe deadline: one that does not answer in time
-    // is unreachable, never left hanging.
     let out = match link.bounded_output(&["version", "--json"], link.probe_timeout()) {
         Ok(out) => out,
         Err(why) => return ((FleetState::Unreachable, Some(why)), None),
@@ -591,8 +563,6 @@ fn probe(link: &FleetLink) -> ((FleetState, Option<String>), Option<Value>) {
             None,
         );
     };
-    // Admission is decided here, once: every reader of a Fleet's state
-    // (the `version` worker, a place refresh) sees the same verdict.
     if let Some(why) = crate::fleet_link::incompatible(&answer) {
         return ((FleetState::Incompatible, Some(why)), Some(answer));
     }
@@ -651,10 +621,7 @@ fn follow(
         .map_err(|e| format!("could not start fleet watch: {e}"))?;
     let stdout = child.stdout.take();
     let stderr = child.stderr.take();
-    // Drained beside stdout so a chatty stderr cannot stall the watch. A
-    // warning (a store it cannot read) is the source's error while the watch
-    // runs, until the `synced` that follows the next read that works; the
-    // last line is the reason the watch ended.
+    // Drained beside stdout so a full stderr pipe cannot stall the watch.
     let warnings = tx.clone();
     let last_error = std::thread::spawn(move || {
         let mut last = String::new();
@@ -710,8 +677,6 @@ fn follow(
                     removed.push(name.to_string());
                 }
             }
-            // A resumed watch reports only what moved: a Task deleted while
-            // it was down is one `synced` does not name.
             Some("synced") => {
                 let names: Vec<&str> = event["names"]
                     .as_array()
@@ -931,13 +896,10 @@ pub fn row_of(link: &FleetLink, task: &Value) -> SessionRow {
         branch: None,
         base_branch: None,
         backend: BACKEND.to_string(),
-        // The terminal is the stream `fleet attach` names, not a pane of
-        // thurbox's backends.
         backend_id: None,
         remote_host,
         place,
         agent_session_id: text(&status["conversation"]),
-        // A parent is a Task of the same Fleet.
         parent_id: text(&task["metadata"]["labels"]["gateway.fleet.dev/parent"])
             .map(|parent| super::row_id(link.name(), &parent)),
         display_order: None,
@@ -1232,8 +1194,6 @@ mod tests {
             source.refresh_places("devbox");
             std::thread::sleep(Duration::from_millis(500));
             assert_eq!(state(&mut source), FleetState::Incompatible);
-            // Nothing else either: no places, no watch, and no read of this
-            // remote Fleet's home (`sh -c`).
             let calls = v2.calls();
             assert!(!calls.iter().any(|c| c.contains("sh -c")), "{calls:?}");
             assert!(
@@ -1287,7 +1247,6 @@ mod tests {
             std::fs::write(&places, answer(false)).expect("places");
             store.want_places(Some("devbox".into()));
             until(&mut store, Some(false));
-            // Asked once per opening: a second opening reads again.
             store.want_places(None);
             std::fs::write(&places, answer(true)).expect("places");
             store.want_places(Some("devbox".into()));
@@ -1440,8 +1399,6 @@ mod tests {
                 r#"{"apiVersions":["fleet/v1alpha1"],"manager":{"held":null,"why":"no store"}}"#,
                 FleetState::Unknown,
             ),
-            // The API comes first: a Fleet that does not speak it is that,
-            // whatever its manager does.
             (
                 r#"{"apiVersions":["fleet/v2"],"manager":{"held":true}}"#,
                 FleetState::Incompatible,

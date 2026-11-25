@@ -24,17 +24,8 @@ pub struct Entry {
 }
 
 pub fn resolve(root: &Path, relative: &str) -> Result<PathBuf, String> {
-    // Reject the lexical escape first, so a non-existent `../../etc/passwd`
-    // fails the same way an existing one does.
     let candidate = Path::new(relative);
-    // A ROOT or PREFIX component, not `is_absolute()`.
-    //
-    // On Windows `is_absolute()` is false for `/etc/passwd`, because absolute
-    // there means a drive prefix — so a leading slash slipped past this check and
-    // was refused further down, by the resolved-form comparison, with a message
-    // about the path not existing. Matching on components refuses it here on
-    // both platforms, and `Prefix` additionally covers `C:\…`, `\\?\…` and UNC
-    // paths, none of which a session-rooted read may name.
+    // Components, not `is_absolute()`: Windows calls `/etc/passwd` relative; `Prefix` covers `C:\`, `\\?\` and UNC.
     if candidate
         .components()
         .any(|part| matches!(part, Component::RootDir | Component::Prefix(_)))
@@ -49,7 +40,6 @@ pub fn resolve(root: &Path, relative: &str) -> Result<PathBuf, String> {
     }
 
     let joined = root.join(candidate);
-    // Then the resolved form, which is what catches a symlink out.
     let real_root = root
         .canonicalize()
         .map_err(|e| format!("{}: {e}", root.display()))?;
@@ -60,16 +50,12 @@ pub fn resolve(root: &Path, relative: &str) -> Result<PathBuf, String> {
             }
             Ok(real)
         }
-        // Not existing is a different failure from escaping, and the caller
-        // wants to tell them apart.
         Err(e) => Err(format!("{}: {e}", joined.display())),
     }
 }
 
 pub fn list(root: &Path, relative: &str) -> Result<Vec<Entry>, String> {
     let path = resolve(root, relative)?;
-    // Every link's type is answered against this, so the listing cannot report
-    // something `resolve` would refuse to open.
     let real_root = root
         .canonicalize()
         .map_err(|e| format!("{}: {e}", root.display()))?;
@@ -112,8 +98,6 @@ pub fn read(root: &Path, relative: &str) -> Result<String, String> {
             meta.len()
         ));
     }
-    // Lossy rather than refusing: a file with one stray byte is still worth
-    // looking at, and the viewer is not an editor.
     std::fs::read(&path)
         .map(|bytes| String::from_utf8_lossy(&bytes).to_string())
         .map_err(|e| format!("{}: {e}", path.display()))
@@ -169,13 +153,11 @@ mod tests {
     #[test]
     fn an_absolute_path_is_refused() {
         let dir = fixture();
-        // A leading slash is absolute for this purpose on every platform, even
-        // where `Path::is_absolute()` disagrees (Windows wants a drive prefix).
+        // Windows' `Path::is_absolute()` wants a drive prefix; a leading slash is refused anyway.
         let error = resolve(dir.path(), "/etc/passwd").unwrap_err();
         assert!(error.contains("absolute"), "{error}");
 
-        // The forms only Windows can express. On Unix `C:\Windows` is an
-        // ordinary relative filename, so asserting it there would be wrong.
+        // On Unix `C:\Windows` is an ordinary relative filename.
         #[cfg(windows)]
         {
             for attempt in [
@@ -191,8 +173,6 @@ mod tests {
 
     #[test]
     fn a_symlink_out_of_the_directory_is_refused() {
-        // The lexical check alone would pass this, which is why the resolved
-        // form is checked too.
         #[cfg(unix)]
         {
             let dir = fixture();
@@ -221,9 +201,6 @@ mod tests {
                 .expect("the link is listed");
             assert!(link.is_dir, "a link to a directory is a directory");
 
-            // Pinned because the reordering is a consequence of the fix rather
-            // than a regression: the link is a directory now, and directories
-            // sort first.
             let order: Vec<&str> = entries.iter().map(|entry| entry.name.as_str()).collect();
             assert_eq!(order, ["link-to-src", "src", "README.md"]);
         }
@@ -246,8 +223,6 @@ mod tests {
                 .expect("the link is listed");
             assert!(!link.is_dir, "an outside target's type is not reported");
 
-            // Indistinguishable from a link whose target is a file: both are
-            // refused, and neither says which it was.
             std::os::unix::fs::symlink(
                 outside.path().join("secret.txt"),
                 dir.path().join("link-file"),
@@ -274,8 +249,6 @@ mod tests {
 
     #[test]
     fn a_dangling_symlink_is_listed_and_is_not_a_directory() {
-        // There is no target to ask, and a link that resolves to nothing cannot
-        // be expanded, so it is listed as a leaf rather than dropped.
         #[cfg(unix)]
         {
             let dir = fixture();
@@ -293,8 +266,6 @@ mod tests {
 
     #[test]
     fn a_symlink_loop_is_listed_and_is_not_a_directory() {
-        // ELOOP rather than "not found", and it must take the same path: the
-        // listing neither stalls on it nor drops the entry.
         #[cfg(unix)]
         {
             let dir = fixture();

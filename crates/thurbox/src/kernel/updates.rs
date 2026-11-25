@@ -31,8 +31,6 @@ impl Updates {
         }
 
         if features.version_check {
-            // Instant, and usually enough: the badge is right from the first
-            // frame when the cache is warm.
             updates.latest = crate::update::version_check::read_cached_status().map(|s| s.latest);
             if crate::update::version_check::cache_is_stale() {
                 let tx = updates.sender();
@@ -51,16 +49,14 @@ impl Updates {
 
         if features.auto_update {
             let tx = updates.sender();
-            std::thread::spawn(move || {
-                match crate::update::self_update::perform_update(false) {
+            std::thread::spawn(
+                move || match crate::update::self_update::perform_update(false) {
                     Ok(crate::update::self_update::UpdateOutcome::Updated {
                         to,
                         next_major,
                         ..
                     }) => {
                         log_next_major(next_major.as_deref());
-                        // The check's cache is refreshed with it, so the badge
-                        // agrees with what is now installed on the next launch.
                         let _ = crate::update::version_check::refresh_cache();
                         let fleet = crate::kernel::snapshot::fleet::stale_managers(&fleets, &to);
                         let _ = tx.send(Done::Installed { to, fleet });
@@ -68,12 +64,10 @@ impl Updates {
                     Ok(crate::update::self_update::UpdateOutcome::UpToDate {
                         next_major, ..
                     }) => log_next_major(next_major.as_deref()),
-                    // Up to date, or a dev build — `perform_update` skips those
-                    // itself, which is why nothing is decided here.
                     Ok(_) => {}
                     Err(e) => tracing::warn!("auto-update failed: {e}"),
-                }
-            });
+                },
+            );
         }
         updates
     }
@@ -165,8 +159,6 @@ mod tests {
 
     #[test]
     fn both_switches_off_does_nothing_at_all() {
-        // Not a fetch, not a thread, not a cache read: the point of the switch is
-        // that the network is never touched.
         let updates = Updates::start(&features(false, false), Vec::new());
         assert!(updates.available().is_none());
         assert!(
@@ -183,8 +175,6 @@ mod tests {
 
     #[test]
     fn a_finished_check_updates_the_badge_without_a_message() {
-        // A newer release is shown, not announced: v1 puts it in the header and
-        // says nothing, because the user did not ask for anything.
         let mut updates = Updates::default();
         let tx = updates.sender();
         tx.send(Done::Checked(Some("9.9.9".into()))).expect("send");

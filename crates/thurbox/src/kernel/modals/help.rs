@@ -51,9 +51,6 @@ fn rows(registry: &Registry) -> Vec<(String, Vec<Row>)> {
 
 fn push_binding(rows: &mut Vec<Row>, binding: &Binding) {
     if let Some(row) = rows.iter_mut().find(|row| row.action == binding.action) {
-        // An override is keyed by action, so an action that *declared* two
-        // chords holds the same one twice once it is rebound. Listing `f7 / f7`
-        // would report the registry's shape rather than the user's binding.
         if !row.chords.split(" / ").any(|chord| chord == binding.chord) {
             row.chords.push_str(" / ");
             row.chords.push_str(&binding.chord);
@@ -116,8 +113,6 @@ impl HelpModal {
                 self.selected = (self.selected + 1).min(total.saturating_sub(1));
             }
             KeyCode::Char('k') | KeyCode::Up => self.selected = self.selected.saturating_sub(1),
-            // A screenful is however many rows the last frame fitted, which is
-            // exactly the number of row hitboxes it recorded.
             KeyCode::PageDown => {
                 self.selected = (self.selected + self.page()).min(total.saturating_sub(1));
             }
@@ -125,8 +120,6 @@ impl HelpModal {
             KeyCode::Home | KeyCode::Char('g') => self.selected = 0,
             KeyCode::End | KeyCode::Char('G') => self.selected = total.saturating_sub(1),
             KeyCode::Enter | KeyCode::Char('r') => self.capturing = total > 0,
-            // Lower-case resets one, capital resets everything — v1's `d` /
-            // `Shift+D` pair.
             KeyCode::Char('d') => return self.reset_selected(registry),
             KeyCode::Char('D') => return Some(reset_all(registry)),
             _ => {}
@@ -142,8 +135,6 @@ impl HelpModal {
         let actions = actions(registry);
         let action = actions.get(self.selected)?.clone();
 
-        // Who holds it now, so the report can say what moved. Read before the
-        // rebind, because afterwards the chord belongs to the new action.
         let previous: Option<String> = registry
             .bindings()
             .iter()
@@ -151,9 +142,6 @@ impl HelpModal {
             .map(|binding| binding.action.clone());
 
         match registry.rebind(&action, Some(chord)) {
-            // The registry resolves an override ahead of a declaration that
-            // merely defaults to the same chord, so the reassignment is real
-            // rather than silently shadowed.
             Ok(()) => Some(match previous {
                 Some(previous) => format!("{chord} moved from {previous} to {action}"),
                 None => format!("{action} is now {chord}"),
@@ -220,9 +208,6 @@ impl HelpModal {
             .constraints([Constraint::Min(0), Constraint::Length(1)])
             .areas(inner);
 
-        // Screen lines, plus where each action row landed among them: the two
-        // are built together so the scroll window and the hitboxes cannot
-        // disagree about which line a row is on.
         let key_width = key_column(registry);
         let mut lines: Vec<Line> = Vec::new();
         let mut action_lines: Vec<(usize, usize)> = Vec::new();
@@ -239,9 +224,6 @@ impl HelpModal {
                 let (chords, marker) = if selected && self.capturing {
                     ("Press the new shortcut… (Esc cancels)".to_string(), None)
                 } else {
-                    // v1 marks nothing; the Lua port marked a changed row, and
-                    // that is worth keeping — it is the only way to tell a
-                    // default from a choice you made months ago.
                     (row.chords, row.rebound.then_some(" (rebound)"))
                 };
                 lines.push(entry_line(
@@ -278,11 +260,6 @@ impl HelpModal {
             rows_area,
         );
 
-        // The bar tracks ACTIONS, not screen lines, so its thumb matches what
-        // the selection cursor moves through — v1's rule, and why the viewport
-        // is the number of rows that survived the window above. Once the wheel
-        // has moved the view off the selection, it tracks the view instead:
-        // that is the only thing still moving.
         if let Some(track) = track {
             let (len, viewport, position) = if self.wheeled {
                 (total - height + 1, height, scroll)
@@ -304,8 +281,6 @@ impl HelpModal {
             )),
             footer,
         );
-        // v1's pair and the keys it replays them as: ` Reset all ` is `Shift+D`,
-        // ` Close ` the `Esc` the layer above turns into a close.
         self.hits.buttons = chrome::button_bar(
             frame,
             footer,
@@ -327,8 +302,6 @@ impl HelpModal {
 }
 
 fn push_reference_lines(lines: &mut Vec<Line<'_>>, key_width: usize, chrome: Chrome) {
-    // Never selectable: the escape route out of any pane, which a reader needs
-    // to know exists but can never change.
     lines.push(Line::from(Span::styled(
         "Fixed (not rebindable)",
         chrome.section_header(),
@@ -408,10 +381,6 @@ fn key_column(registry: &Registry) -> usize {
         .chain(RESERVED_ROWS.iter().map(|(chord, _)| chord.chars().count()))
         .max()
         .unwrap_or(0);
-    // Two columns of separation. One is enough to stop the collision, but the
-    // chord and the description then read as a single run; v1's short chords
-    // leave four or five columns of air, and this keeps the widest row legible
-    // without pushing every other row out.
     KEY_WIDTH.max(widest + 2)
 }
 
@@ -447,8 +416,6 @@ fn scroll_for(total: usize, height: usize, selected_line: usize) -> usize {
 }
 
 fn reset_all(registry: &mut Registry) -> String {
-    // By ACTION, not by binding: an override is keyed by action, so an action
-    // that declared two chords would otherwise be reset — and counted — twice.
     let mut overridden: Vec<String> = registry
         .bindings()
         .iter()
@@ -496,14 +463,11 @@ mod tests {
     #[test]
     fn no_row_claims_a_chord_the_kernel_does_not_take() {
         use crate::kernel::registry::RESERVED;
-        // Rows that are not registry chords are documented exceptions, each of which
-        // the loop handles before any binding is consulted, or a modal owns.
         const HANDLED_ELSEWHERE: [&str; 1] = ["[ / ]"];
         for (chord, description) in RESERVED_ROWS {
             if HANDLED_ELSEWHERE.contains(&chord) {
                 continue;
             }
-            // Split the alternates a row may fold together.
             for one in chord.split(" / ") {
                 assert!(
                     RESERVED.contains(&one),
@@ -517,9 +481,6 @@ mod tests {
 
     #[test]
     fn every_reserved_chord_is_listed_as_fixed() {
-        // The two lists are written separately because one carries prose; a
-        // chord the kernel takes and help does not mention would be a chord
-        // nobody can discover.
         let listed = RESERVED_ROWS
             .iter()
             .flat_map(|(chords, _)| chords.split(" / "))
@@ -531,8 +492,6 @@ mod tests {
 
     #[test]
     fn an_action_with_two_chords_is_one_row() {
-        // v1 lists one row per action and joins its chords, so `ctrl+g / f1`
-        // reads as a binding with an alternate rather than two bindings.
         let registry = registry_with(vec![
             binding("kernel", "ctrl+g", "help.open", "Panels"),
             binding("kernel", "f1", "help.open", "Panels"),
@@ -557,8 +516,6 @@ mod tests {
 
     #[test]
     fn capture_binds_the_chord_onto_the_selected_action() {
-        // A rebind persists, so the config directory is redirected: a unit test
-        // must never write the developer's own `ui.json`.
         let dir = tempfile::tempdir().expect("temp dir");
         let _guard = crate::paths::TestPathGuard::new(dir.path());
         let mut registry = registry_with(vec![
@@ -583,8 +540,6 @@ mod tests {
 
     #[test]
     fn the_wheel_turns_at_the_end_without_losing_a_line() {
-        // Every report of an input batch lands before the next frame clamps,
-        // so a report past the end must not bank a line the reversal spends.
         let mut help = HelpModal {
             scroll: 5,
             max_scroll: 5,

@@ -146,9 +146,6 @@ impl RunStore {
         let now = Instant::now();
 
         if let Some(answer) = self.answers.get(&id) {
-            // Already queued or executing: a second ask must not start a second
-            // process. This covers a refresh too, which the old answer's own
-            // `Run::Pending` state cannot — see `Answer::inflight`.
             if answer.inflight {
                 return false;
             }
@@ -157,9 +154,6 @@ impl RunStore {
             }
         }
 
-        // The previous answer stays readable until the new one lands, so a pane
-        // does not blink to "pending" every time its value refreshes — only a
-        // key nobody has asked for before starts out pending.
         let identity = Arc::new(());
         let entry = self.answers.entry(id).or_insert_with(|| Answer {
             run: Run::Pending,
@@ -190,11 +184,6 @@ impl RunStore {
             let tx = self.ensure_channel();
             let runner = runner.clone();
             std::thread::spawn(move || {
-                // Reported from a drop guard so a runner that panics still frees
-                // its slot and clears the key's in-flight marker. Otherwise one
-                // panic costs a permanent slot out of `MAX_CONCURRENT` and leaves
-                // that key unable to ever run again; four would wedge every run in
-                // the interface.
                 let mut report = Report {
                     tx,
                     owner,
@@ -292,28 +281,11 @@ pub fn capture(mut command: std::process::Command, timeout: Duration) -> Run {
         Err(e) => return Run::Failed(format!("could not start it: {e}")),
     };
 
-    // Both streams are drained on their own threads, writing into buffers this
-    // one can read at any moment. Three things force that shape:
-    //
-    // - A program that fills the stderr pipe while we read stdout deadlocks.
-    // - A read that runs to EOF *here* would not return until the program
-    //   exited, so the timeout below could never fire.
-    // - On a timeout we must not WAIT for the readers either: `sh -c "sleep 30"`
-    //   passes its stdout to a grandchild, so killing the shell leaves the pipe
-    //   open and a join would block for the full thirty seconds — which is
-    //   exactly the bug the timeout exists to prevent, reintroduced one level
-    //   down. So the buffers are shared, and on a timeout we take what has
-    //   arrived and abandon the readers, which end when the pipe finally closes.
+    // Drained on threads: a full stderr pipe deadlocks a stdout read, and `sh -c` hands stdout to a grandchild that outlives a kill.
     let out = Captured::draining(child.stdout.take());
     let err = Captured::draining(child.stderr.take());
 
-    // The exit is waited for on its own thread — a blocking `wait` there and a
-    // `recv_timeout` here, instead of a 10ms `try_wait` poll that woke this
-    // thread a hundred times a second for the life of the program. The waiter
-    // owns the `Child` (both `wait` and `kill` need `&mut`), so the timeout
-    // path kills by pid instead; the waiter's `wait` then reaps the corpse, and
-    // the bounded second `recv` below is so a kill that failed cannot hold this
-    // worker past its own timeout.
+    // `wait` and `kill` both need `&mut Child`, so the waiter owns it and a timeout kills by pid.
     let pid = child.id();
     let (exit_tx, exit_rx) = std::sync::mpsc::channel();
     std::thread::spawn(move || {
@@ -332,9 +304,6 @@ pub fn capture(mut command: std::process::Command, timeout: Duration) -> Run {
         }
     };
 
-    // A program that exited has closed its pipes, so give the readers a moment
-    // to finish rather than racing them for the last chunk. A timed-out one gets
-    // no grace: whatever arrived is the answer.
     if !timed_out {
         out.settle();
         err.settle();
@@ -396,9 +365,6 @@ impl Captured {
                 let Ok(mut held) = sink.buffer.lock() else {
                     break;
                 };
-                // Reading past the cap is not merely wasteful: it is how a
-                // program that prints without end takes the interface's memory
-                // with it.
                 if held.0.len() + read >= OUTPUT_CAP {
                     let room = OUTPUT_CAP.saturating_sub(held.0.len());
                     held.0.extend_from_slice(&chunk[..room]);
@@ -487,8 +453,6 @@ mod tests {
 
     #[test]
     fn a_fresh_answer_is_not_run_again() {
-        // The property that makes "ask on every frame" the normal way to keep a
-        // value current, rather than a mistake.
         let (runner, count) = counting();
         let mut store = RunStore::new();
         store.request("p", ask("k"), &runner);
@@ -512,7 +476,6 @@ mod tests {
 
         std::thread::sleep(MIN_TTL + Duration::from_millis(20));
         store.request("p", first, &runner);
-        // Readable throughout: the previous answer is not cleared to make way.
         assert!(matches!(store.get("p", "k"), Some(Run::Done(_))));
         run_to_completion(&mut store, &runner);
         assert_eq!(count.load(std::sync::atomic::Ordering::SeqCst), 2);
@@ -522,7 +485,6 @@ mod tests {
     fn asking_repeatedly_while_a_refresh_is_in_flight_starts_one_run() {
         let count = Arc::new(std::sync::atomic::AtomicUsize::new(0));
         let seen = count.clone();
-        // Slower than its TTL, which is the case that never settles.
         let runner: Arc<Runner> = Arc::new(move |_ask: &Ask| {
             seen.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
             std::thread::sleep(Duration::from_millis(300));
@@ -544,7 +506,6 @@ mod tests {
 
         std::thread::sleep(MIN_TTL + Duration::from_millis(20));
 
-        // A render-loop's worth of asks against one stale key.
         let deadline = Instant::now() + Duration::from_millis(200);
         while Instant::now() < deadline {
             store.request("p", first.clone(), &runner);
@@ -600,8 +561,6 @@ mod tests {
 
     #[test]
     fn a_mod_cannot_ask_for_the_same_run_twice_at_once() {
-        // Two asks in one frame, or an ask while the first is still going, must
-        // not become two processes.
         let (runner, count) = counting();
         let mut store = RunStore::new();
         store.request("p", ask("k"), &runner);
@@ -639,8 +598,6 @@ mod tests {
 
     #[test]
     fn a_finished_run_is_readable_while_another_is_pending() {
-        // What makes a composite pane possible: the slow one does not hold the
-        // fast one.
         let slow: Arc<Runner> = Arc::new(|ask: &Ask| {
             if ask.key == "slow" {
                 std::thread::sleep(Duration::from_millis(300));
@@ -860,10 +817,7 @@ mod tests {
 
     #[test]
     fn a_program_that_never_exits_is_given_up_on_promptly() {
-        // `sh -c "sleep 30"` hands its stdout to a GRANDCHILD, so killing the
-        // shell leaves the pipe open. Waiting for the reader would then block for
-        // the full thirty seconds — the very hang the timeout exists to prevent,
-        // one level down. So the elapsed time is asserted, not just the flag.
+        // `sh -c "sleep 30"` hands its stdout to a grandchild, so the pipe outlives the killed shell.
         let mut command = std::process::Command::new("sh");
         command.arg("-c").arg("sleep 30");
         let started = Instant::now();
@@ -887,7 +841,6 @@ mod tests {
     #[test]
     fn output_past_the_cap_is_truncated_and_says_so() {
         let mut command = std::process::Command::new("sh");
-        // Comfortably past the cap, cheaply.
         command
             .arg("-c")
             .arg("yes abcdefghijklmnopqrstuvwxyz | head -c 400000");

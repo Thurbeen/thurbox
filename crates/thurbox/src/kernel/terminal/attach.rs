@@ -97,8 +97,6 @@ impl Terminals {
                 continue;
             }
             let candidate = row.backend_id.clone();
-            // The same attempt would fail the same way; a different one is worth
-            // making.
             if self.attach.failed.get(&row.id).is_some_and(|failure| {
                 failure.pane == candidate && failure.at.elapsed() < self.attach.retry_after
             }) {
@@ -108,9 +106,6 @@ impl Terminals {
                 self.fail(&row.id, None, "session has no pane yet".to_string());
                 continue;
             };
-            // The first attach on a backend is also what opens its control-mode
-            // connection, so the others wait for it rather than racing to open
-            // the same one several times over.
             let backend = self.key(&row.backend);
             if !self.backend_is_ready(&backend) && self.opening(&backend) {
                 continue;
@@ -135,8 +130,6 @@ impl Terminals {
             .collect();
         for (id, pane) in lost {
             self.live.remove(&id);
-            // Recorded against the pane that died, so the retry rule treats a
-            // *different* candidate as worth trying at once.
             self.fail(&id, pane, "session has no pane yet".to_string());
         }
     }
@@ -240,8 +233,6 @@ impl Terminals {
             );
             return;
         };
-        // The host a remote session's list row names, resolved here rather
-        // than inside the backend contract, which reads no global config.
         let remote_host = crate::kernel::snapshot::remote_host_of(&row.backend);
 
         let backend_name = self.key(&row.backend);
@@ -272,10 +263,6 @@ impl Terminals {
                     Err(e) => session_handle = Err(format!("{backend_name}: {e}")),
                 }
             }
-            // The history capture is a round trip of its own, and seeding the
-            // parser with it is what makes an adopted pane show the conversation
-            // that is already there rather than a blank screen until the agent
-            // next prints. A failure to read it is not a failure to attach.
             let result = session_handle
                 .and_then(|()| {
                     if let Some(view) = &stream_view {
@@ -287,9 +274,6 @@ impl Terminals {
                             name, rows, cols, &pane, &backend, adopted, scrollback,
                         ));
                     }
-                    // Nothing is looking at it yet, so where the grid can be had
-                    // back later it is not built now — nor its history captured,
-                    // which was a round trip per pane on every start.
                     if lazy && backend.capabilities().supports_snapshots {
                         return crate::backend::Session::adopt_dormant(
                             name, rows, cols, &pane, &backend, scrollback,

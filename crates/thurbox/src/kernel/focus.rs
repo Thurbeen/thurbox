@@ -80,9 +80,6 @@ mod tests {
 
     #[test]
     fn an_alternate_is_not_drawn_but_focus_may_still_go_there() {
-        // The whole bug in one assertion. Focusing the alternate is what makes
-        // it the drawn one; judging it by the selection it is about to change
-        // means it can be selected and never seen.
         let it = placement(true, Some(false));
         assert!(!is_drawn(it));
         assert!(
@@ -93,8 +90,6 @@ mod tests {
 
     #[test]
     fn a_slot_the_arrangement_did_not_place_takes_neither() {
-        // A closed column: nothing brings it forward, so focus really would
-        // strand on something the user cannot see.
         let it = placement(false, None);
         assert!(!is_drawn(it));
         assert!(!can_focus(it));
@@ -113,29 +108,18 @@ mod tests {
 
     #[test]
     fn a_closed_float_is_not_drawn_though_focus_may_still_go_there() {
-        // The confirmation dialog and the creation wizard are floats that paint
-        // nothing until invoked. Judging them by the permission to float rather
-        // than by having floated reported both as on screen permanently, in the
-        // inventory that exists to say what is drawing.
         let it = float(false);
         assert!(
             !is_drawn(it),
             "a float that painted nothing is not on screen"
         );
-        // Unchanged, and for the same reason a switch alternate keeps it:
-        // focusing a float is part of what opens it.
         assert!(can_focus(it));
     }
 
     #[test]
     fn a_pane_that_opens_its_own_slot_holds_its_focus_request() {
-        // The search strip: the chord that shows it also asks for focus, and the
-        // slot it asked for is not placed until the arrangement runs again. The
-        // request has to survive that frame or the strip opens unfocused.
         assert!(defer_until_placed(placement(false, None)));
-        // Once the slot is there, nothing is deferred — it is taken.
         assert!(!defer_until_placed(placement(true, None)));
-        // A float needs no slot, so its request is honoured at once.
         assert!(!defer_until_placed(float(false)));
     }
 
@@ -163,7 +147,6 @@ mod tests {
 
     #[test]
     fn the_cycle_stops_once_on_a_switch_slot_at_its_default_occupant() {
-        // sessions, agent, and a pane that replaces the agent.
         let ring = [column(), in_centre(true), in_centre(false)];
         assert_eq!(next_in_cycle(&ring, 0, 1), Some(1));
         assert_eq!(
@@ -231,9 +214,6 @@ mod tests {
 
     #[test]
     fn every_walk_across_any_ring_lands_on_a_stop_and_never_on_an_alternate() {
-        // Exhaustive over small rings of the four kinds of entry: whatever the
-        // mix, a step never lands on an alternate unless it started on one and
-        // nothing else exists, and a stop is found whenever one exists.
         let kinds = [
             column(),
             in_centre(true),

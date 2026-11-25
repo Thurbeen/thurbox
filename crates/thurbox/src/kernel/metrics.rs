@@ -108,14 +108,11 @@ impl Metrics {
         if !due {
             return;
         }
-        // An absent collector means a sample is already in flight: a slow one
-        // delays the next rather than stacking a second walk of /proc onto it.
         let Some(collector) = self.collector.take() else {
             return;
         };
         self.last_sample = Some(Instant::now());
 
-        // Only what the worker needs, so nothing borrows `self` across threads.
         let work: Vec<SampleInput> = subjects
             .iter()
             .map(|subject| {
@@ -141,8 +138,6 @@ impl Metrics {
         while let Ok(sample) = self.rx.try_recv() {
             self.system = sample.system;
             self.resources = sample.resources;
-            // Merged rather than replaced: a session whose file was unreadable
-            // this round keeps what it last reported instead of blanking.
             self.agents.extend(sample.agents);
             self.collector = Some(sample.collector);
             changed = true;
@@ -192,8 +187,6 @@ fn pane_pids(subjects: &[SampleInput]) -> Vec<(String, u32)> {
     let mut by_backend: HashMap<usize, BackendPanes> = HashMap::new();
     for (session, _, pane) in subjects {
         if let Some((backend, pane_id)) = pane {
-            // Keyed by the Arc's address: backends carry no id of their own
-            // here, and two subjects on one host share the same Arc.
             let key = Arc::as_ptr(backend).cast::<()>() as usize;
             by_backend
                 .entry(key)
@@ -486,7 +479,6 @@ mod tests {
         std::fs::write(&good, "{}").expect("write");
         let bad = dir.path().join("bad.json");
         std::fs::write(&bad, "not json").expect("write");
-        // This test's own process: a pid sysinfo is certain to find.
         let me = std::process::id();
         let batched: Arc<dyn crate::backend::SessionBackend> = Arc::new(Panes {
             pids: HashMap::from([("%1".to_string(), me)]),

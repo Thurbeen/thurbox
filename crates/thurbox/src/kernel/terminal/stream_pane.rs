@@ -122,8 +122,7 @@ pub(super) fn adopt_with_upstream(
     let (Some(mut stdin), Some(mut stdout)) = (child.stdin.take(), child.stdout.take()) else {
         return Err(io::Error::other("the stream has no pipes"));
     };
-    // Kept so a stream that never starts says why: over ssh, a refused
-    // connection is a line on stderr and no frame at all.
+    // Over ssh, a refused connection is a line on stderr and no frame at all.
     let said = child.stderr.take().map(stderr_tail);
     let snapshots = match term_stream::read::<Down>(&mut stdout) {
         Ok(Some(Down::Hello(hello))) if hello.version == term_stream::VERSION => {
@@ -152,9 +151,6 @@ pub(super) fn adopt_with_upstream(
     term_stream::write(&mut stdin, &Up::Resize(Size { rows, cols }))?;
     let upstream = Upstream::over(stdin);
     let (tx, rx) = std::sync::mpsc::channel();
-    // A pane over a stream starts without a grid and builds it from the
-    // first snapshot. A stream that sends none (`fleet term-bridge` has no
-    // screen from before it started) starts on a blank one of its size.
     if !snapshots {
         let blank = term_stream::Snapshot {
             cols,
@@ -249,8 +245,6 @@ impl Upstream {
     pub(super) fn send(&self, frame: Up) -> io::Result<()> {
         let weight = weight(&frame);
         let before = self.queued.fetch_add(weight, Ordering::AcqRel);
-        // Only what is typed or pasted is refused: a resize or a detach is a
-        // few bytes, and dropping one would leave the stream wrong.
         let typed = matches!(frame, Up::Input(_) | Up::Paste(_));
         if typed && before > 0 && before + weight > QUEUE_BYTES {
             self.queued.fetch_sub(weight, Ordering::AcqRel);
@@ -305,10 +299,6 @@ impl Input {
 impl Write for Input {
     fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
         match self.up.send(Up::Input(buf.to_vec())) {
-            // Dropped, not failed: the pane's writer ends at its first
-            // error, and a backlog must not close the pane. Later input goes
-            // once the stream reads again; the interface says what was
-            // dropped, once per run of refused writes.
             Err(e) if e.kind() == io::ErrorKind::WouldBlock => {
                 tracing::warn!("dropped {} bytes of input: {e}", buf.len());
                 if !self.dropping {
@@ -339,7 +329,6 @@ impl Drop for Input {
 
 #[cfg(test)]
 mod tests {
-    // For the tests that run a process, all of them Unix's.
     #[cfg(unix)]
     use std::process::{Command, Stdio};
     #[cfg(unix)]
@@ -467,8 +456,6 @@ mod tests {
         let (tx, rx) = std::sync::mpsc::channel();
         let upstream = super::Upstream::over(child.stdin.take().expect("stdin"));
         let mut input = super::Input::new(upstream.clone(), notices(tx));
-        // The writer takes the first frame and stalls on it; the second
-        // waits in the queue, near the bound.
         input.write_all(&vec![b'a'; 100 << 10]).expect("typed");
         std::thread::sleep(Duration::from_millis(200));
         input.write_all(&vec![b'b'; 800 << 10]).expect("queued");

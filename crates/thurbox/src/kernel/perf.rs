@@ -518,8 +518,6 @@ impl ModRow {
         } else if often(stats.store_writes) {
             hints.push(Hint::RenderWrites);
         }
-        // An impure pane renders on every paint by definition, which the first
-        // hint already says; only a pure one re-rendering is a surprise.
         if meta.pure && stats.idle_renders >= HINT_MIN_FRAMES {
             hints.push(Hint::IdleRenders);
         }
@@ -701,9 +699,6 @@ mod tests {
 
     #[test]
     fn an_empty_histogram_reports_zero_rather_than_a_bucket_bound() {
-        // The percentile of nothing is not "250µs", which is what returning the
-        // first bucket bound would print into a HUD on a run that painted
-        // nothing.
         let h = DurationHistogram::default();
         assert_eq!(h.percentile_us(50), 0);
         assert_eq!(h.percentile_us(95), 0);
@@ -714,9 +709,6 @@ mod tests {
 
     #[test]
     fn a_percentile_never_reads_above_the_max_beside_it() {
-        // The bucket's UPPER bound is reported, so without the clamp a single
-        // 300µs sample would print "p95 500µs / max 300µs" — a contradiction
-        // in two adjacent columns.
         let mut h = DurationHistogram::default();
         h.record(Duration::from_micros(300));
         assert_eq!(h.max_us(), 300);
@@ -745,7 +737,6 @@ mod tests {
         }
         let seen: Vec<u64> = ops.iter_recent().map(|op| op.ms).collect();
         assert_eq!(seen.len(), SlowOps::CAP);
-        // Newest first, and the four oldest were dropped rather than the newest.
         assert_eq!(seen[0], SlowOps::CAP as u64 + 3);
         assert!(!seen.contains(&0));
     }
@@ -811,8 +802,6 @@ mod tests {
         assert_eq!(json["slow_ops"][0]["ms"], 120);
         assert_eq!(json["slow_ops"][0]["plugin"], "sessions");
         assert!(json["plugins"].is_array());
-        // Each histogram is present even when it recorded nothing, so the CLI
-        // never has to distinguish "absent" from "no samples".
         for key in ["frame", "tick", "republish"] {
             assert!(json[key]["p50_us"].is_number(), "{key} p50 missing");
             assert!(json[key]["max_us"].is_number(), "{key} max missing");
@@ -823,8 +812,6 @@ mod tests {
 
     #[test]
     fn a_window_is_the_difference_between_two_readings() {
-        // Asserting on absolute totals would make a test depend on everything
-        // that ran before it.
         let counters = Counters::default();
         Counters::bump(&counters.frames);
         let before = counters.read();
@@ -847,7 +834,6 @@ mod tests {
 
     #[test]
     fn a_hint_needs_enough_frames_to_mean_anything() {
-        // Three impure renders in three frames is every frame, and says nothing.
         let mut table = ModTable::default();
         for _ in 0..3 {
             table.note_frame(Duration::from_millis(1));
@@ -900,8 +886,6 @@ mod tests {
     fn fit_columns_pads_and_cuts_by_terminal_columns() {
         assert_eq!(fit_columns("abc", 5), "abc  ");
         assert_eq!(fit_columns("abcdef", 3), "abc");
-        // A double-width glyph that would straddle the edge is left out and the
-        // gap padded, so the cell is still exactly three columns.
         assert_eq!(fit_columns("名前", 3), "名 ");
         assert_eq!(text_columns(&fit_columns("名前ペイン", 7)), 7);
     }

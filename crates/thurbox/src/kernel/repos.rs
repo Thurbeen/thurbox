@@ -197,8 +197,6 @@ impl RepoStore {
         if self.branches_inflight.contains(repo) {
             return;
         }
-        // `<host>\0<repo>`: a repository of a place elsewhere, read there
-        // through Fleet, as that machine last fetched it.
         if let Some((link, place, path)) = repo
             .split_once('\0')
             .and_then(|(host, path)| self.remote_place(host).map(|(l, p)| (l, p, path)))
@@ -225,8 +223,6 @@ impl RepoStore {
             });
             return;
         }
-        // The fresh-answer shortcut is for re-reads only: an opening fetches
-        // however recently a closed picker listed the repository.
         let fetch = !self.fetched.contains(repo);
         if !fetch && self.branches.get(repo).is_some_and(|held| !held.stale()) {
             return;
@@ -314,8 +310,6 @@ impl RepoStore {
 
         let dir = dir.to_string();
         let tx = self.tx.clone();
-        // A place elsewhere is listed there, through Fleet: never this
-        // machine's directory of the same name.
         if let Some((link, place)) = self.remote_place(host) {
             std::thread::spawn(move || {
                 let (listing, dir) = remote_listing(&link, &place, &dir);
@@ -403,8 +397,6 @@ impl RepoStore {
     }
 
     pub fn serve(&mut self, wants: &Wants) {
-        // Cloned rather than borrowed: each request takes `&mut self`, and the
-        // wants are the loop's, not the store's.
         let wants = wants.clone();
         if let Some(host) = wants.bookmarks {
             self.request_bookmarks(&host);
@@ -412,8 +404,6 @@ impl RepoStore {
         if let Some((host, dir)) = wants.browse {
             self.request_listing(&host, &dir);
         }
-        // A repository the flow stopped asking about is fetched again when
-        // it is asked about next.
         self.fetched
             .retain(|repo| wants.branches.as_ref() == Some(repo));
         if let Some(repo) = wants.branches {
@@ -500,8 +490,6 @@ fn remote_listing(
     };
     match ask_place(link, args, "browse") {
         Ok(answer) => {
-            // The runtime names the home it listed: kept, so an entry picked
-            // from it is an absolute path.
             let resolved = home
                 .then(|| answer["dir"].as_str().map(str::to_string))
                 .flatten();
@@ -558,25 +546,15 @@ fn read_bookmarks(host: &str) -> Vec<BookmarkRow> {
 }
 
 fn offer_interface_dir(rows: &mut Vec<BookmarkRow>) {
-    // `resolve(false)`: reading the list must not materialize an interface, or
-    // opening the creation flow would write files as a side effect.
     let Ok((dir, _chosen, _report)) = super::bundled::resolve(false) else {
         return;
     };
     if !dir.is_dir() || rows.iter().any(|row| row.path == dir.to_string_lossy()) {
         return;
     }
-    // `is_git` is probed like any other row: the interface directory is not a
-    // repository under a default install, and the flow needs to know — a
-    // worktree cannot be cut from something that is not one.
     let is_git = Some(dir.join(".git").exists());
     let mut offered = row(&dir, None, false, is_git);
-    // Named for what picking it does, not for where it happens to live. Its leaf
-    // is usually `ui`, which tells a reader nothing, and the rest of the path is
-    // install-specific boilerplate that the row was truncating anyway.
     offered.label = Some("Thurbox interface — edit your panes".to_string());
-    // Flagged so a reader of the list can tell placement from recency: this row
-    // is first because this function puts it here, not because it was just used.
     offered.offered = true;
     rows.insert(0, offered);
 }
@@ -584,7 +562,6 @@ fn offer_interface_dir(rows: &mut Vec<BookmarkRow>) {
 fn flatten(bookmarks: &[Bookmark], scanned: &HashMap<PathBuf, Vec<PathBuf>>) -> Vec<BookmarkRow> {
     let persisted = group_persisted(bookmarks);
 
-    // A path a parent already covers is emitted under that parent, not twice.
     let covered: std::collections::HashSet<&PathBuf> = scanned
         .values()
         .flatten()
@@ -592,8 +569,6 @@ fn flatten(bookmarks: &[Bookmark], scanned: &HashMap<PathBuf, Vec<PathBuf>>) -> 
         .collect();
 
     let mut rows = Vec::new();
-    // Guards against any path appearing twice: duplicate bookmarks, a member
-    // shared by two folders, a folder nested inside another.
     let mut emitted: std::collections::HashSet<PathBuf> = std::collections::HashSet::new();
     for bookmark in bookmarks {
         if bookmark.is_parent {
@@ -628,11 +603,6 @@ fn push_folder(
     }
     rows.push(row(&bookmark.repo_path, None, true, None));
     let parent = display(&bookmark.repo_path);
-    // A scan is the truth about a folder, and what was written at import time is
-    // only the last scan that succeeded: chaining the two would keep offering a
-    // repository that has since been deleted, which is what it used to do.
-    // Scanned members are repositories by construction; persisted ones carry
-    // whatever was established when they were imported.
     let members: Vec<(&PathBuf, Option<bool>)> = match scanned.get(&bookmark.repo_path) {
         Some(children) => children.iter().map(|path| (path, Some(true))).collect(),
         None => persisted
@@ -653,10 +623,6 @@ fn scan_parents(bookmarks: &[Bookmark]) -> HashMap<PathBuf, Vec<PathBuf>> {
     bookmarks
         .iter()
         .filter(|bookmark| bookmark.is_parent)
-        // `read_dir` rather than `is_dir`, because the question is whether the
-        // scan can be *trusted*: `scan_child_repos` answers a directory it
-        // cannot open with an empty list, which is indistinguishable from a
-        // folder holding nothing.
         .filter(|bookmark| std::fs::read_dir(&bookmark.repo_path).is_ok())
         .map(|bookmark| {
             (
@@ -786,10 +752,6 @@ mod tests {
             "{:?}",
             remote.calls()
         );
-        // A home not known here is the runtime's own default: `~` itself is
-        // never sent, since a runtime takes only an absolute directory. The
-        // directory the runtime answered for is kept, so an entry picked
-        // from it is an absolute path.
         assert!(
             remote.called("runtime browse local --json"),
             "{:?}",
@@ -816,7 +778,6 @@ mod tests {
 
     #[test]
     fn requesting_a_listing_returns_at_once_and_reads_pending() {
-        // The property that matters: asking does not wait for the filesystem.
         let mut store = RepoStore::new();
         let started = std::time::Instant::now();
         store.request_listing("", "/definitely/not/here");
@@ -829,7 +790,6 @@ mod tests {
 
     #[test]
     fn pending_is_distinct_from_an_empty_directory() {
-        // A slow host must not read as a directory with nothing in it.
         assert_ne!(Listing::Pending, Listing::Ready(Vec::new()));
     }
 
@@ -851,8 +811,6 @@ mod tests {
 
     #[test]
     fn a_settled_listing_is_read_again_once_it_is_old() {
-        // Without this a directory created after the first look never appears,
-        // because the answer is cached for the life of the process.
         assert!(!held(Listing::Ready(Vec::new()), std::time::Duration::ZERO).stale());
         assert!(held(Listing::Ready(Vec::new()), LISTING_TTL).stale());
         assert!(held(Listing::Failed("gone".into()), LISTING_TTL).stale());
@@ -860,8 +818,6 @@ mod tests {
 
     #[test]
     fn a_pending_listing_is_never_asked_for_twice() {
-        // However slow the host is: a second request would spawn a second worker
-        // for an answer already on its way.
         assert!(!held(Listing::Pending, LISTING_TTL * 10).stale());
     }
 
@@ -987,8 +943,6 @@ mod tests {
 
     #[test]
     fn listings_are_keyed_by_host_as_well_as_directory() {
-        // Two machines' `/srv` are different directories, and a result for one
-        // must never be shown for the other.
         let mut store = RepoStore::new();
         store.set_listing_for_test("", "/srv", Listing::Ready(Vec::new()));
         store.set_listing_for_test(
@@ -1062,16 +1016,12 @@ mod tests {
 
     #[test]
     fn a_folder_leads_its_members() {
-        // The header first, then what was imported under it — the order the flow
-        // draws them in, since a member is indented beneath its header.
         let rows = flatten(
             &[
                 saved("/src", true, None),
                 saved("/src/one", false, Some("/src")),
                 saved("/src/two", false, Some("/src")),
             ],
-            // Nothing scanned: the members are what was persisted at import
-            // time, which is what another Fleet host's folder shows.
             &no_scan(),
         );
         assert_eq!(
@@ -1086,9 +1036,6 @@ mod tests {
 
     #[test]
     fn a_scan_replaces_what_the_import_remembered() {
-        // The rule the whole scan rests on. `two` was cloned after the import
-        // and `gone` has been deleted since; a folder that chained the scan onto
-        // its memory offered all three.
         let rows = flatten(
             &[
                 saved("/src", true, None),
@@ -1109,9 +1056,6 @@ mod tests {
 
     #[test]
     fn a_deleted_member_does_not_come_back_as_a_row_of_its_own() {
-        // The other half: a member the scan dropped is still *covered* by its
-        // folder, so it does not fall out of the group and stand alone — which
-        // would be the same wrong row in a different place.
         let rows = flatten(
             &[
                 saved("/src", true, None),
@@ -1124,8 +1068,6 @@ mod tests {
 
     #[test]
     fn a_folder_that_cannot_be_read_keeps_what_it_last_held() {
-        // A local folder on an unmounted drive: `scan_parents` leaves it out of
-        // the map entirely rather than reporting it empty, and memory stands in.
         let bookmarks = [
             saved("/mnt/src", true, None),
             saved("/mnt/src/one", false, Some("/mnt/src")),
@@ -1145,8 +1087,6 @@ mod tests {
 
     #[test]
     fn a_repository_a_folder_covers_is_not_listed_twice() {
-        // Adding a path by hand and then importing the folder above it must not
-        // produce two rows for the same repository.
         let rows = flatten(
             &[
                 saved("/src/one", false, None),
@@ -1164,9 +1104,6 @@ mod tests {
 
     #[test]
     fn a_member_whose_folder_is_gone_stands_alone() {
-        // Forgetting a folder should take its members with it, but a row left
-        // behind by an older version — or a half-finished delete — must still be
-        // offered rather than silently dropped.
         let rows = flatten(&[saved("/src/one", false, Some("/src"))], &no_scan());
         assert_eq!(shape(&rows), [("/src/one", None, false)]);
     }
@@ -1185,8 +1122,6 @@ mod tests {
 
     #[test]
     fn a_folder_row_is_never_offered_as_a_repository() {
-        // It is a header: selecting it would create a session against a directory
-        // of repositories rather than a repository.
         let rows = flatten(&[saved("/src", true, None)], &no_scan());
         assert_eq!(rows.len(), 1);
         assert!(rows[0].is_parent);
@@ -1206,16 +1141,12 @@ mod tests {
     #[test]
     fn a_want_carries_a_host_and_a_path() {
         let wants = Wants::new(Some(String::new()), Some("ssh:box\0/srv/repos".into()));
-        // The local machine is an empty host, which is not the same as no
-        // request at all.
         assert_eq!(wants.bookmarks.as_deref(), Some(""));
         assert_eq!(wants.browse, Some(("ssh:box".into(), "/srv/repos".into())));
     }
 
     #[test]
     fn a_malformed_or_empty_want_asks_for_nothing() {
-        // No separator at all, and a separator with nothing after it — the
-        // second is what a flow leaves while its input is still empty.
         assert_eq!(Wants::new(None, Some("/srv/repos".into())).browse, None);
         let wants = Wants::new(None, Some("ssh:box\0".into()));
         assert_eq!(wants.bookmarks, None);
@@ -1224,8 +1155,6 @@ mod tests {
 
     #[test]
     fn the_interface_directory_is_offered_first() {
-        // Editing a pane is work every user can do without cloning anything, and
-        // it was the one directory the list never offered.
         let home = tempfile::TempDir::new().expect("tempdir");
         let ui = home.path().join("ui");
         std::fs::create_dir_all(ui.join("mods")).expect("mkdir");
@@ -1241,25 +1170,17 @@ mod tests {
             Some(false),
             "a default install is not a repository, and the flow has to know"
         );
-        // The path is a long install-specific string whose leaf is `ui`, which
-        // says nothing about what picking the row would do. A row the flow offers
-        // on its own account names itself.
         let label = rows[0].label.as_deref().expect("the offered row is named");
         assert!(
             label.contains("interface"),
             "the name says what it is: {label}"
         );
-        // The flag is what keeps it out of the flow's recency lookup: being
-        // first here is placement, not a bookmark that was just used.
         assert!(rows[0].offered, "an offered row says so");
         std::env::remove_var("THURBOX_UI_DIR");
     }
 
     #[test]
     fn another_hosts_list_offers_no_local_interface_directory() {
-        // The interface directory is a path on this machine. Offered on
-        // another Fleet host's list, picking it would hand that host a path
-        // it does not have.
         let home = tempfile::TempDir::new().expect("tempdir");
         let ui = home.path().join("ui");
         std::fs::create_dir_all(ui.join("mods")).expect("mkdir");
@@ -1274,8 +1195,6 @@ mod tests {
 
     #[test]
     fn a_bookmark_of_your_own_keeps_its_place() {
-        // Yours may sit under a folder you arranged; inserting a second row for
-        // the same path would rearrange a list you built.
         let home = tempfile::TempDir::new().expect("tempdir");
         let ui = home.path().join("ui");
         std::fs::create_dir_all(&ui).expect("mkdir");
