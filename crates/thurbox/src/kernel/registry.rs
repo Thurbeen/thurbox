@@ -149,8 +149,6 @@ pub fn protected_action(name: &str) -> bool {
         || name == super::clipboard::PASTE_ACTION
 }
 
-/// The session actions a person confirms before they run, on screen or with
-/// `thurbox-cli ui confirm`. Each takes a required `session_id` from outside.
 pub const GUARDED_SESSION_ACTIONS: [&str; 5] = [
     "sessions.delete",
     "sessions.force_delete",
@@ -159,7 +157,6 @@ pub const GUARDED_SESSION_ACTIONS: [&str; 5] = [
     "sessions.sync",
 ];
 
-/// Whether `name` is one of [`GUARDED_SESSION_ACTIONS`].
 pub fn is_guarded_session_action(name: &str) -> bool {
     GUARDED_SESSION_ACTIONS.contains(&name)
 }

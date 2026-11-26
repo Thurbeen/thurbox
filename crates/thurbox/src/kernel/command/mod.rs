@@ -25,12 +25,27 @@ pub enum Command {
         cwd: Option<std::path::PathBuf>,
         member_dirs: Vec<std::path::PathBuf>,
     },
-    Delete { session: String, force: bool },
-    Send { session: String, text: String },
-    Start { session: String },
-    Pause { session: String },
-    Restart { session: String, fresh: bool },
-    Order { list: Vec<String> },
+    Delete {
+        session: String,
+        force: bool,
+    },
+    Send {
+        session: String,
+        text: String,
+    },
+    Start {
+        session: String,
+    },
+    Pause {
+        session: String,
+    },
+    Restart {
+        session: String,
+        fresh: bool,
+    },
+    Order {
+        list: Vec<String>,
+    },
     Create {
         name: String,
         repo: String,
@@ -564,7 +579,6 @@ pub struct Args {
     pub text: Option<String>,
     pub value: Option<String>,
     pub force: bool,
-    /// `restart`: start the agent on a new conversation.
     pub fresh: bool,
     pub flag: Option<bool>,
     pub toggle: bool,
