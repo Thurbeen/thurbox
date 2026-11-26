@@ -1,0 +1,47 @@
+{% macro controls(items, noun, searchHint) %}
+  <form class="plugin-filters" id="plugin-filters" hidden role="search" aria-label="Search and sort {{ noun }}">
+    <div><label for="plugin-search">Search {{ noun }}</label><input id="plugin-search" type="search" placeholder="{{ searchHint }}" /></div>
+    <div><label for="plugin-sort">Sort by</label><select id="plugin-sort"><option value="popular">Popular</option><option value="updated">Recently updated</option><option value="newest">Newest</option><option value="name">Name</option></select></div>
+    <div><label for="plugin-badge">Maintainer</label><select id="plugin-badge"><option value="">All maintainers</option><option value="official">Official</option><option value="community">Community</option></select></div>
+    <button type="reset">Reset</button>
+  </form>
+  <p id="plugin-count" role="status" aria-live="polite" aria-atomic="true" data-noun="{{ noun }}">{{ items | length }} {{ noun }}</p>
+  <noscript><p>All {{ noun }} are listed below, most starred first. Enable JavaScript to search, filter and sort.</p></noscript>
+{% endmacro %}
+
+{% macro card(item) %}
+{% set badge = "official" if item.official else "community" %}
+    <article class="plugin-card" data-plugin data-badge="{{ badge }}" data-stars="{{ item.stars }}" data-pushed="{{ item.pushedAt | escape }}" data-created="{{ item.createdAt | escape }}" data-name="{{ item.name | lower | escape }}">
+      <div class="plugin-card-head">
+        <img class="plugin-avatar" src="https://github.com/{{ item.owner | urlencode }}.png?size=64" alt="" width="32" height="32" loading="lazy" decoding="async" />
+        <div class="plugin-title">
+          <h2><a href="{{ item.repo | escape }}">{{ item.name | escape }}</a></h2>
+          <p class="plugin-owner">by <a href="https://github.com/{{ item.owner | urlencode }}">{{ item.owner | escape }}</a></p>
+        </div>
+        <span class="plugin-badge plugin-badge--{{ badge }}">{{ badge | capitalize }}</span>
+      </div>
+      <p class="plugin-desc">{{ item.description | escape }}</p>
+      {% if item.media %}
+      <a class="plugin-preview" href="{{ item.repo | escape }}#readme"><img src="{{ item.media.url | escape }}" alt="{{ item.media.alt | escape }}" loading="lazy" decoding="async" /></a>
+      {% else %}
+      <div class="plugin-preview"><div class="plugin-preview-placeholder"><span aria-hidden="true">&gt;_</span>No preview yet<br /><a href="{{ item.repo | escape }}#readme">Explore the README</a></div></div>
+      {% endif %}
+      <dl class="plugin-meta">
+        {% if item.kinds | length %}<div><dt>Kinds</dt><dd><ul class="plugin-kinds">{% for kind in item.kinds %}<li><code>{{ kind | escape }}</code></li>{% endfor %}</ul></dd></div>{% endif %}
+        <div><dt>Stars</dt><dd class="plugin-stars">{{ item.stars }}</dd></div>
+        <div><dt>Last update</dt><dd><time datetime="{{ item.pushedAt | escape }}">{{ item.pushedAt.slice(0, 10) | escape }}</time></dd></div>
+        {% if item.version %}<div><dt>Version</dt><dd>{{ item.version | escape }}</dd></div>{% endif %}
+        {% if item.requiresThurbox %}<div><dt>Thurbox</dt><dd>{{ item.requiresThurbox | escape }}</dd></div>{% endif %}
+        {% if item.requiresFleet %}<div><dt>Fleet</dt><dd>{{ item.requiresFleet | escape }}</dd></div>{% endif %}
+        {% if item.platforms | length %}<div><dt>Platforms</dt><dd>{{ item.platforms | join(', ') | escape }}</dd></div>{% endif %}
+      </dl>
+      {% if item.topics | length %}
+      <ul class="plugin-topics" aria-label="Topics">
+        {% for topic in item.topics %}<li><a href="https://github.com/topics/{{ topic | urlencode }}">{{ topic | escape }}</a></li>{% endfor %}
+      </ul>
+      {% endif %}
+      <details class="plugin-install"><summary>Install command</summary><pre data-wrap data-title="Install"><code class="language-bash">{{ item.install | escape }}</code></pre></details>
+      {% if item.notes %}<p class="plugin-notes">{{ item.notes | escape }}</p>{% endif %}
+      <a href="{{ item.repo | escape }}#readme">Repository &amp; setup →</a>
+    </article>
+{% endmacro %}

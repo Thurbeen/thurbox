@@ -25,7 +25,7 @@ function validUrl(value, repository = false) {
 
 const nonEmpty = (value) => typeof value === 'string' && value.trim() !== '';
 
-export function validateMods(entries) {
+export function validateOverlay(entries) {
   if (!Array.isArray(entries)) return ['Registry must be an array'];
   const errors = [];
   const repos = new Set();
@@ -92,7 +92,7 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
   const entries = JSON.parse(
     await readFile(process.argv[2] || 'website/_data/mods.json', 'utf8'),
   );
-  let errors = validateMods(entries);
+  let errors = validateOverlay(entries);
   if (!errors.length && process.argv.includes('--links')) errors = await checkLinks(entries);
   if (errors.length) {
     console.error(errors.join('\n'));

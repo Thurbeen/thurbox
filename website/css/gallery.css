@@ -161,6 +161,15 @@
   font-size: 0.9rem;
 }
 
+.plugin-kinds {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-xs) var(--space-sm);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
 .plugin-topics {
   display: flex;
   flex-wrap: wrap;

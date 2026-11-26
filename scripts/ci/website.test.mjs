@@ -138,6 +138,43 @@ test('mod gallery is discovered by topic and documents the mod.toml listing conv
   assert.match(contributing, /website\/mods-snapshot\.json/);
 });
 
+test('Fleet plugins page lists fleet-reviewer with its kinds, beside the Mods page', () => {
+  const page = built('fleet-plugins.html');
+  const card = page
+    .querySelectorAll('[data-plugin]')
+    .find((c) => c.querySelector('h2 a')?.getAttribute('href') === 'https://github.com/Thurbeen/fleet-reviewer');
+  assert.ok(card, 'a card links to fleet-reviewer');
+  assert.equal(card.getAttribute('data-badge'), 'official');
+  assert.deepEqual(
+    card.querySelectorAll('.plugin-kinds code').map((c) => c.textContent),
+    ['ReviewSource', 'Review'],
+  );
+  assert.match(text(parse(card.querySelector('pre').innerHTML)), /git clone https:\/\/github\.com\/Thurbeen\/fleet-reviewer/);
+  const copy = text(page);
+  assert.match(copy, /discovered automatically/i);
+  assert.match(copy, /not reviewed/i);
+  assert.doesNotMatch(copy, /\bmods? (adds?|extends?) Fleet/i);
+  const navOrder = page.querySelectorAll('.nav-links a').map((a) => a.textContent.trim());
+  assert.equal(navOrder.indexOf('Fleet plugins'), navOrder.indexOf('Mods') + 1);
+  const guide = built('docs/fleet/plugins.html');
+  assert.ok(guide.querySelector('a[href="https://thurbox.thurbeen.eu/fleet-plugins.html"]'));
+  assert.match(text(guide), /fleet-plugin\.toml/);
+  assert.match(text(guide), /A Fleet plugin is not a thurbox mod/);
+  assert.match(readFileSync('CONTRIBUTING.md', 'utf8'), /## Fleet plugin gallery/);
+});
+
+test('the site rebuilds every hour and skips a scheduled deploy when the galleries did not change', () => {
+  const workflow = readFileSync('.github/workflows/pages.yml', 'utf8');
+  const cron = workflow.match(/- cron: '([^']+)'/)[1].split(' ');
+  assert.equal(cron[1], '*', 'every hour');
+  assert.notEqual(cron[0], '0', 'off the top of the hour, when GitHub delays schedules');
+  assert.match(workflow, /galleries\.sha256/);
+  assert.match(workflow, /github\.event_name != 'schedule'/);
+  assert.match(readFileSync('_site/galleries.sha256', 'utf8'), /^[0-9a-f]{64}\n$/);
+  for (const page of ['mods.html', 'fleet-plugins.html'])
+    assert.match(text(built(page)), /rebuilds every hour/, page);
+});
+
 test('homepage presents Fleet and thurbox apart, links each official mod, and stays light on commands', () => {
   const home = built('index.html');
   const install = 'curl -fsSL https://raw.githubusercontent.com/Thurbeen/thurbox/main/scripts/install.sh | sh';

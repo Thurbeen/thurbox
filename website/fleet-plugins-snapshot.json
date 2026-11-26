@@ -1,0 +1,45 @@
+[
+  {
+    "repo": "https://github.com/Thurbeen/fleet-reviewer",
+    "fullName": "Thurbeen/fleet-reviewer",
+    "owner": "Thurbeen",
+    "name": "fleet-reviewer",
+    "description": "Fleet plugin: discover open pull and merge requests and start review Tasks",
+    "stars": 0,
+    "pushedAt": "2026-11-26T11:09:12Z",
+    "createdAt": "2026-10-29T14:42:34Z",
+    "topics": [],
+    "official": true,
+    "tagged": true,
+    "version": null,
+    "requiresFleet": ">=3.0.0",
+    "kinds": [
+      "ReviewSource",
+      "Review"
+    ],
+    "install": "git clone https://github.com/Thurbeen/fleet-reviewer /opt/fleet-plugins/fleet-reviewer",
+    "platforms": [],
+    "notes": "Needs Node.js 22.18 or later on the manager, a forge token passed through envFrom, and tasks = \"own\".",
+    "media": null
+  },
+  {
+    "repo": "https://github.com/Thurbeen/fleet-factory",
+    "fullName": "Thurbeen/fleet-factory",
+    "owner": "Thurbeen",
+    "name": "fleet-factory",
+    "description": "Software factory on Fleet: ticket board to production and back, as infrastructure as code",
+    "stars": 0,
+    "pushedAt": "2026-11-19T16:54:52Z",
+    "createdAt": "2026-11-16T19:05:11Z",
+    "topics": [],
+    "official": true,
+    "tagged": true,
+    "version": null,
+    "requiresFleet": null,
+    "kinds": [],
+    "install": "git clone https://github.com/Thurbeen/fleet-factory /opt/fleet-plugins/fleet-factory",
+    "platforms": [],
+    "notes": null,
+    "media": null
+  }
+]

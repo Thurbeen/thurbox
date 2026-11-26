@@ -1,0 +1,59 @@
+---
+layout: base.njk
+title: Fleet plugins — Thurbox
+description: Official and community Fleet plugins that add resource kinds to Fleet, discovered from the thurbox-fleet-plugins GitHub topic.
+extraCss: [gallery.css]
+activeNav: fleet-plugins
+footer: true
+navScrolled: true
+---
+{% import "gallery.njk" as gallery %}
+<div class="container plugin-page">
+  <header class="plugin-intro">
+    <p class="plugin-eyebrow">Extend Fleet</p>
+    <h1>Fleet plugins</h1>
+    <p>A Fleet plugin adds resource kinds to Fleet, and the controller that reconciles them, the way a CRD and an operator extend Kubernetes. The plugins below are published on GitHub and discovered automatically from the <a href="https://github.com/topics/thurbox-fleet-plugins"><code>thurbox-fleet-plugins</code></a> topic. Each card lists the kinds the plugin adds.</p>
+    <p><a href="#install-plugin">Install one</a> · <a href="#submit-plugin">Publish yours</a> · <a href="./docs/fleet/plugins.html">Write a plugin</a></p>
+    <p>To change the thurbox interface instead, see <a href="./mods.html">Mods</a>.</p>
+  </header>
+  <p class="plugin-notice">Official plugins are maintained by Thurbeen. Community plugins list themselves with the topic and are not reviewed by Thurbeen. A plugin runs on the manager's machine, and its observer gets the variables you pass it: read the README and check the credentials and the <code>tasks</code> setting it asks for before you register it.</p>
+  {{ gallery.controls(fleetPluginGallery, "plugins", "Name, owner, kind, topic or description") }}
+  <div class="plugin-grid" id="plugin-grid">
+    {% for plugin in fleetPluginGallery %}{{ gallery.card(plugin) }}{% endfor %}
+  </div>
+  <p id="plugin-empty" hidden>No plugins match these filters. Try another search or reset the filters.</p>
+  <section class="plugin-submit" id="install-plugin" aria-labelledby="install-heading">
+    <h2 id="install-heading">Install a plugin</h2>
+    <ol>
+      <li>Run the card's install command on the manager's machine. It checks out the repository.</li>
+      <li>Register the plugin under <code>[plugins]</code> in the manager's Fleet config. Its README gives the <code>program</code> and the other fields.</li>
+      <li>Check that Fleet sees its kinds, then apply objects of those kinds.</li>
+    </ol>
+    <pre data-title="fleet.toml"><code class="language-toml">[plugins.fleet-tickets]
+program = "/opt/fleet-plugins/fleet-tickets/bin/tickets"
+cwd = "/opt/fleet-plugins/fleet-tickets"</code></pre>
+    <pre data-title="Check"><code class="language-bash">fleet list plugins --json</code></pre>
+    <p><a href="./docs/fleet/configuration.html#plugins-section">The <code>[plugins]</code> section</a> lists every field.</p>
+  </section>
+  <section class="plugin-submit" id="submit-plugin" aria-labelledby="submit-heading">
+    <h2 id="submit-heading">Publish your plugin</h2>
+    <ol>
+      <li>Publish the plugin in a public GitHub repository.</li>
+      <li>Add the <a href="https://github.com/topics/thurbox-fleet-plugins"><code>thurbox-fleet-plugins</code></a> topic to the repository.</li>
+      <li>Add a <code>fleet-plugin.toml</code> at the repository root that lists the kinds the plugin adds, as below.</li>
+    </ol>
+    <p>The site rebuilds every hour. It reads each repository’s name, owner, description, stars, last push and topics from GitHub, and its kinds, version and required Fleet version from <code>fleet-plugin.toml</code>. Forks and archived repositories are left out. No pull request and no review queue.</p>
+    <pre data-title="fleet-plugin.toml"><code class="language-toml">name = "fleet-tickets"
+version = "0.1.0"
+requires_fleet = ">=3.0.0"
+kinds = ["Ticket", "TicketBoard"]
+
+[gallery]
+media = "media/demo.gif"
+media_alt = "What the screenshot shows"
+platforms = ["Linux", "macOS"]
+notes = "Runtimes, credentials and the tasks setting it needs."</code></pre>
+    <p>Every field is optional. Fleet does not read this file: Fleet learns the kinds from the plugin's <code>manifest</code> call, so keep <code>kinds</code> the same as what that call answers. <code>media</code> is a path in the repository or an HTTPS URL. The install command is <code>git clone</code> into <code>/opt/fleet-plugins/</code>. A plugin that needs another command asks for it in the reviewed overlay. The <a href="https://github.com/Thurbeen/thurbox/blob/main/CONTRIBUTING.md#fleet-plugin-gallery">contributing guide</a> describes the overlay.</p>
+  </section>
+</div>
+<script src="./js/gallery.js"></script>

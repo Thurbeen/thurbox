@@ -8,7 +8,9 @@ on:
       - 'eleventy.config.js'
       - 'package.json'
       - 'package-lock.json'
+      - 'scripts/ci/gallery.mjs'
       - 'scripts/ci/mods-gallery.mjs'
+      - 'scripts/ci/fleet-plugins-gallery.mjs'
       - 'scripts/ci/validate-mods.mjs'
       - 'docs/fleet/**'
       - 'docs/runtime/**'
@@ -18,7 +20,7 @@ on:
       - 'docs/observability.md'
   workflow_dispatch:
   schedule:
-    - cron: '23 5 * * *'
+    - cron: '23 * * * *'
 
 permissions:
   contents: read
@@ -57,11 +59,23 @@ jobs:
           GITHUB_TOKEN: ${{ github.token }}
         run: npm run build:website
 
-      - uses: actions/configure-pages@45bfe0192ca1faeb007ade9deae92b16b8254a0d # v6.0.0
+      - name: Compare the galleries with the published site
+        id: galleries
+        run: |
+          live=$(curl -fsSL --max-time 20 https://thurbox.thurbeen.eu/galleries.sha256 || true)
+          built=$(cat _site/galleries.sha256)
+          if [ "$live" = "$built" ]; then changed=false; else changed=true; fi
+          echo "changed=$changed" >> "$GITHUB_OUTPUT"
+          echo "published ${live:-none}, built $built, changed $changed"
 
-      - uses: actions/upload-pages-artifact@fc324d3547104276b827a68afc52ff2a11cc49c9 # v5.0.0
+      - if: github.event_name != 'schedule' || steps.galleries.outputs.changed == 'true'
+        uses: actions/configure-pages@45bfe0192ca1faeb007ade9deae92b16b8254a0d # v6.0.0
+
+      - if: github.event_name != 'schedule' || steps.galleries.outputs.changed == 'true'
+        uses: actions/upload-pages-artifact@fc324d3547104276b827a68afc52ff2a11cc49c9 # v5.0.0
         with:
           path: _site
 
       - id: deploy
+        if: github.event_name != 'schedule' || steps.galleries.outputs.changed == 'true'
         uses: actions/deploy-pages@368f82528645a54fb793d4d04e342629a3f51346 # v5.0.1

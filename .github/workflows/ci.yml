@@ -88,6 +88,7 @@ jobs:
               - 'website/**'
               - 'eleventy.config.js'
               - 'scripts/ci/*mods*.mjs'
+              - 'scripts/ci/*gallery*.mjs'
               - 'scripts/ci/website.test.mjs'
               - 'scripts/docs/*.mjs'
               - 'crates/fleet-api/src/harness/bundled.rs'
@@ -610,6 +611,10 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ github.token }}
         run: npm run check:mods:links
+      - name: Validate Fleet plugin registry URLs and live topic discovery
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: npm run check:fleet-plugins:links
 
   sonarqube:
     name: SonarQube

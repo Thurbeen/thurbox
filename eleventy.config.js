@@ -4,7 +4,9 @@ import { RenderPlugin } from '@11ty/eleventy';
 import { parse } from 'node-html-parser';
 import Prism from 'prismjs';
 import loadLanguages from 'prismjs/components/index.js';
-import { galleryData } from './scripts/ci/mods-gallery.mjs';
+import { galleryData as modGallery } from './scripts/ci/mods-gallery.mjs';
+import { galleryData as fleetPluginGallery } from './scripts/ci/fleet-plugins-gallery.mjs';
+import { galleryDigest } from './scripts/ci/gallery.mjs';
 
 loadLanguages(['bash', 'powershell', 'toml', 'json', 'rust']);
 
@@ -274,12 +276,22 @@ function repoDocRule(state) {
 }
 
 export default function (eleventyConfig) {
-  eleventyConfig.on('eleventy.after', () => {
-    const bytes = writeCoreBundle();
-    console.log(`[11ty] Wrote _site/css/core.css (${(bytes / 1024).toFixed(1)} KB)`);
+  let galleries;
+  eleventyConfig.on('eleventy.before', () => {
+    galleries = { mods: modGallery(), plugins: fleetPluginGallery() };
   });
 
-  for (const sheet of ['landing', 'docs', 'tutorial', 'mods']) {
+  eleventyConfig.on('eleventy.after', async () => {
+    const bytes = writeCoreBundle();
+    console.log(`[11ty] Wrote _site/css/core.css (${(bytes / 1024).toFixed(1)} KB)`);
+    const digest = galleryDigest({
+      commit: process.env.GITHUB_SHA ?? '',
+      galleries: { mods: await galleries.mods, plugins: await galleries.plugins },
+    });
+    writeFileSync('_site/galleries.sha256', `${digest}\n`);
+  });
+
+  for (const sheet of ['landing', 'docs', 'tutorial', 'gallery']) {
     eleventyConfig.addPassthroughCopy(`website/css/${sheet}.css`);
   }
   eleventyConfig.addPassthroughCopy('website/js');
@@ -291,7 +303,8 @@ export default function (eleventyConfig) {
 
   eleventyConfig.addPlugin(RenderPlugin);
   eleventyConfig.addGlobalData('repoDocs', listRepoDocs);
-  eleventyConfig.addGlobalData('gallery', () => galleryData());
+  eleventyConfig.addGlobalData('modGallery', () => galleries.mods);
+  eleventyConfig.addGlobalData('fleetPluginGallery', () => galleries.plugins);
   eleventyConfig.amendLibrary('md', (md) => md.core.ruler.push('repo_doc', repoDocRule));
   for (const dir of RENDERED_DOCS) {
     eleventyConfig.addPassthroughCopy(`${dir}/**/*.svg`);

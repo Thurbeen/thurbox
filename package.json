@@ -3,19 +3,23 @@
   "type": "module",
   "scripts": {
     "build:website": "eleventy",
-    "build:website:offline": "THURBOX_MODS_OFFLINE=1 eleventy",
+    "build:website:offline": "THURBOX_GALLERY_OFFLINE=1 eleventy",
     "dev:website": "eleventy --serve",
     "lint:html": "htmlhint '_site/**/*.html'",
     "lint:css": "stylelint 'website/css/**/*.css'",
     "lint:js": "eslint 'website/js/**/*.js'",
     "lint:format": "prettier --check 'website/css/**/*.css' 'website/js/**/*.js' 'eleventy.config.js'",
-    "lint:website": "npm run check:mods && npm run test:mods && npm run build:website:offline && npm run test:website && npm run lint:format && npm run lint:html && npm run lint:css && npm run lint:js",
+    "lint:website": "npm run check:mods && npm run check:fleet-plugins && npm run test:mods && npm run test:fleet-plugins && npm run build:website:offline && npm run test:website && npm run lint:format && npm run lint:html && npm run lint:css && npm run lint:js",
     "fmt:website": "prettier --write 'website/css/**/*.css' 'website/js/**/*.js' 'eleventy.config.js'",
     "test:mods": "node --test scripts/ci/mods.test.mjs scripts/ci/mods-gallery.test.mjs",
     "check:mods": "node scripts/ci/validate-mods.mjs",
     "check:mods:links": "node scripts/ci/validate-mods.mjs website/_data/mods.json --links && node scripts/ci/mods-gallery.mjs",
     "test:website": "node --test scripts/ci/website.test.mjs",
-    "mods:snapshot": "node scripts/ci/mods-gallery.mjs --write"
+    "mods:snapshot": "node scripts/ci/mods-gallery.mjs --write",
+    "test:fleet-plugins": "node --test scripts/ci/fleet-plugins-gallery.test.mjs",
+    "check:fleet-plugins": "node scripts/ci/validate-mods.mjs website/_data/fleet-plugins.json",
+    "check:fleet-plugins:links": "node scripts/ci/validate-mods.mjs website/_data/fleet-plugins.json --links && node scripts/ci/fleet-plugins-gallery.mjs",
+    "fleet-plugins:snapshot": "node scripts/ci/fleet-plugins-gallery.mjs --write"
   },
   "devDependencies": {
     "@11ty/eleventy": "^3.0.0",
