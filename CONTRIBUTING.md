@@ -303,61 +303,77 @@ tree is 39 MiB. Deleting a file later does not give that space back.
 By contributing, you agree that your contributions will be licensed under the
 [MIT License](LICENSE), the same license that covers the project.
 
-## Mod catalog
+## Mod gallery
 
-The [Mods page](https://thurbox.thurbeen.eu/mods.html) reads only
-`website/_data/mods.json`. To submit an add-on:
+The [Mods page](https://thurbox.thurbeen.eu/mods.html) lists the public GitHub
+repositories that carry the [`thurbox-mods`](https://github.com/topics/thurbox-mods)
+topic. The site build searches GitHub for the topic, so no pull request is needed.
+To list a mod:
 
-1. Add the [`thurbox-mods`](https://github.com/topics/thurbox-mods) topic to your public
-   GitHub repository.
-2. Open a PR adding one object to the catalog, using the template below.
-3. Link setup instructions in your README, including required Thurbox versions,
-   capability grants, dependencies, platform limits and conflicts with other panes.
-4. Run `npm ci`, `npm run lint:website` and `npm run check:mods:links`.
+1. Publish the mod in a public GitHub repository.
+2. Add the `thurbox-mods` topic to the repository.
+3. Link setup instructions in your README: required Thurbox versions, capability
+   grants, dependencies, platform limits and conflicts with other panes.
+4. Optional: add a preview and a `[gallery]` table, as described below.
 
-Maintainers review every listing before publishing. The topic helps discovery;
-it never adds entries automatically. An official badge is reserved for
-Thurbeen-maintained add-ons. Use `community` for submissions.
+Forks and archived repositories are left out. Repositories owned by `Thurbeen`
+show an **Official** badge; every other one shows **Community**. Community
+listings are not reviewed.
 
-```json
-{
-  "name": "thurbox-example",
-  "description": "A one-line explanation of what the add-on does.",
-  "author": "Your public GitHub name",
-  "badge": "community",
-  "repo": "https://github.com/your-account/thurbox-example",
-  "kind": "pane",
-  "platforms": ["Linux", "macOS"],
-  "updated": "2026-10-01",
-  "install": "thurbox-cli mod install git+https://github.com/your-account/thurbox-example",
-  "notes": "Required version, layout changes, capability grants and conflicts.",
-  "media": {
-    "url": "https://raw.githubusercontent.com/your-account/thurbox-example/main/media/demo.gif",
-    "alt": "Describe what the screenshot or demo shows."
-  }
-}
+### What the gallery reads
+
+| Field on the card | Source |
+|---|---|
+| Name, owner, description, stars, last update, topics | The GitHub repository |
+| Version, required Thurbox version | `version` and `requires_thurbox` in `mod.toml` |
+| Description, when the repository has none | `description` in `mod.toml` |
+| Preview | `[gallery] media`, else `media/demo.gif` when the repository has one |
+| Install command | `thurbox-cli mod install git+<repository URL>`; `[gallery] install` replaces it for `Thurbeen` repositories only |
+| Platforms, setup notes | `[gallery] platforms` and `notes` |
+
+The `[gallery]` table goes in the `mod.toml` at the repository root, beside the
+manifest fields `thurbox-cli mod install` reads. Every field is optional:
+
+```toml
+[gallery]
+media = "media/demo.gif"
+media_alt = "What the screenshot shows"
+install = "thurbox-cli mod install git+https://github.com/you/thurbox-widget"
+platforms = ["Linux", "macOS"]
+notes = "Required capability grants, layout changes and conflicts."
 ```
 
-[`website/mods.schema.json`](website/mods.schema.json) defines the schema.
-All template fields are required except `media`. `release` is an optional
-stable release tag; `updated` is the repository's last push date, recorded as
-`YYYY-MM-DD`. Kinds are `pane`, `extension`, `agent`, `theme` and `other`:
-use the kind the add-on actually installs. An extension can include optional
-panes. Use the appropriate command for the kind, including clone and install
-steps when needed. Catalog commands are displayed, never executed by the site.
+`media` is a path in the repository or an HTTPS URL. A path cannot leave the
+repository. The site displays the install command; it never runs it. Because
+community listings are not reviewed, the site reads `install` only from
+`Thurbeen` repositories. A community mod that needs another command asks for it
+in the curated overlay, which maintainers review.
 
-Names and repository URLs must be unique (case-insensitive). Repository URLs
-must be canonical HTTPS GitHub URLs. Media URLs must use HTTPS; link to the
-repository's own screenshot or GIF instead of copying it. `check:mods:links`
-fails an entry without `media` whose repository has a `media/demo.gif`, so a GIF
-added after the listing reaches the page. Include descriptive alt text. State
-which platforms are supported and qualify anything unverified.
-Do not include private URLs or local machine information.
+### Curated overlay
 
-The offline validator checks fields, enums, real dates, URL syntax and duplicates.
-CI also checks repository and media URLs. The page builds without network calls,
-using this checked-in snapshot even when GitHub is unavailable. A dead link
-fails the submission check rather than silently publishing a broken entry.
-Catalog updates follow the same reviewed PR process as new entries; archived
-or superseded add-ons should be removed or clearly explained. Build and filter
-regressions are exercised with fixture entries by `npm run test:mods`.
+[`website/_data/mods.json`](website/_data/mods.json) holds what GitHub cannot
+supply. Its schema is [`website/mods.schema.json`](website/mods.schema.json).
+Each entry names a `repo` and can set:
+
+- `install`, `platforms`, `notes` and `media` (`url` and `alt`). These replace
+  the repository's `[gallery]` values. A reviewed `install` here is the only way
+  a community mod shows a command other than the default.
+- `hidden: true`, which removes the repository from the gallery.
+
+A repository in the overlay is listed even without the topic. That keeps the
+mods published before the topic existed on the page.
+
+### Build, refresh and fallback
+
+- The site build reads the GitHub API with the workflow's token (`GITHUB_TOKEN`
+  or `GH_TOKEN`). The Deploy Website workflow runs every day, so new and
+  updated mods appear within a day.
+- If the search fails, is rate-limited or returns incomplete results, the build
+  uses [`website/mods-snapshot.json`](website/mods-snapshot.json) and logs a
+  warning. A failed fetch never breaks the build or empties the page.
+- `npm run mods:snapshot` refreshes the snapshot. `THURBOX_MODS_OFFLINE=1`
+  (`npm run build:website:offline`) builds from the snapshot without network
+  calls; `npm run lint:website` builds this way.
+- `npm run check:mods:links` checks the overlay's URLs and runs a live discovery.
+- `npm run test:mods` tests discovery, the fallback and the page against a
+  mocked GitHub API.

@@ -1,44 +1,23 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "title": "Thurbox mod catalog",
+  "title": "Thurbox mod gallery overlay",
+  "description": "Curated additions to the mods discovered by the thurbox-mods GitHub topic. Each entry names a repository; its other fields replace what the repository's mod.toml [gallery] table says.",
   "type": "array",
   "items": {
     "type": "object",
     "additionalProperties": false,
-    "required": [
-      "name",
-      "description",
-      "author",
-      "badge",
-      "repo",
-      "kind",
-      "platforms",
-      "updated",
-      "install",
-      "notes"
-    ],
+    "required": ["repo"],
     "properties": {
-      "name": {
-        "type": "string",
-        "minLength": 1
-      },
-      "description": {
-        "type": "string",
-        "minLength": 1
-      },
-      "author": {
-        "type": "string",
-        "minLength": 1
-      },
-      "badge": {
-        "enum": ["official", "community"]
-      },
       "repo": {
         "type": "string",
         "pattern": "^https://github\\.com/[\\w.-]+/(?!.*\\.git$)[\\w.-]+$"
       },
-      "kind": {
-        "enum": ["pane", "extension", "agent", "theme", "other"]
+      "hidden": {
+        "type": "boolean"
+      },
+      "install": {
+        "type": "string",
+        "minLength": 1
       },
       "platforms": {
         "type": "array",
@@ -48,18 +27,6 @@
           "type": "string",
           "minLength": 1
         }
-      },
-      "updated": {
-        "type": "string",
-        "format": "date"
-      },
-      "release": {
-        "type": "string",
-        "minLength": 1
-      },
-      "install": {
-        "type": "string",
-        "minLength": 1
       },
       "notes": {
         "type": "string",

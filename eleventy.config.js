@@ -21,6 +21,7 @@ import { RenderPlugin } from '@11ty/eleventy';
 import { parse } from 'node-html-parser';
 import Prism from 'prismjs';
 import loadLanguages from 'prismjs/components/index.js';
+import { galleryData } from './scripts/ci/mods-gallery.mjs';
 
 loadLanguages(['bash', 'powershell', 'toml', 'json', 'rust']);
 
@@ -373,6 +374,7 @@ export default function (eleventyConfig) {
   // beside them, and a rebuild under --serve when one changes.
   eleventyConfig.addPlugin(RenderPlugin);
   eleventyConfig.addGlobalData('repoDocs', listRepoDocs);
+  eleventyConfig.addGlobalData('gallery', () => galleryData());
   eleventyConfig.amendLibrary('md', (md) => md.core.ruler.push('repo_doc', repoDocRule));
   for (const dir of RENDERED_DOCS) {
     eleventyConfig.addPassthroughCopy(`${dir}/**/*.svg`);

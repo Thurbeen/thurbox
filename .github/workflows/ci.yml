@@ -845,7 +845,9 @@ jobs:
       # the site first, then runs every linter.
       - name: Lint website
         run: npm run lint:website
-      - name: Validate mod repository and media URLs
+      - name: Validate mod registry URLs and live topic discovery
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
         run: npm run check:mods:links
 
   sonarqube:

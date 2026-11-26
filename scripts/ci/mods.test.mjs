@@ -1,47 +1,84 @@
 import assert from 'node:assert/strict';
 import { runInNewContext } from 'node:vm';
 import { test } from 'node:test';
-import { cp, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, rm } from 'node:fs/promises';
 import Eleventy from '@11ty/eleventy';
 import { parse } from 'node-html-parser';
 
-const fixture = [
+const searchItems = [
   {
-    name: 'Fixture pane <safe>',
-    description: 'A searchable pane.',
-    author: 'Example',
-    badge: 'official',
-    repo: 'https://github.com/Thurbeen/thurbox-fixture',
-    kind: 'pane',
-    platforms: ['Linux'],
-    updated: '2026-09-01',
-    install: 'thurbox-cli mod install git+https://github.com/Thurbeen/thurbox-fixture',
-    notes: 'Place its slot in layout.lua.',
+    full_name: 'Thurbeen/thurbox-fixture',
+    name: 'thurbox-fixture',
+    owner: { login: 'Thurbeen' },
+    html_url: 'https://github.com/Thurbeen/thurbox-fixture',
+    description: 'A searchable pane <safe>.',
+    stargazers_count: 2,
+    pushed_at: '2026-09-01T08:00:00Z',
+    created_at: '2026-01-01T08:00:00Z',
+    default_branch: 'main',
+    topics: ['thurbox-mods', 'lua'],
+    fork: false,
+    archived: false,
   },
   {
-    name: 'Fixture extension',
+    full_name: 'contributor/zeta-extension',
+    name: 'zeta-extension',
+    owner: { login: 'contributor' },
+    html_url: 'https://github.com/contributor/zeta-extension',
     description: 'An extension.',
-    author: 'Contributor',
-    badge: 'community',
-    repo: 'https://github.com/example/extension',
-    kind: 'extension',
-    platforms: ['macOS'],
-    updated: '2026-09-02',
-    install: './install.sh',
-    notes: 'Clone the repository first.',
-    media: { url: 'https://example.com/demo.gif', alt: 'Extension demo' },
+    stargazers_count: 7,
+    pushed_at: '2026-10-02T08:00:00Z',
+    created_at: '2025-06-01T08:00:00Z',
+    default_branch: 'main',
+    topics: ['thurbox-mods'],
+    fork: false,
+    archived: false,
   },
 ];
 
-// The fixture goes through the same template and transforms as the production catalog.
-test('site builds every fixture entry, badges, controls and escaped text', async () => {
+const manifests = {
+  'contributor/zeta-extension': `name = "zeta"
+version = "v2.0.0"
+requires_thurbox = ">=3.0.0"
+pane = { source = "z.lua", path = "mods/50_z.lua" }
+
+[gallery]
+media = "shots/zeta.png"
+media_alt = "Extension demo"
+install = "./install.sh"
+platforms = ["macOS"]
+notes = "Clone the repository first."
+`,
+};
+
+function mockGitHub(url) {
+  const { hostname, pathname } = new URL(url);
+  const reply = (status, body) => ({
+    ok: status === 200,
+    status,
+    json: async () => body,
+    text: async () => body,
+  });
+  if (pathname === '/search/repositories')
+    return reply(200, { total_count: 2, incomplete_results: false, items: searchItems });
+  if (hostname === 'api.github.com') return reply(404, {});
+  const [, owner, repo] = pathname.split('/');
+  if (pathname.endsWith('/mod.toml')) {
+    const manifest = manifests[`${owner}/${repo}`];
+    return manifest ? reply(200, manifest) : reply(404, '');
+  }
+  return reply(404, '');
+}
+
+test('site renders every discovered mod, its GitHub data, controls and escaped text', async () => {
   await mkdir('tmp', { recursive: true });
-  const scratch = await mkdtemp('tmp/mods-site-');
-  const output = `${scratch}/output`;
+  const output = await mkdtemp('tmp/mods-site-');
+  const realFetch = globalThis.fetch;
+  const offline = process.env.THURBOX_MODS_OFFLINE;
+  globalThis.fetch = async (url) => mockGitHub(url);
+  delete process.env.THURBOX_MODS_OFFLINE;
   try {
-    await cp('website', `${scratch}/website`, { recursive: true });
-    await writeFile(`${scratch}/website/_data/mods.json`, JSON.stringify(fixture));
-    const site = new Eleventy(`${scratch}/website`, output, {
+    const site = new Eleventy('website', output, {
       source: 'cli',
       configPath: 'eleventy.config.js',
       config: (config) => config.setUseGitIgnore(false),
@@ -49,48 +86,79 @@ test('site builds every fixture entry, badges, controls and escaped text', async
     await site.write();
     const root = parse(await readFile(`${output}/mods.html`, 'utf8'));
     const cards = root.querySelectorAll('[data-plugin]');
-    assert.equal(cards.length, fixture.length);
-    fixture.forEach((entry, i) => {
-      assert.equal(cards[i].querySelector('h2').textContent, entry.name);
-      assert.equal(cards[i].getAttribute('data-kind'), entry.kind);
-      assert.equal(cards[i].getAttribute('data-badge'), entry.badge);
-      assert.equal(parse(cards[i].querySelector('pre').innerHTML).textContent, entry.install);
-      assert.ok(cards[i].textContent.includes(entry.author));
-      const install = cards[i].querySelector('details.plugin-install');
+    assert.deepEqual(
+      cards.map((c) => c.querySelector('h2').textContent),
+      ['zeta-extension', 'thurbox-fixture'],
+      'most starred first',
+    );
+    const [zeta, fixture] = cards;
+
+    assert.equal(fixture.getAttribute('data-badge'), 'official');
+    assert.equal(fixture.querySelector('.plugin-badge').textContent, 'Official');
+    assert.equal(zeta.getAttribute('data-badge'), 'community');
+    assert.equal(zeta.querySelector('.plugin-badge').textContent, 'Community');
+
+    assert.ok(fixture.innerHTML.includes('A searchable pane &lt;safe&gt;.'), 'description escaped');
+    assert.equal(fixture.querySelector('.plugin-owner a').textContent, 'Thurbeen');
+    assert.equal(fixture.querySelector('.plugin-stars').textContent, '2');
+    assert.equal(fixture.querySelector('time').getAttribute('datetime'), '2026-09-01T08:00:00Z');
+    assert.equal(fixture.querySelector('time').textContent, '2026-09-01');
+    assert.deepEqual(
+      fixture.querySelectorAll('.plugin-topics a').map((a) => a.textContent),
+      ['lua'],
+    );
+    assert.equal(
+      parse(fixture.querySelector('pre').innerHTML).textContent,
+      'thurbox-cli mod install git+https://github.com/Thurbeen/thurbox-fixture',
+    );
+    assert.ok(fixture.querySelector('.plugin-preview-placeholder'));
+    assert.equal(fixture.querySelector('.plugin-notes'), null);
+
+    assert.equal(
+      parse(zeta.querySelector('pre').innerHTML).textContent,
+      'thurbox-cli mod install git+https://github.com/contributor/zeta-extension',
+      'a community mod.toml cannot set the install command',
+    );
+    assert.match(zeta.textContent, /v2\.0\.0/);
+    assert.match(zeta.textContent, />=3\.0\.0/);
+    assert.match(zeta.textContent, /macOS/);
+    assert.equal(zeta.querySelector('.plugin-notes').textContent, 'Clone the repository first.');
+    const img = zeta.querySelector('.plugin-preview img');
+    assert.equal(
+      img.getAttribute('src'),
+      'https://raw.githubusercontent.com/contributor/zeta-extension/main/shots/zeta.png',
+    );
+    assert.equal(img.getAttribute('alt'), 'Extension demo');
+    assert.equal(img.getAttribute('loading'), 'lazy');
+
+    for (const card of cards) {
+      const install = card.querySelector('details.plugin-install');
       assert.ok(install, 'install command has a keyboard-accessible native reveal');
       assert.equal(install.hasAttribute('open'), false);
       assert.equal(install.querySelector('summary').textContent, 'Install command');
-      assert.ok(install.querySelector('pre'));
-      const preview = cards[i].querySelector('.plugin-preview');
-      assert.ok(preview);
-      assert.notEqual(preview.tagName, 'DETAILS');
-      for (let ancestor = preview; ancestor !== cards[i]; ancestor = ancestor.parentNode) {
-        assert.notEqual(ancestor.tagName, 'DETAILS', 'preview is visible before interaction');
-        assert.equal(ancestor.hasAttribute('hidden'), false);
-      }
-      if (entry.media) {
-        assert.equal(preview.querySelector('img').getAttribute('src'), entry.media.url);
-        assert.equal(preview.querySelector('img').getAttribute('loading'), 'lazy');
-      } else {
-        assert.ok(preview.querySelector('.plugin-preview-placeholder'));
-      }
-    });
-    assert.equal(root.querySelectorAll('#plugin-kind option').length, 6);
+      assert.equal(card.querySelector('.plugin-avatar').getAttribute('alt'), '');
+    }
+
+    assert.equal(root.querySelector('#plugin-count').textContent, '2 mods');
+    assert.equal(root.querySelectorAll('#plugin-sort option').length, 4);
     assert.equal(root.querySelectorAll('#plugin-badge option').length, 3);
     assert.ok(root.querySelector('label[for="plugin-search"]'));
+    assert.ok(root.querySelector('label[for="plugin-sort"]'));
     assert.equal(root.querySelector('#plugin-count').getAttribute('aria-live'), 'polite');
     assert.ok(root.querySelector('a[aria-current="page"]'));
-    assert.equal(root.querySelector('img[alt="Extension demo"]').getAttribute('loading'), 'lazy');
     assert.ok(root.querySelector('script[src="./js/mods.js"]'));
+
     const events = {};
     const form = root.querySelector('#plugin-filters');
     form.addEventListener = (event, handler) => {
       events[event] = handler;
     };
+    const grid = root.querySelector('#plugin-grid');
     const search = root.querySelector('#plugin-search');
-    const kind = root.querySelector('#plugin-kind');
+    const sort = root.querySelector('#plugin-sort');
     const badge = root.querySelector('#plugin-badge');
-    search.value = kind.value = badge.value = '';
+    search.value = badge.value = '';
+    sort.value = 'popular';
     runInNewContext(await readFile('website/js/mods.js', 'utf8'), {
       document: {
         getElementById: (id) => root.querySelector(`#${id}`),
@@ -98,80 +166,92 @@ test('site builds every fixture entry, badges, controls and escaped text', async
       },
       setTimeout: (handler) => handler(),
     });
+    const order = () => grid.querySelectorAll('[data-plugin]').map((c) => c.querySelector('h2').textContent);
     assert.equal(form.hidden, false);
     assert.ok(cards.every((card) => !card.hidden));
-    search.value = '  CONTRIBUTOR  ';
+    assert.deepEqual(order(), ['zeta-extension', 'thurbox-fixture']);
+
+    sort.value = 'name';
+    events.change();
+    assert.deepEqual(order(), ['thurbox-fixture', 'zeta-extension']);
+    sort.value = 'newest';
+    events.change();
+    assert.deepEqual(order(), ['thurbox-fixture', 'zeta-extension']);
+    sort.value = 'updated';
+    events.change();
+    assert.deepEqual(order(), ['zeta-extension', 'thurbox-fixture']);
+
+    search.value = '  LUA  ';
     events.input();
     assert.deepEqual(
       cards.map((card) => card.hidden),
       [true, false],
+      'search matches topics',
     );
-    kind.value = 'pane';
-    events.change();
-    assert.ok(cards.every((card) => card.hidden));
-    assert.equal(root.querySelector('#plugin-empty').hidden, false);
-    search.value = kind.value = '';
-    badge.value = 'official';
+    search.value = '';
+    badge.value = 'community';
     events.change();
     assert.deepEqual(
       cards.map((card) => card.hidden),
       [false, true],
     );
-    search.value = kind.value = badge.value = '';
+    search.value = 'nothing-matches';
+    events.input();
+    assert.equal(root.querySelector('#plugin-empty').hidden, false);
+    search.value = badge.value = '';
+    sort.value = 'popular';
     events.reset();
     assert.ok(cards.every((card) => !card.hidden));
+    assert.deepEqual(order(), ['zeta-extension', 'thurbox-fixture']);
     assert.equal(root.querySelector('#plugin-count').textContent, '2 of 2 mods');
     assert.equal(root.querySelector('#plugin-empty').hidden, true);
   } finally {
-    await rm(scratch, { recursive: true, force: true });
+    globalThis.fetch = realFetch;
+    if (offline !== undefined) process.env.THURBOX_MODS_OFFLINE = offline;
+    await rm(output, { recursive: true, force: true });
   }
 });
 
-test('catalog schema rejects missing fields, unsafe URLs, invalid values and duplicates', async () => {
+const fixture = [
+  {
+    repo: 'https://github.com/Thurbeen/thurbox-fixture',
+    install: 'git clone https://github.com/Thurbeen/thurbox-fixture\n./install.sh',
+    platforms: ['Linux'],
+    notes: 'Place its slot in layout.lua.',
+  },
+  {
+    repo: 'https://github.com/example/extension',
+    notes: 'Clone the repository first.',
+    media: { url: 'https://example.com/demo.gif', alt: 'Extension demo' },
+  },
+  { repo: 'https://github.com/spam/ads', hidden: true },
+];
+
+test('registry schema rejects unknown fields, unsafe URLs, invalid values and duplicates', async () => {
   const { validateMods } = await import('./validate-mods.mjs');
   assert.deepEqual(validateMods(fixture), []);
-  assert.deepEqual(
-    validateMods([{ ...fixture[0], repo: 'https://github.com/Thurbeen/fleet' }]),
-    [],
-  );
-  for (const field of [
-    'name',
-    'description',
-    'author',
-    'badge',
-    'repo',
-    'kind',
-    'platforms',
-    'updated',
-    'install',
-    'notes',
-  ]) {
-    const entry = { ...fixture[0] };
-    delete entry[field];
-    assert.ok(validateMods([entry]).length, field);
-  }
+  assert.deepEqual(validateMods([{ repo: 'https://github.com/example/bare' }]), []);
+  assert.ok(validateMods([{ notes: 'no repo' }]).length, 'repo is required');
   for (const patch of [
-    { repo: 'https://github.com/Thurbeen-other/fleet' },
-    { repo: 'https://github.com/example/fleet' },
     { repo: 'javascript:alert(1)' },
     { repo: 'https://example.com/repo' },
-    { repo: 'https://github.com:8443/Thurbeen/thurbox-fixture', badge: 'community' },
+    { repo: 'https://github.com:8443/Thurbeen/thurbox-fixture' },
     { repo: 'https://github.com/Thurbeen/thurbox-fixture.git' },
-    { kind: 'wrong' },
-    { badge: 'wrong' },
+    { badge: 'official' },
+    { hidden: 'yes' },
+    { install: '' },
+    { notes: ' ' },
     { platforms: [] },
-    { updated: '2026-02-30' },
-    { media: { url: 'http://example.com/x.gif', alt: '' } },
+    { platforms: ['Linux', 'Linux'] },
+    { media: { url: 'http://example.com/x.gif', alt: 'x' } },
+    { media: { url: 'https://example.com/x.gif', alt: '' } },
   ]) {
     assert.ok(validateMods([{ ...fixture[0], ...patch }]).length, JSON.stringify(patch));
   }
   assert.ok(
-    validateMods([
-      fixture[0],
-      { ...fixture[0], name: 'Another', repo: fixture[0].repo.toUpperCase() },
-    ]).length,
+    validateMods([fixture[0], { repo: fixture[0].repo.toUpperCase() }]).length,
+    'duplicate repository',
   );
-  assert.ok(validateMods([fixture[0], { ...fixture[1], name: fixture[0].name }]).length);
   assert.ok(validateMods({}).length);
   assert.ok(validateMods([null]).length);
 });
@@ -181,19 +261,13 @@ test('link validation rejects a missing repository and unreachable media', async
   const seen = [];
   const errors = await checkLinks(fixture, async (url) => {
     seen.push(url);
-    return { ok: !url.includes('extension') && !url.endsWith('/demo.gif'), status: 404 };
+    return { ok: !url.includes('extension'), status: 404 };
   });
   assert.ok(seen.includes(fixture[1].repo));
   assert.ok(seen.includes(fixture[1].media.url));
+  assert.ok(!seen.includes(fixture[2].repo), 'a hidden repository is not checked');
   assert.ok(errors.some((e) => e.includes(fixture[1].repo)));
-  assert.ok(errors.some((e) => e.includes(fixture[1].media.url)));
-  const shipsDemo = await checkLinks(fixture, async () => ({ ok: true }));
-  assert.ok(
-    shipsDemo.some((e) => e.startsWith(fixture[0].repo) && e.includes('has no media')),
-    'an entry without media is flagged when its repository ships media/demo.gif',
-  );
-  const noDemo = await checkLinks(fixture, async (url) => ({ ok: !url.endsWith('/demo.gif') }));
-  assert.ok(!noDemo.some((e) => e.startsWith(fixture[0].repo)));
+  assert.ok(!errors.some((e) => e.includes(fixture[0].repo)));
   const unavailable = await checkLinks(fixture, async () => {
     throw new Error('offline');
   });
