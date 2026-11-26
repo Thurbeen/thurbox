@@ -249,7 +249,7 @@ test('a failed or rate-limited fetch falls back to the committed snapshot', asyn
       env: {},
       warn: (m) => warnings.push(m),
     });
-    assert.equal(gallery, snapshot, name);
+    assert.deepEqual(gallery, snapshot, name);
     assert.equal(warnings.length, 1, name);
   }
 });
@@ -273,7 +273,7 @@ test('offline builds read the snapshot without touching the network', async () =
     env: { THURBOX_MODS_OFFLINE: '1' },
     warn: () => {},
   });
-  assert.equal(gallery, snapshot);
+  assert.deepEqual(gallery, snapshot);
 });
 
 test('the token comes from GITHUB_TOKEN or GH_TOKEN', async () => {
@@ -327,4 +327,57 @@ test('a repository GitHub reports without a push or star count still renders', a
   assert.equal(gallery[0].pushedAt, official.created_at);
   assert.equal(gallery[0].stars, 0);
   assert.deepEqual(validateGallery(gallery), []);
+});
+
+test('the snapshot fallback follows the current overlay', async () => {
+  const snapshot = [
+    { fullName: 'spam/thurbox-ads', repo: 'https://github.com/spam/thurbox-ads', install: 'x' },
+    {
+      fullName: 'bob/thurbox-gamma',
+      repo: 'https://github.com/bob/thurbox-gamma',
+      install: 'old install',
+      platforms: [],
+      notes: null,
+      media: null,
+    },
+    { fullName: 'carol/other', repo: 'https://github.com/carol/other', install: 'kept' },
+  ];
+  const offline = await loadGallery({
+    curated,
+    snapshot,
+    request: async () => assert.fail('no request offline'),
+    env: { THURBOX_MODS_OFFLINE: '1' },
+    warn: () => {},
+  });
+  const { request } = githubMock({ search: () => response(403, {}) });
+  const failed = await loadGallery({ curated, snapshot, request, env: {}, warn: () => {} });
+  for (const gallery of [offline, failed]) {
+    assert.deepEqual(
+      gallery.map((m) => m.fullName),
+      ['bob/thurbox-gamma', 'carol/other'],
+      'a hidden repository stays hidden',
+    );
+    assert.equal(gallery[0].install, curated[0].install);
+    assert.deepEqual(gallery[0].platforms, ['Linux']);
+    assert.equal(gallery[0].notes, 'Needs make.');
+    assert.equal(gallery[1].install, 'kept');
+  }
+});
+
+test('a renamed repository in the overlay is listed once, with its overlay', async () => {
+  const renamed = repository('bob/thurbox-gamma-renamed');
+  const { request } = githubMock({
+    search: () =>
+      response(200, { total_count: 1, incomplete_results: false, items: [renamed] }),
+    [`${API}/repos/bob/thurbox-gamma`]: () => response(200, renamed),
+    [`${RAW}/bob/thurbox-gamma-renamed/main/mod.toml`]: () => response(404, ''),
+    [`${RAW}/bob/thurbox-gamma-renamed/main/media/demo.gif`]: () => response(404, ''),
+  });
+  const gallery = await collectGallery({ curated: [curated[0]], request });
+  assert.deepEqual(
+    gallery.map((m) => m.fullName),
+    ['bob/thurbox-gamma-renamed'],
+  );
+  assert.equal(gallery[0].install, curated[0].install);
+  assert.equal(gallery[0].notes, 'Needs make.');
 });

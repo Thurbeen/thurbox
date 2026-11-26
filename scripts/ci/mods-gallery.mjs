@@ -162,8 +162,12 @@ function byPopularity(a, b) {
   );
 }
 
+function overlayByName(curated) {
+  return new Map(curated.map((entry) => [fullNameOf(entry.repo).toLowerCase(), entry]));
+}
+
 export async function collectGallery({ curated, request = fetch, token }) {
-  const overlay = new Map(curated.map((entry) => [fullNameOf(entry.repo).toLowerCase(), entry]));
+  const overlay = overlayByName(curated);
   const hidden = (fullName) => overlay.get(fullName.toLowerCase())?.hidden === true;
   const repositories = new Map();
   for (const repository of await searchByTopic(request, token)) {
@@ -171,11 +175,14 @@ export async function collectGallery({ curated, request = fetch, token }) {
     if (hidden(repository.full_name)) continue;
     repositories.set(repository.full_name.toLowerCase(), { repository, tagged: true });
   }
-  for (const [key, entry] of overlay) {
+  for (const [key, entry] of [...overlay]) {
     if (entry.hidden || repositories.has(key)) continue;
     const repository = await api(request, token, `/repos/${fullNameOf(entry.repo)}`);
     if (!repository || repository.archived || repository.private) continue;
-    repositories.set(key, { repository, tagged: false });
+    const currentName = repository.full_name.toLowerCase();
+    if (!overlay.has(currentName)) overlay.set(currentName, entry);
+    if (!repositories.has(currentName))
+      repositories.set(currentName, { repository, tagged: false });
   }
   const gallery = await mapConcurrently(
     [...repositories.entries()],
@@ -186,8 +193,26 @@ export async function collectGallery({ curated, request = fetch, token }) {
   return gallery.sort(byPopularity);
 }
 
+function withOverlay(snapshot, curated) {
+  const overlay = overlayByName(curated);
+  return snapshot.flatMap((mod) => {
+    const entry = overlay.get(mod.fullName.toLowerCase());
+    if (!entry) return [mod];
+    if (entry.hidden) return [];
+    return [
+      {
+        ...mod,
+        install: entry.install ?? mod.install,
+        platforms: entry.platforms ?? mod.platforms,
+        notes: entry.notes ?? mod.notes,
+        media: entry.media ?? mod.media,
+      },
+    ];
+  });
+}
+
 export async function loadGallery({ curated, snapshot, request = fetch, env, warn }) {
-  if (env.THURBOX_MODS_OFFLINE) return snapshot;
+  if (env.THURBOX_MODS_OFFLINE) return withOverlay(snapshot, curated);
   try {
     return await collectGallery({
       curated,
@@ -196,7 +221,7 @@ export async function loadGallery({ curated, snapshot, request = fetch, env, war
     });
   } catch (error) {
     warn(`[mods] GitHub discovery failed (${error.message}); using ${SNAPSHOT_PATH}`);
-    return snapshot;
+    return withOverlay(snapshot, curated);
   }
 }
 
