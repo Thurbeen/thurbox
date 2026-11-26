@@ -51,15 +51,19 @@ fleet up</code></pre>
   <a href="#service" class="heading-anchor">#</a>
 </h2>
 <p>
-  On a machine you do not sit at, run <code>fleet up</code> as a user service. Then sessions
-  come back after a reboot, without a login. On Linux with a systemd user session, the
-  installer already did this. Otherwise, <code>fleet service install --now</code> writes the
-  unit, records your current <code>PATH</code>, enables the unit and starts it. A user service
-  does not read your login <code>PATH</code>: run it from a shell whose <code>PATH</code> holds
-  <code>fleet</code>, <code>runtime-mux</code>, <code>tmux</code> and your coding agents.
+  On a machine you do not sit at, run <code>fleet up</code> as a user service. On Linux with a
+  systemd user session, the installer already did this. Otherwise,
+  <code>fleet service install --now</code> writes the service, records your current
+  <code>PATH</code>, enables the service and starts it. A user service does not read your login
+  <code>PATH</code>: run it from a shell whose <code>PATH</code> holds <code>fleet</code>,
+  <code>runtime-mux</code>, <code>tmux</code> and your coding agents.
 </p>
-<pre><code class="language-bash">fleet service install --now
-loginctl enable-linger "$USER"</code></pre>
+<pre><code class="language-bash">fleet service install --now</code></pre>
+<p>
+  On Linux, enable lingering so that sessions come back after a reboot, without a login. On macOS
+  (a launchd agent) and on Windows (a Task Scheduler task), the service starts when you log in.
+</p>
+<pre><code class="language-bash">loginctl enable-linger "$USER"</code></pre>
 <p>
   thurbox can follow this Fleet from another machine over ssh; see
   <a href="configuration.html#fleets">Fleets</a>.
