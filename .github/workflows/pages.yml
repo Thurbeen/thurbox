@@ -5,26 +5,17 @@ on:
     branches: [main]
     paths:
       - 'website/**'
-      # The build reads these from the repo root, outside `website/`:
-      # `eleventy.config.js` generates the CSS bundle, the TOC rail and the code
-      # highlighting, and the two package files decide which versions do it. A
-      # Renovate bump to `node-html-parser` or `prismjs` changes deployed HTML
-      # with nothing under `website/` touched.
       - 'eleventy.config.js'
       - 'package.json'
       - 'package-lock.json'
       - 'scripts/ci/mods-gallery.mjs'
       - 'scripts/ci/validate-mods.mjs'
-      # The docs pages rendered from the repository: eleventy.config.js's
-      # RENDERED_DOCS, which scripts/ci/website.test.mjs holds this list to.
       - 'docs/fleet/**'
       - 'docs/runtime/**'
       - 'docs/thurbox/mods.md'
       - 'docs/thurbox/kernel.md'
       - 'docs/thurbox/architecture.md'
       - 'docs/observability.md'
-  # scripts/demo/publish-media.sh dispatches this after it replaces the
-  # recordings on the `media` release, which no push to main announces.
   workflow_dispatch:
   schedule:
     - cron: '23 5 * * *'
@@ -53,10 +44,6 @@ jobs:
           node-version: 26
           cache: npm
 
-      # The demo videos live on the `media` release, not in git (see
-      # scripts/demo/publish-media.sh). They go into the Eleventy input
-      # (website/assets/) before the build, so the passthrough copy puts them
-      # in the built _site/.
       - name: Download demo videos into website assets
         env:
           GH_TOKEN: ${{ github.token }}

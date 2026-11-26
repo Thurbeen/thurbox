@@ -1,38 +1,9 @@
--- A text field: a buffer, a cursor, and the keys that move them.
---
--- The `input` node renders a value and a caret; it owns no buffer. That is the
--- right split — a hot reload must not lose what you have typed, and `state` is
--- what survives one — but it leaves every pane with a text field to implement
--- editing. So it lives here once, exactly as v1 keeps its own in one place
--- (`modals::apply_ctrl_line_edit` over a `LineEdit` trait) rather than per
--- modal.
---
--- A field is a PLAIN TABLE, `{ value = "", cursor = 0 }`, because that is what
--- `state` can persist: reading `state.foo` builds a fresh Lua table, so a
--- caller mutates the table it holds and writes the whole thing back. Every
--- function here therefore mutates in place and returns whether it consumed the
--- key.
---
--- `cursor` counts CHARACTERS before the caret, not bytes and not columns — the
--- kernel's caret is placed by character offset, and a path with an accent in it
--- must not put the caret in the wrong column. `widgets.chars` is that count;
--- `widgets.len` is the column width every layout budgets in, and using it here
--- would misplace the caret in exactly the double-width text it exists for.
---
--- One chord v1 has is missing, and cannot be had: `ctrl+h` (delete backwards) is
--- reserved by the kernel for moving focus, so it never reaches a mod.
--- `backspace` does the same thing and is what a keyboard sends anyway. It is
--- also what most terminals send for `ctrl+backspace`, so that chord deletes a
--- word only where the terminal tells the two apart (the kitty keyboard
--- protocol); elsewhere `alt+backspace` and `ctrl+w` do it.
-
 local hover = require("lib.hover")
 local theme = require("lib.theme")
 local widgets = require("lib.widgets")
 
 local textinput = {}
 
---- Byte offset just before character `n` (1-based), for slicing.
 local function byte_at(text, n)
   if n <= 0 then
     return 1
@@ -40,7 +11,6 @@ local function byte_at(text, n)
   return utf8.offset(text, n + 1) or (#text + 1)
 end
 
---- The characters before and after the caret.
 local function split(field)
   local at = byte_at(field.value, field.cursor)
   return string.sub(field.value, 1, at - 1), string.sub(field.value, at)
@@ -51,7 +21,6 @@ function textinput.new(value)
   return { value = text, cursor = widgets.chars(text) }
 end
 
---- Replace the contents, caret at the end — how a field is prefilled.
 function textinput.set(field, value)
   field.value = value or ""
   field.cursor = widgets.chars(field.value)
@@ -72,8 +41,6 @@ function textinput.insert(field, text)
   return field
 end
 
---- The field's characters, one string each, and whether position `index`
---- (1-based; out of range counts) separates words.
 local function characters(field)
   local chars = {}
   for _, code in utf8.codes(field.value) do
@@ -86,9 +53,6 @@ local function characters(field)
   return chars, separator
 end
 
---- Start of the word before the caret, in characters — the target `ctrl+w`
---- deletes back to. Trailing separators are skipped first, so deleting a word
---- from `~/src/thing/` lands on `thing/` rather than on nothing.
 local function word_start(field)
   local _, separator = characters(field)
   local at = field.cursor
@@ -101,9 +65,6 @@ local function word_start(field)
   return at
 end
 
---- End of the word after the caret, in characters — where `alt+f` moves to
---- and `alt+d` deletes up to. The mirror of `word_start`: leading separators
---- are skipped first.
 local function word_end(field)
   local chars, separator = characters(field)
   local at = field.cursor
@@ -116,8 +77,6 @@ local function word_end(field)
   return at
 end
 
---- Delete the characters between two caret positions, `from` < `to`, and
---- leave the caret at `from`.
 local function delete_between(field, from, to)
   local value = field.value
   field.value = string.sub(value, 1, byte_at(value, from) - 1)
@@ -125,10 +84,6 @@ local function delete_between(field, from, to)
   field.cursor = from
 end
 
---- The word chords a shell's line editor has taught every hand: `alt` with
---- `b`/`f` (move) and `d` (delete forward), and `ctrl` or `alt` with the
---- arrows, `backspace` (delete back) and `delete` (delete forward). True when
---- it was one.
 local function word_edit(field, key)
   local name = key.key
   if name == "left" or (key.alt and name == "b") then
@@ -145,11 +100,6 @@ local function word_edit(field, key)
   return true
 end
 
---- The readline chords v1's own fields accept, and nothing else.
----
---- Every `ctrl`+letter is consumed whether or not it is mapped, so a bare
---- control character can never leak into the value — v1 makes the same choice,
---- for the same reason.
 local function control(field, key)
   local name = key.key
   if name == "a" then
@@ -182,19 +132,11 @@ local function control(field, key)
   return true
 end
 
---- Offer a key to the field. True when it was consumed.
----
---- Deliberately does NOT consume `enter`, `esc` or `tab`: those belong to
---- whatever the field is inside, which is the only thing that knows what
---- submitting means.
 function textinput.key(field, key)
   if (key.ctrl or key.alt) and word_edit(field, key) then
     return true
   end
   if key.ctrl or key.alt then
-    -- Any other bare `ctrl`+letter is swallowed, so a control character is never
-    -- typed. An `alt` chord that is not a word edit is left unconsumed and never
-    -- typed: the pane holding the field may own it (new-session's `alt+p`).
     if key.ctrl and not key.alt and key.char and widgets.chars(key.char) == 1 then
       return control(field, key)
     end
@@ -232,8 +174,6 @@ function textinput.key(field, key)
     return true
   end
 
-  -- Anything that produced a character is typed, which is what makes a path
-  -- with `~`, `/` or a digit in it work without listing them.
   if key.char and not key.ctrl and widgets.chars(key.char) == 1 then
     textinput.insert(field, key.char)
     return true
@@ -241,13 +181,6 @@ function textinput.key(field, key)
   return false
 end
 
---- The field as a node: a framed one-line input, its label the frame's title.
----
---- `focused` drives the border AND the caret: the kernel paints the caret in the
---- one input that claims it, so a screen holding two fields puts it in the one
---- being typed into rather than in whichever holds text. A field given an `id`
---- is a click target, and its border lights under the pointer
---- (`hover.border`) — the caller's `on_click` decides what the press does.
 function textinput.node(field, opts)
   opts = opts or {}
   return {

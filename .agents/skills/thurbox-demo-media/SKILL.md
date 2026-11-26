@@ -16,7 +16,10 @@ asciinema inside a private tmux server, `tmux send-keys` presses the real chords
 and the context menu is opened by sending the SGR mouse report of a right press.
 Every socket it creates has a name only it uses (`thurbox-hero*`), never
 `thurbox`, because its teardown kills them by name. agg needs a Nerd Font and
-Noto Sans Symbols 2 in `FONT_DIR` (the header says why only the first is named).
+Noto Sans Symbols 2 in `FONT_DIR`: the Nerd Font is JetBrains Mono Nerd Font
+Mono, and Noto carries the worktree mark `⑂` (U+2442) no Nerd Font has. Name
+only the first in `FONT_FAMILY`: agg falls back to the rest of `FONT_DIR` on its
+own, and agg 1.x draws no text at all when the Noto family is named too.
 The README GIF is a second agg pass at a smaller font, not an ffmpeg re-encode,
 which turned agg's change-only frames into ~66 MB of full frames.
 
@@ -48,9 +51,12 @@ poster: asciinema records the real TUI and agg rasterises the cast. Doom is a **
 [`thurbox-doom`](https://github.com/Thurbeen/thurbox-doom) into the throwaway
 interface directory, seeds the `program` grant the settings modal would have written
 (trust is a decision made *in* a running interface, so there is deliberately no CLI
-for it), and presses `f5`. Everything the clip keeps is timed from that press, so
-read the phase comments before changing any of the numbers — including which frame
-becomes the poster, since Doom flashes the whole view red when the player is hit.
+for it), and presses `f5`. Everything the clip keeps is timed from that press:
+`trim-cast.mjs` prints when the first Doom frame appears, which is the origin to
+retime the phase variables from. Check which frame becomes the poster after any
+change, since Doom flashes the whole view red when the player is hit.
+`DOOM_PLUGIN_SRC` points the install at a local checkout of the mod instead of
+the GitHub clone, and `FONT_DIR`/`FONT_FAMILY` choose agg's fonts.
 
 **The herdr guide's clip is a GUI recording.** `scripts/demo/record-herdr.sh`
 writes `media/herdr-fleet-vega.{mp4,gif}`, the clip at the top of
@@ -76,7 +82,8 @@ the script, not the file itself, while editing it: bash reads a script as it
 runs.
 
 **The onboarding tutorial's screenshots are a fourth recorder.**
-`scripts/demo/record-tutorial.sh` writes `media/tutorial/*.png` — one still per
+`scripts/demo/record-tutorial.sh [OUTPUT_DIR]` writes `OUTPUT_DIR/*.png`
+(default `media/tutorial/`) — one still per
 step of `docs/thurbox/tutorial.md`, taken by driving the real TUI through the
 creation flow. The profile starts with **zero sessions, an empty repo
 memory and no Fleet config**, because the tutorial's subject is a first launch:

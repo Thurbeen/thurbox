@@ -1,4 +1,3 @@
--- `thurbox.hover`, with one letter wrong.
 return {
   name = "std_typo_hover",
   render = function()

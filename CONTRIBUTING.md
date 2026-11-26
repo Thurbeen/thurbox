@@ -77,8 +77,14 @@ npx skills@latest add https://github.com/LeTuR/publish --skill publish --agent c
 [`.publish.yaml`](.publish.yaml) is everything the skill reads here: the base
 branch, the two gate steps and the files the review must read. Its lint step
 runs `just lint` plus the rustdoc check, so it needs the same dev toolchain the
-manual workflow does. It does not run the website linters — those need
-`npm ci`, and CI's `website-lint` job covers them. It is external tooling, so
+manual workflow does. `just lint` does not carry rustdoc, but CI and the prek
+hook do, so a broken intra-doc link would otherwise fail only after the push.
+It does not run the website linters — those need
+`npm ci`, and CI's `website-lint` job covers them. For the same reason its
+`fix` command is not `just fmt`: it runs `cargo fmt` and `stylua` (which
+`just lint` checks) and nothing that needs `node_modules`. A cancelled CI check
+almost always means a newer push superseded the run: read the failing job
+rather than re-running the pipeline. `.publish.yaml` is external tooling, so
 it is described here rather than in [`docs/thurbox/config.md`](docs/thurbox/config.md), which
 covers thurbox's own configuration.
 
@@ -258,8 +264,9 @@ doc in the **same PR**. Rationale lives in:
 - [`docs/thurbox/review.md`](docs/thurbox/review.md) — the house rules a change is reviewed
   against, and which document owns which class of fact
 
-Comments explain **why**, not **what** — see the Comments section of
-[`AGENTS.md`](AGENTS.md).
+Code carries no comments: names, types, small functions and tests say what it
+does and why. The [`no-comments`](.agents/skills/no-comments/SKILL.md) skill
+lists the few exceptions and the `MUST KILL` marker.
 
 ## Architecture
 

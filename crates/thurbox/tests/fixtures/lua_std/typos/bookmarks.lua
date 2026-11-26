@@ -1,4 +1,3 @@
--- `thurbox.bookmarks`, with one letter wrong.
 return {
   name = "std_typo_bookmarks",
   render = function()

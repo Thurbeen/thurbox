@@ -1,51 +1,3 @@
--- The new-session flow.
---
--- v1 spent five modals, a 46-field wizard struct (`NewSessionWizardState`), three
--- background tasks and a generation counter on this. Here it is one file: a step
--- machine over reads the kernel publishes, ending in one `create` command.
---
--- A session is a Fleet Task (ADR-41), and the steps ask for what a Task takes:
---
---   [fleet] → place → repo → [base branch] → name → [branch name] → [agent] → create
---
--- plus a detour off the repo step for a typed path that does not exist yet:
---
---   repo → new folder (git init / leave it empty) → repo
---                     (clone into it)         → clone URL → repo
---
--- These are v2's steps, in v2's order, after a Fleet step of their own: with
--- several Fleets listed, which one manages the session is asked first, each
--- with how it is reached and whether it is up, and every later list (places,
--- agents) is that Fleet's. With one, the step is skipped. The place step (still
--- `host` in the flow's state) is always asked: the Fleet's `local` is a choice
--- at once, and the places Fleet names join the open step when they arrive. A
--- place on another machine (any place of a Fleet elsewhere, or a place of this
--- machine's Fleet other than its `local`) is read there, through Fleet: the
--- repo step browses its folders from its home (`fleet runtime browse`), and
--- the base branch step lists its branches (`fleet runtime branches`). A clone
--- URL is taken there too. The repo step gathers repositories, each ticked
--- (`space`) and each given a worktree of its own or not (`alt+w`); a
--- repository's existing worktrees open under it (`→`), and one picked runs as
--- it is. `base branch` and `branch name` only appear when some repository has
--- a worktree, and `agent` is skipped when there is one harness or none. Each
--- repository is one URL of the Task's workspace, the first where the agent
--- starts, and the runtime makes every worktree from its `git+file` URL on the
--- session's place (ADR-41). Nothing here waits: every listing, path check and
--- branch list is a READ the kernel serves from a worker (`kernel::repos`),
--- asked for by leaving a key in `store`.
---
--- WHY ONE PLUGIN AND NOT SIX. The kernel renders every floating mod each
--- frame purely to discover it is not floating, so six closed modals would cost
--- six Lua calls a frame forever. They also share one thing — the pending choice
--- — which as six mods would have to live in `store` as a protocol between
--- panes that only ever run in sequence.
---
--- WHERE A REFUSAL APPEARS. v1 puts "Not a git repo…" in the status bar. A mod
--- cannot write the message band (it is kernel chrome), so a refusal this flow
--- makes itself is shown on its own footer row instead. A refusal from the
--- *kernel* — a path that does not exist, a folder with no repositories — comes
--- back as a failed command and the band reports it, as it does for every command.
-
 local fuzzy = require("lib.fuzzy")
 local hover = require("lib.hover")
 local modal = require("lib.modal")
@@ -55,8 +7,6 @@ local textinput = require("lib.textinput")
 local theme = require("lib.theme")
 local widgets = require("lib.widgets")
 
--- ── Reads, with their absences handled once ─────────────────────────────────
-
 local function bookmarks()
   return (thurbox and thurbox.bookmarks) or {}
 end
@@ -65,17 +15,14 @@ local function browse()
   return (thurbox and thurbox.browse) or {}
 end
 
---- Every Fleet `settings.toml` lists, by name.
 local function fleets()
   return (thurbox and thurbox.fleets) or {}
 end
 
---- Whether there is a Fleet to choose: with one, the Fleet step is skipped.
 local function several_fleets()
   return #fleets() > 1
 end
 
---- The Fleet the open flow chose, or nil before the flow has one.
 local function chosen_fleet()
   local name = state.flow and state.flow.fleet
   for _, fleet in ipairs(fleets()) do
@@ -86,9 +33,6 @@ local function chosen_fleet()
   return nil
 end
 
---- Why the chosen Fleet is not taken: one thurbox cannot speak to answers
---- nothing more, so its places and agents never come. With one Fleet the
---- Fleet step is skipped, so the place step says it instead.
 local function refusal()
   local fleet = chosen_fleet()
   if fleet and fleet.state == "incompatible" then
@@ -97,8 +41,6 @@ local function refusal()
   return nil
 end
 
---- Every place the chosen Fleet defines, `local` first when it does; `nil`
---- until that Fleet has answered, which is pending, not empty.
 local function hosts()
   local fleet = chosen_fleet()
   if fleet then
@@ -120,7 +62,6 @@ local function host_cursor(flow)
   return flow.host_index or first_ready_place()
 end
 
---- The chosen Fleet's agents, or nil until it has said.
 local function known_agents()
   local fleet = chosen_fleet()
   if fleet then
@@ -133,8 +74,6 @@ local function agents()
   return known_agents() or {}
 end
 
---- The branches of the repository `store.want_branches` names, or `nil`
---- while they are not known for `repo`: pending, not empty.
 local function repo_branches(repo)
   local read = thurbox and thurbox.repo_branches
   if not read or read.repo ~= repo or read.loading then
@@ -143,21 +82,14 @@ local function repo_branches(repo)
   return read
 end
 
---- Whether Fleet has said which agents it has. Until it has, the list is
---- pending, not empty, and nothing is created without one.
 local function agents_known()
   return known_agents() ~= nil
 end
 
---- The spinner frame for this paint, from the flow's own clock.
 local function spinner(flow)
   return theme.spinner_frame(flow.elapsed)
 end
 
---- Is a repository-memory write still running?
----
---- v1 renders `Add Repo Path ⠋ checking…` while it validates a typed path on a
---- host. The same state is readable here: the command is in flight.
 local function bookmark_pending()
   for _, item in ipairs((thurbox and thurbox.commands) or {}) do
     if item.kind == "bookmark" and item.phase ~= "failed" then
@@ -167,9 +99,6 @@ local function bookmark_pending()
   return false
 end
 
---- The repository-memory writes that have failed and are still being
---- reported: their path (the command's `subject`, as issued) keyed by id as a
---- string.
 local function bookmark_failures()
   local failed = {}
   for _, item in ipairs((thurbox and thurbox.commands) or {}) do
@@ -180,19 +109,10 @@ local function bookmark_failures()
   return failed
 end
 
--- ── Flow state ─────────────────────────────────────────────────────────────
---
--- One table, read whole and written whole: `state` hands back a fresh Lua table
--- on every read, so a nested field mutated in place would not persist.
-
 local function load()
   return state.flow
 end
 
---- Assigned once the repo step's row model exists below. Declared here because
---- `save` is the one choke point every flow mutation passes through, which makes
---- it the only place "which repo is the cursor on" can be answered without each
---- of the eight cursor-moving sites remembering to ask.
 local track_worktrees
 
 local function save(flow)
@@ -202,27 +122,18 @@ local function save(flow)
   state.flow = flow
 end
 
---- A fresh flow. `step` is what "open" means — there is no separate flag for the
---- kernel and this to disagree about, exactly as floating itself works.
 local function fresh()
-  -- With one Fleet there is nothing to ask: the flow starts on its places.
   local only = not several_fleets() and fleets()[1] or nil
   return {
     step = several_fleets() and "fleet" or "host",
     fleet = only and only.name or nil,
     remote = only ~= nil and only.remote == true,
-    -- The chosen place is another machine: its folders and branches are read
-    -- there, through Fleet. Set with the place.
     elsewhere = false,
     fleet_index = 1,
     host = "",
-    -- The place a created Task names: empty for the Fleet's own `local`.
-    -- `host` above is where its repositories are remembered.
+    -- MUST KILL: type — a `Place` with an explicit local variant would say "" names the Fleet's own `local`
     place = "",
     cursor = 1,
-    -- The repo step opens on its search, not on the list: the first thing a
-    -- hand does there is type part of a repository's name. The other focus is
-    -- `input`, the path field.
     focus = "search",
     selected = {},
     worktree = {},
@@ -234,36 +145,23 @@ local function fresh()
     select_newest = false,
     base = nil,
     branch_index = 1,
-    -- The repo whose existing worktrees are showing as child rows, and the one
-    -- chosen to open (`{ path, branch }`) once one has been.
     wt_repo = nil,
     open_worktree = nil,
     name = textinput.new(""),
     branch = textinput.new(""),
     agent_index = 1,
-    -- The detour for a typed path that does not exist: where, and which of
-    -- `FOLDER_CHOICES` the cursor is on.
     new_path = nil,
     folder_index = 1,
     url = textinput.new(""),
-    -- What the path field's spinner says while a repository-memory write is in
-    -- flight: `checking…` for an add, `cloning…` for a clone, which takes long
-    -- enough that "checking" would read as stuck.
     pending_label = nil,
     message = nil,
   }
 end
 
---- The place the flow reads folders and branches through.
 local function reads(flow)
   return flow.reads or flow.host or ""
 end
 
---- The home of the place's machine, or nil while it is not known here.
----
---- A remote Fleet's own `local` has the home its Fleet said. Any place
---- elsewhere has the home its runtime named when its `~` was listed, which
---- the kernel keeps per place.
 local function remote_home(flow)
   local fleet = flow.remote and flow.place == "" and chosen_fleet()
   if fleet and fleet.home then
@@ -276,9 +174,6 @@ local function remote_home(flow)
   return nil
 end
 
---- How the chosen place is named in the flow's words: a place of this
---- machine's Fleet by its own name, a remote Fleet's `local` as that Fleet,
---- and any other place of a remote Fleet by its key (`box/mux/wsl-dev`).
 local function place_label(flow)
   if not flow.remote then
     return flow.place ~= "" and flow.place or (flow.host or "")
@@ -289,8 +184,6 @@ local function place_label(flow)
   return flow.host
 end
 
---- Whether the chosen Fleet offers a ready `local` of its own, which a Task
---- names with an empty backend.
 local function fleet_local_is_ready()
   for _, place in ipairs(hosts() or {}) do
     if (place.backend or "") == "" and place.ready ~= false then
@@ -300,9 +193,6 @@ local function fleet_local_is_ready()
   return false
 end
 
---- Where the repositories of `place` are remembered: a Fleet's own machine
---- under one key whichever runtime's `local` names it, and any other place
---- under `<fleet>/<place>`, since none of its paths is a path here.
 local function repository_key(flow, place)
   local machine = flow.place == "" or place.here
   if not flow.elsewhere then
@@ -311,9 +201,6 @@ local function repository_key(flow, place)
   return flow.fleet .. "/" .. (machine and "local" or place.name)
 end
 
---- Which place reads the repositories of `place`: the one they are
---- remembered under, except a Fleet's own machine elsewhere while its
---- `local` is not ready, which is read through `place` itself.
 local function reading_key(flow, place)
   local key = repository_key(flow, place)
   if flow.elsewhere and place.here and not fleet_local_is_ready() then
@@ -322,7 +209,6 @@ local function reading_key(flow, place)
   return key
 end
 
---- A typed `~` on a place elsewhere is that machine's home, never this one's.
 local function expand_remote_home(flow, path)
   local home = remote_home(flow)
   if home and (path == "~" or path:sub(1, 2) == "~/") then
@@ -331,9 +217,6 @@ local function expand_remote_home(flow, path)
   return path
 end
 
---- Why a path typed for a place elsewhere names another login's home
---- (`~user/…`), or nil. Only the login's own home is known there: listing it
---- instead would show the wrong folder.
 local function other_users_home(flow)
   if not (flow.elsewhere and flow.step == "repo") then
     return nil
@@ -345,10 +228,6 @@ local function other_users_home(flow)
   return nil
 end
 
---- Ask the kernel for what this step needs, and stop asking for the rest.
----
---- Written every frame because the want is what keeps the read served; clearing
---- the others is what makes a closed flow cost nothing.
 local function ask(flow)
   if not flow then
     store.want_bookmarks = nil
@@ -358,13 +237,7 @@ local function ask(flow)
     return
   end
   store.want_bookmarks = flow.host or ""
-  -- The chosen Fleet's places and agents, read again each time the place
-  -- picker opens, so a place's readiness is not the one from startup.
   store.want_places = (flow.step == "host" and flow.fleet) or nil
-  -- The branches of the first worktree repository, while the base branch is
-  -- asked; on the repo step, the expanded repository's, whose read carries
-  -- its existing worktrees. A place elsewhere has its read there, through
-  -- Fleet, so they are asked as `<host>\0<repo>`.
   if flow.step == "branch" then
     store.want_branches = flow.elsewhere and (reads(flow) .. "\0" .. flow.primary) or flow.primary
   elseif flow.step == "repo" and flow.wt_repo then
@@ -373,23 +246,6 @@ local function ask(flow)
     store.want_branches = nil
   end
 
-  -- The listing of the typed path's directory. Requested whether or not the
-  -- dropdown is open, because the ghost completion is derived from it — which is
-  -- how completion works for a remote target here and does not in v1.
-  --
-  -- An EMPTY field still names a directory: `split_typed` answers `~` for it,
-  -- exactly as it does for a bare `~`. Asking only once something had been typed
-  -- is what made `tab` on a fresh field open a dropdown nothing could ever fill —
-  -- and `tab` on a fresh field is how browsing starts, so it read as "tab no
-  -- longer browses". The want is still dropped the moment the dropdown closes, so
-  -- a flow that is only picking from memory asks for no listing at all.
-  --
-  -- Only while the field has focus: it holds its starting directory the whole
-  -- time now, and a flow picking from memory must not pay for a listing.
-  -- A place elsewhere is listed there, through Fleet, and its `~` is that
-  -- machine's home. The directory part is split off first and
-  -- only then made the home: a bare `~` names the home itself, not its
-  -- parent.
   local typed = flow.step == "repo" and (flow.input.value or "") or ""
   if flow.step == "repo" and flow.focus == "input" and (typed ~= "" or flow.browse) then
     local dir = pathpicker.split_typed(typed)
@@ -397,8 +253,6 @@ local function ask(flow)
       dir = nil
     elseif flow.elsewhere then
       dir = expand_remote_home(flow, dir)
-      -- A home not known yet is asked for first: the runtime takes only an
-      -- absolute directory, and its answer to `~` names the home.
       if dir:sub(1, 1) == "~" then
         dir = "~"
       end
@@ -409,15 +263,6 @@ local function ask(flow)
   end
 end
 
--- ── The repo step's row model ──────────────────────────────────────────────
---
--- The model itself is `lib.repo_picker` (matching on `lib.fuzzy`, like every
--- other picker) and the path-typing derivations are `lib.pathpicker`. The
--- wrappers below only gather what each needs from the flow and the published
--- reads, so every consumer in this file asks the same question the same way —
--- three derivations of "which entries" would eventually disagree about which
--- one `enter` picks.
-
 local function rows_for(flow)
   local query = flow.search.value or ""
   local entries = repo_picker.rows(bookmarks().rows or {}, query, flow.collapsed)
@@ -426,12 +271,10 @@ local function rows_for(flow)
   return repo_picker.with_worktrees(entries, flow.wt_repo, published)
 end
 
---- The row the cursor is on, or nil when the list is empty.
 local function current_row(flow)
   return repo_picker.current(rows_for(flow), flow.cursor)
 end
 
---- Keep an explicit expansion while moving between its repo and child rows.
 track_worktrees = function(flow)
   if not flow or flow.step ~= "repo" or not flow.wt_repo then
     return
@@ -450,11 +293,6 @@ local function chosen(flow)
   return repo_picker.chosen(bookmarks().rows or {}, flow.selected, flow.worktree)
 end
 
---- The repository the cursor stands in for when nothing is ticked, or nil.
----
---- "Ticked, else the cursor row": type part of a name and confirm, with no
---- `space` in between. A folder header is not a repository, and a worktree row
---- is opened rather than gathered, so neither stands in.
 local function cursor_stand_in(flow)
   local worktrees, plain = chosen(flow)
   if #worktrees > 0 or #plain > 0 then
@@ -472,14 +310,6 @@ local function browse_entries(flow)
   return pathpicker.entries(flow.input and flow.input.value or "", browse().entries or {})
 end
 
---- A repository-memory write has been issued: tick the row it lands as (see
---- `select_newest` in the render), and clear a search typed before the path
---- was — one the new row need not match, which would hide it once ticked.
----
---- `path` is the path exactly as issued, and the failures already on record
---- are noted too: a new failure for that path is this write's, and a write that
---- never landed has no row to tick (see the render). Another write failing
---- meanwhile says nothing about this one.
 local function await_new_row(flow, path)
   flow.select_newest = true
   flow.awaiting_path = path
@@ -488,13 +318,6 @@ local function await_new_row(flow, path)
   flow.cursor = 1
 end
 
---- Move focus into the path field, filling an empty one with where a new path
---- most likely goes (`pathpicker.start`). The fill is remembered so it can be
---- told apart from something typed: until it is edited it is no choice at all.
----
---- A place elsewhere starts at that machine's home, an absolute path it
---- takes. Until its home is known the field starts empty, and browsing it
---- lists the home the runtime names: a `~/` there would only be refused.
 local function enter_path_field(flow)
   flow.focus = "input"
   if (flow.input.value or "") == "" then
@@ -511,23 +334,15 @@ local function enter_path_field(flow)
   end
 end
 
---- Is the path field still holding only its starting directory?
 local function untouched(flow)
   return flow.prefill ~= nil and flow.input.value == flow.prefill
 end
 
---- The typed path with its trailing slashes gone, which is the folder it names.
 local function typed_target(flow)
   local value = (flow.input.value or ""):match("^%s*(.-)%s*$")
   return (value:gsub("(.)/+$", "%1"))
 end
 
---- Does the path field name a folder that is known not to exist?
----
---- Known from the listing the field already asks for — the parent's — and only
---- once it has answered for that very directory: until then the path may well
---- exist, and `enter` stays the add the kernel checks. A listing that failed
---- means a parent is missing too, which `mkdir -p` makes, so it counts.
 local function names_missing_folder(flow)
   if untouched(flow) then
     return false
@@ -537,7 +352,6 @@ local function names_missing_folder(flow)
     return false
   end
   local dir, leaf = pathpicker.split_typed(target)
-  -- A folder is made on this machine only: a path elsewhere is typed.
   if flow.elsewhere then
     return false
   end
@@ -560,14 +374,9 @@ local function suggestion_for(flow)
   return pathpicker.suggestion(flow.input and flow.input.value or "", browse().entries or {})
 end
 
--- ── Rendering: the pieces every step shares ────────────────────────────────
-
---- The float's width, and the columns a list row inside it actually gets: the
---- modal's own border, then the border of the panel the list sits in.
 local MODAL_COLS = 60
 local ROW_COLS = MODAL_COLS - 4
 
---- The last component of a path, which is how people name a repository.
 local function leaf(path)
   if not path or path == "" then
     return ""
@@ -575,17 +384,11 @@ local function leaf(path)
   return (path:gsub("/+$", ""):match("[^/]+$")) or path
 end
 
---- What has been decided so far, for the title's trail.
----
---- A breadcrumb rather than `step 2 of 4`, because the flow is CONDITIONAL: the
---- branch steps only happen for a worktree, and the agent step is skipped when
---- there is nothing to choose. A count would have to lie about those.
 local function trail(flow)
   if not flow then
     return ""
   end
   local parts = {}
-  -- A remote Fleet's repository key already names it (`box/local`).
   if several_fleets() and flow.fleet and not flow.remote and flow.step ~= "fleet" then
     parts[#parts + 1] = flow.fleet
   end
@@ -602,11 +405,6 @@ local function trail(flow)
   return table.concat(parts, " › ")
 end
 
---- The shared modal shell, with this flow's two constants folded in: a step
---- is `MODAL_COLS` wide (`cols`, in cells — every row here is truncated against
---- `ROW_COLS`) unless it sizes itself to a table (`picker_cols`), and every
---- step's title carries the breadcrumb trail, muted, so the step says where
---- you are without spending a row on it.
 local function frame(title, rows_height, children, flow, cols)
   return modal.frame(title, {
     cols = cols or MODAL_COLS,
@@ -616,12 +414,7 @@ local function frame(title, rows_height, children, flow, cols)
   })
 end
 
---- A refusal this flow made itself, on its own row. Empty when there is none, so
---- the row is spent either way and the modal does not change height as messages
---- come and go.
 local function message_row(flow)
-  -- Every step says why its Fleet is refused, so a flow past the place step
-  -- when the refusal came is not left waiting on what will never come.
   local text = refusal() or flow.message or other_users_home(flow)
   return {
     type = "text",
@@ -630,9 +423,6 @@ local function message_row(flow)
   }
 end
 
---- The band a row wears under the pointer, which the row under the cursor
---- never does: it already reads as the cursor, and a band on it would say
---- nothing a click there could change.
 local function row_hover(id, is_cursor)
   if not is_cursor and hover.id(id) then
     return hover.row_style()
@@ -667,14 +457,8 @@ local function selector_rows(labels, index, height, dimmed)
   return children
 end
 
--- ── The steps ──────────────────────────────────────────────────────────────
-
---- The cells between two columns of a table row.
 local GUTTER = 2
 
---- Each column's width in a table of `rows` (lists of cells), measured in
---- display columns so a wide glyph lines up too, and the width the widest
---- row takes.
 local function measure(rows)
   local widths = {}
   for _, cells in ipairs(rows) do
@@ -689,11 +473,6 @@ local function measure(rows)
   return widths, natural
 end
 
---- The rows of a picker laid out as a table: every column as wide as its
---- widest cell, so a column starts at one cell on every row whatever the
---- lengths around it. When the rows overrun `width`, the columns in `shrink`
---- give up the difference in that order, each down to one cell, their cells
---- ellipsized. A column not in `shrink` (a row's status) is always whole.
 local function table_labels(rows, width, shrink)
   local widths, natural = measure(rows)
   for _, column in ipairs(shrink) do
@@ -709,7 +488,6 @@ local function table_labels(rows, width, shrink)
     local parts = {}
     for column, cell in ipairs(cells) do
       local fitted = widgets.truncate(cell, widths[column])
-      -- The last column is not padded: trailing spaces are nothing to align.
       parts[column] = column < #cells and widgets.pad(fitted, widths[column]) or fitted
     end
     labels[#labels + 1] = widgets.truncate(table.concat(parts, string.rep(" ", GUTTER)), width)
@@ -717,8 +495,6 @@ local function table_labels(rows, width, shrink)
   return labels
 end
 
---- `text` broken at spaces into lines at most `width` cells wide; a word wider
---- than a line is ellipsized rather than cut silently.
 local function wrap(text, width)
   local lines, line = {}, ""
   for word in text:gmatch("%S+") do
@@ -738,22 +514,14 @@ local function wrap(text, width)
   return lines
 end
 
---- The most lines the reason under a picker takes; a longer one ends in `…`.
 local REASON_LINES = 4
 
---- A picker sized to its table: as wide as its widest row needs, never
---- narrower than the rest of the flow, never wider than the screen. Returns
---- the modal's columns and the columns a row inside it gets: the modal's
---- border and the `▸ ` marker.
 local function picker_cols(natural, flow)
   local screen = flow.screen_cols or MODAL_COLS
   local cols = math.min(math.max(MODAL_COLS, natural + 4), screen)
   return cols, cols - 4
 end
 
---- How many lines the reason under a picker wants: the longest of
---- `reasons` wrapped to `width`, so the modal keeps its size as the cursor
---- moves, and never more than `REASON_LINES`.
 local function reason_height(reasons, width)
   local height = 0
   for _, reason in ipairs(reasons) do
@@ -762,19 +530,12 @@ local function reason_height(reasons, width)
   return height
 end
 
---- The rows a picker's list and its reason get on the screen. The modal's
---- border, message row and footer take four; the list keeps every row it
---- can, and the reason gives up its lines first, down to one. A list longer
---- than its rows scrolls with the cursor (`selector_rows`), so no row is
---- selectable without being drawn.
 local function picker_rows(count, wanted_reason, flow)
   local avail = (flow.screen_rows or math.huge) - 4
   local reason = math.min(wanted_reason, math.max(math.min(wanted_reason, 1), avail - count))
   return math.max(1, math.min(count, avail - reason)), reason
 end
 
---- What the row under the cursor says beyond its own short status, under the
---- list: wrapped to the modal, on `height` lines; a longer one ends in `…`.
 local function reason_rows(reasons, index, width, height)
   local lines = wrap(reasons[index] or "", width)
   if #lines > 1 and height == 1 then
@@ -789,7 +550,6 @@ local function reason_rows(reasons, index, width, height)
   return { type = "text", len = height, text = text }
 end
 
---- A Fleet's state as its row shows it, short enough to fit beside its name.
 local FLEET_STATES = {
   up = "● up",
   down = "○ Fleet not running",
@@ -799,9 +559,6 @@ local FLEET_STATES = {
   incompatible = "⊘ incompatible",
 }
 
---- What the row under the cursor says beyond its state: why a Fleet is not
---- up, and for a remote one with no manager, what runs it (M4: thurbox never
---- starts a manager on another machine).
 local function fleet_detail(fleet)
   if fleet.state == "down" and fleet.remote then
     return "install the systemd unit (see doctor)"
@@ -809,7 +566,6 @@ local function fleet_detail(fleet)
   return fleet.why or ""
 end
 
---- The Fleet picker: each listed Fleet, how it is reached, and its state.
 local function render_fleet(flow)
   local rows, reasons = {}, {}
   for _, fleet in ipairs(fleets()) do
@@ -834,8 +590,6 @@ local function render_fleet(flow)
   }, flow, cols)
 end
 
---- Whether a place's runtime says it can run a session, as its row shows it:
---- short, since the row is a table cell. Why it cannot reads under the list.
 local function readiness(place)
   if place.ready == true then
     return "● ready"
@@ -845,11 +599,6 @@ local function readiness(place)
   return ""
 end
 
---- The place picker: each place the chosen Fleet defines, with the detail
---- that tells two apart and whether its runtime can run a session. Fleet's
---- `local` is offered only when Fleet defines it. A place is named as a
---- Task names it, and as its session's row will: `local`, or
---- `<runtime>/<place>`.
 local function render_host(flow)
   local places = hosts() or {}
   local rows, reasons, dimmed = {}, {}, {}
@@ -887,15 +636,11 @@ end
 local REPO_LIST_MAX = 10
 local BROWSE_MAX = 8
 
--- The repo step's click targets. Every kind carries its own prefix, so no
--- remembered path — a relative one can be any string — can be read as a field
--- or a browsed folder, nor a folder's name as a bookmark.
 local SEARCH_FIELD = "field:search"
 local PATH_FIELD = "field:input"
 local BROWSE_ROW = "browse:"
 local REPO_ROW = "repo:"
 
---- One row of the bookmark list. v1's `bookmark_item`, marker for marker.
 local function repo_row(entry, selected, flow, is_cursor)
   local row = entry.row
   local style = is_cursor and { fg = theme.accent, bold = true } or { fg = theme.text }
@@ -906,9 +651,6 @@ local function repo_row(entry, selected, flow, is_cursor)
     }
   end
 
-  -- An existing worktree: not a thing to tick, a thing to open. So no checkbox,
-  -- and the branch is what identifies it — the directory name is usually a
-  -- shortened form of the branch, and the branch is what the work is on.
   if row.is_worktree then
     return {
       { text = "  ↳ ", style = { fg = theme.muted } },
@@ -925,24 +667,15 @@ local function repo_row(entry, selected, flow, is_cursor)
     spans[#spans + 1] = { text = "  ", style = style }
   end
   spans[#spans + 1] = { text = selected and "[x] " or "[ ] ", style = style }
-  -- The label leads, because it is the answer to "what would picking this do";
-  -- the path still follows it, muted, because it is the answer to "where".
   if row.label then
     spans[#spans + 1] = { text = row.label .. "  ", style = style }
   end
-  -- Matched characters accented, as v1 accents them; the rest keeps the row's
-  -- own style so the cursor row still reads as the cursor row. `fuzzy.spans`
-  -- owns the character-boundary slicing, so a multi-byte hit cannot render as
-  -- rubbish here any more than in the search strip.
   if #entry.matched > 0 then
     local hit = { fg = theme.accent_bright, bold = true }
     for _, span in ipairs(fuzzy.spans(row.path, entry.matched, style, hit)) do
       spans[#spans + 1] = span
     end
   else
-    -- Middle-truncated: the leaf is what identifies a repository, and it is the
-    -- half an end-truncation drops. `avail` is what the row has left after the
-    -- indent, the checkbox, and any label ahead of the path.
     local used = 4 + (row.parent and 2 or 0) + (row.label and (widgets.len(row.label) + 2) or 0)
     local avail = math.max(8, ROW_COLS - used)
     spans[#spans + 1] = {
@@ -954,19 +687,12 @@ local function repo_row(entry, selected, flow, is_cursor)
   if selected and flow.worktree[row.path] then
     spans[#spans + 1] = { text = " [wt]", style = { fg = theme.accent } }
   end
-  -- A known non-repository reads as a plain directory: selectable, but `w` will
-  -- not take.
   if row.is_git == false then
     spans[#spans + 1] = { text = " (dir)", style = { fg = theme.muted } }
   end
   return spans
 end
 
---- Does `enter` on the name spawn straight away, with nothing left to ask?
----
---- One agent is not a question (see `after_name`, which is what actually
---- decides it). Shared by the name field's pill and `after_name` so they cannot
---- drift apart.
 local function spawns_directly()
   return agents_known() and #agents() <= 1
 end
@@ -980,8 +706,6 @@ local function render_repo(flow)
 
   local children = {}
 
-  -- The search bar is always there, above the list it filters: it is where the
-  -- keys go from the moment the flow opens.
   children[#children + 1] = textinput.node(flow.search, {
     label = "Search (" .. #entries .. "/" .. total .. ")",
     focused = flow.focus == "search",
@@ -1036,11 +760,7 @@ local function render_repo(flow)
     children = list,
   }
 
-  -- The path input, with the ghost completion sitting immediately after the
-  -- typed text. The input node is sized to the value so the caret lands where
-  -- the text ends and the ghost begins there rather than at the right edge.
   local suggestion = flow.suggestion or ""
-  -- A place elsewhere takes a path there, or a URL its runtime clones.
   local label = flow.elsewhere and "Add Repo Path or Clone URL" or "Add Repo Path"
   if bookmark_pending() then
     label = label .. " " .. spinner(flow) .. " " .. (flow.pending_label or "checking…")
@@ -1054,9 +774,6 @@ local function render_repo(flow)
       borders = "all",
       border_style = { fg = hover.border(flow.focus == "input", PATH_FIELD) },
     },
-    -- The whole framed field is the target, not the input inside it: the input
-    -- is sized to its text, so a press on the empty rest of the field would
-    -- otherwise land on nothing.
     id = PATH_FIELD,
     children = {
       {
@@ -1140,19 +857,6 @@ local function render_repo(flow)
 
   children[#children + 1] = message_row(flow)
 
-  -- v1's footer, which says something different per focus — the keys really are
-  -- different, and a hint that named them all would name most of them wrongly.
-  -- The two pills are subject to that as much as the hints: they REPLAY `enter`
-  -- and `esc`, so a fixed pair of labels ("Done", "Cancel") would name four
-  -- different actions each, and would name them wrongly in three focuses out of
-  -- four. `enter` in particular never finishes this flow: it adds the typed
-  -- path, or picks a browsed one, or keeps the filter, or moves on to the next
-  -- question.
-  --
-  -- Which is why `enter` is not in the hints as well: the pill beside them now
-  -- carries its action word for word, and the strip is 58 columns wide — the
-  -- repetition cost `alt+p` its description entirely, and that one is the only
-  -- place a folder import is offered at all.
   local hints, primary, cancel
   if flow.focus == "search" then
     hints = {
@@ -1164,19 +868,8 @@ local function render_repo(flow)
     }
     local entry = entries[widgets.clamp(flow.cursor, #entries)]
     if entry and entry.row.is_worktree then
-      -- An existing worktree is not a selection to gather but a thing to open —
-      -- but `enter` only spawns straight from here when nothing is left to ask
-      -- (see `spawns_directly`); otherwise it advances to the agent step same as
-      -- every other row.
       primary = spawns_directly() and "Open" or "Next"
     else
-      -- `enter` carries the TICKED rows, not the row under the cursor, and with
-      -- none ticked on a host `after_repos` refuses and stays here: a remote
-      -- target has no local home to stand in for a repository. So there is
-      -- nothing to advance to and nothing is offered — which on a host whose
-      -- memory is still empty is the whole of that step until a path is added.
-      -- Spelled as an `if`: `cond and nil or "Next"` is always "Next", because
-      -- `and` yielding nil falls through to the `or`.
       local worktrees, plain = chosen(flow)
       local nothing_to_carry = #worktrees == 0 and #plain == 0 and not cursor_stand_in(flow)
       if nothing_to_carry and (flow.host or "") ~= "" then
@@ -1185,7 +878,6 @@ local function render_repo(flow)
         primary = "Next"
       end
     end
-    -- `esc` clears a typed query before it closes anything.
     if query ~= "" then
       cancel = "Clear"
     end
@@ -1205,19 +897,11 @@ local function render_repo(flow)
       { "tab", suggestion ~= "" and "complete" or "browse" },
       { "alt+p", "import parent" },
       { "s-tab", "search" },
-      -- The portable spelling; `ctrl+enter` does the same where the terminal
-      -- can send it, and help lists both.
       { "alt+⏎", "next" },
     }
-    -- A folder is imported on this machine only.
     if flow.elsewhere then
       hints = { hints[1], { "s-tab", "search" }, { "alt+⏎", "next" } }
     end
-    -- An empty field is nothing to add — including straight after an add, which
-    -- clears it and leaves the focus here so several paths can be typed in a
-    -- row. Trimmed as `enter` trims it, so a field holding only spaces reads as
-    -- the nothing it is.
-    -- The untouched starting directory is not a choice either.
     local typed = (flow.input.value or ""):match("^%s*(.-)%s*$")
     if typed == "" or untouched(flow) then
       primary = nil
@@ -1227,11 +911,6 @@ local function render_repo(flow)
       primary = "Add repo"
     end
   end
-  -- Stacked: this step has more keys than one row can name beside its pills,
-  -- and a hint cut off at the pill is a key nobody learns (forget was).
-  -- Existing worktrees are read on this machine only (`→` ignores the rest):
-  -- a place elsewhere lists none, so its hint would name a key that does
-  -- nothing.
   if flow.focus == "search" and (flow.host or "") == "" then
     children[#children + 1] = {
       type = "text",
@@ -1242,10 +921,6 @@ local function render_repo(flow)
   end
   children[#children + 1] = modal.footer(hints, primary, { cancel = cancel, stack = true })
 
-  -- The height is the sum of what was actually built, plus the two border rows.
-  -- Deriving it from the children rather than recomputing the layout means the
-  -- frame can never disagree with what is inside it — which is the bug a second
-  -- arithmetic expression here would eventually be.
   local height = 2
   for _, child in ipairs(children) do
     height = height + (child.len or 1)
@@ -1253,8 +928,6 @@ local function render_repo(flow)
   return frame("Select Repos", height, children, flow)
 end
 
---- What can go into a folder made for a path that did not exist, in the order
---- offered: the `bookmark` action each one issues, and how it reads.
 local FOLDER_CHOICES = {
   { action = "init", label = "New git repository (git init)" },
   { action = "clone", label = "Clone a repository into it" },
@@ -1305,13 +978,9 @@ local function render_branch(flow)
         },
       },
       message_row(flow),
-      -- No confirm pill: there is nothing to select yet, and one offered here
-      -- would be a button that does nothing when pressed.
       modal.footer({ { "esc", "cancel" } }, nil),
     }, flow)
   end
-  -- The cursor starts on the branch a new worktree starts from by default, the
-  -- first time the list is there to put it on.
   if not flow.branch_placed then
     flow.branch_placed = true
     flow.branch_index = 1
@@ -1324,10 +993,6 @@ local function render_branch(flow)
   end
   local height = math.min(#names, REPO_LIST_MAX)
   local rows = {}
-  -- A fetch that failed leaves the refs as they were: say so, or `origin/main`
-  -- reads as the upstream's tip when it is only the last one fetched. A
-  -- place elsewhere is never fetched here: its branches are as that machine
-  -- has them.
   local note = read.fetch_error and (" not fetched: " .. read.fetch_error)
     or (flow.elsewhere and (" branches as of " .. place_label(flow) .. "'s last fetch"))
   if note then
@@ -1376,17 +1041,10 @@ local function render_clone(flow)
       },
     },
     message_row(flow),
-    -- No pill until there is a URL: `enter` would only refuse.
     modal.footer({ { "esc", "back" } }, url ~= "" and "Clone" or nil, { cancel = "Back" }),
   }, flow)
 end
 
---- Does `enter` on this field end the flow?
----
---- The name is the last question only sometimes: the worktree flow asks for a
---- branch name after it, and a name followed by a choice of agent is not the
---- end either. One agent is not a question, so it spawns straight from the
---- field. Mirrors `after_name`, which is what actually decides it.
 local function field_creates(flow)
   if flow.step == "name" and flow.base then
     return false
@@ -1395,14 +1053,6 @@ local function field_creates(flow)
 end
 
 local function render_field(title, label, field, flow, placeholder)
-  -- What `enter` would actually take: the typed value, or the placeholder
-  -- standing in for it. The name step's suggestion is a real answer — `on_key`
-  -- takes it from an untouched field — while the branch step has no such
-  -- default, and neither has a repository whose leaf is no kind of name (the
-  -- home directory the flow falls back to). When that resolves to nothing,
-  -- `enter` is refused with "cannot be empty", so no pill is offered until
-  -- there is something to confirm. The field is where that gets fixed, and it
-  -- already has the caret in it.
   local resolved = (field.value or ""):match("^%s*(.-)%s*$")
   if resolved == "" then
     resolved = placeholder or ""
@@ -1422,7 +1072,6 @@ local function render_field(title, label, field, flow, placeholder)
 end
 
 local function render_agent(flow)
-  -- A refused Fleet sends no agents: only why, and the way out.
   if refusal() then
     return frame("Coding Agent", 4, {
       message_row(flow),
@@ -1444,11 +1093,9 @@ local function render_agent(flow)
         },
       },
       message_row(flow),
-      -- No pill: there is nothing to choose yet.
       modal.footer({ { "esc", "cancel" } }, nil),
     }, flow)
   end
-  -- The harnesses Fleet has profiles for, by name.
   local labels = {}
   for _, agent in ipairs(agents()) do
     labels[#labels + 1] = agent.name
@@ -1461,23 +1108,10 @@ local function render_agent(flow)
       children = selector_rows(labels, widgets.clamp(flow.agent_index, #labels), height),
     },
     message_row(flow),
-    -- The last question: `enter` here spawns the session rather than merely
-    -- settling the agent, and the pill that replays it says so.
     modal.footer({ { "j/k", "navigate" } }, "Create"),
   })
 end
 
--- ── Advancing ──────────────────────────────────────────────────────────────
-
---- The name to use when the field is left empty: the repository's own.
----
---- Shown as a PLACEHOLDER rather than written into the field. Prefilling the value
---- would have been worse than the empty field it replaced: `{ value, cursor }` has
---- no selection, so there is no "typing replaces the suggestion" — the first
---- keystroke would have appended, and picking `thurbox` then typing `fix` would
---- have produced `thurboxfix`. As a placeholder the field is genuinely empty, so
---- typing behaves normally, and `Enter` on an untouched field is a valid answer
---- with the answer visible before you press it.
 local function suggested_name(flow)
   local name = leaf(flow and flow.primary)
   if name == "" or name == "~" then
@@ -1486,8 +1120,6 @@ local function suggested_name(flow)
   return name
 end
 
---- v1's `session_name_to_branch`: lowercase alphanumerics, every run of spaces,
---- dashes and underscores collapsed to one dash, trimmed.
 local function branch_from_name(name)
   local out = {}
   for _, code in utf8.codes(name) do
@@ -1501,10 +1133,6 @@ local function branch_from_name(name)
   return (table.concat(out):gsub("^%-+", ""):gsub("%-+$", ""))
 end
 
---- Where the flow goes after the repositories are chosen. v1's three-way split
---- in `submit_repo_picker`, with its ordering: worktrees first, then plain
---- directories, then nothing at all. The first of them is where the agent
---- starts; the rest are the session's other workspace URLs, in that order.
 local function after_repos(flow)
   local worktrees, plain = chosen(flow)
   flow.extras = {}
@@ -1530,9 +1158,6 @@ local function after_repos(flow)
     flow.step = "name"
     return flow
   end
-  -- Nothing selected. v1 spawns in the home directory; a remote target has no
-  -- local home to stand in for it and `create` needs a path on the machine the
-  -- session will run on, so that one case asks for a repository instead.
   if (flow.host or "") ~= "" then
     flow.message = "Pick a repository on " .. place_label(flow)
     return flow
@@ -1542,11 +1167,8 @@ local function after_repos(flow)
   return flow
 end
 
---- Issue the one command the whole flow exists to produce, and close.
 local function commit(flow)
   local picked = agents()[flow.agent_index]
-  -- Opening an existing worktree: it runs as it is, on the branch already
-  -- checked out there, named after its directory.
   local open = flow.open_worktree
   local worktree = flow.base ~= nil and not open
   command("create", {
@@ -1564,9 +1186,6 @@ local function commit(flow)
   ask(nil)
 end
 
---- After the name (and the branch name, in the worktree flow): the agent step,
---- or straight to creating when there is nothing to choose. v1's
---- `finish_prepare_spawn`.
 local function after_name(flow)
   local list = agents()
   if agents_known() and #list <= 1 then
@@ -1579,12 +1198,6 @@ local function after_name(flow)
   return flow
 end
 
---- Carry the repo step on to the next question: the ticked rows, else the row
---- under the cursor.
----
---- An existing worktree under the cursor is not a selection to gather: it names
---- its own repo, branch and directory, so there is nothing left to ask — unless
---- rows are ticked, which are what the reader has been gathering.
 local function confirm_repos(flow)
   local stand_in = cursor_stand_in(flow)
   if stand_in then
@@ -1604,22 +1217,10 @@ local function confirm_repos(flow)
   ask(load())
 end
 
--- ── The mod ─────────────────────────────────────────────────────────────
-
---- Whether the browse dropdown is up and holding the keys.
----
---- It is a list of its own, so while it is open the step's list behind it must
---- not move as well.
 local function dropdown_open(flow)
   return flow.browse == true and flow.focus == "input"
 end
 
---- Move the selection of whatever step is showing.
----
---- One place rather than one per caller: the arrows and `j`/`k` must agree about
---- what "next" means on each of the four steps that are lists, and they reach it
---- by different routes — a declared action, and a raw key while a field has
---- focus.
 local function move_selection(flow, step)
   if flow.step == "fleet" then
     flow.fleet_index = widgets.clamp(flow.fleet_index + step, #fleets())
@@ -1639,8 +1240,6 @@ end
 
 return {
   name = "new_session",
-  -- `create` is issued from here. Granted without asking while this file is
-  -- the one thurbox ships.
   capabilities = { "sessions" },
   ui_state = function()
     local flow = load()
@@ -1661,30 +1260,14 @@ return {
     end
     return { open = true, step = flow.step, selection = selection }
   end,
-  -- A slot the arrangement never places: this pane only ever floats, and a slot
-  -- it could also occupy would make it an alternative to the terminal.
   slot = "float",
   order = 70,
   floats = true,
-  -- Never in the focus ring, so `tab` cannot land on a closed flow — v1's
-  -- pickers are modals for the same reason.
   focusable = false,
-  -- Pure DESPITE the render's store/state writes, which is worth spelling out:
-  -- a skipped render skips its writes, and that is safe here because every one
-  -- of them is a function of inputs already in the cache key. The `ask` wants
-  -- derive from the flow (state version), so a skipped render would only have
-  -- re-written identical values — the kernel re-reads the persisted store keys
-  -- each publish either way. The `select_newest` consumption is a transition
-  -- whose triggering write (the bookmark command landing) bumps the epoch
-  -- first, so the frame that must
-  -- run always misses the cache. Floats render every frame even while closed;
-  -- this is what makes the closed flow actually cost nothing.
+  -- MUST KILL: rearchitect — moving the `ask` wants and the `select_newest` tick out of render would make `pure` safe on its face
   pure = true,
 
   keys = {
-    -- v1's `Ctrl+N`, and like v1 NOT a passthrough chord: a focused agent does
-    -- not need `ctrl+n`, and starting work is the one command that must be
-    -- reachable from anywhere.
     {
       key = "ctrl+n",
       action = "new_session.open",
@@ -1692,14 +1275,8 @@ return {
       scope = "global",
       group = "Sessions",
     },
-    -- The rest are plugin-scoped, so they fire only while the flow is up. Each
-    -- is declared rather than merely handled, which is what puts it in help and
-    -- makes it rebindable.
     { key = "j", action = "new_session.next", desc = "next choice", group = "New session" },
     { key = "k", action = "new_session.previous", desc = "previous choice", group = "New session" },
-    -- Declared beside them because every other list here takes both, and a
-    -- picker that only answers to `j`/`k` reads as broken to anyone who reaches
-    -- for an arrow first.
     { key = "down", action = "new_session.next", desc = "next choice", group = "New session" },
     {
       key = "up",
@@ -1713,8 +1290,6 @@ return {
       desc = "select a repository, or fold a folder",
       group = "New session",
     },
-    -- Chords rather than letters: the repo step types every letter into its
-    -- search, so a bare `w` or `d` is part of a repository's name there.
     {
       key = "alt+w",
       action = "new_session.worktree",
@@ -1722,8 +1297,6 @@ return {
       group = "New session",
     },
     {
-      -- Not `ctrl+d`: that is the global delete-session chord, and a float's
-      -- claim on a global chord is a conflict the registry reports.
       key = "alt+d",
       action = "new_session.forget",
       desc = "forget a remembered repository",
@@ -1735,11 +1308,8 @@ return {
       desc = "forget a remembered repository",
       group = "New session",
     },
-    -- Confirm the repo step from any focus — the path field included — with the
-    -- ticked rows, else the cursor row. `ctrl+enter` reaches a terminal only
-    -- under the kitty keyboard protocol; `alt+enter` is the same action for
-    -- every other terminal.
     {
+      -- A terminal sends ctrl+enter only under the kitty keyboard protocol; alt+enter is the portable spelling.
       key = "ctrl+enter",
       action = "new_session.confirm",
       desc = "go on with the ticked repositories, or the one under the cursor",
@@ -1752,8 +1322,6 @@ return {
       group = "New session",
     },
     {
-      -- `alt`, not `ctrl`: `ctrl+p` is the command palette everywhere, and a
-      -- float's own claim on a global chord is a conflict the registry reports.
       key = "alt+p",
       action = "new_session.import",
       desc = "import a folder of repositories",
@@ -1765,31 +1333,15 @@ return {
     local flow = load()
     ask(flow)
     if not flow then
-      -- Not floating: the flow is closed, and a closed modal draws nothing.
       return { type = "text", text = "" }
     end
 
-    -- Carried on the table the renderers already receive, rather than passed
-    -- through five signatures, so a spinner can animate in any of them. Not
-    -- saved: it belongs to this frame.
     flow.elapsed = ctx.elapsed
-    -- A float is told the screen: a picker sized to its table stays inside it.
     flow.screen_cols = ctx.width
     flow.screen_rows = ctx.height
     flow.suggestion = flow.step == "repo" and flow.focus == "input" and suggestion_for(flow) or ""
 
-    -- A path just added is selected, which is v1's select-or-add. The row cannot
-    -- be found by name — the expansion of a `~` on a remote host happened on the
-    -- worker — so it is found by RECENCY: memory is published most-recent-first
-    -- and an add touches recency, so the row asked for is the newest one.
-    -- Newest is not the same as first: the kernel offers the
-    -- interface directory ahead of memory, and taking row 1 selected THAT for
-    -- every repository added. Consumed only once the write has landed and the
-    -- list has been re-read, or it would select whatever was previously on top.
     if flow.select_newest and not bookmark_pending() and not bookmarks().loading then
-      -- A failure that was not on record when the write was issued is this
-      -- write's: the newest row is then whatever was newest before it, and
-      -- ticking that would pick a repository nobody chose.
       local failed = false
       for _, item in ipairs((thurbox and thurbox.commands) or {}) do
         if
@@ -1810,8 +1362,6 @@ return {
       local newest = not failed and repo_picker.newest(bookmarks().rows or {})
       if newest then
         flow.selected[newest.path] = true
-        -- The cursor follows the selection rather than resetting to the top, for
-        -- the same reason: the top row is no longer the row just added.
         flow.cursor = repo_picker.index_of(rows_for(flow), newest.path) or 1
       end
       flow.select_newest = nil
@@ -1841,13 +1391,8 @@ return {
     return render_agent(flow)
   end,
 
-  --- Declared keys. Returning false hands the keystroke on to `on_key`, which is
-  --- what lets `j` move the list in one focus and type a `j` in another.
   on_action = function(action)
     if action == "new_session.open" then
-      -- A second press while the flow is up is a no-op rather than a reset:
-      -- while it floats it takes every key, so `ctrl+n` here would otherwise be
-      -- a way to lose a half-filled flow to a stray keystroke.
       if load() then
         return true
       end
@@ -1861,8 +1406,6 @@ return {
     if not flow then
       return false
     end
-    -- Every step with a text field types the letters `j`/`k`; the repo step
-    -- always has one focused (its search or its path).
     local typing = flow.step == "repo"
       or flow.step == "name"
       or flow.step == "worktree"
@@ -1871,8 +1414,6 @@ return {
     flow.message = nil
 
     if action == "new_session.next" or action == "new_session.previous" then
-      -- The arrows are not letters, and are handled in `on_key` so they move the
-      -- list even mid-typing — which is what v1's picker does.
       if typing then
         return false
       end
@@ -1882,8 +1423,6 @@ return {
     end
 
     if flow.step ~= "repo" then
-      -- Elsewhere the chord is still an `enter`: `on_key` matches the key name
-      -- and ignores the modifier.
       return false
     end
 
@@ -1892,8 +1431,6 @@ return {
       confirm_repos(flow)
       return true
     elseif action == "new_session.toggle" then
-      -- A space is a character the path field is entitled to; the search gives
-      -- it up, because no repository is found by typing one.
       if not in_search then
         return false
       end
@@ -1918,15 +1455,9 @@ return {
       local entry = current_row(flow)
       if entry and not entry.row.is_parent and not entry.row.is_worktree then
         if entry.row.is_git == false then
-          -- v1's refusal, in v1's words: worktree mode needs a repository, and
-          -- the directory stays selectable without it.
           flow.message =
             "Not a git repo — worktree mode needs one (it can still be added as a plain dir)"
         elseif (flow.host or "") ~= "" and not flow.elsewhere then
-          -- A place no Fleet names cannot be asked what a worktree there
-          -- starts from: the repository runs as it is. A place elsewhere has
-          -- its branches read through Fleet, and its runtime makes the
-          -- worktree there.
           flow.message = "Worktrees need a Fleet's place — it runs as it is"
         else
           local path = entry.row.path
@@ -1939,11 +1470,6 @@ return {
       save(flow)
       return true
     elseif action == "new_session.forget" then
-      -- Only from the search: in the path field `alt+d` and `delete` are the
-      -- edits every field takes. In the search they still delete forward while
-      -- there is text ahead of the caret, and mean "forget" only past the end,
-      -- where they would otherwise do nothing — the way readline's `ctrl+d`
-      -- deletes a character or, on an empty line, ends the input.
       local ahead = widgets.chars(flow.search.value or "") > (flow.search.cursor or 0)
       if not in_search or (ahead and textinput.key(flow.search, { key = "delete" })) then
         save(flow)
@@ -1962,7 +1488,6 @@ return {
       save(flow)
       return true
     elseif action == "new_session.import" then
-      -- Works from any focus, as v1's does, because it acts on the typed path.
       local path = (flow.input.value or ""):match("^%s*(.-)%s*$")
       if path == "" then
         flow.message = "Type a folder path, then alt+p to import its repos as a parent"
@@ -1978,8 +1503,6 @@ return {
     return false
   end,
 
-  --- Everything a modal owns without declaring: confirm, cancel, move between
-  --- halves, and typing. v1 keeps the same set fixed rather than rebindable.
   on_key = function(key)
     local flow = load()
     if not flow then
@@ -1987,19 +1510,12 @@ return {
     end
     local name = key.key
 
-    -- Arrows move the list even while a field has focus. They cannot be typed,
-    -- so there is nothing to lose by claiming them — and the alternative is a
-    -- path field you must leave before you can pick a row. The one exception is
-    -- the browse dropdown, which is a list of its own.
     if (name == "down" or name == "up") and not dropdown_open(flow) then
       move_selection(flow, name == "down" and 1 or -1)
       save(flow)
       return true
     end
 
-    -- Esc: out of the dropdown, out of the search, else out of the flow. Three
-    -- levels, innermost first — v1's, and why a stray Esc never loses more than
-    -- one thing at a time.
     if name == "esc" then
       if flow.step == "repo" and flow.browse then
         flow.browse = false
@@ -2007,13 +1523,11 @@ return {
         textinput.clear(flow.search)
         flow.cursor = 1
       elseif flow.step == "new_folder" then
-        -- Back to the path, still typed, so a slip in the name is one edit away.
         flow.step = "repo"
         flow.focus = "input"
       elseif flow.step == "clone" then
         flow.step = "new_folder"
       elseif flow.step == "host" and several_fleets() then
-        -- Back to the Fleets: the places shown are only the one picked.
         flow.step = "fleet"
       else
         save(nil)
@@ -2077,8 +1591,6 @@ return {
         flow.reads = reading_key(flow, chosen)
         flow.step = "repo"
         flow.cursor = 1
-        -- Bookmarks are host-scoped, so the choices change with the host: an
-        -- earlier host's selection must not carry over.
         flow.selected, flow.worktree, flow.collapsed = {}, {}, {}
         save(flow)
         ask(flow)
@@ -2106,10 +1618,6 @@ return {
       local field = flow.step == "name" and flow.name or flow.branch
       if name == "enter" then
         local value = (field.value or ""):match("^%s*(.-)%s*$")
-        -- An untouched name field takes the suggestion the placeholder was
-        -- showing, so `Enter` straight through is a valid answer and the answer
-        -- was visible before the key was pressed. A branch has no such default:
-        -- there is no obvious name for a branch that does not exist yet.
         if value == "" and flow.step == "name" then
           value = suggested_name(flow)
           field.value = value
@@ -2124,9 +1632,6 @@ return {
         if flow.step == "name" then
           flow.name.value = value
           if flow.base then
-            -- The worktree flow names the branch next, prefilled from the
-            -- session name exactly as v1 prefills it. A branch that already
-            -- exists is checked out rather than made.
             textinput.set(flow.branch, branch_from_name(value))
             flow.step = "worktree"
             save(flow)
@@ -2189,15 +1694,12 @@ return {
       if name == "enter" then
         local choice = FOLDER_CHOICES[widgets.clamp(flow.folder_index, #FOLDER_CHOICES)]
         if choice.action == "clone" then
-          -- The URL is still to be asked; nothing is made until it is.
           flow.step = "clone"
           textinput.clear(flow.url)
           save(flow)
           return true
         end
         command("bookmark", { host = flow.host, repo = flow.new_path, action = choice.action })
-        -- Back on the repositories with the search focused, so the new row —
-        -- picked once it lands, as a typed path's is — goes on with one `enter`.
         flow.step = "repo"
         flow.focus = "search"
         await_new_row(flow, flow.new_path)
@@ -2209,7 +1711,6 @@ return {
       return false
     end
 
-    -- The repo step: the list, the input, the search bar and the dropdown.
     if dropdown_open(flow) then
       local entries = browse_entries(flow)
       if name == "up" or name == "down" then
@@ -2228,7 +1729,6 @@ return {
           local dir = (browse().dir or "")
           local joined = (dir == "/" and "/" or (dir .. "/")) .. entry.name
           if name == "enter" then
-            -- A session can use any directory, a git repository or not.
             command("bookmark", { host = flow.host, repo = joined, action = "add" })
             textinput.clear(flow.input)
             flow.browse = false
@@ -2243,7 +1743,6 @@ return {
         ask(flow)
         return true
       end
-      -- Anything else edits the path, and the listing follows the new directory.
     end
 
     if flow.focus == "search" then
@@ -2263,7 +1762,6 @@ return {
           and not row.is_worktree
           and (flow.host or "") == ""
         then
-          -- This machine only: a place elsewhere lists no existing worktrees.
           flow.wt_repo = row.path
         end
         save(flow)
@@ -2279,8 +1777,6 @@ return {
         return true
       end
       if textinput.key(flow.search, key) then
-        -- The visible set just changed, so the cursor starts again at the best
-        -- match rather than pointing at whatever now occupies its old position.
         flow.cursor = 1
         save(flow)
         return true
@@ -2290,10 +1786,6 @@ return {
 
     if flow.focus == "input" then
       if name == "tab" then
-        -- Derived here rather than read off the flow: the renderer's copy belongs
-        -- to the frame it drew, and this pane does not stash it. (A render CAN
-        -- write `state` — it persists whenever it happens — but deriving twice is
-        -- simpler than keeping two places true.)
         local suggestion = suggestion_for(flow)
         if suggestion ~= "" then
           textinput.insert(flow.input, suggestion)
@@ -2312,22 +1804,16 @@ return {
       elseif name == "enter" then
         local path = (flow.input.value or ""):match("^%s*(.-)%s*$")
         if names_missing_folder(flow) then
-          -- Nothing is made yet: what goes into it is the next question.
           flow.new_path = typed_target(flow)
           flow.folder_index = 1
           flow.step = "new_folder"
           flow.browse = false
         elseif other_users_home(flow) then
-          -- Shown on the message row already; nothing is remembered.
           flow.message = nil
         elseif flow.elsewhere and path:sub(1, 1) == "~" and not remote_home(flow) then
-          -- Saved as typed it would be refused: the home is still being
-          -- asked for, through the listing the field already wants.
           flow.message = "asking " .. place_label(flow) .. " for its home…"
         elseif path ~= "" and not untouched(flow) then
           path = expand_remote_home(flow, path)
-          -- Validated on the target machine, not here: a missing path is refused
-          -- by the command and reported, with the text left to be corrected.
           command("bookmark", { host = flow.host, repo = path, action = "add" })
           textinput.clear(flow.input)
           enter_path_field(flow)
@@ -2338,14 +1824,10 @@ return {
         ask(flow)
         return true
       end
-      -- `/` or `~` typed over the untouched start is a path of its own, the way
-      -- an address bar takes a new address; anything else is a name under it.
       if untouched(flow) and (key.char == "/" or key.char == "~") then
         textinput.clear(flow.input)
       end
       if textinput.key(flow.input, key) then
-        -- The visible set just changed, so the cursor starts again rather than
-        -- pointing at whatever now occupies its old position. v1 resets it too.
         flow.browse_index = 1
         save(flow)
         ask(flow)
@@ -2356,15 +1838,6 @@ return {
     return false
   end,
 
-  --- A click selects the row it landed on, exactly as `j`/`k` would. Rows carry
-  --- their path rather than an index, so a list that changed between the paint
-  --- and the press still selects what was pointed at.
-  ---
-  --- On the repo step a press on a field moves the focus there, as `tab`
-  --- (into the path) and `shift+tab` (back to the search) do, and a press on a
-  --- browsed folder selects it as the arrows do. A press on the field that
-  --- already has focus changes nothing: `tab` there completes or browses, and
-  --- a click is not asking for either.
   on_click = function(hit)
     local flow = load()
     if not flow or not hit.id then

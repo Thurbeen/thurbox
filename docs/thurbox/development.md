@@ -26,6 +26,13 @@ interactive builtins.
 (`nix/package.nix`), which CI's `nix` job builds; the rest of CI installs its
 tools without Nix, so the shell is a local convenience, not what CI runs.
 
+The package's version must not contain `-dev`: `build.rs` would then set the
+`dev_build` cfg, which moves the build onto the `thurbox-dev` socket and data
+directory. A `0.0.0` version still reads as unreleased at runtime, so
+`thurbox-cli update` never tries to replace a binary in the read-only store.
+The package skips its tests, which CI's `Nextest` job runs. It appends `tmux`
+and `git` to `PATH`, so a `tmux` or `git` the user has keeps winning.
+
 ```bash
 # one-time, if not done already: enable flakes
 #   mkdir -p ~/.config/nix && echo 'experimental-features = nix-command flakes' >> ~/.config/nix/nix.conf
@@ -73,7 +80,7 @@ records version evidence and RMUX platform limits.
 | `just test-one NAME` | one test by name (`cargo nextest run -E 'test(NAME)'`) |
 | `just test-scripts` | the bats suites CI runs: `scripts/install.bats`, the pull-request-title checker, the release-line gate, `packaging/winget/winget.bats`, `scripts/dev/e2e/windows-vm.bats`, `scripts/dev/lib/sandbox-env.bats` and the rumdl version check (needs `bats`) |
 | `just lint` | fmt-check + clippy + cargo-deny + Windows clippy + rumdl (CI's version) + shellcheck + selene, stylua and lua-language-server |
-| `just clippy-windows` | the `Windows (clippy)` CI job, cross-checked from Linux (`--target x86_64-pc-windows-gnu`) |
+| `just clippy-windows` | the `Windows (clippy)` CI job, cross-checked from Linux (`--target x86_64-pc-windows-gnu`); needs that target's standard library and a MinGW gcc, and skips without the target (the Nix shell ships none) |
 | `just fmt` / `just fmt-lua` | format Rust + website / format the Lua interface |
 | `just lua-api` | regenerate `thurbox.d.lua`, `thurbox.yml` and the selene probe from `src/kernel/lua_api.rs` |
 | `just arch` | architecture-rule + rustdoc checks |
@@ -209,6 +216,15 @@ other PR can restore it. CI also runs on push to `main`, which is the only
 scope every PR can read, and only `main` saves the Rust caches. A cold build
 takes about twice as long as a warm one, and pull-request saves would keep the
 repository over its 10 GB cache quota.
+A new push to a pull request cancels its running CI run. A run on `main` is
+never cancelled: a cancelled run skips its cache save.
+
+`.config/nextest.toml` runs `tui_e2e` in the `e2e-pty` group, one test at a
+time. Its tests wait on wall-clock time, and at full parallelism they starve
+each other and miss their timeouts. Other binaries still run beside the group.
+`a_task_dispatched_beside_running_tasks` gets a longer kill timeout: on a
+loaded runner its twelve Task starts can outlast the default, which would end
+the test before it names the late Task.
 
 The CI nextest profile gives two binaries a priority, so both start first.
 `tui_e2e` runs on one thread (the `e2e-pty` group), so its roughly 370 s of
@@ -231,6 +247,57 @@ tests for changes that are not thurbox's:
 
 Fleet's own suite runs in the `fleet` job and in `Windows (tests)`, and its
 clippy in `fleet` and `Windows (clippy)`.
+
+A job gates on a job-level `if:`, not on a workflow-level `paths-ignore:`. A
+skipped job reports `skipped`, which `All Checks` counts as a pass, so the
+required gate always reports. A filter lists every input of its jobs, not only
+the tree it names:
+
+- every filter lists `ci.yml`, so a workflow edit re-runs every job;
+- `rust` lists `ui/` and the embedded examples: the binary embeds them and
+  the suite asserts on their content;
+- `rust` lists the configs that decide its verdicts (`clippy.toml`,
+  `deny.toml`, `.config/nextest.toml`) and the vendored crossterm;
+- `fleet` lists every crate's manifest, the skills and `cog.toml`, which its
+  tests read;
+- `pr_title` lists `cog.toml`, which declares the types and scopes the checker
+  enforces;
+- `release_line` lists `src/update/version_check.rs`, which holds the
+  constant the gate reads;
+- `nix` lists every input of the thurbox build, so a new `include_str!` outside
+  the package's source set fails there.
+
+### CI jobs
+
+- No job runs `cargo check`: `clippy --all-targets -D warnings` type-checks
+  the same targets.
+- `Clippy (aarch64 Linux)` runs natively. The release ships an aarch64 Linux
+  archive, so an arch-only break would block it.
+- `Windows (clippy)` and `Windows (tests)` run in parallel: clippy-driver and
+  rustc share no artifacts, so one job would build twice. Each excludes the
+  build directories from Defender real-time scanning. The local Windows VM
+  (`scripts/dev/e2e/windows-vm.sh test-suite`) runs the same suite.
+- `install-script-ps` runs on Linux and on Windows, in both PowerShell 7 and
+  Windows PowerShell 5.1: the installer must work on the PowerShell Windows
+  ships, and only Windows reproduces an update over a running `thurbox.exe`.
+- `Clean install` packs the release archive with the release script and
+  installs it with the installer into an empty home, in thurbox mode and in
+  fleet-only mode. On Linux it installs the static musl build in a bare Debian
+  container. It uses a debug build: it tests the packing and the install.
+- `PR Title Checker` runs the checker's suite in `ci.yml`, not in
+  `pr-title.yml`. `pr-title.yml` re-runs on every edit of the title and stays
+  lean.
+- `Large Files` runs on every pull request. It runs only prek's builtin hook:
+  the other hooks are `language: system` and need their jobs' toolchains. The
+  hook caps a file at 1 MiB and weighs modified files too: every committed
+  version stays in the history each clone downloads.
+- `SonarQube` skips a pull request from a fork, which gets no `SONAR_TOKEN`.
+  The fork's code is analysed after it lands, when `sonar.yml` analyses
+  `main`.
+- `Binary Size` is informational. It is not in `All Checks`, so it never
+  blocks a merge.
+- The `fleet` job excludes `e2e_runtime_exec`. `Nextest` runs it, because it
+  has tmux, jq and `runtime-mux`.
 
 ### Debug information and disk usage
 
@@ -357,3 +424,33 @@ fleet list task                       # every session is a Fleet Task
 fleet send <task> "hello"             # type into its agent
 fleet get task <task> | jq .status    # one Task, as JSON
 ```
+
+## 4. Cargo profiles and manifests
+
+The dev profile builds thurbox at `opt-level = 1`. The interface runs Lua on
+every frame, and at `opt-level = 0` the TUI lags. Dependencies build at
+`opt-level = 3` even in a dev build: they compile once, and mlua, ratatui and
+vt100 run on every frame.
+
+`term-stream` and `otel-env` keep thurbox's edition and MSRV, because thurbox
+and `runtime-mux` depend on them. `rust-version` in `crates/thurbox/Cargo.toml`
+is the oldest Rust the locked dependencies build on. Clippy reads its `msrv`
+from there, and `tests/doc_references.rs` holds every stated version to it.
+
+`[patch.crates-io]` in the root `Cargo.toml` replaces two published crates with
+copies under `vendor/`:
+
+- `crossterm` 0.29.0 consumes a terminal reply behind the `>` marker, such as
+  the secondary device attributes `ESC [ > 0 ; 10 ; 1 c`. Unpatched, the focused
+  agent receives it as the keys `0;10;1c`. The patch also rearms Mio readiness
+  between reads, so input longer than one buffer arrives. The parts marked
+  `thurbox patch` are the only changes. The vendored crate is not a workspace
+  member: CI runs its tests from its own manifest and `Cargo.lock`.
+- `tui-term` 0.3.4 requires vt100 0.16. The patch moves it to vt100 0.18.
+
+Drop a patch when a release fixes its behaviour. `tests/tui_e2e.rs` covers
+device-attributes replies and a mouse burst across the buffer edge.
+
+`deny.toml` allows two licenses beyond the usual permissive set. `CC0-1.0` is
+`notify`'s public-domain dedication. `MIT-0` is `borrow-or-share`, which Fleet
+reaches through `jsonschema`; it has no attribution condition.

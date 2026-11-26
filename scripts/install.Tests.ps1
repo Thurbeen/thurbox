@@ -1,37 +1,12 @@
 #Requires -Version 5.1
-<#
-.SYNOPSIS
-    Pester tests for scripts/install.ps1.
-
-.DESCRIPTION
-    Mirrors the coverage style of scripts/install.bats: structural assertions
-    (the helpers exist, the source is ASCII-only / BOM-free / parses) plus
-    behavioral tests for the two pure helpers exposed for testing -
-    Get-Target and Get-ExpectedChecksum.
-
-    install.ps1 guards the installer behind $env:THURBOX_PS_TEST, so dot-sourcing
-    it here defines every function without running Invoke-Install.
-
-.EXAMPLE
-    Invoke-Pester -Path scripts/install.Tests.ps1
-
-.NOTES
-    Requires Pester 5+. The helpers are platform-independent (Get-Target only
-    reads $env:PROCESSOR_ARCHITECTURE, which the tests set explicitly), so this
-    runs on any OS where PowerShell is available - not just native Windows.
-#>
 
 BeforeAll {
     $script:ScriptPath = Join-Path $PSScriptRoot 'install.ps1'
     $env:THURBOX_PS_TEST = '1'
-    # Dot-source so the helper functions land in this scope; the
-    # THURBOX_PS_TEST guard keeps Invoke-Install from firing.
     . $script:ScriptPath
-    # The one list of shipped programs, as scripts/ci/release-archive.sh packs it.
     $packer = Get-Content -Raw (Join-Path $PSScriptRoot 'ci/release-archive.sh')
     $m = [regex]::Match($packer, '(?m)^BINARIES=\(([^)]*)\)')
     $script:Shipped = @($m.Groups[1].Value.Trim() -split '\s+')
-    # And the part of it Fleet runs without thurbox.
     $m = [regex]::Match($packer, '(?m)^FLEET_BINARIES=\(([^)]*)\)')
     $script:FleetShipped = @($m.Groups[1].Value.Trim() -split '\s+')
 }
@@ -214,8 +189,7 @@ Describe 'Get-ExpectedChecksum' {
 }
 
 BeforeDiscovery {
-    # -Skip is read at discovery, before any BeforeAll. $IsWindows does not
-    # exist on Windows PowerShell 5.1, which only runs on Windows.
+    # Pester reads -Skip at discovery; Windows PowerShell 5.1 has no $IsWindows.
     $script:OnWindows = ($PSVersionTable.PSEdition -eq 'Desktop') -or $IsWindows
 }
 
@@ -276,8 +250,7 @@ Describe 'Install-Archive' {
     }
 
     It 'replaces thurbox.exe while it is running' -Skip:(-not $script:OnWindows) {
-        # A real executable, so Windows maps it the way it maps a running
-        # thurbox: deleting it is refused, renaming it is not.
+        # Windows refuses to delete a running executable's image but lets it be renamed.
         $exe = Join-Path $script:Dest 'thurbox.exe'
         Copy-Item (Join-Path $env:SystemRoot 'System32\PING.EXE') $exe
         $proc = Start-Process -FilePath $exe -ArgumentList '-n', '60', '127.0.0.1' -WindowStyle Hidden -PassThru
@@ -298,10 +271,7 @@ Describe 'Install-Archive' {
         $first = Start-Process -FilePath $exe -ArgumentList '-n', '60', '127.0.0.1' -WindowStyle Hidden -PassThru
         $second = $null
         try {
-            # The first update moves the running image to .thurbox.exe.old ...
             Install-Archive -ZipPath $script:Zip -Destination $script:Dest
-            # ... and a second thurbox, started from the new binary, then holds
-            # both files the next update has to move.
             Copy-Item $ping $exe -Force
             $second = Start-Process -FilePath $exe -ArgumentList '-n', '60', '127.0.0.1' -WindowStyle Hidden -PassThru
             { Install-Archive -ZipPath $script:Zip -Destination $script:Dest } |
@@ -316,8 +286,6 @@ Describe 'Install-Archive' {
     }
 
     It 'names a running Fleet manager when its backup is still running too' -Skip:(-not $script:OnWindows) {
-        # `fleet up` runs as long as sessions do, so it is the program an
-        # update most often finds running.
         $exe = Join-Path $script:Dest 'fleet.exe'
         $ping = Join-Path $env:SystemRoot 'System32\PING.EXE'
         Copy-Item $ping $exe
@@ -341,8 +309,6 @@ Describe 'Install-Archive' {
     It 'puts the installed file back when the new one cannot be moved in' {
         $exe = Join-Path $script:Dest 'thurbox.exe'
         Set-Content -Path $exe -Value 'old' -NoNewline
-        # Only the move of the new thurbox.exe fails - after the installed one
-        # has been moved aside, which is the state that must not be left.
         $real = Get-Command Move-Item -CommandType Cmdlet
         Mock Move-Item { & $real @PesterBoundParameters }
         Mock Move-Item { throw 'simulated failure' } -ParameterFilter {
@@ -370,12 +336,10 @@ Describe 'A fleet-only install' {
     AfterAll {
         $env:PROCESSOR_ARCHITECTURE = $script:SavedArch
         Remove-Item Env:\THURBOX_FLEET_ONLY, Env:\THURBOX_VERSION, Env:\THURBOX_INSTALL_DIR -ErrorAction SilentlyContinue
-        # Back to the full install every other block expects.
         . $script:ScriptPath
     }
 
     BeforeEach {
-        # A release of every shipped program, served as the release assets are.
         $script:Work = Join-Path ([System.IO.Path]::GetTempPath()) ('thurbox-test-' + [guid]::NewGuid().ToString('N'))
         $src = Join-Path $script:Work 'src'
         $script:Assets = Join-Path $script:Work 'assets'
@@ -396,7 +360,6 @@ Describe 'A fleet-only install' {
 
         $script:Printed = [System.Collections.Generic.List[string]]::new()
         Mock Write-Host { $script:Printed.Add([string]$Object) }
-        # A missing asset throws, as a 404 does.
         Mock Invoke-WebRequest { Copy-Item (Join-Path $script:Assets (Split-Path -Leaf $Uri)) $OutFile -ErrorAction Stop }
         Mock Add-ToUserPath { $false }
     }
@@ -424,7 +387,6 @@ Describe 'A fleet-only install' {
         }
         $text | Should -Not -Match 'thurbox-cli'
         $text | Should -Not -Match 'Launch the TUI'
-        # Only the env var can leave a session installing Fleet alone unasked.
         if ($Form -eq '-FleetOnly') {
             $text | Should -Not -Match 'THURBOX_FLEET_ONLY'
         } else {
@@ -450,8 +412,6 @@ Describe 'A fleet-only install' {
         }
     }
 
-    # A 3.x release never ships thurbox-v<V>-checksums.txt: every 2.x updater
-    # fetches that name first (docs/thurbox/releasing.md, "v2 and v3").
     It 'verifies a 3.x release by its sha256sums file, never asking for checksums.txt' {
         . $script:ScriptPath
         Invoke-Install
@@ -459,8 +419,6 @@ Describe 'A fleet-only install' {
         Should -Invoke Invoke-WebRequest -ParameterFilter { $Uri -like '*checksums.txt' } -Times 0
     }
 
-    # A 2.x release, as THURBOX_VERSION=v2.x.y pins it: two programs, and only
-    # the old sums name.
     It 'installs a pinned 2.x release, verified by its checksums.txt' {
         $src = Join-Path $script:Work 'src-v2'
         New-Item -ItemType Directory -Path $src -Force | Out-Null

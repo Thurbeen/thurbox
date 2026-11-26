@@ -1,4 +1,3 @@
--- `thurbox.browse`, with one letter wrong.
 return {
   name = "std_typo_browse",
   render = function()

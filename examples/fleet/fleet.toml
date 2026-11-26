@@ -8,8 +8,6 @@ dir = "fake-host"
 draftPolicy = "checks"
 [forge.hosts]
 "forge.example" = { kind = "fake", dir = "fake-forge" }
-# Hosted Bitbucket Cloud uses an externally authenticated curl client:
-# "bitbucket.org" = { kind = "bitbucket-cloud", cli = "curl" }
 [forge.readyPolicies.checks]
 checksPassed = true
 [forge.readyPolicies.checks-and-bots]

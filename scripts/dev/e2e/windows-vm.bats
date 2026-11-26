@@ -1,33 +1,13 @@
 #!/usr/bin/env bats
-#
-# Drives windows-vm.sh's psmux hook-status gate probes — the half of that
-# harness that can be checked without a Windows VM, and the half issue #1170
-# was about. Probe A asserted the pane-user-option round-trip and reported on
-# its own `ok` branch whether or not the option came back, so nothing failed
-# when psmux silently dropped it. These tests pin the two directions in which
-# the probes must now fail, and that a failure reaches the exit status.
 
 setup() {
   SCRIPT="${BATS_TEST_DIRNAME}/windows-vm.sh"
 
-  # The measurement from #1170, taken on Windows 11 against psmux 3.3.6: the
-  # option was set on %3, and every pane — that one included — reads it back
-  # empty, because psmux implements no per-pane user options.
   PSMUX_336=$'%1 \n%3 '
-  # What a multiplexer that does implement them per pane answers (tmux).
   ROUND_TRIPPED=$'%1 \n%3 working'
-  # What one stored at window or server scope would answer: set on %3, read
-  # back on every pane, so no pane's state belongs to its own session.
   LEAKED=$'%1 working\n%3 working'
 }
 
-# Run one of the harness's helpers without provisioning a VM: windows-vm.sh
-# dispatches a subcommand only when executed, so sourcing it hands back the
-# helpers alone. What the helper printed is `${lines[0]}`; the last line is
-# always `rc=<status> FAILS=<count>` — the exit status and the counter `bad`
-# bumps, which is what the suite's verdict reads. Both are matched whole: the
-# words at stake share substrings ("unknown" contains "no", "FAILS" contains
-# "FAIL"), so a loose glob here would report safety these tests do not have.
 drive() {
   run bash -c '
     . "$1" || exit 99
@@ -39,9 +19,6 @@ drive() {
   ' _ "$SCRIPT" "$@"
 }
 
-# A stand-in for runtime-mux's psmux.rs declaring the gate as $1
-# ("true"/"false"), beside a tmux-shaped impl declaring the opposite — so a
-# read that matched the wrong adapter's constant would fail.
 source_declaring() {
   local path="${BATS_TEST_TMPDIR}/psmux-$1.rs" other=true
   [ "$1" = true ] && other=false
@@ -117,15 +94,11 @@ RS
 @test "an open gate over a psmux that implements both halves passes" {
   drive psmux_gate_verdict open yes yes
   [ "${lines[-1]}" = "rc=0 FAILS=0" ]
-  # What holds is the mailbox. No branch reports `ok` for the gate itself,
-  # because the harness cannot measure every condition the gate rests on.
   [[ "${lines[0]}" == *"mailbox"* ]]
   [[ "${lines[0]}" != *"gate: both"* ]]
 }
 
 @test "a holding mailbox never reads as the whole gate being proven" {
-  # The gate's third condition — claude's --settings path on Windows — has no
-  # probe here, so neither verdict over a holding pair may pass in silence.
   drive psmux_gate_verdict open yes yes
   [[ "$output" == *"--settings"* ]]
   [[ "$output" == *"not probed here"* ]]

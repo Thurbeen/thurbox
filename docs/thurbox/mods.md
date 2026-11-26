@@ -374,6 +374,26 @@ them every withheld capability is declared absent, so reaching for one is a lint
 error rather than a nil-index at the moment someone opens your pane. `stylua ui`
 formats. All three run in CI; selene and stylua also run on commit.
 
+`thurbox.yml` lists the granted set and inherits no `base:`, the same shape
+`kernel::host::mod_stdlib` and `install_api` build; keep the three in step.
+Inheriting `lua53` and marking names `removed` does not work: selene applies
+`removed` to plain functions but not to a table's fields. Three names stay out
+on purpose:
+
+- `_G`: selene's `global_usage` lint rejects it anyway, and `_G["io"]` is a
+  spelling the file cannot see.
+- the math functions Lua 5.4 removed (`pow`, `ldexp`, `log10`, …): mlua's
+  vendored Lua still answers them through `LUA_COMPAT_MATHLIB`, and a
+  dependency bump can take them away.
+- arities: every function takes varargs, because the check is that a name
+  exists, not how many arguments it takes.
+
+`selene.toml` only warns on an unused variable: the kernel calls a mod's fields,
+and nothing else references them. It allows shadowing, which the bundled panes
+use to narrow a name for a few lines (`local session = item.session`). It
+excludes `thurbox.d.lua`: describing a global means assigning it, which the
+sandbox forbids, so lua-language-server checks that file instead.
+
 ## Names, checked before you run
 
 Absence is the loud half. The quiet half is everything that *is* there and is
@@ -428,6 +448,33 @@ get wrong — which is why a list is declared only as far as the list itself.
 probes: `reads.lua` reads every path `thurbox.yml` declares and must lint clean,
 while `typos/` holds one pane per table misspelling one field, each of which must
 not.
+
+### What the types do not say
+
+The types in `thurbox.d.lua` cannot carry these rules:
+
+- A node's size resolves exact (`len`), then percentage (`pct`), then share
+  (`fill`). `min` and `max` clamp each one. A node that asks for nothing takes
+  an equal share of the remainder.
+- A frame's `borders` is all or none.
+- A `surface` has exactly one source: a session, a program this mod asked to
+  run, or lines the mod produced itself.
+- The kernel reads `float` from the value `render` returns, and from nowhere
+  else. A `float` on a child node is dropped. `decorate` returns a plain node,
+  because nothing reads `float` from its result.
+- Reading `ctx.elapsed` marks a `pure` pane as one that depends on the
+  animation clock.
+- `text.truncate` raises on an unknown `side`. `text.pad` never truncates: text
+  that is already too wide is returned as it is.
+- `command("restart", { fresh = true })` starts the agent on a new
+  conversation in the same session. Thurbox refuses it while a turn is in
+  progress.
+- `command("send")` types the text and presses Enter, as `thurbox-cli session
+  send` does. Thurbox refuses an empty text and a stopped session. While the
+  agent's composer holds typing, the text goes to the agent's inbox.
+- `command("program", { keys = … })` sends the bytes to the program's stdin as
+  typed (`"\r"` is Enter, `"\27"` is Escape). Alone, it starts nothing. With
+  `repo`, an empty pane starts from `repo` and the keys are not sent.
 
 ## The four node kinds
 
@@ -1882,6 +1929,10 @@ mod grants it nothing.
 Interface tab restores it, so there is nothing here you cannot undo. It is copied
 rather than installed on purpose: the manager never writes your arrangement (see
 below).
+
+To keep the shipped arrangement instead, give the installed pane `slot = "center"`
+and `slot_mode = "switch"`. It then shares the center with the agent, and `F5` or
+`F7` brings it forward.
 
 Two things they are chosen to show. `tasks.lua` draws the `input` node kind, which
 is the one of the four nothing bundled uses. And `top.lua` reads the machine **the

@@ -135,6 +135,9 @@ Each rule has a negative fixture that breaks it, and the test requires the
 checker to report exactly that rule. The pure crates also carry
 `compile_fail` doc probes for every forbidden edge.
 
+The pure crates also carry a `clippy.toml`. Its `disallowed-types` and
+`disallowed-methods` reject the same I/O at compile time, on resolved paths.
+
 ## Task
 
 ```text

@@ -1,17 +1,4 @@
 <?xml version="1.0" encoding="utf-8"?>
-<!--
-  Chocolatey package for thurbox. This is the canonical source, kept in the
-  main repo. CI (the `publish-chocolatey` job in .github/workflows/cd.yml) bumps
-  <version> here and $url64/$checksum64 in tools/chocolateyinstall.ps1 on every
-  release, then runs `choco pack` + `choco push`. The <version> below is a
-  last-known-good template — CI overrides it per release.
-
-    choco install thurbox
-
-  Only Windows x86_64 is supported (the only published Windows release
-  artifact: thurbox-v<version>-x86_64-pc-windows-msvc.zip). ARM64 Windows runs
-  it under x64 emulation.
--->
 <package xmlns="http://schemas.microsoft.com/packaging/2015/06/nuspec.xsd">
   <metadata>
     <id>thurbox</id>
@@ -52,8 +39,7 @@ them onto your PATH.
 - A coding-agent CLI (claude, codex, gemini, opencode, aider, ...) on your PATH.
     ]]></description>
     <releaseNotes>https://github.com/Thurbeen/thurbox/releases</releaseNotes>
-    <!-- No <dependencies>: psmux has no Chocolatey package, so it can't be a
-         hard dependency. It is documented in <description> instead. -->
+    <!-- psmux has no Chocolatey package, so it cannot be a <dependency>. -->
   </metadata>
   <files>
     <file src="tools\**" target="tools" />

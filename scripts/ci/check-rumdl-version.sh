@@ -1,13 +1,4 @@
 #!/usr/bin/env bash
-# Hold the local rumdl to the version CI lints markdown with, so `just lint`
-# fails here instead of CI failing after a push.
-#
-# The pin's single source is the `rvben/rumdl@<sha> # vX.Y.Z` line of the CI
-# markdown job: Renovate bumps the SHA and its comment together, and
-# scripts/install-dev-tools.sh installs whatever `--print` reports.
-#
-#   check-rumdl-version.sh            exit 1 when `rumdl --version` differs
-#   check-rumdl-version.sh --print    print the pinned version
 set -euo pipefail
 
 ci="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)/.github/workflows/ci.yml"

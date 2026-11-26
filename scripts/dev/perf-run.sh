@@ -1,32 +1,4 @@
 #!/usr/bin/env bash
-#
-# Run the real thurbox under a reproducible load and report what it cost.
-#
-# `benches/frame_cost.rs` measures the pieces of a frame in isolation; this runs
-# the whole binary — real tmux panes, a real vt100 grid per session, the real
-# render loop — and reports the two numbers a user actually feels: **CPU while
-# an agent prints**, and the frame/republish/tick percentiles the loop logged.
-#
-# The docs' only steady-state instruction was "launch it and leave it idle",
-# which measures the one regime nobody complains about. This is the other one.
-#
-#   scripts/dev/perf-run.sh                    # 8 sessions, 1 printing, 30s
-#   scripts/dev/perf-run.sh -n 20 -d 60        # 20 sessions, 60s
-#   scripts/dev/perf-run.sh -n 20 -p 3         # 3 of them printing
-#   scripts/dev/perf-run.sh --idle             # nothing printing, for the floor
-#   scripts/dev/perf-run.sh --json             # one machine-readable line
-#   scripts/dev/perf-run.sh -b 1000 --search e # global search open over full scrollback
-#
-# Fully isolated: a private HOME, XDG root, TMUX_TMPDIR (so the cleanup
-# `kill-server` can never reach a real server) and Fleet, the sandbox helper
-# every other dev script uses. Each session is a Fleet Task whose harness is a
-# `sh` script printing on a timer, so the measurement is of thurbox and not of
-# whichever coding CLI happened to be installed.
-#
-# thurbox needs a terminal, and it must be a terminal of a KNOWN SIZE — a frame
-# costs what its cells cost, so a run at whatever the invoking window happens to
-# be is not comparable with the last one. So it runs inside an outer tmux
-# session created at an exact size, on the same private socket.
 
 set -euo pipefail
 
@@ -41,53 +13,19 @@ DURATION=30
 COLS=200
 ROWS=50
 JSON=0
-# Whether the run carries THURBOX_PERF_LOG. On, the loop keeps histograms and
-# republishes a JSON snapshot (`perf.json`) every few seconds -- which is itself
-# work, and work a default run does not do. CPU here is measured from
-# /proc, so the log can be turned off and the headline number still stands;
-# only the percentile lines go away.
 PERF_LOG=1
 PROFILE=release
-# Lines a printing agent emits per second. 30 is ADR-P17's workload, so a number
-# from this script is comparable with the table in that ADR.
-RATE=30
-# One URL every N printed lines (0 = none). A knob because the link scan is
-# keyed on the surface's output stamp and re-runs per painted frame while output
-# arrives -- so "what do links cost while an agent prints" is a question the
-# harness should be able to answer, not one to reason about.
+ADR_P17_LINES_PER_SECOND=30
+RATE=$ADR_P17_LINES_PER_SECOND
 URL_EVERY=12
-# How many sessions report themselves `working`. The animation clock advances
-# eight times a second while any session does, and it is part of the pure-pane
-# cache key -- so every pane re-renders at that rate for a spinner glyph. `sh`
-# runs no status hook, so without this the harness measures that cost as zero
-# while a real profile pays it nearly all the time. A working agent reports
-# itself with `fleet signal working`, as a real agent's hook does.
-#
-# A `working` session must also PRINT, or the harness measures zero anyway by a
-# second route: `snapshot::with_output_quiescence` folds a `working` session with
-# no terminal output for WORKING_QUIET_MS (10s) back to idle, so a silent one
-# would decay a couple of seconds into the measurement window and the animation
-# clock would stop with it. Real agents animate a progress line for exactly this
-# reason, so a working session here runs the `ticking` agent below rather than
-# the silent one -- the cheapest output that keeps the state alive.
 WORKING=0
-# Seconds between a `ticking` agent's progress lines. Well under the 10s
-# quiescence bound and well over the printing agents' rate, so a working session
-# costs the animation clock and almost no output.
-WORKING_TICK=4
-# Lines every agent prints the moment it starts, so each terminal begins the
-# run with a full scrollback rather than an empty one -- a search's cost is the
-# history it reads, and a fresh sandbox otherwise has none (ADR-P26).
+WORKING_TICK_SECS_UNDER_10S_QUIESCENCE=4
+STARTUP_SETTLE_SECS=8
 BACKFILL=0
-# `scrollback_lines` for the run; empty keeps the built-in default.
 SCROLLBACK=""
-# A query to open global search with before the measurement starts, and whether
-# to keep typing it (erase, retype) for the whole window. Empty = search closed.
 SEARCH=""
 TYPING=0
 FOCUS_LAST=0
-# Prebuilt binaries to measure instead of building this checkout -- how an
-# older release is measured with the same harness.
 PREBUILT=""
 
 usage() {
@@ -143,23 +81,6 @@ done
 
 say() { [ "$JSON" = "1" ] || echo "$@" >&2; }
 
-# --- not inside a validation step -------------------------------------------
-#
-# This script builds a release binary, spawns a tmux server and N agents, and
-# then deliberately sits still for -d seconds. That is the right shape for a
-# measurement and the wrong shape for anything a gate runs: it looks like a test
-# -- it is under scripts/dev/, it drives the real binary, it prints a result --
-# so an agent asked to run the tests and gather evidence reaches for it, waits
-# for it, and burns the step's whole budget. Not hypothetical: it timed out a
-# gate's test step at 30m0s with the agent silent, having decided the intent's
-# paired before/after reading was the evidence to gather.
-#
-# So it refuses, and says how to get the number instead. A benchmark that also
-# generates load has no business running unattended inside a validation step --
-# the reading would be meaningless there anyway, since the gate's own build is
-# what the machine is busy doing. THURBOX_GATE is the sentinel to export around
-# any such step; it is deliberately not named after one tool, because the next
-# gate is a different tool and the hazard is the same.
 if [ -n "${THURBOX_GATE:-}" ] && [ -z "${THURBOX_PERF_ALLOW_IN_GATE:-}" ]; then
     cat >&2 <<'REFUSE'
 perf-run.sh: refusing to run inside a validation step.
@@ -182,12 +103,6 @@ REFUSE
     exit 2
 fi
 
-# --- build ------------------------------------------------------------------
-#
-# Release by default. A dev build runs the interpreter at opt-level 1 and its
-# numbers are not the ones a user sees; `--debug` is for attributing a change
-# quickly, never for a figure worth writing down.
-
 if [ -n "$PREBUILT" ]; then
     BIN_DIR="$(cd "$PREBUILT" && pwd)"
     say "measuring the binaries in $BIN_DIR…"
@@ -203,24 +118,18 @@ else
         >/dev/null 2>&1
 fi
 
-# --- an isolated world ------------------------------------------------------
+put_measured_binaries_ahead_of_sandbox_debug_ones() {
+    PATH="$BIN_DIR:$PATH"
+    export PATH
+}
 
 tbx_sandbox_init_full fresh
-# The helper puts target/debug first; this measures a chosen profile, so the
-# chosen one wins -- for `fleet` and `runtime-mux` too, which the sandbox's `fleet
-# up` and every session run on.
-PATH="$BIN_DIR:$PATH"
-export PATH
+put_measured_binaries_ahead_of_sandbox_debug_ones
 tbx_sandbox_fleet
 trap 'tbx_sandbox_teardown' EXIT
 
-# The agent. `sh` rather than a coding CLI: this measures thurbox's cost of
-# *carrying* output, and a real agent would add its own — plus its rate would be
-# whatever the model felt like, which is not a controlled variable.
 AGENT_DIR="$TBX_SANDBOX_ROOT/agent"
 mkdir -p "$AGENT_DIR"
-# Agent-shaped history: varied words, so a query matches some lines and not
-# others, the way it does in a real session.
 BACKFILL_CMD=":"
 if [ "$BACKFILL" -gt 0 ]; then
     BACKFILL_CMD="awk 'BEGIN { split(\"the session worktree branch failed compile error src/main.rs fn let tests passed running cargo warning: unused variable match diff\", w, \" \"); for (i = 1; i <= $BACKFILL; i++) { line = \"\"; for (j = 0; j < 9; j++) line = line \" \" w[(i * 7 + j * 13) % 19 + 1]; print i line } }'"
@@ -258,7 +167,7 @@ n=0
 while :; do
     n=\$((n + 1))
     printf '  (%ds - esc to interrupt)\n' "\$n"
-    sleep $WORKING_TICK
+    sleep $WORKING_TICK_SECS_UNDER_10S_QUIESCENCE
 done
 EOF
 chmod +x "$AGENT_DIR/noisy" "$AGENT_DIR/quiet" "$AGENT_DIR/ticking"
@@ -269,26 +178,11 @@ if [ -n "$SCROLLBACK" ]; then
         > "$XDG_CONFIG_HOME/thurbox-dev/settings.toml"
 fi
 
-# A repository for the sessions to live in, shared by every Task as its
-# workspace directory. Bare and local: worktree creation is a startup cost, not
-# a steady-state one, and a real repo would make each run depend on whatever is
-# checked out.
 REPO="$TBX_SANDBOX_ROOT/repo"
 mkdir -p "$REPO"
 git -C "$REPO" init -q
 git -C "$REPO" -c user.email=perf@example.com -c user.name=perf commit -q \
     --allow-empty -m "root"
-
-# --- run it -----------------------------------------------------------------
-#
-# In an outer tmux window of an exact size: a frame costs what its cells cost,
-# so a run at whatever the invoking window happens to be is not comparable with
-# the last one.
-#
-# The sandbox's `fleet up` and the TUI start before any session exists.
-# Sessions are created underneath them, as Fleet Tasks: that manager spawns them
-# and the TUI's `fleet watch` adopts them, which is also closer to what a real
-# profile does.
 
 tbx_sandbox_fleet_up
 LOG_DIR="$XDG_DATA_HOME/thurbox-dev"
@@ -299,41 +193,28 @@ tmux -L "$TBX_DEV_SOCKET" new-session -d -s perf-harness -x "$COLS" -y "$ROWS" \
     "$LAUNCH"
 sleep 3
 
-# THE process, not A process. Two traps here, and both report a number that
-# looks entirely plausible:
-#
-#   * `pgrep -f "$BIN_DIR/thurbox"` also matches `$BIN_DIR/thurbox-cli`, whose
-#     path has it as a prefix;
-#   * `pgrep -x thurbox` matches the developer's OWN running thurbox, which on
-#     this machine is the likeliest process of that name. Every measurement then
-#     reports their real instance's CPU -- the same ~17% for an idle harness, a
-#     printing one, one session or twenty, because the harness was never the
-#     thing being measured.
-#
-# So the sandbox is what identifies it: only this run's thurbox has this run's
-# private XDG_DATA_HOME in its environment.
-PID=""
-for candidate in $(pgrep -x thurbox 2>/dev/null || true); do
-    if tr '\0' '\n' < "/proc/$candidate/environ" 2>/dev/null |
-        grep -qxF "XDG_DATA_HOME=$XDG_DATA_HOME"; then
-        PID="$candidate"
-        break
-    fi
-done
+thurbox_pid_by_this_sandbox_not_by_name() {
+    for candidate in $(pgrep -x thurbox 2>/dev/null || true); do
+        if tr '\0' '\n' < "/proc/$candidate/environ" 2>/dev/null |
+            grep -qxF "XDG_DATA_HOME=$XDG_DATA_HOME"; then
+            echo "$candidate"
+            return
+        fi
+    done
+}
+
+PID="$(thurbox_pid_by_this_sandbox_not_by_name)"
 if [ -z "$PID" ]; then
     echo "perf-run.sh: thurbox did not start. Last log lines:" >&2
     tail -20 "$LOG_DIR"/thurbox.log* 2>/dev/null >&2 || true
     exit 1
 fi
 
-# The first $PRINTING print; of the rest, the ones that must report `working`
-# get the ticking agent so their state survives the quiescence fallback.
 say "creating $SESSIONS sessions ($PRINTING printing, $WORKING working)…"
 for i in $(seq 1 "$SESSIONS"); do
     if [ "$i" -le "$PRINTING" ]; then
         agent=noisy
     elif [ "$i" -le "$WORKING" ]; then
-        # Reports itself `working` (see the ticking agent above).
         agent=ticking
     else
         agent=quiet
@@ -341,12 +222,8 @@ for i in $(seq 1 "$SESSIONS"); do
     tbx_fleet_session "perf-session-$i" "$REPO" "$AGENT_DIR/$agent"
 done
 
-# Settle: spawning the sessions, adopting their panes, taking the first snapshot
-# and painting the first frame are startup, not steady state. Measuring across
-# them would report the startup once as if it happened every second.
-sleep 8
+sleep "$STARTUP_SETTLE_SECS"
 
-# A session row's id is its Task's name.
 if [ "$FOCUS_LAST" = "1" ]; then
     thurbox-cli ui action session.focus --session "perf-session-$SESSIONS" >/dev/null
     sleep 2
@@ -357,7 +234,6 @@ if ! kill -0 "$PID" 2>/dev/null; then
     exit 1
 fi
 
-# Global search, opened the way a person opens it: the chord, then the query.
 # `C-_` is what tmux sends for ctrl+/, and the kernel folds it into that chord.
 TYPER=""
 if [ -n "$SEARCH" ]; then
@@ -366,8 +242,6 @@ if [ -n "$SEARCH" ]; then
     tmux -L "$TBX_DEV_SOCKET" send-keys -t perf-harness -l "$SEARCH"
     sleep 3
     if [ "$TYPING" = "1" ]; then
-        # Erase and retype at a brisk human pace, for as long as the run lasts:
-        # every keystroke is a new query, which is the cost typing pays.
         (
             while :; do
                 i=0
@@ -391,10 +265,7 @@ if [ -n "$SEARCH" ]; then
 fi
 
 jiffies() { awk '{print $14 + $15}' "/proc/$1/stat" 2>/dev/null || echo 0; }
-# Every thread, so a cost moved onto a worker is still counted. Moving work off
-# the render thread is the right fix for a stall and does nothing for a laptop
-# battery, and only the total tells the two apart.
-tree_jiffies() {
+all_threads_jiffies() {
     total=0
     for t in "/proc/$1/task"/*; do
         [ -r "$t/stat" ] || continue
@@ -404,34 +275,25 @@ tree_jiffies() {
 }
 
 BEFORE_MAIN="$(jiffies "$PID")"
-BEFORE_ALL="$(tree_jiffies "$PID")"
+BEFORE_ALL="$(all_threads_jiffies "$PID")"
 sleep "$DURATION"
 AFTER_MAIN="$(jiffies "$PID")"
-AFTER_ALL="$(tree_jiffies "$PID")"
+AFTER_ALL="$(all_threads_jiffies "$PID")"
 [ -n "$TYPER" ] && kill "$TYPER" 2>/dev/null
 
 HZ="$(getconf CLK_TCK)"
 main_pct="$(awk "BEGIN { printf \"%.2f\", ($AFTER_MAIN - $BEFORE_MAIN) * 100 / $HZ / $DURATION }")"
 all_pct="$(awk "BEGIN { printf \"%.2f\", ($AFTER_ALL - $BEFORE_ALL) * 100 / $HZ / $DURATION }")"
 
-# The loop's own view, from the last window it logged. `perf_window` is emitted
-# every PERF_WINDOW_TICKS iterations, so the last complete one is the steady
-# state; earlier ones can still contain the startup.
 WINDOW="$(grep -h perf_window "$LOG_DIR"/thurbox.log* 2>/dev/null | tail -1 || true)"
 SNAPSHOT="$(thurbox-cli perf 2>/dev/null || true)"
 
-# The sandbox is `fresh`, so teardown takes the log with it. Copy it out first:
-# a `perf_window` line is a summary, and the question after reading one is always
-# "what else did it say" -- a slow op, a warning, a panic on a reader thread.
 KEPT_LOG="$REPO_ROOT/target/perf-run.log"
 mkdir -p "$REPO_ROOT/target"
 cat "$LOG_DIR"/thurbox.log* > "$KEPT_LOG" 2>/dev/null || true
 
 tmux -L "$TBX_DEV_SOCKET" kill-session -t perf-harness >/dev/null 2>&1 || true
 
-# A missing field must read 0, not the empty string: the pipeline's exit status
-# is `cut`'s, which succeeds on no input, so a caller-side `|| echo 0` never
-# fires and the JSON line comes out syntactically invalid.
 field() {
     value="$(echo "$WINDOW" | grep -o "$1=[0-9]*" | head -1 | cut -d= -f2)"
     echo "${value:-0}"
@@ -446,7 +308,6 @@ if [ "$JSON" = "1" ]; then
     printf '"frame_p50_us":%s,"frame_p95_us":%s,"republish_p50_us":%s,"tick_p50_us":%s,' \
         "$(field frame_p50_us)" "$(field frame_p95_us)" \
         "$(field republish_p50_us)" "$(field tick_p50_us)"
-    # A query is free text -- `"a phrase"`, `/\d+/` -- so it is escaped for JSON.
     search_json="$(printf '%s' "$SEARCH" | sed 's/\\/\\\\/g; s/"/\\"/g')"
     printf '"frame_max_us":%s,"republish_p95_us":%s,"search":"%s","typing":%s,' \
         "$(field frame_max_us)" "$(field republish_p95_us)" "$search_json" "$TYPING"

@@ -1,20 +1,3 @@
--- Theme roles.
---
--- This file carries NO colour values. It reads the palette the kernel resolved
--- from the built-in presets, your themes.toml and your persisted choice — the
--- same three sources v1 used, so your themes and your current selection carry
--- over untouched.
---
--- That is the whole contract: a mod names a ROLE, never a colour. Change the
--- active theme and every pane restyles at once, including panes whose author
--- never heard of your theme. A mod that hardcodes "#5fafff" opts out of all
--- of that, which is why nothing here hands one out.
-
---- Declared so the shorthands the metatable serves are checkable: `__index`
---- answers nil for a name it does not know, so without this a misspelt one is a
---- run that renders in the terminal's default colour and looks deliberate. The
---- full role vocabulary is `thurbox.Role` in `thurbox.d.lua`; these are the
---- short names, and the two are kept in step by SHORTHAND below.
 ---@class thurbox.ThemeLib
 ---@field accent thurbox.Color?
 ---@field accent_bright thurbox.Color?
@@ -31,11 +14,6 @@
 ---@field hint thurbox.Color?
 local theme = {}
 
--- Resolved on access so a theme change is picked up on the next frame, and
--- memoized on the published table's identity: `thurbox.theme` is a gated
--- group, so seeing the same table object again means the same roles. Without
--- the memo every `theme.muted`-style access walks thurbox → theme → roles —
--- dozens of crossings per rendered row.
 local cached_theme, cached_roles
 local function roles()
   local src = thurbox and thurbox.theme
@@ -49,18 +27,12 @@ local function roles()
   return cached_roles
 end
 
---- A role's colour, or nil when the active theme does not define it.
----
---- nil is deliberate: an undefined role must render as "no colour", never as an
---- arbitrary one that looks deliberate.
 ---@param name thurbox.Role
 ---@return thurbox.Color?
 function theme.role(name)
   return roles()[name]
 end
 
--- Short names for the roles the bundled panes draw with, resolved on access so
--- a theme change is picked up on the next frame — no reload, no mod edit.
 local SHORTHAND = {
   accent = "accent",
   accent_bright = "accent_bright",
@@ -87,39 +59,18 @@ setmetatable(theme, {
   end,
 })
 
--- Hoisted: `theme.status` runs once per rendered row (and again per border
--- dot), and building these two tables per call was three allocations each time.
 local STATUS_GLYPHS = {
   working = "◐",
   blocked = "◆",
   done = "●",
-  -- The turn is at rest and sub-work it started is still running. A ring
-  -- around a centre: done's circle, with something still inside it. Static,
-  -- because the work runs out of the pane's sight and nothing on screen says
-  -- it is moving.
   background = "◎",
   idle = "○",
   error = "✗",
   unreachable = "⊘",
-  -- An agent holds the pane and has reported nothing. Filled, because
-  -- something IS there. This is the STATIC half: a process listing cannot tell
-  -- a turn in flight from a prompt waiting for input, so the dot only moves
-  -- when `ui.status` is handed the one thing that can — `thurbox.printing`,
-  -- saying that pane is producing output right now. Quiet, it stays this glyph.
-  --
-  -- FISHEYE rather than CIRCLE WITH VERTICAL FILL (U+25CD), which is rare
-  -- enough that monospace fonts routinely have no glyph for it and draw a
-  -- fallback box. Still distinct from done's solid circle and idle's hollow
-  -- one, which is the whole job of this row.
+  -- Not U+25CD: monospace fonts often lack it and draw a fallback box.
   running = "◉",
-  -- The two silences. Dotted, because the content of both is an absence: no
-  -- hooks are wired (`uncovered`), or none have fired yet (`unreported`).
-  -- Kept visibly apart from `idle`'s green hollow circle, which is a claim
-  -- that the agent said it is at rest.
   uncovered = "◌",
   unreported = "◌",
-  -- The launch died before the agent said anything (a failed `setup`, or an
-  -- agent that exited first): the same mark as an error, because it is one.
   failed = "✗",
 }
 local STATUS_ROLES = {
@@ -136,16 +87,6 @@ local STATUS_ROLES = {
   failed = "status_error",
 }
 
---- Glyph and colour for a session status.
----
---- Colour comes from the theme's own status roles, so a theme that recolours
---- "blocked" recolours it here without this file changing.
----
---- The `idle` fallback is for a word this table has no row for: `stopped`,
---- whose row says why beside it. It is deliberately NOT how the three
---- silences are drawn: `running`, `uncovered` and `unreported` each have a row
---- above, because falling through to `idle` is what made a working
---- driver-launched agent draw the green "the agent says it is at rest" dot.
 ---@param name thurbox.Status
 ---@return { glyph: string, color: thurbox.Color? }
 function theme.status(name)
@@ -155,29 +96,14 @@ function theme.status(name)
   }
 end
 
--- The braille spinner the working state animates through.
 theme.spinner = { "⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏" }
 
---- The spinner glyph for this frame.
----
---- Here rather than in `lib/widgets.lua` so that it ships in the same file as
---- the table it indexes. A pane and a `lib/` module are delivered separately and
---- an edit to either is preserved, so a directory can carry an updated pane
---- beside a module predating a helper it calls; the call then throws from
---- `render`, and a pane that throws records no click targets, so its rows stop
---- answering the mouse. Nothing makes a pane immune to a stale module — but the
---- glyphs and the arithmetic over them can at least not skew against each
---- other.
----
---- The 8 is the kernel's `ANIMATION_HZ` (`kernel::host`), and the two must stay
---- in lockstep: the shared animation clock invalidates `pure` panes at that rate
---- and only while something is animating, so a spinner advancing faster than the
---- clock would skip frames and one advancing slower would be re-rendered for no
---- visible change.
+local KERNEL_ANIMATION_HZ = 8
+
 ---@param elapsed number?
 ---@return string
 function theme.spinner_frame(elapsed)
-  local frame = math.floor((elapsed or 0) * 8) % #theme.spinner + 1
+  local frame = math.floor((elapsed or 0) * KERNEL_ANIMATION_HZ) % #theme.spinner + 1
   return theme.spinner[frame]
 end
 
@@ -192,11 +118,6 @@ local function rgb(colour)
   return { tonumber(r, 16), tonumber(g, 16), tonumber(b, 16) }
 end
 
---- `colour` laid over the theme's own background at `amount` (0..1): a band
---- that reads as that colour's tint in a dark preset and a light one alike,
---- derived from roles rather than spelt. nil when either side is not `#rrggbb`
---- — a named or indexed colour, or the `default` preset's terminal background
---- — because there is nothing to mix, and a guessed colour would look chosen.
 ---@param colour thurbox.Color?
 ---@param amount number
 ---@return thurbox.Color?
@@ -224,7 +145,6 @@ function theme.heading(text)
   return { text = text, style = { fg = theme.accent, bold = true } }
 end
 
---- The active theme's identifier, for anything that wants to show it.
 ---@return string
 function theme.name()
   return (thurbox and thurbox.theme and thurbox.theme.name) or "default"

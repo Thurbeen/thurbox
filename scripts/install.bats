@@ -106,7 +106,6 @@
 }
 
 @test "get_target rejects unshipped platforms (darwin-x86_64)" {
-  # cd.yml builds no .tar.gz for it, so get_target must NOT resolve it.
   run sh -c "TEST_TMPDIR=1 NO_COLOR=1 . '${BATS_TEST_DIRNAME}/install.sh'; get_target darwin-x86_64"
   [ "$status" -ne 0 ]
 }
@@ -164,9 +163,6 @@
   [ "$output" = "$expected" ]
 }
 
-# A 3.x release names its sums file thurbox-<V>-sha256sums.txt, never
-# thurbox-v<V>-checksums.txt: that name is what every 2.x updater fetches
-# first (docs/thurbox/releasing.md, "What a 3.x release must do").
 @test "get_binary downloads from DOWNLOAD_URL, verified by the 3.x sums file" {
   tmpdir=$(mktemp -d)
   mkdir -p "$tmpdir/v9.9.9"
@@ -180,9 +176,6 @@
   rm -rf "$tmpdir"
 }
 
-# Rule 1 of docs/thurbox/releasing.md, "What a 3.x release must do": every
-# 2.x updater fetches thurbox-v<V>-checksums.txt first, so a 3.x release that
-# never publishes that name makes them all fail safe.
 @test "a 3.x release's assets carry no thurbox-v<V>-checksums.txt" {
   dir=$(mktemp -d)
   for t in x86_64-unknown-linux-gnu aarch64-apple-darwin; do
@@ -201,12 +194,10 @@
 @test "the Release workflow publishes the sums file under no other name" {
   cd_yml="${BATS_TEST_DIRNAME}/../.github/workflows/cd.yml"
   grep -q 'release-archive.sh --sums' "$cd_yml"
-  # Comments may name the old file to say why it is gone; no step may.
   run sh -c "grep -vE '^[[:space:]]*#' '$cd_yml' | grep -nE 'thurbox-[^ \"/]*-checksums\\.txt|\\*checksums\\.txt'"
   [ "$status" -eq 1 ]
 }
 
-# VERSION=v2.x.y pins a 2.x release, which only has the old sums name.
 @test "get_binary verifies a 2.x release by its checksums.txt" {
   tmpdir=$(mktemp -d)
   mkdir -p "$tmpdir/v2.84.0"
@@ -254,8 +245,6 @@
   [ "$output" = "$expected" ]
 }
 
-# A release of every shipped program for this machine, served from a directory
-# as DOWNLOAD_URL fetches it. Sets $assets and $dest.
 fake_release() {
   tmpdir=$(mktemp -d)
   assets="$tmpdir/www" dest="$tmpdir/bin"
@@ -264,13 +253,11 @@ fake_release() {
   for f in $files; do printf '#!/bin/sh\n' > "$tmpdir/src/$f"; done
   printf '#!/bin/sh\necho "$*" >> "%s/fleet-calls"\n' "$tmpdir" > "$tmpdir/src/fleet"
   target=$(TEST_TMPDIR=1 sh -c ". '${BATS_TEST_DIRNAME}/install.sh'; get_target \$(detect_platform)")
-  # Named members, as release-archive.sh packs them.
-  # shellcheck disable=SC2086 # one member per word
+  # shellcheck disable=SC2086
   tar -czf "$assets/v9.9.9/thurbox-v9.9.9-$target.tar.gz" -C "$tmpdir/src" $files
   (cd "$assets/v9.9.9" && sha256sum ./*.tar.gz | sed 's| \./| |' > thurbox-9.9.9-sha256sums.txt)
 }
 
-# Sets $code and $log (stdout and stderr).
 run_installer() {
   code=0
   log=$(env NO_COLOR=1 THURBOX_NO_SERVICE=1 VERSION=v9.9.9 DOWNLOAD_URL="file://$assets" INSTALL_DIR="$dest" "$@" 2>&1) || code=$?
@@ -327,8 +314,6 @@ fleet_only_installed() {
   rm -rf "$tmpdir"
 }
 
-# A 2.x release, as VERSION=v2.x.y pins it: two programs, and only the old
-# sums name. Sets $assets and $dest, as fake_release does.
 fake_v2_release() {
   tmpdir=$(mktemp -d)
   assets="$tmpdir/www" dest="$tmpdir/bin"
@@ -391,7 +376,7 @@ fake_systemctl() {
   for flag in "" --fleet-only; do
     fake_release
     fake_systemctl
-    # shellcheck disable=SC2086 # the flag is a word or none
+    # shellcheck disable=SC2086
     run_installer THURBOX_NO_SERVICE= PATH="$path" sh "${BATS_TEST_DIRNAME}/install.sh" $flag
     [ "$code" -eq 0 ]
     [ "$(cat "$tmpdir/fleet-calls")" = "$(printf 'init\nservice install --now')" ]

@@ -1,4 +1,3 @@
--- `thurbox.keyboard`, with one letter wrong.
 return {
   name = "std_typo_keyboard",
   render = function()

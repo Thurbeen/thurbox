@@ -1,14 +1,9 @@
 #!/usr/bin/env bats
-#
-# Drives release-line.sh: a held tree releases nothing, a release must be on the
-# major the source declares, and only the newest release of the channels' major
-# reaches the package names.
 
 setup() {
   SCRIPT="${BATS_TEST_DIRNAME}/release-line.sh"
 
-  # git exports these to hook processes, so a suite running under this
-  # project's own pre-commit hook would otherwise read the real repository.
+  # git exports these to hook processes, which would otherwise read the real repository.
   unset GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE GIT_COMMON_DIR \
     GIT_OBJECT_DIRECTORY GIT_ALTERNATE_OBJECT_DIRECTORIES GIT_PREFIX \
     GIT_NAMESPACE
@@ -61,9 +56,7 @@ line() {
   [[ "$output" == *"channels=false"* ]]
 }
 
-# The real tree, as cd.yml runs the gate on main: its hold file, its
-# RELEASE_LINE and cd.yml's PACKAGE_CHANNELS_MAJOR.
-real() {
+run_gate_as_cd_yml_on_the_real_tree() {
   local root="${BATS_TEST_DIRNAME}/../.."
   local channels
   channels="$(sed -nE 's/^  PACKAGE_CHANNELS_MAJOR: "([0-9]+)"$/\1/p' "$root/.github/workflows/cd.yml")"
@@ -74,7 +67,7 @@ real() {
 }
 
 @test "the real tree releases 3.0.0, to no package channel" {
-  real v3.0.0
+  run_gate_as_cd_yml_on_the_real_tree v3.0.0
   [ "$status" -eq 0 ]
   [[ "$output" == *"held=false"* ]]
   [[ "$output" == *"line=3"* ]]
@@ -82,10 +75,10 @@ real() {
 }
 
 @test "the real tree refuses a 2.x that a feat or fix on main auto-bumps" {
-  real v2.85.0
+  run_gate_as_cd_yml_on_the_real_tree v2.85.0
   [ "$status" -eq 1 ]
   [[ "$output" == *"refusing to release v2.85.0"* ]]
-  real v2.84.1
+  run_gate_as_cd_yml_on_the_real_tree v2.84.1
   [ "$status" -eq 1 ]
 }
 
@@ -103,10 +96,8 @@ real() {
   [[ "$output" == *"line=3"* ]]
 }
 
-# main carries `feat!:` commits, so the push that merges RELEASE_LINE = 3
-# computes v3.0.0 with cog bump --auto, and that cuts the first 3.x release.
 @test "the real tree releases an auto-bumped 3.0.0" {
-  real v3.0.0
+  run_gate_as_cd_yml_on_the_real_tree v3.0.0
   [ "$status" -eq 0 ]
   [[ "$output" == *"held=false"* ]]
   [[ "$output" == *"channels=false"* ]]

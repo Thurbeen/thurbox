@@ -1,15 +1,9 @@
-# Rust
 /target
 **/*.rs.bk
 *.pdb
 
-# Nix / direnv dev environment (flake.nix is committed; flake.lock is too —
-# generate it with `nix flake lock`). The direnv cache is local-only.
 .direnv/
-# Persistent dev sandboxes live under /target (already ignored above):
-#   target/dev-sandbox/<profile>/  — see scripts/dev/sandbox.sh
 
-# IDE
 .vscode/
 .idea/
 *.swp
@@ -17,68 +11,43 @@
 *~
 .DS_Store
 
-# Testing
 .tarpaulin
 cobertura.xml
 junit.xml
 
-# Nextest
 .nextest/
 
-
-# Insta snapshots (review and commit)
 *.snap.new
 
-# Environment
 .env
 .env.local
 
-# Logs
 *.log
 
-# Temporary files
 tmp/
 temp/
 
-# Node (website linting tools)
 node_modules/
 
-# Eleventy build output for the website
 _site/
 .claude/scheduled_tasks.lock
 .aider*
 
-# Local orchestrator/agent worker workspaces (stray nested checkouts at the
-# root; anchored so docs/thurbox/ is not caught)
 /thurbox/
 
-# Python bytecode cache (from the packaging bump scripts)
 __pycache__/
 *.pyc
 
-# What the interface delivery last wrote. Only appears in the repo's own
-# ui/ when a dev build restores or removes a file from inside the running TUI;
-# it describes one directory's state and belongs to nobody else.
 ui/.bundled.json
 
-# Demo recordings live on the `media` GitHub release, never in git: every
-# re-recording would stay in the history each clone downloads.
-# scripts/demo/record*.sh write them to media/, scripts/demo/publish-media.sh
-# uploads them, and pages.yml downloads the MP4s into website/assets/ at deploy.
 /media/*.gif
 /media/*.mp4
 website/assets/*.mp4
 
-# Lavish review artifacts (`lavish-axi <file>`): HTML the agent generates for a
-# human to annotate in a browser. Working material for one review, not part of
-# the project — the same entry firstmate carries.
 .lavish/
 
-# nix build output
 /result
 
-# Fleet: release output, offline install fixtures and private operator data,
-# which must never enter a public commit.
 /dist/
 /fleet.toml
 /examples/fleet/orchestration/queue/*

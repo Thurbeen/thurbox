@@ -1,18 +1,4 @@
 #!/usr/bin/env bash
-#
-# Verify a pull request title is the conventional commit squash merge will land.
-#
-# Under squash merge the commit on main is built by GitHub from the PR title
-# plus its own " (#N)" suffix. That string — not any commit on the branch — is
-# what `cog bump --auto` reads for the release decision and what the changelog
-# quotes. Nothing else validates it: branch commits are discarded by the squash,
-# so CI no longer walks them. This is the only gate between a typo in a title
-# box and a main whose history no longer parses.
-#
-# The title is checked in its final form, suffix included, because that is the
-# artifact — not the bare title the author typed.
-#
-# Usage: check-pr-title.sh <title> <pr-number>
 set -euo pipefail
 
 if [ "$#" -ne 2 ]; then
@@ -28,9 +14,7 @@ if [ -z "$title" ]; then
     exit 1
 fi
 
-# GitHub appends " (#N)" itself, so a title that already ends in one lands as
-# "… (#12) (#34)". Only a *trailing* reference is rejected: a title that cites
-# another pull request mid-sentence is a different thing and still passes.
+# GitHub's squash merge appends " (#N)" itself, so only a trailing reference is rejected.
 if printf '%s' "$title" | grep -qE '[[:space:]]\(#[0-9]+\)[[:space:]]*$'; then
     printf 'The pull request title already ends in a (#N) reference:\n\n' >&2
     printf '  %s\n\n' "$title" >&2
@@ -39,12 +23,7 @@ if printf '%s' "$title" | grep -qE '[[:space:]]\(#[0-9]+\)[[:space:]]*$'; then
     exit 1
 fi
 
-# `cog verify` resolves the current git author before it parses anything and
-# panics when user.name is unset — which is every fresh CI checkout, where
-# nothing commits and so nothing configures an identity. The author is only
-# printed back, never part of the verdict, so lend one through a throwaway HOME
-# (libgit2 reads $HOME/.gitconfig) rather than writing into the repository being
-# checked.
+# `cog verify` panics without a git identity; libgit2 reads one from $HOME/.gitconfig.
 if ! git config --get user.name >/dev/null 2>&1 ||
     ! git config --get user.email >/dev/null 2>&1; then
     borrowed_home=$(mktemp -d)
@@ -54,16 +33,9 @@ if ! git config --get user.name >/dev/null 2>&1 ||
     export HOME="$borrowed_home"
 fi
 
-# cog.toml is read from the working directory, so the commit-type and scope
-# allowlists this repository declares are part of what is enforced here.
 subject="$title (#$number)"
 
-# `cog verify` names only the token it disliked — "Commit scope `program` not
-# allowed" — never the set it was checked against, so an author who has not
-# read cog.toml cannot correct the title from the failure alone. Quote the
-# declared sets back. Each awk reads from the key to the line that closes it,
-# so a reformatted (multi-line) array still prints; an allowlist the file does
-# not declare prints nothing rather than an empty label.
+# `cog verify` names only the token it rejected, never the allowed set.
 print_allowlists() {
     [ -f cog.toml ] || return 0
     local types scopes

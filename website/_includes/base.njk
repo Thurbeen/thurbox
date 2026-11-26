@@ -15,7 +15,6 @@ hasOwnMain: false
     <meta name="description" content="{{ description }}" />
     <link rel="canonical" href="{{ site.url }}{{ page.url }}" />
 
-    <!-- Open Graph (Facebook, LinkedIn, Slack, Discord, …) -->
     <meta property="og:type" content="website" />
     <meta property="og:site_name" content="{{ site.name }}" />
     <meta property="og:title" content="{{ title }}" />
@@ -26,13 +25,11 @@ hasOwnMain: false
     <meta property="og:image:height" content="630" />
     <meta property="og:image:alt" content="{{ site.name }} — TUI Agentic IDE" />
 
-    <!-- Twitter / X card -->
     <meta name="twitter:card" content="summary_large_image" />
     <meta name="twitter:title" content="{{ title }}" />
     <meta name="twitter:description" content="{{ description }}" />
     <meta name="twitter:image" content="{{ site.url }}{{ image or site.ogImage }}" />
 
-    <!-- Structured data for rich search results -->
     <script type="application/ld+json">
       {
         "@context": "https://schema.org",
@@ -49,12 +46,6 @@ hasOwnMain: false
     </script>
 
     <link rel="icon" href="{{ root }}/assets/favicon.svg" type="image/svg+xml" />
-    <!-- Fonts are self-hosted (@font-face lives in core.css) — no Google Fonts
-         stylesheet, no preconnects, no third-party request. Preload the two
-         faces that paint above the fold so they are in flight alongside the CSS
-         rather than after it: the display face for the headline/nav, and the
-         mono face for the eyebrow, HUD and install tabs. Inter is body copy
-         further down and can wait for the normal CSS-driven fetch. -->
     <link
       rel="preload"
       href="{{ root }}/assets/fonts/press-start-2p-400.woff2"
@@ -69,19 +60,11 @@ hasOwnMain: false
       type="font/woff2"
       crossorigin
     />
-    <!-- Core CSS is concatenated at build time into one file (see the css-bundle
-         step in eleventy.config.js), so every page costs one render-blocking
-         request for the shared chrome instead of four. Page-specific sheets
-         (landing / docs / ui-review) still load separately — they are only
-         wanted on the pages that declare them. -->
     <link rel="stylesheet" href="{{ root }}/css/core.css" />
     {%- for css in extraCss %}
     <link rel="stylesheet" href="{{ root }}/css/{{ css }}" />
     {%- endfor %}
   </head>
-  <!-- data-assets is how main.js resolves media paths: it is one shared script
-       served to pages at different depths, so a hardcoded "assets/…" would 404
-       from /docs/. Used by the god-mode easter egg to fetch its clip on demand. -->
   <body data-assets="{{ root }}/assets">
     <a class="skip-link" href="#main-content">Skip to content</a>
     <nav class="nav{% if navScrolled %} scrolled{% endif %}" id="nav">
@@ -165,11 +148,6 @@ hasOwnMain: false
           <a href="https://discord.gg/fGumcHaxFY" target="_blank" rel="noopener">Discord</a>
           &middot; Built with Rust
         </p>
-        <!-- The clue. Deliberately names the game, the year and the mode but not
-             the code itself, so it reads as flavour text to everyone else. The
-             HUD bar's "God Mode" segment is the second, subtler half of the hint
-             (it is aria-hidden, so this line is what carries it to a screen
-             reader). Payoff lives in main.js. -->
         <p class="footer-secret">
           Ships with a Doom palette &mdash; and the 1993 god-mode cheat still works. Type it
           anywhere.

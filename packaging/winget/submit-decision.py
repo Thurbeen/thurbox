@@ -38,11 +38,7 @@ import sys
 from datetime import datetime, timezone
 from pathlib import Path
 
-# Shapes that mean "the moderated channel is busy / already has this version",
-# not "thurbox is broken". Kept deliberately narrow: anything unrecognised is
-# worth a human's eyes, and the job-level `continue-on-error` already keeps a
-# red winget job from reddening the release.
-DEFERRABLE = [
+MODERATED_CHANNEL_PUSHBACK = [
     (r"(?i)\bAPI rate limit exceeded\b", "GitHub API rate limit"),
     (r"(?i)\bsecondary rate limit\b", "GitHub secondary rate limit"),
     (r"(?i)\b(429|abuse detection)\b", "GitHub throttling"),
@@ -51,7 +47,6 @@ DEFERRABLE = [
 
 
 def parse_iso(value: str) -> datetime:
-    """Parse a GitHub timestamp (`2026-09-09T12:00:00Z`) as aware UTC."""
     return datetime.fromisoformat(value.replace("Z", "+00:00")).astimezone(timezone.utc)
 
 
@@ -95,7 +90,7 @@ def after_submit(exit_code: int, output: str) -> dict:
             "fail": False,
             "reason": "wingetcreate submit opened a pull request on winget-pkgs",
         }
-    for pattern, why in DEFERRABLE:
+    for pattern, why in MODERATED_CHANNEL_PUSHBACK:
         if re.search(pattern, output):
             return {"opened": False, "deferrable": True, "fail": False, "reason": why}
     return {

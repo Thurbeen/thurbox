@@ -1,11 +1,4 @@
-# thurbox dev task runner. Run `just` (or `just --list`) to see tasks.
-#
-# Enter the pinned toolchain first with `nix develop` (or `direnv allow`); these
-# tasks assume the dev tools (cargo-nextest, cargo-deny, rumdl, shellcheck, selene,
-# stylua, …)
-# are on PATH. See docs/thurbox/development.md.
-
-# Default: show the task list.
+# Show the task list.
 default:
     @just --list
 
@@ -25,11 +18,7 @@ test:
 test-one NAME:
     cargo nextest run -E 'test({{NAME}})'
 
-# Run the bats suites: the install script, the pull-request-title checker, the
-# release-line gate, the winget packaging scripts and the Windows harness's
-# psmux gate probes. Not
-# part of `just test` (which is cargo's), and needs bats on PATH (the title
-# checker's suite skips without `cog`).
+# Run the bats suites CI runs (needs bats; the title checker's suite skips without cog).
 test-scripts:
     bats scripts/install.bats
     bats scripts/ci/check-pr-title.bats
@@ -51,31 +40,17 @@ lint:
     cargo deny check advisories
     cargo deny check bans licenses sources
     just clippy-windows
-    # CI lints markdown with the rumdl pinned in ci.yml; an older local one
-    # passes what CI then fails.
     scripts/ci/check-rumdl-version.sh
     rumdl check .
     git ls-files -z '*.sh' | xargs -0 shellcheck
     selene ui examples
     stylua --check ui examples
-    # Absolute path required: a relative --configpath resolves against the
-    # server's install dir, and a missed config reports every injected global as
-    # undefined instead of erroring.
+    # lua-language-server resolves a relative --configpath against its own install directory.
     lua-language-server --check ui --configpath "{{ justfile_directory() }}/.luarc.json" --checklevel=Warning
-    # The other direction: three panes that each misspell something, which must
-    # each still come back as a finding.
     scripts/ci/check-lua-types.sh
-    # And selene's own: one pane reading the injected tables, which must lint
-    # clean, and one misspelt pane per table, which must not — so a table
-    # declared without its fields fails instead of passing unread.
     scripts/ci/check-lua-std.sh
 
-# The `Windows (clippy)` CI job, cross-checked from Linux: code and tests under
-# `cfg(windows)` (or unused only there) fail here instead of after a push.
-# Needs the x86_64-pc-windows-gnu standard library (`rustup target add
-# x86_64-pc-windows-gnu`) and a MinGW gcc (`x86_64-w64-mingw32-gcc`) for the C
-# build scripts. Without the target (the Nix shell ships none) it says so and
-# skips, rather than failing `just lint` for a toolchain CI already covers.
+# The `Windows (clippy)` CI job, cross-checked from Linux; skips without the target.
 clippy-windows:
     #!/usr/bin/env bash
     set -euo pipefail
@@ -90,8 +65,7 @@ clippy-windows:
 fmt-lua:
     stylua ui examples
 
-# Regenerate the plugin API declarations (`thurbox.d.lua`, `thurbox.yml`, the
-# selene probe) from `src/kernel/lua_api.rs`, after editing it.
+# Regenerate the mod API declarations from `src/kernel/lua_api.rs`, after editing it.
 lua-api:
     THURBOX_REGENERATE=1 cargo nextest run --test lua_api the_declaration_files_are_what_the_schema_renders
 
@@ -108,10 +82,6 @@ dev-tools:
 hooks-install:
     prek install
 
-# `cargo run` alone reads `~/.config/thurbox-dev/ui`, like every other config a dev
-# build reads. Editing the interface in the repository is a different request, so it
-# is stated here rather than inferred from the working directory.
-#
 # Run the dev TUI against THIS checkout's ui/ instead of your own copy.
 tui-ui *ARGS:
     THURBOX_UI_DIR="{{justfile_directory()}}/ui" cargo run --bin thurbox -- {{ARGS}}
@@ -120,18 +90,9 @@ tui-ui *ARGS:
 sandbox *ARGS:
     scripts/dev/sandbox.sh {{ARGS}}
 
-# The interface lives inside the sandbox root, so a throwaway sandbox is already a
-# clean interface directory. There is no separate recipe for that; there was one
-# (`sandbox-fresh-ui`) which ran exactly this and claimed to do something else.
-
 # Run the dev TUI in a throwaway sandbox (wiped on exit).
 sandbox-fresh:
     scripts/dev/sandbox.sh --fresh
-
-# A bare `sandbox` deliberately starts empty — the state most bugs are reported
-# against. These opt in: one repository with a file of each git status, a session
-# whose branch has changes, and one whose branch deliberately has none. Idempotent,
-# so running either again costs a few lookups and changes nothing.
 
 # Seed a demo repository + sessions into the persistent sandbox, then launch.
 sandbox-demo:
@@ -153,19 +114,14 @@ sandbox-clean PROFILE="default":
 smoke:
     cargo nextest run --test tui_e2e
 
-# Reap orphaned *test* tmux servers (Linux). A harness's own guard covers every
-# in-process exit; this is for the ones a signal killed, which run on with no
-# socket file and nothing able to connect to them. Never touches `thurbox` or
-# `thurbox-dev`. `just reap-tmux --dry-run` lists without killing.
+# Reap orphaned test tmux servers a signal left behind (Linux; `--dry-run` lists only).
 reap-tmux *ARGS:
     scripts/dev/reap-tmux-servers.sh {{ARGS}}
 
-# Sweep with THURBOX_BENCH_SESSIONS / _WIDTH / _HEIGHT.
 # What a frame costs, piece by piece, against the real interface.
 bench:
     cargo bench --bench frame_cost
 
-# Pass -s and -n explicitly: a reading only compares with one at the same size.
 # What the whole binary costs under load: `just perf --idle`, `-n 19 -p 3 -s 255x62`, `-u 0`.
 perf *ARGS:
     scripts/dev/perf-run.sh {{ARGS}}

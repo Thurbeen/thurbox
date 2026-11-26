@@ -1,23 +1,5 @@
--- Manual-order algebra over the session list's ordered session items.
---
--- A move is computed over the session model's full order and sent explicitly.
--- The kernel cannot compute it: only the pane knows the repo grouping and the
--- parent/child nesting, and therefore what a move actually swaps — a root row
--- drags its whole subtree, a root row at its group's edge moves the WHOLE
--- GROUP past the neighbouring one on the same machine, and a nested child moves
--- among its siblings only. Ported from v1's `move_in_order` and
--- `sort_alphabetically_within_groups`.
---
--- Pure functions over the session items `session_model.build` returns, after
--- the pane removes fold handles and restores host boundaries as headers. An
--- item carries `depth` (nesting), `header` (on a group's first row), `host`
--- (only while the host axis is on) and, for a session, `session.name`. Nothing
--- here reads the snapshot or the theme.
-
 local order = {}
 
---- End of the block rooted at `at`: the first later row at a depth `<=` its own,
---- i.e. one past its whole rendered subtree.
 local function block_end(items, at)
   local last = #items
   local finish = at + 1
@@ -27,13 +9,6 @@ local function block_end(items, at)
   return finish
 end
 
---- Start of the group containing `at`: the nearest row at or above it that
---- carries a header.
----
---- Only the first row of a group carries one. With `group_by_repo` off, the pane
---- still marks host boundaries when grouping by host, but a flat local list has
---- no header; row 1 is its group start. This used to be nil, which made
---- `root_ranges` give up and every root move a silent no-op in a flat list.
 local function group_start(items, at)
   for index = at, 1, -1 do
     if items[index].header then
@@ -43,7 +18,6 @@ local function group_start(items, at)
   return #items > 0 and 1 or nil
 end
 
---- Start of the group after the one starting at `at`, or one past the end.
 local function group_end(items, at)
   for index = at + 1, #items do
     if items[index].header then
@@ -53,21 +27,10 @@ local function group_end(items, at)
   return #items + 1
 end
 
---- Are these two groups on the same machine?
----
---- A whole-group swap across a host boundary would be accepted and persisted,
---- and then undone by the next build re-clustering the group under its own host
---- -- the exact failure the `group_by_repo` setting was reshaped to avoid. The
---- host is not a position the user can move a group to: it is what the session
---- runs on, and grouping is a view. Both sides are nil while the host axis is
---- off, so nothing is refused that was allowed before it existed.
 local function same_host(items, a, b)
   return items[a].host == items[b].host
 end
 
---- The two adjacent ranges a root move swaps: the neighbouring root block in
---- the same group, or — at a group edge — this whole group with its neighbour
---- on the same machine.
 local function root_ranges(items, at, down)
   local last = #items
   local finish = block_end(items, at)
@@ -102,23 +65,17 @@ local function root_ranges(items, at, down)
   return nil
 end
 
---- The two adjacent ranges a nested move swaps: the adjacent same-depth sibling
---- only, so a child never leaves its parent.
 local function child_ranges(items, at, down)
   local last = #items
   local depth = items[at].depth
   local finish = block_end(items, at)
 
   if down then
-    -- A shallower row where the next sibling would start means the parent's
-    -- subtree ended.
     if finish <= last and items[finish].depth == depth then
       return at, finish, finish, block_end(items, finish)
     end
     return nil
   end
-  -- Scan back over the previous sibling's subtree; a same-depth row is that
-  -- sibling, a shallower one is our parent.
   local index = at - 1
   while index >= 1 and items[index].depth > depth do
     index = index - 1
@@ -129,8 +86,6 @@ local function child_ranges(items, at, down)
   return nil
 end
 
---- The rendered item list with the block at `at` moved one place, or nil when
---- it is already at the edge that move would take it past.
 function order.move_block(items, at, down)
   local a_start, a_end, b_start, b_end
   if items[at].depth == 0 then
@@ -157,14 +112,7 @@ function order.move_block(items, at, down)
   return moved
 end
 
---- A creation in flight is its own root block carrying the `command` that will
---- make a session rather than a session, so it has no name to be alphabetical
---- about. Reading one off it is what took the pane down on Shift+S (#1200), as
---- soon as a group held a second block for the comparator to run on at all.
----
---- Nil rather than `""`: an empty name is a real sort key, and it would put the
---- placeholder at the TOP of its group instead of the end, where
---- `session_model.build` draws it and where its session will land.
+-- MUST KILL: rename — `sort_name_or_nil_for_pending` would say why a creation in flight sorts as nil, not "", and so stays last
 local function block_name(block)
   local session = block[1].session
   return session and (session.name or ""):lower() or nil
@@ -178,16 +126,11 @@ local function emit_blocks(out, blocks)
   end
 end
 
---- Sort by name **within each repo group**, preserving group order and the
---- parent/child nesting: roots sort among themselves, each parent's children
---- among theirs. A block with no session behind it yet keeps its group's end.
---- v1's `sort_alphabetically_within_groups`.
 function order.sorted_within_groups(items)
   local out = {}
   local at = 1
   while at <= #items do
     local group_last = group_end(items, at) - 1
-    -- Collect this group's root blocks, each as its own subtree.
     local blocks = {}
     local index = at
     while index <= group_last do
@@ -199,8 +142,6 @@ function order.sorted_within_groups(items)
       blocks[#blocks + 1] = block
       index = finish
     end
-    -- Case-insensitive, like v1, and stable on a tie so equal names keep their
-    -- existing relative order.
     local named, nameless = {}, {}
     for position, block in ipairs(blocks) do
       block.position = position

@@ -1,4 +1,3 @@
-/* ---- Navigation ---- */
 .nav {
   position: fixed;
   top: 0;
@@ -71,7 +70,6 @@
   text-shadow: var(--glow-red);
 }
 
-/* Menu selector — a ▶ cursor slides in on hover/active (Doom main-menu) */
 .nav-links a::before {
   content: '\25B6';
   display: inline-block;
@@ -158,7 +156,6 @@
   }
 }
 
-/* ---- Buttons — arcade style ---- */
 .btn {
   display: inline-flex;
   align-items: center;
@@ -206,7 +203,6 @@
   transform: translateY(-1px);
 }
 
-/* ---- Cards ---- */
 .card {
   background: var(--bg-card);
   border: 1px solid var(--hud-edge);
@@ -222,10 +218,6 @@
   box-shadow: var(--bevel-glow-red), var(--shadow-panel);
 }
 
-/* Monochrome terminal glyph in a beveled tile — shared by the landing feature
-   cards and the docs hub/extension cards so both boards read the same. Colour
-   emoji used to sit here and were the only rounded, multi-hue elements in a
-   squared pixel UI. */
 .card-icon {
   display: inline-flex;
   align-items: center;
@@ -256,7 +248,6 @@
   margin-bottom: 0;
 }
 
-/* ---- Badges ---- */
 .badge {
   display: inline-flex;
   align-items: center;
@@ -264,9 +255,6 @@
   padding: 0.25rem 0.75rem;
   font-family: var(--font-mono);
   font-size: 0.75rem;
-
-  /* Squared, like every other surface. A rounded pill fought the pixel-era
-     look it sat next to. */
   border-radius: var(--border-radius);
   border: 1px solid var(--border);
   color: var(--text-secondary);
@@ -282,7 +270,6 @@
   color: var(--yellow);
 }
 
-/* ---- Terminal frame (video panels + .tui-demo ASCII mockups) ---- */
 .terminal-frame,
 .tui-demo {
   background: var(--bg-code);
@@ -325,7 +312,6 @@
   color: var(--text-primary);
 }
 
-/* ---- Code block (build-time Prism highlighting) ---- */
 .code-block {
   background: var(--bg-code);
   border: 1px solid var(--hud-edge);
@@ -369,7 +355,6 @@
   color: var(--text-primary);
 }
 
-/* Opt-in line wrapping for blocks with very long lines (data-wrap). */
 .code-block[data-wrap] .code-block-body {
   overflow-x: visible;
 }
@@ -379,7 +364,6 @@
   overflow-wrap: break-word;
 }
 
-/* Copy button — lives in the header, always visible (touch-friendly). */
 .copy-btn {
   margin-left: auto;
   padding: 0.35rem 0.65rem;
@@ -408,7 +392,6 @@
   border-color: var(--red);
 }
 
-/* ---- Prism token theme → Doom palette ---- */
 .code-block .token.comment,
 .code-block .token.prolog,
 .code-block .token.doctype,
@@ -460,7 +443,6 @@
   color: var(--red);
 }
 
-/* ---- Footer ---- */
 .footer {
   padding: var(--space-2xl) 0;
   border-top: 2px solid var(--hud-bg-deep);
@@ -483,8 +465,6 @@
   text-shadow: var(--glow-red);
 }
 
-/* The easter-egg clue. Muted and mono so it reads as a build-stamp footnote
-   rather than a call to action. */
 .footer-secret {
   font-family: var(--font-mono);
   font-size: 0.8125rem;
@@ -492,20 +472,12 @@
   opacity: 0.75;
 }
 
-/* The egg is keyboard-only (a keydown sequence — see js/main.js), and a phone
-   has no keyboard and no text field on this page to summon one, so the clue
-   would invite something impossible. Hidden at the same 639px the HUD bar's
-   "God Mode" segment uses, so both hints appear and disappear together.
-   Anyone who pairs a physical keyboard is above this breakpoint anyway. */
 @media (max-width: 639px) {
   .footer-secret {
     display: none;
   }
 }
 
-/* ---- God-mode overlay (typing the Doom cheat; see js/main.js) ---- */
-
-/* Locks the page behind the modal so a wheel scroll does not move it. */
 .doom-open {
   overflow: hidden;
 }
@@ -513,8 +485,6 @@
 .doom-overlay {
   position: fixed;
   inset: 0;
-
-  /* Above the nav (100), back-to-top (90) and HUD bar (80) — it is modal. */
   z-index: 200;
   display: flex;
   align-items: center;
@@ -524,7 +494,6 @@
   backdrop-filter: blur(6px);
 }
 
-/* [hidden] alone loses to display:flex, so restate it after. */
 .doom-overlay[hidden] {
   display: none;
 }
@@ -574,10 +543,6 @@
   display: block;
   width: 100%;
   height: auto;
-
-  /* The clip is a rasterised terminal wider than this modal, so it is always
-     scaled *down* — leave smoothing on (image-rendering: pixelated aliases the
-     TUI's 1px borders and text into a mess at non-integer ratios). */
   background: #000;
 }
 
@@ -590,8 +555,6 @@
   border-top: 1px solid var(--border);
 }
 
-/* Underlined rather than colour-only: the caption is muted grey, so a red link
-   inside it would be the one thing on the page carrying meaning by hue alone. */
 .doom-overlay__link {
   color: var(--doom-red-bright);
   text-decoration: underline;
@@ -602,10 +565,6 @@
   color: var(--text-primary);
 }
 
-/* ---- Step numbers ---- */
-
-/* Squared and beveled like every other panel — a round badge was the one
-   circular element in a UI whose whole premise is --border-radius: 0. */
 .step-number {
   display: inline-flex;
   align-items: center;
@@ -622,7 +581,6 @@
   flex-shrink: 0;
 }
 
-/* ---- Retro flicker (brand/hero) ---- */
 @keyframes flicker {
   0%,
   19%,
@@ -651,7 +609,6 @@
   }
 }
 
-/* ---- GitHub / Discord icons (inline SVG) ---- */
 .icon-github,
 .icon-discord {
   width: 20px;
@@ -659,20 +616,12 @@
   fill: currentColor;
 }
 
-/* ============================================================
-   GAME-TERMINAL CHROME — replaces macOS traffic-light window dots.
-   One square status LED (green = power, red = REC for video) + a
-   beveled header bar + uppercase mono title. No macOS vibes.
-   ============================================================ */
-
-/* Beveled header bar with an ember accent edge (matches the HUD nav) */
 .terminal-header,
 .code-block-header {
   border-bottom: 2px solid var(--hud-bg-deep);
   box-shadow: inset 0 -1px 0 0 rgb(232, 24, 11, 0.3);
 }
 
-/* Single square status LED — a power / online indicator */
 .terminal-header::before,
 .code-block-header::before {
   content: '';
@@ -685,31 +634,24 @@
   animation: led-pulse 2.4s ease-in-out infinite;
 }
 
-/* Video frames get a blinking red REC LED */
 .terminal-frame:has(video) .terminal-header::before {
   background: var(--red);
   box-shadow: var(--glow-red);
   animation: doom-blink 1.6s ease-in-out infinite;
 }
 
-/* Console-style titles */
 .terminal-title,
 .code-block-lang {
   text-transform: uppercase;
   letter-spacing: 0.12em;
 }
 
-/* Touch targets — meet the 44px minimum on phones */
 @media (max-width: 639px) {
   .btn {
     min-height: 44px;
     padding-block: 0.95rem;
   }
 
-  /* The hero pair ("GET STARTED" 180px + "VIEW DOCS" 157px + 16px gap = 353px)
-     exceeds the available width until ~414px, so flex-wrap dropped them into a
-     ragged 2-row stack on every common phone. Make the stack deliberate:
-     equal-width full-bleed bars. */
   .hero-ctas {
     flex-direction: column;
     align-items: stretch;
@@ -719,10 +661,6 @@
     justify-content: center;
   }
 }
-
-/* ---- Live-terminal animations ----
-   Pulsing power LED + a CRT refresh sweep traveling down each panel,
-   so code/video windows feel alive (retro game-terminal). */
 
 @keyframes led-pulse {
   0%,
@@ -736,19 +674,12 @@
   }
 }
 
-/* CRT refresh sweep — a soft scanning band down each panel */
 .terminal-frame,
 .tui-demo,
 .code-block {
   position: relative;
 }
 
-/* The sweep is paused by default and resumed per panel by main.js when the
-   panel scrolls into view (or on hover). A landing page has ~12 of these
-   panels; running every sweep at once is a lot of always-on compositing for an
-   effect only the visible panels can be seen doing.
-   `animation-play-state` rather than toggling `animation` so a panel returning
-   to view resumes mid-sweep instead of snapping back to the top. */
 .terminal-frame::after,
 .tui-demo::after,
 .code-block::after {
@@ -775,9 +706,6 @@
   animation-play-state: running;
 }
 
-/* Phones: keep the static identity (bevels, LEDs, scanlines) but drop the
-   moving sweep — it is the most expensive decorative effect and the least
-   visible on a small screen. */
 @media (max-width: 639px) {
   .terminal-frame::after,
   .tui-demo::after,
@@ -795,7 +723,6 @@
   }
 }
 
-/* Panels glow red on hover */
 .terminal-frame:hover,
 .tui-demo:hover,
 .code-block:hover {
@@ -819,10 +746,6 @@
   }
 }
 
-/* ---- Prompt examples ----
-   Things you SAY to an agent, not commands you run. Deliberately unlike the
-   <pre> blocks around them: dashed, italic, no copy affordance, so nobody
-   pastes one into a shell. */
 .prompts {
   list-style: none;
   margin: 0 0 var(--space-lg);

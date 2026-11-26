@@ -1,42 +1,7 @@
 ---@meta
---
--- The mod API, as types. Loaded by lua-language-server through
--- `.luarc.json`'s `workspace.library`; never loaded by the mod VM.
---
--- It exists because every mistake the API allows is silent. `convert.rs` drops
--- a node key it does not know (that is how a mod carries its own bookkeeping
--- on the node table), `command` reads a fixed list of option names and ignores
--- the rest, and `lib/theme.lua`'s `__index` answers nil for a role no palette
--- defines. Each of those renders something plausible and reports nothing, so
--- the only place a typo can be caught is before it runs.
---
--- Two shapes do the catching, because lua-language-server will not flag an
--- *extra* key in a table constructor:
---
---   * every kind and every verb declares the field it cannot work without, so
---     a misspelt one reads as that field missing (`missing-fields`);
---   * every field whose value is drawn from a fixed set is that set, so a
---     misspelt value is a type mismatch (`assign-type-mismatch`).
---
--- `tests/fixtures/lua_types` + `scripts/ci/check-lua-types.sh` hold this to it.
---
--- The published `thurbox.*` shape and the theme roles are the GENERATED region
--- below, rendered from `src/kernel/lua_api.rs` — the same source as the
--- `thurbox.*` entries in `thurbox.yml` — and `tests/lua_api.rs` fails when either
--- drifts from it or a publish serves a key it does not declare. Keep the rest in
--- step with `src/kernel/node.rs` and `src/kernel/convert.rs` (nodes),
--- `src/kernel/host/load.rs` (the declaration) and `src/kernel/command/mod.rs`
--- (verbs).
---
--- The two files split by LIFETIME. A global, or a field of a published table,
--- is a NAME selene can see, and it belongs in `thurbox.yml`. The shape of a
--- value that exists only while a call is running — a `hit`, a `key`, a `wheel`,
--- a row out of a list, an answer out of `thurbox.runs` — is unreachable from
--- there and is declared here.
 
 ---@alias thurbox.Color string A role's colour, `#rrggbb`, a name, or a 0-255 index.
 
---- A style: a bare colour is shorthand for a foreground.
 ---@class thurbox.Style
 ---@field fg? thurbox.Color
 ---@field bg? thurbox.Color
@@ -49,29 +14,16 @@
 
 ---@alias thurbox.StyleSpec thurbox.Color|thurbox.Style
 
---- One styled run within a line.
----
---- `id`/`role` make the run itself a click target over the columns it is laid
---- out at, so a chip inside a line needs no node of its own. Adjacent runs
---- carrying the SAME identity coalesce into one hitbox, which is how a
---- two-colour button (` ◀ F9 `) stays one target.
 ---@class thurbox.Span
 ---@field text string|number|boolean
 ---@field style? thurbox.StyleSpec
 ---@field id? string
 ---@field role? string
 
---- One line: a bare string, one span, or a list of spans.
 ---@alias thurbox.Line string|number|boolean|thurbox.Span|thurbox.Span[]
 
---- What a `text` node or a frame title accepts: one line, or a list of them.
 ---@alias thurbox.Text thurbox.Line|thurbox.Line[]
 
---- Runs painted onto a frame's own border cells, after the block is drawn.
----
---- Border cells cost no content row or column, which is why the status-dot
---- strip, the `▲ N`/`▼ N` scroll counts and the terminal scrollbar live here.
---- Each slot is clipped between the corners, which are never painted over.
 ---@class thurbox.Overlay
 ---@field top_left? thurbox.Text Rightward from the cell after the top-left corner.
 ---@field top_right? thurbox.Text Leftward from the cell before the top-right corner.
@@ -79,7 +31,6 @@
 ---@field bottom_right? thurbox.Text
 ---@field right_column? thurbox.Text One run per inner row, down the right border column.
 
---- A frame drawn around a node. `borders` is all-or-none.
 ---@class thurbox.Frame
 ---@field title? thurbox.Text
 ---@field title_align? "left"|"center"|"centre"|"right"
@@ -90,12 +41,6 @@
 ---@field padding? integer
 ---@field overlay? thurbox.Overlay
 
---- What every node may say about its space and its identity.
----
---- Sizing resolves exact → percentage → share, each clamped by `min`/`max`; a
---- node that asks for nothing takes an equal share of the remainder. `role`
---- carries the kernel's own click verbs (`action:`, `key:`, `focus:`, `url:`,
---- and the bare `drag`); any other role hands the click to the mod.
 ---@class thurbox.NodeCommon
 ---@field len? integer
 ---@field pct? number
@@ -108,9 +53,6 @@
 ---@field frame? thurbox.Frame|string|boolean
 ---@field block? thurbox.Frame|string|boolean The POC's spelling of `frame`.
 
---- Text. `style` paints across the whole rect before the spans go on top, so a
---- span that names its own colour keeps it — that is a selection bar or a
---- hover band, and `widgets.list` exposes it as `selected_style`/`hover_style`.
 ---@class (exact) thurbox.TextNode : thurbox.NodeCommon
 ---@field type? "text"|"paragraph"|"line"
 ---@field text thurbox.Text
@@ -119,14 +61,12 @@
 ---@field scroll? integer
 ---@field style? thurbox.StyleSpec
 
---- A row or a column. Children live under `children`, or in the array part.
 ---@class (exact) thurbox.BoxNode : thurbox.NodeCommon
 ---@field type? "box"|"vstack"|"hstack"|"column"|"row"|"stack"
 ---@field axis? "vertical"|"horizontal"|"column"|"row"|"v"|"h"
 ---@field gap? integer
 ---@field children? thurbox.Node[]
 
---- A text field. `focused` claims the one caret, and `cursor` counts characters.
 ---@class (exact) thurbox.InputNode : thurbox.NodeCommon
 ---@field type? "input"|"field"
 ---@field value string
@@ -135,8 +75,6 @@
 ---@field focused? boolean
 ---@field style? thurbox.StyleSpec
 
---- Pre-rendered cells: a live session's terminal, a program this mod asked
---- to run, or lines the mod produced itself. Exactly one source.
 ---@class (exact) thurbox.SurfaceNode : thurbox.NodeCommon
 ---@field type? "surface"|"terminal"
 ---@field session? string
@@ -147,18 +85,6 @@
 
 ---@alias thurbox.Node thurbox.TextNode|thurbox.BoxNode|thurbox.InputNode|thurbox.SurfaceNode
 
---- What a render RETURNS: any node, plus the one key that is read only there.
----
---- `float` is on these and not on `thurbox.NodeCommon` because the kernel reads
---- it from the returned value itself (`host/load.rs`'s `read_float`, called on
---- the render's result in `LuaHost::render`) and never walks the tree for it.
---- On the shared shape the type said a child could carry one, which `convert.rs`
---- drops in silence.
----
---- This buys accuracy and editor completion, not a diagnostic: luals does not
---- flag an extra key in a table constructor, so a `float` on a child is no more
---- reported now than it was before, and `thurbox.Float` has no required field
---- for a misspelt `widht` to be missing. Verified by probing both.
 ---@class (exact) thurbox.RootText : thurbox.TextNode
 ---@field float? thurbox.Float|boolean `true` takes the default size.
 ---@class (exact) thurbox.RootBox : thurbox.BoxNode
@@ -170,14 +96,10 @@
 
 ---@alias thurbox.Root thurbox.RootText|thurbox.RootBox|thurbox.RootInput|thurbox.RootSurface
 
---- A cell on the screen, as `hit.screen_x`/`hit.screen_y` report it: where an
---- anchored float opens. Past an edge the float opens the other way round.
 ---@class (exact) thurbox.FloatAt
 ---@field x integer
 ---@field y integer
 
---- How big a floating pane asks to be: a share of the screen, or exact cells —
---- and, with `at`, where it opens instead of the centre.
 ---@class (exact) thurbox.Float
 ---@field at? thurbox.FloatAt
 ---@field width? number
@@ -185,8 +107,6 @@
 ---@field cols? integer
 ---@field rows? integer
 
---- What a render is told. `elapsed` is served through a metatable, so reading it
---- is what marks a `pure` pane as depending on the animation clock.
 ---@class (exact) thurbox.Ctx
 ---@field width integer
 ---@field height integer
@@ -196,26 +116,20 @@
 ---@field slot string
 ---@field elapsed number
 
---- What a decorator is told. Smaller than a render's: it is handed the tree it
---- is transforming, not a slot of its own.
 ---@class (exact) thurbox.DecorateCtx
 ---@field width integer
 ---@field height integer
 
---- What `ui/layout.lua` is told. Smaller than a render's: an arrangement sees
---- the screen and which slots are occupied, and no mod.
 ---@class (exact) thurbox.LayoutCtx
 ---@field width integer
 ---@field height integer
 ---@field slots table<string, boolean>
 ---@field strips thurbox.Strip[] Slots named by panes that declared `strip = true`, once each, in load order.
 
---- A full-width row a pane asked for, as the arrangement is told it.
 ---@class (exact) thurbox.Strip
 ---@field slot string
 ---@field len integer Its panes' declared `size.len` (1 when unsaid): summed in a stack slot, the tallest in a switch one.
 
---- A key offered to `on_key`. Return true to consume it.
 ---@class (exact) thurbox.Key
 ---@field key string
 ---@field char? string
@@ -224,8 +138,6 @@
 ---@field shift boolean
 ---@field cmd boolean
 
---- A click on a node this mod painted, with the rect it landed in.
---- Reached only for identity the kernel has no verb for.
 ---@class (exact) thurbox.Hit
 ---@field id? string
 ---@field class string
@@ -239,7 +151,6 @@
 ---@field dragging boolean
 ---@field clicks integer 2 for the second press on the same node in quick succession, else 1.
 
---- A wheel tick over this mod's pane. Declining puts it back on the key path.
 ---@class (exact) thurbox.Wheel
 ---@field up boolean
 ---@field x integer
@@ -262,8 +173,6 @@
 ---| "interface.reloaded"
 ---| string A `user.<name>` a mod emits.
 
---- A key a mod declares. Declared as data so the registry can enumerate,
---- conflict-check and rebind it without calling the mod.
 ---@class (exact) thurbox.Binding
 ---@field key string
 ---@field action string
@@ -273,7 +182,6 @@
 ---@field release? boolean Also call `on_action(action, { event = "release" })` when the key is let go; the press then arrives as `{ event = "press" }` and auto-repeat is swallowed — on a chord with `ctrl`, `alt` or `super`, since outside Windows a held text key (`v`, `space`) repeats as fresh presses. Needs a terminal reporting releases — see `thurbox.keyboard`.
 ---@field group? string
 
---- A palette row: an action reachable without a chord.
 ---@class (exact) thurbox.CommandDecl
 ---@field action string
 ---@field desc? string
@@ -291,13 +199,11 @@
 ---@field destructive? boolean
 ---@field args? thurbox.ActionArgument[]
 
---- An entry in the action band.
 ---@class (exact) thurbox.Pill
 ---@field action string
 ---@field label string
 ---@field priority? integer
 
---- A switch in the settings panel, owned by the declaring mod.
 ---@class (exact) thurbox.SettingDecl
 ---@field id string
 ---@field desc? string
@@ -305,12 +211,6 @@
 ---@field list? boolean A `;`-separated list of percent-escaped entries, shown as a count.
 ---@field choices? string[] The only values a string setting may take; the panel steps through them instead of offering a text field, and the default must be one of them.
 
---- What a mod file returns.
----
---- `render` is required unless the mod `decorates` another, which draws
---- nothing of its own. Its return type is `thurbox.Root` rather than
---- `thurbox.Node` because `float` is read from that value alone; `decorate`
---- keeps `thurbox.Node`, since nothing reads `float` off its result.
 ---@class thurbox.Mod
 ---@field name? string Defaults to the filename, minus a numeric ordering prefix.
 ---@field slot? string Defaults to `"center"`.
@@ -343,7 +243,6 @@
 ---@field on_event? fun(name: string, payload: table<string, any>)
 ---@field ui_state? fun(): table<string, string|number|boolean> Bounded public projection for `ui state`; omit private values.
 
---- What a pane asks of its slot, in the same vocabulary a node uses.
 ---@class (exact) thurbox.Size
 ---@field len? integer
 ---@field pct? number
@@ -351,10 +250,6 @@
 ---@field min? integer
 ---@field max? integer
 
---- The second argument `on_action` may receive. A binding declared
---- `release = true` gets `event`; an action with declared `args` gets those.
---- An action run from the palette or `thurbox-cli ui action` gets no `event`,
---- which a hold-aware mod should treat as a press.
 ---@alias thurbox.ActionArgs table<string, string>|{ event: "press"|"release" }
 
 -- BEGIN GENERATED by src/kernel/lua_api.rs: edit there, then `just lua-api`
@@ -796,19 +691,12 @@
 thurbox = {}
 -- END GENERATED
 
---- Persistent, shared by every mod — the bus between them. Survives a
---- reload, not a restart.
 ---@type table<string, any>
 store = {}
 
---- Persistent and private to the declaring mod. Same lifetime as `store`.
 ---@type table<string, any>
 state = {}
 
---- The path of the mod that last wrote `store[key]` — written for another
---- mod's request, that request's chain, "a.lua via b.lua" — or nil when
---- nothing has, or the kernel or `layout.lua` did. Recorded by the writer's own view
---- of `store`, so it cannot be claimed for another mod.
 ---@param key string
 ---@return string?
 function store_writer(key) end
@@ -817,9 +705,6 @@ function store_writer(key) end
 ---@field name string
 ---@field dir boolean True for a directory, and for a symlink to one inside the session.
 
---- Directory entries and file text, rooted at a session's working directory.
---- Not a filesystem: a path outside the root is refused. Absent unless this
---- mod declares `capabilities = { "files" }` AND the user has trusted it.
 ---@class thurbox.Files
 files = {}
 
@@ -828,11 +713,6 @@ files = {}
 ---@return thurbox.FileEntry[]
 function files.list(session, path) end
 
---- Request file text on a worker. Poll from render: nil means pending.
---- Retained answers refresh after one second; the previous text stays visible
---- during refresh. Read failures raise on a later call. At most 16 keys and
---- two active reads; excess requests stay pending until capacity is available.
---- A mod may retain at most 16 distinct paths per render.
 ---@param session string
 ---@param path string Relative to the session's root.
 ---@return string? text
@@ -842,12 +722,6 @@ function files.read(session, path) end
 ---@field ellipsis? string What marks the cut. `""` cuts without a mark.
 ---@field side? "right"|"left"|"middle" Which end is eaten. Defaults to `"right"`.
 
---- Display width, in terminal COLUMNS.
----
---- The one measurement Lua cannot make: `#` counts bytes and `utf8.len` counts
---- codepoints, and a CJK glyph is one codepoint over two columns. Backed by the
---- same `unicode-width` the painter measures with, so a budget computed here
---- agrees with what lands on the screen.
 ---@class thurbox.TextApi
 text = {}
 
@@ -855,16 +729,12 @@ text = {}
 ---@return integer
 function text.width(str) end
 
---- Cut `str` down to `cols` columns. `opts` is the ellipsis, or a table. An
---- unknown `side` raises rather than being quietly read as `"right"`.
 ---@param str string
 ---@param cols integer
 ---@param opts? string|thurbox.TruncateOpts
 ---@return string
 function text.truncate(str, cols, opts) end
 
---- Space `str` out to `cols` columns. Never truncates: what to do with text
---- that is already too wide is the caller's choice.
 ---@param str string
 ---@param cols integer
 ---@param align? "left"|"right"|"center"|"centre"
@@ -878,28 +748,18 @@ function text.pad(str, cols, align) end
 ---@field timeout? number Seconds before the program is given up on.
 ---@field refresh? boolean Ask again even if a fresh answer is held.
 
---- Ask for a program and read the answer later, from `thurbox.runs[key]`.
----
---- Queued, never executed here — a mod cannot call anything that waits.
---- Absent unless this mod declares `capabilities = { "run" }` AND the user
---- has trusted it, so `if not run then` is the honest check.
 ---@param key string
 ---@param program string
 ---@param opts thurbox.RunOpts
 function run(key, program, opts) end
 
---- Forget this mod's answer/queued request; discard its late completion.
---- Same grant as run; asynchronous, idempotent, and does not cancel active work.
 ---@param key string Nonempty key, implicitly scoped to this mod.
 function run_forget(key) end
 
---- Loads any `.lua` under the interface directory, and nothing outside it.
 ---@param name string
 ---@return any
 function require(name) end
 
---- A user event. Not exact: every other scalar on the table travels as the
---- event's payload, which is the one place an unknown key is meaningful.
 ---@class thurbox.cmd.Emit
 ---@field text string The event's name; subscribers see `user.<name>`.
 
@@ -914,29 +774,20 @@ function require(name) end
 ---@field value? string A text setting's value.
 ---@field reset? boolean Put the setting back to its default.
 
---- Create, edit or delete a task, as `thurbox-cli task` does; a task that is
---- not there, or an unknown status, is reported as `command.failed`.
 ---@class (exact) thurbox.cmd.Task
 ---@field text? string A title: creates when there is no `number`.
 ---@field number? integer An existing task's id.
 ---@field status? string `todo`, `in_progress` or `done`.
 ---@field reset? boolean Delete it.
 
---- Hand a task to an agent, as `thurbox-cli task run` does: its Send action
---- types into its session, its Spawn action reuses or spawns the task's own
---- session, and a task with neither is refused as `command.failed`.
 ---@class (exact) thurbox.cmd.Dispatch
 ---@field number integer The task to dispatch.
 ---@field session? string A session to type it into instead of the task's own action.
 
---- A repository a session spans besides its first.
 ---@class (exact) thurbox.cmd.CreateExtra
 ---@field path string An absolute path on the session's host (`~` only on this machine).
 ---@field worktree? boolean A worktree of its own on the session's branch, made from this repository's default branch; else the directory as it is.
 
---- A Fleet Task whose workspace is `repo`, then each of `extras`:
---- `git+file://<repo>?branch=…#…` for a worktree, `file://<repo>` for the
---- directory as it is.
 ---@class (exact) thurbox.cmd.Create
 ---@field repo string An absolute path on the session's host (`~` only on this machine).
 ---@field text? string The session's name.
@@ -973,11 +824,6 @@ function require(name) end
 ---@field args? string[]
 ---@field action? "close"|"stop"
 ---@field keys? string Type this into the program already running in the pane.
---- The bytes reach its stdin as if typed, so `"\r"` is Enter and `"\27"` is
---- Escape. Names the pane through `text`: it is how a long-lived program is
---- told something rather than replaced. On its own it starts nothing and says
---- so when the pane holds nothing live; sent *with* `repo`, a pane with nothing
---- running is started from it instead, and these keys are not sent.
 
 ---@class (exact) thurbox.cmd.Delete
 ---@field session string
@@ -992,10 +838,6 @@ function require(name) end
 ---@field session string
 ---@field force? boolean Restore what can be restored.
 
---- Restart a session's agent in its session, as `fleet restart` does: on its
---- conversation when Fleet can resume it, or on a new one when `fresh`. It cuts a turn in
---- progress and works on a paused session. Fleet refuses a held or deleting
---- session, and one with no session to restart yet, as `command.failed`.
 ---@class (exact) thurbox.cmd.Restart
 ---@field session string
 ---@field fresh? boolean Start a new conversation instead of resuming this one.
@@ -1003,9 +845,6 @@ function require(name) end
 ---@class (exact) thurbox.cmd.Session
 ---@field session string A session id, or for `copy` a surface: `<id>#shell` reads the companion shell's screen rather than the agent's.
 
---- Type text into a session and press Enter, as `thurbox-cli session send`
---- does: refused when empty or stopped, handed to the agent's inbox while its
---- composer holds typing, and done by a sharing host's own CLI.
 ---@class (exact) thurbox.cmd.Send
 ---@field session string
 ---@field text string
@@ -1018,22 +857,15 @@ function require(name) end
 ---@field session string
 ---@field text? string The new session's name.
 
---- Refused, as `command.failed` with the reason, for any name `session create`
---- would refuse or another session on the same backend already has.
 ---@class (exact) thurbox.cmd.Rename
 ---@field session string
 ---@field text string The name to give it.
 
---- Run a declared action, exactly as its chord or a click on it would — which
---- is how a pane opens help, settings, themes or the palette from a key
---- handler. The mod that asked is the fallback owner, stamped by the kernel.
 ---@class (exact) thurbox.cmd.Action
 ---@field text string The action id. `action` is not read.
 ---@field session? string Pass this row as the action's `session_id` argument.
 ---@field target? string Pass this row as the action's `target` argument.
 
---- Say something in the message band. The band stays kernel-drawn; this is a
---- sentence and a severity contributed to it, like a pill or a binding.
 ---@class (exact) thurbox.cmd.Message
 ---@field text string
 ---@field level? "info"|"success"|"error" Defaults to `info`; anything else is refused.
@@ -1044,11 +876,6 @@ function require(name) end
 ---| "delete" | "restore" | "restart" | "start" | "pause" | "send" | "reorder" | "fork"
 ---| "sync" | "rename" | "copy" | "diff" | "shell" | "editor" | "action" | "message"
 
---- The only way a mod changes anything. Enqueues and returns; it never runs
---- the operation, which is why a mod cannot stall the loop.
----
---- An option name no verb reads is collected and ignored, so the overloads
---- below name what each verb actually requires.
 ---@overload fun(verb: "emit", opts: thurbox.cmd.Emit)
 ---@overload fun(verb: "mod", opts: thurbox.cmd.Mod)
 ---@overload fun(verb: "plugin", opts: thurbox.cmd.Mod)

@@ -48,28 +48,23 @@ param(
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
-# --- Configuration (parameter overrides env var overrides default) ----------
 if (-not $Repo)    { $Repo    = if ($env:THURBOX_REPO)    { $env:THURBOX_REPO }    else { 'Thurbeen/thurbox' } }
 if (-not $Version) { $Version = if ($env:THURBOX_VERSION) { $env:THURBOX_VERSION } else { '' } }
-# Where the release assets are fetched from; a mirror, or a local copy in tests.
 $DownloadUrl = if ($env:THURBOX_DOWNLOAD_URL) { $env:THURBOX_DOWNLOAD_URL } else { "https://github.com/$Repo/releases/download" }
 $Binaries = @('thurbox', 'thurbox-cli', 'fleet', 'runtime-mux', 'runtime-herdr', 'workspace-git')
 $FleetBinaries = @('fleet', 'runtime-mux', 'runtime-herdr', 'workspace-git')
-# The env var is a default: an explicit -FleetOnly or -FleetOnly:$false wins.
 $FleetOnlyFromEnv = $false
 if (-not $PSBoundParameters.ContainsKey('FleetOnly') -and $env:THURBOX_FLEET_ONLY -and $env:THURBOX_FLEET_ONLY -ne '0') {
     $FleetOnly = [switch]$true
     $FleetOnlyFromEnv = $true
 }
-# What this run installs.
 $Programs = if ($FleetOnly) { $FleetBinaries } else { $Binaries }
 if (-not $InstallDir) {
     if ($env:THURBOX_INSTALL_DIR) { $InstallDir = $env:THURBOX_INSTALL_DIR }
     elseif ($env:LOCALAPPDATA)    { $InstallDir = Join-Path $env:LOCALAPPDATA 'Programs\thurbox' }
-    else                          { $InstallDir = Join-Path $HOME '.thurbox\bin' }  # degenerate fallback
+    else                          { $InstallDir = Join-Path $HOME '.thurbox\bin' }
 }
 
-# --- Pretty output ----------------------------------------------------------
 function Write-Info    { param($m) Write-Host "> $m"  -ForegroundColor Cyan }
 function Write-Step    { param($m) Write-Host "  $m"   -ForegroundColor DarkGray }
 function Write-Ok      { param($m) Write-Host "ok $m"  -ForegroundColor Green }
@@ -88,10 +83,7 @@ function Show-Banner {
     Write-Host "  multi-session coding-agent orchestrator`n" -ForegroundColor DarkGray
 }
 
-# --- Platform detection -----------------------------------------------------
 function Get-Target {
-    # ARM64 Windows runs x64 binaries under emulation, so x86_64 is the target
-    # for every Windows arch until a native aarch64-pc-windows-msvc build ships.
     $arch = $env:PROCESSOR_ARCHITECTURE
     switch ($arch) {
         'AMD64' { return 'x86_64-pc-windows-msvc' }
@@ -104,11 +96,9 @@ function Get-Target {
     }
 }
 
-# --- Version resolution -----------------------------------------------------
 function Get-LatestVersion {
     if ($Version) { return $Version }
 
-    # GitHub API first.
     try {
         $rel = Invoke-RestMethod -UseBasicParsing -Uri "https://api.github.com/repos/$Repo/releases/latest" `
             -Headers @{ 'User-Agent' = 'thurbox-installer' }
@@ -117,7 +107,6 @@ function Get-LatestVersion {
         Write-Step "GitHub API unavailable ($($_.Exception.Message)); scraping releases page..."
     }
 
-    # Fallback: scrape the releases page for the newest tag.
     try {
         $page = Invoke-WebRequest -UseBasicParsing -Uri "https://github.com/$Repo/releases"
         $m = [regex]::Match($page.Content, 'releases/tag/(v[0-9][0-9A-Za-z.\-+]*)')
@@ -129,11 +118,9 @@ function Get-LatestVersion {
     throw "Could not determine the latest version. Pin one with -Version v0.1.0 (or `$env:THURBOX_VERSION)."
 }
 
-# --- Checksum verification --------------------------------------------------
 function Get-ExpectedChecksum {
     param([string]$ChecksumFile, [string]$ArchiveName)
     foreach ($line in Get-Content $ChecksumFile) {
-        # sha256sum format: "<hash>  <filename>"
         if ($line -match "([0-9a-fA-F]{64})\s+\*?(.*$([regex]::Escape($ArchiveName)))\s*$") {
             return $Matches[1].ToLower()
         }
@@ -141,7 +128,6 @@ function Get-ExpectedChecksum {
     throw "Checksum for $ArchiveName not found in checksums file."
 }
 
-# --- PATH management --------------------------------------------------------
 function Add-ToUserPath {
     param([string]$Dir)
     $userPath = [Environment]::GetEnvironmentVariable('Path', 'User')
@@ -152,41 +138,25 @@ function Add-ToUserPath {
     }
     $newPath = (@($entries) + $Dir) -join ';'
     [Environment]::SetEnvironmentVariable('Path', $newPath, 'User')
-    # Reflect into the current session too.
     $env:Path = "$env:Path;$Dir"
     return $true
 }
 
-# --- Extraction -------------------------------------------------------------
-# The running processes of the shipped programs started from any of $Path, for
-# the message that asks the user to close them. `fleet up`, the Fleet manager,
-# runs for as long as sessions do, so it is the likeliest one. Path is $null
-# for a process we may not inspect.
 function Get-LockingProcess {
     param([string[]]$Path)
     Get-Process -Name $Binaries -ErrorAction SilentlyContinue |
         Where-Object { $_.Path -and ($Path -contains $_.Path) }
 }
 
-# Extract the release zip into $Destination, replacing what is there.
-#
-# Not Expand-Archive -Force straight into $Destination: that deletes each file
-# it overwrites, and Windows refuses to delete an executable a process is
-# running from, so updating while thurbox (or a thurbox-cli a hook started) was
-# running died with Remove-Item's access-denied trace. Windows does let such a
-# file be renamed, so each one is moved aside to .<name>.old - the backup name
-# the in-app updater (src/update/self_update.rs) uses - and the new one moved
-# in. A backup a process still runs from stays until the next update.
+# Windows refuses to delete a running executable but lets it be renamed, so each one moves aside.
 function Install-Archive {
-    # -Only: the program stems to install; every file in the archive otherwise.
     param([string]$ZipPath, [string]$Destination, [string[]]$Only)
     New-Item -ItemType Directory -Path $Destination -Force | Out-Null
     $Destination = (Resolve-Path -LiteralPath $Destination).ProviderPath
-    # Inside $Destination so every move below is a rename on one volume.
-    $staging = Join-Path $Destination ('.install-' + [System.Guid]::NewGuid().ToString('N'))
+    $stagingOnDestinationVolume = Join-Path $Destination ('.install-' + [System.Guid]::NewGuid().ToString('N'))
     try {
-        Expand-Archive -LiteralPath $ZipPath -DestinationPath $staging
-        $files = @(Get-ChildItem -LiteralPath $staging -File)
+        Expand-Archive -LiteralPath $ZipPath -DestinationPath $stagingOnDestinationVolume
+        $files = @(Get-ChildItem -LiteralPath $stagingOnDestinationVolume -File)
         if ($Only) {
             $files = @($files | Where-Object { $Only -contains $_.BaseName -and $_.Extension -eq '.exe' })
             if (-not ($files | Where-Object { $_.BaseName -eq 'fleet' })) {
@@ -210,7 +180,6 @@ function Install-Archive {
             try {
                 Move-Item -LiteralPath $file.FullName -Destination $target
             } catch {
-                # Leave the old file in place rather than nothing at all.
                 if ((Test-Path -LiteralPath $backup) -and -not (Test-Path -LiteralPath $target)) {
                     Move-Item -LiteralPath $backup -Destination $target -ErrorAction SilentlyContinue
                 }
@@ -220,12 +189,10 @@ function Install-Archive {
         }
     }
     finally {
-        Remove-Item -LiteralPath $staging -Recurse -Force -ErrorAction SilentlyContinue
+        Remove-Item -LiteralPath $stagingOnDestinationVolume -Recurse -Force -ErrorAction SilentlyContinue
     }
 }
 
-# --- Next steps -------------------------------------------------------------
-# `fleet init` only when the release shipped Fleet: a 2.x release has none.
 function Show-NextSteps {
     param([string]$Dir, [switch]$FleetOnly)
     Write-Host "`nNext steps" -ForegroundColor Magenta
@@ -247,7 +214,6 @@ function Show-NextSteps {
     Write-Step '* Launch the TUI:    thurbox'
 }
 
-# --- Main -------------------------------------------------------------------
 function Invoke-Install {
     Show-Banner
 
@@ -265,11 +231,9 @@ function Invoke-Install {
     try {
         Write-Info 'Downloading checksums...'
         $checksumPath = Join-Path $tmp 'checksums.txt'
-        # A 3.x release's sums file is thurbox-<V>-sha256sums.txt: it never ships
-        # thurbox-v<V>-checksums.txt, the name every 2.x updater fetches first,
-        # so those updaters fail safe on it (docs/thurbox/releasing.md, "v2 and
-        # v3"). A pinned 2.x release has only that old name.
-        $sums = @("thurbox-$($ver.TrimStart('v'))-sha256sums.txt", "thurbox-$ver-checksums.txt")
+        $v3Sums = "thurbox-$($ver.TrimStart('v'))-sha256sums.txt"
+        $v2Sums = "thurbox-$ver-checksums.txt"
+        $sums = @($v3Sums, $v2Sums)
         $fetched = $false
         foreach ($name in $sums) {
             try {
@@ -316,7 +280,6 @@ function Invoke-Install {
     Write-Warn 'Windows support is experimental for now - expect rough edges and please report issues.'
 
     Show-NextSteps -Dir $InstallDir -FleetOnly:$FleetOnly
-    # A session that kept the variable from an earlier install must not skip thurbox silently.
     if ($FleetOnlyFromEnv) {
         Write-Warn 'THURBOX_FLEET_ONLY is set, so thurbox was not installed. Remove it for a full install: Remove-Item Env:\THURBOX_FLEET_ONLY'
     }
@@ -324,7 +287,6 @@ function Invoke-Install {
     Write-Ok 'Installation complete! Happy hacking.'
 }
 
-# Run unless dot-sourced for testing ($env:THURBOX_PS_TEST set).
 if (-not $env:THURBOX_PS_TEST) {
     Invoke-Install
 }

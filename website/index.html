@@ -6,7 +6,6 @@ root: '.'
 extraCss: ['landing.css']
 footer: true
 ---
-<!-- Hero -->
     <section class="hero section">
       <div class="container">
         <h1>
@@ -33,7 +32,6 @@ footer: true
       </div>
     </section>
 
-    <!-- Fleet: the engine thurbox runs on. It also stands on its own. -->
     <section class="section product" id="fleet">
       <div class="container">
         <div class="product__grid" data-reveal>
@@ -61,8 +59,6 @@ fleet send fix-login "Run the tests too"</code></pre>
           </div>
         </div>
 
-        <!-- Fleet alone. Its own block so the install line can change without
-             touching thurbox's. -->
         <div class="get-started" id="fleet-start" data-reveal>
           <h3>Get started with Fleet alone</h3>
           <pre data-wrap><code class="language-bash">curl -fsSL https://raw.githubusercontent.com/Thurbeen/thurbox/main/scripts/install.sh | sh -s -- --fleet-only
@@ -133,8 +129,6 @@ thurbox</code></pre>
           </p>
         </div>
 
-        <!-- The official mods, one line each. Setup lives in each README and
-             in the catalog, so the home page stays a list of names. -->
         <div class="plugin-strip" id="plugins">
           <h3>Mods to start from</h3>
           <ul class="plugin-strip__list" data-reveal>
@@ -929,12 +923,10 @@ thurbox</code></pre>
       </div>
     </section>
 
-    <!-- Back to top -->
     <button class="back-to-top" id="back-to-top" aria-label="Back to top" title="Back to top">
       <span aria-hidden="true">&uarr;</span>
     </button>
 
-    <!-- HUD status bar (decorative game chrome) -->
     <div class="hud-bar" aria-hidden="true" role="presentation">
       <span class="hud-bar__seg">
         <span class="hud-bar__live"></span>
@@ -953,10 +945,6 @@ thurbox</code></pre>
         <span class="k">License</span>
         <span class="v">MIT</span>
       </span>
-      <!-- Half of the easter-egg clue: says god mode exists and that it is five
-           keystrokes, without spelling the code. Anyone who played Doom fills in
-           the rest. The accessible half is the footer's .footer-secret line,
-           since this whole bar is aria-hidden decoration. -->
       <span class="hud-bar__seg hud-bar__seg--hide-sm">
         <span class="k">God Mode</span>
         <span class="v">5 keys</span>

@@ -1,12 +1,8 @@
-/* ---- Docs layout ---- */
 .docs-page {
   padding-top: var(--nav-height);
   min-height: 100vh;
 }
 
-/* Mobile-first: one column. The sidebar is an off-canvas drawer (below) and the
-   TOC rail is hidden, so the content column owns the full width. Grid rather
-   than flex so the >=1280px three-column layout is a template swap. */
 .docs-layout {
   display: grid;
   grid-template-columns: minmax(0, 1fr);
@@ -21,7 +17,6 @@
   }
 }
 
-/* Wide enough for the on-this-page rail to earn its keep. */
 @media (min-width: 1280px) {
   .docs-layout {
     grid-template-columns: var(--sidebar-width) minmax(0, 1fr) var(--toc-width);
@@ -34,7 +29,6 @@
   }
 }
 
-/* ---- Sidebar ---- */
 .docs-sidebar {
   padding: var(--space-xl) var(--space-lg) var(--space-xl) 0;
   position: sticky;
@@ -68,8 +62,6 @@
   margin: 0;
 }
 
-/* Navigation lists, not prose: their position says "link", so they skip the
-   underline base.css gives a link in a list item. */
 .docs-sidebar li a,
 .docs-toc li a {
   text-decoration: none;
@@ -112,7 +104,6 @@
   font-weight: 600;
 }
 
-/* ---- Sidebar toggle (mobile) ---- */
 .sidebar-toggle {
   display: none;
   position: fixed;
@@ -142,29 +133,23 @@
   box-shadow: var(--bevel-glow-red);
 }
 
-/* ---- Content area ---- */
 .docs-content {
   min-width: 0;
   padding: var(--space-xl) 0 var(--space-3xl);
 }
 
-/* Gutter between the sidebar rule and the prose, only once the sidebar is a
-   real column rather than a drawer. */
 @media (min-width: 1024px) {
   .docs-content {
     padding-left: var(--space-xl);
   }
 }
 
-/* Long-form prose caps its measure for readability even when the grid track is
-   wider; the rail and sidebar absorb the rest. */
 @media (min-width: 1440px) {
   .docs-content {
     padding-right: var(--space-xl);
   }
 }
 
-/* ---- Breadcrumbs ---- */
 .breadcrumbs {
   display: flex;
   align-items: center;
@@ -190,7 +175,6 @@
   color: var(--text-secondary);
 }
 
-/* ---- Heading anchors ---- */
 .docs-content h2 {
   margin-top: var(--space-2xl);
   margin-bottom: var(--space-md);
@@ -230,14 +214,10 @@ h3:hover .heading-anchor {
   color: var(--cyan);
 }
 
-/* A block in a language the build does not highlight (nix) stays a bare <pre>
-   with no scrolling body of its own: it scrolls by itself instead of widening
-   the page. */
 .docs-content > pre {
   overflow-x: auto;
 }
 
-/* ---- Docs-specific table styling ---- */
 .docs-content table {
   font-size: 0.875rem;
 }
@@ -246,7 +226,6 @@ h3:hover .heading-anchor {
   font-size: 0.8rem;
 }
 
-/* ---- Docs hub cards ---- */
 .docs-hub-grid {
   display: grid;
   grid-template-columns: 1fr;
@@ -275,8 +254,6 @@ h3:hover .heading-anchor {
   color: var(--cyan);
 }
 
-/* Match the landing board's glyph-tile hover, keeping the bevel under the glow
-   so the tile lights up rather than flattening. */
 .docs-hub-card:hover .card-icon {
   color: var(--green);
   border-color: var(--green);
@@ -284,7 +261,6 @@ h3:hover .heading-anchor {
   box-shadow: var(--bevel), var(--glow-green);
 }
 
-/* ---- Docs hub categories ---- */
 .docs-hub-category {
   margin-top: var(--space-2xl);
   padding-bottom: var(--space-xs);
@@ -298,12 +274,10 @@ h3:hover .heading-anchor {
   font-size: 0.9rem;
 }
 
-/* Tighten the grid's default top gap when it follows a category blurb. */
 .docs-hub-category-desc + .docs-hub-grid {
   margin-top: var(--space-lg);
 }
 
-/* ---- Info boxes ---- */
 .info-box {
   background: var(--bg-secondary);
   border: 1px solid var(--border);
@@ -322,7 +296,6 @@ h3:hover .heading-anchor {
   border-left-color: var(--yellow);
 }
 
-/* ---- Responsive ---- */
 @media (max-width: 1023px) {
   .docs-sidebar {
     position: fixed;
@@ -359,7 +332,6 @@ h3:hover .heading-anchor {
   }
 }
 
-/* ---- Performance charts (inline SVG) ---- */
 .perf-figure {
   margin: var(--space-xl) 0;
 }
@@ -394,7 +366,6 @@ h3:hover .heading-anchor {
   color: var(--text-muted);
 }
 
-/* ---- Sidebar backdrop (mobile) — dims content behind the open panel ---- */
 .docs-sidebar-backdrop {
   display: none;
 }
@@ -425,10 +396,6 @@ h3:hover .heading-anchor {
   }
 }
 
-/* ---- "On this page" rail ----
-   Built at build time by the docs-toc transform. It only exists as a column at
-   >=1280px; below that the sidebar is the single navigation surface and a second
-   list of links would just be noise. */
 .docs-toc {
   display: none;
 }
@@ -446,8 +413,6 @@ h3:hover .heading-anchor {
 }
 
 .docs-toc__heading {
-  /* An h2 for document outline correctness, styled as a sidebar label rather
-     than inheriting the Press Start 2P display treatment other h2s get. */
   font-family: var(--font-mono);
   font-size: 0.75rem;
   font-weight: 700;
@@ -483,36 +448,30 @@ h3:hover .heading-anchor {
   border-left-color: var(--text-muted);
 }
 
-/* Scroll-spy shares main.js's .active convention with the sidebar. */
 .docs-toc__item a.active {
   color: var(--green);
   border-left-color: var(--green);
   text-shadow: var(--glow-green);
 }
 
-/* h3s nest one level in under their h2. */
 .docs-toc__item--h3 a {
   padding-left: var(--space-lg);
   font-size: 0.75rem;
   color: var(--text-muted);
 }
 
-/* ---- Mobile reading ---- */
 @media (max-width: 639px) {
   .docs-content {
     padding-top: var(--space-lg);
     font-size: 0.95rem;
   }
 
-  /* Press Start 2P is very wide; docs h2s are prose signposts, not title cards,
-     so drop to the mono face on phones to stop them wrapping to three lines. */
   .docs-content h2 {
     font-family: var(--font-mono);
     letter-spacing: 0;
     margin-top: var(--space-xl);
   }
 
-  /* Wide tables scroll in their own box rather than forcing the page sideways. */
   .docs-content table {
     display: block;
     width: 100%;
@@ -526,8 +485,6 @@ h3:hover .heading-anchor {
     white-space: nowrap;
   }
 
-  /* The hover-reveal "#" affordance can't be hovered on touch, and it pushes
-     long headings wider. */
   .heading-anchor {
     display: none;
   }

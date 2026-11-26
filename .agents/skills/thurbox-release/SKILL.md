@@ -33,6 +33,9 @@ Every push to `main` automatically triggers the release workflow:
      single push, so a website-only push landing on an unreleased `src/` commit
      still cuts the release it owes. A forced `workflow_dispatch` version
      **skips** the relevance gate — an explicit human cut is always honoured.
+     The last tag is the last `v*` tag: the `media` release's tag
+     (`scripts/demo/publish-media.sh`) also sits on `main`, and diffing from it
+     would hide an unreleased change.
 3. **Release line** (`check-release`'s `line` step, `scripts/ci/release-line.sh`):
    the version's major must equal `RELEASE_LINE` in
    `src/update/version_check.rs`, or the run fails before tagging — so a stray
@@ -64,7 +67,12 @@ Every push to `main` automatically triggers the release workflow:
   the major). To cut a *specific* version that `--auto` can't reach — the only
   way across a major boundary from a `0.x` line, or any one-off — dispatch the
   Release workflow (`cd.yml`) with the `version` input (e.g. `1.0.0`); it runs
-  `cog bump --version <v>` instead of `--auto`.
+  `cog bump --version <v>` instead of `--auto`. `check-release` computes these
+  `bump_args` in bash: a YAML `${{ && || }}` ternary in `create-tag` fell back
+  to `--auto` when an output briefly read empty.
+- **Tag push**: `create-tag` pushes `refs/tags/<version>` alone. A branch push
+  from `v1.x` would try to move `main` and be rejected, and the tag would never
+  leave the runner.
 
 ### Release Artifacts
 
@@ -128,7 +136,9 @@ own):
   version — the binary still ships immediately via GitHub Releases +
   Homebrew/AUR/winget). A residual `403`/`409` at push time is likewise caught
   and exits green; only a genuine failure (bad package, auth) fails red — so a
-  backed-up channel never turns the whole release red.
+  backed-up channel never turns the whole release red. A feed lookup error
+  pushes anyway, and winget's PR lookup error submits anyway: a lookup hiccup
+  never blocks a release.
 - **winget** (`publish-winget`): bumps `PackageVersion`/`InstallerUrl`/
   `InstallerSha256`/`ReleaseNotesUrl` in the three manifests under
   `packaging/winget/manifests/` (via `packaging/winget/bump-manifests.py`,

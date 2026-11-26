@@ -56,12 +56,10 @@ def main() -> int:
     notes = f"https://github.com/Thurbeen/thurbox/releases/tag/v{version}"
     pv = rf"(?m)^PackageVersion:\s*.*$"
 
-    # Version manifest: PackageVersion only.
     vt = version_manifest.read_text()
     vt = sub_once(vt, pv, f"PackageVersion: {version}", "PackageVersion (version manifest)")
     version_manifest.write_text(vt)
 
-    # Installer manifest: PackageVersion, InstallerUrl, InstallerSha256.
     it = installer_manifest.read_text()
     it = sub_once(it, pv, f"PackageVersion: {version}", "PackageVersion (installer manifest)")
     it = sub_once(
@@ -78,7 +76,6 @@ def main() -> int:
     )
     installer_manifest.write_text(it)
 
-    # Locale manifest: PackageVersion, ReleaseNotesUrl.
     lt = locale_manifest.read_text()
     lt = sub_once(lt, pv, f"PackageVersion: {version}", "PackageVersion (locale manifest)")
     lt = sub_once(

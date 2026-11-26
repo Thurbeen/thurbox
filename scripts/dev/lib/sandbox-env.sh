@@ -1,62 +1,29 @@
 # shellcheck shell=sh
-#
-# Shared dev-sandbox isolation helper — the single source of truth for running a
-# thurbox *dev build* (`0.0.0-dev` => `dev_build` cfg, which uses the
-# `thurbox-dev` tmux socket) against an isolated environment, without polluting
-# your real thurbox config/sessions.
-#
-# Two isolation flavors:
-#
-#   tbx_sandbox_init      — *thurbox-only* isolation (DEFAULT for sandbox.sh):
-#                           redirects only THURBOX_CONFIG_DIR / THURBOX_DATA_DIR
-#                           (+ TMUX_TMPDIR), leaving HOME/XDG real so your real,
-#                           authenticated agent CLIs (claude/codex/antigravity/…) work.
-#   tbx_sandbox_init_full — *full* isolation: also overrides HOME + XDG_* under
-#                           the sandbox (hermetic; agents boot with no creds).
-#                           Used by the demo recorder.
-#
-# Source it (don't execute) AFTER setting REPO_ROOT (or TBX_REPO_ROOT). Written
-# in POSIX sh so both bash callers (sandbox.sh) and sh callers (the ui-review
-# skill's capture.sh) can source it. Both flavors prepend the
-# repo's target/debug to PATH, so `fleet` and `runtime-mux` resolve to this
-# checkout's. Sessions are Fleet's: tbx_sandbox_fleet gives the sandbox a Fleet
-# of its own, and tbx_fleet_session creates one.
-#
-# Build the binaries (thurbox, thurbox-cli, fleet, runtime-mux) BEFORE calling
-# init so cargo still resolves your ~/.cargo (the full flavor overrides $HOME).
 
 : "${TBX_REPO_ROOT:=${REPO_ROOT:-}}"
 if [ -z "$TBX_REPO_ROOT" ]; then
     echo "sandbox-env.sh: set REPO_ROOT (or TBX_REPO_ROOT) before sourcing" >&2
-    # `return` works when sourced (the intended use); `exit` covers the mistake
-    # of executing this file directly.
+    # `return` fails outside a sourced file, so `exit` covers running this directly.
     # shellcheck disable=SC2317
     return 2 2>/dev/null || exit 2
 fi
 export TBX_REPO_ROOT
 
-# The sandbox's tmux socket name (the dev build's default — mirrors
-# crates/runtime-mux/src/instance.rs TMUX_SOCKET for a dev_build). It lives inside the sandbox's
-# private TMUX_TMPDIR, so killing it can never reach a real server. Exported to
-# thurbox as THURBOX_SOCKET by the init flavors below: a sandbox relocates
-# THURBOX_DATA_DIR, and thurbox derives a socket of its own from a relocated
-# data dir, so the teardown below would otherwise be killing a name nothing
-# created.
 export TBX_DEV_SOCKET="thurbox-dev"
 
-# Populated by an init call.
 export TBX_SANDBOX_ROOT=""
 export TBX_SANDBOX_FRESH=0
 
-# tbx_sandbox_tmux_dir <profile> — short, stable tmux socket dir for a persistent
-# profile (kept off the deep target/ path; AF_UNIX socket paths are length-limited).
 tbx_sandbox_tmux_dir() {
     echo "${XDG_RUNTIME_DIR:-${TMPDIR:-/tmp}}/thurbox-sbx-${1:-default}"
 }
 
-# _tbx_resolve_root <fresh|persistent> [profile] — common setup shared by both
-# init flavors: resolves TBX_SANDBOX_ROOT, exports TMUX_TMPDIR (short, see above),
-# and prepends target/debug to PATH. Internal.
+_tbx_name_socket_over_any_inherited_one() {
+    THURBOX_SOCKET="$TBX_DEV_SOCKET"
+    export THURBOX_SOCKET
+    unset THURBOX_SOCKET_FOR
+}
+
 _tbx_resolve_root() {
     mode="${1:-persistent}"
     profile="${2:-default}"
@@ -71,8 +38,7 @@ _tbx_resolve_root() {
             TBX_SANDBOX_ROOT="$TBX_REPO_ROOT/target/dev-sandbox/$profile"
             TBX_SANDBOX_FRESH=0
             mkdir -p "$TBX_SANDBOX_ROOT"
-            # The deep target/ path overflows tmux's socket-path limit, so keep
-            # the persistent socket dir short + stable per profile.
+            # AF_UNIX socket paths are length-limited, and the deep target/ path overflows them.
             TMUX_TMPDIR="$(tbx_sandbox_tmux_dir "$profile")"
             ;;
         *)
@@ -83,25 +49,11 @@ _tbx_resolve_root() {
 
     export TMUX_TMPDIR
     mkdir -p "$TMUX_TMPDIR"
-    # Name the socket outright (see TBX_DEV_SOCKET) so teardown/clean can find
-    # it whichever flavor of isolation ran. THURBOX_SOCKET_FOR — the tag that
-    # tells thurbox an injected socket from an operator's own — has to go with
-    # it: a sandbox started from inside a thurbox pane inherits one naming the
-    # operator's data dir, and socket_for then rules the name above inherited
-    # and derives one from the sandbox's own data dir instead. The sandbox
-    # would run on a server nothing here can name, and the teardown below would
-    # kill an empty one — a leaked tmux server (with its agents and heartbeat)
-    # per sandbox run.
-    THURBOX_SOCKET="$TBX_DEV_SOCKET"
-    export THURBOX_SOCKET
-    unset THURBOX_SOCKET_FOR
+    _tbx_name_socket_over_any_inherited_one
     PATH="$TBX_REPO_ROOT/target/debug:$PATH"
     export PATH
 }
 
-# tbx_sandbox_init <fresh|persistent> [profile] — THURBOX-ONLY isolation.
-# Real HOME/XDG (so authenticated agent CLIs work); only thurbox's config/data
-# are redirected into the sandbox via the THURBOX_*_DIR overrides paths.rs honors.
 tbx_sandbox_init() {
     _tbx_resolve_root "$@" || return $?
     THURBOX_CONFIG_DIR="$TBX_SANDBOX_ROOT/thurbox-config"
@@ -110,15 +62,13 @@ tbx_sandbox_init() {
     mkdir -p "$THURBOX_CONFIG_DIR" "$THURBOX_DATA_DIR"
 }
 
-# tbx_sandbox_init_full <fresh|persistent> [profile] — FULL isolation.
-# Overrides HOME + XDG_* under the sandbox too (hermetic; agents boot fresh with
-# no creds). For the demo recorder. Uses the dev_build `thurbox-dev`
-# XDG subdir (no THURBOX_*_DIR override needed).
+_tbx_drop_inherited_thurbox_dir_overrides() {
+    unset THURBOX_CONFIG_DIR THURBOX_DATA_DIR
+}
+
 tbx_sandbox_init_full() {
     _tbx_resolve_root "$@" || return $?
-    # Hermetic: drop any inherited THURBOX_*_DIR overrides — paths.rs honors them
-    # ahead of XDG, so an inherited one would silently defeat the isolation.
-    unset THURBOX_CONFIG_DIR THURBOX_DATA_DIR
+    _tbx_drop_inherited_thurbox_dir_overrides
     HOME="$TBX_SANDBOX_ROOT/home"
     XDG_CONFIG_HOME="$TBX_SANDBOX_ROOT/config"
     XDG_DATA_HOME="$TBX_SANDBOX_ROOT/data"
@@ -129,29 +79,19 @@ tbx_sandbox_init_full() {
         "$XDG_CACHE_HOME"
 }
 
-# tbx_sandbox_fleet — give the sandbox a Fleet of its own (ADR-41): every
-# session is a Fleet Task, and thurbox reads them through `fleet watch`.
-# thurbox never starts `fleet up`: tbx_sandbox_fleet_up does. Without this, `fleet` would read the operator's own
-# config — their real Tasks in a sandbox's interface. Exports FLEET_CONFIG and
-# writes the config under the sandbox root on every run: the file is generated,
-# so a profile made by an older checkout never keeps a section the current
-# `fleet` refuses. Edit this function, not the file:
-#
-#   - `runtime-mux` (target/debug, on PATH after an init) serves `local`, on
-#     the sandbox's tmux directory and socket, which it inherits.
-#
-# Call it after an init flavor.
+_tbx_replace_by_rename_from_stdin() {
+    staged="$(mktemp "$1.XXXXXX")"
+    cat > "$staged"
+    mv -f "$staged" "$1"
+}
+
 tbx_sandbox_fleet() {
     tbx_sandbox_runtime
     fleet_dir="$TBX_SANDBOX_ROOT/fleet"
     FLEET_CONFIG="$fleet_dir/config.toml"
     export FLEET_CONFIG
     mkdir -p "$fleet_dir"
-    # Staged in a file of this run's own and renamed into place: a manager an
-    # earlier run left alive never reads a half-written file, and two
-    # launches of one profile never rename each other's staging file away.
-    staged="$(mktemp "$fleet_dir/config.toml.XXXXXX")"
-    cat > "$staged" <<'EOF'
+    _tbx_replace_by_rename_from_stdin "$FLEET_CONFIG" <<'EOF'
 version = 1
 
 [data]
@@ -162,40 +102,25 @@ program = "runtime-mux"
 callTimeoutMs = 10000
 keyPrefix = "tbx-sandbox"
 EOF
-    mv -f "$staged" "$FLEET_CONFIG"
 }
 
-# tbx_sandbox_runtime — keep runtime-mux's workspaces (the worktrees it makes
-# from a session's `git+file` URL) inside the sandbox, not under the real
-# `~/.local/share/runtime-mux`. Written on every run, like the Fleet config.
 tbx_sandbox_runtime() {
     RUNTIME_MUX_CONFIG="$TBX_SANDBOX_ROOT/fleet/runtime-mux.toml"
     export RUNTIME_MUX_CONFIG
     mkdir -p "$TBX_SANDBOX_ROOT/fleet"
-    staged="$(mktemp "$TBX_SANDBOX_ROOT/fleet/runtime-mux.toml.XXXXXX")"
-    printf "[workspace]\nroot = '%s'\n" "$TBX_SANDBOX_ROOT/fleet/workspaces" > "$staged"
-    mv -f "$staged" "$RUNTIME_MUX_CONFIG"
+    printf "[workspace]\nroot = '%s'\n" "$TBX_SANDBOX_ROOT/fleet/workspaces" \
+        | _tbx_replace_by_rename_from_stdin "$RUNTIME_MUX_CONFIG"
 }
 
-# tbx_fleet_task_name <name> — the Task name thurbox gives a session called
-# <name>: lowercase, each run of other characters one `-`.
 tbx_fleet_task_name() {
     printf '%s' "$1" | tr '[:upper:]' '[:lower:]' \
         | sed 's/[^a-z0-9][^a-z0-9]*/-/g; s/^-//; s/-$//'
 }
 
-# tbx_fleet_session <name> <dir> [harness] — an interactive session over <dir>,
-# as thurbox's create flow makes one: a dispatched Task with no brief, its
-# given name in the `thurbox.dev/name` label. <harness> defaults to
-# claude-code; Fleet runs any other name (or an absolute path) as the program,
-# with no hooks. Skips a Task that already exists. Nothing spawns until a
-# `fleet up` (tbx_sandbox_fleet_up) or a `fleet reconcile` runs. <name> and <dir>
-# go into JSON as they are: keep quotes and backslashes out of them.
+# MUST KILL: rearchitect — a JSON encoder would make a name or dir holding quotes or backslashes safe
 tbx_fleet_session() {
     task="$(tbx_fleet_task_name "$1")"
     fleet get task "$task" >/dev/null 2>&1 && return 0
-    # A path is the directory as it is; a URL (`git+file://<repo>?branch=…`)
-    # is passed through, so the runtime makes that worktree.
     case "$2" in
         *://*) url="$2" ;;
         *) url="file://$2" ;;
@@ -204,13 +129,7 @@ tbx_fleet_session() {
         "$task" "$1" "${3:-claude-code}" "$url" | fleet apply --create-only -f - >/dev/null
 }
 
-# _tbx_fleet_is_ours <pid> <root> — whether that process runs on the Fleet
-# config tbx_sandbox_fleet wrote under <root>. Without /proc nothing tells, so
-# the caller's `fleet up` check is all there is.
-# A manager is this sandbox's when its config is: the sandbox's FLEET_CONFIG,
-# or, with none set, the per-user file under an XDG_CONFIG_HOME inside the
-# sandbox (what the tutorial recorder's `fleet init` writes). Resolved, since that home can be a symlink into the root.
-_tbx_fleet_is_ours() { # <pid> <root>
+_tbx_fleet_is_ours() {
     [ -r "/proc/$1/environ" ] || return 0
     _tbx_env=$(tr '\0' '\n' < "/proc/$1/environ")
     if printf '%s\n' "$_tbx_env" | grep -q '^FLEET_CONFIG='; then
@@ -252,7 +171,7 @@ EOF
     return "$stopped"
 }
 
-_tbx_stop_manager() { # <pid> <root>
+_tbx_stop_manager() {
     case "$1" in
         *[!0-9]*|"") return 0 ;;
     esac
@@ -267,7 +186,7 @@ _tbx_stop_manager() { # <pid> <root>
     return 1
 }
 
-_tbx_wait_gone() { # <pid> <seconds>
+_tbx_wait_gone() {
     ticks=$(($2 * 10))
     while [ "$ticks" -gt 0 ]; do
         case "$(ps -p "$1" -o stat= 2>/dev/null)" in
@@ -279,18 +198,12 @@ _tbx_wait_gone() { # <pid> <seconds>
     return 1
 }
 
-# _tbx_kill_servers — kill the tmux servers of the private TMUX_TMPDIR in
-# force: thurbox's own socket, and `runtime-mux`, the one runtime-mux keeps
-# Fleet's sessions on. Safe: that directory is the sandbox's alone.
 _tbx_kill_servers() {
     for socket in "$TBX_DEV_SOCKET" runtime-mux; do
         tmux -L "$socket" kill-server >/dev/null 2>&1 || true
     done
 }
 
-# tbx_sandbox_teardown — stop the sandbox's `fleet up`, kill its tmux servers
-# and, for a `fresh` sandbox, remove the whole root. Persistent sandboxes are
-# left intact (use tbx_sandbox_clean to wipe them).
 tbx_sandbox_teardown() {
     [ -n "$TBX_SANDBOX_ROOT" ] && _tbx_stop_fleet "$TBX_SANDBOX_ROOT"
     _tbx_kill_servers
@@ -299,9 +212,6 @@ tbx_sandbox_teardown() {
     fi
 }
 
-# tbx_sandbox_clean [profile] — stop a persistent profile's `fleet up`, kill
-# its tmux servers and remove its root + short tmux dir. Default profile
-# "default".
 tbx_sandbox_clean() {
     profile="${1:-default}"
     root="$TBX_REPO_ROOT/target/dev-sandbox/$profile"

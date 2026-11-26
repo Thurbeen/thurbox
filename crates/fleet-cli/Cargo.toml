@@ -12,9 +12,6 @@ publish.workspace = true
 name = "fleet"
 path = "src/main.rs"
 
-# The end-to-end tests' stand-in for the forge and chat CLIs, a plugin and
-# an environment command. Built with the tests; the release builds and ships
-# `--bin fleet` only.
 [[bin]]
 name = "fleet-test-stub"
 path = "tests/stubs/stub.rs"
@@ -50,4 +47,3 @@ sha2.workspace = true
 term-stream.workspace = true
 opentelemetry-proto = { workspace = true, features = ["logs"] }
 prost.workspace = true
-

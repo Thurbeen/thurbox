@@ -1,7 +1,4 @@
 #!/usr/bin/env bats
-# check-rumdl-version.sh holds a local rumdl to the version CI lints with: an
-# older one passes markdown (line length, blockquotes, link fragments) that CI
-# then fails.
 
 setup() {
   SCRIPT="$BATS_TEST_DIRNAME/check-rumdl-version.sh"

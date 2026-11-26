@@ -1,7 +1,4 @@
 #!/usr/bin/env bats
-#
-# Drives check-pr-title.sh: what a pull request title must be for squash merge
-# to land a commit `cog` can still parse, and the mistakes it exists to catch.
 
 setup() {
   CHECKER="${BATS_TEST_DIRNAME}/check-pr-title.sh"
@@ -9,9 +6,7 @@ setup() {
     skip "cocogitto (cog) is not installed"
   fi
 
-  # git exports these to hook processes, so a suite running under this
-  # project's own pre-commit hook would otherwise read the real repository
-  # instead of the temporary one below.
+  # git exports these to hook processes, which would otherwise read the real repository.
   unset GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE GIT_COMMON_DIR \
     GIT_OBJECT_DIRECTORY GIT_ALTERNATE_OBJECT_DIRECTORIES GIT_PREFIX \
     GIT_NAMESPACE
@@ -22,9 +17,6 @@ setup() {
   git init -q -b main .
   git config user.name tester
   git config user.email tester@example.invalid
-  # cog.toml is read by `cog verify` from the working directory, so the type
-  # and scope allowlists a repository declares are part of what the checker
-  # enforces — and are what it must quote back when it rejects one.
   cat >cog.toml <<'TOML'
 scopes = ["core", "cli"]
 
@@ -61,10 +53,6 @@ TOML
   [ "$status" -eq 1 ]
 }
 
-# The rejection a contributor actually sees. `cog verify` names only the token
-# it disliked ("Commit scope `lint` not allowed"), so a first-time author has
-# to find and read cog.toml to learn the set. Both open fork pull requests
-# (#1107 `fix(program)`, #1108 `fix(clipboard)`) failed exactly this way.
 @test "a rejected scope's message names the scopes cog.toml allows" {
   run "$CHECKER" "fix(lint): keep the caret where the frame put it" 1044
   [ "$status" -eq 1 ]
@@ -109,9 +97,6 @@ TOML
 }
 
 @test "works in a checkout that has configured no git identity" {
-  # `cog verify` resolves the current author before parsing and panics when
-  # user.name is unset, which is every fresh CI checkout. The checker lends one
-  # through a throwaway HOME; without that this call aborts.
   git config --unset user.name
   git config --unset user.email
   HOME="${BATS_TEST_TMPDIR}/empty-home"

@@ -1,12 +1,4 @@
 default_stages: [pre-commit]
-# Two speeds. A commit runs what is fast and catches most mistakes (format,
-# clippy, the linters). A push runs what needs a full build or the network: the
-# suite, rustdoc, cargo-deny and the Windows cross-check. The suite on every
-# commit made each commit cost minutes; nothing reaches the pull request
-# without passing the push stage, and CI stays the full gate.
-#
-# Commit messages are not walked at push: squash merge discards them, and the
-# pull request title (.github/workflows/pr-title.yml) is the commit that lands.
 default_install_hook_types:
   - commit-msg
   - pre-commit
@@ -14,7 +6,6 @@ default_install_hook_types:
 repos:
   - repo: local
     hooks:
-      # Conventional commit validation (commit-msg stage)
       - id: cocogitto-verify
         name: Verify conventional commit message
         entry: cog verify
@@ -22,16 +13,12 @@ repos:
         stages: [commit-msg]
         args: ["--file"]
 
-      # Code quality (pre-commit stage)
       - id: cargo-fmt
         name: Cargo format check
         entry: cargo fmt
         language: system
         types: [rust]
         pass_filenames: false
-        # `--check`, or this hook reformats every file in the workspace including
-        # ones the developer did not stage — surprising, and not what its name
-        # says. Matches `just fmt-check` and the CI job.
         args: ["--all", "--", "--check"]
 
       - id: cargo-clippy
@@ -42,12 +29,6 @@ repos:
         pass_filenames: false
         args: ["--all-targets", "--all-features", "--", "-D", "warnings"]
 
-      # No `cargo check`: clippy above type-checks the same targets (the reason
-      # CI dropped its check job too).
-
-      # The `Windows (clippy)` CI job, cross-checked from Linux (`just
-      # clippy-windows`): code unused only under cfg(windows) otherwise fails
-      # only after the push.
       - id: cargo-clippy-windows
         name: Cargo clippy (Windows target)
         entry: just clippy-windows
@@ -56,10 +37,7 @@ repos:
         pass_filenames: false
         stages: [pre-push]
 
-      # git exports its location variables to a hook, and a test that runs git
-      # in a scratch repository would act on this one instead. Fleet's tests
-      # run git, cog and Fleet's own binaries without scrubbing them, so the
-      # suite starts without them.
+      # git exports its location variables to a hook, and the suite must not inherit them.
       - id: cargo-nextest
         name: Cargo nextest
         entry: env -u GIT_DIR -u GIT_WORK_TREE -u GIT_INDEX_FILE -u GIT_COMMON_DIR -u GIT_OBJECT_DIRECTORY -u GIT_ALTERNATE_OBJECT_DIRECTORIES -u GIT_PREFIX -u GIT_NAMESPACE cargo nextest run
@@ -68,9 +46,6 @@ repos:
         pass_filenames: false
         args: ["--all"]
         stages: [pre-push]
-
-      # No separate architecture hook: arch-rules' `architecture` test is an
-      # ordinary integration test, so the suite above already runs it.
 
       - id: cargo-deny-advisories
         name: Cargo deny advisories
@@ -98,8 +73,6 @@ repos:
 
       - id: bash-install-tests
         name: Bash install script tests
-        # From PATH: an absolute ~/.local/bin path fails under the flake (nix store),
-        # under the package-manager route docs/thurbox/development.md documents, and in CI.
         entry: bats scripts/install.bats
         language: system
         files: scripts/install\.(sh|bats)
@@ -111,8 +84,6 @@ repos:
         language: system
         types: [shell]
 
-      # Before the lint itself: an older local rumdl passes markdown that CI's
-      # pinned one fails.
       - id: rumdl-version
         name: Markdown linter matches CI
         entry: scripts/ci/check-rumdl-version.sh
@@ -120,7 +91,6 @@ repos:
         files: (\.md|^\.rumdl\.toml|^scripts/ci/check-rumdl-version\..*)$
         pass_filenames: false
 
-      # CI twin: the `Markdown Lint` job.
       - id: rumdl-version-tests
         name: Markdown linter version check tests
         entry: bats scripts/ci/check-rumdl-version.bats
@@ -135,10 +105,6 @@ repos:
         types: [markdown]
         pass_filenames: false
 
-      # The plugin interface. `selene` also enforces the VM's sandbox: its
-      # standard library (`thurbox.yml`) declares only what `mod_stdlib`
-      # grants, so a plugin reaching for `os` or `io` fails here rather than at
-      # runtime.
       - id: selene
         name: Lua lint
         entry: selene ui examples
@@ -153,10 +119,6 @@ repos:
         types: [lua]
         pass_filenames: false
 
-      # Website linting (pre-commit stage)
-      # Page .html files carry YAML front matter and are partial templates, so
-      # Prettier/HTMLHint run on the CSS/JS sources and on the *built* _site
-      # output rather than the page sources.
       - id: prettier-check
         name: Prettier format check
         entry: npx prettier --check
@@ -185,12 +147,6 @@ repos:
         files: ^website/.*\.js$
         pass_filenames: true
 
-  # Every committed version of a file stays in the history each clone
-  # downloads: re-recorded demo GIFs/MP4s grew the pack to 478 MiB while the
-  # tree is 39 MiB. prek's Rust-native copy of pre-commit-hooks'
-  # check-added-large-files, so nothing is fetched. `--enforce-all` weighs a
-  # modified file too, not only an added one, which is what CI's `--all-files`
-  # run (the `Large Files` job) checks.
   - repo: builtin
     hooks:
       - id: check-added-large-files

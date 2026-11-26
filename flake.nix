@@ -18,10 +18,7 @@
       rust-overlay,
     }:
     let
-      # The flake cannot see git tags, so a build from it is never a release:
-      # the base comes from crates/thurbox/Cargo.toml (`0.0.0-dev`, minus the `-dev` that would
-      # make it a dev build, see nix/package.nix) and the date of the commit
-      # it was built from says how new it is.
+      # A flake cannot see git tags: the version is Cargo.toml's base plus the commit date.
       baseVersion = nixpkgs.lib.removeSuffix "-dev" (nixpkgs.lib.importTOML ./crates/thurbox/Cargo.toml).package.version;
       date = builtins.substring 0 8 (self.lastModifiedDate or "19700101");
       version = "${baseVersion}-unstable-${builtins.substring 0 4 date}-${builtins.substring 4 2 date}-${builtins.substring 6 2 date}";
@@ -33,8 +30,6 @@
           rev = self.shortRev or self.dirtyShortRev or null;
         };
 
-      # The modules install the package. thurbox configures everything else
-      # itself, in files it owns, so the modules manage no config.
       removedAutomations = ''
         thurbox schedules nothing of its own any more. Run work on a schedule
         with a Fleet CronTask, or with a systemd timer that runs
@@ -93,8 +88,7 @@
           };
         };
     }
-    # The systems thurbox releases for. nixpkgs no longer evaluates for
-    # x86_64-darwin, and thurbox ships no binary for it either.
+    # nixpkgs no longer evaluates for x86_64-darwin.
     // flake-utils.lib.eachSystem
       [
         "x86_64-linux"
@@ -110,48 +104,36 @@
         };
         thurbox = thurboxFor pkgs;
 
-        # Single source of truth for the Rust toolchain: the same
-        # rust-toolchain.toml cargo/rustup already honor (stable + rustfmt,
-        # clippy, rust-src). No version drift between flake users and others.
         rustToolchain = pkgs.rust-bin.fromRustupToolchainFile ./rust-toolchain.toml;
 
-        # Cargo dev tools that ARE packaged in nixpkgs, at the revision flake.lock
-        # pins.
         cargoTools = with pkgs; [
           cargo-nextest
           cargo-deny
           cocogitto
         ];
 
-        # System deps to build/test/lint thurbox (mirrors .github/workflows/ci.yml).
         systemTools = with pkgs; [
-          # Real-pane tests exercise Readline's bracketed-paste contract. The
-          # stdenv shell is Bash without interactive builtins such as `bind`.
+          # The stdenv shell is Bash without interactive builtins such as `bind`.
           bashInteractive
-          tmux # session backend (AGENTS.md: >= 3.2)
-          (callPackage ./nix/herdr-core.nix { }) # runtime-herdr's e2e tests
+          tmux
+          (callPackage ./nix/herdr-core.nix { })
           git
-          shellcheck # shell linter (pre-commit + CI)
-          selene # Lua linter for ui/ (pre-commit + CI); enforces the plugin sandbox
-          stylua # Lua formatter for ui/ (pre-commit + CI)
-          lua-language-server # Lua type checker for ui/ (CI; `just lint`)
-          bats # install-script tests
-          nodejs_22 # website linters (CI uses 26; 22 runs eleventy/eslint/etc.)
-          just # task runner (see justfile)
-          jq # handy for `thurbox-cli … --json` in the sandbox
+          shellcheck
+          selene
+          stylua
+          lua-language-server
+          bats
+          nodejs_22
+          just
+          jq
         ];
 
-        # Optional demo and screenshot stack (scripts/demo/record-*.sh, the ui-review skill).
         demoTools = with pkgs; [
           vhs
           ffmpeg
           ttyd
         ];
 
-        # Dev tools NOT in nixpkgs — the shellHook nudges the user to install
-        # them via scripts/install-dev-tools.sh (cargo-binstall). Keeping the
-        # flake the single entrypoint without blocking on un-packaged tools.
-        # (prek = pre-commit runner, rumdl = markdown linter.)
         missingHint = ''
           for t in prek rumdl; do
             command -v "$t" >/dev/null 2>&1 || {
@@ -168,9 +150,7 @@
           default = thurbox;
         };
 
-        # Evaluates the NixOS module with thurbox enabled and checks it installs
-        # the package; `nix flake check` alone only checks that the module is a
-        # function.
+        # `nix flake check` alone only checks that the NixOS module is a function.
         checks = pkgs.lib.optionalAttrs pkgs.stdenv.isLinux {
           nixos-module =
             let
@@ -204,7 +184,6 @@
         devShells.default = pkgs.mkShell {
           packages = [ rustToolchain ] ++ cargoTools ++ systemTools ++ demoTools;
 
-          # rust-analyzer / some tools want the std sources.
           RUST_SRC_PATH = "${rustToolchain}/lib/rustlib/src/rust/library";
 
           shellHook = ''
