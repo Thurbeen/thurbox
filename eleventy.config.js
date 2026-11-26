@@ -276,7 +276,10 @@ function repoDocRule(state) {
 }
 
 export default function (eleventyConfig) {
-  const galleries = { mods: modGallery(), plugins: fleetPluginGallery() };
+  let galleries;
+  eleventyConfig.on('eleventy.before', () => {
+    galleries = { mods: modGallery(), plugins: fleetPluginGallery() };
+  });
 
   eleventyConfig.on('eleventy.after', async () => {
     const bytes = writeCoreBundle();

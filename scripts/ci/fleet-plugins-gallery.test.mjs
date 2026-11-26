@@ -298,3 +298,35 @@ test('the gallery digest changes with the commit or with either gallery, and onl
     digest,
   );
 });
+
+test('each Eleventy build, a watch rebuild included, reads the galleries again', async () => {
+  const offline = process.env.THURBOX_GALLERY_OFFLINE;
+  process.env.THURBOX_GALLERY_OFFLINE = '1';
+  try {
+    const handlers = {};
+    const data = {};
+    const config = new Proxy(
+      {
+        on: (event, handler) => {
+          handlers[event] = handler;
+        },
+        addGlobalData: (name, value) => {
+          data[name] = value;
+        },
+      },
+      { get: (target, key) => target[key] ?? (() => {}) },
+    );
+    const { default: configure } = await import('../../eleventy.config.js');
+    configure(config);
+    handlers['eleventy.before']();
+    const first = data.fleetPluginGallery();
+    assert.equal(data.fleetPluginGallery(), first, 'one build reads each gallery once');
+    handlers['eleventy.before']();
+    assert.notEqual(data.fleetPluginGallery(), first, 'the next build reads it again');
+    assert.notEqual(data.modGallery(), undefined);
+    assert.ok(Array.isArray(await data.fleetPluginGallery()));
+  } finally {
+    if (offline === undefined) delete process.env.THURBOX_GALLERY_OFFLINE;
+    else process.env.THURBOX_GALLERY_OFFLINE = offline;
+  }
+});
