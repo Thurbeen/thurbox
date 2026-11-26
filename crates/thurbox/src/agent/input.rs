@@ -1,11 +1,7 @@
 use crossterm::event::{KeyCode, KeyModifiers};
 
-/// Translate a crossterm key event into the ANSI byte sequence that should be
-/// sent to the PTY. Follows xterm-style modifier encoding conventions.
 pub fn key_to_bytes(code: KeyCode, modifiers: KeyModifiers) -> Option<Vec<u8>> {
-    // Cmd/Super-modified keys have no legacy PTY encoding and the inner app
-    // never negotiated the kitty protocol — swallow rather than inject the
-    // bare key into the agent.
+    // Cmd/Super keys have no legacy PTY encoding, and the inner app never negotiated kitty keys.
     if modifiers.contains(KeyModifiers::SUPER) {
         return None;
     }
@@ -26,12 +22,10 @@ pub fn key_to_bytes(code: KeyCode, modifiers: KeyModifiers) -> Option<Vec<u8>> {
         return f_key_bytes(n, modifier_param);
     }
 
-    // Alt wraps the inner byte with ESC prefix
     if alt {
         return alt_bytes(code);
     }
 
-    // Shift+Char: just send the character (already uppercase/shifted by crossterm)
     if shift {
         if let KeyCode::Char(c) = code {
             return Some(char_bytes(c));
@@ -41,25 +35,21 @@ pub fn key_to_bytes(code: KeyCode, modifiers: KeyModifiers) -> Option<Vec<u8>> {
     unmodified_key(code)
 }
 
-/// Ctrl+letter and the Shift-special keys (Shift+Enter, reverse-tab) that have
-/// dedicated encodings handled before the generic CSI/Alt paths.
 fn ctrl_or_shift_special_bytes(
     code: KeyCode,
     shift: bool,
     alt: bool,
     ctrl: bool,
 ) -> Option<Vec<u8>> {
-    // Ctrl+letter → control character (0x01..=0x1A), optionally wrapped with ESC for Alt
     if let Some(bytes) = ctrl_letter_bytes(code, shift, alt, ctrl) {
         return Some(bytes);
     }
 
-    // Shift+Enter → ESC [ 13;2u (xterm modifyOtherKeys / kitty protocol)
+    // Shift+Enter has no legacy byte; xterm modifyOtherKeys and kitty spell it CSI 13;2u.
     if shift && code == KeyCode::Enter {
         return Some(b"\x1b[13;2u".to_vec());
     }
 
-    // BackTab / Shift+Tab → reverse tab (CSI Z)
     if matches!(code, KeyCode::BackTab) || (shift && code == KeyCode::Tab) {
         return Some(b"\x1b[Z".to_vec());
     }
@@ -67,24 +57,19 @@ fn ctrl_or_shift_special_bytes(
     None
 }
 
-/// Cursor/navigation and extended keys that share the CSI `1;<mod>` family.
 fn csi_key_bytes(code: KeyCode, modifier_param: u8) -> Option<Vec<u8>> {
-    // Cursor keys & navigation with modifiers: CSI 1;<mod> X
     if let Some(bytes) = cursor_key_bytes(code, modifier_param) {
         return Some(bytes);
     }
 
-    // Extended keys with modifiers: CSI <num>;<mod> ~
     extended_key_bytes(code, modifier_param)
 }
 
-/// Encode a `char` as its UTF-8 bytes.
 fn char_bytes(c: char) -> Vec<u8> {
     let mut buf = [0u8; 4];
     c.encode_utf8(&mut buf).as_bytes().to_vec()
 }
 
-/// Ctrl+letter → control character (0x01..=0x1A), optionally ESC-wrapped for Alt.
 fn ctrl_letter_bytes(code: KeyCode, shift: bool, alt: bool, ctrl: bool) -> Option<Vec<u8>> {
     if !ctrl || shift {
         return None;
@@ -103,7 +88,6 @@ fn ctrl_letter_bytes(code: KeyCode, shift: bool, alt: bool, ctrl: bool) -> Optio
     })
 }
 
-/// Cursor/navigation keys: CSI 1;<mod> X (or CSI X when unmodified).
 fn cursor_key_bytes(code: KeyCode, modifier_param: u8) -> Option<Vec<u8>> {
     let suffix = cursor_key_suffix(code)?;
     Some(if modifier_param > 1 {
@@ -113,7 +97,6 @@ fn cursor_key_bytes(code: KeyCode, modifier_param: u8) -> Option<Vec<u8>> {
     })
 }
 
-/// Extended keys (Insert/Delete/PageUp/PageDown): CSI <num>;<mod> ~ (or CSI <num> ~).
 fn extended_key_bytes(code: KeyCode, modifier_param: u8) -> Option<Vec<u8>> {
     let num = extended_key_num(code)?;
     Some(if modifier_param > 1 {
@@ -123,11 +106,9 @@ fn extended_key_bytes(code: KeyCode, modifier_param: u8) -> Option<Vec<u8>> {
     })
 }
 
-/// Alt-modified key: ESC prefix wrapping the inner (unmodified) byte sequence.
 fn alt_bytes(code: KeyCode) -> Option<Vec<u8>> {
     let inner = match code {
         KeyCode::Char(c) => char_bytes(c),
-        // Alt+Enter, Alt+Backspace, etc.
         _ => unmodified_key(code)?,
     };
     let mut result = vec![0x1b];
@@ -135,7 +116,6 @@ fn alt_bytes(code: KeyCode) -> Option<Vec<u8>> {
     Some(result)
 }
 
-/// Plain key without modifiers.
 fn unmodified_key(code: KeyCode) -> Option<Vec<u8>> {
     match code {
         KeyCode::Char(c) => Some(char_bytes(c)),
@@ -148,12 +128,10 @@ fn unmodified_key(code: KeyCode) -> Option<Vec<u8>> {
     }
 }
 
-/// xterm modifier parameter: 1=none, 2=Shift, 3=Alt, 4=Shift+Alt, 5=Ctrl, etc.
 fn xterm_modifier(shift: bool, alt: bool, ctrl: bool) -> u8 {
     1 + (shift as u8) + ((alt as u8) << 1) + ((ctrl as u8) << 2)
 }
 
-/// Single-char suffix for cursor/navigation keys (CSI <suffix> format).
 fn cursor_key_suffix(code: KeyCode) -> Option<char> {
     match code {
         KeyCode::Up => Some('A'),
@@ -166,7 +144,6 @@ fn cursor_key_suffix(code: KeyCode) -> Option<char> {
     }
 }
 
-/// Numeric parameter for extended keys (CSI <num> ~ format).
 fn extended_key_num(code: KeyCode) -> Option<u8> {
     match code {
         KeyCode::Insert => Some(2),
@@ -178,7 +155,7 @@ fn extended_key_num(code: KeyCode) -> Option<u8> {
 }
 
 fn f_key_bytes(n: u8, modifier_param: u8) -> Option<Vec<u8>> {
-    // F1-F4 use SS3 format (no modifier support in SS3, fall back to CSI)
+    // SS3 carries no modifier, so a modified F1-F4 falls back to CSI.
     if modifier_param <= 1 {
         let seq = match n {
             1 => "\x1bOP",
@@ -297,7 +274,6 @@ mod tests {
 
     #[test]
     fn ctrl_shift_arrows() {
-        // Ctrl=5, Ctrl+Shift=6
         assert_eq!(
             key_to_bytes(KeyCode::Up, KeyModifiers::CONTROL),
             Some(b"\x1b[1;5A".to_vec())
@@ -409,7 +385,6 @@ mod tests {
 
     #[test]
     fn shift_char_passes_through() {
-        // Shift+A should produce 'A' (crossterm already delivers uppercase)
         assert_eq!(
             key_to_bytes(KeyCode::Char('A'), KeyModifiers::SHIFT),
             Some(vec![b'A'])
@@ -443,7 +418,6 @@ mod tests {
 
     #[test]
     fn alt_arrow_uses_modifier_param() {
-        // Alt modifier_param = 3, so uses CSI 1;3 A format
         assert_eq!(
             key_to_bytes(KeyCode::Up, KeyModifiers::ALT),
             Some(b"\x1b[1;3A".to_vec())
@@ -484,7 +458,6 @@ mod tests {
 
     #[test]
     fn super_modified_keys_are_swallowed() {
-        // An unbound Cmd+letter must not inject the bare key into the agent.
         assert_eq!(key_to_bytes(KeyCode::Char('j'), KeyModifiers::SUPER), None);
         assert_eq!(
             key_to_bytes(

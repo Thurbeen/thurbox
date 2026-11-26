@@ -1,11 +1,6 @@
-//! A message handed to Claude Code through its messaging socket, the path
-//! it names to its hooks in `CLAUDE_CODE_MESSAGING_SOCKET`: one stream-json
-//! `user` line starts a turn, or waits for the current one to end, and its
-//! prompt hook reports the text. Nothing is typed into its composer.
 use std::io;
 use std::path::Path;
 
-/// The line Claude Code's socket reads as one user turn.
 pub fn claude_line(text: &str) -> String {
     let line = serde_json::json!({
         "type": "user",
@@ -14,7 +9,6 @@ pub fn claude_line(text: &str) -> String {
     format!("{line}\n")
 }
 
-/// Write `text` to the Claude Code socket at `socket`.
 #[cfg(unix)]
 pub fn post_claude(socket: &Path, text: &str) -> io::Result<()> {
     use std::io::Write;

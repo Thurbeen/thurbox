@@ -1,5 +1,3 @@
-//! Deduplicated, bounded background reads with aged answers.
-
 use std::collections::HashMap;
 use std::hash::Hash;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -19,14 +17,6 @@ struct Pool<K, V> {
     answers: mpsc::Receiver<(K, Arc<AtomicBool>, Option<V>)>,
 }
 
-/// A lazy fixed worker pool and bounded LRU answer cache.
-///
-/// Requests never wait for capacity. Pending keys deduplicate, including during
-/// refresh. `poll` refreshes retained answers even when their pure pane is cached;
-/// unchanged answers renew their age without advancing `generation`. Completed
-/// entries alone may be evicted; retirement invalidates pending work by identity.
-/// One refused key is retained for admission before the next refresh pass.
-/// Dropping the store closes its queue without joining blocked readers.
 pub struct WorkerStore<K, V> {
     entries: HashMap<K, Entry<V>>,
     pool: Option<Pool<K, V>>,
@@ -43,8 +33,6 @@ where
     K: Clone + Eq + Hash + Send + 'static,
     V: PartialEq + Send + 'static,
 {
-    /// Each channel and the answer cache hold at most `capacity` items;
-    /// at most `workers` reads execute at once. TTL must be positive.
     pub fn new(
         workers: usize,
         capacity: usize,
@@ -87,8 +75,6 @@ where
         self.pool = Some(Pool { jobs, answers });
     }
 
-    /// Return the last answer, or `None` until admitted and completed.
-    /// A stale answer remains available during its background refresh.
     pub fn request(&mut self, key: K) -> Option<Arc<V>> {
         let now = Instant::now();
         if let Some(entry) = self.entries.get_mut(&key) {
@@ -133,10 +119,6 @@ where
         None
     }
 
-    /// Retire unneeded keys. Queued work skips the read; an active read may
-    /// finish, but its result cannot overwrite a later request for the same key.
-    /// Retiring the deferred key also signals a change: other refused readers
-    /// may need a repaint to request admission again.
     pub fn retain(&mut self, mut keep: impl FnMut(&K) -> bool) -> bool {
         let before = self.entries.len();
         let retired_waiting = self.waiting.as_ref().is_some_and(|key| !keep(key));
@@ -153,8 +135,6 @@ where
         retired_waiting || self.entries.len() != before
     }
 
-    /// Collect completions and refresh expired answers without blocking.
-    /// Returns whether a visible answer changed.
     pub fn poll(&mut self) -> bool {
         let before = self.generation;
         let Some(pool) = &self.pool else { return false };
@@ -193,7 +173,6 @@ where
         before != self.generation
     }
 
-    /// Changes only when a collected answer differs from its predecessor.
     pub fn generation(&self) -> u64 {
         self.generation
     }

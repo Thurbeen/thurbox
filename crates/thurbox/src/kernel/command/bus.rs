@@ -1,8 +1,3 @@
-//! The dispatch machinery: accept a command, run it off the render path, keep
-//! the in-flight record a mod can draw. Split from the protocol (`mod.rs`)
-//! and the effects (`execute.rs`) so the write side reads as its three
-//! halves.
-
 use std::collections::{HashMap, VecDeque};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc::{channel, Receiver, Sender};
@@ -12,11 +7,6 @@ use super::execute::Outcome;
 use super::fleet::Fleet;
 use super::{Command, Executor};
 
-/// How far along a command is.
-///
-/// `Stage` carries a name from the operation itself — creation reports which
-/// part of the pipeline it reached, because "working" is exactly the wrong
-/// answer when the question is *why is this slow*.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Phase {
     Queued,
@@ -36,33 +26,18 @@ impl Phase {
     }
 }
 
-/// A command that has been accepted but whose effect is not yet visible.
 #[derive(Debug, Clone)]
 pub struct InFlight {
     pub id: u64,
     pub kind: &'static str,
     pub session: String,
-    /// What the command concerns when it names no session yet — the repository
-    /// a creation is for, so a pending row can be grouped where the session
-    /// will actually land.
     pub subject: Option<String>,
-    /// The host a creation is for, when it names one — `None` for this machine
-    /// and for every command that already names a session.
     pub host: Option<String>,
     pub phase: Phase,
-    /// Set once the command has failed; retained briefly so a mod can show
-    /// it, then swept.
     pub error: Option<String>,
 }
 
 impl InFlight {
-    /// Note that the worker has started, unless this row is already finished.
-    ///
-    /// A phase only ever moves forward. The worker announces itself from its own
-    /// thread, so the announcement can be scheduled *after* something has already
-    /// resolved the row — and an unguarded write then puts a failed command back
-    /// on the progress line, where it hides the error that explains it. Only a
-    /// row still reading `Queued` has anything to learn from "it started".
     pub(super) fn started(&mut self) {
         if self.phase == Phase::Queued {
             self.phase = Phase::Running;
@@ -70,13 +45,11 @@ impl InFlight {
     }
 }
 
-/// A phase change reported from a running command.
 pub(super) struct Progress {
     pub(super) id: u64,
     pub(super) phase: String,
 }
 
-/// A finished command, reported back to the loop.
 struct Done {
     id: u64,
     error: Option<String>,
@@ -94,12 +67,10 @@ impl Done {
     }
 }
 
-/// How long a failed command stays readable before being swept.
 const FAILURE_LINGER_MS: u64 = 8_000;
 
 type SessionQueues = HashMap<String, VecDeque<(u64, Command)>>;
 
-/// Accepts commands, runs them off the render path, and reports progress.
 pub struct CommandBus {
     inflight: Arc<Mutex<Vec<InFlight>>>,
     finished_tx: Sender<Done>,
@@ -108,23 +79,13 @@ pub struct CommandBus {
     progress_rx: Receiver<Progress>,
     next_id: AtomicU64,
     pending: Arc<Mutex<SessionQueues>>,
-    /// When each failure was recorded, so it can be swept after lingering.
     failed_at: Vec<(u64, std::time::Instant)>,
-    /// The sessions of deletes that succeeded since [`Self::take_deleted`].
     deleted: Vec<String>,
-    /// What runs each command: Fleet, through its command line.
     executor: Arc<dyn Executor>,
-    /// The Fleet a creation that names none goes to, which a created
-    /// session's id names.
     fleet: Option<String>,
 }
 
 impl CommandBus {
-    /// A bus whose session commands act through the command line of the
-    /// Fleets `fleets` reach (ADR-41): `fleet apply`, `send` and `delete`, each
-    /// on its session's own Fleet, and a creation on the Fleet it names (the
-    /// Fleet in force when it names none). The
-    /// interface's own files (settings, repository memory) are written here.
     pub fn fleet(fleets: impl Into<crate::fleet_link::Fleets>) -> Self {
         let fleets = fleets.into();
         let fleet = Some(fleets.in_force().name().to_string());
@@ -134,10 +95,6 @@ impl CommandBus {
         }
     }
 
-    /// The id the session a `create` named `name` will have: its Task's name
-    /// in the Fleet the creation goes to (`box:review`), `fleet` when it
-    /// names one, else the Fleet in force. A creation is found by it, never
-    /// by its name, which another Fleet's session can share.
     pub fn created_id(&self, name: &str, fleet: Option<&str>) -> Option<String> {
         let in_force = self.fleet.as_deref()?;
         let fleet = fleet.filter(|f| !f.is_empty()).unwrap_or(in_force);
@@ -165,8 +122,6 @@ impl CommandBus {
         }
     }
 
-    /// Accept a command without waiting for its execution. Commands naming the
-    /// same non-empty session execute in dispatch order; other work is independent.
     pub fn dispatch(&self, command: Command) -> u64 {
         let id = self.next_id.fetch_add(1, Ordering::Relaxed);
         let entry = InFlight {
@@ -209,7 +164,6 @@ impl CommandBus {
                         entry.started();
                     }
                 }
-                // A panic must not strand the remaining commands for this session.
                 let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                     executor.execute(&command, id, &progress)
                 }))
@@ -218,8 +172,6 @@ impl CommandBus {
                 if session.is_empty() {
                     break;
                 }
-                // Retire an empty queue under the dispatch lock, so a new command
-                // either joins this worker or starts its successor, never both.
                 let mut queues = pending.lock().unwrap();
                 next = queues.get_mut(&session).and_then(VecDeque::pop_front);
                 if next.is_none() {
@@ -230,31 +182,18 @@ impl CommandBus {
         id
     }
 
-    /// Report a command finished, as a worker would.
-    ///
-    /// The worker path is a thread and a channel; a test that wants to observe
-    /// what `poll` does with a completion needs the completion without the
-    /// thread.
     #[doc(hidden)]
     pub fn finish_for_test(&self, id: u64, error: Option<String>) {
         let _ = self.finished_tx.send(Done { id, error });
     }
 
-    /// Fold finished commands into the in-flight list.
-    ///
-    /// Returns true when anything completed, so the caller can refresh the
-    /// snapshot immediately rather than waiting out the refresh interval —
-    /// which is what makes a delete feel instant.
     pub fn poll(&mut self) -> bool {
-        // Phase changes first, so a command that reports and then finishes in
-        // the same window does not show a stale stage.
         let mut changed = self.drain_progress();
         changed |= self.drain_finished();
         changed |= self.sweep_expired_failures();
         changed
     }
 
-    /// Apply the stage each running command last reported.
     fn drain_progress(&mut self) -> bool {
         let mut changed = false;
         while let Ok(update) = self.progress_rx.try_recv() {
@@ -269,8 +208,6 @@ impl CommandBus {
         changed
     }
 
-    /// Retire completed commands: a success leaves the list, a failure lingers
-    /// long enough to be read.
     fn drain_finished(&mut self) -> bool {
         let mut changed = false;
         while let Ok(done) = self.finished_rx.try_recv() {
@@ -279,8 +216,6 @@ impl CommandBus {
                 continue;
             };
             match done.error {
-                // Success: the effect is in Fleet now, so the entry has
-                // nothing left to say.
                 None => {
                     if let Some(entry) = list
                         .iter()
@@ -302,15 +237,10 @@ impl CommandBus {
         changed
     }
 
-    /// The sessions whose delete succeeded since the last call. The entry
-    /// that hid the row leaves the list at once, while Fleet can still list
-    /// the Task: the snapshot takes over hiding it
-    /// ([`crate::kernel::snapshot::SnapshotStore::hide_until_gone`]).
     pub fn take_deleted(&mut self) -> Vec<String> {
         std::mem::take(&mut self.deleted)
     }
 
-    /// Sweep failures that have been readable long enough.
     fn sweep_expired_failures(&mut self) -> bool {
         let expired: Vec<u64> = self
             .failed_at
@@ -328,12 +258,6 @@ impl CommandBus {
         true
     }
 
-    /// Everything accepted but not yet done, for publishing to mods.
-    /// Whether anything is in flight, without cloning the list.
-    ///
-    /// The animation clock asks this on every published frame, and
-    /// [`Self::inflight`] clones under a lock — a second copy a frame to answer
-    /// a question about emptiness.
     pub fn has_inflight(&self) -> bool {
         self.inflight
             .lock()
@@ -348,13 +272,6 @@ impl CommandBus {
             .unwrap_or_default()
     }
 
-    /// The first command that is still *running*, for the progress line.
-    ///
-    /// A failed entry stays in the list for `FAILURE_LINGER_MS` so a pane can
-    /// draw a failed row, and that is longer than a message is retained — so
-    /// describing one as progress does not merely mislabel it, it hides the
-    /// error explaining the failure for the whole time that error is readable.
-    /// The failure is reported through the message band instead.
     pub fn first_running(&self) -> Option<InFlight> {
         self.inflight
             .lock()
@@ -364,7 +281,6 @@ impl CommandBus {
             .cloned()
     }
 
-    /// Whether any command is in flight for a session.
     pub fn is_busy(&self, session: &str) -> bool {
         self.inflight
             .lock()

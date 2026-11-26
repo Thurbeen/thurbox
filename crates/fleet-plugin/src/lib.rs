@@ -1,4 +1,3 @@
-//! The process adapter. Controller calls receive only the OS startup environment.
 use fleet_api::plugin::{PluginConfig, Plugins};
 use fleet_exec::{Spec, run, worst_case};
 use serde_json::Value;

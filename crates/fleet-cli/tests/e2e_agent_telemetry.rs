@@ -1,9 +1,3 @@
-//! Acceptance: when Fleet exports OpenTelemetry, each agent it starts
-//! exports its own telemetry to the same collector, as its harness profile's
-//! `[telemetry]` table says, tagged with its Task. Fleet's own identity and
-//! trace context never reach the session. Export off, or `agentTelemetry`
-//! false on the Task or its TaskConfig, the session gets none of it.
-
 mod support;
 
 use std::collections::BTreeMap;
@@ -24,7 +18,6 @@ fn exporting(env: &mut Env, endpoint: &str) {
     );
 }
 
-/// The session the Task's spawn started: its environment and argv.
 fn session(env: &Env, name: &str) -> (BTreeMap<String, String>, Vec<String>) {
     let s = env
         .host()
@@ -34,7 +27,6 @@ fn session(env: &Env, name: &str) -> (BTreeMap<String, String>, Vec<String>) {
     (s.env, s.argv)
 }
 
-/// Every variable of the agent's own telemetry that Fleet can set.
 fn agent_vars(env: &BTreeMap<String, String>) -> Vec<&String> {
     env.keys()
         .filter(|k| {
@@ -65,7 +57,6 @@ fn a_claude_session_exports_its_own_telemetry_to_fleets_collector_tagged_by_task
     assert_eq!(vars["OTEL_EXPORTER_OTLP_ENDPOINT"], collector.endpoint);
     assert_eq!(vars["OTEL_EXPORTER_OTLP_PROTOCOL"], "http/protobuf");
     assert_eq!(vars["OTEL_EXPORTER_OTLP_HEADERS"], HEADERS);
-    // The agent's own name, never Fleet's.
     assert_eq!(vars["OTEL_SERVICE_NAME"], "claude");
     let resource = &vars["OTEL_RESOURCE_ATTRIBUTES"];
     for attr in [
@@ -82,7 +73,6 @@ fn a_claude_session_exports_its_own_telemetry_to_fleets_collector_tagged_by_task
         !resource.contains("deployment.environment.name"),
         "{resource}"
     );
-    // Agents start their own traces; prompt content stays off.
     for absent in [
         "TRACEPARENT",
         "TRACESTATE",
@@ -91,10 +81,7 @@ fn a_claude_session_exports_its_own_telemetry_to_fleets_collector_tagged_by_task
     ] {
         assert!(!vars.contains_key(absent), "{absent} in {vars:#?}");
     }
-    // Fleet exported too: the agent's collector is Fleet's own.
     assert!(!collector.spans().is_empty());
-    // The collector's headers are in no frozen launch: telemetry is added
-    // at each start, from Fleet's environment then.
     let launches = env.data.join("launches");
     if launches.is_dir() {
         for f in std::fs::read_dir(launches).unwrap().flatten() {
@@ -121,7 +108,6 @@ fn a_codex_session_takes_its_telemetry_as_config_overrides() {
         "{argv:#?}"
     );
     assert!(otel.iter().any(|a| a.contains("binary")), "{argv:#?}");
-    // A header is a secret: never in an argument list.
     assert!(
         !argv.iter().any(|a| a.contains("agent-header")),
         "{argv:#?}"
@@ -165,7 +151,6 @@ fn agent_telemetry_false_on_the_task_or_its_task_config_turns_it_off() {
     let mut configured = task("configured", true);
     configured["spec"]["configRef"] = json!({"name": "quiet"});
     env.apply(configured).ok();
-    // The Task's own field overrides its TaskConfig's.
     let mut back_on = task("back-on", true);
     back_on["spec"]["configRef"] = json!({"name": "quiet"});
     back_on["spec"]["agentTelemetry"] = json!(true);
@@ -179,8 +164,6 @@ fn agent_telemetry_false_on_the_task_or_its_task_config_turns_it_off() {
     assert_eq!(vars["CLAUDE_CODE_ENABLE_TELEMETRY"], "1", "{vars:#?}");
 }
 
-/// A Task's own OTLP endpoint names another collector: Fleet gives that
-/// session none of its own collector, so Fleet's headers never reach it.
 #[test]
 fn a_task_with_its_own_otlp_endpoint_gets_none_of_fleets_collector() {
     let collector = Collector::start();
@@ -219,8 +202,6 @@ fn a_task_with_its_own_otlp_endpoint_gets_none_of_fleets_collector() {
     }
 }
 
-/// A revive and a resume start the agent again with Fleet's collector as
-/// it is then: a changed endpoint and headers reach the new start.
 #[test]
 fn a_revive_and_a_resume_take_fleets_collector_as_it_is_then() {
     let first = Collector::start();
@@ -241,7 +222,6 @@ fn a_revive_and_a_resume_take_fleets_collector_as_it_is_then() {
     env.reconcile().ok();
     assert_eq!(session(&env, "t1").0["OTEL_EXPORTER_OTLP_HEADERS"], HEADERS);
 
-    // Fleet now exports elsewhere, with other headers.
     env.set_var("OTEL_EXPORTER_OTLP_ENDPOINT", &second.endpoint);
     env.set_var("OTEL_EXPORTER_OTLP_HEADERS", "authorization=Bearer second");
     let host = env.host();
@@ -253,7 +233,6 @@ fn a_revive_and_a_resume_take_fleets_collector_as_it_is_then() {
         })
         .unwrap();
     }
-    // p1 goes idle long enough to pause, then a message resumes it.
     signal_idle(&env, "p1");
     env.reconcile().ok();
     expire_idle(&env, "p1");
@@ -298,7 +277,6 @@ fn a_revive_and_a_resume_take_fleets_collector_as_it_is_then() {
     );
 }
 
-/// The agent's hooks report it idle, as `fleet signal` writes it.
 fn signal_idle(env: &Env, name: &str) {
     let file = env
         .data
@@ -309,7 +287,6 @@ fn signal_idle(env: &Env, name: &str) {
     support::wait(cmd.spawn().expect("fleet signal")).ok();
 }
 
-/// Let the Task's idle time run past `pauseAfterMs` now.
 fn expire_idle(env: &Env, name: &str) {
     let path = env.object_path("Task", name);
     let mut obj: serde_json::Value =

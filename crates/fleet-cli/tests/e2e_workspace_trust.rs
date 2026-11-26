@@ -1,7 +1,3 @@
-//! Workspace trust at agent startup, end to end: the real `fleet` binary,
-//! its file store and TaskController against the fake host, whose agents
-//! either trust their workspace or wait for a person to.
-
 mod support;
 
 use fleet_runtime::Fault;
@@ -16,14 +12,12 @@ fn condition(status: &Value, type_: &str) -> Value {
         .unwrap_or(Value::Null)
 }
 
-/// Every new agent waits for a person to trust its workspace.
 fn untrusting(name: &str) -> Env {
     let env = Env::new(name);
     env.host().update(|s| s.spawn_untrusted = true).unwrap();
     env
 }
 
-/// A person trusts the workspace once; the agent passes its dialog.
 fn trust(env: &Env, task: &str) {
     let key = env.session_key(task);
     env.host()
@@ -43,12 +37,10 @@ fn an_agent_waiting_for_trust_is_never_briefed_and_asks_for_it_once() {
     assert_condition(&st, "WorkspaceTrusted", "False", "Unsupported");
     assert_condition(&st, "NeedsAttention", "True", "WorkspaceUntrusted");
 
-    // Looked at again after the retry wait, not in a hot loop.
     assert!(env.get("t1")["status"]["notBefore"].is_u64());
     env.reconcile().ok();
     assert_eq!(env.calls("brief"), 0);
 
-    // The same Task now gets its brief, without a respawn.
     trust(&env, "t1");
     env.expire_wait("t1");
     env.reconcile().ok();

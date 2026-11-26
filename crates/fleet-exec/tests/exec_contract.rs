@@ -1,8 +1,3 @@
-//! fleet-exec's promises, proven with real processes on the OS that runs
-//! the test: the child is this test binary itself, re-entered in a role
-//! named by `FLEET_EXEC_ROLE`, so the same test runs natively on Linux,
-//! macOS and Windows with no shell and no helper program.
-
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
@@ -11,7 +6,6 @@ use std::time::{Duration, Instant};
 
 use fleet_exec::{Outcome, Spec, run};
 
-/// Not a test of its own: the body each child role runs.
 #[test]
 fn child_role() {
     let Ok(role) = std::env::var("FLEET_EXEC_ROLE") else {
@@ -20,7 +14,6 @@ fn child_role() {
     let out = PathBuf::from(std::env::var("FLEET_EXEC_OUT").expect("out"));
     match role.as_str() {
         "hang-with-grandchild" => {
-            // Left running on purpose: it is what the parent's kill must reach.
             #[allow(clippy::zombie_processes)]
             let child = Command::new(std::env::current_exe().unwrap())
                 .args(["--exact", "child_role", "--nocapture"])
@@ -114,8 +107,6 @@ fn a_child_past_its_bound_is_killed_with_its_whole_tree() {
 fn stdin_and_environment_reach_the_child_and_never_its_command_line() {
     let dir = scratch("echo");
     let out = dir.join("echo");
-    // A value for the environment only, and an inherited variable (PATH)
-    // the parent removes.
     let mut spec = child("echo", &out, Duration::from_secs(30)).stdin("from-stdin");
     spec.env
         .push(("FLEET_EXEC_TOKEN".into(), "tok-value".into()));
@@ -129,7 +120,6 @@ fn stdin_and_environment_reach_the_child_and_never_its_command_line() {
         fs::read_to_string(&out).unwrap(),
         "from-stdin|tok-value|false"
     );
-    // The child's own argv, as it saw it.
     let argv = fs::read_to_string(out.with_extension("argv")).unwrap();
     assert!(
         !argv.contains("tok-value"),

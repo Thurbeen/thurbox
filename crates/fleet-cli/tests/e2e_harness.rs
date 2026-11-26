@@ -1,8 +1,3 @@
-//! Harness profiles own launch, resume and trust: each Task's session is
-//! started with its harness profile's argv, and revived with its resume
-//! argv on the conversation its hooks reported. The real `fleet` binary,
-//! its file store and the fake host, a runtime that only runs an argv.
-
 mod support;
 
 use fleet_runtime::FakeSession;
@@ -16,8 +11,6 @@ fn session(env: &Env, task: &str) -> FakeSession {
         .expect("a session")
 }
 
-/// A harness asset's path as Fleet names it in an argument or environment
-/// value: `/` separators on every platform, which Node reads everywhere.
 fn asset(path: &std::path::Path) -> String {
     path.to_string_lossy().replace('\\', "/")
 }
@@ -27,14 +20,12 @@ fn each_harness_starts_with_its_profiles_argv_and_revives_on_its_conversation() 
     let env = Env::new("harness-profiles");
     let mut codex = support::task("c1", true);
     codex["spec"]["harness"] = json!("codex");
-    // Codex is trusted in exactly the directory it starts in.
     codex["spec"]["workspace"] = json!([format!("file://{}/work/c1", env.root.display())]);
     env.apply(json!([support::task("t1", true), codex])).ok();
     env.reconcile().ok();
     assert_eq!(env.status("t1")["phase"], "Briefed");
     assert_eq!(env.status("c1")["phase"], "Briefed");
 
-    // Claude Code: its hooks in --settings, reporting through fleet signal.
     let claude = session(&env, "t1");
     assert_eq!(
         claude.argv[..2],
@@ -47,7 +38,6 @@ fn each_harness_starts_with_its_profiles_argv_and_revives_on_its_conversation() 
         .as_str()
         .unwrap();
     assert!(prompt.starts_with("fleet signal prompt"), "{prompt}");
-    // Codex: its notify hook, then its trust of exactly its workspace.
     let codex = session(&env, "c1");
     assert_eq!(codex.argv[0], "codex");
     assert_eq!(
@@ -57,7 +47,6 @@ fn each_harness_starts_with_its_profiles_argv_and_revives_on_its_conversation() 
     assert_eq!(codex.argv[3], "-c");
     assert!(codex.argv[4].starts_with("projects="), "{:?}", codex.argv);
 
-    // The hooks reported each conversation; a reboot revives both on it.
     for (task, id) in [("t1", &claude.id), ("c1", &codex.id)] {
         assert_eq!(
             env.get(task)["status"]["conversation"],
@@ -93,8 +82,6 @@ fn write_profile(env: &Env, file: &str, text: &str) {
 
 const VENDOR: &str = "name = \"vendor\"\nprogram = \"vendor\"\nauthority = \"full\"\n\n[launch]\nenv = { API_KEY = \"profile\", VENDOR_HOOKS = \"on\" }\n";
 
-/// A profile's `[launch] env` sits under the Task's own, whatever the
-/// spelling of a name, and Fleet names the profile directory to the hooks.
 #[test]
 fn a_profiles_launch_env_sits_under_the_tasks_and_names_its_directory() {
     let env = Env::new("harness-env");
@@ -125,8 +112,6 @@ fn a_profiles_launch_env_sits_under_the_tasks_and_names_its_directory() {
     );
 }
 
-/// A profile file that does not parse stops a command that runs Tasks, but
-/// a view still lists every other user harness.
 #[test]
 fn a_broken_profile_stops_a_reconcile_and_leaves_the_others_listed() {
     let env = Env::new("harness-broken");
@@ -154,9 +139,6 @@ fn a_broken_profile_stops_a_reconcile_and_leaves_the_others_listed() {
     );
 }
 
-/// The `node` on PATH, which runs the plugin files Fleet ships for pi and
-/// opencode. Without it a test that runs one says so and skips, except in
-/// CI: every runner there has node, so a skip would hide the test.
 #[cfg(unix)]
 fn node() -> Option<std::path::PathBuf> {
     let found = std::env::var_os("PATH").and_then(|path| {
@@ -174,17 +156,9 @@ fn node() -> Option<std::path::PathBuf> {
     found
 }
 
-/// A `fleet` that records each signal it is asked for: its arguments, then
-/// the payload on its stdin, in FLEET_SIGNAL_FILE, else in FLEET_STUB_LOG, so
-/// a hook that runs it outside a session is seen. Shell builtins only: its
-/// PATH holds nothing but itself and `node`.
 #[cfg(unix)]
 const STUB_FLEET: &str = "#!/bin/sh\nIFS= read -r payload\nprintf '%s\\t%s\\n' \"$*\" \"$payload\" >> \"${FLEET_SIGNAL_FILE:-$FLEET_STUB_LOG}\"\n";
 
-/// Run `driver` under `node` on the plugin file `asset`, with `steps`, and
-/// the stub `fleet` first on PATH unless `with_fleet` is false; each signal
-/// the plugin sent, as its state and its payload. `signal_file`: whether
-/// FLEET_SIGNAL_FILE is set, as in a session Fleet started.
 #[cfg(unix)]
 fn run_asset(
     env: &Env,
@@ -205,7 +179,6 @@ fn run_asset(
     }
     let log = env.root.join("signals.log");
     let _ = std::fs::remove_file(&log);
-    // The plugin finds `fleet` and nothing else, wherever node is installed.
     let _ = std::fs::remove_file(bin.join("node"));
     std::os::unix::fs::symlink(node, bin.join("node")).unwrap();
     let mut cmd = std::process::Command::new(node);
@@ -234,8 +207,6 @@ fn run_asset(
         .collect()
 }
 
-/// pi's extension API, as much of it as Fleet's extension uses: each step
-/// is an event and its payload, given to every handler of the event.
 #[cfg(unix)]
 const PI_DRIVER: &str = r#"
 const [asset, steps] = process.argv.slice(1);
@@ -248,12 +219,6 @@ for (const [name, event] of JSON.parse(steps)) {
 }
 "#;
 
-/// The context an OpenCode 2 plugin's server part gets, as much of it as
-/// Fleet's plugin uses, after its TUI part's start. A step `["prompt",
-/// event]` runs the prompt hook; a step
-/// `["event", event]` is one event of the stream, and the next step waits
-/// until the plugin asked for the event after it. `ses-sub` is a subagent's.
-/// A plugin that registered nothing is given nothing.
 #[cfg(unix)]
 const OPENCODE_DRIVER: &str = r#"
 const [asset, steps] = process.argv.slice(1);
@@ -289,9 +254,6 @@ for (const [kind, event] of JSON.parse(steps)) {
 dispose?.();
 "#;
 
-/// pi and opencode take their hooks at launch from a plugin file Fleet
-/// writes under its own data directory: pi with `-e`, opencode through
-/// `OPENCODE_CONFIG_CONTENT`, which it merges with the user's config.
 #[test]
 fn pi_and_opencode_launch_with_the_plugin_files_fleet_writes() {
     let env = Env::new("harness-launch-hooks");
@@ -306,7 +268,6 @@ fn pi_and_opencode_launch_with_the_plugin_files_fleet_writes() {
 
     let pi = session(&env, "p1");
     let extension = assets.join("fleet-pi.ts");
-    // `--approve`: the project is trusted for this run only.
     assert_eq!(
         pi.argv,
         ["pi", "-e", &*asset(&extension), "--approve"],
@@ -316,8 +277,7 @@ fn pi_and_opencode_launch_with_the_plugin_files_fleet_writes() {
     assert!(extension.is_file(), "{}", extension.display());
 
     let opencode = session(&env, "o1");
-    // Its own server: a shared background service was started with another
-    // environment, and would load neither the plugin nor the signal file.
+    // A shared opencode service started with another environment would load neither the plugin nor the signal file.
     assert_eq!(opencode.argv, ["opencode", "--standalone"]);
     let content: serde_json::Value = serde_json::from_str(
         opencode
@@ -332,7 +292,6 @@ fn pi_and_opencode_launch_with_the_plugin_files_fleet_writes() {
         assert!(plugin.join(part).is_file(), "{}/{part}", plugin.display());
     }
 
-    // A revive resumes each on the conversation its hooks reported.
     env.host().reboot().unwrap();
     env.reconcile().ok();
     let pi = session(&env, "p1");
@@ -354,8 +313,6 @@ fn pi_and_opencode_launch_with_the_plugin_files_fleet_writes() {
     );
 }
 
-/// Fleet's pi extension, run on pi's events: a start, a prompt, a run and
-/// its end, each reported with the session id.
 #[cfg(unix)]
 #[test]
 fn the_pi_extension_reports_each_event_with_its_session() {
@@ -365,7 +322,7 @@ fn the_pi_extension_reports_each_event_with_its_session() {
     task["spec"]["harness"] = json!("pi");
     env.apply(json!([task])).ok();
     env.reconcile().ok();
-    // Node runs a module by its extension; the file is plain JavaScript.
+    // Node runs a module by its extension.
     let asset = env.root.join("fleet-pi.mjs");
     std::fs::copy(env.data.join("harness-assets/fleet-pi.ts"), &asset).unwrap();
     let steps = json!([
@@ -395,7 +352,6 @@ fn the_pi_extension_reports_each_event_with_its_session() {
             ("idle".into(), session),
         ]
     );
-    // Outside a session Fleet started, nothing; without `fleet`, no failure.
     assert!(
         run_asset(
             &env,
@@ -409,10 +365,6 @@ fn the_pi_extension_reports_each_event_with_its_session() {
     assert!(run_asset(&env, &node, (PI_DRIVER, &asset), steps, (false, true)).is_empty());
 }
 
-/// Fleet's opencode plugin, run on opencode's prompt hook and events: a
-/// turn whose subagent asks a permission and a question. The agent works
-/// until every session ends, waits on a person while a request is open, and
-/// a subagent's prompt is neither a prompt nor the conversation.
 #[cfg(unix)]
 #[test]
 fn the_opencode_plugin_reports_each_change_of_state_with_its_session() {
@@ -453,7 +405,6 @@ fn the_opencode_plugin_reports_each_change_of_state_with_its_session() {
         ],
         "{sent:?}"
     );
-    // The TUI part reports the start, before any session.
     assert_eq!(sent[0].1, json!({}));
     assert_eq!(
         sent[1].1,
@@ -475,12 +426,6 @@ fn the_opencode_plugin_reports_each_change_of_state_with_its_session() {
     assert!(run_asset(&env, &node, (OPENCODE_DRIVER, &asset), steps, (false, true)).is_empty());
 }
 
-/// kilo takes its hooks at launch from two files Fleet writes: its server
-/// plugin, named in `KILO_CONFIG_CONTENT`, and the terminal UI's config that
-/// names its TUI plugin, in `KILO_TUI_CONFIG`. kilo merges each with the
-/// user's. `KILO_NO_DAEMON`: a running background service was started with
-/// another environment, and would load neither the plugin nor the signal
-/// file.
 #[test]
 fn kilo_launches_with_the_plugin_files_fleet_writes() {
     let env = Env::new("harness-launch-kilo");
@@ -512,12 +457,10 @@ fn kilo_launches_with_the_plugin_files_fleet_writes() {
     for part in ["index.js", "tui.js", "signal.js", "tui.json"] {
         assert!(plugin.join(part).is_file(), "{}/{part}", plugin.display());
     }
-    // The TUI config names its plugin beside it, wherever the data dir is.
     let config: serde_json::Value =
         serde_json::from_str(&std::fs::read_to_string(&tui).unwrap()).unwrap();
     assert_eq!(config, json!({"plugin": ["./tui.js"]}));
 
-    // A revive resumes kilo on the conversation its hooks reported.
     env.host().reboot().unwrap();
     env.reconcile().ok();
     let kilo = session(&env, "k1");
@@ -532,10 +475,6 @@ fn kilo_launches_with_the_plugin_files_fleet_writes() {
     );
 }
 
-/// The context a kilo plugin's server part gets, after its TUI part's start.
-/// A step `["chat.message", input, output]` runs the prompt hook; a step
-/// `["event", event]` is one event of the bus. As kilo does, each handler
-/// runs without waiting for the one before it.
 #[cfg(unix)]
 const KILO_DRIVER: &str = r#"
 const [asset, steps] = process.argv.slice(1);
@@ -550,12 +489,6 @@ for (const [kind, input, output] of JSON.parse(steps)) {
 await Promise.all(running);
 "#;
 
-/// Fleet's kilo plugin, run on kilo's prompt hook and events: a turn whose
-/// subagent asks a permission, then a question, suggestions and network
-/// requests the agent asks itself, two of them at once. The
-/// agent works until every session is idle, waits on a person while a
-/// request is open, and a subagent's prompt is neither a prompt nor the
-/// conversation.
 #[cfg(unix)]
 #[test]
 fn the_kilo_plugin_reports_each_change_of_state_with_its_session() {
@@ -583,7 +516,7 @@ fn the_kilo_plugin_reports_each_change_of_state_with_its_session() {
             ]}
         ])
     };
-    // A request is opened with its `id` and closed with its `requestID`.
+    // The agent opens a request with its `id` and closes it with its `requestID`.
     let open = |kind: &str, id: &str| event(kind, json!({"id": id, "sessionID": "ses-root"}));
     let close =
         |kind: &str, id: &str| event(kind, json!({"requestID": id, "sessionID": "ses-root"}));
@@ -617,7 +550,6 @@ fn the_kilo_plugin_reports_each_change_of_state_with_its_session() {
             "question.rejected",
             json!({"requestID": "que-1", "sessionID": "ses-root"})
         ),
-        // Two requests at once: the agent waits until both are closed.
         open("suggestion.shown", "sug-1"),
         open("session.network.asked", "net-1"),
         close("suggestion.dismissed", "sug-1"),
@@ -646,7 +578,6 @@ fn the_kilo_plugin_reports_each_change_of_state_with_its_session() {
         ],
         "{sent:?}"
     );
-    // The TUI part reports the start, before any session.
     assert_eq!(sent[0].1, json!({}));
     assert_eq!(
         sent[1].1,
@@ -668,10 +599,6 @@ fn the_kilo_plugin_reports_each_change_of_state_with_its_session() {
     assert!(run_asset(&env, &node, (KILO_DRIVER, &asset), steps, (false, true)).is_empty());
 }
 
-/// omp takes its hooks at launch as an extension file Fleet writes, passed
-/// with `-e`; qwen as a settings file Fleet writes, named in
-/// `QWEN_CODE_SYSTEM_DEFAULTS_PATH`, whose hooks qwen merges with the
-/// system's, the user's and the project's. omp skips its first-run setup.
 #[test]
 fn omp_and_qwen_launch_with_the_hook_files_fleet_writes() {
     let env = Env::new("harness-launch-omp-qwen");
@@ -705,7 +632,6 @@ fn omp_and_qwen_launch_with_the_hook_files_fleet_writes() {
     );
     assert!(settings.is_file(), "{}", settings.display());
 
-    // A revive resumes each on the conversation its hooks reported.
     env.host().reboot().unwrap();
     env.reconcile().ok();
     for (task, program) in [("m1", "omp"), ("q1", "qwen")] {
@@ -720,11 +646,6 @@ fn omp_and_qwen_launch_with_the_hook_files_fleet_writes() {
     }
 }
 
-/// omp's extension API, as much of it as Fleet's extension uses: each step
-/// is an event and its payload, given to every handler of the event without
-/// waiting for the one before it. A step whose third element is `"sub"`
-/// comes from a subagent, which runs in omp's process with the same
-/// extensions, its own session and no UI.
 #[cfg(unix)]
 const OMP_DRIVER: &str = r#"
 const [asset, steps] = process.argv.slice(1);
@@ -741,10 +662,6 @@ for (const [name, event, from] of JSON.parse(steps)) {
 await Promise.all(running);
 "#;
 
-/// Fleet's omp extension, run on omp's events: a start, a prompt, a run
-/// with two tool calls waiting on a person at once, a subagent, and the
-/// run's end, each reported with the session id. A run that will continue
-/// is not an end, and neither a subagent nor a revive reports anything.
 #[cfg(unix)]
 #[test]
 fn the_omp_extension_reports_each_event_with_its_session() {
@@ -754,7 +671,7 @@ fn the_omp_extension_reports_each_event_with_its_session() {
     task["spec"]["harness"] = json!("omp");
     env.apply(json!([task])).ok();
     env.reconcile().ok();
-    // Node runs a module by its extension; the file is plain JavaScript.
+    // Node runs a module by its extension.
     let asset = env.root.join("fleet-omp.mjs");
     std::fs::copy(env.data.join("harness-assets/fleet-omp.ts"), &asset).unwrap();
     let approval = |kind: &str, id: &str| json!([kind, {"toolCallId": id, "toolName": "bash"}]);
@@ -772,7 +689,6 @@ fn the_omp_extension_reports_each_event_with_its_session() {
         ["agent_end", {"messages": []}, "sub"],
         ["agent_end", {"messages": [], "willContinue": true}],
         ["agent_end", {"messages": []}],
-        // `--restore` goes on with an unfinished turn: no prompt was given.
         ["before_agent_start", {"reason": "revive", "prompt": ""}],
     ]);
     let sent = run_asset(
@@ -810,11 +726,6 @@ fn the_omp_extension_reports_each_event_with_its_session() {
     assert!(run_asset(&env, &node, (OMP_DRIVER, &asset), steps, (false, true)).is_empty());
 }
 
-/// A hook command of Fleet's, run by `shell` (the program and the arguments
-/// before the command) with `payload` on stdin: the state it sent and the
-/// payload `fleet` read, or nothing. `with_fleet`: whether the stub `fleet`
-/// is on PATH. `signal_file`: whether FLEET_SIGNAL_FILE is set, as in a
-/// session Fleet started.
 #[cfg(unix)]
 fn run_hook(
     env: &Env,
@@ -848,7 +759,7 @@ fn run_hook(
     }
     let mut child = cmd.spawn().expect(shell[0]);
     use std::io::Write;
-    // Without `fleet` the shell exits unread, and the write may break its pipe.
+    // The shell may exit unread, so the write may break its pipe.
     let _ = child
         .stdin
         .take()
@@ -867,10 +778,6 @@ fn run_hook(
         .collect()
 }
 
-/// Fleet's qwen settings: each hook qwen runs reports its state with qwen's
-/// payload, and a missing `fleet` never fails qwen's turn. qwen's own
-/// notifications are not used: it sends `idle_prompt` while its approval
-/// dialog opens, inside a turn.
 #[cfg(unix)]
 #[test]
 fn the_qwen_settings_report_each_event_through_fleet_signal() {
@@ -927,9 +834,6 @@ fn the_qwen_settings_report_each_event_through_fleet_signal() {
     }
 }
 
-/// Copilot takes its hooks at launch as a plugin directory Fleet writes,
-/// passed with `--plugin-dir`: a manifest and the hooks file Copilot reads
-/// from a plugin. A revive resumes it on the conversation its hooks reported.
 #[test]
 fn copilot_launches_with_the_plugin_fleet_writes() {
     let env = Env::new("harness-launch-copilot");
@@ -962,13 +866,9 @@ fn copilot_launches_with_the_plugin_fleet_writes() {
     );
 }
 
-/// `sh`, as a hook runner for [`run_hook`].
 #[cfg(unix)]
 const SH: &[&str] = &["/bin/sh", "-c"];
 
-/// The `pwsh` on PATH, which runs the PowerShell form of Copilot's hooks.
-/// Without it a test says so and runs only the POSIX form, except in CI:
-/// there a skip would leave the PowerShell form unrun.
 #[cfg(unix)]
 fn pwsh() -> Option<String> {
     let found = std::env::var_os("PATH").and_then(|path| {
@@ -986,13 +886,6 @@ fn pwsh() -> Option<String> {
     found.map(|p| p.to_string_lossy().into_owned())
 }
 
-/// Fleet's Copilot hooks: each event Copilot runs a hook for reports its
-/// state with Copilot's payload, in a POSIX shell form and a PowerShell
-/// form, which Copilot runs on Windows. Outside a session neither runs
-/// `fleet`, and a missing `fleet` never fails a turn. `permissionRequest` is
-/// not used: Copilot runs it for every permission check, an allowed one
-/// included. A person is asked only when Copilot notifies a permission
-/// prompt or a question.
 #[cfg(unix)]
 #[test]
 fn the_copilot_hooks_report_each_event_through_fleet_signal() {
@@ -1090,12 +983,9 @@ fn the_copilot_hooks_report_each_event_through_fleet_signal() {
     }
 }
 
-/// Every Copilot event's PowerShell hook is this one command with its state.
 #[cfg(unix)]
 const COPILOT_POWERSHELL_HOOK: &str = "try { if ($env:FLEET_SIGNAL_FILE) { $input | fleet signal {state} 2>$null } } catch { }; exit 0";
 
-/// `(fleet on PATH, FLEET_SIGNAL_FILE set)` for each way a hook runs
-/// outside a Fleet session.
 #[cfg(unix)]
 const OUTSIDE_A_SESSION: [(bool, bool); 3] = [(false, true), (true, false), (false, false)];
 
@@ -1104,10 +994,7 @@ fn pwsh_command(pwsh: &str) -> [&str; 4] {
     [pwsh, "-NoProfile", "-NonInteractive", "-Command"]
 }
 
-/// A plugin file is named inside a JSON string (opencode's config), where a
-/// double quote cannot stand as it is: a data directory whose path holds one
-/// stops each command that starts sessions, and names the directory.
-// Windows refuses a `"` in a file name, so the directory cannot exist there.
+// Windows refuses a `"` in a file name.
 #[cfg(unix)]
 #[test]
 fn a_data_directory_with_a_quote_in_its_path_is_refused_before_any_spawn() {

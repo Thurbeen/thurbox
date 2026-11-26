@@ -1,23 +1,3 @@
-//! Every window thurbox creates carries the `remain-on-exit` its role wants.
-//!
-//! The option is a **window** option, so `set-option -t <session>` never set it
-//! for a session — tmux resolves that target down to the session's current
-//! window (measured, tmux 3.2a). Which windows carried it was therefore an
-//! accident of when `ensure_ready` last ran, and the two roles want opposite
-//! answers:
-//!
-//! - an agent's window keeps its corpse, so the error it printed stays readable
-//!   and the listing can still report `#{pane_dead}`;
-//! - a mod's program is read from its output *stream*, and tmux announces a
-//!   pane's death only by closing its window — so a kept window is a death that
-//!   is never announced, which is what "the editor hung" was.
-//!
-//! Asserted on a real tmux through the real spawn paths, because what is being
-//! tested is the wiring: a helper returning the right string proves nothing
-//! about which windows are told.
-//!
-//! Skipped when tmux is absent: a missing multiplexer is an environment fact.
-
 #![cfg(unix)]
 
 use std::collections::HashMap;
@@ -25,13 +5,13 @@ use std::process::Command;
 
 use thurbox::kernel::terminal::{ProgramKey, Terminals};
 
-/// The guard every tmux server in this file is reaped by — see its own doc.
 #[path = "../../runtime-mux/tests/support/tmux_server.rs"]
 mod tmux_server;
 
 use tmux_server::TmuxServer;
 
 const SOCKET: &str = "thurbox-remain-on-exit-e2e";
+const TIME_FOR_A_CORPSE_TO_BE_REAPED: std::time::Duration = std::time::Duration::from_millis(500);
 
 fn have_tmux() -> bool {
     Command::new("tmux")
@@ -49,8 +29,6 @@ fn tmux(args: &[&str]) -> std::process::Output {
         .expect("run tmux")
 }
 
-/// What `window-size` says for the window holding `pane`, or for the server when
-/// `pane` is `None`.
 fn window_size(pane: Option<&str>) -> String {
     let out = match pane {
         Some(pane) => tmux(&["show-options", "-w", "-t", pane, "window-size"]),
@@ -63,9 +41,6 @@ fn window_size(pane: Option<&str>) -> String {
     }
 }
 
-/// What `remain-on-exit` says for the window holding `pane`, or `"<unset>"` when
-/// the window carries no value of its own — which is the failure this guards:
-/// an option nobody set is an option that was never inherited either.
 fn remain_on_exit(pane: &str) -> String {
     let out = tmux(&["show-options", "-w", "-t", pane, "remain-on-exit"]);
     let text = String::from_utf8_lossy(&out.stdout);
@@ -75,7 +50,6 @@ fn remain_on_exit(pane: &str) -> String {
     }
 }
 
-/// The pane of the one window whose name starts with `prefix`.
 fn pane_of(prefix: &str) -> Option<String> {
     let out = tmux(&["list-windows", "-a", "-F", "#{window_name} #{pane_id}"]);
     String::from_utf8_lossy(&out.stdout)
@@ -95,10 +69,6 @@ async fn an_agent_window_keeps_its_corpse_and_a_program_window_does_not() {
     let _server = TmuxServer::pin(SOCKET);
     thurbox::paths::set_test_dir(dir.path());
 
-    // The agent, through the headless spawn path — which creates the session and
-    // applies its options on the way, exactly as a restart does. A long-lived
-    // program: one that exits before tmux finishes setting the window up turns a
-    // real failure into a skip.
     let spawned = thurbox::backend::WindowLifecycle::create_window(
         &thurbox::backend::tmux::TmuxBackend::local(&thurbox::backend::mux_settings(
             &Default::default(),
@@ -118,11 +88,10 @@ async fn an_agent_window_keeps_its_corpse_and_a_program_window_does_not() {
     let agent_pane = match spawned {
         Ok(pane) if !pane.is_empty() => pane,
         other => {
-            // Not a skip. tmux is installed — that was checked above — so a
-            // spawn that produced no pane is the spawn path being broken, which
-            // is half of what this file is about. A skip here would report the
-            // regression as a clean run on a machine without a multiplexer.
-            panic!("the agent window could not be spawned: {other:?}");
+            panic!(
+                "the agent window could not be spawned with tmux installed, so the spawn \
+                 path is broken: {other:?}"
+            );
         }
     };
 
@@ -159,18 +128,6 @@ async fn an_agent_window_keeps_its_corpse_and_a_program_window_does_not() {
     );
 }
 
-/// A window adopted from an earlier run is normalised, not taken as found.
-///
-/// The restart path finds a program window by its deterministic name and
-/// reconnects to it. That window was created by some *earlier* interface —
-/// possibly one that set `remain-on-exit` session-wide and landed it on
-/// whichever window was current. Left as found, an editor window carrying `on`
-/// from that era is a pane whose exit can never be announced: the corpse comes
-/// straight back on the first restart after an upgrade, which is the one moment
-/// this whole change exists to fix.
-///
-/// Driven through the real adoption path rather than by calling the helper: the
-/// claim is that adopting *reaches* it.
 #[tokio::test(flavor = "multi_thread")]
 async fn adopting_a_program_window_normalises_what_it_finds() {
     if !have_tmux() {
@@ -195,7 +152,6 @@ async fn adopting_a_program_window_normalises_what_it_finds() {
         panic!("the program pane was started and tmux lists no window for it");
     };
 
-    // What an interface from before the per-window setting left behind.
     tmux(&["set-window-option", "-t", &pane, "remain-on-exit", "on"]);
     assert_eq!(
         remain_on_exit(&pane),
@@ -203,8 +159,6 @@ async fn adopting_a_program_window_normalises_what_it_finds() {
         "the test could not stage the state it is about"
     );
 
-    // A second interface over the same tmux: the window is found by name and
-    // adopted, exactly as a restart does.
     drop(first);
     let mut second = Terminals::with_registry(
         std::sync::Arc::new(thurbox::backend::wiring::local_only(&Default::default())),
@@ -221,24 +175,6 @@ async fn adopting_a_program_window_normalises_what_it_finds() {
     );
 }
 
-/// An agent whose command exits **instantly** still leaves a window behind.
-///
-/// The option is not a message of its own: a window is born with the
-/// server-wide default (`off`), and a command that has already exited by the
-/// time a second message arrives takes its window with it — and the server too,
-/// when it was the last window. That is what CI reported on this branch, twice,
-/// as `tmux new-window exited exit status: 1 for window tb-flow: server exited
-/// unexpectedly`, on the *second* install of a test whose agent binary does not
-/// exist on the runner.
-///
-/// Deterministic without the fix, which is why it is worth having: five windows
-/// created this way with the option sent afterwards were gone every time
-/// (measured, tmux 3.2a, `no such window`). `exit 7` stands in for the real
-/// cause — a missing agent binary, a supported state since #1104.
-///
-/// Not the same failure as the `server exited unexpectedly` CI reported, which
-/// was `window-size` (see `a_window_is_born_sized_by_hand`) — the two produce
-/// the same string from different causes.
 #[tokio::test(flavor = "multi_thread")]
 async fn an_agent_that_dies_at_once_still_leaves_its_window() {
     if !have_tmux() {
@@ -273,8 +209,7 @@ async fn an_agent_that_dies_at_once_still_leaves_its_window() {
         }
     };
 
-    // Long enough for the corpse to be reaped if it was ever going to be.
-    tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+    tokio::time::sleep(TIME_FOR_A_CORPSE_TO_BE_REAPED).await;
     let listed = pane_of("tb-");
     let retention = remain_on_exit(&pane);
 
@@ -292,14 +227,6 @@ async fn an_agent_that_dies_at_once_still_leaves_its_window() {
     );
 }
 
-/// And it still leaves it when an older window already answers to its name.
-///
-/// `tb-<session name>` is not unique — two sessions can share a name, which is
-/// what the `@thurbox_session` stamp exists for — and tmux resolves a duplicate
-/// name to the **lowest index**, which is the older window (measured, tmux
-/// 3.2a). A retention chained by name would therefore land on the wrong window
-/// and leave the new one with the server-wide `off`, which is the failure this
-/// file is about, one collision away.
 #[tokio::test(flavor = "multi_thread")]
 async fn an_older_namesake_does_not_take_the_new_windows_retention() {
     if !have_tmux() {
@@ -311,8 +238,6 @@ async fn an_older_namesake_does_not_take_the_new_windows_retention() {
     let _server = TmuxServer::pin(SOCKET);
     thurbox::paths::set_test_dir(dir.path());
 
-    // The older namesake, from the other session that shares the name. Spawned
-    // through the same path, so it is a real one rather than a hand-made window.
     let first = thurbox::backend::WindowLifecycle::create_window(
         &thurbox::backend::tmux::TmuxBackend::local(&thurbox::backend::mux_settings(
             &Default::default(),
@@ -356,7 +281,7 @@ async fn an_older_namesake_does_not_take_the_new_windows_retention() {
         }
     };
 
-    tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+    tokio::time::sleep(TIME_FOR_A_CORPSE_TO_BE_REAPED).await;
     let retention = remain_on_exit(&pane);
     let listed = tmux(&["list-windows", "-a", "-F", "#{pane_id}"]);
     let alive = String::from_utf8_lossy(&listed.stdout)
@@ -374,26 +299,6 @@ async fn an_older_namesake_does_not_take_the_new_windows_retention() {
     );
 }
 
-/// A window thurbox creates sizes itself, and the **server** never does.
-///
-/// `window-size manual` is what keeps a window from being resized to the
-/// smallest attached client. Said server-wide it is fatal: tmux works out a
-/// window's size before the window exists (`spawn_window` calls
-/// `default_window_size` with `w = NULL`) and the manual branch of
-/// `clients_calculate_size` reads `w->manual_sx` with no NULL check, so the
-/// server dies on the next `new-window` from an unattached client — which is
-/// every headless spawn. Measured, tmux 3.5a: with `set-option -w -g
-/// window-size manual` every `new-window` answered `server exited
-/// unexpectedly`; with the same option said per window, a pane id every time.
-/// Unguarded in 3.3 through 3.6 and guarded only on tmux master. The supported
-/// floor has the option — tmux 2.9 added it (`CHANGES`, 2.8 → 2.9) — but not
-/// the crash: measured, tmux 3.2 and 3.2a accept the per-window write and
-/// survive the server-wide one, so a machine with 3.2 cannot see the failure at
-/// all.
-///
-/// The assertion is therefore about the *configuration*, not the crash: it is
-/// the one form that fails the same way on every tmux, including the one this
-/// machine has.
 #[tokio::test(flavor = "multi_thread")]
 async fn a_window_is_born_sized_by_hand_and_the_server_is_not() {
     if !have_tmux() {

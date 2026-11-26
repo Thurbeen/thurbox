@@ -1,24 +1,3 @@
-//! A session nobody is looking at keeps no terminal of its own.
-//!
-//! tmux already parses every pane and keeps its screen and history. The interface
-//! used to run a second vt100 emulator per session on top of that, with a full
-//! grid and `scrollback_lines` of history each, whether or not the session was
-//! ever shown — ~6 MiB a session once its history filled. So a session that is
-//! not on screen now holds a two-cell grid that still reads every byte for what
-//! the interface needs live (the title, a bell, a notification, when it last
-//! printed), and its real grid is rebuilt from the multiplexer when something
-//! wants it: a paint, or a search.
-//!
-//! What has to hold for that to be invisible is what these pin, against a real
-//! tmux server on a private socket: the rebuilt terminal is the one that was
-//! never dropped, output that arrives while it is gone is neither lost nor
-//! doubled, the first nonblank frame after coming back is current, a search
-//! still finds history nobody is looking at, a session off screen still
-//! reports its title and its output, non-ASCII text printed while a grid is
-//! live reaches it with every character intact, and — on an ssh host — a
-//! session off screen sends no output at all yet loses none of those
-//! signals (`remote`).
-
 use std::path::Path;
 use std::process::Command;
 use std::sync::{Arc, Mutex};
@@ -41,7 +20,6 @@ use tmux_server::TmuxServer;
 
 const SOCKET: &str = "thurbox-lazy-test";
 
-/// `backend::tmux_compat::server::TMUX_SESSION` in a test build — see `tests/attach_by_name.rs`.
 const SESSION: &str = "thurbox-dev";
 
 const ID: &str = "22222222-2222-2222-2222-222222222222";
@@ -108,8 +86,6 @@ fn snapshot(pane: &str) -> Snapshot {
     }
 }
 
-/// A pane running `script` in its own window, at the size the interface will
-/// attach it at, so nothing is resized underneath the comparison.
 fn pane_running(script: &str) -> String {
     tmux(&[
         "new-session",
@@ -140,8 +116,6 @@ fn pane_running(script: &str) -> String {
     .to_string()
 }
 
-/// Everything tmux holds for the pane, as text — how a test knows output has
-/// reached the multiplexer before asking the interface about it.
 fn tmux_text(pane: &str) -> String {
     tmux(&["capture-pane", "-p", "-J", "-S", "-", "-t", pane])
 }
@@ -172,16 +146,14 @@ async fn attach(terminals: &mut Terminals, snap: &Snapshot) {
     );
 }
 
-/// Wait until the interface has taken in everything the pane printed since it
-/// attached: its output stamp has moved (`printed`) and then stopped moving.
+const ADOPTED_STAMP_IS_THE_EPOCH_MS: u64 = 3_600_000;
+
 async fn settle(terminals: &Terminals, printed: bool) {
     let deadline = Instant::now() + Duration::from_secs(15);
     while Instant::now() < deadline {
         let quiet = terminals.millis_since_output(ID).unwrap_or(0);
-        // An adopted pane's stamp starts at the epoch, so "quiet for years"
-        // is "has printed nothing since it was attached".
-        let seen = quiet < 3_600_000;
-        if quiet > 400 && (seen || !printed) {
+        let printed_since_attach = quiet < ADOPTED_STAMP_IS_THE_EPOCH_MS;
+        if quiet > 400 && (printed_since_attach || !printed) {
             return;
         }
         tokio::time::sleep(Duration::from_millis(50)).await;
@@ -189,7 +161,6 @@ async fn settle(terminals: &Terminals, printed: bool) {
     panic!("the pane never went quiet");
 }
 
-/// One frame of the session, as the rows a person would see.
 fn paint(terminals: &Terminals, scroll: u16) -> Vec<String> {
     let mut term = Terminal::new(TestBackend::new(COLS, ROWS)).expect("terminal");
     term.draw(|frame| {
@@ -218,10 +189,6 @@ fn agent_parser(terminals: &Terminals) -> Arc<Mutex<thurbox::backend::SessionPar
         .parser
 }
 
-/// Terminal output that exercises what a replay could get wrong: colours of
-/// every kind, lines that wrap, one exactly as wide as the screen, wide
-/// characters, a tab, more history than the scrollback keeps, and a last line
-/// with no newline, so the cursor is left mid-row.
 fn script_bytes(tag: &str, lines: usize) -> Vec<u8> {
     let mut out = String::new();
     for i in 0..lines {
@@ -243,7 +210,7 @@ fn script_bytes(tag: &str, lines: usize) -> Vec<u8> {
     out.into_bytes()
 }
 
-/// What a pty hands on: `\n` leaves as `\r\n` (`onlcr`).
+// A pty's `onlcr` turns each `\n` into `\r\n`.
 fn through_pty(bytes: &[u8]) -> Vec<u8> {
     let mut out = Vec::with_capacity(bytes.len() + bytes.len() / 16);
     for &b in bytes {
@@ -255,8 +222,6 @@ fn through_pty(bytes: &[u8]) -> Vec<u8> {
     out
 }
 
-/// One row of a screen, cell by cell: what is in it and how it is drawn. A cell
-/// never written and a written space read the same, as they do on screen.
 fn row_cells(screen: &vt100::Screen, row: u16) -> Vec<String> {
     (0..screen.size().1.get())
         .map(|col| {
@@ -281,15 +246,11 @@ fn row_cells(screen: &vt100::Screen, row: u16) -> Vec<String> {
         .collect()
 }
 
-/// Every row the parser holds, oldest history first, each with its wrap flag.
 fn all_rows(parser: &mut vt100::Parser<impl vt100::Callbacks>) -> Vec<(Vec<String>, bool)> {
     let rows = parser.screen().size().0.get();
     parser.screen_mut().set_scrollback(usize::MAX);
     let depth = parser.screen().scrollback();
     let mut out = Vec::new();
-    // Page up to the top, then read one screenful at a time on the way down;
-    // the last page overlaps the screen, so rows are keyed by their distance
-    // from the bottom.
     let mut seen = std::collections::BTreeMap::new();
     let mut offset = depth;
     loop {
@@ -354,8 +315,6 @@ fn grid_size(terminals: &Terminals) -> (u16, u16) {
     (size.0.get(), size.1.get())
 }
 
-/// The numbers of every complete `line-N` the parser holds, oldest first. The
-/// row the cursor is on is left out: it may hold half a line still arriving.
 fn numbered_lines(terminals: &Terminals) -> Vec<u64> {
     let parser = agent_parser(terminals);
     let mut parser = parser.lock().expect("parser");
@@ -374,7 +333,6 @@ fn numbered_lines(terminals: &Terminals) -> Vec<u64> {
         .collect()
 }
 
-/// Every number follows the one before it — nothing lost, nothing repeated.
 fn assert_contiguous(numbers: &[u64], when: &str) {
     for pair in numbers.windows(2) {
         assert_eq!(
@@ -397,11 +355,6 @@ async fn a_grid_dropped_and_rebuilt_while_its_pane_prints_loses_and_repeats_noth
     let dir = tempfile::tempdir().expect("tempdir");
     let go = dir.path().join("go");
     let stop = dir.path().join("stop");
-    // Steady output until the test says stop, so every rebuild below lands
-    // while the pane is printing. Each round waits for the pane to have moved
-    // on by 300 lines rather than for time to pass: a fixed amount of output
-    // paced by the wall clock ran out after three rounds on a loaded machine
-    // (#1248).
     let pane = pane_running(&format!(
         "sh -c 'while [ ! -e {go} ]; do sleep 0.05; done; i=0; \
          while [ ! -e {stop} ]; do echo line-$i; i=$((i+1)); \
@@ -421,9 +374,6 @@ async fn a_grid_dropped_and_rebuilt_while_its_pane_prints_loses_and_repeats_noth
     attach(&mut terminals, &snap).await;
 
     std::fs::write(&go, b"").expect("go");
-    // Each round: shown, which rebuilds the grid where the snapshot lands in
-    // the stream; left to take live output for a moment, then checked; then
-    // off screen, which drops it again on the next sync.
     for rebuild in 1..10 {
         wait_for("the pane to print on", || {
             last_printed(&pane).is_some_and(|n| n >= 300 * (rebuild - 1))
@@ -439,8 +389,6 @@ async fn a_grid_dropped_and_rebuilt_while_its_pane_prints_loses_and_repeats_noth
         assert!(grid_size(&terminals) <= (2, 2), "dropped again");
     }
 
-    // The last one is kept, so the rest of the output lands in a grid that was
-    // rebuilt mid-stream — and the history it ends with crosses the splice.
     terminals.keep_hidden_for(None);
     wait_for("the final rebuilt grid", || {
         paint(&terminals, 0);
@@ -466,7 +414,6 @@ async fn a_grid_dropped_and_rebuilt_while_its_pane_prints_loses_and_repeats_noth
     assert_eq!(numbers.last().copied(), last_printed(&pane));
 }
 
-/// The number of the last `line-N` the pane has printed, as tmux holds it.
 fn last_printed(pane: &str) -> Option<u64> {
     tmux_text(pane)
         .lines()
@@ -482,8 +429,6 @@ async fn the_rebuilt_terminal_is_the_one_that_was_never_dropped() {
     }
     let _server = TmuxServer::pin(SOCKET);
     let dir = tempfile::tempdir().expect("tempdir");
-    // More than `scrollback_lines` (1000) before the interface attaches, and
-    // more after — which arrives while nothing holds a grid for it.
     let before = script_bytes("before", 900);
     let after = script_bytes("after", 400);
     let a = write(dir.path(), "a", &before);
@@ -588,8 +533,6 @@ async fn a_search_finds_history_in_a_session_nobody_is_looking_at() {
         .find(|hit| hit.session == ID && !hit.shell)
         .unwrap_or_else(|| panic!("no hit in the agent pane: {answer:?}"));
 
-    // And the hit lands where it says: showing the session at the hit's offset
-    // puts the line on screen.
     wait_for("the search hit grid to be restored", || {
         paint(&terminals, hit.scroll as u16);
         grid_size(&terminals) == (ROWS, COLS)
@@ -662,8 +605,6 @@ async fn a_title_set_before_the_interface_attached_is_still_reported() {
         return;
     }
     let _server = TmuxServer::pin(SOCKET);
-    // The title is set once, before anything attaches, and never again: the
-    // only place it still exists is tmux's `#{pane_title}`.
     let pane =
         pane_running("sh -c 'printf \"\\033]2;reviewing the diff\\007\"; exec sleep 100000'");
     wait_for("tmux to have the title", || {
@@ -697,19 +638,9 @@ async fn a_title_set_before_the_interface_attached_is_still_reported() {
     }
 }
 
-/// Two-byte characters throughout, so nearly every cut tmux makes in the
-/// stream lands inside one.
 const CYRILLIC: &str = "съешь же ещё этих мягких французских булок да выпей чаю";
 
-/// tmux hands a pane's output to control mode in `%output` lines cut wherever
-/// its read ended — often inside a multi-byte character — and passes bytes
-/// `>= 0x80` through raw. Decoding each line as text on its own turned both
-/// halves of such a character into U+FFFD, which vt100 drops, so a word lost a
-/// letter at random until the agent next redrew it.
-///
-/// Only output that arrives while the grid is live goes that way: what a pane
-/// printed before comes in as a `capture-pane` snapshot of whole lines, which
-/// is why every test above that prints first and looks second never saw it.
+// tmux cuts `%output` wherever its read ended, often inside a multi-byte character.
 #[tokio::test(flavor = "multi_thread")]
 async fn non_ascii_printed_while_the_grid_is_live_loses_no_character() {
     if !have_tmux() {
@@ -724,8 +655,6 @@ async fn non_ascii_printed_while_the_grid_is_live_loses_no_character() {
         .chain(std::iter::once("done> ".to_string()))
         .collect();
     let file = write(dir.path(), "cyrillic", text.as_bytes());
-    // It waits for `go`, so every byte of it is live `%output` and none is in
-    // the snapshot the grid is rebuilt from.
     let pane = pane_running(&format!(
         "sh -c 'while [ ! -e {go} ]; do sleep 0.05; done; cat {file}; exec sleep 100000'",
         go = go.display()
@@ -782,14 +711,7 @@ async fn non_ascii_printed_while_the_grid_is_live_loses_no_character() {
     );
 }
 
-// --- A remote session off screen sends no output (ADR-P30) ---
-//
-// Control mode streams every pane's `%output`, so what a host costs the link
-// grows with every busy session on it. On an ssh host a pane with no grid has
-// its output paused, and what the interface reads off it arrives through a
-// tmux format subscription instead. These run the real server behind a
-// stand-in `ssh` that records what the control connection carries.
-
+// tmux control mode streams every pane's `%output` unless the pane is paused.
 #[cfg(unix)]
 mod remote {
     use super::*;
@@ -802,13 +724,10 @@ mod remote {
     use thurbox::session::{HostDef, Platform};
     use thurbox::shell::HostLauncher;
 
-    /// The destination the stand-in `ssh` answers for.
     const DEST: &str = "e2e@hidden.invalid";
 
     const REMOTE_SESSION: &str = "tbx-hidden";
 
-    /// Put a stand-in `ssh` first on `PATH` that runs the remote command here,
-    /// copying what a control-mode connection sends back into `log`.
     fn stand_in_ssh(log: &Path) -> tempfile::TempDir {
         let bin = tempfile::tempdir().expect("tempdir");
         let ssh = bin.path().join("ssh");
@@ -864,8 +783,6 @@ mod remote {
         panic!("timed out waiting for {what}");
     }
 
-    /// `%output` / `%extended-output` lines for `pane` in what the connection
-    /// carried after byte `from`.
     fn output_lines(log: &Path, from: usize, pane: &str) -> usize {
         let bytes = std::fs::read(log).unwrap_or_default();
         let text = String::from_utf8_lossy(&bytes[from.min(bytes.len())..]).into_owned();
@@ -880,9 +797,6 @@ mod remote {
         std::fs::metadata(log).map_or(0, |m| m.len() as usize)
     }
 
-    /// A pane that prints a numbered line twenty times a second until `stop`
-    /// exists, sets its title and two input modes on the way, then prints `FINAL`
-    /// and waits for `go` before printing `AFTER`.
     fn busy_pane(server: &TmuxServer, dir: &Path, session: &str) -> String {
         let stop = dir.join("stop");
         let go = dir.join("go");
@@ -962,19 +876,16 @@ mod remote {
             "a hidden remote pane's output still crossed the link"
         );
 
-        // What the interface reads off a hidden pane still arrives: the title …
         wait_within("the title set while hidden", 10, || {
             session.agent_title().as_deref() == Some("hidden-title")
         })
         .await;
-        // … and that it is printing.
         assert!(
             session.millis_since_last_output() < 3_000,
             "a printing hidden pane reads as quiet: {} ms",
             session.millis_since_last_output()
         );
 
-        // Its hook state, which rides its own subscription.
         let out = server.tmux(&["set-option", "-p", "-t", &pane, "@thurbox_state", "blocked"]);
         assert!(out.status.success(), "set the hook option");
         wait_within("the hook state of a hidden pane", 10, || {
@@ -985,15 +896,12 @@ mod remote {
         })
         .await;
 
-        // Once it stops, it reads as quiet — the stuck-`working` fallback's input.
         std::fs::write(dir.path().join("stop"), "").expect("stop");
         wait_within("the hidden pane to read as quiet", 15, || {
             session.millis_since_last_output() > 2_500
         })
         .await;
 
-        // Shown again: the grid is the current screen, with the modes set while
-        // nothing was streamed, and output flows again.
         assert!(session.restore_pane(false), "asked for the grid");
         assert!(
             session.wait_resident(Duration::from_secs(10)),
@@ -1001,8 +909,7 @@ mod remote {
         );
         let text = session_text(&session);
         assert!(text.contains("FINAL"), "the current screen: {text}");
-        // A tmux that has no `bracket_paste_flag` (3.2) cannot report the mode,
-        // and the unit tests pin that it is then left alone.
+        // tmux 3.2 has no `bracket_paste_flag`, so it cannot report the mode.
         let knows_bracket_paste = !String::from_utf8_lossy(
             &server
                 .tmux(&[
@@ -1039,7 +946,6 @@ mod remote {
         backend.shutdown();
     }
 
-    /// A local pane's output costs no link, and streams as it always has.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn a_hidden_local_pane_still_streams_its_output() {
         if !have_tmux() {

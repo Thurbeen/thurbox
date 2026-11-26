@@ -1,42 +1,7 @@
-//! A test run leaves no tmux server behind.
-//!
-//! thurbox injects `THURBOX_SOCKET` **and** `THURBOX_SOCKET_FOR` into every
-//! pane it spawns, so a suite run from inside a thurbox session — which is how
-//! this repository is developed — inherits both. `backend::instance::socket_for`
-//! reads the pair: an override tagged for somebody else's data directory is an
-//! inherited one and is dropped, and an instance that also relocated
-//! `THURBOX_DATA_DIR` then lands on a socket *derived* from that directory.
-//!
-//! That rule is right — a harness that isolated its database but not its server
-//! would be spawning windows on the operator's tmux — but it means a harness
-//! which pins a socket without clearing the inherited tag spawns its windows on
-//! a name it never chose, and the `kill-server` in its teardown kills a name
-//! nothing created. One orphan tmux server, with the agent processes inside it,
-//! per test run, forever. That is how a developer's machine came to hold a
-//! hundred of them.
-//!
-//! Being *reachable* is only half of it. A harness that pinned a socket
-//! correctly and then panicked before its `cleanup()` left the server running
-//! and took its socket file away with the tempdir, so nothing could connect to
-//! reap it either — 400 of them on one machine, 4 sockets between 433 servers
-//! (issue #1175). Reaching teardown was never something a test could promise:
-//! a failed assertion, a `.expect()` on a racing tmux and a nextest
-//! `slow-timeout` termination all skip it.
-//!
-//! `tests/cli_socket_isolation.rs` owns the resolution and pins it. What is
-//! here is its consequence for a test harness, in four tests: the recipe that
-//! avoids the leak driven end to end, a harness panicked on purpose to show
-//! the reap survives it, and two gates — one holding
-//! `crates/runtime-mux/tests/support/tmux_server.rs` to the recipe, one holding
-//! every harness here and in the runtime's tests to the guard. Read off the sources rather than by running
-//! them, because the leak is silent: a run that leaks still passes every
-//! assertion it makes.
-
 use std::path::{Path, PathBuf};
 #[cfg(unix)]
 use std::process::Command;
 
-/// The guard every harness in this directory reaps through.
 #[path = "../../runtime-mux/tests/support/tmux_server.rs"]
 mod tmux_server;
 
@@ -52,28 +17,12 @@ fn have_tmux() -> bool {
         .unwrap_or(false)
 }
 
-// --- the panic that used to leak ------------------------------------------
-
-/// Where the probe below writes the socket it started a server on. Read out of
-/// the environment rather than fixed, so the probe can only run when the test
-/// that drives it asked for it.
-///
-/// `cfg(unix)` with the pair of tests that use it: the process table is read
-/// through `ps`, and a constant nothing reads is `dead_code` on Windows.
 #[cfg(unix)]
 const PROBE_REPORT_ENV: &str = "THURBOX_PANIC_PROBE_REPORT";
 
-/// The probe test's name, as the libtest harness spells it.
 #[cfg(unix)]
 const PROBE: &str = "a_harness_that_panics_after_starting_a_server";
 
-/// Whether any tmux **server** process is still running on `socket`.
-///
-/// Asked of the process table rather than of tmux, because the whole failure
-/// is a server with no socket file: the file lived in the harness's own
-/// directory and went away with it, so `tmux -L <name> list-sessions` answers
-/// "no server" for a server that is very much alive, spinning on a CPU. That
-/// is how a machine came to hold 433 of them with only 4 reachable.
 #[cfg(unix)]
 fn server_processes(socket: &str) -> Vec<String> {
     let out = Command::new("ps")
@@ -89,16 +38,6 @@ fn server_processes(socket: &str) -> Vec<String> {
         .collect()
 }
 
-/// A harness that panics between starting its server and its teardown leaves
-/// no tmux server behind.
-///
-/// The panic is the point. Teardown spelled as a `cleanup()` call at each exit
-/// point is reached by the paths that return; it is not reached by the one
-/// that unwinds, and an unwind is what a failed assertion, a `.expect()` on a
-/// racing tmux, or a nextest `slow-timeout` termination all look like. So this
-/// runs a real harness — a child copy of this very test binary, the way
-/// `paths::tests::no_unit_test_temp_dir_outlives_the_test_process` does —
-/// panics it on purpose, and then asks the process table what survived.
 #[test]
 #[cfg(unix)]
 fn a_panicking_harness_still_reaps_its_tmux_server() {
@@ -123,9 +62,6 @@ fn a_panicking_harness_still_reaps_its_tmux_server() {
         String::from_utf8_lossy(&out.stderr)
     );
 
-    // An empty report means the probe never got a server started, and there is
-    // nothing for the assertion below to be about: passing it then would be
-    // passing for the wrong reason.
     let socket = std::fs::read_to_string(&report).unwrap_or_default();
     let socket = socket.trim();
     if socket.is_empty() {
@@ -142,13 +78,6 @@ fn a_panicking_harness_still_reaps_its_tmux_server() {
     );
 }
 
-/// The probe [`a_panicking_harness_still_reaps_its_tmux_server`] drives: start
-/// a server with a pane that outlives the test, say where it is, then panic
-/// the way a failed assertion does.
-///
-/// Inert unless that test asked for it — it is the only caller, and it names
-/// this one by [`PROBE`] rather than discovering it, so a rename fails the run
-/// instead of passing vacuously.
 #[test]
 #[cfg(unix)]
 fn a_harness_that_panics_after_starting_a_server() {
@@ -160,12 +89,8 @@ fn a_harness_that_panics_after_starting_a_server() {
     }
 
     let server = TmuxServer::pin(&format!("thurbox-panic-probe-{}", std::process::id()));
-    // A pane that outlives the test: one that exits takes the server with it
-    // and would turn this probe into a test of tmux's own idle shutdown.
+    // tmux shuts an idle server down, so the pane outlives the test.
     let started = server.tmux(&["new-session", "-d", "-s", "probe", "sleep", "300"]);
-    // The report is what says a server exists to leak; the panic happens
-    // either way, so the caller reads one failing child rather than having to
-    // tell "could not start a server" from "did not panic".
     if started.status.success() {
         std::fs::write(&report, server.socket()).expect("report the socket");
     }
@@ -173,11 +98,6 @@ fn a_harness_that_panics_after_starting_a_server() {
     panic!("the probe panics here, as a failed assertion would");
 }
 
-/// `src` with its line comments removed, so a rule below is answered by code
-/// rather than by a comment that talks about it. Line comments are all this
-/// needs: `tests/` carries no block comments, and one appearing later costs a
-/// false *failure* — a harness reported as unscoped when it is not — which is
-/// the direction that gets noticed and fixed rather than trusted.
 fn code_of(src: &str) -> String {
     src.lines()
         .map(|line| match line.find("//") {
@@ -188,46 +108,28 @@ fn code_of(src: &str) -> String {
         .join("\n")
 }
 
-/// How far from a pin the clear and the socket directory may sit. The real
-/// gaps are a handful of lines, so this is headroom rather than latitude: the
-/// point is that the three are one piece of setup, not three places in a file.
 const WINDOW: usize = 15;
 
-/// Verbs that *set* an environment variable, and verbs that *clear* one.
 const SET: [&str; 2] = ["set_var(", ".env("];
 const CLEAR: [&str; 2] = ["remove_var(", "env_remove("];
 
-/// Whether `line` sets or clears the variable spelled `literal`, whose crate
-/// constant — where it has one — is `konst`.
-///
-/// The constant counts without a verb beside it, because the multi-line form
-/// `set_var(\n  SOCKET_OVERRIDE_ENV,\n  …)` puts the two on different lines;
-/// `prev` is how that case is recognised. An import naming the constant is not
-/// a use of it, and a bare literal needs the verb, or every mention would count.
 fn touches(line: &str, prev: &str, konst: Option<&str>, literal: &str, verbs: &[&str]) -> bool {
     let line = line.trim_start();
     if line.starts_with("use ") {
         return false;
     }
     let verbed = verbs.iter().any(|v| line.contains(v));
-    // A real use of the constant, not this file's own description of one:
-    // `marks(Some("SOCKET_OVERRIDE_ENV"), …)` names it inside a string, and a
-    // use never is.
     let names_konst = konst.is_some_and(|k| {
         line.match_indices(k)
             .any(|(at, _)| at == 0 || !line[..at].ends_with('"'))
     });
     if names_konst {
-        // …and it still has to be a set or a clear. `var(SOCKET_OVERRIDE_ENV)`
-        // reads the socket rather than moving it, and counting that as a pin
-        // would fail a harness for asking a question.
         let continued = prev.trim_end().ends_with('(') && verbs.iter().any(|v| prev.contains(v));
         return verbed || continued;
     }
     line.contains(literal) && verbed
 }
 
-/// The lines of `lines` that touch one variable — see [`touches`].
 fn marks(lines: &[&str], konst: Option<&str>, literal: &str, verbs: &[&str]) -> Vec<usize> {
     lines
         .iter()
@@ -245,12 +147,6 @@ fn marks(lines: &[&str], konst: Option<&str>, literal: &str, verbs: &[&str]) -> 
         .collect()
 }
 
-/// Take the line nearest `at` within [`WINDOW`] out of `xs`, or answer that
-/// there is none left to take.
-///
-/// Taking is what makes this one-for-one: two pins ten lines apart cannot both
-/// point at the same `remove_var`, which under a plain proximity test would let
-/// the unscoped one borrow its neighbour's and pass.
 fn claim_nearest(xs: &mut Vec<usize>, at: usize) -> bool {
     let found = xs
         .iter()
@@ -267,8 +163,6 @@ fn claim_nearest(xs: &mut Vec<usize>, at: usize) -> bool {
     }
 }
 
-/// Every pin in `src`, and for each one what it failed to do: how many pins
-/// were seen, and a line-numbered complaint per pin that is not scoped.
 fn scope_failures(src: &str) -> (usize, Vec<String>) {
     let code = code_of(src);
     let lines: Vec<&str> = code.lines().map(str::trim_end).collect();
@@ -304,34 +198,16 @@ fn scope_failures(src: &str) -> (usize, Vec<String>) {
     (pinned.len(), failures)
 }
 
-/// The guard's own file, from the workspace root: the one place a socket is
-/// pinned, and the one place that has to spell the whole recipe out. The
-/// multiplexer runtime's tests hold it, and thurbox's include it.
 const GUARD: &str = "crates/runtime-mux/tests/support/tmux_server.rs";
 
-/// The directories whose harnesses must pin through [`GUARD`]: thurbox's
-/// tests and the runtime's.
 const HARNESS_DIRS: [&str; 2] = ["crates/thurbox/tests", "crates/runtime-mux/tests"];
 
 fn workspace_root() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("../..")
 }
 
-/// The guard type, as the harnesses spell it.
 const GUARD_TYPE: &str = "TmuxServer";
 
-/// Every pin the guard makes clears the inherited owner tag and points
-/// `TMUX_TMPDIR` somewhere of its own.
-///
-/// The rule used to be read off every harness, because every harness spelled it
-/// out. They now route through [`GUARD`] instead, which is a better place for
-/// it to be right and a worse place for it to be wrong: one mistake here is
-/// every harness's mistake. So the rule did not go away, it moved.
-///
-/// Read off the source rather than by running it: the leak only shows up on a
-/// machine where the suite runs inside a thurbox pane, and a run that does leak
-/// still passes every assertion it makes. Comments are stripped first: a rule
-/// read off raw text is satisfied by prose.
 #[test]
 fn the_guard_scopes_every_socket_it_pins() {
     let src = std::fs::read_to_string(workspace_root().join(GUARD)).expect("read the guard");
@@ -348,27 +224,8 @@ fn the_guard_scopes_every_socket_it_pins() {
     );
 }
 
-/// No harness pins a tmux socket by hand: every one of them goes through the
-/// guard, whose `Drop` reaps whatever the pin started.
-///
-/// Per pin *site*, not per file — and that distinction is the whole reason this
-/// is worth reading off the sources. A file-wide check is satisfied by one
-/// correctly written test while a sibling beside it leaks: `attach_by_name`
-/// scopes five times, and a sixth test that pinned a socket of its own would
-/// sit behind the other five. The previous version of this gate asked each pin
-/// for a cleared owner tag and a private socket directory, which is what makes
-/// a server reachable; it did not ask who kills it. Nobody did, on any path
-/// that panicked or timed out, and a machine ended up holding 433 servers with
-/// 4 sockets between them (issue #1175).
-///
-/// So the question here is narrower and stronger: a harness may not pin at all.
-/// `TmuxServer::pin` and `TmuxServer::private` are the only two pins in this
-/// directory, `the_guard_scopes_every_socket_it_pins` holds them to the recipe,
-/// and holding one is what reaps.
 #[test]
 fn no_harness_pins_a_socket_outside_the_guard() {
-    // The one file that is *about* the resolution, sets the pair on purpose,
-    // and never starts a multiplexer.
     const EXEMPT: [&str; 1] = ["cli_socket_isolation.rs"];
 
     let mut offenders = Vec::new();
@@ -425,18 +282,6 @@ fn no_harness_pins_a_socket_outside_the_guard() {
     );
 }
 
-/// Whether `line` builds a guard and, if it does, whether it keeps it.
-///
-/// A guard reaps when it is *dropped*, so building one the compiler may drop at
-/// the end of that very statement leaves the test running unscoped — and that
-/// is neither a compile error nor a failed assertion, which is the state this
-/// whole file is about. Three shapes do it: a bare `TmuxServer::pin(SOCKET);`
-/// statement, a `let _ = …` (`_` alone is not a binding), and a temporary used
-/// for one of its methods, `TmuxServer::private(SOCKET).socket().to_owned()`.
-///
-/// So the value has to be bound — to a named local, a struct field or a
-/// position in a tuple — and it has to *be* the value rather than the receiver
-/// of a chain.
 fn held_guard(line: &str, next: &str) -> Option<bool> {
     let ctor = format!("{GUARD_TYPE}::");
     let line = line.trim_start();
@@ -446,8 +291,7 @@ fn held_guard(line: &str, next: &str) -> Option<bool> {
         || before.ends_with(':')
         || before.ends_with('(')
         || before.ends_with(',');
-    // `next` because rustfmt breaks a method chain across lines, and a chain
-    // whose first link sits on the following line is the same temporary.
+    // rustfmt may put a method chain's first link on the following line.
     let rest = after_call(&line[at + ctor.len()..]);
     let rest = if rest.is_empty() {
         next.trim_start()
@@ -457,12 +301,6 @@ fn held_guard(line: &str, next: &str) -> Option<bool> {
     Some(bound && !rest.starts_with('.'))
 }
 
-/// What follows the call `after` opens — `after` starting just past
-/// `TmuxServer::` — or nothing when it opens no call or never closes one.
-///
-/// Balanced rather than "up to the next `)`": every constructor here is
-/// handed a `format!` or a `&[…]`, so the first close paren is usually not the
-/// one that ends the call.
 fn after_call(after: &str) -> &str {
     let mut depth = 0usize;
     for (at, c) in after.char_indices() {

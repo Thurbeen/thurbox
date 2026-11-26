@@ -1,51 +1,17 @@
-//! The clipboard chords, declared rather than matched.
-//!
-//! Copy and paste used to be literal `KeyCode::Char('c')`/`('v')` arms in the
-//! loop, ahead of the registry — which meant help listed them under *Fixed (not
-//! rebindable)* and nobody could move them. They are ordinary bindings now,
-//! owned by [`super::modals::OWNER`] like the modal chords: listed in help,
-//! offered by the palette, conflict-checked, and rebindable. The loop still
-//! *runs* them itself, because there is no Lua mod behind them.
-//!
-//! **macOS gets `Cmd` as well.** `Ctrl+C` on a terminal means interrupt, so a
-//! Mac user reaches for `Cmd+C` — and it did nothing, because the Command key
-//! was dropped at the input boundary before any chord was resolved (issue
-//! #1024). The modifier is carried through now ([`super::host::KeyPress::cmd`]),
-//! and macOS builds declare the `Cmd` pair beside the `Ctrl` one — the same
-//! "Cmd mirrors the Ctrl primary" pattern v1 used for its four Cmd alternates.
-//! Arriving at all still needs the kitty keyboard protocol, which is pushed at
-//! startup: iTerm2 3.5+, kitty, WezTerm and Ghostty report `Cmd`, Terminal.app
-//! does not — and the emulator gets the chord first, so one that swallows its
-//! own unperformed `Cmd+C` keeps it from thurbox whatever is declared here
-//! (`docs/thurbox/features.md` → Text Selection and Copy-Paste).
-
 use super::modals::OWNER;
 use super::registry::{binding_from, Binding};
 
-/// Copy the current selection. Fires only while there **is** one: with none,
-/// the chord belongs to whatever has focus, so `Ctrl+C` still interrupts the
-/// agent. Under `[clipboard] copy_on_select` (the default) the release has
-/// already copied and the chord never fires on a selection. Both guards are
-/// the loop's — see `coordinator::input`.
 pub const COPY_ACTION: &str = "kernel.copy";
 
-/// Paste the clipboard into the focused session's terminal.
 pub const PASTE_ACTION: &str = "kernel.paste";
 
-/// The group these two are listed under in help.
 const GROUP: &str = "Clipboard";
 
-/// One clipboard action: what it is called, what help says about it, and the
-/// chord it takes on each platform.
-///
-/// Both chords on one row rather than two flat lists, because "Cmd mirrors the
-/// Ctrl primary" is the rule — spelling them together makes it impossible to
-/// add one and forget the other.
 struct Chords {
     action: &'static str,
     description: &'static str,
     ctrl: &'static str,
-    /// Declared on macOS builds only.
+    // Ctrl+C means interrupt on a terminal, so macOS also binds Cmd; Cmd arrives only under the kitty keyboard protocol.
     cmd: &'static str,
 }
 
@@ -64,13 +30,10 @@ const CLIPBOARD: [Chords; 2] = [
     },
 ];
 
-/// The clipboard chords as registry declarations, for the platform this build
-/// runs on.
 pub fn bindings() -> Vec<Binding> {
     bindings_for(cfg!(target_os = "macos"))
 }
 
-/// Split out so both platforms' tables are testable from either.
 fn bindings_for(macos: bool) -> Vec<Binding> {
     CLIPBOARD
         .iter()
@@ -86,11 +49,6 @@ fn bindings_for(macos: bool) -> Vec<Binding> {
                     row.action,
                     row.description,
                     Some("global"),
-                    // Never deferred to the agent. `Ctrl+C` reaching the agent
-                    // is a *fall-through* decided per press by whether there is
-                    // a selection, not a property of the binding: marking it
-                    // passthrough would give the agent the chord even with one,
-                    // and copying is the one case where thurbox wins it back.
                     false,
                     Some(GROUP),
                 )
@@ -120,8 +78,6 @@ mod tests {
         }
     }
 
-    /// The issue this module exists for: on a Mac the Command key is what a
-    /// user presses to copy, and `Ctrl+C` is spent on interrupt.
     #[test]
     fn macos_adds_the_cmd_pair_and_no_other_platform_does() {
         let mac = chords(true);
@@ -129,8 +85,6 @@ mod tests {
         assert!(!chords(false).iter().any(|chord| chord.starts_with("cmd")));
     }
 
-    /// A chord the registry would spell differently is worse than none: the
-    /// declaration would silently never match the press that made it.
     #[test]
     fn every_chord_is_already_canonical() {
         for row in CLIPBOARD {

@@ -1,8 +1,3 @@
-//! The Task inbox end to end: `fleet send` through the real binary, the
-//! file store's typed mutations, TaskController's delivery and the runtime's
-//! journal, against the fake host, across process restarts and injected
-//! faults.
-
 mod support;
 
 use std::fs;
@@ -13,13 +8,10 @@ use fleet_runtime::Fault;
 use serde_json::{Value, json};
 use support::{Env, assert_condition, base_config, task};
 
-/// A Task briefed on the fake host, sent by a known user.
 fn briefed(name: &str) -> Env {
     briefed_as(name, "claude-code")
 }
 
-/// Briefed, on `harness`: one with no prompt hook leaves a lost answer to
-/// the runtime's journal.
 fn briefed_as(name: &str, harness: &str) -> Env {
     let mut env = Env::new(name);
     env.set_var("USER", "tester");
@@ -50,7 +42,6 @@ fn concluded(name: &str) -> Env {
     env
 }
 
-/// `fleet send --json`: the entry as appended, and its key.
 fn send(env: &Env, text: &str) -> Value {
     env.fleet(&["send", "t1", text, "--json"]).ok().json()
 }
@@ -134,14 +125,12 @@ fn a_message_to_a_briefed_task_is_delivered_once_under_its_key() {
         .ok()
         .stdout_has("inbox 0 queued, 1 delivered");
 
-    // A second reconcile, a new process, changes nothing.
     let again = env.reconcile().ok().json();
     assert_eq!(
         (again["statusWrites"].as_u64(), again["effects"].as_u64()),
         (Some(0), Some(0)),
         "{again:#}"
     );
-    // A second message gets its own key and goes out behind the first.
     let second = send(&env, "And one more thing.");
     assert_ne!(second["key"], key);
     env.reconcile().ok();
@@ -171,7 +160,6 @@ fn a_message_to_a_concluded_task_is_delivered_and_concludes_nothing_else() {
         "delivery in Concluded changes no condition"
     );
     assert_eq!(env.calls("spawn"), 1, "never respawned");
-    // At rest again: a Concluded Task with an empty inbox is not due.
     let looked_up = env.calls("find");
     let again = env.reconcile().ok().json();
     assert_eq!(
@@ -185,8 +173,6 @@ fn a_message_to_a_concluded_task_is_delivered_and_concludes_nothing_else() {
 #[test]
 fn a_duplicate_key_is_refused() {
     let env = briefed("inbox-duplicate");
-    // The key `fleet send` will compute next is the Task's resourceVersion;
-    // an entry already holding it, however it got there, is refused.
     let path = env.object_path("Task", "t1");
     let mut stored: Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
     let rv = stored["metadata"]["resourceVersion"].as_u64().unwrap();
@@ -201,12 +187,10 @@ fn a_duplicate_key_is_refused() {
         .stderr_has("already exists");
     let st = full_status(&env);
     assert_eq!(inbox_keys(&st), vec![key.clone()], "nothing appended");
-    // Delivered, the key stays taken.
     env.reconcile().ok();
     assert_eq!(delivered_keys(&full_status(&env)), vec![key.clone()]);
     let mut stored: Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
     let rv = stored["metadata"]["resourceVersion"].as_u64().unwrap();
-    // Make the next computed key collide with the receipted one.
     stored["status"]["deliveries"]["receipts"][0]["key"] =
         json!(format!("task/t1/{uid}/send/{rv}"));
     fs::write(&path, serde_json::to_vec(&stored).unwrap()).unwrap();
@@ -263,8 +247,6 @@ fn a_lost_delivery_answer_is_recovered_from_the_journal_without_a_resend() {
     assert_eq!(env.calls("brief"), 2, "asked the journal, never resent");
     assert_eq!(briefs(&env).len(), 2);
 
-    // A request lost before it arrived: the journal says no, so it is sent
-    // again under the same key, and the session sees it once.
     env.fault(Fault::new("brief", "unknown"));
     send(&env, "Second.");
     env.reconcile().ok();
@@ -286,8 +268,6 @@ fn three_refused_sends_raise_attention_and_a_later_entry_still_goes_out() {
     env.expire_wait("t1");
     env.reconcile().ok();
     assert_eq!(env.calls("brief"), 3);
-    // The third refusal spends the last send: the entry is given up on in
-    // the same run, and the next entry goes out behind it.
     env.expire_wait("t1");
     env.reconcile().ok();
     let st = env.status("t1");
@@ -313,7 +293,6 @@ fn three_refused_sends_raise_attention_and_a_later_entry_still_goes_out() {
         5,
         "three for the first, one for the second"
     );
-    // Nothing more to do: the next run writes nothing.
     let again = env.reconcile().ok().json();
     assert_eq!(again["statusWrites"], 0, "{again:#}");
 }
@@ -334,8 +313,6 @@ fn a_gone_session_is_worker_gone_and_never_respawned() {
     let again = env.reconcile().ok().json();
     assert_eq!(again["statusWrites"], 0, "{again:#}");
 
-    // An unreadable list is not absence: no WorkerGone from it, and
-    // nothing typed into a session whose readiness cannot be read either.
     let env = concluded("inbox-list-unknown");
     env.host().vanish(&env.session_key("t1")).unwrap();
     env.fault(Fault::new("find", "unknown").times(100));
@@ -405,8 +382,8 @@ fn a_manager_crash_between_send_and_delivery_is_recovered_without_a_resend() {
     );
     assert_eq!(inbox_keys(&raw).len(), 1, "still queued: no receipt yet");
     assert_eq!(briefs(&env).len(), 2, "the effect happened");
-    // The dead holder's lease must expire before the next manager can take it.
-    thread::sleep(Duration::from_millis(3_100));
+    let dead_holder_lease_expiry = Duration::from_millis(3_100);
+    thread::sleep(dead_holder_lease_expiry);
     env.reconcile().ok();
     let st = full_status(&env);
     assert_eq!(delivered_keys(&st), vec![entry["key"].as_str().unwrap()]);
@@ -423,9 +400,6 @@ fn a_manager_crash_between_send_and_delivery_is_recovered_without_a_resend() {
 
 #[test]
 fn a_message_whose_send_never_answered_is_never_resent_and_later_entries_go_past_it() {
-    // The send may have typed the text: only the agent's prompt hook could
-    // prove it, and it reports nothing. Fleet never types it again, asks a
-    // person, and delivers the entries behind it.
     let env = briefed("inbox-unconfirmed");
     env.fault(Fault::new("brief", "unknown"));
     let first = send(&env, "first");

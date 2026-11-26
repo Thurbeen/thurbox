@@ -1,11 +1,3 @@
-//! Settings a mod declares are real knobs, not decoration.
-//!
-//! The contribution API (`Registry::settings`) existed from the start and no
-//! bundled mod used it, so the settings modal rendered an empty pane. That
-//! is the failure mode these guard against: a declaration that nothing reads is
-//! worse than none, because it puts a row in front of the user that does not do
-//! anything when they change it.
-
 use ratatui::backend::TestBackend;
 use ratatui::Terminal;
 
@@ -55,22 +47,17 @@ fn row(name: &str, repo: &str) -> SessionRow {
     }
 }
 
-/// `row`, moved by hand to `position` in the manual order.
 fn ordered(mut row: SessionRow, position: i64) -> SessionRow {
     row.display_order = Some(position);
     row
 }
 
-/// `row`, running on another machine. Both fields, as a real remote row
-/// carries them: the backend is how the session was started and `remote_host`
-/// is the bare name the session list is published and grouped by.
 fn on_host(mut row: SessionRow, machine: &str) -> SessionRow {
     row.backend = format!("ssh:{machine}");
     row.remote_host = Some(machine.into());
     row
 }
 
-/// Where each of `names` lands in the rendered list, top to bottom.
 fn rendered_order<'a>(drawn: &str, names: &[&'a str]) -> Vec<&'a str> {
     let mut found: Vec<(usize, &str)> = names
         .iter()
@@ -85,7 +72,6 @@ fn rendered_order<'a>(drawn: &str, names: &[&'a str]) -> Vec<&'a str> {
     found.into_iter().map(|(_, name)| name).collect()
 }
 
-/// Render the session list with `registry` in force.
 fn session_list(host: &LuaHost, registry: &Registry) -> String {
     session_list_of(
         host,
@@ -94,7 +80,6 @@ fn session_list(host: &LuaHost, registry: &Registry) -> String {
     )
 }
 
-/// The same, over a session set the caller chose.
 fn session_list_of(host: &LuaHost, registry: &Registry, sessions: Vec<SessionRow>) -> String {
     let snapshot = Snapshot {
         sessions,
@@ -180,8 +165,6 @@ fn registry_for(host: &LuaHost) -> Registry {
 
 #[test]
 fn the_bundled_mods_declare_settings_at_all() {
-    // The regression this whole file exists for: with none declared, the
-    // settings modal has nothing to render and the extension point is unproven.
     let host = host();
     let registry = registry_for(&host);
     assert!(
@@ -192,8 +175,6 @@ fn the_bundled_mods_declare_settings_at_all() {
 
 #[test]
 fn a_declared_setting_actually_changes_what_is_drawn() {
-    // Declaring is half of it. Flipping `sessions.group_by_repo` must remove the
-    // repo rows, or the row in the modal is a lie.
     let host = host();
     let mut registry = registry_for(&host);
 
@@ -211,7 +192,6 @@ fn a_declared_setting_actually_changes_what_is_drawn() {
         !flat.contains("thurbox") && !flat.contains("website"),
         "headers should be gone once grouping is off:\n{flat}"
     );
-    // The sessions themselves are untouched — only the header line goes.
     assert!(
         flat.contains("one") && flat.contains("two"),
         "sessions must survive:\n{flat}"
@@ -237,11 +217,6 @@ fn a_setting_reverts_to_its_default_when_cleared() {
 
 #[test]
 fn grouping_off_means_ungrouped_and_not_merely_unlabelled() {
-    // The knob suppressed the header LINE and kept the repo clustering, so a
-    // manual order that interleaved two repos was silently re-clustered on the
-    // next build: `Shift+J` past a repo boundary was accepted, persisted, and
-    // undone a frame later, with the headers that would have explained it
-    // turned off. Off has to mean one flat list ordered by the manual order.
     let host = host();
     let mut registry = registry_for(&host);
     let sessions = || {
@@ -272,13 +247,8 @@ fn grouping_off_means_ungrouped_and_not_merely_unlabelled() {
 
 #[test]
 fn host_grouping_is_the_operators_choice() {
-    // The host axis shipped derived: a list spanning machines grouped by them
-    // and there was no way to say otherwise. The repo axis has been a knob
-    // since it shipped, and this is the row beside it.
     let host = host();
     let mut registry = registry_for(&host);
-    // One repo on two machines, so the repo axis alone cannot produce the
-    // second header and only the host axis can.
     let across_machines = || {
         vec![
             row("one", "thurbox"),
@@ -286,9 +256,6 @@ fn host_grouping_is_the_operators_choice() {
         ]
     };
 
-    // Two headers, because the two machines split one repo group in two. The
-    // repo name is only ever on a header here -- the sessions are `one` and
-    // `two` -- so counting it counts the groups.
     let by_machine = session_list_of(&host, &registry, across_machines());
     assert!(
         by_machine.contains("buildbox"),
@@ -322,7 +289,6 @@ fn host_grouping_is_the_operators_choice() {
 
 #[test]
 fn local_host_row_follows_the_host_grouping_setting() {
-    // The local row is useful even on a single machine: it is the fold handle.
     let host = host();
     let mut registry = registry_for(&host);
     let one_machine = || vec![row("one", "thurbox"), row("two", "website")];
@@ -340,10 +306,6 @@ fn local_host_row_follows_the_host_grouping_setting() {
     assert!(!flat.contains("local"), "{flat}");
 }
 
-// --- a text setting with declared choices -----------------------------------
-
-/// The bundled interface plus one pane declaring a setting with choices, and
-/// reading back what the registry publishes for it.
 fn host_with_choices() -> (tempfile::TempDir, LuaHost) {
     let dir = tempfile::tempdir().expect("tempdir");
     copy_ui(
@@ -511,8 +473,6 @@ fn the_choices_are_published_to_lua() {
     );
 }
 
-/// A pane declaring one setting row, loaded beside the bundled interface: the
-/// load error it causes, if any.
 fn load_error_for(setting: &str) -> Option<String> {
     let dir = tempfile::tempdir().expect("tempdir");
     copy_ui(

@@ -1,10 +1,3 @@
-//! Splitting a long post, shared by the platform adapters: each platform
-//! converts Fleet's Markdown subset itself, then splits under its own limit.
-
-/// Text as consecutive posts of at most `limit` characters each,
-/// split at line breaks where possible and inside a line otherwise. A
-/// fenced code block cut by a split is closed at the end of one chunk and
-/// reopened at the start of the next, so each chunk renders on its own.
 pub fn split(text: &str, limit: usize) -> Vec<String> {
     const FENCE: &str = "```";
     if text.chars().count() <= limit {
@@ -14,10 +7,7 @@ pub fn split(text: &str, limit: usize) -> Vec<String> {
     let mut current = String::new();
     let mut current_len = 0usize;
     let mut in_fence = false;
-    // The chunk holds only a reopened fence, which the next line follows
-    // without a separator.
     let mut reopened = false;
-    // Close the chunk, and reopen the fence in the next one when inside one.
     let mut flush = |current: &mut String, current_len: &mut usize, in_fence: bool| -> bool {
         if current.is_empty() {
             return false;
@@ -38,14 +28,11 @@ pub fn split(text: &str, limit: usize) -> Vec<String> {
         in_fence
     };
     for line in text.split('\n') {
-        // Inside a fence, keep room to close it.
         let room = if in_fence {
             limit.saturating_sub(FENCE.len() + 1).max(1)
         } else {
             limit.max(1)
         };
-        // A piece cut from a long line inside a fence starts a chunk that
-        // reopens the fence, so it leaves room for that opening too.
         let piece_room = if in_fence {
             room.saturating_sub(FENCE.len() + 1).max(1)
         } else {
@@ -87,9 +74,6 @@ pub fn split(text: &str, limit: usize) -> Vec<String> {
 mod tests {
     use super::split;
 
-    /// A long line inside a fenced block is cut into pieces, and every chunk
-    /// after the first reopens the fence: each piece must leave room for the
-    /// reopening fence and the closing one, or the chunk exceeds the limit.
     #[test]
     fn a_long_line_in_a_fence_stays_within_the_limit() {
         let limit = 20;

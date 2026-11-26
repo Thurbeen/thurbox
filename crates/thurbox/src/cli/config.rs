@@ -1,9 +1,3 @@
-//! Config introspection subcommands: `validate` and `show`.
-//!
-//! `validate` strictly parses every config file and fails (exit 1) when any
-//! is invalid — usable as a dotfiles CI check. `show` prints the *effective*
-//! resolved configuration and where each value came from.
-
 use clap::Subcommand;
 use serde_json::{json, Value};
 
@@ -11,9 +5,9 @@ use crate::cli::output::{self, CommandOutput};
 
 #[derive(Subcommand, Debug)]
 pub enum Action {
-    /// Parse every config file strictly; non-zero exit when any is invalid.
+    #[command(about = "Parse every config file strictly; non-zero exit when any is invalid")]
     Validate,
-    /// Print the effective configuration and where each value came from.
+    #[command(about = "Print the effective configuration and where each value came from")]
     Show,
 }
 
@@ -28,7 +22,6 @@ pub fn run(
             if failed.is_empty() {
                 Ok(CommandOutput::new(report, human))
             } else {
-                // Exit non-zero so this is usable as a dotfiles CI gate.
                 Ok(CommandOutput::failed(
                     report,
                     human,
@@ -44,7 +37,6 @@ pub fn run(
     }
 }
 
-/// One file's validation outcome.
 fn file_report(path: Option<std::path::PathBuf>, problems: Vec<String>, exists: bool) -> Value {
     json!({
         "path": path.map(|p| p.display().to_string()),
@@ -54,9 +46,6 @@ fn file_report(path: Option<std::path::PathBuf>, problems: Vec<String>, exists: 
     })
 }
 
-/// Validate one TOML config file against `T`. Absent files are valid
-/// (defaults/seeding apply). Unknown fields don't fail the *load* at startup,
-/// but they do fail *validation* — they are typos or stale keys either way.
 fn validate_toml<T: serde::de::DeserializeOwned>(
     path: Option<std::path::PathBuf>,
     label: &str,
@@ -68,8 +57,6 @@ fn validate_toml<T: serde::de::DeserializeOwned>(
     })
 }
 
-/// Validate one config file with `parse`, whose `Ok` holds the problems a
-/// loadable file still has.
 fn validate_file(
     path: Option<std::path::PathBuf>,
     parse: impl Fn(&str) -> Result<Vec<String>, String>,
@@ -91,8 +78,6 @@ fn validate_file(
     (file_report(Some(path), problems, true), ok)
 }
 
-/// Validate `ui.json` — the file the interface actually reads for rebindings,
-/// settings and band order.
 fn validate_ui_json() -> (Value, bool) {
     let path = crate::kernel::registry::overrides_file();
     let problems = crate::kernel::registry::validate_overrides();
@@ -107,7 +92,6 @@ fn validate_ui_json() -> (Value, bool) {
     )
 }
 
-/// Validate `mod-state.json` — trust grants and the disabled set.
 fn validate_mod_state() -> (Value, bool) {
     let path = crate::kernel::registry::decisions_file();
     let exists = path.as_ref().is_some_and(|p| p.exists());
@@ -116,11 +100,7 @@ fn validate_mod_state() -> (Value, bool) {
     (file_report(path, problems, exists), ok)
 }
 
-/// Validate every config file. Returns the full report plus the list of files
-/// that failed (empty = all valid).
 fn validate() -> (Value, Vec<String>) {
-    // A key thurbox retired is reported at startup, never a failure here: a v2
-    // file stays valid.
     let (settings, settings_ok) = validate_file(
         crate::config::settings::settings_config_path(),
         crate::config::settings::unknown_keys,
@@ -154,7 +134,6 @@ fn validate() -> (Value, Vec<String>) {
     (report, failed)
 }
 
-/// Render `config validate` as a per-file status list.
 fn render_validate(report: &Value, failed: &[String]) -> String {
     let files = [
         ("settings.toml", "settings_toml"),
@@ -174,11 +153,9 @@ fn render_validate(report: &Value, failed: &[String]) -> String {
     lines.join("\n")
 }
 
-/// Append one config file's status line (and any problem lines) to `lines`.
 fn push_validate_file_lines(lines: &mut Vec<String>, label: &str, entry: &Value) {
     let exists = entry["exists"].as_bool().unwrap_or(false);
     let valid = entry["valid"].as_bool().unwrap_or(false);
-    // Absent files are valid (defaults/seeding apply), so flag them apart.
     let (mark, status) = match (exists, valid) {
         (false, _) => ("·", "absent"),
         (true, true) => ("✓", "ok"),
@@ -194,7 +171,6 @@ fn push_validate_file_lines(lines: &mut Vec<String>, label: &str, entry: &Value)
     }
 }
 
-/// Render `config show` as grouped key/value blocks.
 fn render_show(report: &Value) -> String {
     let mut sections: Vec<String> = Vec::new();
 
@@ -252,10 +228,6 @@ fn show(settings: &crate::session::settings::Settings) -> Value {
                 .map(|p| p.display().to_string()),
             "themes_toml": crate::config::themes::themes_config_path()
                 .map(|p| p.display().to_string()),
-            // The interface is config like the rest of it, and it was the one
-            // thing this command could not tell you the location of — which is
-            // exactly the question a dev build invites, since every path here
-            // swaps `thurbox` for `thurbox-dev`.
             "ui_dir": crate::kernel::bundled::user_ui_dir()
                 .map(|p| p.display().to_string()),
             "ui_json": crate::kernel::registry::overrides_file()
@@ -267,13 +239,8 @@ fn show(settings: &crate::session::settings::Settings) -> Value {
             "interface_json": crate::config::file::path("interface.json")
                 .map(|p| p.display().to_string()),
         },
-        // Not a path, but the same question: which instance is this? A
-        // relocated data dir gets a socket of its own, so the name is resolved
-        // rather than constant and worth reporting where the dirs are.
         "tmux_socket": crate::backend::instance::local_socket_name(),
         "settings": settings,
-        // Fleet runs every session (ADR-41): the one in force, and what it
-        // reads.
         "fleet": super::doctor::FleetFacts::read(&crate::fleet_link::FleetLink::in_force(settings)).document(),
         "editor": { "command": editor, "source": editor_source, "mode": state.editor_mode.as_db_value() },
         "theme": state.theme,
@@ -281,8 +248,6 @@ fn show(settings: &crate::session::settings::Settings) -> Value {
     })
 }
 
-/// Resolve the effective editor command + its source, mirroring the TUI's
-/// Ctrl+O chain: `interface.json` → $VISUAL → $EDITOR → unset.
 fn resolve_editor(stored: Option<String>) -> (Option<String>, &'static str) {
     if let Some(cmd) = stored.filter(|c| !c.is_empty()) {
         return (Some(cmd), "interface.json (editor_command)");
@@ -296,7 +261,6 @@ fn resolve_editor(stored: Option<String>) -> (Option<String>, &'static str) {
     (None, "unset")
 }
 
-/// A non-empty environment variable value, or `None` when unset/empty.
 fn nonempty_env(key: &str) -> Option<String> {
     std::env::var(key).ok().filter(|v| !v.is_empty())
 }
@@ -317,8 +281,6 @@ mod tests {
 
     #[test]
     fn validate_checks_the_interface_overrides_file() {
-        // `ui.json` is the one the interface actually reads on every launch, and it
-        // was the one `validate` did not look at.
         let tmp = tempfile::tempdir().unwrap();
         let _g = TestPathGuard::new(tmp.path());
         let path = crate::kernel::registry::overrides_file().expect("a ui.json path");
@@ -341,8 +303,6 @@ mod tests {
 
     #[test]
     fn validate_checks_the_mod_state_store() {
-        // Trust is granted from this file, so a broken one is reported rather
-        // than read as "nothing trusted" in silence.
         let tmp = tempfile::tempdir().unwrap();
         let _g = TestPathGuard::new(tmp.path());
         let path = crate::kernel::registry::decisions_file().expect("a store path");
@@ -355,8 +315,6 @@ mod tests {
         assert_eq!(report["plugin_state_json"], report["mod_state_json"]);
     }
 
-    /// `serde_ignored` reports nested unknown keys, so a typo inside
-    /// `[features]` must fail strict validation just like a top-level one.
     #[test]
     fn validate_fails_on_unknown_feature_flag() {
         let tmp = tempfile::tempdir().unwrap();

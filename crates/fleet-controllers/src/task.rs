@@ -1,12 +1,3 @@
-//! TaskController: spawns one agent session for one brief, briefs it once,
-//! delivers what is queued in the Task's inbox (amendments to the brief
-//! among it), records the worker's answer, pauses the session while its
-//! agent is idle and resumes it when work arrives, restarts it when `fleet
-//! restart` asks, and releases the session when the Task is deleted.
-//!
-//! Pure: it reads the Task and what the probes saw, and returns a Plan. The
-//! manager performs the plan.
-
 use fleet_api::condition::{
     Condition, ConditionStatus, condition, is_true, set_condition, settle_transitions,
 };
@@ -24,8 +15,6 @@ use fleet_api::task::{
 use fleet_api::validate::typed;
 use fleet_api::{Observation, StoreError};
 
-/// What one reconcile of one Task reads. Every outside fact arrives here as
-/// a value; nothing is read from the world inside the controller.
 #[derive(Debug, Clone)]
 pub struct TaskInput<'a> {
     pub task: &'a Object,
@@ -33,33 +22,18 @@ pub struct TaskInput<'a> {
     pub now: Millis,
 }
 
-/// How many times a spawn or a brief send is tried before the Task stalls,
-/// and how many unreadable delivery checks or failed releases raise
-/// NeedsAttention (those two keep being retried: neither can do harm).
 pub const MAX_ATTEMPTS: u32 = 3;
 
-/// The wait after a failed or unknown attempt before the next one, persisted
-/// as `status.notBefore` so a new manager run honours it too.
 pub const RETRY_DELAY_MS: Millis = 30_000;
 
-/// The longest wait between two release or workspace clean attempts. Past
-/// [`MAX_ATTEMPTS`] failures the wait doubles from [`RETRY_DELAY_MS`] with
-/// each further one, up to this.
 pub const RETRY_BACKOFF_MAX_MS: Millis = 3_600_000;
 
-/// How often a Concluded Task at rest has its session looked up again, so
-/// a session deleted out of band or lost is reported. Recorded as
-/// `status.sessionCheckedAt`. A view's wake request newer than the last
-/// lookup makes one due at once.
 pub const SESSION_RECHECK_MS: Millis = 300_000;
 
 const OUTBOX_UNREAD: &str = "OutboxUnread";
 
 const HELD_BY_AN_IDLE_AGENT: &str = "the agent stayed idle and its prompt hook never reported it, so it may sit unsent in its composer";
 
-/// How long a deleted Task waits, from its `deletionTimestamp`, for its
-/// session to be proven at rest. Past it the session is released even if
-/// the agent's last report said it was busy or nothing tells.
 pub const RELEASE_GRACE_MS: Millis = 300_000;
 
 fn retry_delay_after_failures(attempts: u32) -> Millis {
@@ -76,7 +50,6 @@ fn retry_delay_after_failures(attempts: u32) -> Millis {
 #[derive(Debug, Clone, Copy, Default)]
 pub struct TaskController;
 
-/// Condition types TaskController writes.
 pub mod conditions {
     pub const HOST_REACHABLE: &str = "HostReachable";
     pub const SPAWNED: &str = "Spawned";
@@ -85,23 +58,11 @@ pub mod conditions {
     pub const WORKER_GONE: &str = "WorkerGone";
     pub const CONCLUDED: &str = "Concluded";
     pub const RELEASED: &str = "Released";
-    /// Whether the session's agent trusts its workspace; the brief waits
-    /// until it does.
     pub const WORKSPACE_TRUSTED: &str = "WorkspaceTrusted";
-    /// The runtime holds the session but its agent's window is gone, as
-    /// after a host reboot.
     pub const SESSION_LOST: &str = "SessionLost";
-    /// Something only a person can decide: a stall, a vanished worker, a
-    /// release that kept failing.
     pub const NEEDS_ATTENTION: &str = "NeedsAttention";
-    /// The runtime holds the session with its agent stopped: Fleet paused
-    /// it while it was idle, or someone else stopped it.
     pub const PAUSED: &str = "Paused";
-    /// How the last `fleet restart` ended: the agent started again on its
-    /// conversation or on a new one, or nothing was restarted.
     pub const RESTARTED: &str = "Restarted";
-    /// Whether the workspace the runtime makes for the session is whole:
-    /// True once made, False once cleaned or refused.
     pub const WORKSPACE_READY: &str = "WorkspaceReady";
 }
 use conditions::*;
@@ -109,22 +70,14 @@ use conditions::*;
 const SPAWN: &str = "spawn";
 const MATERIALIZE: &str = "materialize";
 const CLEAN: &str = "cleanWorkspace";
-/// The NeedsAttention reason once cleans keep failing.
 const CLEAN_FAILED: &str = "CleanFailed";
-/// The reason a Task waits for a runtime that handles one of its URLs.
 const UNSUPPORTED: &str = "WorkspaceUnsupported";
-/// The reason a spawn waits for the runtime to map the harness's trust.
 const TRUST_UNMAPPED: &str = "TrustUnmapped";
-/// The NeedsAttention reason while a known trust gap holds the brief.
 const WORKSPACE_UNTRUSTED: &str = "WorkspaceUntrusted";
 const HOOK_REPORT_HINT_MS: Millis = 60_000;
 const BRIEF: &str = "brief";
-/// The Briefed reason of a Task with no brief.
 const INTERACTIVE: &str = "Interactive";
-/// The runtime only queued the brief, where the agent does not read it.
 const BRIEF_UNDELIVERED: &str = "BriefUndelivered";
-/// The Briefed reason while the runtime sent the brief and the agent's prompt
-/// hook has not reported it yet.
 const AWAITING_PROMPT: &str = "AwaitingPrompt";
 const RELEASE: &str = "release";
 const REVIVE: &str = "revive";
@@ -134,13 +87,10 @@ const CATCH_UP: &str = "catchup";
 const RESTART: &str = "restart";
 const REBRIEF: &str = "rebrief";
 const RESTART_UNCONFIRMED: &str = "RestartUnconfirmed";
-/// The NeedsAttention reason once revives keep leaving the session lost.
 const CANNOT_RESUME: &str = "CannotResume";
 const REVIVE_FAILED: &str = "ReviveFailed";
-/// The NeedsAttention reason once resumes keep leaving the session stopped.
 const RESUME_FAILED: &str = "ResumeFailed";
 
-/// The condition that goes with a phase: the one its reason comes from.
 fn phase_condition(phase: Phase) -> &'static str {
     match phase {
         Phase::Pending | Phase::Spawning | Phase::Spawned => SPAWNED,
@@ -151,41 +101,27 @@ fn phase_condition(phase: Phase) -> &'static str {
     }
 }
 
-/// Whether a send under a key is proven by the agent's prompt hook.
 enum Proof {
-    /// The harness has no prompt hook: the runtime's answer is the proof.
     NotNeeded,
-    /// The hook reported the text.
     Proven,
-    /// The hook has not reported it, or its report cannot be read: never a
-    /// second send.
     Awaiting(String),
-    /// The reports were not read on this pass.
     NotAsked,
 }
 
-/// What one keyed send came to on this pass.
 enum Sent {
-    /// On the session: `recovered` when the journal recovered it, `via` the
-    /// runtime's route when the send named one, `may_hold` when that route
-    /// can hold it behind an approval dialog.
     Delivered {
         recovered: bool,
         via: Option<String>,
         may_hold: bool,
     },
-    /// Sent, waiting, or not sendable yet.
     Pending,
-    /// Its sends ran out.
     GivenUp,
 }
 
 impl TaskController {
-    /// The kind this controller reconciles and the field manager it writes as.
     pub const KIND: &'static str = task::KIND;
     pub const MANAGER: FieldManager = FieldManager::TaskController;
 
-    /// What the next `reconcile` needs observed. Only these are asked.
     pub fn probes(&self, input: &TaskInput<'_>) -> Result<Vec<Probe>, StoreError> {
         let (spec, st) = decode(input.task)?;
         let host = st
@@ -202,8 +138,6 @@ impl TaskController {
             urls: spec.workspace.urls().to_vec(),
         });
         if input.task.is_deleting() {
-            // A workspace call whose answer was lost is released by its key,
-            // never made again to be found.
             let mut probes = vec![find];
             if let Some(s) = &st.session {
                 probes.push(Probe::AtRest { session: s.clone() });
@@ -240,7 +174,6 @@ impl TaskController {
                             key: bk,
                         });
                     } else {
-                        // The brief is not in flight: the inbox may ask.
                         inbox_probes(&st, s, &mut probes);
                     }
                 }
@@ -256,12 +189,6 @@ impl TaskController {
                 }
                 probes
             }
-            // A Concluded Task is due for delivery, and at rest once per
-            // recheck interval; its session is looked up, so a vanished
-            // worker is reported, never respawned, and a lost one reads
-            // lost. Only a delivery or a view revives a lost session: a
-            // concluded worker at rest stays at rest. A session that may be
-            // paused has its activity watched.
             Phase::Concluded
                 if next_entry(&st).is_some()
                     || st.catch_up.is_some()
@@ -315,8 +242,6 @@ impl TaskController {
         settle_transitions(&mut r.st.conditions, &before.conditions);
         r.start_outbox_unread(&before);
         r.queue_phase_event(&before);
-        // A delivery is a status write even when nothing else moved: the
-        // store takes the status along with the receipt.
         let status = if r.st == before && r.delivery.is_none() {
             None
         } else {
@@ -337,7 +262,6 @@ impl TaskController {
     }
 }
 
-/// One reconcile in progress.
 struct Pass<'a, 'b> {
     input: &'a TaskInput<'b>,
     spec: &'a TaskSpec,
@@ -366,8 +290,6 @@ impl Pass<'_, '_> {
         );
     }
 
-    /// Record what this pass's answers proved about the session, for views.
-    /// Nothing decides on it; a pass that proved nothing keeps the last state.
     fn observe_session(&mut self) {
         let Some(session) = &self.st.session else {
             self.st.session_state = None;
@@ -387,10 +309,6 @@ impl Pass<'_, '_> {
             return;
         }
         let profile = fleet_api::harness::profile(&self.spec.harness);
-        // A harness with no hooks and no screen rules, such as a shell, has
-        // no agent state to report, so no source either: only an agent can
-        // be unknown. Cleared before the signals are read, so a session on a
-        // host whose signal file cannot be read drops one too.
         let agentless = profile.authority == fleet_api::harness::Authority::None
             && profile.screen_rules().is_none();
         if agentless {
@@ -403,9 +321,6 @@ impl Pass<'_, '_> {
             }
             _ => None,
         };
-        // Only a file that was read says what the agent reported. An
-        // unreadable one, as on another host, claims no silence: a matched
-        // screen rule still says the state, and otherwise the last stands.
         let unread = fleet_api::signal::Reported::default();
         let r = match &self.input.observations.signals {
             Some(Observation::Known(r)) => r,
@@ -425,8 +340,6 @@ impl Pass<'_, '_> {
             self.st.agent_state = Some(merged.state);
             return;
         }
-        // A capture that failed says nothing: a screen state stands until a
-        // capture reads another, or the hooks speak.
         let last = self.st.activity.as_ref();
         if merged.source != fleet_api::screen::Source::Hook
             && matches!(screen, Some(Observation::Unknown { .. }))
@@ -489,14 +402,10 @@ impl Pass<'_, '_> {
         self.effects.push(Effect { key, action });
     }
 
-    /// Whether the send under `key` is proven by the agent's prompt hook. A
-    /// proven key's digest is dropped: its receipt now stands alone.
     fn proof(&mut self, key: &str) -> Proof {
         let Some(digest) = self.st.prompts.get(key) else {
             return Proof::NotNeeded;
         };
-        // A report older than this send's intent proves an earlier send of
-        // the same text, not this one.
         let since = self.st.intents.get(key).map_or(0, |i| i.at);
         let loose = self.st.loose_prompts.get(key);
         match &self.input.observations.signals {
@@ -516,10 +425,6 @@ impl Pass<'_, '_> {
         }
     }
 
-    /// Whether a send whose answer was lost arrived. For a harness with a
-    /// prompt hook only the hook answers, and never "not delivered": a text
-    /// the hook did not report may still be typed, so it is never sent
-    /// again. Otherwise the runtime's journal answers.
     fn delivered(&mut self, key: &str) -> Option<Observation<bool>> {
         match self.proof(key) {
             Proof::NotNeeded => self.input.observations.brief_delivered.clone(),
@@ -583,7 +488,6 @@ impl Pass<'_, '_> {
         }
     }
 
-    /// Clear NeedsAttention when the cause `reason` named has gone.
     fn settle_attention(&mut self, reason: &str) {
         if condition(&self.st.conditions, NEEDS_ATTENTION)
             .is_some_and(|c| c.status == ConditionStatus::True && c.reason == reason)
@@ -595,20 +499,13 @@ impl Pass<'_, '_> {
     fn advance(&mut self) {
         self.forget_resolved_entries();
         match self.st.phase {
-            // Stalled has no session to deliver to; nothing moves.
             Phase::Stalled => return,
-            // Terminal, except that its inbox is still delivered.
             Phase::Concluded => return self.concluded(),
             _ => {}
         }
-        // A result for the generation the worker was last given ends the
-        // run: a result is only accepted once the brief has a receipt, so
-        // this is Briefed in practice. One for an older generation answers
-        // less than the worker now has, and the run goes on.
         if let Some(result) = self.st.result.as_ref().filter(|_| result_current(&self.st)) {
             let outcome = format!("{:?}", result.outcome);
             self.st.phase = Phase::Concluded;
-            // Reporting a result is work: the idle time starts again.
             self.st.idle_since = None;
             self.cond(
                 CONCLUDED,
@@ -664,7 +561,6 @@ impl Pass<'_, '_> {
         let key = self.key(SPAWN, Some(attempt));
         self.st.spawn_attempts = attempt;
         self.st.not_before = None;
-        // An attempt given back after a trust gap reuses its key.
         self.st.receipts.remove(&key);
         self.st.phase = Phase::Spawning;
         self.cond(
@@ -682,8 +578,6 @@ impl Pass<'_, '_> {
         self.intend(key, Action::Spawn(spec));
     }
 
-    /// What a start of the agent on `host` needs: a spawn makes the first,
-    /// a revive or a resume the next ones.
     fn launch(&self, host: String) -> SpawnSpec {
         SpawnSpec {
             host,
@@ -713,8 +607,6 @@ impl Pass<'_, '_> {
             Some(Observation::Known(other)) => {
                 self.spawn_retry(&format!("unexpected outcome {other:?}"))
             }
-            // Unknown outcome, or an intent with no receipt (a crash between the
-            // effect and its receipt): the key decides, never a blind respawn.
             Some(Observation::Unknown { .. }) | None => {
                 match self.input.observations.find.clone() {
                     Some(Observation::Known(Some(session))) => {
@@ -751,10 +643,6 @@ impl Pass<'_, '_> {
         self.settle_spawn_gaps();
     }
 
-    /// A harness the runtime does not map is a configuration
-    /// gap, not a failed attempt: nothing started, so the attempt is given
-    /// back. The spawn is tried again after [`RETRY_DELAY_MS`], without
-    /// limit, until the runtime maps it.
     fn spawn_unmapped(&mut self, reason: &str, why: String) {
         self.st.spawn_attempts = self.st.spawn_attempts.saturating_sub(1);
         self.st.phase = Phase::Pending;
@@ -767,8 +655,6 @@ impl Pass<'_, '_> {
         self.settle_attention(TRUST_UNMAPPED);
     }
 
-    /// A spawn proven not to have happened is tried again after
-    /// [`RETRY_DELAY_MS`], at most [`MAX_ATTEMPTS`] times in all.
     fn spawn_retry(&mut self, why: &str) {
         self.settle_spawn_gaps();
         let attempts = self.st.spawn_attempts;
@@ -801,8 +687,6 @@ impl Pass<'_, '_> {
 
     fn spawned(&mut self) {
         let Some(session) = self.st.session.clone() else {
-            // A Spawned phase without a session is not a state this controller
-            // writes; start over rather than brief nobody.
             self.st.phase = Phase::Pending;
             return;
         };
@@ -836,8 +720,6 @@ impl Pass<'_, '_> {
         }
     }
 
-    /// Whether the runtime only queued the brief, where the agent does not
-    /// read it.
     fn brief_queued(&self) -> bool {
         matches!(
             self.st
@@ -848,10 +730,6 @@ impl Pass<'_, '_> {
         )
     }
 
-    /// Whether the brief was sent and is not settled yet: its receipt is not
-    /// Known, or the agent's prompt hook has not reported it. An entry typed
-    /// before the agent took the brief joins the brief's prompt, and the hook
-    /// then proves neither (#1901).
     fn brief_pending(&self) -> bool {
         let key = brief_key(self.input.task);
         self.st.phase == Phase::Spawned
@@ -862,7 +740,6 @@ impl Pass<'_, '_> {
     fn brief_step(&mut self, session: SessionRef) {
         let key = brief_key(self.input.task);
         match self.st.receipts.get(&key).map(|r| r.outcome.clone()) {
-            // The runtime typed it; the agent's prompt hook proves it.
             Some(Observation::Known(EffectOutcome::Delivered { .. })) => {
                 return match self.proof(&key) {
                     Proof::NotNeeded | Proof::Proven => self.briefed_now(key, false),
@@ -872,8 +749,6 @@ impl Pass<'_, '_> {
                     Proof::NotAsked => {}
                 };
             }
-            // The text waits where the agent does not read it. It is not
-            // sent again: a person moves it on, and the inbox waits too.
             Some(Observation::Known(EffectOutcome::Queued { why })) => {
                 self.cond(
                     BRIEFED,
@@ -897,9 +772,6 @@ impl Pass<'_, '_> {
             _ => {}
         }
         if self.st.intents.contains_key(&key) {
-            // Sent, but no Known receipt: ask the session. Known yes is a
-            // recovered receipt, Known no a send, Unknown a read tried again
-            // after a wait: a read can do no harm, so it never stalls the Task.
             match self.delivered(&key) {
                 Some(Observation::Known(true)) => {
                     self.st
@@ -931,9 +803,6 @@ impl Pass<'_, '_> {
         self.send_brief(session, key);
     }
 
-    /// Send under the one brief key. Each send is counted and bounded; the
-    /// session refuses a second delivery of the same key, so a send after a
-    /// Known "not delivered" cannot brief twice.
     fn send_brief(&mut self, session: SessionRef, key: String) {
         if self.st.brief_sends >= MAX_ATTEMPTS {
             self.st.phase = Phase::Stalled;
@@ -947,8 +816,6 @@ impl Pass<'_, '_> {
             self.needs_attention("Stalled", "brief attempts exhausted");
             return;
         }
-        // Every send, including retries proven not delivered, needs fresh
-        // trust and readiness. Receipt recovery above sends nothing.
         if !self.workspace_trusted() {
             return;
         }
@@ -971,8 +838,6 @@ impl Pass<'_, '_> {
         self.st.receipts.remove(&key);
         let msg = format!("send {}", self.st.brief_sends);
         self.cond(BRIEFED, ConditionStatus::Unknown, "Sending", msg);
-        // The brief and every amendment so far, as one message: an
-        // amendment queued before the brief went out is then already given.
         let text = self
             .spec
             .assignment(&self.input.task.metadata.name, self.generation);
@@ -986,10 +851,6 @@ impl Pass<'_, '_> {
         );
     }
 
-    /// Whether the session's agent trusts its workspace on this pass. A
-    /// known gap asks a person and is looked at again after a wait. Unknown
-    /// proves nothing either way: like readiness, it is asked again on the
-    /// next pass, so a starting agent is not held back.
     fn workspace_trusted(&mut self) -> bool {
         match self.input.observations.workspace_trust.clone() {
             Some(Observation::Known(WorkspaceTrust::Trusted { how })) => {
@@ -1042,8 +903,6 @@ impl Pass<'_, '_> {
         self.st.brief_probe_failures = 0;
         self.st.not_before = None;
         self.settle_attention("BriefUnconfirmed");
-        // The generation the brief was composed for, which an amendment
-        // since may have moved past.
         let generation = self
             .st
             .intents
@@ -1080,12 +939,8 @@ impl Pass<'_, '_> {
         self.pause_step(session);
     }
 
-    /// Concluded is terminal, and delivery goes on: a message for a worker
-    /// that has reported is still a message. A readable list that no longer
-    /// shows the session is WorkerGone and attention, never a respawn.
     fn concluded(&mut self) {
         if next_entry(&self.st).is_some() {
-            // A delivery breaks the idle time: it starts again at rest.
             self.st.idle_since = None;
         }
         if next_entry(&self.st).is_none() && self.st.catch_up.is_none() {
@@ -1103,8 +958,6 @@ impl Pass<'_, '_> {
             {
                 return;
             }
-            // A worker at rest is revived only for a view, and it may be
-            // paused. A pass that does not watch it breaks its idle time.
             match self.st.session.clone() {
                 Some(session) if watched(self.input.task, self.spec, &self.st) => {
                     if !self.restart_step(&session) && !self.pause_state(&session) {
@@ -1133,9 +986,6 @@ impl Pass<'_, '_> {
         }
     }
 
-    /// Deliver the oldest inbox entry not given up on: the brief protocol
-    /// under the entry's key. One entry per pass; nothing else of the Task
-    /// changes, apart from the attention a failed delivery asks for.
     fn deliver(&mut self, session: SessionRef) {
         let due = inbox::due(&self.st.inbox, &self.st.delivery_attempts);
         if due > MAX_INBOX {
@@ -1146,8 +996,6 @@ impl Pass<'_, '_> {
         } else {
             self.settle_attention("InboxFull");
         }
-        // Not in a pass that sent something, is waiting something out, or
-        // has lost sight of the session.
         if !self.effects.is_empty()
             || self.st.not_before.is_some_and(|t| t > self.now())
             || condition(&self.st.conditions, WORKER_GONE)
@@ -1177,8 +1025,6 @@ impl Pass<'_, '_> {
         let Some(given) = self.st.brief.as_ref().map(|b| b.generation) else {
             return;
         };
-        // The worker has it already, or the newer amendment queued behind
-        // it, never sent yet, will carry it: recorded without a send.
         let newer = self.st.inbox.iter().any(|e| {
             e.amends.is_some_and(|g| g > generation)
                 && !self
@@ -1205,9 +1051,6 @@ impl Pass<'_, '_> {
         }
     }
 
-    /// The worker was given the amendment that created `generation`: a
-    /// result must now name it, and a Concluded Task is open again, its old
-    /// result kept until the worker replaces it.
     fn amended(&mut self, key: String, generation: u64, recovered: bool) {
         self.st.brief = Some(BriefRecord {
             key,
@@ -1225,13 +1068,8 @@ impl Pass<'_, '_> {
         }
     }
 
-    /// The brief protocol under one key, for an inbox entry or a catch-up
-    /// note: a Known receipt decides, else the session's journal does after
-    /// a send; a send needs the session observed ready on this pass, at most
-    /// [`MAX_ATTEMPTS`] times. `what` names it in attention messages.
     fn keyed_send(&mut self, session: SessionRef, key: &str, text: String, what: &str) -> Sent {
         match self.st.receipts.get(key).map(|r| r.outcome.clone()) {
-            // The runtime typed it; the agent's prompt hook proves it.
             Some(Observation::Known(EffectOutcome::Delivered { via, may_hold, .. })) => {
                 return match self.proof(key) {
                     Proof::NotNeeded | Proof::Proven => Sent::Delivered {
@@ -1252,8 +1090,6 @@ impl Pass<'_, '_> {
                     Proof::NotAsked => Sent::Pending,
                 };
             }
-            // Queued where the agent does not read it: given up, never sent
-            // again, so that later entries go out past it.
             Some(Observation::Known(EffectOutcome::Queued { why })) => {
                 self.st
                     .delivery_attempts
@@ -1290,9 +1126,6 @@ impl Pass<'_, '_> {
             _ => {}
         }
         if self.st.intents.contains_key(key) {
-            // Sent, but no Known receipt: the agent's prompt hook, or the
-            // session's journal, decides, exactly as for the brief. Unknown
-            // is read again after a wait.
             match self.delivered(key) {
                 Some(Observation::Known(true)) => {
                     return Sent::Delivered {
@@ -1393,9 +1226,6 @@ impl Pass<'_, '_> {
         Sent::GivenUp
     }
 
-    /// Send under `key`, to a session observed ready on this pass, at most
-    /// [`MAX_ATTEMPTS`] times; past that it is given up on, and whatever
-    /// comes next goes out past it.
     fn send_keyed(&mut self, session: SessionRef, key: &str, text: String, what: &str) -> Sent {
         let sends = self.st.delivery_attempts.get(key).map_or(0, |a| a.sends);
         if sends >= MAX_ATTEMPTS {
@@ -1462,8 +1292,6 @@ impl Pass<'_, '_> {
         Sent::Pending
     }
 
-    /// The entry is on the session: its receipt goes to `status.deliveries`
-    /// and the entry leaves the inbox, in one write the manager performs.
     fn record_delivery(
         &mut self,
         entry: &InboxEntry,
@@ -1491,9 +1319,6 @@ impl Pass<'_, '_> {
         });
     }
 
-    /// A session a readable list no longer shows raises WorkerGone and
-    /// NeedsAttention; nothing abandons the Task. An unreadable list is never
-    /// read as gone. Returns true once WorkerGone is set.
     fn worker_gone(&mut self) -> bool {
         let same_session = |s: &SessionRef| self.st.session.as_ref() == Some(s);
         let present = match &self.input.observations.find {
@@ -1524,15 +1349,6 @@ impl Pass<'_, '_> {
         true
     }
 
-    /// A session the runtime still holds but whose agent's window is gone,
-    /// as after a host reboot, is revived in its own workspace under the
-    /// same identity. Nothing is sent to it meanwhile. Revives wait
-    /// [`RETRY_DELAY_MS`] between attempts. After [`MAX_ATTEMPTS`] revives
-    /// that left the window gone, the session cannot resume, as when its
-    /// agent never saved the conversation it resumes: it is revived no more
-    /// until its window is seen again. A held Task (`dispatch: false`) is
-    /// not revived, nor one `revive` says to leave at rest. Returns true
-    /// while the session is lost.
     fn lost(&mut self, session: &SessionRef, revive: bool) -> bool {
         match self.input.observations.lost {
             Some(Observation::Known(true)) => {}
@@ -1540,7 +1356,6 @@ impl Pass<'_, '_> {
                 self.found_again();
                 return false;
             }
-            // Unknown proves nothing either way.
             _ => return false,
         }
         if cannot_resume(&self.st) {
@@ -1611,9 +1426,6 @@ impl Pass<'_, '_> {
         true
     }
 
-    /// Whether each of the last [`MAX_ATTEMPTS`] revives started the agent,
-    /// on a Known `Revived` receipt, and still left the window gone. A revive
-    /// that failed before it started anything is retried, never counted.
     fn started_revives_left_lost(&self) -> bool {
         (0..MAX_ATTEMPTS).all(|back| {
             let Some(n) = self.st.revivals.checked_sub(back) else {
@@ -1626,9 +1438,6 @@ impl Pass<'_, '_> {
         })
     }
 
-    /// The session's window is there. After it was lost, a briefed worker
-    /// that has not concluded is owed a catch-up note, sent before anything
-    /// else. A concluded one is resumed plainly, with nothing typed.
     fn found_again(&mut self) {
         self.st.revive_attempts = 0;
         let was_lost = condition(&self.st.conditions, SESSION_LOST)
@@ -1650,8 +1459,6 @@ impl Pass<'_, '_> {
         }
     }
 
-    /// A briefed worker whose agent was started again is owed a catch-up
-    /// note, once, before anything else is delivered.
     fn owe_catch_up(&mut self) {
         if self.st.brief.is_some() && self.st.catch_up.is_none() {
             self.st.catch_ups += 1;
@@ -1862,18 +1669,6 @@ impl Pass<'_, '_> {
         self.st.loose_prompts.remove(key);
     }
 
-    /// Where the session stands on pausing, from what is in flight and what
-    /// the runtime shows:
-    ///
-    /// - a pause in flight is settled by its receipt, else by the session;
-    /// - a resume in flight likewise, and is tried again while the session
-    ///   is proven stopped;
-    /// - a session found stopped is Paused, `External` when Fleet did not
-    ///   stop it, and an entry to deliver resumes it;
-    /// - a paused session found running again is resumed.
-    ///
-    /// Returns true while the session is paused or a pause is in flight:
-    /// nothing is sent to it meanwhile.
     fn pause_state(&mut self, session: &SessionRef) -> bool {
         let observed = self.input.observations.paused.clone();
         let pause = self.key(PAUSE, Some(self.st.pauses));
@@ -1888,7 +1683,6 @@ impl Pass<'_, '_> {
                     self.pause_refused(&pause, why);
                     return false;
                 }
-                // No Known receipt: the session decides, never a second stop.
                 Some(Observation::Unknown { .. }) | None => match observed {
                     Some(Observation::Known(true)) => self.paused_by_fleet(&pause),
                     Some(Observation::Known(false)) => {
@@ -1907,13 +1701,10 @@ impl Pass<'_, '_> {
                     self.resumed(Some(&resume));
                     return false;
                 }
-                // Refused: tried again after a wait.
                 Some(Observation::Known(_)) => {
                     self.resume_again(&resume);
                     return true;
                 }
-                // No Known receipt: a running session is resumed; one still
-                // stopped is resumed again after a wait, which is harmless.
                 Some(Observation::Unknown { .. }) | None => match observed {
                     Some(Observation::Known(false)) => {
                         self.resumed(Some(&resume));
@@ -1952,7 +1743,6 @@ impl Pass<'_, '_> {
                 }
                 false
             }
-            // Unknown proves nothing: a paused session stays paused.
             _ => paused,
         }
     }
@@ -1972,8 +1762,6 @@ impl Pass<'_, '_> {
         self.cond(PAUSED, ConditionStatus::True, reason, message);
     }
 
-    /// The pause did not happen. The idle time starts again from the next
-    /// Idle observation.
     fn pause_refused(&mut self, key: &str, why: String) {
         self.st.intents.remove(key);
         self.st.receipts.remove(key);
@@ -1981,10 +1769,6 @@ impl Pass<'_, '_> {
         self.cond(PAUSED, ConditionStatus::False, "PauseFailed", why);
     }
 
-    /// Plan one resume. A held, stalled or deleting Task never comes here.
-    /// Resumes wait [`RETRY_DELAY_MS`] between attempts and raise
-    /// NeedsAttention after [`MAX_ATTEMPTS`], but go on: a resume of a
-    /// running session does nothing.
     fn resume_now(&mut self, session: &SessionRef) {
         if !self.effects.is_empty() || self.st.not_before.is_some_and(|t| t > self.now()) {
             return;
@@ -2013,8 +1797,6 @@ impl Pass<'_, '_> {
         );
     }
 
-    /// The resume under `key` left the session stopped: drop it, and wait
-    /// from its last word before the next one.
     fn resume_again(&mut self, key: &str) {
         let at = self
             .st
@@ -2044,11 +1826,6 @@ impl Pass<'_, '_> {
         self.settle_attention(RESUME_FAILED);
     }
 
-    /// Pause the session for a pending `fleet pause`, or once its agent was
-    /// seen Idle, without a break, for `pauseAfterMs`. The pass that plans
-    /// the pause proved the session running and not lost; an idle pause also
-    /// read the activity fresh. Any other answer, or a pass that sent
-    /// something, starts the idle time again.
     fn pause_step(&mut self, session: SessionRef) {
         let o = &self.input.observations;
         let safe = pausable(self.spec, &self.st)
@@ -2203,12 +1980,6 @@ impl Pass<'_, '_> {
         self.intend(key, Action::Release { session });
     }
 
-    /// The `Released` reason and message once the released session's
-    /// outbox no longer holds the Task, `None` while it does. A line still
-    /// to ingest holds it with no limit, as each read makes progress. An
-    /// outbox that cannot be read holds it for `RELEASE_GRACE_MS` from the
-    /// first of an unbroken run of unread passes; then its unread lines are
-    /// given up.
     fn outbox_settled(&mut self) -> Option<(&'static str, String)> {
         match self.input.observations.outbox_drained.clone() {
             None | Some(Observation::Known(true)) => Some(("Released", String::new())),
@@ -2240,19 +2011,12 @@ impl Pass<'_, '_> {
         }
     }
 
-    /// When the run of unread outbox passes began: the `Released`
-    /// condition's transition time while its reason is `OutboxUnread`.
     fn outbox_unread_since(&self) -> Option<Millis> {
         condition(&self.st.conditions, RELEASED)
             .filter(|c| c.reason == OUTBOX_UNREAD)
             .map(|c| c.last_transition_time)
     }
 
-    /// A first `OutboxUnread` is a transition even from another Unknown
-    /// `Released`, such as `Releasing`: its grace starts now.
-    /// Queue the `fleet.task.phase` event of a phase change in the write
-    /// that makes it. Its reason is that of a condition this pass changed:
-    /// the one that goes with the new phase, else the first.
     fn queue_phase_event(&mut self, before: &TaskStatus) {
         let (from, to) = (before.phase, self.st.phase);
         if from == to {
@@ -2301,15 +2065,10 @@ impl Pass<'_, '_> {
             .is_some_and(|deleted| deleted.saturating_add(RELEASE_GRACE_MS) <= self.now())
     }
 
-    /// Whether the runtime makes this Task's workspace: every non-empty
-    /// URL list, a `file://` directory included, which it uses as it is.
     fn makes_workspace(&self) -> bool {
         !self.spec.workspace.is_empty()
     }
 
-    /// One step toward a whole workspace; true once `status.workspace`
-    /// holds it. A lost answer is settled by asking the runtime again under
-    /// the same key, which is idempotent, never by a new attempt.
     fn materialize(&mut self) -> bool {
         let attempt = self.st.materialize_attempts;
         let key = self.key(MATERIALIZE, Some(attempt));
@@ -2322,9 +2081,6 @@ impl Pass<'_, '_> {
                     );
                 }
                 Some(Observation::Known(EffectOutcome::Unsupported { url })) => {
-                    // A configuration gap, not an attempt: given back. Nothing
-                    // spawns until a runtime that handles the URL serves the
-                    // host.
                     self.st.intents.remove(&key);
                     self.st.receipts.remove(&key);
                     self.st.materialize_attempts = attempt - 1;
@@ -2416,9 +2172,6 @@ impl Pass<'_, '_> {
         true
     }
 
-    /// A materialize proven not to have left a workspace is tried again
-    /// after [`RETRY_DELAY_MS`], at most [`MAX_ATTEMPTS`] times in all; its
-    /// intent is settled, so the next pass plans the next attempt.
     fn materialize_retry(&mut self, key: &str, why: &str) {
         self.st.intents.remove(key);
         self.settle_attention(UNSUPPORTED);
@@ -2449,8 +2202,6 @@ impl Pass<'_, '_> {
         );
     }
 
-    /// The session is released, or there never was one: release the
-    /// workspace the runtime made, then drop the finalizer.
     fn let_go(&mut self) {
         let finalizer = Some(task::RELEASE_FINALIZER.to_string());
         let workspace = match self.workspace_to_clean() {
@@ -2524,10 +2275,6 @@ impl Pass<'_, '_> {
         self.intend(key, Action::CleanWorkspace { workspace });
     }
 
-    /// The workspace the runtime made, if any: recorded, or under the key
-    /// of a workspace call whose answer was lost, which is released by its
-    /// key alone. A release of nothing is harmless, so deletion never makes
-    /// a workspace to learn what to release.
     fn workspace_to_clean(&mut self) -> Result<Option<fleet_api::workspace::WorkspaceRef>, ()> {
         if let Some(w) = &self.st.workspace {
             return Ok(Some(w.clone()));
@@ -2573,8 +2320,6 @@ fn decode(obj: &Object) -> Result<(TaskSpec, TaskStatus), StoreError> {
     Ok((spec, st))
 }
 
-/// Whether an idle session may be paused, apart from its activity: a pause
-/// setting, and what [`pausable`] asks.
 fn pause_candidate(spec: &TaskSpec, st: &TaskStatus) -> bool {
     spec.pause_after_ms.is_some() && pausable(spec, st)
 }
@@ -2600,7 +2345,6 @@ fn pausable(spec: &TaskSpec, st: &TaskStatus) -> bool {
             .any(|c| is_true(&st.conditions, c))
 }
 
-/// Whether a pause, a resume or a restart waits for its outcome.
 fn in_flight(obj: &Object, st: &TaskStatus) -> bool {
     let m = &obj.metadata;
     let key = |action, n| effect_key(task::KIND, &m.name, &m.uid, action, Some(n));
@@ -2609,7 +2353,6 @@ fn in_flight(obj: &Object, st: &TaskStatus) -> bool {
         || effect_in_flight(st, &key(RESTART, st.restarts), RESTART)
 }
 
-/// Whether `key` holds an intent of the effect `action`.
 fn effect_in_flight(st: &TaskStatus, key: &str, action: &str) -> bool {
     st.intents.get(key).is_some_and(|i| i.action == action)
 }
@@ -2622,16 +2365,6 @@ fn watched(obj: &Object, spec: &TaskSpec, st: &TaskStatus) -> bool {
             || (spec.dispatch && (wake_requested(st) || restart_requested(st).is_some())))
 }
 
-/// The activity probe: what the agent's own hooks reported through `fleet
-/// signal`. Asked of every live session, not only one that may be paused:
-/// `sessionState` is how a person, and thurbox's status dot, tells an agent
-/// at work from one waiting for input. Reading it is a local file read.
-///
-/// With it, the screen probe, for a harness Fleet has screen rules for,
-/// unless the last pass took the state from hooks whose authority is full:
-/// those win while they report, so their screen is not read. A capture runs
-/// a process, so this is the costlier read, and its runtime may answer it
-/// from a recent capture.
 fn activity_probe(
     input: &TaskInput<'_>,
     spec: &TaskSpec,
@@ -2658,7 +2391,6 @@ fn activity_probe(
     }
 }
 
-/// Whether a materialize was sent and its answer is not Known yet.
 fn materialize_in_flight(obj: &Object, st: &TaskStatus) -> bool {
     let m = &obj.metadata;
     let key = effect_key(
@@ -2678,15 +2410,11 @@ fn session_key(obj: &Object) -> String {
     task::session_key(&obj.metadata.name, &obj.metadata.uid)
 }
 
-/// The brief has one key: every send of it reuses the key, so the session can
-/// refuse a duplicate.
 fn brief_key(obj: &Object) -> String {
     let m = &obj.metadata;
     effect_key(task::KIND, &m.name, &m.uid, BRIEF, None)
 }
 
-/// Whether the recorded result answers the generation the worker was last
-/// given.
 fn result_current(st: &TaskStatus) -> bool {
     match (&st.result, &st.brief) {
         (Some(r), Some(b)) => r.generation == b.generation,
@@ -2695,8 +2423,6 @@ fn result_current(st: &TaskStatus) -> bool {
     }
 }
 
-/// Whether the send under `key` went out, or may have, and waits for the
-/// agent's prompt hook to prove it.
 fn awaits_proof(st: &TaskStatus, key: &str) -> bool {
     st.prompts.contains_key(key)
         && st.intents.contains_key(key)
@@ -2708,7 +2434,6 @@ fn awaits_proof(st: &TaskStatus, key: &str) -> bool {
         })
 }
 
-/// The agent's reports, read once per pass: the same probe a pause reads.
 fn proof_probe(session: &SessionRef, probes: &mut Vec<Probe>) {
     if !probes.iter().any(|p| matches!(p, Probe::Activity { .. })) {
         probes.push(Probe::Activity {
@@ -2717,7 +2442,6 @@ fn proof_probe(session: &SessionRef, probes: &mut Vec<Probe>) {
     }
 }
 
-/// A delivery the agent proved after its runtime's answer was lost.
 fn recovered_receipt(at: Millis) -> Receipt {
     Receipt {
         action: BRIEF.into(),
@@ -2755,10 +2479,6 @@ fn wake_requested(st: &TaskStatus) -> bool {
         .is_some_and(|(asked, paused)| asked >= paused)
 }
 
-/// Whether `fleet pause` asked for a pause that nothing has answered yet: a
-/// request newer than the last one a pause was planned for, the last
-/// `Paused` transition and the last wake. It waits for the session to be
-/// pausable, and is acted on once.
 fn pause_requested(st: &TaskStatus) -> bool {
     st.pause_requested_at
         .is_some_and(|asked| st.pause_request_answered.is_none_or(|a| asked > a))
@@ -2770,8 +2490,6 @@ fn restart_requested(st: &TaskStatus) -> Option<RestartRequest> {
         .filter(|asked| st.restart_request_answered.is_none_or(|a| asked.at > a.at))
 }
 
-/// Whether the pause in flight was planned for a request: one made after
-/// the `Paused` transition it ends.
 fn paused_on_request(st: &TaskStatus) -> bool {
     pause_request_since_last_transition(st, st.pause_request_answered)
 }
@@ -2791,8 +2509,6 @@ fn answered_relay(st: &TaskStatus, key: &str) -> bool {
     })
 }
 
-/// The oldest inbox entry still to deliver: an entry given up on after its
-/// sends ran out stays queued but blocks nothing.
 fn next_entry(st: &TaskStatus) -> Option<&InboxEntry> {
     st.inbox.iter().find(|e| {
         !st.delivery_attempts
@@ -2801,11 +2517,6 @@ fn next_entry(st: &TaskStatus) -> Option<&InboxEntry> {
     })
 }
 
-/// What delivering the next entry needs observed: readiness, and the
-/// journal when the entry was sent without a Known receipt.
-/// Whether a Concluded Task at rest is due to have its session looked up
-/// again: never looked up yet, [`SESSION_RECHECK_MS`] since the last time,
-/// or a view asked for it since.
 pub fn session_recheck_due(st: &TaskStatus, now: Millis) -> bool {
     view_asked(st, now)
         || st
@@ -2813,8 +2524,6 @@ pub fn session_recheck_due(st: &TaskStatus, now: Millis) -> bool {
             .is_none_or(|t| t.saturating_add(SESSION_RECHECK_MS) <= now)
 }
 
-/// Whether a view (`fleet attach`) asked for the session since it was last
-/// looked up, and still waits for it.
 fn view_asked(st: &TaskStatus, now: Millis) -> bool {
     st.wake_requested_at.is_some_and(|asked| {
         asked.saturating_add(task::VIEW_WAIT_MS) >= now
@@ -2822,8 +2531,6 @@ fn view_asked(st: &TaskStatus, now: Millis) -> bool {
     })
 }
 
-/// Whether a revive is under way: it ends when the window is back, or
-/// when the session cannot resume.
 fn reviving(st: &TaskStatus) -> bool {
     st.revive_attempts > 0 && !cannot_resume(st)
 }
@@ -2833,12 +2540,6 @@ fn cannot_resume(st: &TaskStatus) -> bool {
         .is_some_and(|c| c.status == ConditionStatus::True && c.reason == CANNOT_RESUME)
 }
 
-/// Whether the manager owes a Concluded Task with nothing to deliver a
-/// pass: its session is due a lookup, a revive is under way, its
-/// activity is watched (it may be paused, a pause or resume waits for its
-/// outcome, or a view asked for it while paused), or a person retried or
-/// dropped an entry given up on. An undecodable Task is owed one, to
-/// report it.
 pub fn due_at_rest(obj: &Object, now: Millis) -> bool {
     decode(obj).map_or(true, |(spec, st)| {
         session_recheck_due(&st, now)
@@ -2848,8 +2549,6 @@ pub fn due_at_rest(obj: &Object, now: Millis) -> bool {
     })
 }
 
-/// What the next delivery needs observed: the catch-up note's, while one
-/// is owed, and the inbox's otherwise.
 fn delivery_probes(st: &TaskStatus, session: &SessionRef, probes: &mut Vec<Probe>) {
     let Some(key) = &st.catch_up else {
         return inbox_probes(st, session, probes);

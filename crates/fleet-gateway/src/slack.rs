@@ -1,34 +1,3 @@
-//! Slack through an externally authenticated `curl`: the Web API behind the
-//! Gateway port, as the adapters page maps it.
-//!
-//! - An address is `slack:<channel>:<parent ts>` for a thread, or
-//!   `slack:<channel>` for the channel a thread is opened in.
-//! - [`read_event`] reads a Socket Mode envelope or an Events API body and
-//!   is pure: a reply is told from a parent by `thread_ts != ts`, Fleet's
-//!   own posts by the account's bot user id, a mention by `<@bot>` in the
-//!   text, and the marker from the message metadata.
-//! - `whoami` and `capabilities` ask `auth.test`. `history` pages
-//!   `conversations.replies` (or `conversations.history` for a channel)
-//!   under a budget of calls, and answers Unknown rather than a partial
-//!   list.
-//! - `open` and `post` are `chat.postMessage` without and with `thread_ts`.
-//!   A `post` to a channel address sends every chunk without `thread_ts`:
-//!   top-level posts that start no thread. `link` makes none: a permalink
-//!   needs the workspace's domain, which only `chat.getPermalink` gives.
-//!   Each post carries the intent key as message metadata. The text is
-//!   split at [`POST_LIMIT`] characters under derived keys. Each chunk is
-//!   posted as a `markdown` block, which Slack renders as standard
-//!   Markdown, tables included. The chunk converted to mrkdwn, with `&`,
-//!   `<` and `>` escaped, is the post's `text`: the notification and
-//!   history fallback.
-//! - A rate limit (HTTP 429, or `ratelimited`) is Unknown, with Slack's
-//!   `Retry-After` where the answer is a history read.
-//!
-//! Every call is one bounded `curl` process through fleet-exec, killed with
-//! its process tree past the bound. Fleet never constructs an Authorization
-//! header: the bot token lives in the operator's curl config file, which
-//! Fleet names with `--config` and never reads.
-
 use std::collections::BTreeSet;
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
@@ -49,35 +18,19 @@ use crate::curl::{Budget, landed, send_failure};
 use crate::text::split;
 
 pub const KIND: &str = "slack";
-/// Every call is `POST https://slack.com/api/<method>` with a JSON body.
 pub const API: &str = "https://slack.com/api";
-/// The client an account runs without a `cli` of its own.
 pub const DEFAULT_CLI: &str = "curl";
-/// The most characters one post takes: Slack's recommended length. A longer
-/// text is split into consecutive posts under derived keys.
 pub const POST_LIMIT: usize = 4_000;
-/// The most posts one text is split into: Slack truncates past 40,000
-/// characters, so a text past this many chunks is refused, never cut.
+// Slack truncates a message past 40,000 characters.
 pub const MAX_CHUNKS: usize = 10;
-/// The `event_type` of the metadata every Fleet post carries; the intent
-/// key rides in `event_payload.key`.
 pub const METADATA_EVENT_TYPE: &str = "fleet_post";
-/// The most calls one operation makes: a history read's pages and its
-/// parent lookup, or a split post's chunks. The bound reported for the port
-/// is this many worst-case calls.
 pub const MAX_CALLS_PER_OPERATION: u32 = 10;
-/// Messages per history page, the count Slack recommends.
 const PAGE: u32 = 200;
-/// The largest file Fleet downloads, in bytes.
 pub const MAX_FILE_BYTES: u64 = 50 * 1024 * 1024;
-/// The hosts Fleet sends the bot token to for a file. Slack's file guide
-/// asks that the token go only to a Slack file host, over https.
+// Slack asks that the bot token go only to a Slack file host, over https.
 pub const FILE_HOSTS: &[&str] = &["files.slack.com"];
 const DOWNLOAD_CALLS: u32 = 6;
 
-/// What Slack offers on every account: a thread's history can be read, a
-/// post's metadata is read back, every message in a channel the bot is in
-/// is delivered, and conversations are threads.
 pub const CAPABILITIES: Capabilities = Capabilities {
     history: true,
     marker: Marker::Metadata,
@@ -86,7 +39,6 @@ pub const CAPABILITIES: Capabilities = Capabilities {
     reactions: true,
 };
 
-/// One Slack workspace, served by `curl` with the operator's config file.
 #[derive(Debug, Clone)]
 pub struct SlackGateway {
     account: String,
@@ -98,9 +50,6 @@ pub struct SlackGateway {
 }
 
 impl SlackGateway {
-    /// The adapter for an account, or why its configuration cannot be
-    /// served: an `inbound` no Slack listener delivers by, or no
-    /// `curlConfig`. The pure rules ran at config load.
     pub fn new(
         account: &str,
         config: &AccountConfig,
@@ -130,11 +79,6 @@ impl SlackGateway {
         &self.account
     }
 
-    /// One bounded call: `curl --include … --config <file> --data-binary @-
-    /// --url <API>/<method>` with the body on stdin, so neither the text nor
-    /// anything from the config file is on a command line. Only Slack's write
-    /// methods read a JSON body; the read methods take form arguments and
-    /// answer a JSON body with `invalid_arguments`.
     fn call(&self, method: &str, body: &Value, timeout: Duration) -> Result<Value, CallError> {
         let (content_type, payload) = if method.starts_with("chat.") {
             (
@@ -165,7 +109,7 @@ impl SlackGateway {
                 "POST",
                 "--header",
                 content_type,
-                // No `100 Continue` round trip: the whole answer is one head.
+                // An empty `Expect:` stops curl waiting for `100 Continue`.
                 "--header",
                 "Expect:",
                 "--data-binary",
@@ -198,7 +142,6 @@ impl SlackGateway {
         }
     }
 
-    /// One call of a budgeted operation.
     fn budgeted(
         &self,
         method: &str,
@@ -213,8 +156,6 @@ impl SlackGateway {
         self.call(method, body, timeout)
     }
 
-    /// Every page of a paginated read, under the budget. `has_more` with no
-    /// cursor is Incomplete, never a partial list.
     fn pages(
         &self,
         method: &str,
@@ -274,8 +215,7 @@ impl SlackGateway {
         let is_parent = |m: &&Value| m["ts"].as_str() == Some(thread);
         let mut parent = items.iter().find(is_parent).cloned();
         if parent.is_none() && !matches!(query, HistoryQuery::After { id: None, .. }) {
-            // A read bounded by `oldest` may leave the parent out: ask for
-            // it alone, so `starter` is always answered.
+            // `conversations.replies` bounded by `oldest` may leave the parent out.
             let alone =
                 json!({"channel": chat, "ts": thread, "limit": 1, "include_all_metadata": true});
             match self.budgeted("conversations.replies", &alone, &mut budget) {
@@ -324,8 +264,6 @@ impl SlackGateway {
         }
     }
 
-    /// `chat.postMessage` once with one chunk of Markdown: the posted
-    /// message's `ts`, and its time.
     fn post_once(
         &self,
         chat: &str,
@@ -358,10 +296,6 @@ impl SlackGateway {
         Ok((ts.to_string(), at))
     }
 
-    /// Post `text` as one or more chunks, the first under `key` alone when
-    /// it is the only one, else each under `<key>/<n>/<total>`. `thread` is the
-    /// thread to reply in, or `None` to open one with the first chunk, which
-    /// the rest then reply to. The first chunk's `ts` and time come back.
     fn post_chunks(
         &self,
         chat: &str,
@@ -393,8 +327,6 @@ impl SlackGateway {
                     first.get_or_insert(landed);
                 }
                 Err(e) => {
-                    // Something landed: the outcome is for a recovery read
-                    // to settle, whatever Slack said last.
                     let partly = (i > 0)
                         .then(|| format!("{i} of {} posts landed under {key}", chunks.len()));
                     return send_failure(partly, e.why(), e.certain_failure());
@@ -405,9 +337,6 @@ impl SlackGateway {
         Observation::Known(landed(KIND, chat, thread, message, at))
     }
 
-    /// Post `text` at the top level of `chat`: every chunk without
-    /// `thread_ts`, so no thread starts. The first chunk's `ts` and time
-    /// come back as `Posted`.
     fn post_channel(&self, chat: &str, text: &str, key: &str) -> Observation<EffectOutcome> {
         let chunks = split(text, POST_LIMIT);
         if chunks.len() > MAX_CHUNKS {
@@ -441,10 +370,6 @@ impl SlackGateway {
         Observation::Known(EffectOutcome::Posted { message, at })
     }
 
-    /// `reactions.add` or `reactions.remove` on the message `ts` in the
-    /// conversation's channel, as form arguments. `already_reacted` and
-    /// `no_reaction` say the reaction already stands as asked: a Known
-    /// success.
     fn react_on(
         &self,
         conversation: &ConversationRef,
@@ -470,17 +395,10 @@ impl SlackGateway {
         }
     }
 
-    /// No link: a Slack permalink needs the workspace's domain.
     fn thread_link(&self, _thread: &ConversationRef) -> Option<String> {
         None
     }
 
-    /// `files.info` for the whole file object, which an event's Slack
-    /// Connect stub (`file_access: check_file_info`) leaves out, then one
-    /// GET of its `url_private_download` with the operator's curl config,
-    /// which carries the bot token. The file lands at
-    /// `<dir>/fleet-file-<file id>-<unique>/<name>`, in a directory made
-    /// fresh for this call that only this user can enter.
     fn fetch_file(&self, file: &str, dir: &Path) -> Observation<Fetched> {
         if !is_file_id(file) {
             return refused(format!("{file:?} is not a Slack file id"));
@@ -543,9 +461,6 @@ impl SlackGateway {
         }
     }
 
-    /// One bounded GET of `url` into `out`: the HTTP status and the
-    /// `Content-Type`. Redirects are refused, so the token never follows
-    /// one to another host, and a file past [`MAX_FILE_BYTES`] is cut off.
     fn download(&self, url: &str, out: &Path) -> Result<(u16, String), CallError> {
         let timeout = self.call_timeout * DOWNLOAD_CALLS;
         let args: Vec<OsString> = [
@@ -621,8 +536,6 @@ impl SlackGateway {
         })
     }
 
-    /// Slack's capabilities are the platform's, the same on every account;
-    /// `auth.test` proves the account answers before they are claimed.
     fn offers(&self) -> Observation<Capabilities> {
         match self.call("auth.test", &json!({}), self.call_timeout) {
             Ok(_) => Observation::Known(CAPABILITIES),
@@ -631,14 +544,6 @@ impl SlackGateway {
     }
 }
 
-// ----------------------------------------------------------------------
-// Addresses and timestamps.
-// ----------------------------------------------------------------------
-
-/// `slack:<channel>[:<ts>]`: a channel id (`C…`, `G…` or `D…`, uppercase
-/// letters and digits) and a Slack timestamp (`<seconds>.<fraction>`).
-/// A body as Slack's form arguments: strings as they are, numbers and
-/// booleans as written, anything else as its JSON text.
 fn form(body: &Value) -> Vec<u8> {
     fn encode(out: &mut String, s: &str) {
         for b in s.bytes() {
@@ -677,8 +582,6 @@ pub fn parse_address(address: &str) -> Result<ConversationRef, String> {
     Ok(parsed)
 }
 
-/// The parts of a reference are a Slack channel id and, when present, a
-/// Slack timestamp.
 fn check_ref(r: &ConversationRef) -> Result<(), String> {
     if r.platform != KIND {
         return Err(format!("platform {:?} is not {KIND}", r.platform));
@@ -708,7 +611,6 @@ fn is_channel_id(s: &str) -> bool {
             .all(|c| c.is_ascii_digit() || c.is_ascii_uppercase())
 }
 
-/// A Slack timestamp as (seconds, microseconds): `1730000000.000100`.
 pub fn ts_key(ts: &str) -> Option<(u64, u64)> {
     let (secs, frac) = ts.split_once('.')?;
     if secs.is_empty()
@@ -723,18 +625,15 @@ pub fn ts_key(ts: &str) -> Option<(u64, u64)> {
     Some((secs.parse().ok()?, micros))
 }
 
-/// A Slack timestamp as Unix milliseconds, the port's time.
 pub fn ts_millis(ts: &str) -> Option<Millis> {
     let (secs, micros) = ts_key(ts)?;
     secs.checked_mul(1000)?.checked_add(micros / 1000)
 }
 
-/// Unix milliseconds as a Slack timestamp, for `oldest`.
 pub fn ts_of_millis(at: Millis) -> String {
     format!("{}.{:06}", at / 1000, (at % 1000) * 1000)
 }
 
-/// `a` is later than `b`, both Slack timestamps.
 fn ts_after(a: &str, b: &str) -> bool {
     match (ts_key(a), ts_key(b)) {
         (Some(a), Some(b)) => a > b,
@@ -742,12 +641,6 @@ fn ts_after(a: &str, b: &str) -> bool {
     }
 }
 
-// ----------------------------------------------------------------------
-// Reading messages and events, pure.
-// ----------------------------------------------------------------------
-
-/// Message subtypes the Gateway reads as messages; every other subtype is
-/// a system note, a change notice or a tombstone.
 fn is_message_subtype(subtype: Option<&str>) -> bool {
     matches!(
         subtype,
@@ -755,11 +648,6 @@ fn is_message_subtype(subtype: Option<&str>) -> bool {
     )
 }
 
-/// One Slack message object, from an event or from history, in the port's
-/// words. The account's `bot` is the one author that is Fleet, and its own
-/// posts mention nobody; a message with a `bot_id`, or of subtype
-/// `bot_message`, is another bot's, under its bot user id where Slack gives
-/// one and its `bot_id` otherwise.
 pub fn message_of(bot: &str, item: &Value) -> Result<Message, String> {
     let ts = item["ts"]
         .as_str()
@@ -780,7 +668,6 @@ pub fn message_of(bot: &str, item: &Value) -> Result<Message, String> {
     let thread_ts = item["thread_ts"].as_str();
     Ok(Message {
         id: ts.to_string(),
-        // Fleet's own post never mentions Fleet, whatever it quotes.
         mentions_fleet: author.kind != AuthorKind::Fleet && mentions(text, bot),
         at,
         key: key_of(item),
@@ -791,9 +678,7 @@ pub fn message_of(bot: &str, item: &Value) -> Result<Message, String> {
     })
 }
 
-/// The files a message shares, each with why Fleet cannot fetch it when
-/// the message alone tells. A Slack Connect stub carries only an id and
-/// `file_access: check_file_info`: `files.info` reads the rest at fetch.
+// A Slack Connect stub carries only an id and `file_access: check_file_info`.
 pub fn files_of(item: &Value) -> Vec<Attachment> {
     let Some(files) = item["files"].as_array() else {
         return Vec::new();
@@ -829,9 +714,6 @@ fn file_name(f: &Value) -> &str {
         .unwrap_or("")
 }
 
-/// Why a Slack file object cannot be fetched, or `None` when nothing in
-/// it says so: deleted, hidden by the workspace's plan limits, hosted
-/// outside Slack, or past [`MAX_FILE_BYTES`].
 pub fn unavailable(f: &Value) -> Option<String> {
     let mode = f["mode"].as_str();
     let flag = |k: &str| f[k] == true || f[k].as_u64().is_some_and(|n| n != 0);
@@ -868,8 +750,6 @@ fn scope_hint(why: String) -> String {
     }
 }
 
-/// `url` is `https` on one of [`FILE_HOSTS`], with no user, password or
-/// port: the only URL the bot token is sent to.
 pub fn check_file_url(url: &str) -> Result<(), String> {
     let Some(rest) = url.strip_prefix("https://") else {
         return Err(format!("{url:?} is not an https URL"));
@@ -922,9 +802,7 @@ fn download_answer(
     Ok((status, content_type.trim().to_string()))
 }
 
-/// Whether a download's answer is the file: a 200 whose type is not a web
-/// page, unless the file is one. Slack answers a token it will not honour
-/// with its sign-in page or a redirect to it, never with an API error.
+// Slack answers a token it will not honour with its sign-in page, never an API error.
 pub fn check_download(
     status: u16,
     content_type: &str,
@@ -971,9 +849,6 @@ fn kind_of(bot: &str, item: &Value) -> AuthorKind {
     }
 }
 
-// Slack: with `blocks`, `text` is only the notification fallback; alert
-// bots leave `text` empty and post their body as attachments; a table block
-// is not in `text`; a person's attachments are unfurls and shared messages.
 fn shown(bot: &str, item: &Value) -> String {
     let kind = kind_of(bot, item);
     let tabled = each(&item["blocks"]).any(|b| table_rows(b).is_some());
@@ -1128,12 +1003,10 @@ fn text_of(v: &Value) -> String {
     text_at(v, "text")
 }
 
-/// `<@U…>` or `<@U…|name>` with Fleet's bot user id.
 fn mentions(text: &str, bot: &str) -> bool {
     text.contains(&format!("<@{bot}>")) || text.contains(&format!("<@{bot}|"))
 }
 
-/// The intent key a Fleet post carries as its metadata.
 fn key_of(item: &Value) -> Option<String> {
     let metadata = &item["metadata"];
     (metadata["event_type"] == METADATA_EVENT_TYPE)
@@ -1151,10 +1024,6 @@ fn name_of(item: &Value) -> String {
         .to_string()
 }
 
-/// The messages of a thread read, oldest first, with the parent's
-/// `starter`: a `tombstone` parent is one Slack reports deleted. `items`
-/// may hold the parent on every page, or not at all when `oldest` left it
-/// out; it is counted once either way, and only when the query covers it.
 pub fn collect_thread(
     bot: &str,
     items: &[Value],
@@ -1174,8 +1043,6 @@ pub fn collect_thread(
     })
 }
 
-/// The messages among `items` the query covers, each once, oldest first,
-/// and how many older ones an `After` read left out under its limit.
 fn collect<'a>(
     bot: &str,
     items: impl Iterator<Item = &'a Value>,
@@ -1210,15 +1077,6 @@ fn collect<'a>(
     Ok((messages, left_out))
 }
 
-/// What an envelope carries, read without any call. The payload is a
-/// Socket Mode envelope (`type: events_api` around an `event_callback`)
-/// or an Events API body (the `event_callback` itself). Other envelope
-/// types (`hello`, `disconnect`, `interactive`, `slash_commands`,
-/// `url_verification`), events that are not messages, message subtypes
-/// that are system notes, and events of another workspace are ignored. An
-/// event whose `channel_type` is `im` is in a one-to-one DM: `direct`. A
-/// payload that is no object, has no type, or has a message event without
-/// its `event_id`, `channel` or `ts` is Unknown.
 pub fn read_event(account: &AccountConfig, envelope: &Envelope) -> Observation<Option<Delivery>> {
     let Some(outer) = envelope.payload.as_object() else {
         return Observation::unknown("the payload is not an object");
@@ -1316,7 +1174,6 @@ pub fn read_event(account: &AccountConfig, envelope: &Envelope) -> Observation<O
                     id: id.into(),
                 }
             }
-            // `message_replied`, `channel_join`, `tombstone` and the rest.
             _ => return Observation::Known(None),
         }
     };
@@ -1325,34 +1182,18 @@ pub fn read_event(account: &AccountConfig, envelope: &Envelope) -> Observation<O
         verified: envelope.verified,
         received_at: envelope.received_at,
         event,
-        // A one-to-one DM is the event's `channel_type` "im"; a group DM is
-        // "mpim", and a channel id prefix does not tell them apart.
+        // Slack marks a one-to-one DM `im` and a group DM `mpim`; the channel id prefix does not tell them apart.
         direct: str_of(ev, "channel_type") == Some("im"),
     }))
 }
 
-// ----------------------------------------------------------------------
-// One call's answer.
-// ----------------------------------------------------------------------
-
-/// Why a call gave no usable answer.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum CallError {
-    /// Slack asked to slow down (HTTP 429, or `ratelimited`): nothing was
-    /// done, and `retry_after` is its `Retry-After` in milliseconds.
     Throttled { retry_after: Option<Millis> },
-    /// Slack answered `ok: false` with this error: the request was not
-    /// performed. Not `internal_error` or `fatal_error`, which Slack
-    /// documents as possibly performed in part: those are `Unreadable`.
     Refused(String),
-    /// No answer that tells whether the request was performed: an
-    /// unreadable body, or Slack's `internal_error`/`fatal_error`.
     Unreadable(String),
-    /// The call ran past its bound and its process tree was killed.
     Timeout(String),
-    /// The budget of calls ran out before the read was complete.
     Incomplete(String),
-    /// `curl` could not start, so nothing was sent.
     Unavailable(String),
 }
 
@@ -1382,7 +1223,6 @@ impl CallError {
         }
     }
 
-    /// Slack said no, or curl never ran: the write was certainly not made.
     fn certain_failure(&self) -> bool {
         matches!(self, CallError::Refused(_) | CallError::Unavailable(_))
     }
@@ -1400,14 +1240,12 @@ impl CallError {
 }
 
 impl Reply {
-    /// `Retry-After` in seconds, as milliseconds, at least one second.
     pub fn retry_after(&self) -> Option<Millis> {
         self.header("retry-after")
             .and_then(|v| v.trim().parse::<u64>().ok())
             .map(|secs| secs.saturating_mul(1000).max(1000))
     }
 
-    /// The Web API's answer: its JSON when `ok`, else why not.
     pub fn answer(&self, method: &str) -> Result<Value, CallError> {
         if self.status == 429 {
             return Err(CallError::Throttled {
@@ -1438,8 +1276,6 @@ impl Reply {
             });
         }
         if v["ok"] == false {
-            // Slack documents these two as "some aspect of the operation
-            // may have succeeded": the request may have been performed.
             if matches!(error, "internal_error" | "fatal_error") {
                 return Err(CallError::Unreadable(format!(
                     "{method}: {error}; Slack says some aspect of the operation may have succeeded"
@@ -1453,11 +1289,6 @@ impl Reply {
     }
 }
 
-// ----------------------------------------------------------------------
-// Text: Fleet's Markdown subset to mrkdwn, and splitting.
-// ----------------------------------------------------------------------
-
-/// `&`, `<` and `>` as Slack wants them in text.
 pub fn escape(s: &str) -> String {
     let mut out = String::with_capacity(s.len());
     for c in s.chars() {
@@ -1471,13 +1302,6 @@ pub fn escape(s: &str) -> String {
     out
 }
 
-/// Fleet's Markdown subset (paragraphs, emphasis, code, links, lists,
-/// quotes and tables) as mrkdwn: `**bold**` to `*bold*`, `*em*` and
-/// `_em_` to `_em_`, `~~gone~~` to `~gone~`, `[text](url)` to
-/// `<url|text>`, a heading to a bold line, a bullet to `•`, a quote line
-/// to `&gt;`, a table's lines to a code block, code spans and fences kept,
-/// and everything else escaped. Text inside code is escaped and never
-/// formatted. A fence left open is closed.
 pub fn to_mrkdwn(markdown: &str) -> String {
     let mut out = String::with_capacity(markdown.len());
     let mut in_fence = false;
@@ -1526,9 +1350,6 @@ pub fn to_mrkdwn(markdown: &str) -> String {
     out.trim_end_matches('\n').to_string()
 }
 
-/// Markdown for a `markdown` block, with every `<` that would open a
-/// Slack mention, a broadcast or a channel link (`<@`, `<!`, `<#`)
-/// escaped by a backslash outside code, so a post makes none.
 pub fn defuse(markdown: &str) -> String {
     let mut out = String::with_capacity(markdown.len());
     let mut in_fence = false;
@@ -1574,8 +1395,6 @@ fn heading(line: &str) -> Option<&str> {
     None
 }
 
-/// A heading's text without the bold that wraps it whole: the heading is
-/// bold already, and mrkdwn does not nest bold in bold.
 fn unbold(text: &str) -> &str {
     for marker in ["**", "__"] {
         if let Some(inner) = text
@@ -1607,14 +1426,12 @@ fn ordered(line: &str) -> Option<(&str, &str)> {
     Some((&line[..digits], rest))
 }
 
-/// Inline Markdown of one line as mrkdwn.
 fn inline(text: &str) -> String {
     let chars: Vec<char> = text.chars().collect();
     let mut out = String::with_capacity(text.len());
     let mut i = 0;
     while i < chars.len() {
         let c = chars[i];
-        // A code span: kept, its text escaped, never formatted.
         if c == '`'
             && let Some(end) = find(&chars, i + 1, &['`'])
         {
@@ -1625,7 +1442,6 @@ fn inline(text: &str) -> String {
             i = end + 1;
             continue;
         }
-        // A link: `[text](url)` to `<url|text>` for a web or mail URL.
         if c == '['
             && let Some(close) = find(&chars, i + 1, &[']'])
             && chars.get(close + 1) == Some(&'(')
@@ -1653,10 +1469,6 @@ fn inline(text: &str) -> String {
     out
 }
 
-/// An emphasis span opening at `i`, pushed to `out` as mrkdwn, and where
-/// it ends: a double marker is bold, a single one italic, a double tilde
-/// strikethrough. A marker opens only at a word start before a non-space,
-/// closes only after a non-space at a word end, and is literal otherwise.
 fn emphasis(chars: &[char], i: usize, out: &mut String) -> Option<usize> {
     const MARKERS: [(&[char], char); 5] = [
         (&['*', '*'], '*'),
@@ -1691,7 +1503,6 @@ fn emphasis(chars: &[char], i: usize, out: &mut String) -> Option<usize> {
     None
 }
 
-/// A string field of a JSON object.
 fn str_of<'a>(m: &'a Map<String, Value>, k: &str) -> Option<&'a str> {
     m.get(k).and_then(Value::as_str)
 }
@@ -1704,13 +1515,10 @@ fn find_seq(chars: &[char], from: usize, seq: &[char]) -> Option<usize> {
     (from..chars.len()).find(|&j| chars[j..].starts_with(seq))
 }
 
-/// An emphasis marker opens only at a word start: the line's start, or
-/// after a character that is not a letter, a digit or the marker itself.
 fn word_start(chars: &[char], i: usize) -> bool {
     i == 0 || !chars[i - 1].is_alphanumeric()
 }
 
-/// An emphasis marker closes only at a word end.
 fn word_end(chars: &[char], after: usize) -> bool {
     after >= chars.len() || !chars[after].is_alphanumeric()
 }
@@ -1766,8 +1574,6 @@ mod tests {
         }
     }
 
-    // The recorded Socket Mode and Events API payloads: synthetic, with
-    // made-up ids, in the shapes Slack documents.
     const MENTION: &str = include_str!("../fixtures/slack/socket-mode-mention.json");
     const REPLY: &str = include_str!("../fixtures/slack/socket-mode-reply.json");
     const OWN_POST: &str = include_str!("../fixtures/slack/socket-mode-own-post.json");
@@ -1946,7 +1752,6 @@ mod tests {
         assert_eq!(m.author.kind, AuthorKind::Person);
         assert_eq!(m.key, None);
         assert_eq!(m.text, "<@U0BOT0001> please look at the failing build");
-        // The `<@id|name>` form is a mention too.
         let named = MENTION.replace("<@U0BOT0001>", "<@U0BOT0001|fleet>");
         assert!(message(&delivery(&named)).1.mentions_fleet);
     }
@@ -1959,9 +1764,7 @@ mod tests {
         assert_eq!(conversation.address(), "slack:D0123ABCD:1730000400.000100");
         assert!(m.starts_thread && !m.mentions_fleet);
         assert_eq!(m.author.kind, AuthorKind::Person);
-        // A group DM is `mpim`; its `G` id prefix is no DM signal either.
         assert!(!delivery(GROUP_DM).direct, "channel_type \"mpim\"");
-        // The channel type, not the id prefix, decides.
         let typed = |payload: &str, from: &str, to: &str| {
             delivery(&payload.replace(
                 &format!("\"channel_type\": \"{from}\""),
@@ -1972,7 +1775,6 @@ mod tests {
         assert!(!typed(DM, "im", "channel"));
         assert!(typed(MENTION, "channel", "im"));
         assert!(!delivery(MENTION).direct && !delivery(REPLY).direct);
-        // An event without a channel type does not say it is a DM.
         let untyped = DM.replace("\"channel_type\": \"im\",", "");
         assert!(!delivery(&untyped).direct);
     }
@@ -2145,14 +1947,12 @@ mod tests {
                 "{what}"
             );
         }
-        // Without a team on the account, any workspace's event is read.
         assert!(
             read_event(&account(None), &envelope(OTHER_TEAM))
                 .known()
                 .unwrap()
                 .is_some()
         );
-        // An enterprise id on the account matches the org.
         assert!(
             read_event(&account(Some("E0123ABCD")), &envelope(OTHER_TEAM))
                 .known()
@@ -2236,8 +2036,6 @@ mod tests {
         let own = json!({"type": "message", "ts": "1730000500.000000", "user": BOT, "bot_id": "B0FLEET001",
             "text": "On it.", "thread_ts": "1730000300.000200",
             "metadata": {"event_type": "fleet_post", "event_payload": {"key": "task/t/u/gateway/comment/c1"}}});
-        // Pages as Slack may give them: the parent on each, a system note,
-        // and a reply out of order.
         let items = vec![
             parent.clone(),
             item("1730000360.000300", "U0456EFGH", "second"),
@@ -2312,7 +2110,6 @@ mod tests {
         .unwrap();
         assert_eq!(since.messages.len(), 2);
         assert_eq!(since.left_out, 0);
-        // A parent Slack reports deleted is a tombstone.
         let tombstone = json!({"type": "message", "subtype": "tombstone", "ts": "1730000300.000200",
             "user": "USLACKBOT", "text": "This message was deleted.", "thread_ts": "1730000300.000200"});
         let gone: Vec<Value> = items
@@ -2324,13 +2121,11 @@ mod tests {
         let h = collect_thread(BOT, &gone, &tombstone, &all).unwrap();
         assert_eq!(h.starter, Some(Starter::removed()));
         assert_eq!(h.messages.len(), 3, "the tombstone is no message");
-        // A Fleet-opened thread's starter carries the key.
         let h = collect_thread(BOT, std::slice::from_ref(&own), &own, &all).unwrap();
         assert_eq!(
             h.starter.unwrap().key.as_deref(),
             Some("task/t/u/gateway/comment/c1")
         );
-        // An item without an author makes the read Unknown, never a guess.
         let odd = vec![json!({"type": "message", "ts": "1730000600.000000", "text": "?"})];
         assert!(collect_thread(BOT, &odd, &parent, &all).is_err());
     }
@@ -2348,7 +2143,6 @@ mod tests {
             Some("application/json; charset=utf-8")
         );
         assert_eq!(r.answer("chat.postMessage").unwrap()["ts"], "1.000001");
-        // An informational head before the real one is skipped.
         let r = Reply::parse(
             "HTTP/1.1 100 Continue\r\n\r\nHTTP/1.1 200 OK\r\n\r\n{\"ok\":true}",
             Some(0),
@@ -2515,7 +2309,6 @@ mod tests {
         for chunk in split(text, 9) {
             assert!(chunk.chars().count() <= 9);
         }
-        // A line longer than the limit is cut inside.
         let long = "x".repeat(25);
         let chunks = split(&long, 10);
         assert_eq!(chunks.len(), 3);
@@ -2523,12 +2316,9 @@ mod tests {
         for chunk in &chunks {
             assert!(chunk.chars().count() <= 10);
         }
-        // Paragraph breaks at a split are dropped, not carried.
         assert_eq!(split("one\n\ntwo\n\nthree", 8), ["one\n\ntwo", "three"]);
-        // Characters, not bytes.
         let wide = "é".repeat(12);
         assert_eq!(split(&wide, 10).len(), 2);
-        // A fence cut by a split is closed and reopened.
         let fenced = "```\nline one\nline two\nline three\n```\nafter";
         let chunks = split(fenced, 22);
         assert!(chunks.len() >= 2, "{chunks:?}");
@@ -2593,13 +2383,11 @@ mod tests {
         )
         .unwrap_err();
         assert_eq!(err, "a slack account needs a curlConfig");
-        // Refusals that need no call are Known.
         let thread = parse_address("slack:C0123ABCD:1730000000.000100").unwrap();
         assert!(matches!(
             g.open("slack-main", &thread, "x", "k"),
             Observation::Known(EffectOutcome::Failed { why }) if why.contains("is a thread")
         ));
-        // A channel address is a top-level post, but only on a channel id.
         let not_a_channel = ConversationRef {
             platform: "slack".into(),
             chat: "general".into(),
@@ -2632,7 +2420,6 @@ mod tests {
                 ..
             }
         ));
-        // A text past the chunk cap is refused before any call.
         let huge = "y".repeat(POST_LIMIT * MAX_CHUNKS + 1);
         assert!(matches!(
             g.post("slack-main", &thread, &huge, "k"),

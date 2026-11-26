@@ -1,12 +1,3 @@
-//! Which pane has focus, and which panes may.
-//!
-//! Focus is an index into the host's focusable mods, but the rules are about
-//! *visibility*: a slot the arrangement did not place is not a cycle stop, and a
-//! switch slot's alternates are not either — they are reached by their own key.
-//! `pending_focus` is the one subtlety — a pane that opens its own slot asks for
-//! focus a frame before the slot exists, so the request is held for exactly one
-//! layout and re-asked there.
-
 use thurbox::kernel::layout::SlotMode;
 
 use crate::App;
@@ -34,7 +25,6 @@ impl App {
         }
     }
 
-    /// Offer explicit navigation to the topmost float before cycling panes.
     pub(crate) fn cycle_focus_action(&mut self, step: isize) {
         if let Some(index) = self.grabbed {
             let direction = if step > 0 { "next" } else { "previous" };
@@ -50,9 +40,6 @@ impl App {
         self.cycle_focus(step);
     }
 
-    /// Step focus one column along — see `kernel::focus::next_in_cycle` for why a
-    /// switch slot is one stop however many panes share it. Automatic repair also
-    /// uses this path, so it must not dispatch input to a float from the last frame.
     pub(crate) fn cycle_focus(&mut self, step: isize) {
         let focusable = self.host.focusable();
         let ring: Vec<_> = focusable
@@ -98,7 +85,6 @@ impl App {
                 chosen_in_switch: None,
             };
         };
-        // A `switch` slot draws ONE of its occupants; the rest are alternatives.
         let chosen_in_switch =
             matches!(self.host.slot_mode(&loaded.slot), SlotMode::Switch).then(|| {
                 let members = self.host.in_slot(&loaded.slot);
@@ -131,12 +117,6 @@ impl App {
             .is_some_and(|loaded| loaded.session_input)
     }
 
-    /// Whether the terminal the focused pane is showing has a dead pane.
-    ///
-    /// Only meaningful next to [`Self::focused_wants_session_input`]: it is the
-    /// surface that pane painted (`focused_surface`) whose session is asked.
-    /// `false` when nothing is focused or the backend cannot say — an unsure
-    /// answer must not divert a chord from the agent it would otherwise reach.
     pub(crate) fn focused_terminal_is_dead(&self) -> bool {
         self.focused_surface
             .as_deref()

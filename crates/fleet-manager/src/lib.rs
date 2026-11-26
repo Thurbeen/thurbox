@@ -1,57 +1,3 @@
-//! Fleet's manager: the only code that performs a controller's plan.
-//!
-//! It holds the one manager lease, walks the Tasks, asks TaskController what
-//! to probe, probes through the runtime port, asks it to decide, then writes
-//! in the order the contract requires: the status carrying each effect's
-//! intent first (compare-and-swap, fenced by the lease), then the effect,
-//! then its receipt. It also hosts the spec and worker verbs, so the CLI only
-//! parses and prints.
-//!
-//! Each Task has a second controller, ForgeController, with its own due
-//! gate: it runs after TaskController, from a fresh read of the Task, asks
-//! for the ChangeRequests the worker declared (answered from the store),
-//! Fleet's login on their hosts (through the Forge port, cached for the
-//! sweep) and, while a mark-ready is being evaluated, whether the session
-//! is at rest (through the runtime), and its plan is one typed write:
-//! `status.forge` replaced and the relay's inbox entries appended together,
-//! carrying any mark-ready intent. The one effect, `MarkReady`, is then
-//! performed through the Forge port after a lease renewal, and its receipt
-//! written onto the entry.
-//!
-//! A third controller, GatewayController, runs after the Forge one on each
-//! Task it is due for: the Conversation its labels name is answered from
-//! the store, its children from the sweep's one Task listing, and its plan
-//! is the same typed write, `status.gateway` replaced and the relay's
-//! entries appended together. Whether a tied Task is due is judged from
-//! the sweep's Conversation listing, so a quiet tied Task costs nothing.
-//!
-//! The same sweep walks the CronTasks: each due one is decided by
-//! CronTaskController from the Tasks carrying its uid label, and its plan
-//! creates the scheduled Task and retires old ones, intent before and
-//! receipt after, as the `cron_tasks` module says.
-//!
-//! It walks the ChangeRequests: each due one is observed through
-//! the Forge port and decided by ChangeRequestController, whose plan is one
-//! status write and, after retention, one fenced delete. There are no effects
-//! and no receipts on that side.
-//!
-//! It then walks the Conversations and the Listeners of the `[gateway]`
-//! section: a Conversation is answered from the store (its tied Task) and
-//! the Gateway port (the account's capabilities, cached for the sweep, and
-//! one history read), decided by ConversationController, and written
-//! through `record_received`, which drains the spool with the status; a
-//! Listener is answered from the port (capabilities and identity, cached)
-//! and decided by ListenerController. Each retires its own object by a
-//! fenced delete. A Conversation's plan may also create the Task its thread
-//! starts, under a key whose intent the status carries: the manager checks
-//! the create's `exclusive: {workspace}` precondition against the store's
-//! Tasks under the lease, makes the Task's `dir` workspace on its host
-//! through the runtime port, then performs the fenced create, and writes
-//! the receipt back under the key; and it may post the thread's refusal or
-//! busy notice through the Gateway port, intent before and receipt after.
-//! The receive verb that fills the spool and records beats lives in
-//! [`verbs`] and needs no lease.
-
 mod cron_tasks;
 mod execution;
 mod fleet_events;
@@ -100,37 +46,26 @@ pub use verbs::{
     restart, send, wake,
 };
 
-/// How a bounded reconcile run ends.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct RunOptions {
-    /// Stop after this many passes even if work remains.
     pub max_passes: u32,
-    /// The lease's time to live; renewed before every object and effect.
     pub lease_ttl: Millis,
 }
 
-/// What a run did, for `fleet reconcile`'s output.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct RunReport {
     pub holder: String,
     pub lease_token: u64,
     pub passes: u32,
-    /// True when the last pass changed nothing: everything is waiting.
     pub idle: bool,
     pub status_writes: u32,
     pub effects: u32,
     pub conflicts: u32,
-    /// Objects that could not be reconciled, with why. Never silently skipped.
     pub errors: Vec<String>,
-    /// Observations that were Unknown during the run, with why.
     pub unknowns: Vec<String>,
-    /// Each Task the run left starting, waiting on its agent: its session
-    /// and the length of its signal file then.
     #[serde(skip)]
     pub waiting: Vec<(SessionRef, u64)>,
-    /// Set when the sweep stopped because the store's disk is full: the
-    /// manager runs nothing until it can write again.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub paused: Option<Paused>,
 }
@@ -138,7 +73,6 @@ pub struct RunReport {
 const PAUSE_FIRST_RETRY: Millis = 5_000;
 const PAUSE_LAST_RETRY: Millis = 60_000;
 
-/// Why the manager paused, and how long to wait before it tries again.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Paused {
@@ -158,42 +92,22 @@ pub struct Manager<'a> {
     pub runtime: &'a dyn Runtime,
     pub clock: &'a dyn Clock,
     pub holder: String,
-    /// The configured forges; `None` when the config has no `[forge]`, in
-    /// which case a ChangeRequest is reported as an error, never polled.
     pub plugins: Option<(
         &'a dyn fleet_api::plugin::Plugins,
         &'a [fleet_api::plugin::Registration],
     )>,
     pub forge: Option<&'a dyn Forge>,
-    /// The signal port: the file each session's hooks report to, and what
-    /// it says. `None`: no session gets one, and what Fleet would learn
-    /// from it stays Unknown.
     pub signals: Option<&'a dyn fleet_api::signal::Signals>,
-    /// The collector Fleet exports its own telemetry to: each agent's
-    /// harness profile points the agent's telemetry there too, unless its
-    /// Task says `agentTelemetry: false`. `None`: Fleet exports nothing,
-    /// and no agent gets telemetry from Fleet.
     pub agent_telemetry: Option<fleet_api::harness::Collector>,
-    /// The `[forge]` defaults a ChangeRequest spec may override.
     pub change_request_defaults: ChangeRequestDefaults,
-    /// The `[forge]` relay defaults a Task's `spec.forge` may override, and
-    /// the ready policies it may select.
     pub forge_defaults: ForgeDefaults,
-    /// The `[gateway]` section with its port; `None` when the config has
-    /// none, in which case a Conversation or Listener is reported as an
-    /// error, never reconciled.
     pub gateway: Option<GatewaySide<'a>>,
 }
 
-/// The chat side of a run: the port the CLI wired, the section it was
-/// wired from, and each account's digest, which the CLI computed.
 pub struct GatewaySide<'a> {
     pub port: &'a dyn Gateway,
     pub config: GatewayConfig,
-    /// Per account, the digest `fleet gateway account NAME --json` prints.
     pub digests: BTreeMap<String, String>,
-    /// Per route, its brief as the CLI read the file when it loaded the
-    /// config: what each Task the route starts carries.
     pub briefs: BTreeMap<String, String>,
 }
 
@@ -205,8 +119,6 @@ impl std::fmt::Debug for GatewaySide<'_> {
     }
 }
 
-/// One sweep's answers from the Gateway port, asked at most once per
-/// account, and the accounts a throttled history read deferred.
 #[derive(Debug, Default)]
 struct GatewayCache {
     capabilities: BTreeMap<String, Observation<Capabilities>>,
@@ -244,7 +156,6 @@ impl ForgeLogins {
     }
 }
 
-/// The outcome of one object's reconcile.
 #[derive(Debug, Default)]
 struct Step {
     wrote: u32,
@@ -252,8 +163,6 @@ struct Step {
     conflict: bool,
 }
 
-/// A forge's answer to slow down, handed to every later ChangeRequest of the
-/// same host in the sweep instead of asking again.
 #[derive(Debug, Clone)]
 struct Deferral {
     kind: Uncertainty,
@@ -271,8 +180,6 @@ impl Deferral {
     }
 }
 
-/// The ChangeRequests some Task not being deleted names in its
-/// `status.declared`.
 fn change_request_followers(tasks: &[Object]) -> BTreeSet<String> {
     tasks
         .iter()
@@ -283,8 +190,6 @@ fn change_request_followers(tasks: &[Object]) -> BTreeSet<String> {
         .collect()
 }
 
-/// The forge host a ChangeRequest is on, once its controller recorded the
-/// ref; empty before that, which sorts such objects first.
 fn host_of(obj: &Object) -> String {
     obj.status["ref"]["host"]
         .as_str()
@@ -327,17 +232,6 @@ fn starting(obj: &Object) -> bool {
 }
 
 impl Manager<'_> {
-    /// Keep the single manager lease for the entire foreground service.
-    /// Every sweep visits all due Tasks, independently of agent activity.
-    /// The first sweep, and the first after a pause, is one pass, so `wait`
-    /// runs within a pass of taking the lease or of the disk having room. `wait` supplies the clock wait and shutdown policy
-    /// at the CLI edge.
-    ///
-    /// A full disk pauses the service instead of ending it: the sweep stops
-    /// at the write that failed, so no effect runs without its intent, and
-    /// the report carries [`Paused`] with the wait before the next try. The
-    /// caller holds `manager.lock`, so after a pause the manager reclaims
-    /// its own lease even when it expired meanwhile.
     pub fn serve(
         &self,
         opts: RunOptions,
@@ -429,9 +323,6 @@ impl Manager<'_> {
         }
     }
 
-    /// Take the lease, run passes until idle or `max_passes`, give the lease
-    /// back. A lease that is held elsewhere or lost mid-run ends the run with
-    /// that error: no write happens without it.
     pub fn run(&self, opts: RunOptions) -> Result<RunReport, StoreError> {
         let mut lease = self.store.acquire_lease(&self.holder, opts.lease_ttl)?;
         let mut report = RunReport {
@@ -440,7 +331,6 @@ impl Manager<'_> {
             ..RunReport::default()
         };
         let outcome = self.passes(&mut lease, opts, &mut report, &mut ForgeLogins::default());
-        // A lost lease is not ours to release; anything else is.
         if !matches!(outcome, Err(StoreError::LeaseLost(_))) {
             self.store.release_lease(&lease)?;
         }
@@ -456,7 +346,6 @@ impl Manager<'_> {
     ) -> Result<(), StoreError> {
         let mut passes = 0;
         if let Some(gateway) = &self.gateway {
-            // One Listener per account, as the config loads.
             for problem in verbs::ensure_listeners(self.store, &gateway.config) {
                 if !report.errors.contains(&problem) {
                     report.errors.push(problem);
@@ -481,9 +370,6 @@ impl Manager<'_> {
                 .iter()
                 .map(|t| (t.metadata.uid.clone(), t.metadata.name.clone()))
                 .collect();
-            // What the Gateway controller's due test needs besides the
-            // Task: the Conversations as they stand, and each Task's
-            // children, from this one listing.
             let conversations: Observation<BTreeMap<String, Object>> =
                 self.store.list(conversation::KIND).map(|list| {
                     list.into_iter()
@@ -493,8 +379,6 @@ impl Manager<'_> {
             if let Some(why) = conversations.why() {
                 report.unknowns.push(format!("list Conversation: {why}"));
             }
-            // What a Task's change news is judged against, listed only when
-            // some Task follows a change.
             let follows = tasks.iter().any(|t| {
                 t.status["forge"]["changes"]
                     .as_object()
@@ -614,9 +498,6 @@ impl Manager<'_> {
                     continue;
                 }
                 *lease = self.store.renew_lease(lease, opts.lease_ttl)?;
-                // Each later controller decides from the Task as it is now,
-                // after the earlier one's write, so the plans do not
-                // conflict on every sweep.
                 let mut moved = false;
                 if task_due {
                     let (stepped, rest) = self.reconcile_while_starting(
@@ -695,14 +576,6 @@ impl Manager<'_> {
         Ok(())
     }
 
-    /// Every due ChangeRequest, the one due longest first. A `retryAfter`
-    /// from a forge defers the rest of that host's in the pass: they are not
-    /// asked, they take the same answer. A pass starts no poll once its polls
-    /// have taken [`CHANGE_POLLS_PER_PASS`]: the rest stay due for the next
-    /// pass, so a slow forge does not hold every Task's next reconcile, and a
-    /// change due again at once does not keep the others waiting. A deferred
-    /// host's changes cost no call and still take the deferral. Returns
-    /// whether anything changed or is left due.
     fn sweep_change_requests(
         &self,
         tasks: &[Object],
@@ -764,10 +637,6 @@ impl Manager<'_> {
         Ok(busy)
     }
 
-    /// One ChangeRequest: parse its URL when its ref is not yet recorded,
-    /// observe the change through the Forge port, decide, then write the
-    /// status (compare-and-swap, under the lease) and, when the plan says so,
-    /// delete the object by its uid and resourceVersion.
     fn reconcile_change_request(
         &self,
         obj: &Object,
@@ -791,7 +660,6 @@ impl Manager<'_> {
             followed,
         };
         if obj.status.get("ref").is_none_or(Value::is_null) {
-            // The probe names the ref, so the first poll needs it parsed first.
             let parsed = forge.parse(&spec.url);
             if let Some(why) = parsed.why() {
                 report.unknowns.push(format!("{} parse: {why}", obj.key()));
@@ -861,7 +729,6 @@ impl Manager<'_> {
                 lease,
             ) {
                 Ok(_) => step.wrote += 1,
-                // Recreated or rewritten since the decision: nothing removed.
                 Err(StoreError::Conflict { .. }) => step.conflict = true,
                 Err(e) => return Err(e),
             }
@@ -869,9 +736,6 @@ impl Manager<'_> {
         Ok(step)
     }
 
-    /// Every due Conversation, one account at a time in a stable order, so
-    /// that a `retryAfter` from a platform defers all of that account's
-    /// history reads together. Returns whether anything changed.
     fn sweep_conversations(
         &self,
         lease: &mut LeaseToken,
@@ -911,12 +775,6 @@ impl Manager<'_> {
         Ok(busy)
     }
 
-    /// One Conversation: parse its address when its ref is not yet
-    /// recorded, answer its `Object` probe from the store and its
-    /// `Capabilities` and `History` probes through the Gateway port, decide,
-    /// then write the status through `record_received` (the spool drained
-    /// with it, compare-and-swap, under the lease) and, when the plan says
-    /// so, delete the object by its uid and resourceVersion.
     fn reconcile_conversation(
         &self,
         obj: &Object,
@@ -948,8 +806,6 @@ impl Manager<'_> {
             input.observations.parsed = Some(parsed);
         }
         let ctl = ConversationController;
-        // Each round answers what the last one asked; the controller asks
-        // only for what it lacks, so this ends. The bound is a guard.
         for _ in 0..4 {
             let probes = ctl.probes(&input)?;
             if probes.is_empty() {
@@ -964,8 +820,6 @@ impl Manager<'_> {
                                 .unknowns
                                 .push(format!("{} object {kind}/{name}: {why}", obj.key()));
                         }
-                        // The tie's Task, or the Task a Fleet-opened
-                        // thread's marker names.
                         if obj.status["task"]["name"].as_str() == Some(name.as_str()) {
                             input.observations.task = Some(o);
                         } else {
@@ -1014,7 +868,6 @@ impl Manager<'_> {
                         }
                         input.observations.history = Some(answer);
                     }
-                    // Not this controller's.
                     _ => {}
                 }
             }
@@ -1042,8 +895,6 @@ impl Manager<'_> {
                 Err(e) => return Err(e),
             }
         }
-        // Intent first (written above), each effect under a fresh lease,
-        // receipt after, under the effect's key.
         for create in &plan.creates {
             *lease = self.store.renew_lease(lease, ttl)?;
             let (outcome, made) = self.perform_create(create, lease);
@@ -1083,7 +934,6 @@ impl Manager<'_> {
                     self.retire_task(task, uid, &obj.metadata.uid, lease)
                 }
                 Action::RemoveDir { host, path } => self.remove_thread_dir(obj, host, path),
-                // Not this controller's effect: never performed from here.
                 _ => continue,
             };
             if let Observation::Unknown { why } = &outcome {
@@ -1114,7 +964,6 @@ impl Manager<'_> {
                 lease,
             ) {
                 Ok(_) => step.wrote += 1,
-                // Recreated or rewritten since the decision: nothing removed.
                 Err(StoreError::Conflict { .. }) => step.conflict = true,
                 Err(e) => return Err(e),
             }
@@ -1122,13 +971,6 @@ impl Manager<'_> {
         Ok(step)
     }
 
-    /// One keyed create of a Conversation's plan: the precondition is
-    /// checked against the store's Tasks under the lease, then the Task's
-    /// `dir` workspace is made on its host, then the fenced create runs. A
-    /// directory the runtime cannot make is a refused create, and one it
-    /// cannot tell about is Unknown: no Task names a missing directory. A
-    /// directory this call made is returned, to be recorded with the
-    /// receipt.
     fn perform_create(
         &self,
         create: &Create,
@@ -1153,8 +995,6 @@ impl Manager<'_> {
                 return (Observation::Known(busy), None);
             }
         }
-        // The directory first, recorded when this call made it, whatever
-        // the create then answers: Fleet removes it when the thread retires.
         let mut made = None;
         if let Some(dir) = create.exclusive.as_ref().map(|e| e.workspace.as_str()) {
             let host = match self.task_host(obj) {
@@ -1187,10 +1027,6 @@ impl Manager<'_> {
         (self.create_task(obj, lease), made)
     }
 
-    /// The fenced create of a conversation Task: an object already under
-    /// the name is adopted when it carries this Conversation's uid, since an
-    /// earlier attempt's receipt may have been lost; one with another uid,
-    /// or none, is a refusal. The store's doubt is Unknown, never a refusal.
     fn create_task(&self, obj: &Object, lease: &LeaseToken) -> Observation<EffectOutcome> {
         let by = ConversationController::MANAGER;
         match self.store.create_fenced(obj.clone(), by, lease) {
@@ -1231,11 +1067,6 @@ impl Manager<'_> {
         }
     }
 
-    /// The host a Task about to be created runs on: its own `host`, else
-    /// its TaskConfig's, else the local host. An absent TaskConfig is a
-    /// refusal: the directory's host is not known, and a directory made on
-    /// a guessed host would leave the Task naming a missing one. A
-    /// TaskConfig that cannot be read is Unknown.
     fn task_host(&self, obj: &Object) -> Observation<Result<String, String>> {
         if let Some(h) = obj.spec["host"].as_str() {
             return Observation::Known(Ok(h.to_string()));
@@ -1257,9 +1088,6 @@ impl Manager<'_> {
         }
     }
 
-    /// A retiring thread's Task, deleted through the store, fenced on its
-    /// uid: gone already is done; one that is not Concluded, or not this
-    /// thread's, is a refusal; the store's doubt is Unknown.
     fn retire_task(
         &self,
         name: &str,
@@ -1283,10 +1111,6 @@ impl Manager<'_> {
         }
     }
 
-    /// A retiring thread's directory, removed through the runtime port:
-    /// only the directory the Conversation records the manager making, and
-    /// only while no Task names it. A Task that does is `WorkspaceBusy`,
-    /// and the store's doubt is Unknown, never absence.
     fn remove_thread_dir(
         &self,
         conv: &Object,
@@ -1322,10 +1146,6 @@ impl Manager<'_> {
         }
     }
 
-    /// A Conversation's effect happened (or may have): its receipt must
-    /// land under its key even if the object moved meanwhile, so this
-    /// re-reads and retries on a conflict, through the controller's typed
-    /// write with the spool as it is.
     fn write_conversation_receipt(
         &self,
         current: &Object,
@@ -1386,7 +1206,6 @@ impl Manager<'_> {
         )))
     }
 
-    /// Every due Listener. Returns whether anything changed.
     fn sweep_listeners(
         &self,
         lease: &mut LeaseToken,
@@ -1416,10 +1235,6 @@ impl Manager<'_> {
         Ok(busy)
     }
 
-    /// One Listener: answer its `Capabilities` and `GatewayWhoami` probes
-    /// through the Gateway port, from the sweep's cache, decide, then write
-    /// the status (compare-and-swap, under the lease) and, when its account
-    /// left the config, delete the object by its uid and resourceVersion.
     fn reconcile_listener(
         &self,
         obj: &Object,
@@ -1530,7 +1345,6 @@ impl Manager<'_> {
         Ok(step)
     }
 
-    /// An account's capabilities, asked once per sweep.
     fn capabilities(
         &self,
         gateway: &GatewaySide<'_>,
@@ -1548,14 +1362,6 @@ impl Manager<'_> {
         Ok(a)
     }
 
-    /// ForgeController on one Task: answer its `Object` probes from the store
-    /// (no lease renewal: no adapter is asked), then its `Whoami` probes
-    /// through the Forge port and its `AtRest` probe through the runtime,
-    /// each after a renewal, asking again until the controller wants
-    /// nothing more; decide; write `status.forge` and the relay's entries in
-    /// one typed compare-and-swap write, the mark-ready intent with them;
-    /// then perform each `MarkReady` effect through the Forge port after a
-    /// renewal and write its receipt onto the entry.
     fn reconcile_forge(
         &self,
         obj: &Object,
@@ -1575,8 +1381,6 @@ impl Manager<'_> {
             now: self.clock.now(),
             defaults: self.forge_defaults.clone(),
         };
-        // Each round answers what the last one asked; the controller asks
-        // only for what it lacks, so this ends. The bound is a guard.
         for _ in 0..4 {
             let probes = ctl.probes(&input)?;
             if probes.is_empty() {
@@ -1624,7 +1428,6 @@ impl Manager<'_> {
                         }
                         input.observations.at_rest = Some(o);
                     }
-                    // Not this controller's.
                     _ => {}
                 }
             }
@@ -1649,8 +1452,6 @@ impl Manager<'_> {
                 step.wrote += 1;
                 o
             }
-            // Someone wrote first, or the key already landed: decide again
-            // from fresh state on the next pass. Nothing ran yet.
             Err(StoreError::Conflict { .. }) | Err(StoreError::AlreadyExists(_)) => {
                 step.conflict = true;
                 return Ok(step);
@@ -1659,7 +1460,6 @@ impl Manager<'_> {
         };
         for effect in &plan.effects {
             let Action::MarkReady { change, expect } = &effect.action else {
-                // Not this controller's effect: never performed from here.
                 continue;
             };
             let Some(forge) = self.forge else {
@@ -1667,8 +1467,6 @@ impl Manager<'_> {
                     "no [forge] section is configured; a change cannot be marked ready".into(),
                 ));
             };
-            // Intent first (written above), effect under a fresh lease,
-            // receipt after.
             *lease = self.store.renew_lease(lease, ttl)?;
             let outcome = telemetry::effect(obj, effect, || {
                 forge.mark_ready(change, expect, &effect.key)
@@ -1685,13 +1483,6 @@ impl Manager<'_> {
         Ok(step)
     }
 
-    /// GatewayController on one Task: answer its `Object` probe for the
-    /// Conversation from the store and its `List` probe for the children
-    /// from the sweep's Task listing (neither renews the lease: no adapter
-    /// is asked), asking again until the controller wants nothing more;
-    /// decide; write `status.gateway` and the relay's entries in one typed
-    /// compare-and-swap write, the intents of its `Open`, `Receive`, `Post`,
-    /// `Log` and `React` actions with them; then perform each, receipt after.
     fn reconcile_gateway(
         &self,
         obj: &Object,
@@ -1760,8 +1551,6 @@ impl Manager<'_> {
                         conversation,
                         query,
                     } => {
-                        // A read of the log channel recovers a log post; any
-                        // other, a post in the thread.
                         let logs = input
                             .defaults
                             .logs
@@ -1814,7 +1603,6 @@ impl Manager<'_> {
                         };
                         input.observations.children = Some(answer);
                     }
-                    // Not this controller's.
                     _ => {}
                 }
             }
@@ -1841,17 +1629,12 @@ impl Manager<'_> {
                 current = o;
                 step.wrote += 1;
             }
-            // Someone wrote first, or the key already landed: decide again
-            // from fresh state on the next pass, the intents unwritten and
-            // so nothing performed.
             Err(StoreError::Conflict { .. }) | Err(StoreError::AlreadyExists(_)) => {
                 step.conflict = true;
                 return Ok(step);
             }
             Err(e) => return Err(e),
         }
-        // Intent first (written above), each effect under a fresh lease,
-        // receipt after, under the effect's key.
         for effect in &plan.effects {
             *lease = self.store.renew_lease(lease, ttl)?;
             let outcome = self.perform_gateway(effect, lease);
@@ -1867,9 +1650,6 @@ impl Manager<'_> {
         Ok(step)
     }
 
-    /// One of GatewayController's effects: a post or an open through the
-    /// Gateway port, or Fleet's opening post added to its thread's
-    /// Conversation through the store.
     fn perform_gateway(&self, effect: &Effect, lease: &LeaseToken) -> Observation<EffectOutcome> {
         let Some(gateway) = &self.gateway else {
             return Observation::Known(EffectOutcome::Failed {
@@ -1933,9 +1713,6 @@ impl Manager<'_> {
         }
     }
 
-    /// The effect happened (or may have): its receipt lands on the record
-    /// that holds its intent under `status.gateway.posts`, even if the Task
-    /// moved meanwhile, so this re-reads and retries on a conflict.
     fn write_gateway_receipt(
         &self,
         current: &Object,
@@ -1992,11 +1769,6 @@ impl Manager<'_> {
         )))
     }
 
-    /// The mark-ready effect happened (or may have): its receipt must land
-    /// on the entry that holds its intent, even if the Task moved meanwhile,
-    /// so this re-reads and retries on a conflict. The write replaces
-    /// `status.forge` through the Forge controller's typed mutation, with
-    /// nothing appended.
     fn write_forge_receipt(
         &self,
         current: &Object,
@@ -2061,12 +1833,6 @@ impl Manager<'_> {
         )))
     }
 
-    /// A Task waiting out `notBefore` after a failed or unknown attempt is
-    /// not looked at again until then, in this run or the next. A Concluded
-    /// Task is at rest, and due again while its inbox holds something to
-    /// deliver, once it is being deleted, or when its session is due to be
-    /// looked up again. A Concluded Task whose session may be paused is
-    /// due on every sweep, so that its activity is watched.
     fn due(&self, obj: &Object) -> bool {
         let waiting = obj
             .status
@@ -2210,8 +1976,6 @@ impl Manager<'_> {
             .is_some_and(|now| now != mark)
     }
 
-    /// Whether the agent of a Task the last run left starting has reported
-    /// since: `fleet up` ends its wait for the next sweep then.
     pub fn reported(&self, report: &RunReport) -> bool {
         report
             .waiting
@@ -2240,8 +2004,6 @@ impl Manager<'_> {
         }
     }
 
-    /// Whether the store holds a private launch for `obj`. A store that
-    /// keeps none holds none.
     fn launch_saved(&self, obj: &Object) -> Result<bool, StoreError> {
         match self.store.launch(obj) {
             Ok(launch) => Ok(launch.is_some()),
@@ -2264,11 +2026,6 @@ impl Manager<'_> {
         } else {
             fleet_api::validate::typed(task::KIND, &obj.status)?
         };
-        // The default TaskConfig is taken at a Task's first launch only: one
-        // that launched without it keeps that launch. A launch frozen from
-        // it is kept even when it went before the launch reached status.
-        // A Task with no harness of its own takes one at its launch, or
-        // its launch fails: it never starts without one.
         let needs_launch = spec.config_ref.is_some()
             || !spec.env.is_empty()
             || obj.spec.get("harness").is_none()
@@ -2326,8 +2083,6 @@ impl Manager<'_> {
         };
         let ctl = TaskController;
         for probe in ctl.probes(&input)? {
-            // Every probe is bounded but not instant: renew first, so a
-            // Task's probes together never outlive the lease.
             *lease = self.store.renew_lease(lease, ttl)?;
             self.observe(&probe, obj, &mut input.observations, report);
         }
@@ -2339,11 +2094,9 @@ impl Manager<'_> {
             .unwrap_or(true);
         if let Some(execution) = effective {
             for effect in &mut plan.effects {
-                // A revive or a resume starts where the session is.
                 let first = matches!(effect.action, Action::Spawn(_));
                 if let Some(spawn) = effect.action.launch_mut() {
                     spawn.harness = execution.harness.clone();
-                    // The host the runtime made the workspace on is where it runs.
                     if first {
                         spawn.host = spawn
                             .ready
@@ -2356,11 +2109,6 @@ impl Manager<'_> {
                 }
             }
         }
-        // The harness profile's variables under the Task's own, unless the
-        // launch is frozen: a frozen one took them when it was resolved, and
-        // keeps them. Then the file the agent's hooks report to, on the host
-        // it runs on, and the harness and profile directory whose
-        // `[payload]` reads them.
         let profiles = fleet_api::harness::installed();
         for effect in &mut plan.effects {
             let Some(spawn) = effect.action.launch_mut() else {
@@ -2371,10 +2119,6 @@ impl Manager<'_> {
                 fleet_api::config::merge_env(&mut env, &spawn.env);
                 spawn.env = env;
             }
-            // The agent's own telemetry, under the Task's environment and
-            // never frozen: each start takes Fleet's collector as it is
-            // then, and no header is kept in the launch snapshot. A Task
-            // that names its own collector gets none of Fleet's.
             if let Some(collector) = &self.agent_telemetry
                 && telemetry_on
                 && !fleet_api::harness::names_collector(&spawn.env)
@@ -2418,8 +2162,6 @@ impl Manager<'_> {
         self.perform_plan(obj, plan, lease, ttl, report)
     }
 
-    /// Write the status, run the effects with their receipts, then remove the
-    /// finalizer: intent before effect, receipt after.
     fn perform_plan(
         &self,
         obj: &Object,
@@ -2431,8 +2173,6 @@ impl Manager<'_> {
         let by = TaskController::MANAGER;
         let mut step = Step::default();
         let mut current = obj.clone();
-        // A delivery receipt is written with the status, as one mutation:
-        // the receipt into status.deliveries, its entry out of status.inbox.
         let status = match (plan.status, &plan.delivery) {
             (Some(status), _) => Some(status),
             (None, Some(_)) => Some(current.status.clone()),
@@ -2463,8 +2203,6 @@ impl Manager<'_> {
                     current = o;
                     step.wrote += 1;
                 }
-                // Someone wrote first (the worker, a person): nothing ran yet,
-                // so drop this plan and decide again from what is there now.
                 Err(StoreError::Conflict { .. }) => {
                     step.conflict = true;
                     return Ok(step);
@@ -2484,11 +2222,6 @@ impl Manager<'_> {
             }
         }
         for effect in &plan.effects {
-            // Fence the effect itself, not only the writes around it: a
-            // manager that lost the lease since its intent write stops here.
-            // (The runtime cannot be fenced from fleet's side; an effect
-            // already started when the lease changed hands is adopted or
-            // refused by its key.)
             *lease = self.store.renew_lease(lease, ttl)?;
             let outcome = telemetry::effect(obj, effect, || self.perform(effect));
             if let Observation::Unknown { why } = &outcome {
@@ -2579,8 +2312,6 @@ impl Manager<'_> {
                 note(&format!("findWorkspace on {host}"), o.why());
                 obs.workspace = Some(o);
             }
-            // The agent's own hooks report it; the runtime knows nothing of
-            // it. A session that reported nothing yet has no activity.
             Probe::Activity { session } => {
                 let o = match (rt.signals(session), self.signals) {
                     (Some(o), _) => o,
@@ -2597,10 +2328,7 @@ impl Manager<'_> {
                 });
                 obs.signals = Some(o);
             }
-            // For a view only: a screen that cannot be read is not a
-            // reconcile problem worth reporting.
             Probe::Screen { session } => obs.screen = Some(rt.screen(session)),
-            // Not TaskController's probes: it never asks them.
             Probe::Change { .. }
             | Probe::Object { .. }
             | Probe::List { .. }
@@ -2649,8 +2377,6 @@ impl Manager<'_> {
             } => self
                 .runtime
                 .restart(session, conversation.as_deref(), launch),
-            // The Forge, Conversation, CronTask and Gateway controllers' effects,
-            // performed by their own steps; TaskController never plans them.
             Action::MarkReady { .. }
             | Action::Post { .. }
             | Action::Open { .. }
@@ -2665,8 +2391,6 @@ impl Manager<'_> {
         }
     }
 
-    /// The effect happened (or may have): its receipt must land even if the
-    /// object moved meanwhile, so this re-reads and retries on a conflict.
     fn write_receipt(
         &self,
         current: &Object,

@@ -1,12 +1,3 @@
-//! Paint a resolved [`Node`] tree into a ratatui frame.
-//!
-//! Everything here is arithmetic plus ratatui calls — no Lua is touched, which
-//! is what lets a mod's tree be rendered after its VM has been thrown away.
-//!
-//! The tree arriving here has already been through the layout pass, so this
-//! walks it with rects rather than computing them: a `box` divides its own
-//! rect among children ([`super::node::divide`]) and recurses.
-
 use ratatui::buffer::{Buffer, CellDiffOption};
 use ratatui::layout::{Alignment, Position, Rect};
 use ratatui::style::{Modifier, Style};
@@ -19,53 +10,25 @@ use super::node::{
     Run, SurfaceSource,
 };
 
-/// A painted node that carried identity, and the rect it went into.
-///
-/// v1 built the same registry by hand, one `record_click` per renderer
-/// (`App::click_targets`); here it falls out of the paint walk, so a hitbox
-/// cannot drift from the cells it covers and a mod nobody has written yet is
-/// clickable the moment it gives a node an `id`.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Hit {
     pub rect: Rect,
     pub identity: Identity,
 }
 
-/// Fills a session-backed surface.
-///
-/// The kernel owns this because a live terminal grid cannot round-trip through
-/// Lua tables at 20 fps. A mod *places and frames* a surface; the provider
-/// paints inside the rect it was given.
-///
-/// Painting into the frame rather than returning lines is deliberate: a live
-/// terminal is rendered by `tui_term` straight off the vt100 screen, which
-/// preserves colour, wide characters and the cursor. Flattening to `Line`s
-/// first would mean reimplementing that badly.
 pub trait SurfaceProvider {
-    /// Paint `session` into `area`. Return `false` when there is nothing live
-    /// behind it, and the caller draws a placeholder instead.
     fn render_session(&self, frame: &mut Frame, area: Rect, session: &str, scroll: u16) -> bool;
 
     fn render_program(&self, frame: &mut Frame, area: Rect, surface: &str) -> ProgramPaint;
 }
 
-/// What a program surface had to show.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ProgramPaint {
-    /// Painted its screen.
     Painted,
-    /// Nothing has been started for this pane.
     NotStarted,
-    /// The program ran and ended. Named, because "which one exited" is the first
-    /// thing anybody asks.
     Exited(String),
 }
 
-/// A provider with nothing behind it — every surface falls back to the
-/// placeholder.
-///
-/// Used by tests, so the arrangement, framing and sizing of a surface stay
-/// testable without a tmux server.
 pub struct PlaceholderSurfaces;
 
 impl SurfaceProvider for PlaceholderSurfaces {
@@ -84,11 +47,7 @@ impl SurfaceProvider for PlaceholderSurfaces {
     }
 }
 
-/// What a session-backed surface shows when nothing live is behind it.
-/// A centred two-line notice, for a surface with nothing to paint.
 fn render_notice(frame: &mut Frame, area: Rect, title: &str, detail: &str) {
-    // Clears its own rect: it stands in for a surface and paints only the few
-    // centred rows, so whatever the layout left underneath would show through.
     frame.render_widget(Clear, area);
     let mut lines = Vec::new();
     let blank = usize::from(area.height).saturating_sub(2) / 2;
@@ -109,7 +68,6 @@ fn render_notice(frame: &mut Frame, area: Rect, title: &str, detail: &str) {
 }
 
 fn render_detached(frame: &mut Frame, area: Rect, session: &str) {
-    // Clears its own rect, for the reason `render_notice` does.
     frame.render_widget(Clear, area);
     let mut lines = Vec::new();
     let blank = usize::from(area.height).saturating_sub(3) / 2;
@@ -138,18 +96,10 @@ fn short_id(id: &str) -> String {
     id.split('-').next().unwrap_or(id).to_string()
 }
 
-/// Paint `node` into `area`.
 pub fn render(frame: &mut Frame, area: Rect, node: &Node, surfaces: &dyn SurfaceProvider) {
     render_recording(frame, area, node, surfaces, &mut Vec::new());
 }
 
-/// Paint `node` into `area`, appending a [`Hit`] for every identified node.
-///
-/// Hits are appended **pre-order** — a parent before its children — so a caller
-/// scanning in reverse finds the innermost node under a point first, and finds
-/// a whole-pane fallback recorded before the tree only when nothing inside
-/// matched. That is v1's ordering rule (specific targets recorded before the
-/// pane's own rect, first match wins) read backwards.
 pub fn render_recording(
     frame: &mut Frame,
     area: Rect,
@@ -160,10 +110,6 @@ pub fn render_recording(
     if area.width == 0 || area.height == 0 {
         return;
     }
-    // The OUTER rect, before any border is subtracted: v1's on-border
-    // affordances (the collapse chevron, the tab strip) are painted on the
-    // frame's own cells, so a hitbox that stopped at the inner rect could never
-    // catch them.
     if !node.identity().is_empty() {
         hits.push(Hit {
             rect: area,
@@ -188,9 +134,7 @@ pub fn render_recording(
             ..
         } => {
             let text: Vec<Line> = lines.iter().map(|runs| to_line(runs)).collect();
-            // The node's style is the paragraph's base: ratatui fills the rect
-            // with it and each run patches over, so a bar reaches the right
-            // edge and a run that names a colour keeps it.
+            // ratatui fills the rect with the paragraph style and each run patches over it.
             let paragraph = Paragraph::new(text).style(*style).scroll((*scroll, 0));
             let paragraph = match align {
                 Align::Left => paragraph.left_aligned(),
@@ -239,7 +183,6 @@ pub fn render_recording(
     }
 }
 
-/// Draw a node's frame over `area`, and return the rect its content gets.
 fn paint_frame(frame: &mut Frame, area: Rect, spec: &NodeFrame, hits: &mut Vec<Hit>) -> Rect {
     let block = build_block(spec);
     let inner = block.inner(area);
@@ -250,8 +193,6 @@ fn paint_frame(frame: &mut Frame, area: Rect, spec: &NodeFrame, hits: &mut Vec<H
     pad(inner, spec.padding)
 }
 
-/// Divide `inner` along `axis` by the children's declared sizes, and paint
-/// each child into its share.
 fn paint_children(
     frame: &mut Frame,
     inner: Rect,
@@ -277,8 +218,6 @@ fn paint_children(
     }
 }
 
-/// The part of `inner` that starts `cursor` along `axis` and runs `length`
-/// cells, spanning all of `inner` across it.
 fn child_rect(inner: Rect, axis: Axis, cursor: u16, length: u16) -> Rect {
     match axis {
         Axis::Vertical => Rect {
@@ -314,14 +253,6 @@ fn paint_input(
         Paragraph::new(Line::from(text.to_string()).style(line_style)),
         inner,
     );
-    // A real caret, in the one field that claims it — empty or not. A field
-    // showing its placeholder is still the field being typed into: keying the
-    // caret on the value being non-empty instead, as this did, made the cursor
-    // blink into existence on the first keystroke and out of it on the last
-    // backspace, and handed it to whichever *other* field on screen happened to
-    // hold text. The placeholder is dim, so a caret at its start cannot be
-    // mistaken for one. Clamped into the rect so a cursor past the end cannot
-    // paint outside it.
     if !focused {
         return;
     }
@@ -341,13 +272,7 @@ fn paint_surface(
     scroll: u16,
     surfaces: &dyn SurfaceProvider,
 ) {
-    // No blanket `Clear` here. `swap_buffers` resets the frame buffer before
-    // every draw, so nothing stale survives to be erased, and a live terminal
-    // covers its rect itself — clearing first was a second full-grid write of
-    // ~9,000 cells for a frame about to overwrite them (ADR-P17). Whatever does
-    // *not* cover its rect clears itself instead: the paragraph below,
-    // `render_notice`/`render_detached`, and `clear_uncovered` for a grid still
-    // catching up to a resize.
+    // ratatui's `swap_buffers` resets the buffer before every draw, so no blanket `Clear` is needed.
     match source {
         SurfaceSource::Cells(cells) => {
             frame.render_widget(Clear, inner);
@@ -364,17 +289,11 @@ fn paint_surface(
             ProgramPaint::NotStarted => {
                 render_notice(frame, inner, "program surface", "nothing started here yet")
             }
-            // Said rather than shown: the grid a finished program left behind
-            // looks exactly like one that is still running.
             ProgramPaint::Exited(program) => render_notice(frame, inner, &program, "exited"),
         },
     }
 }
 
-/// Paint an error panel for a mod that failed, in that mod's own rect.
-///
-/// The isolation rule made visible: the neighbours around this rect are painted
-/// normally and keep their state.
 pub fn render_error(frame: &mut Frame, area: Rect, title: &str, message: &str) {
     if area.width == 0 || area.height == 0 {
         return;
@@ -395,46 +314,13 @@ pub fn render_error(frame: &mut Frame, area: Rect, title: &str, message: &str) {
     );
 }
 
-/// The emoji-presentation selector, the one codepoint that makes a cell's width
-/// a matter of opinion.
 const VARIATION_SELECTOR_16: char = '\u{FE0F}';
 
-/// How many bytes [`VARIATION_SELECTOR_16`] occupies in UTF-8.
-///
-/// A symbol shorter than this cannot contain it, which rejects every ASCII cell
-/// on an integer compare — and this walks the whole buffer on every painted
-/// frame. Derived rather than written as `3` so the two cannot drift apart.
 const VARIATION_SELECTOR_16_LEN: usize = VARIATION_SELECTOR_16.len_utf8();
 
-/// Strip the emoji-presentation selector (`U+FE0F`) from every cell of a
-/// painted frame.
-///
-/// A cell is one column or two, `unicode-width` calls an emoji-presentation
-/// sequence two, and a terminal is free to disagree — Windows Terminal and
-/// Ghostty draw many of them in one. Both answers damage the screen, in opposite
-/// directions. Drawn two columns wide, the row receives the emoji *and* the
-/// blank ratatui pairs with it, so it emits three columns for two cells and
-/// wraps into the next row. Drawn one column wide, the trailing column is left
-/// holding whatever was there before, because the diff only prints a cell whose
-/// contents changed — which is the leftover glyphs a pane opening or closing
-/// exposes, since the diff believes those columns already say what the frame
-/// says.
-///
-/// Guessing which kind of terminal this is would settle neither, so the
-/// ambiguity is removed instead: without the selector the base glyph is one
-/// column everywhere, and the blank ratatui already reserved beside it keeps the
-/// row the width it was measured at. Applied to the finished frame, so it covers
-/// panes, bands, modals and the vt100 surfaces alike — an agent printing `✔️`
-/// corrupts a row exactly as a mod does.
-///
-/// The clusters it cannot help (a regional-indicator flag is two columns here
-/// and a different number there) are why a reflow repaints in full — see
-/// [`force_full_repaint`] and `App::last_placed`.
+// Terminals disagree with `unicode-width` on U+FE0F sequences: Windows Terminal and Ghostty draw many in one column.
 pub fn normalize_ambiguous_width(buf: &mut Buffer) {
-    // The buffer's storage is its area exactly, row-major, so walking it
-    // directly visits the same cells the coordinate loop did — minus a
-    // bounds-checked `cell_mut` per cell, on a pass that touches ~10k of them
-    // every painted frame.
+    // ratatui's buffer storage is its area exactly, row-major.
     for cell in buf.content.iter_mut() {
         let symbol = cell.symbol();
         if symbol.len() < VARIATION_SELECTOR_16_LEN || !symbol.contains(VARIATION_SELECTOR_16) {
@@ -445,32 +331,10 @@ pub fn normalize_ambiguous_width(buf: &mut Buffer) {
             .chars()
             .filter(|c| *c != VARIATION_SELECTOR_16)
             .collect();
-        // A cell holding nothing but the selector would print nothing at
-        // all, which is the leftover this exists to prevent.
         cell.set_symbol(if stripped.is_empty() { " " } else { &stripped });
     }
 }
 
-/// Mark every cell of a painted frame as one the diff must print, so the next
-/// flush repaints the whole screen.
-///
-/// This is what a reflow owes (see `App::last_placed`): the cell diff is only
-/// correct while ratatui's idea of a glyph's width matches the terminal's, and
-/// where they cannot agree the pane that just closed leaves characters behind in
-/// the column that replaced it.
-///
-/// Erasing the screen first would do the same job and is what `Terminal::clear`
-/// is for, but it is the wrong instrument here, for three reasons. It flushes a
-/// blank screen and the repaint arrives in the *next* flush, so every pane
-/// toggle blinks. It asks the terminal where the cursor is first — a synchronous
-/// round trip on the input stream, on a keypress. And it is unnecessary: what a
-/// reflow actually needs is not an empty terminal but a print of every cell, and
-/// [`CellDiffOption::AlwaysUpdate`] says exactly that without emitting anything
-/// of its own. The screen goes straight from the old arrangement to the new one.
-///
-/// The marks travel into the buffer the next frame is diffed against, so the
-/// frame after a reflow prints in full as well. That is one extra full write,
-/// invisible and bounded by how often a layout moves — which is a keypress.
 pub fn force_full_repaint(buf: &mut Buffer) {
     let area = buf.area;
     for y in area.top()..area.bottom() {
@@ -496,17 +360,6 @@ fn build_block(spec: &NodeFrame) -> Block<'_> {
         Borders::None => block.borders(RatBorders::NONE),
     };
     if let Some(title) = &spec.title {
-        // A run carrying no colour of its own takes the border's. An unstyled title
-        // took the TERMINAL's default foreground, which is somebody else's palette:
-        // under the light themes that came out cream on cream, and panel titles —
-        // the labels a newcomer navigates by — were the one thing on screen you
-        // could not read. A title and the border it sits in are one piece of
-        // chrome, so the default is shared and it is always a theme role. A run
-        // that does set a colour keeps it, which is how the agent pane paints its
-        // status word without the rest of the title changing.
-        //
-        // Spans borrow the runs' text (the reason `to_line` borrows), so the
-        // patched style is the only thing built per frame.
         let spans: Vec<_> = title
             .iter()
             .map(|run| {
@@ -529,19 +382,10 @@ fn build_block(spec: &NodeFrame) -> Block<'_> {
     block
 }
 
-/// Paint a frame's overlay onto the border cells it just drew, recording a
-/// [`Hit`] for every run that names one.
-///
-/// After the block, because that is what "overlay" means: the strip, the counts
-/// and the scrollbar sit ON the cells the border occupies, so they cost no
-/// content column. Only a bordered frame has such cells, so a frame with
-/// `borders = "none"` overlays nothing.
 fn paint_overlay(buf: &mut Buffer, area: Rect, overlay: &Overlay, hits: &mut Vec<Hit>) {
     if area.width < 2 || area.height < 1 {
         return;
     }
-    // The corners are never painted over: they are what makes a pane read as a
-    // pane, and v1's strips stop one cell short of each.
     let left = i32::from(area.x) + 1;
     let right = i32::from(area.right()) - 1;
     let top = area.y;
@@ -577,11 +421,6 @@ fn paint_overlay(buf: &mut Buffer, area: Rect, overlay: &Overlay, hits: &mut Vec
     }
 }
 
-/// Paint `runs` along row `y`, clipped to the columns `[left, right)`.
-///
-/// Columns are `i32` because a right-aligned strip that does not fit starts
-/// left of the frame: keeping the arithmetic signed is what makes it lose its
-/// HEAD rather than its tail, which is what right-aligned means.
 fn paint_row(
     buf: &mut Buffer,
     y: u16,
@@ -618,8 +457,6 @@ fn paint_row(
     }
 }
 
-/// Paint one run per row down column `x`, from `top` up to (not including)
-/// `bottom`. A shorter list leaves the rows under it as border.
 fn paint_column(
     buf: &mut Buffer,
     x: u16,
@@ -667,12 +504,6 @@ fn paint_column(
     }
 }
 
-/// Grow the open group of adjacent runs sharing an identity, flushing it
-/// through `emit` when this run starts a different one.
-///
-/// Adjacency is what makes ` ◀ F9 ` — an accent chevron and a muted hint, two
-/// runs because a run carries one style — a single hitbox rather than two with
-/// the pointer having to find one of them.
 fn extend<'a>(
     group: Option<(&'a Identity, i32, i32)>,
     run: &'a Run,
@@ -709,10 +540,6 @@ fn push_hit(hits: &mut Vec<Hit>, identity: &Identity, from: i32, to: i32, y: u16
     });
 }
 
-/// Drop the first `columns` display columns of `text`.
-///
-/// A wide character straddling the cut goes whole, which is what the cell
-/// buffer this replaces did with an out-of-range cell.
 fn clip_left(text: &str, columns: u16) -> &str {
     if columns == 0 {
         return text;
@@ -728,12 +555,6 @@ fn clip_left(text: &str, columns: u16) -> &str {
     ""
 }
 
-/// Record a [`Hit`] for every run that names an identity, at the columns the
-/// paragraph will lay it out at.
-///
-/// Only for an unwrapped node: with `wrap` on, ratatui decides where a line
-/// breaks, and a hitbox computed from the unwrapped columns would sit over
-/// cells the run never reached.
 fn record_run_hits(lines: &[Vec<Run>], area: Rect, align: Align, scroll: u16, hits: &mut Vec<Hit>) {
     let left = i32::from(area.x);
     let right = i32::from(area.right());
@@ -769,7 +590,6 @@ fn record_run_hits(lines: &[Vec<Run>], area: Rect, align: Align, scroll: u16, hi
     }
 }
 
-/// Shrink a rect by `padding` on every side, never past zero.
 fn pad(area: Rect, padding: u16) -> Rect {
     if padding == 0 {
         return area;
@@ -793,10 +613,6 @@ mod tests {
     use crate::kernel::convert::to_node;
     use mlua::{Lua, Value};
 
-    /// The emoji-presentation selector is what makes a cell's width a matter of
-    /// opinion between ratatui and the terminal, and the leftover glyphs a pane
-    /// toggle used to expose are that disagreement showing. Stripped, the glyph
-    /// is one column everywhere.
     #[test]
     fn variation_selector_is_stripped_from_painted_cells() {
         let mut buffer = Buffer::empty(Rect::new(0, 0, 6, 1));
@@ -806,21 +622,14 @@ mod tests {
         normalize_ambiguous_width(&mut buffer);
 
         assert_eq!(buffer[(0, 0)].symbol(), "⚠");
-        // The blank ratatui reserved beside it stays, so nothing after the glyph
-        // moves: the row is the width it was measured at.
+        // ratatui reserves a blank beside a wide glyph; it stays, so nothing after the glyph moves.
         assert_eq!(buffer[(1, 0)].symbol(), " ");
         assert_eq!(buffer[(2, 0)].symbol(), "a");
     }
 
-    /// The fast path must not eat multi-byte glyphs that merely *look* like
-    /// candidates. `len < VARIATION_SELECTOR_16_LEN` rejects a cell before the
-    /// substring search, so the boundary — a symbol as long as the selector, or
-    /// longer, carrying no selector — is where a wrong comparison would corrupt
-    /// the screen rather than merely slow it down.
     #[test]
     fn multi_byte_glyphs_without_the_selector_are_left_alone() {
         let mut buffer = Buffer::empty(Rect::new(0, 0, 8, 1));
-        // 2 bytes (below the threshold), 3 bytes (exactly at it), 4 bytes (above).
         buffer[(0, 0)].set_symbol("é");
         buffer[(1, 0)].set_symbol("中");
         buffer[(2, 0)].set_symbol("𝄞");
@@ -832,9 +641,6 @@ mod tests {
         assert_eq!(buffer[(2, 0)].symbol(), "𝄞");
     }
 
-    /// The threshold is derived from the selector rather than written as `3`,
-    /// so this pins the two together: a symbol shorter than the selector cannot
-    /// contain it, and skipping it is what makes the common cell free.
     #[test]
     fn the_length_threshold_is_the_selectors_own_width() {
         assert_eq!(VARIATION_SELECTOR_16_LEN, VARIATION_SELECTOR_16.len_utf8());
@@ -842,8 +648,6 @@ mod tests {
         assert!("a".len() < VARIATION_SELECTOR_16_LEN);
     }
 
-    /// A cell holding nothing but the selector would print nothing at all, which
-    /// is the leftover the pass exists to prevent.
     #[test]
     fn lone_variation_selector_becomes_a_blank() {
         let mut buffer = Buffer::empty(Rect::new(0, 0, 2, 1));
@@ -854,10 +658,6 @@ mod tests {
         assert_eq!(buffer[(0, 0)].symbol(), " ");
     }
 
-    /// A reflow repaints in full by marking the frame, not by erasing the
-    /// screen: every cell of an otherwise-identical frame has to reach the
-    /// terminal, and nothing may be emitted before it — an erase flushed on its
-    /// own is a blank screen the user sees.
     #[test]
     fn a_forced_repaint_prints_every_cell_of_an_unchanged_frame() {
         let area = Rect::new(0, 0, 4, 2);
@@ -874,7 +674,6 @@ mod tests {
         );
     }
 
-    /// Render a Lua-authored tree and return the screen as text lines.
     fn screen(source: &str, width: u16, height: u16) -> Vec<String> {
         let lua = Lua::new();
         let value: Value = lua
@@ -961,7 +760,6 @@ mod tests {
 
     #[test]
     fn a_zero_height_rect_paints_nothing_rather_than_panicking() {
-        // Guards the responsive case where a slot is squeezed out entirely.
         let lines = screen("{ text = \"x\" }", 10, 0);
         assert!(lines.is_empty());
     }
@@ -999,7 +797,6 @@ mod tests {
         assert_eq!(pad(Rect::new(0, 0, 1, 1), 4).width, 0);
     }
 
-    /// Programs answer by surface id; there are no live sessions.
     struct Programs;
 
     impl SurfaceProvider for Programs {

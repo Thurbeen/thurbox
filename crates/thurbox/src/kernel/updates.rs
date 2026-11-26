@@ -1,27 +1,7 @@
-//! Whether a newer release exists, and installing it.
-//!
-//! Both switches from `[features]` land here, and they are separate on purpose:
-//! `version_check` only *reports*, `auto_update` also *replaces binaries*. One
-//! makes a network call, the other makes a network call and writes to disk, so
-//! neither is inferred from the other. Neither crosses a **major** version: both
-//! only consider releases on the binary's own line
-//! ([`crate::update::version_check::RELEASE_LINE`]), so the badge never offers
-//! 3.x to a 2.x install and the installer never fetches it.
-//!
-//! Sixth instance of the worker pattern, and the one with the longest tail: a
-//! release download can take a minute on a slow link. Nothing here is waited on —
-//! the cached answer is read instantly at startup and the network runs on a
-//! thread, so a machine with no route to GitHub costs the interface nothing.
-//!
-//! The work itself is v1's, unchanged: [`crate::update::version_check`] for the
-//! check and its cache, [`crate::update::self_update`] for the install. What is
-//! new is only where the results are kept and when the threads are started.
-
 use std::sync::mpsc::{channel, Receiver, Sender};
 
 use crate::session::settings::FeatureFlags;
 
-/// Note a newer major line in the log: it is never installed, only reported.
 fn log_next_major(next: Option<&str>) {
     if let Some(next) = next {
         tracing::info!(
@@ -32,33 +12,18 @@ fn log_next_major(next: Option<&str>) {
     }
 }
 
-/// What a worker came back with.
 enum Done {
-    /// A refreshed check: the latest release, when it is newer than this build.
     Checked(Option<String>),
-    /// The silent update finished and replaced the binaries, and how to
-    /// restart each Fleet manager still on the old release
-    /// ([`crate::kernel::snapshot::fleet::stale_managers`]).
     Installed { to: String, fleet: String },
 }
 
-/// The update state, and the workers feeding it.
 #[derive(Default)]
 pub struct Updates {
-    /// The newer release, when one is known. This is what the header band shows.
     latest: Option<String>,
     channel: Option<(Sender<Done>, Receiver<Done>)>,
 }
 
 impl Updates {
-    /// Read what is already known and start whatever the switches allow.
-    ///
-    /// The cache read is a file, so it happens here; everything that touches the
-    /// network happens on a thread. With both switches off this does nothing at
-    /// all — not a fetch, not a thread, not a file.
-    ///
-    /// `fleets` are the Fleets an install names a manager restart for:
-    /// those on this machine among them.
     pub fn start(features: &FeatureFlags, fleets: Vec<crate::fleet_link::FleetLink>) -> Self {
         let mut updates = Self::default();
         if !features.version_check && !features.auto_update {
@@ -66,8 +31,6 @@ impl Updates {
         }
 
         if features.version_check {
-            // Instant, and usually enough: the badge is right from the first
-            // frame when the cache is warm.
             updates.latest = crate::update::version_check::read_cached_status().map(|s| s.latest);
             if crate::update::version_check::cache_is_stale() {
                 let tx = updates.sender();
@@ -86,16 +49,14 @@ impl Updates {
 
         if features.auto_update {
             let tx = updates.sender();
-            std::thread::spawn(move || {
-                match crate::update::self_update::perform_update(false) {
+            std::thread::spawn(
+                move || match crate::update::self_update::perform_update(false) {
                     Ok(crate::update::self_update::UpdateOutcome::Updated {
                         to,
                         next_major,
                         ..
                     }) => {
                         log_next_major(next_major.as_deref());
-                        // The check's cache is refreshed with it, so the badge
-                        // agrees with what is now installed on the next launch.
                         let _ = crate::update::version_check::refresh_cache();
                         let fleet = crate::kernel::snapshot::fleet::stale_managers(&fleets, &to);
                         let _ = tx.send(Done::Installed { to, fleet });
@@ -103,23 +64,18 @@ impl Updates {
                     Ok(crate::update::self_update::UpdateOutcome::UpToDate {
                         next_major, ..
                     }) => log_next_major(next_major.as_deref()),
-                    // Up to date, or a dev build — `perform_update` skips those
-                    // itself, which is why nothing is decided here.
                     Ok(_) => {}
                     Err(e) => tracing::warn!("auto-update failed: {e}"),
-                }
-            });
+                },
+            );
         }
         updates
     }
 
-    /// The newer release, when one is known.
     pub fn available(&self) -> Option<&str> {
         self.latest.as_deref()
     }
 
-    /// Fold in whatever the workers finished. Returns a message to report, which
-    /// is only ever the one that matters: binaries were replaced.
     pub fn poll(&mut self) -> Option<String> {
         let mut message = None;
         let Some((_, rx)) = &self.channel else {
@@ -149,17 +105,6 @@ impl Updates {
 
 #[cfg(test)]
 mod tests {
-    /// Exactly one place in the interface installs a release.
-    ///
-    /// Not a style rule. `self_update::install_binaries` stages each binary and
-    /// then commits it with an atomic rename, so two updates running at once race
-    /// over the same files -- and both would toast the same "Updated to v…". A
-    /// duplicate is easy to add by accident, because v1 did this in `main` under a
-    /// different name and porting it here looks like filling a gap rather than
-    /// doubling one.
-    ///
-    /// `cli::update` is the deliberate other caller: a person typing
-    /// `thurbox-cli update` is not the interface updating itself.
     #[test]
     fn only_this_module_installs_a_release() {
         let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
@@ -214,8 +159,6 @@ mod tests {
 
     #[test]
     fn both_switches_off_does_nothing_at_all() {
-        // Not a fetch, not a thread, not a cache read: the point of the switch is
-        // that the network is never touched.
         let updates = Updates::start(&features(false, false), Vec::new());
         assert!(updates.available().is_none());
         assert!(
@@ -232,8 +175,6 @@ mod tests {
 
     #[test]
     fn a_finished_check_updates_the_badge_without_a_message() {
-        // A newer release is shown, not announced: v1 puts it in the header and
-        // says nothing, because the user did not ask for anything.
         let mut updates = Updates::default();
         let tx = updates.sender();
         tx.send(Done::Checked(Some("9.9.9".into()))).expect("send");

@@ -1,4 +1,3 @@
-//! A disposable pane-local Codex stand-in that stays alive while its hook runs.
 use std::path::Path;
 use std::process::Command;
 

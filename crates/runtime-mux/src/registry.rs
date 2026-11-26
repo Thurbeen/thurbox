@@ -1,21 +1,9 @@
-//! Backend registry for multi-backend session support.
-//!
-//! Allows multiple `SessionBackend` implementations to coexist, each keyed by
-//! the qualified [`Route`] it serves. A container only: what fills it for a
-//! running process is [`crate::wiring`]. It looks up exactly the route it is
-//! asked for and never substitutes another.
-
 use std::collections::HashMap;
 use std::sync::Arc;
 
 use crate::Route;
 use crate::SessionBackend;
 
-/// A registry of session backends keyed by the qualified route each serves.
-///
-/// The registry always has a default backend: this machine's own
-/// multiplexer. A clone shares the same backends — the handles, not new
-/// connections.
 #[derive(Clone)]
 pub struct BackendRegistry {
     backends: HashMap<Route, Arc<dyn SessionBackend>>,
@@ -23,7 +11,6 @@ pub struct BackendRegistry {
 }
 
 impl BackendRegistry {
-    /// A registry whose default is `default`, serving `route`.
     pub fn new(route: Route, default: Arc<dyn SessionBackend>) -> Self {
         let mut backends = HashMap::new();
         backends.insert(route.clone(), default);
@@ -33,47 +20,34 @@ impl BackendRegistry {
         }
     }
 
-    /// Register a backend for `route`, replacing any serving it already.
     pub fn register(&mut self, route: Route, backend: Arc<dyn SessionBackend>) {
         self.backends.insert(route, backend);
     }
 
-    /// The backend serving exactly `route`.
     pub fn get(&self, route: &Route) -> Option<&Arc<dyn SessionBackend>> {
         self.backends.get(route)
     }
 
-    /// Return the default backend.
     pub fn default_backend(&self) -> &Arc<dyn SessionBackend> {
         &self.backends[&self.default_route]
     }
 
-    /// The route the default backend serves.
     pub fn default_route(&self) -> &Route {
         &self.default_route
     }
 
-    /// Whether a new session may be created on `route`: only when an
-    /// implementation has registered for it. Installing a binary alone never
-    /// makes an adapter exist, and neither does the OS this runs on.
     pub fn supports(&self, route: &Route) -> bool {
         self.backends.contains_key(route)
     }
 
-    /// Every registered route.
     pub fn routes(&self) -> impl Iterator<Item = &Route> {
         self.backends.keys()
     }
 
-    /// Every registered backend, with the route it serves.
     pub fn all_backends(&self) -> impl Iterator<Item = (&Route, &Arc<dyn SessionBackend>)> {
         self.backends.iter()
     }
 
-    /// Retire every backend's long-lived resources, all at once: each
-    /// [`WindowLifecycle::shutdown`](crate::WindowLifecycle::shutdown) runs on its own thread, so quitting costs
-    /// the slowest connection rather than their sum. Called once, by the
-    /// process that built the registry, as it exits.
     pub fn shutdown_all(&self) {
         std::thread::scope(|scope| {
             for backend in self.backends.values() {
@@ -83,18 +57,11 @@ impl BackendRegistry {
     }
 }
 
-/// A registry for the crate's own unit tests, which may name neither the
-/// factory nor an adapter: this machine's route served by an in-memory backend
-/// that starts with no windows and runs nothing. It keeps the windows it is
-/// asked to open, by owner, so a pipeline that creates a session and tears it
-/// down again finds what it made; the faithful fake, held to the tmux
-/// adapter's contract, is the integration tests' `RecordingBackend`.
 #[cfg(any(test, feature = "test-support"))]
 pub fn inert() -> BackendRegistry {
     inert_serving(&[])
 }
 
-/// [`inert`], also serving each of `routes` with a backend of its own.
 #[cfg(any(test, feature = "test-support"))]
 pub fn inert_serving(routes: &[Route]) -> BackendRegistry {
     let local = Route::local(crate::Multiplexer::platform_default());
@@ -105,8 +72,6 @@ pub fn inert_serving(routes: &[Route]) -> BackendRegistry {
     registry
 }
 
-/// The in-memory backend [`inert`] serves, for this crate's tests and an
-/// embedder's (`test-support`).
 #[cfg(any(test, feature = "test-support"))]
 #[cfg_attr(not(test), allow(dead_code))]
 pub(crate) mod stub {
@@ -121,7 +86,6 @@ pub(crate) mod stub {
     pub(crate) struct StubBackend {
         pub(crate) backend_name: String,
         pub(crate) shutdowns: std::sync::atomic::AtomicUsize,
-        /// `(pane, owner id, owner name, role)` for every window opened.
         windows: std::sync::Mutex<Vec<(String, String, String, WindowRole)>>,
     }
 
@@ -150,8 +114,6 @@ pub(crate) mod stub {
         typed_stub(route)
     }
 
-    /// A stub named `name` rather than by a route — a probe adapter's, which
-    /// says which factory built it.
     pub(crate) fn stub_named(name: &str) -> Arc<dyn SessionBackend> {
         Arc::new(StubBackend {
             backend_name: name.to_string(),
@@ -395,7 +357,6 @@ mod tests {
         registry.register(remote.clone(), stub(&remote));
 
         assert_eq!(registry.get(&remote).unwrap().name(), "ssh:box:tmux");
-        // Another multiplexer on the same machine is another backend.
         for missing in [
             remote.with_mux(Multiplexer::Rmux),
             Route::remote(Via::Wsl, "box", Multiplexer::Tmux),
@@ -406,10 +367,6 @@ mod tests {
         }
     }
 
-    /// Every multiplexer is a route on every machine; which of them work is
-    /// what registered, and nothing else. A test registers an implementation
-    /// for each multiplexer the way a factory does — locally and on a
-    /// host of either kind — and only those routes resolve.
     #[test]
     fn availability_is_registration_for_every_mux_on_every_machine() {
         let places = [
@@ -439,8 +396,6 @@ mod tests {
         }
     }
 
-    /// Quit's one call reaches every backend the registry holds, the default
-    /// and each host's alike.
     #[test]
     fn shutdown_all_retires_every_backend_once() {
         let default = local(Multiplexer::Tmux);

@@ -1,30 +1,18 @@
-//! What every curl-backed platform adapter shares: one HTTP answer as
-//! `curl --include` prints it, the budget of calls and time one operation
-//! may spend, how a split text's sends end, and the `Gateway` impl around
-//! the platform's own calls. What an answer means is each platform's own.
-
 use std::time::{Duration, Instant};
 
 use fleet_api::Observation;
 use fleet_api::plan::EffectOutcome;
 
-/// One HTTP answer as `curl --include` prints it: the status line and
-/// headers, then the body.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Reply {
-    /// 0 when no status line was printed.
     pub status: u16,
-    /// Lowercased names.
     pub headers: Vec<(String, String)>,
     pub body: String,
     pub exit: Option<i32>,
-    /// The first non-empty line of stderr, at most 200 characters.
     pub stderr: String,
 }
 
 impl Reply {
-    /// Split `--include` output into its last head and the body: an
-    /// informational head (`100 Continue`) before the final one is skipped.
     pub fn parse(stdout: &str, exit: Option<i32>, stderr: &[u8]) -> Reply {
         let mut rest = stdout;
         let mut status = 0;
@@ -77,8 +65,6 @@ fn first_line(bytes: &[u8]) -> String {
         .collect()
 }
 
-/// The time and calls one operation may spend: `call_timeout` times
-/// `calls`, and no more calls than that either.
 #[derive(Debug)]
 pub struct Budget {
     deadline: Instant,
@@ -95,7 +81,6 @@ impl Budget {
         }
     }
 
-    /// The timeout of the next call, or `None` when the budget is spent.
     pub fn next_timeout(&mut self) -> Option<Duration> {
         if self.calls_left == 0 {
             return None;
@@ -109,9 +94,6 @@ impl Budget {
     }
 }
 
-/// How a send that did not land ends: Unknown when an earlier part of the
-/// text landed (`partly` says what), a Known refusal when the platform
-/// certainly did nothing, and Unknown otherwise.
 pub fn send_failure(
     partly: Option<String>,
     why: String,
@@ -124,8 +106,6 @@ pub fn send_failure(
     }
 }
 
-/// What a text that landed answers: `Posted` in a thread, or `Opened` with
-/// the thread its first post started in `chat`.
 pub fn landed(
     platform: &str,
     chat: &str,
@@ -147,17 +127,6 @@ pub fn landed(
     }
 }
 
-/// The [`Gateway`] of a curl-backed platform: the account check, the address
-/// check and the thread or channel dispatch around each call are the same
-/// for every one. It is invoked in the adapter's module, which supplies the
-/// fields `account` and `call_timeout`, the constant
-/// `MAX_CALLS_PER_OPERATION`, the functions `check_ref`, `parse_address` and
-/// `read_event`, and the methods `identity`, `offers`, `thread_history`,
-/// `channel_history`, `post_chunks`, `post_channel`, `react_on`,
-/// `thread_link` and `fetch_file`. A macro, since the port is another
-/// crate's trait.
-///
-/// [`Gateway`]: fleet_api::gateway::Gateway
 macro_rules! curl_gateway {
     ($t:ty, $name:literal) => {
         impl $t {
@@ -265,7 +234,6 @@ macro_rules! curl_gateway {
                     Some(thread) => {
                         self.post_chunks(&conversation.chat, Some(thread), text, intent_key)
                     }
-                    // A channel address: top-level posts, no thread.
                     None => self.post_channel(&conversation.chat, text, intent_key),
                 }
             }

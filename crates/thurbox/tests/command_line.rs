@@ -1,7 +1,3 @@
-//! The `thurbox` binary's command line, run as a new user runs it: in an
-//! empty home with no config, and with a stand-in `fleet` on `PATH` that
-//! records every call. Answering a flag, or refusing to start without a
-//! terminal, must leave that home as it found it and never start Fleet.
 #![cfg(unix)]
 
 use std::os::fd::{FromRawFd, OwnedFd};
@@ -9,8 +5,6 @@ use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
 
-/// An empty home, its XDG directories inside it, and a `bin` holding the
-/// recording `fleet`.
 struct Sandbox {
     root: tempfile::TempDir,
 }
@@ -38,12 +32,10 @@ impl Sandbox {
         self.root.path().join("home")
     }
 
-    /// `thurbox args`, stdin from nowhere and stdout to a pipe: no terminal.
     fn run(&self, args: &[&str]) -> Output {
         self.run_on(args, Stdio::null(), Stdio::piped())
     }
 
-    /// `thurbox args` with the given stdin and stdout; stderr is captured.
     fn run_on(&self, args: &[&str], stdin: Stdio, stdout: Stdio) -> Output {
         let home = self.home();
         let mut cmd = Command::new(env!("CARGO_BIN_EXE_thurbox"));
@@ -80,7 +72,6 @@ impl Sandbox {
         cmd.output().expect("run thurbox")
     }
 
-    /// Nothing written in the home, and Fleet never run.
     fn assert_untouched(&self) {
         let written = files(&self.home());
         assert!(written.is_empty(), "thurbox wrote {written:?}");
@@ -89,8 +80,6 @@ impl Sandbox {
     }
 }
 
-/// A pseudo-terminal: the controller, kept open while the test runs, and the
-/// terminal side handed to thurbox.
 fn pty() -> (OwnedFd, OwnedFd) {
     let (mut controller, mut terminal) = (-1, -1);
     // SAFETY: openpty writes two valid descriptors into the out-params on
@@ -182,7 +171,6 @@ fn without_a_terminal_thurbox_exits_before_it_writes_or_starts_fleet() {
     sandbox.assert_untouched();
 }
 
-/// A terminal on stdin alone is not enough: the interface draws on stdout.
 #[test]
 fn a_terminal_on_stdin_alone_is_refused() {
     let sandbox = Sandbox::new();
@@ -197,8 +185,6 @@ fn a_terminal_on_stdin_alone_is_refused() {
     sandbox.assert_untouched();
 }
 
-/// A terminal on stdout alone is not enough: the interface reads keys from
-/// stdin.
 #[test]
 fn a_terminal_on_stdout_alone_is_refused() {
     let sandbox = Sandbox::new();

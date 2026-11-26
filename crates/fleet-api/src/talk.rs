@@ -1,25 +1,3 @@
-//! Talking in a conversation: the Task fields the Gateway controller reads
-//! and owns, and the two things on a Task that nobody owns but an inbox
-//! append may write.
-//!
-//! - `status.gateway` ([`GatewayStatus`]): the tie to a chat thread, the
-//!   cursor the relay went through, what was read of each child, the post
-//!   records, and this controller's conditions.
-//! - `status.answered`: per Question id, the inbox entry that answered it
-//!   ([`Answer`]). No owner: only an inbox append that carries `answers`
-//!   writes it, through the store's typed mutations, and the first answer
-//!   wins.
-//! - The parent labels ([`PARENT_LABEL`], [`PARENT_UID_LABEL`]): a child
-//!   Task's words go into its parent's inbox, so naming a parent is
-//!   writing to it. The store accepts the labels only when the child is
-//!   created, only from a writer that may already append to the parent's
-//!   inbox, and only for a parent that exists with that `uid`.
-//!
-//! The [interface](../../../docs/fleet/controllers/gateway.md) defines
-//! the fields, the keys and the entries; the
-//! [state machine](../../../docs/fleet/controllers/gateway.md)
-//! defines the tie's states.
-
 use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
@@ -31,54 +9,32 @@ use crate::meta::Millis;
 use crate::plan::effect_key;
 use crate::store::FieldManager;
 
-/// The labels a child Task carries, naming its parent by name and `uid`.
 pub const PARENT_LABEL: &str = "gateway.fleet.dev/parent";
 pub const PARENT_UID_LABEL: &str = "gateway.fleet.dev/parent-uid";
-/// The route whose channel a Question from an untied Task opens a thread
-/// in. An ordinary label.
 pub const ROUTE_LABEL: &str = "gateway.fleet.dev/route";
 
-/// The declaration kinds the Gateway reads, besides `ChangeRequest`.
 pub const DECLARED_QUESTION: &str = "Question";
 pub const DECLARED_COMMENT: &str = "Comment";
 pub const DECLARED_DRAFT: &str = "Draft";
 
-/// An inbox entry holds at most this many bytes of messages: the newest
-/// are kept, and the entry says how many older ones remain on the platform.
 pub const ENTRY_CAP: usize = 64 * 1024;
 
-/// A parent with more children than this relays none of them.
 pub const MAX_CHILDREN: usize = 200;
 
-/// Settled post records kept, newest first to go.
 pub const POSTS_CAP: usize = 100;
 
-/// The source prefix of an entry the Gateway controller appends:
-/// `gateway/<conversation>` for a relay, `gateway/child/<child>` for a
-/// child's item.
 pub const GATEWAY_SOURCE_PREFIX: &str = "gateway/";
 
-/// Where the tie between a Task and a thread stands, as the state machine
-/// defines it. `none` is the absence of a tie, and a child's tie to its
-/// parent is its labels, not a state here.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum TieState {
-    /// Fleet is opening a thread for the Task's Question.
     Opening,
-    /// The thread is open; Fleet is adding its opening post to the
-    /// thread's Conversation.
     Opened,
-    /// The Conversation exists, and Fleet waits for it to name this Task.
     Waiting,
-    /// The Task and the thread are tied. Fleet relays and posts.
     Tied,
-    /// The opened thread never reached its Conversation. The Task acts as
-    /// untied.
     Abandoned,
 }
 
-/// `{name, uid, state}` of the tied Conversation.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ConversationTie {
@@ -87,11 +43,6 @@ pub struct ConversationTie {
     pub state: TieState,
 }
 
-/// What was read of one child: its `uid`, the `resourceVersion` last read,
-/// how many of its declarations were read, the result generation relayed,
-/// if any, and the keys of its relayed Questions that are still in the
-/// parent's inbox but answered in the child's `status.answered`.
-/// TaskController records each of those without a send.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ChildEntry {
@@ -106,9 +57,6 @@ pub struct ChildEntry {
     pub answered: Vec<String>,
 }
 
-/// Where and when a Question was posted: the Conversation's name, the
-/// post's message id and the platform's own time for it. A relay answers
-/// the Question with the first admitted message written after `at`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct PostedQuestion {
@@ -118,85 +66,52 @@ pub struct PostedQuestion {
     pub at: Millis,
 }
 
-/// `status.gateway`: GatewayController's.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct GatewayStatus {
-    /// The tied Conversation, while the tie is being set up or holds.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub conversation: Option<ConversationTie>,
-    /// The Conversation `revision` last read.
     #[serde(default)]
     pub seen: u64,
-    /// The Conversation `revision` relayed through. `0` until the join, so
-    /// the first relay is the whole retained thread.
     #[serde(default)]
     pub cursor: u64,
-    /// How many items of `status.declared` were read for posting in the
-    /// thread.
     #[serde(default)]
     pub declared: u64,
-    /// How many items of `status.declared` the log lane read for Drafts.
     #[serde(default, skip_serializing_if = "is_zero")]
     pub logged: u64,
-    /// The result generation logged, or read while nothing logs.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub result: Option<u64>,
-    /// Per ChangeRequest name, the `state.seq` logged through, or read
-    /// while nothing logs.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub changes: BTreeMap<String, u64>,
-    /// The `uid` of each ChangeRequest whose ready notice was posted in the
-    /// thread: once per change, the first time it is ready for review.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub ready: Vec<String>,
-    /// Per ChangeRequest `uid`, the followed entry's `answeredAt` that the
-    /// last ready or answered notice found: the answered notice is posted
-    /// once each time `answeredAt` moves past it. A ready change with no
-    /// entry records its `answeredAt` without a notice.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub announced: BTreeMap<String, Millis>,
-    /// Per child Task name, what was read of it.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub children: BTreeMap<String, ChildEntry>,
-    /// Per intent key, the post effect's intent, receipt, attempts and
-    /// recovery reads. The newest [`POSTS_CAP`] settled, every unsettled.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub posts: BTreeMap<String, EffectRecord>,
-    /// Every Question and Comment id posted, and every Draft id logged, for
-    /// the life of the Task.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub posted: Vec<String>,
-    /// Per Question id, where and when it was posted.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub questions: BTreeMap<String, PostedQuestion>,
-    /// How many relays found messages dropped from the mirror.
     #[serde(default)]
     pub gaps: u64,
-    /// The reactions on the thread's messages: which are marked working or
-    /// replied.
     #[serde(default, skip_serializing_if = "ReactionStatus::is_empty")]
     pub reactions: ReactionStatus,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub conditions: Vec<Condition>,
 }
 
-/// How a person's message is marked.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Mark {
-    /// Admitted, and waiting for its Task: the "queued" reaction. Only a
-    /// Conversation marks a message queued.
     Queued,
-    /// Relayed to the Task, which is working on it: the "working" reaction.
     Working,
-    /// Fleet posted in the thread since: the "replied" reaction, and no
-    /// "working".
     Replied,
 }
 
 impl Mark {
-    /// The mark's word in a reaction key and in a status.
     pub fn as_str(self) -> &'static str {
         match self {
             Mark::Queued => "queued",
@@ -215,17 +130,11 @@ impl Mark {
     }
 }
 
-/// `status.gateway.reactions`: GatewayController's.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ReactionStatus {
-    /// Per message id in the thread, how it is marked. Only messages the
-    /// mirror still holds.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub marks: BTreeMap<String, Mark>,
-    /// The keys of the thread posts already counted: each landed before
-    /// every working mark, or replied to the marks standing when it landed.
-    /// Empty while no message is marked working.
     #[serde(default, skip_serializing_if = "std::collections::BTreeSet::is_empty")]
     pub replies: std::collections::BTreeSet<String>,
 }
@@ -236,14 +145,11 @@ impl ReactionStatus {
     }
 }
 
-/// The tail of a reaction key: `react/<message id>/<mark>/<on|off>`.
 pub fn react_suffix(message: &str, mark: Mark, on: bool) -> String {
     let on = if on { "on" } else { "off" };
     format!("react/{message}/{}/{on}", mark.as_str())
 }
 
-/// What the part of a reaction key after `react/` names: the message id,
-/// the mark and whether it adds.
 pub fn react_parse(rest: &str) -> Option<(String, Mark, bool)> {
     let mut parts = rest.rsplitn(3, '/');
     let on = match parts.next()? {
@@ -256,24 +162,19 @@ pub fn react_parse(rest: &str) -> Option<(String, Mark, bool)> {
     Some((message.to_string(), mark, on))
 }
 
-/// The key of a reaction effect on a message:
-/// `task/<name>/<uid>/gateway/react/<message id>/<working|replied>/<on|off>`.
 pub fn react_key(name: &str, uid: &str, message: &str, mark: Mark, on: bool) -> String {
     post_key(name, uid, &react_suffix(message, mark, on))
 }
 
-/// What a reaction key names: the message id, the mark and whether it adds.
 pub fn react_of(name: &str, uid: &str, key: &str) -> Option<(String, Mark, bool)> {
     react_parse(key.strip_prefix(&post_key(name, uid, "react/"))?)
 }
 
 impl GatewayStatus {
-    /// Nothing to store: a Task that never talks has no `status.gateway`.
     pub fn is_empty(&self) -> bool {
         *self == GatewayStatus::default()
     }
 
-    /// The Task is tied to a verified thread.
     pub fn is_tied(&self) -> bool {
         self.conversation
             .as_ref()
@@ -281,8 +182,6 @@ impl GatewayStatus {
     }
 }
 
-/// `status.answered[<question id>]`: the inbox entry that answered it, its
-/// source and when it was queued.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct Answer {
@@ -291,41 +190,27 @@ pub struct Answer {
     pub at: Millis,
 }
 
-/// The key of a relay or the join:
-/// `task/<name>/<uid>/gateway/<conversation uid>/<revision>`.
 pub fn relay_key(name: &str, uid: &str, conversation_uid: &str, revision: u64) -> String {
     let base = effect_key(crate::task::KIND, name, uid, "gateway", None);
     format!("{base}/{conversation_uid}/{revision}")
 }
 
-/// The key of a child's item in its parent's inbox:
-/// `task/<name>/<uid>/gateway/child/<child uid>/<item>`, `item` being the
-/// declaration's index or `result/<generation>`.
 pub fn child_key(name: &str, uid: &str, child_uid: &str, item: &str) -> String {
     let base = effect_key(crate::task::KIND, name, uid, "gateway", None);
     format!("{base}/child/{child_uid}/{item}")
 }
 
-/// The key of one of the Task's posts in its thread:
-/// `task/<name>/<uid>/gateway/<item>`, `item` being `question/<id>`,
-/// `comment/<id>`, `draft/<id>`, `result/<generation>` or
-/// `change/<cr uid>/<state.seq>`. A Question's open of a thread carries the
-/// Question's key; adding its opening post to the Conversation carries
-/// `<key>/receive`.
 pub fn post_key(name: &str, uid: &str, item: &str) -> String {
     let base = effect_key(crate::task::KIND, name, uid, "gateway", None);
     format!("{base}/{item}")
 }
 
-/// The `id` of a declared Question, Comment or Draft: a non-empty string.
 pub fn declared_id(item: &Value) -> Option<&str> {
     item.get("id")
         .and_then(Value::as_str)
         .filter(|id| !id.trim().is_empty())
 }
 
-/// Whether a declaration is one the Gateway reads: a Question, Comment or
-/// Draft with an `id`, or a ChangeRequest with a `name`.
 pub fn gateway_reads(item: &Value) -> bool {
     match item.get("kind").and_then(Value::as_str) {
         Some(DECLARED_QUESTION | DECLARED_COMMENT | DECLARED_DRAFT) => declared_id(item).is_some(),
@@ -336,7 +221,6 @@ pub fn gateway_reads(item: &Value) -> bool {
     }
 }
 
-/// Every `answers` id names a declared Question with that `id`.
 pub fn check_answers(declared: &[Value], answers: &[String]) -> Result<(), String> {
     for id in answers {
         if id.trim().is_empty() {
@@ -353,8 +237,6 @@ pub fn check_answers(declared: &[Value], answers: &[String]) -> Result<(), Strin
     Ok(())
 }
 
-/// The parent a Task's labels name, if any: both labels or neither, a valid
-/// name and a non-empty `uid`.
 pub fn parent_of(labels: &BTreeMap<String, String>) -> Result<Option<(String, String)>, String> {
     match (labels.get(PARENT_LABEL), labels.get(PARENT_UID_LABEL)) {
         (None, None) => Ok(None),
@@ -375,8 +257,6 @@ pub fn parent_of(labels: &BTreeMap<String, String>) -> Result<Option<(String, St
     }
 }
 
-/// The parent labels never change once a Task is created: not removed, not
-/// pointed elsewhere.
 pub fn check_parent_unchanged(
     old: &BTreeMap<String, String>,
     new: &BTreeMap<String, String>,
@@ -391,11 +271,6 @@ pub fn check_parent_unchanged(
     Ok(())
 }
 
-/// Whether a writer creating a child may name `parent`: only one that may
-/// already append to the parent's inbox. A person may name any parent; a
-/// plugin over any Task too; a plugin over its own Tasks only a parent it
-/// created. `plugin_access` is the plugin's configured Task scope, `Own`
-/// when it is not known.
 pub fn may_name_parent(
     by: &FieldManager,
     plugin_access: Option<crate::plugin::TaskAccess>,

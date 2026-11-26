@@ -1,10 +1,3 @@
-//! The boot sequence: everything between process start and the loop.
-//!
-//! `main` itself stays a one-liner in `main.rs` beside the state it constructs;
-//! the order here is load-bearing and each step's comment says why it sits
-//! where it does — the panic hook before anything can panic, the settings
-//! before anything is built with one.
-
 use std::error::Error;
 use std::path::{Path, PathBuf};
 use std::time::Instant;
@@ -32,21 +25,8 @@ use crate::App;
 
 const V2_STATE_NOTICE: &str = "thurbox 2.x state found · thurbox-cli migrate --dry-run";
 
-/// Days of `thurbox.log.<date>` kept by the rolling appender.
 const LOG_FILES_KEPT: usize = 30;
 
-/// The log appender: one file per day in `dir`, the newest
-/// [`LOG_FILES_KEPT`] kept and the rest deleted as it is built.
-///
-/// Capped because `rolling::daily` never deletes anything — it opened a new
-/// `thurbox.log.<date>` every day and left every earlier one in the data dir
-/// for good, which on a machine thurbox runs on daily is an unbounded disk
-/// leak. A month still holds the log of whatever a user is reporting.
-///
-/// The name has to stay `thurbox.log.<date>`: that spelling is what
-/// `docs/thurbox/performance.md` tells a reader to open, and it is also what the
-/// pruning above matches on, so a different prefix would silently orphan every
-/// file written by an earlier release instead of retiring it.
 fn log_appender(dir: PathBuf) -> tracing_appender::rolling::RollingFileAppender {
     tracing_appender::rolling::Builder::new()
         .rotation(tracing_appender::rolling::Rotation::DAILY)
@@ -57,21 +37,7 @@ fn log_appender(dir: PathBuf) -> tracing_appender::rolling::RollingFileAppender 
 }
 
 pub(crate) async fn run() -> Result<(), Box<dyn Error>> {
-    // Put the terminal back before the panic message prints.
-    //
-    // v2 had no hook at all, where v1 has always installed one
-    // (`src/main.rs`). Without it a panic — or a kill — leaves the terminal in
-    // raw mode with mouse reporting still on, and the terminal then streams
-    // reports at whatever shell comes next, which is why moving the pointer
-    // afterwards printed `\x1b[<35;…M` into the prompt. Restoring here is also
-    // why the message is readable at all: on the alternate screen it would be
-    // wiped the moment the shell repainted.
-    //
-    // The message is also written to the log, because stderr is where a panic
-    // is *least* likely to be read: a worker thread's panic does not end the
-    // process, so the pane it printed on is scrolled away long before anyone
-    // looks — which is how a reader thread dying, and taking one session's
-    // terminal with it for the rest of the run, left no trace to report.
+    // A panic in raw mode leaves mouse reporting on, and the terminal streams reports at the next shell.
     let original_hook = std::panic::take_hook();
     std::panic::set_hook(Box::new(move |info| {
         restore_terminal();
@@ -89,24 +55,10 @@ pub(crate) async fn run() -> Result<(), Box<dyn Error>> {
         original_hook(info);
     }));
 
-    // The same restore for a signal, which the panic hook cannot see. A
-    // `SIGHUP` (the terminal or ssh session went away), a `SIGTERM` (a session
-    // manager, or the machine waking from a long sleep and reaping what it
-    // suspended) or a `kill -INT` ends the process with the default action,
-    // and the default action runs no hook — so mouse reporting stayed on and
-    // the next shell printed `\x1b[<64;…M` on every scroll. Spawned before the
-    // terminal is taken: every step of `restore_terminal` is a no-op for a mode
-    // that was never enabled, and a signal that lands during boot is otherwise
-    // the one this misses.
+    // The default action of SIGHUP, SIGTERM and SIGINT runs no panic hook.
     install_signal_restore();
 
-    // File-based logging: stdout belongs to the TUI, so every `tracing` call in
-    // this process — the panic hook, a worker's warning, the perf lines below —
-    // has nowhere else to go. Without a subscriber they are not merely
-    // unformatted but *dropped*, which is how a reader thread could die and
-    // leave no trace anywhere. The guard is deliberately leaked: the appender's
-    // worker must outlive every later log call, including the panic hook's, and
-    // this runs once per process.
+    // tracing-appender stops writing when its guard drops, and the panic hook logs until the process ends.
     let log_dir = thurbox::paths::log_directory().unwrap_or_else(|| std::path::PathBuf::from("."));
     let create = log_dir.clone();
     tokio::task::spawn_blocking(move || std::fs::create_dir_all(create))
@@ -121,24 +73,14 @@ pub(crate) async fn run() -> Result<(), Box<dyn Error>> {
             .with_filter(
                 tracing_subscriber::EnvFilter::from_default_env()
                     .add_directive("thurbox=debug".parse().unwrap_or_default())
-                    // The multiplexer runtime logs under its own crate name.
                     .add_directive("runtime_mux=debug".parse().unwrap_or_default()),
             )
     };
 
-    // Startup phases are timed unconditionally: this runs once, so the two
-    // `Instant` reads per phase cost nothing measurable, and the numbers are
-    // only *reported* when timing is active.
     let process_start = Instant::now();
     let mut startup = thurbox::kernel::perf::Startup::default();
 
-    // The user's settings, loaded BEFORE anything is built with one: every
-    // restart-only value below — the backends' history depth, the terminals'
-    // scrollback, the snapshot store's git cadence, the audit retention — is
-    // handed over from `startup_settings`, never read from process state.
-    //
-    // Loaded under the file log alone, so a warning it raises reaches the file
-    // before the global subscriber, which cannot be replaced, is installed.
+    // A tracing global subscriber cannot be replaced once installed.
     let phase = Instant::now();
     let (config, config_warnings) = tracing::subscriber::with_default(
         tracing_subscriber::registry().with(file_layer()),
@@ -162,16 +104,10 @@ pub(crate) async fn run() -> Result<(), Box<dyn Error>> {
     if let Some(e) = bridge_error {
         tracing::warn!("{e}");
     }
-    // Read before any subscriber took them, so logged now: a key the file
-    // should not hold is worth a line in the log, not only the status band.
     for warning in &config_warnings {
         tracing::warn!("{warning}");
     }
 
-    // The one registry this process drives every backend through, built here
-    // and handed to each consumer: attach, the command workers and the startup
-    // self-heal all see the same set of backends. Registration only — nothing
-    // is connected until a session on a backend is attached or acted on.
     let backends = std::sync::Arc::new(thurbox::backend::wiring::local_only(&startup_settings));
 
     let mut startup_notices: Vec<String> = config_warnings;
@@ -182,18 +118,11 @@ pub(crate) async fn run() -> Result<(), Box<dyn Error>> {
     let (ui_dir, ui_notices, recovering) = resolve_ui_dir()?;
     startup_notices.extend(ui_notices);
 
-    // A user copy that will not load must not cost the interface, but the falling
-    // back lives in `App::reload_interface` — called once below and on every
-    // reload after. Deciding it twice is how the floor became a one-way door:
-    // startup installed the fallback and every later reload rebuilt *that*.
     let ui_phase = Instant::now();
     let host = LuaHost::new(&ui_dir);
 
-    // Resolved before the move, since `focus` indexes into the host.
     let initial_focus = focus_index_of(&host, "agent");
 
-    // Hoisted out of the struct literal below so each phase can be timed
-    // separately; the construction order is unchanged.
     let phase = Instant::now();
     let fleets = thurbox::fleet_link::Fleets::of(&startup_settings);
     let fleet = fleets.in_force().clone();
@@ -356,8 +285,6 @@ pub(crate) async fn run() -> Result<(), Box<dyn Error>> {
     app.reload_interface(crate::coordinator::events::ReloadReason::Boot);
     app.collect_declarations();
     app.startup.ui_build_ms = ui_phase.elapsed().as_millis() as u64;
-    // Non-empty only on a profile's first wire-up or on a failure, so this is a
-    // real signal rather than noise on every launch.
     if let Some(notice) = app.startup_notices.pop_front() {
         app.toast(notice);
         if !app.startup_notices.is_empty() {
@@ -367,50 +294,22 @@ pub(crate) async fn run() -> Result<(), Box<dyn Error>> {
 
     let terminal = ratatui::init();
 
-    // The kitty keyboard protocol, ported from v1's `main`. It disambiguates
-    // escape codes, which is what makes a bound `cmd+…` chord distinguishable at
-    // all (iTerm2 3.5+, kitty, WezTerm, Ghostty -- not Terminal.app) and what
-    // separates `ctrl+/` from the bytes a legacy terminal sends for it. Pushed
-    // after the terminal is taken and popped by `restore_terminal`, which
-    // `ratatui::restore()` does not do for us.
+    // The kitty keyboard protocol tells `cmd+…` and `ctrl+/` apart; `ratatui::restore()` does not pop it.
     app.holds.releases = push_keyboard_enhancement();
-    // Drag-to-select and click targeting need mouse reporting. Enabled after
-    // init so the panic hook ratatui installed still restores the terminal if
-    // anything below goes wrong, and only when `[features] mouse` is on — v1
-    // gates the same escape at the same point, so turning it off leaves the
-    // terminal's own selection and scrolling behaving natively.
     if app.mouse {
         enable_mouse_clicks();
     }
-    // Bracketed paste, so text pasted with the TERMINAL's own chord arrives as
-    // one `Event::Paste` rather than as a stream of keystrokes — without it the
-    // first newline in a multi-line paste submits the prompt mid-paste. It is
-    // also the only paste route that works over SSH, where there is no local
-    // clipboard to read. v1 enables it unconditionally, mouse or not.
+    // Without bracketed paste, the first newline of a multi-line paste submits the prompt.
     let _ = crossterm::execute!(std::io::stdout(), crossterm::event::EnableBracketedPaste);
     let result = app.run(terminal);
     restore_terminal();
-    // Each backend's connection comes down at once rather than one after
-    // another as the registry's last owner drops it.
     drop(app);
     backends.shutdown_all();
     thurbox::telemetry::shutdown();
     result
 }
 
-/// Put the terminal back and exit when a signal ends the process.
-///
-/// Exits directly rather than asking the loop to quit: the loop is on the
-/// thread blocked in `app.run`, and after a `SIGHUP` its `event::poll` may be
-/// reading a pty that is already gone, so a request would be honoured late or
-/// never. Exiting from the runtime's thread skips the loop's drops, exactly as
-/// the panic path does — tmux keeps the sessions alive, so nothing is lost.
-/// The status is the shell's convention, `128 + signal`, so a wrapper script
-/// can tell a signal from a clean quit.
-///
-/// `restore_terminal` is idempotent and takes no lock, so racing the normal
-/// exit path — a `SIGTERM` that lands while `Ctrl+Q` is being honoured —
-/// costs a redundant escape and nothing else.
+// After SIGHUP the loop may be reading a pty that is gone; exit here with the shell's 128 + signal.
 fn install_signal_restore() {
     fn restore_and_exit(name: &str, number: i32) -> ! {
         restore_terminal();
@@ -421,9 +320,7 @@ fn install_signal_restore() {
     #[cfg(unix)]
     {
         use tokio::signal::unix::{signal, SignalKind};
-        // The numbers are POSIX's (1, 2, 15 on Linux and macOS alike), spelled
-        // here because `SignalKind` does not expose them portably and `libc`
-        // is a dev-dependency only.
+        // `SignalKind` does not expose the POSIX signal numbers portably.
         let hangup = ("SIGHUP", signal(SignalKind::hangup()), 1);
         let terminate = ("SIGTERM", signal(SignalKind::terminate()), 15);
         let interrupt = ("SIGINT", signal(SignalKind::interrupt()), 2);
@@ -442,7 +339,7 @@ fn install_signal_restore() {
     }
     #[cfg(not(unix))]
     {
-        // Ctrl+C / Ctrl+Break / a closed console window all arrive here.
+        // Ctrl+C, Ctrl+Break and a closed console window all arrive here.
         tokio::spawn(async {
             if tokio::signal::ctrl_c().await.is_ok() {
                 restore_and_exit("SIGINT", 2);
@@ -463,9 +360,6 @@ fn focus_index_of(host: &LuaHost, name: &str) -> usize {
 }
 
 fn resolve_ui_dir() -> Result<(PathBuf, Vec<String>, bool), Box<dyn Error>> {
-    // The resolution itself lives in the library, so `thurbox-cli mod dir`
-    // reports the directory this will actually load. Writing the user's copy is
-    // the interface's business, which is why it asks for it.
     let migration = thurbox::kernel::mod_migration::migrate_in_force();
     if !migration.errors.is_empty() {
         let dir = thurbox::kernel::bundled::fallback_dir()?;
@@ -489,14 +383,6 @@ fn resolve_ui_dir() -> Result<(PathBuf, Vec<String>, bool), Box<dyn Error>> {
 const RECOVERY_NOTICE: &str =
     "until the move to mods succeeds, trust, turned-off panes, mod settings and rebound keys changed here are not saved";
 
-/// Which interface just loaded — said only when there is a question.
-///
-/// Silent for a release build on its own copy, because there is nothing to
-/// disambiguate and a greeting on every launch is noise. It speaks when an
-/// override is in force (that is somebody's deliberate redirection, and the most
-/// likely thing to have been forgotten), when the embedded fallback had to be
-/// used, and on a **dev build** — where "which interface am I running" is a real
-/// question, since the checkout beside you contains one too.
 fn directory_notice(dir: &Path, chosen: thurbox::kernel::bundled::Chosen) -> Option<String> {
     use thurbox::kernel::bundled::Chosen;
     let shown = thurbox::paths::display_path(dir);
@@ -507,20 +393,12 @@ fn directory_notice(dir: &Path, chosen: thurbox::kernel::bundled::Chosen) -> Opt
         Chosen::UserCopy => None,
         Chosen::Override => Some(format!("interface from {shown} (THURBOX_UI_DIR)")),
         Chosen::Checkout => Some(format!("interface from {shown} (checkout)")),
-        // Not a preference: the user's copy could not be written, so the panes
-        // are the embedded ones in a directory that will not survive the process.
         Chosen::Fallback => Some(format!(
             "interface from {shown} — your copy could not be written"
         )),
     }
 }
 
-/// What an upgrade did that the user did not ask for and should know about.
-///
-/// Only the two outcomes that are about THEIR files: an edit of theirs kept
-/// where a newer version was available, and a file taken back because this
-/// binary no longer ships it. Writes and updates are the ordinary case and say
-/// nothing, so this stays a signal rather than a greeting.
 fn delivery_notice(report: &thurbox::kernel::bundled::Report) -> Option<String> {
     let mut parts = Vec::new();
     if !report.preserved.is_empty() {
@@ -538,8 +416,6 @@ fn delivery_notice(report: &thurbox::kernel::bundled::Report) -> Option<String> 
     (!parts.is_empty()).then(|| parts.join("; "))
 }
 
-/// The terminals, each local tmux pane opened through `runtime-mux view` when
-/// `stream_panes` is on and the program is there.
 fn terminals(
     backends: std::sync::Arc<thurbox::backend::BackendRegistry>,
     settings: &thurbox::session::settings::Settings,
@@ -565,38 +441,19 @@ fn terminals(
 mod tests {
     use super::*;
 
-    /// The log appender keeps a bounded number of days and names them the way
-    /// the docs say.
-    ///
-    /// Both halves are the bug: `rolling::daily` never deleted anything, so the
-    /// data dir grew a file per day for good; and the cap only retires a file it
-    /// recognises, so a prefix that stopped spelling `thurbox.log.<date>` would
-    /// leave every older file orphaned *and* break the path
-    /// `docs/thurbox/performance.md` hands the reader. Pruning happens as the appender
-    /// is built, which is what makes this observable without waiting a day.
     #[test]
     fn the_log_appender_keeps_a_months_worth_and_no_more() {
         use std::io::Write as _;
 
         let dir = tempfile::tempdir().expect("tempdir");
 
-        // More days than the cap, named exactly as the appender names them.
         let seeded = LOG_FILES_KEPT + 5;
         for nth in 0..seeded {
-            // Real dates, in the year 2000 so today's file is never one of
-            // them, and rolled into months rather than run past the end of
-            // January. `2000-01-32` would be the subtler bug: the cap reads a
-            // file's age from its birth time and falls back to parsing the
-            // date out of the name, so on a filesystem that does not record
-            // birth times — a container on overlayfs — an impossible date
-            // parses as nothing, drops out of the candidates and is never
-            // pruned, failing this test for a reason that is not the
-            // behaviour under test.
+            // overlayfs records no birth time, so a file named with an impossible date is never pruned.
             let day = format!("2000-{:02}-{:02}", nth / 28 + 1, nth % 28 + 1);
             std::fs::write(dir.path().join(format!("thurbox.log.{day}")), b"old\n")
                 .expect("seed a day of logs");
         }
-        // A file that is not the appender's is not the appender's to delete.
         std::fs::write(dir.path().join("version-check.json"), b"{}\n").expect("seed");
 
         let mut appender = log_appender(dir.path().to_path_buf());
@@ -625,10 +482,6 @@ mod tests {
             "the cap deleted a file that was not a log: {names:?}"
         );
 
-        // Today's file is among them, spelled `thurbox.log.<date>` — the name
-        // the docs give and the one the cap matches on.
-        // Everything seeded is dated 2000, so the one file that is not is the
-        // one the write above went to.
         let today = logs
             .iter()
             .find(|n| !n.starts_with("thurbox.log.2000-"))
@@ -643,14 +496,6 @@ mod tests {
         );
     }
 
-    /// Startup says which interface loaded, but only when there is a question.
-    ///
-    /// The silent case is the one that matters: a release build on its own copy has
-    /// nothing to disambiguate, and a greeting on every launch is noise. Everything
-    /// else speaks, because it is either somebody's deliberate redirection (the most
-    /// likely thing to have been forgotten), a fallback the user did not choose, or
-    /// a dev build — where the checkout beside you contains an interface too and
-    /// "which one am I running" is a real question.
     #[test]
     fn the_interface_directory_is_announced_only_when_it_is_in_doubt() {
         use thurbox::kernel::bundled::Chosen;
@@ -667,7 +512,6 @@ mod tests {
             assert!(own.is_none(), "a release build on its own copy stays quiet");
         }
 
-        // These three speak on any build.
         for chosen in [Chosen::Override, Chosen::Checkout, Chosen::Fallback] {
             let said = directory_notice(dir, chosen)
                 .unwrap_or_else(|| panic!("{chosen:?} must be announced"));
@@ -676,7 +520,6 @@ mod tests {
                 "{chosen:?} names the directory: {said}"
             );
         }
-        // The fallback is not a preference and must not read like one.
         let fallback = directory_notice(dir, Chosen::Fallback).expect("announced");
         assert!(
             fallback.contains("could not be written"),

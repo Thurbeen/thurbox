@@ -1,11 +1,3 @@
-//! The verbs people and workers use: spec writes (`apply`, `delete`), a
-//! person's message (`send`), events on a board (`publish_event`,
-//! `list_events`, `wait_events`, `wait_ingested`), a Task's subscriptions to
-//! them (`subscribe`, `unsubscribe`) and the worker's answers
-//! (`result`, `declare`).
-//! The CLI calls these and nothing below them, so every rule lives here
-//! once.
-
 use std::collections::{BTreeMap, BTreeSet};
 
 use fleet_api::change_request::{self, ChangeRequestSpec};
@@ -40,12 +32,8 @@ pub enum ApplyOutcome {
     Unchanged,
 }
 
-/// Bounded retries for a compare-and-swap that keeps losing to another
-/// writer; past it the conflict is reported, never forced.
 const CAS_TRIES: u32 = 8;
 
-/// Start a bootstrap Task once, retaining its immutable inputs and identity
-/// on reconnect. A changed template never rewrites an already running Task.
 pub fn ensure_task(store: &dyn Store, obj: Object) -> Result<Object, StoreError> {
     store.validate(&obj)?;
     for _ in 0..CAS_TRIES {
@@ -64,15 +52,6 @@ pub fn ensure_task(store: &dyn Store, obj: Object) -> Result<Object, StoreError>
     ))
 }
 
-/// Create the object, or replace its spec and labels when it exists; a Task
-/// manifest without `amendments` keeps the stored ones. Status in an
-/// applied object is refused: status belongs to controllers. A
-/// Task whose `spec.forge.draft.policy` names a policy not in
-/// `ready_policies`, the names under `[forge.readyPolicies]`, is refused:
-/// a policy the config does not define would never mark anything ready.
-/// With `create_only`, an object whose name is taken is refused as
-/// `AlreadyExists` and left as it is: the store's create is exclusive, so two
-/// clients applying one name at once get one object and one refusal.
 pub fn apply(
     store: &dyn Store,
     obj: Object,
@@ -129,13 +108,6 @@ pub fn apply(
     })
 }
 
-/// Create `obj`, or replace its spec and labels when it exists and
-/// `existing` accepts the object there; a Task manifest without
-/// `amendments` keeps the stored ones. With `create_only` an object whose
-/// name is taken is refused as `AlreadyExists` and left as it is: the
-/// store's create is exclusive, so two clients applying one name at once
-/// get one object and one refusal. Every kind `fleet apply` takes is
-/// written here.
 fn upsert(
     store: &dyn Store,
     obj: Object,
@@ -147,7 +119,6 @@ fn upsert(
         match store.get(&obj.kind, &name) {
             Observation::Known(None) => match store.create(obj.clone(), FieldManager::Apply) {
                 Ok(o) => return Ok((ApplyOutcome::Created, o)),
-                // Another writer created it between our read and our create.
                 Err(StoreError::AlreadyExists(why)) if create_only => {
                     return Err(StoreError::AlreadyExists(why));
                 }
@@ -162,8 +133,6 @@ fn upsert(
                 let rv = current.metadata.resource_version;
                 let labels = Some(obj.metadata.labels.clone());
                 let mut spec = obj.spec.clone();
-                // A manifest carries no amendments: re-applying it keeps the
-                // stored ones, which only the store's amend mutation writes.
                 if obj.kind == task::KIND
                     && let (Some(fields), Some(kept)) =
                         (spec.as_object_mut(), current.spec.get("amendments"))
@@ -188,8 +157,6 @@ fn upsert(
     )))
 }
 
-/// The labels only Fleet writes: the Conversation's controller when it
-/// creates a Task, and a plugin's host. `fleet label` refuses them.
 const PROTECTED_LABELS: [&str; 5] = [
     CONVERSATION_LABEL,
     CONVERSATION_UID_LABEL,
@@ -198,10 +165,6 @@ const PROTECTED_LABELS: [&str; 5] = [
     fleet_api::plugin::CREATOR,
 ];
 
-/// Set `labels` on the Task `name` and change nothing else of it: its spec,
-/// generation and other labels stay. A label only Fleet writes is refused,
-/// and the ones the Task carries are kept, which `apply` cannot do for a
-/// Task a Conversation made.
 pub fn label(
     store: &dyn Store,
     name: &str,
@@ -223,9 +186,6 @@ pub fn label(
             }
             Observation::Unknown { why } => return Err(StoreError::Unknown(why)),
         };
-        // The update replaces the labels. The ones only Fleet writes go back
-        // as they are, except the creator label, which the store refuses
-        // from a writer and keeps itself.
         let mut merged = current.metadata.labels.clone();
         merged.remove(fleet_api::plugin::CREATOR);
         merged.extend(labels.iter().map(|(k, v)| (k.clone(), v.clone())));
@@ -251,30 +211,18 @@ pub fn delete(store: &dyn Store, kind: &str, name: &str) -> Result<DeleteOutcome
     store.delete(kind, name, FieldManager::Apply)
 }
 
-/// `cr-` and the first twelve hex digits of the SHA-256 of the canonical
-/// ref: one change names one object, two projects that flatten alike cannot
-/// collide, and long project paths fit.
 pub fn derived_name(reference: &ChangeRef) -> String {
     let digest = Sha256::digest(reference.canonical().as_bytes());
     let hex: String = digest.iter().take(6).map(|b| format!("{b:02x}")).collect();
     format!("cr-{hex}")
 }
 
-/// `conv-` and the first twelve hex digits of the SHA-256 of
-/// `<account>/<address>`, the address as the adapter normalised it: one
-/// thread names one Conversation per account, and the account, not the
-/// address, carries the platform workspace.
 pub fn conversation_name(account: &str, conversation: &ConversationRef) -> String {
     let digest = Sha256::digest(conversation.canonical(account).as_bytes());
     let hex: String = digest.iter().take(6).map(|b| format!("{b:02x}")).collect();
     format!("conv-{hex}")
 }
 
-/// Start mirroring a change. The URL is parsed by the forge adapter for its
-/// host (a host not configured is refused), the name is derived from the
-/// canonical ref when the manifest gives none, and an existing object under
-/// the name is reused only if it mirrors the same change: its recorded
-/// `status.ref` when the controller wrote one, else its own URL parsed.
 pub fn apply_change_request(
     store: &dyn Store,
     forge: &dyn Forge,
@@ -304,9 +252,6 @@ pub fn apply_change_request(
     })
 }
 
-/// An existing ChangeRequest is reused only when it mirrors `reference`:
-/// its recorded `status.ref` once the controller wrote one, else its own
-/// URL parsed again.
 fn verify_mirrors(
     forge: &dyn Forge,
     current: &Object,
@@ -341,35 +286,23 @@ fn verify_mirrors(
 #[serde(rename_all = "camelCase")]
 pub enum DeclareOutcome {
     Declared,
-    /// The same fact was already declared: a retry of `fleet declare`.
     Unchanged,
 }
 
-/// What `fleet declare --change-request` did.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Declared {
     pub outcome: DeclareOutcome,
-    /// The declaration as appended (or found).
     pub item: Value,
-    /// The ChangeRequest's name, and whether this verb created it.
     pub change_request: String,
     pub created: bool,
 }
 
-/// `fleet declare TASK --change-request URL`: parse the URL through the
-/// Forge port (a host not configured is refused), ensure one ChangeRequest
-/// exists for it under its derived name (an existing one is reused after
-/// its `status.ref` is verified), then append `{kind, url, name}` to the
-/// Task's `status.declared` as field manager `worker`. A repeated URL is a
-/// no-op. The two steps are not atomic: a crash between them leaves a
-/// ChangeRequest nobody follows, which the next `declare` of that URL finds.
 pub fn declare_change_request(
     store: &dyn Store,
     forge: &dyn Forge,
     task_name: &str,
     url: &str,
 ) -> Result<Declared, StoreError> {
-    // Eligibility first, so an ineligible Task creates no orphan.
     eligible_for_declare(store, task_name)?;
     let url = url.trim();
     let (name, created) = ensure_change_request(store, forge, url)?;
@@ -386,7 +319,6 @@ pub fn declare_change_request(
     })
 }
 
-/// Ensure a verified mirror without applying over its operator-owned spec or labels.
 pub(crate) fn ensure_change_request(
     store: &dyn Store,
     forge: &dyn Forge,
@@ -432,9 +364,6 @@ pub(crate) fn ensure_change_request(
     ))
 }
 
-/// `fleet declare TASK --json OBJECT`: append any JSON object with a string
-/// `kind` to `status.declared`; Fleet validates nothing else. The same
-/// object again is a no-op.
 pub fn declare(
     store: &dyn Store,
     task_name: &str,
@@ -444,8 +373,6 @@ pub fn declare(
     append_declaration(store, task_name, item.clone(), |existing| *existing == item)
 }
 
-/// Both forms are accepted after the brief has a receipt and before
-/// deletion, and conclude nothing.
 fn eligible_for_declare(store: &dyn Store, name: &str) -> Result<(Object, TaskStatus), StoreError> {
     let obj = match store.get(task::KIND, name) {
         Observation::Known(Some(o)) => o,
@@ -515,17 +442,6 @@ fn parse_url(forge: &dyn Forge, url: &str, name: &str) -> Result<ChangeRef, Stor
     }
 }
 
-/// `fleet send`: queue a message for the Task's session as `cli/<user>`,
-/// under the key `task/<name>/<uid>/send/<n>`, through the store's typed
-/// append. `n` is the resourceVersion the append is made against, which the
-/// store hands out once for its whole life, so a key never repeats even
-/// after its receipt has rotated out of `status.deliveries`. `answers`
-/// names the declared Questions the message answers (`--answers ID`): the
-/// store records each in `status.answered` in the same write, first answer
-/// wins, and refuses an id that names no declared Question. The entry is
-/// returned as appended; delivery is the controller's, on its next pass.
-/// An answer to a Concluded Task is an amendment instead, as `fleet amend`
-/// appends it: the work it starts re-opens the Task and can end in a result.
 pub fn send(
     store: &dyn Store,
     clock: &dyn Clock,
@@ -603,11 +519,9 @@ pub fn send(
     )))
 }
 
-/// What `fleet send` did.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Sent {
     Queued(InboxEntry),
-    /// An answer to a Concluded Task, appended as an amendment.
     Amended(Amended),
 }
 
@@ -619,17 +533,12 @@ fn concluded(obj: &Object) -> Result<bool, StoreError> {
     Ok(st.phase == Phase::Concluded)
 }
 
-/// What a person does with an inbox entry TaskController gave up on.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Resolution {
-    /// Queue the same message again under a fresh `send` key.
     Retry,
-    /// Remove it; it is never delivered.
     Drop,
 }
 
-/// `fleet send --retry` and `--drop`: resolve the given-up entry under
-/// `key`. Returns the queued copy for a retry.
 pub fn resolve_inbox(
     store: &dyn Store,
     clock: &dyn Clock,
@@ -666,10 +575,6 @@ pub fn resolve_inbox(
     )))
 }
 
-/// `fleet event publish` from outside a session: append one event to
-/// `board` as `cli/<user>`, through the store's typed append under its
-/// lock. No lease is needed. A publish whose key this source already used
-/// on the board answers the first event, marked `duplicate`.
 pub fn publish_event(
     store: &dyn Store,
     board: &str,
@@ -683,10 +588,6 @@ pub fn publish_event(
         .ok_or_else(|| StoreError::Unknown(format!("{board}: the append answered no event")))
 }
 
-/// `fleet event subscribe`: add `subscription` to the Task's
-/// `spec.subscriptions`, compare-and-swap. Refused when the Task already
-/// subscribes to the Board with the same filter. The Board need not exist
-/// yet: TaskController reads it from its first event once it does.
 pub fn subscribe(
     store: &dyn Store,
     name: &str,
@@ -708,9 +609,6 @@ pub fn subscribe(
     })
 }
 
-/// `fleet event unsubscribe`: remove the Task's subscription to `board`
-/// with `filter`, compare-and-swap. TaskController drops its cursor on its
-/// next pass; a notice already queued is still delivered.
 pub fn unsubscribe(
     store: &dyn Store,
     name: &str,
@@ -782,15 +680,9 @@ fn edit_subscriptions(
     )))
 }
 
-/// The most events one `fleet event list` returns.
 pub const MAX_EVENT_LIST: usize = 10_000;
 const EVENT_READ_PAGE: usize = 1_000;
 
-/// `fleet event list`: the first `limit` events after `after` that `filter`
-/// keeps, oldest first, read through the store without a lock, up to the
-/// head of the Board's log when the list starts: an event published during
-/// the list is left to the next one. `Expired` when the log no longer holds
-/// every event after `after`.
 pub fn list_events(
     store: &dyn Store,
     board: &str,
@@ -827,9 +719,6 @@ pub fn list_events(
     }
 }
 
-/// Ask TaskController to resume a paused Task's session for a view, as an
-/// inbox entry would: `status.wakeRequestedAt` set to now. The resume is the
-/// controller's, on its next pass. Returns the Task as written.
 pub fn wake(store: &dyn Store, clock: &dyn Clock, name: &str) -> Result<Object, StoreError> {
     for _ in 0..CAS_TRIES {
         let obj = match store.get(task::KIND, name) {
@@ -856,9 +745,6 @@ pub fn wake(store: &dyn Store, clock: &dyn Clock, name: &str) -> Result<Object, 
     )))
 }
 
-/// Ask TaskController to restart a Task's session once: its agent stops
-/// and starts again in the same session, on its conversation, or on a new
-/// one when `fresh`. Returns the Task as written.
 pub fn restart(
     store: &dyn Store,
     clock: &dyn Clock,
@@ -894,9 +780,6 @@ pub fn restart(
     )))
 }
 
-/// Ask TaskController to pause a Task's session now, as an idle pause
-/// would: `status.pauseRequestedAt` set to now. The pause is the
-/// controller's, on its next pass. Returns the Task as written.
 pub fn pause(store: &dyn Store, clock: &dyn Clock, name: &str) -> Result<Object, StoreError> {
     for _ in 0..CAS_TRIES {
         let obj = match store.get(task::KIND, name) {
@@ -933,8 +816,6 @@ fn check_event_limit(limit: usize) -> Result<(), StoreError> {
     }
 }
 
-/// A reader that follows a Board (`fleet event wait` and `watch`): `after`
-/// is the `seq` of the last event it read, whether `filter` kept it or not.
 #[derive(Debug, Clone)]
 pub struct EventCursor {
     pub board: String,
@@ -942,21 +823,9 @@ pub struct EventCursor {
     pub filter: Filter,
 }
 
-/// The most pages of the log one [`EventCursor::next`] reads, so a reader
-/// behind a Board that grows faster than it reads still returns between
-/// pages to check its deadline and hand on what it kept.
 pub const MAX_EVENT_PAGES: usize = 4;
 
 impl EventCursor {
-    /// The events after `after` that `filter` keeps, at most `limit`, oldest
-    /// first, read through the store without a lock. `after` moves past each
-    /// event read, kept or not, and stops at the last event answered when
-    /// `limit` cuts the answer, so the next call neither repeats an event nor
-    /// passes one over. It reads at most [`MAX_EVENT_PAGES`] pages: an empty
-    /// answer means the reader has caught up with the log only when `after`
-    /// did not move. A read that expires or fails after some events were kept
-    /// answers those events, and the next call meets it again. `Expired`
-    /// and an error leave `after` where the last read left it.
     pub fn next(&mut self, store: &dyn Store, limit: usize) -> Result<Page, StoreError> {
         check_event_limit(limit)?;
         let mut kept = Vec::new();
@@ -985,15 +854,10 @@ impl EventCursor {
     }
 }
 
-/// Whether a read that failed with `e` may work on the next poll: another
-/// writer held the store, or the store could not tell. `fleet event wait`
-/// and `watch` read again; any other error ends them.
 pub fn is_transient(e: &StoreError) -> bool {
     matches!(e, StoreError::Busy(_) | StoreError::Unknown(_))
 }
 
-/// How a waiting verb polls: every `every_ms` through `pause`, telling
-/// `warn` of each [transient](is_transient) read it reads again after.
 pub struct Poll<'a> {
     pub every_ms: u64,
     pub pause: &'a mut dyn FnMut(u64),
@@ -1019,11 +883,6 @@ impl Poll<'_> {
     }
 }
 
-/// `fleet event wait`: the first answer of `cursor` that holds an event, or
-/// `Expired`, reading again until the clock reaches `deadline`: at once
-/// while the cursor still moves, every poll once it has caught up. A
-/// [transient](is_transient) read is warned of and read again. `None` when
-/// no event came by then.
 pub fn wait_events(
     store: &dyn Store,
     clock: &dyn Clock,
@@ -1050,10 +909,6 @@ pub fn wait_events(
     }
 }
 
-/// What `fleet event publish --wait` reads before it appends its line to
-/// the outbox: the Task whose session key `session_key` is, its
-/// `status.outbox`, and the head of the line's Board (0 for a Board that is
-/// not there, whose line Fleet will skip).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BeforeAppend {
     pub task: String,
@@ -1063,8 +918,6 @@ pub struct BeforeAppend {
     pub board_uid: Option<String>,
 }
 
-/// Read [`BeforeAppend`] through the store, without a lock. The line's
-/// content is not trusted to name the Task: the session key is.
 pub fn before_append(
     store: &dyn Store,
     session_key: &str,
@@ -1123,9 +976,6 @@ fn outbox_of(task: &Object) -> Result<fleet_api::event::OutboxCursor, StoreError
 }
 
 impl BeforeAppend {
-    /// The line appended from `offset` to `end` of the outbox. A line that
-    /// starts below the outbox cursor is in a file made again: Fleet reads
-    /// it under the next generation, and derives its key from that one.
     pub fn queued(&self, offset: u64, end: u64, board: &str, key: Option<String>) -> QueuedLine {
         let generation = if offset < self.outbox.offset {
             self.outbox.generation + 1
@@ -1146,10 +996,6 @@ impl BeforeAppend {
     }
 }
 
-/// A line `fleet event publish --wait` appended to its session's outbox:
-/// the Task that reads it, the board and key its event has, where it lies
-/// in which generation of the outbox, and the board's head and uid before
-/// it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct QueuedLine {
     pub task: String,
@@ -1163,32 +1009,16 @@ pub struct QueuedLine {
     pub board_uid: Option<String>,
 }
 
-/// Where Fleet is with a [`QueuedLine`].
 #[derive(Debug, Clone, PartialEq)]
 pub enum Ingest {
-    /// Not read in yet.
     Pending,
-    /// Read in: the event the board holds for it, and whether that event
-    /// was there before the line (a key the Task already used).
     Appended {
         event: Box<BoardEvent>,
         duplicate: bool,
     },
-    /// Read and skipped, for this reason.
     Skipped(String),
 }
 
-/// Where Fleet is with `line`, read through the store without a lock.
-/// Pending until the Task's `status.outbox`, as a (generation, offset)
-/// pair, reaches the line's end. TaskController appends a line's event
-/// before it moves the cursor past it, so from then on the event is on the
-/// board, unless `lastSkipped` names the line in its own generation: a
-/// line the store refused is skipped even when its key matches an older
-/// event, and a skip in a later file is another line's. Otherwise the event is
-/// above the head read before the append, or at or below it for a key the
-/// Task already used. A Board made again since then holds no event
-/// from before the line, so any event found there is new. A line whose event
-/// is in neither place was skipped, or is no longer on the board.
 pub fn ingested(store: &dyn Store, line: &QueuedLine) -> Result<Ingest, StoreError> {
     let owner = match store.get(task::KIND, &line.task) {
         Observation::Known(Some(t)) if t.metadata.uid == line.uid => t,
@@ -1230,10 +1060,6 @@ pub fn ingested(store: &dyn Store, line: &QueuedLine) -> Result<Ingest, StoreErr
     )))
 }
 
-/// `fleet event publish --wait` inside a session: [`ingested`] every poll
-/// until it is no longer `Pending`, or until the clock reaches `deadline`,
-/// which answers `Pending`. A [transient](is_transient) read is warned of
-/// and read again.
 pub fn wait_ingested(
     store: &dyn Store,
     clock: &dyn Clock,
@@ -1290,36 +1116,26 @@ fn find_published(
     Ok(None)
 }
 
-/// What `fleet amend` asks for.
 #[derive(Debug, Clone, Default)]
 pub struct AmendRequest {
     pub text: String,
     pub reason: Option<String>,
     pub outputs: std::collections::BTreeMap<String, OutputDecl>,
-    /// The declared Questions the amendment answers.
     pub answers: Vec<String>,
-    /// Refuse unless the Task is at this generation.
     pub if_generation: Option<u64>,
 }
 
-/// What `fleet amend` did.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Amended {
     pub task: String,
-    /// 1 for the Task's first amendment.
     pub amendment: usize,
     pub previous_generation: u64,
     pub generation: u64,
-    /// The inbox entry that delivers it.
     pub key: String,
     pub from: String,
 }
 
-/// Add to a Task's brief: append an amendment to `spec.amendments`, which
-/// bumps the generation, and queue its delivery to the same session, in one
-/// write. The caller never needs a generation; `if_generation` is an
-/// optional precondition for one that must not land after another write.
 pub fn amend(
     store: &dyn Store,
     clock: &dyn Clock,
@@ -1460,14 +1276,9 @@ fn amend_once(
 #[serde(rename_all = "camelCase")]
 pub enum ResultOutcome {
     Recorded,
-    /// The same result was already recorded: a retry of `fleet result`.
     Unchanged,
 }
 
-/// The worker's answer: written as field manager `worker` into
-/// `status.result`, only once the brief it answers has a receipt, and never
-/// while an amendment waits to be delivered. It names `status.brief`'s
-/// generation and carries the outputs declared up to it.
 pub fn record_result(
     store: &dyn Store,
     name: &str,
@@ -1499,8 +1310,6 @@ pub fn record_result(
                 obj.key()
             )));
         };
-        // An amendment still to deliver is owed an answer first; one given
-        // up on never reached the worker, so it holds nothing.
         if let Some(pending) = st.inbox.iter().find(|e| {
             e.amends.is_some_and(|g| g > brief.generation)
                 && !st.delivery_attempts.get(&e.key).is_some_and(|a| a.failed)
@@ -1527,8 +1336,6 @@ pub fn record_result(
                 problems.join("; ")
             )));
         }
-        // Write-once within a generation; a result for an amended brief
-        // replaces the one for an older generation.
         match &st.result {
             Some(existing) if *existing == result => return Ok(ResultOutcome::Unchanged),
             Some(existing) if existing.generation == result.generation => {
@@ -1586,7 +1393,6 @@ mod tests {
             conversation_name("slack-main", &thread.channel()),
             "per thread"
         );
-        // The canonical string is `<account>/<address>`, and the hash is of exactly that.
         use sha2::{Digest, Sha256};
         let hex: String = Sha256::digest(b"slack-main/slack:C0123ABCD:1730000000.000100")
             .iter()
@@ -1606,11 +1412,6 @@ mod tests {
     }
 }
 
-/// Start mirroring a thread by manifest. The adapter of the account parses
-/// the address (an account or route not configured is refused), the name
-/// derives from the account and the normalised address when the manifest
-/// gives none, and a manifest giving one thread's derived name with
-/// another's address is refused: one thread names one object.
 pub fn apply_conversation(
     store: &dyn Store,
     gateway: &dyn Gateway,
@@ -1669,7 +1470,6 @@ pub fn apply_conversation(
             obj.key()
         )));
     }
-    // The stored address is the adapter's normalised one.
     obj.spec["address"] = json!(reference.address());
     store.validate(&obj)?;
     if !obj.status.is_null() {
@@ -1681,29 +1481,26 @@ pub fn apply_conversation(
     upsert(store, obj, create_only, |_| Ok(()))
 }
 
-/// What `fleet gateway receive` did.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "outcome", rename_all = "lowercase")]
 pub enum Received {
-    /// The delivery is spooled on the thread's Conversation.
     Written {
         conversation: String,
         delivery: String,
     },
-    /// The delivery id was spooled or numbered before: nothing changed.
     Duplicate {
         conversation: String,
         delivery: String,
     },
-    /// Nothing the Gateway mirrors.
-    Ignored { why: String },
-    /// A heartbeat was recorded on the account's Listener.
-    Beat { listener: String, instance: String },
+    Ignored {
+        why: String,
+    },
+    Beat {
+        listener: String,
+        instance: String,
+    },
 }
 
-/// Why the verb refused or could not read an envelope, as counted on the
-/// Listener. `fault` marks the listener's own: not an envelope, or the
-/// wrong `verified`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Refusal {
     NotEnvelope,
@@ -1737,12 +1534,6 @@ fn not_configured(account: &str) -> StoreError {
     ))
 }
 
-/// Fetch a file shared in the thread a Task is tied to, into `dir`, for
-/// the Task's worker to read. Only a file that a message in the tied
-/// Conversation's mirror shares can be fetched, and only through that
-/// Conversation's account. A file the message already says cannot be
-/// fetched is refused without a platform call. The verb writes nothing to
-/// the store and takes no lease.
 pub fn fetch_file(
     store: &dyn Store,
     gateway: &dyn Gateway,
@@ -1813,15 +1604,6 @@ pub fn fetch_file(
     }
 }
 
-/// `fleet gateway receive --account NAME`: read one envelope and add its
-/// event to the thread's Conversation, as `listener/<account>`, without the
-/// lease. An event in a channel no route covers is ignored; one in a thread
-/// Fleet does not mirror yet creates the Conversation only when it could
-/// start a Task, earn a refusal, or is Fleet's own keyed post; a
-/// redelivered event changes nothing. Every envelope refused or unreadable
-/// is counted on the account's Listener, which the verb creates if the
-/// manager has not. The error maps to the verb's exit code: refused is 1,
-/// Unknown is 4, a conflict the retries did not resolve is 5.
 pub fn receive(
     store: &dyn Store,
     clock: &dyn Clock,
@@ -1966,12 +1748,6 @@ pub fn receive(
     )))
 }
 
-/// The Gateway controller's `Receive` action: add Fleet's opening post in a
-/// thread it opened to the thread's Conversation, as the receive verb would,
-/// creating the Conversation under the name its account and address derive.
-/// Written as `by`, the Gateway controller, under the lease; a delivery already
-/// spooled or numbered is a duplicate. The store's doubt is Unknown, never
-/// a refusal.
 pub fn receive_opened(
     store: &dyn Store,
     account: &str,
@@ -2035,11 +1811,6 @@ pub fn receive_opened(
     ))
 }
 
-/// Whether an edit or a removal that does not say it is in a DM is in a
-/// thread Fleet mirrors as one. A platform may leave the chat's type out of
-/// such an event, and the thread's route must still cover it. Only an
-/// account with a DM route reads the store for this; a missing
-/// Conversation is no DM, and an unknown one is the store's doubt.
 fn mirrored_as_dm(
     store: &dyn Store,
     config: &GatewayConfig,
@@ -2057,9 +1828,6 @@ fn mirrored_as_dm(
     }
 }
 
-/// Whether an event in a thread Fleet does not mirror yet is worth a
-/// Conversation: it could start a Task, earn a refusal, or is Fleet's own
-/// keyed post. Other chatter costs no object.
 fn worth_mirroring(
     route: &fleet_api::gateway::RouteConfig,
     direct: bool,
@@ -2075,9 +1843,6 @@ fn worth_mirroring(
         || (message.author.kind == AuthorKind::Fleet && message.key.is_some())
 }
 
-/// `fleet gateway receive --account NAME --beat`: record one heartbeat on
-/// the account's Listener, stamped by this clock, creating the Listener if
-/// the manager has not yet.
 pub fn beat(
     store: &dyn Store,
     clock: &dyn Clock,
@@ -2131,9 +1896,6 @@ pub fn beat(
     )))
 }
 
-/// Count a refused or unreadable envelope on the account's Listener. Best
-/// effort: the refusal is already decided, and a Listener the store cannot
-/// write changes nothing about it.
 fn record_refusal(store: &dyn Store, clock: &dyn Clock, account: &str, why: Refusal) {
     let name = listener_name(account);
     let by = FieldManager::Listener(account.to_string());
@@ -2155,7 +1917,6 @@ fn record_refusal(store: &dyn Store, clock: &dyn Clock, account: &str, why: Refu
     }
 }
 
-/// The account's Listener, created by exclusive creation when absent.
 fn ensure_listener(store: &dyn Store, account: &str) -> Result<Object, StoreError> {
     let name = listener_name(account);
     for _ in 0..CAS_TRIES {
@@ -2187,9 +1948,6 @@ fn ensure_listener(store: &dyn Store, account: &str) -> Result<Object, StoreErro
     ))
 }
 
-/// One Listener per configured account, as the manager loads the config:
-/// each created by exclusive creation when absent. Returns what could not
-/// be ensured, by account, so a run reports it without stopping.
 pub fn ensure_listeners(store: &dyn Store, config: &GatewayConfig) -> Vec<String> {
     let mut problems = Vec::new();
     for account in config.accounts.keys() {

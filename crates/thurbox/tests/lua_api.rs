@@ -1,18 +1,3 @@
-//! The mod API against its one declaration, `kernel::lua_api` (issue #1476).
-//!
-//! Two directions. The declaration files are what `lua_api` renders — the
-//! generated region of `ui/lib/thurbox.d.lua`, the `thurbox.*` entries of
-//! `thurbox.yml` and the whole `tests/fixtures/lua_std/reads.lua` — and a real
-//! publish serves no key `lua_api` does not declare. Either one alone lets a
-//! field drift: the first is satisfied by a schema missing the field, the second
-//! by declaration files nobody regenerated.
-//!
-//! `THURBOX_REGENERATE=1` (what `just lua-api` sets) rewrites the files instead
-//! of comparing them.
-//!
-//! `meta` drives the first field added under the versioned API, `session.meta`,
-//! from the real `thurbox-cli` to the bundled session list.
-
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
@@ -27,7 +12,6 @@ fn root() -> PathBuf {
     PathBuf::from(concat!(env!("CARGO_MANIFEST_DIR"), "/../.."))
 }
 
-/// Compare `path` with `expected`, or write it when regenerating.
 fn holds(path: &Path, expected: &str) -> Result<(), String> {
     if std::env::var_os("THURBOX_REGENERATE").is_some() {
         std::fs::write(path, expected).expect("write a generated file");
@@ -82,10 +66,6 @@ fn granted_declares_exactly_the_capabilities() {
     assert_eq!(declared, capabilities);
 }
 
-// ── The walk ──────────────────────────────────────────────────────────────
-
-/// A class as a Lua table literal the probe below walks: each field names its
-/// kind and, below a record, list or map, the fields of its rows.
 fn shape(class: &Class, without: Option<&str>) -> String {
     let fields: Vec<String> = class
         .fields
@@ -109,8 +89,6 @@ fn shape(class: &Class, without: Option<&str>) -> String {
     format!("{{ {} }}", fields.join(", "))
 }
 
-/// A pane that walks every key of `thurbox`, and of every row beneath it,
-/// against `api` and renders `declared` or the first key that is not.
 fn walker(api: &str) -> String {
     let roles: Vec<String> = lua_api::roles()
         .iter()
@@ -206,7 +184,6 @@ fn row(name: &str) -> SessionRow {
     }
 }
 
-/// A place with every optional field set.
 fn box_place() -> HostRow {
     HostRow {
         name: "box".into(),
@@ -218,8 +195,6 @@ fn box_place() -> HostRow {
     }
 }
 
-/// A snapshot with every optional field of every row set, so a key the
-/// declaration lacks is one the walk meets.
 fn full() -> Snapshot {
     Snapshot {
         sessions: vec![row("lead")],
@@ -281,8 +256,6 @@ fn publish(host: &LuaHost, snapshot: &Snapshot) {
             untracked_omitted: 1,
         },
     );
-    // Every creation-flow read served at once, `branches` as a failure so the
-    // `error` field is published too.
     let mut repos = thurbox::kernel::repos::RepoStore::new();
     repos.set_bookmarks_for_test(
         "",
@@ -424,7 +397,6 @@ fn every_key_a_publish_serves_is_declared() {
 
 #[test]
 fn the_walk_names_a_published_key_left_undeclared() {
-    // What the walk exists to catch, proven on a field every publish serves.
     let api = shape(&API_ROOT, None).replacen(
         "[\"sessions\"] = { kind = \"list\", fields = { [\"id\"] = { kind = \"leaf\" }, ",
         "[\"sessions\"] = { kind = \"list\", fields = { ",
@@ -439,7 +411,6 @@ fn the_walk_names_a_published_key_left_undeclared() {
     publish(&host, &full());
     assert_eq!(render_text(&host), "thurbox.api is not declared");
 
-    // An optional field two levels down, on a row of a list.
     let api = shape(&API_ROOT, None).replacen(", [\"merged\"] = { kind = \"leaf\" }", "", 1);
     assert_ne!(api, shape(&API_ROOT, None), "the declaration was removed");
     let (_dir, host) = host_with(&walker(&api));
@@ -449,8 +420,6 @@ fn the_walk_names_a_published_key_left_undeclared() {
         "thurbox.sessions[].git.merged is not declared"
     );
 }
-
-// ── The contract number ───────────────────────────────────────────────────
 
 #[test]
 fn thurbox_api_is_the_contract_number() {
@@ -466,9 +435,6 @@ fn thurbox_api_is_the_contract_number() {
 
 #[test]
 fn a_mod_needing_a_newer_api_is_refused_and_says_why() {
-    // A load is all-or-nothing, as for any pane that does not load: the
-    // refusal is the load error, and it starts with the file stem, which is
-    // what `inventory::rows` pins a failure on.
     let future = API + 1;
     let dir = tempfile::tempdir().expect("tempdir");
     let mods = dir.path().join("mods");
@@ -493,7 +459,6 @@ fn a_mod_needing_a_newer_api_is_refused_and_says_why() {
         "{error}"
     );
 
-    // The contract it was written against, or an older one, loads.
     let (_dir, host) = host_with(&format!(
         r#"return {{
           name = "walk", slot = "a", requires_api = {API},

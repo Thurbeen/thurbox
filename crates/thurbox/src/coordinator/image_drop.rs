@@ -1,20 +1,7 @@
-//! Recognising a drop of local image files on a terminal.
-//!
-//! A terminal delivers a dropped file as a paste of its path. On this machine
-//! that path is what the agent needs; on another machine it names nothing, so
-//! a drop on a remote session is refused rather than typed (ADR-41: neither the
-//! runtime protocol nor Fleet's command line yet carries a file to a Task's
-//! host).
-
 use std::path::PathBuf;
 
-/// The extensions a drop counts as an image by.
 const IMAGE_EXTENSIONS: [&str; 7] = ["png", "jpg", "jpeg", "gif", "webp", "bmp", "heic"];
 
-/// The image files `text` drops, when it is nothing but absolute paths with an
-/// image extension, as a terminal pastes a drop; `None` for any other text.
-/// Decided from the text alone: this runs on the paste, on the loop, and a
-/// filesystem check could stall it on a mount that does not answer.
 pub fn dropped_images(text: &str) -> Option<Vec<PathBuf>> {
     let words = split_words(text.trim_matches(|c: char| c.is_ascii_whitespace()))?;
     if words.is_empty() {
@@ -32,15 +19,7 @@ pub fn dropped_images(text: &str) -> Option<Vec<PathBuf>> {
         })
         .collect()
 }
-/// Split like a shell would for the three spellings a terminal uses: single
-/// quotes, double quotes and backslash escapes. Backslashes are path
-/// separators on Windows, so they escape nothing there. `None` on an
-/// unterminated quote.
-///
-/// Only ASCII whitespace separates words, as in a shell. A terminal escapes
-/// the spaces it knows about and leaves Unicode ones bare: macOS names a
-/// screenshot `… at 4.33.57\u{202F}PM.png`, and Ghostty drops it with that
-/// narrow no-break space unescaped, so `char::is_whitespace` would split it.
+// Ghostty drops a macOS screenshot name with its U+202F unescaped, so only ASCII whitespace splits.
 fn split_words(text: &str) -> Option<Vec<String>> {
     let escapes = !cfg!(windows);
     let mut words = Vec::new();
@@ -82,7 +61,6 @@ fn split_words(text: &str) -> Option<Vec<String>> {
     Some(words)
 }
 
-/// A `file://` URI's path, percent-decoded; any other word unchanged.
 fn file_uri_path(word: &str) -> Option<String> {
     let Some(rest) = word.strip_prefix("file://") else {
         return Some(word.to_string());
@@ -105,8 +83,7 @@ fn file_uri_path(word: &str) -> Option<String> {
         }
     }
     let mut path = String::from_utf8(out).ok()?;
-    // A drive URI spells its path /C:/..., which Windows reads as rooted but
-    // not absolute. Strip the URI separator only for a drive's absolute path.
+    // Windows reads a drive URI's `/C:/...` as rooted but not absolute.
     if cfg!(windows)
         && path.as_bytes().get(..4).is_some_and(|prefix| {
             prefix[0] == b'/'
@@ -124,13 +101,9 @@ fn file_uri_path(word: &str) -> Option<String> {
 mod tests {
     use super::dropped_images;
 
-    /// The decision is made from the text alone: a path under a directory
-    /// that does not exist is still a drop, so a stalled mount cannot hold
-    /// the paste that asks.
     #[test]
     fn a_drop_is_known_by_its_shape_without_touching_the_filesystem() {
-        // An absolute path is this platform's: a drive path on Windows,
-        // where a terminal's drop always names the drive.
+        // A terminal's drop on Windows always names the drive.
         let (gone, two) = if cfg!(windows) {
             (
                 r"C:\nonexistent-thurbox-dir\sub\shot.png",
@@ -147,8 +120,7 @@ mod tests {
         for text in ["shot.png", "/tmp/notes.txt", "hello /tmp/a.png", ""] {
             assert!(dropped_images(text).is_none(), "{text:?}");
         }
-        // A rooted path with no drive is not absolute on Windows, and no
-        // drop there spells one: it is text, typed as is.
+        // A rooted path with no drive is not absolute on Windows.
         if cfg!(windows) {
             assert!(dropped_images("/rooted/no-drive.png").is_none());
         }

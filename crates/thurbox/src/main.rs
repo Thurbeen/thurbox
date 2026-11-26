@@ -1,16 +1,3 @@
-//! thurbox — a session engine with a Lua-driven renderer.
-//!
-//! The kernel owns no pane. It resolves rects, calls mods, paints what they
-//! return, and refreshes a snapshot of the session engine on its own schedule.
-//! Every surface you see — the session list included — is a file under `ui/`
-//! that you can edit while this is running.
-//!
-//! This file holds the loop's state — `App`, whose every field is documented
-//! with what broke without it — plus the loop's constants. Startup lives in
-//! `coordinator::boot`, the terminal/chrome helpers in `coordinator::chrome`,
-//! and `App`'s behaviour in the rest of [`coordinator`], split by what each
-//! group of methods is for.
-
 mod coordinator;
 
 use std::error::Error;
@@ -38,164 +25,47 @@ use thurbox::kernel::theme::Themes;
 use thurbox::kernel::watch::Watcher;
 use thurbox::ui_control::Server as UiControlServer;
 
-/// How long the loop blocks waiting for input.
-///
-/// v1 uses 10ms (`src/main.rs`). At 50ms a keystroke could sit unnoticed for a
-/// twentieth of a second before the loop even looked at it, which is felt as
-/// lag however fast the frame that follows is. Polling this often is only
-/// affordable because the expensive per-frame work below is gated on a paint
-/// actually being due.
 const TICK: Duration = Duration::from_millis(10);
 
-/// The input poll's timeout once nothing has happened for [`QUIESCENT_AFTER`].
-///
-/// `event::poll` returns the instant an event arrives, so lengthening this costs
-/// **no** input latency — a keystroke wakes the thread either way. What it slows
-/// is noticing things that do not wake it: new agent output, a worker result, a
-/// row another process wrote. At rest there is by definition none of the first,
-/// and a 50ms delay on the others is not perceptible; the first sign of activity
-/// puts the loop straight back on [`TICK`].
-///
-/// Worth 94 wakes a second against 20 on an idle interface, which was half its
-/// entire cost.
 const IDLE_TICK: Duration = Duration::from_millis(50);
 
-/// How long nothing must happen before the loop slows its poll to
-/// [`IDLE_TICK`]. Longer than a keypress-to-repaint round trip, so typing never
-/// crosses into the slow poll and back.
 const QUIESCENT_AFTER: Duration = Duration::from_millis(500);
-/// Editors save in bursts (write, rename, chmod); wait for the dust to settle.
 const DEBOUNCE: Duration = Duration::from_millis(120);
-/// Longest a frame may go unpainted when nothing has changed.
-///
-/// Covers time-driven content the diff cannot see — a spinner, a clock — and is
-/// what turns an idle app from ~20 fps into ~4. v1 uses the same floor.
 const FORCE_REDRAW_INTERVAL: Duration = Duration::from_millis(250);
 
-/// Longest a session's links may be out of date while its screen keeps moving.
-///
-/// The scan is gated on the surface's output stamp, which is exact for a screen
-/// that has stopped and useless for one that has not: a printing agent moves it
-/// on every frame, so the scan ran per painted frame — walking the whole vt100
-/// grid, and, because the URLs on a scrolling screen sit on different rows each
-/// time, publishing a *changed* answer that moved the data epoch. Moving the
-/// epoch is what ADR-P16's gating exists to avoid: it rebuilds every published
-/// group and throws away every pure pane's cached tree. So an agent printing
-/// anything link-shaped — which is to say every coding agent — turned the whole
-/// change-gated frame back into an ungated one.
-///
-/// Deliberately paced rather than driven by the stamp alone, and 250ms because
-/// nothing acts on a link's *position* faster than that: a click resolves
-/// against the live grid ([`Terminals::url_at`]) and the OSC 8 repaint
-/// recomputes from it too, so this bounds how stale the *published* map may be,
-/// and nothing else. Measured with `scripts/dev/perf-run.sh`, 19 sessions at
-/// 255x62 with three agents printing 30 lines a second: 8.3% of a core down to
-/// 5.3%, frame p50 4ms down to 2ms, pane trees served from the cache 179 up to
-/// 3347. Against the same run with no URLs in its output, the penalty for
-/// printing one falls from +66% to +15% — ADR-P20 says why the rest is left.
 const LINK_SCAN_INTERVAL: Duration = Duration::from_millis(250);
 
-/// Iterations between two `perf_window` log lines (~10s at the 10ms tick).
 const PERF_WINDOW_TICKS: u64 = 1000;
 
-/// How often the JSON snapshot is written while timing is active. Slower than
-/// the log line because each one rewrites `perf.json`, which `thurbox-cli perf`
-/// reads.
 const PERF_PUBLISH_INTERVAL: Duration = Duration::from_secs(5);
 
-/// The floor between two paints.
-///
-/// The poll above runs every 10ms so input is noticed at once, but a frame here
-/// costs far more than v1's -- every visible pane is rebuilt through Lua and
-/// converted back. Without a cap, an agent streaming output marks the screen
-/// dirty on every poll (`Terminals::output_generation`, checked in the loop) and
-/// drives 100 paints a second for a terminal nobody can read that fast. 60fps
-/// keeps typing and output feeling immediate while bounding the cost of a chatty
-/// agent.
-///
-/// This cap only bites once output *causes* a frame at all. It did not until
-/// the generation check was hoisted into the loop — before that a printing agent
-/// was drawn at the `FORCE_REDRAW_INTERVAL` floor, four times a second, which is
-/// what made v2 feel less responsive than v1.
 const MIN_FRAME_INTERVAL: Duration = Duration::from_millis(16);
 
 const FAILURE_HOLD: Duration = Duration::from_secs(5);
 
-/// The floor when the only thing owed a frame is new agent output.
-///
-/// Typing has to feel instant; watching a log scroll does not, and applying the
-/// 16ms floor to both meant a chatty agent drove ~60 paints a second to show 30
-/// lines. Measured across the interval (`docs/thurbox/performance.md`, ADR-P17): 62fps
-/// costs 21.2% of a core, 30fps costs 14.4% and 20fps 13.1% — most of the saving
-/// arrives by 30, and below it the scroll starts to look stepped rather than
-/// smooth. So: 30fps for output, and a keystroke still repaints on the next
-/// frame.
 const OUTPUT_FRAME_INTERVAL: Duration = Duration::from_millis(33);
 
-/// How long after a keystroke reaches a terminal its echo is watched for.
-///
-/// The echo of a key is agent output, so it used to be painted on
-/// [`OUTPUT_FRAME_INTERVAL`] — measured from the keystroke's own frame, which
-/// had just painted. That put 25–48 ms on every key (the multiplexer benchmark,
-/// against 1–2 ms for tmux and Herdr). Output that answers a key is the one
-/// kind somebody is waiting for, so the first of it after a keystroke gets a
-/// frame with no floor, and the loop watches for it at [`ECHO_POLL`] rather
-/// than at [`TICK`], since nothing wakes the input poll when output lands.
-///
-/// One floor-free frame per keystroke, not per chunk: an agent streaming while
-/// you type would otherwise be painted at the poll rate. Long enough for a slow
-/// agent or a remote host to answer; an echo later than this is painted on the
-/// ordinary floors, as all output was before.
 const ECHO_WINDOW: Duration = Duration::from_millis(150);
 
-/// How long the keystroke's own frame waits for the echo.
-///
-/// A key sent to a terminal changes nothing on screen by itself; what shows it
-/// is the echo. Painted at once, that frame was a paint per key that showed
-/// nothing new, and an echo arriving during it waited for it to finish. Held
-/// this long, the two are one frame whenever the agent answers in time, and
-/// a key that is never echoed is painted one input frame late.
 const ECHO_HOLD: Duration = MIN_FRAME_INTERVAL;
 
-/// How long after the last keystroke into a terminal the last full frame is
-/// kept for the next echo frame.
-///
-/// A copy of the screen is a cell per column and row — ~0.4 MiB at 200x50 —
-/// and a copy made on every full frame. Kept only while someone types, an
-/// interface at rest carries neither; the first key after a pause has its echo
-/// painted as a full frame, and every key after it as an echo frame.
 const KEEP_FRAME_WHILE_TYPING: Duration = Duration::from_secs(2);
 
-/// The input poll's slice while an echo is owed: the most the echo can wait
-/// before the loop notices it. Only an owed echo pays for it, and between two
-/// slices it costs one atomic load.
 const ECHO_POLL: Duration = Duration::from_millis(1);
 
-/// Consecutive input-read failures tolerated before the loop gives up.
-///
-/// One is a terminal handing crossterm bytes it cannot parse, which is a
-/// keystroke to drop rather than a reason to quit. A run of them is a stream
-/// that has gone away, and polling it forever would spin at full speed.
 const INPUT_FAILURE_LIMIT: u32 = 64;
-/// How long an outcome message stays up. v1's `STATUS_MESSAGE_TTL`.
 const STATUS_TTL: Duration = Duration::from_secs(5);
 
-// A tokio runtime is required, not decorative: adopting a session spawns its
-// reader on `spawn_blocking` and its writer on `tokio::spawn`. The render loop
-// below stays synchronous — as v1's does — and those tasks run on the worker
-// pool.
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn Error>> {
-    // Both before boot: it writes the interface's config and starts `fleet
-    // up`, which neither a flag nor a run that cannot draw may do.
     Args::parse();
     require_terminal();
     coordinator::boot::run().await
 }
-
-/// The interface takes no options: `--version`, `--help`, and a usage line
-/// for anything else. Scripts drive thurbox through `thurbox-cli`.
 #[derive(clap::Parser)]
+#[command(
+    about = "The interface takes no options: `--version`, `--help`, and a usage line for anything else. Scripts drive thurbox through `thurbox-cli`"
+)]
 #[command(
     name = "thurbox",
     version = env!("THURBOX_VERSION"),
@@ -205,8 +75,6 @@ async fn main() -> Result<(), Box<dyn Error>> {
 )]
 struct Args {}
 
-/// Exit with a clear message when stdin or stdout is not a terminal, where
-/// the interface could only crash once it tried to draw.
 fn require_terminal() {
     use std::io::IsTerminal;
     if !(std::io::stdin().is_terminal() && std::io::stdout().is_terminal()) {
@@ -224,12 +92,6 @@ struct ClickTarget {
     identity: Identity,
 }
 
-/// A node that took hold of the pointer, and where it was when it did.
-///
-/// Held rather than re-resolved on every move: a drag that wanders off a
-/// scrollbar is still that scrollbar's, and hit-testing afresh would hand it to
-/// whatever it wandered onto. Released on the button coming up, so nothing
-/// survives the press that made it.
 #[derive(Debug, Clone)]
 struct PointerGrab {
     mod_index: usize,
@@ -237,31 +99,18 @@ struct PointerGrab {
     identity: Identity,
 }
 
-/// A command seen in flight, remembered so its outcome can be reported and its
-/// session let go of when it finishes.
-///
-/// Remembered rather than read back at the end because a finished command simply
-/// leaves the list, taking what it was about with it — a deleted session's row
-/// is already gone by the time its delete reports.
 #[derive(Clone)]
 struct TrackedCommand {
     kind: &'static str,
     session: String,
     label: Option<String>,
     failed: bool,
-    /// The name a creation or a fork was given, which `session.post_create`
-    /// reports.
     name: Option<String>,
-    /// The id the created session will have (`box:review`), so
-    /// `session.post_create` finds the row it made — the command itself
-    /// names no session, and its name can be another Fleet's session's too.
     created: Option<String>,
-    /// Whether a delete was a force delete, for `session.post_delete`.
     force: bool,
 }
 
 struct App {
-    /// The private endpoint owned by this running interface.
     control: Option<UiControlServer>,
     control_revision: u64,
     control_observed: Option<serde_json::Value>,
@@ -279,249 +128,76 @@ struct App {
     ),
     host: LuaHost,
     ui_dir: PathBuf,
-    /// Where each file of the interface came from.
-    ///
-    /// Cached because answering it reads and digests every file: it changes
-    /// only when the directory does, which is exactly when the host reloads.
     sources: std::collections::BTreeMap<String, thurbox::kernel::bundled::Source>,
     watcher: Watcher,
     snapshots: SnapshotStore,
     terminals: Terminals,
     commands: CommandBus,
     diffs: DiffStore,
-    /// What the creation flow asks about: remembered repositories, directory
-    /// listings, branch lists. Requests arrive through `store` and are served
-    /// on workers, like every other read that touches the world.
     repos: thurbox::kernel::repos::RepoStore,
     metrics: Metrics,
-    /// Native clipboard handle, when the platform has one.
-    ///
-    /// Built once and kept: `clipboard::copy`/`paste` take it by reference, and
-    /// passing `None` means every paste reports an unreachable clipboard — which
-    /// is exactly what happened while this field did not exist. v1 holds the
-    /// same handle for the same reason.
     clipboard: Option<arboard::Clipboard>,
-    /// Whether the Windows clipboard holds an image, asked on a thread.
-    ///
-    /// Only ever used inside WSL, where [`Self::clipboard`] answers about the X
-    /// clipboard rather than the one being copied into — see
-    /// [`thurbox::clipboard::ImageProbe`].
     image_probe: thurbox::clipboard::ImageProbe,
-    /// The sessions the presses waiting on [`Self::image_probe`] were aimed at,
-    /// in the order they were made.
-    ///
-    /// Remembered rather than resolved when the answer lands: the question takes
-    /// ~0.42 s, which is long enough to change panes, and a paste belongs where
-    /// it was aimed — a prompt typed into whichever pane happened to be focused
-    /// a third of a second later is the corruption this whole path exists to
-    /// avoid. Bounded, because key auto-repeat makes presses faster than
-    /// answers.
     paste_targets: Vec<String>,
-    /// Terminal input held behind a paste of image paths into a remote
-    /// session, oldest first, while a worker asks whether the files are this
-    /// machine's. Everything typed or pasted meanwhile queues behind it, so an
-    /// `Enter` cannot overtake the paste it follows.
     held_input: coordinator::input::HeldInput,
-    /// How many of [`Self::paste_targets`] the question now out was asked for.
-    ///
-    /// The answer describes the clipboard at the moment it was asked, so it is
-    /// spent only on the presses already made by then; the rest wait for a
-    /// question of their own.
     probed_presses: usize,
     notifier: Notifier,
     perf: Counters,
-    /// Wall-clock stats, populated only while timing is active (ADR-P11).
     timings: thurbox::kernel::perf::Timings,
-    /// How long each startup phase took; published and logged once.
     startup: thurbox::kernel::perf::Startup,
-    /// `THURBOX_PERF_LOG` was set, read once at construction. The other half of
-    /// [`Self::perf_timing_active`] is the HUD, which can be toggled.
     perf_log: bool,
-    /// Counters as they stood when the current perf window opened, so the
-    /// `perf_window` line reports deltas rather than lifetime totals.
     perf_window_base: thurbox::kernel::perf::Snapshot,
-    /// Iteration count at which the current perf window opened.
     perf_window_tick: u64,
-    /// When the JSON snapshot was last written to the database.
     perf_published_at: Option<Instant>,
-    /// The one-shot `startup` line is logged after the first painted frame.
     first_frame_logged: bool,
-    /// True process start, taken before any startup phase — `started` is taken
-    /// during construction and so misses everything before it.
     process_start: Instant,
-    /// Whether this frame is owed to something a person did — a keypress, a
-    /// resize, a worker result they asked for — rather than to an agent
-    /// printing. Only the first kind gets [`MIN_FRAME_INTERVAL`].
     input_dirty: bool,
-    /// The echoes keystrokes sent to terminals are owed, until each arrives or
-    /// [`ECHO_WINDOW`] runs out. See `App::settle_echo`.
     echo: std::collections::VecDeque<coordinator::EchoWait>,
-    /// The surface an owed echo has arrived from: the next frame is painted at
-    /// once, with no floor at all.
     echo_due: Option<String>,
-    /// The last full frame, kept while it can be reused as the ground of an
-    /// echo frame (see `App::paint_echo_frame`) and somebody is typing.
     last_frame: Option<ratatui::buffer::Buffer>,
-    /// When a keystroke last reached a terminal — see [`KEEP_FRAME_WHILE_TYPING`].
     last_keystroke: Option<Instant>,
-    /// When anything last happened — input, output, a worker result, a repaint
-    /// that changed something. Drives the poll timeout, nothing else.
     last_activity: Instant,
-    /// The shared animation clock, advanced only while something is animating.
-    ///
-    /// Kept here rather than read from `ctx.elapsed` in the render, because
-    /// whether anything is animating is the loop's knowledge: a spinner turns
-    /// for a session that is *working*, and the creation flow's pending row for
-    /// a command in flight. With neither, the clock stands still and a pure
-    /// pane's tree survives — which is what lets an idle interface stop
-    /// rebuilding anything at all (`frame-cost`).
     animation_tick: u64,
-    /// The last `elapsed * ANIMATION_HZ` step the tick was advanced for, so a
-    /// step is counted once however many frames fall inside it.
     animation_step: u64,
-    /// Moves whenever data the loop owns and publishes does — a worker store
-    /// that took a result, the links or screen text just re-scanned, the
-    /// in-flight command list, an attach failure.
-    ///
-    /// The stores already answer "did anything land" from `poll`, so this reads
-    /// that rather than duplicating a counter inside each one: a signal derived
-    /// from the existing return value cannot drift from it. Combined with the
-    /// versions the kernel sources carry into [`Self::publish_epoch`].
     data_epoch: u64,
-    /// Active mouse text selection over a terminal surface, if any.
     selection: Option<Selection>,
-    /// The wheel notch in progress, so the tail of one detent's reports does
-    /// not step a selection again. See `coordinator::mouse`.
     wheel_notch: coordinator::mouse::WheelNotch,
-    /// The left presses in progress on one node, so a pane can tell a
-    /// double-click from two clicks. See `coordinator::mouse`.
     click_train: coordinator::mouse::ClickTrain,
     themes: Themes,
     slot_selection: std::collections::HashMap<String, usize>,
-    /// Whether a newer release exists, and the silent update if it was allowed.
     updates: thurbox::kernel::updates::Updates,
-    /// The user's settings: the live half re-read when the file changes, the
-    /// restart-only half as published at startup. See `kernel::config`.
     config: thurbox::kernel::config::Config,
     registry: Registry,
-    /// Help, settings and the theme picker: kernel-owned, overlaying, and
-    /// outside both the layout and the focus ring. See `kernel::modals`.
     modals: Modals,
-    /// Slots the arrangement actually placed on the last frame.
-    ///
-    /// A side column is only in here while it is toggled open, so this is what
-    /// keeps Tab from parking focus on a pane nobody can see — v1's rule that a
-    /// panel is "a cycle stop only while visible".
     visible_slots: std::collections::HashSet<String>,
-    /// A focus request whose slot the arrangement had not placed yet.
-    ///
-    /// Held for exactly one layout and re-asked there. See
-    /// `kernel::focus::defer_until_placed`: a pane that opens its own slot asks
-    /// for focus a frame before the slot exists, and judging that request against
-    /// the frame that already painted refuses the focus its chord existed to give.
     pending_focus: Option<usize>,
-    /// The session a `Command::Editor` asked to open the editor over, until
-    /// the loop hands the editor its tty.
     editor_request: Option<String>,
     click_targets: Vec<ClickTarget>,
-    /// The area the last frame was painted into.
-    ///
-    /// A selection outside every terminal is anchored to this, so a drag over
-    /// the session list or a modal has a rect to clamp against.
     last_area: Rect,
-    /// The terminal's size, seeded once at startup and updated from
-    /// `Event::Resize`.
-    ///
-    /// Cached because `terminal::size()` is a syscall and its two consumers run
-    /// on every iteration of a loop that polls every 10 ms.
     screen_size: (u16, u16),
-    /// The text under the current selection, read while the frame that painted
-    /// it is still in hand.
-    ///
-    /// v1 caches it the same way (`selected_text_cache`) and for the same
-    /// reason: a selection outside a terminal can only be read off the painted
-    /// buffer, and the buffer is gone by the time `Ctrl+C` arrives.
     selected_text: Option<String>,
-    /// A drag outside every terminal was released under copy-on-select and its
-    /// copy is owed.
-    ///
-    /// Made after the next paint rather than at the release: outside a
-    /// terminal the text is only read off the painted frame, and a drag whose
-    /// reports all arrived in one batch has had no paint yet. A terminal's
-    /// selection is copied at the release instead. See `App::copy_on_select`.
     copy_after_paint: bool,
-    /// The identity under the pointer, for hover highlighting.
-    ///
-    /// Stored as the identity rather than the position so a move WITHIN the
-    /// same affordance is free: the redraw is gated on this changing, not on
-    /// the pointer moving. v1 keeps the position instead and re-resolves it
-    /// every frame; this way a mouse crossing the screen costs one repaint per
-    /// affordance rather than one per cell.
     hovered: Option<Identity>,
-    /// `[features] mouse`. Off means no capture escape was ever sent, so the
-    /// terminal keeps its native selection and scrolling.
     mouse: bool,
-    /// Turns a key stream back into a paste where the terminal reports none
-    /// (see `coordinator::paste`). Held across input batches so a run's timing
-    /// is judged against the previous key even when the drain boundary falls
-    /// between them. Inert where `Event::Paste` arrives on its own.
     paste_burst: coordinator::paste::PasteBurst,
-    /// Keys held on a binding that asked for its release, and whether this
-    /// terminal reports releases at all (`coordinator::input::Holds`).
     holds: coordinator::input::Holds,
     focused_session: Option<String>,
-    /// Whether the last painted frame drew a pane that reads `thurbox.diffs`.
-    /// A diff over ssh is fetched only while one does (`serve_worker_stores`).
     diffs_shown: bool,
     focused_surface: Option<String>,
-    /// Whether the focused pane holds the caret in a field of its own, so a
-    /// paste is typing for it rather than text for a terminal.
     focused_typing: bool,
     focus: usize,
-    /// Where focus was before the last deliberate move, so `Esc` can go back.
-    ///
-    /// v1's pickers and panels are modals: `Esc` closes them and focus returns
-    /// to what you were doing. v2's are centre-slot occupants, so "closing" one
-    /// IS returning focus — without this, `Esc` in the theme picker did nothing
-    /// at all once the kernel stopped treating a bare `Esc` as quit.
     focus_return: usize,
-    /// Set once a change is seen, fired after the debounce window.
     reload_at: Option<Instant>,
     errors: Vec<ModError>,
     failing: std::collections::HashMap<usize, (ModError, Instant)>,
-    /// A failure from `ui/layout.lua`, cleared by the next arrangement that
-    /// works.
     layout_error: Option<String>,
-    /// Why the bundled interface is running instead of the user's copy.
-    ///
-    /// Sticky, and separate from `layout_error` for a reason that cost the notice
-    /// entirely: `layout_error` is cleared on every frame whose arrangement
-    /// resolves, and the fallback's arrangement always does — so a message put
-    /// there was wiped before it could ever be painted. The floor is a state that
-    /// lasts until the user's copy loads again, so it is recorded as one.
     floor: Option<String>,
-    /// The user's own load error behind [`Self::floor`], unprefixed, so the
-    /// inventory can still name the file that caused it: the bundled host that
-    /// replaced the user's reports no error of its own.
     floor_cause: Option<String>,
     memory_rebuilt: Option<Instant>,
-    /// What just happened, and when. Separate from `layout_error` because that
-    /// field is reset by every successful arrangement — which is once a frame —
-    /// so a message sharing it was gone before it could be read.
     status: Option<(String, Level, Instant)>,
-    /// Boot can produce several notices; the one-line band shows each in turn.
     startup_notices: std::collections::VecDeque<String>,
-    /// Independent of `status`, since other reports must not defer boot warnings.
     startup_notice_due: Option<Instant>,
-    /// Commands whose failure has already been reported, so the window in which
-    /// a failure lingers for the panes does not re-raise it every poll.
     reported_failures: std::collections::HashSet<u64>,
-    /// Commands seen in flight: `id → (verb, session, what it is about, failed)`.
-    ///
-    /// Kept because a finished command simply leaves the list — there is no
-    /// "done" to observe — and because what it was about has to be captured
-    /// while it still can be: a deleted session's row is gone by the time its
-    /// delete reports.
     tracked_commands: std::collections::HashMap<u64, TrackedCommand>,
     band_targets: Vec<thurbox::kernel::bands::Hit>,
     started: Instant,
@@ -529,117 +205,27 @@ struct App {
     last_trees: Vec<Option<std::rc::Rc<thurbox::kernel::node::Node>>>,
     last_bands: std::collections::HashMap<Band, (Rect, u64)>,
     last_floats: std::collections::HashMap<usize, (Rect, std::rc::Rc<thurbox::kernel::node::Node>)>,
-    /// Floats that actually painted on the last frame.
-    ///
-    /// Distinct from `last_floats`, which is a settle cache and deliberately
-    /// KEEPS a closed float's last tree to compare against when it reopens. This
-    /// is the live answer to "is it on screen", so it is rebuilt every frame —
-    /// reading the cache instead is what reported a closed modal as visible.
     drawn_floats: std::collections::HashSet<usize>,
     last_paint: Instant,
-    /// The slot rects the arrangement placed last frame — the signal that the
-    /// screen owes a full repaint, because they moved.
-    ///
-    /// A pane opening or closing reflows every column beside it, and a cell the
-    /// diff believes it already printed is a cell it will not print again. That
-    /// is fine while ratatui's model of a cell's width matches the terminal's,
-    /// and grapheme clusters exist where it cannot: a regional-indicator flag is
-    /// two columns to `unicode-width` and a different number to several
-    /// emulators, so glyphs from the pane that just closed survive in the column
-    /// that replaced it. `normalize_ambiguous_width` removes the one such
-    /// disagreement it can (see `kernel::paint`); this covers the rest by
-    /// marking the reflowed frame `paint::force_full_repaint`, which prints
-    /// every cell of it.
-    ///
-    /// Deliberately NOT `Terminal::clear`: erasing flushes a blank screen and
-    /// leaves the repaint to the next flush, so every toggle blinks the whole
-    /// interface. The frame is the same either way — only the empty one in
-    /// between is avoided.
     last_placed: Vec<thurbox::kernel::layout::SlotRect>,
-    /// Set by anything that invalidates the screen outside the tree diff:
-    /// input, a reload, a resize, a completed command.
     dirty: bool,
     changed_this_frame: bool,
-    /// Output stamp each surface was last painted at, keyed by surface name.
-    /// What makes a quiet terminal settle rather than repaint every frame.
     last_output_painted: std::collections::HashMap<String, u64>,
-    /// Every live pane's last-output stamp, summed, as of the last check.
-    ///
-    /// Compared each iteration so that new agent output *causes* a frame. The
-    /// per-surface map above only decides whether a frame that is already
-    /// happening counts as a change — which is why, without this, a printing
-    /// agent was drawn at the 250ms floor rather than at once.
     last_output_gen: u64,
     grabbed: Option<usize>,
-    /// The node holding the pointer between a press and its release, if any.
     pointer_grab: Option<PointerGrab>,
-    /// The SURFACE whose pty took the last left press, if the program inside
-    /// tracks the mouse. While set, moves and the release are forwarded there
-    /// instead of drawing thurbox's own selection — the press chose the owner
-    /// of the whole gesture.
-    ///
-    /// A surface rather than a session because a session has two of them: the
-    /// agent's pane and its companion shell can be on screen at once, and only
-    /// one of them took the press. Opaque here — it is handed straight back to
-    /// the terminal store, which is what resolves it.
     pty_pointer: Option<String>,
     runs: thurbox::kernel::runs::RunStore,
     inventory: Vec<thurbox::kernel::inventory::Row>,
-    /// Whether a bookmark command is still running.
-    ///
-    /// Repository memory is the one read the flow can *change*, so its cached
-    /// rows have to be dropped when a write lands — and only then, since
-    /// re-reading while the worker is mid-write would publish the old list and
-    /// look like the add did nothing.
     bookmark_in_flight: bool,
-    /// The snapshot read finished commands are reported after, once it lands:
-    /// a `session.post_create` names the row the command made, which only
-    /// exists here once the rows are — and the loop never waits for a read.
     report_after: Option<u64>,
-    /// Links found on each live session's screen, keyed by session, and the
-    /// output stamp each answer was found at.
-    ///
-    /// Rebuilt for a session only when that session printed something. Finding
-    /// them walks the whole grid cell by cell, and this runs on every frame *and*
-    /// every input event — so a held-down key used to rescan every terminal on
-    /// the screen per repeat, for answers that cannot have changed.
     links: std::collections::HashMap<String, Vec<(String, usize, usize)>>,
     link_stamps: std::collections::HashMap<String, u64>,
-    /// What the last frame handed the outer terminal, so an unchanged frame
-    /// hands it nothing.
-    ///
-    /// OSC 8 binds a URL to the *cells*, so the escapes only have to be
-    /// re-sent when those cells are re-printed. Sending them per painted frame
-    /// regardless is what a settled screen showing twenty bare URLs cost before
-    /// this: 295kB over four idle seconds, against 400 bytes for the same
-    /// screen with no URL on it — on the ssh link the whole pass exists to
-    /// serve. Dropped whenever the frame reprints cells the diff would
-    /// otherwise have skipped (see `App::draw`), since a re-printed cell loses
-    /// the hyperlink the terminal had attached to it.
     last_link_paints: Vec<thurbox::kernel::terminal::HyperlinkPaint>,
-    /// When each session's links were last scanned, so a screen that keeps
-    /// moving is rescanned at [`LINK_SCAN_INTERVAL`] rather than per frame.
-    /// Kept beside the stamp rather than folded into it: the stamp answers
-    /// "could the answer have changed", this answers "is it worth asking again
-    /// yet", and a screen that has settled must still be served by the stamp
-    /// alone, for free, forever.
     link_scans: std::collections::HashMap<String, Instant>,
-    /// The content search: every session's scrollback, read and matched on a
-    /// worker while the search strip asks (`kernel::search`).
     search: thurbox::kernel::search::SearchStore,
-    /// Where each interface file stands with the user, and the lock the answer
-    /// was resolved against.
-    ///
-    /// Answering it reads and digests every file in the interface directory and
-    /// parses `mods.lock`, which is the wrong price to pay per keystroke: the
-    /// answer changes only when the directory or a grant does, and both say so.
-    /// The rows themselves are still assembled every publish — those depend on
-    /// what is on screen this frame, which is cheap and does change.
     trust: std::collections::HashMap<String, thurbox::kernel::inventory::Trust>,
-    /// Set when the directory, a grant or the disabled set moved, so the trust
-    /// answers above are re-read.
     trust_stale: bool,
-    /// Whether the perf counters are painted over the interface (F12).
     hud: bool,
     events: coordinator::events::Events,
     quit: bool,
@@ -661,13 +247,6 @@ struct PendingConfirmation {
 mod tests {
     use super::*;
 
-    /// The three intervals only mean anything in relation to each other, and
-    /// nothing enforces that at the definitions.
-    ///
-    /// Output must wait longer than input, or the split buys nothing; and both
-    /// must stay under the forced-redraw floor, or the floor becomes the real
-    /// cadence and the constant above it is silently dead — a setting that
-    /// looks tuned while doing nothing (ADR-P17).
     #[test]
     fn the_frame_floors_stand_in_the_right_order() {
         assert!(

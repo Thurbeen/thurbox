@@ -1,10 +1,6 @@
-//! Which kinds this build serves, and who may write what on each.
-
 use crate::store::FieldManager;
 use crate::{board, change_request, conversation, cron_task, listener, task};
 
-/// Every kind this build serves, in the order `fleet version` lists them.
-/// A plugin manifest may claim none of these names.
 pub const BUILT_IN: &[&str] = &[
     task::KIND,
     crate::config::TASK_CONFIG,
@@ -16,12 +12,10 @@ pub const BUILT_IN: &[&str] = &[
     board::KIND,
 ];
 
-/// Whether this build stores and reconciles a kind.
 pub fn is_served(kind: &str) -> bool {
     BUILT_IN.contains(&kind)
 }
 
-/// The controller that owns a kind's status, if the kind has one.
 pub fn controller_of(kind: &str) -> Option<FieldManager> {
     match kind {
         task::KIND => Some(FieldManager::TaskController),
@@ -33,11 +27,6 @@ pub fn controller_of(kind: &str) -> Option<FieldManager> {
     }
 }
 
-/// Who owns one top-level status field of a kind. `None`: nobody may write
-/// it through `update_status`. `Task.status.inbox` and `answered`, a
-/// Conversation's `received` and a Listener's `beats`, `refused` and
-/// `beatRevision` have no owner: they change only through the typed
-/// mutations below.
 pub fn status_owner(kind: &str, field: &str) -> Option<FieldManager> {
     match kind {
         task::KIND if task::UNOWNED_FIELDS.contains(&field) => None,
@@ -57,13 +46,6 @@ pub fn status_owner(kind: &str, field: &str) -> Option<FieldManager> {
     }
 }
 
-/// Who may create an object of a kind (`Store::create`, and
-/// `Store::create_fenced` under the lease): `apply` for any kind; an
-/// account's listener, through the receive verb, for the Conversation of a
-/// thread it delivers for and for its own Listener; the Conversation's
-/// controller for the Task a thread starts; the CronTask's controller for
-/// the Task a scheduled time starts; and the Gateway controller for the
-/// Conversation of a thread Fleet opened.
 pub fn may_create(kind: &str, by: &FieldManager) -> bool {
     match by {
         FieldManager::Apply => true,
@@ -76,56 +58,35 @@ pub fn may_create(kind: &str, by: &FieldManager) -> bool {
     }
 }
 
-/// Who may set the `gateway.fleet.dev/conversation` and `-uid` labels on a
-/// Task it creates: the Conversation's controller only. Nobody changes them
-/// afterwards.
 pub fn may_set_conversation_labels(by: &FieldManager) -> bool {
     *by == FieldManager::ConversationController
 }
 
-/// Who may set the `crontask.fleet.dev/name` and `-uid` labels on a Task it
-/// creates: the CronTask's controller only. Nobody changes them afterwards.
 pub fn may_set_cron_task_labels(by: &FieldManager) -> bool {
     *by == FieldManager::CronTaskController
 }
 
-/// Who may delete a Task a CronTask created (`Store::retire_scheduled_task`):
-/// the CronTask's controller only.
 pub fn may_retire_scheduled_task(by: &FieldManager) -> bool {
     *by == FieldManager::CronTaskController
 }
 
-/// Who may spool a delivery on a Conversation (`Store::receive_event`) and
-/// record beats and refusals on a Listener (`Store::record_beat`,
-/// `Store::record_refusal`): the listener of the account the object's spec
-/// names, and nobody else.
 pub fn is_listener_of(by: &FieldManager, account: &str) -> bool {
     matches!(by, FieldManager::Listener(a) if a == account)
 }
 
-/// Who may spool a delivery on a Conversation (`Store::receive_event`): the
-/// listener of the account its spec names, and the Gateway controller for
-/// Fleet's own opening post (`verified = fleet`) in a thread Fleet opened.
 pub fn may_spool(by: &FieldManager, account: &str, verified: crate::gateway::Verified) -> bool {
     is_listener_of(by, account)
         || (*by == FieldManager::GatewayController && verified == crate::gateway::Verified::Fleet)
 }
 
-/// Who may write a Conversation's status and drain its spool in one write
-/// (`Store::record_received`): its controller only.
 pub fn may_record_received(by: &FieldManager) -> bool {
     *by == FieldManager::ConversationController
 }
 
-/// Who may delete the conversation Task a retiring thread created
-/// (`Store::retire_conversation_task`): the Conversation's controller only.
 pub fn may_retire_conversation_task(by: &FieldManager) -> bool {
     *by == FieldManager::ConversationController
 }
 
-/// Who may append to `Task.status.inbox` (`Store::append_inbox`), each
-/// naming itself: `fleet send` as `cli`, and the Forge and Gateway
-/// controllers, whose relays land through `Store::record_relay`.
 pub fn may_append_inbox(by: FieldManager) -> bool {
     matches!(
         by,
@@ -133,34 +94,22 @@ pub fn may_append_inbox(by: FieldManager) -> bool {
     )
 }
 
-/// Who may ask for a paused Task's session (`Store::request_wake`): `fleet
-/// attach` and `fleet shell`, as `cli`.
 pub fn may_request_wake(by: &FieldManager) -> bool {
     *by == FieldManager::Cli
 }
 
-/// Who may ask for a Task's session to be paused (`Store::request_pause`):
-/// `fleet pause`, as `cli`.
 pub fn may_request_pause(by: &FieldManager) -> bool {
     *by == FieldManager::Cli
 }
 
-/// Who may ask for a Task's session to be restarted
-/// (`Store::request_restart`): `fleet restart`, as `cli`.
 pub fn may_request_restart(by: &FieldManager) -> bool {
     *by == FieldManager::Cli
 }
 
-/// Who may replace its own status field and append the relay's entries in
-/// one write (`Store::record_relay`): the Forge controller, for
-/// `Task.status.forge`, the Gateway controller, for `Task.status.gateway`,
-/// and TaskController, for `Task.status.subscriptions` and its notices.
-/// The field is the writer's: `relay_field`.
 pub fn may_record_relay(by: FieldManager) -> bool {
     relay_field(&by).is_some()
 }
 
-/// The Task status field a relay write replaces, by its writer.
 pub fn relay_field(by: &FieldManager) -> Option<&'static str> {
     match by {
         FieldManager::ForgeController => Some("forge"),
@@ -170,11 +119,6 @@ pub fn relay_field(by: &FieldManager) -> Option<&'static str> {
     }
 }
 
-/// The source prefix an inbox appender must name itself with: `cli/<user>`
-/// for `fleet send`, `forge/<change>` for the Forge controller,
-/// `gateway/<conversation>` or `gateway/child/<child>` for the Gateway
-/// controller, `board/<board>` for TaskController's notices. `None` for a
-/// writer that never appends.
 pub fn inbox_source_prefix(by: FieldManager) -> Option<&'static str> {
     match by {
         FieldManager::Cli => Some(crate::inbox::CLI_SOURCE_PREFIX),
@@ -185,11 +129,6 @@ pub fn inbox_source_prefix(by: FieldManager) -> Option<&'static str> {
     }
 }
 
-/// Who may append events to a Board's log (`Store::append_events`):
-/// `fleet event publish` as `cli`, under a `cli/<user>` source, and
-/// TaskController, under the lease, as the Task whose session's outbox it
-/// ingests, or as itself for its own `fleet.task.*` events. A Board's
-/// status has no owner: the append moves it.
 pub fn may_append_events(by: &FieldManager, source: &crate::event::Source) -> bool {
     use crate::event::{ControllerSource, Source};
     match (by, source) {
@@ -200,13 +139,10 @@ pub fn may_append_events(by: &FieldManager, source: &crate::event::Source) -> bo
     }
 }
 
-/// Who may record a delivery and remove its entry
-/// (`Store::record_delivery`): the Task's controller only.
 pub fn may_record_delivery(by: FieldManager) -> bool {
     controller_of(task::KIND) == Some(by)
 }
 
-/// Finalizers the store puts on an object when it is created.
 pub fn finalizers_on_create(kind: &str) -> Vec<String> {
     match kind {
         task::KIND => vec![task::RELEASE_FINALIZER.to_string()],

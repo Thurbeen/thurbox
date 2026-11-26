@@ -1,8 +1,3 @@
-//! A full disk pauses the manager instead of ending it (#1866). The file
-//! store under the manager fails every write with `Full` while the disk is
-//! full, as the file store does on `ENOSPC`; the runtime is the fake one,
-//! counting its spawns.
-
 mod support;
 
 use std::cell::{Cell, RefCell};

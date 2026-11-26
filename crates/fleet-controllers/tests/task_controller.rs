@@ -1,7 +1,3 @@
-//! TaskController as a pure function: a Task and what the probes saw go in;
-//! a plan comes out. Each case is one transition or one Unknown of the
-//! Task's lifecycle.
-
 use fleet_api::condition::ConditionStatus;
 use fleet_api::plan::{Action, EffectOutcome, Observations, Plan, Probe, Receipt};
 use fleet_api::runtime::{Activity, TrustGap, WorkspaceTrust};
@@ -64,7 +60,6 @@ fn probes(obj: &Object) -> Vec<Probe> {
     TaskController.probes(&input).unwrap()
 }
 
-/// What the runtime answers for a session whose agent trusts its workspace.
 fn trusted() -> Option<Observation<WorkspaceTrust>> {
     Some(Observation::Known(WorkspaceTrust::Trusted {
         how: "test".into(),
@@ -212,8 +207,6 @@ fn spawn_attempts_are_bounded() {
     assert_eq!(cond(&st, "NeedsAttention").reason, "Stalled");
 }
 
-/// One spawn as the manager performs it: the planned status, then the
-/// effect's receipt under the planned key, then the next pass.
 fn spawn_once(obj: &Object, outcome: EffectOutcome, now: u64) -> (Object, TaskStatus) {
     let host = Observations {
         host: Some(Observation::Known(true)),
@@ -254,7 +247,6 @@ fn a_trust_gap_spends_no_attempt_and_never_stalls_the_task() {
         now += RETRY_DELAY_MS;
     }
 
-    // Genuine runtime failures keep their limit once the mapping is there.
     for attempt in 1..=MAX_ATTEMPTS {
         let (next, st) = spawn_once(&obj, EffectOutcome::Failed { why: "no".into() }, now);
         assert_eq!(st.spawn_attempts, attempt);
@@ -769,8 +761,6 @@ fn an_interrupted_release_is_retried_and_still_ends() {
 
 #[test]
 fn a_task_waiting_on_its_host_reaches_a_fixed_point() {
-    // A pass that sees the same world as the last writes nothing, so the
-    // manager goes idle instead of rewriting conditions every pass.
     let unreachable = || Observations {
         host: Some(Observation::Known(false)),
         ..Default::default()
@@ -799,8 +789,6 @@ fn a_session_seen_again_clears_worker_gone() {
     assert_eq!(cond(&st, "NeedsAttention").status, ConditionStatus::False);
 }
 
-// --- The inbox: delivered as the brief is, under each entry's key. --------
-
 fn entry(key: &str) -> fleet_api::inbox::InboxEntry {
     fleet_api::inbox::InboxEntry {
         key: key.into(),
@@ -822,7 +810,6 @@ fn intent(at: u64) -> fleet_api::plan::Intent {
     }
 }
 
-/// A Briefed Task with the given inbox and extra status.
 fn briefed_with(inbox: &[&str], extra: impl FnOnce(&mut TaskStatus)) -> Object {
     spawned(|st| {
         st.phase = Phase::Briefed;
@@ -898,7 +885,6 @@ fn the_oldest_inbox_entry_is_sent_to_a_ready_session_under_its_key() {
             Probe::Paused { session: session() },
             Probe::Ready { session: session() },
             Probe::Activity { session: session() },
-            // Claude Code has screen rules, and its hooks have not spoken.
             Probe::Screen { session: session() }
         ]
     );
@@ -1202,8 +1188,6 @@ fn a_concluded_task_delivers_its_inbox_and_concludes_nothing_else() {
         probes(&concluded(&[])).is_empty(),
         "nothing queued, session just looked up: at rest"
     );
-    // At rest, the session is looked up again once per recheck interval,
-    // with whether its window is lost, and what its agent last reported.
     for checked in [None, Some(NOW - SESSION_RECHECK_MS)] {
         assert_eq!(
             probes(&concluded_checked(&[], checked)),
@@ -1214,7 +1198,6 @@ fn a_concluded_task_delivers_its_inbox_and_concludes_nothing_else() {
                 },
                 Probe::Lost { session: session() },
                 Probe::Activity { session: session() },
-                // Claude Code has screen rules, and its hooks have not spoken.
                 Probe::Screen { session: session() }
             ],
             "{checked:?}"
@@ -1232,7 +1215,6 @@ fn a_concluded_task_delivers_its_inbox_and_concludes_nothing_else() {
             Probe::Paused { session: session() },
             Probe::Ready { session: session() },
             Probe::Activity { session: session() },
-            // Claude Code has screen rules, and its hooks have not spoken.
             Probe::Screen { session: session() }
         ]
     );
@@ -1348,7 +1330,6 @@ fn in_spawned_the_brief_goes_first_and_an_entry_follows_on_a_later_pass() {
     );
     assert_eq!(plan.effects[0].key, "task/t/u7/brief");
     assert!(st.delivery_attempts.is_empty());
-    // The brief is sent but unconfirmed: the inbox waits and asks nothing.
     let pending = task(true, Some(st));
     assert!(!probes(&pending).iter().any(
         |p| matches!(p, Probe::BriefDelivered { key, .. } if key.starts_with("task/t/u7/send/"))
@@ -1379,7 +1360,6 @@ fn more_than_the_bound_queued_is_attention_until_delivered_down() {
         },
     );
     assert_eq!(cond(&st, "NeedsAttention").reason, "InboxFull");
-    // One delivered (the store removes it): back within the bound.
     let mut st = st;
     st.inbox.remove(0);
     let (_, st) = run(
@@ -1440,8 +1420,6 @@ fn the_brief_waits_for_the_agent_to_trust_its_workspace() {
         ..Default::default()
     };
 
-    // A known gap: no brief, a person is asked, and it is looked at again
-    // after the wait rather than on every sweep.
     let (plan, st) = run(
         &obj,
         obs(Some(Observation::Known(WorkspaceTrust::Untrusted {
@@ -1456,7 +1434,6 @@ fn the_brief_waits_for_the_agent_to_trust_its_workspace() {
     assert_eq!(st.not_before, Some(NOW + RETRY_DELAY_MS));
     assert_eq!(st.brief_sends, 0, "a held brief is not an attempt");
 
-    // Unknown proves nothing: no brief, and no claim that a person must act.
     let (plan, st) = run(&obj, obs(Some(Observation::unknown("unreadable"))));
     assert!(plan.effects.is_empty());
     assert_eq!(
@@ -1466,11 +1443,9 @@ fn the_brief_waits_for_the_agent_to_trust_its_workspace() {
     assert_eq!(st.not_before, None, "asked again on the next pass");
     assert!(st.conditions.iter().all(|c| c.type_ != "NeedsAttention"));
 
-    // Not asked is not trusted.
     let (plan, _) = run(&obj, obs(None));
     assert!(plan.effects.is_empty());
 
-    // Trust settles the attention it raised; the brief goes out.
     let (_, held) = run(
         &obj,
         obs(Some(Observation::Known(WorkspaceTrust::Untrusted {
@@ -1513,7 +1488,6 @@ fn a_brief_held_for_trust_holds_the_inbox_with_it() {
     }
 }
 
-/// A Briefed Task whose session the runtime still holds, as after a reboot.
 fn lost_obs(lost: bool) -> Observations {
     Observations {
         find: live(),
@@ -1554,7 +1528,6 @@ fn a_lost_session_is_revived_once_and_its_worker_resumes_its_brief() {
     assert_eq!(cond(&st, "SessionLost").status, ConditionStatus::True);
     assert!(st.intents.contains_key("task/t/u7/revive/1"));
 
-    // Back: the catch-up note goes before the inbox, under its own key.
     let mut st = st;
     st.receipts.insert(
         "task/t/u7/revive/1".into(),
@@ -1576,8 +1549,6 @@ fn a_lost_session_is_revived_once_and_its_worker_resumes_its_brief() {
     assert!(text.ends_with("do it"), "the brief again: {text}");
     assert!(st.inbox.len() == 1, "the inbox waits for the note");
 
-    // Delivered, and the agent's prompt hook reported it: the note is done
-    // and the inbox goes next.
     let mut st = st;
     st.receipts.insert(
         "task/t/u7/catchup/1".into(),
@@ -1649,7 +1620,6 @@ fn revives_wait_between_attempts_and_stop_once_the_session_cannot_resume() {
             },
         );
         obj = with_status(&obj, &st);
-        // Still lost: the next revive waits.
         let (plan, st) = run_at(&obj, lost_obs(true), now + 1);
         assert!(plan.effects.is_empty(), "{plan:#?}");
         assert_eq!(st.not_before, Some(now + RETRY_DELAY_MS));
@@ -1744,11 +1714,8 @@ fn a_session_lost_before_its_brief_is_revived_and_briefed_once() {
     assert_eq!(plan.effects[0].key, "task/t/u7/brief");
 }
 
-// Pausing an idle session and resuming it when work arrives.
-
 const PAUSE_AFTER: u64 = 60_000;
 
-/// A Briefed Task whose session may be paused.
 fn pausable(inbox: &[&str], extra: impl FnOnce(&mut TaskStatus)) -> Object {
     let mut obj = briefed_with(inbox, |st| {
         st.brief = Some(fleet_api::task::BriefRecord {
@@ -1806,12 +1773,10 @@ fn effect_intent(action: &str) -> fleet_api::plan::Intent {
 fn only_a_known_idle_lasting_pause_after_ms_pauses() {
     let obj = pausable(&[], |_| {});
     assert!(probes(&obj).contains(&Probe::Activity { session: session() }));
-    // The first Idle starts the idle time.
     let (plan, st) = run(&obj, pause_obs(idle(), Observation::Known(false)));
     assert!(plan.effects.is_empty(), "{plan:#?}");
     assert_eq!(st.idle_since, Some(NOW));
 
-    // Unknown and Active never pause, and start the idle time again.
     for activity in [
         Observation::unknown("cannot tell"),
         Observation::Known(Activity::Active),
@@ -1826,7 +1791,6 @@ fn only_a_known_idle_lasting_pause_after_ms_pauses() {
         assert_eq!(after.idle_since, None);
     }
 
-    // Idle without a break for pauseAfterMs, read fresh: one pause.
     let (plan, st) = run_at(
         &with_status(&obj, &st),
         pause_obs(idle(), Observation::Known(false)),
@@ -1837,14 +1801,11 @@ fn only_a_known_idle_lasting_pause_after_ms_pauses() {
     assert_eq!(plan.effects[0].action, Action::Pause { session: session() });
     assert!(st.intents.contains_key("task/t/u7/pause/1"));
 
-    // A session not proven running is never paused.
     let (plan, _) = run(
         &pausable(&[], |st| st.idle_since = Some(0)),
         pause_obs(idle(), Observation::unknown("cannot tell")),
     );
     assert!(plan.effects.is_empty(), "{plan:#?}");
-    // Nor is a Task with no pause setting, though its activity is read for
-    // its session state.
     let plain = briefed_with(&[], |st| st.idle_since = Some(0));
     assert!(probes(&plain).contains(&Probe::Activity { session: session() }));
     let (plan, _) = run(&plain, pause_obs(idle(), Observation::Known(false)));
@@ -2061,13 +2022,11 @@ fn a_refused_pause_request_is_answered_and_not_tried_again() {
 
 #[test]
 fn a_session_fleet_cannot_resume_on_its_conversation_is_never_paused() {
-    // A harness with no resume argv, such as aider.
     let mut aider = pausable(&[], |st| st.idle_since = Some(0));
     aider.spec["harness"] = json!("aider");
     let (plan, st) = run(&aider, pause_obs(idle(), Observation::Known(false)));
     assert!(plan.effects.is_empty(), "{plan:#?}");
     assert_eq!(st.idle_since, None);
-    // A conversation the hooks never reported.
     let unnamed = pausable(&[], |st| {
         st.idle_since = Some(0);
         st.conversation = None;
@@ -2084,12 +2043,10 @@ fn a_pause_without_its_receipt_is_read_back_and_never_repeated() {
             .insert("task/t/u7/pause/1".into(), effect_intent("pause"));
     });
 
-    // Unknown: wait, and do nothing.
     let (plan, st) = run(&obj, pause_obs(idle(), Observation::unknown("cannot tell")));
     assert!(plan.effects.is_empty(), "{plan:#?}");
     assert!(st.intents.contains_key("task/t/u7/pause/1"));
 
-    // Stopped: the pause happened.
     let (plan, st) = run(&obj, pause_obs(idle(), Observation::Known(true)));
     assert!(plan.effects.is_empty(), "{plan:#?}");
     assert_eq!(cond(&st, "Paused").status, ConditionStatus::True);
@@ -2101,7 +2058,6 @@ fn a_pause_without_its_receipt_is_read_back_and_never_repeated() {
             .all(|c| c.type_ != "WorkerGone" && c.type_ != "SessionLost")
     );
 
-    // Running: it did not, and the idle time starts again.
     let (plan, st) = run(&obj, pause_obs(idle(), Observation::Known(false)));
     assert!(plan.effects.is_empty(), "{plan:#?}");
     assert_eq!(cond(&st, "Paused").reason, "PauseFailed");
@@ -2130,7 +2086,6 @@ fn a_resume_without_its_receipt_is_read_back_and_retried_only_while_stopped() {
     };
     assert_eq!(text, "message task/t/u7/send/1");
 
-    // Still stopped: a new resume, after a wait from the last one.
     let (plan, st) = run(&obj, pause_obs(not_asked(), Observation::Known(true)));
     assert!(plan.effects.is_empty(), "{plan:#?}");
     assert_eq!(st.not_before, Some(NOW - 10 + RETRY_DELAY_MS));
@@ -2150,7 +2105,6 @@ fn a_resume_without_its_receipt_is_read_back_and_retried_only_while_stopped() {
         "{plan:#?}"
     );
 
-    // Unknown: wait, and do nothing.
     let (plan, st) = run(
         &obj,
         pause_obs(not_asked(), Observation::unknown("cannot tell")),
@@ -2173,7 +2127,6 @@ fn stalled_held_and_deleting_tasks_are_never_resumed() {
     let (plan, _) = run(&stalled, pause_obs(not_asked(), Observation::Known(true)));
     assert!(plan.effects.is_empty(), "{plan:#?}");
 
-    // A stopped session is at rest: deleting the Task releases it.
     let mut deleting = pausable(&["task/t/u7/send/1"], |st| set_paused(st, "Idle"));
     deleting.metadata.deletion_timestamp = Some(NOW);
     let (plan, _) = run(
@@ -2214,8 +2167,6 @@ fn a_delivery_to_a_concluded_task_starts_its_idle_time_again() {
 
 #[test]
 fn a_concluded_task_at_rest_that_is_not_watched_loses_its_idle_time() {
-    // Held at rest: unwatched passes leave no stale idle time behind, so a
-    // later dispatch never pauses on a single Idle answer.
     let mut obj = pausable(&[], |st| {
         st.phase = Phase::Concluded;
         st.idle_since = Some(NOW - PAUSE_AFTER);
@@ -2283,7 +2234,6 @@ fn the_status_reports_what_the_runtime_proved_about_the_session() {
     let (_, after) = run(&obj, obs);
     assert_eq!(after.session_state, Some(SessionState::Running));
 
-    // A doubt keeps the last state; a proof replaces it.
     let obj = task(true, Some(after));
     let obs = Observations {
         find: Some(Observation::unknown("list unreadable")),
@@ -2304,10 +2254,6 @@ fn the_status_reports_what_the_runtime_proved_about_the_session() {
     assert_eq!(cond(&after, "SessionLost").status, ConditionStatus::True);
 }
 
-/// A harness with no hooks and no screen rules, such as a shell, has no
-/// agent state to report: it gets no `activity`, so a view draws its session
-/// as it did before screen rules. An agent with neither a report nor a
-/// matching rule is still `none`.
 #[test]
 fn a_harness_with_no_hooks_and_no_screen_rules_reports_no_source() {
     use fleet_api::screen::Source;
@@ -2329,8 +2275,6 @@ fn a_harness_with_no_hooks_and_no_screen_rules_reports_no_source() {
     assert_eq!(observe("bash"), None, "a shell");
     assert_eq!(observe("claude"), Some(Source::None), "an agent");
 
-    // A record written before this rule, on a host whose signal file cannot
-    // be read, drops its source too.
     let mut stale = briefed_with(&[], |st| {
         st.activity = Some(fleet_api::screen::AgentActivity {
             source: Source::None,
@@ -2350,9 +2294,6 @@ fn a_harness_with_no_hooks_and_no_screen_rules_reports_no_source() {
     assert_eq!(st.activity, None);
 }
 
-/// The screen is read for a harness Fleet has rules for, unless the last
-/// pass took the state from hooks whose authority is full; a screen rule's
-/// state then shows, below a full harness's hooks once they report.
 #[test]
 fn the_screen_is_read_only_where_the_hooks_do_not_say_the_state() {
     use fleet_api::screen::{AgentActivity, Screen, Source};
@@ -2423,8 +2364,6 @@ fn the_screen_is_read_only_where_the_hooks_do_not_say_the_state() {
         observe(&codex, None, Observation::Known(None)),
         (Some(AgentState::Unknown), Some((Source::None, None)))
     );
-    // A signal file Fleet cannot read, as on another host, still lets the
-    // screen say the state; with no rule matched, the state is kept.
     let (_, st) = run(
         &codex,
         Observations {
@@ -2450,7 +2389,6 @@ fn the_screen_is_read_only_where_the_hooks_do_not_say_the_state() {
         (None, None),
         "kept as it was"
     );
-    // A failed capture keeps a screen state.
     let seen = with("codex", Some(Source::Screen));
     let (state, activity) = observe(&seen, None, Observation::unknown("capture timed out"));
     assert_eq!(activity.map(|a| a.0), Some(Source::Screen));

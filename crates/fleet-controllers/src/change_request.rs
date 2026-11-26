@@ -1,11 +1,3 @@
-//! ChangeRequestController: mirrors one change on a forge. From the stored
-//! snapshot and one complete observation it decides whether anything
-//! changed, numbers what did, and says when to look again. It performs no
-//! effect: the forge is read, never written, from here.
-//!
-//! Pure: it reads the ChangeRequest and what the probe saw, and returns a
-//! Plan. The manager performs the plan.
-
 use fleet_api::change_request::{
     self, CLOSED_POLL_FACTOR, ChangeRequestDefaults, ChangeRequestSpec, ChangeRequestStatus, Head,
     NOTE_CAP, Phase, Sequenced, StoredNote,
@@ -21,52 +13,35 @@ use fleet_api::validate::typed;
 use fleet_api::{Observation, StoreError};
 use serde_json::Value;
 
-/// What one reconcile of one ChangeRequest reads. Every outside fact arrives
-/// here as a value; nothing is read from the world inside the controller.
 #[derive(Debug, Clone)]
 pub struct ChangeRequestInput<'a> {
     pub object: &'a Object,
     pub observations: ChangeRequestObservations,
     pub now: Millis,
-    /// The `[forge]` defaults the spec may override.
     pub defaults: ChangeRequestDefaults,
-    /// Whether a Task that is not being deleted names this ChangeRequest in
-    /// its `status.declared`. An unfollowed change is polled at the closed
-    /// rate.
     pub followed: bool,
 }
 
-/// The answers to the probes; `None` means "not asked".
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct ChangeRequestObservations {
-    /// The manager's parse of `spec.url`, supplied before the first poll
-    /// while `status.ref` is still absent: the probe names the ref.
     pub parsed: Option<Observation<ChangeRef>>,
-    /// The answer to `Probe::Change`.
     pub change: Option<ChangeObservation>,
 }
 
 #[derive(Debug, Clone, Copy, Default)]
 pub struct ChangeRequestController;
 
-/// Condition types ChangeRequestController writes.
 pub mod conditions {
-    /// The last poll read the change completely.
     pub const REACHABLE: &str = "Reachable";
-    /// The forge's own answer about merging, reported and never acted on.
     pub const MERGEABLE: &str = "Mergeable";
-    /// `Merged`, `ClosedGraceExpired` or `Gone`.
     pub const SETTLED: &str = "Settled";
 }
 use conditions::*;
 
 impl ChangeRequestController {
-    /// The kind this controller reconciles and the field manager it writes as.
     pub const KIND: &'static str = change_request::KIND;
     pub const MANAGER: FieldManager = FieldManager::ChangeRequestController;
 
-    /// What the next `reconcile` needs observed: one complete observation of
-    /// the change while it is watched and due, nothing once it settled.
     pub fn probes(&self, input: &ChangeRequestInput<'_>) -> Result<Vec<Probe>, StoreError> {
         let (_, st) = decode(input.object)?;
         if input.object.is_deleting()
@@ -87,10 +62,6 @@ impl ChangeRequestController {
             .unwrap_or_default())
     }
 
-    /// Whether the ChangeRequest is to be reconciled now: its `notBefore`
-    /// has passed, or a Task follows it, its last poll was answered while
-    /// Watching, and `pollMs` has passed since. The second wakes a change
-    /// that was waiting out the unfollowed rate as soon as a Task declares it.
     pub fn due(&self, object: &Object, followed: bool, now: Millis) -> Result<bool, StoreError> {
         let status = &object.status;
         let millis = |field: &str| status.get(field).and_then(Value::as_u64);
@@ -119,7 +90,6 @@ impl ChangeRequestController {
     pub fn reconcile(&self, input: &ChangeRequestInput<'_>) -> Result<Plan, StoreError> {
         let (spec, before) = decode(input.object)?;
         if input.object.is_deleting() {
-            // No finalizer and no owner: the store removes the record itself.
             return Ok(Plan::default());
         }
         let mut pass = Pass {
@@ -147,7 +117,6 @@ impl ChangeRequestController {
     }
 }
 
-/// One reconcile in progress.
 struct Pass<'a, 'b> {
     input: &'a ChangeRequestInput<'b>,
     spec: &'a ChangeRequestSpec,
@@ -174,8 +143,6 @@ impl Pass<'_, '_> {
         );
     }
 
-    /// The poll interval: `pollMs` while Watching and followed, ten times
-    /// that while Closed or while no Task follows the change.
     fn interval(&self) -> Millis {
         let poll = self.spec.poll_ms();
         match self.st.phase {
@@ -211,8 +178,6 @@ impl Pass<'_, '_> {
                 why,
                 retry_after,
             }) => {
-                // The snapshot is untouched: Unknown never means closed,
-                // merged or empty.
                 self.cond(REACHABLE, ConditionStatus::Unknown, kind.reason(), why);
                 let wait = retry_after.unwrap_or_else(|| self.interval());
                 self.wait(wait);
@@ -232,7 +197,6 @@ impl Pass<'_, '_> {
         }
     }
 
-    /// Settled: nothing is asked; the object goes once its retention passed.
     fn retain(&mut self) {
         let now = self.now();
         let settled_at = *self.st.settled_at.get_or_insert(now);
@@ -249,12 +213,10 @@ impl Pass<'_, '_> {
         self.st.phase = Phase::Settled;
         self.st.settled_at = Some(now);
         self.cond(SETTLED, ConditionStatus::True, reason, message);
-        // Not looked at again until its retention has passed.
         let ttl = self.spec.settled_ttl_ms(&self.input.defaults);
         self.st.not_before = Some(now.saturating_add(ttl));
     }
 
-    /// The forge's own answer, reported as a condition and never acted on.
     fn mergeable(&mut self, snapshot: &ChangeSnapshot) {
         let reason = snapshot.mergeable.reason.clone().unwrap_or_default();
         match snapshot.mergeable.value {
@@ -276,9 +238,6 @@ impl Pass<'_, '_> {
         }
     }
 
-    /// Compare the observation with the stored snapshot. If anything
-    /// differs, `revision` moves and every new or changed item takes it;
-    /// otherwise the snapshot is left exactly as stored.
     fn absorb(&mut self, snapshot: ChangeSnapshot) {
         let st = &self.st;
         let next = st.revision + 1;
@@ -355,8 +314,6 @@ impl Pass<'_, '_> {
         st.dropped_before = dropped_before;
     }
 
-    /// Move between Watching, Closed and Settled on what the state says, and
-    /// set the next poll.
     fn schedule(&mut self) {
         let Some(state) = self.st.state.as_ref().map(|s| s.value) else {
             return;
@@ -393,17 +350,6 @@ impl Pass<'_, '_> {
     }
 }
 
-/// Merge what the forge holds with what is stored, under the cap.
-///
-/// The newest [`NOTE_CAP`] notes by creation time are the window. A note in
-/// the window keeps its number unless its body was edited or its thread went
-/// from resolved to unresolved; one seen for the first time takes `next`. A
-/// stored note pushed below the window raises `droppedBefore` to its number;
-/// one that left the forge altogether just leaves. A note below the window
-/// that was never stored was rotated out before and is not numbered again.
-///
-/// Returns the notes to store, the new `droppedBefore`, and whether anything
-/// differs from what was stored.
 fn merge_notes(
     stored: &[StoredNote],
     mut seen: Vec<Note>,
@@ -449,8 +395,6 @@ fn merge_notes(
     (out, dropped, true)
 }
 
-/// A forge's reason word (`ci_must_pass`, `changes-requested`, `blocked`)
-/// as a CamelCase condition reason.
 fn camel(reason: &str) -> String {
     let mut out = String::new();
     let mut upper = true;

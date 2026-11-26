@@ -1,4 +1,3 @@
-//! The shipped fresh-config example is executable without Python or external tools.
 mod support;
 use support::Env;
 

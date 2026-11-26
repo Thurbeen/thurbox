@@ -1,4 +1,3 @@
-//! Resolve passive launch configuration before the first runtime effect.
 use fleet_api::config::{
     ConfigSource, DEFAULT_TASK_CONFIG, ENV_PROVIDER, EnvProviderSpec, Execution, TASK_CONFIG,
     TaskConfigSpec, merge_env,
@@ -34,7 +33,6 @@ fn source(
     Ok(obj)
 }
 
-/// Whether the store holds the TaskConfig a Task with no `configRef` takes.
 pub(crate) fn default_config(store: &dyn Store) -> Result<bool, StoreError> {
     match store.get(TASK_CONFIG, DEFAULT_TASK_CONFIG) {
         Observation::Known(found) => Ok(found.is_some_and(|o| !o.is_deleting())),
@@ -64,7 +62,6 @@ pub(crate) fn resolve(
         )?,
         None => TaskConfigSpec::default(),
     };
-    // Validate every reference before executing any external provider command.
     let mut providers = Vec::new();
     for r in &defaults.env_from {
         let obj = source(store, ENV_PROVIDER, &r.name, &mut sources)?;
@@ -85,8 +82,6 @@ pub(crate) fn resolve(
     let pause_after_ms = spec.pause_after_ms.or(defaults.pause_after_ms);
     let agent_telemetry = spec.agent_telemetry.or(defaults.agent_telemetry);
     validate_execution(Some(&harness), Some(&host), model.as_deref())?;
-    // The harness profile's variables first, under every source: the
-    // frozen launch keeps them as they were when it was resolved.
     let mut env = fleet_api::harness::profile(&harness).launch.env;
     for (name, provider) in providers {
         let mut data = provider.data;
@@ -127,7 +122,6 @@ pub(crate) fn resolve(
     }
 }
 
-/// Resolve the same explicit provider sources for plugin observers, once per sweep.
 pub(crate) fn resolve_providers(
     store: &dyn Store,
     runtime: &dyn Runtime,

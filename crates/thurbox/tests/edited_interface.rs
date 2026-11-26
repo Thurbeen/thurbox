@@ -1,24 +1,3 @@
-//! An edited layout keeps working across an upgrade.
-//!
-//! Delivery never overwrites a file the user edited (`bundled::decide` →
-//! *Preserve*), but it keeps updating everything that file depends on: the
-//! kernel, and every untouched file under `lib/`. So an edited `layout.lua` or
-//! pane is frozen while its dependencies move, and "intact" is not "working".
-//! These tests hold the second half.
-//!
-//! `tests/fixtures/edited_interface/<release>/` is what such a user has on
-//! disk: files as that release shipped them, each with an edit so delivery
-//! treats it as the user's. `v2.22.4` is the arrangement, `10_sessions.lua` and
-//! `20_agent.lua` of the release the `thurbox-files` fork is pinned to. They
-//! are FROZEN on
-//! purpose — never refresh them to follow a change in `ui/`, because a user's
-//! preserved file does not follow it either. If one stops loading, the change
-//! that broke it breaks every user with that edit; keep the old shape working in
-//! `lib/` instead (the contract in `ui/AGENTS.md`).
-//!
-//! `lib_surface.txt` beside them is that contract as data: every name each
-//! `lib/` module exports, and what kind of value it is.
-
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 use std::process::Command as Process;
@@ -36,7 +15,6 @@ use thurbox::kernel::theme::Themes;
 use thurbox::session::mod_spec::mod_destination;
 use thurbox::session::SessionState;
 
-/// Every release a user may have edited files from, each with what they edited.
 const RELEASES: &[(&str, &[&str])] = &[(
     "v2.22.4",
     &[
@@ -65,10 +43,6 @@ fn delivered_by_an_old_release(dir: &Path) {
     std::fs::write(&manifest, old).expect("manifest");
 }
 
-/// A delivered interface the user then edited, upgraded once more.
-///
-/// The upgrade is what runs on every start of a new release: the migration to
-/// `mods/`, then `materialize`. It must hand the edits back untouched.
 fn upgraded_edited_interface(release: &str, edited: &[&str]) -> tempfile::TempDir {
     let dir = tempfile::tempdir().expect("tempdir");
     delivered_by_an_old_release(dir.path());
@@ -198,8 +172,6 @@ fn rect_of(host: &LuaHost, width: u16, height: u16, slot: &str) -> Option<Rect> 
         .map(|placed| placed.rect)
 }
 
-// ── the edited files, against the current lib/ and kernel ───────────────────
-
 #[test]
 fn edited_layouts_and_panes_from_old_releases_still_arrange_and_render() {
     for (release, edited) in RELEASES {
@@ -208,7 +180,6 @@ fn edited_layouts_and_panes_from_old_releases_still_arrange_and_render() {
         assert!(host.error.is_none(), "{release}: {:?}", host.error);
         publish(&host);
 
-        // The edit is honoured: the list on the right, wider than it shipped.
         let sessions = rect_of(&host, 160, 48, "sessions").expect("the list is placed");
         let center = rect_of(&host, 160, 48, "center").expect("the agent is placed");
         assert!(sessions.x > center.x, "{release}: {sessions:?} {center:?}");
@@ -217,8 +188,6 @@ fn edited_layouts_and_panes_from_old_releases_still_arrange_and_render() {
         assert!(rect_of(&host, 60, 48, "center").is_some());
 
         for focused in [false, true] {
-            // The list first: it is what selects a session, which is what gives
-            // the agent pane something to draw.
             let list = host
                 .render(index_of(&host, "sessions"), ctx(48, 40, focused))
                 .unwrap_or_else(|e| panic!("{release}: the session list renders: {e:?}"));
@@ -254,8 +223,6 @@ fn edited_session_pane_still_renders_remote_sessions() {
 
 #[test]
 fn edited_interfaces_pass_mod_check() {
-    // What the user runs — and what `AGENTS.md` tells an agent to run — after an
-    // upgrade. It loads the whole interface at two sizes the way thurbox does.
     for (release, edited) in RELEASES {
         let dir = upgraded_edited_interface(release, edited);
         let output = Process::new(env!("CARGO_BIN_EXE_thurbox-cli"))
@@ -274,9 +241,6 @@ fn edited_interfaces_pass_mod_check() {
     }
 }
 
-// ── lib/'s published surface ────────────────────────────────────────────────
-
-/// Every `lib/` module that loads into the VM — `thurbox.d.lua` is types only.
 fn lib_modules() -> Vec<String> {
     let lib = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../ui/lib");
     let mut names: Vec<String> = std::fs::read_dir(lib)
@@ -299,18 +263,6 @@ fn pinned() -> BTreeSet<String> {
         .collect()
 }
 
-/// `module.name kind` for every name each `lib/` module exports, read from
-/// inside the sandbox a pane runs in, off a delivered interface.
-///
-/// Two readings, because a module can answer a name it does not hold:
-/// `theme.accent` and the other colour shorthands come from a metatable, so
-/// `pairs` never sees them, yet they are what third-party panes use most. So
-/// the table's own keys find what is new, and every pinned name is also read
-/// the way a pane reads it — with a theme published, as it is on screen.
-///
-/// The one gap: a NEW metatable-served name is not discovered, so adding a
-/// shorthand does not force a line here. Removing one that is pinned is caught,
-/// which is the half the promise is about.
 fn exported_surface(pinned: &BTreeSet<String>) -> BTreeSet<String> {
     let dir = tempfile::tempdir().expect("tempdir");
     let report = bundled::materialize(dir.path());
@@ -396,8 +348,6 @@ fn lib_still_exports_every_name_it_ever_published() {
     );
 }
 
-// ── the explicit writers of layout.lua ──────────────────────────────────────
-
 #[test]
 fn restoring_an_edited_layout_keeps_the_edit_as_a_backup() {
     let (release, edited) = RELEASES[0];
@@ -414,7 +364,6 @@ fn restoring_an_edited_layout_keeps_the_edit_as_a_backup() {
         fixture(&format!("{release}/layout.lua"))
     );
 
-    // Restoring the untouched file again has nothing to keep.
     assert_eq!(
         bundled::restore(dir.path(), "layout.lua").expect("restore"),
         None

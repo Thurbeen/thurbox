@@ -1,8 +1,3 @@
-//! `fleet integration`'s I/O on this machine: the agent's config directory
-//! as the agent finds it, the ledger under Fleet's data directory, and each
-//! write. What is Fleet's and what state it is in is decided in
-//! `fleet_api::integration`; this module reads and writes only.
-
 use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
@@ -13,52 +8,37 @@ use fleet_api::integration::{
     self as api, Entry, LEDGER, Ledger, Observed, State, WrittenBlock, WrittenFile,
 };
 
-/// This machine's platform, for [`api::supported`].
 const PLATFORM: api::Platform = if cfg!(windows) {
     api::Platform::Windows
 } else {
     api::Platform::Unix
 };
 
-/// One agent's integration as `status` reports it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Report {
     pub state: State,
-    /// The config directory the agent reads now, when one can be named.
     pub dir: Option<PathBuf>,
-    /// The version installed, from the ledger.
     pub installed: Option<u32>,
 }
 
-/// What `install` did.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Installed {
     Written,
-    /// It was current: nothing was written.
     Unchanged,
 }
 
-/// The agent's config directory, as the agent finds it from `env`.
 pub fn config_dir(profile: &Profile, env: &dyn Fn(&str) -> Option<String>) -> Option<PathBuf> {
     let install = profile.install.as_ref()?;
     let home = env(HOME);
     let dir = PathBuf::from(api::config_dir(install, env, home.as_deref())?);
-    // Recorded and compared as an absolute path: a relative one names
-    // another directory from each working directory.
     if dir.is_relative() {
         return std::env::current_dir().ok().map(|cwd| cwd.join(dir));
     }
     Some(dir)
 }
 
-/// The variable the user's home is read from on this platform.
 const HOME: &str = if cfg!(windows) { "USERPROFILE" } else { "HOME" };
 
-/// The ledger's lock: one `install` or `uninstall` at a time, so two never
-/// read the same ledger and the last write drops the other's entry. It is
-/// the operating system's advisory lock on a file (`flock`, `LockFileEx`),
-/// so it goes with its holder: a killed command leaves the file, not the
-/// lock. The file stays, and is never what is locked against.
 struct LedgerLock(#[allow(dead_code, reason = "held for its lock")] fs::File);
 
 impl LedgerLock {
@@ -88,10 +68,8 @@ impl LedgerLock {
     }
 }
 
-/// The ledger lock's file name, beside the ledger.
 pub const LOCK: &str = "integrations.lock";
 
-/// The ledger under `data_dir`; none written is an empty one.
 pub fn read_ledger(data_dir: &Path) -> io::Result<Ledger> {
     let path = data_dir.join(LEDGER);
     match fs::read(&path) {
@@ -108,8 +86,6 @@ fn write_ledger(data_dir: &Path, ledger: &Ledger) -> io::Result<()> {
     write_atomic(&data_dir.join(LEDGER), &text)
 }
 
-/// What is on disk for `entry`, in its directory; with no entry, whether
-/// `dir` is there.
 fn observe(name: &str, entry: Option<&Entry>, dir: Option<&Path>) -> io::Result<Observed> {
     let Some(entry) = entry else {
         return Ok(Observed {
@@ -129,8 +105,6 @@ fn observe(name: &str, entry: Option<&Entry>, dir: Option<&Path>) -> io::Result<
     }
     for b in &entry.blocks {
         let now = match fs::read_to_string(root.join(&b.path)) {
-            // A block that lost a comment line is no longer as Fleet wrote
-            // it: modified.
             Ok(text) => match api::find_block(&text, name, &b.comment) {
                 Ok(range) => range.map(|r| api::hash(text[r].as_bytes())),
                 Err(_) => Some("broken".into()),
@@ -146,7 +120,6 @@ fn observe(name: &str, entry: Option<&Entry>, dir: Option<&Path>) -> io::Result<
     })
 }
 
-/// The state of `profile`'s integration on this machine.
 pub fn status(
     profile: &Profile,
     data_dir: &Path,
@@ -164,9 +137,6 @@ pub fn status(
     })
 }
 
-/// Write `profile`'s integration into the agent's config directory, after
-/// removing an older one. The ledger records what will be written before
-/// any of it is, so an interrupted install is removed whole.
 pub fn install(
     profile: &Profile,
     data_dir: &Path,
@@ -211,10 +181,6 @@ pub fn install(
     }
     let mut ledger = read_ledger(data_dir).map_err(|e| e.to_string())?;
     let old = ledger.integrations.get(&profile.name).cloned();
-    // Everything that would stop the new install is checked while the old
-    // one still works: it is removed only once the new one can be written.
-    // Owning a block in a shared file is not owning the file: a whole file
-    // is Fleet's to replace only when the old entry wrote it whole.
     let same_dir = old.as_ref().filter(|o| Path::new(&o.dir) == dir);
     let our_file = |rel: &str| same_dir.is_some_and(|o| o.files.iter().any(|f| f.path == rel));
     let our_block = |rel: &str| same_dir.is_some_and(|o| o.blocks.iter().any(|b| b.path == rel));
@@ -253,7 +219,6 @@ pub fn install(
         write_ledger(data_dir, &ledger).map_err(|e| e.to_string())?;
     }
 
-    // What will be written, recorded before any of it is.
     let version = install.version;
     let mut entry = Entry {
         version,
@@ -325,8 +290,6 @@ pub fn install(
     Ok(Installed::Written)
 }
 
-/// Every directory between `dir` and `path`'s parent that is not there,
-/// outermost first, relative to `dir`.
 fn missing_dirs(dir: &Path, path: &Path) -> Vec<String> {
     let mut missing = Vec::new();
     let mut at = path.parent();
@@ -343,8 +306,6 @@ fn missing_dirs(dir: &Path, path: &Path) -> Vec<String> {
     missing
 }
 
-/// Remove `name`'s integration: exactly what the ledger lists. `false` when
-/// none is installed.
 pub fn uninstall(name: &str, data_dir: &Path) -> Result<bool, String> {
     let _lock = LedgerLock::take(data_dir)?;
     let mut ledger = read_ledger(data_dir).map_err(|e| e.to_string())?;
@@ -357,14 +318,10 @@ pub fn uninstall(name: &str, data_dir: &Path) -> Result<bool, String> {
     Ok(true)
 }
 
-/// The names of every integration the ledger lists.
 pub fn installed(data_dir: &Path) -> io::Result<Vec<String>> {
     Ok(read_ledger(data_dir)?.integrations.into_keys().collect())
 }
 
-/// Remove what `entry` wrote, whatever of it is still there: an own file,
-/// Fleet's block with what Fleet put before it, a file Fleet created that
-/// the block alone held, then each directory Fleet created that is empty.
 fn remove(name: &str, entry: &Entry) -> io::Result<()> {
     let root = Path::new(&entry.dir);
     for f in &entry.files {
@@ -408,14 +365,6 @@ fn remove(name: &str, entry: &Entry) -> io::Result<()> {
 
 static SEQ: AtomicU64 = AtomicU64::new(0);
 
-/// Write `bytes` to `path` whole: through a symlink to its real target,
-/// never over a file with other hard links or one that is not a regular
-/// file, and keeping an existing file's permissions; a new file, and the
-/// temporary one before it gets them, is its owner's alone. Elsewhere than
-/// Windows a file in the same directory is renamed over the target, so a
-/// reader sees the old bytes or the new. On Windows a rename can lose the
-/// target's ACL, so the file is written in place with a backup kept until
-/// the write is done.
 pub fn write_atomic(path: &Path, bytes: &[u8]) -> io::Result<()> {
     let target = match fs::symlink_metadata(path) {
         Ok(_) => fs::canonicalize(path)?,
@@ -463,8 +412,6 @@ pub fn write_atomic(path: &Path, bytes: &[u8]) -> io::Result<()> {
     written
 }
 
-/// A new file only its owner can read until its permissions are set: the
-/// bytes it receives are a config's, which may be private.
 fn create_private(path: &Path) -> io::Result<fs::File> {
     let mut options = fs::OpenOptions::new();
     options.write(true).create_new(true);
@@ -478,13 +425,11 @@ fn links(m: &fs::Metadata) -> u64 {
     std::os::unix::fs::MetadataExt::nlink(m)
 }
 
-/// Stable Rust reads no link count on Windows.
 #[cfg(not(unix))]
 fn links(_: &fs::Metadata) -> u64 {
     1
 }
 
-/// `<file>.fleet-backup`, and the copy that becomes it.
 fn backups(target: &Path) -> (PathBuf, PathBuf) {
     let mut backup = target.as_os_str().to_os_string();
     backup.push(".fleet-backup");
@@ -493,9 +438,6 @@ fn backups(target: &Path) -> (PathBuf, PathBuf) {
     (PathBuf::from(backup), PathBuf::from(pending))
 }
 
-/// Write an existing file in place, a backup of it kept until the write is
-/// done. A backup left by an earlier write stops this one: it may be the
-/// only good copy.
 fn write_with_backup(target: &Path, bytes: &[u8]) -> io::Result<()> {
     let (backup, pending) = backups(target);
     for left in [&backup, &pending] {

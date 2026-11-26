@@ -1,9 +1,3 @@
-//! The chrome the kernel paints itself, and the terminal the whole interface
-//! sits in: the host-service helpers (the URL opener, the
-//! editor launcher), the terminal-mode setup and teardown the loop and the
-//! panic hook share, and the rects and renderers for the error panel and the
-//! perf HUD.
-
 use std::time::Duration;
 use thurbox::kernel::host::KeyReleases;
 
@@ -22,17 +16,11 @@ pub(crate) fn browser_available() -> bool {
         .any(|name| std::env::var(name).is_ok_and(|value| !value.trim().is_empty()))
 }
 
-/// Hand a URL to the platform's opener.
-///
-/// v1's `helpers::open_url`. The child is spawned and **not** waited on: a
-/// launcher can take seconds to come up and the render loop must not park in
-/// `waitpid`, so a successful spawn is reported as opened.
 pub(crate) fn open_url(url: &str) -> Result<(), String> {
     let (program, args) = if cfg!(target_os = "macos") {
         ("open", vec![url])
     } else if cfg!(target_os = "windows") {
-        // The empty string is `start`'s window-title argument; without it
-        // `start` swallows the URL as the title and opens nothing.
+        // `start` reads its first quoted argument as the window title.
         ("cmd", vec!["/C", "start", "", url])
     } else {
         if !browser_available() {
@@ -87,8 +75,6 @@ pub(crate) fn key_event_from_chord(chord: &str) -> Option<KeyEvent> {
         "pagedown" => KeyCode::PageDown,
         other => match other.strip_prefix('f').and_then(|n| n.parse::<u8>().ok()) {
             Some(n) if (1..=12).contains(&n) => KeyCode::F(n),
-            // A bare character, which is most of them. `chars().count()`
-            // rather than `len()`, so a non-ASCII key is not read as several.
             _ => {
                 let mut chars = other.chars();
                 match (chars.next(), chars.next()) {
@@ -101,10 +87,6 @@ pub(crate) fn key_event_from_chord(chord: &str) -> Option<KeyEvent> {
     Some(KeyEvent::new(code, modifiers))
 }
 
-/// The editor to open a session's directory with.
-///
-/// v1's chain, from `resolve_editor` (`src/cli/config.rs`): the DB setting
-/// `thurbox-cli editor set` writes (`stored`), then `$VISUAL`, then `$EDITOR`.
 pub(crate) fn editor_command(stored: Option<String>) -> Option<String> {
     stored
         .or_else(|| std::env::var("VISUAL").ok())
@@ -112,26 +94,6 @@ pub(crate) fn editor_command(stored: Option<String>) -> Option<String> {
         .filter(|command| !command.trim().is_empty())
 }
 
-/// Run the configured editor over a session's directories.
-///
-/// Every directory, not just the first: a multi-repo session's whole point is
-/// that its repositories are worked together, and opening one of them is the
-/// same bug as forgetting the others exist.
-///
-/// A **terminal** editor gets a real tty, which mirrors v1's
-/// `run_pending_editor` (`src/main.rs`): inside tmux it floats in a
-/// `display-popup` with a pty of its own and the TUI keeps its screen
-/// underneath; elsewhere the terminal is handed over for the editor's lifetime
-/// and taken back afterwards — the git/sudoedit pattern. Blocking the render
-/// loop while someone edits is correct, not a bug.
-///
-/// A **GUI** editor is spawned detached instead. Handing one a tty is not
-/// harmless: a launcher told to wait (`code --wait`) holds the terminal for the
-/// whole editing session with nothing drawn in it.
-///
-/// `command` and `mode` are the stored setting (`thurbox-cli editor set` and
-/// `editor mode`); `Auto`, the default mode, leaves the decision to the
-/// name-based classification.
 pub(crate) fn open_editor(
     terminal: &mut DefaultTerminal,
     dirs: &[std::path::PathBuf],
@@ -155,8 +117,6 @@ pub(crate) fn open_editor(
     };
 
     if !terminal_editor {
-        // Detached: no tty, no wait, and deliberately no report of how it went —
-        // a GUI editor's exit status arrives long after anyone is looking.
         return match std::process::Command::new(&program).args(&args).spawn() {
             Ok(_) => Ok(format!("{opened} in {program}")),
             Err(e) => Err(format!("could not run {program}: {e}")),
@@ -164,17 +124,13 @@ pub(crate) fn open_editor(
     }
 
     if std::env::var_os("TMUX").is_some() {
-        // Quoted and run through tmux's shell, so a path or flag with a space
-        // in it survives being flattened into one command string.
+        // tmux runs the popup command through a shell.
         let mut script = thurbox::shell::posix_quote(&program);
         for arg in &args {
             script.push(' ');
             script.push_str(&thurbox::shell::posix_quote(arg));
         }
-        // `-E` closes the popup when the editor exits; the editor's own exit
-        // code is ignored, since a non-zero edit must not trigger a retry.
-        // A tmux that would not run at all falls through to the suspend path
-        // rather than leaving the key doing nothing.
+        // `-E` closes the tmux popup when the editor exits.
         let launched = std::process::Command::new("tmux")
             .args([
                 "display-popup",
@@ -193,15 +149,7 @@ pub(crate) fn open_editor(
         }
     }
 
-    // Stand the interface down so the editor inherits a normal cooked
-    // terminal, then put everything back and force a full repaint — the
-    // editor overwrote the cells ratatui thinks are on screen.
-    //
-    // The kitty flags come off first and go back on last, mirroring boot: they
-    // were pushed on the alternate screen, and a terminal keeps a flag stack
-    // per screen, so a pop written after leaving it would miss them and an
-    // editor opening the alternate screen would be sent an escape sequence for
-    // every key it is let go of.
+    // A terminal keeps a kitty flag stack per screen, so pop before leaving the alternate screen.
     let popped = pop_keyboard_enhancement();
     let _ = crossterm::execute!(
         std::io::stdout(),
@@ -215,8 +163,6 @@ pub(crate) fn open_editor(
     if popped {
         repush_keyboard_enhancement();
     }
-    // Mirrors the disable above; harmless when the feature is off, since the
-    // loop drops mouse events either way.
     enable_mouse_clicks();
     let _ = terminal.clear();
 
@@ -226,55 +172,28 @@ pub(crate) fn open_editor(
     }
 }
 
-/// Undo everything boot did to the terminal, in reverse.
-///
-/// Safe to call twice and safe to call when some of it was never enabled —
-/// every step is best-effort, because this runs on the panic path where
-/// failing to clean up is worse than a redundant escape.
 pub(crate) fn restore_terminal() {
-    // Reverse order of setup, so the kitty flags come off while raw mode is still
-    // on -- popping them after `ratatui::restore()` would write the escape to a
-    // cooked terminal.
+    // Pop the kitty flags while raw mode is still on.
     pop_keyboard_enhancement();
-    // Unconditional: cheaper than tracking whether capture was on, and a
-    // terminal left reporting is the failure this exists to prevent. The
-    // cursor is shown here too, not left to `Terminal`'s drop: a signal exits
-    // from the runtime's thread and drops nothing, and a shell with no cursor
-    // is the leftover that path had.
     let _ = crossterm::execute!(
         std::io::stdout(),
         crossterm::event::DisableMouseCapture,
         crossterm::event::DisableBracketedPaste,
         crossterm::cursor::Show
     );
-    // The console's own mouse handling is a mode, not an escape, so the line
-    // above does not give it back. Idempotent, and a no-op if we never took it.
+    // The Windows console's own mouse handling is a mode, not an escape.
     windows_console::release_mouse();
     ratatui::restore();
 }
 
-/// The kitty flags thurbox runs under — see [`push_keyboard_enhancement`].
 const KEYBOARD_FLAGS: crossterm::event::KeyboardEnhancementFlags =
     crossterm::event::KeyboardEnhancementFlags::DISAMBIGUATE_ESCAPE_CODES
         .union(crossterm::event::KeyboardEnhancementFlags::REPORT_EVENT_TYPES);
 
-/// Whether we pushed the kitty flags, so only we pop them.
 static KEYBOARD_ENHANCEMENT_PUSHED: std::sync::atomic::AtomicBool =
     std::sync::atomic::AtomicBool::new(false);
 
-/// Ask for `DISAMBIGUATE_ESCAPE_CODES` and `REPORT_EVENT_TYPES`, if the
-/// terminal supports the kitty keyboard protocol, and say whether key releases
-/// will now be reported.
-///
-/// Event types are what make a release (and a repeat, as distinct from a press)
-/// reportable at all; they change nothing for a binding that never asked for a
-/// release, because `coordinator::input::Holds` hands a repeat on as the press
-/// a legacy terminal would have sent and drops a release nobody holds.
-///
-/// Accepting the push is not proof the terminal honours event types (crossterm
-/// does not expose the flags read back), which is why the answer is
-/// `Negotiated` and only a release actually arriving makes it `Reported`.
-/// Windows needs no flag: its console reports every release already.
+// crossterm cannot read the kitty flags back; the Windows console reports releases without them.
 pub(crate) fn push_keyboard_enhancement() -> KeyReleases {
     use crossterm::event::PushKeyboardEnhancementFlags;
     if matches!(
@@ -296,10 +215,6 @@ pub(crate) fn push_keyboard_enhancement() -> KeyReleases {
     }
 }
 
-/// Pop them if and only if we pushed, and say whether we did.
-///
-/// `swap` so a second restore -- the panic hook racing the normal path -- cannot
-/// pop a level we never pushed.
 pub(crate) fn pop_keyboard_enhancement() -> bool {
     let pushed = KEYBOARD_ENHANCEMENT_PUSHED.swap(false, std::sync::atomic::Ordering::SeqCst);
     if pushed {
@@ -311,10 +226,6 @@ pub(crate) fn pop_keyboard_enhancement() -> bool {
     pushed
 }
 
-/// Push the flags [`push_keyboard_enhancement`] pushed, after a
-/// [`pop_keyboard_enhancement`] that handed the terminal to someone else. The
-/// terminal already answered whether it supports them, so it is not asked
-/// again.
 fn repush_keyboard_enhancement() {
     if crossterm::execute!(
         std::io::stdout(),
@@ -326,49 +237,16 @@ fn repush_keyboard_enhancement() {
     }
 }
 
-/// Ask the terminal for clicks, motion, and SGR coordinates.
-///
-/// Three modes, each earning its keep:
-///
-/// * `?1000` — presses and releases, what the click registry needs.
-/// * `?1003` — motion, **whether or not a button is down**. Both of thurbox's
-///   pointer features need it and neither worked without it: a drag reports
-///   nothing between press and release (so dragging a selection selected
-///   nothing), and a *hover* highlight has no event at all to fire on, which is
-///   why every button stayed unlit. `?1002` covers only the first of those, so it
-///   is not enough. The flood is real — one report per cell crossed — and is
-///   absorbed where it arrives rather than by asking for less: the loop drains
-///   every queued event per iteration, and a `Moved` that does not change the
-///   identity under the pointer is dropped without touching `dirty`.
-/// * `?1006` — SGR coordinates, so columns past 223 survive.
-///
-/// v1 asks for `?1000`+`?1002` (crossterm's `EnableMouseCapture`), which is why
-/// its hover highlight is likewise limited to drags.
-///
-/// `DisableMouseCapture` still turns everything off, so teardown is unchanged.
 pub(crate) fn enable_mouse_clicks() -> bool {
     use std::io::Write;
-    // The escape asks the TERMINAL to report. On Windows something else has to
-    // be asked as well, or the console keeps every drag for itself.
+    // On Windows the console keeps every drag unless asked to report it.
     windows_console::capture_mouse();
     let mut out = std::io::stdout();
+    // ?1003 reports motion with no button down, and ?1006 keeps columns past 223.
     out.write_all(b"\x1b[?1000h\x1b[?1003h\x1b[?1006h").is_ok() && out.flush().is_ok()
 }
 
-/// The Windows console's own mouse handling, which that escape does not reach.
-///
-/// A console with `ENABLE_QUICK_EDIT_MODE` set -- the Windows default -- takes
-/// every drag for **its** selection: it highlights a rectangle of the whole
-/// screen buffer, copies through conhost, and never tells the application. So a
-/// drag selected across panes instead of within one, and the copy that followed
-/// raised no toast, because thurbox was not involved in either. crossterm does
-/// not touch these bits (its raw mode clears only the line, echo and processed
-/// flags), so this does.
-///
-/// Three bits, and all three are load-bearing: `ENABLE_MOUSE_INPUT` to be told
-/// about the mouse at all, `ENABLE_EXTENDED_FLAGS` because without it a write
-/// of the quick-edit bit is ignored, and quick edit **off** so the drag is
-/// ours. The mode that was there is put back by [`restore_terminal`].
+// Quick edit, the console default, takes every drag; its bit is ignored without ENABLE_EXTENDED_FLAGS.
 #[cfg(windows)]
 mod windows_console {
     use crossterm_winapi::{ConsoleMode, Handle};
@@ -377,7 +255,6 @@ mod windows_console {
     const ENABLE_MOUSE_INPUT: u32 = 0x0010;
     const ENABLE_QUICK_EDIT_MODE: u32 = 0x0040;
     const ENABLE_EXTENDED_FLAGS: u32 = 0x0080;
-    /// Not a mode any console reports, so it cannot be one we saved.
     const NOT_SAVED: u32 = u32::MAX;
 
     static SAVED_MODE: AtomicU32 = AtomicU32::new(NOT_SAVED);
@@ -393,8 +270,6 @@ mod windows_console {
         let wanted =
             (current | ENABLE_MOUSE_INPUT | ENABLE_EXTENDED_FLAGS) & !ENABLE_QUICK_EDIT_MODE;
         match console.set_mode(wanted) {
-            // Saved only once it is really ours, so a failed take restores
-            // nothing on the way out.
             Ok(()) => SAVED_MODE.store(current, Ordering::SeqCst),
             Err(e) => tracing::warn!("could not take the console's mouse input: {e}"),
         }
@@ -417,10 +292,6 @@ mod windows_console {
     pub(super) fn release_mouse() {}
 }
 
-/// The next terminal event, or `None` if none arrived within `timeout`.
-///
-/// The two crossterm calls belong together: a `poll` that says yes is what makes
-/// the `read` non-blocking, and either can fail the same way.
 pub(crate) fn next_event(timeout: Duration) -> std::io::Result<Option<Event>> {
     if !event::poll(timeout)? {
         return Ok(None);
@@ -428,17 +299,10 @@ pub(crate) fn next_event(timeout: Duration) -> std::io::Result<Option<Event>> {
     event::read().map(Some)
 }
 
-/// Clamp a span into `floor..=cap`, tolerating a `cap` below the `floor`.
-///
-/// `u16::clamp` asserts `min <= max`, and every rect below takes its cap from the
-/// space available — which on a short terminal is smaller than the floor the
-/// content wants. The cap wins, because a rect must never exceed its parent.
 pub(crate) fn clamp_span(value: u16, floor: u16, cap: u16) -> u16 {
     value.clamp(floor.min(cap), cap)
 }
 
-/// Where the reload-failure panel goes: the bottom of the screen, sized to the
-/// message but never more than half the height.
 pub(crate) fn error_area(area: Rect) -> Rect {
     let cap = (area.height / 2).max(3).min(area.height);
     let height = clamp_span(area.height.saturating_sub(2), 3, cap);
@@ -450,10 +314,6 @@ pub(crate) fn error_area(area: Rect) -> Rect {
     }
 }
 
-/// Where the perf HUD sits: the top-right corner, clamped to what there is.
-///
-/// The corner the session list is not in, so the pane you are most likely to be
-/// watching while measuring is the one it does not cover.
 pub(crate) fn hud_area(area: Rect) -> Rect {
     let width = 34.min(area.width);
     let height = 15.min(area.height);
@@ -465,20 +325,9 @@ pub(crate) fn hud_area(area: Rect) -> Rect {
     }
 }
 
-/// A digest of one rect of the frame, for comparing against the last one.
-///
-/// A hash of the cells rather than a clone of them: the settle diff only asks
-/// "same as last frame?", and storing the cells cost a `Cell` clone per band
-/// cell per painted frame. Hashing keeps the property that made cells the
-/// right input — exact, and immune to a new `BandState` field being forgotten
-/// — at zero retained allocation. Clipped to the buffer's own area: a rect the
-/// arrangement produced is trusted to be inside the frame, but reading out of
-/// bounds would panic rather than merely mis-compare.
 pub(crate) fn read_cells(frame: &mut Frame, rect: Rect) -> u64 {
     use std::hash::{Hash, Hasher};
-    // `Frame` exposes only `buffer_mut`, hence the mutable borrow for a read.
-    // Taken once rather than per cell: this runs for every band on every
-    // painted frame.
+    // `Frame` exposes only `buffer_mut`.
     let buffer = frame.buffer_mut();
     let rect = rect.intersection(buffer.area);
     let mut hasher = std::hash::DefaultHasher::new();
@@ -496,7 +345,6 @@ pub(crate) fn read_cells(frame: &mut Frame, rect: Rect) -> u64 {
     hasher.finish()
 }
 
-/// Compact µs for the HUD's narrow columns; `cli::perf` formats the same way.
 pub(crate) fn fmt_hud_us(us: u64) -> String {
     if us < 1_000 {
         format!("{us}us")
@@ -507,11 +355,6 @@ pub(crate) fn fmt_hud_us(us: u64) -> String {
     }
 }
 
-/// Paint the counters.
-///
-/// Counts rather than timings, which is the whole point of `kernel::perf`: a
-/// number that says "an idle loop painted no frames" is exact, where one that
-/// says "idle was fast" is a coin toss on shared hardware.
 pub(crate) fn render_hud(
     frame: &mut Frame,
     area: Rect,
@@ -530,8 +373,6 @@ pub(crate) fn render_hud(
         .border_style(Style::default().fg(Color::Yellow))
         .title(" perf ");
     let inner = block.inner(area);
-    // Counters first — they are the exact half. The timings below them are
-    // wall-clock and so only ever indicative (ADR-P11).
     let mut text = format!(
         "iterations {}\nframes     {}\nskipped    {}\nrenders    {}\nreused r/g {}/{}\nechoes e/f {}/{}\nfailures   {}\nreloads    {}\n",
         counters.iterations,
@@ -556,8 +397,6 @@ pub(crate) fn render_hud(
             fmt_hud_us(histogram.max_us()),
         ));
     }
-    // The pane when there is one: it is what the reader goes to fix, and the
-    // op name alone does not fit beside it.
     match timings.slow_ops.iter_recent().next() {
         Some(op) => match &op.owner {
             Some(owner) => text.push_str(&format!("slow   {}ms {owner}", op.ms)),
@@ -575,18 +414,15 @@ pub(crate) fn render_hud(
 
 const MOD_HUD_ROWS: usize = 8;
 
-/// Columns the per-pane table wants: the widest row it formats, plus borders.
 const MOD_HUD_WIDTH: u16 = 52;
 
-/// Two borders, the header and one row: less than this shows no pane at all.
 const MOD_HUD_MIN_HEIGHT: u16 = 4;
 
-/// Where the per-pane table sits: under the counters, in the same corner — or
-/// beside them on a terminal too short to have room below, where placing it
-/// underneath would draw nothing at all.
+const MOD_HUD_BORDERS_HEADER_AND_HINT_ROWS: u16 = 4;
+
 pub(crate) fn mod_hud_area(area: Rect, hud: Rect, rows: usize) -> Rect {
-    // Two borders, the header, the rows and one hint line.
-    let wanted = (rows.min(MOD_HUD_ROWS) as u16).saturating_add(4);
+    let wanted =
+        (rows.min(MOD_HUD_ROWS) as u16).saturating_add(MOD_HUD_BORDERS_HEADER_AND_HINT_ROWS);
     let below = area.bottom().saturating_sub(hud.bottom());
     if below >= wanted.min(MOD_HUD_MIN_HEIGHT) {
         let width = MOD_HUD_WIDTH.min(area.width);
@@ -606,8 +442,6 @@ pub(crate) fn mod_hud_area(area: Rect, hud: Rect, rows: usize) -> Rect {
     }
 }
 
-/// Paint the per-pane cost table: most expensive first, the worst in red, any
-/// pane with a hint marked `!`, and the first hint spelled out underneath.
 pub(crate) fn render_mod_hud(
     frame: &mut Frame,
     area: Rect,
@@ -667,7 +501,6 @@ pub(crate) fn render_mod_hud(
     frame.render_widget(Paragraph::new(lines), inner);
 }
 
-/// Flatten a crossterm key into what Lua is told about it.
 pub(crate) fn to_press(key: &KeyEvent) -> KeyPress {
     let name = match key.code {
         KeyCode::Char(' ') => "space".to_string(),
@@ -684,11 +517,6 @@ pub(crate) fn to_press(key: &KeyEvent) -> KeyPress {
         ctrl: key.modifiers.contains(KeyModifiers::CONTROL),
         alt: key.modifiers.contains(KeyModifiers::ALT),
         shift: key.modifiers.contains(KeyModifiers::SHIFT),
-        // Dropped until issue #1024, which made every `cmd+…` chord
-        // unresolvable: `Cmd+C` arrived as a bare `c` and was offered to the
-        // focused pane as one. The pty boundary already refuses a SUPER-modified
-        // key (`agent::input::key_to_bytes`), so carrying it here costs nothing
-        // and is what lets the registry match a Cmd chord.
         cmd: key.modifiers.contains(KeyModifiers::SUPER),
     }
 }
@@ -781,8 +609,6 @@ mod tests {
         );
     }
 
-    /// Past the right edge it opens leftwards, ending on the point — what a
-    /// desktop menu does, rather than being cut off.
     #[test]
     fn an_anchored_float_flips_left_at_the_right_edge() {
         let area = Rect::new(0, 0, 80, 24);
@@ -819,7 +645,6 @@ mod tests {
         );
     }
 
-    /// The area can start below a band; a point above it is brought down to it.
     #[test]
     fn an_anchor_outside_the_area_is_brought_back_into_it() {
         let area = Rect::new(0, 2, 80, 20);
@@ -840,8 +665,6 @@ mod tests {
         assert_eq!(App::float_rect(area, float), Rect::new(30, 9, 20, 6));
     }
 
-    /// The cap wins over the floor, so a rect never exceeds the space it was
-    /// given even when the content wants more.
     #[test]
     fn clamp_span_prefers_the_cap_to_the_floor() {
         assert_eq!(clamp_span(9, 3, 5), 5);
@@ -850,8 +673,6 @@ mod tests {
         assert_eq!(clamp_span(9, 3, 0), 0);
     }
 
-    /// A short terminal leaves no room under the counters, and the table the
-    /// HUD exists for must not silently vanish there.
     #[test]
     fn the_pane_table_moves_beside_the_counters_when_there_is_no_room_below() {
         for (width, height) in [(120u16, 15u16), (120, 17), (100, 12)] {

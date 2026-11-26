@@ -1,26 +1,4 @@
-//! The harness profiles Fleet ships, one TOML document per harness. They are
-//! constants, not files: a pure crate reads nothing at build time. The hook
-//! files pi's, opencode's, kilo's, omp's, qwen's and Copilot's name are the
-//! runtime adapter's (`fleet_runtime::assets`); the block Kimi's `[install]`
-//! names is written by `fleet integration`. A user file of the same `name` in
-//! Fleet's config dir replaces one (docs/fleet/controllers/task.md, *Harness
-//! profiles*).
-//!
-//! Each `[telemetry]` table follows the agent's own documentation, and
-//! leaves every switch that exports prompt or tool content off
-//! (docs/observability.md, *Coding agents*). pi and Kimi Code export no
-//! OpenTelemetry. kilo has none here: its AI SDK spans are on by default,
-//! and they can hold prompt text.
-
-/// Claude Code. Its hooks are one `--settings`: Claude Code keeps the last
-/// of several, so a second would drop Fleet's hooks or the other's. Only a
-/// permission prompt needs a person: Claude Code also notifies after 60 s of
-/// input idle (`idle_prompt`), which a matcher-less hook would report as
-/// attention. Since 2.1.325 its prompt hook gets a typed brief, a bracketed
-/// paste, wrapped in `<pasted_content id="…">` tags. Its telemetry exports
-/// metrics and events; its `OTEL_LOG_*` content switches stay unset, which
-/// is off. It names its messaging socket to its hooks; the launch clears an
-/// inherited one, so a Claude Code that sets none never reports another's.
+// Claude Code keeps the last of several `--settings`, so its hooks are one.
 pub const CLAUDE: &str = r#"
 name = "claude"
 program = "claude"
@@ -54,13 +32,7 @@ args = ["fleet", "inbox-post", "{address}", "--", "{text}"]
 env = { CLAUDE_CODE_ENABLE_TELEMETRY = "1", OTEL_METRICS_EXPORTER = "otlp", OTEL_LOGS_EXPORTER = "otlp", OTEL_EXPORTER_OTLP_ENDPOINT = "{endpoint}", OTEL_EXPORTER_OTLP_PROTOCOL = "{protocol}", OTEL_EXPORTER_OTLP_HEADERS = "{headers}", OTEL_SERVICE_NAME = "claude", OTEL_RESOURCE_ATTRIBUTES = "{resource}" }
 "#;
 
-/// Codex. `notify` runs at each turn's end with the turn as JSON, its
-/// prompts included, as the last argument. The trust override is one
-/// `projects` key with a TOML inline table: Codex splits a dotted `-c` key
-/// on every `.`, and a path has them. Its telemetry is its `[otel]` config,
-/// given as `-c` overrides: Codex reads no `OTEL_EXPORTER_OTLP_*` variable,
-/// and a header in an argument would be public, so Codex gets none.
-/// `log_user_prompt` stays at its default, off.
+// Codex splits a dotted `-c` key on every `.` and reads no `OTEL_EXPORTER_OTLP_*` variable.
 pub const CODEX: &str = r#"
 name = "codex"
 program = "codex"
@@ -93,12 +65,7 @@ args = [
 env = { OTEL_RESOURCE_ATTRIBUTES = "{resource}" }
 "#;
 
-/// pi. Its hooks are an extension file Fleet writes, passed with `-e`,
-/// which loads beside the user's own extensions. pi asks a person nothing of
-/// its own, so its hooks report no blocked state. `--approve` trusts the
-/// project for this run only, as Codex's launch override does: pi otherwise
-/// asks first in a directory with project resources (`.pi`, `.agents`), its
-/// parents' included.
+// pi asks for trust in a directory with project resources unless `--approve` is given.
 pub const PI: &str = r#"
 name = "pi"
 program = "pi"
@@ -119,13 +86,7 @@ prompt = ["prompt"]
 conversation = ["session_id"]
 "#;
 
-/// opencode (OpenCode 2). Its hooks are a plugin directory Fleet writes,
-/// named in `OPENCODE_CONFIG_CONTENT`, which opencode merges with the
-/// user's and the project's config. It runs its own server: the shared
-/// background service was started with another environment, and loads
-/// neither the plugin nor the session's signal file. Its telemetry is on
-/// when `OTEL_EXPORTER_OTLP_ENDPOINT` is set; its AI SDK spans, which can
-/// hold prompt text, need `experimental.openTelemetry`, which stays off.
+// opencode's shared background server runs with another environment and loads no plugin.
 pub const OPENCODE: &str = r#"
 name = "opencode"
 program = "opencode"
@@ -146,13 +107,7 @@ conversation = ["session_id"]
 env = { OTEL_EXPORTER_OTLP_ENDPOINT = "{endpoint}", OTEL_EXPORTER_OTLP_HEADERS = "{headers}", OTEL_RESOURCE_ATTRIBUTES = "{resource}" }
 "#;
 
-/// kilo, an opencode fork with the first plugin API. Its hooks are two
-/// files Fleet writes: a server plugin named in `KILO_CONFIG_CONTENT`, and a
-/// terminal UI config naming a TUI plugin, in `KILO_TUI_CONFIG`. kilo merges
-/// each with the user's and the project's config. `KILO_NO_DAEMON` keeps the
-/// server in kilo's own process: a running background service was started
-/// with another environment, and would load neither the plugin nor the
-/// session's signal file.
+// kilo's background daemon runs with another environment; `KILO_NO_DAEMON` keeps the server in-process.
 pub const KILO: &str = r#"
 name = "kilo"
 program = "kilo"
@@ -169,13 +124,6 @@ prompt = ["prompt"]
 conversation = ["session_id"]
 "#;
 
-/// omp, a pi fork. Its hooks are an extension file Fleet writes, passed with
-/// `-e`, which loads beside the user's own extensions. Unlike pi, omp asks
-/// before a tool runs when its approval mode says so, and trusts every
-/// project. `OMP_SKIP_SETUP` skips the setup wizard of omp's first start:
-/// Fleet never answers it, as it never answers pi's trust question. Its
-/// telemetry is on when an OTLP endpoint is set; message content needs
-/// `OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT`, which stays unset.
 pub const OMP: &str = r#"
 name = "omp"
 program = "omp"
@@ -197,14 +145,7 @@ conversation = ["session_id"]
 env = { OTEL_EXPORTER_OTLP_ENDPOINT = "{endpoint}", OTEL_EXPORTER_OTLP_PROTOCOL = "{protocol}", OTEL_EXPORTER_OTLP_HEADERS = "{headers}", OTEL_SERVICE_NAME = "omp", OTEL_RESOURCE_ATTRIBUTES = "{resource}" }
 "#;
 
-/// Qwen Code. Its hooks are a settings file Fleet writes, named in
-/// `QWEN_CODE_SYSTEM_DEFAULTS_PATH`: qwen merges the hooks of its system
-/// defaults, user, project and system settings. That path replaces the
-/// system defaults file's, which a Fleet session does not read. The system
-/// settings path is left alone: qwen derives the defaults path from it when
-/// none is given, so naming it would hide both files. qwen logs prompts by
-/// default once its telemetry is on: `QWEN_TELEMETRY_LOG_PROMPTS=false`
-/// turns that off. Its `http` protocol is OTLP over HTTP with JSON.
+// qwen derives its system defaults path from its system settings path when none is given.
 pub const QWEN: &str = r#"
 name = "qwen"
 program = "qwen"
@@ -225,13 +166,7 @@ conversation = ["session_id"]
 env = { QWEN_TELEMETRY_ENABLED = "true", QWEN_TELEMETRY_OTLP_ENDPOINT = "{endpoint}", QWEN_TELEMETRY_OTLP_PROTOCOL = "http", QWEN_TELEMETRY_LOG_PROMPTS = "false", OTEL_EXPORTER_OTLP_HEADERS = "{headers}", OTEL_SERVICE_NAME = "qwen", OTEL_RESOURCE_ATTRIBUTES = "{resource}" }
 "#;
 
-/// GitHub Copilot CLI. Its hooks are a plugin directory Fleet writes, passed
-/// with `--plugin-dir`, which loads beside the user's plugins and hooks.
-/// Copilot runs `permissionRequest` for every permission check, an allowed
-/// one included, so the plugin reports `blocked` from the notification that
-/// a person is asked. Copilot starts its session, and reports it, at its
-/// first message. Its telemetry captures no content unless
-/// `OTEL_INSTRUMENTATION_GENAI_CAPTURE_CONTENT` says so, which stays unset.
+// Copilot runs `permissionRequest` for every permission check, an allowed one included.
 pub const COPILOT: &str = r#"
 name = "copilot"
 program = "copilot"
@@ -255,12 +190,7 @@ conversation = ["sessionId"]
 env = { COPILOT_OTEL_ENABLED = "true", OTEL_EXPORTER_OTLP_ENDPOINT = "{endpoint}", OTEL_EXPORTER_OTLP_PROTOCOL = "{protocol}", OTEL_EXPORTER_OTLP_HEADERS = "{headers}", OTEL_SERVICE_NAME = "copilot", OTEL_RESOURCE_ATTRIBUTES = "{resource}" }
 "#;
 
-/// Kimi Code (`kimi`). It reads hooks from its own `config.toml` only: no
-/// flag or variable adds any at launch, and `KIMI_CODE_HOME` moves its
-/// whole home, sign-in included. So its hooks are a block `fleet
-/// integration install kimi` appends to that file. Each command is a no-op
-/// outside a Fleet session, and a missing `fleet` never fails a turn. Kimi
-/// starts its session, and reports it, at its first message.
+// Kimi reads hooks only from its own `config.toml`; no flag or variable adds any at launch.
 pub const KIMI: &str = r#"
 name = "kimi"
 program = "kimi"
@@ -326,5 +256,4 @@ timeout = 10
 '''
 "#;
 
-/// Every bundled profile, in the order `fleet version --json` lists them.
 pub const ALL: &[&str] = &[CLAUDE, CODEX, PI, OPENCODE, KILO, OMP, QWEN, COPILOT, KIMI];

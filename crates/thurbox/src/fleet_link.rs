@@ -1,47 +1,21 @@
-//! How thurbox reaches a Fleet: the one place a `fleet …` invocation becomes
-//! a process (ADR-41). Every call thurbox makes of Fleet's command line —
-//! the commands, the watch, the manager, an attach, `doctor`'s
-//! probes — is built here, so a Fleet on another machine is a
-//! launcher on the link rather than a change at each call site.
-//!
-//! The launcher is the runtime's ([`crate::shell::launch`]): over ssh each
-//! word POSIX-quoted for the remote shell, and ssh hardened (`BatchMode`,
-//! `ConnectTimeout`, `ServerAlive*`) and multiplexed (`ControlMaster`);
-//! through WSL each word as it is, with `wsl.exe --exec`. The
-//! link adds only the Fleet's `--config <path>`, before the verb, and changes
-//! no stream: stdin, stdout, stderr
-//! and the exit status are the remote `fleet`'s, so a JSON answer, a watch's
-//! NDJSON, a Task on stdin and an exit code (3 not found, 6 lease held) read
-//! the same either way.
-
 use std::io::Write;
 use std::process::{Command, Stdio};
 use std::time::Duration;
 
-/// How long a probe of a Fleet on another machine may take: ssh's own
-/// `ConnectTimeout` (5 s) comes first, and a first connection also sets up
-/// the shared master.
 pub const REMOTE_PROBE_TIMEOUT: Duration = Duration::from_secs(15);
 
 use crate::session::settings::{FleetDef, FleetTransport, IMPLIED_FLEET};
 use crate::shell::HostLauncher;
 
-/// One Fleet's command line: the `fleet` program, on this machine or behind
-/// a launcher.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FleetLink {
-    /// The Fleet's name in `settings.toml`.
     name: String,
-    /// `None`: this machine.
     launcher: Option<HostLauncher>,
-    /// A name on the `PATH` of the machine Fleet runs on, or a path there.
     program: String,
-    /// The config file Fleet reads, given as `--config` when set.
     config: Option<String>,
 }
 
 impl FleetLink {
-    /// The Fleet `program` runs on this machine, under [`IMPLIED_FLEET`].
     pub fn local(program: impl Into<String>) -> Self {
         Self {
             name: IMPLIED_FLEET.to_string(),
@@ -51,7 +25,6 @@ impl FleetLink {
         }
     }
 
-    /// The Fleet `settings.toml` lists as `[fleets.<name>]`.
     pub fn of(name: &str, def: &FleetDef) -> Self {
         let launcher = match &def.transport {
             FleetTransport::Local(_) => None,
@@ -71,24 +44,19 @@ impl FleetLink {
         }
     }
 
-    /// The one Fleet the interface uses until it follows several
-    /// ([`crate::session::settings::Settings::fleet_in_force`]).
     pub fn in_force(settings: &crate::session::settings::Settings) -> Self {
         let (name, def) = settings.fleet_in_force();
         Self::of(&name, &def)
     }
 
-    /// The Fleet's name in `settings.toml`.
     pub fn name(&self) -> &str {
         &self.name
     }
 
-    /// The `fleet` program, as configured.
     pub fn program(&self) -> &str {
         &self.program
     }
 
-    /// The same Fleet, run through `program`.
     pub fn with_program(&self, program: impl Into<String>) -> Self {
         Self {
             program: program.into(),
@@ -96,20 +64,14 @@ impl FleetLink {
         }
     }
 
-    /// The config file Fleet is given with `--config`, if any.
     pub fn config(&self) -> Option<&str> {
         self.config.as_deref()
     }
 
-    /// Whether Fleet runs on this machine.
     pub fn is_local(&self) -> bool {
         self.launcher.is_none()
     }
 
-    /// The config file a Fleet on this machine reads, and what named it: the
-    /// `config` its `[fleets]` entry gives, else Fleet's documented rule
-    /// (docs/fleet/configuration.md), `FLEET_CONFIG` or the per-user file.
-    /// `None` for a Fleet elsewhere, whose files are that machine's.
     pub fn local_config(&self) -> Option<(std::path::PathBuf, &'static str)> {
         if let Some(path) = self.config() {
             return Some((std::path::PathBuf::from(path), "settings.toml"));
@@ -132,10 +94,6 @@ impl FleetLink {
         Some((base.join("fleet/config.toml"), "the per-user file"))
     }
 
-    /// What a Fleet on this machine whose manager holds no lease tells the
-    /// user to run: [`Self::no_config`] before `fleet init` wrote its config,
-    /// otherwise [`Self::start_manager`]. `None` for a Fleet on another
-    /// machine.
     pub fn not_running(&self, manager: &serde_json::Value) -> Option<String> {
         if !self.is_local() {
             return None;
@@ -146,16 +104,11 @@ impl FleetLink {
         )
     }
 
-    /// The command that starts this Fleet's manager, from the `manager` of
-    /// its `fleet version --json`: `systemctl` for the systemd unit its
-    /// `supervisor` names, `fleet service start` for another supervisor's
-    /// service, else `fleet service install --now`.
     pub fn start_manager(&self, manager: &serde_json::Value) -> String {
         self.supervise(manager, "start")
             .unwrap_or_else(|| self.fleet_command(&["service", "install", "--now"]))
     }
 
-    /// The command that restarts it on the release an update installed.
     pub fn restart_manager(&self, manager: &serde_json::Value) -> String {
         self.supervise(manager, "restart").unwrap_or_else(|| {
             format!(
@@ -183,8 +136,6 @@ impl FleetLink {
         command_line(&words)
     }
 
-    /// [`NO_CONFIG`] for a Fleet on this machine whose config file does not
-    /// exist, naming the file when `settings.toml` names it. `None` otherwise.
     pub fn no_config(&self) -> Option<String> {
         if !self.is_local() {
             return None;
@@ -202,8 +153,6 @@ impl FleetLink {
         })
     }
 
-    /// How the Fleet is reached, as the creation flow shows it: `local
-    /// Fleet`, `ssh <destination>` or `wsl <distro>`.
     pub fn transport(&self) -> String {
         match &self.launcher {
             None => "local Fleet".to_string(),
@@ -212,15 +161,10 @@ impl FleetLink {
         }
     }
 
-    /// Whether Fleet is reached over ssh, whose own failure (an unreachable
-    /// machine, a refused key) is exit 255.
     pub fn is_ssh(&self) -> bool {
         matches!(self.launcher, Some(HostLauncher::Ssh { .. }))
     }
 
-    /// `fleet [--config <path>] <args>`, not yet started. Its streams are the
-    /// caller's to set, as for any [`Command`]. `--config` is a global flag
-    /// of Fleet's, so it goes before the verb.
     pub fn command(&self, args: &[&str]) -> Command {
         let mut words: Vec<&str> = Vec::with_capacity(args.len() + 2);
         if let Some(config) = &self.config {
@@ -230,9 +174,6 @@ impl FleetLink {
         self.build(&self.program, &words)
     }
 
-    /// `argv` (a program Fleet named, such as an attach's stream) on the
-    /// machine this Fleet runs on, not yet started: through the same
-    /// launcher, without the Fleet's `--config`.
     pub fn launch(&self, argv: &[String]) -> Result<Command, String> {
         let (program, args) = argv
             .split_first()
@@ -241,10 +182,6 @@ impl FleetLink {
         Ok(self.build(program, &args))
     }
 
-    /// The stream `fleet <verb> <task> --json` names (`attach` or `shell`),
-    /// not yet started, on the Fleet's machine: the argv names paths there,
-    /// so it runs through the same launcher. The asking `fleet` and a local
-    /// stream both run under the span `fleet <verb>`.
     pub fn stream(&self, verb: &str, task: &str) -> Result<Command, StreamFailure> {
         let _span = command_span(verb, Some(task));
         let out = self
@@ -280,8 +217,6 @@ impl FleetLink {
         Ok(self.launch(&argv)?)
     }
 
-    /// `program` with `args` on the Fleet's machine: the one place a call
-    /// becomes a process.
     fn build(&self, program: &str, args: &[&str]) -> Command {
         let mut cmd = crate::shell::launch(self.launcher.as_ref(), program, args);
         if self.launcher.is_none() {
@@ -290,10 +225,6 @@ impl FleetLink {
         cmd
     }
 
-    /// The home directory of the machine this Fleet runs on, as that
-    /// machine spells it: `$HOME` there, read through the same launcher. A
-    /// creation flow starts a path there, and reads a typed `~` as it.
-    /// `None` when it does not answer an absolute path within `timeout`.
     pub fn home(&self, timeout: Duration) -> Option<String> {
         let argv = ["sh", "-c", r#"printf %s "$HOME""#].map(String::from);
         let mut child = self
@@ -318,10 +249,6 @@ impl FleetLink {
         (out.status.success() && home.starts_with('/')).then_some(home)
     }
 
-    /// How long a probe of this Fleet (`fleet version --json`) may take: a
-    /// program or launcher that stalls must not hang what asked. On another
-    /// machine ssh's own `ConnectTimeout` (5 s) comes first, and a first
-    /// connection also sets up the shared master.
     pub fn probe_timeout(&self) -> std::time::Duration {
         if self.is_local() {
             PROBE_TIMEOUT
@@ -330,17 +257,6 @@ impl FleetLink {
         }
     }
 
-    /// `fleet <args>`'s output, or why there is none: it could not start,
-    /// or it ran past `timeout` and was stopped, which says the Fleet did
-    /// not answer, never what it would have said.
-    ///
-    /// The child's exit is bounded by `timeout`: one still running then is
-    /// stopped with its whole process group (a job object on Windows) and
-    /// did not answer. Once it has exited, its pipes get a short grace (250 ms) and
-    /// give what they read: a launcher (ssh, `wsl.exe`, `sh`) can exit while
-    /// something it started (ssh's ControlPersist master) still holds a
-    /// pipe, and reading to that end would never return. That group is not
-    /// killed: the master is meant to outlive the call.
     pub fn bounded_output(
         &self,
         args: &[&str],
@@ -385,10 +301,7 @@ impl FleetLink {
                 Err(e) => return Err(format!("{}: {e}", self.program)),
             }
         };
-        // Exited: the answer is what each pipe gave. A pipe still held
-        // after the exit (a background job, ssh's ControlPersist master
-        // keeping stderr) is not a failure: each gets a short grace, then
-        // gives what it read so far.
+        // ssh's ControlPersist master can hold stderr open after the exit.
         let grace = std::time::Instant::now() + PIPE_GRACE;
         let (out, err) = (stdout.by(grace), stderr.by(grace));
         Ok(std::process::Output {
@@ -398,9 +311,6 @@ impl FleetLink {
         })
     }
 
-    /// `fleet version --json`, within [`Self::probe_timeout`], or why it did
-    /// not come: the Fleet could not be reached, did not answer in time, or
-    /// failed. Any of those is unknown, never an answer.
     pub fn version(&self) -> Result<serde_json::Value, String> {
         let out = self.bounded_output(&["version", "--json"], self.probe_timeout())?;
         if !out.status.success() {
@@ -415,10 +325,6 @@ impl FleetLink {
             .map_err(|e| format!("fleet version answered no JSON: {e}"))
     }
 
-    /// Why this Fleet could not be asked, when `out` is ssh's own failure
-    /// (exit 255: an unreachable machine, a refused key) rather than
-    /// Fleet's answer. Such a failure says nothing of a Task: it is never
-    /// "gone".
     pub fn unreachable(&self, out: &std::process::Output) -> Option<String> {
         (self.is_ssh() && out.status.code() == Some(255)).then(|| {
             format!(
@@ -429,9 +335,6 @@ impl FleetLink {
         })
     }
 
-    /// Run `fleet <args>` with `input` on its stdin (none: stdin is closed),
-    /// and answer its error when it exits non-zero: the first `error: ` line
-    /// it wrote, else all of its stderr.
     pub fn run(&self, args: &[&str], input: Option<&str>) -> Result<(), String> {
         let verb = args.first().copied().unwrap_or_default();
         let _span = command_span(verb, None);
@@ -466,11 +369,6 @@ impl FleetLink {
     }
 }
 
-/// The span `fleet VERB` around one command the interface runs and waits
-/// for ([`FleetLink::run`], [`FleetLink::bounded_output`],
-/// [`FleetLink::stream`]), about the Task `task` when it names one, current
-/// until dropped: the `fleet` it starts joins its trace through
-/// `TRACEPARENT`. A no-op unless the OTEL_* variables turned tracing on.
 fn command_span(verb: &str, task: Option<&str>) -> opentelemetry::ContextGuard {
     use opentelemetry::trace::{SpanKind, TraceContextExt, Tracer};
     use opentelemetry::KeyValue;
@@ -485,9 +383,6 @@ fn command_span(verb: &str, task: Option<&str>) -> opentelemetry::ContextGuard {
     opentelemetry::Context::current_with_span(span).attach()
 }
 
-/// Give a local `fleet` the current span as its `TRACEPARENT`, and none of
-/// the interface's own service name: the variables do not cross a launcher,
-/// and a Fleet on another machine reads its own (docs/observability.md).
 fn carry_trace(cmd: &mut Command) {
     cmd.env_remove("OTEL_SERVICE_NAME")
         .env_remove(otel_env::TRACEPARENT);
@@ -496,8 +391,6 @@ fn carry_trace(cmd: &mut Command) {
     }
 }
 
-/// Why [`FleetLink::stream`] has no stream: its message, and the exit code
-/// of a `fleet` that answered with a failure.
 #[derive(Debug)]
 pub struct StreamFailure {
     pub message: String,
@@ -513,25 +406,12 @@ impl From<String> for StreamFailure {
     }
 }
 
-/// How long a pipe still held after its process exited is read for.
 const PIPE_GRACE: std::time::Duration = std::time::Duration::from_millis(250);
 
-/// The most one probe pipe keeps: an answer is a small JSON document, and a
-/// pipe that says more is not read for more.
 const PIPE_CAP: usize = 1024 * 1024;
 
-/// A pipe read on a thread of its own, its bytes kept as they arrive, so a
-/// reader can take what came by a deadline even when the pipe never closes.
-///
-/// Once taken, or past [`PIPE_CAP`], nothing more is kept: a background job
-/// still writing (a launcher's leftover) is drained into a scratch buffer
-/// for as long as it writes, never into memory that grows. The pipe is not
-/// closed on it, which would end such a job with `SIGPIPE`: ssh's
-/// ControlPersist master is meant to outlive the call.
+// Closing the pipe would SIGPIPE ssh's ControlPersist master, which outlives the call.
 struct Reading {
-    /// What the pipe gave, and whether it was taken: one lock, so the
-    /// reader's check and its append are one step, and nothing is kept once
-    /// [`Self::by`] has taken it.
     kept: std::sync::Arc<std::sync::Mutex<Kept>>,
     done: std::sync::mpsc::Receiver<()>,
 }
@@ -564,8 +444,6 @@ fn read_all(pipe: Option<impl std::io::Read + Send + 'static>) -> Reading {
 }
 
 impl Reading {
-    /// What the pipe gave once it closed, or by `deadline`, whichever is
-    /// first. Nothing is kept after.
     fn by(&self, deadline: std::time::Instant) -> Vec<u8> {
         let _ = self
             .done
@@ -580,17 +458,12 @@ impl Reading {
     }
 }
 
-/// How long a probe of a Fleet on this machine may take.
 const PROBE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
 
-/// The unit that runs `fleet up`, as `fleet version --json` names it in
-/// `manager.supervisor`.
 pub fn supervisor_unit(manager: &serde_json::Value) -> Option<&str> {
     manager["supervisor"]["unit"].as_str()
 }
 
-/// `words` as a command the user's shell runs as typed: PowerShell on
-/// Windows, a POSIX shell elsewhere.
 pub fn command_line(words: &[&str]) -> String {
     command_line_for(cfg!(windows), words)
 }
@@ -623,14 +496,10 @@ fn needs_quotes(word: &str) -> bool {
             .all(|c| c.is_ascii_alphanumeric() || "/._-+,:@%".contains(c))
 }
 
-/// What thurbox says of a Fleet on this machine with no config yet.
 pub const NO_CONFIG: &str = "no Fleet config · fleet init";
 
 pub const TASK_API: &str = "fleet/v1alpha1";
 
-/// Why thurbox cannot speak to the Fleet whose `fleet version --json`
-/// answered `answer`: its `apiVersions` lack [`TASK_API`]. The one rule, for
-/// the session list, the commands and `doctor`.
 pub fn incompatible(answer: &serde_json::Value) -> Option<String> {
     let apis: Vec<&str> = answer["apiVersions"]
         .as_array()
@@ -651,27 +520,14 @@ pub fn incompatible(answer: &serde_json::Value) -> Option<String> {
     })
 }
 
-/// Every Fleet thurbox lists, and the one in force: what a command is
-/// routed by. A session's id is `<fleet>:<task>`, so a command for it goes to
-/// that Fleet; a bare Task name, and a creation, go to the Fleet in force
-/// (the only one listed, or the first by name).
-///
-/// Every Fleet a command reaches through it is admitted first: its
-/// `fleet version --json` must speak [`TASK_API`] ([`incompatible`]), so no
-/// path can send anything else to a Fleet
-/// thurbox cannot speak to. A verdict is kept, shared by the clones; a
-/// Fleet that did not answer is asked again next time.
 #[derive(Debug, Clone)]
 pub struct Fleets {
     in_force: FleetLink,
     all: Vec<FleetLink>,
-    /// Each Fleet's verdict by name: `None` admitted, else why not.
     admitted: std::sync::Arc<std::sync::Mutex<std::collections::HashMap<String, Option<String>>>>,
 }
 
 impl Fleets {
-    /// `all` the Fleets, with `in_force` named among them. One not among
-    /// them is taken as the first, so the set is never without one.
     pub fn new(in_force: &str, all: Vec<FleetLink>) -> Self {
         let chosen = all
             .iter()
@@ -686,7 +542,6 @@ impl Fleets {
         }
     }
 
-    /// The Fleets `settings.toml` lists, or the implied local one.
     pub fn of(settings: &crate::session::settings::Settings) -> Self {
         let all = settings
             .fleets()
@@ -696,19 +551,14 @@ impl Fleets {
         Self::new(&settings.fleet_in_force().0, all)
     }
 
-    /// The Fleet a creation, and a bare Task name, goes to.
     pub fn in_force(&self) -> &FleetLink {
         &self.in_force
     }
 
-    /// Every listed Fleet.
     pub fn all(&self) -> &[FleetLink] {
         &self.all
     }
 
-    /// The Fleet a creation goes to, once admitted: the one `name` names, or
-    /// the Fleet in force when it names none. A Fleet `settings.toml` does
-    /// not list is refused by name, never stood in for by another.
     pub fn named(&self, name: Option<&str>) -> Result<&FleetLink, String> {
         let link = match name.filter(|name| !name.is_empty()) {
             None => &self.in_force,
@@ -722,19 +572,12 @@ impl Fleets {
         Ok(link)
     }
 
-    /// The Fleet `session` is a session of, and its Task's name there: a
-    /// session's id is `<fleet>:<task>`, and a bare name is a Task of the
-    /// Fleet in force. A Fleet `settings.toml` does not list is refused by
-    /// name, never stood in for by another.
     pub fn route<'a>(&self, session: &'a str) -> Result<(&FleetLink, &'a str), String> {
         let (link, task) = self.find(session)?;
         self.admit(link)?;
         Ok((link, task))
     }
 
-    /// Refuse a Fleet thurbox cannot speak to ([`incompatible`]). Asked once
-    /// per Fleet, within its probe deadline; an answer that did not come is
-    /// that error, never a verdict.
     fn admit(&self, link: &FleetLink) -> Result<(), String> {
         let known = self
             .admitted
@@ -779,11 +622,6 @@ impl From<FleetLink> for Fleets {
     }
 }
 
-/// A Fleet "on another machine" for tests: a link over `ssh devbox` whose
-/// `ssh` is a stand-in that logs each remote command line and runs it with a
-/// scripted `fleet` on the remote `PATH` only. A call that bypassed the link
-/// would find no such program on this machine, so a logged call is one the
-/// link made.
 #[cfg(all(test, unix))]
 pub(crate) mod testing {
     use std::ffi::OsString;
@@ -792,8 +630,6 @@ pub(crate) mod testing {
     use super::FleetLink;
     use crate::session::settings::{FleetDef, FleetTransport};
 
-    /// The program name the stand-in Fleet answers to: one no machine has, so
-    /// a call run here rather than through the launcher fails to start.
     pub(crate) const PROGRAM: &str = "thurbox-test-remote-fleet";
 
     pub(crate) struct Remote {
@@ -802,7 +638,6 @@ pub(crate) mod testing {
     }
 
     impl Remote {
-        /// The remote Fleet runs `script` (POSIX sh, its arguments in `$@`).
         pub(crate) fn new(script: &str) -> Self {
             let dir = tempfile::tempdir().expect("remote dir");
             let bin = dir.path().join("bin");
@@ -810,8 +645,7 @@ pub(crate) mod testing {
             std::fs::create_dir_all(&bin).expect("bin");
             std::fs::create_dir_all(&remote).expect("remote");
             let log = dir.path().join("ssh.log");
-            // Options and their values, then the destination, then the
-            // command line ssh hands the remote shell, which re-splits it.
+            // ssh hands its command line to the remote shell, which re-splits it.
             executable(
                 &bin.join("ssh"),
                 &format!(
@@ -839,8 +673,6 @@ pub(crate) mod testing {
             Self { dir, link }
         }
 
-        /// This machine's `PATH` with the stand-in `ssh` first, for
-        /// [`crate::paths::with_path`].
         pub(crate) fn path(&self) -> OsString {
             let mut dirs = vec![self.dir.path().join("bin")];
             dirs.extend(std::env::split_paths(
@@ -849,7 +681,6 @@ pub(crate) mod testing {
             std::env::join_paths(dirs).expect("PATH")
         }
 
-        /// Each remote command line, as `devbox <program> <args…>`.
         pub(crate) fn calls(&self) -> Vec<String> {
             std::fs::read_to_string(self.dir.path().join("ssh.log"))
                 .unwrap_or_default()
@@ -858,7 +689,6 @@ pub(crate) mod testing {
                 .collect()
         }
 
-        /// Whether a call starting `devbox <program> <args>` was made.
         pub(crate) fn called(&self, args: &str) -> bool {
             let prefix = format!("devbox {PROGRAM} {args}");
             self.calls().iter().any(|call| call.starts_with(&prefix))
@@ -974,8 +804,6 @@ mod tests {
             .map(|(_, v)| v.map(|v| v.to_string_lossy().into_owned()))
     }
 
-    /// A local `fleet` gets the current span as its `TRACEPARENT`, and never
-    /// the interface's service name; a Fleet behind a launcher gets neither.
     #[test]
     fn a_local_fleet_joins_the_current_trace() {
         use opentelemetry::trace::{
@@ -1014,8 +842,6 @@ mod tests {
         assert_eq!(env_of(&remote.command(&["get"]), "TRACEPARENT"), None);
     }
 
-    /// On this machine the call is the program and its arguments, as they
-    /// are: nothing is quoted, since no shell reads them.
     #[test]
     fn a_local_call_is_the_program_and_its_arguments() {
         let link = FleetLink::local("/opt/fleet");
@@ -1025,10 +851,6 @@ mod tests {
         );
     }
 
-    /// A wrapper that exits while something it started still holds its
-    /// stdout (a backgrounded `sleep`, as an ssh or `wsl.exe` launch can
-    /// leave) is not waited on past the deadline: the whole read, the
-    /// pipes' end included, is bounded.
     #[cfg(unix)]
     #[test]
     fn a_probe_is_bounded_when_a_grandchild_holds_the_pipe() {
@@ -1049,9 +871,6 @@ mod tests {
         assert_eq!(String::from_utf8_lossy(&out.stdout), "answered\n");
     }
 
-    /// A wrapper that answers on stdout and leaves a child holding only its
-    /// stderr keeps that answer: what each pipe gave is kept once read, and
-    /// a pipe still held at the deadline gives only what it had.
     #[cfg(unix)]
     #[test]
     fn an_answer_on_stdout_survives_a_held_stderr() {
@@ -1071,7 +890,6 @@ mod tests {
         assert_eq!(answer["apiVersions"][0], "fleet/v1alpha1");
         assert!(started.elapsed() < std::time::Duration::from_secs(2));
 
-        // The same with a plain answer, read raw.
         std::fs::write(&fleet, "#!/bin/sh\nsleep 600 >/dev/null &\necho answered\n")
             .expect("fleet");
         let started = std::time::Instant::now();
@@ -1082,9 +900,6 @@ mod tests {
         assert!(started.elapsed() < std::time::Duration::from_secs(2));
     }
 
-    /// A pipe a background job keeps writing to after the answer is not
-    /// kept growing: what it held is taken once, and nothing it writes after
-    /// is kept, nor more than the cap before.
     #[cfg(unix)]
     #[test]
     fn a_pipe_written_on_after_the_answer_stays_bounded() {
@@ -1112,8 +927,6 @@ mod tests {
         let _ = child.wait();
     }
 
-    /// A probe whose own process runs past the deadline did not answer: it
-    /// is stopped with everything in its group.
     #[cfg(unix)]
     #[test]
     fn a_probe_past_its_deadline_is_stopped_with_its_group() {
@@ -1136,9 +949,9 @@ mod tests {
             .expect_err("it never exits");
         assert!(why.contains("did not answer"), "{why}");
         assert!(started.elapsed() < std::time::Duration::from_secs(3));
-        // The kill is a signal: the sleep goes a moment later.
+        // kill delivers a signal: the process exits a moment later.
         let pid = std::fs::read_to_string(&pid).expect("pid");
-        // A zombie answers `kill -0` too: it is dead, waiting to be reaped.
+        // A zombie answers `kill -0` until it is reaped.
         let alive = || {
             let signalled = std::process::Command::new("kill")
                 .args(["-0", pid.trim()])
@@ -1160,12 +973,6 @@ mod tests {
         assert!(!alive(), "the group's sleep was left running");
     }
 
-    /// Through WSL each word reaches the distro as its own argument of
-    /// `wsl.exe --exec`, after the script that reads the profile for `PATH`
-    /// with its output discarded: a path with a space names the program it
-    /// says, and a bare `fleet` on a `PATH` set in `~/.profile` still
-    /// resolves. Every call goes through it: `command` (the verbs, the
-    /// watch, `run`) and `launch` (an attach's stream).
     #[test]
     fn a_wsl_fleet_hands_each_word_to_the_profile_script() {
         let wsl = |program: &str, config: Option<&str>| {
@@ -1213,15 +1020,13 @@ mod tests {
             words(argv(&stream)),
             ["/srv/my apps/runtime-mux", "view", "w 1"]
         );
-        // A bare name is left for the profile's `PATH` to find.
         assert_eq!(
             words(argv(&wsl("fleet", None).command(&["version", "--json"]))),
-            ["fleet", "version", "--json"]
+            ["fleet", "version", "--json"],
+            "a bare name is left for the profile's PATH to find"
         );
     }
 
-    /// A listed Fleet's config goes before the verb, as Fleet's global flag,
-    /// on this machine and over ssh alike.
     #[test]
     fn a_fleets_config_goes_before_the_verb() {
         let def = |transport| FleetDef {
@@ -1264,8 +1069,6 @@ mod tests {
         );
     }
 
-    /// Over ssh each word is quoted for the remote shell, after the hardened
-    /// options and the destination, so free text arrives as one word.
     #[test]
     fn an_ssh_call_quotes_each_word_after_the_destination() {
         let link = FleetLink::of(

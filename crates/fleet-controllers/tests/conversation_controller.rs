@@ -1,8 +1,3 @@
-//! ConversationController as a pure function: a Conversation, the spooled
-//! deliveries, one history read and the tied Task go in; a plan comes out,
-//! whose status is the whole mirror with its spool drained. Each case is
-//! one transition of the mirror, or one reason nothing moves.
-
 use fleet_api::condition::{Condition, ConditionStatus};
 use fleet_api::conversation::{
     ConversationStatus, MESSAGE_CAP, Phase, Retiring, SEEN_EVENTS_CAP, StoredMessage, ThreadDir,
@@ -120,8 +115,6 @@ fn removed(id: &str, message_id: &str) -> Delivery {
     )
 }
 
-/// A message as the mirror stores it, numbered in `seq`, delivered by the
-/// listener.
 fn stored(m: Message, seq: u64) -> StoredMessage {
     StoredMessage {
         id: m.id,
@@ -156,7 +149,6 @@ fn object(status: Option<&ConversationStatus>) -> Object {
     serde_json::from_value(v).unwrap()
 }
 
-/// A mirror whose address is parsed, with `received` spooled.
 fn mirrored(received: Vec<Delivery>) -> ConversationStatus {
     ConversationStatus {
         reference: Some(thread()),
@@ -345,18 +337,12 @@ fn the_first_pass_numbers_the_history_and_the_spool_in_one_revision_oldest_first
     assert_eq!(st.observed_at, Some(NOW));
     assert_eq!(st.dropped_before, 0);
     assert_eq!(cond(&st, "Reachable").reason, "Observed");
-    // Alex's mention is admitted and meets the mention rule: the thread's
-    // first Task is being created.
     assert_eq!(cond(&st, "Tied").status, ConditionStatus::False);
     assert_eq!(cond(&st, "Tied").reason, "Starting");
     assert_eq!(plan.creates.len(), 1);
     assert_eq!(st.task.as_ref().map(|t| t.state), Some(TieState::Pending));
     assert!(st.conditions.iter().all(|c| c.type_ != "NeedsAttention"));
-    // Pending: the next look is one interval away, for the receipt.
     assert_eq!(st.not_before, Some(NOW + 1_000));
-    // Untied with nothing to start, the next look is the end of its
-    // retention, counted from the newer of its last message and its
-    // creation.
     let quiet = object(Some(&mirrored(vec![message(
         "Ev01",
         person(SAM, T0 + 300_000, "<@B0FLEET001> can you look into it?"),
@@ -399,8 +385,6 @@ fn the_spool_is_numbered_even_while_the_history_is_unknown() {
         Some(NOW + 2_500),
         "the read is retried as the platform asked, before the retention"
     );
-    // The history later lands: its messages take the next revision, the
-    // mention is one message still.
     let again = object(Some(&st));
     let (_, st) = run(
         &again,
@@ -474,8 +458,6 @@ fn a_delivery_seen_twice_or_from_history_too_is_one_message() {
     );
     assert_eq!(st.revision, 1);
     assert_eq!(st.messages.len(), 2);
-    // Redelivered after the spool was drained, and delivered again as a
-    // second delivery id: neither numbers anything.
     let mut st2 = st.clone();
     st2.received = vec![message("Ev01", m.clone()), message("Ev02", m.clone())];
     let (plan, st3) = run(&object(Some(&st2)), ConversationObservations::default());
@@ -487,7 +469,6 @@ fn a_delivery_seen_twice_or_from_history_too_is_one_message() {
         vec!["Ev01".to_string(), "Ev02".to_string()]
     );
     assert!(plan.status.is_some(), "the drained spool is written");
-    // A quiet pass writes nothing.
     let (plan, _) = run(&object(Some(&st3)), ConversationObservations::default());
     assert_eq!(plan, Plan::default());
 }
@@ -581,7 +562,6 @@ fn the_history_marks_fleets_own_posts_and_a_changed_text_as_an_edit() {
     assert_eq!(st.messages.len(), 2);
     assert_eq!(st.messages[1].author.kind, AuthorKind::Fleet);
     assert_eq!(st.messages[1].key, own.key);
-    // The backstop later reads a changed text: an edit, numbered anew.
     let mut tied = st.clone();
     tied.task = Some(Tie {
         name: format!("{NAME}-1"),
@@ -772,7 +752,6 @@ fn a_readably_gone_task_or_another_under_its_name_orphans_the_thread() {
         },
     );
     assert_eq!(st.phase, Phase::Orphaned, "another Task holds the name");
-    // Orphaned: the Task is not asked about again.
     let orphan = object(Some(&st));
     assert!(probes(&orphan, ConversationObservations::default()).is_empty());
 }
@@ -806,7 +785,6 @@ fn an_orphaned_or_untied_thread_is_deleted_once_its_retention_passed() {
         NOW + 7_000,
     );
     assert!(plan.delete);
-    // Untied: from the later of the last message and the creation.
     let mut untied = mirrored(Vec::new());
     untied.observed_at = Some(NOW - 100);
     untied.last_message_at = Some(CREATED_AT + 5_000);
@@ -820,7 +798,6 @@ fn an_orphaned_or_untied_thread_is_deleted_once_its_retention_passed() {
         CREATED_AT + 15_000,
     );
     assert!(plan.delete);
-    // A thread waiting for its own directory is never retired.
     let mut waiting = untied.clone();
     waiting.messages = vec![stored(person(ALEX, T0 + 300_000, "<@B0FLEET001> hi"), 1)];
     waiting.revision = 1;
@@ -906,7 +883,6 @@ fn more_than_the_cap_rotates_the_oldest_and_raises_dropped_before() {
     assert_eq!(st.messages[0].id, "1730000001000");
     assert_eq!(st.dropped_before, 1, "the rotated message's number");
     assert_eq!(st.seen_events.len(), MESSAGE_CAP + 2);
-    // The seen delivery ids are bounded too.
     let mut many = st.clone();
     many.seen_events = (0..SEEN_EVENTS_CAP as u64)
         .map(|i| format!("old{i}"))
@@ -1001,10 +977,6 @@ fn a_deleting_object_asks_nothing_and_plans_nothing_and_malformed_status_is_inva
     let _: Value = json!(null);
 }
 
-// ----------------------------------------------------------------------
-// Admission, the create and its receipts, the busy tie and the refusals.
-// ----------------------------------------------------------------------
-
 use fleet_api::conversation::{EffectRecord, REFUSALS_CAP, busy_key, refusal_key, task_key};
 use fleet_api::gateway::AuthorKind as Kind;
 use fleet_api::plan::{Action, EffectOutcome, Intent, Receipt};
@@ -1019,8 +991,6 @@ fn receipt(outcome: EffectOutcome) -> Receipt {
     }
 }
 
-/// A Task under the thread's name carrying this thread's uid label, or
-/// another's.
 fn conversation_task(uid: &str, conv_uid: &str) -> Object {
     let mut t = task_object(uid);
     t.metadata
@@ -1029,7 +999,6 @@ fn conversation_task(uid: &str, conv_uid: &str) -> Object {
     t
 }
 
-/// A numbered Untied mirror holding `messages`, all judged.
 fn judged(messages: Vec<StoredMessage>) -> ConversationStatus {
     let revision = messages.iter().map(|m| m.seq).max().unwrap_or(0);
     let mut st = mirrored(Vec::new());
@@ -1105,8 +1074,6 @@ fn an_admitted_mention_starts_the_threads_first_task_as_the_interface_shows_it()
     assert_eq!(plan.creates.len(), 1, "{plan:#?}");
     let create = &plan.creates[0];
     assert_eq!(create.key, create_key());
-    // The route's directory is a base: the thread gets its own below it,
-    // and the precondition guards only that one.
     assert_eq!(
         create.exclusive.as_ref().map(|e| e.workspace.as_str()),
         Some("/work/conversations/conv-3f9a1c0d2b7e")
@@ -1150,7 +1117,6 @@ fn an_admitted_mention_starts_the_threads_first_task_as_the_interface_shows_it()
     assert_eq!(st.judged, 1);
     assert_eq!(st.phase, Phase::Untied, "until the receipt lands");
     assert_eq!(cond(&st, "Tied").reason, "Starting");
-    // With the receipt: Tied, and the trigger is let go.
     let mut with_receipt = st.clone();
     with_receipt.effects.get_mut(&create_key()).unwrap().receipt =
         Some(receipt(EffectOutcome::Created {
@@ -1187,7 +1153,6 @@ fn an_admitted_mention_starts_the_threads_first_task_as_the_interface_shows_it()
     assert_eq!(st.task.as_ref().unwrap().state, TieState::Created);
     assert_eq!(st.task.as_ref().unwrap().trigger, None);
     assert_eq!(cond(&st, "Tied").reason, "TaskKnown");
-    // A later mention in the tied thread starts nothing more.
     let mut later = st.clone();
     later.received = vec![message(
         "Ev02",
@@ -1207,7 +1172,6 @@ fn an_admitted_mention_starts_the_threads_first_task_as_the_interface_shows_it()
 
 #[test]
 fn only_a_delivered_message_that_meets_the_mention_rule_starts_a_task() {
-    // A mention read from history alone is not recovered.
     let obj = object(Some(&mirrored(Vec::new())));
     let (plan, st) = run(
         &obj,
@@ -1223,7 +1187,6 @@ fn only_a_delivered_message_that_meets_the_mention_rule_starts_a_task() {
     assert!(plan.creates.is_empty(), "{plan:#?}");
     assert_eq!(st.task, None);
     assert_eq!(st.judged, 1);
-    // Delivered and read from history in one pass: one message, delivered.
     let m = person(ALEX, T0 + 300_000, "<@B0FLEET001> hi");
     let obj = object(Some(&mirrored(vec![message("Ev01", m.clone())])));
     let (plan, st) = run(
@@ -1236,8 +1199,6 @@ fn only_a_delivered_message_that_meets_the_mention_rule_starts_a_task() {
     );
     assert_eq!(plan.creates.len(), 1);
     assert_eq!(st.messages[1].via.verified, Verified::Connection);
-    // An admitted message without a mention starts nothing in an Untied
-    // thread; a stranger's mention starts nothing either.
     for m in [
         person(ALEX, T0 + 300_000, "no mention"),
         person(SAM, T0 + 300_000, "<@B0FLEET001> hi"),
@@ -1254,7 +1215,6 @@ fn only_a_delivered_message_that_meets_the_mention_rule_starts_a_task() {
         assert!(plan.creates.is_empty());
         assert_eq!(st.task, None);
     }
-    // `top-level`: the message that starts the thread, mention or not.
     let mut top = route();
     top.mention = Mention::TopLevel;
     top.allow_bots = vec!["B0123ABCD".into()];
@@ -1293,7 +1253,6 @@ fn only_a_delivered_message_that_meets_the_mention_rule_starts_a_task() {
 
 #[test]
 fn in_a_dm_thread_a_top_level_message_starts_a_task_and_a_strangers_earns_the_refusal() {
-    // `spec.direct`: the route covers the thread by its DM entry.
     let dm = |status: &ConversationStatus| {
         let mut obj = object(Some(status));
         obj.spec["direct"] = json!(true);
@@ -1309,17 +1268,14 @@ fn in_a_dm_thread_a_top_level_message_starts_a_task_and_a_strangers_earns_the_re
     let (plan, st) = run(&dm(&status), obs(hello.clone()));
     assert_eq!(plan.creates.len(), 1, "no mention needed: {plan:#?}");
     assert!(st.refusals.is_empty());
-    // The same thread outside the DM entry keeps the mention rule.
     let (plan, _) = run(&object(Some(&status)), obs(hello.clone()));
     assert!(plan.creates.is_empty(), "{plan:#?}");
-    // An unmentioned reply in an untied DM thread starts nothing.
     let reply = person(ALEX, T0 + 300_000, "and another thing");
     let (plan, _) = run(
         &dm(&mirrored(vec![message("Ev02", reply)])),
         obs(person(SAM, T0, "first")),
     );
     assert!(plan.creates.is_empty(), "{plan:#?}");
-    // A stranger's top-level DM earns one refusal and starts nothing.
     let stranger = person("U0999ZZZZ", T0, "hi bot");
     let (plan, st) = run(
         &dm(&mirrored(vec![
@@ -1353,7 +1309,6 @@ fn judging_waits_for_the_starter_where_the_account_has_history() {
     assert!(plan.creates.is_empty(), "the starter is not known yet");
     assert_eq!(st.judged, 0);
     assert_eq!(st.revision, 1);
-    // The read lands: the message is judged then.
     let (plan, st) = run(
         &object(Some(&st)),
         ConversationObservations {
@@ -1364,7 +1319,6 @@ fn judging_waits_for_the_starter_where_the_account_has_history() {
     );
     assert_eq!(plan.creates.len(), 1);
     assert_eq!(st.judged, 2);
-    // Without history, nothing is owed: judged at once.
     let obj = object(Some(&mirrored(vec![message("Ev01", m)])));
     let (plan, _) = run(
         &obj,
@@ -1419,7 +1373,6 @@ fn a_strangers_mention_earns_one_refusal_per_author_up_to_the_cap() {
     );
     assert_eq!(st.effects[&first].intent.action, "post");
     assert_eq!(st.effects[&first].attempts, 1);
-    // A bot that is not listed gets none; the route's own words are used.
     let mut worded = route();
     worded.refusal = Some("Not for you, sorry.".into());
     let mut bot = person("B0999ZZZZ", T0 + 300_000, "<@B0FLEET001> hi");
@@ -1445,7 +1398,6 @@ fn a_strangers_mention_earns_one_refusal_per_author_up_to_the_cap() {
     assert!(
         matches!(&plan.effects[0].action, Action::Post { text, .. } if text == "Not for you, sorry.")
     );
-    // Past the cap, no further refusal is sent or recorded.
     let mut full = judged(vec![stored(person(SAM, T0, "first"), 1)]);
     full.refusals = (0..REFUSALS_CAP).map(|i| format!("U{i:05}")).collect();
     full.received = vec![message(
@@ -1455,8 +1407,6 @@ fn a_strangers_mention_earns_one_refusal_per_author_up_to_the_cap() {
     let (plan, st) = run(&object(Some(&full)), ConversationObservations::default());
     assert!(plan.effects.is_empty());
     assert_eq!(st.refusals.len(), REFUSALS_CAP);
-    // A refused post is tried again after the delay, three times, then
-    // needs attention; a Posted receipt settles it.
     let mut failed = judged(vec![stored(
         person("U0999ZZZZ", T0 + 300_000, "<@B0FLEET001> hi"),
         1,
@@ -1546,7 +1496,6 @@ fn a_post_whose_outcome_is_unknown_is_looked_for_and_never_repeated_blindly() {
         },
     );
     let obj = object(Some(&unknown));
-    // Where the platform reads markers back: a recovery read since the intent.
     assert_eq!(
         probes(
             &obj,
@@ -1561,7 +1510,6 @@ fn a_post_whose_outcome_is_unknown_is_looked_for_and_never_repeated_blindly() {
             query: HistoryQuery::Since { at: NOW - 60_000 },
         }]
     );
-    // Found: the receipt is recovered.
     let mut own = person("B0FLEET001", T0 + 400_000, "Sorry.");
     own.author.kind = Kind::Fleet;
     own.key = Some(key.clone());
@@ -1586,7 +1534,6 @@ fn a_post_whose_outcome_is_unknown_is_looked_for_and_never_repeated_blindly() {
         Some(NOW - 100),
         "a recovery read is not the backstop"
     );
-    // Absent from a complete read: one more attempt under the same key.
     let (plan, st) = run(
         &obj,
         ConversationObservations {
@@ -1598,7 +1545,6 @@ fn a_post_whose_outcome_is_unknown_is_looked_for_and_never_repeated_blindly() {
     assert_eq!(plan.effects.len(), 1);
     assert_eq!(plan.effects[0].key, key);
     assert_eq!(st.effects[&key].attempts, 2);
-    // The read could not be made: counted, waited for.
     let (plan, st) = run(
         &obj,
         ConversationObservations {
@@ -1609,7 +1555,6 @@ fn a_post_whose_outcome_is_unknown_is_looked_for_and_never_repeated_blindly() {
     );
     assert!(plan.effects.is_empty());
     assert_eq!(st.effects[&key].recovery, 1);
-    // Where the platform cannot find it again: a person decides.
     let (plan, st) = run(
         &obj,
         ConversationObservations {
@@ -1672,8 +1617,6 @@ fn a_post_whose_outcome_is_unknown_is_resent_under_its_nonce_inside_the_window()
         );
         object(Some(&st))
     };
-    // A post with an unknown outcome asks what the platform offers, and
-    // never reads history to find a nonce.
     let obj = unknown_since(NOW - 10_000, 1);
     assert_eq!(
         probes(&obj, ConversationObservations::default()),
@@ -1691,7 +1634,6 @@ fn a_post_whose_outcome_is_unknown_is_resent_under_its_nonce_inside_the_window()
         )
         .is_empty()
     );
-    // Inside the window: the same key again, the first intent kept.
     let (plan, st) = run(
         &obj,
         ConversationObservations {
@@ -1710,7 +1652,6 @@ fn a_post_whose_outcome_is_unknown_is_resent_under_its_nonce_inside_the_window()
     );
     assert!(record.receipt.is_none());
     assert!(st.conditions.iter().all(|c| c.reason != "PostUnconfirmed"));
-    // Past the window, or out of attempts: a person decides.
     for obj in [
         unknown_since(NOW - 60_000, 1),
         unknown_since(NOW - 10_000, 3),
@@ -1725,9 +1666,6 @@ fn a_post_whose_outcome_is_unknown_is_resent_under_its_nonce_inside_the_window()
         assert!(plan.effects.is_empty(), "{plan:?}");
         assert_eq!(cond(&st, "NeedsAttention").reason, "PostUnconfirmed");
     }
-    // A refused send on a nonce platform: an earlier send under the key
-    // may have landed, so the retry stays inside the first send's window,
-    // under the first intent, and outside it a person decides.
     let refused_since = |intent_at: u64, receipt_at: u64| {
         let mut st = judged(vec![stored(
             person("U0999ZZZZ", T0 + 300_000, "<@B0FLEET001> hi"),
@@ -1781,8 +1719,6 @@ fn a_post_whose_outcome_is_unknown_is_resent_under_its_nonce_inside_the_window()
     );
     assert!(plan.effects.is_empty(), "{plan:?}");
     assert_eq!(cond(&st, "NeedsAttention").reason, "PostFailed");
-    // The marker cannot be read this pass: no retry, which could slide
-    // past a nonce window; a later pass decides.
     let (plan, _) = run(
         &inside,
         ConversationObservations {
@@ -1793,7 +1729,6 @@ fn a_post_whose_outcome_is_unknown_is_resent_under_its_nonce_inside_the_window()
     assert!(plan.effects.is_empty(), "{plan:?}");
 }
 
-/// A pending tie whose create has `receipt`, with its trigger numbered.
 fn pending(receipt_: Option<Receipt>, attempts: u32) -> ConversationStatus {
     let mut st = judged(vec![
         stored(person(SAM, T0, "first"), 1),
@@ -1819,8 +1754,6 @@ fn pending(receipt_: Option<Receipt>, attempts: u32) -> ConversationStatus {
             recovery: 0,
         },
     );
-    // The pass that wrote the intent looks again one interval later; the
-    // receipt landed since, in the same manager step.
     st.not_before = Some(NOW + 500);
     st
 }
@@ -1864,8 +1797,6 @@ fn a_busy_workspace_holds_the_tie_with_one_notice_and_the_task_starts_once_free(
         Some(NOW + 1_000),
         "one pollMs, not the retention"
     );
-    // Planned again when due, under the same key, no second notice and no
-    // attempt counted.
     let mut posted = st.clone();
     posted.effects.get_mut(&notice).unwrap().receipt = Some(receipt(EffectOutcome::Posted {
         message: "p1".into(),
@@ -1884,7 +1815,6 @@ fn a_busy_workspace_holds_the_tie_with_one_notice_and_the_task_starts_once_free(
     assert_eq!(again.effects[&create_key()].attempts, 1);
     assert_eq!(again.effects[&create_key()].receipt, None);
     assert_eq!(again.effects[&create_key()].intent.at, NOW + 1_000);
-    // Busy again, then free: Tied, attention resolved, the notice stays one.
     let mut busy_again = again.clone();
     busy_again.effects.get_mut(&create_key()).unwrap().receipt =
         Some(receipt(EffectOutcome::WorkspaceBusy {
@@ -1913,7 +1843,6 @@ fn a_busy_workspace_holds_the_tie_with_one_notice_and_the_task_starts_once_free(
     );
     assert_eq!(st.phase, Phase::Tied);
     assert_eq!(cond(&st, "NeedsAttention").status, ConditionStatus::False);
-    // Woken early by a delivery, a busy tie is not planned before its interval.
     let mut early = posted.clone();
     early.received = vec![message("Ev05", person(SAM, T0 + 350_000, "any news?"))];
     let (plan, _) = run_with(
@@ -1946,7 +1875,6 @@ fn a_removed_trigger_withdraws_a_busy_tie_and_the_next_number_never_repeats() {
             .all(|c| c.type_ != "NeedsAttention" || c.status == ConditionStatus::False)
     );
     assert!(st.effects.contains_key(&create_key()), "the record stays");
-    // A later mention starts Task 2, never 1 again.
     let mut later = st.clone();
     later.received = vec![message(
         "Ev06",
@@ -1962,8 +1890,6 @@ fn a_removed_trigger_withdraws_a_busy_tie_and_the_next_number_never_repeats() {
 fn a_create_with_no_receipt_adopts_the_task_it_finds_and_never_creates_it_again() {
     let st = pending(None, 1);
     let obj = object(Some(&st));
-    // The Task under its name, and the capabilities that decide whether
-    // the request is marked with a reaction.
     assert_eq!(
         probes(&obj, ConversationObservations::default()),
         vec![
@@ -1976,7 +1902,6 @@ fn a_create_with_no_receipt_adopts_the_task_it_finds_and_never_creates_it_again(
             }
         ]
     );
-    // Found with this thread's uid: adopted, the receipt recovered.
     let (plan, st) = run(
         &obj,
         ConversationObservations {
@@ -1995,8 +1920,6 @@ fn a_create_with_no_receipt_adopts_the_task_it_finds_and_never_creates_it_again(
         })
     );
     assert_eq!(st.effects[&create_key()].attempts, 1);
-    // Another thread's Task under the name: a refusal, tried again after
-    // the delay.
     let (plan, st) = run(
         &obj,
         ConversationObservations {
@@ -2011,8 +1934,6 @@ fn a_create_with_no_receipt_adopts_the_task_it_finds_and_never_creates_it_again(
         Observation::Known(EffectOutcome::Failed { why }) if why.contains("not created for this thread")
     ));
     assert_eq!(st.not_before, Some(NOW + fleet_controllers::RETRY_DELAY_MS));
-    // Readably absent: the create never happened, so once more under the
-    // same key, counted.
     let (plan, st) = run(
         &obj,
         ConversationObservations {
@@ -2023,7 +1944,6 @@ fn a_create_with_no_receipt_adopts_the_task_it_finds_and_never_creates_it_again(
     assert_eq!(plan.creates.len(), 1);
     assert_eq!(plan.creates[0].key, create_key());
     assert_eq!(st.effects[&create_key()].attempts, 2);
-    // Unknown: wait, and count the look.
     let (plan, st) = run(
         &obj,
         ConversationObservations {
@@ -2034,7 +1954,6 @@ fn a_create_with_no_receipt_adopts_the_task_it_finds_and_never_creates_it_again(
     assert!(plan.creates.is_empty());
     assert_eq!(st.effects[&create_key()].recovery, 1);
     assert_eq!(st.task.as_ref().unwrap().state, TieState::Pending);
-    // Three refused creates need attention and stop.
     let spent = pending(
         Some(receipt(EffectOutcome::Failed {
             why: "invalid".into(),
@@ -2085,13 +2004,11 @@ fn an_orphaned_thread_starts_the_next_task_on_any_admitted_message() {
         state: TieState::Gone,
         trigger: None,
     });
-    // A stranger's words are context: nothing starts.
     let mut context = st.clone();
     context.received = vec![message("Ev05", person("U0999ZZZZ", T0 + 400_000, "me too"))];
     let (plan, st2) = run(&object(Some(&context)), ConversationObservations::default());
     assert!(plan.creates.is_empty());
     assert_eq!(st2.phase, Phase::Orphaned);
-    // An admitted message, mention or not, starts Task 2 with the thread.
     let mut admitted = st2.clone();
     admitted.received = vec![message("Ev06", person(ALEX, T0 + 500_000, "still broken"))];
     let (plan, st3) = run(
@@ -2147,8 +2064,6 @@ fn a_thread_fleet_opened_belongs_to_its_questions_task_while_that_task_exists() 
             name: "asker".into()
         }]
     );
-    // The Task exists with that uid: tied to it by the marker, and the
-    // mention starts nothing.
     let mut asker = task_object("u9");
     asker.metadata.name = "asker".into();
     let (plan, st2) = run(
@@ -2171,7 +2086,6 @@ fn a_thread_fleet_opened_belongs_to_its_questions_task_while_that_task_exists() 
         })
     );
     assert_eq!(st2.judged, 1);
-    // Unknown: no guess, mentions wait.
     let (plan, st3) = run(
         &again,
         ConversationObservations {
@@ -2181,7 +2095,6 @@ fn a_thread_fleet_opened_belongs_to_its_questions_task_while_that_task_exists() 
     );
     assert!(plan.creates.is_empty());
     assert_eq!(st3.task, None);
-    // Readably gone, or another uid: a mention may start a Task.
     for opener in [
         Observation::Known(None),
         Observation::Known(Some(task_object("u1"))),
@@ -2196,7 +2109,6 @@ fn a_thread_fleet_opened_belongs_to_its_questions_task_while_that_task_exists() 
         assert_eq!(plan.creates.len(), 1);
         assert_eq!(st4.task.as_ref().unwrap().n, 1);
     }
-    // Fleet's opening post without a readable marker: ignore mentions.
     let mut unmarked = opening.clone();
     unmarked.key = None;
     let obj = object(Some(&mirrored(vec![message("Ev01", mention)])));
@@ -2239,7 +2151,6 @@ fn nothing_starts_while_the_route_is_unknown_and_retention_waits_on_a_pending_cr
         "the route is back: the mention counts"
     );
     assert_eq!(st.judged, 1);
-    // A pending create holds retention as a busy one does.
     let aged = pending(None, 1);
     let (plan, st) = run_with(
         &object(Some(&aged)),
@@ -2273,7 +2184,6 @@ fn an_idle_thread_whose_task_is_concluded_retires_its_task_then_its_directory_th
     let mut st = tied();
     st.dir = Some(thread_dir_record());
     let obj = object(Some(&st));
-    // A running Task holds its thread: nothing retires.
     let (plan, after) = run_with(
         &obj,
         ConversationObservations {
@@ -2290,7 +2200,6 @@ fn an_idle_thread_whose_task_is_concluded_retires_its_task_then_its_directory_th
         Some(idle + 1_000),
         "looked at again one interval later, never at once"
     );
-    // An Unknown Task decides nothing.
     let (plan, after) = run_with(
         &obj,
         ConversationObservations {
@@ -2302,7 +2211,6 @@ fn an_idle_thread_whose_task_is_concluded_retires_its_task_then_its_directory_th
     );
     assert!(plan.effects.is_empty() && !plan.delete, "{plan:#?}");
     assert_eq!(after.retiring, None);
-    // Not idle yet: nothing retires.
     let (plan, _) = run(
         &obj,
         ConversationObservations {
@@ -2311,7 +2219,6 @@ fn an_idle_thread_whose_task_is_concluded_retires_its_task_then_its_directory_th
         },
     );
     assert!(plan.effects.is_empty() && !plan.delete, "{plan:#?}");
-    // Idle and Concluded: step 1 deletes the Task, fenced on its uid.
     let (plan, after) = run_with(
         &obj,
         ConversationObservations {
@@ -2334,8 +2241,6 @@ fn an_idle_thread_whose_task_is_concluded_retires_its_task_then_its_directory_th
         }
     );
     assert!(!plan.delete);
-    // The Task is gone: the thread orphans, and step 2 removes the
-    // directory the manager recorded making, under the same retirement.
     let mut gone = after.clone();
     gone.effects.get_mut(&task_key).unwrap().receipt = Some(Receipt {
         action: "deleteTask".into(),
@@ -2371,7 +2276,6 @@ fn an_idle_thread_whose_task_is_concluded_retires_its_task_then_its_directory_th
         !plan.delete,
         "the record goes with the Conversation, so it waits"
     );
-    // Still named by a Task: it waits, and the attempt is not counted.
     let mut busy = after.clone();
     busy.effects.get_mut(&dir_key).unwrap().receipt = Some(Receipt {
         action: "removeDir".into(),
@@ -2398,7 +2302,6 @@ fn an_idle_thread_whose_task_is_concluded_retires_its_task_then_its_directory_th
     assert_eq!(plan.effects.len(), 1);
     assert_eq!(after.effects[&dir_key].attempts, 1);
     assert!(!plan.delete);
-    // Removed: step 3 deletes the Conversation.
     let mut removed = after.clone();
     removed.effects.get_mut(&dir_key).unwrap().receipt = Some(Receipt {
         action: "removeDir".into(),
@@ -2449,7 +2352,6 @@ fn a_message_numbered_during_a_retirement_ends_it() {
         at: NOW - 1_000,
         revision: 1,
     });
-    // A message numbered since moves the revision past the retirement's.
     st.revision = 2;
     st.last_message_at = Some(NOW - 10);
     let (plan, after) = run(&object(Some(&st)), ConversationObservations::default());
@@ -2522,10 +2424,6 @@ fn a_message_written_while_the_tied_task_is_deleted_waits_to_be_judged() {
     );
 }
 
-// ----------------------------------------------------------------------
-// Reactions: admission marks a request working, or queued while it waits.
-// ----------------------------------------------------------------------
-
 mod reactions {
     use super::*;
     use fleet_api::conversation::react_key;
@@ -2554,7 +2452,6 @@ mod reactions {
         }
     }
 
-    /// The reactions a plan asks for: message, reaction name, on.
     fn reacts(plan: &Plan) -> Vec<(String, String, bool)> {
         plan.effects
             .iter()
@@ -2605,10 +2502,7 @@ mod reactions {
         assert_eq!(plan.effects[0].key, key);
         assert_eq!(st.effects[&key].intent.action, "react");
         assert_eq!(st.reactions.marks[MENTION], Mark::Working);
-        // The message before it started nothing: the join marks it.
         assert_eq!(st.reactions.marks.len(), 1, "{:?}", st.reactions);
-        // Landed: the record is kept for the join to read, and nothing is
-        // added again.
         let mut landed = st.clone();
         landed.effects.get_mut(&key).unwrap().receipt =
             Some(receipt(EffectOutcome::Reacted { already: false }));
@@ -2623,9 +2517,6 @@ mod reactions {
 
     #[test]
     fn a_working_reaction_that_fails_is_never_tried_again_by_the_conversation() {
-        // The Task may reply before a retry lands, and a late working
-        // reaction would then stay beside the replied one: the join adds it
-        // instead, under the Task's key.
         let (_, st) = run(
             &object(Some(&created())),
             with_caps(reacting(true), Some(task_object("t1"))),
@@ -2666,7 +2557,6 @@ mod reactions {
                 uid: "t1".into(),
                 adopted: false,
             }));
-        // The tie pass, with the capabilities Unknown: no mark changes.
         let (plan, tied_st) = run(
             &object(Some(&st)),
             with_caps(
@@ -2679,8 +2569,6 @@ mod reactions {
         assert_eq!(tied_st.phase, Phase::Tied);
         assert!(reacts(&plan).is_empty());
         assert_eq!(tied_st.reactions.marks[MENTION], Mark::Queued);
-        // A later pass: the queued reaction goes, and no working one is
-        // added, since the join may have replied already.
         let (plan, st) = run(
             &object(Some(&tied_st)),
             with_caps(reacting(true), Some(task_object("t1"))),
@@ -2710,7 +2598,6 @@ mod reactions {
     #[test]
     fn a_waiting_create_marks_its_request_queued_then_working_once_the_task_starts() {
         let mut st = busy();
-        // A later admitted message, and a stranger's, both delivered.
         st.messages
             .push(stored(person(ALEX, T0 + 400_000, "also this"), 2));
         st.messages
@@ -2732,13 +2619,11 @@ mod reactions {
         assert_eq!(st.reactions.marks[&later], Mark::Queued);
         assert!(!st.reactions.marks.contains_key(&T0.to_string()));
         assert!(!st.reactions.marks.contains_key(&(T0 + 410_000).to_string()));
-        // The busy notice is planned beside them: a reaction holds nothing.
         assert!(
             plan.effects
                 .iter()
                 .any(|e| matches!(e.action, Action::Post { .. }))
         );
-        // Still busy on the next pass: nothing is added again.
         let mut again = st.clone();
         for rec in again.effects.values_mut() {
             if rec.intent.action == "react" {
@@ -2752,7 +2637,6 @@ mod reactions {
             }));
         let (plan, busy_again) = run(&object(Some(&again)), with_caps(reacting(true), None));
         assert!(reacts(&plan).is_empty(), "{plan:?}");
-        // Free: each queued message is marked working, queued removed.
         let mut free = busy_again.clone();
         free.task.as_mut().unwrap().state = TieState::Pending;
         free.effects.get_mut(&create_key()).unwrap().receipt =
@@ -2793,9 +2677,6 @@ mod reactions {
         st.received = vec![removed("Ev05", MENTION)];
         let (plan, st) = run(&object(Some(&st)), with_caps(reacting(true), None));
         assert_eq!(st.task, None, "withdrawn");
-        // Every queued reaction goes, the removed message's included: the
-        // mirror cannot tell a removal from a rotation, and a removal of a
-        // reaction is set, not counted.
         assert_eq!(
             reacts(&plan),
             vec![
@@ -2808,14 +2689,12 @@ mod reactions {
 
     #[test]
     fn no_mark_without_reactions_and_none_while_the_capabilities_are_unknown() {
-        // The platform has no reactions.
         let (plan, st) = run(
             &object(Some(&created())),
             with_caps(reacting(false), Some(task_object("t1"))),
         );
         assert!(reacts(&plan).is_empty());
         assert!(st.reactions.marks.is_empty());
-        // Unknown: the tie goes on, no mark, no reaction.
         let (plan, st) = run(
             &object(Some(&created())),
             with_caps(
@@ -2828,7 +2707,6 @@ mod reactions {
         assert_eq!(st.phase, Phase::Tied);
         assert!(reacts(&plan).is_empty());
         assert!(st.reactions.marks.is_empty());
-        // Reactions off.
         let mut off = defaults();
         off.reactions = None;
         let (plan, st) = run_with(
@@ -2839,7 +2717,6 @@ mod reactions {
         );
         assert!(reacts(&plan).is_empty());
         assert!(st.reactions.marks.is_empty());
-        // And no capabilities are asked for them.
         let input_probes = ConversationController
             .probes(&ConversationInput {
                 object: &object(Some(&pending(None, 1))),
@@ -2864,13 +2741,11 @@ mod reactions {
         failed.effects.get_mut(&key).unwrap().receipt = Some(receipt(EffectOutcome::Failed {
             why: "rate limited".into(),
         }));
-        // Before the delay: not yet, and a wake is asked for.
         let (plan, st) = run(&object(Some(&failed)), with_caps(reacting(true), None));
         assert!(reacts(&plan).is_empty());
         assert!(st.effects.contains_key(&key));
         let reason = cond(&st, "NeedsAttention").reason.clone();
         assert_eq!(reason, "WorkspaceBusy", "the reaction raises nothing");
-        // After the delay: again, under the same key.
         let later = NOW + 60_000;
         let (plan, st) = run_with(
             &object(Some(&failed)),
@@ -2883,7 +2758,6 @@ mod reactions {
             vec![r(MENTION, "hourglass_flowing_sand", true)]
         );
         assert_eq!(st.effects[&key].attempts, 2);
-        // Past three attempts: dropped, and the mark stays.
         let mut spent = st.clone();
         let rec = spent.effects.get_mut(&key).unwrap();
         rec.attempts = 3;

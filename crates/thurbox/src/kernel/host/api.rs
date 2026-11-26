@@ -48,11 +48,9 @@ pub(super) struct EnvParts {
 }
 
 pub(super) struct Env {
-    /// The `_ENV` its chunk, its modules and every function they define run in.
     pub table: Table,
     pub run: mlua::Function,
     pub run_forget: mlua::Function,
-    /// `files`, kept out of `table` the same way until granted.
     pub files: Table,
     pub thurbox: Table,
 }
@@ -230,10 +228,7 @@ const SEALED: [&str; 6] = ["string", "table", "math", "coroutine", "utf8", "text
 
 pub(super) const READ_TAKEN_AT: u8 = 1;
 pub(super) const READ_METRICS: u8 = 2;
-/// Not a cache key: read by the loop, which fetches a remote session's diff
-/// only while some pane drawn on screen reads `thurbox.diffs`.
 pub(super) const READ_DIFFS: u8 = 4;
-/// What iterating the published table reads: all of it.
 const READ_ALL: u8 = READ_TAKEN_AT | READ_METRICS | READ_DIFFS;
 const PUBLISHED_TABLES: &str = "__published_tables";
 
@@ -320,16 +315,6 @@ fn install_sample_reads(lua: &Lua, read: Rc<std::cell::Cell<u8>>) -> mlua::Resul
     install_frozen_meta(lua)
 }
 
-/// The metamethods every [`freeze`] proxy shares, so a published table costs
-/// one metatable rather than three Rust closures.
-///
-/// Each finds the table behind its proxy through [`FROZEN`] instead of
-/// capturing it. A captured table is a registry reference — a GC root the
-/// collector cannot see through — so a proxy could only free what it stood for
-/// one full collection after the proxy itself went, one nesting level per
-/// collection. A deep published group rebuilt every pass then outran the
-/// collector, and the emergency collection at the memory ceiling, which runs
-/// once, freed one level and failed the allocation anyway.
 fn install_frozen_meta(lua: &Lua) -> mlua::Result<()> {
     let shared = lua.create_table()?;
     shared.raw_set(
@@ -350,9 +335,6 @@ fn install_frozen_meta(lua: &Lua) -> mlua::Result<()> {
                 .map_or(0, |inner| inner.raw_len()))
         })?,
     )?;
-    // The proxy itself is the iteration state: the `next` installed above
-    // reads a frozen proxy as what it stands for, so the table behind it is
-    // never handed out.
     shared.raw_set(
         "__pairs",
         lua.create_function(|lua, proxy: Table| {
@@ -363,17 +345,12 @@ fn install_frozen_meta(lua: &Lua) -> mlua::Result<()> {
     lua.set_named_registry_value(FROZEN_META, shared)
 }
 
-/// Where [`install_frozen_meta`] keeps the shared metamethods.
 const FROZEN_META: &str = "__frozen_meta";
 
 const VIEWS: &str = "__thurbox_views";
 
-/// Every read-only proxy [`freeze`] made, mapped to the table it stands for.
 const FROZEN: &str = "__frozen";
 
-/// The metatable of a read-only view of `inner`: reads through, refuses a
-/// write naming `what`, iterates without handing out `inner`, and hides
-/// itself.
 fn read_only_meta(lua: &Lua, inner: Table, what: &str) -> mlua::Result<Table> {
     let meta = lua.create_table()?;
     meta.raw_set("__index", inner.clone())?;
@@ -429,8 +406,6 @@ pub(super) fn freeze(lua: &Lua, value: Value) -> mlua::Result<Value> {
     Ok(Value::Table(proxy))
 }
 
-/// [`freeze`] every table held by `table`, leaving `table` itself writable —
-/// for the top-level published table, which the kernel still fills.
 pub(super) fn freeze_fields(lua: &Lua, table: &Table) -> mlua::Result<()> {
     let entries = table
         .pairs::<Value, Value>()
@@ -457,8 +432,6 @@ pub(super) fn observe_samples(
     let proxy = lua.create_table()?;
     let tables: Table = lua.named_registry_value(PUBLISHED_TABLES)?;
     tables.raw_set(proxy.clone(), backing)?;
-    // Neither closure captures `backing`: each finds it through
-    // `PUBLISHED_TABLES`, for the reason `install_frozen_meta` gives.
     let meta = lua.create_table()?;
     let reads = read.clone();
     meta.raw_set(
@@ -481,9 +454,6 @@ pub(super) fn observe_samples(
             )))
         })?,
     )?;
-    // The proxy is the iteration state: the installed `next` reads it as the
-    // backing table and notes the read, so the table itself is never handed
-    // out.
     meta.raw_set(
         "__pairs",
         lua.create_function(move |lua, proxy: Table| {
@@ -519,7 +489,6 @@ fn install_clock(
     lua.set_named_registry_value(CTX_META, meta)
 }
 
-/// Give one render context its clock.
 pub(super) fn attach_clock(lua: &Lua, ctx: &Table) -> mlua::Result<()> {
     let meta: Table = lua.named_registry_value(CTX_META)?;
     ctx.set_metatable(Some(meta))
@@ -558,8 +527,6 @@ fn run_for(
                 };
                 Ok(crate::kernel::runs::Target::Session(session))
             };
-            // A fallback could run the program on a machine the pane did not
-            // ask for, so invalid routing options are refused before queueing.
             let machine = match &opts {
                 Some(t) => t.get::<Value>("machine")?,
                 None => Value::Nil,
@@ -724,8 +691,6 @@ fn command_for(
             worktree: get_bool("worktree"),
             branch: get_string("branch"),
             base: get_string("base"),
-            // `create`'s other repositories, each `{ path, worktree }`. An
-            // entry with no path is dropped rather than guessed at.
             extras: opts
                 .as_ref()
                 .and_then(|t| t.get::<Option<Table>>("extras").ok().flatten())
@@ -784,9 +749,6 @@ fn command_for(
         };
 
         let parsed = Command::parse(&kind, args).map_err(mlua::Error::runtime)?;
-        // Edited confirmation panes forward `options` but may not know the new
-        // top-level handoff. Store the undo target when the command is actually
-        // issued, so cancelling an old float cannot create a phantom undo.
         if matches!(&parsed, Command::Delete { force: false, .. }) {
             if let Some(remember) = opts
                 .as_ref()
@@ -805,25 +767,13 @@ fn command_for(
     })
 }
 
-/// Globals that read files, load code, or write to the terminal.
-///
-/// Withholding `io`/`os`/`debug` at VM construction is not enough: Lua's *base*
-/// library is not optional, and it carries `dofile` and `loadfile`, which read
-/// arbitrary paths. `print` is just as unwelcome — stdout belongs to the TUI,
-/// so a stray `print` would corrupt the screen rather than log anything.
-///
-/// Removed rather than replaced with a stub that refuses, because the
-/// capability model is enforcement by *absence*: a mod should find nothing
-/// there at all.
-/// (`tests/kernel_mvp.rs` probes for each of these — that test is what found
-/// `dofile`/`loadfile` in the first place.)
 const WITHHELD_GLOBALS: [&str; 8] = [
-    "dofile",     // reads and runs an arbitrary path
-    "loadfile",   // reads an arbitrary path
+    "dofile",
+    "loadfile",
     "load",       // loads code, including bytecode that can crash the VM
     "loadstring", // Lua 5.1 spelling of the same
-    "print",      // stdout is the TUI's
-    "warn",       // and stderr is usually the same terminal
+    "print",
+    "warn",
     "collectgarbage",
     "rawset",
 ];
@@ -843,7 +793,6 @@ fn require_for(lua: &Lua, ui_dir: &Path, env: Table) -> mlua::Result<mlua::Funct
         if let Ok(Value::Table(module)) = cache.get::<Value>(name.clone()) {
             return Ok(Value::Table(module));
         }
-        // `lib.theme` → `lib/theme.lua`, and nothing may escape the root.
         if name.contains("..") || name.starts_with('/') {
             return Err(mlua::Error::runtime(format!(
                 "require({name:?}): only modules inside the mod directory can be required"
@@ -892,11 +841,6 @@ fn install_store(
         lua.create_function(move |lua, (_, key, value): (Table, String, Value)| {
             count_write(&writes, &value);
             let mut slot = write.borrow_mut();
-            // Compared before storing. A pane may write the same value on every
-            // frame — the search strip re-states how many panes it is showing —
-            // and treating that as a change would move the version 40 times a
-            // second and invalidate every cached tree, which is the difference
-            // between this mechanism working and doing nothing at all.
             let moved = match from_lua(lua, &value) {
                 Some(persisted) => {
                     if slot.get(&key) == Some(&persisted) {
@@ -950,7 +894,6 @@ fn state_for(
             count_write(&writes, &value);
             let ns = ns.clone();
             let mut slot = write.borrow_mut();
-            // Same rule as `store`: only a value that actually moved counts.
             let moved = match from_lua(lua, &value) {
                 Some(persisted) => {
                     if slot.get(&(ns.clone(), key.clone())) == Some(&persisted) {
@@ -1012,13 +955,7 @@ fn from_lua(lua: &Lua, value: &Value) -> Option<Persisted> {
                     entries.push((key, entry));
                 }
             }
-            // In a canonical order, not the order `pairs` walked it in: that
-            // depends on the VM's string-hash seed and on how the table was
-            // built, so two copies of one table walk differently — and a write
-            // is compared with what is held to decide whether it moved. Held in
-            // `pairs` order, a pane re-stating an unchanged table every frame
-            // moved the state version on most of them, and every pure pane's
-            // cached tree went with it.
+            // Lua's `pairs` order depends on the VM's string-hash seed, so entries are held in canonical order.
             entries.sort_by(|(a, _), (b, _)| canonical(a, b));
             Some(Persisted::Table(entries))
         }
@@ -1069,8 +1006,6 @@ fn view_contents(lua: &Lua, view: &Table) -> mlua::Result<Table> {
     Ok(copy)
 }
 
-/// A total order over table keys, for [`from_lua`]'s canonical order. Keys
-/// are almost always strings or integers; the rest only need to be consistent.
 fn canonical(a: &Persisted, b: &Persisted) -> std::cmp::Ordering {
     use std::cmp::Ordering;
     let rank = |p: &Persisted| match p {
@@ -1095,11 +1030,8 @@ fn canonical(a: &Persisted, b: &Persisted) -> std::cmp::Ordering {
     }
 }
 
-/// Trim mlua's wrapper noise so the pane shows the mod's own message.
 pub(super) fn clean_error(error: &mlua::Error) -> String {
     let text = error.to_string();
-    // Before the memory check: arming fails on a full VM, and its cause reads
-    // "not enough memory" too, but the call never started.
     if let Some(at) = text.find(BUDGET_UNARMED) {
         let cause = text[at + BUDGET_UNARMED.len()..].trim_start_matches(':');
         let cause = cause.lines().next().unwrap_or_default().trim();
@@ -1122,20 +1054,12 @@ pub(super) fn clean_error(error: &mlua::Error) -> String {
         .to_string()
 }
 
-// ── Display width ───────────────────────────────────────────────────────────
-
-/// What a cut is marked with when the caller does not say.
 const ELLIPSIS: &str = "…";
 
 pub(crate) fn columns(s: &str) -> usize {
     UnicodeWidthStr::width(s)
 }
 
-/// The longest prefix of `s` that fits in `cols` columns.
-///
-/// A double-width glyph that would straddle the edge is left out rather than
-/// half-drawn, so the result is never *wider* than asked for — which is what
-/// lets a caller add its own marker and still fit.
 pub(crate) fn take_left(s: &str, cols: usize) -> &str {
     let mut used = 0;
     for (at, ch) in s.char_indices() {
@@ -1148,7 +1072,6 @@ pub(crate) fn take_left(s: &str, cols: usize) -> &str {
     s
 }
 
-/// The longest suffix of `s` that fits in `cols` columns.
 fn take_right(s: &str, cols: usize) -> &str {
     let mut used = 0;
     for (at, ch) in s.char_indices().rev() {
@@ -1161,7 +1084,6 @@ fn take_right(s: &str, cols: usize) -> &str {
     s
 }
 
-/// Which end of the text a truncation eats.
 enum Side {
     Right,
     Left,
@@ -1181,7 +1103,6 @@ impl Side {
     }
 }
 
-/// Cut `s` down to `cols` columns, marking the cut with `ellipsis`.
 fn truncate(s: &str, cols: usize, ellipsis: &str, side: &Side) -> String {
     if cols == 0 {
         return String::new();
@@ -1190,9 +1111,6 @@ fn truncate(s: &str, cols: usize, ellipsis: &str, side: &Side) -> String {
         return s.to_string();
     }
     let mark = columns(ellipsis);
-    // No room for both the mark and any text: the mark alone is the whole
-    // answer, itself cut to fit rather than overrunning the budget it was
-    // meant to respect.
     if mark >= cols {
         return take_left(ellipsis, cols).to_string();
     }
@@ -1201,8 +1119,6 @@ fn truncate(s: &str, cols: usize, ellipsis: &str, side: &Side) -> String {
         Side::Right => format!("{}{ellipsis}", take_left(s, budget)),
         Side::Left => format!("{ellipsis}{}", take_right(s, budget)),
         Side::Middle => {
-            // The tail gets the larger share of an odd remainder: for a path it
-            // carries the leaf, which is the half that identifies the thing.
             let head = budget / 2;
             format!(
                 "{}{ellipsis}{}",
@@ -1213,7 +1129,6 @@ fn truncate(s: &str, cols: usize, ellipsis: &str, side: &Side) -> String {
     }
 }
 
-/// Where the short side of a pad goes.
 enum Align {
     Left,
     Right,
@@ -1233,9 +1148,6 @@ impl Align {
     }
 }
 
-/// Spaces `s` out to `cols` columns. Text already that wide is returned as it
-/// is — a pad never truncates, because the two answers to "too long" are the
-/// caller's to choose between.
 fn pad(s: &str, cols: usize, align: &Align) -> String {
     let short = cols.saturating_sub(columns(s));
     if short == 0 {
@@ -1253,8 +1165,6 @@ fn pad(s: &str, cols: usize, align: &Align) -> String {
 
 const MAX_COLS: usize = 1 << 20;
 
-/// A column count as Lua spells it: any number, floored, never negative,
-/// and never past [`MAX_COLS`].
 fn cols_arg(n: f64) -> usize {
     if n.is_finite() && n > 0.0 {
         (n.floor() as usize).min(MAX_COLS)
@@ -1263,18 +1173,6 @@ fn cols_arg(n: f64) -> usize {
     }
 }
 
-/// `text.width(s)`, `text.truncate(s, cols, opts)` and `text.pad(s, cols, align)`.
-///
-/// The one measurement a mod cannot make for itself. Lua's `#` counts bytes
-/// and `utf8.len` counts codepoints; a terminal budget is columns, and no
-/// arithmetic over the other two recovers it. Every truncation and every pad in
-/// the interface rides on this, so it is the kernel's `unicode-width` — the
-/// painter's own measure — rather than an approximation per mod.
-///
-/// `opts` is the ellipsis, or `{ ellipsis = "…", side = "right"|"left"|"middle" }`
-/// for the cuts that keep the far end. An unknown `side` or `align` raises
-/// rather than being ignored: a misspelt option that silently means "left" is
-/// the trap `command`'s option list already documents.
 fn install_text(lua: &Lua) -> mlua::Result<()> {
     let table = lua.create_table()?;
 
@@ -1328,9 +1226,6 @@ mod tests {
         assert_eq!("修复终端宽度".chars().count(), 6);
     }
 
-    /// A double-width glyph that would straddle the budget's edge is dropped
-    /// rather than half-drawn: the result must never be wider than asked for,
-    /// or the caller's own marker pushes the row over.
     #[test]
     fn a_cut_never_returns_more_columns_than_it_was_given() {
         assert_eq!(take_left("修复终端", 3), "修");
@@ -1346,12 +1241,9 @@ mod tests {
         assert_eq!(truncate("abcdefgh", 5, ELLIPSIS, &Side::Right), "abcd…");
         assert_eq!(truncate("abcdefgh", 5, ELLIPSIS, &Side::Left), "…efgh");
         assert_eq!(truncate("abcdefgh", 5, ELLIPSIS, &Side::Middle), "ab…gh");
-        // The tail takes the larger share of an odd remainder.
         assert_eq!(truncate("abcdefgh", 6, ELLIPSIS, &Side::Middle), "ab…fgh");
     }
 
-    /// Below the mark's own width there is nothing to say but the mark, and it
-    /// is cut to the budget rather than overrunning the one it protects.
     #[test]
     fn a_budget_too_small_for_the_mark_holds_the_mark() {
         assert_eq!(truncate("abcdefgh", 1, ELLIPSIS, &Side::Right), "…");
@@ -1373,8 +1265,6 @@ mod tests {
         assert_eq!(pad("修复终端", 4, &Align::Left), "修复终端");
     }
 
-    /// A misspelt option means the caller asked for something; answering with
-    /// the default would draw a plausible frame and report nothing.
     #[test]
     fn an_unknown_side_or_align_is_refused() {
         assert!(Side::parse("centre").is_err());

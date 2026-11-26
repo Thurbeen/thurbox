@@ -1,7 +1,3 @@
-//! `fleet label` end to end: a Task's labels set through the real binary,
-//! its spec and generation untouched, and the labels only Fleet's own
-//! controllers write left alone and refused.
-
 mod support;
 
 use fleet_api::conversation::{CONVERSATION_LABEL, CONVERSATION_UID_LABEL};
@@ -62,8 +58,6 @@ fn a_label_only_fleet_writes_is_refused() {
     env.fleet(&["label", "task", "nobody", "a=b"]).code(3);
 }
 
-/// A Task a Conversation made carries the labels `apply` refuses; a label
-/// set on it keeps them.
 #[test]
 fn a_task_a_conversation_made_keeps_its_labels() {
     let env = with_task("label-conversation");
@@ -73,7 +67,6 @@ fn a_task_a_conversation_made_keeps_its_labels() {
         CONVERSATION_LABEL: "conv-0123456789ab",
         CONVERSATION_UID_LABEL: "u-1",
     });
-    // As the Conversation's controller makes one: under the manager lease.
     let lease = store.acquire_lease("test", 60_000).unwrap();
     store
         .create_fenced(
@@ -83,8 +76,6 @@ fn a_task_a_conversation_made_keeps_its_labels() {
         )
         .unwrap();
     store.release_lease(&lease).unwrap();
-    // And as a plugin's child of another Task: the labels only a plugin's
-    // host and a parent's creation write, put where the store keeps them.
     let file = env.data.join("objects/Task/t2.json");
     let mut stored: serde_json::Value =
         serde_json::from_str(&std::fs::read_to_string(&file).unwrap()).unwrap();

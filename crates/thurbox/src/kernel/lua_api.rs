@@ -1,67 +1,13 @@
-//! The mod API's published shape, declared once (issue #1476).
-//!
-//! What a mod can read off `thurbox` used to be written out by hand in four
-//! places — the publish code, `ui/lib/thurbox.d.lua`, `thurbox.yml` and the
-//! `tests/fixtures/lua_std` probe — and nothing compared them, so a field could
-//! be published undeclared (#1133) with CI green. This module is the one
-//! statement of that shape. The three files carry a generated region built from
-//! it, and `tests/lua_api.rs` holds them to it in both directions: each file
-//! must equal what this module renders, and every key a real publish produces
-//! must be declared here.
-//!
-//! `just lua-api` rewrites the generated regions after an edit here.
-//!
-//! [`API`] versions the contract. A field is added freely; removing one, or
-//! changing what it means, bumps the number. A mod that needs a newer
-//! contract says so with `requires_api` in its declaration table, and is
-//! refused at load with a reason rather than rendering against a field that is
-//! not there.
-
-/// The mod API contract number, published as `thurbox.api`.
-///
-/// Bumped when the mod contract changes incompatibly (ADR-40).
-/// API 2 makes `files.read` asynchronous: `nil` means pending.
-/// API 3 removes `thurbox.metrics.sessions[id].usage`: account quotas belong
-/// to a mod that fetches them through `run`, such as `thurbox-info-panel`.
-/// API 4 is thurbox 3.0's, on Fleet (ADR-41). It removes what no engine
-/// serves any more: `thurbox.deleted`, `thurbox.tasks`, `thurbox.preflight`,
-/// `thurbox.branches`, `thurbox.worktrees`, `thurbox.agent_default`, an
-/// agent's `command` and `presence` (agents are Fleet's harnesses), the
-/// `tasks` and `soft_delete`
-/// feature flags and `settings.three_panel_min_cols`, and the commands
-/// `restore`, `restart`, `fork`, `sync`, `reorder`, `task`, `dispatch` and
-/// `automation`.
-/// API 5 removes the `file_viewer`, `global_search`, `info_panel` and
-/// `code_review` feature flags: no pane read them, and `settings.toml` no
-/// longer holds them.
-/// API 6 removes `thurbox.automations` and the `automations` feature flag:
-/// thurbox schedules nothing of its own.
-/// Additions never bump it: a mod reads a newer field defensively, as it
-/// reads any optional one.
 pub const API: u32 = 6;
 
-/// The prefix of the session meta keys published as `session.meta`.
-///
-/// Fixed, so a key a driver keeps for itself (`fm.lease`) or thurbox keeps for
-/// itself (`thurbox.codex_conversation_id`) never reaches a mod.
 pub const META_PREFIX: &str = crate::session::PUBLISHED_META_PREFIX;
 
-/// The longest published meta value, in characters. A row note is one line.
 pub const META_VALUE_CHARS: usize = 256;
 
-/// The longest published meta key, in characters; a longer key is skipped.
 pub const META_KEY_CHARS: usize = 64;
 
-/// The most `ui.*` keys published per session, in key order.
-///
-/// Bounds the per-row table the `sessions` group rebuilds whenever the snapshot
-/// moves, whatever a driver writes.
 pub const META_KEYS: usize = 32;
 
-/// The published form of one meta value: control characters (newlines
-/// included) and invisible characters removed, and the length capped.
-/// Anyone with the CLI writes these, agents included, so they reach a pane as
-/// untrusted plain text.
 pub fn clean_meta_value(value: &str) -> String {
     value
         .chars()
@@ -70,14 +16,6 @@ pub fn clean_meta_value(value: &str) -> String {
         .collect()
 }
 
-/// The characters that are not drawn yet still act: the format characters
-/// that change how the text around them is drawn (the soft hyphen, the Arabic
-/// letter mark, the Mongolian vowel separator, zero-width spaces and joiners,
-/// bidi marks, embeddings, overrides and isolates, the byte-order mark,
-/// interlinear annotation, the tag characters, the shorthand and musical
-/// format controls), and the Hangul fillers, letters that draw as blank space.
-/// Left in, a note could reorder the row it is drawn on or carry text nobody
-/// sees.
 const INVISIBLE_META_RANGES: &[(char, char)] = &[
     ('\u{00ad}', '\u{00ad}'),
     ('\u{061c}', '\u{061c}'),
@@ -97,8 +35,6 @@ const INVISIBLE_META_RANGES: &[(char, char)] = &[
     ('\u{1d173}', '\u{1d17a}'),
 ];
 
-/// Extra characters the bounded metadata query must exclude before counting
-/// keys. Shares the publication filter's ranges so rejected keys cost no slot.
 pub fn invisible_meta_key_chars() -> String {
     INVISIBLE_META_RANGES
         .iter()
@@ -106,8 +42,6 @@ pub fn invisible_meta_key_chars() -> String {
         .collect()
 }
 
-/// A character a published meta key or value may not carry: one that acts on
-/// the terminal, or one that is not drawn yet changes or hides text.
 fn is_hidden(c: char) -> bool {
     c.is_control()
         || INVISIBLE_META_RANGES
@@ -115,9 +49,6 @@ fn is_hidden(c: char) -> bool {
             .any(|&(start, end)| (start..=end).contains(&c))
 }
 
-/// Whether a stored meta key is one a mod may see. A pane may draw the key
-/// too, so one carrying a hidden character is skipped, not cleaned: cleaning
-/// could fold it onto another key.
 pub fn is_published_meta_key(key: &str) -> bool {
     key.len() > META_PREFIX.len()
         && key.starts_with(META_PREFIX)
@@ -125,12 +56,9 @@ pub fn is_published_meta_key(key: &str) -> bool {
         && !key.chars().any(is_hidden)
 }
 
-/// One published table's shape, rendered as a `---@class`.
 pub struct Class {
     pub name: &'static str,
-    /// The `---` lines above the class.
     pub doc: &'static [&'static str],
-    /// `(exact)`: luals reports a field read that is not declared.
     pub exact: bool,
     pub fields: &'static [Field],
 }
@@ -142,31 +70,19 @@ pub struct Field {
     pub doc: &'static str,
 }
 
-/// A field's value. Everything a walk or a dotted path can descend into is a
-/// class of its own; a value with no fields to declare is a [`Ty::Leaf`].
 pub enum Ty {
-    /// A luals type with nothing below it to declare: a scalar, a literal
-    /// union, an alias, a list of scalars or a map nobody reads by name.
     Leaf(&'static str),
     Record(&'static Class),
     List(&'static Class),
-    /// Keyed by a session or surface id — reached through a variable, so a
-    /// dotted path stops at the map.
     Map(&'static Class),
-    /// Keyed by surface, each entry a list.
     MapOfLists(&'static Class),
-    /// Keyed by the key THIS mod passed to `run`, so a literal key is a
-    /// dotted path a mod really writes (`thurbox.runs.cpu.state`).
     OwnKeys(&'static Class),
-    /// The palette, one key per role of [`roles`].
     Roles,
 }
 
-/// A string alias drawn from a fixed set, rendered as `---@alias`.
 pub struct Alias {
     pub name: &'static str,
     pub doc: &'static [&'static str],
-    /// `None` for `thurbox.Role`, whose values are [`roles`].
     pub values: Option<&'static [&'static str]>,
 }
 
@@ -200,8 +116,6 @@ impl Field {
     }
 }
 
-/// Every theme role, named as a mod names it — `theme::palette_roles` is the
-/// field set, so a role added there is declared here without a second edit.
 pub fn roles() -> Vec<&'static str> {
     let palette = crate::theme::ThemePreset::all()[0].palette();
     crate::kernel::theme::palette_roles(&palette)
@@ -851,7 +765,6 @@ pub static CHROME: Class = Class {
     fields: &[leaf("status_rows", "integer")],
 };
 
-/// One field per `Capability::ALL` entry, which `tests/lua_api.rs` checks.
 pub static GRANTED: Class = Class {
     name: "thurbox.Granted",
     doc: &[
@@ -870,8 +783,6 @@ pub static GRANTED: Class = Class {
     ],
 };
 
-/// The root. Two publish paths fill it: `LuaHost::publish` for everything, and
-/// `LuaHost::enter`, which sets `runs` and `granted` per mod.
 pub static API_ROOT: Class = Class {
     name: "thurbox.Api",
     doc: &[
@@ -932,7 +843,6 @@ pub static API_ROOT: Class = Class {
     ],
 };
 
-/// Everything the generated region of `thurbox.d.lua` declares, in order.
 pub static ITEMS: &[Item] = &[
     Item::Alias(&ROLE),
     Item::Alias(&STATUS),
@@ -978,7 +888,6 @@ pub static ITEMS: &[Item] = &[
     Item::Class(&API_ROOT),
 ];
 
-/// The first and last line of every generated region.
 pub const BEGIN: &str = "BEGIN GENERATED by src/kernel/lua_api.rs: edit there, then `just lua-api`";
 pub const END: &str = "END GENERATED";
 
@@ -1003,7 +912,6 @@ fn doc_lines(out: &mut String, doc: &[&str]) {
     }
 }
 
-/// The generated region of `ui/lib/thurbox.d.lua`, markers excluded.
 pub fn declarations() -> String {
     let mut out = String::new();
     for (index, item) in ITEMS.iter().enumerate() {
@@ -1043,14 +951,6 @@ pub fn declarations() -> String {
     out
 }
 
-/// Every dotted path selene checks, in [`API_ROOT`] order.
-///
-/// selene checks a path one segment at a time and stops at the first computed
-/// index, so a record is written out field by field while a list or an
-/// id-keyed map stops at itself: its rows are reached through `[i]` or a
-/// variable. Declaring a field implies its parents, so only leaves appear.
-/// `runs` is the one map a mod indexes with a literal of its own choosing,
-/// so it takes `*` twice instead.
 pub fn selene_paths() -> Vec<String> {
     let mut paths = Vec::new();
     walk_paths("thurbox", &API_ROOT, &mut paths, true);
@@ -1082,7 +982,6 @@ fn walk_paths(prefix: &str, class: &Class, out: &mut Vec<String>, wildcard: bool
     }
 }
 
-/// The generated region of `thurbox.yml`'s `globals:`, markers excluded.
 pub fn selene_globals() -> String {
     let mut out = String::new();
     for path in selene_paths() {
@@ -1091,8 +990,6 @@ pub fn selene_globals() -> String {
     out
 }
 
-/// `tests/fixtures/lua_std/reads.lua`: a pane reading every declared path, which
-/// must lint clean against `thurbox.yml`.
 pub fn std_probe() -> String {
     let mut out = String::new();
     out.push_str(&format!("-- {BEGIN}\n"));
@@ -1124,12 +1021,6 @@ pub fn std_probe() -> String {
     out
 }
 
-/// Replace the region between the `BEGIN`/`END` marker lines of `text` (each
-/// marker a whole line of `comment` + marker) with `body`. `None` when the
-/// markers are missing or out of order.
-///
-/// The answer always has `\n` line ends: the files are committed that way,
-/// and a Windows checkout with `core.autocrlf` reads them back with `\r\n`.
 pub fn splice(text: &str, comment: &str, body: &str) -> Option<String> {
     let text = &text.replace("\r\n", "\n");
     let begin = format!("{comment}{BEGIN}\n");
@@ -1149,20 +1040,21 @@ mod tests {
             clean_meta_value("waiting\non CI\u{1b}[31m"),
             "waitingon CI[31m"
         );
-        // Invisible format characters: a right-to-left override, zero-width
-        // space and joiner, a bidi isolate, a byte-order mark.
         assert_eq!(
             clean_meta_value("ab\u{202e}c\u{200b}d\u{200d}e\u{2066}f\u{feff}g"),
-            "abcdefg"
+            "abcdefg",
+            "bidi overrides, zero-width characters, isolates and a BOM are stripped"
         );
-        // An Arabic letter mark, a soft hyphen, the Mongolian vowel separator,
-        // interlinear annotation and tag characters — hidden text — and a
-        // Hangul filler and a shorthand format control, which draw as nothing.
         assert_eq!(
             clean_meta_value("a\u{061c}b\u{00ad}c\u{180e}d\u{fff9}e\u{e0001}f\u{e0041}g"),
-            "abcdefg"
+            "abcdefg",
+            "letter marks, soft hyphens, annotation and tag characters are stripped"
         );
-        assert_eq!(clean_meta_value("a\u{3164}b\u{1bca0}c"), "abc");
+        assert_eq!(
+            clean_meta_value("a\u{3164}b\u{1bca0}c"),
+            "abc",
+            "characters that draw as nothing are stripped"
+        );
         let long = "é".repeat(META_VALUE_CHARS + 10);
         assert_eq!(clean_meta_value(&long).chars().count(), META_VALUE_CHARS);
     }

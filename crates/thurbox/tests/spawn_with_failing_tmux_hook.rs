@@ -1,39 +1,8 @@
-//! A user hook on the tmux server cannot cost thurbox a window it created.
-//!
-//! tmux hands a command-mode client the exit status of the last `run-shell` its
-//! command list triggered — hooks included. An `after-new-window` hook left
-//! behind by an uninstalled tmux plugin runs a script that is no longer there,
-//! `/bin/sh` answers 127, and the *client* exits 127 although `new-window`
-//! itself succeeded and printed the pane id. Reading that status as the verdict
-//! is what reported `Failed to spawn tmux window: tmux new-window exited exit
-//! status: 127` on a server that had just created the window (issue #1154), and
-//! the hook's own output — printed on the same stream as the `-P` answer — is
-//! what corrupts the id if stdout is taken whole.
-//!
-//! Asserted against a real tmux, because what is being tested is which of the
-//! two answers thurbox believes.
-//!
-//! Its own binary and its own socket because the hook it installs is
-//! **server-global**: borrowing another suite's socket would leave every spawn
-//! in it answering 127 for reasons of its own.
-//!
-//! Each test gets its own server, not a shared one: `cargo nextest` runs every
-//! test in its own process and each `TmuxServer` guard gives it a socket
-//! directory of its own, so the socket *name* they share resolves to a
-//! different path per test — the same shape as
-//! `tests/window_remain_on_exit.rs`. Under plain `cargo test` that does not
-//! hold: one process, one `TMUX_TMPDIR`, and these tests will reap each
-//! other's server. Run them with nextest, which is what `.publish.yaml`, CI
-//! and the pre-commit hook all use.
-//!
-//! Skipped when tmux is absent: a missing multiplexer is an environment fact.
-
 #![cfg(unix)]
 
 use std::collections::HashMap;
 use std::process::Command;
 
-/// The guard every tmux server in this file is reaped by — see its own doc.
 #[path = "../../runtime-mux/tests/support/tmux_server.rs"]
 mod tmux_server;
 
@@ -60,8 +29,6 @@ fn tmux(args: &[&str]) -> std::process::Output {
         .expect("run tmux")
 }
 
-/// What `option` says for the window holding `pane`, or `"<unset>"` when the
-/// window carries no value of its own.
 fn window_option(pane: &str, option: &str) -> String {
     let out = tmux(&["show-options", "-w", "-t", pane, option]);
     let text = String::from_utf8_lossy(&out.stdout);
@@ -79,8 +46,6 @@ fn window_names() -> Vec<String> {
         .collect()
 }
 
-/// A long-lived program: one that exits before tmux finishes setting the window
-/// up would turn a real failure into a passing run.
 fn spawn(name: &str, cwd: &std::path::Path) -> thurbox::backend::BackendResult<String> {
     thurbox::backend::WindowLifecycle::create_window(
         &thurbox::backend::tmux::TmuxBackend::local(&thurbox::backend::mux_settings(
@@ -98,10 +63,6 @@ fn spawn(name: &str, cwd: &std::path::Path) -> thurbox::backend::BackendResult<S
     .map(String::from)
 }
 
-/// A server the hook has been installed on — and the control that says the same
-/// spawn succeeds on that server without it, so a failure below is the hook and
-/// nothing else. (The server has to exist before a hook can be set on it, and
-/// the first spawn is what creates it.)
 fn server_with_a_dead_hook(dir: &std::path::Path) -> TmuxServer {
     let server = TmuxServer::pin(SOCKET);
     thurbox::paths::set_test_dir(dir);
@@ -146,11 +107,6 @@ fn a_dead_mod_hook_does_not_fail_a_window_that_was_created() {
     );
 }
 
-/// The other half: the id the spawn kept must be the window's own.
-///
-/// An id that is not one is not a refusal, which is what makes it worse: every
-/// later lookup simply targets nothing and the session's stamp lands nowhere,
-/// so a window that is running is one thurbox can never find again.
 #[test]
 fn the_id_kept_from_a_hooked_spawn_still_names_the_window() {
     if !have_tmux() {

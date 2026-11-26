@@ -1,17 +1,3 @@
-//! Crash invariants of the render pipeline, as properties.
-//!
-//! The display bugs that hurt are the ones no example thought to write: a pane
-//! resolved one cell wide, a selection dragged past the grid, a screen full of
-//! double-width glyphs, a chord nobody expected in the pane it landed in. Each
-//! property here is a *class* of input the pipeline must survive whole, and
-//! the assertion is usually "does not error" — a Lua error blanks the pane in
-//! the running interface, a paint panic costs the frame, and a panic on a
-//! reader thread poisons the parser mutex for the life of the process.
-//!
-//! `tests/kernel_limits.rs` owns the instruction and memory ceilings;
-//! `backend::tmux_compat::control_mode`'s own proptests own byte transparency. This file is
-//! the geometry and the input: sizes, positions, glyph widths and keys.
-
 use proptest::prelude::*;
 use ratatui::backend::TestBackend;
 use ratatui::layout::Rect;
@@ -114,8 +100,6 @@ fn publish(host: &LuaHost, rows: Vec<SessionRow>) {
     .expect("publish");
 }
 
-/// A world with something in every column: a working spinner, a blocked dot,
-/// and a name wider than most panes.
 fn sample() -> Vec<SessionRow> {
     vec![
         row("fix-osc52", "working"),
@@ -150,8 +134,6 @@ fn render_and_paint(host: &LuaHost, index: usize, width: u16, height: u16) {
         .expect("draw");
 }
 
-// --- sizes -----------------------------------------------------------------
-
 #[test]
 fn every_bundled_pane_renders_and_paints_at_any_size() {
     let host = host();
@@ -167,10 +149,6 @@ fn every_bundled_pane_renders_and_paints_at_any_size() {
 
 #[test]
 fn the_arrangement_places_every_slot_inside_the_screen_and_apart() {
-    // The arrangement is Lua arithmetic; `resolve` must hand out rects that
-    // fit the area whatever that arithmetic says — a rect past the edge is a
-    // paint that indexes out of the buffer — and two slots may not share a
-    // cell, or the second paint silently overwrites the first.
     let host = host();
     proptest!(ProptestConfig::with_cases(128), |(width in 1u16..=300, height in 1u16..=100)| {
         let area = Rect { x: 0, y: 0, width, height };
@@ -201,11 +179,6 @@ fn the_arrangement_places_every_slot_inside_the_screen_and_apart() {
     });
 }
 
-// --- keys ------------------------------------------------------------------
-
-/// Any key a terminal can deliver: a printable character, or a named key,
-/// with any modifiers. Weighted toward the letters, which are where the
-/// single-letter chords live.
 fn any_key() -> impl Strategy<Value = KeyPress> {
     let named = prop::sample::select(vec![
         "esc",
@@ -271,13 +244,6 @@ fn press(
 
 #[test]
 fn no_key_sequence_makes_a_bundled_pane_throw() {
-    // A pane that throws on a key is a pane that goes blank on that key, and
-    // — because the loop routes the press before it paints — one that can
-    // leave the interface with the pointer on something no longer drawn. So
-    // every pane is fed keys it never declared, in modifiers it never named,
-    // in orders nobody would type, and must neither error nor stop rendering.
-    // The creation flow is opened first, because a float that is not up
-    // ignores everything, and it is the pane with the most state to corrupt.
     let host = host();
     publish(&host, sample());
     let registry = registry(&host);
@@ -303,7 +269,6 @@ fn no_key_sequence_makes_a_bundled_pane_throw() {
                 rendered.err()
             );
         }
-        // Put the flow away so the next case starts from the same place.
         let esc = KeyPress { name: "esc".into(), ..KeyPress::default() };
         for _ in 0..4 {
             let _ = press(&host, &registry, flow, &esc);
@@ -311,11 +276,6 @@ fn no_key_sequence_makes_a_bundled_pane_throw() {
     });
 }
 
-// --- glyph widths and selection --------------------------------------------
-
-/// Arbitrary printable content, weighted toward the widths that break column
-/// math: ASCII, CJK (double-width), emoji, and the variation selector that
-/// `normalize_ambiguous_width` exists for.
 fn glyph_soup() -> impl Strategy<Value = String> {
     proptest::collection::vec(
         prop_oneof![
@@ -329,7 +289,6 @@ fn glyph_soup() -> impl Strategy<Value = String> {
     .prop_map(|chars| chars.into_iter().collect())
 }
 
-/// Paint `lines` one per row into a fresh buffer of the given size.
 fn buffer_of(lines: &[String], width: u16, height: u16) -> ratatui::buffer::Buffer {
     let mut terminal = Terminal::new(TestBackend::new(width, height)).expect("terminal");
     terminal
@@ -352,11 +311,6 @@ fn buffer_of(lines: &[String], width: u16, height: u16) -> ratatui::buffer::Buff
 
 #[test]
 fn a_selection_over_any_buffer_extracts_and_highlights() {
-    // The pane rect, the drag endpoints and the buffer contents are three
-    // independent coordinate systems; every combination — including endpoints
-    // far outside both the pane and the buffer — must extract and highlight
-    // without panicking, and extraction must stay inside the pane it was
-    // confined to.
     proptest!(|(
         lines in proptest::collection::vec(glyph_soup(), 1..20),
         pane_x in 0u16..40, pane_y in 0u16..20,
@@ -386,11 +340,6 @@ fn a_selection_over_any_buffer_extracts_and_highlights() {
 
 #[test]
 fn a_selection_over_any_vt100_stream_extracts() {
-    // The terminal-pane half: whatever bytes an agent emits — control
-    // sequences, half a UTF-8 glyph, a wide character straddling the last
-    // column — the grid that results must be selectable. This is the reader
-    // whose panic would poison the parser mutex, so "never panics" is the
-    // whole point.
     proptest!(ProptestConfig::with_cases(64), |(
         bytes in proptest::collection::vec(any::<u8>(), 0..2048),
         rows in 2u16..40, cols in 2u16..120,
@@ -408,8 +357,6 @@ fn a_selection_over_any_vt100_stream_extracts() {
 
 #[test]
 fn normalizing_ambiguous_width_strips_the_selector_and_nothing_else() {
-    // The one disagreement `normalize_ambiguous_width` resolves is U+FE0F; it
-    // must strip every occurrence and leave every other cell as it was.
     proptest!(|(lines in proptest::collection::vec(glyph_soup(), 1..10))| {
         let width = 40u16;
         let height = lines.len() as u16;
@@ -439,10 +386,6 @@ fn normalizing_ambiguous_width_strips_the_selector_and_nothing_else() {
     });
 }
 
-// --- the command palette ---------------------------------------------------
-
-/// Any keystroke the modal layer can be handed, as a `KeyEvent` rather than a
-/// `KeyPress`: the palette is chrome, so it takes the terminal's own events.
 fn any_modal_key() -> impl Strategy<Value = crossterm::event::KeyEvent> {
     use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
     let named = prop::sample::select(vec![
@@ -480,8 +423,6 @@ fn any_modal_key() -> impl Strategy<Value = crossterm::event::KeyEvent> {
 
 #[test]
 fn no_key_sequence_makes_the_palette_throw_or_stop_drawing() {
-    // Every keystroke is query text or navigation; none may panic the modal
-    // layer, and after any sequence the palette still paints at any size.
     use thurbox::kernel::modals::{ModalKind, Modals, World};
     use thurbox::kernel::theme::Themes;
 
@@ -492,7 +433,7 @@ fn no_key_sequence_makes_the_palette_throw_or_stop_drawing() {
         width in 1u16..=160,
         height in 1u16..=50,
     )| {
-        // Per case: the closure is `Fn`, and the modal layer writes through both.
+        // proptest's closure is `Fn`, so each case builds its own mutable state.
         let mut registry = registry(&host);
         registry.declare_commands(host.commands());
         let mut themes = Themes::load(None);

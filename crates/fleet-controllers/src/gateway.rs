@@ -1,26 +1,3 @@
-//! GatewayController: the third controller over a Task. It keeps the tie
-//! between the Task and its chat thread, joins a newly tied Task with the
-//! whole retained thread, relays each later admitted message into the
-//! Task's inbox under a cursor kept on the Task, posts what a tied Task
-//! declares, opens a thread for an untied Task's Question, routes a child
-//! Task's declarations and result into its parent's inbox, and logs every
-//! Task's result and change news in the `gateway.logs` channel, and marks
-//! each relayed admitted message working, then replied once a thread post
-//! lands, with reactions that are best effort and hold nothing back. It owns
-//! `status.gateway` and appends to `status.inbox`; it writes nothing else
-//! of the Task, and reaches a Conversation only through the `Receive`
-//! action.
-//!
-//! Pure: it reads the Task, the Conversation the manager fetched for it,
-//! the Tasks that name it as their parent, its parent, its followed
-//! ChangeRequests and, to recover a post, the platform's capabilities and
-//! history, and returns a Plan whose `status` is the desired
-//! `status.gateway`, whose `appends` are the inbox entries to land in the
-//! same write, and whose `effects` are the `Post`, `Open`, `Receive`, `Log`
-//! and `React` actions whose intents that status carries. Thread posts and log
-//! posts are two lanes: a held post in one never holds back the other. The relay is a status write,
-//! not an effect: no intent, no receipt, no platform call.
-
 use std::collections::{BTreeMap, BTreeSet};
 
 use fleet_api::change_request::{self, ChangeRequestSpec, ChangeRequestStatus};
@@ -52,54 +29,30 @@ use serde_json::Value;
 
 use crate::task::{MAX_ATTEMPTS, RETRY_DELAY_MS};
 
-/// What one reconcile of one Task's tie reads. Every outside fact arrives
-/// here as a value; nothing is read from the world inside.
 #[derive(Debug, Clone)]
 pub struct GatewayInput<'a> {
     pub task: &'a Object,
     pub observations: GatewayObservations,
     pub now: Millis,
-    /// The `[gateway]` timings, every route and the people table, as
-    /// values.
     pub defaults: GatewayDefaults,
 }
 
-/// The answers to the probes; `None` means "not asked".
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct GatewayObservations {
-    /// The answer to `Probe::Object` for the Conversation the Task's
-    /// labels name: `Known(None)` is readable absence.
     pub conversation: Option<Observation<Option<Object>>>,
-    /// The answer to `Probe::List` for the Tasks whose parent labels name
-    /// this Task.
     pub children: Option<Observation<Vec<Object>>>,
-    /// The answer to `Probe::Object` for the Task this one's parent labels
-    /// name.
     pub parent: Option<Observation<Option<Object>>>,
-    /// The answers to `Probe::Object` for each followed ChangeRequest, by
-    /// name.
     pub changes: BTreeMap<String, Observation<Option<Object>>>,
-    /// The answers to `Probe::Capabilities`, by account: the account a
-    /// thread post or an open is on, and the log channel's.
     pub capabilities: BTreeMap<String, Observation<Capabilities>>,
-    /// The answer to `Probe::History` in the thread: a recovery read since
-    /// the oldest thread post whose outcome is unknown.
     pub history: Option<HistoryObservation>,
-    /// The answer to `Probe::History` in the log channel: a recovery read
-    /// since the oldest log post whose outcome is unknown.
     pub log_history: Option<HistoryObservation>,
 }
 
 #[derive(Debug, Clone, Copy, Default)]
 pub struct GatewayController;
 
-/// Condition types GatewayController writes, under `status.gateway.conditions`.
 pub mod conditions {
-    /// The Task is tied to a thread it verified.
     pub const TIED: &str = "Tied";
-    /// `RelayGap`, `ConversationGone`, `TooManyChildren`, `RouteUnknown`,
-    /// `PostFailed`, `PostUnconfirmed`, `DeclarationInvalid`,
-    /// `ReceiveFailed`, `RecoveryIncomplete`.
     pub const NEEDS_ATTENTION: &str = "NeedsAttention";
 }
 use conditions::*;
@@ -108,28 +61,17 @@ const RELAY_GAP: &str = "RelayGap";
 const CONVERSATION_GONE: &str = "ConversationGone";
 const TOO_MANY_CHILDREN: &str = "TooManyChildren";
 const ROUTE_UNKNOWN: &str = "RouteUnknown";
-/// Three attempts at one post or open were refused.
 const POST_FAILED: &str = "PostFailed";
-/// A post's outcome is unknown, and the platform cannot find it again; or
-/// a split landed in part, which Fleet can neither finish nor repeat.
 const POST_UNCONFIRMED: &str = "PostUnconfirmed";
-/// Three recovery reads for a post with an unknown outcome could not
-/// complete, so Fleet cannot yet tell whether it landed.
 const RECOVERY_INCOMPLETE: &str = "RecoveryIncomplete";
-/// A Question, Comment or Draft without an `id`: skipped.
 const DECLARATION_INVALID: &str = "DeclarationInvalid";
-/// Three attempts to add an opened thread's first post to its
-/// Conversation failed.
 const RECEIVE_FAILED: &str = "ReceiveFailed";
-/// The action names the post records carry.
 const POST: &str = "post";
 const OPEN: &str = "open";
 const RECEIVE: &str = "receive";
 const LOG: &str = "log";
 const REACT: &str = "react";
 
-/// Which ordered lane a record is in: posts to the thread (and the open of
-/// one), or posts to the log channel.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Lane {
     Thread,
@@ -137,24 +79,15 @@ enum Lane {
 }
 
 impl GatewayController {
-    /// The kind this controller reconciles and the field manager it writes as.
     pub const KIND: &'static str = task::KIND;
     pub const MANAGER: FieldManager = FieldManager::GatewayController;
 
-    /// Whether the manager should run this controller on the Task now,
-    /// from the Task alone: it carries the conversation labels and its tie
-    /// is not verified yet, so the Conversation must be looked at. A
-    /// deleting Task is never due. What the sweep knows besides, the
-    /// Conversation's revision and the children, is judged by
-    /// [`Self::due_with`].
     pub fn due(task: &Object, now: Millis) -> bool {
         let _ = now;
         if task.is_deleting() {
             return false;
         }
         let Ok(st) = decode(task) else {
-            // A status this controller cannot read is reported by the
-            // reconcile, not skipped silently.
             return true;
         };
         let gw = st.gateway.clone().unwrap_or_default();
@@ -175,7 +108,6 @@ impl GatewayController {
         if reply_landed(&gw) {
             return true;
         }
-        // Every Task's result is logged, or read while nothing logs.
         if st
             .result
             .as_ref()
@@ -192,20 +124,11 @@ impl GatewayController {
         unread_question(&st, &gw).is_some()
     }
 
-    /// The Conversation the Task's tie names: by the labels a thread's
-    /// create set, else by the tie the status records for a thread Fleet
-    /// opened. The manager reads it from its listing for [`Self::due_with`].
     pub fn conversation_of(task: &Object) -> Option<String> {
         let gw = decode(task).ok()?.gateway.unwrap_or_default();
         tie_target(task, &gw).map(|(name, _)| name)
     }
 
-    /// [`Self::due`], and besides: a tied Task whose Conversation moved past
-    /// what it read, was recreated or is absent from the sweep's listing
-    /// (`conversation` is the Conversation its labels name as the listing
-    /// has it), a Task one of whose followed changes moved past what it
-    /// logged, or a parent one of whose children changed since it was read.
-    /// A quiet Task is not due.
     pub fn due_with(
         task: &Object,
         now: Millis,
@@ -252,8 +175,6 @@ impl GatewayController {
         children.iter().any(|c| Self::child_due(&gw, c))
     }
 
-    /// Whether a child changed since its parent read it: not read yet, a
-    /// new incarnation under its name, or any write since.
     pub fn child_due(gw: &GatewayStatus, child: &Object) -> bool {
         match gw.children.get(&child.metadata.name) {
             None => true,
@@ -261,9 +182,6 @@ impl GatewayController {
         }
     }
 
-    /// What the next `reconcile` needs observed and does not have yet: the
-    /// Conversation the labels name, and the Tasks whose parent labels name
-    /// this one.
     pub fn probes(&self, input: &GatewayInput<'_>) -> Result<Vec<Probe>, StoreError> {
         if input.task.is_deleting() {
             return Ok(Vec::new());
@@ -290,7 +208,6 @@ impl GatewayController {
                 ]),
             });
         }
-        // Whether this Task is a child decides whether it speaks at all.
         if let Ok(Some((parent, _))) = parent_of(&input.task.metadata.labels)
             && !gw.is_tied()
             && obs.parent.is_none()
@@ -301,7 +218,6 @@ impl GatewayController {
                 name: parent,
             });
         }
-        // Change news is every Task's, tied or not.
         if let Some(forge) = &st.forge {
             for name in forge.changes.keys() {
                 if !obs.changes.contains_key(name) {
@@ -312,8 +228,6 @@ impl GatewayController {
                 }
             }
         }
-        // A post or an open to settle: whether the platform reads markers
-        // back or honours a nonce decides how.
         let mut accounts = BTreeSet::new();
         if gw
             .posts
@@ -331,8 +245,6 @@ impl GatewayController {
         {
             accounts.insert(logs.account.clone());
         }
-        // A relay may mark messages working: whether the platform has
-        // reactions decides.
         if input.defaults.reactions.is_some()
             && let Some(Observation::Known(Some(conv))) = &obs.conversation
             && revision_of(conv) > gw.seen
@@ -393,8 +305,6 @@ impl GatewayController {
         };
         let conv = pass.tie();
         if let Some(conv) = &conv {
-            // A post that landed replies to the messages marked before it,
-            // so it is counted before this pass's relay marks new ones.
             pass.replied(conv);
             pass.relay(conv);
         }
@@ -422,8 +332,6 @@ impl GatewayController {
     }
 }
 
-/// The Conversation a Task's labels name, by name and `uid`, when both
-/// labels are there: only the Conversation's controller sets them.
 fn conversation_label(task: &Object) -> Option<(String, String)> {
     let labels = &task.metadata.labels;
     let name = labels.get(CONVERSATION_LABEL)?;
@@ -454,8 +362,6 @@ fn decode_conversation(obj: &Object) -> Result<(ConversationSpec, ConversationSt
     Ok((spec, st))
 }
 
-/// The open NeedsAttention reasons, one per (reason, entry), carried from
-/// pass to pass in the condition's message.
 struct Attention(BTreeMap<(String, String), String>);
 
 impl Attention {
@@ -505,7 +411,6 @@ impl Attention {
     }
 }
 
-/// One reconcile in progress.
 struct Pass<'a, 'b> {
     input: &'a GatewayInput<'b>,
     st: &'a TaskStatus,
@@ -515,11 +420,9 @@ struct Pass<'a, 'b> {
     effects: Vec<Effect>,
 }
 
-/// One message above the cursor, sorted by admission.
 struct Above<'c> {
     message: &'c StoredMessage,
     admission: Admission,
-    /// Relayed before, under an earlier number: this is its edit.
     edited: bool,
 }
 
@@ -555,18 +458,10 @@ impl Pass<'_, '_> {
             .collect()
     }
 
-    /// Whether the store would refuse one more append: it accepts each
-    /// while at most MAX_INBOX entries are still to deliver, counting those
-    /// this pass already planned.
     fn inbox_full(&self) -> bool {
         inbox::due(&self.st.inbox, &self.st.delivery_attempts) + self.appends.len() > MAX_INBOX
     }
 
-    /// The tie, as the labels and the Conversation's observation leave it:
-    /// verified against the Conversation's `status.task`, waiting until it
-    /// names this Task, gone when the Conversation is readably absent, was
-    /// recreated, or names another Task. Unknown changes nothing. Returns
-    /// the Conversation to relay from while the tie holds.
     fn tie(&mut self) -> Option<Object> {
         if self
             .gw
@@ -574,7 +469,6 @@ impl Pass<'_, '_> {
             .as_ref()
             .is_some_and(|t| matches!(t.state, TieState::Opening | TieState::Opened))
         {
-            // A thread is being opened: there is no Conversation to read yet.
             return None;
         }
         let (name, uid) = tie_target(self.input.task, &self.gw)?;
@@ -585,13 +479,10 @@ impl Pass<'_, '_> {
             .is_some_and(|t| t.state == TieState::Abandoned);
         let observed = match &self.input.observations.conversation {
             Some(Observation::Known(c)) => c,
-            // Not asked, or unreadable: nothing moves.
             Some(Observation::Unknown { .. }) | None => return None,
         };
         let Some(obj) = observed else {
             if abandoned {
-                // The opened thread never reached its Conversation: the
-                // Task stays untied.
                 self.gw.conversation = None;
                 return None;
             }
@@ -643,11 +534,6 @@ impl Pass<'_, '_> {
         self.attention.raise(CONVERSATION_GONE, name, why);
     }
 
-    /// The join and the relay, as the state machine has them: everything
-    /// above the cursor goes out as one entry once an admitted message is
-    /// among it, with the messages from people off the allowlist first
-    /// under a header, and the cursor advances in the same write. Fleet's
-    /// own posts never go out. Context alone waits; a full inbox waits.
     fn relay(&mut self, conv: &Object) {
         let Ok((spec, cs)) = decode_conversation(conv) else {
             return;
@@ -683,16 +569,10 @@ impl Pass<'_, '_> {
             .collect();
         let has_turn = above.iter().any(|a| a.admission == Admission::Admitted);
         if !has_turn {
-            // Context alone, or Fleet's own words: nothing to deliver yet.
-            // The read is recorded so the mirror is not judged again until
-            // it moves; what waits goes out with the next admitted message.
             self.gw.seen = cs.revision;
             return;
         }
         if self.inbox_full() {
-            // More than MAX_INBOX still to deliver: the store would refuse the
-            // append. Neither the cursor nor the read moves, so this is
-            // judged again once the inbox drains.
             return;
         }
         let gap = cursor > 0 && cs.dropped_before > cursor;
@@ -731,9 +611,6 @@ impl Pass<'_, '_> {
         self.gw.seen = cs.revision;
     }
 
-    /// The Questions this relay answers: each posted in this thread, not
-    /// answered yet, with an admitted message written after it by the
-    /// platform's clock.
     fn answers(&self, above: &[Above<'_>]) -> Vec<String> {
         self.gw
             .questions
@@ -748,10 +625,6 @@ impl Pass<'_, '_> {
             .collect()
     }
 
-    /// The entry's text: a header saying what it is and that what follows
-    /// is data, the gap or join notice, then the messages off the allowlist
-    /// under their header and the admitted ones after, the newest kept
-    /// under the cap.
     fn render(
         &self,
         name: &str,
@@ -789,7 +662,6 @@ impl Pass<'_, '_> {
             }
         }
         let task = self.task_meta().0;
-        // The newest fit under the cap; older ones are counted out.
         let context: Vec<String> = above
             .iter()
             .filter(|a| a.admission == Admission::Context)
@@ -836,14 +708,8 @@ impl Pass<'_, '_> {
         text
     }
 
-    /// The parent's side of children: every Task whose parent labels name
-    /// this one, each new declaration the Gateway reads and each new
-    /// result generation becoming one entry in this inbox, under a key
-    /// that names the child's `uid` and the item. A child tied to its own
-    /// thread is left alone: a verified tie wins over the labels.
     fn children(&mut self) {
         let Some(Observation::Known(list)) = &self.input.observations.children else {
-            // Not asked, or Unknown: what was read stays as it was.
             return;
         };
         let (task_name, task_uid) = self.task_meta();
@@ -883,7 +749,6 @@ impl Pass<'_, '_> {
                     answered: Vec::new(),
                 });
             let Ok(cst) = decode(child) else {
-                // Unreadable: read again when it changes.
                 children.insert(name, entry);
                 continue;
             };
@@ -893,9 +758,6 @@ impl Pass<'_, '_> {
                 children.insert(name, entry);
                 continue;
             }
-            // Items go out in order while the inbox has room; at the cap
-            // the counters stop at the first item left, and the child stays
-            // unseen so the next pass after a delivery takes up from there.
             let mut done = true;
             for (i, item) in cst
                 .declared
@@ -995,7 +857,6 @@ impl Pass<'_, '_> {
         } else if condition(&self.gw.conditions, TIED)
             .is_some_and(|c| c.status == ConditionStatus::True)
         {
-            // A thread Fleet opened is gone: the Task is untied again.
             set_condition(
                 &mut self.gw.conditions,
                 TIED,
@@ -1034,16 +895,8 @@ impl Pass<'_, '_> {
     }
 }
 
-// ----------------------------------------------------------------------
-// Posting: what a tied Task declares goes out in its thread, one keyed
-// post at a time, and an untied Task's Question opens a thread.
-// ----------------------------------------------------------------------
-
-/// A post record whose outcome is not settled: no receipt yet, an Unknown
-/// one, or a refusal with attempts left.
 fn unsettled(record: &EffectRecord) -> bool {
     match record.receipt.as_ref().map(|r| &r.outcome) {
-        // A reaction is best effort: past its attempts it is given up.
         None | Some(Observation::Unknown { .. }) if record.intent.action == REACT => {
             record.attempts < MAX_ATTEMPTS
         }
@@ -1053,9 +906,6 @@ fn unsettled(record: &EffectRecord) -> bool {
     }
 }
 
-/// Whether admission marked `message` working on the Conversation and its
-/// working reaction landed. Anything less, the join adds the reaction
-/// itself: a reaction is set, not counted.
 fn admission_reacted(cs: &ConversationStatus, message: &str) -> bool {
     if cs.reactions.marks.get(message) != Some(&Mark::Working) {
         return false;
@@ -1070,7 +920,6 @@ fn admission_reacted(cs: &ConversationStatus, message: &str) -> bool {
     })
 }
 
-/// Whether a thread post landed that no working mark has counted yet.
 fn reply_landed(gw: &GatewayStatus) -> bool {
     gw.reactions.marks.values().any(|m| *m == Mark::Working)
         && landed_posts(gw).any(|k| !gw.reactions.replies.contains(k))
@@ -1089,9 +938,6 @@ fn landed_posts(gw: &GatewayStatus) -> impl Iterator<Item = &String> {
         .map(|(k, _)| k)
 }
 
-/// The Conversation a Task's tie names, by name and `uid`: a thread Fleet
-/// opened for its Question once its Conversation is known, else the labels
-/// a thread's create set.
 fn tie_target(task: &Object, gw: &GatewayStatus) -> Option<(String, String)> {
     let label = conversation_label(task);
     let opened = gw
@@ -1109,8 +955,6 @@ fn tie_target(task: &Object, gw: &GatewayStatus) -> Option<(String, String)> {
     opened.or(label)
 }
 
-/// The first Question past what was read that was neither posted nor
-/// answered: what opens a thread for an untied Task.
 fn unread_question<'s>(st: &'s TaskStatus, gw: &GatewayStatus) -> Option<(usize, &'s Value)> {
     st.declared
         .iter()
@@ -1124,7 +968,6 @@ fn unread_question<'s>(st: &'s TaskStatus, gw: &GatewayStatus) -> Option<(usize,
         })
 }
 
-/// Whether a Draft past what the log lane read waits to be logged.
 fn unlogged_draft(st: &TaskStatus, gw: &GatewayStatus) -> bool {
     st.declared
         .iter()
@@ -1140,12 +983,10 @@ fn unannounced(gw: &GatewayStatus, entry: &ChangeEntry) -> bool {
             .is_none_or(|told| entry.answered_at > *told)
 }
 
-/// Whether a followed change is ready for review: `everReady`.
 fn ever_ready(cr: &Object) -> bool {
     cr.status["everReady"].as_bool() == Some(true)
 }
 
-/// Whether the Task has words not yet read: declarations or a result.
 fn has_unread(st: &TaskStatus, gw: &GatewayStatus) -> bool {
     st.declared.len() as u64 > gw.declared
         || st
@@ -1154,14 +995,11 @@ fn has_unread(st: &TaskStatus, gw: &GatewayStatus) -> bool {
             .is_some_and(|r| gw.result != Some(r.generation))
 }
 
-/// The state of a ChangeRequest and the `seq` at which it last changed.
 fn change_state(cr: &Object) -> Option<(fleet_api::forge::ChangeState, u64)> {
     let st: ChangeRequestStatus = serde_json::from_value(cr.status.clone()).ok()?;
     st.state.map(|s| (s.value, s.seq))
 }
 
-/// The route a Question from an untied Task opens its thread in: the route
-/// label, else the `[gateway]` default.
 fn question_route(task: &Object, defaults: &GatewayDefaults) -> Option<String> {
     task.metadata
         .labels
@@ -1170,8 +1008,6 @@ fn question_route(task: &Object, defaults: &GatewayDefaults) -> Option<String> {
         .or_else(|| defaults.questions.clone())
 }
 
-/// The account the Task's unsettled records are on: its thread's, or the
-/// questions route's while a thread is being opened.
 fn records_account(input: &GatewayInput<'_>) -> Option<String> {
     if let Some(Observation::Known(Some(conv))) = &input.observations.conversation
         && let Ok((spec, _)) = decode_conversation(conv)
@@ -1182,15 +1018,11 @@ fn records_account(input: &GatewayInput<'_>) -> Option<String> {
     input.defaults.routes.get(&route).map(|r| r.account.clone())
 }
 
-/// What the mirror holds of Fleet's post under `key`: the post, or the
-/// parts of a split that are there.
 fn mirrored(cs: &ConversationStatus, key: &str) -> Option<PostFound> {
     let messages: Vec<Message> = cs.messages.iter().map(as_message).collect();
     find_post(&messages, key)
 }
 
-/// The oldest intent among the posts whose outcome is unknown and that the
-/// mirror does not hold whole: what a recovery read starts from.
 fn recovery_since(gw: &GatewayStatus, cs: &ConversationStatus) -> Option<Millis> {
     gw.posts
         .iter()
@@ -1206,8 +1038,6 @@ fn recovery_since(gw: &GatewayStatus, cs: &ConversationStatus) -> Option<Millis>
         .min()
 }
 
-/// The oldest intent among the log posts whose outcome is unknown: what a
-/// recovery read of the log channel starts from.
 fn log_recovery_since(gw: &GatewayStatus) -> Option<Millis> {
     gw.posts
         .values()
@@ -1222,20 +1052,12 @@ fn log_recovery_since(gw: &GatewayStatus) -> Option<Millis> {
         .min()
 }
 
-/// How a settled-or-not record stands this pass.
 enum Settle {
-    /// Nothing holds the thread for it.
     Done,
-    /// It holds back the posts after it.
     Hold,
 }
 
 impl Pass<'_, '_> {
-    /// Post what the Task said, or open a thread for its Question, as the
-    /// tie allows: a child speaks only through its parent; a thread being
-    /// opened or waited for holds every later word; a tied Task posts the
-    /// next thing it said; an untied Task opens a thread for a Question and
-    /// skips everything else.
     fn speak(&mut self, conv: Option<&Object>) {
         if self.is_child() {
             self.hush();
@@ -1251,8 +1073,6 @@ impl Pass<'_, '_> {
                 }
             }
             Some(TieState::Abandoned) | None => {
-                // A conversation Task opens a thread only once its own
-                // thread is readably gone, never before its tie is known.
                 let own_gone = conversation_label(self.input.task).is_none_or(|(name, _)| {
                     self.attention
                         .0
@@ -1265,9 +1085,6 @@ impl Pass<'_, '_> {
         }
     }
 
-    /// Whether the Task is a child: its parent labels name a Task that
-    /// exists with that `uid`, or one the store cannot read. A verified
-    /// tie to a thread wins over the labels.
     fn is_child(&self) -> bool {
         if self.gw.is_tied() {
             return false;
@@ -1278,14 +1095,10 @@ impl Pass<'_, '_> {
         match &self.input.observations.parent {
             Some(Observation::Known(Some(p))) => p.metadata.uid == uid,
             Some(Observation::Known(None)) => false,
-            // Unknown, or not asked because nothing is unread: wait.
             Some(Observation::Unknown { .. }) | None => true,
         }
     }
 
-    /// A child's words go to its parent's inbox, never to a thread: mark
-    /// them read, so a child whose parent is gone does not replay them. Its
-    /// result and change news are logged as every Task's are.
     fn hush(&mut self) {
         self.gw.declared = self.st.declared.len() as u64;
     }
@@ -1298,8 +1111,6 @@ impl Pass<'_, '_> {
         }
     }
 
-    /// Ask the manager to perform `action` under `key`, intent first: a
-    /// fresh intent and one more attempt.
     fn plan(&mut self, key: &str, action: Action) {
         let intent = self.intent(action.name());
         let record = self
@@ -1321,8 +1132,6 @@ impl Pass<'_, '_> {
         });
     }
 
-    /// Send again under the same key and intent, so a nonce derived from
-    /// the key is the same and its window counts from the first send.
     fn resend(&mut self, key: &str, action: Action) {
         if let Some(record) = self.gw.posts.get_mut(key) {
             record.receipt = None;
@@ -1345,7 +1154,6 @@ impl Pass<'_, '_> {
         }
     }
 
-    /// The capabilities of the account a lane's records are on.
     fn caps(&self, lane: Lane) -> Option<&Observation<Capabilities>> {
         let account = match lane {
             Lane::Thread => records_account(self.input)?,
@@ -1364,15 +1172,6 @@ impl Pass<'_, '_> {
         }
     }
 
-    /// One record's receipt, as the interface's recovery rules have it:
-    /// a landed post settles; a refusal is retried after the delay, three
-    /// times, inside the first send's nonce window where the platform has
-    /// one; an unknown outcome is looked for in the mirror and by a
-    /// recovery read where markers read back, resent under its nonce
-    /// inside the window, and otherwise waits for a person.
-    /// `mirror` is the thread's mirror, where there is one; `action`
-    /// rebuilds the effect for a retry; `lane` names whose capabilities and
-    /// recovery read apply.
     fn settle(
         &mut self,
         key: &str,
@@ -1403,8 +1202,6 @@ impl Pass<'_, '_> {
                 let at = record.receipt.as_ref().map_or(now, |r| r.at);
                 let retry_at = at.saturating_add(RETRY_DELAY_MS);
                 if readable.is_none() || now < retry_at {
-                    // Not yet, or whether a nonce window binds the retry is
-                    // not known this pass.
                     return Settle::Hold;
                 }
                 match window {
@@ -1442,8 +1239,7 @@ impl Pass<'_, '_> {
                     return Settle::Done;
                 }
                 if let Some(w) = window {
-                    // Under the same nonce, a resend inside the window
-                    // returns what landed and makes the parts that did not.
+                    // Inside its window the platform answers a resent nonce with what landed.
                     if now < record.intent.at.saturating_add(w) && record.attempts < MAX_ATTEMPTS {
                         self.resend(key, action);
                     } else {
@@ -1458,8 +1254,6 @@ impl Pass<'_, '_> {
                     }
                     return Settle::Hold;
                 }
-                // The recovery read of the lane: the thread's, or the log
-                // channel's.
                 let obs = &self.input.observations;
                 let history = match lane {
                     Lane::Thread => obs.history.as_ref(),
@@ -1475,16 +1269,11 @@ impl Pass<'_, '_> {
                                 self.settled(key);
                                 Settle::Done
                             }
-                            // Where markers read back, a part that landed
-                            // is never repeated, and the rest cannot be
-                            // sent alone.
                             found @ Some(PostFound::Partial { .. }) => {
                                 self.unconfirmed(key, found);
                                 Settle::Hold
                             }
                             None => {
-                                // A complete read since the intent lacks
-                                // the marker: the post never landed.
                                 if record.attempts >= MAX_ATTEMPTS {
                                     self.attention.raise(
                                         POST_FAILED,
@@ -1498,7 +1287,6 @@ impl Pass<'_, '_> {
                             }
                         }
                     }
-                    // The platform reads no history after all.
                     Some(HistoryObservation::Unsupported) => {
                         self.unconfirmed(key, in_mirror);
                         Settle::Hold
@@ -1523,22 +1311,17 @@ impl Pass<'_, '_> {
                         }
                         Settle::Hold
                     }
-                    // Not read this pass: read on the next.
                     None => Settle::Hold,
                 }
             }
         }
     }
 
-    /// The record under `key` is settled: nothing about it needs a person.
     fn settled(&mut self, key: &str) {
         self.attention.clear(POST_UNCONFIRMED, key);
         self.attention.clear(RECOVERY_INCOMPLETE, key);
     }
 
-    /// The post under `key` waits for a person: its outcome is unknown and
-    /// the platform cannot find it again, or `found` says that a split
-    /// landed in part, which Fleet can neither finish nor repeat.
     fn unconfirmed(&mut self, key: &str, found: Option<PostFound>) {
         let why = match found {
             Some(PostFound::Partial { found, total }) => format!(
@@ -1556,8 +1339,6 @@ impl Pass<'_, '_> {
         self.attention.raise(POST_UNCONFIRMED, key, why);
     }
 
-    // -- Tied: post the next thing the Task said ------------------------
-
     fn post_next(&mut self, conv: &Object) {
         let Ok((spec, cs)) = decode_conversation(conv) else {
             return;
@@ -1571,8 +1352,6 @@ impl Pass<'_, '_> {
             conversation: reference.clone(),
             text,
         };
-        // Earlier posts first: one not settled holds back the rest. A
-        // refusal with no attempts left is looked at too, so it is named.
         let pending: Vec<String> = self
             .gw
             .posts
@@ -1594,7 +1373,6 @@ impl Pass<'_, '_> {
             }
             self.record_question(&key, &conv.metadata.name);
         }
-        // Settled Questions are recorded where they were posted.
         let posted: Vec<String> = self.gw.posts.keys().cloned().collect();
         for key in posted {
             self.record_question(&key, &conv.metadata.name);
@@ -1604,8 +1382,6 @@ impl Pass<'_, '_> {
         }
     }
 
-    /// Where and when a landed Question was posted, for the relay's
-    /// answers.
     fn record_question(&mut self, key: &str, conversation: &str) {
         let (name, uid) = self.task_meta();
         let prefix = post_key(name, uid, "question/");
@@ -1642,8 +1418,6 @@ impl Pass<'_, '_> {
             let slug = match kind {
                 DECLARED_QUESTION => "question",
                 DECLARED_COMMENT => "comment",
-                // A Draft is logged; a ChangeRequest is news once the Forge
-                // follows it; the rest is not the Gateway's.
                 _ => continue,
             };
             let Some(id) = declared_id(item) else {
@@ -1703,7 +1477,6 @@ impl Pass<'_, '_> {
         None
     }
 
-    /// What the post under `key` says, derived again for a retry.
     fn post_text(&self, key: &str) -> Option<String> {
         let (name, uid) = self.task_meta();
         let item = key.strip_prefix(&post_key(name, uid, ""))?;
@@ -1724,8 +1497,6 @@ impl Pass<'_, '_> {
                 let (cr_uid, _) = rest.split_once('/')?;
                 self.change_by_uid(cr_uid).map(render_answered)
             }
-            // A thread post of a Draft, a result or change news, planned
-            // before the log channel took them: retried as the log says it.
             "draft" | "result" | "change" => self.log_text(key),
             _ => None,
         }
@@ -1742,17 +1513,11 @@ impl Pass<'_, '_> {
             })
     }
 
-    // -- Untied: a Question opens a thread ------------------------------
-
-    /// The first unread Question opens a thread in the questions route's
-    /// first channel. Every Comment the Task declared before it is skipped
-    /// and never posted later.
     fn open_for_question(&mut self) {
         let Some((i, item)) = unread_question(self.st, &self.gw) else {
             return;
         };
         let Some(route_name) = question_route(self.input.task, &self.input.defaults) else {
-            // No questions route: the Gateway has nowhere to ask.
             return;
         };
         let (task_name, _) = self.task_meta();
@@ -1781,7 +1546,6 @@ impl Pass<'_, '_> {
         self.plan(&key, action);
     }
 
-    /// The open of a thread for `question` in `route`'s first channel.
     fn open_action(&self, route_name: &str, question: &Value) -> Option<Action> {
         let route = self.input.defaults.routes.get(route_name)?;
         let platform = self.input.defaults.platforms.get(&route.account)?;
@@ -1799,8 +1563,6 @@ impl Pass<'_, '_> {
         })
     }
 
-    /// The record of the open in flight: an `open` whose thread is not on
-    /// its Conversation yet.
     fn open_key(&self) -> Option<String> {
         self.gw
             .posts
@@ -1825,10 +1587,6 @@ impl Pass<'_, '_> {
             .cloned()
     }
 
-    /// The open's receipt: the thread is open, so its first post goes onto
-    /// its Conversation; refused three times, the Task is untied again; an
-    /// unknown outcome is resent under its nonce inside the window, and
-    /// otherwise waits for a person.
     fn opening(&mut self) {
         let Some(key) = self.open_key() else {
             self.gw.conversation = None;
@@ -1862,14 +1620,10 @@ impl Pass<'_, '_> {
             return;
         }
         if let Settle::Done = self.settle(&key, None, action, Lane::Thread) {
-            // Refused three times: the Task acts as untied.
             self.gw.conversation = None;
         }
     }
 
-    /// Fleet's opening post goes onto the thread's Conversation through the
-    /// store, as the receive verb would add it; once there, the Task waits
-    /// for the Conversation to name it.
     fn opened(&mut self) {
         let Some(open) = self
             .gw
@@ -1971,7 +1725,6 @@ impl Pass<'_, '_> {
                 );
                 self.attention.clear(RECEIVE_FAILED, &receive_key);
             }
-            // Being performed this pass.
             None if self.effects.iter().any(|e| e.key == receive_key) => {}
             outcome => {
                 if r.attempts >= MAX_ATTEMPTS {
@@ -1992,16 +1745,12 @@ impl Pass<'_, '_> {
                         t.state = TieState::Abandoned;
                     }
                 } else {
-                    // Adding the same delivery again is a duplicate at most.
                     self.plan(&receive_key, action);
                 }
             }
         }
     }
 
-    // -- Reactions: working on a message, then replied ------------------
-
-    /// The reaction effect on `message`, under its key.
     fn react_action(
         &self,
         account: &str,
@@ -2040,12 +1789,6 @@ impl Pass<'_, '_> {
         }
     }
 
-    /// Each admitted message this relay delivers, not marked before, is
-    /// marked working, where reactions are on and the platform has them.
-    /// A message whose working reaction admission added, and saw land, is
-    /// marked working with no reaction of this Task's.
-    /// An edit of a marked message is not marked again. Context and Fleet's
-    /// own posts get nothing.
     fn mark_working(
         &mut self,
         spec: &ConversationSpec,
@@ -2055,7 +1798,6 @@ impl Pass<'_, '_> {
         if self.input.defaults.reactions.is_none() {
             return;
         }
-        // Unknown or without reactions: the relay goes on unmarked.
         let Some(Observation::Known(caps)) =
             self.input.observations.capabilities.get(&spec.account)
         else {
@@ -2083,7 +1825,6 @@ impl Pass<'_, '_> {
             .values()
             .any(|m| *m == Mark::Working)
         {
-            // Every post that landed so far is older than these marks.
             self.gw.reactions.replies = landed_posts(&self.gw).cloned().collect();
         }
         for id in fresh {
@@ -2094,11 +1835,6 @@ impl Pass<'_, '_> {
         }
     }
 
-    /// A thread post that landed since the working marks were made: each
-    /// message still marked working, and still in the mirror, is marked
-    /// replied and loses its working reaction. A message that left the
-    /// mirror, removed or rotated out, gets nothing more. With reactions
-    /// off, every mark is forgotten.
     fn replied(&mut self, conv: &Object) {
         if self.input.defaults.reactions.is_none() {
             self.gw.reactions = Default::default();
@@ -2128,7 +1864,6 @@ impl Pass<'_, '_> {
         let new = landed
             .iter()
             .any(|k| !self.gw.reactions.replies.contains(k));
-        // Only posts the record still holds are kept counted.
         self.gw.reactions.replies = landed.into_iter().collect();
         if !new {
             return;
@@ -2144,16 +1879,7 @@ impl Pass<'_, '_> {
         self.gw.reactions.replies.clear();
     }
 
-    /// Reaction records: one that landed, or is given up, is dropped; one
-    /// that was refused or whose outcome is unknown is performed again
-    /// under its key after the delay, at most three times in all, since a
-    /// reaction is set, not counted. One that a later mark made pointless,
-    /// the working reaction of a message already replied to, is dropped.
-    /// None of it holds anything back or raises a condition.
     fn retry_reactions(&mut self, conv: Option<&Object>) {
-        // The thread is readably gone, or the Task is no longer tied to
-        // it: nothing is left to react on, so the marks and the records go.
-        // An Unknown Conversation changes nothing.
         let unknown = matches!(
             self.input.observations.conversation,
             Some(Observation::Unknown { .. })
@@ -2206,14 +1932,6 @@ impl Pass<'_, '_> {
         }
     }
 
-    // -- Every Task: results and change news go to the log channel -------
-
-    /// The log lane: a result once per generation, then news of each
-    /// followed change, one top-level post at a time in the `gateway.logs`
-    /// channel. A log post not settled holds back this Task's later log
-    /// posts and nothing else. Without a log channel, what would be logged
-    /// is marked read and posted nowhere, and log posts not settled are
-    /// dropped.
     fn log(&mut self, conv: Option<&Object>) {
         let Some(dest) = self.input.defaults.logs.clone() else {
             self.gw
@@ -2254,7 +1972,6 @@ impl Pass<'_, '_> {
         }
     }
 
-    /// The thread a log post names: the verified tie's.
     fn log_thread(&self, conv: Option<&Object>) -> Option<LogThread> {
         let conv = conv?;
         let (spec, cs) = decode_conversation(conv).ok()?;
@@ -2264,14 +1981,9 @@ impl Pass<'_, '_> {
         })
     }
 
-    /// The next log post, in order: each Draft, then the result, then news
-    /// of each followed change. What it reads past is marked read in the
-    /// same pass.
     fn next_log(&mut self) -> Option<(String, String)> {
         let (name, uid) = self.task_meta();
         let (name, uid) = (name.to_string(), uid.to_string());
-        // The cursor moves only when a Draft waits: other declarations are
-        // not the log lane's, and reading past them is no reason to write.
         let start = if unlogged_draft(self.st, &self.gw) {
             self.gw.logged as usize
         } else {
@@ -2290,7 +2002,6 @@ impl Pass<'_, '_> {
                 );
                 continue;
             };
-            // Logged before, or posted in a thread before the log took it.
             if self.gw.posted.iter().any(|p| p == id) {
                 continue;
             }
@@ -2335,7 +2046,6 @@ impl Pass<'_, '_> {
         None
     }
 
-    /// What the log post under `key` says, derived again for a retry.
     fn log_text(&self, key: &str) -> Option<String> {
         let (name, uid) = self.task_meta();
         let item = key.strip_prefix(&post_key(name, uid, ""))?;
@@ -2373,7 +2083,6 @@ impl Pass<'_, '_> {
         }
     }
 
-    /// Keep every unsettled record and the newest settled ones.
     fn prune_posts(&mut self) {
         let mut settled: Vec<(Millis, String)> = self
             .gw
@@ -2388,7 +2097,6 @@ impl Pass<'_, '_> {
         settled.sort();
         let drop = settled.len() - POSTS_CAP;
         for (_, key) in settled.into_iter().take(drop) {
-            // A record the open in flight still reads is kept.
             if self.gw.conversation.is_some() && self.open_key().as_deref() == Some(key.as_str()) {
                 continue;
             }
@@ -2397,7 +2105,6 @@ impl Pass<'_, '_> {
     }
 }
 
-/// A declaration as its post says it.
 fn render_item(item: &Value) -> String {
     let field = |k: &str| item.get(k).and_then(Value::as_str).unwrap_or("");
     match item.get("kind").and_then(Value::as_str) {
@@ -2415,12 +2122,10 @@ fn render_item(item: &Value) -> String {
     }
 }
 
-/// A Draft as its log post says it, naming the Task.
 fn render_draft(task: &str, item: &Value) -> String {
     format!("Task {task}: {}", render_item(item))
 }
 
-/// The thread's one notice that a change is ready for review, with its URL.
 fn render_ready(cr: &Object) -> String {
     format!("Ready for review: {}", change_url(cr))
 }
@@ -2435,7 +2140,6 @@ fn render_answered(cr: &Object) -> String {
     format!("Every review thread is answered: {}", change_url(cr))
 }
 
-/// A result as its log post says it, naming the Task.
 fn render_result(task: &str, r: &fleet_api::result::TaskResult) -> String {
     let mut text = format!(
         "Task {task} reported its result for generation {}: {}.",
@@ -2452,7 +2156,6 @@ fn render_result(task: &str, r: &fleet_api::result::TaskResult) -> String {
     text
 }
 
-/// Change news as its log post says it, naming the Task.
 fn render_change(
     task: &str,
     name: &str,
@@ -2463,14 +2166,12 @@ fn render_change(
         .map(|s| s.url)
         .unwrap_or_default();
     let what = match state {
-        // Out of draft: the change is ready for review.
         fleet_api::forge::ChangeState::Open => "open and ready for review".to_string(),
         other => word(other),
     };
     format!("Task {task}: change {name} is {what}: {url}")
 }
 
-/// A stored message as admission reads it.
 fn as_message(m: &StoredMessage) -> Message {
     Message {
         id: m.id.clone(),
@@ -2484,8 +2185,6 @@ fn as_message(m: &StoredMessage) -> Message {
     }
 }
 
-/// One message, quoted as data: who, when, whether this is an edit, the
-/// text line by line, and one line per shared file.
 fn render_message(a: &Above<'_>, task: &str) -> String {
     let m = a.message;
     let who = if m.author.name.is_empty() {
@@ -2535,12 +2234,8 @@ fn render_file(out: &mut String, file: &Attachment, task: &str) {
     }
 }
 
-/// The longest child summary or declaration text quoted into the parent's
-/// inbox, in bytes. A longer one is named with where to read it, so that one
-/// entry stays short enough to type into a session.
 pub const MAX_RELAYED_TEXT: usize = 4_000;
 
-/// A child's result generation as one entry in its parent's inbox.
 fn child_result(
     task_name: &str,
     task_uid: &str,
@@ -2592,8 +2287,6 @@ fn relayed_to_parent(item: &Value) -> bool {
             != Some(fleet_api::follow::DECLARED_CHANGE_REQUEST)
 }
 
-/// One child's declaration, quoted as data, with how the parent answers
-/// a Question.
 fn render_child_item(name: &str, uid: &str, item: &serde_json::Value) -> String {
     let kind = item.get("kind").and_then(|k| k.as_str()).unwrap_or("");
     let id = declared_id(item).unwrap_or("");
@@ -2635,7 +2328,6 @@ fn quote(out: &mut String, body: &str) {
     }
 }
 
-/// A vocabulary word as the resource pages spell it.
 fn word<T: std::fmt::Debug>(value: T) -> String {
     let mut out = String::new();
     for (i, c) in format!("{value:?}").chars().enumerate() {

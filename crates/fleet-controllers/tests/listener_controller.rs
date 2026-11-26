@@ -1,7 +1,3 @@
-//! ListenerController as a pure function: a Listener with the beats and
-//! refusals the verb recorded, the account's configuration, and the
-//! platform's answers go in; the three conditions come out.
-
 use std::collections::BTreeMap;
 
 use fleet_api::condition::{Condition, ConditionStatus};
@@ -193,7 +189,6 @@ fn accepted_and_resolved_follow_the_config_and_the_platforms_identity() {
     );
     assert_eq!(st.seen, 0);
     assert_eq!(st.not_before, Some(NOW + POLL_MS));
-    // The accepted time holds while the digest does; a new digest moves it.
     let (_, again) = run_with(
         &object(Some(&st)),
         ListenerObservations::default(),
@@ -210,13 +205,11 @@ fn accepted_and_resolved_follow_the_config_and_the_platforms_identity() {
         NOW + 5,
     );
     assert_eq!(moved.accepted.as_ref().unwrap().at, NOW + 5);
-    // No route uses the account.
     let (_, st) = run_with(&obj, resolved(), defaults(Some(account(false))), NOW);
     assert_eq!(
         reason(&st, "Accepted"),
         (ConditionStatus::False, "NoRoute".into())
     );
-    // The platform names another bot.
     let other = ListenerObservations {
         whoami: Some(Observation::Known(Identity {
             id: "B0OTHER".into(),
@@ -230,7 +223,6 @@ fn accepted_and_resolved_follow_the_config_and_the_platforms_identity() {
         (ConditionStatus::False, "IdentityMismatch".into())
     );
     assert!(cond(&st, "Resolved").message.contains("B0OTHER"));
-    // Unknown answers are Unknown, and leave the last observation alone.
     let lost = ListenerObservations {
         whoami: Some(Observation::unknown("lost")),
         ..resolved()
@@ -246,7 +238,6 @@ fn accepted_and_resolved_follow_the_config_and_the_platforms_identity() {
         Some(NOW + POLL_MS),
         "an unreachable platform is asked again next poll, not next sweep"
     );
-    // Not asked: what was recorded stands.
     let (_, st) = run(&obj, resolved());
     let (_, same) = run(&object(Some(&st)), ListenerObservations::default());
     assert_eq!(cond(&same, "Resolved"), cond(&st, "Resolved"));
@@ -339,7 +330,6 @@ fn a_refusal_for_the_listeners_own_fault_turns_inbound_off_until_it_ages_out() {
         (ConditionStatus::False, "DeliveriesRefused".into())
     );
     assert_eq!(judged.seen, 3);
-    // Past three beats, with a fresh beat, the fault no longer counts.
     let mut later = judged.clone();
     later.record_beat("a1", beat(BeatState::Connected, DIGEST, NOW + 5_000));
     let (_, st) = run_with(
@@ -352,7 +342,6 @@ fn a_refusal_for_the_listeners_own_fault_turns_inbound_off_until_it_ages_out() {
         reason(&st, "InboundReady"),
         (ConditionStatus::True, "Connected".into())
     );
-    // One thread's full spool was never the listener's fault.
     let mut full = with_beats(vec![("a1", beat(BeatState::Connected, DIGEST, NOW - 10))]);
     full.refused = Some(Refused {
         counts: BTreeMap::from([("SpoolFull".to_string(), 7)]),
@@ -376,7 +365,6 @@ fn a_listener_whose_account_left_the_config_is_deleted_and_a_quiet_one_writes_no
     let plan = ListenerController.reconcile(&input).unwrap();
     assert!(plan.delete);
     assert_eq!(plan.status, None);
-    // Nothing new, nothing asked: no write.
     let (plan, _) = run_with(
         &obj,
         ListenerObservations::default(),

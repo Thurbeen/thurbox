@@ -1,20 +1,3 @@
-//! Desktop notifications when an agent needs you.
-//!
-//! The rule is v1's, and so is the delivery: `crate::notifications` already
-//! resolves a backend and dispatches on its own thread. What lives here is only
-//! the *edge detection* — noticing that a session became blocked — because that
-//! is the part that has to watch the snapshot.
-//!
-//! Observing the edge in one place is deliberate. v1 learned that computing
-//! "should we notify" anywhere other than where status is derived lets the rule
-//! drift from the icon in the list.
-//!
-//! Every `[notifications]` setting is honoured here, because a setting that is
-//! offered and ignored is worse than one that does not exist: whether the
-//! session in view is skipped, whether a sound plays, and the floor between two
-//! notifications for one session. The one edge is into `blocked`: Fleet reports
-//! no finished state, so v1's opt-in for that edge went with it.
-
 use std::collections::HashMap;
 use std::time::{Duration, Instant};
 
@@ -22,21 +5,14 @@ use super::snapshot::{SessionRow, Snapshot};
 use crate::session::settings::NotificationSettings;
 use crate::session::SessionState;
 
-/// Watches for sessions becoming blocked and raises one notification each time.
 pub struct Notifier {
-    /// Sender into the dispatcher thread. `None` when notifications are off,
-    /// in which case nothing is ever attempted — not even a resolve.
     sender: Option<crate::notifications::NotificationSender>,
-    /// Last status seen per session, so a transition can be told from a state.
     previous: HashMap<String, SessionState>,
-    /// When each session last had a notification raised for it, for the
-    /// per-session floor.
     last_raised: HashMap<String, Instant>,
     settings: NotificationSettings,
 }
 
 impl Notifier {
-    /// Build from the user's settings. Disabled means no thread is started.
     pub fn new(enabled: bool, settings: NotificationSettings) -> Self {
         let sender = if enabled {
             Some(crate::notifications::start(
@@ -53,23 +29,14 @@ impl Notifier {
         }
     }
 
-    /// Whether any delivery will be attempted at all.
     pub fn is_enabled(&self) -> bool {
         self.sender.is_some()
     }
 
-    /// Observe a snapshot, raising a notification per session that just became
-    /// blocked.
-    ///
-    /// Returns the sessions notified about, so a caller can assert on it
-    /// without a desktop.
     pub fn observe(&mut self, snapshot: &Snapshot, active: Option<&str>) -> Vec<String> {
         self.observe_at(snapshot, active, Instant::now())
     }
 
-    /// [`Self::observe`] with the clock passed in, so the per-session floor is
-    /// testable without waiting it out. v1 threads `now` through for the same
-    /// reason.
     pub fn observe_at(
         &mut self,
         snapshot: &Snapshot,
@@ -82,14 +49,10 @@ impl Notifier {
         for row in &snapshot.sessions {
             let was = self.previous.insert(row.id.clone(), row.status);
 
-            // The *edge*, not the state: a session that is already blocked when
-            // the interface starts has not just asked for anything.
             let Some(previous) = was else { continue };
             if previous == row.status || !self.worth_raising(row, active) {
                 continue;
             }
-            // The floor is per session: an agent flipping between states must not
-            // deliver a notification per flip.
             if self
                 .last_raised
                 .get(&row.id)
@@ -102,8 +65,6 @@ impl Notifier {
             self.deliver(row);
         }
 
-        // Sessions that went away stop being tracked, or a deleted-and-recreated
-        // id would inherit a stale status.
         let live = |id: &String| snapshot.sessions.iter().any(|row| &row.id == id);
         self.previous.retain(|id, _| live(id));
         self.last_raised.retain(|id, _| live(id));
@@ -111,19 +72,11 @@ impl Notifier {
         raised
     }
 
-    /// Whether this transition is one the user asked to hear about.
-    ///
-    /// Only blocked notifies. A notification for the session you are already
-    /// looking at is noise, so it is suppressed when configured.
     fn worth_raising(&self, row: &SessionRow, active: Option<&str>) -> bool {
         row.status == SessionState::Blocked
             && !(self.settings.suppress_for_active && active == Some(row.id.as_str()))
     }
 
-    /// Hand one notification to the delivery layer.
-    ///
-    /// Keyed on the row's id as the snapshot carries it: a Fleet session's id
-    /// is its Task's name, not a UUID.
     fn deliver(&self, row: &SessionRow) {
         let Some(sender) = &self.sender else {
             return;
@@ -183,7 +136,6 @@ mod tests {
         }
     }
 
-    /// A notifier that never touches a desktop.
     fn quiet(suppress_active: bool) -> Notifier {
         with(NotificationSettings {
             suppress_for_active: suppress_active,
@@ -191,7 +143,6 @@ mod tests {
         })
     }
 
-    /// A notifier over given settings, still touching no desktop.
     fn with(settings: NotificationSettings) -> Notifier {
         Notifier {
             sender: None,
@@ -204,19 +155,14 @@ mod tests {
     #[test]
     fn the_transition_fires_not_the_state() {
         let mut notifier = quiet(false);
-        // First sight of a blocked session is not a transition: it may have
-        // been blocked long before the interface opened.
         assert!(notifier
             .observe(&snap(vec![row("a", SessionState::Blocked)]), None)
             .is_empty());
-        // Still blocked: nothing new.
         assert!(notifier
             .observe(&snap(vec![row("a", SessionState::Blocked)]), None)
             .is_empty());
     }
 
-    /// A Fleet session's id is its Task's name, not a UUID: its notification
-    /// is still delivered, naming that id for a click to focus.
     #[test]
     fn a_fleet_sessions_notification_is_delivered_under_its_task_name() {
         let (tx, rx) = std::sync::mpsc::channel();
@@ -242,7 +188,6 @@ mod tests {
             notifier.observe(&snap(vec![row("a", SessionState::Blocked)]), None),
             vec!["a".to_string()]
         );
-        // And not again while it stays blocked.
         assert!(notifier
             .observe(&snap(vec![row("a", SessionState::Blocked)]), None)
             .is_empty());
@@ -250,8 +195,6 @@ mod tests {
 
     #[test]
     fn blocking_again_after_clearing_raises_again() {
-        // Past the per-session floor, which is what the next test covers: this one
-        // is about the edge.
         let mut notifier = quiet(false);
         let start = Instant::now();
         notifier.observe_at(&snap(vec![row("a", SessionState::Working)]), None, start);
@@ -266,8 +209,6 @@ mod tests {
 
     #[test]
     fn a_second_notification_inside_the_floor_is_dropped() {
-        // An agent flipping blocked → working → blocked must not deliver one
-        // notification per flip.
         let mut notifier = with(NotificationSettings {
             min_interval_secs: 30,
             ..NotificationSettings::default()
@@ -286,7 +227,6 @@ mod tests {
                 start + Duration::from_secs(29)
             )
             .is_empty());
-        // And delivered again once the floor has passed.
         notifier.observe_at(&snap(vec![row("a", SessionState::Working)]), None, start);
         assert_eq!(
             notifier.observe_at(
@@ -300,7 +240,6 @@ mod tests {
 
     #[test]
     fn the_floor_is_per_session() {
-        // One noisy agent must not silence another session's first notification.
         let mut notifier = with(NotificationSettings {
             min_interval_secs: 30,
             ..NotificationSettings::default()
@@ -349,8 +288,6 @@ mod tests {
 
     #[test]
     fn the_sound_setting_reaches_the_notification() {
-        // Not observable through `observe`'s return, so it is asserted where it is
-        // decided: the setting the notifier was built with.
         let quiet_sound = with(NotificationSettings {
             sound: false,
             ..NotificationSettings::default()
@@ -366,7 +303,6 @@ mod tests {
             .observe(&snap(vec![row("a", SessionState::Blocked)]), Some("a"))
             .is_empty());
 
-        // And not suppressed when it is some other session in view.
         let mut notifier = quiet(true);
         notifier.observe(&snap(vec![row("a", SessionState::Working)]), Some("b"));
         assert_eq!(
@@ -388,7 +324,6 @@ mod tests {
         notifier.observe(&snap(Vec::new()), None);
         assert!(notifier.previous.is_empty());
 
-        // So a recreated id is a first sighting again, not a transition.
         assert!(notifier
             .observe(&snap(vec![row("a", SessionState::Blocked)]), None)
             .is_empty());

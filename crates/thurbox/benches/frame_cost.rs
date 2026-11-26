@@ -1,20 +1,3 @@
-//! What a frame actually costs, measured against the real interface.
-//!
-//! Not a gate — ADR-P5 keeps timing out of CI, and `tests/kernel_frame_cost.rs`
-//! holds the assertions that *are* deterministic. This is the instrument those
-//! assertions cannot be: it drives the bundled `ui/` with a synthetic snapshot
-//! and reports where the time in one frame goes, so a change can be measured
-//! rather than argued about.
-//!
-//! ```sh
-//! cargo bench --bench frame_cost                 # the default sweep
-//! THURBOX_BENCH_SESSIONS=1,20,100 cargo bench --bench frame_cost
-//! ```
-//!
-//! Every phase is named after the thing the loop does, so a row here maps onto
-//! a line in `docs/thurbox/performance.md` rather than onto a function name that may
-//! move.
-
 use std::collections::{HashMap, HashSet};
 use std::time::{Duration, Instant};
 
@@ -39,9 +22,6 @@ fn HEIGHT() -> u16 {
     SCREEN.get_or_init(screen).1
 }
 
-/// The screen the frame is measured at. Overridable because "the session list
-/// costs 435us" and "a visible row costs 9us" are different claims, and only a
-/// height sweep tells them apart.
 fn screen() -> (u16, u16) {
     let parse = |name: &str, fallback: u16| {
         std::env::var(name)
@@ -55,8 +35,6 @@ fn screen() -> (u16, u16) {
     )
 }
 
-// --- the world --------------------------------------------------------------
-
 fn ui_dir() -> std::path::PathBuf {
     std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../ui")
 }
@@ -67,9 +45,6 @@ fn host() -> LuaHost {
     host
 }
 
-/// The `default` preset by name, never the environment's active choice — a
-/// measurement that moves with whichever palette the machine happens to have
-/// selected is not a measurement.
 fn themes() -> Themes {
     let mut themes = Themes::load(None);
     themes.preview("default").expect("the default preset");
@@ -83,9 +58,6 @@ fn registry(host: &LuaHost) -> Registry {
     registry
 }
 
-/// Rows shaped like the ones a working machine has: several repos, a parent
-/// per group, live panes, and a git stat block — the shape the session list
-/// spends its time on.
 fn snapshot(sessions: usize) -> Snapshot {
     let repos = ["/src/thurbox", "/src/thurview", "/src/thurspace"];
     let rows = (0..sessions)
@@ -112,8 +84,6 @@ fn snapshot(sessions: usize) -> Snapshot {
                 remote_host: None,
                 place: None,
                 agent_session_id: Some(format!("00000000-0000-0000-0000-{nth:012}")),
-                // Every fourth row nests under the one before it, so the
-                // session model's tree walk is exercised rather than skipped.
                 parent_id: (nth % 4 == 3).then(|| format!("session-{:04}", nth - 1)),
                 display_order: Some(nth as i64),
                 worktree_count: 1,
@@ -198,12 +168,6 @@ impl World {
     }
 }
 
-// --- timing -----------------------------------------------------------------
-
-/// Median of `runs` timed passes, each of `inner` repetitions.
-///
-/// Median rather than mean: one scheduler hiccup in a hundred passes should not
-/// move the number a reader compares against last week's.
 fn measure(runs: usize, inner: usize, mut body: impl FnMut()) -> Duration {
     let mut samples = Vec::with_capacity(runs);
     for _ in 0..runs {
@@ -248,8 +212,6 @@ impl Table {
     }
 }
 
-// --- a frame, as the loop actually draws one ---------------------------------
-
 fn placed_panes(host: &LuaHost) -> Vec<(usize, String, ratatui::layout::Rect)> {
     let area = ratatui::layout::Rect::new(0, 0, WIDTH(), HEIGHT());
     let region = host.arrangement(WIDTH(), HEIGHT()).expect("arrangement");
@@ -260,10 +222,6 @@ fn placed_panes(host: &LuaHost) -> Vec<(usize, String, ratatui::layout::Rect)> {
                 continue;
             };
             out.push((index, loaded.name.clone(), slot.rect));
-            // A switch slot shows one occupant; a stack shows them all. The
-            // bundled interface has one occupant per slot either way, so the
-            // distinction costs nothing to ignore here — but say so, because an
-            // interface with two panes in `center` would need it.
             if host.slot_mode(&slot.slot) == thurbox::kernel::layout::SlotMode::Switch {
                 break;
             }
@@ -320,11 +278,6 @@ fn main() {
     let columns: Vec<String> = counts.iter().map(|n| format!("{n} sessions")).collect();
     let mut rows: Vec<(String, Vec<Duration>)> = Vec::new();
 
-    // --- whole frames -------------------------------------------------------
-
-    // The frame the loop spends most of its life on: the 250ms forced redraw
-    // with nothing moved. Every group reused, every pure pane cached. This is
-    // the number that must stay flat in the session count.
     rows.push((
         "frame: settled".into(),
         counts
@@ -346,8 +299,6 @@ fn main() {
             .collect(),
     ));
 
-    // Model the once-a-second idle clock and metrics sample with diffs held
-    // from earlier selections. No session row or diff body changes.
     rows.push((
         "frame: idle clock/sample + diffs".into(),
         counts
@@ -385,9 +336,6 @@ fn main() {
             .collect(),
     ));
 
-    // A frame after the snapshot moved: the whole publish, every pane run
-    // again, and the paint. What a session appearing, a status changing or a
-    // branch landing costs.
     rows.push((
         "frame: snapshot moved".into(),
         counts
@@ -408,10 +356,6 @@ fn main() {
             .collect(),
     ));
 
-    // The animation clock ticking, which is what a `working` session does eight
-    // times a second: nothing else moved, and only the panes whose render read
-    // `ctx.elapsed` are invalidated by it (ADR-P21). What is left after that
-    // scoping is what this row measures — before it, every pure pane was here.
     rows.push((
         "frame: animation tick".into(),
         counts
@@ -431,8 +375,6 @@ fn main() {
             })
             .collect(),
     ));
-
-    // --- the parts ----------------------------------------------------------
 
     rows.push((
         "  publish (reused)".into(),
@@ -480,8 +422,6 @@ fn main() {
                 let snapshot = snapshot(n);
                 let mut epoch = Epoch::default();
                 measure(9, 20, || {
-                    // A moved epoch, so this is the cost of actually running
-                    // them rather than of the cache answering.
                     epoch.snapshot += 1;
                     world.publish(&host, epoch, &snapshot);
                     let _ = render_panes(&host, &panes, 0);
@@ -611,27 +551,10 @@ fn paint(
         .expect("draw");
 }
 
-/// Move the epoch so every pure pane must render, as cheaply as a publish can.
-///
-/// The themes epoch. It is in the pure-pane cache key like every other epoch
-/// field, so it invalidates all of them unconditionally, and the only published
-/// group gated on it is the palette — so the publish beside each render stays a
-/// near-cache-hit rather than the ~1ms rebuild the snapshot epoch would force.
-/// Subtracting a millisecond from a millisecond measures the subtraction, not
-/// the pane, and the palette rebuild is inside the baseline that is subtracted.
-///
-/// NOT the animation epoch, which is what this drove before ADR-P21 scoped the
-/// clock to the panes that read it: a pure pane whose render never touches
-/// `ctx.elapsed` — the bundled agent pane, and every closed float — is now
-/// served from its cache across an animation tick, so every such row would
-/// report a cache hit minus the baseline. Roughly zero, in the one table whose
-/// whole job is to say where the time went.
 fn cold(epoch: &mut Epoch) {
     epoch.themes += 1;
 }
 
-/// Which pane the time is in, at the largest session count — the question
-/// "the frame got slower" always turns into.
 fn per_pane(
     host: &LuaHost,
     world: &World,
@@ -682,10 +605,6 @@ fn per_pane(
     .print("per placed pane, rendered cold");
 }
 
-/// What the caches actually did — the counters the perf HUD reads.
-///
-/// A time that looks fine because a cache answered is a different fact from a
-/// time that is fine, and only these tell them apart.
 fn caching(
     host: &LuaHost,
     world: &World,
@@ -719,10 +638,6 @@ fn caching(
     );
 }
 
-// --- the streaming-agent frame ----------------------------------------------
-
-/// A screen with the shape an agent's output has: mostly text, a few URLs, some
-/// styling. Filled to the full grid, because both costs below are per cell.
 fn agent_screen(rows: u16, cols: u16) -> vt100::Parser {
     let mut parser = vt100::Parser::new(rows.try_into().unwrap(), cols.try_into().unwrap(), 0);
     for nth in 0..rows {
@@ -738,21 +653,9 @@ fn agent_screen(rows: u16, cols: u16) -> vt100::Parser {
     parser
 }
 
-/// What a frame costs *because an agent is printing* — the two per-frame costs
-/// a `PlaceholderSurfaces` harness cannot see.
-///
-/// They are paid at *different rates*, which is why each row carries its own.
-/// Painting the surface happens once per painted frame per visible surface, at
-/// the 33ms output floor. The link scan does not: it is keyed on the surface's
-/// output stamp, which a printing agent moves every frame, so before ADR-P20 it
-/// ran at that rate too — the second gate paces it at `LINK_SCAN_INTERVAL`
-/// instead. Scaling it at the frame rate is how a 7.5x-too-high number gets
-/// printed by an instrument that never fails.
 fn output_frame() {
-    // The rate each phase is actually paid at. `LINK_SCAN_INTERVAL` lives in
-    // `src/main.rs` — the loop is a binary, so a bench linking the library
-    // cannot name it; changing one means changing the other.
     const FRAME_HZ: f64 = 1000.0 / 33.0;
+    // MUST KILL: rearchitect — `LINK_SCAN_INTERVAL` in the library, so the bench names it
     const LINK_SCAN_HZ: f64 = 1000.0 / 250.0;
 
     let (width, height) = (WIDTH() * 3 / 4, HEIGHT() - 2);

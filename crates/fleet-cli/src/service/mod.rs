@@ -1,9 +1,3 @@
-//! `fleet service`: the one user service that runs `fleet up` for a store,
-//! under this system's own supervisor: a systemd user unit on Linux, a
-//! launchd agent on macOS, a Task Scheduler task on Windows. Fleet writes
-//! the service's file, which names its store, so Fleet finds the service of
-//! a store without a record of its own.
-
 #[cfg(unix)]
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
@@ -31,6 +25,7 @@ use systemd as host;
 
 pub const DEFAULT_NAME: &str = "fleet";
 #[cfg(any(target_os = "linux", windows))]
+// systemd keeps and ignores a unit key that starts with `X-`.
 const STORE_KEY: &str = "X-Fleet-Store=";
 const QUICK_BOUND: Duration = Duration::from_secs(30);
 
@@ -122,14 +117,11 @@ pub fn store_unit(data_dir: &Path) -> Result<Option<Unit>, String> {
     }))
 }
 
-/// How a unit Fleet did not write runs `fleet up`: the config and data
-/// directory it names, each `None` when it leaves that to discovery.
 pub struct Invocation {
     pub config: Option<PathBuf>,
     pub data_dir: Option<PathBuf>,
 }
 
-/// The store a hand-written unit's `fleet up` serves, by its invocation.
 pub type StoreOf<'a> = &'a dyn Fn(&Invocation) -> Option<PathBuf>;
 
 fn hand_written_unit(data_dir: &Path, store_of: StoreOf) -> Result<Option<Unit>, String> {
@@ -140,8 +132,6 @@ fn hand_written_unit(data_dir: &Path, store_of: StoreOf) -> Result<Option<Unit>,
     }))
 }
 
-/// The unit that runs `fleet up` for the store: the one Fleet wrote, else
-/// one written by hand whose `fleet up` serves the store.
 pub fn serving_unit(data_dir: &Path, store_of: StoreOf) -> Result<Option<Unit>, String> {
     match store_unit(data_dir)? {
         Some(unit) => Ok(Some(unit)),
@@ -149,8 +139,6 @@ pub fn serving_unit(data_dir: &Path, store_of: StoreOf) -> Result<Option<Unit>, 
     }
 }
 
-/// [`target`], or with no name the hand-written unit that serves the store:
-/// what the verbs that start, stop and report a manager drive.
 pub fn serving_target(
     name: Option<&str>,
     data_dir: &Path,
@@ -319,8 +307,6 @@ pub fn drive(unit: &Unit, verb: Verb, stop_bound: Duration) -> Result<(), Refusa
     host::drive(unit, verb, stop_bound)
 }
 
-/// The supervisor's own report on the service, and an exit code: 0 while
-/// it runs, 3 when it does not.
 pub fn status(unit: &Unit) -> Result<(String, i32), Refusal> {
     host::status(unit)
 }
@@ -333,9 +319,7 @@ struct Tool {
 impl Tool {
     fn spec(&self, args: &[&str], bound: Duration) -> Spec {
         let mut spec = Spec::new(self.program, bound).args(self.lead).args(args);
-        // Windows looks a bare program up in System32 before the parent's
-        // PATH, and in a PATH set on the child first: setting it keeps the
-        // lookup to PATH, as on Unix.
+        // Windows looks a bare program up in System32 before PATH unless the child's PATH is set.
         if let Some(path) = std::env::var_os("PATH").and_then(|p| p.into_string().ok()) {
             spec.env.push(("PATH".into(), path));
         }

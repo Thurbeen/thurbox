@@ -1,7 +1,3 @@
-//! Each adapter serves its own multiplexer on any
-//! machine, rather than one adapter that becomes the other when the binary's
-//! name or the build OS says so.
-
 use runtime_mux::psmux::PsmuxBackend;
 use runtime_mux::rmux::RmuxBackend;
 use runtime_mux::tmux::TmuxBackend;
@@ -25,8 +21,6 @@ fn host(name: &str, platform: Platform, preferred: Option<&str>) -> HostDef {
     }
 }
 
-/// Each adapter serves the route of its own multiplexer — on this machine
-/// whatever OS it is, and on a host whatever the host prefers.
 #[test]
 fn each_adapter_serves_its_own_multiplexer_wherever_it_runs() {
     assert_eq!(
@@ -61,17 +55,11 @@ fn each_adapter_serves_its_own_multiplexer_wherever_it_runs() {
     }
 }
 
-/// What a multiplexer can report is its adapter's answer, read off its
-/// `Capabilities` and its status channel: tmux announces a window's close and answers a
-/// snapshot in step with the pane's output, psmux does neither (docs/runtime/runtime-mux.md), RMUX
-/// answers a snapshot but is polled — on any OS, since none of it is a fact
-/// about one. Only a server that keeps a dead pane can hold an exited window,
-/// and only one with a status channel hands out a hook command.
 #[test]
 fn what_each_multiplexer_can_report_is_its_own_adapters_answer() {
     let windows = host("windows", Platform::Windows, None);
     let linux = host("linux", Platform::Posix, Some("psmux"));
-    // `[needs_liveness_poll, supports_snapshots, keeps_exited_windows, hooks]`
+    // MUST KILL: type — a named capabilities struct would label `[needs_liveness_poll, supports_snapshots, keeps_exited_windows, hooks]`
     let tmux = [false, true, true, true];
     let psmux = [true, false, false, false];
     let rmux = [true, true, true, true];
@@ -137,8 +125,6 @@ fn what_each_multiplexer_can_report_is_its_own_adapters_answer() {
     }
 }
 
-/// Each adapter runs its own binary: fake multiplexers on
-/// `PATH` record which one each adapter asked for its version.
 #[cfg(unix)]
 #[test]
 fn each_adapter_runs_its_own_binary() {
@@ -195,8 +181,6 @@ fn have(binary: &str) -> bool {
 fn forwarding_psmux(tmux: &std::path::Path) -> tempfile::TempDir {
     use std::os::unix::fs::PermissionsExt;
 
-    // Real unstamped windows exercise the psmux ownership rules; forwarding
-    // changes only the executable name, never the listing replies.
     let bin = tempfile::tempdir().expect("shim directory");
     let shim = bin.path().join("psmux");
     std::fs::write(&shim, "#!/bin/sh\nexec \"$IDENTITY_REAL_TMUX\" \"$@\"\n").expect("shim");
@@ -639,19 +623,13 @@ esac
     );
 }
 
-/// The contract's pane I/O and shutdown, against a real psmux where one is
-/// installed. Not the stamp-reading half: psmux keeps `@` options in one
-/// server-wide map (docs/runtime/runtime-mux.md), so it resolves windows by name and declares that
-/// by stamping nothing.
 #[test]
 fn the_psmux_backend_keeps_the_contract_where_psmux_is_installed() {
     if !have("psmux") {
         eprintln!("skipping: psmux is not installed");
         return;
     }
-    // psmux has no socket directory, so the pinned socket's name is all that
-    // keeps this off the operator's own server — and a tmux reap does not
-    // reach a psmux server, so it is killed by name too.
+    // psmux has no socket directory, and a tmux reap does not reach a psmux server.
     const SOCKET: &str = "thurbox-psmux-contract";
     let _pinned = tmux_server::TmuxServer::pin(SOCKET);
     struct Reap;
@@ -668,12 +646,6 @@ fn the_psmux_backend_keeps_the_contract_where_psmux_is_installed() {
     backend_contract::shutdown_is_final(&PsmuxBackend::local(&runtime_mux::MuxSettings::default()));
 }
 
-/// A psmux window with no stored pane id is the recovery shape of a row that
-/// survived a server or application restart. Resolve it from the live listing:
-/// psmux 3.3.8 does not implement tmux's `=name` exact-match target, reports
-/// that lookup error on stdout with exit status 0, and permits duplicate window
-/// names. A name target can therefore be neither the recovered pane nor proof
-/// that capture succeeded.
 #[test]
 fn psmux_recovery_requires_one_unique_live_pane() {
     use runtime_mux::{Located, Owner, WindowRole, WindowSpec};

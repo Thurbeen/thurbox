@@ -1,8 +1,3 @@
-//! What the CLI-backed adapters share: one bounded call through
-//! fleet-exec, the HTTP head a `--include` answer carries, the forge's
-//! rate-limit advice, a budget for one observation made of several calls,
-//! and the forge's timestamps as Unix milliseconds.
-
 use std::ffi::OsString;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
@@ -10,17 +5,11 @@ use fleet_api::Millis;
 use fleet_api::forge::Uncertainty;
 use fleet_exec::{Outcome, Spec, run};
 
-/// The most calls one observation of a change makes. The bound reported for
-/// the port is this many worst-case calls; the budget below runs out first.
 pub const MAX_CALLS_PER_OBSERVATION: u32 = 6;
 
-/// One HTTP answer as `gh api --include` and `glab api --include` print it:
-/// the status line and headers, then the body.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Reply {
-    /// 0 when no status line was printed.
     pub status: u16,
-    /// Lowercased names.
     pub headers: Vec<(String, String)>,
     pub body: String,
     pub exit: Option<i32>,
@@ -35,8 +24,6 @@ impl Reply {
             .map(|(_, v)| v.as_str())
     }
 
-    /// How long the forge asked to wait, from `Retry-After` (seconds) or a
-    /// rate-limit reset time (Unix seconds), in milliseconds.
     pub fn retry_after(&self) -> Option<Millis> {
         if let Some(secs) = self
             .header("retry-after")
@@ -55,7 +42,6 @@ impl Reply {
         None
     }
 
-    /// The forge said to slow down: a 429, or a 403 whose body says so.
     pub fn throttled(&self) -> bool {
         self.status == 429
             || (self.status == 403
@@ -65,7 +51,6 @@ impl Reply {
     }
 }
 
-/// Split the `--include` output into its head and body.
 pub fn parse_reply(stdout: &str) -> (u16, Vec<(String, String)>, String) {
     if !stdout.starts_with("HTTP/") {
         return (0, Vec::new(), stdout.to_string());
@@ -90,7 +75,6 @@ pub fn parse_reply(stdout: &str) -> (u16, Vec<(String, String)>, String) {
     (status, headers, body.to_string())
 }
 
-/// One bounded call. The process tree is killed past `timeout`.
 pub fn call(
     program: &OsString,
     args: &[String],
@@ -98,7 +82,6 @@ pub fn call(
 ) -> Result<Reply, (Uncertainty, String)> {
     let what = args.first().cloned().unwrap_or_default();
     let mut spec = Spec::new(program, timeout).args(args);
-    // No prompts, no colour, no update nag: the output is parsed.
     spec.env.extend(
         [
             ("GH_PROMPT_DISABLED", "1"),
@@ -157,8 +140,6 @@ fn first_line(bytes: &[u8]) -> String {
         .collect()
 }
 
-/// The time one observation may spend over all its calls: `call_timeout`
-/// times [`MAX_CALLS_PER_OBSERVATION`], and no more calls than that either.
 #[derive(Debug)]
 pub struct Budget {
     deadline: Instant,
@@ -175,7 +156,6 @@ impl Budget {
         }
     }
 
-    /// The timeout of the next call, or `None` when the budget is spent.
     pub fn next_timeout(&mut self) -> Option<Duration> {
         if self.calls_left == 0 {
             return None;
@@ -189,14 +169,11 @@ impl Budget {
     }
 }
 
-/// The worst case of one observation: every call at its worst.
 pub fn operation_bound(call_timeout: Duration) -> Millis {
     let one = fleet_exec::worst_case(call_timeout) * MAX_CALLS_PER_OBSERVATION;
     u64::try_from(one.as_millis()).unwrap_or(u64::MAX)
 }
 
-/// An RFC 3339 timestamp (`2026-10-24T12:34:56Z`, with optional fraction and
-/// offset) as Unix milliseconds. `None` for anything else.
 pub fn iso_millis(s: &str) -> Option<Millis> {
     let s = s.trim();
     let (date, rest) = s.split_once(['T', 't', ' '])?;
@@ -250,7 +227,6 @@ pub fn iso_millis(s: &str) -> Option<Millis> {
     u64::try_from(secs * 1000 + millis).ok()
 }
 
-/// Days since 1970-01-01 of a proleptic Gregorian date.
 fn days_from_civil(y: i64, m: u32, d: u32) -> i64 {
     let y = if m <= 2 { y - 1 } else { y };
     let era = if y >= 0 { y } else { y - 399 } / 400;
@@ -261,8 +237,6 @@ fn days_from_civil(y: i64, m: u32, d: u32) -> i64 {
     era * 146_097 + doe - 719_468
 }
 
-/// Percent-encode a project path for a URL segment (`group/sub` as
-/// `group%2Fsub`), leaving unreserved characters alone.
 pub fn encode_segment(s: &str) -> String {
     let mut out = String::with_capacity(s.len());
     for b in s.bytes() {
@@ -275,9 +249,6 @@ pub fn encode_segment(s: &str) -> String {
     out
 }
 
-/// `scheme://host/<project>/(pull|pulls|merge_requests|changes)/<id>`, with
-/// an optional `/-` before the word, as GitLab writes it. Each adapter then
-/// checks the shape its forge uses.
 pub fn parse_change_url(url: &str) -> Option<(String, String, String)> {
     let rest = url.trim().split_once("://")?.1;
     let rest = rest.split(['?', '#']).next()?;

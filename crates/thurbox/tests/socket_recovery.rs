@@ -1,15 +1,3 @@
-//! A tmux server whose socket is gone is found again, never replaced.
-//!
-//! tmux's default socket directory is `/tmp`, which macOS sweeps; a socket's
-//! access time is not bumped by `connect()`, so a server in daily use loses its
-//! socket after a few days. The server keeps running, unreachable, and a
-//! `new-session` on the same name used to start a second one beside it — one
-//! Mac held 93 processes and 3.1 GB that way, 13 of its agents duplicates of
-//! sessions resumed into the new server. Each test here starts a *real* server
-//! (skipped when tmux is absent), takes its socket away or puts it where an
-//! earlier build would have, and asserts that thurbox reaches the original:
-//! its windows are there, and no second server process exists.
-
 #![cfg(unix)]
 
 use std::os::unix::fs::PermissionsExt;
@@ -36,10 +24,6 @@ fn have_tmux() -> bool {
         .is_ok_and(|out| out.status.success())
 }
 
-/// Kills the servers it is handed when dropped. [`TmuxServer`] reaps by
-/// connecting, which is exactly what a server with no socket refuses — so a
-/// test that takes a socket away holds one of these too, or a failure in it
-/// would leak the very orphan it is about.
 #[derive(Default)]
 struct ReapByPid(Vec<u32>);
 
@@ -56,9 +40,6 @@ impl Drop for ReapByPid {
     }
 }
 
-/// Kills the server on `socket` in tmux's default directory when dropped —
-/// for the one test whose host is meant to fall back there, out of the
-/// [`TmuxServer`] guard's own directory.
 struct KillDefaultServer(String);
 
 impl Drop for KillDefaultServer {
@@ -72,9 +53,6 @@ impl Drop for KillDefaultServer {
     }
 }
 
-/// Kills the server listening at a socket path when dropped — for a host
-/// server started in its data dir, which no [`TmuxServer`] pins. Declared
-/// after the guard whose directory holds the socket, so it runs first.
 struct KillServerAt(PathBuf);
 
 impl Drop for KillServerAt {
@@ -87,12 +65,8 @@ impl Drop for KillServerAt {
     }
 }
 
-/// The destination the stand-in `ssh` answers for.
 const DEST: &str = "e2e@sockrec.invalid";
 
-/// Put a stand-in `ssh` first on `PATH` that runs the remote command here,
-/// so a host's commands run through a host's shell exactly as they would on
-/// one; the returned directory holds it.
 fn stand_in_ssh() -> tempfile::TempDir {
     let bin = tempfile::tempdir().expect("tempdir");
     let ssh = bin.path().join("ssh");
@@ -111,7 +85,6 @@ fn stand_in_ssh() -> tempfile::TempDir {
     bin
 }
 
-/// A backend for the stand-in host, its socket and session as given.
 fn host_backend(socket: &str, session: &str) -> TmuxBackend {
     let host = HostDef {
         name: "sockrec".into(),
@@ -132,18 +105,12 @@ fn host_backend(socket: &str, session: &str) -> TmuxBackend {
     )
 }
 
-/// `<dir>/tmux-<uid>/<socket>`, where tmux puts a socket for `dir`.
 fn socket_path(dir: &Path, socket: &str) -> PathBuf {
     // SAFETY: `getuid` cannot fail and touches no memory.
     let uid = unsafe { libc::getuid() };
     dir.join(format!("tmux-{uid}")).join(socket)
 }
 
-/// Every running tmux server process for `socket`: a process whose command
-/// line started one (`new-session`) on that name. A server keeps the argv of
-/// the client that started it, which is what makes a socketless one findable.
-/// Test sockets include the test process id so simultaneous worktree suites
-/// cannot count or recover each other's servers.
 fn servers(socket: &str) -> Vec<u32> {
     let out = Command::new("ps")
         .args(["-axo", "pid=,args="])
@@ -157,7 +124,6 @@ fn servers(socket: &str) -> Vec<u32> {
         .collect()
 }
 
-/// The pid of the server answering on `server`'s socket.
 fn answering_pid(server: &TmuxServer) -> Option<u32> {
     let out = server.tmux(&["display-message", "-p", "#{pid}"]);
     out.status
@@ -166,8 +132,6 @@ fn answering_pid(server: &TmuxServer) -> Option<u32> {
         .flatten()
 }
 
-/// Start `server` with one window, `tb-survivor`, in `session`, and return
-/// the server's pid.
 fn start_with_window(server: &TmuxServer, session: &str) -> u32 {
     let out = server.tmux(&[
         "new-session",
@@ -196,8 +160,6 @@ fn window_names(backend: &dyn SessionBackend) -> Vec<String> {
         .collect()
 }
 
-/// The incident: the socket goes from under a running server, and the next
-/// thurbox finds its windows rather than starting a server of its own.
 #[test]
 fn a_server_whose_socket_was_removed_is_reattached_not_replaced() {
     if !have_tmux() {
@@ -227,9 +189,6 @@ fn a_server_whose_socket_was_removed_is_reattached_not_replaced() {
     backend.shutdown();
 }
 
-/// The same over the ssh transport: the host is a stand-in whose `ssh` runs
-/// the remote command here, so the lookup and the `SIGUSR1` run through the
-/// host's shell exactly as they would on one.
 #[test]
 fn a_hosts_server_whose_socket_was_removed_is_reattached_not_replaced() {
     if !have_tmux() {
@@ -258,19 +217,12 @@ fn a_hosts_server_whose_socket_was_removed_is_reattached_not_replaced() {
     backend.shutdown();
 }
 
-/// A thurbox that keeps its socket somewhere new still finds a server an
-/// earlier build started in tmux's default directory, and adopts it rather
-/// than starting a second; once that server is gone, the next one starts in
-/// the new directory.
 #[test]
 fn a_server_in_the_old_directory_is_adopted_until_it_exits() {
     if !have_tmux() {
         eprintln!("skipping: tmux is not installed");
         return;
     }
-    // The guard's directory stands for tmux's default (`TMUX_TMPDIR`, which
-    // an earlier build left alone); `new/` inside it is the one a build
-    // choosing its own directory would use.
     let server = TmuxServer::pin(&format!("tbx-sockrec-move-{}", std::process::id()));
     let mut reap = ReapByPid::default();
     let new_dir = server.tmpdir().join("new");
@@ -301,7 +253,6 @@ fn a_server_in_the_old_directory_is_adopted_until_it_exits() {
     );
     adopted.shutdown();
 
-    // The old server exits on its own terms; the next start is a clean one.
     assert!(server.tmux(&["kill-server"]).status.success());
     let started = backend();
     started.ensure_ready().expect("start");
@@ -313,9 +264,6 @@ fn a_server_in_the_old_directory_is_adopted_until_it_exits() {
     started.shutdown();
 }
 
-/// A socket path with a space in it is found whole: on Linux the bound path
-/// is read out of `/proc/net/unix`, where a word-splitting reader saw only
-/// up to the space and never found the server's socket.
 #[test]
 fn a_socket_path_with_a_space_in_it_is_found_whole() {
     if !have_tmux() {
@@ -337,10 +285,6 @@ fn a_socket_path_with_a_space_in_it_is_found_whole() {
     backend.shutdown();
 }
 
-/// A server that is running but does not answer even `SIGUSR1` — stopped
-/// here, wedged in life — is out of reach, not absent: discovery fails
-/// rather than reading its windows as none, and nothing starts a second
-/// server, which the first one's pending `SIGUSR1` would orphan later.
 #[test]
 fn a_server_that_will_not_answer_is_not_replaced() {
     if !have_tmux() {
@@ -371,9 +315,6 @@ fn a_server_that_will_not_answer_is_not_replaced() {
     backend.shutdown();
 }
 
-/// A host whose data dir is too deep for a socket path keeps its server in
-/// tmux's default directory, every command alike, rather than failing each
-/// one with `File name too long`.
 #[test]
 fn a_host_whose_data_dir_is_too_deep_starts_its_server_in_the_default() {
     if !have_tmux() {
@@ -402,9 +343,6 @@ fn a_host_whose_data_dir_is_too_deep_starts_its_server_in_the_default() {
     backend.shutdown();
 }
 
-/// A host's socket name reaches its shell quoted, and stays quoted through
-/// the data-dir test every command makes: one with a `"` in it starts and is
-/// reached in the host's data dir instead of failing every command.
 #[test]
 fn a_hosts_socket_name_with_a_quote_in_it_starts_in_its_data_dir() {
     if !have_tmux() {

@@ -1,9 +1,3 @@
-//! What fills the registry for a running process: the one place that names a
-//! concrete adapter.
-//!
-//! Only the embedder's composition roots may call it; every other consumer is
-//! handed the registry this builds.
-
 use std::sync::Arc;
 
 use crate::registry::BackendRegistry;
@@ -12,29 +6,17 @@ use crate::shell::HostLauncher;
 use crate::SessionBackend;
 use crate::{HostDef, HostRegistry, Multiplexer, Platform, Route};
 
-/// What an adapter is built from: the route it will serve and where that is.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BackendSpec {
-    /// The qualified route the backend serves, and is named by.
     pub route: Route,
-    /// How the host is reached, or `None` for this machine.
     pub launcher: Option<HostLauncher>,
-    /// The OS of the machine the multiplexer runs on: this one's, or the
-    /// host's — never the multiplexer's.
     pub platform: Platform,
-    /// The host as configured, or `None` for this machine.
     pub host: Option<HostDef>,
-    /// What the embedder injected: the scrollback a terminal on this backend
-    /// keeps, and where the instance keeps its data.
     pub settings: MuxSettings,
 }
 
-/// Builds the backend serving a [`BackendSpec`].
 pub type AdapterFactory = fn(&BackendSpec) -> Arc<dyn SessionBackend>;
 
-/// One adapter per multiplexer: the only list of them. Adding one is a module
-/// and a row here; a route naming a multiplexer with no row is refused by name
-/// rather than driven through another's grammar.
 const ADAPTERS: &[(Multiplexer, AdapterFactory)] = &[
     (Multiplexer::Tmux, tmux),
     (Multiplexer::Psmux, psmux),
@@ -68,38 +50,18 @@ fn rmux(spec: &BackendSpec) -> Arc<dyn SessionBackend> {
     }
 }
 
-/// Whether an adapter here implements `mux`.
 pub fn implements(mux: Multiplexer) -> bool {
     ADAPTERS.iter().any(|(implemented, _)| *implemented == mux)
 }
 
-/// One backend per adapter on this machine and on every host in `hosts`,
-/// with this platform's own multiplexer as the default.
-///
-/// Backends are registered, never readied: registration is a map insert,
-/// where readying is a blocking connect (an ssh round trip for a remote
-/// host), so a down host must not be probed until a session on it is
-/// actually attached. `settings` are the ones the embedder injected.
 pub fn for_hosts(hosts: &HostRegistry, settings: &MuxSettings) -> BackendRegistry {
     registry_from(ADAPTERS, hosts, settings)
 }
 
-/// Every adapter for this machine and no host.
 pub fn local_only(settings: &MuxSettings) -> BackendRegistry {
     for_hosts(&HostRegistry::default(), settings)
 }
 
-/// Every adapter in `table`, for this machine and for each of `hosts`.
-///
-/// Registration is by adapter, never by OS (ADR-31): a
-/// machine — this one or a host — is served by every multiplexer an adapter
-/// implements, whatever its platform or its preference. Those decide only which
-/// multiplexer a host key means ([`HostDef::default_route`]) and which backend
-/// is the default; a binary that is not installed is reported when its backend
-/// is first asked to start, by name.
-///
-/// `table` must serve this platform's default multiplexer, which the registry
-/// is never without.
 fn registry_from(
     table: &[(Multiplexer, AdapterFactory)],
     hosts: &HostRegistry,
@@ -165,9 +127,6 @@ mod tests {
         }
     }
 
-    /// A host's own multiplexer is served when an adapter implements it —
-    /// psmux on a host that prefers it, tmux on one that names none — and
-    /// what nothing implements is never served.
     #[test]
     fn each_host_serves_its_own_multiplexer() {
         let hosts = hosts(&[
@@ -205,9 +164,6 @@ mod tests {
         );
     }
 
-    /// Registration is by adapter, never by OS (ADR-31): every adapter here
-    /// is registered for this machine and for every host whichever OS either
-    /// is, and the platform only picks which backend is the default.
     #[test]
     fn every_adapter_is_registered_whatever_the_platform() {
         use crate::shell::simulate_local;
@@ -250,15 +206,6 @@ mod tests {
         }
     }
 
-    /// The selection matrix: a probe adapter registered for each of
-    /// [`Multiplexer::ALL`] — Herdr included, which no adapter here implements
-    /// — on this machine, an ssh host and a WSL
-    /// distro, from a POSIX and a Windows thurbox, and on a POSIX and a Windows
-    /// ssh host. Each route reaches the adapter registered for its own
-    /// multiplexer, whatever the host prefers; the spec it is built from names
-    /// the platform and launcher the placement says, whatever the multiplexer;
-    /// and the launcher carries the probe's own command line with nothing of
-    /// tmux's added to it.
     mod selection {
         use std::cell::RefCell;
 
@@ -299,8 +246,6 @@ mod tests {
             format!("{}-probe", mux.name())
         }
 
-        /// Every placement a route can name: an ssh host of each platform,
-        /// each preferring every multiplexer in turn, and a WSL distro.
         fn placements() -> HostRegistry {
             let mut hosts = Vec::new();
             for platform in Platform::ALL {
@@ -382,7 +327,6 @@ mod tests {
                             "{at}: the launcher is the placement's"
                         );
 
-                        // The probe's own grammar, unchanged.
                         let command = crate::shell::launch(
                             spec.launcher.as_ref(),
                             mux.name(),
@@ -410,8 +354,6 @@ mod tests {
             }
         }
 
-        /// The platform picks which adapter is the default; the adapters
-        /// registered are the same set either way.
         #[test]
         fn the_platform_never_decides_what_is_registered() {
             let hosts = placements();

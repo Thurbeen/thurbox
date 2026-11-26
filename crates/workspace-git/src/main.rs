@@ -1,17 +1,3 @@
-//! `workspace-git make|release|discard|inspect`: one JSON request on stdin,
-//! one answer on stdout (docs/runtime/README.md, "workspace-git").
-//!
-//! - `make` takes `{root, key, urls, preserveDays?}` and answers
-//!   `{"made": {dirs, adopted}}`, `{"unsupported": {url}}` or
-//!   `{"failed": {why}}`.
-//! - `release` takes `{root, key}` and answers `"released"`.
-//! - `discard` takes `{root, key}` and answers `"discarded"`.
-//! - `inspect` takes `{root, key}` and answers `{"workspace": {urls, dirs}}`
-//!   or `"none"`.
-//!
-//! Anything else is `{"unknown": {why}}`: the request was not answered, and
-//! the caller concludes nothing from it.
-
 use std::io::Read;
 use std::path::PathBuf;
 
@@ -91,8 +77,6 @@ fn answer(verb: &str, request: &[u8]) -> Value {
 
 fn main() {
     let verb = std::env::args().nth(1).unwrap_or_default();
-    // Each call is one span, `workspace-git VERB`, under the caller's
-    // TRACEPARENT; off unless the OTEL_* variables ask (docs/observability.md).
     let telemetry = otel_env::init(
         "workspace-git",
         env!("CARGO_PKG_VERSION"),
@@ -119,9 +103,6 @@ fn main() {
         }
         out
     };
-    // The answer first: its caller waits for this process to exit, and
-    // the flush below is bounded far inside that caller's deadline, so a
-    // stalled collector never turns an answer into a timeout.
     println!("{out}");
     let _ = std::io::Write::flush(&mut std::io::stdout());
     telemetry.shutdown_within(otel_env::CALL_SHUTDOWN_BOUND);

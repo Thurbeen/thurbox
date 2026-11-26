@@ -1,20 +1,3 @@
-//! Implementations of the runtime contract ([`fleet_api::runtime::Runtime`]).
-//!
-//! - [`ExecRuntime`]: any program speaking the runtime protocol
-//!   (docs/runtime/README.md), `runtime-mux` by default, chosen per host.
-//! - [`FakeRuntime`]: a file-backed fake host for tests and local trials. It
-//!   keeps sessions and workspaces as records, not processes or files, and
-//!   runs nothing.
-//! - [`FileSignals`]: the signal port's adapter, one file per session on
-//!   this machine.
-//! - [`events`]: a session's outbox, which `fleet event publish` appends
-//!   to beside its signal file, and Fleet's reads of it.
-//! - [`assets`]: the plugin files Fleet ships for the harnesses that take
-//!   their hooks as a file, written beside the signal files.
-//! - [`integration`]: the hooks `fleet integration` installs into an agent's
-//!   own config directory, for a harness that takes none at launch.
-//! - [`program`]: where a harness's program would be found on PATH.
-
 pub mod assets;
 pub mod bridge;
 pub mod events;
@@ -30,8 +13,6 @@ pub use exec::{ExecProgram, ExecRuntime};
 pub use fake::{FakeHost, FakeRuntime, FakeSession, FakeWorkspace, Fault};
 pub use signals::FileSignals;
 
-/// Resolve manager-local explicit sources, never an implicit shell. Errors
-/// deliberately omit child output, paths and parser text (all may contain values).
 pub(crate) fn resolve_env_source(
     source: &fleet_api::config::EnvSource,
 ) -> fleet_api::Observation<std::collections::BTreeMap<String, String>> {

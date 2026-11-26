@@ -1,86 +1,38 @@
-//! Remote-host definitions — pure data describing the off-local targets
-//! thurbox can run sessions on: SSH machines and local WSL distros.
-//!
-//! Kept in `host`, the runtime's dependency sink, so the backends here and
-//! thurbox's `git` module (which runs it on the host for remote worktrees)
-//! depend on the same type.
-//!
-//! A WSL distro is modeled as "SSH without the ssh": the only difference from
-//! a remote host is the launch prefix (`wsl.exe -d <distro>` instead of
-//! `ssh <dest>`). tmux, git, the agent, and the worktrees all run *inside* the
-//! distro at native Linux paths, so everything downstream of the launcher is
-//! identical to the SSH path.
-
 use serde::{Deserialize, Serialize};
 
 use super::{Multiplexer, Platform, Route, Via};
 
-/// How thurbox reaches a host: over SSH, or into a local WSL distro.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "lowercase")]
 pub enum HostKind {
-    /// A remote machine reached with `ssh <destination>`.
     #[default]
     Ssh,
-    /// A local Windows Subsystem for Linux distro reached with
-    /// `wsl.exe -d <distro>`.
     Wsl,
 }
 
-/// A single off-local host: an SSH machine or a local WSL distro.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct HostDef {
-    /// Short, unique name. The backend is registered as `ssh:<name>` or
-    /// `wsl:<name>` depending on [`kind`](Self::kind).
     pub name: String,
-    /// Transport kind: SSH (default) or WSL.
     #[serde(default)]
     pub kind: HostKind,
-    /// SSH destination (e.g. `me@devbox`), resolved via the user's
-    /// `~/.ssh/config`. Required for [`HostKind::Ssh`]; ignored for WSL.
     #[serde(default)]
     pub destination: String,
-    /// WSL distro name (e.g. `Ubuntu`). Defaults to [`name`](Self::name) when
-    /// unset. Ignored for [`HostKind::Ssh`].
     #[serde(default)]
     pub distro: Option<String>,
-    /// Optional override for the host's `tmux -L` socket name. Defaults to the
-    /// same socket thurbox uses locally.
     #[serde(default)]
     pub socket: Option<String>,
-    /// Optional override for the host's tmux session name.
     #[serde(default)]
     pub session: Option<String>,
-    /// Extra `ssh` flags inserted before the destination (e.g.
-    /// `["-o", "ControlMaster=auto"]`). SSH-only.
     #[serde(default)]
     pub ssh_opts: Vec<String>,
-    /// Optional absolute directory (inside the host / distro) under which git
-    /// worktrees are created. When unset, the host's
-    /// `$HOME/.local/share/thurbox/worktrees` is resolved at spawn time.
     #[serde(default)]
     pub worktrees_dir: Option<String>,
-    /// Optional multiplexer binary on the host. Defaults to `tmux` (the WSL
-    /// distro and a Unix SSH host both run `tmux`); set to `psmux` for a
-    /// Windows SSH host (psmux speaks the same control-mode wire protocol).
     #[serde(default)]
     pub multiplexer: Option<String>,
-    /// The host's operating system: `"posix"` or `"windows"`. Independent of
-    /// [`multiplexer`](Self::multiplexer) and of [`kind`](Self::kind); read
-    /// through [`platform`](Self::platform), which settles an entry that
-    /// leaves it unset.
     #[serde(default)]
     pub platform: Option<Platform>,
-    /// Whether the host may run a thurbox of its own (`true`, the default). It
-    /// matters only when `socket` is unset: `false` lets this build's default
-    /// socket name the host's server (`instance::known_host_socket`), and
-    /// `true` needs the socket set or learned.
     #[serde(default = "default_share_sessions")]
     pub share_sessions: bool,
-    /// Directories put in front of the agent's `PATH` on the host, ahead of
-    /// the login-shell `PATH` thurbox reads there (`host_path`). For a
-    /// host whose login shell cannot be run non-interactively. Absolute or
-    /// `~`-rooted; anything else is ignored.
     #[serde(default)]
     pub path_prepend: Vec<String>,
 }
@@ -89,9 +41,6 @@ fn default_share_sessions() -> bool {
     true
 }
 
-// By hand rather than derived: a derived `Default` would make `share_sessions`
-// `false`, and every `HostDef { name, .. Default::default() }` — the tests, the
-// WSL constructor — would silently opt its host out of sharing.
 impl Default for HostDef {
     fn default() -> Self {
         Self {
@@ -112,7 +61,6 @@ impl Default for HostDef {
 }
 
 impl HostDef {
-    /// Construct an auto-discovered WSL host for `distro` with all defaults.
     pub fn wsl(distro: impl Into<String>) -> Self {
         let distro = distro.into();
         Self {
@@ -124,25 +72,18 @@ impl HostDef {
         }
     }
 
-    /// Whether the host may run a thurbox of its own
-    /// ([`share_sessions`](Self::share_sessions)).
     pub fn shareable(&self) -> bool {
         self.share_sessions
     }
 
-    /// Whether this host is a WSL distro.
     pub fn is_wsl(&self) -> bool {
         self.kind == HostKind::Wsl
     }
 
-    /// The WSL distro name (the explicit `distro` field, else the host `name`).
-    /// Only meaningful for [`HostKind::Wsl`].
     pub fn distro_name(&self) -> String {
         self.distro.clone().unwrap_or_else(|| self.name.clone())
     }
 
-    /// The host key this machine goes by, multiplexer unsaid: `ssh:<name>`
-    /// or `wsl:<name>`, what the host picker carries.
     pub fn backend_name(&self) -> String {
         format!("{}{}", self.via().prefix(), self.name)
     }
@@ -155,8 +96,6 @@ impl HostDef {
         }
     }
 
-    /// A short detail string for the host picker (the SSH destination, or
-    /// `WSL` for a distro).
     pub fn picker_detail(&self) -> String {
         match self.kind {
             HostKind::Ssh => self.destination.clone(),
@@ -164,32 +103,18 @@ impl HostDef {
         }
     }
 
-    /// The multiplexer this host's entry prefers, when it names one thurbox
-    /// knows.
     pub fn multiplexer(&self) -> Option<Multiplexer> {
         self.multiplexer
             .as_deref()
             .and_then(|name| Multiplexer::parse(name).ok())
     }
 
-    /// The host's multiplexer binary (`tmux` unless overridden).
     pub fn mux(&self) -> String {
         self.multiplexer
             .clone()
             .unwrap_or_else(|| "tmux".to_string())
     }
 
-    /// The host's operating system — what decides its shell and path
-    /// semantics, whichever multiplexer serves it and however it is reached.
-    ///
-    /// A WSL distro is Linux inside, always. Otherwise the entry's own
-    /// [`platform`](Self::platform) field, and for an entry that names none,
-    /// the meaning such an entry has always had: `multiplexer = "psmux"` was
-    /// the declaration that a host is Windows before a platform could be
-    /// written down, so it still is one, and anything else is POSIX. That is a
-    /// reading of old configuration, not a rule: a Windows host on another
-    /// multiplexer says `platform = "windows"`, and nothing reads a platform
-    /// off a route or a multiplexer's name.
     pub fn platform(&self) -> Platform {
         if self.is_wsl() {
             return Platform::Posix;
@@ -200,31 +125,21 @@ impl HostDef {
         })
     }
 
-    /// Whether this host is **native Windows** — no POSIX shell, `\` paths,
-    /// PowerShell rather than `sh` ([`platform`](Self::platform)).
     pub fn is_windows(&self) -> bool {
         self.platform() == Platform::Windows
     }
 
-    /// The route to this host served by `mux`.
     pub fn route(&self, mux: Multiplexer) -> Route {
         Route::remote(self.via(), self.name.clone(), mux)
     }
 
-    /// The route to this host served by its own multiplexer: the one its
-    /// entry names, else tmux.
     pub fn default_route(&self) -> Route {
         self.route(self.multiplexer().unwrap_or(Multiplexer::Tmux))
     }
 }
 
-/// All configured remote hosts, in declaration order.
-///
-/// Unknown fields are tolerated but reported: the loader names every
-/// unrecognized key in a startup warning.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct HostRegistry {
-    /// Config-format version, for future migrations. Currently `1`.
     #[serde(default)]
     pub config_version: Option<u32>,
     #[serde(default)]
@@ -232,29 +147,14 @@ pub struct HostRegistry {
 }
 
 impl HostRegistry {
-    /// Look up a host by its bare name (not the `ssh:` backend name).
     pub fn get(&self, name: &str) -> Option<&HostDef> {
         self.hosts.iter().find(|h| h.name == name)
     }
 
-    /// The host a route runs on — `None` for a local route, or one naming a
-    /// host this registry does not describe. The host comes back exactly as
-    /// configured, whatever multiplexer the route names, so nothing downstream
-    /// reads a platform off a route.
-    ///
-    /// The route's `ssh:`/`wsl:` prefix is **not** checked against the host's
-    /// own [`kind`](HostDef::kind): `ssh:ubuntu` finds a host named `ubuntu`
-    /// even if it is a WSL distro. A name is unique across kinds, so the two
-    /// disagree only for a key written before the host's kind was changed, and
-    /// resolving to the host that now carries that name keeps it reachable.
     pub fn host_of(&self, route: &Route) -> Option<&HostDef> {
         self.get(route.host()?)
     }
 
-    /// Look up a host by any of its spellings: the bare name (`devbox`), the
-    /// host key the host picker carries (`ssh:devbox`), or a route
-    /// (`ssh:devbox:tmux`). A host key names no multiplexer: the host found
-    /// here gives it ([`HostDef::default_route`]).
     pub fn resolve(&self, key: &str) -> Option<&HostDef> {
         match super::route::host_of_key(key) {
             Some(host) => self.get(host),
@@ -262,12 +162,6 @@ impl HostRegistry {
         }
     }
 
-    /// Drop every entry whose name holds a `:`, returning a warning for each.
-    ///
-    /// A route is `ssh:<name>[:<multiplexer>]`, so `box:rmux` as a name would
-    /// be the host `box` on rmux as far as every row is concerned. Refused at
-    /// load rather than disambiguated at each read: a parse that guessed
-    /// would be the silent kind of wrong.
     pub fn refuse_unroutable_names(&mut self) -> Vec<String> {
         let mut warnings = Vec::new();
         self.hosts.retain(|host| {
@@ -284,12 +178,10 @@ impl HostRegistry {
         warnings
     }
 
-    /// All host names in declaration order.
     pub fn names(&self) -> Vec<&str> {
         self.hosts.iter().map(|h| h.name.as_str()).collect()
     }
 
-    /// Whether any remote hosts are configured.
     pub fn is_empty(&self) -> bool {
         self.hosts.is_empty()
     }
@@ -334,9 +226,6 @@ mod tests {
 
     #[test]
     fn resolve_accepts_both_spellings_of_a_host() {
-        // Which spelling a caller holds depends on where it came from, and
-        // resolving only one of them refused every session the new-session flow
-        // tried to create on a host ("Unknown host 'ssh:devbox'").
         let hosts = registry();
         for key in ["devbox", "ssh:devbox"] {
             assert_eq!(
@@ -362,11 +251,6 @@ mod tests {
         }
     }
 
-    /// Which multiplexer a row names says nothing about the OS its host runs:
-    /// with the host's configuration held fixed, resolving the row under every
-    /// multiplexer, qualified or not, leaves the host's platform where the
-    /// configuration put it. Reading the OS off the route would provision a
-    /// Linux box with PowerShell because one row said `psmux`.
     #[test]
     fn a_rows_multiplexer_never_decides_its_hosts_platform() {
         for configured in [
@@ -397,12 +281,6 @@ mod tests {
         }
     }
 
-    /// Every multiplexer, including the prospective rmux and herdr, can be
-    /// named against every kind of host on either OS: route, host OS, the way
-    /// the host is reached and the multiplexer are four choices, and making
-    /// one leaves the other three where they were. Naming a multiplexer here
-    /// is a route identity only — whether anything implements it is the
-    /// registry's answer, and it is not asked here.
     #[test]
     fn route_host_os_launcher_and_multiplexer_are_independent() {
         use super::super::{BackendChoice, Platform};
@@ -450,9 +328,6 @@ mod tests {
         }
     }
 
-    /// This machine can name every multiplexer as well, whichever OS it is
-    /// built for — no multiplexer's route is reserved to one platform: an
-    /// explicit choice never consults the local platform at all.
     #[test]
     fn every_multiplexer_is_a_local_route_on_either_os() {
         use super::super::BackendChoice;
@@ -463,10 +338,6 @@ mod tests {
         }
     }
 
-    /// An entry written before a platform could be declared keeps the meaning
-    /// it always had — `psmux` was the declaration of a Windows host — and a
-    /// declared platform wins over that reading. A WSL distro is Linux inside
-    /// whatever its entry says.
     #[test]
     fn a_legacy_entry_keeps_its_platform_and_a_declared_one_wins() {
         use super::super::Platform;
@@ -495,9 +366,6 @@ mod tests {
 
     #[test]
     fn the_backend_prefix_is_not_checked_against_the_hosts_kind() {
-        // A name is unique across kinds, so the prefix carries no information
-        // the name does not. Asserted so the leniency is a decision, not an
-        // accident.
         let hosts = registry();
         assert_eq!(
             hosts.resolve("ssh:Ubuntu").map(|h| h.kind),
@@ -513,8 +381,6 @@ mod tests {
     fn is_windows_is_declared_by_the_multiplexer_alone() {
         let hosts = registry();
         assert!(hosts.resolve("winbox").expect("winbox").is_windows());
-        // Every other shape is POSIX: the default, an explicit `tmux`, and a
-        // WSL distro (Linux inside, whatever machine hosts it).
         assert!(!hosts.resolve("devbox").expect("devbox").is_windows());
         assert!(!hosts.resolve("Ubuntu").expect("Ubuntu").is_windows());
         let explicit_tmux = HostDef {
@@ -543,10 +409,9 @@ mod tests {
         assert_eq!(h.distro_name(), "Ubuntu");
         assert_eq!(h.backend_name(), "wsl:Ubuntu");
         assert_eq!(h.picker_detail(), "WSL");
-        // WSL distros run `tmux` inside the distro, same as a Unix SSH host.
+        // A WSL distro runs `tmux` inside the distro.
         assert_eq!(h.mux(), "tmux");
 
-        // An SSH host (the default kind) keeps the ssh prefix and is not WSL.
         let ssh = HostDef {
             name: "devbox".into(),
             destination: "me@devbox".into(),
@@ -592,8 +457,6 @@ mod tests {
         assert_eq!(host_of("ssh:nope:tmux"), None);
     }
 
-    /// A host key names no multiplexer: the host entry gives it, so a user
-    /// never types one.
     #[test]
     fn a_host_key_resolves_to_its_hosts_own_multiplexer() {
         let hosts = registry();
@@ -623,7 +486,6 @@ mod tests {
                 ..Default::default()
             }],
         };
-        // The host comes back as configured, whichever route found it.
         let host = registry
             .host_of(&Route::parse("ssh:example:psmux").unwrap())
             .unwrap();

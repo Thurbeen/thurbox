@@ -1,15 +1,3 @@
-//! v2's keymap against v1's, chord for chord.
-//!
-//! v1's defaults are data — `Action::default_chords_for` — so this does not
-//! restate them in a list of its own where it can be avoided: it walks v1's own
-//! table and asks the v2 registry what each chord does. A key v1 hands to the
-//! agent in a focused terminal (`Action::terminal_passthrough`) has to be
-//! handed over here too, or the agent's line editing quietly stops working the
-//! day the pane it belongs to lands.
-//!
-//! The bundled mods are loaded exactly as the binary loads them, so this
-//! fails if a mod drops a chord as readily as if the kernel does.
-
 use std::path::PathBuf;
 
 use ratatui::layout::Rect;
@@ -20,8 +8,6 @@ use thurbox::kernel::registry::{is_ctrl_letter_chord, normalise_chord, Registry,
 use thurbox::kernel::snapshot::{SessionRow, Snapshot};
 use thurbox::kernel::theme::Themes;
 use thurbox::session::SessionState;
-/// v1's keymap tables, compiled into this test crate only — see the module's
-/// own doc for why the oracle lives here rather than in `src/`.
 #[path = "support/v1_keymap.rs"]
 mod v1_keymap;
 
@@ -118,9 +104,6 @@ fn index_of(host: &LuaHost, mod_name: &str) -> usize {
         .unwrap_or_else(|| panic!("no mod named {mod_name}"))
 }
 
-/// Build the keypress a terminal would deliver for a canonical chord.
-/// Draw the confirmation, which answers only what it drew — as it does every
-/// frame in the running interface — then press `y` on it.
 fn confirm_yes(host: &LuaHost) {
     let confirm = index_of(host, "confirm");
     host.render(
@@ -170,20 +153,13 @@ fn fire(host: &LuaHost, chord: &str) {
 
 const GLOBAL_CHORDS: [(&str, &str); 19] = [
     ("ctrl+n", "new_session.open"),
-    // Reassigned deliberately, not reused quietly: v1 spent it on an
-    // automations pane thurbox no longer has. See `CHORDS_AWAITING_THEIR_PANE`,
-    // which it left.
     ("ctrl+p", "palette.open"),
-    // One declaration, three spellings: the kernel folds the encodings a
-    // terminal may deliver `Ctrl+/` as, where v1 bound all three by hand.
+    // Terminals deliver `Ctrl+/` as any of these three encodings.
     ("ctrl+/", "search.open"),
     ("ctrl+7", "search.open"),
     ("ctrl+_", "search.open"),
     ("ctrl+d", "sessions.delete"),
     ("ctrl+o", "sessions.editor"),
-    // Reassigned deliberately, as `ctrl+p` was: v1 held it for a files pane that
-    // exists nowhere now, and `f2`, the other conventional rename key, is still
-    // claimed by the info panel that is maintained out of tree.
     ("ctrl+e", "sessions.rename"),
     ("ctrl+j", "sessions.next"),
     ("ctrl+k", "sessions.previous"),
@@ -192,21 +168,14 @@ const GLOBAL_CHORDS: [(&str, &str); 19] = [
     ("ctrl+g", "help.open"),
     ("ctrl+,", "settings.open"),
     ("f4", "themes.open"),
-    // F-key alternates, which reach a pane from a focused terminal.
     ("f1", "help.open"),
     ("f6", "settings.open"),
     ("f8", "shell.open"),
     ("f9", "sessions.toggle_panel"),
 ];
 
-/// v1 chords with no v2 owner, each named with the pane that would bring it
-/// back. Asserted to be *unbound* — a chord that silently resolved to something
-/// else would be worse than one that does nothing.
-///
-/// `ctrl+p` (the automations pane) and `ctrl+e` (the files pane) were here and
-/// were reassigned on purpose, to the command palette and to renaming a session
-/// (`GLOBAL_CHORDS`): a deliberate, recorded reassignment is the one thing this
-/// list does not forbid.
+const PALETTE_OPENS_FROM_A_FOCUSED_TERMINAL_UNLIKE_V1: &str = "palette.open";
+
 const CHORDS_AWAITING_THEIR_PANE: [(&str, &str); 7] = [
     ("ctrl+w", "tasks"),
     ("ctrl+x", "review"),
@@ -236,9 +205,6 @@ fn every_global_chord_v1_binds_resolves_to_a_v2_action() {
 
 #[test]
 fn a_chord_whose_pane_was_removed_is_unbound_rather_than_reused() {
-    // Re-pointing a freed chord at something else would silently change what a
-    // v1 user's muscle memory does. Better that it does nothing until its pane
-    // returns.
     let host = host();
     let registry = registry(&host);
     for (chord, pane) in CHORDS_AWAITING_THEIR_PANE {
@@ -290,7 +256,6 @@ fn the_session_chords_issue_the_commands_v1_runs() {
         ..Snapshot::default()
     };
     publish(&host, &snapshot);
-    // Rendering is what settles the cursor onto a row, exactly as a frame does.
     host.render(
         index_of(&host, "sessions"),
         RenderContext {
@@ -318,20 +283,14 @@ fn the_session_chords_issue_the_commands_v1_runs() {
     }
 }
 
-/// Chords v1 hands to the agent that v2 does not yet.
-///
 #[test]
 fn the_chords_v1_leaves_to_the_agent_are_marked_and_no_others_are() {
-    // Read out of v1's own tables rather than restated: a chord that stops
-    // being passthrough there must fail here rather than drift.
     let host = host();
     let registry = registry(&host);
     let mut checked = 0;
     for action in Action::all() {
         for chord in action.default_chords_for(false) {
             let chord = normalise_chord(&chord.display());
-            // v1 gates the deferral on the bound chord being a bare
-            // Ctrl+<letter>, so an F-key alternate is never handed over.
             if !is_ctrl_letter_chord(&chord) {
                 continue;
             }
@@ -342,10 +301,7 @@ fn the_chords_v1_leaves_to_the_agent_are_marked_and_no_others_are() {
             else {
                 continue;
             };
-            // The one deliberate divergence: v1 deferred `ctrl+p` (automations) to
-            // the agent, and the palette on the same chord must NOT be — it has
-            // to open from a focused terminal, which is where the user mostly is.
-            if binding.action == "palette.open" {
+            if binding.action == PALETTE_OPENS_FROM_A_FOCUSED_TERMINAL_UNLIKE_V1 {
                 continue;
             }
             assert_eq!(
@@ -357,14 +313,11 @@ fn the_chords_v1_leaves_to_the_agent_are_marked_and_no_others_are() {
             checked += 1;
         }
     }
-    // A mapping that matched nothing would pass vacuously.
     assert!(checked >= 10, "only {checked} chords were compared");
 }
 
 #[test]
 fn a_bare_ctrl_letter_is_the_only_chord_that_defers() {
-    // The gate v1 applies before handing a key to the pty. Anything else — an
-    // F-key alternate, Ctrl+, , Ctrl+/ — reaches thurbox from the terminal too.
     for chord in ["ctrl+d", "ctrl+x", "ctrl+w"] {
         assert!(is_ctrl_letter_chord(chord), "{chord}");
     }
@@ -388,8 +341,6 @@ fn no_mod_claims_a_chord_the_kernel_reserves() {
 
 #[test]
 fn the_bundled_mods_agree_on_who_owns_which_chord() {
-    // Two panes declaring `j` is fine — focus decides. A global chord claimed
-    // twice is not, and the shadowed one would silently never fire.
     let host = host();
     let registry = registry(&host);
     assert!(
@@ -399,11 +350,6 @@ fn the_bundled_mods_agree_on_who_owns_which_chord() {
     );
 }
 
-/// Copy and paste are *bindings*, not literal key arms in the loop.
-///
-/// They were matched ahead of the registry, which meant help listed them under
-/// "Fixed (not rebindable)" and a Mac user could not put copy where a Mac user
-/// reaches for it (issue #1024).
 #[test]
 fn copy_and_paste_resolve_through_the_registry_and_can_be_rebound() {
     use thurbox::kernel::clipboard::{COPY_ACTION, PASTE_ACTION};
@@ -421,9 +367,6 @@ fn copy_and_paste_resolve_through_the_registry_and_can_be_rebound() {
             "{chord} must fire from any pane, as it did when the loop matched it"
         );
     }
-    // Reserved chords are refused; these two are not reserved, which is the
-    // whole difference. Onto `alt+c` rather than an F-key: the free ones are
-    // held for the panes that have not come back (`CHORDS_AWAITING_THEIR_PANE`).
     registry
         .rebind(COPY_ACTION, Some("alt+c"))
         .expect("copy must be rebindable");
@@ -435,15 +378,11 @@ fn copy_and_paste_resolve_through_the_registry_and_can_be_rebound() {
     );
 }
 
-/// The macOS half of the same issue: `Ctrl+C` is spent on interrupt, so copy
-/// lives on `Cmd+C` — a chord that resolved to nothing because the Command
-/// modifier was dropped before any chord was built.
 #[test]
 fn a_cmd_chord_canonicalises_and_resolves() {
     use thurbox::kernel::registry::{canonical_chord, normalise_chord};
 
     assert_eq!(canonical_chord(&press("cmd+c")), "cmd+c");
-    // Both spellings have to agree, or a declared chord never matches its press.
     assert_eq!(normalise_chord("Cmd+C"), canonical_chord(&press("cmd+c")));
     assert_eq!(normalise_chord("super+j"), "cmd+j");
 
@@ -461,7 +400,6 @@ fn a_cmd_chord_canonicalises_and_resolves() {
     );
 }
 
-/// The pane's scrollback keys are declared, so help lists them and they move.
 #[test]
 fn the_agent_panes_page_keys_are_declared_rather_than_hidden_in_on_key() {
     let host = host();
@@ -477,9 +415,6 @@ fn the_agent_panes_page_keys_are_declared_rather_than_hidden_in_on_key() {
 
 #[test]
 fn a_bare_d_deletes_nothing_in_the_session_list() {
-    // Deleting is the one destructive thing a focused list can do, and `d` is a
-    // single unmodified keystroke away from `j`/`k`. `Ctrl+D` (and `Shift+D` for
-    // the worktree with it) are the only ways in.
     let host = host();
     let snapshot = Snapshot {
         sessions: vec![row("fix-osc52")],
@@ -512,7 +447,6 @@ fn a_bare_d_deletes_nothing_in_the_session_list() {
         "and the pane must not delete on it either"
     );
 
-    // The chord that does asks before deleting.
     fire(&host, "ctrl+d");
     assert!(host.drain_commands().is_empty());
     confirm_yes(&host);

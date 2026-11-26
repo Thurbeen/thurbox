@@ -1,6 +1,3 @@
-//! CronTask: a Task created on a schedule, modelled on the Kubernetes
-//! CronJob. The schedule math lives here, pure: every time is an input.
-
 use std::collections::{BTreeMap, BTreeSet};
 
 use serde::{Deserialize, Serialize};
@@ -12,42 +9,28 @@ use crate::plan::{Intent, Receipt};
 
 pub const KIND: &str = "CronTask";
 
-/// The label every Task a CronTask creates carries: the CronTask's name.
 pub const NAME_LABEL: &str = "crontask.fleet.dev/name";
-/// The label every Task a CronTask creates carries: the CronTask's uid, which
-/// tells its Tasks from a namesake's.
 pub const UID_LABEL: &str = "crontask.fleet.dev/uid";
 
-/// Concluded Tasks kept when the spec names no limit.
 pub const DEFAULT_HISTORY_LIMIT: u32 = 3;
-/// The most Concluded Tasks a CronTask may keep.
 pub const MAX_HISTORY_LIMIT: u32 = 100;
-/// Settled effect records kept on the status, newest first.
 pub const EFFECTS_KEPT: usize = 20;
-/// Attempts at one create before the scheduled time is given up.
 pub const MAX_CREATE_ATTEMPTS: u32 = 3;
 
-/// Whether a label is one only CronTaskController sets.
 pub fn is_controller_label(label: &str) -> bool {
     label == NAME_LABEL || label == UID_LABEL
 }
 
-/// What a CronTask asks for.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct CronTaskSpec {
-    /// Five-field cron, or `@hourly`, `@daily`, `@weekly`, `@monthly`,
-    /// `@yearly`; evaluated in UTC.
     pub schedule: String,
     #[serde(default)]
     pub concurrency_policy: ConcurrencyPolicy,
-    /// A scheduled time missed by more than this is skipped.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub starting_deadline_seconds: Option<u64>,
-    /// No new Task while true; the running ones go on.
     #[serde(default)]
     pub suspend: bool,
-    /// Concluded Tasks kept; older ones are deleted.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub history_limit: Option<u32>,
     pub template: TaskTemplate,
@@ -64,25 +47,19 @@ impl CronTaskSpec {
     }
 }
 
-/// What to do when a scheduled time comes while an earlier Task runs.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ConcurrencyPolicy {
-    /// Create the Task anyway.
     Allow,
-    /// Skip the time.
     #[default]
     Forbid,
-    /// Delete the running Tasks, then create the Task.
     Replace,
 }
 
-/// The Task each scheduled time creates.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct TaskTemplate {
     #[serde(default, skip_serializing_if = "TemplateMeta::is_empty")]
     pub metadata: TemplateMeta,
-    /// A Task spec, validated as `fleet apply` validates one.
     pub spec: Value,
 }
 
@@ -106,7 +83,6 @@ pub enum Phase {
     Suspended,
 }
 
-/// The intent and receipt of one of this controller's effects.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct EffectRecord {
@@ -115,18 +91,11 @@ pub struct EffectRecord {
     pub receipt: Option<Receipt>,
     #[serde(default)]
     pub attempts: u32,
-    /// The Task the effect is about.
     pub task: String,
-    /// For a create: the scheduled time it is for.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub scheduled: Option<Millis>,
-    /// For a create: earlier attempts whose outcome was never known, read
-    /// Unknown or never received. Only a Known outcome clears it.
     #[serde(default, skip_serializing_if = "is_zero")]
     pub unknowns: u32,
-    /// For a delete: whether it may delete a Task that is not Concluded
-    /// (Replace). Fixed when the delete is decided and kept on every retry,
-    /// so a history delete never removes a Task a person reopened.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub running: bool,
 }
@@ -136,8 +105,6 @@ fn is_zero(n: &u32) -> bool {
 }
 
 impl EffectRecord {
-    /// How many attempts at this create are in doubt: the earlier ones
-    /// counted in `unknowns`, and the latest when its outcome is not known.
     pub fn doubt(&self) -> u32 {
         let latest = self.attempts > 0
             && matches!(
@@ -148,7 +115,6 @@ impl EffectRecord {
     }
 }
 
-/// CronTask status. CronTaskController owns all of it.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct CronTaskStatus {
@@ -156,34 +122,26 @@ pub struct CronTaskStatus {
     pub phase: Phase,
     #[serde(default)]
     pub observed_generation: u64,
-    /// The scheduled time of the last Task created.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub last_schedule_time: Option<Millis>,
-    /// The last scheduled time decided on: created, skipped or forbidden.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub last_considered: Option<Millis>,
-    /// The next scheduled time, when there is one.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub next_schedule_time: Option<Millis>,
-    /// When the manager looks again.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub not_before: Option<Millis>,
-    /// This CronTask's Tasks that are not Concluded, by name.
     #[serde(default, skip_serializing_if = "BTreeSet::is_empty")]
     pub active: BTreeSet<String>,
-    /// Each create and retire by key: its intent before, its receipt after.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub effects: BTreeMap<String, EffectRecord>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub conditions: Vec<Condition>,
 }
 
-/// A parsed schedule.
 #[derive(Debug, Clone)]
 pub struct Schedule(croner::Cron);
 
 impl Schedule {
-    /// Five fields, or an `@` macro. Seconds and years are refused.
     pub fn parse(text: &str) -> Result<Schedule, String> {
         croner::parser::CronParser::builder()
             .seconds(croner::parser::Seconds::Disallowed)
@@ -193,7 +151,6 @@ impl Schedule {
             .map_err(|e| format!("schedule {text:?}: {e}"))
     }
 
-    /// The latest scheduled time at or before `t`.
     pub fn latest_at_or_before(&self, t: Millis) -> Option<Millis> {
         let at = to_utc(t)?;
         self.0
@@ -202,7 +159,6 @@ impl Schedule {
             .and_then(|d| from_utc(&d))
     }
 
-    /// The first scheduled time after `t`.
     pub fn first_after(&self, t: Millis) -> Option<Millis> {
         let at = to_utc(t)?;
         self.0
@@ -220,18 +176,14 @@ fn from_utc(d: &chrono::DateTime<chrono::Utc>) -> Option<Millis> {
     u64::try_from(d.timestamp_millis()).ok()
 }
 
-/// The name of the Task a CronTask creates for the scheduled time `at`: the
-/// same for every sweep that decides on that time.
 pub fn task_name(cron_task: &str, at: Millis) -> String {
     format!("{cron_task}-{}", at / 60_000)
 }
 
-/// The key a create is recorded under.
 pub fn create_key(at: Millis) -> String {
     format!("create/{}", at / 60_000)
 }
 
-/// The key a retire is recorded under.
 pub fn retire_key(task_uid: &str) -> String {
     format!("retire/{task_uid}")
 }
@@ -240,7 +192,6 @@ pub fn retire_key(task_uid: &str) -> String {
 mod tests {
     use super::*;
 
-    /// 2026-11-16T03:00:00Z, a Monday.
     const MONDAY_3AM: Millis = 1_794_798_000_000;
 
     #[test]

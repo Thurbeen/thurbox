@@ -1,8 +1,3 @@
-//! A minimal in-process OTLP/HTTP collector, for the tests that assert what
-//! thurbox exports: it records every POST and answers with whatever status the
-//! test last set, so a test can make it refuse an export.
-//!
-//! Each test file that includes it uses a different part of it.
 #![allow(dead_code)]
 
 use std::io::{BufRead, BufReader, Read, Write};
@@ -14,7 +9,6 @@ use opentelemetry_proto::tonic::collector::logs::v1::ExportLogsServiceRequest;
 use opentelemetry_proto::tonic::logs::v1::LogRecord;
 use prost::Message;
 
-/// One request the receiver took: the path it was posted to and its body.
 pub type Request = (String, Vec<u8>);
 
 pub struct Collector {
@@ -51,13 +45,11 @@ impl Collector {
         self.status.store(status, Ordering::SeqCst);
     }
 
-    /// Everything received since the last call.
     pub fn take(&self) -> Vec<Request> {
         std::mem::take(&mut *self.requests.lock().unwrap())
     }
 }
 
-/// Answer HTTP/1.1 requests on one connection until the client closes it.
 fn serve(stream: TcpStream, seen: &Mutex<Vec<Request>>, answer: &AtomicU16) {
     let mut reader = BufReader::new(stream.try_clone().expect("clone the stream"));
     let mut writer = stream;
@@ -100,7 +92,6 @@ fn serve(stream: TcpStream, seen: &Mutex<Vec<Request>>, answer: &AtomicU16) {
     }
 }
 
-/// Every log record in the `/v1/logs` requests among `requests`.
 pub fn logs(requests: &[Request]) -> Vec<LogRecord> {
     requests
         .iter()
@@ -115,8 +106,6 @@ pub fn logs(requests: &[Request]) -> Vec<LogRecord> {
         .collect()
 }
 
-/// The string attributes of each resource in the `/v1/logs` requests among
-/// `requests`.
 pub fn log_resources(requests: &[Request]) -> Vec<Attributes> {
     requests
         .iter()
@@ -130,8 +119,6 @@ pub fn log_resources(requests: &[Request]) -> Vec<Attributes> {
         .collect()
 }
 
-/// The string attributes of each resource in the `/v1/traces` requests among
-/// `requests`, with the names of the spans under it.
 pub fn trace_resources(requests: &[Request]) -> Vec<(Attributes, Vec<String>)> {
     use opentelemetry_proto::tonic::collector::trace::v1::ExportTraceServiceRequest;
     requests
@@ -169,8 +156,6 @@ fn strings(resource: Option<opentelemetry_proto::tonic::resource::v1::Resource>)
         .collect()
 }
 
-/// One exported span: its ids as hex, its string attributes and its
-/// resource's `service.name`.
 #[derive(Debug, Clone)]
 pub struct Span {
     pub service: String,
@@ -181,7 +166,6 @@ pub struct Span {
     pub attrs: std::collections::BTreeMap<String, String>,
 }
 
-/// Every span in the `/v1/traces` requests among `requests`.
 pub fn spans(requests: &[Request]) -> Vec<Span> {
     use opentelemetry_proto::tonic::collector::trace::v1::ExportTraceServiceRequest;
     use opentelemetry_proto::tonic::common::v1::{any_value::Value, KeyValue};

@@ -1,13 +1,3 @@
-//! The examples in `docs/fleet/resources/` and the example plugin in
-//! `examples/fleet/plugin/` do what the documentation says.
-//!
-//! Each resource page has an `## Example` section. Every JSON block in it is
-//! applied, as written, to a Fleet configured as the pages assume: a GitLab
-//! host, a Slack account and the example plugin. The Listener page's
-//! manifest is the one `apply` refuses, and the page says so.
-//!
-//! The plugin is a Python program, so this file runs where `python3` is on
-//! PATH: the Linux and macOS jobs.
 #![cfg(unix)]
 
 mod support;
@@ -22,8 +12,6 @@ const PLUGIN: &str = concat!(
     "/../../examples/fleet/plugin/files.py"
 );
 
-/// An environment with the example plugin registered, its files under
-/// `root/files`.
 fn plugin_env(name: &str) -> Env {
     let env = Env::new(name);
     let files = env.root.join("files");
@@ -37,7 +25,6 @@ fn plugin_env(name: &str) -> Env {
     env
 }
 
-/// The JSON blocks of a page's `## Example` section.
 fn examples(page: &str) -> Vec<Value> {
     let section = page
         .split("\n## Example\n")
@@ -98,15 +85,6 @@ fn every_resource_example_applies_as_written() {
     env.apply(listener[0].clone())
         .code(1)
         .stderr_has("created by the manager");
-
-    // This test stops at apply for the ChangeRequest and the Conversation:
-    // reconciling them reads gitlab.example.com through `glab` and Slack
-    // through `curl`, which a test must not reach. The fake forge and the
-    // fake platform take other URL and address shapes than the pages show;
-    // e2e_forge and e2e_gateway reconcile those kinds against the fakes.
-    // The Task, TaskConfig and EnvProvider examples settle in
-    // `the_task_examples_settle_under_the_fake_runtime`, and the plugin
-    // kind's in the plugin tests below.
 }
 
 #[test]
@@ -124,12 +102,7 @@ fn the_task_examples_settle_under_the_fake_runtime() {
     let report = env.reconcile().ok().json();
     assert_eq!(report["errors"], json!([]));
 
-    // The dispatched Task is spawned and briefed on `local`.
     assert_eq!(env.status("design-305")["phase"], "Briefed");
-    // The Task that uses the TaskConfig is not dispatched: it waits. When it
-    // is, its EnvProvider's file source, /work/config/agent-env.json, is
-    // read on the manager, and a test cannot create that path; the
-    // resolution itself is held by e2e_task_config.
     assert_eq!(env.status("review")["phase"], "Pending");
     for (kind, name) in [("taskconfig", "reviewer"), ("envprovider", "project-env")] {
         assert!(
@@ -138,7 +111,6 @@ fn the_task_examples_settle_under_the_fake_runtime() {
         );
     }
 
-    // The worker's answer concludes it.
     env.fleet(&[
         "result",
         "design-305",
@@ -183,8 +155,6 @@ fn the_example_plugin_writes_its_file_and_reports_ready() {
     assert_eq!(st["phase"], "Ready", "{st:#}");
     assert_eq!(st["observedGeneration"], 1);
 
-    // The file drifts after Ready: the next pass writes it again, under a
-    // new key, since the first one already has its receipt.
     fs::remove_file(&file).expect("drift");
     env.expire_wait_of("File", "hello");
     env.reconcile().ok();
@@ -215,8 +185,6 @@ fn the_example_plugin_writes_its_file_and_reports_ready() {
 #[test]
 fn the_example_plugin_retries_a_failed_write() {
     let env = plugin_env("doc-plugin-retry");
-    // A read-only directory: the plugin reads that the file is absent, and
-    // the first write fails.
     let dir = env.root.join("files");
     let blocked = dir.join("hello.txt");
     fs::set_permissions(&dir, fs::Permissions::from_mode(0o555)).expect("read-only");
@@ -239,8 +207,6 @@ fn the_example_plugin_retries_a_failed_write() {
         .values()
         .filter(|e| e["receipt"]["outcome"]["failed"].is_object())
         .count();
-    // One bounded run may pass the one-second recheck and try again: each
-    // attempt has its own key and its own failed receipt.
     assert!(failed >= 1, "{st:#}");
 
     fs::set_permissions(&dir, fs::Permissions::from_mode(0o755)).expect("unblock");

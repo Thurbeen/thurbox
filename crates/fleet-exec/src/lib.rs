@@ -1,31 +1,3 @@
-//! The one place fleet starts a process. Every adapter that runs a program
-//! (a runtime program, the gate's tools) goes through [`run`], and `crates/architecture.toml` lets no other crate name
-//! `std::process::Command`.
-//!
-//! What a run promises:
-//!
-//! - **Bounded.** Past its timeout the child is killed with its whole tree:
-//!   on Unix it leads its own process group and the group is killed; on
-//!   Windows it runs in a job object and the job is terminated. A program
-//!   that hangs costs one bound, never the caller, and leaves no grandchild.
-//! - **Killed on unwind.** A caller that panics while the child runs drops
-//!   the guard, which kills the tree the same way.
-//! - **Values off the log.** `Debug` prints the names of `env`, never the
-//!   values.
-//! - **Bounded output.** stdout and stderr are capped; a chatty child cannot
-//!   exhaust memory or block on a full pipe.
-//!
-//! - **Recorded.** Once [`children::record_in`] names a directory, each run
-//!   records its process group there until it returns, so the process
-//!   that takes over a dead holder's lease can stop what it left running.
-//!
-//! A child that exits normally keeps anything it detached (a multiplexer
-//! server it started in a new session): only a timeout or an unwind kills.
-//!
-//! [`pty`] is the one unbounded start: a command a bridge keeps on a
-//! pseudo-terminal for as long as its view stays, killed when its handle
-//! is dropped.
-
 use std::ffi::OsString;
 use std::fmt;
 use std::io::{Read, Write};
@@ -39,20 +11,15 @@ use process_wrap::std::{ChildWrapper, CommandWrap};
 
 pub mod children;
 
-/// The most of each stream a run keeps.
 pub const OUTPUT_CAP: usize = 16 * 1024 * 1024;
 
 #[derive(Clone, Default)]
 pub struct Spec {
-    /// Clear inherited environment before injecting declared variables.
     pub clear_env: bool,
-    /// Kill the process tree when either output stream exceeds this bound.
     pub output_limit: Option<usize>,
     pub program: OsString,
     pub args: Vec<OsString>,
-    /// Removed from the inherited environment first.
     pub env_remove: Vec<String>,
-    /// Added to the inherited environment.
     pub env: Vec<(String, String)>,
     pub stdin: Option<Vec<u8>>,
     pub cwd: Option<PathBuf>,
@@ -106,19 +73,18 @@ impl fmt::Debug for Spec {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Outcome {
     Exited {
-        /// `None` when a signal ended it.
         code: Option<i32>,
         stdout: Vec<u8>,
         stderr: Vec<u8>,
     },
-    /// Past the bound; its tree was killed.
-    TimedOut { stdout: Vec<u8>, stderr: Vec<u8> },
-    /// It never started: not found, not executable.
+    TimedOut {
+        stdout: Vec<u8>,
+        stderr: Vec<u8>,
+    },
     NotStarted(String),
 }
 
 impl Outcome {
-    /// The exit code 0, with stdout as text.
     pub fn success_text(&self) -> Option<String> {
         match self {
             Outcome::Exited {
@@ -130,9 +96,6 @@ impl Outcome {
         }
     }
 
-    /// One line about a run that did not succeed, without its output: a
-    /// child's stderr may echo what it was given, so callers decide whether
-    /// to show it.
     pub fn failure(&self) -> String {
         match self {
             Outcome::Exited { code: Some(c), .. } => format!("exited {c}"),
@@ -143,7 +106,6 @@ impl Outcome {
     }
 }
 
-/// Kills the tree unless the child was seen to exit.
 struct Guard {
     child: Box<dyn ChildWrapper>,
     exited: bool,
@@ -198,18 +160,12 @@ fn take(sink: &Sink) -> Vec<u8> {
     std::mem::take(&mut *sink.lock().unwrap_or_else(|e| e.into_inner()))
 }
 
-/// How long the output readers get once the child is gone or killed. A
-/// reader still blocked past it belongs to a process that left the tree;
-/// it is left behind rather than waited on.
 pub const GRACE: Duration = Duration::from_secs(2);
 
-/// The longest a [`run`] with this timeout can take: the bound, the kill,
-/// and the readers' grace on either path.
 pub fn worst_case(timeout: Duration) -> Duration {
     timeout + GRACE * 2
 }
 
-/// Wait for every reader until `until`; true when all finished.
 fn settle(readers: &[thread::JoinHandle<()>], until: Instant) -> bool {
     loop {
         if readers.iter().all(thread::JoinHandle::is_finished) {
@@ -222,8 +178,6 @@ fn settle(readers: &[thread::JoinHandle<()>], until: Instant) -> bool {
     }
 }
 
-/// The one place a child's command line and environment are built: the
-/// environment minus `env_remove`, plus the variables in `env`.
 pub(crate) fn command(spec: &Spec) -> Command {
     let mut cmd = Command::new(&spec.program);
     cmd.args(&spec.args);
@@ -317,8 +271,7 @@ pub fn run(spec: &Spec) -> Outcome {
         };
     };
     guard.exited = true;
-    // A process the child left in its group or job may still hold the
-    // pipes; give the readers until the deadline, then clean up after it.
+    // A grandchild left in the process group or job can hold the pipes open.
     if !settle(&readers, deadline.max(Instant::now() + GRACE)) {
         guard.kill();
         settle(&readers, Instant::now() + GRACE);
@@ -333,13 +286,6 @@ pub fn run(spec: &Spec) -> Outcome {
     }
 }
 
-/// A program on a pseudo-terminal of its own, for a bridge that keeps its
-/// screen: the program sees a terminal, and its size is the bridge's to set.
-/// Its tree is killed when the handle is dropped.
-///
-/// Shared between threads: the terminal and the program are locked apart, so
-/// a resize never waits behind [`Self::wait`], and [`Self::killer`] ends the
-/// program while another thread waits for it.
 pub struct Pty {
     master: Mutex<Box<dyn portable_pty::MasterPty + Send>>,
     child: Mutex<Box<dyn portable_pty::Child + Send + Sync>>,
@@ -352,7 +298,6 @@ impl fmt::Debug for Pty {
     }
 }
 
-/// What ends a [`Pty`]'s program without its lock.
 pub struct PtyKiller(Box<dyn portable_pty::ChildKiller + Send + Sync>);
 
 impl fmt::Debug for PtyKiller {
@@ -362,14 +307,11 @@ impl fmt::Debug for PtyKiller {
 }
 
 impl PtyKiller {
-    /// End the program; one already gone is left alone.
     pub fn kill(&mut self) {
         let _ = self.0.kill();
     }
 }
 
-/// Start `argv` on a new pseudo-terminal of `rows` × `cols`, with this
-/// process's environment.
 pub fn pty(argv: &[String], rows: u16, cols: u16) -> std::io::Result<Pty> {
     let (program, args) = argv
         .split_first()
@@ -403,7 +345,6 @@ fn poisoned<T>(_: T) -> std::io::Error {
 }
 
 impl Pty {
-    /// What the program writes to its terminal.
     pub fn reader(&self) -> std::io::Result<Box<dyn Read + Send>> {
         self.master
             .lock()
@@ -412,7 +353,6 @@ impl Pty {
             .map_err(std::io::Error::other)
     }
 
-    /// What the program reads from its terminal, as typed.
     pub fn writer(&self) -> std::io::Result<Box<dyn Write + Send>> {
         self.master
             .lock()
@@ -434,14 +374,12 @@ impl Pty {
             .map_err(std::io::Error::other)
     }
 
-    /// What ends the program from another thread, even while one waits.
     pub fn killer(&self) -> std::io::Result<PtyKiller> {
         Ok(PtyKiller(
             self.child.lock().map_err(poisoned)?.clone_killer(),
         ))
     }
 
-    /// Wait for the program to exit: its exit code.
     pub fn wait(&self) -> std::io::Result<u32> {
         let status = self.child.lock().map_err(poisoned)?.wait()?;
         self.exited.store(true, std::sync::atomic::Ordering::SeqCst);

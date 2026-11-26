@@ -1,15 +1,3 @@
-//! The Gateway controller's fourth step end to end: what a tied Task
-//! declares for the person (a Question, a Comment) is posted in its
-//! thread, never a Draft or its result, in declaration order, as keyed
-//! effects that never post twice; a post with an unknown outcome is looked
-//! for by its marker, every part of a split included, resent under its
-//! nonce inside the window, and otherwise waits for a person under
-//! `NeedsAttention/PostUnconfirmed`, holding later posts back; recovery
-//! reads that cannot complete are named; a Question from an untied Task
-//! opens a thread tied to it, or abandons it when its opening post cannot
-//! reach the Conversation; an untied Task's other words and a child's words
-//! are never posted, and a child's reach its parent.
-
 mod support;
 
 use fleet_api::gateway::{Author, AuthorKind, Capabilities, ConversationRef, Marker, Message};
@@ -40,8 +28,6 @@ fn person(id: &str, at: u64, text: &str) -> Message {
     }
 }
 
-/// A gateway environment with one mirrored thread and the Task Alex's
-/// mention started there, joined. Returns the environment and the Task.
 fn tied(name: &str) -> (Env, String) {
     let mut env = Env::gateway(name);
     env.set_var("USER", "tester");
@@ -72,8 +58,6 @@ fn tied(name: &str) -> (Env, String) {
     env.reconcile().ok();
     env.reconcile().ok();
     let task = format!("{conv}-1");
-    // The platform's clock reads like Fleet's, as a real one would: a
-    // recovery read asks for what was posted since the intent.
     env.fake_gateway()
         .set_clock(support::now_ms() + 60_000)
         .unwrap();
@@ -101,7 +85,6 @@ fn declare(env: &Env, task: &str, item: Value) {
         .ok();
 }
 
-/// Fleet's posts on the fake platform, the refusals and notices included.
 fn posts(env: &Env) -> Vec<PostRecord> {
     env.fake_gateway().posts().unwrap()
 }
@@ -177,8 +160,6 @@ fn a_tied_tasks_comments_and_questions_are_posted_in_order_and_never_twice() {
         assert_eq!(record["intent"]["action"], "post", "{gw:#}");
         assert_eq!(record["receipt"]["outcome"]["known"]["type"], "posted");
     }
-    // Every later pass posts nothing again, and Fleet's own posts are
-    // never relayed back to the Task.
     let inbox_before = env.get(&task)["status"]["deliveries"]["receipts"]
         .as_array()
         .map_or(0, Vec::len);
@@ -189,7 +170,6 @@ fn a_tied_tasks_comments_and_questions_are_posted_in_order_and_never_twice() {
         .as_array()
         .map_or(0, Vec::len);
     assert_eq!(inbox_before, inbox_after, "Fleet's posts are not relayed");
-    // A Question answered in the thread is recorded on the Task.
     env.receive(
         "Ev02",
         message_event(
@@ -215,8 +195,6 @@ fn a_tied_tasks_comments_and_questions_are_posted_in_order_and_never_twice() {
 fn a_declaration_without_an_id_is_skipped_and_named() {
     let (env, task) = tied("no-id");
     let before = posts(&env).len();
-    // `fleet declare` may refuse an item without an id itself; either way
-    // nothing is posted for it.
     let _ = env.fleet(&[
         "declare",
         &task,
@@ -345,7 +323,6 @@ fn a_question_from_an_untied_task_opens_a_thread_tied_to_it() {
     env.apply(support::task("asker", true)).ok();
     env.reconcile().ok();
     let uid = uid_of(&env, "task", "asker");
-    // A Comment before the Question has nowhere to go and is never posted.
     declare(
         &env,
         "asker",
@@ -383,7 +360,6 @@ fn a_question_from_an_untied_task_opens_a_thread_tied_to_it() {
         "opened"
     );
     assert_condition(&gw, "Tied", "True", "Verified");
-    // The reply reaches the Task and answers the Question.
     env.receive(
         "Ev10",
         message_event(&thread, "r1", ALEX_ID, got[0].at + 5_000, "Yes, go ahead."),
@@ -397,7 +373,6 @@ fn a_question_from_an_untied_task_opens_a_thread_tied_to_it() {
         format!("gateway/{conv}"),
         "{st:#}"
     );
-    // Later words go to the same thread; nothing is opened again.
     declare(
         &env,
         "asker",
@@ -452,7 +427,6 @@ fn a_child_and_an_untied_task_post_nothing() {
     reconcile_clean(&env);
     assert!(posts(&env).is_empty(), "{:#?}", posts(&env));
     assert_eq!(env.fake_gateway().calls("open").unwrap(), 0);
-    // The child's Question reached its parent instead.
     let texts = env
         .host()
         .session(&env.session_key("p"))
@@ -471,10 +445,8 @@ fn a_child_and_an_untied_task_post_nothing() {
     assert_eq!(gw["children"]["c"]["declared"], 1, "read through: {gw:#}");
 }
 
-/// A Comment of twenty characters: three parts under a post limit of eight.
 const LONG: &str = "abcdefghijklmnopqrst";
 
-/// The derived keys of a post split into `total` parts.
 fn part_keys(key: &str, total: usize) -> Vec<String> {
     (1..=total).map(|n| format!("{key}/{n}/{total}")).collect()
 }
@@ -505,7 +477,6 @@ fn a_split_post_is_recovered_only_when_every_part_is_found() {
     let before = posts(&env).len();
     let fake = env.fake_gateway();
     fake.set_post_limit(Some(8)).unwrap();
-    // Every part landed and the answer was lost: found by its parts, once.
     fake.add_fault(GatewayFault::new("post", "lost-applied"))
         .unwrap();
     declare(
@@ -529,8 +500,6 @@ fn a_split_post_is_recovered_only_when_every_part_is_found() {
         "the first part is the post"
     );
     assert!(!attention_open(&gw), "{gw:#}");
-    // One part of three landed: Fleet can neither finish nor repeat it, so
-    // a person decides, and the next post waits.
     fake.add_fault(GatewayFault::new("post", "lost-partly"))
         .unwrap();
     declare(
@@ -601,7 +570,6 @@ fn on_a_nonce_platform_an_unknown_post_is_resent_under_its_key_and_a_split_is_fi
         "the platform returned the post that landed"
     );
     assert!(!attention_open(&gw), "{gw:#}");
-    // A split that landed in part is finished by the resend: each part once.
     fake.set_post_limit(Some(8)).unwrap();
     fake.add_fault(GatewayFault::new("post", "lost-partly"))
         .unwrap();
@@ -670,9 +638,6 @@ fn a_failed_receive_abandons_the_opened_thread_and_a_later_question_opens_anothe
     env.fake_gateway().set_clock(t_open).unwrap();
     env.apply(support::task("asker", true)).ok();
     env.reconcile().ok();
-    // The thread the open will make is the fake's next post: its record
-    // cannot be read, so Fleet's opening post cannot be added to it, three
-    // times.
     let thread = format!("fake:C0123ABCD:{t_open}");
     let conv = conversation_name(GATEWAY_ACCOUNT, &thread);
     let path = env.object_path("Conversation", &conv);
@@ -694,8 +659,6 @@ fn a_failed_receive_abandons_the_opened_thread_and_a_later_question_opens_anothe
     assert_condition(&gw, "NeedsAttention", "True", "ReceiveFailed");
     assert_eq!(env.fake_gateway().calls("open").unwrap(), 1);
     std::fs::remove_file(&path).unwrap();
-    // Abandoned, the Task acts as untied: a later Question opens another
-    // thread, which ties.
     declare(
         &env,
         "asker",

@@ -1,6 +1,3 @@
-//! Answering "what is here" on this machine: directory listings and
-//! child-repo scans for the creation flow, and repository display names.
-
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
@@ -9,7 +6,6 @@ use std::sync::Mutex;
 use super::git_program;
 use crate::paths;
 
-/// Global cache for repo display names (path → name).
 pub(super) static REPO_NAME_CACHE: std::sync::OnceLock<Mutex<HashMap<PathBuf, String>>> =
     std::sync::OnceLock::new();
 
@@ -17,12 +13,6 @@ pub(super) fn repo_name_cache() -> &'static Mutex<HashMap<PathBuf, String>> {
     REPO_NAME_CACHE.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
-/// Get a short display name for a repo directory.
-///
-/// Tries to extract the repo name from `git remote get-url origin`
-/// (e.g. `github.com/user/thurbox.git` → `"thurbox"`).
-/// Falls back to the directory's file name if no remote is found.
-/// Results are cached globally.
 pub fn repo_display_name(path: &Path) -> Option<String> {
     let cache = repo_name_cache();
     if let Ok(guard) = cache.lock() {
@@ -41,16 +31,11 @@ pub fn repo_display_name(path: &Path) -> Option<String> {
     Some(name)
 }
 
-/// True if `path` is itself a git repo: it contains a `.git` directory OR a
-/// `.git` file (worktree checkouts and submodules use a `.git` file).
 pub fn is_git_repo(path: &Path) -> bool {
     let git = path.join(".git");
     git.is_dir() || git.is_file()
 }
 
-/// Immediate child directories of `parent` that are git repos, sorted by file
-/// name. Hidden (`.`-prefixed) entries are skipped. Returns an empty vec when
-/// `parent` can't be read (missing, permission denied, …).
 pub fn scan_child_repos(parent: &Path) -> Vec<PathBuf> {
     let Ok(entries) = std::fs::read_dir(parent) else {
         return Vec::new();
@@ -71,31 +56,18 @@ pub fn scan_child_repos(parent: &Path) -> Vec<PathBuf> {
     repos
 }
 
-/// Immediate sub-directories of a path, each flagged as a git repo or not —
-/// the repo picker's path-browser payload. `Missing` is "the dir isn't there"
-/// (a user typo, reported inline).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum DirListing {
-    /// The requested directory does not exist on the target filesystem.
     Missing,
-    /// `(name, is_git)` per immediate sub-directory, sorted by name. Hidden
-    /// (`.`-prefixed) entries are included — the picker's filter decides
-    /// their visibility (offered only to a `.`-prefix, like the local
-    /// completer).
     Entries(Vec<(String, bool)>),
 }
 
-/// List the immediate sub-directories of `dir` on this machine, flagging each
-/// as a git repo the way [`is_git_repo`] does. A leading `~` expands against
-/// this machine's home.
 pub fn list_dir_entries(dir: &str) -> DirListing {
     let dir = &paths::expand_tilde(dir);
     if !dir.is_dir() {
         return DirListing::Missing;
     }
     let Ok(entries) = std::fs::read_dir(dir) else {
-        // Exists but unreadable (permissions): an empty listing keeps the
-        // browser usable; the path itself may still be committed.
         return DirListing::Entries(Vec::new());
     };
     let mut names: Vec<(String, bool)> = entries
@@ -112,33 +84,19 @@ pub fn list_dir_entries(dir: &str) -> DirListing {
     DirListing::Entries(names)
 }
 
-/// A repository's branches and the one a new worktree starts from by
-/// default.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Branches {
-    /// The default base: the upstream's default branch as `origin` has it
-    /// (`origin/HEAD`, else `origin/main`, else `origin/master`), else the
-    /// branch checked out, else the first. `None` for a repository with no
-    /// branch yet.
     pub default: Option<String>,
-    /// Every local branch, sorted by name, then every `origin/*` branch.
     pub names: Vec<String>,
-    /// The worktrees the repository already has besides its own checkout,
-    /// in git's order: a session can open one as it is.
     pub worktrees: Vec<Worktree>,
 }
 
-/// A worktree a repository already has: where it is checked out, and its
-/// branch (`None` when its HEAD is detached).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Worktree {
     pub path: String,
     pub branch: Option<String>,
 }
 
-/// The worktrees in `git worktree list --porcelain` output, less the first
-/// record: that one is the repository's own checkout (or, bare, no checkout
-/// at all), which is the repository row itself.
 pub fn parse_worktrees(porcelain: &str) -> Vec<Worktree> {
     porcelain
         .split("\n\n")
@@ -163,24 +121,12 @@ pub fn parse_worktrees(porcelain: &str) -> Vec<Worktree> {
         .collect()
 }
 
-/// Fetch the `origin` of the repository at `repo` on this machine, so its
-/// `refs/remotes/origin/*` and `origin/HEAD` are the upstream's as they are
-/// now. A repository
-/// with no `origin` has nothing to fetch.
-///
-/// Bounded by `deadline`: an ssh `origin` has a connect timeout and
-/// keepalives ([`crate::shell::ssh_appended_opts`]) unless the user configured
-/// their own ssh command, and an http one gives up
-/// when it has moved no bytes for that long, so a host that accepts the
-/// connection and never answers costs the picker `deadline`, not forever.
 pub fn fetch_origin(repo: &str, deadline: std::time::Duration) -> Result<(), String> {
     let repo = paths::expand_tilde(repo);
     if super::run_git_capture(&["remote", "get-url", "origin"], &repo).is_none() {
         return Ok(());
     }
-    // `followRemoteHEAD=always` moves `origin/HEAD` to what the upstream
-    // advertises in the same fetch, so an upstream that changed its default
-    // branch is followed (git 2.48+; an older git ignores it).
+    // `followRemoteHEAD=always` moves `origin/HEAD` to the upstream default (git 2.48+; older git ignores it).
     let mut fetch = super::git_command(
         &repo,
         &[
@@ -191,9 +137,6 @@ pub fn fetch_origin(repo: &str, deadline: std::time::Duration) -> Result<(), Str
             "origin",
         ],
     );
-    // A repository's own ssh command (`core.sshCommand`, `GIT_SSH_COMMAND`,
-    // `GIT_SSH`: a wrapper, a key, a proxy) is kept, so its fetch works as the
-    // user's own does; only one nothing configures gets thurbox's options.
     let own_ssh = std::env::var_os("GIT_SSH_COMMAND").is_some()
         || std::env::var_os("GIT_SSH").is_some()
         || super::run_git_capture(&["config", "--get", "core.sshCommand"], &repo)
@@ -211,16 +154,8 @@ pub fn fetch_origin(repo: &str, deadline: std::time::Duration) -> Result<(), Str
         .map_err(|e| e.to_string().lines().next().unwrap_or_default().to_string())
 }
 
-/// The branches of the repository at `repo` on this machine, as its refs
-/// hold them, or why there are none. [`fetch_origin`] first for the
-/// upstream's current branches.
-///
-/// A `git+file` workspace is a worktree of this checkout, so every branch
-/// listed here, remote-tracking ones included, is one it can start from.
 pub fn branches(repo: &str) -> Result<Branches, BranchesUnread> {
     let repo = paths::expand_tilde(repo);
-    // Whether there is a repository is read from the filesystem, so a `git`
-    // that cannot run, or refuses the repository, never passes for none.
     let bare = repo.join("HEAD").is_file() && repo.join("objects").is_dir();
     if !bare && !repo.ancestors().any(|at| at.join(".git").exists()) {
         return Err(BranchesUnread::NotGit);
@@ -274,16 +209,12 @@ pub fn branches(repo: &str) -> Result<Branches, BranchesUnread> {
     })
 }
 
-/// Why [`branches`] has no answer.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum BranchesUnread {
-    /// The directory is no git repository.
     NotGit,
-    /// It is one, and `git` could not read it: the message says why.
     Failed(String),
 }
 
-/// Parse repo name from the origin remote URL.
 pub(super) fn repo_name_from_remote(path: &Path) -> Option<String> {
     let output = git_program()
         .args(["remote", "get-url", "origin"])
@@ -299,14 +230,7 @@ pub(super) fn repo_name_from_remote(path: &Path) -> Option<String> {
     parse_repo_name_from_url(&url)
 }
 
-/// Extract repo name from a git remote URL.
-///
-/// Handles common formats:
-/// - `git@github.com:user/repo.git` → `"repo"`
-/// - `https://github.com/user/repo.git` → `"repo"`
-/// - `https://github.com/user/repo` → `"repo"`
 pub(super) fn parse_repo_name_from_url(url: &str) -> Option<String> {
-    // Split on the last '/' (HTTPS/SSH with path) or ':' (SSH shorthand).
     let after_sep = if url.contains('/') {
         url.rsplit('/').next()?
     } else {

@@ -1,16 +1,3 @@
-//! What the interface remembers between runs that is no setting a user
-//! writes by hand: the theme last chosen, the editor `Ctrl+O` opens and the
-//! manual order of the session list, kept in `interface.json` beside
-//! `settings.toml`.
-//!
-//! The order is the interface's own: Fleet keeps Tasks, and the order a
-//! person sorted them in is no fact about a Task.
-//!
-//! Plain JSON, rewritten whole and atomically on each change, under a lock
-//! every process takes ([`crate::paths`]'s file lock), so two writers never
-//! lose each other's change. A file that is missing or unreadable is the
-//! defaults: losing a remembered theme is not worth refusing to start over.
-
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use serde::{Deserialize, Serialize};
@@ -19,28 +6,18 @@ use crate::session::settings::EditorMode;
 
 const FILE: &str = "interface.json";
 
-/// Moves on every update this process makes, so a reader of the order (the
-/// snapshot) reads the file again only when it changed.
 static GENERATION: AtomicU64 = AtomicU64::new(0);
 
-/// The remembered values. Every field is optional, so a file written by a
-/// later release with more fields still reads.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct InterfaceState {
-    /// The theme the picker last applied.
     pub theme: Option<String>,
-    /// The editor command (`thurbox-cli editor set`).
     pub editor_command: Option<String>,
-    /// How the editor is launched (`thurbox-cli editor mode`).
     pub editor_mode: EditorMode,
-    /// The session list's manual order: session ids, first on top. A session
-    /// not named sorts after every one that is.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub order: Vec<String>,
 }
 
-/// The state as stored, or the defaults when there is none to read.
 pub fn load() -> InterfaceState {
     super::file::path(FILE)
         .and_then(|path| std::fs::read_to_string(path).ok())
@@ -48,7 +25,6 @@ pub fn load() -> InterfaceState {
         .unwrap_or_default()
 }
 
-/// Apply `change` to the stored state and write it back.
 pub fn update(change: impl FnOnce(&mut InterfaceState)) -> std::io::Result<()> {
     let path = super::file::path(FILE).ok_or_else(|| {
         std::io::Error::new(
@@ -66,8 +42,6 @@ pub fn update(change: impl FnOnce(&mut InterfaceState)) -> std::io::Result<()> {
     Ok(())
 }
 
-/// Where this process's updates stand: compare two reads to learn whether
-/// the file changed in between.
 pub fn generation() -> u64 {
     GENERATION.load(Ordering::Relaxed)
 }
@@ -88,8 +62,6 @@ mod tests {
         assert_eq!(state.editor_command.as_deref(), Some("code --wait"));
     }
 
-    /// Writers that interleave their read-change-write each keep their
-    /// change: every thread's entry is in the file at the end.
     #[test]
     fn interleaved_writers_lose_no_update() {
         let dir = tempfile::tempdir().unwrap();

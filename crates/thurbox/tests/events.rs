@@ -1,12 +1,3 @@
-//! Mod events, through the real kernel: a mod declares what it listens
-//! for, the kernel derives what changed and hands each subscriber one call per
-//! change, and a handler that fails costs only itself.
-//!
-//! What lives in the loop — the dispatch point, the cascade bound, focus and
-//! command events, the reload — is the binary's and is asserted by its unit
-//! tests and the design; this file covers the kernel's half, which is the half
-//! a mod author can observe.
-
 use std::path::PathBuf;
 
 use thurbox::kernel::command::Command;
@@ -132,7 +123,6 @@ fn a_declared_subscription_fires_once_with_its_payload() {
         host.shared_string("last").as_deref(),
         Some("session.status s1 idle>blocked")
     );
-    // Once: a second dispatch of a different event is not a second call.
     host.dispatch_event(&Event::new("session.created").with("session", Some("s2")));
     assert_eq!(
         host.shared_string("last").as_deref(),
@@ -208,12 +198,10 @@ fn one_subscriber_throwing_costs_neither_the_others_nor_its_own_pane() {
         "the failure names the event and the plugin's own message: {}",
         failures[0].message
     );
-    // The second subscriber still ran.
     assert_eq!(
         host.shared_string("last").as_deref(),
         Some("session.status s1 idle>blocked")
     );
-    // And the thrower's pane still renders on the next frame.
     let rendered = host
         .render(
             host.index_of("thrower").expect("loaded"),
@@ -369,9 +357,6 @@ fn emit_is_reachable_only_through_command() {
 
 #[test]
 fn what_the_deriver_says_changed_is_what_a_subscriber_hears() {
-    // The kernel's half of "a session created by another process": the row
-    // appears in a snapshot, and every subscriber hears `session.created` once —
-    // whoever wrote it.
     let (_dir, host) = host_of(&[(
         "10_watcher.lua",
         r#"return {
@@ -405,7 +390,6 @@ fn what_the_deriver_says_changed_is_what_a_subscriber_hears() {
         host.shared_string("log").as_deref(),
         Some("session.created:b;session.status:a;")
     );
-    // Same version again: nothing is re-delivered.
     for event in deriver.observe(&second, 2) {
         host.dispatch_event(&event);
     }

@@ -1,15 +1,3 @@
-//! Turning a mod off without losing it.
-//!
-//! The state that was missing is the one people want most: a mod present,
-//! intact, and not loaded. Without it, the only key that read like "not right
-//! now" deleted the file — and for a mod the user wrote there is no embedded
-//! copy to restore, so the work was simply gone.
-//!
-//! What is asserted here is that disabling is *absence*, not a half-loaded
-//! in-between. Every one of these is a consequence of the same decision — a
-//! disabled file is not read — so they would all break together, which is
-//! exactly why they are worth pinning separately.
-
 use std::collections::HashSet;
 
 #[cfg(unix)]
@@ -20,8 +8,6 @@ use thurbox::kernel::host::LuaHost;
 use thurbox::kernel::inventory::{self, State, Trust};
 use thurbox::kernel::registry::Registry;
 
-/// A pane that declares a key, a setting and a slot, so its absence is testable
-/// from several directions at once.
 fn pane(name: &str) -> String {
     format!(
         r#"return {{
@@ -85,8 +71,6 @@ fn turning_it_back_on_needs_nothing_restored() {
 
 #[test]
 fn a_disabled_mod_declares_nothing() {
-    // Its key is free, its setting is not offered, its slot is released. All one
-    // consequence of not being read.
     let (_home, ui) = interface(&[("90_mine.lua", pane("mine"))]);
 
     let on = loaded(&ui, &[]);
@@ -137,8 +121,6 @@ fn a_freed_key_can_be_claimed_without_a_conflict() {
 
 #[test]
 fn a_mod_that_would_fail_to_load_does_not_while_it_is_off() {
-    // The recovery case: a bad file you can switch off, rather than one you must
-    // delete to get the interface back.
     let (_home, ui) = interface(&[("90_broken.lua", "this is not lua".to_string())]);
 
     assert!(
@@ -153,9 +135,6 @@ fn a_mod_that_would_fail_to_load_does_not_while_it_is_off() {
 
 #[test]
 fn a_disabled_file_reads_as_disabled_rather_than_failed() {
-    // It is not loaded, and the loader must not mistake a deliberate choice for
-    // a fault — `failed` is the reading that turns "I turned this off" into an
-    // alarm.
     let (_home, ui) = interface(&[("90_mine.lua", pane("mine"))]);
     let host = loaded(&ui, &["mods/90_mine.lua"]);
 
@@ -181,9 +160,6 @@ fn the_decision_is_per_file_and_survives_a_restart() {
     let home = tempfile::tempdir().expect("tempdir");
     std::env::set_var("THURBOX_CONFIG_DIR", home.path());
 
-    // Loaded, not default: only a registry that read its files writes them back,
-    // which is what keeps a test from erasing the config directory it inherited
-    // (`registry::Origin`). The loop's registry is a loaded one.
     let mut registry = Registry::load();
     registry
         .set_disabled("/ui/mods/mine.lua", true)
@@ -203,7 +179,6 @@ fn the_decision_is_per_file_and_survives_a_restart() {
         .set_disabled("/ui/mods/mine.lua", false)
         .expect("enable");
     assert!(!registry.is_disabled("/ui/mods/mine.lua"));
-    // Asking for a state it is already in is not an error.
     registry
         .set_disabled("/ui/mods/mine.lua", false)
         .expect("idempotent");
@@ -355,8 +330,6 @@ fn decisions_save_beyond_windows_max_path() {
 
 #[test]
 fn disabling_is_not_recorded_as_a_removal() {
-    // A disabled bundled file is still one delivery should keep up to date, so
-    // the delivery manifest must not learn about a user preference.
     let home = tempfile::tempdir().expect("tempdir");
     std::env::set_var("THURBOX_CONFIG_DIR", home.path());
     let ui = home.path().join("ui");

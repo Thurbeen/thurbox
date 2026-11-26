@@ -1,10 +1,6 @@
-//! Persisted proptest seeds still name live source files.
-
 use std::fs;
 use std::path::Path;
 
-/// Every persisted proptest seed still names a source file: a moved source
-/// silently stops replaying its saved cases.
 #[test]
 fn every_proptest_seed_still_names_a_live_source_file() {
     let root = Path::new(env!("CARGO_MANIFEST_DIR"));

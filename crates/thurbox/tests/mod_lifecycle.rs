@@ -1,13 +1,3 @@
-//! Adding, replacing and removing parts of the interface.
-//!
-//! Every one of these already worked, or nearly did, and none of them was held
-//! by anything: the bundled set changes pane by pane, so "you can drop a file
-//! in" is exactly the kind of promise that regresses without anyone noticing
-//! until a user's mod stops loading.
-//!
-//! The interface is built in a temporary directory the same way the binary
-//! builds the user's, so these exercise delivery and loading together.
-
 use std::collections::{BTreeMap, HashSet};
 use std::fs;
 use std::path::Path;
@@ -60,9 +50,6 @@ fn sources(dir: &Path) -> BTreeMap<String, Source> {
 
 #[test]
 fn the_inventory_view_draws_what_the_kernel_computed() {
-    // The view of the interface's own files is a tab of the settings modal, not
-    // a pane, so this drives it the way the loop does: build the rows, hand them
-    // to the modal, and read the cells it painted.
     let dir = interface();
     let host = loaded(dir.path());
     let rows = inventory::rows(
@@ -76,7 +63,6 @@ fn the_inventory_view_draws_what_the_kernel_computed() {
     );
 
     let mut modal = thurbox::kernel::modals::settings::SettingsModal::default();
-    // `]` moves to the Interface tab; the settings half is the one that opens.
     modal.on_key(
         &KeyEvent::new(KeyCode::Char(']'), KeyModifiers::NONE),
         &mut Registry::default(),
@@ -109,8 +95,6 @@ fn the_inventory_view_draws_what_the_kernel_computed() {
         "every file is listed: {screen}"
     );
     assert!(
-        // Untouched modules are support files: folded away until `a`, since
-        // nothing about them needs the operator.
         !screen.contains("lib/chrome.lua"),
         "untouched modules wait for `a`: {screen}"
     );
@@ -125,7 +109,6 @@ fn the_inventory_view_draws_what_the_kernel_computed() {
     );
 }
 
-/// Every cell of a rendered frame as one string.
 fn screen_text(backend: &ratatui::backend::TestBackend) -> String {
     backend
         .buffer()
@@ -156,7 +139,6 @@ fn a_pane_is_added_by_adding_a_file() {
         .iter()
         .any(|index| host.mods[*index].name == "mine"));
 
-    // And delivery has no opinion about a file it did not write.
     let report = bundled::materialize(dir.path());
     assert!(report.is_empty(), "{report:?}");
     assert_eq!(sources(dir.path())["mods/50_mine.lua"], Source::User);
@@ -185,12 +167,13 @@ fn a_decorator_and_a_module_are_added_the_same_way() {
         .find(|loaded| loaded.name == "decor")
         .expect("the decorator loads");
     assert_eq!(decor.decorates.as_deref(), Some("sessions"));
-    // It draws into another pane's tree, so it is nobody's slot occupant — the
-    // default slot must not make it compete with the pane it decorates.
-    assert!(!host
-        .in_slot("center")
-        .iter()
-        .any(|index| host.mods[*index].name == "decor"));
+    assert!(
+        !host
+            .in_slot("center")
+            .iter()
+            .any(|index| host.mods[*index].name == "decor"),
+        "a decorator draws into another pane's tree, so it occupies no slot"
+    );
 
     let report = bundled::materialize(dir.path());
     assert!(report.is_empty(), "{report:?}");
@@ -207,7 +190,6 @@ fn a_bundled_pane_is_replaced_by_a_differently_named_file() {
     )
     .expect("write");
 
-    // Delivery runs on every start, and this is the start that used to undo it.
     bundled::materialize(dir.path());
     let host = loaded(dir.path());
 
@@ -225,11 +207,12 @@ fn the_arrangement_decides_which_panes_have_a_rect() {
     let dir = interface();
     fs::write(dir.path().join("mods/52_notes.lua"), pane("notes", "notes")).expect("write");
 
-    // The stock arrangement has no `notes` region, so the pane loads and is
-    // simply not placed — the silent drop this inventory exists to name.
     let host = loaded(dir.path());
     assert!(host.mods.iter().any(|loaded| loaded.slot == "notes"));
-    assert!(!placed(&host, 120, 40).contains("notes"));
+    assert!(
+        !placed(&host, 120, 40).contains("notes"),
+        "the stock arrangement has no `notes` region"
+    );
 
     let rows = inventory::rows(
         &host.mods,
@@ -246,7 +229,6 @@ fn the_arrangement_decides_which_panes_have_a_rect() {
         .expect("listed");
     assert_eq!(notes.state, State::Unplaced);
 
-    // Give it a region and it has one.
     fs::write(
         dir.path().join("layout.lua"),
         "return function()\n\
@@ -272,7 +254,6 @@ fn removing_every_pane_is_an_empty_interface_rather_than_a_fault() {
     assert!(host.mods.is_empty(), "{:?}", host.error);
     assert!(host.error.is_none());
 
-    // And every one of them is still listed, so they can be brought back.
     let rows = inventory::rows(
         &host.mods,
         &sources(dir.path()),
@@ -282,17 +263,15 @@ fn removing_every_pane_is_an_empty_interface_rather_than_a_fault() {
         &|_| inventory::Trust::NotAsked,
         &|_| false,
     );
-    assert!(rows
-        .iter()
-        .any(|row| row.path == "mods/10_sessions.lua" && row.state == State::Removed));
+    assert!(
+        rows.iter()
+            .any(|row| row.path == "mods/10_sessions.lua" && row.state == State::Removed),
+        "a removed pane stays listed so it can be brought back"
+    );
 }
 
 #[test]
 fn the_view_that_lists_the_files_is_not_one_of_them() {
-    // It used to be a pane, and being a pane made it removable — which is a fine
-    // property for a pane and a fatal one for the view you would use to undo a
-    // removal. It is chrome now (`kernel::modals::interface`), so no file in the
-    // interface can take it away.
     let dir = interface();
     let host = loaded(dir.path());
     assert!(
@@ -300,8 +279,6 @@ fn the_view_that_lists_the_files_is_not_one_of_them() {
         "the file list is a settings tab, not a plugin"
     );
 
-    // Removing every pane there is must still leave it reachable, since it is
-    // the only way back from exactly that state.
     for path in ["mods/10_sessions.lua", "mods/20_agent.lua"] {
         bundled::remove(dir.path(), path).expect("remove");
     }
@@ -342,14 +319,10 @@ fn a_broken_interface_loads_again_once_it_is_fixed() {
     let mut host = LuaHost::new(dir.path());
     assert!(host.error.is_some(), "a syntax error must fail the build");
 
-    // What the binary does while it cannot load the user's copy: run the bundled
-    // interface instead, from somewhere else entirely.
     let floor = bundled::fallback_dir().expect("fallback");
     let mut running = LuaHost::new(&floor);
     assert!(running.error.is_none(), "{:?}", running.error);
 
-    // Now the user fixes their file. Reloading from the directory the host was
-    // built from — the floor — can never notice.
     fs::write(&broken, pane("fixed", "center")).expect("fix");
     running.reload();
     assert!(
@@ -357,7 +330,6 @@ fn a_broken_interface_loads_again_once_it_is_fixed() {
         "the floor rebuilds itself; this is why the reload has to be re-pointed"
     );
 
-    // Re-pointed at the authoritative directory, it picks the fix up.
     running.reload_from(dir.path());
     assert!(running.error.is_none(), "{:?}", running.error);
     assert!(
@@ -365,27 +337,17 @@ fn a_broken_interface_loads_again_once_it_is_fixed() {
         "a fixed interface must come back without a restart"
     );
 
-    // And the plain path still works: a host on the user's directory reloads it.
     host.reload();
     assert!(host.error.is_none(), "{:?}", host.error);
 
     let _ = fs::remove_dir_all(&floor);
 }
 
-/// Turning a pane off must not leave its column reserved and empty.
-///
-/// The interface's central promise is that the arrangement closes up around what
-/// is left, and it did not: `ui/layout.lua` gated the session column on the F9
-/// panel toggle alone, which is arrangement state, and knew nothing about the
-/// disabled set, which is delivery state. Disabling `10_sessions.lua` therefore
-/// produced a quarter-width rect with nothing in it — reproduced by a UI review
-/// and visible in the shipped demo recording.
 #[test]
 fn a_disabled_pane_does_not_reserve_its_column() {
     let dir = interface();
     let mut host = loaded(dir.path());
 
-    // Wide enough for the two-column arrangement, so the column is there to lose.
     let before = placed(&host, 150, 40);
     assert!(
         before.contains("sessions"),
@@ -411,7 +373,6 @@ fn a_disabled_pane_does_not_reserve_its_column() {
         "the centre pane is never dropped: {after:?}"
     );
 
-    // The point of not reserving it: the space goes to the pane that is left.
     let full = resolve(
         &host.arrangement(150, 40).expect("arrangement"),
         Rect::new(0, 0, 150, 40),
@@ -427,16 +388,9 @@ fn a_disabled_pane_does_not_reserve_its_column() {
     assert_eq!(center.rect.x, 0, "and starts at the left edge");
 }
 
-/// A float claiming a slot must not make the arrangement reserve one.
-///
-/// A float draws *above* the arrangement, so it never fills a rect carved out of
-/// the screen. Counting one as an occupant would put back exactly the bug this
-/// pair of tests exists for: a reserved column with nothing in it.
 #[test]
 fn a_float_does_not_make_its_slot_count_as_occupied() {
     let dir = interface();
-    // Replace the session list with a FLOAT that claims the same slot, so the
-    // slot is claimed but nothing will ever paint into the column.
     fs::write(
         dir.path().join("mods/10_sessions.lua"),
         "return { name = \"floaty\", slot = \"sessions\", floats = true,\n\
@@ -461,19 +415,11 @@ fn a_float_does_not_make_its_slot_count_as_occupied() {
     );
 }
 
-/// A float that painted nothing must not be reported as being on screen.
-///
-/// The inventory exists to answer "which of these files is drawing", and for the
-/// two floats — the confirmation dialog and the creation wizard — it answered
-/// `on screen` permanently, because `focus::is_drawn` returned true for anything
-/// *allowed* to float rather than for what had floated. Being the screen a user
-/// reaches for when the interface looks wrong, that is the worst place for it.
 #[test]
 fn a_float_drawing_nothing_is_reported_on_demand_rather_than_on_screen() {
     let dir = interface();
     let host = loaded(dir.path());
 
-    // No float painted, which is the state at rest: nothing in `visible`.
     let rows = inventory::rows(
         &host.mods,
         &sources(dir.path()),
@@ -506,8 +452,6 @@ fn a_float_drawing_nothing_is_reported_on_demand_rather_than_on_screen() {
         assert_ne!(state_of(float), State::Visible, "{float}");
     }
 
-    // The distinction is the point: `Hidden` still means a slot held by someone
-    // else or a closed column, which is a different thing from a modal at rest.
     assert!(
         thurbox::kernel::focus::is_drawn(thurbox::kernel::focus::Placement {
             floats: true,
@@ -519,12 +463,6 @@ fn a_float_drawing_nothing_is_reported_on_demand_rather_than_on_screen() {
     );
 }
 
-/// The interface ships its own README, and the inventory accounts for it.
-///
-/// This directory is the working copy an agent is pointed at when someone asks it
-/// to change a pane, and the rules that matter there — four node kinds, asking
-/// every frame being correct, `run` being absent rather than failing — are not
-/// guessable from the Lua beside it.
 #[test]
 fn the_interface_ships_guidance_and_lists_it_as_a_doc() {
     let dir = interface();
@@ -556,21 +494,12 @@ fn the_interface_ships_guidance_and_lists_it_as_a_doc() {
         Source::Bundled,
         "unedited, so delivery owns it and may update it"
     );
-    // Emphatically not `Failed`: it is not a pane that would not load, and the
-    // loader never offers it the chance — it reads `*.lua` only.
     assert_eq!(row.state, State::Present, "prose does not draw");
 
-    // And an edit to it is preserved, like an edit to any other shipped file.
     fs::write(&readme, "# mine\n").expect("edit");
     assert_eq!(sources(dir.path())["README.md"], Source::Edited);
 }
 
-/// The distributed panes load, and the demo arrangement stacks them where it says.
-///
-/// `examples/panes/` is not bundled, so nothing else would notice it rotting: a renamed
-/// snapshot field or a changed `run` signature would leave the files looking fine
-/// and failing the moment somebody installed them. This builds the interface the
-/// install instructions produce and asserts the shape the header diagram promises.
 #[test]
 fn the_demo_examples_load_and_stack_where_the_layout_says() {
     let dir = interface();
@@ -606,7 +535,6 @@ fn the_demo_examples_load_and_stack_where_the_layout_says() {
         "the example declares `run`, so the trust prompt has something to be about"
     );
 
-    // Wide enough for the right stack.
     let wide = resolve(
         &host.arrangement(200, 40).expect("arrangement"),
         Rect::new(0, 0, 200, 40),
@@ -620,13 +548,11 @@ fn the_demo_examples_load_and_stack_where_the_layout_says() {
     let (sessions, center, tasks, top_rect) =
         (rect("sessions"), rect("center"), rect("tasks"), rect("top"));
 
-    // Left to right: sessions, centre, then the stack.
     assert!(sessions.x < center.x, "{sessions:?} {center:?}");
     assert!(
         center.x + center.width <= tasks.x,
         "the stack is to the RIGHT of the centre: {center:?} {tasks:?}"
     );
-    // Stacked: same column, tasks above top, no gap and no overlap.
     assert_eq!(tasks.x, top_rect.x, "one column");
     assert_eq!(tasks.width, top_rect.width, "one width");
     assert_eq!(
@@ -635,7 +561,6 @@ fn the_demo_examples_load_and_stack_where_the_layout_says() {
         "tasks sits directly on top of top: {tasks:?} {top_rect:?}"
     );
 
-    // Too narrow for a legible gauge: the stack goes rather than being squeezed.
     let narrow = resolve(
         &host.arrangement(120, 40).expect("arrangement"),
         Rect::new(0, 0, 120, 40),
@@ -658,7 +583,6 @@ fn the_demo_layout_drops_a_stack_slot_whose_mod_is_missing() {
         dir.path().join("layout.lua"),
     )
     .expect("layout");
-    // Only one of the two, which is the likeliest half-finished state.
     fs::copy(
         root.join("examples/panes/tasks/tasks.lua"),
         dir.path().join("mods/80_tasks.lua"),
@@ -673,8 +597,6 @@ fn the_demo_layout_drops_a_stack_slot_whose_mod_is_missing() {
         "no `top` plugin, so no rect reserved for one: {placed:?}"
     );
 }
-
-// ── strips: a pane that asks for a row needs no edit to `layout.lua` ────────
 
 fn strip_mod(name: &str, slot: &str, extra: &str) -> String {
     format!(
@@ -747,8 +669,6 @@ fn strips_stack_in_load_order_and_default_to_one_row() {
     assert!(first.y < second.y, "load order, top to bottom: {placed:?}");
 }
 
-/// A float draws above the arrangement, so asking for a strip as well is asking
-/// for a reserved row nothing paints into — the bug `ctx.slots` exists to stop.
 #[test]
 fn a_float_is_not_a_strip() {
     let dir = interface();
@@ -765,7 +685,6 @@ fn a_float_is_not_a_strip() {
     );
 }
 
-/// Each pane's rect inside `slot`, split the way the stack draw path splits it.
 fn pane_heights(host: &LuaHost, placed: &[(String, Rect)], slot: &str) -> Vec<u16> {
     let sizes: Vec<_> = host
         .in_slot(slot)
@@ -778,8 +697,6 @@ fn pane_heights(host: &LuaHost, placed: &[(String, Rect)], slot: &str) -> Vec<u1
         .collect()
 }
 
-/// Nothing between the panes and the bars: every row the strips take is one
-/// the panes gave up, and none is left reserved for nothing.
 fn assert_no_blank_rows(placed: &[(String, Rect)], top: &str) {
     let center = rect_of(placed, "center");
     assert_eq!(
@@ -789,9 +706,6 @@ fn assert_no_blank_rows(placed: &[(String, Rect)], top: &str) {
     );
 }
 
-/// Two panes naming one strip slot share one rect. Listing the slot once per
-/// pane placed it once — the first entry wins — and left the second entry's
-/// rows reserved and blank, while the panes split a rect sized for one.
 #[test]
 fn two_strips_sharing_a_stack_slot_get_one_rect_with_both_heights() {
     let dir = interface();
@@ -818,7 +732,6 @@ fn two_strips_sharing_a_stack_slot_get_one_rect_with_both_heights() {
     assert_no_blank_rows(&placed, "ticker");
 }
 
-/// A switch slot shows one pane at a time, so it is as tall as the tallest.
 #[test]
 fn two_strips_sharing_a_switch_slot_get_the_tallest_height() {
     let dir = interface();
@@ -843,8 +756,6 @@ fn two_strips_sharing_a_switch_slot_get_the_tallest_height() {
     assert_no_blank_rows(&placed, "ticker");
 }
 
-/// A strip the user placed by hand keeps that placement, and the loop does not
-/// reserve a second, blank row for it.
 #[test]
 fn a_strip_placed_by_hand_is_not_placed_again_by_the_loop() {
     let dir = interface();
@@ -877,8 +788,6 @@ fn a_strip_placed_by_hand_is_not_placed_again_by_the_loop() {
     );
 }
 
-/// The same, for a placement written AFTER the loop: the loop cannot see it yet
-/// when it runs, so a guard that only looks back still reserves a blank row.
 #[test]
 fn a_strip_placed_by_hand_below_the_loop_is_not_placed_again() {
     let dir = interface();

@@ -1,27 +1,11 @@
-//! Board: a named, append-only log of events that every Task may publish
-//! to and read. The spec bounds the log; the status says which `seq`s it
-//! still holds. The events themselves are not resources: they live in the
-//! store's per-board log, reached only through [`Store::append_events`]
-//! and [`Store::read_events`].
-//!
-//! A Board has no controller. Nobody writes its status through
-//! `update_status`: the store's typed append moves `head` and `oldest` in
-//! the same write that appends the events.
-//!
-//! [`Store::append_events`]: crate::store::Store::append_events
-//! [`Store::read_events`]: crate::store::Store::read_events
-
 use serde::{Deserialize, Serialize};
 
 use crate::meta::Millis;
 
 pub const KIND: &str = "Board";
 
-/// The board `fleet init` ensures, and the one `fleet event` uses by default.
 pub const SHARED: &str = "shared";
 
-/// The board `fleet init` ensures for Fleet's own events: TaskController
-/// publishes `fleet.task.*` to it.
 pub const FLEET: &str = "fleet";
 
 pub const DEFAULT_MAX_AGE_SECONDS: u64 = 7 * 24 * 60 * 60;
@@ -31,9 +15,6 @@ pub const DEFAULT_MAX_DATA_BYTES: u64 = 16 * 1024;
 pub const MAX_COUNT_LIMIT: u64 = 1_000_000;
 pub const MAX_DATA_BYTES_LIMIT: u64 = 1024 * 1024;
 
-/// The most events one log segment holds. Retention drops whole segments,
-/// so a segment is a tenth of `maxCount`, at least one event and at most
-/// this many.
 pub const MAX_SEGMENT_EVENTS: u64 = 1_000;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -41,7 +22,6 @@ pub const MAX_SEGMENT_EVENTS: u64 = 1_000;
 pub struct BoardSpec {
     #[serde(default)]
     pub retention: Retention,
-    /// The most bytes an event's `data` may take, serialized as JSON.
     #[serde(default = "default_max_data_bytes")]
     pub max_data_bytes: u64,
 }
@@ -56,7 +36,6 @@ impl Default for BoardSpec {
 }
 
 impl BoardSpec {
-    /// How many events one segment of this board's log holds.
     pub fn segment_events(&self) -> u64 {
         (self.retention.max_count / 10).clamp(1, MAX_SEGMENT_EVENTS)
     }
@@ -76,11 +55,6 @@ impl BoardSpec {
     }
 }
 
-/// How long the log keeps an event. Retention runs only when someone
-/// publishes, and drops whole segments: a segment goes once all its events
-/// are older than `maxAgeSeconds`, or while the log holds more than
-/// `maxCount` events. Until the next publish, a read can still show older
-/// events.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct Retention {
@@ -117,9 +91,6 @@ fn default_max_data_bytes() -> u64 {
     DEFAULT_MAX_DATA_BYTES
 }
 
-/// Which `seq`s the log holds: `oldest..=head`. `head` is the last `seq`
-/// handed out, 0 before the first event; `oldest` is the first `seq` a
-/// reader can still get, `head + 1` when the log holds none.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct BoardStatus {

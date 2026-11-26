@@ -1,8 +1,3 @@
-//! Agents report their state through `fleet signal`: a stand-in agent's
-//! hook runs `fleet signal` with the file Fleet passed it at start, and the
-//! Task's session state and its pause follow. The real `fleet` binary, its
-//! file store and the fake host, which reports no activity of its own.
-
 mod support;
 
 use serde_json::{Value, json};
@@ -26,7 +21,6 @@ fn setup(name: &str) -> Env {
     env
 }
 
-/// The file Fleet passed the session at start.
 fn signal_file(env: &Env) -> String {
     let session = env
         .host()
@@ -40,8 +34,6 @@ fn signal_file(env: &Env) -> String {
         .expect("FLEET_SIGNAL_FILE in the session's environment")
 }
 
-/// What the agent's hook runs: `fleet signal <args>`, with the session's
-/// environment.
 fn signal(env: &Env, file: &str, args: &[&str]) {
     let mut cmd = env.command(&[&["signal"], args].concat());
     cmd.env("FLEET_SIGNAL_FILE", file);
@@ -66,7 +58,6 @@ fn the_agents_hooks_drive_its_session_state_and_an_idle_one_pauses() {
     env.reconcile().ok();
     assert_eq!(env.status("t1")["phase"], "Briefed");
     let file = signal_file(&env);
-    // Nothing reported yet: the session is present, not idle.
     assert_eq!(session_state(&env), "Running");
 
     signal(&env, &file, &["working"]);
@@ -93,7 +84,6 @@ fn a_signal_file_fleet_cannot_read_concludes_nothing() {
     env.reconcile().ok();
     assert_eq!(session_state(&env), "Idle");
     expire_idle(&env);
-    // The file goes unreadable: a directory where it was.
     std::fs::remove_file(&file).unwrap();
     std::fs::create_dir(&file).unwrap();
     env.reconcile().ok();
@@ -108,8 +98,6 @@ fn a_signal_file_fleet_cannot_read_concludes_nothing() {
 #[test]
 fn a_signal_outside_a_fleet_session_does_nothing() {
     let env = Env::new("signal-outside");
-    // No FLEET_SIGNAL_FILE: a hook installed for every session of the
-    // harness may run where Fleet started nothing.
     env.fleet(&["signal", "idle"]).ok();
     env.fleet(&["signal", "busy"]).code(2);
 }
@@ -125,14 +113,12 @@ fn a_turn_that_ends_with_background_work_is_not_idle_and_never_pauses() {
     env.reconcile().ok();
     assert_eq!(session_state(&env), "Running");
     assert!(env.get("t1")["status"]["idleSince"].is_null());
-    // A cron that will wake it later is work too.
     let cron = json!({"background_tasks": [], "session_crons": [{"id": "k1"}]});
     signal(&env, &file, &["idle", &cron.to_string()]);
     env.reconcile().ok();
     assert_eq!(session_state(&env), "Running");
     assert_eq!(env.calls("pause"), 0);
 
-    // Nothing left in flight: idle.
     let done = json!({"background_tasks": [], "session_crons": []});
     signal(&env, &file, &["idle", &done.to_string()]);
     env.reconcile().ok();
@@ -163,10 +149,6 @@ fn an_interactive_sessions_hooks_drive_its_session_state() {
     assert_eq!(session_state(&env), "Idle");
 }
 
-/// The agent's own report, finer than `sessionState`: `agentState` is
-/// `unknown` until the agent reports, then follows its hooks. `prompt` and
-/// `working` are a turn at work, `blocked` waits on a person (attention),
-/// and `idle` is a finished turn.
 #[test]
 fn an_interactive_sessions_hooks_drive_its_agent_state() {
     let env = Env::new("signal-agent-state");
@@ -195,10 +177,6 @@ fn an_interactive_sessions_hooks_drive_its_agent_state() {
     }
 }
 
-/// Claude Code's `Notification` hook fires for a permission prompt, and also
-/// after 60 s of input idle. Only the first needs a person: an idle
-/// notification leaves an idle agent idle, so it still reads idle and can
-/// still be paused.
 #[test]
 fn an_idle_notification_keeps_an_idle_agent_idle() {
     let env = Env::new("signal-idle-notification");
@@ -234,9 +212,6 @@ fn an_idle_notification_keeps_an_idle_agent_idle() {
     assert_eq!(env.get("t1")["status"]["agentState"], "attention");
 }
 
-/// `fleet signal` reads the payload with the fields of the harness's
-/// profile: `--harness`, else `FLEET_HARNESS`, which Fleet sets at spawn. A
-/// user profile in the config dir names fields no bundled one does.
 #[test]
 fn a_harness_profile_names_the_payload_fields_fleet_signal_reads() {
     let env = Env::new("signal-harness-fields");
@@ -275,7 +250,6 @@ fn a_harness_profile_names_the_payload_fields_fleet_signal_reads() {
     env.reconcile().ok();
     assert_eq!(conversation(&env), "v2");
 
-    // No harness named: the default fields.
     signal(
         &env,
         &file,
@@ -285,7 +259,6 @@ fn a_harness_profile_names_the_payload_fields_fleet_signal_reads() {
     assert_eq!(conversation(&env), "c3");
 }
 
-/// Fleet names the session's harness to its hooks.
 #[test]
 fn a_session_is_started_with_its_harness_named() {
     let env = setup("signal-harness-env");
@@ -301,9 +274,6 @@ fn a_session_is_started_with_its_harness_named() {
     );
 }
 
-/// `fleet signal` reads the profiles from the directory Fleet named at
-/// spawn, not beside the config its own `fleet` would find, and one profile
-/// it cannot parse leaves the others read.
 #[test]
 fn a_hook_reads_the_profiles_fleet_launched_it_with() {
     let env = setup("signal-harness-dir");

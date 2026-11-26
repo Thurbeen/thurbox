@@ -1,16 +1,3 @@
-//! Fleet's own events about a Task, on Board [`FLEET`](crate::board::FLEET):
-//! what TaskController publishes as itself, after the write that caused
-//! each, and its record of what it published (`Task.status.fleetEvents`).
-//!
-//! A phase change queues its event in `pending` in the same write that
-//! changes the phase, so the intent lands with its cause. A declaration and
-//! a result are the worker's writes: an event is owed for each declaration
-//! past `declared`, and for a result whose generation is not `result`. Each
-//! event's key names the Task by its uid, and the event's place in its
-//! series, so a publish that is tried again appends nothing new. The key
-//! leaves the name out, which the `subject` carries: a name of up to 253
-//! characters would push the key past the Board's 256.
-
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
@@ -22,41 +9,26 @@ pub const PHASE: &str = "fleet.task.phase";
 pub const DECLARED: &str = "fleet.task.declared";
 pub const RESULT: &str = "fleet.task.result";
 
-/// The most phase events `pending` holds. A new one past it drops the
-/// oldest, which leaves a gap in the phase keys' numbers.
 pub const MAX_PENDING: usize = 64;
-/// The most characters of a result's summary an event carries.
 pub const MAX_SUMMARY_CHARS: usize = 1024;
-/// The most bytes of a declaration, as JSON, an event carries whole.
 pub const MAX_DECLARATION_BYTES: usize = 4096;
-/// The most characters of a declaration's `kind` an event carries when the
-/// declaration is too large to carry whole.
 pub const MAX_KIND_CHARS: usize = 256;
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct FleetEvents {
-    /// The record follows the Task: set by its first phase change, or by
-    /// the first pass over a Task from before Board `fleet`.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub started: bool,
-    /// Phase events written with their phase change and not appended yet.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub pending: Vec<Publish>,
-    /// Phase changes over the Task's life: the number of the last one's key.
     #[serde(default, skip_serializing_if = "is_zero")]
     pub phases: u64,
-    /// How many of `status.declared` have their event.
     #[serde(default, skip_serializing_if = "is_zero")]
     pub declared: u64,
-    /// The generation of the last result that has its event.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub result: Option<u64>,
-    /// Events Board `fleet` refused, such as when it does not exist, over
-    /// the Task's life. They are not published again.
     #[serde(default, skip_serializing_if = "is_zero")]
     pub skipped: u64,
-    /// The key of the last event skipped, and why.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub last_skipped: Option<String>,
 }
@@ -65,7 +37,6 @@ fn is_zero(n: &u64) -> bool {
     *n == 0
 }
 
-/// `task/<uid>/<series>/<n>`.
 pub fn key(uid: &str, series: &str, n: u64) -> String {
     format!("task/{uid}/{series}/{n}")
 }
@@ -85,7 +56,6 @@ impl FleetEvents {
         *self == FleetEvents::default()
     }
 
-    /// Queue the event of a change from `from` to `to`, for `reason`.
     pub fn queue_phase(
         &mut self,
         task: &str,
@@ -107,15 +77,6 @@ impl FleetEvents {
         }
     }
 
-    /// Every event owed, oldest first: the pending ones, one per
-    /// declaration past `declared`, and one for a result not published
-    /// yet. With them, the record to write once all are appended.
-    ///
-    /// An empty record is a Task from before Board `fleet`: a Task queues
-    /// its first phase change before any brief, and a declaration or a
-    /// result needs a brief. Its past is owed nothing, and the record
-    /// starts, `started` set, at what status holds, even when that is no
-    /// declaration and no result.
     pub fn owed(
         &self,
         task: &str,
@@ -160,7 +121,6 @@ impl FleetEvents {
         (events, next)
     }
 
-    /// Count `publish` as refused, for `why`.
     pub fn skip(&mut self, publish: &Publish, why: &str) {
         self.skipped += 1;
         self.last_skipped = Some(format!(

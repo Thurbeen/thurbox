@@ -1,16 +1,3 @@
-//! The theme picker: the presets plus `themes.toml`, and nothing else.
-//!
-//! Deliberately asymmetric with the other two: there is nothing
-//! a mod could usefully add to a list of palettes, so this modal declares no
-//! extension point at all rather than an unused one.
-//!
-//! The layout is v1's `ui::theme_picker_modal`, kept detail for detail: a
-//! 64 %-wide, content-height frame; the `/` filter line with a right-aligned
-//! `matched/total themes` count; a 45/55 split of rows and preview swatch;
-//! `Dark`/`Light` headers drawn *inside* the row that opens each section, so a
-//! header costs a screen line but never a selection index; the `  theme id:`
-//! line; and hints with right-packed ` Select ` / ` Cancel ` pills.
-
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::style::{Modifier, Style};
@@ -22,27 +9,15 @@ use super::chrome::{self, Chrome, Hits, Pill, Replay};
 use crate::kernel::theme::{ThemeChoice, Themes};
 use crate::theme::ThemePalette;
 
-/// Non-list rows the modal always spends: both borders, the filter line, the
-/// theme-id line, the footer, and one spacer. v1's `CHROME`.
 const CHROME: u16 = 6;
-/// Tallest the modal may grow, as a percent of the screen.
 const MAX_FRAME_PCT: u16 = 85;
-/// Floor, so it stays usable on a very short terminal.
 const MIN_HEIGHT: u16 = 10;
-/// Share of the width the modal takes, centred.
 const WIDTH_PCT: u16 = 64;
-/// Rows of context kept above the selection while scrolling.
 const MAX_MARGIN: u16 = 3;
-/// Blank column kept right of the count so it does not touch the border.
 const RIGHT_GUTTER: usize = 1;
 
-/// A visible row: the choice to draw, plus the section header that precedes it
-/// when it opens one. Keeping the header attached to its row is what lets the
-/// whole list stay indexed in match space.
 struct Row {
-    /// Index into the *matches*, which is what the cursor moves through.
     match_index: usize,
-    /// Index into the full choice list.
     choice_index: usize,
     header: Option<&'static str>,
 }
@@ -55,9 +30,6 @@ fn total_height(rows: &[Row]) -> u16 {
     rows.iter().map(row_height).fold(0u16, u16::saturating_add)
 }
 
-/// Pair each surviving choice with its header. A header is emitted at the first
-/// choice of each `Dark`/`Light` run, so a filter that removes every light
-/// theme removes the `Light` header with it.
 fn build_rows(choices: &[ThemeChoice], matches: &[usize]) -> Vec<Row> {
     let mut rows = Vec::with_capacity(matches.len());
     let mut current: Option<bool> = None;
@@ -74,9 +46,6 @@ fn build_rows(choices: &[ThemeChoice], matches: &[usize]) -> Vec<Row> {
     rows
 }
 
-/// Case-insensitive substring match over a theme's display name *and* its
-/// stable id, so both "rose" and "rose-pine-dawn" find the same entry. v1's
-/// `ThemePickerModal::is_match`.
 fn is_match(choice: &ThemeChoice, needle: &str) -> bool {
     choice.display_name.to_lowercase().contains(needle)
         || choice.name.to_lowercase().contains(needle)
@@ -92,22 +61,11 @@ fn compute_matches(choices: &[ThemeChoice], filter: &str) -> Vec<usize> {
         .collect()
 }
 
-/// v1's `scroll_start`. Row heights vary, so this WALKS rows rather than doing
-/// flat arithmetic: back off far enough to show the margin above the selection,
-/// then pull the top up to fill the pane.
 fn scroll_start(rows: &[Row], selected: usize, height: u16) -> usize {
     if rows.is_empty() {
         return 0;
     }
     let selected = selected.min(rows.len() - 1);
-    // Show the top whenever the top would have fitted. The margin walk below
-    // backs off at most `MAX_MARGIN` rows, which is right for a list scrolled
-    // into its middle and wrong at the start of one: the picker opens on the
-    // active theme, and with `doom` fifth the walk stopped one row short of the
-    // beginning — because the first row carries the `Dark` section header and is
-    // two rows tall. So `Default` and the header that groups everything under it
-    // sat off the top of a pane with twenty-six rows to spare, which read as the
-    // grouping being absent rather than scrolled.
     if total_height(&rows[..=selected]) <= height {
         return 0;
     }
@@ -128,20 +86,10 @@ fn scroll_start(rows: &[Row], selected: usize, height: u16) -> usize {
 
 #[derive(Default)]
 pub struct ThemeModal {
-    /// Cursor within the *matches*, not within the full list.
     selected: usize,
-    /// The open query, or `None` in navigation mode — v1 puts the filter behind
-    /// `/` (a sub-mode, like the file viewer's find) so `j`/`k` keep selecting
-    /// as they do in every other picker.
     filter: Option<String>,
-    /// How many rows the list showed last frame, so `PgUp`/`PgDn` step by
-    /// exactly one screenful.
     page: usize,
-    /// Where the cursor should start: the active theme, resolved once.
     settled: bool,
-    /// The theme that was active when the picker opened, so `Esc` can put it
-    /// back. Every cursor move previews, and a preview is not a choice — v1
-    /// keeps the same value in `ThemePickerModal::original` for the same reason.
     original: Option<String>,
     hits: Hits,
 }
@@ -150,8 +98,6 @@ impl ThemeModal {
     pub fn selected(&self) -> usize {
         self.selected
     }
-    /// Whether keystrokes are being typed into the filter rather than driving
-    /// the list.
     pub fn filtering(&self) -> bool {
         self.filter.is_some()
     }
@@ -160,22 +106,14 @@ impl ThemeModal {
         &self.hits
     }
 
-    /// Take a key. `Some(message)` is reported by the loop; `None` is silent.
-    ///
-    /// Returns `Close` when the modal is done with itself — an `Esc` that had
-    /// no filter to close first.
     pub fn on_key(&mut self, key: &KeyEvent, themes: &mut Themes) -> Outcome {
         let choices = themes.choices();
         self.settle(choices, themes.active_name());
         let matches = compute_matches(choices, self.filter.as_deref().unwrap_or(""));
         let total = matches.len();
 
-        // The theme under the cursor *now*, so a query edit below can carry the
-        // cursor to wherever that theme lands in the new match list.
         let highlighted = matches.get(self.selected).copied();
 
-        // While the filter is open, a bare letter is query text — so the
-        // navigation keys narrow to the ones that cannot be typed.
         if let Some(query) = &mut self.filter {
             let edited = match key.code {
                 KeyCode::Char(c) if !key.modifiers.contains(KeyModifiers::CONTROL) => {
@@ -186,9 +124,6 @@ impl ThemeModal {
                     query.pop();
                     true
                 }
-                // v1 closes the filter first, restoring the full list without
-                // moving the cursor off the theme it was on; a second Esc then
-                // closes the picker.
                 KeyCode::Esc => {
                     self.filter = None;
                     true
@@ -197,9 +132,6 @@ impl ThemeModal {
             };
             if edited {
                 self.keep_highlighted(choices, highlighted);
-                // Narrowing can move the cursor onto a different theme, so the
-                // preview follows it — otherwise the list would highlight one
-                // palette while the screen showed another.
                 self.preview_selected(themes);
                 return Outcome::Stay(None);
             }
@@ -219,8 +151,6 @@ impl ThemeModal {
             KeyCode::Char('g') | KeyCode::Home => self.selected = 0,
             KeyCode::Char('G') | KeyCode::End => self.selected = total.saturating_sub(1),
             KeyCode::Char('/') => {
-                // Idempotent: re-pressing `/` keeps the query rather than
-                // clearing it.
                 self.filter.get_or_insert_with(String::new);
             }
             KeyCode::Enter => {
@@ -231,11 +161,6 @@ impl ThemeModal {
                 else {
                     return Outcome::Stay(None);
                 };
-                // Applied here and stored by the loop in `interface.json`
-                // (`store_chosen_theme`), so a restart keeps it and every
-                // other thurbox process takes it when it next starts.
-                // Chosen, so there is nothing to put back — clearing this is
-                // what stops the close below from reverting the choice.
                 self.original = None;
                 return match themes.select(&name) {
                     Ok(()) => Outcome::Applied(format!("theme: {name}")),
@@ -244,18 +169,10 @@ impl ThemeModal {
             }
             _ => {}
         }
-        // Every arm above either moved the cursor or did nothing, so previewing
-        // here covers all of them — v1 does exactly this at the end of its own
-        // handler rather than repeating the call per key.
         self.preview_selected(themes);
         Outcome::Stay(None)
     }
 
-    /// Apply whatever the cursor points at, without persisting it.
-    ///
-    /// An empty match list leaves the previous preview alone: there is nothing to
-    /// show, and blanking back to the original mid-search would read as the
-    /// picker forgetting what you were looking at.
     pub(super) fn preview_selected(&self, themes: &mut Themes) {
         let choices = themes.choices();
         let matches = compute_matches(choices, self.filter.as_deref().unwrap_or(""));
@@ -266,15 +183,9 @@ impl ThemeModal {
         else {
             return;
         };
-        // A palette that will not resolve is not worth reporting from a preview:
-        // the list only offers names that came from `choices`.
         let _ = themes.preview(&name);
     }
 
-    /// Put back the palette that was active when the picker opened.
-    ///
-    /// Called when the picker closes without a choice. Nothing was persisted, so
-    /// this is the whole of undoing a preview.
     pub fn revert(&mut self, themes: &mut Themes) {
         if let Some(original) = self.original.take() {
             let _ = themes.preview(&original);
@@ -290,26 +201,17 @@ impl ThemeModal {
         self.selected = next.clamp(0, total as isize - 1) as usize;
     }
 
-    /// Start on the theme that is actually in force, so the first `j` moves
-    /// from the highlighted row rather than from row one.
     fn settle(&mut self, choices: &[ThemeChoice], active: &str) {
         if self.settled {
             return;
         }
         self.settled = true;
-        // Captured before any preview can move `active` off it.
         self.original = Some(active.to_string());
         if let Some(index) = choices.iter().position(|choice| choice.name == active) {
             self.selected = index;
         }
     }
 
-    /// Put the cursor back on `highlighted` after a query edit, when that theme
-    /// survived the new filter.
-    ///
-    /// v1's `refilter`, and the reason for it: the cursor indexes *matches*, so
-    /// holding the index across an edit would silently preview — and then apply
-    /// — a different palette than the one that was highlighted.
     fn keep_highlighted(&mut self, choices: &[ThemeChoice], highlighted: Option<usize>) {
         let matches = compute_matches(choices, self.filter.as_deref().unwrap_or(""));
         self.selected = highlighted
@@ -317,9 +219,6 @@ impl ThemeModal {
             .unwrap_or(0);
     }
 
-    /// A click selects the theme row under it — the same act as `j`/`k`, with
-    /// `Enter` still the thing that applies, so a stray click cannot repaint
-    /// the whole interface.
     pub fn on_click(&mut self, x: u16, y: u16) {
         if let Some(index) = self.hits.row_at(x, y) {
             self.selected = index;
@@ -334,8 +233,6 @@ impl ThemeModal {
         self.selected = self.selected.min(matches.len().saturating_sub(1));
         let rows = build_rows(choices, &matches);
 
-        // Grow with the content, but cap at a share of the screen so the
-        // interface around it stays visible; the list scroll-windows inside.
         let desired = total_height(&rows).saturating_add(CHROME).max(MIN_HEIGHT);
         let cap = (area.height * MAX_FRAME_PCT / 100).max(MIN_HEIGHT);
         let height = desired.min(cap).min(area.height);
@@ -348,10 +245,10 @@ impl ThemeModal {
         let chunks = Layout::default()
             .direction(Direction::Vertical)
             .constraints([
-                Constraint::Length(1), // filter query + count
-                Constraint::Min(1),    // rows + preview
-                Constraint::Length(1), // theme id
-                Constraint::Length(1), // hints + buttons
+                Constraint::Length(1),
+                Constraint::Min(1),
+                Constraint::Length(1),
+                Constraint::Length(1),
             ])
             .split(inner);
 
@@ -367,8 +264,6 @@ impl ThemeModal {
             .get(self.selected)
             .and_then(|index| choices.get(*index))
         {
-            // v1's swatch previews the HIGHLIGHTED row, not the active theme,
-            // which is the whole point of a preview.
             if let Some(entry) = themes.entry(&choice.name) {
                 render_preview(frame, columns[1], &entry.palette, chrome);
             }
@@ -381,8 +276,6 @@ impl ThemeModal {
             );
         }
 
-        // The hint is clipped to the space left of the pills, so a narrow modal
-        // elides it rather than painting underneath them.
         let hints: &[(&str, &str)] = if self.filter.is_some() {
             &[
                 ("↑/↓", " navigate  "),
@@ -396,8 +289,6 @@ impl ThemeModal {
                 ("/", " filter"),
             ]
         };
-        // v1's pair, with the keys it replays them as: ` Select ` is `Enter`,
-        // ` Cancel ` the `Esc` the layer above turns into a close.
         self.hits.buttons = chrome::button_bar(
             frame,
             chunks[3],
@@ -431,9 +322,6 @@ impl ThemeModal {
         );
     }
 
-    /// The filter line: the live query or the hint that opens it, with the
-    /// match count right-aligned so a query that narrows to nothing is obvious
-    /// rather than an unexplained empty list.
     fn render_head(
         &self,
         frame: &mut Frame,
@@ -484,8 +372,6 @@ impl ThemeModal {
             self.page = 0;
             return;
         }
-        // Reserved against the full un-windowed height, so the rows column
-        // keeps one width as the window scrolls.
         let (rows_area, track) = chrome::reserve_track(
             area,
             usize::from(total_height(rows)),
@@ -525,12 +411,9 @@ impl ThemeModal {
                 },
             )));
         }
-        // One hitbox per visible row, so its count *is* the page step.
         self.page = self.hits.rows.len();
         frame.render_widget(Paragraph::new(lines), rows_area);
 
-        // The bar tracks ROWS, not lines, so its thumb matches what the cursor
-        // moves through — headers get no stop of their own.
         if let Some(track) = track {
             chrome::scrollbar(
                 frame,
@@ -544,22 +427,13 @@ impl ThemeModal {
     }
 }
 
-/// What a key did to the modal.
 pub enum Outcome {
-    /// Stay open, optionally reporting something.
     Stay(Option<String>),
-    /// A theme was applied; the layer closes the modal so the result is
-    /// visible, as v1's picker does.
     Applied(String),
 }
 
-/// Six lines of 14-column muted labels and their chips, from v1's
-/// `render_preview`. The palette is the highlighted theme's, not the active
-/// one's.
 fn render_preview(frame: &mut Frame, area: Rect, palette: &ThemePalette, chrome: Chrome) {
     use ratatui::style::Color;
-    // Secondary, not muted: these name the swatches beside them, and a label
-    // dimmer than the thing it labels inverts the reading order.
     let label =
         |text: &'static str| Span::styled(text, Style::default().fg(chrome.palette.text_secondary));
     let chip = |text: &'static str, fg: Color, bg: Option<Color>| {
@@ -603,20 +477,12 @@ fn render_preview(frame: &mut Frame, area: Rect, palette: &ThemePalette, chrome:
             space(),
             chip(" - ", palette.diff_removed, Some(palette.diff_removed_bg)),
         ]),
-        // Blocks, like every row above. A hairline `╭─────╮` in the border colour
-        // was close to invisible, and it showed only one of the two border roles.
         Line::from(vec![
             label("  Border      "),
             chip("█████", palette.border_unfocused, None),
             space(),
             chip("█████", palette.border_focused, None),
         ]),
-        // Shown against a CONTRASTING ground, which is the only way this row can
-        // work. It was spaces whose background was `modal_bg`, drawn onto the modal
-        // whose background is `modal_bg` — invisible by construction rather than by
-        // bad luck. Painting it as ink instead is no better: the ink is the same
-        // colour as what is behind it. So the swatch sits on the palette's own text
-        // colour, where a dark ground reads as dark and a light one as light.
         Line::from(vec![
             label("  Modal bg    "),
             chip("█████", palette.modal_bg, Some(palette.text_primary)),
@@ -635,11 +501,6 @@ mod tests {
 
     #[test]
     fn opening_on_an_early_theme_does_not_scroll_the_first_ones_away() {
-        // The picker opens on the ACTIVE theme. `doom` is the fifth preset, and the
-        // first row is two tall because it carries the `Dark` header — so the
-        // margin walk, which backs off at most MAX_MARGIN rows, stopped one row
-        // short of the top and hid `Default` and the header with it. In a pane with
-        // twenty-six rows to spare, that read as the dark grouping not existing.
         let choices = choices();
         let matches: Vec<usize> = (0..choices.len()).collect();
         let rows = build_rows(&choices, &matches);
@@ -657,8 +518,6 @@ mod tests {
             "everything from the top through the selection fits, so show the top"
         );
 
-        // Still scrolls when it has to, and the selection stays inside the window
-        // it chose.
         let last = rows.len() - 1;
         let start = scroll_start(&rows, last, 26);
         assert!(start > 0, "a selection past the pane still scrolls");
@@ -670,8 +529,6 @@ mod tests {
 
     #[test]
     fn an_empty_list_has_somewhere_to_start() {
-        // Reachable with a filter that matches nothing; indexing `rows[..=0]` on an
-        // empty slice would panic.
         assert_eq!(scroll_start(&[], 0, 20), 0);
     }
 
@@ -681,7 +538,6 @@ mod tests {
         let matches: Vec<usize> = (0..choices.len()).collect();
         let rows = build_rows(&choices, &matches);
         let headers: Vec<&str> = rows.iter().filter_map(|row| row.header).collect();
-        // The presets are dark-then-light, so exactly two sections in order.
         assert_eq!(headers, vec!["Dark", "Light"]);
     }
 
@@ -702,7 +558,6 @@ mod tests {
     #[test]
     fn the_filter_matches_a_display_name_and_an_id() {
         let choices = choices();
-        // "Tokyo Night" is the display name; "tokyo-night" the persisted id.
         let by_name = compute_matches(&choices, "Tokyo");
         let by_id = compute_matches(&choices, "tokyo-night");
         assert!(!by_name.is_empty(), "no theme matched a display name");
@@ -748,16 +603,11 @@ mod tests {
             Outcome::Stay(message) => panic!("apply did not happen: {message:?}"),
         }
         assert_eq!(themes.active_name(), wanted);
-        // The loop stores it where v1 persists it, so a restart and every
-        // other process agree.
         assert_eq!(themes.take_chosen(), Some(wanted));
     }
 
     #[test]
     fn an_open_filter_paints_its_own_caret() {
-        // Same decision as the settings edit: the caret is a glyph, so it
-        // survives the modal being drawn over and needs no arbitration with the
-        // panes underneath.
         let palette = crate::theme::ThemePreset::Default.palette();
         let mut themes = Themes::load(None);
         let mut modal = ThemeModal::default();

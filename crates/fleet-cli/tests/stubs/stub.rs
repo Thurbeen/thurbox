@@ -1,19 +1,3 @@
-//! A bounded stand-in for `az`, `curl`, `gh` and `glab`, so the end-to-end
-//! tests drive the real binary against something that behaves like them
-//! without any real forge or chat platform. Copied to a file named `gh` or
-//! `glab` it answers `api …` in that forge's shapes, GraphQL for GitHub and
-//! REST for GitLab, rendered from one forge-neutral model under `changes` in
-//! its state. As `curl` it answers Bitbucket Cloud's API, Slack's Web API
-//! from the model under `slack`, and Discord's REST API from the model under
-//! `discord`. Under any name it also serves as a plugin (`plugin …`), an
-//! environment command (`env-output …`) and a program that hangs (`sleep`).
-//!
-//! Its whole state is one JSON file in `$FLEET_STUB_DIR`, guarded by a lock
-//! file so concurrent fleet processes see one host. Every call is appended to
-//! `calls.jsonl` with its argv and the NAMES of its environment, so a test can
-//! prove what reached a command line. Faults make a call fail, or hang
-//! (leaving a grandchild behind, to prove the caller kills the whole tree).
-
 use std::fs::{self, OpenOptions};
 use std::io::{Read, Write};
 use std::path::PathBuf;
@@ -23,9 +7,6 @@ use std::time::{Duration, Instant};
 
 use serde_json::{Value, json};
 
-/// The state directory: `$FLEET_STUB_DIR`, or the path in the `stub-dir`
-/// file beside the executable, for a copy driven by an adapter under test
-/// in-process, which sets no environment of its own.
 fn dir() -> PathBuf {
     if let Some(d) = std::env::var_os("FLEET_STUB_DIR") {
         return PathBuf::from(d);
@@ -84,15 +65,12 @@ fn log_call(args: &[String]) {
         .create(true)
         .open(dir().join("calls.jsonl"))
         .expect("calls log");
-    // One write per line, so a reader never sees half of one.
     f.write_all(format!("{line}\n").as_bytes()).expect("log");
 }
 
-/// The fault armed for `call`, consumed once.
 fn take_fault(state: &mut Value, call: &str) -> Option<String> {
     let faults = state.get_mut("faults")?.as_array_mut()?;
     let i = faults.iter().position(|f| f["call"] == call)?;
-    // `after: N` lets the first N matching calls through.
     if let Some(after) = faults[i]["after"].as_u64().filter(|n| *n > 0) {
         faults[i]["after"] = json!(after - 1);
         return None;
@@ -107,8 +85,6 @@ fn take_fault(state: &mut Value, call: &str) -> Option<String> {
     Some(mode)
 }
 
-/// Hang like a stuck program: leave a grandchild that would outlive a caller
-/// killing only its direct child, record its pid, and never answer.
 fn hang() -> ! {
     let me = std::env::current_exe().expect("self");
     let child = Command::new(me)
@@ -128,11 +104,6 @@ fn hang() -> ! {
     std::process::exit(9)
 }
 
-/// A service manager, `launchctl` or `schtasks`: the answer under
-/// `service[<first argument>]` in its state, `{code, stdout, writes, text}`,
-/// exit 0 with no output when there is none. A list of answers is consumed
-/// in order, and its last answer stays. `writes` names a file the call
-/// writes `text` to, as a supervisor starting a manager writes its record.
 fn service_manager(args: &[String]) -> ExitCode {
     let answer = {
         let _lock = Lock::take();
@@ -200,18 +171,6 @@ fn main() -> ExitCode {
     }
 }
 
-/// The forge roles: one model, two renderings. A change lives under
-/// `changes["<project>#<id>"]` as
-/// `{state, head, title, checks: [{name, state, url}], reviewDecision,
-/// mergeable, approvedBy, reviews: [{id, author, bot, state, body, head, at,
-/// editedAt}], comments: [{id, author, bot, body, at, editedAt}],
-/// threads: [{id, resolved, path, line, comments: [...]}]}`; `pageSize`
-/// bounds a GitHub page, `login` answers whoami, `noRepo` makes the project
-/// itself absent. A mark-ready (the GitHub mutation, or GitLab's title
-/// update) moves `state` to `open` and records the intent under
-/// `readyIntents`. Faults are armed under the call `gh`, `glab`, `az` or
-/// `curl`: `fail`,
-/// `hang`, `auth`, `rate-limit` (with `retryAfter` seconds) and `malformed`.
 mod forge {
     use std::process::ExitCode;
 
@@ -228,7 +187,7 @@ mod forge {
         let (secs, millis) = (ms / 1000, ms % 1000);
         let days = i64::try_from(secs / 86_400).unwrap_or(0);
         let rem = secs % 86_400;
-        // Civil-from-days, Howard Hinnant's algorithm.
+        // Howard Hinnant's civil-from-days algorithm.
         let z = days + 719_468;
         let era = if z >= 0 { z } else { z - 146_096 } / 146_097;
         let doe = z - era * 146_097;
@@ -264,7 +223,6 @@ mod forge {
         code
     }
 
-    /// Arm and apply the role's fault; `None` means proceed normally.
     fn faulted(
         state: &mut Value,
         lock: Lock,
@@ -322,7 +280,6 @@ mod forge {
         json!({"login": item["author"], "__typename": if item["bot"] == true { "Bot" } else { "User" }})
     }
 
-    /// One page of a connection: cursors are indexes.
     fn page(items: &[Value], after: Option<String>, size: usize) -> (Vec<Value>, Value) {
         let start = after
             .and_then(|c| c.parse::<usize>().ok())
@@ -358,8 +315,6 @@ mod forge {
             return answer(ExitCode::from(1), HEAD, &json!({"data": {"repository": null}, "errors": [{"type": "NOT_FOUND", "path": ["repository"], "message": "Could not resolve to a Repository"}]}).to_string());
         }
         if query.contains("markPullRequestReadyForReview") {
-            // The mutation names the pull request by the id the fresh read
-            // handed out: `PR_<project>#<number>`.
             let id = var(args, "id").unwrap_or_default();
             let Some(key) = id.strip_prefix("PR_") else {
                 return answer(ExitCode::SUCCESS, HEAD, &json!({"data": null, "errors": [{"type": "NOT_FOUND", "message": "Could not resolve to a node"}]}).to_string());
@@ -389,7 +344,6 @@ mod forge {
         let size = usize::try_from(state["pageSize"].as_u64().unwrap_or(100)).unwrap_or(100);
         let head = c["head"].as_str().unwrap_or("").to_string();
         if var(args, "withCore").is_none() {
-            // The fresh read before a mark-ready: id, draft, state and head.
             let state_word = match c["state"].as_str().unwrap_or("open") {
                 "closed" => "CLOSED",
                 "merged" => "MERGED",
@@ -1077,7 +1031,6 @@ mod forge {
     }
 }
 
-/// Protocol fixture: reads only the explicit input directory, never operator state.
 fn plugin(args: &[String]) -> ExitCode {
     let root = PathBuf::from(&args[1]);
     let call = args.last().unwrap();
@@ -1134,28 +1087,6 @@ fn plugin(args: &[String]) -> ExitCode {
     ExitCode::SUCCESS
 }
 
-/// The Slack role of `curl`: the Web API behind the Slack gateway adapter,
-/// from the model under `slack` in the state: `{team, botUser, botId,
-/// botName, clock, pageSize, messages: {"<channel>": [message, …]},
-/// tombstones: [ts, …], postError, postErrorAfter, posts, calls}`. Each message is in
-/// Slack's own shape (`ts`, `user` or `bot_id`, `text`, `thread_ts`,
-/// `metadata`, `subtype`). `conversations.replies` answers a thread's
-/// messages oldest first, paged by `pageSize` or the call's `limit`, with
-/// the parent only when `oldest` does not exclude it, and a tombstone for a
-/// parent under `tombstones`. `conversations.history` answers a channel's
-/// top-level messages newest first. `chat.postMessage` appends a message at
-/// the clock, which advances one second per post, and records it under
-/// `posts`, or refuses with `postError` when set. Every call is recorded
-/// under `calls` with its method and JSON body, read from stdin. Faults are
-/// armed under the call `curl` as for the forges, rendered in Slack's
-/// shapes: `auth` is `invalid_auth`, `rate-limit` a 429 with `Retry-After`
-/// and `ratelimited`, `malformed` a non-JSON body, `fail` a failed curl,
-/// `hang` a hung process. `files.info` answers the file object under
-/// `files["<id>"]`, or `file_not_found`, or `filesError` when set. A curl
-/// run with `--output` is a download: the file whose `url_private_download`
-/// is the URL gets its `content` written, answered with its `status`
-/// (default 200) and `contentType` (default its `mimetype`); any other URL
-/// is a 404. Each download is recorded under `downloads` with its argv.
 mod slack {
     use std::io::Read;
     use std::process::ExitCode;
@@ -1176,7 +1107,6 @@ mod slack {
         answer(HEAD, &json!({"ok": false, "error": error}))
     }
 
-    /// A Slack timestamp as (seconds, microseconds), for ordering.
     fn key(ts: &Value) -> (u64, u64) {
         let ts = ts.as_str().unwrap_or("0.0");
         let (secs, frac) = ts.split_once('.').unwrap_or((ts, "0"));
@@ -1190,8 +1120,6 @@ mod slack {
         v.as_str().unwrap_or("").to_string()
     }
 
-    /// A form body as an object: `true`, `false` and digits typed, the
-    /// rest strings, so a model reads either encoding the same way.
     fn form(text: &str) -> Value {
         fn decode(s: &str) -> String {
             let b = s.as_bytes();
@@ -1234,8 +1162,7 @@ mod slack {
         if args.iter().any(|a| a == "@-") {
             std::io::stdin().read_to_string(&mut text).expect("stdin");
         }
-        // Slack's read methods take form arguments only: a JSON body reaches
-        // them as no arguments at all, as the real API answers.
+        // Slack's read methods take form arguments only: a JSON body reaches them as no arguments.
         let json_body = args
             .iter()
             .any(|a| a.starts_with("Content-Type: application/json"));
@@ -1360,10 +1287,6 @@ mod slack {
         ExitCode::SUCCESS
     }
 
-    /// `reactions.add` and `reactions.remove` on a message of the model:
-    /// `slack.reactions["<channel>/<ts>"]` lists the bot's reactions there.
-    /// Adding one already there is `already_reacted`; removing one that is
-    /// not is `no_reaction`, as Slack answers.
     fn react(state: &mut Value, body: &Value, add: bool) -> ExitCode {
         let channel = string(&body["channel"]);
         let ts = string(&body["timestamp"]);
@@ -1395,13 +1318,10 @@ mod slack {
         answer(HEAD, &json!({"ok": true}))
     }
 
-    /// The messages of `channel`, or `None` for a channel the model lacks.
     fn channel_messages(state: &Value, channel: &str) -> Option<Vec<Value>> {
         state["slack"]["messages"][channel].as_array().cloned()
     }
 
-    /// One page of `all`, under the model's page size or the call's limit,
-    /// after `oldest` (inclusive or not), from the call's cursor.
     fn page(state: &Value, body: &Value, mut all: Vec<Value>) -> ExitCode {
         if let Some(oldest) = body["oldest"].as_str() {
             let bound = key(&json!(oldest));
@@ -1519,8 +1439,7 @@ mod slack {
                 "metadata": body["metadata"], "mrkdwn": body["mrkdwn"], "blocks": body["blocks"],
             }));
         save(state);
-        // `postErrorAfter`: the post landed, and Slack answers an error
-        // anyway, as its `internal_error` and `fatal_error` may.
+        // Slack may land a post and still answer `internal_error` or `fatal_error`.
         if let Some(error) = state["slack"]["postErrorAfter"].as_str() {
             return ok_false(error);
         }
@@ -1531,20 +1450,6 @@ mod slack {
     }
 }
 
-/// The Discord role of `curl`: the REST API behind the Discord gateway
-/// adapter, from the model under `discord` in the state: `{guild, botUser,
-/// botName, appFlags, clock, channels: {"<id>": {parent, messages: [message,
-/// …]}}, loseNextPost, posts, threads, calls}`. Each message is in
-/// Discord's own shape (`id`, `channel_id`, `author`, `content`,
-/// `timestamp`, `type`, `mentions`, `nonce`). A channel with a `parent` is a
-/// thread. `GET …/messages` answers newest first, at most `limit`, after
-/// `after` or before `before`; `POST …/messages` appends a message at the clock, which advances
-/// one second per post, and returns the bot's earlier message with the same
-/// nonce when `enforce_nonce` is set. `loseNextPost` lets one post land and
-/// then hangs, a lost answer. `POST …/messages/{id}/threads` starts a
-/// thread whose id is the message's, once: a second start answers 160004.
-/// Errors are Discord's JSON errors with their HTTP status. Every call is
-/// recorded under `calls` with its method, path and JSON body.
 mod discord {
     use std::io::Read;
     use std::process::ExitCode;
@@ -1569,11 +1474,10 @@ mod discord {
         v.as_str().and_then(|s| s.parse().ok()).unwrap_or(0)
     }
 
-    /// A UTC ISO 8601 time for Unix milliseconds, as Discord writes it.
     fn iso(ms: u64) -> String {
         let secs = ms / 1000;
         let (days, rem) = (secs / 86_400, secs % 86_400);
-        // Civil date from days since 1970-01-01 (Howard Hinnant's algorithm).
+        // Howard Hinnant's civil-from-days algorithm.
         let z = days as i64 + 719_468;
         let era = z.div_euclid(146_097);
         let doe = z - era * 146_097;
@@ -1667,8 +1571,7 @@ mod discord {
                     .cloned()
                     .collect();
                 page.sort_by_key(|m| id_of(&m["id"]));
-                // After a message: the ones right after it. Otherwise the
-                // newest. Either way newest first, as Discord answers.
+                // Discord answers newest first.
                 if after.is_some() {
                     page.truncate(limit);
                 } else {
@@ -1737,14 +1640,12 @@ mod discord {
         state["discord"]["loseNextPost"] = json!(false);
         save(state);
         if lose {
-            // The post landed; its answer never comes.
             drop(lock);
             hang();
         }
         answer(200, &message)
     }
 
-    /// `%XX` decoded.
     fn unescape(s: &str) -> String {
         let b = s.as_bytes();
         let mut out = Vec::new();
@@ -1762,10 +1663,6 @@ mod discord {
         String::from_utf8_lossy(&out).into_owned()
     }
 
-    /// Create or delete the bot's own reaction: `204` with no body either
-    /// way, as Discord answers. `discord.reactions["<channel>/<message>"]`
-    /// lists the emoji there. An emoji that is neither Unicode nor
-    /// `name:id` is `10014 Unknown Emoji`.
     fn react(state: &mut Value, channel: &str, message: &str, emoji: &str, add: bool) -> ExitCode {
         let found = state["discord"]["channels"][channel]["messages"]
             .as_array()

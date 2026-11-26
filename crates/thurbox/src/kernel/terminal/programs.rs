@@ -1,12 +1,3 @@
-//! Program panes mods asked for (`Capability::Program`).
-//!
-//! A pane belongs to a **mod**, not a session: the kernel stamps the owner
-//! from the mod being rendered, so naming another mod's pane is
-//! impossible by construction. The slots live on [`Terminals`] beside the
-//! session panes because a pane needs everything that struct already holds —
-//! the backend registry, the paint seam, the redraw stamp, the rect memo — and
-//! `SurfaceProvider` has one implementor by design.
-
 use std::cell::Cell;
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -16,17 +7,9 @@ use tracing::debug;
 
 use super::Terminals;
 
-/// Which mod's pane, and which of that mod's panes.
-///
-/// The mod is identified by **path**, the identity trust, the disabled set,
-/// `run`'s attribution and the inventory all already use. Keying on a declared
-/// name instead would let two files claim one pane by declaring the same name,
-/// and would move a pane when its author renamed the mod.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct ProgramKey {
-    /// The owning mod's path, relative to the interface directory.
     pub owner: String,
-    /// The name the mod gave this pane.
     pub name: String,
 }
 
@@ -38,45 +21,22 @@ impl ProgramKey {
         }
     }
 
-    /// The surface id this pane is addressed by.
-    ///
-    /// Prefixed so it cannot be confused with a session id, which is a UUID, and
-    /// so a paint can tell the two apart by inspection.
     pub fn surface_id(&self) -> String {
         format!("{PROGRAM_SURFACE_PREFIX}{}#{}", self.owner, self.name)
     }
 }
 
-/// What happened to a program slot between two looks.
-///
-/// Ordered, and that is the whole point: whether a death is news depends on
-/// what came before it in this list. See [`Terminals::take_program_transitions`].
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ProgramTransition {
-    /// A pane was **spawned** here — never adopted from a previous run.
     Started(ProgramKey),
-    /// A finished pane was overwritten by a restart, with what it had been
-    /// running.
     Replaced(ProgramKey, String),
 }
 
-/// Does this surface id name a mod's program rather than a session?
-///
-/// A prefix test, and deliberately **not** a parse. Splitting the id back into
-/// `(mod, name)` looked obvious and is ambiguous in both directions: a pane
-/// name may contain the separator, and so — on POSIX — may a file name, so
-/// neither the first nor the last `#` is reliably the right one. Since the keys
-/// are what *generate* these ids, the way back is to look one up
-/// ([`Terminals::program_key`]) rather than to take it apart.
 pub fn is_program_surface(id: &str) -> bool {
     id.starts_with(PROGRAM_SURFACE_PREFIX)
 }
 
-/// Refuse a pane name that would make an unreadable window or an ambiguous id.
-///
-/// Checked where the ask arrives, so the author gets a message instead of a pane
-/// that never appears. The name reaches a tmux window name, which tmux parses as
-/// part of a target string.
+// The name becomes a tmux window name, which tmux parses as part of a target string.
 pub fn validate_program_name(name: &str) -> Result<(), String> {
     if name.is_empty() {
         return Err("a program pane needs a name".to_string());
@@ -92,20 +52,8 @@ pub fn validate_program_name(name: &str) -> Result<(), String> {
     Ok(())
 }
 
-/// Marks a surface id as naming a mod's program rather than a session.
-///
-/// A session id is a UUID, so no session can collide with this — but it is
-/// spelled out rather than relying on that, because "a session id is a UUID" is a
-/// fact about the id generator and this is a parsing rule.
 pub const PROGRAM_SURFACE_PREFIX: &str = "program:";
 
-/// The most panes one mod may hold at once.
-///
-/// Matches `runs::MAX_CONCURRENT` so there is one number to remember rather than
-/// two. `run`'s other bounds deliberately do not transfer — an output cap is
-/// meaningless for a screen overwritten in place, and a timeout is the opposite of
-/// what an interactive program wants — which leaves how many as the only thing
-/// left to bound, and the reason the capability is granted separately.
 pub const MAX_PROGRAMS_PER_MOD: usize = 4;
 
 fn stale_program_keys<'a>(
@@ -130,25 +78,13 @@ fn admit_program(mod_name: &str, held: usize, program: &str) -> Result<(), Strin
     Ok(())
 }
 
-/// What `keys` sent to a mod's pane should do.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum KeysPlan {
-    /// The program is running: type at it.
     Send,
-    /// Nothing is running and the mod named a program: start that instead.
     Start,
-    /// Nothing is running and nothing was named to start.
     Refuse(String),
 }
 
-/// The choice `keys` makes: type at a running program, start the one named, or
-/// refuse.
-///
-/// `running` is the pane's state **before** the send, never the answer a send
-/// gave. A live pane can refuse a send because its input channel is full; read
-/// as "not running", that refusal was reported as a missing program, or handed
-/// to the start — which answers `Ok` for the pane already there, so the keys
-/// were lost with nothing said. Pure for the reason `admit_program` is.
 pub fn plan_keys(mod_name: &str, name: &str, running: bool, program: &str) -> KeysPlan {
     if running {
         return KeysPlan::Send;
@@ -163,24 +99,11 @@ pub fn plan_keys(mod_name: &str, name: &str, running: bool, program: &str) -> Ke
 
 pub(super) struct ProgramSlot {
     pub(super) pane: crate::backend::pane::ProgramPane,
-    /// Where it was last painted and the size it was last told about — the same
-    /// per-surface record a session's two panes each hold, and for the same
-    /// reason: geometry belongs to one surface.
     pub(super) painted: super::Painted,
     pub(super) program: String,
 }
 
 impl Terminals {
-    /// Start `program` in a pane belonging to `key.owner`, or keep the one it
-    /// already has.
-    ///
-    /// **Idempotent**, deliberately: a mod asks on every frame — the pattern
-    /// `run` established — so asking for a pane that exists must be a map lookup
-    /// and not a second copy of the program.
-    ///
-    /// The pane is born at `rows`/`cols`, which the caller passes as the rect it
-    /// will be painted into where that is known — so its first frame is already
-    /// the right shape rather than a screen-wide one that reflows on the next.
     pub fn start_program(
         &mut self,
         key: &ProgramKey,
@@ -191,8 +114,6 @@ impl Terminals {
         cols: u16,
     ) -> Result<(), String> {
         if let Some(slot) = self.programs.get(key) {
-            // Already running, or finished and not yet reaped. A finished one is
-            // replaced, which is what makes "ask again to restart it" work.
             if !slot.pane.has_exited() {
                 return Ok(());
             }
@@ -205,8 +126,6 @@ impl Terminals {
         admit_program(&key.owner, self.program_count(&key.owner), program)?;
 
         let backend = Arc::clone(self.backends.default_backend());
-        // This local-only spawn still runs inline; a companion shell opens
-        // through Fleet, on a worker of its own.
         if let Err(e) = backend.ensure_ready() {
             return Err(format!("could not reach the local multiplexer: {e:#}"));
         }
@@ -218,9 +137,6 @@ impl Terminals {
         let env: HashMap<String, String> = HashMap::new();
         let (rows, cols) = (rows.max(1), cols.max(1));
 
-        // An existing window of that name is this same pane from a previous run of
-        // the interface: the name is deterministic, so finding it IS the
-        // re-adoption path — there is no stored pane id that could go stale.
         let existing = self.find_program_window(&backend, &window);
         let adopted = existing.is_some();
         let pane = match existing {
@@ -259,48 +175,17 @@ impl Terminals {
             },
         );
         if !adopted {
-            // Spawned here, so this loop knows it ran — which is what lets its
-            // ending be announced even if it dies before anything looks again.
-            // An *adopted* window is deliberately not recorded: it belongs to a
-            // previous run of the interface, and a corpse found on startup ended
-            // before there was anything to tell.
-            //
-            // After the spawn, not before: a spawn that failed leaves no pane to
-            // die, and claiming one started would make the *next* restart's
-            // replacement look like a fresh death.
             self.program_transitions
                 .push(ProgramTransition::Started(key.clone()));
         }
         Ok(())
     }
 
-    /// A *live* window of this exact name already running on `backend`, if there
-    /// is one — clearing any corpse that carries the same name on the way.
-    ///
-    /// This is the whole of re-adoption after a restart: the name is deterministic
-    /// (`tmux::program_window_name`), so it is enough to look. Nothing is
-    /// persisted, and therefore nothing can be stale — which is the failure a
-    /// stored pane id invites and this repository has been bitten by before.
-    ///
-    /// A dead window is killed rather than skipped. A window whose program has
-    /// ended can outlive it (an older build left `remain-on-exit` on for these,
-    /// and a pane can also die while the interface is not running); skipping it
-    /// spawns a second window of the same name beside the corpse, so the name
-    /// stops addressing one window and the next lookup has to guess. Adopting it
-    /// is worse still — a pane that paints a frozen grid and swallows every
-    /// keystroke, which is what "the editor hung" looks like from the outside.
-    ///
-    /// A tmux round trip, so it is called when a pane is *started* and never per
-    /// frame.
     fn find_program_window(
         &self,
         backend: &Arc<dyn crate::backend::SessionBackend>,
         window: &str,
     ) -> Option<String> {
-        // `window_panes`, not `discover`: a program window has no session id to
-        // resolve by, only its deterministic name. Discovery does list it, but
-        // stamped `@thurbox_role=program` and unowned, so it can never be
-        // adopted as a session's agent (ADR-25).
         let mut live = None;
         for (backend_id, dead) in backend.window_panes(window).unwrap_or_default() {
             if dead {
@@ -308,15 +193,7 @@ impl Terminals {
                     debug!("could not clear the dead program window {window}: {e:#}");
                 }
             } else if live.is_none() {
-                // Normalised on the way, not taken as found: this window was
-                // made by an earlier interface, possibly one that set
-                // `remain-on-exit` for a whole session and landed it on
-                // whichever window happened to be current. Left as it stood, a
-                // program window carrying `on` is a pane whose exit can never be
-                // announced — the corpse comes straight back on the first
-                // restart after an upgrade, which is the one moment this is
-                // about. One round trip, and only here, where the answer is
-                // known from the name we looked the window up by.
+                // An earlier interface may have left tmux `remain-on-exit` on; a pane carrying it never announces its exit.
                 if let Err(e) = backend.set_pane_retention(&backend_id, false) {
                     debug!("could not clear remain-on-exit on {window}: {e:#}");
                 }
@@ -326,11 +203,6 @@ impl Terminals {
         live
     }
 
-    /// The key a surface id names, by matching against the keys that generate
-    /// them — see `is_program_surface` for why this is a lookup and not a parse.
-    ///
-    /// Linear over a map holding at most `MAX_PROGRAMS_PER_MOD` per mod,
-    /// on a path that runs once per program surface per frame.
     pub fn program_key(&self, surface: &str) -> Option<&ProgramKey> {
         if !is_program_surface(surface) {
             return None;
@@ -338,7 +210,6 @@ impl Terminals {
         self.programs.keys().find(|key| key.surface_id() == surface)
     }
 
-    /// How many panes a mod is holding.
     pub fn program_count(&self, mod_name: &str) -> usize {
         self.programs
             .keys()
@@ -346,11 +217,6 @@ impl Terminals {
             .count()
     }
 
-    /// Give up one pane, killing the program in it.
-    ///
-    /// Killed rather than left running: unlike a session, nothing in the interface
-    /// could ever show it again, and an unreachable program is worse than a closed
-    /// one.
     pub fn release_program(&mut self, key: &ProgramKey) -> bool {
         match self.programs.remove(key) {
             Some(slot) => {
@@ -361,22 +227,12 @@ impl Terminals {
         }
     }
 
-    /// Release every pane held by a mod that is no longer loaded.
-    ///
-    /// Mirrors `runs::retain_mods`, which `reload_interface` already calls for
-    /// the same reason: a mod edited away, renamed, removed or turned off must
-    /// not leave anything of itself behind across reloads.
     pub fn retain_program_mods(&mut self, live: &[String]) {
         for key in stale_program_keys(self.programs.keys(), live) {
             self.release_program(&key);
         }
     }
 
-    /// Send bytes to a mod's program.
-    ///
-    /// The error says which refusal it was — no pane, a finished program, or an
-    /// input channel that is full — because a caller that reports one as another
-    /// sends the author looking for the wrong fault.
     pub fn send_to_program(&self, key: &ProgramKey, bytes: Vec<u8>) -> Result<(), String> {
         let Some(slot) = self.programs.get(key) else {
             return Err(format!("there is no program pane named {:?}", key.name));
@@ -387,13 +243,6 @@ impl Terminals {
         slot.pane.send_input(bytes).map_err(|e| format!("{e:#}"))
     }
 
-    /// Every program pane held right now, with what it runs and whether it has
-    /// ended.
-    ///
-    /// The loop's per-iteration read, so it can fire `program.exited` on the
-    /// transition. `has_exited` is an atomic the reader loop sets, so this is a
-    /// map walk and some atomic loads — no tmux round trip, and nothing that can
-    /// block the frame.
     pub fn program_liveness(&self) -> Vec<(ProgramKey, String, bool)> {
         self.programs
             .iter()
@@ -401,22 +250,10 @@ impl Terminals {
             .collect()
     }
 
-    /// Every spawn and replacement since the last look, in order, taken once.
-    ///
-    /// [`Self::program_liveness`] can only describe the panes that are *held*:
-    /// a restart that replaces an exited slot within the same iteration hides
-    /// the ending from it entirely, and a program that starts and dies inside
-    /// one iteration is only ever seen dead — indistinguishable from a corpse
-    /// adopted from a previous run, which wants the opposite answer. Both are
-    /// recorded as they happen and drained here, alongside that read.
-    ///
-    /// The order is load-bearing; `program_endings` says what it is read for.
     pub fn take_program_transitions(&mut self) -> Vec<ProgramTransition> {
         std::mem::take(&mut self.program_transitions)
     }
 
-    /// What is running in a pane, and whether it has ended — for a pane that wants
-    /// to report rather than paint a frozen grid.
     pub fn program_state(&self, key: &ProgramKey) -> Option<(&str, bool)> {
         self.programs
             .get(key)
@@ -441,26 +278,17 @@ mod tests {
         }
     }
 
-    /// The id is resolved by looking up the key that generated it, never by
-    /// splitting it.
-    ///
-    /// Splitting looked obvious and is ambiguous in both directions — a pane name
-    /// may contain the separator, and on POSIX so may a file name — so neither the
-    /// first nor the last `#` is reliably the right one. A lookup cannot be wrong.
     #[test]
     fn a_program_surface_resolves_by_lookup_not_by_splitting() {
         let terminals = Terminals::with_registry(
             std::sync::Arc::new(crate::backend::registry::inert()),
             &crate::session::settings::Settings::default(),
         );
-        // Nothing is running, so nothing resolves — including a well-formed id.
         let key = ProgramKey::new("mods/90_watch.lua", "watch");
         assert!(terminals.program_key(&key.surface_id()).is_none());
         assert!(terminals.program_key("not-a-program").is_none());
     }
 
-    /// The name reaches a tmux window name, which tmux parses as part of a target
-    /// string — so it is checked where the ask arrives rather than mangled.
     #[test]
     fn a_program_pane_name_is_checked_when_it_is_asked_for() {
         for good in ["watch", "top-2", "my_pane", "a1"] {
@@ -490,18 +318,10 @@ mod tests {
 
     #[test]
     fn a_pane_with_no_program_named_is_refused() {
-        // Otherwise the pane spawns the backend's idea of an empty command line.
         assert!(admit_program("mods/90_watch.lua", 0, "   ").is_err());
         assert!(admit_program("mods/90_watch.lua", 0, "").is_err());
     }
 
-    /// Nothing running means nothing to send to, and nothing to report — asserted
-    /// because "no pane" must not read as "a pane that swallowed your key".
-    ///
-    /// This return value is **load-bearing for key routing**: the loop consumes a
-    /// keystroke only when a send reports delivery. A pane whose surface names a
-    /// session that is no longer live therefore does not swallow `Esc`, which is
-    /// what keeps the user from being trapped in a pane showing a dead terminal.
     #[test]
     fn an_absent_program_pane_accepts_nothing_and_reports_nothing() {
         let terminals = Terminals::with_registry(
@@ -514,12 +334,6 @@ mod tests {
         assert!(terminals.program_state(&key).is_none());
     }
 
-    /// A running program is typed at even when a program to start was named.
-    ///
-    /// The branch this pins had no test and was wrong: the choice was made from
-    /// whether a send *worked*, so a live pane that refused one — its input
-    /// channel full — was sent to the start, which keeps the pane already there
-    /// and reports success. The keys were lost and nothing was reported.
     #[test]
     fn keys_for_a_running_program_are_sent_even_with_a_program_named() {
         let plan = |program| plan_keys("mods/90_editor.lua", "editor", true, program);
@@ -550,14 +364,12 @@ mod tests {
         let gone = ProgramKey::new("mods/91_deleted.lua", "top");
         let keys = [watch.clone(), gone.clone()];
 
-        // Both still loaded: nothing is released.
         let live = vec![
             "mods/90_watch.lua".to_string(),
             "mods/91_deleted.lua".to_string(),
         ];
         assert!(stale_program_keys(keys.iter(), &live).is_empty());
 
-        // One edited away, renamed or turned off: only its pane goes.
         let live = vec!["mods/90_watch.lua".to_string()];
         assert_eq!(stale_program_keys(keys.iter(), &live), vec![gone]);
 

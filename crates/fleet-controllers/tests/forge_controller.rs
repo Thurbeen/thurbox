@@ -1,9 +1,3 @@
-//! ForgeController as a pure function: a Task, the ChangeRequests it
-//! declared, Fleet's login and whether the session is at rest go in; a plan
-//! comes out, whose status is `status.forge`, whose appends are the inbox
-//! entries that land with it, and whose effects are the mark-ready actions.
-//! Each case is one transition of one entry, or one reason nothing moves.
-
 use std::collections::BTreeMap;
 
 use fleet_api::change_request::{ChangeRequestStatus, Head, Phase, Sequenced, StoredNote};
@@ -34,7 +28,6 @@ fn task(declared: Vec<Value>, forge: Option<ForgeStatus>, spec_forge: Value) -> 
     task_with(declared, forge, spec_forge, false)
 }
 
-/// A Task whose worker reported `shipped` and whose session is recorded.
 fn shipped_task(declared: Vec<Value>, forge: Option<ForgeStatus>, spec_forge: Value) -> Object {
     task_with(declared, forge, spec_forge, true)
 }
@@ -125,8 +118,6 @@ fn inline(id: &str, seq: u64, at: u64, author: &str, thread: &str, resolved: boo
     }
 }
 
-/// A mirror at `revision`, a reachable draft, head `h1` pending, with the
-/// given notes.
 fn mirror(revision: u64, notes: Vec<StoredNote>) -> ChangeRequestStatus {
     let mut conditions = Vec::new();
     set_condition(
@@ -192,7 +183,6 @@ fn seen(cr: &ChangeRequestStatus) -> ForgeObservations {
     observed(Observation::Known(Some(change_request(CR_UID, cr))))
 }
 
-/// `status.forge` as the controller leaves it after joining at `cursor`.
 fn following(cursor: u64) -> ForgeStatus {
     let obj = task(declared(), None, Value::Null);
     let (_, forge) = run(&obj, seen(&mirror(cursor, Vec::new())));
@@ -288,7 +278,6 @@ fn a_declaration_asks_for_its_object_then_for_the_login_on_its_host() {
         probes(&obj, seen(&mirror(1, Vec::new()))).is_empty(),
         "everything is answered"
     );
-    // Two declarations on one host: one Whoami.
     let two = task(
         vec![
             json!({"kind": "ChangeRequest", "url": URL, "name": CR}),
@@ -413,7 +402,6 @@ fn a_new_note_above_the_cursor_is_relayed_once_and_the_cursor_advances() {
         text(&plan)
     );
 
-    // The same snapshot again: nothing above the cursor, nothing written.
     let obj = task(declared(), Some(forge), Value::Null);
     let (plan, _) = run(&obj, seen(&cr));
     assert_eq!(plan.status, None, "no churn");
@@ -452,8 +440,6 @@ fn this_tasks_own_marked_words_are_never_relayed() {
     assert_eq!(entry(&forge).cursor, 5, "the cursor still advances");
     assert!(plan.status.is_some());
 
-    // The same words under another login are a person's, and relayed,
-    // and a mark naming this Task is not another worker's.
     let mut person = mine;
     person.author = "ann".into();
     let obj = task(declared(), Some(following(4)), Value::Null);
@@ -517,7 +503,6 @@ fn a_resolved_thread_and_a_thread_this_task_answered_are_not_relayed() {
     let (plan, _) = run(&obj, seen(&mirror(5, vec![resolved])));
     assert!(plan.appends.is_empty(), "a resolved thread is answered");
 
-    // A thread this Task replied in, later by seq then at, is answered.
     let asked = inline("i2", 5, 30, "ann", "t2", false);
     let mut reply = inline("i3", 5, 31, ME, "t2", false);
     reply.body = format!("Renamed.\n{}", worker_mark(TASK_UID));
@@ -525,7 +510,6 @@ fn a_resolved_thread_and_a_thread_this_task_answered_are_not_relayed() {
     let (plan, _) = run(&obj, seen(&mirror(5, vec![asked.clone(), reply.clone()])));
     assert!(plan.appends.is_empty(), "{plan:#?}");
 
-    // A reply by another Task does not count; an earlier reply does not count.
     let mut other = reply.clone();
     other.body = format!("Renamed.\n{}", worker_mark("u8"));
     let obj = task(declared(), Some(following(4)), Value::Null);
@@ -588,7 +572,6 @@ fn transitions_of_state_decision_and_checks_are_relayed_with_the_failing_names()
         Some("h2")
     );
 
-    // A head that is only pending is not news.
     let obj = task(declared(), Some(following(4)), Value::Null);
     let mut quiet = mirror(5, Vec::new());
     quiet.head.as_mut().unwrap().seq = 5;
@@ -676,7 +659,6 @@ fn spec_forge_relay_turns_notes_or_checks_off_without_stopping_the_other() {
     assert!(!t.contains("checks `passed`"), "{t}");
     assert!(t.contains("> new"), "{t}");
 
-    // The config default is what an absent field inherits.
     let obj = task(declared(), Some(following(4)), Value::Null);
     let (plan, _) = run_with(
         &obj,
@@ -709,7 +691,6 @@ fn a_gap_delivers_the_whole_snapshot_counts_it_and_raises_attention_until_a_clea
         (ConditionStatus::True, "RelayGap")
     );
 
-    // The next clean relay clears it.
     let obj = task(declared(), Some(forge), Value::Null);
     cr.revision = 131;
     cr.notes.push(note("n10", 131, 20, "ann", "one more"));
@@ -753,7 +734,6 @@ fn a_followed_object_that_went_absent_is_change_gone_and_the_entry_is_kept() {
         (ConditionStatus::True, "ChangeGone")
     );
 
-    // Unknown later keeps the reason; found again clears it.
     let obj = task(declared(), Some(forge.clone()), Value::Null);
     let (plan, _) = run(&obj, observed(Observation::unknown("unreadable")));
     assert_eq!(plan.status, None);
@@ -792,7 +772,6 @@ fn a_settled_change_is_relayed_one_last_time_and_then_read_no_more() {
     assert_eq!(cond(&forge, "Following").status, ConditionStatus::False);
     assert_eq!(cond(&forge, "Settled").status, ConditionStatus::True);
 
-    // Settled: nothing asked, nothing written, not due.
     let obj = task(declared(), Some(forge), Value::Null);
     assert!(probes(&obj, ForgeObservations::default()).is_empty());
     assert!(!ForgeController::due(&obj, NOW));
@@ -868,9 +847,6 @@ fn two_entries_are_independent_and_one_problem_stops_nothing_else() {
     );
 }
 
-// ---- Mark ready -----------------------------------------------------------
-
-/// The shipped policies, `checks` as the default.
 fn policies() -> ForgeDefaults {
     ForgeDefaults {
         draft_policy: Some("checks".into()),
@@ -879,7 +855,6 @@ fn policies() -> ForgeDefaults {
     }
 }
 
-/// A fresh draft mirror at revision 5 whose head `h1` passed its checks.
 fn ready_draft() -> ChangeRequestStatus {
     let mut cr = mirror(5, Vec::new());
     cr.head.as_mut().unwrap().checks = Checks::Passed;
@@ -899,8 +874,6 @@ fn key(head: &str) -> String {
     format!("task/t/{TASK_UID}/ready/{CR_UID}/{head}")
 }
 
-/// A following entry at cursor 5 whose mark-ready record is `pending` for
-/// `h1`, with an intent written at `at`, and the receipt, if any.
 fn pending(at: u64, receipt: Option<Observation<EffectOutcome>>) -> ForgeStatus {
     let mut forge = following(5);
     let e = forge.changes.get_mut(CR).unwrap();
@@ -942,7 +915,6 @@ fn mark_probes(obj: &Object, obs: ForgeObservations, defaults: ForgeDefaults) ->
 fn a_draft_under_checks_is_marked_ready_once_the_worker_shipped_and_the_session_is_at_rest() {
     let cr = ready_draft();
     let obj = shipped_task(declared(), Some(following(5)), Value::Null);
-    // At-rest is asked only now that a mark-ready is being evaluated.
     assert_eq!(
         mark_probes(&obj, seen(&cr), policies()),
         vec![Probe::AtRest { session: session() }]
@@ -982,7 +954,6 @@ fn a_draft_under_checks_is_marked_ready_once_the_worker_shipped_and_the_session_
         "the intent is written with the status"
     );
 
-    // Pending: nothing asked, nothing planned, until the receipt.
     let obj = shipped_task(declared(), Some(forge), Value::Null);
     assert!(mark_probes(&obj, seen(&cr), policies()).is_empty());
     let (plan, _) = run_with(&obj, resting(&cr), policies());
@@ -1015,12 +986,10 @@ fn the_session_is_asked_last_once_the_snapshots_predicates_hold() {
 #[test]
 fn worker_done_and_worker_idle_are_always_on() {
     let cr = ready_draft();
-    // Not shipped: nothing is evaluated, so at-rest is not even asked.
     let obj = task(declared(), Some(following(5)), Value::Null);
     assert!(mark_probes(&obj, seen(&cr), policies()).is_empty());
     let (plan, _) = run_with(&obj, resting(&cr), policies());
     assert!(plan.effects.is_empty());
-    // Shipped but mid-turn, or the session cannot be read: nothing.
     let obj = shipped_task(declared(), Some(following(5)), Value::Null);
     for rest in [
         Observation::Known(false),
@@ -1043,7 +1012,6 @@ fn a_change_opened_ready_or_ever_seen_ready_is_never_marked() {
     open.ever_ready = true;
     let (plan, _) = run_with(&obj, resting(&open), policies());
     assert!(plan.effects.is_empty());
-    // A person put it back into draft: everReady stays true.
     let mut back = ready_draft();
     back.ever_ready = true;
     assert!(mark_probes(&obj, seen(&back), policies()).is_empty());
@@ -1081,7 +1049,6 @@ fn a_stale_mirror_never_marks() {
 #[test]
 fn the_policy_is_the_specs_else_the_default_and_null_disables() {
     let cr = ready_draft();
-    // No default and no spec: off.
     let obj = shipped_task(declared(), Some(following(5)), Value::Null);
     let no_default = ForgeDefaults {
         ready_policies: shipped_policies(),
@@ -1090,7 +1057,6 @@ fn the_policy_is_the_specs_else_the_default_and_null_disables() {
     assert!(mark_probes(&obj, seen(&cr), no_default.clone()).is_empty());
     let (plan, _) = run_with(&obj, resting(&cr), no_default.clone());
     assert!(plan.effects.is_empty());
-    // The spec names one.
     let obj = shipped_task(
         declared(),
         Some(following(5)),
@@ -1098,7 +1064,6 @@ fn the_policy_is_the_specs_else_the_default_and_null_disables() {
     );
     let (plan, _) = run_with(&obj, resting(&cr), no_default);
     assert_eq!(plan.effects.len(), 1);
-    // An explicit null turns the default off.
     let obj = shipped_task(
         declared(),
         Some(following(5)),
@@ -1126,7 +1091,6 @@ fn a_policy_the_config_does_not_define_raises_policy_unknown_until_it_does() {
     );
     assert!(c.message.contains("\"careful\""), "{}", c.message);
     assert!(c.message.contains(CR), "{}", c.message);
-    // Defined again: cleared, and the change is marked.
     let mut defined = policies();
     defined.ready_policies.insert(
         "careful".into(),
@@ -1168,7 +1132,6 @@ fn a_done_receipt_closes_the_record_and_nothing_is_asked_again() {
     assert!(record.intents.is_empty(), "answered");
     assert_eq!(record.receipts.len(), 1, "the receipt is kept");
     assert!(plan.effects.is_empty());
-    // Done is final for the entry, even if the mirror lags behind the forge.
     let obj = shipped_task(declared(), Some(forge), Value::Null);
     let (plan, _) = run_with(&obj, resting(&cr), policies());
     assert!(plan.effects.is_empty());
@@ -1196,7 +1159,6 @@ fn a_moved_receipt_is_not_an_attempt_and_the_new_head_is_evaluated_afresh() {
         "the mirror still shows h1, which the forge said moved: wait for it"
     );
     assert!(forge.conditions.iter().all(|c| c.type_ != "NeedsAttention"));
-    // The mirror catches up: a new head, a new key, a first attempt.
     let mut cr = ready_draft();
     cr.revision = 6;
     cr.head.as_mut().unwrap().id = "h2".into();
@@ -1231,7 +1193,6 @@ fn a_failed_receipt_waits_on_the_entry_then_retries_and_three_raise_attention() 
         NOW
     ));
 
-    // The wait over: a second attempt on the same head, under the same key.
     let mut waited = forge;
     waited.changes.get_mut(CR).unwrap().not_before = Some(NOW);
     let obj = shipped_task(declared(), Some(waited), Value::Null);
@@ -1249,7 +1210,6 @@ fn a_failed_receipt_waits_on_the_entry_then_retries_and_three_raise_attention() 
     );
     assert_eq!(e.not_before, None);
 
-    // The third attempt fails too: attention, and no fourth.
     let mut third = pending(NOW - 100, Some(failed));
     third.changes.get_mut(CR).unwrap().mark_ready.attempts = 3;
     let obj = shipped_task(declared(), Some(third), Value::Null);
@@ -1271,7 +1231,6 @@ fn a_failed_receipt_waits_on_the_entry_then_retries_and_three_raise_attention() 
 #[test]
 fn an_unknown_outcome_is_answered_by_the_next_fresh_observation_never_by_repeating() {
     let lost = Observation::unknown("the answer was lost");
-    // The mirror has not been read since the intent: wait.
     let mut cr = ready_draft();
     cr.observed_at = Some(NOW - 100);
     let obj = shipped_task(
@@ -1282,7 +1241,6 @@ fn an_unknown_outcome_is_answered_by_the_next_fresh_observation_never_by_repeati
     let (plan, forge) = run_with(&obj, resting(&cr), policies());
     assert_eq!(entry(&forge).mark_ready.state, MarkReadyState::Pending);
     assert!(plan.effects.is_empty());
-    // A fresh read shows the change ready: a recovered receipt.
     let mut ready = ready_draft();
     ready.observed_at = Some(NOW - 10);
     ready.ever_ready = true;
@@ -1299,7 +1257,6 @@ fn an_unknown_outcome_is_answered_by_the_next_fresh_observation_never_by_repeati
     let (plan, forge) = run_with(&obj, resting(&ready), policies());
     assert_eq!(entry(&forge).mark_ready.state, MarkReadyState::Done);
     assert!(plan.effects.is_empty());
-    // A fresh read still shows a draft: a failed attempt, not a repeat.
     let obj = shipped_task(
         declared(),
         Some(pending(NOW - 100, Some(lost))),
@@ -1313,7 +1270,6 @@ fn an_unknown_outcome_is_answered_by_the_next_fresh_observation_never_by_repeati
     );
     assert_eq!(e.not_before, Some(NOW + 30_000));
     assert!(plan.effects.is_empty());
-    // An intent with no receipt at all, after a crash, is the same question.
     let obj = shipped_task(declared(), Some(pending(NOW - 100, None)), Value::Null);
     let (plan, forge) = run_with(&obj, resting(&ready_draft()), policies());
     assert_eq!(entry(&forge).mark_ready.state, MarkReadyState::Failed);
@@ -1366,12 +1322,10 @@ fn checks_and_bots_waits_on_a_bots_unresolved_thread_and_relays_it_even_with_bot
     );
     assert!(!t.contains("coverage 93%"), "status is not: {t}");
     assert_eq!(entry(&forge).cursor, 5);
-    // Under `checks` the same bot note is not relayed and does not block.
     let obj = shipped_task(declared(), Some(following(4)), Value::Null);
     let (plan, _) = run_with(&obj, resting(&cr), policies());
     assert_eq!(plan.effects.len(), 1);
     assert!(plan.appends.is_empty(), "{plan:#?}");
-    // Resolved, or answered by this Task in the thread: addressed.
     let mut resolved = cr.clone();
     resolved.notes[0].resolved = Some(true);
     let obj = shipped_task(declared(), Some(following(5)), Value::Null);
@@ -1383,7 +1337,6 @@ fn checks_and_bots_waits_on_a_bots_unresolved_thread_and_relays_it_even_with_bot
     answered.notes.push(reply);
     let (plan, _) = run_with(&obj, resting(&answered), bots.clone());
     assert_eq!(plan.effects.len(), 1);
-    // A bot review requesting changes on the head blocks too.
     let mut reviewed = ready_draft();
     reviewed.reviews = vec![Review {
         id: "rv1".into(),
@@ -1468,7 +1421,6 @@ fn a_rebind_resets_the_record_and_a_second_entry_is_evaluated_on_its_own() {
     assert!(plan.effects[0].key.contains("/ready/c9/h1"));
     assert_eq!(forge.changes[CR].mark_ready.state, MarkReadyState::Failed);
     assert_eq!(cond(&forge, "NeedsAttention").reason, "MarkReadyFailed");
-    // A new incarnation of the first: the record and its attention go.
     let two = shipped_task(
         vec![json!({"kind": "ChangeRequest", "url": URL, "name": CR})],
         Some(forge),

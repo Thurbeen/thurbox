@@ -1,9 +1,3 @@
-//! A private session bus with a stand-in notification daemon, for the tests
-//! that assert what thurbox delivers to the desktop. Nothing here reaches the
-//! user's own bus: the daemon listens on a socket inside the test's directory
-//! and the receiver records every `Notify` call instead of showing it.
-//!
-//! Needs `dbus-daemon` on `PATH`, as the PTY tests need `tmux`.
 #![allow(dead_code)]
 
 use std::collections::HashMap;
@@ -14,7 +8,6 @@ use std::time::{Duration, Instant};
 
 use zbus::OwnedVariant;
 
-/// One notification the receiver took.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Shown {
     pub app_name: String,
@@ -65,8 +58,6 @@ impl Receiver {
     }
 }
 
-/// The private `dbus-daemon`, killed when dropped — from the moment it is
-/// spawned, so a setup step that panics after it does not leave it running.
 struct Daemon(Child);
 
 impl Drop for Daemon {
@@ -87,10 +78,8 @@ pub struct NotificationBus {
 }
 
 impl NotificationBus {
-    /// Start a bus listening on `<dir>/bus` — the path `XDG_RUNTIME_DIR/bus`
-    /// names when `dir` is the runtime directory — and claim the notification
-    /// service on it.
     pub fn start(dir: &Path) -> Self {
+        // `XDG_RUNTIME_DIR/bus` is where D-Bus clients look for the session bus.
         let socket = dir.join("bus");
         let daemon = Daemon(
             Command::new("dbus-daemon")
@@ -137,12 +126,10 @@ impl NotificationBus {
         }
     }
 
-    /// The value `DBUS_SESSION_BUS_ADDRESS` takes to reach this bus.
     pub fn address(&self) -> String {
         format!("unix:path={}", self.socket.display())
     }
 
-    /// Every notification received so far, in order.
     pub fn shown(&self) -> Vec<Shown> {
         self.shown.lock().unwrap().clone()
     }

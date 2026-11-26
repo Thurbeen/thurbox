@@ -1,16 +1,3 @@
-//! The new-session flow, against the real bundled mod.
-//!
-//! What is worth testing here is not the pixels, but the two things v1 got
-//! wrong often enough to have grown machinery for:
-//! **which step the flow is on** after each keystroke, and **what the create
-//! command it finally issues actually carries**. Both are observable from
-//! outside: the step from what is drawn, the command from the queue it is pushed
-//! onto.
-//!
-//! The flow is driven exactly as the loop drives it — declared chords through
-//! the registry to `on_action`, everything else to `on_key` — so a binding that
-//! resolves to the wrong handler fails here rather than in the terminal.
-
 use ratatui::backend::TestBackend;
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
@@ -39,8 +26,6 @@ fn index_of(host: &LuaHost, name: &str) -> usize {
         .unwrap_or_else(|| panic!("no {name} plugin"))
 }
 
-/// Fleet's `local` host as the snapshot publishes it: this machine, with an
-/// empty backend.
 fn local_host() -> HostRow {
     HostRow {
         name: "local".into(),
@@ -64,7 +49,6 @@ fn snapshot() -> Snapshot {
     }
 }
 
-/// Where an installed interface lives, as `offered` reports it.
 const INTERFACE_DIR: &str = "/home/me/.config/thurbox/ui";
 
 fn bookmark(path: &str, is_git: Option<bool>) -> BookmarkRow {
@@ -79,8 +63,6 @@ fn bookmark(path: &str, is_git: Option<bool>) -> BookmarkRow {
     }
 }
 
-/// The interface directory, which the kernel offers at the top of the local list
-/// under a name of its own rather than reading it from memory.
 fn offered() -> BookmarkRow {
     BookmarkRow {
         label: Some("Thurbox interface — edit your panes".into()),
@@ -89,14 +71,12 @@ fn offered() -> BookmarkRow {
     }
 }
 
-/// A store holding the three reads, as if every worker had already answered.
 fn store_with(rows: Vec<BookmarkRow>) -> RepoStore {
     let mut repos = RepoStore::new();
     repos.set_bookmarks_for_test("", rows);
     repos
 }
 
-/// A world whose remembered repositories are `rows`.
 fn world_with(rows: Vec<BookmarkRow>) -> World {
     World {
         repos: store_with(rows),
@@ -104,7 +84,6 @@ fn world_with(rows: Vec<BookmarkRow>) -> World {
     }
 }
 
-/// A folder of repositories: the header row plus one member under it.
 fn folder_rows() -> Vec<BookmarkRow> {
     vec![
         BookmarkRow {
@@ -128,8 +107,6 @@ fn folder_rows() -> Vec<BookmarkRow> {
     ]
 }
 
-/// Everything the loop publishes, with the wants the flow is currently asking
-/// for — which is what makes the three reads visible to it.
 struct World {
     snapshot: Snapshot,
     repos: RepoStore,
@@ -158,8 +135,6 @@ fn publish(host: &LuaHost, world: &World) {
     publish_hovered(host, world, None);
 }
 
-/// Publish with the pointer over `hovered`, the identity the kernel resolved
-/// through the same hitboxes a click is routed by.
 fn publish_hovered(host: &LuaHost, world: &World, hovered: Option<&Identity>) {
     let themes = Themes::load(None);
     let mut registry = Registry::default();
@@ -194,8 +169,6 @@ fn publish_hovered(host: &LuaHost, world: &World, hovered: Option<&Identity>) {
     .expect("publish");
 }
 
-/// What the flow draws, as text. Empty when it is closed — a closed modal draws
-/// nothing at all, which is how the kernel knows it is not floating.
 fn drawn(host: &LuaHost, world: &World) -> String {
     match painted(host, world, None) {
         Some((buffer, _)) => screen_of(&buffer),
@@ -203,8 +176,6 @@ fn drawn(host: &LuaHost, world: &World) -> String {
     }
 }
 
-/// The flow painted into its own rect, with the hitboxes the paint recorded —
-/// what the loop routes a press through. `None` while the flow is closed.
 fn painted(
     host: &LuaHost,
     world: &World,
@@ -213,8 +184,6 @@ fn painted(
     painted_on(host, world, hovered, 120)
 }
 
-/// [`painted`] on a screen `screen_cols` wide: a float is told the screen's
-/// width, and one sized to its content may not outgrow it.
 fn painted_on(
     host: &LuaHost,
     world: &World,
@@ -224,7 +193,6 @@ fn painted_on(
     painted_sized(host, world, hovered, screen_cols, 40)
 }
 
-/// [`painted_on`] on a screen `screen_rows` tall as well.
 fn painted_sized(
     host: &LuaHost,
     world: &World,
@@ -247,9 +215,6 @@ fn painted_sized(
         )
         .expect("render");
     let float = rendered.float?;
-    // The flow asks in cells for both, and cells win over the percentage just
-    // as they do in the kernel — a dump wider than the real modal hides every
-    // truncation the user would see.
     let rows = float.rows.expect("the flow sizes its own height");
     let width = float
         .cols
@@ -286,7 +251,6 @@ fn screen_of(buffer: &Buffer) -> String {
         .join("\n")
 }
 
-/// The cell where `needle` starts, counted in cells rather than bytes.
 fn locate(buffer: &Buffer, needle: &str) -> (u16, u16) {
     let first = needle.chars().next().expect("a needle");
     for y in 0..buffer.area.height {
@@ -303,8 +267,6 @@ fn locate(buffer: &Buffer, needle: &str) -> (u16, u16) {
     panic!("{needle:?} is not on screen:\n{}", screen_of(buffer));
 }
 
-/// The identity the kernel resolves at a cell: the innermost hitbox, which is
-/// the last one recorded — `App::target_at`'s rule.
 fn identity_at(hits: &[Hit], x: u16, y: u16) -> Identity {
     let position = ratatui::layout::Position::new(x, y);
     hits.iter()
@@ -314,9 +276,6 @@ fn identity_at(hits: &[Hit], x: u16, y: u16) -> Identity {
         .unwrap_or_default()
 }
 
-/// A left press on the cell where `needle` is drawn, resolved against the
-/// paint's own hitboxes and delivered as the loop delivers it. `below` moves the
-/// press that many rows down, for a field whose label is its frame's title.
 fn click_on(host: &LuaHost, world: &World, needle: &str, below: u16) -> Identity {
     let (buffer, hits) = painted(host, world, None).expect("the flow is open");
     let (x, y) = locate(&buffer, needle);
@@ -333,8 +292,6 @@ fn click_on(host: &LuaHost, world: &World, needle: &str, below: u16) -> Identity
     identity
 }
 
-/// Press a key the way the loop does: a declared chord resolves through the
-/// registry to `on_action`, and anything else goes to `on_key`.
 fn press(host: &LuaHost, world: &World, chord: &str) {
     publish(host, world);
     let index = index_of(host, MOD);
@@ -375,7 +332,6 @@ fn key_press(chord: &str) -> KeyPress {
     key
 }
 
-/// Type a word, character by character, as a terminal delivers it.
 fn type_text(host: &LuaHost, world: &World, text: &str) {
     for ch in text.chars() {
         let mut key = KeyPress {
@@ -388,9 +344,6 @@ fn type_text(host: &LuaHost, world: &World, text: &str) {
         }
         publish(host, world);
         let index = index_of(host, MOD);
-        // Typed text is never a declared chord in a field: the flow returns
-        // `false` from those actions while a field has focus, which is the
-        // behaviour this exercises.
         let mut registry = Registry::default();
         let (bindings, settings) = host.declarations();
         registry.declare(bindings, settings);
@@ -407,7 +360,6 @@ fn type_text(host: &LuaHost, world: &World, text: &str) {
     }
 }
 
-/// Open the flow and take the host step's first row, for tests of later steps.
 fn open(host: &LuaHost, world: &World) {
     press(host, world, "ctrl+n");
     if drawn(host, world).contains("Place") {
@@ -424,7 +376,6 @@ fn devbox() -> HostRow {
     }
 }
 
-/// A Fleet as the snapshot publishes it, with its own places and agents.
 fn fleet(
     name: &str,
     transport: &str,
@@ -451,9 +402,6 @@ fn fleet(
     }
 }
 
-/// Three Fleets, as the approved mock-up lists them: box (no manager
-/// running) with a place beside its `local`, gpu (unreachable) and this
-/// machine's laptop.
 fn three_fleets() -> Vec<FleetRow> {
     let box_local = HostRow {
         detail: "box itself (mux)".into(),
@@ -490,10 +438,6 @@ fn three_fleets() -> Vec<FleetRow> {
     ]
 }
 
-// ── The Fleet step ─────────────────────────────────────────────────────────
-
-/// With one Fleet listed there is nothing to choose: the flow opens on that
-/// Fleet's places, and the create names it.
 #[test]
 fn a_single_listed_fleet_skips_the_fleet_step() {
     let host = host();
@@ -510,7 +454,7 @@ fn a_single_listed_fleet_skips_the_fleet_step() {
     assert!(screen.contains("Place"), "{screen}");
     assert!(!screen.contains("local Fleet"), "no Fleet step: {screen}");
     press(&host, &world, "enter");
-    press(&host, &world, "down"); // /src/notes
+    press(&host, &world, "down");
     press(&host, &world, "enter");
     type_text(&host, &world, "notes");
     press(&host, &world, "enter");
@@ -523,9 +467,6 @@ fn a_single_listed_fleet_skips_the_fleet_step() {
     );
 }
 
-/// A sole Fleet thurbox cannot speak to is refused where the flow opens,
-/// on the place step it starts on: the refusal is shown, enter goes no
-/// further, and no step waits on agents that will never come.
 #[test]
 fn a_sole_incompatible_fleet_is_refused_on_the_place_step() {
     let host = host();
@@ -556,8 +497,6 @@ fn a_sole_incompatible_fleet_is_refused_on_the_place_step() {
     assert!(host.drain_commands().is_empty());
 }
 
-/// A refused Fleet whose first ready place is not its first one still shows
-/// its refusal under the cursor: the list is the refusal alone.
 #[test]
 fn a_refusal_keeps_the_cursor_when_a_later_place_is_ready() {
     let host = host();
@@ -580,9 +519,6 @@ fn a_refusal_keeps_the_cursor_when_a_later_place_is_ready() {
     assert_ne!(fg_at(&buffer, "Select"), muted, "{screen}");
 }
 
-/// A Fleet refused after the flow left the place step says so on the step
-/// the flow is on: the agent step shows the refusal, not a wait for agents
-/// that will never come.
 #[test]
 fn a_fleet_refused_later_shows_the_refusal_on_the_agent_step() {
     let host = host();
@@ -598,7 +534,7 @@ fn a_fleet_refused_later_shows_the_refusal_on_the_agent_step() {
     world.snapshot.fleets = vec![only];
     press(&host, &world, "ctrl+n");
     press(&host, &world, "enter");
-    press(&host, &world, "down"); // /src/notes
+    press(&host, &world, "down");
     press(&host, &world, "enter");
     type_text(&host, &world, "notes");
     press(&host, &world, "enter");
@@ -613,19 +549,12 @@ fn a_fleet_refused_later_shows_the_refusal_on_the_agent_step() {
         "{screen}"
     );
     assert!(!screen.contains("Asking Fleet"), "{screen}");
-    // Only the refusal and the way out: no empty list, no Create pill.
     assert!(!screen.contains("Create"), "{screen}");
     assert!(screen.contains("esc"), "{screen}");
     press(&host, &world, "enter");
     assert!(host.drain_commands().is_empty());
 }
 
-/// With several Fleets, the Fleet step comes first: each Fleet, how it is
-/// reached and whether it is up, with why for the one under the cursor. An
-/// unreachable Fleet is not taken. The places and agents that follow are
-/// the chosen Fleet's, its repositories are remembered under
-/// `<fleet>/<place>` rather than as this machine's, and the create names
-/// the Fleet.
 #[test]
 fn the_fleet_step_lists_each_fleet_and_the_rest_follows_the_one_picked() {
     let host = host();
@@ -692,8 +621,6 @@ fn the_fleet_step_lists_each_fleet_and_the_rest_follows_the_one_picked() {
     press(&host, &world, "tab");
     press(&host, &world, "tab");
     drawn(&host, &world);
-    // Browsing asks for box's place, which the kernel reads through box's
-    // link, never this machine's disk.
     assert!(
         host.shared_string("want_browse")
             .is_some_and(|want| want.starts_with("box/local\0")),
@@ -721,9 +648,6 @@ fn the_fleet_step_lists_each_fleet_and_the_rest_follows_the_one_picked() {
     );
 }
 
-/// A remote Fleet's path field starts at its own home, and a typed `~` is
-/// that home. Until the home is known the field starts empty, with a hint,
-/// rather than at a `~/` the Fleet would refuse.
 #[test]
 fn a_remote_fleets_path_starts_at_its_own_home() {
     let host = host();
@@ -741,8 +665,6 @@ fn a_remote_fleets_path_starts_at_its_own_home() {
     );
     assert!(!screen.contains("~/"), "{screen}");
 
-    // Browsing with the home unknown lists the runtime's own home, and an
-    // entry picked there is an absolute path on box, never `~/…`.
     press(&host, &world, "tab");
     drawn(&host, &world);
     assert_eq!(
@@ -779,8 +701,6 @@ fn a_remote_fleets_path_starts_at_its_own_home() {
     press(&host, &world, "enter");
     press(&host, &world, "tab");
     assert!(drawn(&host, &world).contains("/home/me/"));
-    // A typed `~` lists box's home, not its parent: the directory part is
-    // split off first and only then made box's home.
     for (typed, back) in [("~", 1), ("~/", 2), ("~/pro", 5)] {
         type_text(&host, &world, typed);
         drawn(&host, &world);
@@ -804,9 +724,6 @@ fn a_remote_fleets_path_starts_at_its_own_home() {
     );
 }
 
-/// A remote Fleet's home is the home of its own `local` only: another
-/// place of it is another machine, whose path field starts empty until that
-/// place names its home.
 #[test]
 fn a_remote_fleets_home_prefills_only_its_own_local() {
     let mut world = World::default();
@@ -840,8 +757,6 @@ fn a_remote_fleets_home_prefills_only_its_own_local() {
     assert!(screen.contains("/home/box/"), "{screen}");
 }
 
-// ── Opening and closing ────────────────────────────────────────────────────
-
 #[test]
 fn the_flow_draws_nothing_until_it_is_opened() {
     let host = host();
@@ -853,9 +768,6 @@ fn the_flow_draws_nothing_until_it_is_opened() {
     );
 }
 
-/// The host step is never skipped: this machine is a choice at once, and the
-/// hosts Fleet names later join the same open form, so a form opened before
-/// Fleet answers neither waits nor loses them.
 #[test]
 fn the_host_step_offers_this_machine_at_once_and_fleets_hosts_when_they_arrive() {
     let host = host();
@@ -871,8 +783,6 @@ fn the_host_step_offers_this_machine_at_once_and_fleets_hosts_when_they_arrive()
     assert!(drawn(&host, &world).contains("Select Repo"));
 }
 
-/// With no host list published at all, the step says it is asking rather than
-/// offering nothing, and the hosts appear once they arrive.
 #[test]
 fn a_host_list_not_yet_published_shows_the_wait() {
     let host = host();
@@ -886,8 +796,6 @@ fn a_host_list_not_yet_published_shows_the_wait() {
     assert!(screen.contains("devbox"), "{screen}");
 }
 
-/// Two places as the maintainer's screenshot listed them: `local`, and a
-/// place whose runtime says why it cannot run a session, at length.
 fn places_of_two_lengths() -> Vec<HostRow> {
     vec![
         HostRow {
@@ -909,15 +817,10 @@ fn places_of_two_lengths() -> Vec<HostRow> {
 const NOT_READY_WHY: &str =
     "place \"gpu-box\" cannot be reached: ssh: connect to host gpu-box port 22: Connection timed out";
 
-/// The cell column `needle` starts at on screen.
 fn column_of(buffer: &Buffer, needle: &str) -> u16 {
     locate(buffer, needle).0
 }
 
-/// The place picker is a table: each column starts at one cell on every row,
-/// whatever the names' lengths; a row's status is short and whole, and the
-/// selected place's reason reads on one line under the list, ellipsized,
-/// in a modal that fits the screen it opens on.
 #[test]
 fn the_place_picker_aligns_its_columns_and_gives_the_reason_one_line() {
     let frames: [(u16, &[&str]); 2] = [
@@ -1001,8 +904,6 @@ fn the_place_picker_aligns_its_columns_and_gives_the_reason_one_line() {
     }
 }
 
-/// The place under the cursor is ready: no line is held under the list for
-/// a reason it does not have, beyond the one line every place gets.
 #[test]
 fn a_ready_place_under_the_cursor_leaves_one_blank_reason_line() {
     let host = host();
@@ -1026,14 +927,11 @@ fn a_ready_place_under_the_cursor_leaves_one_blank_reason_line() {
     assert!(lines[place + 3].contains("[ Select ]"), "{screen}");
 }
 
-/// The foreground colour of the first cell of `needle` on screen.
 fn fg_at(buffer: &Buffer, needle: &str) -> ratatui::style::Color {
     let (x, y) = locate(buffer, needle);
     buffer[(x, y)].fg
 }
 
-/// A place that is not ready reads as muted on its whole row, not only in
-/// its status cell, while a ready place keeps the text colour.
 #[test]
 fn a_not_ready_place_is_dimmed() {
     let host = host();
@@ -1069,9 +967,6 @@ fn a_not_ready_place_is_dimmed() {
     assert_ne!(fg_at(&buffer, "mux/other"), muted, "{}", screen_of(&buffer));
 }
 
-/// `enter` on a place that is not ready stays on the place step and says
-/// why, as the Fleet step does for an unreachable Fleet; `Select` reads
-/// disabled while the cursor is on that place.
 #[test]
 fn a_not_ready_place_cannot_be_selected() {
     let host = host();
@@ -1102,8 +997,6 @@ fn a_not_ready_place_cannot_be_selected() {
     assert!(screen.contains("mux/gpu-box is not ready"), "{screen}");
 }
 
-/// A disabled `Select` stays disabled under the pointer: hovering it does
-/// not light it as a button that would act.
 #[test]
 fn a_disabled_select_does_not_light_under_the_pointer() {
     let host = host();
@@ -1118,7 +1011,6 @@ fn a_disabled_select_does_not_light_under_the_pointer() {
     assert_eq!(resting[(x, y)], lit[(x, y)], "{}", screen_of(&lit));
 }
 
-/// The picker opens with the cursor on the first place that is ready.
 #[test]
 fn the_place_picker_opens_on_the_first_ready_place() {
     let host = host();
@@ -1139,9 +1031,6 @@ fn the_place_picker_opens_on_the_first_ready_place() {
     );
 }
 
-/// A name too long for its row never costs a row its status: the status
-/// column is always kept, the description gives up its cells first, and
-/// then the name is ellipsized. The Fleet picker keeps its state the same way.
 #[test]
 fn a_long_name_never_hides_a_pickers_status_column() {
     let long = "mux/a-place-whose-name-runs-on-and-on-and-on-x";
@@ -1188,8 +1077,6 @@ fn a_long_name_never_hides_a_pickers_status_column() {
     }
 }
 
-/// More places than the screen has rows: the modal stays inside the screen,
-/// the list scrolls with the cursor, and the row the cursor is on is drawn.
 #[test]
 fn a_long_place_list_scrolls_inside_a_short_screen() {
     let host = host();
@@ -1229,9 +1116,6 @@ fn a_long_place_list_scrolls_inside_a_short_screen() {
         screen.contains("cannot be reached"),
         "no reason at all:\n{screen}"
     );
-    // The reason gives up its lines before the list gives up a row: twenty
-    // rows inside the border, footer and message row leave the list 19 and
-    // the reason one.
     let lines: Vec<&str> = screen.lines().collect();
     let listed = lines
         .iter()
@@ -1250,7 +1134,6 @@ fn a_long_place_list_scrolls_inside_a_short_screen() {
     );
 }
 
-/// A Fleet that defines no `local` host offers none.
 #[test]
 fn local_is_offered_only_when_fleet_defines_it() {
     let host = host();
@@ -1285,8 +1168,6 @@ fn opening_with_hosts_asks_where_to_run_first() {
     );
 }
 
-/// A Fleet whose `herdr` runtime has a `local` place beside the default
-/// runtime's.
 fn with_herdr_local() -> World {
     let mut world = World::default();
     let herdr_local = HostRow {
@@ -1306,9 +1187,6 @@ fn with_herdr_local() -> World {
     world
 }
 
-/// Another runtime's `local` place is this machine, as the default one is:
-/// it offers this machine's repositories, read on this disk, and the Task
-/// names the place.
 #[test]
 fn another_runtimes_local_place_is_this_machine() {
     let host = host();
@@ -1335,8 +1213,6 @@ fn another_runtimes_local_place_is_this_machine() {
     );
 }
 
-/// Another runtime's `local` place is browsed on this disk, never through
-/// its runtime.
 #[test]
 fn another_runtimes_local_place_is_browsed_here() {
     let host = host();
@@ -1351,9 +1227,6 @@ fn another_runtimes_local_place_is_browsed_here() {
     assert!(browse.starts_with('\0'), "{browse:?}");
 }
 
-/// On a remote Fleet whose default runtime has no `local` place, another
-/// runtime's `local` is read through that place itself, never through a
-/// `local` the Fleet would refuse. Its repositories stay the machine's.
 #[test]
 fn a_remote_fleets_runtime_local_place_is_read_through_itself() {
     let host = host();
@@ -1387,9 +1260,6 @@ fn a_remote_fleets_runtime_local_place_is_read_through_itself() {
     );
 }
 
-/// A remote Fleet's `local` that is not ready reads nothing: another
-/// runtime's ready `local` is read through itself, and its repositories
-/// stay the machine's whichever place reads them.
 #[test]
 fn a_remote_fleets_runtime_local_place_skips_a_local_that_is_not_ready() {
     let host = host();
@@ -1438,7 +1308,6 @@ fn escape_closes_the_flow_and_stops_asking() {
     assert_ne!(drawn(&host, &world), "");
     press(&host, &world, "esc");
     assert_eq!(drawn(&host, &world), "");
-    // And the reads stop being requested, so a closed flow costs nothing.
     assert_eq!(host.shared_string("want_bookmarks"), None);
     assert_eq!(host.shared_string("want_browse"), None);
 }
@@ -1457,8 +1326,6 @@ fn a_second_open_does_not_discard_what_was_chosen() {
     );
 }
 
-// ── The repository step ────────────────────────────────────────────────────
-
 #[test]
 fn remembered_repositories_are_listed_with_their_kind() {
     let host = host();
@@ -1467,7 +1334,6 @@ fn remembered_repositories_are_listed_with_their_kind() {
     let screen = drawn(&host, &world);
     assert!(screen.contains("Repos (2)"), "{screen}");
     assert!(screen.contains("/src/thurbox"), "{screen}");
-    // A known non-repository reads as a plain directory.
     assert!(screen.contains("/src/notes"), "{screen}");
     assert!(screen.contains("(dir)"), "{screen}");
 }
@@ -1482,7 +1348,6 @@ fn a_folder_of_repositories_renders_as_a_group_that_folds() {
     assert!(screen.contains("(parent)"), "{screen}");
     assert!(screen.contains("/src/thurbox"), "{screen}");
 
-    // Space on the header folds it, and its children go with it.
     press(&host, &world, "space");
     let folded = drawn(&host, &world);
     assert!(folded.contains("▸ /src"), "a folded group: {folded}");
@@ -1504,7 +1369,6 @@ fn search_filters_and_counts_what_it_matched() {
     assert!(!screen.contains("thurbox"), "{screen}");
 }
 
-/// The repository rows as drawn, top to bottom, without their checkboxes.
 fn listed(screen: &str) -> Vec<String> {
     screen
         .lines()
@@ -1515,10 +1379,6 @@ fn listed(screen: &str) -> Vec<String> {
 
 #[test]
 fn a_match_in_the_repository_name_ranks_above_one_in_its_path() {
-    // Every path shares its leading directories, so a query that happens to be
-    // spelled across them matched every row — in list order, with the row that
-    // is actually called that somewhere down the list. The cursor starts on the
-    // first row, and enter takes it, so the best match has to be first.
     let host = host();
     let world = world_with(vec![
         bookmark("/home/me/capital/web", Some(true)),
@@ -1531,10 +1391,10 @@ fn a_match_in_the_repository_name_ranks_above_one_in_its_path() {
     assert_eq!(
         listed(&drawn(&host, &world)),
         vec![
-            "/home/me/work/api",         // the name, exactly
-            "/home/me/work/api-gateway", // the name starts with it
-            "/home/me/work/legacy-api",  // the name contains it
-            "/home/me/capital/web",      // only the path does
+            "/home/me/work/api",
+            "/home/me/work/api-gateway",
+            "/home/me/work/legacy-api",
+            "/home/me/capital/web",
         ]
     );
 }
@@ -1556,8 +1416,6 @@ fn a_query_every_path_matches_keeps_the_list_order() {
 
 #[test]
 fn a_search_ranks_folder_members_without_their_header() {
-    // The ranked list is flat: a header is a folder, not something to pick, and
-    // keeping it would split the ranking into groups.
     let host = host();
     let world = world_with(folder_rows());
     open(&host, &world);
@@ -1569,8 +1427,6 @@ fn a_search_ranks_folder_members_without_their_header() {
 
 #[test]
 fn the_search_is_focused_as_soon_as_the_flow_opens() {
-    // No `/` first: the flow opens on the repositories to pick from, and the
-    // first thing a hand does there is start typing one's name.
     let host = host();
     let world = World::default();
     open(&host, &world);
@@ -1580,8 +1436,6 @@ fn the_search_is_focused_as_soon_as_the_flow_opens() {
 
 #[test]
 fn letters_that_used_to_be_shortcuts_are_typed_into_the_search() {
-    // j/k/w/d were list commands; with the search focused they are part of a
-    // repository's name, which is what they are far more often.
     let host = host();
     let world = world_with(vec![
         bookmark("/src/jkwd", Some(true)),
@@ -1639,9 +1493,6 @@ fn shift_tab_from_the_path_returns_to_the_search() {
 
 #[test]
 fn a_letter_typed_into_a_field_is_not_a_command() {
-    // `w` is worktree mode in the list and a letter in the path input. The flow
-    // declares it as an action and declines it while a field has focus, which is
-    // the only reason typing a path with a `w` in it works.
     let host = host();
     let world = World::default();
     open(&host, &world);
@@ -1659,8 +1510,6 @@ fn the_typed_path_is_asked_about_by_directory() {
     open(&host, &world);
     press(&host, &world, "tab");
     type_text(&host, &world, "/srv/rep");
-    // The want carries the host and the DIRECTORY component: the listing that
-    // both the dropdown and the completion are built from.
     assert_eq!(host.shared_string("want_browse").as_deref(), Some("\0/srv"));
 }
 
@@ -1692,7 +1541,6 @@ fn the_completion_offers_the_one_entry_that_extends_what_was_typed() {
         "the ghost completes the typed prefix: {screen}"
     );
 
-    // Tab takes it.
     press(&host, &world, "tab");
     assert!(drawn(&host, &world).contains("/srv/repos/"));
 }
@@ -1791,11 +1639,6 @@ fn a_dotted_prefix_offers_the_hidden_entries() {
 
 #[test]
 fn tab_on_a_fresh_field_browses_home_when_memory_is_empty() {
-    // The regression behind "tab no longer browses directories": the flow asked
-    // for a listing only once something had been typed, so `tab` on a fresh
-    // field opened a dropdown whose want was never published — it sat on "(no
-    // subdirectories)" forever. With nothing remembered the field starts at
-    // home, exactly as a bare `~` does.
     let host = host();
     let mut world = world_with(Vec::new());
     world.repos.set_listing_for_test(
@@ -1809,8 +1652,6 @@ fn tab_on_a_fresh_field_browses_home_when_memory_is_empty() {
     world.wants.browse = Some((String::new(), "~".into()));
     open(&host, &world);
     press(&host, &world, "tab");
-    // Nothing typed yet, and nothing to complete — so this `tab` opens the
-    // browser rather than taking a suggestion.
     press(&host, &world, "tab");
     assert_eq!(
         host.shared_string("want_browse").as_deref(),
@@ -1823,10 +1664,6 @@ fn tab_on_a_fresh_field_browses_home_when_memory_is_empty() {
 
 #[test]
 fn a_flow_picking_from_memory_asks_for_no_listing() {
-    // A flow only picking from memory must not pay for a directory read — even
-    // though the path field now holds its starting directory the whole time.
-    // The want is restated on every render, so what a frame asks for is read
-    // after one; leaving the field stops the asking.
     let host = host();
     let world = World::default();
     open(&host, &world);
@@ -1840,7 +1677,6 @@ fn a_flow_picking_from_memory_asks_for_no_listing() {
     assert_eq!(host.shared_string("want_browse"), None);
 }
 
-/// What the path field holds once focus has moved into it.
 fn path_field(host: &LuaHost, world: &World) -> String {
     open(host, world);
     press(host, world, "tab");
@@ -1866,7 +1702,6 @@ fn the_path_field_starts_at_the_directory_every_repository_shares() {
 
 #[test]
 fn the_shared_directory_is_found_by_whole_components() {
-    // `/src/app` and `/src/apple` share `/src`, not `/src/app`.
     let world = world_with(vec![
         bookmark("/src/app/one", Some(true)),
         bookmark("/src/apple/two", Some(true)),
@@ -1891,8 +1726,6 @@ fn repositories_with_nothing_in_common_start_at_the_root() {
 
 #[test]
 fn folder_headers_and_the_offered_interface_do_not_move_the_start() {
-    // The header is a folder, not a repository in it, and the interface
-    // directory is offered by the kernel, not remembered by the user.
     let mut rows = folder_rows();
     rows.insert(0, offered());
     assert_eq!(path_field(&host(), &world_with(rows)), "/src/");
@@ -1911,8 +1744,6 @@ fn a_name_typed_into_the_untouched_field_lands_under_the_start() {
 
 #[test]
 fn a_new_path_typed_into_the_untouched_field_replaces_the_start() {
-    // `/` or `~` first is a path of its own, not a name under the start — the
-    // way an address bar takes a new address.
     let host = host();
     let world = World::default();
     open(&host, &world);
@@ -1937,7 +1768,6 @@ fn a_field_that_was_typed_in_is_not_refilled() {
 
 #[test]
 fn a_bare_tilde_browses_home_rather_than_filtering_by_it() {
-    // v1's exception: `~` is where to look, not something to match names against.
     let host = host();
     let mut world = World::default();
     world.repos.set_listing_for_test(
@@ -1998,9 +1828,6 @@ fn a_missing_directory_is_reported_in_place_of_its_entries() {
 
 #[test]
 fn the_dropdown_keeps_the_arrows_while_it_is_open() {
-    // The arrows move the repository list even while the path field has focus,
-    // which is the one place that rule has an exception: an open dropdown is a
-    // list of its own, and it must not have the list behind it move instead.
     let host = host();
     let mut world = World::default();
     world.repos.set_listing_for_test(
@@ -2058,8 +1885,6 @@ fn escape_closes_the_dropdown_before_it_closes_the_flow() {
     );
 }
 
-// ── The commands the flow issues ───────────────────────────────────────────
-
 #[test]
 fn a_typed_path_is_committed_as_a_bookmark_rather_than_trusted() {
     let host = host();
@@ -2082,10 +1907,6 @@ fn a_typed_path_is_committed_as_a_bookmark_rather_than_trusted() {
 
 #[test]
 fn a_path_just_added_is_the_row_that_gets_selected() {
-    // The flow finds the row it just added by recency — memory is published
-    // most-recent-first — and the kernel offers the interface directory ahead of
-    // memory. Taking row 1 therefore selected the INTERFACE for every repository
-    // added, leaving the typed one unchecked.
     let host = host();
     let mut world = world_with(vec![offered()]);
     open(&host, &world);
@@ -2093,8 +1914,6 @@ fn a_path_just_added_is_the_row_that_gets_selected() {
     type_text(&host, &world, "/src/new");
     press(&host, &world, "enter");
 
-    // The write lands: the added path is now the newest thing in memory, still
-    // behind the offered row.
     world.repos = store_with(vec![offered(), bookmark("/src/new", Some(true))]);
     let screen = drawn(&host, &world);
     let selected: Vec<&str> = screen.lines().filter(|line| line.contains("[x]")).collect();
@@ -2105,10 +1924,6 @@ fn a_path_just_added_is_the_row_that_gets_selected() {
     );
 }
 
-// ── A path that does not exist yet ─────────────────────────────────────────
-
-/// A world whose `/src` holds the two remembered repositories and nothing else,
-/// with that listing served — the directory the path field starts in.
 fn world_listing_src() -> World {
     let mut world = World::default();
     world.repos.set_listing_for_test(
@@ -2139,7 +1954,6 @@ fn a_name_that_is_not_there_offers_to_create_the_folder() {
     let screen = drawn(&host, &world);
     assert!(screen.contains("[ Create folder ]"), "{screen}");
 
-    // A name that IS there is still an add.
     let host = self::host();
     open(&host, &world);
     press(&host, &world, "tab");
@@ -2183,15 +1997,11 @@ fn a_new_git_repository_is_one_command_and_lands_ticked() {
             edit: BookmarkEdit::Init,
         }]
     );
-    // Back on the repositories, where the new row is picked once it lands —
-    // the same select-or-add a typed path gets.
     assert!(drawn(&host, &world).contains("Select Repo"));
 }
 
 #[test]
 fn adding_a_repository_clears_the_search_that_would_hide_it() {
-    // The new row is ticked and the cursor put on it — which is no use behind a
-    // query typed before the path was, one that the new row does not match.
     let host = host();
     let world = world_listing_src();
     open(&host, &world);
@@ -2219,7 +2029,6 @@ fn a_folder_can_be_left_empty() {
     press(&host, &world, "tab");
     type_text(&host, &world, "scratch");
     press(&host, &world, "enter");
-    // The last choice; the selector stops there rather than wrapping.
     press(&host, &world, "j");
     press(&host, &world, "j");
     press(&host, &world, "enter");
@@ -2248,7 +2057,6 @@ fn escape_from_the_folder_question_keeps_what_was_typed() {
     assert!(host.drain_commands().is_empty());
 }
 
-/// Walk to the new-folder question for `/src/<name>` and pick "clone".
 fn to_the_clone_step(host: &LuaHost, world: &World, name: &str) {
     open(host, world);
     press(host, world, "tab");
@@ -2334,9 +2142,6 @@ fn a_clone_under_way_says_so_where_the_path_is_typed() {
 
 #[test]
 fn a_write_that_failed_ticks_nothing_in_its_place() {
-    // The row a write lands as is found by recency, so a write that never
-    // landed would tick whichever row was newest before it — and a confirm
-    // after the reported failure would open a session somewhere nobody chose.
     let host = host();
     let mut world = world_listing_src();
     to_the_clone_step(&host, &world, "fork-of-it");
@@ -2354,7 +2159,6 @@ fn a_write_that_failed_ticks_nothing_in_its_place() {
     let screen = drawn(&host, &world);
     assert!(!screen.contains("▸ /src/fork-of-it"), "{screen}");
 
-    // Nor does the tick arrive late, once the failure is swept from the list.
     world.inflight.clear();
     let screen = drawn(&host, &world);
     assert!(
@@ -2417,8 +2221,6 @@ fn an_earlier_failure_does_not_stop_the_next_write_being_ticked() {
 
 #[test]
 fn another_write_failing_meanwhile_does_not_count_as_this_ones() {
-    // Writes run independently: a forget that fails while a clone is running
-    // says nothing about the clone.
     let host = host();
     let mut world = world_listing_src();
     open(&host, &world);
@@ -2440,7 +2242,6 @@ fn another_write_failing_meanwhile_does_not_count_as_this_ones() {
 
 #[test]
 fn a_parent_that_is_missing_too_is_still_a_folder_to_create() {
-    // `mkdir -p` makes the parents, so a failed listing is no reason to refuse.
     let host = host();
     let mut world = World::default();
     world.repos.set_listing_for_test(
@@ -2452,13 +2253,14 @@ fn a_parent_that_is_missing_too_is_still_a_folder_to_create() {
     open(&host, &world);
     press(&host, &world, "tab");
     type_text(&host, &world, "new/deeper");
-    assert!(drawn(&host, &world).contains("[ Create folder ]"));
+    assert!(
+        drawn(&host, &world).contains("[ Create folder ]"),
+        "the folder is made with its parents, so a failed listing is no reason to refuse"
+    );
 }
 
 #[test]
 fn a_listing_still_on_its_way_leaves_enter_an_add() {
-    // Until the listing says otherwise the path may well exist, and the kernel
-    // is the one that checks: the old behaviour, unchanged.
     let host = host();
     let mut world = World::default();
     world.wants.browse = Some((String::new(), "/src".into()));
@@ -2512,8 +2314,6 @@ fn alt_d_forgets_a_remembered_repository() {
 
 #[test]
 fn delete_forgets_too_once_there_is_nothing_ahead_of_the_caret() {
-    // `delete` still edits the query while there is text ahead of the caret —
-    // only past the end, where it would do nothing, does it mean "forget".
     let host = host();
     let world = World::default();
     open(&host, &world);
@@ -2547,15 +2347,12 @@ fn a_member_of_a_folder_cannot_be_forgotten_on_its_own() {
     assert!(drawn(&host, &world).contains("forget the folder header instead"));
 }
 
-// ── Through to creation ────────────────────────────────────────────────────
-
-/// Walk a plain (no worktree) selection through to the create command.
 #[test]
 fn a_plain_selection_names_the_session_then_the_agent() {
     let host = host();
     let world = World::default();
     open(&host, &world);
-    press(&host, &world, "down"); // /src/notes, no repository
+    press(&host, &world, "down");
     press(&host, &world, "enter");
     let screen = drawn(&host, &world);
     assert!(
@@ -2567,7 +2364,6 @@ fn a_plain_selection_names_the_session_then_the_agent() {
     press(&host, &world, "enter");
     let screen = drawn(&host, &world);
     assert!(screen.contains("Coding Agent"), "{screen}");
-    // The configured default is preselected, and the command it wraps is shown.
     assert!(screen.contains("▸ claude"), "{screen}");
 
     press(&host, &world, "enter");
@@ -2588,8 +2384,6 @@ fn a_plain_selection_names_the_session_then_the_agent() {
     assert_eq!(drawn(&host, &world), "", "the flow closes when it commits");
 }
 
-/// A world whose repository `/src/thurbox` has the branches `listing`, and
-/// whose flow is asking for them, as the loop serves `store.want_branches`.
 fn world_with_branches(listing: thurbox::kernel::repos::BranchListing) -> World {
     let mut world = World::default();
     world.repos.set_branches_for_test("/src/thurbox", listing);
@@ -2605,8 +2399,6 @@ fn main_and_dev() -> thurbox::kernel::repos::BranchListing {
     })
 }
 
-/// The upstream's default branch is under the cursor and is the base sent,
-/// and a fetch that failed says so above the list it left as it was.
 #[test]
 fn the_base_branch_defaults_to_origin_and_says_when_the_fetch_failed() {
     let host = host();
@@ -2644,9 +2436,6 @@ fn the_base_branch_defaults_to_origin_and_says_when_the_fetch_failed() {
     );
 }
 
-/// v2's worktree flow: `alt+w` gives the repository a worktree (`[wt]`),
-/// then the base branch is picked (the default under the cursor), the session
-/// named, and its branch named, prefilled from the name.
 #[test]
 fn a_worktree_asks_the_base_branch_then_names_the_branch() {
     let host = host();
@@ -2691,22 +2480,19 @@ fn a_worktree_asks_the_base_branch_then_names_the_branch() {
     );
 }
 
-/// Every ticked repository goes into the one session: the worktrees first,
-/// the plain ones after, in the list's order. The first is where the agent
-/// starts and the base branch is asked for; the rest ride along as extras.
 #[test]
 fn ticked_repositories_all_go_into_the_session() {
     let host = host();
     let world = world_with_branches(main_and_dev());
     open(&host, &world);
-    press(&host, &world, "alt+w"); // /src/thurbox, a worktree
+    press(&host, &world, "alt+w");
     press(&host, &world, "down");
-    press(&host, &world, "space"); // /src/notes, as it is
+    press(&host, &world, "space");
     press(&host, &world, "enter");
-    press(&host, &world, "enter"); // the base branch
+    press(&host, &world, "enter");
     type_text(&host, &world, "both");
     press(&host, &world, "enter");
-    press(&host, &world, "enter"); // the branch, `both`
+    press(&host, &world, "enter");
     press(&host, &world, "enter");
     assert!(matches!(
         &host.drain_commands()[..],
@@ -2720,22 +2506,18 @@ fn ticked_repositories_all_go_into_the_session() {
     ),);
 }
 
-/// A directory with no repository is refused a worktree, in v2's words, and
-/// stays ticked as a plain directory.
 #[test]
 fn a_directory_without_git_is_refused_a_worktree() {
     let host = host();
     let world = World::default();
     open(&host, &world);
-    press(&host, &world, "down"); // /src/notes
+    press(&host, &world, "down");
     press(&host, &world, "alt+w");
     let screen = drawn(&host, &world);
     assert!(screen.contains("Not a git repo"), "{screen}");
     assert!(!screen.contains("[wt]"), "{screen}");
 }
 
-/// A repository's existing worktrees open under it with `→`, and `enter` on
-/// one runs the session in it as it is, named after its directory.
 #[test]
 fn an_existing_worktree_opens_as_it_is() {
     let host = host();
@@ -2767,8 +2549,6 @@ fn an_existing_worktree_opens_as_it_is() {
     ),);
 }
 
-/// The same plain selection on the Fleet engine (ADR-41) becomes a Task.
-/// `fleet` here is a stand-in that records what it was asked.
 #[cfg(unix)]
 #[test]
 fn a_plain_selection_on_the_fleet_engine_applies_a_task() {
@@ -2789,10 +2569,7 @@ fn a_plain_selection_on_the_fleet_engine_applies_a_task() {
     let fleet = StubFleet::new("[\"local\"]");
     fleet.run(commands).expect("the create");
     let task = fleet.applied();
-    // A Task's name is a DNS-like name: the typed one, made one.
     assert_eq!(task["metadata"]["name"], "read-the-code");
-    // `/src/notes` is no repository, so it runs as it is; `tui_e2e`
-    // covers a repository's worktree.
     assert_eq!(
         task["spec"]["workspace"],
         serde_json::json!(["file:///src/notes"])
@@ -2801,9 +2578,6 @@ fn a_plain_selection_on_the_fleet_engine_applies_a_task() {
     assert_eq!(task["spec"]["host"], "local");
 }
 
-/// A `fleet` that answers what the executor asks before it applies (no Task
-/// yet, the harnesses with a profile, the hosts `hosts` names, as JSON) and
-/// records the rest, with what it read on its standard input.
 #[cfg(unix)]
 struct StubFleet {
     dir: tempfile::TempDir,
@@ -2814,7 +2588,6 @@ struct StubFleet {
 impl StubFleet {
     fn new(hosts: &str) -> StubFleet {
         let dir = tempfile::tempdir().expect("dir");
-        // The interface's own files (a bookmark) land in this profile.
         for (var, sub) in [
             ("THURBOX_CONFIG_DIR", "config"),
             ("THURBOX_DATA_DIR", "data"),
@@ -2838,8 +2611,6 @@ impl StubFleet {
         StubFleet { dir, program }
     }
 
-    /// Dispatch `commands` on the Fleet engine's bus, one by one, and
-    /// answer the first failure.
     fn run(&self, commands: Vec<Command>) -> Result<(), String> {
         let mut bus = thurbox::kernel::command::CommandBus::fleet(
             thurbox::fleet_link::FleetLink::local(self.program.to_string_lossy()),
@@ -2866,7 +2637,6 @@ impl StubFleet {
         Ok(())
     }
 
-    /// The Task the one `apply` carried.
     fn applied(&self) -> serde_json::Value {
         let asked =
             std::fs::read_to_string(self.dir.path().join("asked")).expect("fleet was asked");
@@ -2880,9 +2650,6 @@ impl StubFleet {
     }
 }
 
-/// A repository path typed into the flow is remembered before the session
-/// is made: on the Fleet engine too, since the bookmark is the interface's,
-/// not a session's.
 #[cfg(unix)]
 #[test]
 fn a_typed_repository_is_remembered_on_the_fleet_engine() {
@@ -2915,7 +2682,6 @@ fn a_typed_repository_is_remembered_on_the_fleet_engine() {
     fleet.run(commands).expect("the bookmark");
     assert!(!fleet.asked(), "a bookmark asks nothing of Fleet");
 
-    // And the flow sees it saved, as it waits to.
     let mut repos = RepoStore::new();
     let beta = srv.join("beta").to_string_lossy().into_owned();
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
@@ -2937,19 +2703,13 @@ fn a_typed_repository_is_remembered_on_the_fleet_engine() {
     }
 }
 
-/// What the stand-in `fleet` answers to `runtime browse` on any place: the
-/// place's home, `/home/box`, with a repository and a plain directory.
 #[cfg(unix)]
 const REMOTE_HOME_LISTING: &str =
     r#"{"dir":"/home/box","entries":[{"name":"app","repo":true},{"name":"notes","repo":false}]}"#;
 
-/// What it answers to `runtime branches`, except for `…/notes`, whose
-/// branches fail as a place without `workspace-git` fails them.
 #[cfg(unix)]
 const REMOTE_BRANCHES: &str = r#"{"default":"main","names":["dev","main"]}"#;
 
-/// Ask the store for what the flow asks, as the loop does each iteration,
-/// and wait until every read it started has answered.
 #[cfg(unix)]
 fn serve(host: &LuaHost, world: &mut World) {
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
@@ -2973,10 +2733,6 @@ fn serve(host: &LuaHost, world: &mut World) {
     }
 }
 
-/// The local Fleet's place `mux/box` is another machine. Its folders and
-/// branches are read there, through `fleet runtime browse` and `branches`,
-/// never on this machine's disk, and a worktree of a repository there is
-/// the runtime's to make: the Task names it `git+file://` on that path.
 #[cfg(unix)]
 #[test]
 fn a_place_on_another_machine_is_browsed_and_given_a_worktree_there() {
@@ -3007,7 +2763,6 @@ fn a_place_on_another_machine_is_browsed_and_given_a_worktree_there() {
     press(&host, &world, "down");
     press(&host, &world, "enter");
     serve(&host, &mut world);
-    // The path field opens on the place's home, which the runtime names.
     press(&host, &world, "tab");
     serve(&host, &mut world);
     press(&host, &world, "tab");
@@ -3027,7 +2782,6 @@ fn a_place_on_another_machine_is_browsed_and_given_a_worktree_there() {
         "{browsed}"
     );
 
-    // Picking `app` remembers it for this place, under the Fleet's key.
     press(&host, &world, "enter");
     let commands = host.drain_commands();
     assert!(
@@ -3043,14 +2797,11 @@ fn a_place_on_another_machine_is_browsed_and_given_a_worktree_there() {
     serve(&host, &mut world);
     let screen = drawn(&host, &world);
     assert!(screen.contains("/home/box/app"), "{screen}");
-    // A place elsewhere lists no existing worktrees: `→` is not offered,
-    // and pressing it asks for nothing.
     assert!(!screen.contains("expand worktrees"), "{screen}");
     press(&host, &world, "right");
     drawn(&host, &world);
     assert_eq!(host.shared_string("want_branches"), None);
 
-    // A worktree there: its branches are the place's.
     press(&host, &world, "alt+w");
     let screen = drawn(&host, &world);
     assert!(screen.contains("[wt]"), "{screen}");
@@ -3083,9 +2834,6 @@ fn a_place_on_another_machine_is_browsed_and_given_a_worktree_there() {
     assert_eq!(task["spec"]["host"], "mux/box");
 }
 
-/// A typed `~` on a place elsewhere is that place's home, which its own
-/// `~` listing names: until it has, any `~…` asks for `~` first, and then
-/// both the listing and the remembered path are under that home.
 #[cfg(unix)]
 #[test]
 fn a_typed_home_on_a_place_elsewhere_is_that_places_home() {
@@ -3123,8 +2871,6 @@ fn a_typed_home_on_a_place_elsewhere_is_that_places_home() {
         Some("local/mux/box\0~"),
         "the home is asked for first"
     );
-    // Before the home is known, `enter` remembers nothing: saved as typed,
-    // `~/app` would be refused on the place.
     press(&host, &world, "backspace");
     press(&host, &world, "enter");
     assert!(host.drain_commands().is_empty());
@@ -3151,9 +2897,6 @@ fn a_typed_home_on_a_place_elsewhere_is_that_places_home() {
     );
 }
 
-/// Another login's home (`~user/…`) is not known on a place elsewhere: the
-/// flow says so rather than listing the login's own home, and remembers
-/// nothing.
 #[test]
 fn another_logins_home_on_a_place_elsewhere_is_refused() {
     let host = host();
@@ -3177,8 +2920,6 @@ fn another_logins_home_on_a_place_elsewhere_is_refused() {
     press(&host, &world, "down");
     press(&host, &world, "enter");
     press(&host, &world, "tab");
-    // `~` is listed first, so the place's home is known: the refusal, not
-    // the wait for the home, is what keeps `~bob/app` from being saved.
     type_text(&host, &world, "~/");
     drawn(&host, &world);
     assert_eq!(
@@ -3216,8 +2957,6 @@ fn another_logins_home_on_a_place_elsewhere_is_refused() {
     );
 }
 
-/// A place that cannot list a repository's branches says why in the
-/// dialog, in the place's own words.
 #[cfg(unix)]
 #[test]
 fn a_places_refusal_to_list_branches_is_shown() {
@@ -3259,8 +2998,6 @@ fn a_places_refusal_to_list_branches_is_shown() {
     );
 }
 
-/// The host picker names a route (`ssh:devbox`); Fleet names the same
-/// machine `devbox`, and refuses a host its config does not define.
 #[cfg(unix)]
 #[test]
 fn a_session_on_a_host_names_the_fleet_host() {
@@ -3293,8 +3030,6 @@ fn a_session_on_a_host_names_the_fleet_host() {
     assert!(!unknown.asked(), "nothing was applied");
 }
 
-/// A session on another Fleet host runs in the repository directory there,
-/// as it is: its Task names a `file://` URL of the path given.
 #[cfg(unix)]
 #[test]
 fn a_session_on_another_fleet_host_runs_in_its_directory() {
@@ -3320,9 +3055,6 @@ fn a_session_on_another_fleet_host_runs_in_its_directory() {
     );
 }
 
-/// A directory that is no git repository, such as the installed interface
-/// the picker offers to edit, has no worktree to make: its session runs in it
-/// as it is.
 #[cfg(unix)]
 #[test]
 fn a_directory_that_is_no_repository_runs_as_it_is() {
@@ -3348,9 +3080,6 @@ fn a_directory_that_is_no_repository_runs_as_it_is() {
     );
 }
 
-/// A bare repository is a repository: it has no `.git` beside its files, but
-/// its session still gets a worktree, never a run inside the bare
-/// repository.
 #[cfg(unix)]
 #[test]
 fn a_bare_repository_is_not_run_as_a_plain_directory() {
@@ -3379,8 +3108,6 @@ fn a_bare_repository_is_not_run_as_a_plain_directory() {
     );
 }
 
-/// Only an agent Fleet has a harness profile for becomes a Task: `shell`
-/// is a command of thurbox's registry, not a harness.
 #[cfg(unix)]
 #[test]
 fn an_agent_with_no_fleet_harness_is_refused_by_name() {
@@ -3391,7 +3118,6 @@ fn an_agent_with_no_fleet_harness_is_refused_by_name() {
             name: "shell".into(),
         });
         open(&host, &world);
-        // `/src/notes`: no repository, so no worktree to make here.
         press(&host, &world, "down");
         press(&host, &world, "enter");
         press(&host, &world, "enter");
@@ -3422,10 +3148,6 @@ fn an_agent_with_no_fleet_harness_is_refused_by_name() {
 
 #[test]
 fn an_untouched_name_takes_the_repository_it_just_picked() {
-    // The step used to open on an empty field with no default and no placeholder,
-    // one step after the repository — the obvious answer — had been chosen. Enter
-    // straight through now uses the repository's own leaf, and the placeholder
-    // shows what that will be before the key is pressed.
     let host = host();
     let world = World::default();
     open(&host, &world);
@@ -3446,7 +3168,6 @@ fn an_untouched_name_takes_the_repository_it_just_picked() {
     assert_eq!(
         host.drain_commands(),
         vec![Command::Create {
-            // Named after the repository rather than left unnamed.
             name: "thurbox".into(),
             repo: "/src/thurbox".into(),
             agent: Some("claude".into()),
@@ -3462,14 +3183,9 @@ fn an_untouched_name_takes_the_repository_it_just_picked() {
 
 #[test]
 fn a_name_is_still_refused_when_there_is_nothing_to_name_it_after() {
-    // The guarantee the old test was really protecting: nothing is ever created
-    // unnamed. With no repository selected the flow falls back to the home
-    // directory, which is no kind of session name, so there is no default to take
-    // and the refusal stands.
     let host = host();
     let world = world_with(Vec::new());
     open(&host, &world);
-    // An empty list: nothing to tick or point at, so `enter` takes home.
     press(&host, &world, "enter");
     press(&host, &world, "enter");
     let screen = drawn(&host, &world);
@@ -3494,18 +3210,17 @@ fn a_host_is_carried_into_the_create_and_scopes_the_memory() {
             ..HostRow::default()
         },
     ]);
-    // The memory that matters here is the HOST's, not the local machine's.
     world
         .repos
         .set_bookmarks_for_test("ssh:devbox", vec![bookmark("/srv/thurbox", Some(true))]);
     press(&host, &world, "ctrl+n");
-    press(&host, &world, "j"); // local → devbox
+    press(&host, &world, "j");
     press(&host, &world, "enter");
 
-    // Repository memory is scoped to the machine the repositories live on.
     assert_eq!(
         host.shared_string("want_bookmarks").as_deref(),
-        Some("ssh:devbox")
+        Some("ssh:devbox"),
+        "repository memory is scoped to the machine the repositories live on"
     );
     world.wants.bookmarks = Some("ssh:devbox".into());
     assert!(drawn(&host, &world).contains("Repos on ssh:devbox"));
@@ -3519,18 +3234,15 @@ fn a_host_is_carried_into_the_create_and_scopes_the_memory() {
     let Some(Command::Create { host: target, .. }) = issued.first() else {
         panic!("expected a create, got {issued:?}");
     };
-    // The BACKEND name, because that is the key repository memory is scoped by
-    // and the flow carries one host string, not two. `spawn::resolve_host` is
-    // therefore required to accept this spelling as well as the bare `devbox`
-    // the CLI's `--host` takes — it accepted only the bare one once, and every
-    // session created on a host failed with "Unknown host 'ssh:devbox'".
-    assert_eq!(target.as_deref(), Some("ssh:devbox"));
+    assert_eq!(
+        target.as_deref(),
+        Some("ssh:devbox"),
+        "the create names the backend, the key repository memory is scoped by"
+    );
 }
 
 #[test]
 fn nothing_to_pick_locally_still_creates_a_session() {
-    // v1 spawns in the home directory when no repository is chosen. With rows on
-    // screen the cursor row is the choice, so that fallback is an empty list's.
     let host = host();
     let world = world_with(Vec::new());
     open(&host, &world);
@@ -3546,9 +3258,6 @@ fn nothing_to_pick_locally_still_creates_a_session() {
     assert_eq!(repo, "~", "the home directory, as v1 does");
 }
 
-/// Fleet's agents arrive from a worker. A name confirmed before they have
-/// is not a choice of no agent: the flow waits on the agent step, issues
-/// nothing, and goes on once Fleet answers.
 #[test]
 fn a_name_confirmed_before_fleets_agents_arrive_waits_for_them() {
     let host = host();
@@ -3595,14 +3304,8 @@ fn one_agent_is_not_a_question() {
     assert_eq!(drawn(&host, &world), "");
 }
 
-// ── What the flow is, structurally ─────────────────────────────────────────
-
 #[test]
 fn the_empty_session_list_names_the_chord_that_creates_one() {
-    // v1's empty state is two lines: "No sessions yet" and the chord. The second
-    // was omitted while nothing answered `ctrl+n`; now that the flow does, it is
-    // back — and it reads the chord out of the registry, so a rebind or a removed
-    // flow cannot leave it advertising a dead key.
     let host = host();
     let world = World::default();
     publish(&host, &world);
@@ -3649,10 +3352,6 @@ fn the_empty_session_list_names_the_chord_that_creates_one() {
 
 #[test]
 fn what_the_flow_asks_for_is_what_the_loop_reads() {
-    // The two halves of the request wire format, checked against each other: the
-    // flow writes `store.want_*`, and `Wants::new` is what the loop turns those
-    // strings back into. A format change on either side fails here rather than in
-    // a pane that silently never gets its rows.
     let host = host();
     let mut world = World::default();
     world.snapshot.hosts = Some(vec![
@@ -3680,8 +3379,6 @@ fn what_the_flow_asks_for_is_what_the_loop_reads() {
     assert_eq!(wants.bookmarks.as_deref(), Some("ssh:devbox"));
     assert_eq!(wants.browse, Some(("ssh:devbox".into(), "/srv".into())));
 
-    // And serving those wants is what the loop does with them — idempotently, so
-    // a flow that asks every frame costs one request.
     world.repos.serve(&wants);
     world.repos.serve(&wants);
     assert!(
@@ -3704,8 +3401,6 @@ fn the_flow_is_a_float_that_never_joins_the_focus_ring() {
 
 #[test]
 fn every_key_the_flow_uses_is_declared_rather_than_only_handled() {
-    // Declared keys are what help can list and a user can rebind; the fixed ones
-    // (enter/esc/tab) are v1's fixed ones too.
     let host = host();
     let index = index_of(&host, MOD);
     let declared: Vec<&str> = host.mods[index]
@@ -3723,9 +3418,6 @@ fn every_key_the_flow_uses_is_declared_rather_than_only_handled() {
 
 #[test]
 fn the_arrows_pick_a_host_as_well_as_j_and_k() {
-    // Only `j`/`k` were declared, so anyone who reached for an arrow first — and
-    // every other list in this interface takes both — found a picker that looked
-    // broken.
     let host = host();
     let mut world = World::default();
     world.snapshot.hosts = Some(vec![
@@ -3745,8 +3437,6 @@ fn the_arrows_pick_a_host_as_well_as_j_and_k() {
     ]);
     press(&host, &world, "ctrl+n");
 
-    // The cursor starts on the local machine; one step down reaches the first
-    // host, whichever key does the stepping.
     press(&host, &world, "down");
     let with_arrow = drawn(&host, &world);
     press(&host, &world, "up");
@@ -3760,21 +3450,11 @@ fn the_arrows_pick_a_host_as_well_as_j_and_k() {
 
 #[test]
 fn the_arrows_still_move_the_list_while_a_field_has_focus() {
-    // On the repository step the filter takes letters, so `j` types a `j`. An
-    // arrow cannot be typed, so it keeps moving the selection — otherwise
-    // picking a row means leaving the field first, which v1 never asked of
-    // anyone.
-    //
-    // The cursor is drawn by styling, which the text dump cannot see, so the
-    // selection is observed through `space`, which checks the row under it —
-    // after `enter` leaves the field, since a space is a character the filter
-    // is entitled to take.
     let host = host();
     let world = world_with(vec![
         bookmark("/src/alpha", Some(true)),
         bookmark("/src/beta", Some(true)),
     ]);
-    // No hosts configured, so the flow opens on the repository step.
     open(&host, &world);
 
     press(&host, &world, "down");
@@ -3790,17 +3470,8 @@ fn the_arrows_still_move_the_list_while_a_field_has_focus() {
     );
 }
 
-// ── What the confirm pill says ─────────────────────────────────────────────
-//
-// The pills replay `enter` and `esc`, so their labels are claims about what
-// those keys do. Both keys mean something different in nearly every state of
-// this flow, and a fixed pair of labels made most of those claims false.
-
 #[test]
 fn the_repository_list_offers_the_next_step_rather_than_done() {
-    // `enter` on the list carries the ticked repositories into the next
-    // question; it does not finish anything, and there are three more steps
-    // behind it.
     let h = host();
     let world = World::default();
     open(&h, &world);
@@ -3810,9 +3481,6 @@ fn the_repository_list_offers_the_next_step_rather_than_done() {
 
 #[test]
 fn the_repo_step_footer_names_every_key_it_offers_in_full() {
-    // The hints share one row with the pills, and the ones that did not fit
-    // were cut off at the edge — forgetting a repository was the one hint
-    // nobody could see.
     let h = host();
     let world = World::default();
     open(&h, &world);
@@ -3829,9 +3497,6 @@ fn the_repo_step_footer_names_every_key_it_offers_in_full() {
 
 #[test]
 fn the_typed_path_field_offers_to_add_the_repository() {
-    // `enter` here adds what was typed to memory and leaves the flow on this
-    // very step — the one place the old label read most like "finish". An empty
-    // field has nothing to add, so it offers no pill rather than an inert one.
     let h = host();
     let world = World::default();
     open(&h, &world);
@@ -3846,14 +3511,11 @@ fn the_typed_path_field_offers_to_add_the_repository() {
     type_text(&h, &world, "/srv/thing");
     let screen = drawn(&h, &world);
     assert!(screen.contains("[ Add repo ]"), "{screen}");
-    // `enter` adds, so the key that goes on from here is named beside it.
     assert!(screen.contains("alt+⏎ next"), "{screen}");
 }
 
 #[test]
 fn the_search_pills_name_the_filter_they_act_on() {
-    // With a query typed `esc` clears it rather than closing the flow, so the
-    // dismiss pill must not claim to cancel — until there is nothing to clear.
     let h = host();
     let world = World::default();
     open(&h, &world);
@@ -3954,7 +3616,6 @@ fn a_listing_that_has_not_arrived_offers_no_pill_to_press() {
 
 #[test]
 fn the_last_question_says_that_answering_it_creates_the_session() {
-    // The agent step spawns on `enter`; it does not merely settle the agent.
     let h = host();
     let world = World::default();
     open(&h, &world);
@@ -3976,7 +3637,6 @@ fn the_last_question_says_that_answering_it_creates_the_session() {
 
 #[test]
 fn a_name_that_is_the_last_question_says_so_too() {
-    // One agent is not a question, so `enter` on the name field spawns.
     let h = host();
     let mut world = World::default();
     world.snapshot.agents.as_mut().unwrap().truncate(1);
@@ -3992,10 +3652,6 @@ fn a_name_that_is_the_last_question_says_so_too() {
 
 #[test]
 fn a_host_with_nothing_ticked_offers_nothing_to_advance_to() {
-    // `enter` carries the ticked rows, and with none ticked on a host
-    // `after_repos` refuses: there is no local home to stand in for a
-    // repository that has to exist on the other machine. An empty memory on a
-    // host is that state permanently, until a path is added.
     let h = host();
     let mut world = World::default();
     world.snapshot.hosts = Some(vec![
@@ -4009,8 +3665,8 @@ fn a_host_with_nothing_ticked_offers_nothing_to_advance_to() {
     ]);
     world.repos.set_bookmarks_for_test("ssh:devbox", Vec::new());
     press(&h, &world, "ctrl+n");
-    press(&h, &world, "j"); // local → devbox
-    press(&h, &world, "enter"); // devbox: on to its repositories
+    press(&h, &world, "j");
+    press(&h, &world, "enter");
     world.wants.bookmarks = Some("ssh:devbox".into());
 
     let empty = drawn(&h, &world);
@@ -4020,7 +3676,6 @@ fn a_host_with_nothing_ticked_offers_nothing_to_advance_to() {
         "nothing to advance to on a host: {empty}"
     );
 
-    // A row on screen is a choice even unticked: `enter` takes the cursor row.
     world
         .repos
         .set_bookmarks_for_test("ssh:devbox", vec![bookmark("/srv/thurbox", Some(true))]);
@@ -4030,7 +3685,6 @@ fn a_host_with_nothing_ticked_offers_nothing_to_advance_to() {
 
 #[test]
 fn ctrl_enter_confirms_from_the_path_field() {
-    // No trip back to the list first: the ticked rows go on from any focus.
     let host = host();
     let world = World::default();
     open(&host, &world);
@@ -4055,8 +3709,6 @@ fn alt_enter_is_the_same_confirm_for_terminals_that_cannot_send_ctrl_enter() {
 
 #[test]
 fn with_nothing_ticked_the_cursor_row_is_the_choice() {
-    // Type part of a name, confirm: the best match is the repository, with no
-    // `space` in between.
     let host = host();
     let world = World::default();
     open(&host, &world);
@@ -4074,8 +3726,6 @@ fn with_nothing_ticked_the_cursor_row_is_the_choice() {
 
 #[test]
 fn nothing_ticked_locally_still_offers_the_next_step() {
-    // The local half of the rule above: `after_repos` falls back to the home
-    // directory, so `enter` really does advance and the pill must stay.
     let h = host();
     let world = World::default();
     open(&h, &world);
@@ -4085,9 +3735,6 @@ fn nothing_ticked_locally_still_offers_the_next_step() {
 
 #[test]
 fn a_name_with_no_default_to_fall_back_on_offers_no_pill() {
-    // Nothing selected locally, so the flow names the home directory — which is
-    // no kind of session name, leaving the field with an empty value AND an
-    // empty placeholder. `enter` is refused there, so nothing is offered.
     let h = host();
     let world = world_with(Vec::new());
     open(&h, &world);
@@ -4099,7 +3746,6 @@ fn a_name_with_no_default_to_fall_back_on_offers_no_pill() {
         "validation would refuse this: {screen}"
     );
 
-    // Two agents in this world, so the agent step is still ahead of it.
     type_text(&h, &world, "x");
     let typed = drawn(&h, &world);
     assert!(typed.contains("[ Next ]"), "{typed}");
@@ -4107,8 +3753,6 @@ fn a_name_with_no_default_to_fall_back_on_offers_no_pill() {
 
 #[test]
 fn a_name_the_repository_can_answer_for_keeps_its_pill() {
-    // The other side of it: an untouched field whose placeholder IS the answer
-    // `enter` takes, so the pill is honest about the empty field.
     let h = host();
     let world = World::default();
     open(&h, &world);
@@ -4118,15 +3762,6 @@ fn a_name_the_repository_can_answer_for_keeps_its_pill() {
     assert!(screen.contains("thurbox"), "the suggestion shows: {screen}");
     assert!(screen.contains("[ Next ]"), "{screen}");
 }
-
-// ── What is missing, said before the user commits ──────────────────────────
-
-// ── Left click and hover, field by field ───────────────────────────────────
-//
-// A press is resolved against the hitboxes the paint recorded, exactly as the
-// loop resolves it, so each test proves both halves: the field is a target, and
-// pressing it does what its key already does. "What its key does" is checked
-// by comparing against a second flow driven by that key alone.
 
 fn browse_world() -> World {
     let mut world = World::default();
@@ -4212,7 +3847,6 @@ fn clicking_a_browsed_folder_selects_it_as_the_arrows_do() {
     press(&keyed, &world, "down");
 
     assert_eq!(drawn(&clicked, &world), drawn(&keyed, &world));
-    // And `enter` then acts on the clicked row, as it would on the arrowed one.
     press(&clicked, &world, "enter");
     press(&keyed, &world, "enter");
     let issued = |host: &LuaHost| format!("{:?}", host.drain_commands());
@@ -4224,12 +3858,10 @@ fn clicking_a_browsed_folder_selects_it_as_the_arrows_do() {
     assert_eq!(command, issued(&keyed));
 }
 
-/// The flow as painted with the pointer over `hovered`, for its colours.
 fn colours(host: &LuaHost, world: &World, hovered: Option<&Identity>) -> Buffer {
     painted(host, world, hovered).expect("the flow is open").0
 }
 
-/// The identity drawn at `needle`, as the kernel would publish it on hover.
 fn identity_of(host: &LuaHost, world: &World, needle: &str, below: u16) -> Identity {
     let (buffer, hits) = painted(host, world, None).expect("the flow is open");
     let (x, y) = locate(&buffer, needle);
@@ -4241,7 +3873,6 @@ fn a_hovered_repository_row_is_banded_and_keeps_its_colours() {
     let world = World::default();
     let host = host();
     open(&host, &world);
-    // The second row: the first carries the cursor, whose bar would hide a band.
     let hovered = identity_of(&host, &world, "notes", 0);
     assert!(hovered.id.is_some(), "a repository row is a target");
     let resting = colours(&host, &world, None);
@@ -4327,15 +3958,12 @@ fn a_hovered_field_lights_its_border_and_focus_outranks_it() {
     let resting = colours(&host, &world, None);
     let lit = colours(&host, &world, Some(&path));
     let (x, y) = locate(&resting, "Add Repo Path");
-    // The corner, which is border and nothing else.
     let corner = (x - 2, y);
     assert_ne!(
         resting[corner].fg, lit[corner].fg,
         "hovering the unfocused field lights its border"
     );
 
-    // The focused search field already wears the focused border: hovering it
-    // must not replace that with the weaker hover colour.
     let search = identity_of(&host, &world, "Search (", 0);
     let (sx, sy) = locate(&resting, "Search (");
     let search_corner = (sx - 2, sy);
@@ -4371,8 +3999,6 @@ fn a_hovered_pill_lights_and_its_neighbour_does_not() {
 
 #[test]
 fn a_bookmark_named_like_a_reserved_target_is_still_selected_by_a_click() {
-    // A remembered path can be relative, and a relative path can be any string
-    // — including one spelled like the flow's own field or folder targets.
     let world = World {
         repos: store_with(vec![
             bookmark("/src/thurbox", Some(true)),

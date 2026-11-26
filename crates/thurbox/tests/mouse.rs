@@ -1,15 +1,3 @@
-//! Click targeting, against the *real* bundled mods.
-//!
-//! The kernel hit-tests the tree it painted, so these render the shipped Lua
-//! and then ask "what is under this cell?". That is deliberately the same
-//! question the event loop asks — if a mod stops declaring a target, a test
-//! here fails rather than a click quietly doing nothing.
-//!
-//! What is NOT here is the loop's dispatch of a hit, which needs a live
-//! `LuaHost` plus a terminal plus a registry the binary owns; the pieces it is
-//! built from — verb parsing, hit ordering, mod attribution — are each
-//! asserted below.
-
 use ratatui::backend::TestBackend;
 use ratatui::layout::{Position, Rect};
 use ratatui::Terminal;
@@ -105,10 +93,6 @@ fn hits_of(mod_name: &str, width: u16, height: u16) -> Vec<Hit> {
     })
     .expect("publish");
 
-    // The session list publishes `store.selected`, which is how the agent pane
-    // knows it has a session to show — without it that pane draws its empty
-    // state, whose border carries no tab strip and no collapse toggle. The loop
-    // paints the list first for the same reason.
     if mod_name != "sessions" {
         let sessions = host
             .mods
@@ -125,7 +109,7 @@ fn hits_of(mod_name: &str, width: u16, height: u16) -> Vec<Hit> {
                 frame: 0,
             },
         )
-        .expect("render the list");
+        .expect("render the session list, which publishes `store.selected` for the agent pane");
     }
 
     let index = host
@@ -155,13 +139,10 @@ fn hits_of(mod_name: &str, width: u16, height: u16) -> Vec<Hit> {
     hits
 }
 
-/// The hitbox the loop would pick for a cell: innermost, last painted.
 fn target_at(hits: &[Hit], x: u16, y: u16) -> Option<&Hit> {
     let position = Position::new(x, y);
     hits.iter().rev().find(|hit| hit.rect.contains(position))
 }
-
-// ── the vocabulary ────────────────────────────────────────────────────────
 
 #[test]
 fn a_verb_is_read_off_the_role_and_nothing_else_is() {
@@ -177,11 +158,10 @@ fn a_verb_is_read_off_the_role_and_nothing_else_is() {
         ClickVerb::parse(Some("focus:shell")),
         Some(ClickVerb::Focus("shell".into()))
     );
-    // A url's own colons belong to the url: the verb is read off the FIRST one
-    // and everything after it is the link.
     assert_eq!(
         ClickVerb::parse(Some("url:https://example.test/a?q=1")),
-        Some(ClickVerb::Url("https://example.test/a?q=1".into()))
+        Some(ClickVerb::Url("https://example.test/a?q=1".into())),
+        "a url's own colons belong to the url"
     );
     assert!(ClickVerb::parse(Some("row")).is_none());
 }
@@ -193,7 +173,6 @@ fn a_pane_url_node_becomes_a_link_over_the_cells_it_drew() {
 
     let url = "https://example.test/some/page";
     let node = Node::Text {
-        // Indented, as a pane indents its text: the padding must not be linked.
         lines: vec![vec![Run::plain(format!("  {url}"))]],
         align: Default::default(),
         wrap: false,
@@ -235,12 +214,8 @@ fn a_pane_url_node_becomes_a_link_over_the_cells_it_drew() {
     assert_eq!(printed, url);
 }
 
-// ── recording ─────────────────────────────────────────────────────────────
-
 #[test]
 fn only_identified_nodes_become_targets() {
-    // A tree of plain text declares nothing, so a click on it can only reach
-    // the pane fallback the loop records around it.
     let hits = hits_of("sessions", 40, 12);
     assert!(
         hits.iter().all(|hit| !hit.identity.is_empty()),
@@ -250,10 +225,6 @@ fn only_identified_nodes_become_targets() {
 
 #[test]
 fn the_collapse_toggle_is_one_target_covering_its_chevron_and_its_hint() {
-    // The label is ` ◀ F9 ` and it is ONE button. It has to be two runs — a run
-    // carries one style, and the chevron reads accent while the hint reads muted
-    // — so both carry the same role, and the paint walk coalesces them into one
-    // hitbox over the whole label.
     let hits = hits_of("agent", 113, 10);
     let toggle: Vec<&Hit> = hits
         .iter()
@@ -275,7 +246,6 @@ fn the_collapse_toggle_is_one_target_covering_its_chevron_and_its_hint() {
     );
 }
 
-/// Convert a Lua node table and record the hits painting it declares.
 fn hits_for(source: &str, width: u16, height: u16) -> Vec<Hit> {
     let lua = mlua::Lua::new();
     let value: mlua::Value = lua.load(source).eval().expect("the table evaluates");
@@ -291,9 +261,6 @@ fn hits_for(source: &str, width: u16, height: u16) -> Vec<Hit> {
 
 #[test]
 fn a_run_that_names_a_role_is_a_target_over_its_own_columns() {
-    // Identity used to hang off the node alone, so a clickable chip inside a
-    // line forced the row to be exploded into one sized node per run. The paint
-    // walk already knows each run's column offset; this is that offset kept.
     let hits = hits_for(
         r#"{ text = { { { text = "ab" }, { text = "cd", role = "action:go" }, { text = "ef" } } } }"#,
         10,
@@ -309,8 +276,6 @@ fn a_run_that_names_a_role_is_a_target_over_its_own_columns() {
 
 #[test]
 fn adjacent_runs_sharing_an_identity_are_one_target() {
-    // ` ◀ F9 ` is one button in two colours — a run carries one style, so it has
-    // to be two runs — and a hitbox per run gave it a hole in the middle.
     let hits = hits_for(
         r#"{ text = { { { text = " ◀ ", role = "action:go" }, { text = "F9 ", role = "action:go" } } } }"#,
         10,
@@ -322,8 +287,6 @@ fn adjacent_runs_sharing_an_identity_are_one_target() {
 
 #[test]
 fn a_run_hit_stops_at_the_edge_of_the_node_that_holds_it() {
-    // A row wider than its rect clips rather than declaring a target over cells
-    // it never painted.
     let hits = hits_for(
         r#"{ text = { { { text = "ab" }, { text = "cdef", role = "action:go" } } } }"#,
         4,
@@ -335,10 +298,7 @@ fn a_run_hit_stops_at_the_edge_of_the_node_that_holds_it() {
 
 #[test]
 fn a_center_aligned_run_hit_lines_up_with_where_ratatui_paints_it() {
-    // ratatui halves the area and the run width independently before
-    // subtracting (Paragraph's get_line_offset), not `(area - width) / 2` —
-    // the two diverge whenever area and run width differ in parity, which
-    // used to shift the hitbox a column left of the glyph it names.
+    // ratatui centres by halving area and width separately (Paragraph's get_line_offset).
     let lua = mlua::Lua::new();
     let value: mlua::Value = lua
         .load(r#"{ text = { { { text = "x", role = "action:go" } } }, align = "center" }"#)
@@ -363,9 +323,6 @@ fn a_center_aligned_run_hit_lines_up_with_where_ratatui_paints_it() {
 
 #[test]
 fn an_overlay_run_is_a_target_on_the_border_it_paints_on() {
-    // The chips the agent pane puts on its top border, and the scrollbar it
-    // puts in the right border column: the column is ONE target, so a press
-    // arrives with `y` the row of the bar and `h` its length.
     let hits = hits_for(
         r#"{
              text = "",
@@ -397,8 +354,6 @@ fn an_overlay_run_is_a_target_on_the_border_it_paints_on() {
 
 #[test]
 fn a_parent_is_recorded_before_its_children() {
-    // The ordering the whole hit test rests on: reverse scan finds the
-    // innermost node, and the pane fallback only when nothing inside matched.
     use thurbox::kernel::node::{Axis, Node, Size};
 
     let child = Node::Text {
@@ -454,8 +409,6 @@ fn a_parent_is_recorded_before_its_children() {
 
 #[test]
 fn a_framed_node_is_clickable_on_its_border() {
-    // v1 puts the collapse chevron and the tab pills ON the central pane's top
-    // border, so a hitbox that stopped at the inner rect could never catch one.
     use thurbox::kernel::node::{Frame, Node, Size};
 
     let node = Node::Text {
@@ -501,8 +454,6 @@ fn every_session_row_is_a_click_target_carrying_its_id() {
         assert_eq!(hit.identity.role.as_deref(), Some("row"));
         assert_eq!(hit.rect.height, 1);
     }
-    // The border columns are outside every row, so a click on the frame focuses
-    // the column rather than selecting whatever row it is level with.
     let inside = rows[0].rect;
     assert!(inside.x >= 1 && inside.right() <= 39);
 }
@@ -518,8 +469,6 @@ fn a_session_row_click_lands_on_the_session_under_it() {
     assert_eq!(picked.identity.id, first.identity.id);
 }
 
-/// The sessions pane, published a two-session snapshot and rendered once, so a
-/// click has rows to land on.
 fn published_sessions_pane() -> (LuaHost, usize, RenderContext) {
     let host = host();
     let themes = Themes::load(None);
@@ -571,7 +520,6 @@ fn published_sessions_pane() -> (LuaHost, usize, RenderContext) {
     (host, index, ctx)
 }
 
-/// A click on the second session's row — the one the cursor does not start on.
 fn row_click(clicks: u8) -> thurbox::kernel::host::Click {
     thurbox::kernel::host::Click {
         id: Some(sample().sessions[1].id.clone()),
@@ -597,9 +545,6 @@ fn clicking_a_session_row_selects_that_session() {
         "handled"
     );
 
-    // The pane publishes its selection through `store`, which is how the agent
-    // pane learns what to show — so re-rendering and reading the tree back is
-    // the honest check that the click took.
     let node = host.render(index, ctx).expect("render").node;
     let mut hits = Vec::new();
     let mut terminal = Terminal::new(TestBackend::new(40, 12)).expect("terminal");
@@ -616,10 +561,6 @@ fn clicking_a_session_row_selects_that_session() {
     assert!(selected.is_some(), "the clicked row should be on screen");
 }
 
-/// Selecting and opening are two gestures. A single click selects the row and
-/// leaves the keyboard where it is, so the list's own chords keep working after
-/// you point at a session; a double-click is Enter — it also hands focus to the
-/// agent pane that shows it.
 #[test]
 fn only_a_double_click_on_a_session_row_hands_focus_to_the_agent_pane() {
     let (host, index, _) = published_sessions_pane();
@@ -665,12 +606,7 @@ fn a_click_on_nothing_is_declined_rather_than_guessed() {
 
 #[test]
 fn a_mod_without_on_click_declines_instead_of_failing() {
-    // Most panes never opt in, and a click on one has to fall through to the
-    // pane focus fallback rather than surfacing an error panel.
     let host = host();
-    // The agent pane draws a terminal surface and declares no `on_click`, so it
-    // is the surviving example of the case: a press on it must fall through to
-    // the focus fallback (and, over a terminal, arm a drag) rather than error.
     let index = host
         .mods
         .iter()
@@ -681,16 +617,6 @@ fn a_mod_without_on_click_declines_instead_of_failing() {
         .expect("no handler is not an error"));
 }
 
-// ── the right button reaches `on_context`, and nothing else ──────────────
-//
-// The property worth guarding is the one that makes this safe to add at all:
-// a right press is SILENT in a pane that has not been taught it. Every
-// `on_click` ever written reads "act on this row" — open the file, run the
-// action — so a right press delivered there would do exactly that, everywhere,
-// the moment the kernel began forwarding it. The two hooks must therefore stay
-// strictly separate, which is what these assert.
-
-/// A pane that answers both presses and says which it got.
 const TWO_HANDED: &str = r#"
 return {
   name = "twohanded",
@@ -710,7 +636,6 @@ return {
 }
 "#;
 
-/// A pane that was written before the right button existed.
 const LEFT_ONLY: &str = r#"
 return {
   name = "leftonly",
@@ -755,8 +680,6 @@ fn on(id: &str) -> thurbox::kernel::host::Click {
     }
 }
 
-/// What `state` the pane ended up with, read back the way the kernel would see
-/// it — through a render, not by reaching into Lua.
 fn said(host: &LuaHost, index: usize) -> String {
     let ctx = RenderContext {
         width: 20,
@@ -790,8 +713,6 @@ fn each_button_reaches_its_own_hook() {
     );
 }
 
-/// The safety property: a pane written before this existed cannot be made to
-/// act by a button it never asked for.
 #[test]
 fn a_pane_with_only_on_click_never_hears_a_right_press() {
     let (_home, host) = host_with(&[("20_leftonly.lua", LEFT_ONLY)]);
@@ -810,7 +731,6 @@ fn a_pane_with_only_on_click_never_hears_a_right_press() {
     );
 }
 
-/// A pane that says where on the SCREEN the press landed.
 const WHERE: &str = r#"
 return {
   name = "where",
@@ -826,9 +746,6 @@ return {
 }
 "#;
 
-/// `hit.x`/`hit.y` are inside the node; a menu opened at the pointer needs the
-/// cell on the screen, which a pane cannot work out — it knows neither where its
-/// slot sits nor where the node landed in it.
 #[test]
 fn a_press_carries_the_screen_cell_it_landed_on() {
     let (_home, host) = host_with(&[("10_where.lua", WHERE)]);
@@ -934,8 +851,6 @@ fn a_press_that_misses_a_float_reaches_its_on_outside() {
     );
 }
 
-/// The safety property again: a float written before the hook existed is not
-/// told anything, so it behaves exactly as it always has.
 #[test]
 fn a_float_without_on_outside_hears_nothing() {
     let (_home, host) = host_with(&[("10_twohanded.lua", TWO_HANDED)]);

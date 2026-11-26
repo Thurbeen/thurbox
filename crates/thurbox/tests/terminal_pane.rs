@@ -1,12 +1,3 @@
-//! The centre pane, after agent and shell became two tabs of ONE mod.
-//!
-//! v1's centre is a single pane with a tab strip on its border (`CentralTab`).
-//! v2 first modelled the two views as two mods taking turns in the `switch`
-//! slot, which cost the strip on every tab but the agent's, a second stop in
-//! the focus ring, and a slot arbitration that refereed nothing else
-//! (v2-system-modals D4). These assert the shape that replaced it, against the
-//! *real* bundled mods — so a mod edit that loses a tab fails here.
-
 use ratatui::backend::TestBackend;
 use ratatui::buffer::Buffer;
 use ratatui::Terminal;
@@ -126,8 +117,6 @@ fn index_of(host: &LuaHost, name: &str) -> usize {
         .unwrap_or_else(|| panic!("no plugin named {name}"))
 }
 
-/// Publish, then let the session list choose a session — the terminal reads its
-/// choice out of `store`, exactly as it does in the binary.
 fn with_a_selection() -> LuaHost {
     let host = host();
     publish(&host);
@@ -172,7 +161,6 @@ fn hits(node: &Node, width: u16, height: u16) -> Vec<Hit> {
     hits
 }
 
-/// Which column a label starts in, in cells rather than bytes.
 fn column_of(line: &str, needle: &str) -> u16 {
     let at = line
         .find(needle)
@@ -180,7 +168,6 @@ fn column_of(line: &str, needle: &str) -> u16 {
     u16::try_from(line[..at].chars().count()).expect("a column")
 }
 
-/// How far back the session surface this pane placed is scrolled.
 fn surface_scroll(node: &Node) -> u16 {
     fn walk(node: &Node) -> Option<u16> {
         match node {
@@ -196,7 +183,6 @@ fn surface_scroll(node: &Node) -> u16 {
     walk(node).expect("the pane places a session surface")
 }
 
-/// One wheel report over the middle of the pane.
 fn wheel(host: &LuaHost, up: bool) -> bool {
     host.on_scroll(index_of(host, TERMINAL), &Scroll { up, x: 30, y: 5 })
         .expect("the wheel")
@@ -239,10 +225,6 @@ fn the_centre_holds_one_terminal_mod_rather_than_two() {
 
 #[test]
 fn the_shell_view_names_itself_to_the_focus_badge() {
-    // The footer's badge must say what you are LOOKING at, as v1's does
-    // (`InputFocus::Terminal if is_shell_view => "Shell"`). The seam is the
-    // surface name: this pane addresses its shell as `<id>#shell`, and the badge
-    // is derived from that — so the two cannot disagree about which view is up.
     let host = with_a_selection();
     let index = index_of(&host, TERMINAL);
 
@@ -286,8 +268,6 @@ fn the_shell_chord_survived_the_merge() {
             ctrl: true,
             ..KeyPress::default()
         },
-        // The F-key alternate exists because a focused terminal is exactly
-        // where a bare `ctrl+<letter>` is most likely to be wanted by the agent.
         KeyPress {
             name: "f8".into(),
             ..KeyPress::default()
@@ -300,8 +280,6 @@ fn the_shell_chord_survived_the_merge() {
         assert_eq!(binding.owner, TERMINAL, "declared by the pane that acts");
     }
 }
-
-// ── the strip is the pane's, so it is on every tab ────────────────────────
 
 #[test]
 fn the_tab_strip_renders_on_the_shell_tab_too() {
@@ -319,15 +297,11 @@ fn the_tab_strip_renders_on_the_shell_tab_too() {
         "the strip must survive the switch: {}",
         shell_tab[0]
     );
-    // v1's shell title: name and view, with neither branch nor status, because
-    // neither describes the shell (`ui::terminal_view`).
     assert!(shell_tab[0].contains("(shell)"), "{}", shell_tab[0]);
 }
 
 #[test]
 fn the_showing_view_is_the_primary_chip() {
-    // Which tab is active is communicated by the chip's style — v1's
-    // `button_style` primary — so it has to move with the view.
     let host = with_a_selection();
     let index = index_of(&host, TERMINAL);
 
@@ -347,11 +321,8 @@ fn the_showing_view_is_the_primary_chip() {
     assert_ne!(after[(agent_at, 0)].bg, active);
 }
 
-// ── the views ─────────────────────────────────────────────────────────────
-
 #[test]
 fn the_shell_tab_places_the_shell_surface() {
-    // No new node kind: the shell is `<id>#shell` over the same primitive.
     let host = with_a_selection();
     let index = index_of(&host, TERMINAL);
     let agent = session_surface(&tree(&host, 60, 10));
@@ -366,8 +337,6 @@ fn the_shell_tab_places_the_shell_surface() {
         .iter()
         .map(|command| command.kind())
         .collect();
-    // Opening the shell and bringing the pane forward, which is what v1's
-    // `select_central_tab` does for both terminal tabs.
     assert!(kinds.contains(&"shell"), "{kinds:?}");
     assert!(kinds.contains(&"focus"), "{kinds:?}");
     assert_eq!(
@@ -378,9 +347,6 @@ fn the_shell_tab_places_the_shell_surface() {
 
 #[test]
 fn the_chord_toggles_where_a_chip_selects() {
-    // v1 `toggle_shell_view` vs `select_central_tab`: the key flips between the
-    // two views, a tab click names the one you want. Selecting twice must not
-    // bounce you back off the tab you asked for.
     let host = with_a_selection();
     let index = index_of(&host, TERMINAL);
     let agent = session_surface(&tree(&host, 60, 10));
@@ -406,8 +372,6 @@ fn the_chord_toggles_where_a_chip_selects() {
 
 #[test]
 fn each_session_keeps_its_own_tab() {
-    // v1 keys the view per session (`App::session_terminal_views`), so a shell
-    // opened on one session does not follow you to the next.
     let host = with_a_selection();
     let index = index_of(&host, TERMINAL);
     let sessions = index_of(&host, "sessions");
@@ -430,12 +394,6 @@ fn each_session_keeps_its_own_tab() {
 
 #[test]
 fn paging_is_the_agent_views_and_the_ptys_everywhere_else() {
-    // Scrollback is read off the agent's parser only, so on the shell tab the
-    // action declines and the key reaches whatever is running in it instead.
-    //
-    // Through the action rather than `on_key`: the page keys are *declared*
-    // now, so they are listed in help and can be rebound — which is the whole
-    // difference between a key a pane owns and a key it merely intercepts.
     let host = with_a_selection();
     let index = index_of(&host, TERMINAL);
     assert!(
@@ -448,12 +406,9 @@ fn paging_is_the_agent_views_and_the_ptys_everywhere_else() {
         !host.on_action(index, "terminal.scroll_up").expect("action"),
         "the shell leaves it to the pty"
     );
-    // And the title says nothing about a scroll the shell surface cannot honour.
     let line = painted(&tree(&host, 100, 10), 100, 10)[0].clone();
     assert!(!line.contains('↑'), "{line}");
 }
-
-// ── the chips are click targets ───────────────────────────────────────────
 
 #[test]
 fn a_chip_selects_a_tab_rather_than_focusing_another_mod() {
@@ -481,8 +436,6 @@ fn a_chip_selects_a_tab_rather_than_focusing_another_mod() {
             .any(|verb| matches!(verb, ClickVerb::Focus(name) if name == "review")),
         "the review chip went with its plugin: {verbs:?}"
     );
-    // The chevron shares the border with them and must not have been shifted
-    // out of the strip by the tabs beside it.
     assert!(
         verbs.contains(&ClickVerb::Action("sessions.toggle_panel".into())),
         "{verbs:?}"
@@ -491,8 +444,6 @@ fn a_chip_selects_a_tab_rather_than_focusing_another_mod() {
 
 #[test]
 fn a_chip_is_only_as_wide_as_its_own_label() {
-    // A chip that swallowed the border would make every click on it mean the
-    // same thing — and would eat the drag-selection over the terminal below.
     let host = with_a_selection();
     let node = tree(&host, 100, 10);
     for hit in hits(&node, 100, 10) {
@@ -504,15 +455,8 @@ fn a_chip_is_only_as_wide_as_its_own_label() {
     }
 }
 
-// ── the wheel ─────────────────────────────────────────────────────────────
-
 #[test]
 fn a_wheel_tick_scrolls_the_terminal_under_it() {
-    // The wheel reaches a pane as its own tick, not as a synthesized `up`. This
-    // pane is the reason the hook exists: it hands every unclaimed key to the
-    // agent, so it is the one pane that cannot declare the arrow keys the
-    // keystroke fallback needs — and the wheel therefore did nothing at all
-    // over the only surface with a scrollback worth moving.
     let host = with_a_selection();
     assert_eq!(
         surface_scroll(&tree(&host, 60, 10)),
@@ -537,13 +481,6 @@ fn a_wheel_tick_scrolls_the_terminal_under_it() {
 
 #[test]
 fn the_wheel_scrolls_the_shell_tab_as_well() {
-    // Scrollback is the pane's policy, and it used to hold one for the agent
-    // view alone: the shell surface is a live terminal with a scrollback of its
-    // own, so refusing to hold an offset for it left the wheel dead there.
-    //
-    // The page keys still decline on this tab (see the test above): a pager or
-    // an editor running in the shell has its own idea of what a page is, and
-    // none of what a wheel means.
     let host = with_a_selection();
     let index = index_of(&host, TERMINAL);
     host.on_action(index, "terminal.shell").expect("select");
@@ -564,9 +501,6 @@ fn the_wheel_scrolls_the_shell_tab_as_well() {
 
 #[test]
 fn each_tab_keeps_its_own_place_in_its_own_scrollback() {
-    // Two live terminals taking turns in one rect, so one offset between them
-    // would put the shell where the agent was — and the kernel writes the
-    // offset into whichever parser it is drawing.
     let host = with_a_selection();
     let index = index_of(&host, TERMINAL);
     assert!(wheel(&host, true));
@@ -590,12 +524,6 @@ fn each_tab_keeps_its_own_place_in_its_own_scrollback() {
 
 #[test]
 fn typing_snaps_the_view_back_to_the_bottom() {
-    // v1's rule: a key forwarded to the pty returns you to the live end of the
-    // stream. Without it a wheel tick leaves you typing into a screen you
-    // cannot see, which is a worse trap now that the wheel actually moves.
-    //
-    // The key is not consumed — the handler declines it — so it still reaches
-    // the agent.
     let host = with_a_selection();
     let index = index_of(&host, TERMINAL);
     assert!(wheel(&host, true));
@@ -610,24 +538,20 @@ fn typing_snaps_the_view_back_to_the_bottom() {
         !host.on_key(index, &key).expect("key"),
         "the keystroke belongs to the agent"
     );
-    assert_eq!(surface_scroll(&tree(&host, 60, 10)), 0);
+    assert_eq!(
+        surface_scroll(&tree(&host, 60, 10)),
+        0,
+        "a key forwarded to the pty returns the view to the live end"
+    );
 }
 
-// ── the scrollbar is a control ────────────────────────────────────────────
-
-/// The pane height every scrollbar case below is rendered at, and the scrollback
-/// they scroll. A 12-row pane leaves 10 inner rows: a cap, eight rows of track,
-/// a cap.
 const BAR_HEIGHT: u16 = 12;
 const BAR_TRACK_TOP: u16 = 1;
 const BAR_TRACK_BOTTOM: u16 = 8;
 const BAR_DEPTH: u16 = 20;
 
-/// The role the pane gives its scrollbar — the kernel's own spelling for "a
-/// press here takes hold of the pointer".
 const DRAG: &str = "drag";
 
-/// A press, or a move under one, on row `row` of the scrollbar column.
 fn bar_press(host: &LuaHost, row: u16, dragging: bool) -> bool {
     host.on_click(
         index_of(host, TERMINAL),
@@ -648,7 +572,6 @@ fn bar_press(host: &LuaHost, row: u16, dragging: bool) -> bool {
     .expect("press")
 }
 
-/// A session scrolled back far enough to have a bar to grab.
 fn with_a_scrollback() -> LuaHost {
     let host = with_a_selection();
     for _ in 0..BAR_DEPTH {
@@ -660,9 +583,6 @@ fn with_a_scrollback() -> LuaHost {
 
 #[test]
 fn the_scrollbar_is_a_click_target_only_once_there_is_one() {
-    // The bar is painted into the right border column, which is one node for
-    // the whole column — so it is a target or it is not, and there is no row of
-    // it that can be pressed while the rest cannot.
     let host = with_a_selection();
     let roles = |host: &LuaHost| -> Vec<String> {
         hits(&tree(host, 60, BAR_HEIGHT), 60, BAR_HEIGHT)
@@ -684,11 +604,6 @@ fn the_scrollbar_is_a_click_target_only_once_there_is_one() {
 
 #[test]
 fn the_ends_of_the_track_are_the_ends_of_the_scrollback() {
-    // Both ends have to be reachable, and the bottom one is the one that was
-    // off by a line: the position a scrollbar can express is `0..=depth`, and
-    // counting `depth` of them left the end of the track one line above the
-    // live bottom — so the bar could be dragged all the way down and still
-    // leave you off the stream.
     let host = with_a_scrollback();
     assert!(bar_press(&host, BAR_TRACK_BOTTOM, false));
     assert_eq!(
@@ -707,17 +622,14 @@ fn the_ends_of_the_track_are_the_ends_of_the_scrollback() {
 
 #[test]
 fn the_thumb_is_picked_up_where_it_was_grabbed() {
-    // A shallow scrollback makes a tall thumb, and pressing its lower half must
-    // not jerk it up by half its length. The offset within the thumb is taken at
-    // the press and held for the whole gesture, so the row under the pointer
-    // stays the row under the pointer.
     let host = with_a_scrollback();
-    // Live bottom: the thumb sits at the end of the track, and its last row is
-    // the last row of the track.
     assert!(bar_press(&host, BAR_TRACK_BOTTOM, false));
-    assert_eq!(surface_scroll(&tree(&host, 60, BAR_HEIGHT)), 0);
+    assert_eq!(
+        surface_scroll(&tree(&host, 60, BAR_HEIGHT)),
+        0,
+        "at the live bottom the thumb's last row is the track's last row"
+    );
 
-    // Pressing that last row again is a grab, not a jump: nothing moves.
     assert!(bar_press(&host, BAR_TRACK_BOTTOM, false));
     assert_eq!(
         surface_scroll(&tree(&host, 60, BAR_HEIGHT)),
@@ -725,8 +637,6 @@ fn the_thumb_is_picked_up_where_it_was_grabbed() {
         "grabbing the thumb where it already is moves nothing"
     );
 
-    // And dragging it one row up moves by one row of the track, not by the
-    // whole distance from the track's start.
     assert!(bar_press(&host, BAR_TRACK_BOTTOM - 1, true));
     let one_row = surface_scroll(&tree(&host, 60, BAR_HEIGHT));
     assert!(
@@ -737,8 +647,6 @@ fn the_thumb_is_picked_up_where_it_was_grabbed() {
 
 #[test]
 fn a_press_that_is_not_the_scrollbar_is_declined() {
-    // The pane's other affordances are chips the kernel resolves itself through
-    // a click verb; this handler must not swallow anything else that reaches it.
     let host = with_a_scrollback();
     assert!(
         !host

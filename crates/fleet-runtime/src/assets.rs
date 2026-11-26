@@ -1,16 +1,7 @@
-//! The plugin files Fleet ships for the harnesses that take their hooks as a
-//! file, written under Fleet's data directory on this machine. A harness profile names one with
-//! `{asset:<name>}`; the agent's own config directory is never written.
-
 use std::fs;
 use std::io;
 use std::path::Path;
 
-/// Each file, by its path under the asset directory: pi's extension,
-/// opencode's plugin directory, kilo's plugins with the TUI config that
-/// names one, omp's extension, qwen's settings and Copilot's plugin
-/// directory. Each only runs `fleet signal`, and does nothing where
-/// `FLEET_SIGNAL_FILE` is unset.
 pub const FILES: &[(&str, &str)] = &[
     ("fleet-pi.ts", include_str!("assets/fleet-pi.ts")),
     (
@@ -53,9 +44,6 @@ pub const FILES: &[(&str, &str)] = &[
     ),
 ];
 
-/// Write each shipped plugin file under `dir`, unless it already holds the
-/// same bytes. Each is renamed into place, so an agent starting meanwhile
-/// reads a whole file, the old or the new.
 pub fn write(dir: &Path) -> io::Result<()> {
     for (name, text) in FILES {
         let path = dir.join(name);
@@ -84,7 +72,6 @@ mod tests {
         for (name, text) in FILES {
             assert_eq!(fs::read_to_string(dir.join(name)).unwrap(), *text, "{name}");
         }
-        // A changed file is put back; an unchanged one is left as it is.
         let (name, text) = FILES[0];
         fs::write(dir.join(name), "changed").unwrap();
         write(&dir).unwrap();

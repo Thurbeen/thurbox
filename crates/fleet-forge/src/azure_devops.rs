@@ -1,11 +1,3 @@
-//! Azure DevOps Services pull requests through the authenticated `az` CLI.
-//!
-//! The adapter accepts the hosted `dev.azure.com` URL and its supported
-//! `{organization}.visualstudio.com` aliases.  Its canonical host is the
-//! organization-specific legacy hostname: that keeps `whoami` scoped to the
-//! organization and keeps equal project/repository names in two organizations
-//! from sharing a ChangeRequest identity.
-
 use std::ffi::OsString;
 use std::time::Duration;
 
@@ -267,7 +259,7 @@ fn state_of(pr: &Value) -> Result<ChangeState, String> {
     let is_draft = pr["isDraft"]
         .as_bool()
         .ok_or("pull request has no isDraft flag")?;
-    // Only an active pull request is a draft; an abandoned draft keeps the flag.
+    // Azure DevOps keeps the draft flag on an abandoned pull request.
     match pr["status"].as_str() {
         Some("active") if is_draft => Ok(ChangeState::Draft),
         Some("active") => Ok(ChangeState::Open),
@@ -504,8 +496,7 @@ fn snapshot(
         review_decision,
         mergeable,
         threads: Threads { unresolved },
-        // Azure DevOps reviewer votes do not identify the head on which the
-        // vote was cast, so they cannot satisfy Fleet's Review contract.
+        // Azure DevOps reviewer votes do not name the head they were cast on.
         reviews: Vec::new(),
         notes,
     })

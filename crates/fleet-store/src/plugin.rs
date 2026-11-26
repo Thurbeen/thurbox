@@ -1,4 +1,3 @@
-//! Atomic plugin verbs: rights and identity are rechecked under the write lock.
 use super::*;
 use fleet_api::plugin::{CREATOR, Mutation, TaskAccess};
 use serde_json::json;
@@ -122,8 +121,6 @@ impl FileStore {
                 obj.status = encode_status(&status)?;
             }
             Mutation::Amend(a) => {
-                // The precondition the plan was computed against: a pass
-                // repeated after this amendment landed appends nothing.
                 if a.if_generation != obj.metadata.generation {
                     return Err(StoreError::Precondition(format!(
                         "{} is at generation {}, not {}",

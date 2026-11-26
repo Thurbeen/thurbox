@@ -1,8 +1,3 @@
-//! The architecture rules hold for this workspace, and every rule is proven
-//! to catch what it forbids: each negative fixture below is a small
-//! workspace that breaks exactly one rule, and the checker must report
-//! exactly that rule and nothing else.
-
 use std::collections::BTreeSet;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -14,9 +9,6 @@ fn repo_root() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("..").join("..")
 }
 
-/// [`check`], asserting that resolving every name afresh finds the same:
-/// the resolution cache may only save work. A fresh resolution that runs
-/// out of budget is the case the cache exists for, so it is not compared.
 fn check_agreeing_with_uncached(
     ws: &Workspace,
     rules: &arch_rules::Rules,
@@ -56,8 +48,6 @@ fn this_workspace_obeys_its_architecture() {
             "{expected} missing from {names:?}"
         );
     }
-    // Only `check`: resolving every component name afresh takes ten times as
-    // long, and the fixtures already compare it with the cache.
     let violations = check(&ws, &rules);
     let shown: Vec<String> = violations.iter().map(ToString::to_string).collect();
     assert!(
@@ -116,7 +106,6 @@ fn manifest(name: &str, deps: &[&str]) -> String {
     s
 }
 
-/// The clean base: one crate per role, every rule satisfied.
 fn base() -> Vec<(String, String)> {
     let files = [
         ("fixture.toml", "[workspace]\nmembers = [\"crates/*\"]\n".to_string()),
@@ -141,8 +130,6 @@ fn base() -> Vec<(String, String)> {
     files.into_iter().map(|(p, c)| (p.to_string(), c)).collect()
 }
 
-/// Write the base with `changes` applied (replacing or adding files) and
-/// return every (code, crate) the checker reports.
 fn report(case: &str, changes: &[(&str, &str)]) -> BTreeSet<(String, String)> {
     let n = SEQ.fetch_add(1, Ordering::Relaxed);
     let root = PathBuf::from(env!("CARGO_TARGET_TMPDIR"))
@@ -352,8 +339,6 @@ fn naming_another_controllers_field_manager_is_caught() {
     );
 }
 
-/// The typed inbox mutations name their caller the way status writes do:
-/// only the manager's verb speaks as `Cli`, and the CLI never appends itself.
 #[test]
 fn an_inbox_mutation_caller_is_a_status_writer_too() {
     expect(
@@ -477,20 +462,12 @@ fn a_pure_crate_without_its_compile_fail_probes_is_caught() {
 
 #[test]
 fn a_glob_of_a_local_module_resolves_without_expanding_through_itself() {
-    // The shape of fleet-controllers' `use conditions::*`: a glob of a sibling
-    // module, used from the module that globs it. Resolution must terminate
-    // within its budget and find nothing to report.
     let src = ctl(
         "pub mod conditions { pub const A: &str = \"a\"; }\nuse conditions::*;\npub fn f() -> &'static str { let _ = conditions::A; A }\n",
     );
     expect("local-glob", &[(CTL, &src)], &[]);
 }
 
-/// Nested `use super::*` modules that each glob a sibling too, the shape of
-/// a component's `#[cfg(test)] mod tests` trees: every bare name may come
-/// through every glob on the way up, so resolution that recomputes each
-/// branch runs out of budget, while one that remembers what it resolved
-/// finds nothing to report.
 #[test]
 fn nested_glob_imports_resolve_within_the_budget() {
     let mut body = String::from("pub mod helpers { pub fn h() {} }\n");
@@ -506,27 +483,18 @@ fn nested_glob_imports_resolve_within_the_budget() {
     expect("nested-globs", &[(CTL, &src)], &[]);
 }
 
-/// A function only takes a value name: `fs::read` still reaches the
-/// glob-imported `std::fs` module, so the read is caught.
 #[test]
 fn a_function_does_not_shadow_a_glob_imported_module() {
     let src = ctl("use std::*;\nfn fs() {}\npub fn x() { let _ = fs::read(\"p\"); }\n");
     expect("value-shadow", &[(CTL, &src)], &[("pure-io", "fx-ctl")]);
 }
 
-/// A module of the same name does shadow the glob: `fs::read` is the local
-/// module's function, so nothing is reported.
 #[test]
 fn a_module_shadows_a_glob_imported_module() {
     let src = ctl("use std::*;\nmod fs { pub fn read() {} }\npub fn x() { fs::read(); }\n");
     expect("type-shadow", &[(CTL, &src)], &[]);
 }
 
-/// A resolution cut short by the depth limit is never remembered: `m29`
-/// re-exports `m28` and so on down to `m0`, which globs `std`, so the first
-/// reference gives up partway down the chain. The references after it, each
-/// within the limit on its own, must still each find `std::fs::read`, as
-/// resolving them afresh does.
 #[test]
 fn a_resolution_cut_short_is_not_remembered() {
     let mut body = String::from("pub mod m0 { pub use std::*; }\n");
@@ -546,8 +514,6 @@ fn a_resolution_cut_short_is_not_remembered() {
     expect("cut-short", &[(CTL, &src)], &[("pure-io", "fx-ctl")]);
 }
 
-/// A binary is a crate of its own: its `mod fs` does not shadow the
-/// library's glob-imported `std::fs`.
 #[test]
 fn a_binary_module_does_not_shadow_a_library_glob() {
     let lib = ctl("use std::*;\npub fn x() { let _ = fs::read(\"p\"); }\n");
@@ -561,9 +527,6 @@ fn a_binary_module_does_not_shadow_a_library_glob() {
     );
 }
 
-/// A binary's modules are not the library's, even at the same path: the
-/// binary's `net` module (`src/net.rs`) declaring `mod fs` does not shadow
-/// the library's inline `net` module's glob-imported `std::fs`.
 #[test]
 fn a_binary_submodule_does_not_shadow_a_library_submodule() {
     let lib =
@@ -579,8 +542,6 @@ fn a_binary_submodule_does_not_shadow_a_library_submodule() {
     );
 }
 
-/// The checker ignores `cfg`, so a module `cfg` can remove does not shadow:
-/// outside tests, `fs::read` is still `std::fs::read`.
 #[test]
 fn a_cfg_gated_module_does_not_shadow_a_glob() {
     let src =
@@ -588,8 +549,6 @@ fn a_cfg_gated_module_does_not_shadow_a_glob() {
     expect("cfg-shadow", &[(CTL, &src)], &[("pure-io", "fx-ctl")]);
 }
 
-/// A file both the library and a binary declare is a module of each: the
-/// binary's reads through it are judged in the binary's tree too.
 #[test]
 fn a_file_two_targets_declare_is_indexed_in_each() {
     expect(
@@ -606,8 +565,6 @@ fn a_file_two_targets_declare_is_indexed_in_each() {
     );
 }
 
-/// A `#[path]` module is the file the attribute names, in the tree that
-/// declares it.
 #[test]
 fn a_path_attribute_module_is_followed() {
     expect(
@@ -623,8 +580,6 @@ fn a_path_attribute_module_is_followed() {
     );
 }
 
-/// A `use` inside a function names something only there: it does not hide
-/// what the same name is in the rest of the module.
 #[test]
 fn a_function_local_import_does_not_hide_a_module_read() {
     let src = ctl(
@@ -633,8 +588,6 @@ fn a_function_local_import_does_not_hide_a_module_read() {
     expect("fn-local-use", &[(CTL, &src)], &[("pure-io", "fx-ctl")]);
 }
 
-/// Two imports of one name under different `cfg`s are both possible: the
-/// later one does not hide the earlier.
 #[test]
 fn cfg_alternative_imports_are_both_judged() {
     let rules = format!(
@@ -653,8 +606,6 @@ fn cfg_alternative_imports_are_both_judged() {
     );
 }
 
-/// A module declared inside a function is not the module of the same name
-/// outside it: its `mod fs` does not shadow that module's glob.
 #[test]
 fn a_function_local_module_does_not_shadow_a_module_of_the_same_name() {
     let src = ctl(
@@ -663,18 +614,12 @@ fn a_function_local_module_does_not_shadow_a_module_of_the_same_name() {
     expect("fn-local-mod", &[(CTL, &src)], &[("pure-io", "fx-ctl")]);
 }
 
-/// A `#[path]` module that names a file already on its own chain of
-/// declarations (here the root itself) is not followed again, so the walk
-/// ends and the file is checked once per place it really sits.
 #[test]
 fn a_path_attribute_cycle_terminates() {
     let src = ctl("#[cfg(any())]\n#[path = \"lib.rs\"]\nmod disabled;\npub fn x() {}\n");
     expect("path-cycle", &[(CTL, &src)], &[]);
 }
 
-/// A weak import (in a function body, or behind a `cfg`) reopens a name's
-/// other meanings only when every import of it is weak: an unconditional
-/// import still shadows the glob.
 #[test]
 fn an_unconditional_import_still_shadows_a_glob_beside_a_weak_one() {
     let src = ctl(
@@ -683,9 +628,6 @@ fn an_unconditional_import_still_shadows_a_glob_beside_a_weak_one() {
     expect("weak-beside-strong", &[(CTL, &src)], &[]);
 }
 
-/// When every import of a name is weak, the name keeps its other meanings:
-/// `m::fs` still comes through `m`'s glob of `std`, whatever the function in
-/// `m` imports under that name.
 #[test]
 fn a_weak_import_alone_keeps_the_glob_meaning() {
     let src = ctl(
@@ -694,8 +636,6 @@ fn a_weak_import_alone_keeps_the_glob_meaning() {
     expect("weak-alone", &[(CTL, &src)], &[("pure-io", "fx-ctl")]);
 }
 
-/// The same through a re-export: `m` imports `fs` unconditionally, so a weak
-/// import of it in a function does not reopen `m`'s glob of `std`.
 #[test]
 fn an_unconditional_reexport_still_shadows_a_glob_beside_a_weak_one() {
     let src = ctl(
@@ -704,16 +644,12 @@ fn an_unconditional_reexport_still_shadows_a_glob_beside_a_weak_one() {
     expect("weak-beside-strong-reexport", &[(CTL, &src)], &[]);
 }
 
-/// An import fills only the namespaces its target has: a type imported
-/// under a macro's name does not hide the macro call.
 #[test]
 fn a_type_imported_under_a_macro_name_does_not_hide_the_macro() {
     let src = ctl("use std::fmt::Error as println;\npub fn b() { println!(\"x\"); }\n");
     expect("type-as-macro", &[(CTL, &src)], &[("pure-io", "fx-ctl")]);
 }
 
-/// The same through a re-export: `m`'s import of a type named `println`
-/// does not hide the macro its glob of `std` brings in.
 #[test]
 fn a_reexported_type_named_like_a_macro_does_not_hide_it() {
     let src = ctl(
@@ -726,8 +662,6 @@ fn a_reexported_type_named_like_a_macro_does_not_hide_it() {
     );
 }
 
-/// An import of a re-exported name, read as a macro, keeps the macro meaning
-/// of that name at its source: `m::println` there is the glob's macro too.
 #[test]
 fn a_renamed_import_of_a_reexport_read_as_a_macro_is_judged() {
     let src = ctl(
@@ -740,7 +674,6 @@ fn a_renamed_import_of_a_reexport_read_as_a_macro_is_judged() {
     );
 }
 
-/// The same when the renaming import is itself reached through a path.
 #[test]
 fn a_reexported_renamed_macro_read_through_a_path_is_judged() {
     let src = ctl(
@@ -753,15 +686,12 @@ fn a_reexported_renamed_macro_read_through_a_path_is_judged() {
     );
 }
 
-/// An import of a macro under another name is still followed.
 #[test]
 fn a_macro_imported_under_another_name_is_judged() {
     let src = ctl("use std::println as say;\npub fn b() { say!(\"x\"); }\n");
     expect("macro-alias", &[(CTL, &src)], &[("pure-io", "fx-ctl")]);
 }
 
-/// Macros are a namespace of their own: a struct of the same name does not
-/// shadow a glob-imported macro.
 #[test]
 fn a_struct_does_not_shadow_a_glob_imported_macro() {
     let rules = format!(
@@ -780,8 +710,6 @@ fn a_struct_does_not_shadow_a_glob_imported_macro() {
     );
 }
 
-/// A macro call is not a module read: even a module of the same name does
-/// not shadow a glob-imported macro.
 #[test]
 fn a_module_does_not_shadow_a_glob_imported_macro() {
     let rules = format!(
@@ -818,8 +746,6 @@ fn a_forbidden_method_called_as_a_path_is_caught() {
     );
 }
 
-/// The runtime follow-on's rule: one crate may start processes, and every
-/// other adapter reaches programs only through it.
 #[test]
 fn only_the_exec_crate_spawns_and_others_reach_programs_through_it() {
     let rules = format!(
@@ -857,7 +783,6 @@ fn only_the_exec_crate_spawns_and_others_reach_programs_through_it() {
     expect("exec-bypass", &dirty, &[("restricted", "fx-store")]);
 }
 
-/// A restricted path binds only the roles and crates its rule applies to.
 #[test]
 fn a_restriction_binds_only_the_roles_and_crates_it_names() {
     let store = "pub fn s() { let _: Option<fx_api::store::FieldManager> = None; }\n";
@@ -876,8 +801,6 @@ fn a_restriction_binds_only_the_roles_and_crates_it_names() {
     }
 }
 
-/// A rule whose scope names no role or crate binds nothing, so a typo or an
-/// empty list is reported rather than silently allowing every reach.
 #[test]
 fn a_restriction_must_apply_to_a_known_role_or_crate() {
     for scope in ["[\"adapters\"]", "[]"] {
@@ -892,7 +815,6 @@ fn a_restriction_must_apply_to_a_known_role_or_crate() {
     }
 }
 
-/// Every Fleet restriction binds every non-component crate it doesn't allow.
 #[test]
 fn every_fleet_restriction_binds_every_fleet_crate() {
     let rules = load_rules(&repo_root().join("crates").join("architecture.toml")).expect("rules");
@@ -914,7 +836,6 @@ fn every_fleet_restriction_binds_every_fleet_crate() {
     assert!(unbound.is_empty(), "{unbound:#?}");
 }
 
-/// One crate starts processes: every way to spawn one is restricted to it.
 #[test]
 fn the_rules_keep_spawning_in_fleet_exec() {
     let rules = load_rules(&repo_root().join("crates").join("architecture.toml")).expect("rules");
@@ -933,9 +854,6 @@ fn the_rules_keep_spawning_in_fleet_exec() {
     }
 }
 
-/// Telemetry's rules, against the real rules file: otel-env is a shared
-/// crate on no other, both pure crates probe its edge, and the SDK and the
-/// OTLP exporter are named by it alone.
 #[test]
 fn the_rules_keep_the_sdk_and_exporter_in_otel_env() {
     let rules = load_rules(&repo_root().join("crates").join("architecture.toml")).expect("rules");
@@ -975,8 +893,6 @@ fn the_rules_keep_the_sdk_and_exporter_in_otel_env() {
     }
 }
 
-/// The telemetry rule on a fixture: the crate that owns the SDK may name
-/// it; a manager that installs its own provider is caught.
 #[test]
 fn only_the_telemetry_crate_names_the_sdk() {
     let rules = format!(
@@ -1008,10 +924,6 @@ fn only_the_telemetry_crate_names_the_sdk() {
     expect("telemetry-bypass", &dirty, &[("restricted", "fx-mgr")]);
 }
 
-/// The forge follow-on's rules, against the real rules file: fleet-forge is
-/// an adapter reaching only the API and the spawner, the CLI is the only
-/// crate that wires it, and ChangeRequestController's field manager is
-/// named by the API and the controllers alone.
 #[test]
 fn the_rules_keep_forges_below_the_port() {
     let rules = load_rules(&repo_root().join("crates").join("architecture.toml")).expect("rules");
@@ -1055,9 +967,6 @@ fn the_rules_keep_forges_below_the_port() {
     }
 }
 
-/// A forge adapter is below the controllers and above nothing else: it may
-/// not reach a controller, and a controller may not reach it. The same
-/// shape as the runtime boundary, proven for the second adapter kind.
 #[test]
 fn a_forge_adapter_and_the_controllers_cannot_reach_each_other() {
     let mut rules = RULES.to_string();
@@ -1106,8 +1015,6 @@ fn a_forge_adapter_and_the_controllers_cannot_reach_each_other() {
     );
 }
 
-/// A second controller's field manager is as guarded as the first: only the
-/// crates its rule lists may name it, whatever path they reach it by.
 #[test]
 fn only_the_listed_crates_name_a_second_controllers_field_manager() {
     let rules = format!(
@@ -1251,10 +1158,6 @@ fn runtime_effect_capability_cannot_leak_to_an_observer_adapter() {
     );
 }
 
-/// The mark-ready step's rule, against the real rules file: the Forge port,
-/// which carries Fleet's one forge write, is held by the API that defines
-/// it, the adapters that implement it, the CLI that wires it and the
-/// manager that performs it, and by nothing else.
 #[test]
 fn the_rules_keep_the_forge_port_and_its_one_write_with_the_manager() {
     let rules = load_rules(&repo_root().join("crates").join("architecture.toml")).expect("rules");
@@ -1280,9 +1183,6 @@ fn the_rules_keep_the_forge_port_and_its_one_write_with_the_manager() {
     }
 }
 
-/// A forge effect capability is held like the runtime's: an observer
-/// adapter that takes the port is caught, the manager that performs the
-/// effect is not, and a pure controller cannot hold it either.
 #[test]
 fn forge_effect_capability_cannot_leak_to_an_observer_adapter_or_a_controller() {
     let rules = format!(
@@ -1327,11 +1227,6 @@ fn forge_effect_capability_cannot_leak_to_an_observer_adapter_or_a_controller() 
     );
 }
 
-/// The Gateway's first step, against the real rules file: fleet-gateway is
-/// an adapter reaching only the API and the spawner, the CLI is the only
-/// crate that wires it, both pure crates probe its edge, the Gateway port
-/// with its two writes is held by the API, the adapters, the manager and
-/// the CLI alone, and the CLI may not call its reads or its post itself.
 #[test]
 fn the_rules_keep_the_gateway_below_its_port_and_its_writes_with_the_manager() {
     let rules = load_rules(&repo_root().join("crates").join("architecture.toml")).expect("rules");
@@ -1398,10 +1293,6 @@ fn the_rules_keep_the_gateway_below_its_port_and_its_writes_with_the_manager() {
     }
 }
 
-/// A chat write capability is held like the forge's: an observer adapter or
-/// a pure controller that takes the Gateway port is caught, the manager
-/// that performs the effect is not, and a second adapter cannot reach it
-/// through the first.
 #[test]
 fn gateway_effect_capability_cannot_leak_to_an_observer_adapter_or_a_controller() {
     let rules = format!(
@@ -1444,8 +1335,6 @@ fn gateway_effect_capability_cannot_leak_to_an_observer_adapter_or_a_controller(
         ],
         &[],
     );
-    // A gateway adapter beside the forge one: each is below the controllers
-    // and above nothing else, and neither reaches the other.
     let mut rules = RULES.to_string();
     rules.push_str(
         "\n[crates.fx-forge]\nrole = \"adapter\"\ndeps = [\"fx-api\"]\n\n[crates.fx-gateway]\nrole = \"adapter\"\ndeps = [\"fx-api\"]\n",
@@ -1494,9 +1383,6 @@ fn gateway_effect_capability_cannot_leak_to_an_observer_adapter_or_a_controller(
     );
 }
 
-/// The Forge controller's rules, against the real rules file: its field
-/// manager is named by the API and the controllers alone, and the relay
-/// write and the login read are the manager's, never the CLI's.
 #[test]
 fn the_rules_keep_the_forge_controllers_writes_in_the_controllers() {
     let rules = load_rules(&repo_root().join("crates").join("architecture.toml")).expect("rules");
@@ -1525,9 +1411,6 @@ fn the_rules_keep_the_forge_controllers_writes_in_the_controllers() {
     }
 }
 
-/// A third controller over an existing kind is as guarded as the first two:
-/// only the listed crates name its manager, and its typed write is a
-/// manager method the CLI may not call.
 #[test]
 fn a_second_controller_over_one_kind_is_named_by_the_controllers_alone() {
     let rules = format!(
@@ -1640,11 +1523,6 @@ fn the_rules_keep_board_appends_with_the_publish_verb() {
     );
 }
 
-/// The Gateway mirror's rules, against the real rules file: the two new
-/// controllers' field managers are named by the API and the controllers
-/// alone, the listener's by the API, the manager's verb and the store that
-/// checks it, and the four typed mutations are manager methods the CLI may
-/// not call.
 #[test]
 fn the_rules_keep_the_mirrors_writes_with_the_controllers_and_the_receive_verb() {
     let rules = load_rules(&repo_root().join("crates").join("architecture.toml")).expect("rules");
@@ -1678,8 +1556,6 @@ fn the_rules_keep_the_mirrors_writes_with_the_controllers_and_the_receive_verb()
         "record_received",
         "record_beat",
         "record_refusal",
-        // The conversation Task's create, fenced by the lease: the
-        // manager's, performing ConversationController's plan.
         "create_fenced",
     ] {
         assert!(
@@ -1689,8 +1565,6 @@ fn the_rules_keep_the_mirrors_writes_with_the_controllers_and_the_receive_verb()
     }
 }
 
-/// The fenced create is a store write like the typed mutations: a CLI that
-/// calls it is caught by the method rule, with the real rules' spelling.
 #[test]
 fn the_cli_may_not_create_fenced() {
     let rules = RULES.replace(
@@ -1710,11 +1584,6 @@ fn the_cli_may_not_create_fenced() {
     );
 }
 
-/// A listener-shaped writer, one the manager's verb speaks as without a
-/// lease, is guarded like `Cli`: the manager and the store may name it,
-/// the CLI and an adapter may not; and a fourth controller's manager is
-/// the controllers' alone, with its typed drain a method the CLI may not
-/// call.
 #[test]
 fn a_verb_writer_and_a_mirror_controller_are_named_by_the_listed_crates_alone() {
     let rules = format!(
@@ -1806,10 +1675,6 @@ fn a_verb_writer_and_a_mirror_controller_are_named_by_the_listed_crates_alone() 
     }
 }
 
-/// The Gateway controller's third step, against the real rules file: its
-/// field manager is named by the API and the controllers alone, beside the
-/// Forge controller's, and the relay write both share stays a manager
-/// method the CLI may not call.
 #[test]
 fn the_rules_keep_the_gateway_controllers_writes_in_the_controllers() {
     let rules = load_rules(&repo_root().join("crates").join("architecture.toml")).expect("rules");
@@ -1835,10 +1700,6 @@ fn the_rules_keep_the_gateway_controllers_writes_in_the_controllers() {
     }
 }
 
-/// A third controller over one kind, sharing the second's typed write, is
-/// as guarded as the first two: only the listed crates name its manager,
-/// whatever path they reach it by, and the shared write stays out of the
-/// CLI.
 #[test]
 fn a_third_controller_over_one_kind_is_named_by_the_controllers_alone() {
     let rules = format!(
@@ -1906,10 +1767,6 @@ fn a_third_controller_over_one_kind_is_named_by_the_controllers_alone() {
     );
 }
 
-/// Another component in the repository (thurbox, a runtime) is held to the
-/// crate graph, not to Fleet's own source rules: it may start a process or
-/// name a status writer, but it reaches no workspace crate its rule does not
-/// list.
 #[test]
 fn a_component_keeps_the_graph_but_not_fleets_source_rules() {
     let rules = format!("{RULES}\n[crates.fx-ui]\nrole = \"component\"\ndeps = []\n");
@@ -1933,9 +1790,6 @@ fn a_component_keeps_the_graph_but_not_fleets_source_rules() {
     expect("component-edge", &dirty, &[("undeclared-edge", "fx-ui")]);
 }
 
-/// A component's sources are checked too: reaching a workspace crate it does
-/// not depend on, through a dependency's re-export, is caught there, while a
-/// rule that binds only Fleet's roles still leaves it alone.
 #[test]
 fn a_component_reaching_another_crate_through_a_reexport_is_caught() {
     let rules = format!("{RULES}\n[crates.fx-ui]\nrole = \"component\"\ndeps = [\"fx-ctl\"]\n");
@@ -1955,11 +1809,8 @@ fn a_component_reaching_another_crate_through_a_reexport_is_caught() {
     );
 }
 
-/// A component with module rules: `a` may use `b`, `b` nothing, and `c` is
-/// `governed`, so each of its file modules is a module of its own.
 const MODULES: &str = "\n[crates.fx-mod]\nrole = \"component\"\ndeps = []\nexempt = [\"lib\"]\ngoverned = [\"c\"]\n\n[crates.fx-mod.modules]\na = { use = [\"b\"] }\nb = { use = [] }\nc = { use = [] }\n\"c::d\" = { use = [\"b\"] }\n";
 
-/// The clean module fixture, with `changes` applied, and what it reports.
 fn modules(case: &str, changes: &[(&str, &str)], want: &[(&str, &str)]) {
     let rules = format!("{RULES}{MODULES}");
     let mut files: Vec<(&str, &str)> = vec![
@@ -1994,9 +1845,6 @@ fn a_crate_that_keeps_its_module_rules_passes() {
     modules("modules-clean", &[], &[]);
 }
 
-/// A module reaching one its rule does not name is caught, test code
-/// included, and so is a reach laundered through a re-export or a `type`
-/// alias declared in a module it may use.
 #[test]
 fn a_module_reaching_what_its_rule_does_not_name_is_caught() {
     let bad = [("module-edge", "fx-mod")];
@@ -2029,14 +1877,10 @@ fn a_module_reaching_what_its_rule_does_not_name_is_caught() {
                 "pub fn a() { crate::b::b(); let _: Option<crate::b::Seen> = None; }\n",
             ),
         ],
-        // `b` declaring the alias reaches `c::d` itself, and `a` through it.
         &bad,
     );
 }
 
-/// A module with no rule, a file under a governed module with no rule of
-/// its own, and a rule naming no module are each caught; a `#[cfg(test)]`
-/// file is part of the module that declares it.
 #[test]
 fn every_module_is_governed_and_every_rule_names_one() {
     modules(
@@ -2086,8 +1930,6 @@ fn every_module_is_governed_and_every_rule_names_one() {
     );
 }
 
-/// Two modules allowed to use each other are a cycle, and a grant only test
-/// code uses is unused, whether the test module is inline or a file.
 #[test]
 fn module_rules_allow_no_cycle_and_no_unused_grant() {
     let cycle = MODULES.replace("b = { use = [] }", "b = { use = [\"a\"] }");
@@ -2128,10 +1970,6 @@ fn module_rules_allow_no_cycle_and_no_unused_grant() {
     );
 }
 
-/// A path restricted to some modules is caught anywhere else, test code
-/// included unless the rule is for production code only, and a file's
-/// counted exception covers exactly its count: one more is caught, and one
-/// fewer is stale.
 #[test]
 fn a_restricted_path_binds_every_module_it_does_not_allow() {
     let restricted = |extra: &str| {
@@ -2142,7 +1980,6 @@ fn a_restricted_path_binds_every_module_it_does_not_allow() {
     let hit = [("module-restricted", "fx-mod")];
     let rules = restricted("");
     modules("restricted-module", &[("architecture.toml", &rules)], &hit);
-    // An exempt root has no module rule, but a restriction binds it.
     modules(
         "restricted-root",
         &[
@@ -2204,8 +2041,6 @@ fn a_restricted_path_binds_every_module_it_does_not_allow() {
     }
 }
 
-/// A crate with restrictions and no module rules is still bound by them:
-/// each top-level module is judged under its own name.
 #[test]
 fn a_restriction_binds_a_crate_without_module_rules() {
     let rules = format!(
@@ -2227,8 +2062,6 @@ fn a_restriction_binds_a_crate_without_module_rules() {
     );
 }
 
-/// A file two targets include is one source: its reach counts once against
-/// a file's exception, not once per target.
 #[test]
 fn a_file_two_targets_include_counts_once_against_an_exception() {
     let rules = format!(
@@ -2252,15 +2085,10 @@ fn a_file_two_targets_include_counts_once_against_an_exception() {
     );
 }
 
-/// One restriction on `fx-mod`, with `fields` appended to it.
 fn restriction(fields: &str) -> String {
     format!("{RULES}{MODULES}\n[[crates.fx-mod.restricted]]\nwhy = \"fixture\"\n{fields}")
 }
 
-/// A `direct` restriction judges what a module names itself: an import of the
-/// crate under any name is caught, a path through the crate's own module that
-/// re-exports it is that module's, not a direct reach, and so is a glob
-/// re-export.
 #[test]
 fn a_direct_restriction_judges_what_a_module_names_itself() {
     let rules = restriction("paths = [\"std::fs\"]\nallowed = [\"b\"]\ndirect = true\n");
@@ -2296,15 +2124,11 @@ fn a_direct_restriction_judges_what_a_module_names_itself() {
     }
 }
 
-/// `applies_to` binds only the modules under the paths it names, and
-/// `allowed_files` frees whole files among them.
 #[test]
 fn a_restriction_binds_only_where_it_applies_and_frees_whole_files() {
     let hit = [("module-restricted", "fx-mod")];
     let scoped = restriction("paths = [\"fx_mod::b::b\"]\nallowed = []\napplies_to = [\"c\"]\n");
-    // `c::d` reaches `b::b`; `a` does too, but `a` is outside the scope.
     modules("applies-to", &[("architecture.toml", &scoped)], &hit);
-    // A reach through a glob import is resolved, so it is caught too.
     modules(
         "applies-to-glob",
         &[
@@ -2330,8 +2154,6 @@ fn a_restriction_binds_only_where_it_applies_and_frees_whole_files() {
     );
 }
 
-/// A module's `external` list is every other crate it may name itself:
-/// `std`, `core` and `alloc` are always allowed.
 #[test]
 fn a_module_names_only_the_external_crates_its_rule_lists() {
     let manifest = (
@@ -2357,10 +2179,6 @@ fn a_module_names_only_the_external_crates_its_rule_lists() {
     }
 }
 
-/// A `static mut` reads as the path `#static_mut`, and a `cfg` predicate
-/// naming a build target as `#cfg::<name>` (on an item, a module, a `use`, a
-/// whole file, or `cfg!`), so a
-/// restriction can keep them out of a module.
 #[test]
 fn static_mut_and_build_target_cfg_can_be_restricted() {
     let hit = [("module-restricted", "fx-mod")];
@@ -2419,8 +2237,6 @@ fn static_mut_and_build_target_cfg_can_be_restricted() {
             &hit,
         );
     }
-    // A test-only item's own `cfg` is test code: it is not production code
-    // deciding by a build target.
     modules(
         "cfg-all-test",
         &[
@@ -2456,8 +2272,6 @@ fn static_mut_and_build_target_cfg_can_be_restricted() {
     );
 }
 
-/// A grant of a governed module itself admits none of its file modules, so
-/// it is a mistake for a grant naming the file module meant.
 #[test]
 fn a_grant_of_a_governed_module_is_caught() {
     let rules = format!(
@@ -2478,9 +2292,6 @@ fn a_grant_of_a_governed_module_is_caught() {
     );
 }
 
-/// A module re-exporting another crate's item is what a path through it
-/// reaches: `a` naming `crate::b::read`, which `b` re-exports from `std`,
-/// reaches `b`.
 #[test]
 fn a_reexport_of_another_crates_item_is_its_module() {
     let rules = format!(
@@ -2504,8 +2315,6 @@ fn a_reexport_of_another_crates_item_is_its_module() {
     );
 }
 
-/// A path-only grant admits a fully-qualified path and never an import, a
-/// function-local one included, so the crossing stays visible at each site.
 #[test]
 fn a_path_only_grant_admits_paths_but_no_import() {
     let rules = format!(
@@ -2542,8 +2351,6 @@ fn a_path_only_grant_admits_paths_but_no_import() {
     );
 }
 
-/// A top-level inline module needs a rule as a file module does; an inline
-/// `#[cfg(test)]` one is test code of the root that declares it.
 #[test]
 fn an_inline_module_is_governed_too() {
     modules(
@@ -2564,14 +2371,6 @@ fn an_inline_module_is_governed_too() {
     );
 }
 
-/// Every place `#[cfg(test)]` can stand marks test code, and so does
-/// `cfg(all(.., test))`: an associated constant or method, a trait constant, a
-/// `let`, a statement, a statement macro, a match arm, a field, a variant, a
-/// function or closure parameter, `self`, a generic parameter, a field of a
-/// struct expression or pattern, a pattern, a bare `fn` type's argument, a
-/// `where` predicate, a foreign item, and a
-/// whole file by its inner attribute.
-/// A grant only such code uses is unused.
 #[test]
 fn test_code_anywhere_keeps_no_grant_in_use() {
     let unused = [("module-unused", "fx-mod")];
@@ -2721,9 +2520,6 @@ fn test_code_anywhere_keeps_no_grant_in_use() {
     }
 }
 
-/// A dependency inherited from `[workspace.dependencies]` under another name
-/// is still the workspace crate it names: `mux.workspace = true`, where the
-/// root declares `mux = { package = "fx-store" }`, is an edge to fx-store.
 #[test]
 fn a_renamed_workspace_dependency_is_the_crate_it_names() {
     let root = "[workspace]\nmembers = [\"crates/*\"]\n\n[workspace.dependencies]\nmux = { package = \"fx-store\", path = \"crates/fx-store\" }\n";
@@ -2735,8 +2531,6 @@ fn a_renamed_workspace_dependency_is_the_crate_it_names() {
     );
 }
 
-/// A rule naming a crate that is no member, a source file that does not
-/// parse, and a pure crate whose clippy.toml lacks a guard are each reported.
 #[test]
 fn a_missing_crate_an_unparsable_file_and_a_missing_clippy_guard_are_caught() {
     let ghost = format!("{RULES}\n[crates.fx-ghost]\nrole = \"adapter\"\ndeps = []\n");
@@ -2764,8 +2558,6 @@ fn a_missing_crate_an_unparsable_file_and_a_missing_clippy_guard_are_caught() {
     );
 }
 
-/// Every code the checker can report is in the constitution's table of what
-/// `arch-rules` checks, so a new check cannot land without its row.
 #[test]
 fn every_violation_code_is_in_the_constitution() {
     let constitution = fs::read_to_string(repo_root().join("docs/constitution.md"))

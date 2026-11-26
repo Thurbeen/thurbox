@@ -1,20 +1,3 @@
-//! The interface's mods as *managed* files: the spec, the lock, and the
-//! operations that move the directory between them.
-//!
-//! `bundled` delivers what the binary carries; this delivers what the spec asks
-//! for. The two share the decision that matters — `bundled::decide`, which
-//! encodes "do not clobber my edits, remember what I deleted" — because an
-//! installed file wants exactly the same treatment as a shipped one and
-//! reimplementing that matrix is the one duplication here that would be genuinely
-//! dangerous.
-//!
-//! Everything is keyed on the **destination path relative to the interface
-//! directory**, which is the identity the spec, the lock, the inventory, trust and
-//! the disabled set already all use.
-//!
-//! The types live in `session::mod_spec` (pure data, so the CLI and the kernel
-//! agree on one definition); the filesystem is here.
-
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
@@ -23,23 +6,14 @@ use crate::session::PackageManifest;
 
 use super::bundled::{decide, digest, Action, Delivered};
 
-/// Where the spec lives.
 pub fn spec_path(dir: &Path) -> PathBuf {
     dir.join(SPEC_FILE)
 }
 
-/// Where the record lives.
 pub fn lock_path(dir: &Path) -> PathBuf {
     dir.join(LOCK_FILE)
 }
 
-/// The spec, or an empty one.
-///
-/// **No spec means nothing installed**, which is a valid interface and not a
-/// failure — an existing directory that predates the manager keeps working
-/// untouched. A spec that is *there* and unreadable is a different matter: it is
-/// reported with the file named and the location `toml` gave, and no caller of
-/// this proceeds to change anything.
 pub fn read_spec(dir: &Path) -> Result<ModSpec, String> {
     match std::fs::read_to_string(spec_path(dir)) {
         Ok(text) => ModSpec::parse(&text).map_err(|e| format!("{SPEC_FILE}: {e}")),
@@ -48,7 +22,6 @@ pub fn read_spec(dir: &Path) -> Result<ModSpec, String> {
     }
 }
 
-/// The spec's text, for an edit that has to keep its comments.
 pub fn read_spec_text(dir: &Path) -> Result<String, String> {
     match std::fs::read_to_string(spec_path(dir)) {
         Ok(text) => Ok(text),
@@ -57,7 +30,6 @@ pub fn read_spec_text(dir: &Path) -> Result<String, String> {
     }
 }
 
-/// The record, or an empty one.
 pub fn read_lock(dir: &Path) -> Result<ModLock, String> {
     match std::fs::read_to_string(lock_path(dir)) {
         Ok(text) => ModLock::parse(&text).map_err(|e| format!("{LOCK_FILE}: {e}")),
@@ -66,13 +38,7 @@ pub fn read_lock(dir: &Path) -> Result<ModLock, String> {
     }
 }
 
-/// Write the record.
-///
-/// Rendered wholesale rather than edited in place: nobody hand-maintains this
-/// file, which is the entire reason it is a second file (design D2).
 pub fn write_lock(dir: &Path, lock: &ModLock) -> Result<(), String> {
-    // An emptied lock is removed rather than left as an empty table, so a
-    // directory with nothing managed looks like one.
     if lock.mods.is_empty() {
         return match std::fs::remove_file(lock_path(dir)) {
             Ok(()) => Ok(()),
@@ -85,14 +51,11 @@ pub fn write_lock(dir: &Path, lock: &ModLock) -> Result<(), String> {
         .map_err(|e| format!("{}: {e}", lock_path(dir).display()))
 }
 
-/// Record an entry in the spec, keeping every comment already in the file.
 pub fn add_to_spec(dir: &Path, entry: &ModEntry) -> Result<(), String> {
     let text = mod_spec::insert_entry(&read_spec_text(dir)?, entry)?;
     write_spec(dir, &text)
 }
 
-/// Drop an entry from the spec, returning it. Errors when the spec does not list
-/// it, which the caller reports rather than treating as done.
 pub fn remove_from_spec(dir: &Path, key: &str) -> Result<ModEntry, String> {
     let (text, removed) = mod_spec::remove_entry(&read_spec_text(dir)?, key)?;
     write_spec(dir, &text)?;
@@ -104,27 +67,18 @@ fn write_spec(dir: &Path, text: &str) -> Result<(), String> {
         .map_err(|e| format!("{}: {e}", spec_path(dir).display()))
 }
 
-/// What one file of a package is, and what it should contain.
 pub struct Payload {
-    /// Destination, relative to the interface directory.
     pub file: String,
     pub contents: String,
 }
 
-/// What converging one entry did.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Outcome {
-    /// Written where nothing was.
     Installed,
-    /// Advanced to what the source now carries.
     Updated,
-    /// Present and already what the source carries.
     Current,
-    /// Changed by the user, and therefore theirs. Not overwritten.
     Kept,
-    /// Deleted by the user, and remembered as such. Not reinstalled.
     Deleted,
-    /// Taken back, because the spec no longer lists it.
     Removed,
 }
 
@@ -140,7 +94,6 @@ impl Outcome {
         }
     }
 
-    /// Did this outcome change the directory?
     pub fn changed(self) -> bool {
         matches!(
             self,
@@ -149,18 +102,6 @@ impl Outcome {
     }
 }
 
-/// Write one entry's files, deferring to the user wherever they have acted.
-///
-/// The lock is both the input and the output: the digests it already holds are
-/// what tell "we wrote this and nobody touched it" from "the user changed it",
-/// and the digests written back are what the *next* run and the trust decision
-/// read. On any outcome the caller may report, the lock is left consistent with
-/// what is actually on disk.
-///
-/// A file the user deleted is tombstoned in the same sense `bundled` means it:
-/// the digest is dropped from the record so convergence stops offering to put it
-/// back, which is what makes deleting a managed pane a way to remove it rather
-/// than something the next `sync` undoes.
 pub fn deliver(
     dir: &Path,
     entry: &ModEntry,
@@ -182,8 +123,6 @@ pub fn deliver(
 
     let mut files = BTreeMap::new();
     let mut removed = Vec::new();
-    // Reported as the strongest thing that happened: a package whose pane was
-    // updated and whose module was already current is an update.
     let mut outcome = Outcome::Current;
 
     for payload in payloads {
@@ -192,7 +131,6 @@ pub fn deliver(
             Effect::Recorded(digest) => {
                 files.insert(payload.file.clone(), digest);
             }
-            // The record is carried through UNCHANGED — see `Action::Preserve`.
             Effect::Unchanged => {
                 if let Some(recorded) = recorded.get(&payload.file) {
                     files.insert(payload.file.clone(), recorded.clone());
@@ -214,14 +152,6 @@ pub fn deliver(
     Ok(outcome)
 }
 
-/// Refuse a pane another entry's record already delivers.
-///
-/// What keying one multi-pane package twice looks like — by `install --as` naming a
-/// second pane, or by a hand-edited spec listing it twice. Two records covering one
-/// pane cannot both be honoured: removing either takes the other's files. Checked
-/// here, on the one path `install`, `sync` and `update` all deliver through, and
-/// before anything is written. Modules are left out, since `lib/` is not a pane and
-/// two single-pane copies of a package sharing one has always been allowed.
 fn refuse_a_pane_owned_elsewhere(
     entry: &ModEntry,
     payload: &Payload,
@@ -240,18 +170,12 @@ fn refuse_a_pane_owned_elsewhere(
     }
 }
 
-/// What one payload's delivery does to the lock record.
 enum Effect {
-    /// Written (or already current): record this digest.
     Recorded(String),
-    /// The user's edit stands: carry the recorded digest through untouched.
     Unchanged,
-    /// The user deleted it: drop the digest so convergence stops offering it.
     Tombstoned,
 }
 
-/// Deliver one payload and report both what the lock should say and how strongly
-/// it wants reporting.
 fn deliver_payload(
     dir: &Path,
     payload: &Payload,
@@ -283,27 +207,11 @@ fn deliver_payload(
             Effect::Recorded(digest(&payload.contents)),
             Outcome::Current,
         )),
-        // Theirs. The record is carried through UNCHANGED — recording the digest
-        // now on disk would make the user's edit look like our own delivery, and
-        // the very next run would decide it was safe to overwrite.
-        // `bundled::materialize` leaves the manifest alone on `Preserve` for
-        // exactly this reason; "the last thing we wrote" is what makes an edit
-        // detectable, so it must not be overwritten with what the user wrote.
         Action::Preserve => Ok((Effect::Unchanged, Outcome::Kept)),
-        // Deleted, and recorded as such so the next run leaves it alone. Written
-        // out rather than inferred from a missing digest, which is also what a
-        // newly-added file looks like.
         Action::Tombstone | Action::Leave => Ok((Effect::Tombstoned, Outcome::Deleted)),
     }
 }
 
-/// Raise `current` to `candidate` when the candidate more needs the reader's
-/// attention.
-///
-/// Ranked by that, not by how much work was done. `Kept` and `Deleted` both mean
-/// "you will NOT see the new version", and a package whose module updated while
-/// its pane was left alone has to report the pane — otherwise an edit silently
-/// costing you an update reads as a clean update.
 fn escalate(current: &mut Outcome, candidate: Outcome) {
     let rank = |outcome: Outcome| match outcome {
         Outcome::Current => 0,
@@ -318,13 +226,6 @@ fn escalate(current: &mut Outcome, candidate: Outcome) {
     }
 }
 
-/// Take back the files one record delivered, for an entry the spec no longer
-/// lists.
-///
-/// Only files still byte-identical to what was delivered are deleted; anything
-/// the user changed is left where it is and reported as kept, which is the same
-/// rule `bundled::retire` applies to a mod that stopped shipping. Removal does
-/// not need the source to be reachable — everything needed is in the record.
 pub fn withdraw(dir: &Path, entry: &LockEntry) -> Result<Vec<(String, Outcome)>, String> {
     let mut report = Vec::new();
     for (file, recorded) in &entry.files {
@@ -335,7 +236,6 @@ pub fn withdraw(dir: &Path, entry: &LockEntry) -> Result<Vec<(String, Outcome)>,
                 prune_empty(dir, &path);
                 report.push((file.clone(), Outcome::Removed));
             }
-            // Theirs now — it outlived the entry that delivered it.
             Ok(_) => report.push((file.clone(), Outcome::Kept)),
             Err(_) => report.push((file.clone(), Outcome::Deleted)),
         }
@@ -343,21 +243,12 @@ pub fn withdraw(dir: &Path, entry: &LockEntry) -> Result<Vec<(String, Outcome)>,
     Ok(report)
 }
 
-/// Remove the directories a withdrawn file leaves empty, up to (never including)
-/// the interface directory.
-///
-/// A package's modules live in a namespace of their own, so removing one leaves an
-/// empty `lib/<package>/` that nothing will ever look in again. Only *empty*
-/// directories go, so anything the user put there keeps its home — and the walk
-/// stops at `dir`, which is not ours to remove.
 fn prune_empty(dir: &Path, removed: &Path) {
     let mut at = removed.parent();
     while let Some(parent) = at {
         if parent == dir || !parent.starts_with(dir) {
             return;
         }
-        // `remove_dir` fails on a non-empty directory, which is the test — no
-        // separate emptiness check to race against.
         if std::fs::remove_dir(parent).is_err() {
             return;
         }
@@ -365,51 +256,23 @@ fn prune_empty(dir: &Path, removed: &Path) {
     }
 }
 
-/// The directory in the thurbox repository that bare mod names resolve against
-/// — `examples/panes/`, pinned to this binary's release tag.
-///
-/// Pinning to the tag is worth keeping even for examples: a pane reads `thurbox.*`,
-/// a contract that moves, so what a bare name fetches matches the binary asking
-/// for it.
 pub const EXAMPLE_SET: &str = "examples/panes";
 
-/// One example pane, for discovery and for typo help on a failed bare-name
-/// install.
-///
-/// **Examples, not a supported catalogue.** What lives in `examples/panes/` is there to
-/// be read and copied from — one pane that draws the `input` node kind, one that
-/// runs a program — not a set thurbox maintains on anybody's behalf. Installing one
-/// is a convenience over `cp`, and delivery treats it as the user's the moment they
-/// edit it.
-///
-/// A small static list rather than a remote index: a misspelled name should be
-/// caught without a network round-trip. Keep in step with `examples/panes/<name>/`.
 pub const EXAMPLE_MODS: &[(&str, &str)] = &[
     ("tasks", "A todo pane: read the snapshot, send or spawn"),
     ("top", "CPU, memory and load as gauges, parsed from `top`"),
 ];
 
-/// What a source resolved to.
 pub struct Resolved {
     pub source: crate::agent::fetch::Source,
-    /// The location, as a string worth recording and showing.
     pub at: String,
-    /// The version this resolution represents.
     pub version: String,
 }
 
-/// Where a source points, at a pin if one is asked for.
-///
-/// A pin only means anything for a **bare name**: a URL is already a location and
-/// a filesystem path has no versions, so for those the pin is recorded and
-/// otherwise ignored. For a bare name it selects the git ref, which is what makes
-/// a lock reproducible after the binary moves on.
 pub fn resolve_source(src: &str, pin: Option<&str>) -> Resolved {
     let bare = mod_spec::is_bare_name(src);
     let version = match (pin, bare) {
         (Some(pin), _) => pin.to_string(),
-        // A bare name is fetched at the binary's release tag, so that IS the
-        // version of a freshly-installed one.
         (None, true) => crate::agent::fetch::official_ref(),
         (None, false) => String::new(),
     };
@@ -433,25 +296,12 @@ pub fn resolve_source(src: &str, pin: Option<&str>) -> Resolved {
     }
 }
 
-/// A fetched package: its manifest, if it has one, and its files.
 pub struct Fetched {
     pub manifest: Option<crate::session::PackageManifest>,
     pub payloads: Vec<Payload>,
-    /// The manifest was read from [`PackageManifest::LEGACY_FILE`].
     pub legacy_manifest: bool,
 }
 
-/// Read a package from wherever it resolved to.
-///
-/// Two shapes. A **package** is a directory with a `mod.toml` (or, from before mods were mods, a `plugin.toml`) naming a pane and
-/// any modules it brings. A bare `.lua` at the end of a URL or path is the
-/// **degenerate** case — one file, no modules, no declared compatibility — which
-/// is what makes "install this single file somebody published" a supported thing
-/// rather than a special case.
-///
-/// `as_file` is read by `deliveries`, which decides whether it redirects the one
-/// pane a package declares or selects among several. It is required for the
-/// degenerate shape, which proposes no destination at all.
 pub fn fetch(src: &str, resolved: &Resolved, as_file: Option<&str>) -> Result<Fetched, String> {
     let as_file = as_file.map(mod_spec::mod_destination);
     let as_file = as_file.as_deref();
@@ -462,15 +312,12 @@ pub fn fetch(src: &str, resolved: &Resolved, as_file: Option<&str>) -> Result<Fe
             })?
             .to_string();
         mod_spec::validate_destination(&file)?;
-        // Fetched relative to the *parent*, since the source names the file itself.
         let (base, name) = split_last(src);
         let source = match &resolved.source {
             crate::agent::fetch::Source::Remote(_) => crate::agent::fetch::Source::Remote(base),
             crate::agent::fetch::Source::Local(_) => {
                 crate::agent::fetch::Source::Local(crate::agent::fetch::expand_tilde(&base))
             }
-            // A `.lua` source cannot also be a repository: `git_url` matched first,
-            // so a `git+…/x.lua` never reaches here.
             crate::agent::fetch::Source::Git(url) => crate::agent::fetch::Source::Git(url.clone()),
         };
         let contents = crate::agent::fetch::fetch_file(&source, &name)?;
@@ -519,24 +366,6 @@ pub fn fetch(src: &str, resolved: &Resolved, as_file: Option<&str>) -> Result<Fe
     })
 }
 
-/// Every file a package delivers and where it lands, the entry's own pane first.
-///
-/// `--as` means one of two things, and how many panes the package declares decides
-/// which — because with one pane there is nothing to select, and with several there
-/// is nothing safe to redirect:
-///
-/// * **One pane**: a *redirect*. The pane lands where `--as` says, which is what it
-///   has always done and what every singular manifest was written against.
-/// * **Several panes**: a *selection*. It names one of the declared destinations,
-///   and that pane becomes the one the spec entry is keyed on; every pane still
-///   lands where its author put it. Redirecting one of several would produce a
-///   destination the spec cannot record — an entry names one — so `sync` could not
-///   reproduce it on the next machine, and a move that survives until the next
-///   convergence is worse than one refused up front.
-///
-/// A module is never redirected either way: its path is the `lib/<name>/` namespace
-/// rule the manifest was validated against, and letting `--as` move it would hand
-/// back the collision that rule exists to prevent.
 fn deliveries<'a>(
     manifest: &'a crate::session::PackageManifest,
     as_file: Option<&str>,
@@ -553,8 +382,6 @@ fn deliveries<'a>(
                     .iter()
                     .position(|pane| pane.path == selected)
                     .ok_or_else(|| pick_a_pane(selected, several))?;
-                // Moved to the front rather than swapped, so the rest keep the order
-                // their author declared them in.
                 let chosen = ordered.remove(index);
                 ordered.insert(0, chosen);
             }
@@ -570,12 +397,6 @@ fn deliveries<'a>(
     Ok(files)
 }
 
-/// What to say when a destination names no pane a multi-pane package declares.
-///
-/// Worded for both callers, which is why it does not simply say "pass --as": on an
-/// install the destination came from `--as`, but on a `sync` or an `update` it came
-/// from a spec entry written when the package carried fewer panes. Both readers need
-/// the same thing — the list, since nothing in front of them holds the manifest.
 fn pick_a_pane(given: &str, panes: &[crate::session::PackageFile]) -> String {
     format!(
         "the package carries {} panes and none of them is {given} — an entry is keyed \
@@ -589,7 +410,6 @@ fn pick_a_pane(given: &str, panes: &[crate::session::PackageFile]) -> String {
     )
 }
 
-/// Split a `.lua` source into the directory holding it and its file name.
 fn split_last(src: &str) -> (String, String) {
     let src = src.trim().trim_end_matches('/');
     match src.rsplit_once(['/', '\\']) {
@@ -598,20 +418,6 @@ fn split_last(src: &str) -> (String, String) {
     }
 }
 
-/// Where one file of the interface stands with the user, for what it declares.
-///
-/// One implementation because the question splits two ways and the split is easy
-/// to get wrong: a file the user wrote is judged on its contents, an installed one
-/// on the `src@version` it came from **and** its contents. Doing that at each call
-/// site invites a caller that checks only one half.
-///
-/// A grant made to a pin needs a lock entry to match it. When the lock is
-/// missing, unreadable or has no entry for the file, the file would otherwise be
-/// judged as the user's own, and a changed one would keep its grant as merely
-/// `Drifted` — so it fails closed instead.
-///
-/// A bundled file whose contents are the embedded copy is `Shipped`, whatever
-/// the record says, unless a package delivered it.
 pub fn trust_of(
     dir: &Path,
     relative: &str,
@@ -642,12 +448,6 @@ pub fn trust_of(
     }
 }
 
-/// Which of `files` hold the capabilities they declare, relative as given.
-///
-/// The grant the host enforces, decided by the same [`trust_of`] the Interface
-/// tab draws. Reading the bare record instead — "is there a grant for this
-/// path" — kept `run` on a pane the screen called untrusted after an update
-/// moved its pin.
 pub fn granted<'a>(
     dir: &Path,
     files: impl IntoIterator<Item = &'a str>,
@@ -661,36 +461,21 @@ pub fn granted<'a>(
         .collect()
 }
 
-/// What happened to one entry.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct EntryReport {
     pub name: String,
     pub file: String,
     pub src: String,
-    /// The version now installed.
     pub version: String,
-    /// The version this moved from, when it moved.
     pub from: Option<String>,
-    /// The package was read through its `plugin.toml`, having no `mod.toml`.
     pub legacy_manifest: bool,
     pub outcome: Outcome,
 }
 
-/// Is this entry's source a repository, and therefore a working copy on disk?
-///
-/// Re-derived from the source rather than stored as a field: the source is what
-/// decided the mechanism at install time, so asking it again cannot disagree with
-/// itself the way a second recorded flag could.
 pub fn is_repository(src: &str) -> bool {
     crate::agent::fetch::git_url(src).is_some()
 }
 
-/// The directory name a repository is cloned into: its last path segment, without
-/// `.git`.
-///
-/// Refused rather than sanitised when it is not one safe segment, for the reason
-/// `mod new` refuses a bad name: a clone landing somewhere other than where it
-/// said is worse than one that stops.
 pub fn repository_name(url: &str) -> Result<String, String> {
     let last = last_segment(url, cfg!(windows));
     if last.is_empty() {
@@ -701,20 +486,6 @@ pub fn repository_name(url: &str) -> Result<String, String> {
     Ok(last.to_string())
 }
 
-/// The last segment of a source, without `.git`.
-///
-/// `windows` decides whether a **backslash separates**. On Windows a local source is
-/// `D:\src\thurbox-widget`; on POSIX a backslash is a legal filename character, and
-/// splitting on one there would rename a directory that legitimately contains it. A
-/// remote URL separates with `/` or `:` on either platform, so this changes nothing
-/// but the local-path case.
-///
-/// The platform is a **parameter** rather than a `cfg!` read inside the body, so both
-/// behaviours are testable on one machine. That is not tidiness: this is exactly the
-/// bug that got shipped. Every repository test passed on Linux and *all ten* failed on
-/// Windows, because the only difference was a separator the Linux suite could not
-/// express — the same way `bundled::relative_to` was invisible here until Windows CI
-/// said otherwise.
 fn last_segment(source: &str, windows: bool) -> &str {
     let separators: &[char] = match windows {
         true => &['/', ':', '\\'],
@@ -738,8 +509,6 @@ fn pane_in_working_copy(
 ) -> Result<(String, bool), String> {
     if let Some(rel) = as_file {
         let rel = rel.trim_start_matches('/');
-        // Accept either `mods/40_x.lua` (inside the repo) or the full
-        // `<name>/mods/40_x.lua`, since both readings are natural.
         let rel = rel.strip_prefix(&format!("{name}/")).unwrap_or(rel);
         let file = format!("{name}/{rel}");
         mod_spec::validate_destination(&file)?;
@@ -818,7 +587,6 @@ fn install_repository(
     let name = repository_name(url)?;
     let root = dir.join(&name);
 
-    // Occupied by something this spec does not manage: not ours to replace.
     if root.exists()
         && !spec
             .mods
@@ -839,8 +607,6 @@ fn install_repository(
 
     let (file, legacy_manifest) =
         pane_in_working_copy(&root, &name, as_file).inspect_err(|_| {
-            // A clone whose pane cannot be identified is not an install: take it back so
-            // a second attempt with `--as` starts clean.
             let _ = std::fs::remove_dir_all(&root);
         })?;
 
@@ -849,9 +615,6 @@ fn install_repository(
         file: file.clone(),
         pin: pin.map(str::to_string),
     };
-    // Only the pane is digested. The rest of a repository is its own business, and a
-    // per-file record of it would be thousands of rows the manager never consults —
-    // git owns that working copy.
     let mut files = BTreeMap::new();
     if let Ok(contents) = std::fs::read_to_string(dir.join(&file)) {
         files.insert(file.clone(), digest(&contents));
@@ -878,11 +641,6 @@ fn install_repository(
     })
 }
 
-/// Install one mod, recording it in the spec and the lock.
-///
-/// Refuses before it writes anything: a destination already holding a file the
-/// spec does not manage is somebody else's, and overwriting it is not this
-/// command's business (spec: "the existing file is left exactly as it was").
 pub fn install(
     dir: &Path,
     src: &str,
@@ -893,8 +651,6 @@ pub fn install(
     let mut lock = read_lock(dir)?;
 
     let resolved = resolve_source(src, pin);
-    // A repository is obtained as a working copy; everything else is fetched file by
-    // file. The source's own form chose this (`fetch::git_url`).
     if let crate::agent::fetch::Source::Git(url) = &resolved.source {
         let url = url.clone();
         return install_repository(dir, src, &url, as_file, pin, &spec, &mut lock);
@@ -945,12 +701,6 @@ pub fn install(
     })
 }
 
-/// Converge or advance one repository-backed entry.
-///
-/// git owns the working copy here, and that is the point rather than a shortcut: it
-/// refuses to move a dirty tree, which is the "an edit is yours to keep" rule done
-/// by the tool that owns it. `advance` distinguishes convergence (hold at the
-/// recorded commit) from an update (take what the remote has now).
 fn converge_repository(
     dir: &Path,
     entry: &ModEntry,
@@ -962,8 +712,6 @@ fn converge_repository(
     let root = dir.join(&name);
     let recorded = lock.entry(&entry.file).map(|e| e.version.clone());
 
-    // Absent: a spec that cannot be applied on a fresh machine defeats the lock, so
-    // convergence clones it.
     if !crate::git::is_working_copy(&root) {
         if root.exists() {
             return Err(format!(
@@ -971,8 +719,6 @@ fn converge_repository(
             ));
         }
         crate::git::clone_mod(url, &root, entry.pin.as_deref()).map_err(|e| format!("{e:#}"))?;
-        // Reproducing a recorded commit: a shallow clone has only the tip, so the
-        // exact object has to be asked for.
         if let Some(commit) = recorded.as_deref().filter(|c| !c.is_empty()) {
             if crate::git::head_commit(&root).map_err(|e| format!("{e:#}"))? != commit {
                 crate::git::fetch_ref(&root, commit).map_err(|e| format!("{e:#}"))?;
@@ -985,14 +731,11 @@ fn converge_repository(
 
     let head = crate::git::head_commit(&root).map_err(|e| format!("{e:#}"))?;
 
-    // Modified locally: never moved, and reported so rather than completing
-    // silently. Checked before any fetch, so a dirty copy is not even touched.
     if crate::git::is_dirty(&root).map_err(|e| format!("{e:#}"))? {
         return Ok((Outcome::Kept, head, None));
     }
 
     if !advance {
-        // Convergence holds at the recorded commit rather than following a branch.
         match recorded.as_deref().filter(|c| !c.is_empty()) {
             Some(commit) if commit != head => {
                 crate::git::fetch_ref(&root, commit).map_err(|e| format!("{e:#}"))?;
@@ -1003,11 +746,6 @@ fn converge_repository(
         }
     }
 
-    // Advancing follows the entry's own ref: a pinned branch moves, a pinned tag or
-    // commit does not, and an unpinned entry follows the remote's default branch.
-    // What is checked out is what the fetch returned — never the ref's name, since
-    // a fetch does not move the local branch a `--branch` clone checked out, and a
-    // pinned commit's object is not there until it is asked for by id.
     match entry.pin.as_deref() {
         Some(pin) => crate::git::fetch_ref(&root, pin).map_err(|e| format!("{e:#}"))?,
         None => crate::git::fetch_tip(&root).map_err(|e| format!("{e:#}"))?,
@@ -1020,7 +758,6 @@ fn converge_repository(
     Ok((Outcome::Updated, moved, Some(head)))
 }
 
-/// Record what a repository entry converged to.
 fn record_repository(lock: &mut ModLock, dir: &Path, entry: &ModEntry, url: &str, commit: &str) {
     let mut files = BTreeMap::new();
     if let Ok(contents) = std::fs::read_to_string(dir.join(&entry.file)) {
@@ -1036,21 +773,9 @@ fn record_repository(lock: &mut ModLock, dir: &Path, entry: &ModEntry, url: &str
     });
 }
 
-/// Bring the directory into agreement with the spec.
-///
-/// Installs what is absent, takes back what the spec no longer lists, and leaves
-/// everything else alone — including a pane the spec never listed, which is
-/// nobody's to touch. Idempotent: a second run reports every entry `current` and
-/// changes nothing.
-///
-/// Resolves each entry at the version the **lock** recorded rather than at
-/// whatever is newest, which is what makes the same spec plus lock reproduce the
-/// same interface elsewhere. Advancing is [`update`]'s job, asked for explicitly.
 pub fn sync(dir: &Path) -> Result<Vec<EntryReport>, String> {
     let spec = read_spec(dir)?;
     let mut lock = read_lock(dir)?;
-    // Withdrawn first, so a spec that moves a pane from one file to another does
-    // not have the old file taken back after the new one is written.
     let mut reports = withdraw_stale(dir, &spec, &mut lock, |_| true)?;
 
     for entry in &spec.mods {
@@ -1097,13 +822,6 @@ pub fn sync(dir: &Path) -> Result<Vec<EntryReport>, String> {
     Ok(reports)
 }
 
-/// Take back the records the spec no longer lists, among those `wanted` picks.
-///
-/// Shared by [`sync`], which takes back every one, and [`update`], which takes back
-/// only a record that is one of its targets' own: a hand-edit that re-keys a
-/// multi-pane package leaves its old record covering the pane the new key names, and
-/// delivering over it would be refused as a second owner — or, if allowed, leave two
-/// records the next `sync` would reconcile by withdrawing the live entry's files.
 fn withdraw_stale(
     dir: &Path,
     spec: &ModSpec,
@@ -1133,12 +851,6 @@ fn withdraw_stale(
     Ok(reports)
 }
 
-/// Advance entries to what their source carries now.
-///
-/// `key` names one entry; `None` is all of them. An entry the spec **pins** is
-/// already where the user said it should be, so it is reported as current rather
-/// than moved — moving it means editing the pin, which is what a hand-edited spec
-/// is for. Finding nothing newer is likewise success, not a failure.
 pub fn update(dir: &Path, key: Option<&str>) -> Result<Vec<EntryReport>, String> {
     let spec = read_spec(dir)?;
     let mut lock = read_lock(dir)?;
@@ -1153,13 +865,6 @@ pub fn update(dir: &Path, key: Option<&str>) -> Result<Vec<EntryReport>, String>
         return Ok(Vec::new());
     }
 
-    // Only a record that is provably a target's own leftover from a hand re-key:
-    // same source, covering the target's key, and covering no other live entry's
-    // key. The last condition is what makes it the target's — a re-keyed entry's old
-    // record also covers that entry's new key, and taking it back from under an
-    // update that does not deliver that entry would leave it without its files.
-    // Copied packages only: a repository's record names a file inside a working
-    // copy git owns.
     let owned_by = |stale: &LockEntry, target: &ModEntry| {
         stale.src == target.src
             && stale.files.contains_key(&target.file)
@@ -1187,8 +892,6 @@ pub fn update(dir: &Path, key: Option<&str>) -> Result<Vec<EntryReport>, String>
             continue;
         }
         let was = lock.entry(&entry.file).map(|entry| entry.version.clone());
-        // A pin is the user's statement about which version to run; an update
-        // resolves at it rather than past it.
         let resolved = resolve_source(&entry.src, entry.pin.as_deref());
         let fetched = fetch(&entry.src, &resolved, Some(&entry.file))
             .map_err(|e| not_found_help(&entry.src, e))?;
@@ -1216,18 +919,11 @@ pub fn update(dir: &Path, key: Option<&str>) -> Result<Vec<EntryReport>, String>
     Ok(reports)
 }
 
-/// Remove one installed mod: its files, its spec entry and its record.
-///
-/// Needs nothing from the source, which may be long gone — everything required is
-/// in the lock. A key the spec does not list is an error rather than a no-op, so a
-/// misspelled removal does not read as success.
 pub fn remove(dir: &Path, key: &str) -> Result<EntryReport, String> {
     let removed = remove_from_spec(dir, key)?;
     let mut lock = read_lock(dir)?;
     let record = lock.forget(&removed.file);
 
-    // A repository is one directory, not a file list: taking back the files the lock
-    // happens to name would leave the working copy and its `.git` behind.
     if let Some(url) = crate::agent::fetch::git_url(&removed.src) {
         let name = repository_name(&url)?;
         let root = dir.join(&name);
@@ -1249,8 +945,6 @@ pub fn remove(dir: &Path, key: &str) -> Result<EntryReport, String> {
     if let Some(record) = &record {
         withdraw(dir, record)?;
     } else {
-        // Listed in the spec but never delivered — nothing on disk to take back,
-        // and the entry is gone either way.
         let path = dir.join(&removed.file);
         if path.is_file() {
             std::fs::remove_file(&path).map_err(|e| format!("{}: {e}", path.display()))?;
@@ -1269,11 +963,6 @@ pub fn remove(dir: &Path, key: &str) -> Result<EntryReport, String> {
     })
 }
 
-/// The version to record for a resolution.
-///
-/// A bare official name resolves at a git ref, which *is* its version. Anything
-/// else takes what the package calls itself, and a package that says nothing is
-/// recorded as unpinned — honestly, rather than with a version invented for it.
 fn version_of(resolved: &Resolved, manifest: Option<&crate::session::PackageManifest>) -> String {
     if !resolved.version.is_empty() {
         return resolved.version.clone();
@@ -1283,33 +972,20 @@ fn version_of(resolved: &Resolved, manifest: Option<&crate::session::PackageMani
         .unwrap_or_else(|| "unpinned".to_string())
 }
 
-/// Add "did you mean" to a failed bare-name fetch.
-///
-/// The static list is help, not a gate: a pane published upstream after this
-/// binary was built still installs by name, and a typo still gets an answer
-/// without a network round-trip deciding it.
 fn not_found_help(src: &str, error: String) -> String {
     if !mod_spec::is_bare_name(src) {
         return error;
     }
-    // The fetcher's own message is two downloaders' stderr and a raw URL, which
-    // buries the one thing a mistyped name needs. It is REPLACED rather than
-    // appended to: this is the common failure, and the answer to it is short.
     let mut message = format!("no example mod named {src:?}");
     if let Some(suggestion) = suggest_mod(src) {
         message.push_str(&format!(" — did you mean {suggestion:?}?"));
     }
     let available: Vec<&str> = EXAMPLE_MODS.iter().map(|(name, _)| *name).collect();
     message.push_str(&format!("\n  available: {}", available.join(", ")));
-    // Kept, indented, because a bare name can also fail for reasons that are not
-    // a typo at all — no network, a proxy, a broken package upstream — and
-    // swallowing the cause would make those undiagnosable.
     message.push_str(&format!("\n  ({})", error.replace('\n', " ")));
     message
 }
 
-/// Suggest the closest example mod name, within a small edit budget so an
-/// unrelated typo suggests nothing.
 pub fn suggest_mod(name: &str) -> Option<&'static str> {
     let name = name.trim().to_lowercase();
     let budget = (name.len() / 3).clamp(2, 3);
@@ -1343,16 +1019,8 @@ fn edit_distance(a: &str, b: &str) -> usize {
 mod tests {
     use super::*;
 
-    /// A Windows local path names its clone directory too.
-    ///
-    /// Both platforms are asserted from one machine on purpose: the Windows reading
-    /// was wrong for the whole life of the clone path and Linux could not see it,
-    /// because a `\` is an ordinary filename character here and a separator there.
-    /// Every repository test failed on Windows CI with "Name contains invalid
-    /// characters" while passing locally.
     #[test]
     fn a_source_names_its_directory_on_either_platform() {
-        // A remote URL reads the same either way.
         for windows in [true, false] {
             for url in [
                 "https://github.com/you/thurbox-widget",
@@ -1368,8 +1036,6 @@ mod tests {
             );
         }
 
-        // A local Windows path: the drive letter's colon already split, but the
-        // backslashes did not, so the whole tail was taken as one name and refused.
         for path in [
             r"D:\a\thurbox\thurbox-widget",
             r"D:\a\thurbox\thurbox-widget\",
@@ -1379,8 +1045,6 @@ mod tests {
             assert_eq!(last_segment(path, true), "thurbox-widget", "{path}");
         }
 
-        // And on POSIX a backslash stays part of the name: it is legal there, so
-        // splitting on it would rename somebody's directory.
         assert_eq!(last_segment(r"/home/me/odd\name", false), r"odd\name");
     }
 
@@ -1483,7 +1147,6 @@ mod tests {
             "-- v1\n"
         );
 
-        // Again at the same version: nothing to do, and it says so.
         let again = deliver(
             dir.path(),
             &entry(file),
@@ -1539,9 +1202,6 @@ mod tests {
             "-- mine\n",
             "the edit is the user's to keep"
         );
-        // And again, because this is where it nearly went wrong: if the record were
-        // updated to the digest now on disk, the edit would look like our own
-        // delivery and the SECOND run would overwrite it.
         let outcome = deliver(
             dir.path(),
             &entry(file),
@@ -1610,8 +1270,6 @@ mod tests {
         .expect("deliver");
 
         assert!(dir.path().join("lib/atlas/util.lua").is_file());
-        // Traceable to the entry that brought it, which is what stops a module
-        // being reported as the user's own file.
         assert_eq!(
             lock.covering("lib/atlas/util.lua").map(|e| e.src.as_str()),
             Some("atlas")
@@ -1652,9 +1310,6 @@ mod tests {
         );
     }
 
-    /// The grant, read back through the registry and the lock rather than through
-    /// the pure rule — so the wiring is covered too: which of the two rules is
-    /// chosen, and what the pin is compared against.
     #[test]
     fn trust_follows_an_installed_pane_across_its_versions() {
         let home = tempfile::tempdir().expect("tempdir");
@@ -1690,8 +1345,6 @@ mod tests {
             super::super::inventory::Trust::Trusted
         );
 
-        // An ordinary release. The grant lapses rather than reading as tampering —
-        // which is the whole point of recording the version.
         deliver(
             &dir,
             &entry(file),
@@ -1707,8 +1360,6 @@ mod tests {
             "moving the pin asks again"
         );
 
-        // Granted at v2, then the source re-tags v2 with something else. The
-        // capability must NOT ride along.
         registry
             .trust_installed(&absolute, "atlas@v2", "-- v2\n")
             .expect("trust");
@@ -1728,8 +1379,6 @@ mod tests {
             "no lock entry must not turn it into a file of the user's own"
         );
 
-        // An UNMANAGED file stays on the contents-only rule, untouched by any of
-        // this: the user wrote it, and its version is not a thing.
         let mine = "mods/90_mine.lua";
         std::fs::write(dir.join(mine), "-- mine\n").expect("write");
         let mine_absolute = dir.join(mine).to_string_lossy().into_owned();
@@ -1757,7 +1406,6 @@ mod tests {
         };
         assert!(deliver(dir.path(), &escape, "src", "v1", &[], &mut lock).is_err());
 
-        // And a payload cannot smuggle one past a legitimate entry.
         assert!(deliver(
             dir.path(),
             &entry("mods/a.lua"),

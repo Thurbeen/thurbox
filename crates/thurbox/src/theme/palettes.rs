@@ -1,10 +1,3 @@
-//! The thirty-six built-in palettes, as data.
-//!
-//! Split from `theme_config`'s behaviour so [`super::ThemePreset::palette`]'s
-//! dispatch is the one visible seam: everything in this file is a colour
-//! table, and adding a preset means adding one function here plus its arm
-//! there. The enumeration order users see lives with the dispatch, not here.
-
 use ratatui::style::Color;
 
 use super::{PaletteSlots, ThemePalette};
@@ -170,8 +163,6 @@ pub(super) fn tokyo_night_day_palette() -> ThemePalette {
     let blue = Color::Rgb(0x2E, 0x7D, 0xE9);
     let cyan = Color::Rgb(0x00, 0x71, 0x97);
     let purple = Color::Rgb(0x98, 0x54, 0xF1);
-    // Deepened from #7847BD so the selected-session name (which now uses
-    // `selection_fg`) clears ~4.5:1 contrast on the light `selection_bg` band.
     let magenta = Color::Rgb(0x5A, 0x3A, 0x9E);
     let green = Color::Rgb(0x58, 0x75, 0x39);
     let yellow = Color::Rgb(0x8C, 0x6C, 0x3E);
@@ -291,9 +282,6 @@ pub(super) fn doom_palette() -> ThemePalette {
     let bright_red = Color::Rgb(0xFF, 0x5C, 0x54);
     let bright_green = Color::Rgb(0x6E, 0xFF, 0x6E);
     let cyan = Color::Rgb(0x00, 0xD9, 0xFF);
-    // Hellfire amber, not `red`: the yellow slot drives `status_working`, and
-    // reusing red there made a working session indistinguishable from a
-    // blocked one (both `status_blocked` and `status_error` are red).
     let amber = Color::Rgb(0xFF, 0xA5, 0x00);
     let text = Color::Rgb(0xE0, 0xE0, 0xE0);
     let subtext = Color::Rgb(0xA0, 0xA0, 0xA0);
@@ -324,9 +312,6 @@ pub(super) fn doom_palette() -> ThemePalette {
         base_bg: bg_dark,
     }
     .build();
-    // `status_background` is `role_name` by default, but its `role_name` is the
-    // accent `running` wears, and red besides; a violet the palette otherwise
-    // lacks keeps `background` apart from both.
     palette.status_background = Color::Rgb(0xB0, 0x6C, 0xFF);
     palette
 }
@@ -449,12 +434,12 @@ pub(super) fn one_dark_palette() -> ThemePalette {
 }
 
 pub(super) fn rose_pine_moon_palette() -> ThemePalette {
-    let iris = Color::Rgb(0xC4, 0xA7, 0xE7); // purple
+    let iris = Color::Rgb(0xC4, 0xA7, 0xE7);
     let rose = Color::Rgb(0xEA, 0x9A, 0x97);
-    let foam = Color::Rgb(0x9C, 0xCF, 0xD8); // teal/cyan
-    let gold = Color::Rgb(0xF6, 0xC1, 0x77); // yellow
-    let love = Color::Rgb(0xEB, 0x6F, 0x92); // red/pink
-    let pine = Color::Rgb(0x3E, 0x8F, 0xB0); // blue
+    let foam = Color::Rgb(0x9C, 0xCF, 0xD8);
+    let gold = Color::Rgb(0xF6, 0xC1, 0x77);
+    let love = Color::Rgb(0xEB, 0x6F, 0x92);
+    let pine = Color::Rgb(0x3E, 0x8F, 0xB0);
     let text = Color::Rgb(0xE0, 0xDE, 0xF4);
     let subtle = Color::Rgb(0x90, 0x8C, 0xAA);
     let muted = Color::Rgb(0x6E, 0x6A, 0x86);
@@ -484,8 +469,6 @@ pub(super) fn rose_pine_moon_palette() -> ThemePalette {
         base_bg: base,
     }
     .build();
-    // `status_background` is `role_name` by default, but `role_name` is iris, the
-    // accent `running` wears.
     palette.status_background = rose;
     palette
 }
@@ -531,7 +514,7 @@ pub(super) fn everforest_palette() -> ThemePalette {
 
 pub(super) fn kanagawa_palette() -> ThemePalette {
     let crystal_blue = Color::Rgb(0x7E, 0x9C, 0xD8);
-    let spring_blue = Color::Rgb(0x7F, 0xB4, 0xCA); // cyan
+    let spring_blue = Color::Rgb(0x7F, 0xB4, 0xCA);
     let spring_green = Color::Rgb(0x98, 0xBB, 0x6C);
     let carp_yellow = Color::Rgb(0xE6, 0xC3, 0x84);
     let wave_red = Color::Rgb(0xE4, 0x68, 0x76);
@@ -584,8 +567,6 @@ pub(super) fn solarized_dark_palette() -> ThemePalette {
     let base0 = Color::Rgb(0x83, 0x94, 0x96);
     let base1 = Color::Rgb(0x93, 0xA1, 0xA1);
     PaletteSlots {
-        // Cyan accent keeps Solarized Dark distinct from Solarized Light,
-        // which takes the blue.
         accent: cyan,
         accent_bright: blue,
         green,
@@ -777,8 +758,6 @@ pub(super) fn rose_pine_palette() -> ThemePalette {
     let surface = Color::Rgb(0x1F, 0x1D, 0x2E);
     let base = Color::Rgb(0x19, 0x17, 0x24);
     PaletteSlots {
-        // The Moon variant already takes iris; use rose here so the two
-        // Rosé Pine flavours read differently in the picker swatch.
         accent: rose,
         accent_bright: iris,
         green: foam,
@@ -1071,9 +1050,6 @@ pub(super) fn iceberg_palette() -> ThemePalette {
         base_bg: bg,
     }
     .build();
-    // `status_background` is `role_name` by default, but its purple sits too close
-    // to the blue `done` and `running` wear; a lighter lilac keeps the hue and the
-    // distance.
     palette.status_background = Color::Rgb(0xB8, 0x9C, 0xE6);
     palette
 }
@@ -1344,8 +1320,6 @@ pub(super) fn rose_pine_dawn_palette() -> ThemePalette {
         base_bg: base,
     }
     .build();
-    // `status_background` is `role_name` by default, but `role_name` is iris, the
-    // accent `running` wears.
     palette.status_background = rose;
     palette
 }

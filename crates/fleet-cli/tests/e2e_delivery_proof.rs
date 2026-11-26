@@ -1,8 +1,3 @@
-//! A brief or an inbox entry counts as delivered only when the agent's
-//! prompt hook reports it through `fleet signal`, not when its runtime typed
-//! it. The real `fleet` binary, its file store and the fake host, whose
-//! agents report every text they are given unless a test silences them.
-
 mod support;
 
 use fleet_runtime::Fault;
@@ -28,7 +23,6 @@ fn signal_file(env: &Env) -> String {
         .expect("FLEET_SIGNAL_FILE")
 }
 
-/// The agent's prompt hook, reporting `text` as Claude Code gives it.
 fn prompt_hook(env: &Env, text: &str) {
     let payload = json!({"prompt": text, "session_id": "conv-1"}).to_string();
     let mut cmd = env.command(&["signal", "prompt", &payload]);
@@ -52,7 +46,6 @@ fn a_brief_is_delivered_only_once_the_agents_prompt_hook_reports_it() {
     let env = setup("proof-brief");
     env.host().set_prompt_hook_silent(true).unwrap();
     env.reconcile().ok();
-    // The runtime typed it; nothing proves the agent took it.
     let st = env.status("t1");
     assert_eq!(st["phase"], "Spawned", "{st:#}");
     assert_condition(&st, "Briefed", "Unknown", "AwaitingPrompt");
@@ -108,7 +101,6 @@ fn a_brief_the_agent_split_around_a_paste_is_proven() {
 #[test]
 fn a_brief_whose_answer_was_lost_is_settled_by_the_prompt_hook_and_sent_once() {
     let env = setup("proof-lost");
-    // The brief lands and the agent reports it; the runtime's answer is lost.
     env.fault(Fault::new("brief", "unknown").performed());
     env.reconcile().ok();
     let full = full_status(&env);
@@ -161,8 +153,6 @@ fn an_earlier_report_of_the_same_text_proves_no_later_send() {
     env.reconcile().ok();
     assert_eq!(delivered_keys(&env).len(), 1, "{:#}", full_status(&env));
 
-    // The same text again, lost before it reaches the agent: the earlier
-    // report is not this send's.
     env.host().set_prompt_hook_silent(true).unwrap();
     env.fault(Fault::new("brief", "unknown"));
     env.fleet(&["send", "t1", "same text"]).ok();

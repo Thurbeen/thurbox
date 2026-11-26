@@ -1,47 +1,15 @@
-//! What the interface is made of — the spec, and the record of what it resolved
-//! to.
-//!
-//! Two files in the interface directory, and the split between them is the same
-//! one `.bundled.json` and `ui.json` already make: [`SPEC_FILE`] is **hand-edited
-//! composition** and [`LOCK_FILE`] is a **machine-written record**. You read a
-//! spec diff and you skim a lock diff; a merge conflict in the record must not
-//! dirty the half a person maintains.
-//!
-//! ```toml
-//! # ui/mods.toml
-//! [[mod]]
-//! src  = "atlas"                  # bare name, URL, or path
-//! file = "mods/75_atlas.lua"      # load order lives in the filename
-//! pin  = "v0.3.1"                 # omit to take the newest at install time
-//! ```
-//!
-//! TOML because `docs/thurbox/config.md`'s own rule is that hand-edited registries are
-//! TOML, and because a malformed edit becomes a parse error naming its line
-//! rather than a nil three frames later. Pure data here in `session` — the
-//! dependency sink — so the kernel (which classifies a file's origin and resolves
-//! trust) and the CLI (which installs and converges) share one definition,
-//! exactly as they do for [`crate::session::HostDef`]. Nothing here touches the filesystem.
-
 use std::collections::{BTreeMap, BTreeSet};
 
 use serde::{Deserialize, Serialize};
 
-/// The hand-edited spec, in the interface directory.
 pub const SPEC_FILE: &str = "mods.toml";
 
-/// The machine-written record, beside it.
 pub const LOCK_FILE: &str = "mods.lock";
 
-/// The directory of the interface the loader reads panes from.
 pub const MODS_DIR: &str = "mods";
 
-/// The name [`MODS_DIR`] had before mods were mods.
 pub const LEGACY_MODS_DIR: &str = "plugins";
 
-/// A destination under `plugins/` moved under `mods/`; any other unchanged.
-///
-/// Package manifests we do not control still name `plugins/…` destinations, and
-/// so do `--as` arguments written before the rename.
 pub fn mod_destination(file: &str) -> String {
     match file
         .strip_prefix("plugins/")
@@ -52,8 +20,6 @@ pub fn mod_destination(file: &str) -> String {
     }
 }
 
-/// Rename a spec or lock document's `plugin` array of tables to `mod`, keeping
-/// each table and its comments.
 pub fn rename_entries_key(doc: &mut toml_edit::DocumentMut) {
     if doc.contains_key(ENTRIES_KEY) {
         return;
@@ -63,8 +29,6 @@ pub fn rename_entries_key(doc: &mut toml_edit::DocumentMut) {
     }
 }
 
-/// Visit each entry's `file` value in a spec document, in either TOML form:
-/// `[[mod]]` tables, or an inline `mod = [{ … }]` array.
 pub fn for_each_entry_file(
     doc: &mut toml_edit::DocumentMut,
     mut visit: impl FnMut(&mut toml_edit::Value),
@@ -112,29 +76,15 @@ fn entries_as_tables(doc: &mut toml_edit::DocumentMut) {
 const ENTRIES_KEY: &str = "mod";
 const LEGACY_ENTRIES_KEY: &str = "plugin";
 
-/// One mod the interface is composed of.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ModEntry {
-    /// Where it comes from: a bare name resolving to the repository's examples for
-    /// this release, a URL, or a filesystem path (`agent::fetch` resolves it).
     pub src: String,
-    /// Where it is delivered, relative to the interface directory. Carries the
-    /// load order in its filename, because that is where the interface has always
-    /// kept it.
     pub file: String,
-    /// The version to use. Absent means "whatever was newest when this was
-    /// installed", which the lock then pins for everyone else.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub pin: Option<String>,
 }
 
 impl ModEntry {
-    /// The name this entry answers to on the command line.
-    ///
-    /// A bare-name source is its own name; anything else is named by the file it
-    /// delivers, since a URL is not something anyone wants to retype — with the
-    /// leading load-order prefix dropped, because `75_` is where the pane sits in
-    /// the order and not what it is called. Nobody types `mod remove 75_atlas`.
     pub fn name(&self) -> &str {
         if is_bare_name(&self.src) {
             &self.src
@@ -143,12 +93,6 @@ impl ModEntry {
         }
     }
 
-    /// Refuse an entry that could write outside the interface directory, or that
-    /// names something the host would never load.
-    ///
-    /// Refused rather than sanitised, for the reason `mod new` refuses a bad
-    /// name: a spec that quietly delivers somewhere other than where it says is
-    /// worse than one that stops.
     pub fn validate(&self) -> Result<(), String> {
         if self.src.trim().is_empty() {
             return Err(format!("{}: src is empty", self.file));
@@ -157,16 +101,6 @@ impl ModEntry {
     }
 }
 
-/// Refuse a delivery path that escapes the interface directory or is not Lua.
-///
-/// Shared with the package manifest, whose declared files land under the same
-/// directory and are subject to the same rule.
-///
-/// Deliberately *not* `paths::ensure_safe_relative` (the canonical traversal
-/// guard): `session` is the pure-data leaf and may
-/// reference no crate module (crates/architecture.toml), and this rule set
-/// is different anyway — Lua-only, and string-level on both separators so a
-/// spec written on Windows still refuses `..\` on Linux.
 pub fn validate_destination(file: &str) -> Result<(), String> {
     if file.trim().is_empty() {
         return Err("file is empty".to_string());
@@ -176,8 +110,7 @@ pub fn validate_destination(file: &str) -> Result<(), String> {
             "{file}: must be relative to the interface directory"
         ));
     }
-    // Both separators, because a spec written on Windows is a spec that has to
-    // load on Linux.
+    // A spec written on Windows separates paths with `\`.
     if file
         .split(['/', '\\'])
         .any(|part| part.is_empty() || part == "." || part == "..")
@@ -192,23 +125,6 @@ pub fn validate_destination(file: &str) -> Result<(), String> {
     Ok(())
 }
 
-/// The panes a package manifest names, read **leniently**, in declared order.
-///
-/// Only each pane's `source` — the path within the package — and none of the
-/// copy-model rules [`PackageManifest::validate`] enforces. Those rules exist for a
-/// package whose files are copied to prescribed destinations; a repository keeps its
-/// own layout, so a manifest written for a clone would legitimately fail them (its
-/// modules live at `lib/…` inside its own tree, not at `lib/<name>/…` inside the
-/// interface). Reading strictly here would reject a correct repository for breaking
-/// a rule that does not apply to it.
-///
-/// Both spellings, since a repository's manifest is read through this and is as free
-/// to carry `[[pane]]` as any other. What more than one of them means is the
-/// caller's to decide: this function reports, it does not choose.
-///
-/// One element per **declaration**, `None` where it has no usable `source`. A
-/// malformed declaration is still a declaration: dropping it would let a manifest
-/// declaring two panes read as declaring one, and install half of it silently.
 pub fn pane_sources_of(text: &str) -> Vec<Option<String>> {
     let Ok(value) = toml::from_str::<toml::Value>(text) else {
         return Vec::new();
@@ -229,21 +145,10 @@ pub fn pane_sources_of(text: &str) -> Vec<Option<String>> {
         .collect()
 }
 
-/// Is this destination inside an installed mod's own directory rather than the
-/// interface's shared `mods/`?
-///
-/// A mod obtained as a repository keeps the layout its author chose, so its pane
-/// lives at `<name>/…` — which the loader has to be told about, because it otherwise
-/// reads only the top level of `mods/`.
 pub fn is_nested_pane(file: &str) -> bool {
     !file.starts_with("mods/") && !file.starts_with("lib/") && file.contains('/')
 }
 
-/// Whether a source is a bare name rather than a URL or a path.
-///
-/// Bare names are what resolve against the repository's examples; the
-/// discrimination matters here only for naming an entry, and the authoritative
-/// resolution lives with the installer.
 pub fn is_bare_name(src: &str) -> bool {
     !src.contains("://")
         && !src.contains('/')
@@ -257,10 +162,6 @@ fn file_stem(file: &str) -> &str {
     name.strip_suffix(".lua").unwrap_or(name)
 }
 
-/// Drop a leading `<digits>_` load-order prefix.
-///
-/// The interface has always kept load order in the filename, so `75_atlas.lua` is
-/// the atlas pane at position 75 — the number is not part of its name.
 fn strip_order(stem: &str) -> &str {
     match stem.split_once('_') {
         Some((order, rest)) if !order.is_empty() && order.chars().all(|c| c.is_ascii_digit()) => {
@@ -270,29 +171,18 @@ fn strip_order(stem: &str) -> &str {
     }
 }
 
-/// The interface's composition, as the spec states it.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ModSpec {
-    /// `[[mod]]` entries, in the order they appear. `[[plugin]]` is read as the
-    /// same thing.
     #[serde(default, rename = "mod", alias = "plugin")]
     pub mods: Vec<ModEntry>,
 }
 
 impl ModSpec {
-    /// Read a spec, reporting a malformed one with the location of the problem.
-    ///
-    /// An absent file is not this function's concern: **no spec means nothing
-    /// installed**, which is a valid interface, so the caller passes an empty
-    /// string or does not call at all.
     pub fn parse(text: &str) -> Result<Self, String> {
         let spec: Self = toml::from_str(text).map_err(|e| e.to_string())?;
         for entry in &spec.mods {
             entry.validate()?;
         }
-        // Two entries delivering to one path cannot both be honoured, and
-        // silently letting the last win would make the interface depend on
-        // file order in a way nothing reports.
         let mut seen = BTreeMap::new();
         for (index, entry) in spec.mods.iter().enumerate() {
             if let Some(first) = seen.insert(entry.file.clone(), index) {
@@ -307,25 +197,14 @@ impl ModSpec {
         Ok(spec)
     }
 
-    /// Is this file one the spec is responsible for?
-    ///
-    /// The question `install` asks before writing and `sync` asks before
-    /// removing: a file the spec never listed is nobody's to touch.
     pub fn manages(&self, file: &str) -> bool {
         self.mods.iter().any(|entry| entry.file == file)
     }
 
-    /// The entry a command-line argument refers to.
-    ///
-    /// Accepts the entry's name, the path it delivers to, its source, or the bare
-    /// filename — so `mod remove atlas`, `mod remove 75_atlas` and `mod
-    /// remove mods/75_atlas.lua` all work. What the user has in front of them
-    /// is a listing that shows the path, and a message that names it either way.
     pub fn find(&self, key: &str) -> Option<&ModEntry> {
         self.index_of(key).map(|index| &self.mods[index])
     }
 
-    /// Position of the entry `key` refers to.
     pub fn index_of(&self, key: &str) -> Option<usize> {
         self.mods.iter().position(|entry| {
             entry.name() == key
@@ -335,86 +214,33 @@ impl ModSpec {
         })
     }
 
-    /// Render the spec as TOML.
-    ///
-    /// Used to create the file. An **existing** file is edited through
-    /// [`insert_entry`] / [`remove_entry`] instead, which keep the comments a
-    /// person put there.
     pub fn to_toml(&self) -> Result<String, String> {
         toml::to_string_pretty(self).map_err(|e| e.to_string())
     }
 }
 
-/// A package's own manifest, `mod.toml` (or `plugin.toml`), shipped beside its
-/// Lua.
-///
-/// ```toml
-/// name = "atlas"
-/// description = "A map of your sessions"
-/// version = "v0.3.1"
-/// requires_thurbox = ">=2.0"
-///
-/// # a pane, and where it lands. Repeated for each one the package carries.
-/// [[pane]]
-/// source = "atlas.lua"
-/// path = "mods/75_atlas.lua"
-///
-/// # shared modules, which must live under lib/<name>/
-/// [[module]]
-/// source = "util.lua"
-/// path = "lib/atlas/util.lua"
-/// ```
-///
-/// **Several panes per package**, because a package is a unit of *distribution* —
-/// one version, one pin, one lock record — and not a unit of pane. The mods
-/// people have shipped carry two and three panes over one `lib/`, one gate and one
-/// version history; under one pane each, a manifest's `version` and
-/// `requires_thurbox` would describe one of them and the rest would install a
-/// destination at a time forever.
-///
-/// `pane = { … }` is kept as sugar for a single `[[pane]]`, so every manifest
-/// written before this parses and installs exactly as it did. A single `.lua` URL
-/// is still the degenerate case with no manifest at all: one file, no modules, no
-/// declared compatibility.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PackageManifest {
     pub name: String,
     #[serde(default)]
     pub description: Option<String>,
-    /// The version this package calls itself. Recorded in the lock when the
-    /// source offers nothing better to pin to.
     #[serde(default)]
     pub version: Option<String>,
-    /// The thurbox versions this package expects. Advisory: recorded and
-    /// reported, not enforced at load — one place in the kernel knowing about
-    /// versions is enough.
     #[serde(default)]
     pub requires_thurbox: Option<String>,
-    /// The panes this package delivers, in the order the manifest declares them.
-    /// The first is the one a spec entry is keyed on unless `--as` names another.
     #[serde(rename = "pane", deserialize_with = "one_or_several_panes")]
     pub panes: Vec<PackageFile>,
-    /// Shared modules the panes require.
     #[serde(default, rename = "module")]
     pub modules: Vec<PackageFile>,
 }
 
-/// Read `[[pane]]` and `pane = { … }` as the same thing.
-///
-/// The singular spelling is what every manifest written before a package could
-/// carry several uses — both shipped examples among them — so it stays. Sugar for a
-/// list of one, rather than a second shape every caller downstream would have to
-/// know about.
 fn one_or_several_panes<'de, D>(deserializer: D) -> Result<Vec<PackageFile>, D::Error>
 where
     D: serde::Deserializer<'de>,
 {
     use serde::de::Error;
 
-    // Through `toml::Value` rather than an untagged enum: when neither shape
-    // matches, untagged reports only "did not match any variant", while this names
-    // the field that is actually wrong — and a manifest is hand-written, so that
-    // field is most of the message.
+    // serde untagged enums only say "did not match any variant", so the shapes are matched by hand.
     let value = toml::Value::deserialize(deserializer)?;
     match value {
         toml::Value::Array(_) => Vec::<PackageFile>::deserialize(value).map_err(D::Error::custom),
@@ -424,24 +250,17 @@ where
     }
 }
 
-/// One file a package delivers.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PackageFile {
-    /// Path within the package to read from.
     pub source: String,
-    /// Destination, relative to the interface directory.
     pub path: String,
 }
 
 impl PackageManifest {
-    /// The file name a package manifest goes by.
     pub const FILE: &str = "mod.toml";
 
-    /// The name a package manifest went by before mods were mods, read when a
-    /// package has no [`Self::FILE`].
     pub const LEGACY_FILE: &str = "plugin.toml";
 
-    /// Read a manifest, with every `plugins/…` pane destination under `mods/`.
     pub fn parse(text: &str) -> Result<Self, String> {
         let mut manifest: Self = toml::from_str(text).map_err(|e| e.to_string())?;
         for pane in &mut manifest.panes {
@@ -451,19 +270,10 @@ impl PackageManifest {
         Ok(manifest)
     }
 
-    /// Every file this package delivers, panes first.
     pub fn files(&self) -> impl Iterator<Item = &PackageFile> {
         self.panes.iter().chain(self.modules.iter())
     }
 
-    /// Refuse a manifest that would deliver outside the interface directory, or
-    /// that would put a module anywhere but its own namespace.
-    ///
-    /// The namespace rule is the whole of the collision story: `lib/fuzzy.lua` is
-    /// a namespace with one tenant, and a package free to write there could
-    /// replace a shipped module every other pane requires. Checked at **install**
-    /// time rather than at load, because the loader deliberately knows nothing
-    /// about packages.
     pub fn validate(&self) -> Result<(), String> {
         if self.name.trim().is_empty() {
             return Err("name is empty".to_string());
@@ -506,52 +316,28 @@ impl PackageManifest {
     }
 }
 
-/// What one entry resolved to, and what was delivered for it.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct LockEntry {
-    /// The source, copied from the spec so the record stands alone.
     pub src: String,
-    /// The destination, which is the key the spec is matched on.
     pub file: String,
-    /// Where the source actually resolved to — the fetch URL, or the path.
     pub resolved: String,
-    /// The version installed. Recorded even when the spec left the pin open, so
-    /// the same spec applied elsewhere delivers this rather than whatever is
-    /// newest.
     pub version: String,
-    /// Digest of every file delivered for this entry, keyed by path relative to
-    /// the interface directory.
-    ///
-    /// More than one because a package may bring shared modules under
-    /// `lib/<its own name>/`. This is also what the trust decision reads: a
-    /// managed file is trusted at a version only while its contents are still the
-    /// ones that version delivered (design D5).
     #[serde(default)]
     pub files: BTreeMap<String, String>,
-    /// Files this entry delivered and the user then deleted.
-    ///
-    /// Recorded **explicitly**, and this is why: "absent from `files`" cannot mean
-    /// "deleted", because it is also what a path this version delivers for the
-    /// first time looks like. Conflating the two meant a new release that *added*
-    /// a module was read as a module the user had removed, and never delivered it.
-    /// `.bundled.json` writes its tombstones out for the same reason.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub removed: Vec<String>,
 }
 
 impl LockEntry {
-    /// Digest recorded for one delivered file.
     pub fn digest(&self, file: &str) -> Option<&str> {
         self.files.get(file).map(String::as_str)
     }
 
-    /// The `src@version` a capability grant is recorded against.
     pub fn pin_key(&self) -> String {
         format!("{}@{}", self.src, self.version)
     }
 }
 
-/// What each entry resolved to, so the same spec produces the same interface.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ModLock {
     #[serde(default, rename = "mod", alias = "plugin")]
@@ -559,30 +345,20 @@ pub struct ModLock {
 }
 
 impl ModLock {
-    /// Read a lock. A malformed one is reported like a malformed spec — it is
-    /// machine-written, but it is also a file people merge.
     pub fn parse(text: &str) -> Result<Self, String> {
         toml::from_str(text).map_err(|e| e.to_string())
     }
 
-    /// The record for a delivered path.
     pub fn entry(&self, file: &str) -> Option<&LockEntry> {
         self.mods.iter().find(|entry| entry.file == file)
     }
 
-    /// The record covering a delivered path, whether it is the entry's own pane
-    /// or a module the same package brought.
-    ///
-    /// A package's `lib/<name>/…` files are recorded under the entry that
-    /// delivered them, so this is how the inventory says where such a file came
-    /// from — the alternative being a `lib/` module reported as the user's own.
     pub fn covering(&self, file: &str) -> Option<&LockEntry> {
         self.mods
             .iter()
             .find(|entry| entry.files.contains_key(file))
     }
 
-    /// Replace or add the record for one entry, keyed by destination.
     pub fn record(&mut self, entry: LockEntry) {
         match self
             .mods
@@ -595,17 +371,11 @@ impl ModLock {
         self.mods.sort_by(|a, b| a.file.cmp(&b.file));
     }
 
-    /// Drop the record for a destination, returning it.
     pub fn forget(&mut self, file: &str) -> Option<LockEntry> {
         let index = self.mods.iter().position(|entry| entry.file == file)?;
         Some(self.mods.remove(index))
     }
 
-    /// Records the spec no longer lists.
-    ///
-    /// What convergence removes, and the reason the lock cannot silently disagree
-    /// with the spec: the spec is authoritative, so a record beyond it is a file
-    /// to take back.
     pub fn beyond(&self, spec: &ModSpec) -> Vec<&LockEntry> {
         self.mods
             .iter()
@@ -618,12 +388,6 @@ impl ModLock {
     }
 }
 
-/// Add an entry to a spec's text, keeping every comment already in it.
-///
-/// The spec is the one file here a person maintains by hand, so a command that
-/// rewrote it from the parsed form would delete their notes as the price of
-/// installing a mod. `toml_edit` is the same tool `settings.toml` is written
-/// back through, and for the same reason.
 pub fn insert_entry(text: &str, entry: &ModEntry) -> Result<String, String> {
     entry.validate()?;
     let mut doc: toml_edit::DocumentMut = if text.trim().is_empty() {
@@ -643,8 +407,6 @@ pub fn insert_entry(text: &str, entry: &ModEntry) -> Result<String, String> {
         .as_array_of_tables_mut()
         .ok_or_else(|| format!("{SPEC_FILE}: `{ENTRIES_KEY}` is not a list of entries"))?;
 
-    // An install over an existing entry is an update to it, not a second copy —
-    // otherwise `install` twice leaves a spec that cannot be parsed.
     let existing = array
         .iter()
         .position(|table| table.get("file").and_then(|f| f.as_str()) == Some(&entry.file));
@@ -656,18 +418,13 @@ pub fn insert_entry(text: &str, entry: &ModEntry) -> Result<String, String> {
         table["pin"] = toml_edit::value(pin);
     }
     match existing {
-        // Assigning into the slot keeps the entry where the author put it, and
-        // keeps any comment attached to the surrounding document.
+        // toml_edit keeps the slot position and the comments around it on assignment.
         Some(index) => *array.get_mut(index).expect("index from position") = table,
         None => array.push(table),
     }
     Ok(doc.to_string())
 }
 
-/// Remove an entry from a spec's text, keeping every comment already in it.
-///
-/// Returns the text and the entry that was removed; `None` when the spec does not
-/// list it, which the caller reports rather than treating as success.
 pub fn remove_entry(text: &str, key: &str) -> Result<(String, ModEntry), String> {
     let spec = ModSpec::parse(text)?;
     let index = spec
@@ -685,23 +442,15 @@ pub fn remove_entry(text: &str, key: &str) -> Result<(String, ModEntry), String>
         .get_mut(ENTRIES_KEY)
         .and_then(|item| item.as_array_of_tables_mut())
     {
-        // By destination rather than by the parsed index: `toml_edit` and `toml`
-        // agree on order here, but matching on the key that identifies an entry
-        // cannot drift if one day they do not.
         let at = array
             .iter()
             .position(|table| table.get("file").and_then(|f| f.as_str()) == Some(&removed.file));
         if let Some(at) = at {
             let carried = header_of(array.get(at));
             array.remove(at);
-            // Everything above the FIRST entry is attached to it, so removing that
-            // entry takes the file's own header with it — and the seeded spec is
-            // documented in comments, like `settings.toml`. Whatever stood above
-            // the last blank line was addressed to the file rather than to the
-            // entry, so it has to be put back.
+            // toml_edit attaches the file header to the first entry, so removing it must carry the header down.
             if at == 0 {
                 match (carried, array.get_mut(0)) {
-                    // Down onto whatever is first now.
                     (Some(header), Some(next)) => {
                         let decor = next.decor_mut();
                         let existing = decor
@@ -711,8 +460,6 @@ pub fn remove_entry(text: &str, key: &str) -> Result<(String, ModEntry), String>
                             .to_string();
                         decor.set_prefix(format!("{header}{existing}"));
                     }
-                    // Nothing left to attach it to. An emptied spec still keeps
-                    // what it says about itself, so the document holds it.
                     (Some(header), None) => orphaned_header = Some(header),
                     (None, _) => {}
                 }
@@ -726,18 +473,8 @@ pub fn remove_entry(text: &str, key: &str) -> Result<(String, ModEntry), String>
     Ok((doc.to_string(), removed))
 }
 
-/// The part of a table's leading comments that was addressed to the file rather
-/// than to that table.
-///
-/// `toml_edit` attaches every byte above the first entry to it, blank lines
-/// included, so this is the only way to tell a file header from the comment
-/// somebody wrote about the entry immediately below. The split is the **last
-/// blank line**: a header, a blank line, then a comment sitting directly on the
-/// entry is how the seeded spec is written and how people write TOML generally.
 fn header_of(table: Option<&toml_edit::Table>) -> Option<String> {
     let prefix = table?.decor().prefix()?.as_str()?;
-    // Splitting on the *raw* text rather than on parsed comments, because that is
-    // what has to be written back byte for byte.
     let cut = prefix.rfind("\n\n").map(|at| at + 2)?;
     Some(prefix[..cut].to_string())
 }
@@ -803,8 +540,6 @@ mod tests {
         assert_eq!(ModSpec::parse(&edited).expect("parse").mods.len(), 2);
     }
 
-    /// A file header, then an entry with a comment of its own — the two kinds of
-    /// comment that have to be told apart when an entry is removed.
     const SPEC: &str = r#"# what this interface is made of
 
 # the map pane
@@ -892,8 +627,6 @@ file = "mods/80_notes.lua"
                 "{key}"
             );
         }
-        // A URL source is named by the file it delivers, since nobody retypes a URL
-        // — minus the load-order prefix, which is a position and not a name.
         for key in ["notes", "80_notes", "mods/80_notes.lua"] {
             assert_eq!(
                 spec.find(key).map(|e| e.file.as_str()),
@@ -930,7 +663,6 @@ file = "mods/80_notes.lua"
 
     #[test]
     fn adding_the_same_destination_twice_updates_rather_than_duplicates() {
-        // Otherwise installing twice leaves a spec that will not parse.
         let once = insert_entry(
             SPEC,
             &ModEntry {
@@ -964,10 +696,6 @@ file = "mods/80_notes.lua"
 
     #[test]
     fn removing_the_first_entry_keeps_the_file_header_but_not_its_own_comment() {
-        // The spec is documented in comments, like `settings.toml`, and every byte
-        // above the first entry belongs to that entry as far as `toml_edit` is
-        // concerned — so without carrying the header down, one `mod remove`
-        // would delete the file's documentation.
         let (text, removed) = remove_entry(SPEC, "atlas").expect("remove");
         assert_eq!(removed.file, "mods/75_atlas.lua");
         assert!(
@@ -994,8 +722,6 @@ file = "mods/80_notes.lua"
 
     #[test]
     fn removing_the_only_entry_is_not_a_lost_header() {
-        // Nothing to carry the header down to. It stays where it is, because the
-        // document keeps its own trailing trivia.
         let one = "# mine\n\n[[mod]]\nsrc = \"atlas\"\nfile = \"mods/a.lua\"\n";
         let (text, _) = remove_entry(one, "atlas").expect("remove");
         assert!(text.contains("# mine"), "{text}");
@@ -1028,8 +754,6 @@ file = "mods/80_notes.lua"
         let entry = again.entry("mods/75_atlas.lua").expect("entry");
         assert_eq!(entry.digest("mods/75_atlas.lua"), Some("aaaa"));
         assert_eq!(entry.pin_key(), "atlas@v0.3.1");
-        // A module the package brought is traceable to the entry that brought it,
-        // which is what stops it being reported as the user's own file.
         assert_eq!(
             again.covering("lib/atlas/util.lua").map(|e| e.src.as_str()),
             Some("atlas")
@@ -1154,7 +878,6 @@ file = "mods/80_notes.lua"
             ),
             vec![some("mods/40_a.lua"), some("mods/41_b.lua")]
         );
-        // A declaration with no usable source still counts.
         assert_eq!(
             pane_sources_of(
                 "[[pane]]\nsource = \"mods/40_a.lua\"\n[[pane]]\nsource = \"\"\n[[pane]]\n"

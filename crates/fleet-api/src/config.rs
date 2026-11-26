@@ -1,16 +1,10 @@
-//! Passive execution defaults and the immutable resolved launch snapshot.
-
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 
 pub const ENV_PROVIDER: &str = "EnvProvider";
 pub const SOURCE_CAP: usize = 64 * 1024;
-/// The TaskConfig a Task with no `configRef` takes its defaults from, when
-/// the store holds it. `fleet init` writes it.
 pub const DEFAULT_TASK_CONFIG: &str = "default";
 
-/// What `fleet init` writes as [`DEFAULT_TASK_CONFIG`]: an idle session
-/// pauses after 30 minutes.
 pub const DEFAULT_PAUSE_AFTER_MS: crate::Millis = 30 * 60 * 1000;
 
 pub const TASK_CONFIG: &str = "TaskConfig";
@@ -34,12 +28,8 @@ pub struct TaskConfigSpec {
     pub env: BTreeMap<String, String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub env_from: Vec<ConfigRef>,
-    /// Pause a Task's session once its agent was idle this long. Absent
-    /// means never.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub pause_after_ms: Option<crate::Millis>,
-    /// `false`: the agent exports no telemetry of its own, even when Fleet
-    /// exports. Absent means on.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub agent_telemetry: Option<bool>,
 }
@@ -66,12 +56,10 @@ pub struct Execution {
     pub sources: Vec<ConfigSource>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub pause_after_ms: Option<crate::Millis>,
-    /// The Task's `agentTelemetry`, else its TaskConfig's.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub agent_telemetry: Option<bool>,
 }
 
-/// Later sources override earlier spelling variants consistently on every host.
 pub fn merge_env(target: &mut BTreeMap<String, String>, source: &BTreeMap<String, String>) {
     for (key, value) in source {
         target.retain(|k, _| !k.eq_ignore_ascii_case(key));
@@ -104,7 +92,6 @@ pub enum EnvSource {
     },
 }
 
-/// Public identity only; the resolved map belongs to the private store.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ExecutionIdentity {

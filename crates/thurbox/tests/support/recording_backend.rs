@@ -1,18 +1,3 @@
-//! An in-memory session backend that behaves like a multiplexer: it holds
-//! windows, stamps them, lists them, reports which are alive, and can be made
-//! unreachable.
-//!
-//! It exists to prove that lifecycle follows a row's route. A backend that
-//! accepted every call would prove nothing — the four hand-rolled stubs in
-//! `src/` pass on silent defaults — so this one keeps the state a real
-//! multiplexer keeps and answers from it, and `tests/backend_contract.rs` holds
-//! it to the same contract as `TmuxBackend`. It never runs a process and never
-//! speaks the tmux command grammar: what reaches it is the trait, and nothing
-//! else can.
-//!
-//! Registered under a route no adapter serves (`local:rmux`, `ssh:<h>:rmux`),
-//! it models what an adapter is to `session_ops` without starting a process.
-
 #![allow(dead_code)]
 
 use std::collections::{HashMap, HashSet};
@@ -29,32 +14,20 @@ use thurbox::backend::{
 };
 use thurbox::session::Route;
 
-/// What the fake hands a hook to report through, the state word to follow.
 pub const SIGNAL_COMMAND: &str = "thurbox-probe-signal";
 
-/// One window, as the fake multiplexer holds it.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Window {
-    /// `pane-N`, issued in order and never reused while the fake lives.
     pub pane: String,
     pub name: String,
-    /// The owning row's id as stamped on the window; empty when unstamped.
     pub session: String,
     pub role: WindowRole,
     pub alive: bool,
-    /// What the window was asked to run, `command arg…`.
     pub command: String,
-    /// Where it was asked to run it.
     pub cwd: Option<String>,
-    /// The `PATH` it was opened with, as a real spawn prefixes it.
     pub path: Option<String>,
-    /// The environment it was opened with, as the spawn handed it over.
     pub env: std::collections::BTreeMap<String, String>,
-    /// What reached the pane, in order: typed text, `\n` for each Enter, and
-    /// `<name>` for any other key. What a capture reads back.
     pub screen: String,
-    /// The last hook state the pane's agent reported through this backend's
-    /// own status channel — never a tmux pane option: the fake has none.
     pub hook: Option<String>,
 }
 
@@ -63,11 +36,8 @@ struct State {
     next: u32,
     windows: Vec<Window>,
     unreachable: bool,
-    /// Shut down: nothing is readied again.
     closed: bool,
-    /// Every call that reached the backend, in order, as `verb detail`.
     calls: Vec<String>,
-    /// Hook reports not yet drained by an attached interface.
     hook_events: Vec<(String, String)>,
     refuse_kill: bool,
     fail_discover_on: Option<usize>,
@@ -76,28 +46,20 @@ struct State {
 
 type DiscoveryHook = (usize, Box<dyn FnOnce() + Send>);
 
-/// See the module doc.
 pub struct RecordingBackend {
     name: String,
     state: Mutex<State>,
     on_discover: Mutex<Option<DiscoveryHook>>,
     on_locate: Mutex<Option<Box<dyn FnOnce() + Send>>>,
     on_pane_state: Mutex<Option<Box<dyn FnOnce() + Send>>>,
-    /// The pause between a submitting send's paste and its Enter — see
-    /// [`RecordingBackend::delay_enter`].
     enter_delay: Mutex<std::time::Duration>,
-    /// Whether it answers `text_before_cursor` — see
-    /// [`RecordingBackend::read_cursor`].
     reads_cursor: std::sync::atomic::AtomicBool,
-    /// Fired once by the first cursor read whose row ends with the text — see
-    /// [`RecordingBackend::on_cursor_showing`].
     on_cursor_showing: Mutex<Option<CursorHook>>,
 }
 
 type CursorHook = (String, Box<dyn FnOnce() + Send>);
 
 impl RecordingBackend {
-    /// A fake serving `route`, named by it as every registered backend is.
     pub fn new(route: &Route) -> Arc<Self> {
         Arc::new(Self {
             name: route.format(),
@@ -111,12 +73,10 @@ impl RecordingBackend {
         })
     }
 
-    /// The windows it holds, oldest first.
     pub fn windows(&self) -> Vec<Window> {
         self.state.lock().unwrap().windows.clone()
     }
 
-    /// The windows stamped as `session`'s, whatever their role.
     pub fn windows_of(&self, session: &str) -> Vec<Window> {
         self.windows()
             .into_iter()
@@ -124,12 +84,10 @@ impl RecordingBackend {
             .collect()
     }
 
-    /// Every call it received.
     pub fn calls(&self) -> Vec<String> {
         self.state.lock().unwrap().calls.clone()
     }
 
-    /// What reached `pane`, or nothing for a pane it does not hold.
     pub fn screen(&self, pane: &str) -> String {
         self.windows()
             .into_iter()
@@ -138,20 +96,16 @@ impl RecordingBackend {
             .unwrap_or_default()
     }
 
-    /// Start the call log over, so a check reads only what follows.
     pub fn forget_calls(&self) {
         self.state.lock().unwrap().calls.clear();
     }
 
-    /// Whether any call named `verb`.
     pub fn called(&self, verb: &str) -> bool {
         self.calls()
             .iter()
             .any(|c| c.split_whitespace().next() == Some(verb))
     }
 
-    /// Make every question fail as an unreachable machine's does, or answer
-    /// again.
     pub fn set_reachable(&self, reachable: bool) {
         self.state.lock().unwrap().unreachable = !reachable;
     }
@@ -181,24 +135,15 @@ impl RecordingBackend {
         *self.on_locate.lock().unwrap() = Some(Box::new(callback));
     }
 
-    /// Pause between a submitting send's paste and its Enter, as the tmux
-    /// adapter does, so two sends to one pane can interleave unless something
-    /// above the backend serializes them.
     pub fn delay_enter(&self, delay: std::time::Duration) {
         *self.enter_delay.lock().unwrap() = delay;
     }
 
-    /// Answer `text_before_cursor` with the screen's last row, so the
-    /// composer guard can see a half-typed line. Off by default: a backend
-    /// that cannot tell is the plain-send path most tests drive.
     pub fn read_cursor(&self) {
         self.reads_cursor
             .store(true, std::sync::atomic::Ordering::Relaxed);
     }
 
-    /// Run `callback` once, at the first cursor read that finds `text` typed
-    /// and not yet submitted — the gap between a confirmed send's paste and
-    /// its Enter.
     pub fn on_cursor_showing(&self, text: &str, callback: impl FnOnce() + Send + 'static) {
         *self.on_cursor_showing.lock().unwrap() = Some((text.to_string(), Box::new(callback)));
     }
@@ -207,7 +152,6 @@ impl RecordingBackend {
         *self.on_pane_state.lock().unwrap() = Some(Box::new(callback));
     }
 
-    /// The window's program exits; `remain-on-exit` keeps the window.
     pub fn exit(&self, pane: &str) {
         let mut state = self.state.lock().unwrap();
         if let Some(w) = state.windows.iter_mut().find(|w| w.pane == pane) {
@@ -215,8 +159,6 @@ impl RecordingBackend {
         }
     }
 
-    /// Open a window directly, as something other than thurbox would — the
-    /// state a test starts from.
     pub fn open(&self, name: &str, session: &str, role: WindowRole) -> String {
         let mut state = self.state.lock().unwrap();
         let pane = state.issue();
@@ -236,9 +178,6 @@ impl RecordingBackend {
         pane
     }
 
-    /// An agent hook running in `pane` reports `state` the way this backend's
-    /// panes do: into the backend's own record, where an attached interface
-    /// drains it live and a headless poll lists it.
     pub fn hook(&self, pane: &str, state: &str) {
         let mut state_ = self.state.lock().unwrap();
         let window = state_
@@ -277,7 +216,6 @@ impl State {
         }))
     }
 
-    /// Where `owner`'s `role` window is, by the listing's own rule.
     fn place(&self, owner: Owner<'_>, role: WindowRole) -> Located {
         let index = self.index();
         match role {
@@ -292,7 +230,6 @@ impl State {
         pane
     }
 
-    /// The live window `pane` names, for input: an exited one accepts none.
     fn input(&mut self, pane: &str) -> Result<&mut Window> {
         let window = match self.windows.iter_mut().find(|w| w.pane == pane) {
             Some(w) => w,
@@ -321,8 +258,6 @@ impl State {
         }
     }
 
-    /// One session, one window per role (ADR-25): the newest window keeps a
-    /// stamp two windows carry, as tmux's own sweep decides it.
     fn retire_duplicates(&mut self, session: &str, role: WindowRole) {
         if session.is_empty() {
             return;
@@ -347,7 +282,6 @@ fn pane_number(pane: &str) -> u32 {
         .unwrap_or(0)
 }
 
-/// The role a window's name implies, for one nobody stamped.
 fn role_of(name: &str) -> WindowRole {
     if name.starts_with("tbs-") {
         WindowRole::Shell
@@ -358,8 +292,6 @@ fn role_of(name: &str) -> WindowRole {
     }
 }
 
-/// A pane's output: the fake never prints, and its stream ends at once. What
-/// reaches a pane headlessly is kept on its [`Window::screen`] instead.
 struct Silent;
 
 impl Iterator for Silent {
@@ -369,8 +301,6 @@ impl Iterator for Silent {
     }
 }
 
-/// Keystrokes written to an attached stream go nowhere: the verbs are what
-/// the fake models.
 struct Discard;
 
 impl Write for Discard {
@@ -474,7 +404,6 @@ impl WindowLifecycle for RecordingBackend {
         state.windows.push(Window {
             pane: pane.clone(),
             name,
-            // Stamped as it is created, which is what makes it findable by id.
             session: spec.owner.session_id.to_string(),
             role: spec.role,
             alive: true,
@@ -502,8 +431,6 @@ impl WindowLifecycle for RecordingBackend {
             callback();
         }
         let state = self.lock(format!("locate {}", owner.session_id))?;
-        // Every window here carries its own stamp, so an ambiguous name is
-        // left ambiguous: nothing the fake could do would be proof.
         Ok(Placed {
             agent: state.place(owner, WindowRole::Agent),
             shell: state.place(owner, WindowRole::Shell),
@@ -647,8 +574,6 @@ impl WindowLifecycle for RecordingBackend {
         if state.refuse_kill {
             return Err(anyhow::anyhow!("scripted kill refusal").into());
         }
-        // Idempotent, as the contract asks: a pane already gone is the
-        // outcome a kill wanted.
         state.windows.retain(|w| w.pane != backend_id);
         Ok(())
     }
@@ -692,8 +617,6 @@ impl PaneIo for RecordingBackend {
         text: &str,
         submit: bool,
     ) -> thurbox::backend::contract::BackendResult<()> {
-        // The paste and the Enter are two calls, as they are on a real
-        // multiplexer: nothing holds the pane between them.
         self.lock(format!("send_text {pane} {text}"))?
             .input(pane)?
             .screen
@@ -714,8 +637,6 @@ impl PaneIo for RecordingBackend {
         text: &str,
         delay: std::time::Duration,
     ) -> thurbox::backend::contract::BackendResult<()> {
-        // The fake's time passes at once: what a real timer would type later
-        // is on the screen when this returns.
         let mut state = self.lock(format!(
             "send_text_after {pane} {}s {text}",
             delay.as_secs()

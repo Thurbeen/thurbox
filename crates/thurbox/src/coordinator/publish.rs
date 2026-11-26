@@ -1,11 +1,3 @@
-//! Rebuilding the `thurbox.*` tables mods read.
-//!
-//! `republish` runs once per painted frame and once per input *batch*, not once
-//! per event — a held-down key otherwise paid for it per repeat. Within it every
-//! group is gated on a change-signal, so a group whose inputs did not move is
-//! not rebuilt at all (ADR-P16), and the three reads that touch a screen or the
-//! disk carry an age rather than a "we have an answer" flag (ADR-P14).
-
 use std::time::Instant;
 
 use thurbox::kernel::metrics::Subject;
@@ -15,9 +7,6 @@ use crate::{App, LINK_SCAN_INTERVAL};
 
 impl App {
     pub(crate) fn republish(&mut self) {
-        // Before `advance_animation`, which asks whether a printing `running`
-        // session is on screen — a stale set there would freeze the very
-        // spinner it gates.
         self.terminals.sync_printing();
         self.advance_animation();
         let sessions: Vec<String> = self
@@ -27,18 +16,11 @@ impl App {
             .iter()
             .map(|row| row.id.clone())
             .collect();
-        // Links are asked of every SURFACE, not every session: a session's
-        // companion shell is a screen of its own, and it prints URLs whether or
-        // not the agent's pane is the one on screen.
         let surfaces: Vec<String> = sessions
             .iter()
             .flat_map(|id| [id.clone(), thurbox::kernel::terminal::shell_surface(id)])
             .collect();
         self.refresh_links(&surfaces);
-        // Generation-gated, so an idle session costs one atomic load. The
-        // mutating half runs here; the map itself is borrowed below, after the
-        // last `&mut self` call — cloning it to end this borrow cost two
-        // `String`s per live session per publish.
         self.terminals.sync_meta();
         let attach_errors = self.terminals.failures();
         let starts = self.terminals.starts();
@@ -49,14 +31,9 @@ impl App {
             .get(self.focus)
             .and_then(|index| self.host.mods.get(*index))
             .map(|loaded| loaded.name.to_string());
-        // What is on screen is known from the frame just painted, which is what
-        // makes "its slot is not in the arrangement" an observation rather than
-        // a guess: placement depends on the terminal's current size.
         let visible: std::collections::HashSet<usize> = (0..self.host.mods.len())
             .filter(|index| self.is_visible_mod(*index))
             .collect();
-        // Before the borrows below: it re-reads the directory when something says
-        // the answer moved, which needs `self` mutably.
         self.refresh_trust();
         let ui_dir = self.ui_dir.clone();
         let registry = &self.registry;
@@ -107,9 +84,6 @@ impl App {
             status_rows: self.status_rows(),
             can_open: browser_available(),
             focus: focus.as_deref(),
-            // Last frame's, since `republish` runs before the paint that
-            // recomputes `selected_text` — a chord pressed after a drag reads the
-            // finished selection, which is the case that matters.
             selection: self.selected_text.as_deref(),
             hovered: self.hovered.as_ref(),
             inventory: &inventory,
@@ -120,15 +94,9 @@ impl App {
         }) {
             self.layout_error = Some(format!("publishing the snapshot failed: {e}"));
         }
-        // Put it back: the settings modal's Interface tab lists the same rows,
-        // and recomputing them there would mean a second join against a frame
-        // that has already been painted.
         self.inventory = inventory;
     }
 
-    /// Publish the world for this batch of input, unless it already was.
-    ///
-    /// See the drain loop for why once per batch is enough.
     pub(crate) fn publish_for_batch(&mut self, published: &mut bool) {
         if !*published {
             self.republish();
@@ -136,19 +104,11 @@ impl App {
         }
     }
 
-    /// Re-read where each file of the interface came from.
-    ///
-    /// On reload, and after this process edits one — the two moments the answer
-    /// can have changed. Not per frame: it digests every file.
     pub(crate) fn refresh_sources(&mut self) {
         self.sources = thurbox::kernel::bundled::sources(&self.ui_dir);
-        // Delivery just re-read the directory, so whatever the cached trust
-        // answers were digested from is no longer the file on disk.
         self.trust_stale = true;
     }
 
-    /// Scan `id`'s screen for links, recording the stamp and instant it was
-    /// scanned at, and publish what it found if that differs.
     fn scan_links(&mut self, id: &str, stamp: u64, now: Instant) {
         self.link_stamps.insert(id.to_string(), stamp);
         self.link_scans.insert(id.to_string(), now);
@@ -169,16 +129,6 @@ impl App {
     pub(crate) fn refresh_links(&mut self, surfaces: &[String]) {
         let now = Instant::now();
         for id in surfaces {
-            // Only surfaces that are ON SCREEN. Extracting links walks the whole
-            // vt100 grid and URL-scans every row, and doing that for every
-            // session with a live pane cost ~1.2ms a frame with three of them —
-            // for answers nothing could use, since a link that is not painted
-            // can be neither clicked nor handed to the outer terminal. v1 asked
-            // only the active session for the same reason.
-            //
-            // The rects are last frame's (this runs before the paint that
-            // clears them), so a surface that has just appeared gets its links
-            // on the following frame rather than this one.
             if self.terminals.last_rect(id).is_none() {
                 self.link_stamps.remove(id);
                 self.link_scans.remove(id);
@@ -198,24 +148,12 @@ impl App {
                 }
             }
         }
-        // A surface that left the snapshot takes its cached answer with it.
         let known: std::collections::HashSet<&str> = surfaces.iter().map(String::as_str).collect();
         self.links.retain(|id, _| known.contains(id.as_str()));
         self.link_stamps.retain(|id, _| known.contains(id.as_str()));
         self.link_scans.retain(|id, _| known.contains(id.as_str()));
     }
 
-    /// Hand the content search whatever the strip is asking for.
-    ///
-    /// The reading and matching happen on the search worker; this only compares
-    /// the request against the one last answered and, when a run is due, clones
-    /// each terminal's parser handle. The answer comes back through
-    /// `poll`, a frame or two later.
-    ///
-    /// Called every loop iteration rather than from `republish`: the output
-    /// re-run is paced by the clock, and a republish only happens when a frame
-    /// is owed — an agent that printed a match and went quiet inside the pacing
-    /// interval would otherwise never have it searched.
     pub(crate) fn serve_search(&mut self) {
         use thurbox::kernel::search::{Request, WANT_CONTENT, WANT_SESSIONS};
         let request = self.host.shared_string(WANT_CONTENT).map(|query| Request {
@@ -227,7 +165,6 @@ impl App {
         });
         let generation = self.terminals.output_generation();
         let (snapshots, terminals) = (&self.snapshots, &self.terminals);
-        // Only a dispatch walks the sessions: this runs every iteration.
         let dropped = self.search.serve(request, generation, |request| {
             let wanted: Vec<String> = snapshots
                 .current()
@@ -252,14 +189,6 @@ impl App {
         }
     }
 
-    /// Re-read where each file of the interface stands with the user.
-    ///
-    /// Answering it reads and digests every file in the directory and parses
-    /// `mods.lock`, so it is done when something says the answer moved rather
-    /// than per publish. Trust is keyed by absolute path, and drift is answered by
-    /// reading the file; an INSTALLED file is judged differently (its
-    /// `src@version` as well as its contents), and `trust_of` owns that split so
-    /// no caller can check only one half of it.
     pub(crate) fn refresh_trust(&mut self) {
         if !self.trust_stale {
             return;
@@ -295,11 +224,6 @@ impl App {
         self.host.set_disabled(disabled);
     }
 
-    /// What the creation flow is asking about, read off the shared `store`.
-    ///
-    /// Absent means not asking, which is why the local machine is an *empty*
-    /// host rather than an absent one: a closed flow must cost nothing, and
-    /// asking about local has to be expressible (`kernel::repos::Wants`).
     pub(crate) fn repo_wants(&self) -> thurbox::kernel::repos::Wants {
         use thurbox::kernel::repos::{Wants, WANT_BOOKMARKS, WANT_BRANCHES, WANT_BROWSE};
         Wants::new(
@@ -328,38 +252,17 @@ impl App {
     }
 }
 
-/// Whether a surface whose screen has moved is due another link scan.
-///
-/// The output stamp answers "could the answer have changed"; this answers "is it
-/// worth asking again yet". Split out as a function because the failure it
-/// guards is invisible from any frame: without it a printing agent rescanned its
-/// whole grid per frame and published a *changed* answer each time — the URLs
-/// sit on new rows as the screen scrolls — which moved the data epoch and so
-/// rebuilt every published group and dropped every pure pane's cached tree,
-/// undoing ADR-P16's gating for anyone whose agent prints a URL. Nothing about
-/// the rendered frame looks wrong while that happens; only the CPU does.
 fn link_scan_due(last_scan: Option<Instant>, now: Instant) -> bool {
     last_scan.is_none_or(|at| now.duration_since(at) >= LINK_SCAN_INTERVAL)
 }
 
-/// What a publish owes the links of one surface that is on screen.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum LinkScan {
-    /// Unchanged since the last scan, or moved but scanned too recently: the
-    /// answer stands.
     Keep,
-    /// Moved and due: scan, and record this stamp.
     Scan(u64),
-    /// No live pane, so no screen and no links.
     Gone,
 }
 
-/// Decide [`LinkScan`] for the on-screen surface `id`, whose output stamp is
-/// `stamp`, against the stamp and instant of its last scan.
-///
-/// A screen that moved but was scanned too recently does NOT record its stamp,
-/// so the next publish after the interval does the scan — a screen that has
-/// settled converges on `Keep` and costs nothing again.
 fn plan_link_scan(
     id: &str,
     stamp: Option<u64>,
@@ -395,24 +298,25 @@ mod tests {
             plan_link_scan("s", None, &stamps, &scanned_now, now),
             LinkScan::Gone
         );
-        // Unchanged: the answer stands however long ago it was scanned.
         assert_eq!(
             plan_link_scan("s", Some(7), &stamps, &never, later),
-            LinkScan::Keep
+            LinkScan::Keep,
+            "an unchanged surface keeps its answer however old"
         );
-        // Moved, but too soon to ask again.
         assert_eq!(
             plan_link_scan("s", Some(8), &stamps, &scanned_now, now),
-            LinkScan::Keep
+            LinkScan::Keep,
+            "a moved surface is not scanned again before the interval"
         );
-        // Moved, and the interval has passed — or it was never scanned.
         assert_eq!(
             plan_link_scan("s", Some(8), &stamps, &scanned_now, later),
-            LinkScan::Scan(8)
+            LinkScan::Scan(8),
+            "a moved surface is scanned once the interval has passed"
         );
         assert_eq!(
             plan_link_scan("s", Some(8), &stamps, &never, now),
-            LinkScan::Scan(8)
+            LinkScan::Scan(8),
+            "a moved surface never scanned is scanned at once"
         );
         assert_eq!(
             plan_link_scan("new", Some(1), &stamps, &scanned_now, now),
@@ -422,8 +326,6 @@ mod tests {
 
     #[test]
     fn a_surface_never_scanned_is_due_at_once() {
-        // A pane that has just appeared must show its links on the next frame,
-        // not a quarter of a second later.
         assert!(link_scan_due(None, Instant::now()));
     }
 
@@ -449,18 +351,10 @@ mod tests {
 
     #[test]
     fn the_scan_interval_is_slower_than_the_frames_it_paces() {
-        // The whole point is to take the scan off the per-frame path, so it has
-        // to be slower than a frame owed to output. Equal or faster and the
-        // pacing is a no-op that reads as tuned — the same trap the frame floors
-        // assert their way out of in `main.rs`.
         assert!(
             LINK_SCAN_INTERVAL > OUTPUT_FRAME_INTERVAL,
             "the link scan would still run on every output frame"
         );
-        // And no slower than the floor at which a still screen is repainted:
-        // beyond that the published map would be visibly behind a screen that
-        // has stopped moving, which is the case the output stamp already
-        // handles exactly and for free.
         assert!(
             LINK_SCAN_INTERVAL <= FORCE_REDRAW_INTERVAL,
             "links could lag a settled screen by more than a forced redraw"

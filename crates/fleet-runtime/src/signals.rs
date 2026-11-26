@@ -1,19 +1,3 @@
-//! The signal port's adapter: one file per session under Fleet's data
-//! directory, on this machine.
-//!
-//! A session on the local host gets `<dir>/<key>.jsonl` and its hooks
-//! append to it through `fleet signal`. A session on any other host gets a
-//! file on that host, under its home ([`place_file`]), which the `fleet`
-//! there appends to. This adapter cannot read it: the exec runtime reads it
-//! back through the runtime's `exec`, over the connection the runtime
-//! already has to the host.
-//!
-//! ```text
-//! local:  hook ─fleet signal─▶ <data>/signals/<key>.jsonl ◀─read── Fleet
-//! remote: hook ─fleet signal─▶ ~/.local/state/fleet/signals/<key>.jsonl
-//!                                    ◀─runtime exec (tail)── Fleet
-//! ```
-
 use std::fs::{self, OpenOptions};
 use std::io::{self, Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
@@ -23,42 +7,20 @@ use fleet_api::event::{OutboxRead, outbox_file};
 use fleet_api::signal::{MAX_LINE, Reported, Signal, Signals};
 use fleet_api::task::{LOCAL_HOST, SessionRef};
 
-/// The most of one file Fleet reads, from its end, so a runaway hook cannot
-/// stall a pass.
 const MAX_FILE: u64 = 8 * 1024 * 1024;
 
-/// Where a session on a host other than this machine reports, under the
-/// host's home: `fleet signal` there expands the `~/`, which this machine
-/// cannot, as it does not know that home.
 pub const PLACE_DIR: &str = "~/.local/state/fleet/signals";
 
-/// The file a session under `key` on another host reports to, as that
-/// host's `fleet signal` reads it; `None` for a key that is not a plain
-/// name.
 pub fn place_file(key: &str) -> Option<String> {
     let plain = !key.is_empty() && !key.starts_with('.') && !key.contains(['/', '\\']);
     plain.then(|| format!("{PLACE_DIR}/{key}.jsonl"))
 }
 
-/// The line that parts what a place's signal file held at a restart from
-/// what came after, in one read of it ([`read_split`]): not JSON, so no
-/// report is ever it.
 pub const RESTART_SPLIT: &str = "@@fleet-restart@@";
 
-/// The most of a place's signal file one read returns: the end of what it
-/// held at a restart, and the end of what came after. Together well under
-/// the 1 MiB an `exec` answer keeps of a stream, so neither the newest
-/// report nor the line between the two is cut.
 pub const PLACE_READ_BEFORE: u64 = 256 * 1024;
 pub const PLACE_READ_AFTER: u64 = 512 * 1024;
 
-/// What `fleet signal-read` prints of the signal file `file` on its own
-/// machine (`~`-rooted on a place): the end of what it held before the
-/// offset `since`, [`RESTART_SPLIT`] on a line of its own, then the end of
-/// what came after. Each part is a byte range computed from the file's
-/// length and read by seeking, so no read scans the whole file. A file
-/// shorter than `since` was made again: all of it came after. `None` when
-/// the file is not there.
 pub fn read_split(file: &Path, since: Option<u64>) -> io::Result<Option<Vec<u8>>> {
     let mut f = match crate::events::open_regular(&expand_home(file)) {
         Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(None),
@@ -79,8 +41,6 @@ pub fn read_split(file: &Path, since: Option<u64>) -> io::Result<Option<Vec<u8>>
     Ok(Some(out))
 }
 
-/// The byte length of the signal file `file` (`~`-rooted on a place), 0
-/// when it is not there: where a restart starts reading new reports from.
 pub fn file_length(file: &Path) -> io::Result<u64> {
     match fs::metadata(expand_home(file)) {
         Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(0),
@@ -88,7 +48,6 @@ pub fn file_length(file: &Path) -> io::Result<u64> {
     }
 }
 
-/// `file` as `fleet signal` opens it: a leading `~/` is the user's home.
 pub fn expand_home(file: &Path) -> PathBuf {
     let home = std::env::var_os("HOME").or_else(|| std::env::var_os("USERPROFILE"));
     match (file.to_string_lossy().strip_prefix("~/"), home) {
@@ -103,7 +62,6 @@ pub struct FileSignals {
 }
 
 impl FileSignals {
-    /// The adapter over `dir`, made when missing, its owner's only.
     pub fn open(dir: impl Into<PathBuf>) -> io::Result<FileSignals> {
         let dir = dir.into();
         crate::events::create_private_dir_all(&dir)?;
@@ -116,25 +74,15 @@ impl FileSignals {
     }
 }
 
-/// Where a restart left a place's signal file.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Boundary {
-    /// Its length then: what it holds past it is the new process's.
     At(u64),
-    /// Not known, as on a place whose file Fleet cannot read: nothing the
-    /// file holds is taken for the new process's.
     Unknown,
 }
 
-/// How a mark of an unknown boundary is written.
 const UNKNOWN_BOUNDARY: &str = "unknown";
 
 impl FileSignals {
-    /// Keep `boundary`, where the place's signal file was when the session
-    /// under `key` on another host was last started: what the file holds
-    /// past it is the new process's. Fleet does not write that file, so the
-    /// restart is kept here, and as a length rather than a time, so a
-    /// place's clock need not agree with Fleet's.
     pub fn mark_started(&self, key: &str, boundary: Boundary) -> io::Result<()> {
         let path = self
             .started_path(key)
@@ -148,9 +96,6 @@ impl FileSignals {
         fs::rename(&tmp, &path)
     }
 
-    /// Where the place's file was at the session's last start, as
-    /// [`FileSignals::mark_started`] kept it; `None` when it was never
-    /// restarted. A mark that cannot be read is an unknown boundary.
     pub fn started(&self, key: &str) -> Option<Boundary> {
         let path = self.started_path(key)?;
         let text = match fs::read_to_string(path) {
@@ -166,8 +111,6 @@ impl FileSignals {
     }
 }
 
-/// Append `signal` to `file` as one line, in one write, so lines from hooks
-/// running at once never interleave.
 pub fn append(file: &Path, signal: &Signal) -> io::Result<()> {
     let mut opened = OpenOptions::new().create(true).append(true).open(file)?;
     let placed = Signal {
@@ -230,8 +173,6 @@ impl Signals for FileSignals {
         };
         let read = || -> io::Result<String> {
             let mut file = crate::events::open_regular(&path)?;
-            // Only the tail of a long file: the last state is at its end,
-            // and the cut line is skipped as unreadable.
             let len = file.metadata()?.len();
             file.seek(SeekFrom::Start(len.saturating_sub(MAX_FILE)))?;
             let mut bytes = Vec::new();
@@ -253,11 +194,6 @@ mod place_read_tests {
     use super::*;
     use fleet_api::signal::State;
 
-    /// A read of a 64 MiB sparse file with the restart offset in its middle
-    /// returns its two bounded ranges and the split between them, well
-    /// under the 1 MiB `exec` keeps, and the new process's report is the
-    /// one folded. Its length is the file's; a missing file reads `None`
-    /// and has length 0.
     #[test]
     fn a_place_read_returns_the_two_ranges_around_the_restart() {
         let dir = std::env::temp_dir().join(format!("fleet-place-read-{}", std::process::id()));
@@ -286,7 +222,6 @@ mod place_read_tests {
             Reported::fold_restarted(before, after).state,
             Some(State::Working)
         );
-        // An offset past the end: the file was made again, all of it new.
         let out = read_split(&path, Some(size + 1))
             .expect("read")
             .expect("there");

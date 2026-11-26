@@ -1,17 +1,3 @@
-//! A mod running an interactive program in a pane it owns.
-//!
-//! **No multiplexer is started here.** Spawning a real program needs tmux, which
-//! this file deliberately does not touch (the real binary against a real pane is
-//! `tests/tui_e2e.rs`'s job), so what is asserted is everything up to and including
-//! the decision to spawn: who may ask, what the ask resolves to, what is drawn
-//! when nothing is behind the surface, and where keys would go. The parts that
-//! genuinely need a process are exercised by hand — see the change's tasks.
-//!
-//! The invisible failures are the gate and the attribution, exactly as they are
-//! for `run`: a capability that is *present and refusing* looks identical to one
-//! that is absent until you read the error, and a pane resolved to the wrong owner
-//! looks like nothing at all until two mods both want `watch`.
-
 use thurbox::kernel::command::Command;
 use thurbox::kernel::host::{Capability, LuaHost, RenderContext};
 use thurbox::kernel::terminal::{ProgramKey, Terminals};
@@ -41,7 +27,6 @@ fn render(host: &LuaHost, name: &str) -> thurbox::kernel::host::Rendered {
     .expect("render")
 }
 
-/// A pane that asks for a program and draws its surface.
 fn watch_pane(name: &str, pane: &str, declares: bool) -> String {
     format!(
         r#"return {{
@@ -62,13 +47,8 @@ fn watch_pane(name: &str, pane: &str, declares: bool) -> String {
     )
 }
 
-// ── who may ask ────────────────────────────────────────────────────────────
-
 #[test]
 fn an_undeclared_mod_asking_for_a_program_is_queued_but_may_not_run_it() {
-    // The command is *queued* — `command` is always available — and refused when
-    // it is honoured, because trust can be revoked between the ask and the doing.
-    // What must never happen is the program starting.
     let (_home, ui) = interface(&[("91_watch.lua", &watch_pane("watch", "watch", false))]);
     let host = LuaHost::new(&ui);
     assert!(host.error.is_none(), "{:?}", host.error);
@@ -97,8 +77,6 @@ fn a_declared_but_untrusted_mod_still_may_not_run_a_program() {
     assert!(host.may(loaded, Capability::Program));
 }
 
-// ── whose pane is it ───────────────────────────────────────────────────────
-
 #[test]
 fn two_mods_asking_for_the_same_name_get_different_panes() {
     let (_home, ui) = interface(&[
@@ -122,7 +100,6 @@ fn two_mods_asking_for_the_same_name_get_different_panes() {
     assert_ne!(one, two, "the same pane name, two different panes");
     assert!(one.contains("91_one.lua"), "{one}");
     assert!(two.contains("92_two.lua"), "{two}");
-    // And neither is mistakable for a session's terminal.
     assert_eq!(
         render(&host, "one").node.first_session_surface(),
         None,
@@ -132,8 +109,6 @@ fn two_mods_asking_for_the_same_name_get_different_panes() {
 
 #[test]
 fn a_pane_name_that_could_not_be_a_window_is_a_load_error_not_a_missing_pane() {
-    // Caught while the tree is read, so the author gets a message naming the path
-    // rather than a pane that silently never appears.
     let (_home, ui) = interface(&[("91_bad.lua", &watch_pane("bad", "watch#2", true))]);
     let host = LuaHost::new(&ui);
     let index = host.index_of("bad").expect("the plugin itself loads");
@@ -153,9 +128,6 @@ fn a_pane_name_that_could_not_be_a_window_is_a_load_error_not_a_missing_pane() {
     assert!(text.contains("program"), "{text}");
 }
 
-// ── what is drawn when nothing is behind it ────────────────────────────────
-
-/// A surface with nothing started says so, rather than drawing an empty box.
 #[test]
 fn an_unstarted_program_surface_is_reported_as_such() {
     use thurbox::kernel::paint::{ProgramPaint, SurfaceProvider};
@@ -184,7 +156,6 @@ fn an_unstarted_program_surface_is_reported_as_such() {
     );
 }
 
-/// The whole tree paints, with the surface's placeholder inside it.
 #[test]
 fn a_program_pane_paints_its_placeholder_rather_than_nothing() {
     let (_home, ui) = interface(&[("91_watch.lua", &watch_pane("watch", "watch", true))]);
@@ -216,13 +187,6 @@ fn a_program_pane_paints_its_placeholder_rather_than_nothing() {
     );
 }
 
-// ── keys ───────────────────────────────────────────────────────────────────
-
-/// A key aimed at a pane with nothing behind it must not be swallowed.
-///
-/// Silently eating it is the failure that reads as "the keyboard stopped working":
-/// there is no error, no output, and no way to tell it from a program that ignored
-/// the key.
 #[test]
 fn a_key_for_an_absent_program_is_not_reported_as_delivered() {
     let terminals = Terminals::with_registry(
@@ -273,18 +237,13 @@ fn a_program_surface_is_never_resolved_to_a_session() {
         std::sync::Arc::new(thurbox::backend::wiring::local_only(&Default::default())),
         &Default::default(),
     );
-    // A well-formed program id resolves to nothing while nothing is running, and a
-    // session id never resolves to a program at all.
     let key = ProgramKey::new("mods/91_watch.lua", "watch");
     assert!(terminals.program_key(&key.surface_id()).is_none());
     assert!(terminals
         .program_key("5f9c1f6e-1b2a-4c3d-8e9f-0a1b2c3d4e5f")
         .is_none());
-    // And a program surface has no output stamp among the sessions'.
     assert!(terminals.output_stamp(&key.surface_id()).is_none());
 }
-
-// ── not a session ──────────────────────────────────────────────────────────
 
 #[test]
 fn a_program_pane_is_absent_from_every_session_enumeration() {
@@ -294,7 +253,6 @@ fn a_program_pane_is_absent_from_every_session_enumeration() {
     );
     let key = ProgramKey::new("mods/91_watch.lua", "watch");
 
-    // Not attached, not failed, has no shell, and contributes no output generation.
     assert!(!terminals.is_attached(&key.surface_id()));
     assert!(terminals.failure(&key.surface_id()).is_none());
     assert!(!terminals.has_shell(&key.surface_id()));
@@ -302,8 +260,6 @@ fn a_program_pane_is_absent_from_every_session_enumeration() {
     assert!(terminals.visible_text(&key.surface_id()).is_none());
     assert!(terminals.last_rect(&key.surface_id()).is_none());
 }
-
-// ── what machine am I on ───────────────────────────────────────────────────
 
 #[test]
 fn a_mod_can_read_the_platform_it_is_running_on() {
@@ -360,7 +316,6 @@ fn a_mod_can_read_the_platform_it_is_running_on() {
         drawn.contains(&format!("arch={}", std::env::consts::ARCH)),
         "{drawn}"
     );
-    // And neither is nil, which is what a missing publish would look like.
     assert!(
         !drawn.contains("os=nil") && !drawn.contains("arch=nil"),
         "{drawn}"

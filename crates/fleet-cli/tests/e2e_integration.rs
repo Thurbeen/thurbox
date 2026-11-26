@@ -1,9 +1,3 @@
-//! `fleet integration`: the hooks Fleet installs for an agent that takes
-//! none at launch. Fleet writes only what it owns, under the agent's own
-//! config directory, keeps a ledger of it, and removes exactly that. The
-//! real `fleet` binary, a stub harness profile with an `[install]` table and
-//! a config directory of the test's own.
-
 mod support;
 
 use std::collections::BTreeMap;
@@ -13,8 +7,6 @@ use std::path::{Path, PathBuf};
 use serde_json::Value;
 use support::Env;
 
-/// A harness Fleet ships no profile for: an own file in a directory Fleet
-/// creates, and a block appended to the user's own config file.
 fn stub_profile(version: u32) -> String {
     format!(
         r#"name = "stub"
@@ -44,7 +36,6 @@ command = "fleet signal idle"
     )
 }
 
-/// Every file and directory under `dir`, a file with its bytes.
 fn tree(dir: &Path) -> BTreeMap<PathBuf, Option<Vec<u8>>> {
     let mut found = BTreeMap::new();
     let mut todo = vec![dir.to_path_buf()];
@@ -78,8 +69,6 @@ fn setup(name: &str) -> (Env, PathBuf) {
     fs::write(harnesses.join("stub.toml"), stub_profile(1)).expect("profile");
     let home = env.root.join(".stub-agent");
     fs::create_dir_all(home.join("hooks")).expect("agent config dir");
-    // The user's own config, its last line unterminated, and a hook file of
-    // their own beside the directory Fleet's goes in.
     fs::write(home.join("config.toml"), "# mine\nmodel = \"m\"").expect("user config");
     fs::write(home.join("hooks/user.json"), "{\"user\":true}\n").expect("user hook");
     (env, home)
@@ -114,14 +103,12 @@ fn an_installed_integration_is_versioned_and_its_removal_leaves_the_users_tree_a
         serde_json::from_slice(&fs::read(env.data.join("integrations.json")).expect("ledger"))
             .expect("ledger JSON");
     assert_eq!(ledger["integrations"]["stub"]["version"], 1, "{ledger:#}");
-    // A second install of a current one changes nothing.
     env.fleet(&["integration", "install", "stub"]).ok();
     assert_eq!(
         fs::read_to_string(home.join("config.toml")).unwrap(),
         config
     );
 
-    // A newer profile: what is installed is outdated, and is listed as such.
     fs::write(env.root.join("harnesses/stub.toml"), stub_profile(2)).expect("profile");
     assert_eq!(state(&env, "stub"), "outdated");
     let version = env.fleet(&["version", "--json"]).ok().json();
@@ -140,8 +127,6 @@ fn an_installed_integration_is_versioned_and_its_removal_leaves_the_users_tree_a
     );
     assert!(config.contains("stub, version 2"), "{config}");
 
-    // A person edits Fleet's file: it is modified, and an install refuses to
-    // overwrite it.
     fs::write(home.join("hooks.d/fleet.json"), "{}").expect("edit");
     assert_eq!(state(&env, "stub"), "modified");
     env.fleet(&["integration", "install", "stub"])
@@ -164,8 +149,6 @@ fn fleet_never_creates_an_agents_config_dir_and_honours_its_override() {
         .stderr_has("agent-missing");
     assert!(!elsewhere.exists(), "Fleet created the agent's config dir");
 
-    // The override names a directory that is there: Fleet writes there, and
-    // not in the default one.
     fs::create_dir_all(&elsewhere).expect("override dir");
     let default = tree(&home);
     env.fleet(&["integration", "install", "stub"]).ok();
@@ -237,7 +220,6 @@ fn a_reinstall_that_cannot_complete_keeps_the_working_integration() {
     env.fleet(&["integration", "install", "stub"]).ok();
     let installed = tree(&home);
     fs::write(env.root.join("harnesses/stub.toml"), stub_profile(2)).expect("profile");
-    // The agent now reads a directory that is not there: nothing is removed.
     let absent = env.root.join("absent");
     env.set_var("STUB_AGENT_HOME", &absent.to_string_lossy());
     env.fleet(&["integration", "install", "stub"])
@@ -264,8 +246,6 @@ fn a_block_whose_closing_line_is_gone_is_modified_and_never_extended() {
     );
 }
 
-/// With no home and no override, the refusal names the variable this
-/// platform reads the home from: `USERPROFILE` on Windows, `HOME` elsewhere.
 #[test]
 fn an_install_without_a_home_names_the_variable_to_set() {
     let (env, _home) = setup("integration-no-home");
@@ -277,9 +257,6 @@ fn an_install_without_a_home_names_the_variable_to_set() {
         .stderr_has(&format!("set {home} or one of"));
 }
 
-/// The test process holds the lock through the standard library, which is
-/// `flock` on Unix and `LockFileEx` on Windows, so this runs everywhere,
-/// Windows included, where no `flock` program is.
 #[test]
 fn a_lock_held_by_another_process_stops_install_until_it_is_released() {
     let (env, home) = setup("integration-lock-std");
@@ -301,8 +278,6 @@ fn a_lock_held_by_another_process_stops_install_until_it_is_released() {
     assert_eq!(state(&env, "stub"), "current");
 }
 
-/// `flock` on PATH, which holds a lock the way a `fleet` process does; a
-/// system without it skips the test.
 fn flock() -> Option<PathBuf> {
     let found = std::env::var_os("PATH").and_then(|path| {
         std::env::split_paths(&path)
@@ -323,9 +298,7 @@ fn a_lock_held_by_a_live_command_waits_and_one_left_by_a_killed_command_does_not
     let (env, home) = setup("integration-lock");
     env.fleet(&["list", "task"]).ok();
     let lock = env.data.join("integrations.lock");
-    // A holder that keeps the lock, then dies as a killed command does.
-    // One process from lock to death: the shell takes the lock on its fd 9
-    // and becomes `sleep`, which keeps it.
+    // sh takes the lock on its fd 9 and execs `sleep`, which keeps it.
     let mut holder = std::process::Command::new("sh")
         .arg("-c")
         .arg(r#"exec 9>"$1"; "$2" 9; exec sleep 300"#)
@@ -370,7 +343,6 @@ fn an_upgrade_never_takes_a_file_whose_block_alone_was_fleets() {
     env.fleet(&["integration", "install", "stub"]).ok();
     let installed = tree(&home);
     let ledger = fs::read(env.data.join("integrations.json")).expect("ledger");
-    // Version 2 claims the whole of the file whose block alone Fleet owns.
     let whole = stub_profile(2).replace(
         "[[install.blocks]]\npath = \"config.toml\"",
         "[[install.files]]\npath = \"config.toml\"",
@@ -390,8 +362,6 @@ fn an_upgrade_never_takes_a_file_whose_block_alone_was_fleets() {
 #[test]
 fn a_block_naming_fleet_that_the_ledger_does_not_list_is_never_extended() {
     let (env, home) = setup("integration-unlisted-block");
-    // A block of Fleet's shape that no ledger entry records: from another
-    // data directory, or copied by hand.
     let stray = "# mine\nmodel = \"m\"\n\n# >>> fleet integration stub, version 1: `fleet integration uninstall stub` removes this block\n[[hooks]]\nevent = \"Stop\"\n# <<< fleet integration stub\n";
     fs::write(home.join("config.toml"), stray).unwrap();
     env.fleet(&["integration", "install", "stub"])

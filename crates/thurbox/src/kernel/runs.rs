@@ -1,92 +1,45 @@
-//! Programs a mod asked to be run, and what they printed.
-//!
-//! The eighth worker. A mod cannot call anything that waits, so running a
-//! program is an *ask* (a command) whose answer arrives as a *read* (published
-//! next frame) — the split the kernel already enforces everywhere else, applied
-//! to the one thing that most obviously cannot block a render: a process.
-//!
-//! Three properties are load-bearing and each is a bound rather than a
-//! convention, because the caller is a file the user dropped in a directory and
-//! the interface has to survive it being written badly:
-//!
-//! - **Asking is idempotent while the answer is fresh.** A pane keeps `git
-//!   status` current by asking on every frame; a TTL is what makes that cost one
-//!   map lookup instead of one process.
-//! - **Output is capped and runs time out**, so a program that prints without
-//!   end, or never exits, costs a truncated answer rather than the interface.
-//! - **Concurrency is bounded and the excess queues**, so twenty asks are slow,
-//!   not a fork bomb.
-//!
-//! Modelled on `kernel::diff` (request → worker → poll → publish) with
-//! `kernel::repos`'s staleness, so there is one shape to learn rather than three.
-
 use std::collections::{HashMap, VecDeque};
 use std::path::PathBuf;
 use std::sync::mpsc::{Receiver, Sender};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-/// Most output kept per stream. Beyond this the run is truncated and says so.
 const OUTPUT_CAP: usize = 256 * 1024;
 
-/// How long a program may run before it is given up on.
 pub const DEFAULT_TIMEOUT: Duration = Duration::from_secs(30);
 
 const MAX_TIMEOUT: Duration = Duration::from_secs(600);
 
-/// How long an answer stays fresh when the asker does not say.
 pub const DEFAULT_TTL: Duration = Duration::from_secs(2);
 
 const MIN_TTL: Duration = Duration::from_millis(250);
 
-/// Programs running at once. The rest queue.
 const MAX_CONCURRENT: usize = 4;
 
-/// What a mod asked for.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Ask {
-    /// The mod's own name for this run. Namespaced by the kernel, so two
-    /// mods may both call theirs `status`.
     pub key: String,
-    /// The command line, run through the shell of the machine it targets.
     pub program: String,
-    /// Where it runs.
     pub target: Target,
     pub ttl: Duration,
     pub timeout: Duration,
-    /// Run it again even if the answer is fresh.
     pub refresh: bool,
 }
 
-/// Owner-bound operations, delivered in the order Lua issued them.
 #[derive(Debug, Clone)]
 pub enum Request {
     Ask(Ask),
     Forget(String),
 }
 
-/// The machine, and the directory on it, a run happens in.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Target {
-    /// The session's working directory, on whatever machine the session lives
-    /// on — over the host launcher for a remote one. What makes `docker compose
-    /// ps` mean the right containers.
     Session(String),
-    /// The machine running thurbox, in the user's home directory, whatever
-    /// session is selected. For a program that needs *this* machine — its
-    /// microphone, its display, its clipboard — and that a remote session's host
-    /// cannot stand in for. It grants nothing a local session's run does not
-    /// already: both are the user's own shell, here.
     Local,
-    /// An exact configured host name, without needing a session on it.
     Host(String),
 }
 
 impl Ask {
-    /// Clamp what a mod asked for into what the kernel will do.
-    ///
-    /// Applied here rather than at the worker so the stored TTL is the honoured
-    /// one — otherwise freshness would be judged against a number nobody used.
     pub fn clamped(mut self) -> Self {
         self.ttl = self.ttl.max(MIN_TTL);
         self.timeout = self.timeout.min(MAX_TIMEOUT);
@@ -94,16 +47,10 @@ impl Ask {
     }
 }
 
-/// What a program did.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Run {
-    /// Asked for, not finished. Distinct from a finished run that printed
-    /// nothing, which is the distinction a pane needs to avoid drawing "no
-    /// containers" while `docker` is still starting.
     Pending,
     Done(Output),
-    /// It could not be run at all — no such session, a host that is not
-    /// configured, a program that could not be started.
     Failed(String),
 }
 
@@ -111,15 +58,11 @@ pub enum Run {
 pub struct Output {
     pub stdout: String,
     pub stderr: String,
-    /// `None` when the program was killed by a signal or timed out.
     pub status: Option<i32>,
-    /// Either stream hit the cap.
     pub truncated: bool,
-    /// It ran out of time rather than finishing.
     pub timed_out: bool,
 }
 
-/// One finished run, on its way back to the loop.
 struct Finished {
     owner: String,
     key: String,
@@ -129,12 +72,6 @@ struct Finished {
     identity: Arc<()>,
 }
 
-/// Sends its `Finished` when the worker thread's frame goes away, however it
-/// goes away.
-///
-/// A plain `tx.send` after the call is skipped by an unwinding panic, and the
-/// loop's concurrency slot is only released by a message arriving. The message
-/// is owed even when its answer was forgotten, on every exit path.
 struct Report {
     tx: Sender<Finished>,
     owner: String,
@@ -157,24 +94,11 @@ impl Drop for Report {
     }
 }
 
-/// A stored answer and when it landed.
 struct Answer {
     run: Run,
-    /// `None` while pending — freshness is a property of an answer, and a run
-    /// still going has not produced one.
     at: Option<Instant>,
     ttl: Duration,
-    /// A run for this key is queued or executing.
-    ///
-    /// Tracked separately because `Run::Pending` cannot answer it: a refresh
-    /// deliberately leaves the previous answer in place — that is what stops a
-    /// pane blinking to "pending" every time its value renews — so the entry
-    /// still reads `Done` while the next run is in flight. Without this marker
-    /// every frame's ask started another process, and asking every frame is the
-    /// documented way to use `run`.
     inflight: bool,
-    /// Retained only by the answer and its queued or active request. Removing
-    /// the answer invalidates completion without retaining a key tombstone.
     identity: Arc<()>,
 }
 
@@ -187,16 +111,8 @@ impl Answer {
     }
 }
 
-/// What the loop must do to serve a queued ask: it owns the session lookup and
-/// the host resolution, neither of which belongs in a store.
 pub type Runner = dyn Fn(&Ask) -> Run + Send + Sync;
 
-/// A program starting or finishing, handed to the loop for the per-mod perf
-/// report.
-///
-/// Events rather than running totals so the *report* decides which measuring
-/// window a run belongs to: a finish carries the instant its run started, and a
-/// window counts it only if it saw that start.
 #[derive(Debug, Clone)]
 pub enum RunEvent {
     Started {
@@ -210,19 +126,12 @@ pub enum RunEvent {
     },
 }
 
-/// Every run a mod asked for, keyed by `(mod, key)`.
 #[derive(Default)]
 pub struct RunStore {
     answers: HashMap<(String, String), Answer>,
-    /// Asks waiting for a slot, in the order they arrived.
     queued: VecDeque<(String, Ask, Arc<()>)>,
     running: usize,
     channel: Option<(Sender<Finished>, Receiver<Finished>)>,
-    /// Runs started and finished since the loop last took them.
-    ///
-    /// Pushed unconditionally — once per process started and once per process
-    /// finished, which is nothing beside the process — and drained by the loop
-    /// on every call that can push one, so it never accumulates.
     events: Vec<RunEvent>,
 }
 
@@ -231,19 +140,12 @@ impl RunStore {
         Self::default()
     }
 
-    /// Ask for a program, or do nothing because the answer is still fresh.
-    ///
-    /// Returns whether anything was started or queued, which the caller uses to
-    /// decide nothing more than whether to repaint.
     pub fn request(&mut self, mod_name: &str, ask: Ask, runner: &std::sync::Arc<Runner>) -> bool {
         let ask = ask.clamped();
         let id = (mod_name.to_string(), ask.key.clone());
         let now = Instant::now();
 
         if let Some(answer) = self.answers.get(&id) {
-            // Already queued or executing: a second ask must not start a second
-            // process. This covers a refresh too, which the old answer's own
-            // `Run::Pending` state cannot — see `Answer::inflight`.
             if answer.inflight {
                 return false;
             }
@@ -252,9 +154,6 @@ impl RunStore {
             }
         }
 
-        // The previous answer stays readable until the new one lands, so a pane
-        // does not blink to "pending" every time its value refreshes — only a
-        // key nobody has asked for before starts out pending.
         let identity = Arc::new(());
         let entry = self.answers.entry(id).or_insert_with(|| Answer {
             run: Run::Pending,
@@ -271,7 +170,6 @@ impl RunStore {
         true
     }
 
-    /// Start whatever the concurrency bound allows.
     fn drain_queue(&mut self, runner: &std::sync::Arc<Runner>) {
         while self.running < MAX_CONCURRENT {
             let Some((owner, ask, identity)) = self.queued.pop_front() else {
@@ -286,11 +184,6 @@ impl RunStore {
             let tx = self.ensure_channel();
             let runner = runner.clone();
             std::thread::spawn(move || {
-                // Reported from a drop guard so a runner that panics still frees
-                // its slot and clears the key's in-flight marker. Otherwise one
-                // panic costs a permanent slot out of `MAX_CONCURRENT` and leaves
-                // that key unable to ever run again; four would wedge every run in
-                // the interface.
                 let mut report = Report {
                     tx,
                     owner,
@@ -311,8 +204,6 @@ impl RunStore {
             .clone()
     }
 
-    /// Fold finished runs in and start any that were waiting. True when
-    /// anything arrived, so the caller can repaint.
     pub fn poll(&mut self, runner: &std::sync::Arc<Runner>) -> bool {
         let mut changed = false;
         let finished: Vec<Finished> = match &self.channel {
@@ -342,10 +233,6 @@ impl RunStore {
         changed
     }
 
-    /// No retained answers or queued/active work remain.
-    ///
-    /// The loop uses this constant-time check to avoid rebuilding the runner's
-    /// session map when there is nothing to serve.
     pub fn is_empty(&self) -> bool {
         self.answers.is_empty() && self.queued.is_empty() && self.running == 0
     }
@@ -356,7 +243,6 @@ impl RunStore {
             .map(|answer| &answer.run)
     }
 
-    /// Every answer belonging to one mod, for publishing.
     pub fn for_mod<'a>(&'a self, mod_name: &str) -> Vec<(&'a str, &'a Run)> {
         self.answers
             .iter()
@@ -365,8 +251,6 @@ impl RunStore {
             .collect()
     }
 
-    /// Forget this owner's answer and queued ask. Active work keeps its slot
-    /// until it finishes, but no longer owns an answer it could publish into.
     pub fn forget(&mut self, mod_name: &str, key: &str) -> bool {
         let removed = self
             .answers
@@ -376,26 +260,16 @@ impl RunStore {
         removed.is_some()
     }
 
-    /// Forget everything belonging to mods that no longer exist.
-    ///
-    /// Called after a reload: a mod that was edited away, renamed or removed
-    /// must not leave its answers behind to accumulate across reloads.
     pub fn retain_mods(&mut self, live: &[String]) {
         self.answers.retain(|(owner, _), _| live.contains(owner));
         self.queued.retain(|(owner, _, _)| live.contains(owner));
     }
 
-    /// Take the runs started and finished since the last call.
     pub fn drain_events(&mut self) -> Vec<RunEvent> {
         std::mem::take(&mut self.events)
     }
 }
 
-/// Run a command line and capture what it printed, bounded.
-///
-/// Shared by the local and remote paths: both end in a `Command` that has
-/// already been pointed at the right machine, so the capping, the timeout and
-/// the status reading happen once.
 pub fn capture(mut command: std::process::Command, timeout: Duration) -> Run {
     command
         .stdin(std::process::Stdio::null())
@@ -407,28 +281,11 @@ pub fn capture(mut command: std::process::Command, timeout: Duration) -> Run {
         Err(e) => return Run::Failed(format!("could not start it: {e}")),
     };
 
-    // Both streams are drained on their own threads, writing into buffers this
-    // one can read at any moment. Three things force that shape:
-    //
-    // - A program that fills the stderr pipe while we read stdout deadlocks.
-    // - A read that runs to EOF *here* would not return until the program
-    //   exited, so the timeout below could never fire.
-    // - On a timeout we must not WAIT for the readers either: `sh -c "sleep 30"`
-    //   passes its stdout to a grandchild, so killing the shell leaves the pipe
-    //   open and a join would block for the full thirty seconds — which is
-    //   exactly the bug the timeout exists to prevent, reintroduced one level
-    //   down. So the buffers are shared, and on a timeout we take what has
-    //   arrived and abandon the readers, which end when the pipe finally closes.
+    // Drained on threads: a full stderr pipe deadlocks a stdout read, and `sh -c` hands stdout to a grandchild that outlives a kill.
     let out = Captured::draining(child.stdout.take());
     let err = Captured::draining(child.stderr.take());
 
-    // The exit is waited for on its own thread — a blocking `wait` there and a
-    // `recv_timeout` here, instead of a 10ms `try_wait` poll that woke this
-    // thread a hundred times a second for the life of the program. The waiter
-    // owns the `Child` (both `wait` and `kill` need `&mut`), so the timeout
-    // path kills by pid instead; the waiter's `wait` then reaps the corpse, and
-    // the bounded second `recv` below is so a kill that failed cannot hold this
-    // worker past its own timeout.
+    // `wait` and `kill` both need `&mut Child`, so the waiter owns it and a timeout kills by pid.
     let pid = child.id();
     let (exit_tx, exit_rx) = std::sync::mpsc::channel();
     std::thread::spawn(move || {
@@ -447,9 +304,6 @@ pub fn capture(mut command: std::process::Command, timeout: Duration) -> Run {
         }
     };
 
-    // A program that exited has closed its pipes, so give the readers a moment
-    // to finish rather than racing them for the last chunk. A timed-out one gets
-    // no grace: whatever arrived is the answer.
     if !timed_out {
         out.settle();
         err.settle();
@@ -466,12 +320,6 @@ pub fn capture(mut command: std::process::Command, timeout: Duration) -> Run {
     })
 }
 
-/// Kill a timed-out program by pid.
-///
-/// By pid because `Child::kill` needs the `&mut Child` the waiter thread holds
-/// in its blocking `wait` — std offers no separate kill handle. Shelling out to
-/// the platform's kill tool is fine on a path this cold (a program that ran out
-/// its whole timeout), and the same force-kill the old `Child::kill` sent.
 fn kill_by_pid(pid: u32) {
     #[cfg(unix)]
     let mut command = {
@@ -491,7 +339,6 @@ fn kill_by_pid(pid: u32) {
         .status();
 }
 
-/// One pipe being read into a buffer the caller can take at any time.
 #[derive(Clone)]
 struct Captured {
     buffer: std::sync::Arc<std::sync::Mutex<(Vec<u8>, bool)>>,
@@ -499,7 +346,6 @@ struct Captured {
 }
 
 impl Captured {
-    /// Start draining `pipe` on its own thread, stopping at the cap.
     fn draining<R: std::io::Read + Send + 'static>(pipe: Option<R>) -> Self {
         let captured = Self {
             buffer: std::sync::Arc::new(std::sync::Mutex::new((Vec::new(), false))),
@@ -519,9 +365,6 @@ impl Captured {
                 let Ok(mut held) = sink.buffer.lock() else {
                     break;
                 };
-                // Reading past the cap is not merely wasteful: it is how a
-                // program that prints without end takes the interface's memory
-                // with it.
                 if held.0.len() + read >= OUTPUT_CAP {
                     let room = OUTPUT_CAP.saturating_sub(held.0.len());
                     held.0.extend_from_slice(&chunk[..room]);
@@ -535,8 +378,6 @@ impl Captured {
         captured
     }
 
-    /// Wait briefly for the reader to finish. Bounded, because "the program
-    /// exited" does not guarantee the reader has been scheduled.
     fn settle(&self) {
         let deadline = Instant::now() + Duration::from_millis(200);
         while !self.done.load(std::sync::atomic::Ordering::SeqCst) && Instant::now() < deadline {
@@ -544,7 +385,6 @@ impl Captured {
         }
     }
 
-    /// Whatever has arrived so far, and whether it was cut at the cap.
     fn take(&self) -> (String, bool) {
         match self.buffer.lock() {
             Ok(held) => (String::from_utf8_lossy(&held.0).into_owned(), held.1),
@@ -553,9 +393,6 @@ impl Captured {
     }
 }
 
-/// The command line a mod asked for, run on this machine through the
-/// platform shell in `cwd`. thurbox runs nothing on another machine: a
-/// session there is refused before a run is asked for.
 pub fn command_for(program: &str, cwd: &PathBuf) -> std::process::Command {
     let mut command = if cfg!(windows) {
         let mut c = std::process::Command::new("cmd");
@@ -586,7 +423,6 @@ mod tests {
         }
     }
 
-    /// A runner that answers immediately and counts how often it was called.
     fn counting() -> (Arc<Runner>, Arc<std::sync::atomic::AtomicUsize>) {
         let count = Arc::new(std::sync::atomic::AtomicUsize::new(0));
         let seen = count.clone();
@@ -603,11 +439,6 @@ mod tests {
         (runner, count)
     }
 
-    /// Drive the store until everything queued has landed.
-    ///
-    /// Named apart from `Captured::settle`, which waits on one pipe: sharing a
-    /// verb for "wait for a reader" and "wait for every run" made two very
-    /// different waits read the same.
     fn run_to_completion(store: &mut RunStore, runner: &Arc<Runner>) {
         let deadline = Instant::now() + Duration::from_secs(5);
         while Instant::now() < deadline {
@@ -622,8 +453,6 @@ mod tests {
 
     #[test]
     fn a_fresh_answer_is_not_run_again() {
-        // The property that makes "ask on every frame" the normal way to keep a
-        // value current, rather than a mistake.
         let (runner, count) = counting();
         let mut store = RunStore::new();
         store.request("p", ask("k"), &runner);
@@ -647,7 +476,6 @@ mod tests {
 
         std::thread::sleep(MIN_TTL + Duration::from_millis(20));
         store.request("p", first, &runner);
-        // Readable throughout: the previous answer is not cleared to make way.
         assert!(matches!(store.get("p", "k"), Some(Run::Done(_))));
         run_to_completion(&mut store, &runner);
         assert_eq!(count.load(std::sync::atomic::Ordering::SeqCst), 2);
@@ -657,7 +485,6 @@ mod tests {
     fn asking_repeatedly_while_a_refresh_is_in_flight_starts_one_run() {
         let count = Arc::new(std::sync::atomic::AtomicUsize::new(0));
         let seen = count.clone();
-        // Slower than its TTL, which is the case that never settles.
         let runner: Arc<Runner> = Arc::new(move |_ask: &Ask| {
             seen.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
             std::thread::sleep(Duration::from_millis(300));
@@ -679,7 +506,6 @@ mod tests {
 
         std::thread::sleep(MIN_TTL + Duration::from_millis(20));
 
-        // A render-loop's worth of asks against one stale key.
         let deadline = Instant::now() + Duration::from_millis(200);
         while Instant::now() < deadline {
             store.request("p", first.clone(), &runner);
@@ -694,9 +520,6 @@ mod tests {
         run_to_completion(&mut store, &runner);
     }
 
-    /// A panicking runner must not cost a slot: the message the store's
-    /// bookkeeping waits on is owed on every exit path, so it is sent from a drop
-    /// guard. Four leaked slots would wedge every run in the interface.
     #[test]
     fn a_run_that_panics_frees_its_slot_and_can_be_asked_again() {
         let count = Arc::new(std::sync::atomic::AtomicUsize::new(0));
@@ -738,8 +561,6 @@ mod tests {
 
     #[test]
     fn a_mod_cannot_ask_for_the_same_run_twice_at_once() {
-        // Two asks in one frame, or an ask while the first is still going, must
-        // not become two processes.
         let (runner, count) = counting();
         let mut store = RunStore::new();
         store.request("p", ask("k"), &runner);
@@ -777,8 +598,6 @@ mod tests {
 
     #[test]
     fn a_finished_run_is_readable_while_another_is_pending() {
-        // What makes a composite pane possible: the slow one does not hold the
-        // fast one.
         let slow: Arc<Runner> = Arc::new(|ask: &Ask| {
             if ask.key == "slow" {
                 std::thread::sleep(Duration::from_millis(300));
@@ -998,10 +817,7 @@ mod tests {
 
     #[test]
     fn a_program_that_never_exits_is_given_up_on_promptly() {
-        // `sh -c "sleep 30"` hands its stdout to a GRANDCHILD, so killing the
-        // shell leaves the pipe open. Waiting for the reader would then block for
-        // the full thirty seconds — the very hang the timeout exists to prevent,
-        // one level down. So the elapsed time is asserted, not just the flag.
+        // `sh -c "sleep 30"` hands its stdout to a grandchild, so the pipe outlives the killed shell.
         let mut command = std::process::Command::new("sh");
         command.arg("-c").arg("sleep 30");
         let started = Instant::now();
@@ -1025,7 +841,6 @@ mod tests {
     #[test]
     fn output_past_the_cap_is_truncated_and_says_so() {
         let mut command = std::process::Command::new("sh");
-        // Comfortably past the cap, cheaply.
         command
             .arg("-c")
             .arg("yes abcdefghijklmnopqrstuvwxyz | head -c 400000");

@@ -1,30 +1,3 @@
-//! The real `thurbox` binary on a real pseudo-terminal.
-//!
-//! Every other test in the suite renders to a `TestBackend`, which by design
-//! never touches a tty — so none of them can see what the binary actually
-//! writes: the alternate-screen enter and leave, the mouse-reporting modes, a
-//! screen clear that blinks the whole interface, or how the loop behaves when
-//! the window is resized under it. The regressions that hurt most live there —
-//! a shell left streaming mouse reports, a closed column leaving its border
-//! behind, a chord that opened a strip and then typed into the wrong pane —
-//! and each one was a coordinator bug, in the loop `main.rs` owns and nothing
-//! in-process can drive. This file is where those are asserted.
-//!
-//! The byte stream is kept twice: verbatim, for the escape sequences, and fed
-//! through the same `vt100` the render path uses, for the frame. Assertions on
-//! the frame survive any interleaving of diff repaints; assertions on the bytes
-//! are the ones nothing else can make.
-//!
-//! Hermetic: private HOME, config, data and tmux dirs per test, and the
-//! network-facing and tmux-arming features off, so a run never touches a real
-//! profile or a real tmux server. The scenarios that need a multiplexer (the
-//! ones built on `shell_session`) skip where tmux is absent, as
-//! `tests/create_e2e.rs` does — a missing multiplexer is an environment fact,
-//! not a regression.
-//!
-//! Unix-only, and on `libc` directly: the PTY is `openpty` + `setsid` +
-//! `TIOCSCTTY` + `TIOCSWINSZ`, four calls that are already in the dependency
-//! tree, and the Windows ConPTY path is exercised by the windows-vm e2e harness.
 #![cfg(unix)]
 
 use std::io::{Read, Write};
@@ -36,7 +9,6 @@ use std::process::{Child, Command, ExitStatus, Stdio};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-/// The guard every tmux server in this file is reaped by — see its own doc.
 #[path = "../../runtime-mux/tests/support/tmux_server.rs"]
 mod tmux_server;
 
@@ -45,18 +17,17 @@ use tmux_server::TmuxServer;
 #[path = "support/otlp_collector.rs"]
 mod otlp_collector;
 
-/// How long a frame is given to show something before the test gives up.
-/// Generous because a cold CI runner pays for the first paint with the Lua
-/// interface load and the SQLite open.
 const WAIT: Duration = Duration::from_secs(20);
 
-/// The bytes a terminal sends for the chords the scenarios press.
+const CTRL_D: &[u8] = b"\x04";
+const CTRL_E: &[u8] = b"\x05";
+const CTRL_H: &[u8] = b"\x08";
+const CTRL_L: &[u8] = b"\x0c";
 const CTRL_P: &[u8] = b"\x10";
 const CTRL_Q: &[u8] = b"\x11";
 const CTRL_T: &[u8] = b"\x14";
+const CTRL_U: &[u8] = b"\x15";
 const CTRL_Y: &[u8] = b"\x19";
-/// What a legacy terminal sends for `ctrl+/` (the search mod folds
-/// `ctrl+/`, `ctrl+7` and `ctrl+_` into one chord).
 const CTRL_SLASH: &[u8] = b"\x1f";
 const ESC: &[u8] = b"\x1b";
 const F1: &[u8] = b"\x1bOP";
@@ -65,10 +36,6 @@ const F6: &[u8] = b"\x1b[17~";
 const F10: &[u8] = b"\x1b[21~";
 const F9: &[u8] = b"\x1b[20~";
 
-/// The `GIT_*` location variables git exports to hook processes — the list
-/// `git::GIT_LOCATION_ENV` scrubs, which is crate-private. A suite running
-/// under this repository's own pre-commit hook inherits a `GIT_DIR` pointing
-/// at the real repository, so every process here drops them.
 const GIT_LOCATION_ENV: [&str; 8] = [
     "GIT_DIR",
     "GIT_WORK_TREE",
@@ -80,8 +47,6 @@ const GIT_LOCATION_ENV: [&str; 8] = [
     "GIT_NAMESPACE",
 ];
 
-/// A tmux socket name unique to this process, so parallel tests — and a
-/// developer's own `thurbox-dev` server — never share one.
 fn private_socket() -> String {
     format!("thurbox-e2e-{}", std::process::id())
 }
@@ -94,17 +59,9 @@ fn have_tmux() -> bool {
         .unwrap_or(false)
 }
 
-/// The isolated profile a scenario runs in: every directory the binary reads
-/// or writes, under one tempdir that goes away with the test — except the
-/// multiplexer's socket directory, which has to be short.
 struct Profile {
     root: tempfile::TempDir,
-    /// A directory at the front of `PATH`. Empty unless a scenario drops a
-    /// stand-in for a binary the real one resolves there — see `fake_ssh`.
     bin: PathBuf,
-    /// The scenario's own multiplexer server. A guard: whatever the scenario
-    /// does — return, assert, panic on a pty that stopped answering — dropping
-    /// it kills the server and takes its socket directory with it.
     server: TmuxServer,
     real_fleet: std::cell::Cell<bool>,
     manager: std::cell::RefCell<Option<std::process::Child>>,
@@ -125,14 +82,11 @@ impl Profile {
         for sub in ["home", "config", "data", "bin"] {
             std::fs::create_dir_all(root.path().join(sub)).expect("mkdir");
         }
-        // No update check and no version check: both reach the network.
         std::fs::write(
             root.path().join("config/settings.toml"),
             "[features]\nversion_check = false\nauto_update = false\n",
         )
         .expect("seed settings");
-        // A per-user Fleet config already there: thurbox runs `fleet init` on
-        // a machine without one, which only the first-run scenario is.
         std::fs::create_dir_all(root.path().join("home/.config/fleet")).expect("fleet dir");
         std::fs::write(
             root.path().join("home/.config/fleet/config.toml"),
@@ -169,13 +123,6 @@ impl Profile {
         *self.manager.borrow_mut() = Some(manager);
     }
 
-    /// Put a real Fleet in front of this profile: its own store and config,
-    /// the multiplexer runtime on this profile's tmux directory (reaped with
-    /// the server guard), and `claude` running `sh`, so a Task's session is a
-    /// shell. `None`, with the reason printed, where the binaries are absent;
-    /// a panic under `CI`, whose Nextest job builds them. `workspace-git` is
-    /// one of them: runtime-mux runs it beside itself to prepare a Task's
-    /// `file://` workspace, and without it the session never starts.
     fn real_fleet(&self) -> Option<()> {
         let dir = Path::new(env!("CARGO_BIN_EXE_thurbox-cli")).parent()?;
         let (fleet, runtime) = (dir.join("fleet"), dir.join("runtime-mux"));
@@ -216,8 +163,6 @@ impl Profile {
         Some(())
     }
 
-    /// Run this profile's Fleet with `input` on stdin; it must succeed. Its
-    /// stdout.
     fn fleet(&self, args: &[&str], input: &str) -> String {
         let mut child = Command::new(self.bin.join("fleet"))
             .args(args)
@@ -241,9 +186,6 @@ impl Profile {
         String::from_utf8_lossy(&output.stdout).into_owned()
     }
 
-    /// One bounded `fleet reconcile`. Once a TUI started, the profile's `fleet
-    /// up` holds the lease and reconciles on its own, so a held lease is no
-    /// failure.
     fn reconcile(&self) {
         let output = Command::new(self.bin.join("fleet"))
             .arg("reconcile")
@@ -257,13 +199,10 @@ impl Profile {
         );
     }
 
-    /// The Task `name` as Fleet stores it.
     fn fleet_task(&self, name: &str) -> serde_json::Value {
         serde_json::from_str(&self.fleet(&["get", "task", name], "")).expect("a Task as JSON")
     }
 
-    /// A dispatched, interactive Task named `name` working in `dir`, its
-    /// session started.
     fn fleet_session(&self, name: &str, dir: &Path) {
         let task = format!(
             r#"{{"apiVersion":"fleet/v1alpha1","kind":"Task","metadata":{{"name":"{name}"}},"spec":{{"harness":"claude-code","host":"local","dispatch":true,"workspace":["file://{}"]}}}}"#,
@@ -277,8 +216,6 @@ impl Profile {
         self.root.path().join(sub)
     }
 
-    /// The environment both binaries need to land in this profile and on its
-    /// private multiplexer socket.
     fn apply(&self, cmd: &mut Command) {
         cmd.current_dir(self.root.path());
         cmd.env("HOME", self.path("home"));
@@ -286,15 +223,7 @@ impl Profile {
         cmd.env_remove("FLEET_CONFIG");
         cmd.env("THURBOX_CONFIG_DIR", self.path("config"));
         cmd.env("THURBOX_DATA_DIR", self.path("data"));
-        // Pinned socket, cleared owner tag, private socket directory. Run from
-        // inside a thurbox pane, an inherited owner would make the pin read as
-        // inherited and put the server on a derived socket the guard never
-        // names.
         self.server.scope(cmd);
-        // `bin` first, so a stand-in dropped there shadows the real binary for
-        // every process this profile launches — the TUI and `thurbox-cli` both,
-        // which is what a scenario that stubs `ssh` needs (the session is
-        // created by one and attached by the other).
         cmd.env(
             "PATH",
             format!(
@@ -306,21 +235,17 @@ impl Profile {
         cmd.env("TERM", "xterm-256color");
         // Keep an explicit INPUTRC from bypassing the profile's private HOME.
         cmd.env_remove("INPUTRC");
-        // These tests assert terminal colours and reverse video. An inherited
-        // NO_COLOR makes Crossterm omit colour escapes and reset attributes.
+        // An inherited NO_COLOR makes crossterm omit the colour escapes these tests assert.
         cmd.env_remove("NO_COLOR");
         // A test run inside tmux must not look like one to the binary.
         cmd.env_remove("TMUX");
-        // Git exports these to hook processes, so a suite running under this
-        // repository's own pre-commit hook would otherwise point every spawn
-        // at the real repository.
+        // Git exports these to hook processes, which would aim every spawn at this repository.
         for var in GIT_LOCATION_ENV {
             cmd.env_remove(var);
         }
     }
 }
 
-/// A pseudo-terminal pair at the given size.
 fn openpty(rows: u16, cols: u16) -> (OwnedFd, OwnedFd) {
     let mut master = -1;
     let mut slave = -1;
@@ -330,10 +255,7 @@ fn openpty(rows: u16, cols: u16) -> (OwnedFd, OwnedFd) {
         ws_xpixel: 0,
         ws_ypixel: 0,
     };
-    // Apple's libc declares openpty's termios and winsize arguments `*mut`,
-    // Linux's `*const`; a `*mut` coerces to either, and a named pointer is
-    // what keeps clippy from reading the `&mut` as an unnecessary one on the
-    // `*const` side.
+    // openpty takes a `*mut` winsize on macOS and a `*const` one on Linux; a `*mut` fits both.
     let winsize: *mut libc::winsize = &mut size;
     // SAFETY: openpty writes two valid descriptors into the out-params on
     // success; the name and termios pointers are allowed to be null.
@@ -352,15 +274,10 @@ fn openpty(rows: u16, cols: u16) -> (OwnedFd, OwnedFd) {
     unsafe { (OwnedFd::from_raw_fd(master), OwnedFd::from_raw_fd(slave)) }
 }
 
-/// Device-attribute replies and, on kitty terminals, a flag stack per screen.
-///
-/// Per screen, as kitty keeps them: flags pushed on the alternate screen are
-/// not popped by a pop written after leaving it, which is the order mistake
-/// this exists to catch.
+// kitty keeps keyboard flags per screen: a pop after leaving the alternate screen misses them.
 #[derive(Default)]
 struct TestTerminal {
     kitty: bool,
-    /// How far into the output the sequences have been read.
     scanned: usize,
     main: Vec<u32>,
     alternate: Vec<u32>,
@@ -376,14 +293,10 @@ impl TestTerminal {
         }
     }
 
-    /// How many flag levels are pushed on the main and the alternate screen.
     fn depths(&self) -> (usize, usize) {
         (self.main.len(), self.alternate.len())
     }
 
-    /// Read the output from where the last call stopped and return the bytes
-    /// a terminal would answer with. A sequence split across two reads is
-    /// left for the next call.
     fn feed(&mut self, out: &[u8]) -> Vec<u8> {
         let mut reply = Vec::new();
         while let Some(start) = out[self.scanned..]
@@ -393,7 +306,6 @@ impl TestTerminal {
         {
             let body = &out[start + 2..];
             let Some(end) = body.iter().position(|b| (0x40..=0x7e).contains(b)) else {
-                // Incomplete: wait for the rest.
                 self.scanned = start;
                 return reply;
             };
@@ -432,27 +344,19 @@ enum TerminalMode {
     Kitty,
 }
 
-/// The binary, running on a pty, with everything it has written so far.
 struct Tui {
     child: Child,
     master: OwnedFd,
-    /// Every byte the binary wrote, verbatim — the escape-sequence record.
     raw: Arc<Mutex<Vec<u8>>>,
-    /// Successful terminal replies, separate from the application's output.
     replies: Arc<Mutex<Vec<u8>>>,
     reply_error: Arc<Mutex<Option<std::io::Error>>>,
-    /// The same bytes through vt100, for asserting on the visible frame.
     screen: Arc<Mutex<vt100::Parser>>,
-    /// The exit status, once seen: `try_wait` reaps, so it is read once.
     exited: Option<ExitStatus>,
-    /// The binary's own log, quoted when a wait times out.
     log: PathBuf,
-    /// The kitty-protocol half of the terminal, on one that speaks it.
     kitty: Option<Arc<Mutex<TestTerminal>>>,
 }
 
 impl Tui {
-    /// Launch the binary in `profile` on a `rows`×`cols` terminal.
     fn spawn(profile: &Profile, rows: u16, cols: u16) -> Self {
         Self::spawn_with(profile, rows, cols, |_| {})
     }
@@ -466,11 +370,7 @@ impl Tui {
         Self::spawn_on(profile, rows, cols, adjust, TerminalMode::Legacy)
     }
 
-    /// [`Self::spawn_with`] on a terminal that speaks the kitty keyboard
-    /// protocol: it answers the flags query with the flags pushed so far and
-    /// the device-attributes query after it, which is how crossterm detects
-    /// support. Legacy terminals answer only the device-attributes query; the
-    /// silent-terminal scenario covers a query that times out.
+    // crossterm detects kitty support by a flags query followed by a device-attributes query.
     fn spawn_kitty(
         profile: &Profile,
         rows: u16,
@@ -575,9 +475,6 @@ impl Tui {
         }
     }
 
-    /// On a kitty terminal, wait for every pushed keyboard-flag level to have
-    /// been popped again — a level left behind keeps the shell receiving an
-    /// escape code for every key release.
     fn assert_keyboard_flags_popped(&self) {
         let kitty = self.kitty.as_ref().expect("a kitty terminal");
         let deadline = Instant::now() + WAIT;
@@ -593,14 +490,12 @@ impl Tui {
         );
     }
 
-    /// The frame as vt100 reconstructs it, rows trimmed of trailing blanks.
     fn frame(&self) -> String {
         let error = self.reply_error.lock().unwrap();
         assert!(error.is_none(), "terminal reply failed: {error:?}");
         self.screen.lock().unwrap().screen().contents()
     }
 
-    /// One row of the frame, untrimmed, so a column position means something.
     fn row(&self, y: u16) -> String {
         let screen = self.screen.lock().unwrap();
         let screen = screen.screen();
@@ -614,8 +509,6 @@ impl Tui {
             .collect()
     }
 
-    /// Whether the cell at `(y, x)` is drawn reversed — how the kernel marks a
-    /// surface row.
     fn inverse_at(&self, y: u16, x: u16) -> bool {
         self.screen
             .lock()
@@ -629,7 +522,6 @@ impl Tui {
         self.raw.lock().unwrap().len()
     }
 
-    /// The bytes written from `since` on, lossily decoded for `contains`.
     fn raw_since(&self, since: usize) -> String {
         String::from_utf8_lossy(&self.raw.lock().unwrap()[since..]).into_owned()
     }
@@ -640,7 +532,7 @@ impl Tui {
         writer.flush().expect("flush pty");
     }
 
-    /// Resize the terminal; the kernel raises SIGWINCH in the child for us.
+    // The kernel raises SIGWINCH in the child on TIOCSWINSZ.
     fn resize(&mut self, rows: u16, cols: u16) {
         let size = libc::winsize {
             ws_row: rows,
@@ -663,16 +555,12 @@ impl Tui {
             .set_size(rows.try_into().unwrap(), cols.try_into().unwrap());
     }
 
-    /// Poll the frame until `needle` shows up.
     fn wait_for(&self, needle: &str) {
         self.wait_until(&format!("{needle:?} to appear"), |frame| {
             frame.contains(needle)
         });
     }
 
-    /// The inverse, needed after an Escape: the next chord must not be sent
-    /// while the overlay is still up, or `ESC` + its first byte reads as one
-    /// alt-prefixed sequence and the chord is swallowed.
     fn wait_gone(&self, needle: &str) {
         self.wait_until(&format!("{needle:?} to disappear"), |frame| {
             !frame.contains(needle)
@@ -683,8 +571,6 @@ impl Tui {
         self.wait_within(WAIT, what, done);
     }
 
-    /// [`Self::wait_until`] on a budget of the caller's choosing — for the
-    /// scenarios where *how long* is the assertion rather than the setup.
     fn wait_within(&self, budget: Duration, what: &str, done: impl Fn(&str) -> bool) {
         let deadline = Instant::now() + budget;
         while Instant::now() < deadline {
@@ -696,9 +582,6 @@ impl Tui {
         self.give_up(what);
     }
 
-    /// The failure every timeout reports: what was waited for, the frame as it
-    /// stands, and the binary's own log — where an attach or spawn failure is
-    /// written, since stdout is the interface's.
     fn give_up(&self, what: &str) -> ! {
         panic!(
             "timed out waiting for {what}; final frame:\n{}\n--- thurbox.log ---\n{}",
@@ -707,14 +590,12 @@ impl Tui {
         );
     }
 
-    /// The last lines of the binary's log, for a failure message.
     fn log_tail(&self) -> String {
         let text = self.log_text();
         let lines: Vec<&str> = text.lines().collect();
         lines[lines.len().saturating_sub(30)..].join("\n")
     }
 
-    /// The binary's whole log.
     fn log_text(&self) -> String {
         // The appender rolls daily, so the file carries a date suffix.
         let dir = self.log.parent().expect("log dir");
@@ -745,15 +626,11 @@ impl Tui {
         self.poll_exit().is_none()
     }
 
-    /// Press `Ctrl+Q` and wait for the process to go; the exit status is the
-    /// caller's to judge.
     fn quit(&mut self) -> ExitStatus {
         self.send(CTRL_Q);
         self.wait_exit("Ctrl+Q")
     }
 
-    /// Send `signal` to the binary and wait for it to go; the exit status is
-    /// the caller's to judge.
     fn signal(&mut self, signal: libc::c_int) -> ExitStatus {
         // SAFETY: a plain `kill(2)` on a pid this harness spawned and has not
         // yet reaped (`poll_exit` is the only reaper, and `exited` is `None`).
@@ -781,16 +658,12 @@ impl Tui {
 
 impl Drop for Tui {
     fn drop(&mut self) {
-        // A test that panicked mid-scenario must not leave the binary running
-        // on a pty nobody reads.
         if self.alive() {
             let _ = self.child.kill();
             let _ = self.child.wait();
         }
     }
 }
-
-// --- the boot frame, and giving the terminal back --------------------------
 
 #[test]
 fn boots_paints_and_quits_restoring_the_terminal() {
@@ -908,9 +781,6 @@ fn the_embedded_interface_of_a_failed_move_saves_no_choice() {
     );
 }
 
-/// What every exit owes the terminal. A missing one of these is the "my shell
-/// is streaming mouse reports" bug, which no in-process test and no
-/// capture-pane assertion can see.
 const RESTORE_ESCAPES: [(&str, &str); 5] = [
     ("\x1b[?1049l", "leave the alternate screen"),
     ("\x1b[?1000l", "stop mouse reporting"),
@@ -935,9 +805,7 @@ fn a_signal_restores_the_terminal_before_exiting() {
     tui.wait_for("No sessions yet");
     let taken = tui.raw_len();
 
-    // What a session manager, a closed ssh connection or a machine waking from
-    // a long sleep sends. The default action runs no hook, which is how the
-    // shell that came next was left printing `\x1b[<64;…M` on every scroll.
+    // What a session manager, a closed ssh connection or a waking machine sends.
     let status = tui.signal(libc::SIGTERM);
     assert!(
         !status.success(),
@@ -949,19 +817,9 @@ fn a_signal_restores_the_terminal_before_exiting() {
         "exit status follows the shell's 128 + signal convention: {status:?}"
     );
 
-    // Only the bytes written AFTER the boot count, so a `…l` from setup could
-    // not satisfy this.
     assert_terminal_restored(&tui.raw_since(taken), "a signalled exit");
 }
 
-// --- the event loop never waits on the database ----------------------------
-
-// --- diagnostic logs over OTLP ---------------------------------------------
-
-/// `OTEL_LOGS_EXPORTER=otlp` bridges the interface's own `tracing` events
-/// to the collector, at WARN and above only, while the file log keeps
-/// everything (ADR-38, docs/observability.md). The WARN comes from the
-/// interface's first read of a `settings.toml` with a key it does not know.
 #[test]
 fn diagnostic_logs_reach_the_collector_at_warn_and_above_only() {
     use opentelemetry_proto::tonic::common::v1::any_value::Value;
@@ -975,7 +833,6 @@ fn diagnostic_logs_reach_the_collector_at_warn_and_above_only() {
     std::fs::write(&settings, seeded).expect("write settings");
 
     let mut tui = Tui::spawn_with(&profile, 24, 80, |cmd| {
-        // A suite run where telemetry is on inherits these.
         for (key, _) in std::env::vars() {
             if key.starts_with("OTEL_") {
                 cmd.env_remove(key);
@@ -996,7 +853,6 @@ fn diagnostic_logs_reach_the_collector_at_warn_and_above_only() {
         Some(Value::StringValue(s)) => s.clone(),
         other => format!("{other:?}"),
     };
-    // Sent by the batch processor while the interface runs, not only at exit.
     let mut records = Vec::new();
     let deadline = Instant::now() + WAIT;
     while !records
@@ -1024,8 +880,6 @@ fn diagnostic_logs_reach_the_collector_at_warn_and_above_only() {
         below_warn.is_empty(),
         "only WARN and above is exported: {below_warn:?}"
     );
-    // The file log is unchanged: still at its own level, so it holds the INFO
-    // lines the collector was right not to get, and the WARN as well.
     let file = tui.log_tail();
     assert!(
         file.contains(" INFO thurbox") && file.contains("unknown field `stray_key`"),
@@ -1033,10 +887,6 @@ fn diagnostic_logs_reach_the_collector_at_warn_and_above_only() {
     );
 }
 
-/// The `[telemetry]` table of `settings.toml` turns the interface's export
-/// on with no `OTEL_*` variable set, with its resource attributes on its
-/// spans and its log records alike; an `OTEL_*` variable set where thurbox
-/// starts wins over the file's value.
 #[test]
 fn the_settings_telemetry_table_alone_exports_and_an_otel_variable_wins_over_it() {
     let collector = otlp_collector::Collector::start();
@@ -1105,8 +955,6 @@ fn the_settings_telemetry_table_alone_exports_and_an_otel_variable_wins_over_it(
     );
 }
 
-/// Log records carry text, so an endpoint alone sends none of them: the
-/// interface exports logs only when `OTEL_LOGS_EXPORTER=otlp` is set.
 #[test]
 fn an_endpoint_alone_exports_no_diagnostic_logs() {
     let collector = otlp_collector::Collector::start();
@@ -1140,8 +988,6 @@ fn an_endpoint_alone_exports_no_diagnostic_logs() {
     );
 }
 
-// --- the kernel-owned overlays ---------------------------------------------
-
 #[test]
 fn f1_opens_the_help_overlay_and_escape_closes_it() {
     let profile = Profile::new();
@@ -1149,12 +995,8 @@ fn f1_opens_the_help_overlay_and_escape_closes_it() {
     tui.wait_for("No sessions yet");
 
     tui.send(F1);
-    // The overlay's own chrome — title and footer — because those are pinned
-    // wherever the list is scrolled; a binding row near the bottom slides
-    // below the fold as panes declare more keys.
     tui.wait_for("Keybindings");
     tui.wait_for("rebind");
-    // And it rendered the registry, not just a frame: one real binding row.
     tui.wait_for("next session");
 
     tui.send(ESC);
@@ -1162,12 +1004,6 @@ fn f1_opens_the_help_overlay_and_escape_closes_it() {
     assert!(tui.quit().success());
 }
 
-/// The wheel scrolls help's text a line per report, as it would any document.
-///
-/// It used to step the *selection* once per notch, dropping the reports behind
-/// it, so a spin moved the cursor a few rows while the text stayed put until
-/// the cursor passed the middle — and the end of the events list, below the
-/// last selectable row, could not be scrolled to at all.
 #[test]
 fn the_wheel_scrolls_the_help_overlay_by_lines() {
     let profile = Profile::new();
@@ -1176,8 +1012,6 @@ fn the_wheel_scrolls_the_help_overlay_by_lines() {
     tui.send(F1);
     tui.wait_for("Navigation");
 
-    // One report is one line: the body's second line moves up to its first.
-    // Only the cells left of the scrollbar, whose thumb moves too.
     let (_, title) = tui.find("Keybindings");
     let (track, _) = tui.find("▲");
     let text =
@@ -1196,8 +1030,6 @@ fn the_wheel_scrolls_the_help_overlay_by_lines() {
     tui.wait_for("Navigation");
     tui.wheel(over_help, false, 300);
     tui.wait_gone("Navigation");
-    // A key that moves nothing still brings the view back to the selection
-    // the wheel left behind, on the first row.
     tui.send(b"x");
     tui.wait_for("Navigation");
 
@@ -1206,8 +1038,6 @@ fn the_wheel_scrolls_the_help_overlay_by_lines() {
     assert!(tui.quit().success());
 }
 
-/// Help's scrollbar takes the pointer: a press on the track jumps the text to
-/// that point, and a drag along it scrolls with the pointer.
 #[test]
 fn the_help_overlay_scrollbar_can_be_pressed_and_dragged() {
     let profile = Profile::new();
@@ -1245,9 +1075,6 @@ fn f12_shows_the_per_pane_cost_table() {
 
     tui.send(F12);
     tui.wait_for("rend/reuse");
-    // A ranked row for a bundled pane, not merely the header: `<rank> sessions`
-    // followed by a share, inside the table's own borders — which neither the
-    // session list's empty state nor the footer's session count can mimic.
     tui.wait_until("a ranked row for the session list", |frame| {
         frame.lines().any(|line| {
             line.split('│').any(|cell| {
@@ -1273,12 +1100,7 @@ fn ctrl_y_opens_the_theme_picker_and_escape_closes_it() {
     tui.wait_for("No sessions yet");
 
     tui.send(CTRL_Y);
-    // The filter hint rather than the title: the footer band already says
-    // `Theme · F4`, so the title alone would match with no picker open.
     tui.wait_for("/ filter themes");
-    // Grouped and populated. `Dark` is a group header, which does not move
-    // when the presets are reordered — unlike any one palette in a 36-entry
-    // list.
     tui.wait_for("Dark");
 
     tui.send(ESC);
@@ -1286,16 +1108,8 @@ fn ctrl_y_opens_the_theme_picker_and_escape_closes_it() {
     assert!(tui.quit().success());
 }
 
-// --- a pane that opens itself, and focus ------------------------------------
-
 #[test]
 fn the_search_strip_opens_with_focus_in_it() {
-    // The typed text is the assertion, not the strip appearing. Focus may only
-    // rest on a slot the last painted frame placed, and a pane that opens
-    // itself is not in that set until the next paint — so the focus request
-    // that came with the chord was once refused, and every letter of the
-    // query went to the agent pane instead. Anything that reintroduces that
-    // shows up here as a strip with an empty field.
     let profile = Profile::new();
     let mut tui = Tui::spawn(&profile, 40, 120);
     tui.wait_for("No sessions yet");
@@ -1325,8 +1139,6 @@ fn a_saved_search_shortcut_opens_from_the_agent_pane() {
     assert!(tui.quit().success());
 }
 
-/// A data directory whose `ui-control` cannot be a directory: the control
-/// socket has nowhere to live.
 fn data_without_ui_control(profile: &Profile) -> std::path::PathBuf {
     let data = profile.path("data").join("blocked");
     std::fs::create_dir_all(&data).expect("data path");
@@ -1470,9 +1282,6 @@ fn stale_discovery_entries_do_not_hide_a_live_tui() {
     assert!(tui.quit().success());
 }
 
-/// thurbox reads no `hosts.toml` of its own: where a session runs is its
-/// Fleet's and its place's. Starting the interface seeds no such file, and
-/// `config show` and `config validate` name none.
 #[test]
 fn thurbox_keeps_no_hosts_toml() {
     let profile = Profile::new();
@@ -1497,10 +1306,6 @@ fn thurbox_keeps_no_hosts_toml() {
     assert!(!profile.path("config/hosts.toml").exists());
 }
 
-/// thurbox schedules nothing of its own: work on a timer is an outside
-/// timer's. The interface, left to its defaults, writes no
-/// `automations.json`; `thurbox-cli` has no `automation` command; and
-/// `doctor` says a leftover file is no longer read.
 #[test]
 fn thurbox_keeps_no_automations() {
     let profile = Profile::new();
@@ -1541,9 +1346,6 @@ fn thurbox_keeps_no_automations() {
         .unwrap_or_else(|| panic!("no automations-json check: {report}"));
     assert_eq!(check["level"], "warn", "{check}");
 
-    // A keeper window an earlier thurbox armed runs the gone `automation
-    // tick` every minute until something kills it: doctor names it and says
-    // how.
     let armed = profile.server.tmux(&[
         "new-session",
         "-d",
@@ -2299,9 +2101,6 @@ return {
 
 #[test]
 fn a_paste_lands_in_the_search_strip() {
-    // A paste goes where the caret is. It used to go to the terminal behind
-    // the strip — or, with no terminal on screen, nowhere — because only a
-    // modal or a float was offered the text before the focused terminal.
     let profile = Profile::new();
     let mut tui = Tui::spawn(&profile, 40, 120);
     tui.wait_for("No sessions yet");
@@ -2315,8 +2114,6 @@ fn a_paste_lands_in_the_search_strip() {
 
 #[test]
 fn a_paste_into_a_field_is_text_even_where_the_pane_binds_a_letter() {
-    // A paste is typing, never a command: replayed through the registry, a
-    // pasted `x` ran the pane's own `x` action instead of reaching its field.
     let interface = interface_plus(
         "91_field.lua",
         r#"local textinput = require("lib.textinput")
@@ -2373,8 +2170,6 @@ return {
 
 #[test]
 fn the_search_field_edits_by_word_as_a_shell_line_does() {
-    // Alt+b, Alt+f, Alt+d and Alt+Backspace are what a shell's line editor
-    // has taught every hand; the field swallowed every Alt chord unused.
     let profile = Profile::new();
     let mut tui = Tui::spawn(&profile, 40, 120);
     tui.wait_for("No sessions yet");
@@ -2384,12 +2179,10 @@ fn the_search_field_edits_by_word_as_a_shell_line_does() {
     tui.send(b"alpha beta gamma");
     tui.wait_for("Search alpha beta gamma");
 
-    // Alt+Backspace: the word before the caret goes.
     tui.send(b"\x1b\x7f");
     tui.wait_for("Search alpha beta ");
     tui.wait_gone("gamma");
 
-    // Alt+b back over `beta`, and what is typed lands before it.
     tui.send(b"\x1bb");
     tui.send(b"X");
     tui.wait_for("Search alpha Xbeta");
@@ -2398,17 +2191,12 @@ fn the_search_field_edits_by_word_as_a_shell_line_does() {
 
 #[test]
 fn the_palette_lists_the_kernels_clipboard_actions() {
-    // The one thing a unit test over a hand-assembled registry cannot show: the
-    // *binary* declares copy and paste (`collect_declarations`), so they are
-    // real bindings — listed, runnable by name, and rebindable — rather than the
-    // literal key arms in the loop they used to be (issue #1024).
     let profile = Profile::new();
     let mut tui = Tui::spawn(&profile, 40, 120);
     tui.wait_for("No sessions yet");
 
     tui.send(CTRL_P);
     tui.send(b"paste");
-    // The row's description, which only the registry could have supplied.
     tui.wait_for("ctrl+v");
 
     tui.send(ESC);
@@ -2416,17 +2204,8 @@ fn the_palette_lists_the_kernels_clipboard_actions() {
     assert!(tui.quit().success());
 }
 
-// --- a reflow: closing a column ---------------------------------------------
-
 #[test]
 fn hiding_the_session_column_reflows_without_ghosts_or_a_screen_clear() {
-    // Two regressions live here, and they pull in opposite directions. A
-    // closed column left its border behind (the cell diff cannot see a
-    // glyph-width disagreement), and the fix that cleared the screen made
-    // every toggle blink the whole interface. The right answer is a full
-    // repaint of the new frame with no clear in between — asserted from both
-    // sides: the frame has no trace of the column, and the bytes have no
-    // `ED 2`.
     let profile = Profile::new();
     let mut tui = Tui::spawn(&profile, 30, 100);
     tui.wait_for("No sessions yet");
@@ -2434,18 +2213,14 @@ fn hiding_the_session_column_reflows_without_ghosts_or_a_screen_clear() {
 
     tui.send(F9);
     tui.wait_gone("No sessions yet");
-    // Settle: the forced-redraw floor is 250 ms, so a frame later than this
-    // is one that would have carried a stray clear too.
-    std::thread::sleep(Duration::from_millis(400));
+    let past_the_250ms_forced_redraw_floor = Duration::from_millis(400);
+    std::thread::sleep(past_the_250ms_forced_redraw_floor);
 
     let since_toggle = tui.raw_since(before);
     assert!(
         !since_toggle.contains("\x1b[2J"),
         "a column toggle must repaint, never clear the screen (the blink)"
     );
-    // The column was on the left; with it gone, every pane row starts with
-    // the centre pane's own border — a box-drawing glyph — and nothing in it
-    // is the list's. Row 0 and the last two rows are the chrome bands.
     let (rows, _) = tui.screen.lock().unwrap().screen().size();
     let rows = rows.get();
     for y in 1..rows - 2 {
@@ -2463,21 +2238,13 @@ fn hiding_the_session_column_reflows_without_ghosts_or_a_screen_clear() {
         );
     }
 
-    // And it comes back.
     tui.send(F9);
     tui.wait_for("No sessions yet");
     assert!(tui.quit().success());
 }
 
-// --- sizes ------------------------------------------------------------------
-
 #[test]
 fn survives_a_resize_storm_down_to_one_cell() {
-    // Resizing under the loop is where underflow lives: a one-cell pane is
-    // exactly what `vt_floor` exists for, and a `resolve` that hands out a
-    // rect past the edge is a paint that indexes out of the buffer. The
-    // binary must keep painting through arbitrary sizes and exit cleanly
-    // afterwards.
     let profile = Profile::new();
     let mut tui = Tui::spawn(&profile, 40, 120);
     tui.wait_for("No sessions yet");
@@ -2500,15 +2267,10 @@ fn survives_a_resize_storm_down_to_one_cell() {
         );
     }
 
-    // Proof of life after the storm: back at a usable size the loop paints
-    // the interface again, not merely stays resident.
     tui.wait_for("No sessions yet");
     assert!(tui.quit().success());
 }
 
-// --- a broken interface -----------------------------------------------------
-
-/// A copy of the repository's `ui/` with one pane replaced by `body`.
 fn interface_with(broken: &str, body: &str) -> tempfile::TempDir {
     let dir = tempfile::tempdir().expect("tempdir");
     let source = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../ui");
@@ -2532,10 +2294,6 @@ fn copy_tree(from: &Path, to: &Path) {
 
 #[test]
 fn a_pane_that_fails_to_load_is_reported_and_the_rest_of_the_interface_runs() {
-    // The recovery path. A syntax error in one pane must not take the binary
-    // down or leave a blank screen: the error is painted where the user can
-    // read it, the kernel-owned overlays still open (they are how the pane
-    // gets switched off or restored), and quitting is still clean.
     let interface = interface_with("mods/10_sessions.lua", "return {\n");
     let profile = Profile::new();
     let mut tui = Tui::spawn_with(&profile, 40, 120, |cmd| {
@@ -2546,10 +2304,6 @@ fn a_pane_that_fails_to_load_is_reported_and_the_rest_of_the_interface_runs() {
     tui.wait_for("10_sessions");
     assert!(tui.alive(), "a broken pane must not take the process down");
 
-    // The documented recovery path: settings → the Interface tab, where the
-    // failed file sorts to the top with its error in the footer. Both are
-    // kernel-owned, which is the point — the recovery tool is not the thing
-    // that is broken.
     tui.send(F6);
     tui.wait_for("Settings");
     tui.send(b"]");
@@ -2561,10 +2315,6 @@ fn a_pane_that_fails_to_load_is_reported_and_the_rest_of_the_interface_runs() {
     assert!(status.success(), "exit must still be clean: {status:?}");
 }
 
-/// Move the Interface tab's cursor onto the row listing `path`.
-///
-/// By pressing `j` until the pointer is on it rather than by counting, so the
-/// scenario does not depend on how many files the bundled interface has today.
 fn select_file(tui: &mut Tui, path: &str) {
     for _ in 0..60 {
         let on_it = |frame: &str| {
@@ -2584,10 +2334,6 @@ fn select_file(tui: &mut Tui, path: &str) {
 
 #[test]
 fn the_interface_tab_explains_each_file_and_drives_every_action() {
-    // The tab exists to answer "why is this pane not on screen, and what do I do
-    // about it" without reading the guide. So: every file grouped, one word of
-    // state per row, the selected row's reason and fix spelled out, only the
-    // keys that row answers to, and the one destructive key asking first.
     let interface = interface_with("mods/10_sessions.lua", {
         let shipped = std::fs::read_to_string(
             Path::new(env!("CARGO_MANIFEST_DIR")).join("../../ui/mods/10_sessions.lua"),
@@ -2619,24 +2365,20 @@ fn the_interface_tab_explains_each_file_and_drives_every_action() {
     tui.wait_for("YOURS");
     tui.wait_for("not placed");
 
-    // Not on screen: the reason, and the line that fixes it.
     select_file(&mut tui, "91_tbnotes.lua");
     tui.wait_for(r#"{ slot = "tbnotes" }"#);
 
-    // space: off, said so, and back on.
     tui.send(b" ");
     tui.wait_for("space turns it back on");
     tui.send(b" ");
     tui.wait_gone("space turns it back on");
 
-    // d asks first, and moving away withdraws the question.
     select_file(&mut tui, "91_tbnotes.lua");
     tui.send(b"d");
     tui.wait_for("cannot be undone");
     tui.send(b"k");
     tui.wait_gone("cannot be undone");
 
-    // t: what it asks for, and where it stands, before and after.
     select_file(&mut tui, "92_tbrun.lua");
     tui.wait_for("not granted");
     tui.send(b"t");
@@ -2644,7 +2386,6 @@ fn the_interface_tab_explains_each_file_and_drives_every_action() {
     tui.send(b"t");
     tui.wait_for("t revokes it");
 
-    // r on an edited file asks, says what is lost, and then restores.
     select_file(&mut tui, "10_sessions.lua");
     tui.wait_for("r restore");
     tui.send(b"r");
@@ -2704,7 +2445,6 @@ fn open_interface_tab(tui: &mut Tui) {
     tui.wait_for("SHIPPED");
 }
 
-/// The frame line that lists `path`.
 fn line_of(tui: &Tui, path: &str) -> String {
     tui.frame()
         .lines()
@@ -2741,8 +2481,6 @@ fn the_interface_tab_groups_mods_by_where_they_came_from() {
     assert!(asks.contains("run not granted"), "{asks}");
     let edited = line_of(&tui, "10_sessions.lua");
     assert!(edited.contains("edited"), "{edited}");
-    // The edited layout needs attention — r restores it — so it stays; the
-    // untouched modules do not.
     assert!(!frame.contains("lib/chrome.lua"), "{frame}");
 
     tui.send(b"a");
@@ -2758,15 +2496,6 @@ fn the_interface_tab_groups_mods_by_where_they_came_from() {
 
 #[test]
 fn a_mod_that_breaks_the_reload_is_named_and_the_others_are_not_blamed() {
-    // A reload is all-or-nothing, so one broken file leaves every other file of
-    // yours unloaded. Calling all of them `failed` hid the one to fix among
-    // several red rows; the summary counts the culprit, its row carries the
-    // error, and the rest read as held back by it.
-    //
-    // In the profile's own interface directory rather than `THURBOX_UI_DIR`:
-    // that is where a user's edits live, and the one place a failed load swaps
-    // in the bundled interface — whose host reports no error of its own, so the
-    // culprit has to be named from the user's error it replaced.
     let profile = Profile::new();
     let interface = profile.path("config/ui");
     copy_tree(
@@ -2794,7 +2523,6 @@ fn a_mod_that_breaks_the_reload_is_named_and_the_others_are_not_blamed() {
     let held = line_of(&tui, "92_tbrun.lua");
     assert!(held.contains("not loaded"), "{held}");
     assert!(!held.contains("failed"), "{held}");
-    // The load error itself, under the list.
     tui.wait_for("unexpected symbol");
 
     select_file(&mut tui, "92_tbrun.lua");
@@ -2807,10 +2535,6 @@ fn a_mod_that_breaks_the_reload_is_named_and_the_others_are_not_blamed() {
 
 #[test]
 fn a_broken_layout_reads_failed_with_its_error() {
-    // `layout.lua` is not a pane, so the inventory calls it present whether it
-    // loaded or not. Read that way, the one file to fix said `in use`, the
-    // summary counted nothing, and — with the error panel kept off the open
-    // modal — its error was shown nowhere.
     let profile = Profile::new();
     let interface = profile.path("config/ui");
     copy_tree(
@@ -2836,10 +2560,6 @@ fn a_broken_layout_reads_failed_with_its_error() {
 
 #[test]
 fn granting_a_capability_asks_first_and_revoking_does_not() {
-    // `t` is the one key in the tab that hands something away: `run` lets a
-    // pane start programs. It used to grant on a single press while `d`, which
-    // only costs a file, asked twice. Granting now spells out what is granted
-    // and waits for a second press; taking it back stays one press.
     let profile = Profile::new();
     let interface = mixed_interface(&profile);
     let mut tui = Tui::spawn_with(&profile, 40, 120, |cmd| {
@@ -2862,12 +2582,9 @@ fn granting_a_capability_asks_first_and_revoking_does_not() {
     tui.wait_for("t again to grant");
     assert!(!granted(), "the first press only asks");
 
-    // Any other key withdraws the question.
     tui.send(b"j");
     tui.wait_gone("t again to grant");
     select_file(&mut tui, "92_tbrun.lua");
-    // So does leaving the tab: `[`/`]` never reach the tab, and a question
-    // still armed on return would grant on the next `t` without asking.
     tui.send(b"t");
     tui.wait_for("t again to grant");
     tui.send(b"]");
@@ -2895,9 +2612,6 @@ fn granting_a_capability_asks_first_and_revoking_does_not() {
 
 #[test]
 fn the_interface_tab_keeps_each_rows_state_on_a_narrow_terminal() {
-    // At 60 columns the modal is the whole screen. The file name gives way
-    // first, then where it came from; the state and the grant never do, and
-    // the footer still offers its keys.
     let profile = Profile::new();
     let interface = mixed_interface(&profile);
     std::fs::write(
@@ -2922,11 +2636,8 @@ fn the_interface_tab_keeps_each_rows_state_on_a_narrow_terminal() {
     assert!(asks.contains("run not granted"), "{asks}");
     let footer = line_of(&tui, "j/k");
     assert!(footer.contains("Close"), "{footer}");
-    // The hints stop short of the pill rather than run into it.
     assert!(!footer.contains("ta Close"), "{footer}");
 
-    // The grant question fits too: the file name gives way, never what is
-    // granted or the key that grants it.
     select_file(&mut tui, "94_a_pane");
     tui.send(b"t");
     tui.wait_for("grant 94_");
@@ -2941,7 +2652,6 @@ fn the_interface_tab_keeps_each_rows_state_on_a_narrow_terminal() {
     assert!(tui.quit().success());
 }
 
-/// A pane written for this test, dropped in beside the bundled ones.
 fn interface_plus(name: &str, body: &str) -> tempfile::TempDir {
     let dir = tempfile::tempdir().expect("tempdir");
     let source = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../ui");
@@ -2952,15 +2662,6 @@ fn interface_plus(name: &str, body: &str) -> tempfile::TempDir {
 
 #[test]
 fn a_pane_can_speak_in_the_message_band_and_open_a_kernel_modal() {
-    // The coordinator half of `command("message")` and `command("action")`.
-    // Both are only reachable through the loop: one writes the status the
-    // message band reads, the other runs a declared action exactly as a click
-    // on it would — and neither can be seen from a `TestBackend`, because the
-    // bands and the modals are drawn by the binary's own `draw`.
-    //
-    // `ctrl+p` is the palette's chord and reaches the pane from anywhere, so
-    // the scenario needs no focus dance; `p` alone would be swallowed by
-    // whatever holds the keyboard.
     let interface = interface_plus(
         "91_speaker.lua",
         r#"return {
@@ -2992,8 +2693,6 @@ fn a_pane_can_speak_in_the_message_band_and_open_a_kernel_modal() {
     tui.wait_for("No sessions yet");
 
     tui.send(b"\x07");
-    // The band badges the level the pane asked for, which is what makes this a
-    // contribution to kernel chrome rather than a string the pane painted.
     tui.wait_for("ERROR");
     tui.wait_for("the pane said so");
 
@@ -3006,12 +2705,7 @@ fn a_pane_can_speak_in_the_message_band_and_open_a_kernel_modal() {
 }
 
 impl Tui {
-    /// One press and release of `button` at a 0-based cell, as SGR reports.
-    ///
-    /// Button 0 is the left, 2 the right — the numbers xterm sends, which is
-    /// the layer this has to start at: the whole road from the escape sequence
-    /// to the hook is what is being asserted, so a `MouseEvent` built in
-    /// process would skip the part that was missing.
+    // SGR button numbers as xterm sends them: 0 is the left, 2 the right.
     fn press(&mut self, button: u8, (x, y): (u16, u16)) {
         let (px, py) = (x + 1, y + 1);
         self.send(format!("\x1b[<{button};{px};{py}M").as_bytes());
@@ -3021,9 +2715,6 @@ impl Tui {
 
 #[test]
 fn the_right_button_reaches_on_context_and_the_left_one_still_reaches_on_click() {
-    // The `id` is what makes the row a hit target: a pane that cannot hold
-    // focus records no rect of its own, so an anonymous node would leave the
-    // press landing on nothing and the test passing for the wrong reason.
     let pane = |name: &str, order: u8| {
         format!(
             r#"return {{
@@ -3054,10 +2745,6 @@ fn the_right_button_reaches_on_context_and_the_left_one_still_reaches_on_click()
     tui.wait_for("tb-hook-none");
     tui.wait_for("tb-other-none");
 
-    // `wait_for` is the assertion: the pane repainted, and what it painted says
-    // which hook ran. A right press routed to the click path would paint
-    // `tb-hook-left` instead, and this would fail on the timeout rather than
-    // pass quietly.
     tui.press(2, tui.find("tb-hook-none"));
     tui.wait_for("tb-hook-right");
     tui.find("tb-other-none");
@@ -3074,7 +2761,6 @@ fn the_right_button_reaches_on_context_and_the_left_one_still_reaches_on_click()
     assert!(status.success(), "exit must be clean: {status:?}");
 }
 
-/// A float pinned where a right press landed, closed by a press anywhere else.
 const PINNED: &str = r#"return {
   name = "pinned",
   slot = "float",
@@ -3094,7 +2780,6 @@ const PINNED: &str = r#"return {
   end,
 }"#;
 
-/// Opens `pinned` at its right press, and paints what reached it.
 const PIN_OPENER: &str = r#"return {
   name = "opener",
   slot = "sessions",
@@ -3116,10 +2801,6 @@ const PIN_OPENER: &str = r#"return {
   end,
 }"#;
 
-/// The whole road a context menu takes, on the real binary: the screen cell
-/// reaches `on_context`, the float opens on that cell, and a press that misses
-/// it is told to the float and to nobody else — the pane under that press must
-/// not hear it, or closing a menu would also act on whatever was beneath.
 #[test]
 fn a_float_opens_where_it_was_asked_and_closes_on_a_press_elsewhere() {
     let interface = interface_plus("92_opener.lua", PIN_OPENER);
@@ -3139,7 +2820,6 @@ fn a_float_opens_where_it_was_asked_and_closes_on_a_press_elsewhere() {
         "the float opens on the pressed cell"
     );
 
-    // Left of the float, on the opener itself: swallowed, and told to the float.
     tui.press(0, (x, y));
     tui.wait_gone("tb-pinned");
     tui.wait_for("tb-opener-none-1");
@@ -3148,10 +2828,6 @@ fn a_float_opens_where_it_was_asked_and_closes_on_a_press_elsewhere() {
     assert!(status.success(), "exit must be clean: {status:?}");
 }
 
-/// A press on a band's pill runs the pill — it is not a pane, and a float never
-/// held it — but it is still a press that missed the float, so the float is told.
-/// Without that a menu left open under the Help modal is still there when the
-/// modal closes, although a press landed elsewhere.
 #[test]
 fn a_press_on_a_band_pill_is_told_to_the_float_it_missed() {
     let interface = interface_plus("92_opener.lua", PIN_OPENER);
@@ -3164,7 +2840,6 @@ fn a_press_on_a_band_pill_is_told_to_the_float_it_missed() {
     let (x, y) = tui.find("tb-opener-none-0");
     tui.press(2, (x + 4, y));
     tui.wait_for("tb-pinned");
-    // The footer band's pill, not the agent pane's "F1 Help" hint above it.
     tui.press(0, tui.find("Help · F1"));
     tui.wait_gone("tb-pinned");
     tui.wait_for("tb-opener-none-1");
@@ -3173,7 +2848,6 @@ fn a_press_on_a_band_pill_is_told_to_the_float_it_missed() {
     assert!(status.success(), "exit must be clean: {status:?}");
 }
 
-/// A pane in the session column that paints what it heard, and from which node.
 fn listening_pane(name: &str, order: u8) -> String {
     format!(
         r#"return {{
@@ -3195,16 +2869,6 @@ fn listening_pane(name: &str, order: u8) -> String {
     )
 }
 
-/// A press read in the same batch as a reload reaches no pane, rather than the
-/// one that now sits at the index the last paint recorded (#1118).
-///
-/// Click targets name mods by index, and a reload rebuilds the vector those
-/// indices point into. Removing a pane that sorts before `aim` moves `near` into
-/// `aim`'s old index, so a press resolved against the previous paint reaches
-/// `near` carrying `aim`'s node id. The reload and both presses are one write
-/// so `drain_input` handles all three before the next paint records fresh
-/// targets — the same window a watcher reload leaves open between a paint and
-/// the press that follows it.
 #[test]
 fn a_press_right_after_a_reload_never_reaches_a_pane_that_did_not_paint_it() {
     let interface = interface_plus("06_tbgone.lua", &listening_pane("gone", 6));
@@ -3219,8 +2883,6 @@ fn a_press_right_after_a_reload_never_reaches_a_pane_that_did_not_paint_it() {
     tui.wait_for("tb-near-none");
     let (x, y) = tui.find("tb-aim-none");
 
-    // Written at once, well inside the watcher's debounce, so the reload the
-    // deletion schedules cannot repaint before F10 is read.
     std::fs::remove_file(mods.join("06_tbgone.lua")).expect("remove gone");
     let (px, py) = (x + 1, y + 1);
     let mut batch = F10.to_vec();
@@ -3230,8 +2892,6 @@ fn a_press_right_after_a_reload_never_reaches_a_pane_that_did_not_paint_it() {
     tui.send(&batch);
     tui.wait_gone("tb-gone-");
 
-    // Events are handled in order, so once `aim` has painted this later press
-    // nothing from the batch can still be on its way to `near`.
     tui.press(0, tui.find("tb-aim-"));
     tui.wait_for("tb-aim-L:aim");
     let frame = tui.frame();
@@ -3244,10 +2904,6 @@ fn a_press_right_after_a_reload_never_reaches_a_pane_that_did_not_paint_it() {
     assert!(status.success(), "exit must be clean: {status:?}");
 }
 
-/// Record a trust grant for one interface file, as the settings modal would.
-///
-/// Both spellings of the path are granted: trust is keyed by the absolute path
-/// the binary resolved, and a tempdir reached through a symlink has two.
 fn trust(profile: &Profile, interface: &Path, file: &str, contents: &str) {
     let digest = thurbox::kernel::bundled::digest(contents);
     let raw = interface.join(file);
@@ -3294,9 +2950,6 @@ fn a_sessionless_run_is_refused_before_queueing_and_local_runs_complete() {
     assert!(tui.quit().success());
 }
 
-/// Keep the real server and its output alive while closing only the control
-/// client's input. A burst cannot reliably fill a queue drained on another
-/// thread; a pipe with no reader reliably makes that writer fail instead.
 struct CutProgramInput {
     control: std::fs::File,
     root: PathBuf,
@@ -3387,8 +3040,6 @@ esac
 
 impl Drop for CutProgramInput {
     fn drop(&mut self) {
-        // The supervisor owns and reaps its pumps, including on a test panic.
-        // Its held FIFO descriptor keeps server input open until this request.
         let _ = self.control.write_all(b"stop\n");
         let deadline = Instant::now() + WAIT;
         while self.root.join("started").exists() && !self.root.join("done").exists() {
@@ -3555,7 +3206,6 @@ fn forgetting_an_asked_key_preserves_another_mods_answer_with_that_key() {
     assert!(tui.quit().success());
 }
 
-/// Types at a program it started, and counts what `command.failed` told it.
 const TYPIST: &str = r#"return {
   name = "typist",
   slot = "sessions",
@@ -3601,9 +3251,6 @@ const TYPIST: &str = r#"return {
   end,
 }"#;
 
-/// A live program whose input failed is distinct from a missing program, and
-/// both refusal reasons reach the mod (#1119). Queue overflow itself is
-/// pinned without a consumer by `input_channel_overflow_fails_fast_without_blocking`.
 #[test]
 fn a_refused_keystroke_reaches_the_mod_with_the_reason_it_was_refused() {
     if !have_tmux() {
@@ -3622,8 +3269,6 @@ fn a_refused_keystroke_reaches_the_mod_with_the_reason_it_was_refused() {
     tui.wait_for("tb-typist 1");
     relay.cut(&tui);
 
-    // The first write fails in the control writer; the next makes the pane
-    // writer drop its receiver. Wait for that state, not a scheduling delay.
     let deadline = Instant::now() + WAIT;
     while !tui.frame().contains("tb-typist 1 absent=0 shut=yes") {
         assert!(
@@ -3668,8 +3313,6 @@ fn a_refused_keystroke_reaches_the_mod_with_the_reason_it_was_refused() {
     assert!(status.success(), "exit must be clean: {status:?}");
 }
 
-/// Starts a program on its first frame and draws its pane. The program spells
-/// its line with `%s`, so the line is on screen only once the program has run.
 const PAINTER: &str = r#"return {
   name = "painter",
   slot = "sessions",
@@ -3704,8 +3347,6 @@ fn a_program_pane_draws_what_its_program_prints() {
     assert!(tui.quit().success());
 }
 
-// --- a live session ---------------------------------------------------------
-
 fn git(dir: &Path, args: &[&str]) {
     let mut cmd = Command::new("git");
     for var in GIT_LOCATION_ENV {
@@ -3721,13 +3362,10 @@ fn git(dir: &Path, args: &[&str]) {
     assert!(ok, "git {args:?} failed");
 }
 
-/// A repository with one commit — the least a session's cwd can be.
 fn repo(under: &Path) -> PathBuf {
     named_repo(under, "repo")
 }
 
-/// [`repo`], under a directory name of the caller's choosing — which is the
-/// label its repo row shows.
 fn named_repo(under: &Path, name: &str) -> PathBuf {
     let dir = under.join(name);
     std::fs::create_dir_all(&dir).expect("mkdir");
@@ -3741,13 +3379,6 @@ fn named_repo(under: &Path, name: &str) -> PathBuf {
     dir
 }
 
-/// A profile with one `sh` session, and the binary attached to it with the
-/// agent pane focused and its prompt painted — the ground every scenario that
-/// drives a real terminal starts from. `None` where tmux is absent.
-///
-/// The "agent" is `sh`, declared in the profile's own agents.toml — thurbox is
-/// agent-neutral, so a shell is as good an agent as any and the only one CI
-/// has.
 fn shell_session() -> Option<(Profile, Tui)> {
     shell_session_with(|_| {})
 }
@@ -3787,14 +3418,10 @@ fn session_host_arrows_reach_focused_agent_pane() {
     assert!(tui.quit().success());
 }
 
-/// The same, with the binary's environment adjusted — for the cases where what
-/// is being tested is what thurbox does with the machine it thinks it is on.
 fn shell_session_with(adjust: impl FnOnce(&mut Command)) -> Option<(Profile, Tui)> {
     shell_session_prepared(|_| {}, adjust)
 }
 
-/// The same, with `prepare` run over the profile after the session exists and
-/// before the binary starts — for a scenario about what a start finds on disk.
 fn shell_session_prepared(
     prepare: impl FnOnce(&Profile),
     adjust: impl FnOnce(&mut Command),
@@ -3823,9 +3450,6 @@ fn shell_session_prepared_on_branch(
     let tui = Tui::spawn_with(&profile, 40, 120, adjust);
     tui.wait_for("probe");
 
-    // The agent pane has focus at boot, and the action band names the focused
-    // pane; the prompt is the attach. Both are waited for, because a keystroke
-    // sent before either goes to the list or to nothing.
     tui.wait_until("the agent pane to be the focused one", |frame| {
         frame
             .lines()
@@ -3836,9 +3460,6 @@ fn shell_session_prepared_on_branch(
     Some((profile, tui))
 }
 
-/// thurbox keeps no session state of its own (ADR-41): the interface starts
-/// on Fleet, shows Fleet's session and runs its terminal, and leaves no
-/// database in its data directory.
 #[test]
 fn the_interface_runs_a_fleet_session_with_no_database() {
     let Some((profile, mut tui)) = shell_session() else {
@@ -3853,21 +3474,10 @@ fn the_interface_runs_a_fleet_session_with_no_database() {
 
 #[test]
 fn a_session_shows_its_terminal_and_takes_keystrokes() {
-    // The product, end to end: a session created headlessly appears in the
-    // list, its pane is attached and painted, and a keystroke sent to the
-    // focused terminal reaches the process behind it. The "agent" is `sh`,
-    // declared in the profile's own agents.toml — thurbox is agent-neutral,
-    // so a shell is as good an agent as any and the only one CI has.
     let Some((_profile, mut tui)) = shell_session() else {
         return;
     };
 
-    // Typed into the focused terminal. The echo is the assertion: the marker
-    // is printed by the shell, so seeing it means the pane was attached,
-    // painted and wired for input — and that the letters reached the pty
-    // rather than the session list, whose single-letter chords include `r`
-    // (restart) and `d` (delete). Either firing here kills the pane the
-    // marker was typed into, so a routing regression cannot pass this.
     tui.send(b"echo tb-e2e-\"\"marker\r");
     tui.wait_for("tb-e2e-marker");
 
@@ -3876,19 +3486,11 @@ fn a_session_shows_its_terminal_and_takes_keystrokes() {
 }
 #[test]
 fn search_finds_text_that_scrolled_away_and_opens_the_session_on_it() {
-    // The failure search was rebuilt for: a prompt typed earlier has scrolled
-    // off the screen, and searching for it found nothing, because only the
-    // visible screen was searched. So the marker is printed and then pushed
-    // three hundred lines up, found from the strip, and opened — and opening
-    // it has to land ON it, scrolled back, not merely focus the session.
-    // Colour suppression must not erase the inverse mark when the line lands.
     let Some((_profile, mut tui)) = shell_session_with(|cmd| {
         cmd.env("NO_COLOR", "1");
     }) else {
         return;
     };
-    // Quoted apart on the command line, so the only line that spells the
-    // marker whole is the one the shell prints.
     tui.send(b"echo tb-\"\"findme; seq 1 300\r");
     tui.wait_for("300");
     tui.wait_gone("tb-findme");
@@ -3896,7 +3498,6 @@ fn search_finds_text_that_scrolled_away_and_opens_the_session_on_it() {
     tui.send(CTRL_SLASH);
     tui.wait_for("Search");
     tui.send(b"tb-findme");
-    // A result row names its session, how far back the hit is, and the line.
     tui.wait_until("a result row for the scrolled-away line", |frame| {
         frame
             .lines()
@@ -3904,9 +3505,6 @@ fn search_finds_text_that_scrolled_away_and_opens_the_session_on_it() {
     });
 
     tui.send(b"\r");
-    // Landed: the strip is gone, the terminal is scrolled back (its title
-    // carries the offset) and the printed line is back on screen — beside the
-    // thick border, because opening a result hands the terminal focus.
     tui.wait_until("the session scrolled to the match", |frame| {
         !frame.contains("Search")
             && frame.contains("↑]")
@@ -3923,8 +3521,6 @@ fn search_finds_text_that_scrolled_away_and_opens_the_session_on_it() {
                 tui.inverse_at(row as u16, column as u16)
             })
     });
-    // And the line is marked, so a long screen of output does not leave you
-    // hunting for the row you were brought to.
     let frame = tui.frame();
     let (y, line) = frame
         .lines()
@@ -3942,18 +3538,11 @@ fn search_finds_text_that_scrolled_away_and_opens_the_session_on_it() {
 
 #[test]
 fn ctrl_d_reaches_a_live_agent_as_its_eof() {
-    // The other side of the rule above: while the agent is live the chord is
-    // still its EOF, not a delete. Pressing it ends `sh` — which is what EOF
-    // does — but the session stays in the list, because the keystroke went to
-    // the pty and never to the list's delete. Were the dead-pane exception
-    // firing on a live pane, the row would be gone instead.
     let Some((_profile, mut tui)) = shell_session() else {
         return;
     };
 
     tui.send(b"\x04");
-    // The assertion is the negative: the row is still there, so the chord
-    // reached the pty and was not spent on a delete.
     tui.wait_until_quiet();
     assert!(
         tui.session_row("probe").is_some(),
@@ -3967,12 +3556,6 @@ fn ctrl_d_reaches_a_live_agent_as_its_eof() {
 
 #[test]
 fn ctrl_d_over_a_live_shell_reaches_it_though_the_agent_behind_it_died() {
-    // The shell is a second pane, addressed `<id>#shell`, and the two panes can
-    // die apart: an agent that ran `/exit` is dead while its companion shell is
-    // still a live `sh`. The chord follows the surface on screen, so with the
-    // shell up it must ask *the shell* whether it is dead — not the agent whose
-    // suffix it shares. Judging by the agent would delete the session out from
-    // under a shell the user is still typing in.
     let Some((_profile, mut tui)) = shell_session() else {
         return;
     };
@@ -3985,8 +3568,6 @@ fn ctrl_d_over_a_live_shell_reaches_it_though_the_agent_behind_it_died() {
         tui.frame()
     );
 
-    // Ctrl+T raises the companion shell — a fresh pane, so it is live even though
-    // the agent it sits beside is not.
     tui.send(b"\x14");
     tui.wait_until("the shell tab to be the view", |frame| {
         frame
@@ -3994,14 +3575,9 @@ fn ctrl_d_over_a_live_shell_reaches_it_though_the_agent_behind_it_died() {
             .last()
             .is_some_and(|band| band.trim_start().starts_with("Shell"))
     });
-    // The pane paints before the shell inside it has drawn its prompt, and a
-    // chord sent in between would race the shell that must receive it.
     tui.wait_until_quiet();
 
-    // 0x04 is Ctrl+D, here the live shell's EOF. Were deadness read off the
-    // agent, the chord would delete the session instead; the row leaving is the
-    // failure this guards.
-    tui.send(b"\x04");
+    tui.send(CTRL_D);
     tui.wait_until_quiet();
     assert!(
         tui.frame().contains("1 session(s)") && !tui.frame().contains("No sessions yet"),
@@ -4013,7 +3589,6 @@ fn ctrl_d_over_a_live_shell_reaches_it_though_the_agent_behind_it_died() {
     assert!(status.success(), "exit must be clean: {status:?}");
 }
 
-/// Wait until the action band names `view` as the focused pane's view.
 fn wait_for_view(tui: &Tui, view: &str) {
     tui.wait_until(
         &format!("the {view} view to be the one on screen"),
@@ -4026,11 +3601,8 @@ fn wait_for_view(tui: &Tui, view: &str) {
     );
 }
 
-// --- selection, copy, and the interrupt a shell is owed ----------------------
-
 const OSC52: &str = "\x1b]52;c;";
 
-/// The text an OSC 52 sequence in `out` carries, if there is one.
 fn osc52_payload(out: &str) -> Option<String> {
     let start = out.find(OSC52)? + OSC52.len();
     let end = out[start..].find('\x07')? + start;
@@ -4040,8 +3612,6 @@ fn osc52_payload(out: &str) -> Option<String> {
     Some(String::from_utf8_lossy(&bytes).into_owned())
 }
 
-/// A left press at a 0-based cell, `over` moves to the right and the release,
-/// as one run of SGR reports — what `drain_input` reads as a single batch.
 fn drag_gesture((x, y): (u16, u16), over: u16) -> Vec<u8> {
     let (px, py) = (x + 1, y + 1);
     let mut seq = format!("\x1b[<0;{px};{py}M").into_bytes();
@@ -4053,8 +3623,6 @@ fn drag_gesture((x, y): (u16, u16), over: u16) -> Vec<u8> {
 }
 
 impl Tui {
-    /// Match the session list's first framed column, excluding the selected
-    /// session's name repeated in the app header and terminal title.
     fn session_row(&self, name: &str) -> Option<(u16, u16)> {
         use unicode_width::UnicodeWidthStr;
 
@@ -4068,11 +3636,6 @@ impl Tui {
         })
     }
 
-    /// Where `needle` is painted, as a 0-based (column, row).
-    ///
-    /// The column is counted in cells, not bytes: the borders to the left of
-    /// a pane are multi-byte glyphs, and a byte offset lands a press several
-    /// cells into the text it was aimed at.
     fn find(&self, needle: &str) -> (u16, u16) {
         let rows = self.screen.lock().unwrap().screen().size().0.get();
         (0..rows)
@@ -4084,9 +3647,6 @@ impl Tui {
             .unwrap_or_else(|| self.give_up(&format!("{needle:?} to be on screen")))
     }
 
-    /// A left press at a 0-based cell, dragged `over` cells to the right (none
-    /// for a bare click), and released — as SGR mouse reports, which is what
-    /// the binary asked the terminal for.
     fn drag(&mut self, (x, y): (u16, u16), over: u16) {
         let (px, py) = (x + 1, y + 1);
         self.send(format!("\x1b[<0;{px};{py}M").as_bytes());
@@ -4094,57 +3654,27 @@ impl Tui {
             self.send(format!("\x1b[<32;{cx};{py}M").as_bytes());
         }
         self.send(format!("\x1b[<0;{};{py}m", px + over).as_bytes());
-        // The frame that paints the selection is the one that reads its text.
-        std::thread::sleep(Duration::from_millis(250));
+        let until_the_selection_is_painted_and_read = Duration::from_millis(250);
+        std::thread::sleep(until_the_selection_is_painted_and_read);
     }
 
-    /// A left drag and a chord `key`, written to the pty in one burst so they
-    /// reach `drain_input` in a single batch with no paint between — the case
-    /// `drag`'s trailing sleep deliberately avoids. The whole SGR gesture
-    /// (press, `over` moves, release) is followed immediately by the chord
-    /// byte, so a handler bound to the chord runs in the same batch as the drag
-    /// that made the selection.
     fn drag_then_chord(&mut self, at: (u16, u16), over: u16, key: u8) {
         let mut seq = drag_gesture(at, over);
         seq.push(key);
         self.send(&seq);
     }
 
-    /// `Ctrl+C`, then a marker typed straight after: the marker echoing is
-    /// the shell having taken the chord as its interrupt and gone back to its
-    /// prompt. What the binary wrote in between is returned for the caller to
-    /// judge — an OSC 52 there is a copy that stole the chord.
     fn ctrl_c_then(&mut self, marker: &str) -> String {
         let mark = self.raw_len();
         self.send(b"\x03");
-        // The interrupt has to LAND before the next keystroke is written, and
-        // these two used to be back-to-back. `\x03` travels pty -> thurbox ->
-        // tmux -> `sh`, and the shell answers it by abandoning the line it was
-        // reading and drawing a fresh prompt; a byte that arrives while it is
-        // doing that is discarded. The symptom is the command's FIRST character
-        // going missing -- `sh: cho: command not found`, from a swallowed `e` --
-        // so the marker never echoes and the wait below times out having
-        // reported nothing about why. It only showed up on a loaded machine,
-        // which is what made a race look like slowness.
+        // A shell discards input that arrives while it answers `^C` and redraws its prompt.
         self.wait_for_output_since(mark, "the shell to answer the interrupt");
-        // And then until it has finished answering. The reply is several writes
-        // -- `^C`, a newline, a fresh prompt -- and a byte arriving between them
-        // is discarded exactly as one arriving before the first is; the barrier
-        // above only proves the reply STARTED. Waiting for the stream to stop is
-        // what proves it ended, and it is the same signal for every shell.
         self.wait_until_quiet();
         self.send(format!("echo {marker}-\"\"ok\r").as_bytes());
         self.wait_for(&format!("{marker}-ok"));
         self.raw_since(mark)
     }
 
-    /// Wait until the terminal has stopped writing.
-    ///
-    /// The other half of [`Self::wait_for_output_since`]: that one proves the
-    /// far end started reacting, this one proves it stopped. Best-effort — a
-    /// stream that never settles simply gives the time back rather than failing,
-    /// because this is a barrier in front of an assertion and not the assertion.
-    /// Budgeted well under [`WAIT`] for the same reason.
     fn wait_until_quiet(&self) {
         const QUIET: Duration = Duration::from_millis(150);
         let deadline = Instant::now() + Duration::from_secs(3);
@@ -4161,17 +3691,6 @@ impl Tui {
         }
     }
 
-    /// Wait until the terminal has written *anything* since `since`.
-    ///
-    /// Coarser than [`Self::wait_for`] on purpose: the caller is waiting for the
-    /// far end to have reacted at all, not for a particular string. What the
-    /// shell emits when it takes an interrupt differs between shells and between
-    /// "at an idle prompt" and "mid-command" -- `^C`, a bare newline, a fresh
-    /// prompt, or some combination -- so matching on any of them would be a
-    /// guess. That bytes came back is the one signal every case shares.
-    ///
-    /// `since` must be taken BEFORE whatever is being waited on is sent, or the
-    /// echo of something already in flight satisfies it instead.
     fn wait_for_output_since(&self, since: usize, what: &str) {
         let deadline = Instant::now() + WAIT;
         while Instant::now() < deadline {
@@ -4184,8 +3703,6 @@ impl Tui {
     }
 }
 
-/// A shell session whose settings turn copy-on-select off — the opt-out, under
-/// which a drag only selects and `Ctrl+C` is what copies.
 fn shell_session_without_copy_on_select() -> Option<(Profile, Tui)> {
     shell_session_prepared(
         |profile| {
@@ -4200,10 +3717,6 @@ fn shell_session_without_copy_on_select() -> Option<(Profile, Tui)> {
 
 #[test]
 fn a_drag_release_copies_by_default_and_ctrl_c_stays_the_interrupt() {
-    // Copy-on-select is on by default: releasing a drag is the copy, with no
-    // key pressed — the one copy gesture no emulator can intercept, which is
-    // what macOS needs when the terminal keeps Cmd+C for itself. `Ctrl+C`
-    // after it is never a second copy; it is the shell's interrupt.
     let Some((_profile, mut tui)) = shell_session() else {
         return;
     };
@@ -4211,7 +3724,6 @@ fn a_drag_release_copies_by_default_and_ctrl_c_stays_the_interrupt() {
     tui.wait_for("tb-select-me");
     let at = tui.find("tb-select-me");
 
-    // A bare click copies nothing.
     let mark = tui.raw_len();
     tui.drag(at, 0);
     assert!(
@@ -4219,7 +3731,6 @@ fn a_drag_release_copies_by_default_and_ctrl_c_stays_the_interrupt() {
         "a click is not a selection and must not copy"
     );
 
-    // A drag and its release, and nothing else.
     let mark = tui.raw_len();
     tui.drag(at, 12);
     tui.wait_for("copied 1 line(s)");
@@ -4227,8 +3738,6 @@ fn a_drag_release_copies_by_default_and_ctrl_c_stays_the_interrupt() {
         .unwrap_or_else(|| tui.give_up("an OSC 52 sequence after the release"));
     assert_eq!(copied, "tb-select-me");
 
-    // The selection is still on screen, and `Ctrl+C` interrupts a command
-    // rather than copying it again.
     tui.send(b"sleep 30 && echo tb-not-\"\"interrupted\r");
     std::thread::sleep(Duration::from_millis(200));
     let out = tui.ctrl_c_then("tb-after-copy");
@@ -4238,14 +3747,13 @@ fn a_drag_release_copies_by_default_and_ctrl_c_stays_the_interrupt() {
     );
     assert!(!tui.frame().contains("tb-not-interrupted"));
 
-    // Wide characters copy byte for byte: no space inside `漢字`. Printed
-    // from octal escapes so the line editor never sees a multi-byte key.
+    // Printed from octal escapes so the line editor never sees a multi-byte key.
     tui.send(b"printf 'tbw\\346\\274\\242\\345\\255\\227-\\303\\251-end\\n'\r");
     tui.wait_for("tbw漢字-é-end");
     let at = tui.find("tbw漢字-é-end");
     let mark = tui.raw_len();
-    // 3 + 2×2 + 1 + 1 + 4 = 13 cells, so the release lands 12 to the right.
-    tui.drag(at, 12);
+    let wide_line_cells = 3 + 2 * 2 + 1 + 1 + 4;
+    tui.drag(at, wide_line_cells - 1);
     tui.wait_for_output_since(mark, "the copy of the wide line");
     tui.wait_until_quiet();
     let copied = osc52_payload(&tui.raw_since(mark))
@@ -4258,9 +3766,6 @@ fn a_drag_release_copies_by_default_and_ctrl_c_stays_the_interrupt() {
 
 #[test]
 fn a_key_right_behind_a_release_does_not_cancel_its_copy() {
-    // A terminal's selection is read off its grid, so the release can copy at
-    // once. Waiting for the next paint instead lost the copy to a key queued in
-    // the same batch: the key drops the selection before that paint runs.
     let Some((_profile, mut tui)) = shell_session() else {
         return;
     };
@@ -4280,10 +3785,6 @@ fn a_key_right_behind_a_release_does_not_cancel_its_copy() {
 
 #[test]
 fn a_drag_over_a_pane_with_no_grid_copies_what_it_finished_on() {
-    // A pane that is not a terminal has no grid: its text is read off the
-    // painted frame. A drag whose every report lands in one input batch has had
-    // no paint by its release, so a copy made there would carry the text of the
-    // last paint (none) instead of the selection now highlighted.
     if !have_tmux() {
         return;
     }
@@ -4304,16 +3805,6 @@ fn a_drag_over_a_pane_with_no_grid_copies_what_it_finished_on() {
 
 #[test]
 fn a_click_is_not_a_selection_so_ctrl_c_still_interrupts_the_shell() {
-    // Clicking into a terminal is how it is focused, and the press used to
-    // stay armed as an empty selection afterwards: every `Ctrl+C` from then on
-    // was taken by the copy chord, which — finding nothing selected — pushed
-    // the whole visible screen at the outer terminal as OSC 52 and never
-    // reached the shell as the interrupt it was. v1's rule, restored here: a
-    // press that never moved is a click, and a selection is only what was
-    // dragged over.
-    //
-    // Run with copy-on-select turned off, which is where `Ctrl+C` is still
-    // the copy chord — the opt-out has to keep that working.
     let Some((_profile, mut tui)) = shell_session_without_copy_on_select() else {
         return;
     };
@@ -4321,9 +3812,6 @@ fn a_click_is_not_a_selection_so_ctrl_c_still_interrupts_the_shell() {
     tui.wait_for("tb-select-me");
     let at = tui.find("tb-select-me");
 
-    // A bare click, then a command to interrupt. Were the chord stolen, the
-    // shell would still be in `sleep` when the marker is typed, and the
-    // marker would not echo inside the wait.
     tui.drag(at, 0);
     tui.send(b"sleep 30 && echo tb-not-\"\"interrupted\r");
     std::thread::sleep(Duration::from_millis(200));
@@ -4334,8 +3822,7 @@ fn a_click_is_not_a_selection_so_ctrl_c_still_interrupts_the_shell() {
     );
     assert!(!tui.frame().contains("tb-not-interrupted"));
 
-    // A drag is a selection, and the chord copies exactly what was dragged
-    // over — as OSC 52, since a headless pty has no native clipboard.
+    // A headless pty has no native clipboard, so the copy goes out as OSC 52.
     let released = tui.raw_len();
     tui.drag(at, 12);
     assert!(
@@ -4349,13 +3836,7 @@ fn a_click_is_not_a_selection_so_ctrl_c_still_interrupts_the_shell() {
         .unwrap_or_else(|| tui.give_up("an OSC 52 sequence after the copy"));
     assert_eq!(copied.trim(), "tb-select-me");
 
-    // Any other key drops the selection and still does what it does, so the
-    // next Ctrl+C is the shell's again.
     tui.drag(at, 12);
-    // Wait for the key to have reached the shell and echoed back before the
-    // chord follows it. Left in flight, that echo is the first thing to arrive
-    // after `ctrl_c_then` takes its mark, and satisfies the barrier there in
-    // place of the interrupt it is meant to be waiting for.
     let typed = tui.raw_len();
     tui.send(b":");
     tui.wait_for_output_since(typed, "the shell to echo the key that clears the selection");
@@ -4369,10 +3850,6 @@ fn a_click_is_not_a_selection_so_ctrl_c_still_interrupts_the_shell() {
     assert!(status.success(), "exit must be clean: {status:?}");
 }
 
-// --- an app's own OSC 52: the focused session writes, nobody reads ----------
-
-/// `text` as an OSC 52 clipboard write, spelled as a `printf` format a shell
-/// turns into the escape — so the line the shell echoes carries no ESC.
 fn osc52_printf(target: &str, payload: &str) -> String {
     format!("printf '\\033]52;{target};{payload}\\007'")
 }
@@ -4381,15 +3858,10 @@ fn b64(bytes: &[u8]) -> String {
     base64::Engine::encode(&base64::engine::general_purpose::STANDARD, bytes)
 }
 
-/// How many OSC 52 writes `out` carries.
 fn osc52_count(out: &str) -> usize {
     out.matches(OSC52).count()
 }
 
-/// Give the binary a moment to act on output it has already read, then return
-/// what it wrote since `mark`. The negative assertions read this: nothing can
-/// prove a write will *never* come, only that it did not come in a window
-/// several frames long.
 fn settled_since(tui: &Tui, mark: usize) -> String {
     std::thread::sleep(Duration::from_millis(600));
     tui.wait_until_quiet();
@@ -4398,12 +3870,7 @@ fn settled_since(tui: &Tui, mark: usize) -> String {
 
 #[test]
 fn an_app_osc52_copy_in_the_focused_session_reaches_the_outer_terminal() {
-    // An agent's `/copy`, nvim's OSC 52 provider, lazygit: each writes the
-    // clipboard by printing OSC 52 into its own pane. Thurbox is the process on
-    // the user's machine that reads those bytes, so it is the one that has to
-    // put them on the user's clipboard — tmux never hands a control-mode client
-    // a selection. It was dropped: tmux kept a paste buffer and nothing reached
-    // the outer terminal.
+    // tmux never hands a control-mode client the selection an app writes as OSC 52.
     let Some((_profile, mut tui)) = shell_session() else {
         return;
     };
@@ -4420,8 +3887,7 @@ fn an_app_osc52_copy_in_the_focused_session_reaches_the_outer_terminal() {
         Some("tb-agent-copy é"),
         "the outer terminal must get the app's text, byte for byte"
     );
-    // tmux stores the same write as a paste buffer and announces it with
-    // `%paste-buffer-changed`; acting on that too would copy it twice.
+    // tmux also stores the write as a paste buffer and announces `%paste-buffer-changed`.
     assert_eq!(osc52_count(&out), 1, "one copy, once; wrote:\n{out:?}");
 
     let status = tui.quit();
@@ -4430,9 +3896,6 @@ fn an_app_osc52_copy_in_the_focused_session_reaches_the_outer_terminal() {
 
 #[test]
 fn a_valid_copy_survives_a_write_that_follows_it_and_is_refused() {
-    // Two writes in one burst — the clipboard, then the primary selection
-    // only — reach the forwarder in the same iteration. The refused second
-    // one must not cost the first.
     let Some((_profile, mut tui)) = shell_session() else {
         return;
     };
@@ -4487,22 +3950,6 @@ fn an_app_behind_a_modal_cannot_write_the_clipboard() {
     assert!(status.success(), "exit must be clean: {status:?}");
 }
 
-/// The mouse text selection reaches a Lua pane through `thurbox.selection`.
-///
-/// The coordinator recomputes the selection every frame for `copy_selection`;
-/// publishing it into the snapshot is what lets a pane see it at all. This is the
-/// whole wire, not the module: a probe pane paints the field, and a drag over the
-/// shell's own echoed line is a real selection — the copy test above proves the
-/// same gesture copies exactly that text. Without the publish the field is nil
-/// and the probe stays `selwire:[]`, so this fails on the timeout rather than
-/// passing quietly.
-///
-/// The probe is deliberately NOT `pure`: `thurbox.selection` is a bare scalar, so
-/// it moves no epoch and bumps no state version — a pure pane reading it live
-/// would be served its cached tree until some other signal ticked. The real
-/// consumer (`41_notes`) reads it in `on_key`, which is never cached; a pane that
-/// wants to paint the live selection reads it every frame, which is what impure
-/// means. Reading it in render here is what makes the wire observable.
 #[test]
 fn the_text_selection_reaches_a_pane_as_a_published_field() {
     let interface = interface_plus(
@@ -4526,37 +3973,19 @@ fn the_text_selection_reaches_a_pane_as_a_published_field() {
         return;
     };
 
-    // The field is published every frame, so it is "" before any drag — the
-    // probe paints the empty selection rather than a missing field.
     tui.wait_for("selwire:[]");
 
-    // A line the shell echoes back, aimed at by its output (the `""` keeps the
-    // needle out of the command line, which still shows the quotes). The drag
-    // over it is the selection.
     tui.send(b"echo tb-select-\"\"me\r");
     tui.wait_for("tb-select-me");
     let at = tui.find("tb-select-me");
     tui.drag(at, 12);
 
-    // The assertion: the pane repainted with the dragged text, which it could
-    // only have read from `thurbox.selection`.
     tui.wait_for("selwire:[tb-select-me]");
 
     let status = tui.quit();
     assert!(status.success(), "exit must be clean: {status:?}");
 }
 
-/// A chord that fires in the *same* input batch as the drag that made the
-/// selection reads the finished selection, not the pre-drag one.
-///
-/// `drain_input` publishes the world once per batch and `selected_text` is
-/// recomputed at paint time, so a chord queued right behind a drag — with no
-/// paint between — used to read the selection as it stood before the gesture
-/// (empty here). The human path (drag, see the highlight, then press) is a
-/// later batch and already works; `drag_then_chord` writes the gesture and the
-/// chord in one burst to pin the batch-boundary case. `on_action` echoes what
-/// it read into the message band, so a stale read shows `selchord:[]` and this
-/// fails on the timeout.
 #[test]
 fn a_chord_reads_the_selection_dragged_in_its_own_batch() {
     let interface = interface_plus(
@@ -4591,8 +4020,6 @@ fn a_chord_reads_the_selection_dragged_in_its_own_batch() {
     tui.wait_for("tb-select-me");
     let at = tui.find("tb-select-me");
 
-    // Drag over the echoed line and press ctrl+g in one batch. The handler
-    // reads `thurbox.selection` while it runs — which is inside this batch.
     tui.drag_then_chord(at, 12, 0x07);
 
     tui.wait_for("selchord:[tb-select-me]");
@@ -4601,8 +4028,6 @@ fn a_chord_reads_the_selection_dragged_in_its_own_batch() {
     assert!(status.success(), "exit must be clean: {status:?}");
 }
 
-/// The top-left corners of the panes, left to right, off the first row that
-/// has any: `┏` is the focused pane's frame and `╭` every other's.
 fn pane_corners(frame: &str) -> String {
     frame
         .lines()
@@ -4611,18 +4036,12 @@ fn pane_corners(frame: &str) -> String {
         .unwrap_or_default()
 }
 
-/// The block the agent pane paints at its terminal's cursor.
 fn cursor_block_shown(frame: &str) -> bool {
     frame.contains('█')
 }
 
 #[test]
 fn the_thick_frame_and_the_terminal_cursor_move_with_focus() {
-    // Focus has to be readable at a glance and without colour: the focused
-    // pane's frame is the thick one, and the terminal paints its cursor only
-    // while it is the pane the keys go to. Both are asserted on the byte
-    // stream, as characters, because that is what survives a monochrome
-    // terminal.
     let Some((_profile, mut tui)) = shell_session() else {
         return;
     };
@@ -4631,14 +4050,12 @@ fn the_thick_frame_and_the_terminal_cursor_move_with_focus() {
         pane_corners(frame) == "╭┏" && cursor_block_shown(frame)
     });
 
-    // 0x08 is Ctrl+H, the kernel's focus-cycle chord.
-    tui.send(b"\x08");
+    tui.send(CTRL_H);
     tui.wait_until("the thick frame to move to the session list", |frame| {
         pane_corners(frame) == "┏╭" && !cursor_block_shown(frame)
     });
 
-    // 0x0c is Ctrl+L, the other direction.
-    tui.send(b"\x0c");
+    tui.send(CTRL_L);
     tui.wait_until("the thick frame to come back to the agent pane", |frame| {
         pane_corners(frame) == "╭┏" && cursor_block_shown(frame)
     });
@@ -4647,7 +4064,6 @@ fn the_thick_frame_and_the_terminal_cursor_move_with_focus() {
     assert!(status.success(), "exit must be clean: {status:?}");
 }
 
-/// A second occupant of the centre `switch` slot, reached only by its own key.
 const CENTRE_ALTERNATE: &str = r#"return {
   name = "stand-in",
   slot = "center",
@@ -4669,11 +4085,6 @@ const CENTRE_ALTERNATE: &str = r#"return {
 
 #[test]
 fn the_focus_cycle_skips_a_centre_alternate_and_its_key_still_opens_it() {
-    // A pane that replaces the centre is an alternate of its switch slot, and
-    // moving focus onto one is what draws it. So a Ctrl+L that stepped onto it
-    // swapped the agent's terminal out from under the user on an ordinary walk
-    // across the columns. The cycle stops once per column — on the slot's
-    // default occupant — and the alternate is opened by its own key.
     let interface = interface_plus("91_stand_in.lua", CENTRE_ALTERNATE);
     let Some((_profile, mut tui)) = shell_session_with(|cmd| {
         cmd.env("THURBOX_UI_DIR", interface.path());
@@ -4685,7 +4096,6 @@ fn the_focus_cycle_skips_a_centre_alternate_and_its_key_still_opens_it() {
     wait_for_view(&tui, "Sessions");
     tui.send(b"\x0c");
     wait_for_view(&tui, "Agent");
-    // Onward from the centre wraps to the list: there is no other column.
     tui.send(b"\x0c");
     wait_for_view(&tui, "Sessions");
     tui.wait_until_quiet();
@@ -4695,14 +4105,11 @@ fn the_focus_cycle_skips_a_centre_alternate_and_its_key_still_opens_it() {
         tui.frame()
     );
 
-    // Its own key brings it forward.
     tui.send(b"\x07");
     tui.wait_for("tb-stand-in-body");
 
-    // And the cycle leaves it for the next column, not for its sibling …
     tui.send(b"\x08");
     wait_for_view(&tui, "Sessions");
-    // … and coming back lands on the default occupant, not the alternate.
     tui.send(b"\x0c");
     wait_for_view(&tui, "Agent");
     tui.wait_until_quiet();
@@ -4716,14 +4123,7 @@ fn the_focus_cycle_skips_a_centre_alternate_and_its_key_still_opens_it() {
     assert!(status.success(), "exit must be clean: {status:?}");
 }
 
-// --- the wheel over a live terminal -----------------------------------------
-
 impl Tui {
-    /// `count` wheel reports at a 0-based cell, as the SGR reports the binary
-    /// asked the terminal for (xterm's wheel is buttons 64 up and 65 down).
-    ///
-    /// A notch is several reports and each is one line, so the count is the
-    /// number of lines a real wheel would have travelled.
     fn wheel(&mut self, (x, y): (u16, u16), up: bool, count: u16) {
         let (px, py) = (x + 1, y + 1);
         let button = if up { 64 } else { 65 };
@@ -4733,11 +4133,6 @@ impl Tui {
     }
 }
 
-/// Print `marker` into the focused terminal and then bury it: a hundred
-/// numbered lines, which is more than any pane on a 40-row screen can show.
-///
-/// The marker being off screen is the precondition every scroll assertion
-/// below rests on, so it is waited for rather than assumed.
 fn bury_a_marker(tui: &mut Tui, marker: &str) {
     tui.send(format!("echo {marker}\r").as_bytes());
     tui.wait_for(marker);
@@ -4746,8 +4141,7 @@ fn bury_a_marker(tui: &mut Tui, marker: &str) {
     tui.wait_gone(marker);
 }
 
-// Darwin's PTY input queue is smaller than the source's read buffer, so it
-// cannot prequeue this burst. The vendored UnixStream regression is portable.
+// Darwin's PTY input queue is smaller than the source's read buffer: it cannot hold this burst.
 #[cfg(target_os = "linux")]
 #[test]
 fn a_prewritten_mouse_burst_is_read_without_another_wakeup() {
@@ -4755,9 +4149,12 @@ fn a_prewritten_mouse_burst_is_read_without_another_wakeup() {
     if std::env::var_os(PROBE).is_some() {
         use crossterm::event::{poll, read, Event, MouseEventKind};
 
-        // The source must leave a borrowed, blocking stdin untouched.
         let flags = unsafe { libc::fcntl(0, libc::F_GETFL) };
-        assert_eq!(flags & libc::O_NONBLOCK, 0);
+        assert_eq!(
+            flags & libc::O_NONBLOCK,
+            0,
+            "the event source must leave a borrowed, blocking stdin untouched"
+        );
         for index in 0..90 {
             assert!(
                 poll(Duration::from_secs(1)).expect("poll input"),
@@ -4775,8 +4172,7 @@ fn a_prewritten_mouse_burst_is_read_without_another_wakeup() {
 
     let profile = Profile::new();
     let (master, slave) = openpty(40, 120);
-    // Prequeue the burst before the event source exists, so a later PTY
-    // delivery cannot supply a second readiness edge and hide the bug.
+    // Prequeued, so a later PTY delivery cannot add a second readiness edge that hides the bug.
     let mut termios = std::mem::MaybeUninit::uninit();
     unsafe {
         assert_eq!(libc::tcgetattr(slave.as_raw_fd(), termios.as_mut_ptr()), 0);
@@ -4841,13 +4237,6 @@ fn a_prewritten_mouse_burst_is_read_without_another_wakeup() {
 
 #[test]
 fn the_wheel_scrolls_the_agents_output_back() {
-    // The wheel over a terminal pane has to move that terminal's scrollback.
-    // It reached the pane as a synthesized `up`/`down` keystroke, and the pane
-    // that shows a live terminal is the one pane that cannot declare those —
-    // they belong to the agent — so the tick resolved to nothing and the wheel
-    // did nothing at all. An agent that turns on mouse tracking hid it (the
-    // tick is forwarded to the pty instead), which is why it looked like it
-    // only happened to some people.
     let Some((_profile, mut tui)) = shell_session() else {
         return;
     };
@@ -4858,8 +4247,6 @@ fn the_wheel_scrolls_the_agents_output_back() {
     tui.wait_for("tb-scroll-marker");
     tui.wait_for("[90↑]");
 
-    // And back down again: the wheel is not a one-way trip, and the pane
-    // returns to the live bottom of the stream.
     tui.wheel(at, false, 90);
     tui.wait_for("tb-fill-100");
     tui.wait_gone("tb-scroll-marker");
@@ -4874,9 +4261,7 @@ fn the_wheel_reaches_a_fullscreen_app_that_checks_tmux_mouse_mode() {
         return;
     };
 
-    // Some apps suppress mouse capture when tmux reports `mouse=0`. The
-    // private server must advertise mouse support so they request wheel
-    // reports, which their transcript views can then handle.
+    // Some apps suppress mouse capture when tmux reports `mouse=0`.
     tui.send(b"stty -echo -icanon min 1 time 0; printf '\\033[?1049h'; if [ \"$(tmux display-message -p '#{mouse}')\" = 1 ]; then printf '\\033[?1000h\\033[?1006h'; fi; printf 'ALT-CODEX\\n'; cat -v\r");
     tui.wait_until("the mouse-gated alternate screen", |frame| {
         frame.contains("ALT-CODEX") && !frame.contains("stty -echo")
@@ -4892,11 +4277,6 @@ fn the_wheel_reaches_a_fullscreen_app_that_checks_tmux_mouse_mode() {
 
 #[test]
 fn the_wheel_still_reaches_a_fullscreen_app_after_a_restart() {
-    // An app turns mouse tracking on once, at startup — Codex does — and
-    // never again: a repaint redraws its cells, not its modes. An interface
-    // started after that adopts the pane mid-stream, so whether a wheel tick
-    // is forwarded must come from the mode tmux holds for the pane, not from
-    // bytes this process never read. `?1003` is the mode Codex asks for.
     let Some((profile, mut tui)) = shell_session() else {
         return;
     };
@@ -4915,24 +4295,13 @@ fn the_wheel_still_reaches_a_fullscreen_app_after_a_restart() {
     assert!(tui.quit().success());
 }
 
-// --- the buttons over a tracking terminal -----------------------------------
-
 #[test]
 fn a_drag_over_a_tracking_terminal_reaches_the_program_inside() {
-    // The wheel above already goes to a terminal that asked for the mouse, and
-    // the buttons did not: a program that tracks the mouse and selects text
-    // itself (Claude Code copies on select this way) never heard a press,
-    // because thurbox spent every drag on its own selection. Once a program
-    // has asked, the gesture is its: press, the moves while the button is
-    // down, and the release all reach the pty, in the encoding it asked for
-    // and with coordinates local to its pane.
     let Some((_profile, mut tui)) = shell_session() else {
         return;
     };
 
-    // `cat` parks the shell so the tty's echo shows what the program is sent,
-    // control bytes visibly (`ESC` as `^[`) — the only way a forwarded report
-    // can be read off the screen.
+    // `cat` parks the shell so the tty's echo shows control bytes visibly (`ESC` as `^[`).
     tui.send(b"echo tb-mouse-\"\"here\r");
     tui.wait_for("tb-mouse-here");
     tui.send(b"printf '\\033[?1002h\\033[?1006h'; cat\r");
@@ -4941,8 +4310,7 @@ fn a_drag_over_a_tracking_terminal_reaches_the_program_inside() {
     let at = tui.find("tb-mouse-here");
     tui.drag(at, 3);
 
-    // SGR tells the legs apart by `Cb` and the final letter alone: 0 is the
-    // left button, 32 its move flag, and only a release ends in `m`.
+    // SGR: `Cb` 0 is the left button, 32 its move flag, and only a release ends in `m`.
     tui.wait_for("[<0;");
     tui.wait_for("[<32;");
     tui.wait_until("the release to reach the program", |frame| {
@@ -4957,10 +4325,6 @@ fn a_drag_over_a_tracking_terminal_reaches_the_program_inside() {
 
 #[test]
 fn a_bare_move_reaches_a_terminal_that_asked_for_every_motion() {
-    // `?1003` is the one tracking mode that wants motion with no button down
-    // — hover-driven TUIs are built on it — and a bare move used to stop at
-    // thurbox's own hover. With no button down there is no gesture for a
-    // capture to own, so the move is routed by position, like the wheel.
     let Some((_profile, mut tui)) = shell_session() else {
         return;
     };
@@ -5208,20 +4572,10 @@ fn repo_picker_shows_a_refused_path_inside_the_modal() {
     assert!(tui.quit().success());
 }
 
-/// How soon a hovered affordance must light. Well under the idle frame floor
-/// (250ms), because the failure it catches is a pure pane served its cached
-/// tree until something unrelated moves the epoch: that still lights the
-/// affordance, just late — measured at 280ms and 850ms before the fix.
 const HOVER_BUDGET: Duration = Duration::from_millis(200);
 
 #[test]
 fn a_bare_move_lights_the_pill_under_it_in_a_pure_pane() {
-    // The new-session flow is a `pure` pane: the kernel serves its cached tree
-    // until something it reads moves. The pointer's identity is one of those
-    // reads, so moving onto a pill has to move the epoch the cache is keyed on
-    // — otherwise the lit pill is drawn only once something unrelated moves it,
-    // and hover lags in every pure pane while every render-level test (which
-    // publishes fresh each time) passes.
     let profile = Profile::new();
     let mut tui = Tui::spawn(&profile, 40, 120);
     tui.wait_for("No sessions yet");
@@ -5253,15 +4607,11 @@ fn a_bare_move_lights_the_pill_under_it_in_a_pure_pane() {
 
 #[test]
 fn a_bare_move_lights_a_chip_on_a_docked_pure_pane() {
-    // The same rule for a pane that is not a float: the agent pane is `pure`
-    // and docked, so its cached tree is what the kernel paints unless the
-    // pointer's identity moving is something it notices.
     let Some((_profile, mut tui)) = shell_session() else {
         return;
     };
     tui.wait_for("Shell · F8");
     tui.wait_until_quiet();
-    // The chip, not the banner: the banner also says "Agent".
     let (x, y) = tui.find("Shell · F8");
     let bg = |tui: &Tui| {
         tui.screen
@@ -5285,12 +4635,7 @@ fn a_bare_move_lights_a_chip_on_a_docked_pure_pane() {
 
 #[test]
 fn a_new_press_frees_a_capture_whose_release_never_came() {
-    // A release is the outer terminal's to deliver, and it can fail to — a
-    // focus loss mid-drag is enough in some emulators. A capture that only
-    // the missing release could clear would then own every later drag, and
-    // a selection made anywhere else would be typed into the old pane's pty
-    // instead. The next press starts a new gesture, so it is what frees the
-    // orphaned capture.
+    // Some emulators drop a release when focus is lost mid-drag.
     let Some((_profile, mut tui)) = shell_session() else {
         return;
     };
@@ -5300,15 +4645,10 @@ fn a_new_press_frees_a_capture_whose_release_never_came() {
     tui.send(b"printf '\\033[?1002h\\033[?1006h'; cat\r");
     tui.wait_until_quiet();
 
-    // The wait pins the capture as armed. No release follows — that absence
-    // is the failure under test, not an oversight.
     let (x, y) = tui.find("tb-stale-here");
     tui.send(format!("\x1b[<0;{};{}M", x + 1, y + 1).as_bytes());
     tui.wait_for("[<0;");
 
-    // Proving an absence needs the stream to settle: were the capture still
-    // armed, the moves would echo as `[<32;`, and the quiet wait is what
-    // gives them time to land before the assertion looks.
     let mark = tui.raw_len();
     let at = tui.session_row("probe").expect("the session row");
     tui.drag(at, 3);
@@ -5322,10 +4662,7 @@ fn a_new_press_frees_a_capture_whose_release_never_came() {
     assert!(status.success(), "exit must be clean: {status:?}");
 }
 
-// --- the scrollbar is a control, not a decoration ---------------------------
-
 impl Tui {
-    /// The character painted at a 0-based cell, in cells rather than bytes.
     fn cell(&self, x: u16, y: u16) -> String {
         self.row(y)
             .chars()
@@ -5334,7 +4671,6 @@ impl Tui {
             .unwrap_or_default()
     }
 
-    /// The first and last row a scrollbar occupies in column `x` — its caps.
     fn track_extent(&self, x: u16) -> (u16, u16) {
         let rows = self.screen.lock().unwrap().screen().size().0.get();
         let painted: Vec<u16> = (0..rows)
@@ -5346,7 +4682,6 @@ impl Tui {
         }
     }
 
-    /// Press at a 0-based cell, drag straight down (or up) to `to_y`, release.
     fn drag_down(&mut self, (x, y): (u16, u16), to_y: u16) {
         let px = x + 1;
         self.send(format!("\x1b[<0;{px};{}M", y + 1).as_bytes());
@@ -5359,31 +4694,8 @@ impl Tui {
     }
 }
 
-// --- the WSL image probe, through the real binary ---------------------------
-
-// --- a remote session whose link goes bad -----------------------------------
-
-/// How long the interface is given to answer while a remote link is wedged.
-///
-/// A **liveness** bound, not a performance one — which is why it does not run
-/// against ADR-P2's "caught by counting, not timing" or ADR-P5's refusal of a
-/// startup-time gate. Neither of those excludes a wall clock as such: `WAIT`
-/// above is one, and every `wait_for` in this file is a timeout. What they
-/// exclude is a threshold close enough to the real value that machine variance
-/// decides the verdict. This one is nowhere near: the measured answer is
-/// ~270 ms and ~20 ms (ADR-P24) while the failure it catches never arrives at
-/// all — measured past 30 s. The budget has to clear the first by enough to
-/// survive this suite's own parallelism, which on a loaded machine delays a pty
-/// test's frames by seconds (the reason `WAIT` is 20 s), and still sit far
-/// below the second. It asks whether the interface answered, not how quickly.
-///
-/// `WAIT` itself is no use here for the opposite reason: at 20 s it is longer
-/// than the `COMMAND_TIMEOUT` (10 s) bounding a single wedged round trip, so a
-/// frozen interface would pass.
 const RESPONSIVE: Duration = Duration::from_secs(5);
 
-/// A path as one shell word. The profile root is a tempdir, so it is ordinary —
-/// but a `TMPDIR` with a space in it would otherwise split the redirect.
 fn shell_word(path: &Path) -> String {
     format!("'{}'", path.display().to_string().replace('\'', "'\\''"))
 }
@@ -5422,13 +4734,6 @@ return {
   end,
 }"#;
 
-/// Fill the VM, then require the interface to keep answering.
-///
-/// The palette is drawn from the kernel's own registry, so the only thing that
-/// can make it late is a loop that is not getting round. The first round trip
-/// waits behind the fill itself and is not counted. Measured, eight more take
-/// ~0.65 s on a healthy VM and ~14 s on a full one, every time, however long it
-/// is left — `RESPONSIVE` sits far from both.
 fn fill_the_vm_and_keep_answering(tui: &mut Tui) {
     tui.send(b"\x07");
     tui.send(CTRL_P);
@@ -5461,15 +4766,10 @@ fn a_mod_vm_at_its_memory_limit_does_not_freeze_the_interface() {
     tui.wait_for("hog-idle");
 
     fill_the_vm_and_keep_answering(&mut tui);
-    // On a VM of its own again, which is the only way the heap comes back.
     tui.wait_for("hog-idle");
     assert!(tui.quit().success());
 }
 
-/// A pane that holds ~230 MiB from the moment it loads — above the rebuild
-/// threshold (90% of the 256 MiB ceiling) and below the ceiling itself, so it
-/// works, and a rebuild cannot bring the heap down. Each VM it loads in draws
-/// its own token, which is how a test sees the VM being replaced.
 const RESIDENT_PANE: &str = r#"local held = {}
 for i = 1, 230 do
   held[i] = string.rep(string.format("%07d|", i), 131072)
@@ -5483,7 +4783,6 @@ return {
   end,
 }"#;
 
-/// The per-VM token a pane draws after `prefix`.
 fn token_after(screen: &str, prefix: &str) -> Option<String> {
     let at = screen.find(prefix)? + prefix.len();
     Some(
@@ -5536,8 +4835,6 @@ const FILL_TO_THE_BYTE: &str = r#"local function fill(held)
 end
 "#;
 
-/// A pane that fills the VM to the byte on the first render of every VM it
-/// loads in, and holds it: a rebuild cannot help, however often it runs.
 fn refilling_pane() -> String {
     format!(
         r#"{FILL_TO_THE_BYTE}
@@ -5557,9 +4854,6 @@ return {{
 
 #[test]
 fn an_interface_that_refills_a_fresh_vm_falls_back_to_the_bundled_one() {
-    // Rebuilding a VM the interface fills again straight away is the freeze
-    // with a rebuild added to every loop iteration. Once a rebuild has not
-    // helped, the bundled interface runs instead, and says why.
     let interface = interface_plus("91_refill.lua", &refilling_pane());
     let Some((_profile, mut tui)) = shell_session_with(|cmd| {
         cmd.env("THURBOX_UI_DIR", interface.path());
@@ -5567,7 +4861,6 @@ fn an_interface_that_refills_a_fresh_vm_falls_back_to_the_bundled_one() {
         return;
     };
     tui.wait_for("using the bundled interface");
-    // And it stays answerable there.
     tui.send(CTRL_P);
     tui.wait_within(
         RESPONSIVE,
@@ -5579,9 +4872,6 @@ fn an_interface_that_refills_a_fresh_vm_falls_back_to_the_bundled_one() {
 
 #[test]
 fn an_interface_that_refills_a_fresh_vm_is_retired_when_no_fallback_can_load() {
-    // The bundled interface cannot go in when its directory cannot be created.
-    // Building the user's interface again instead hands it a VM to fill once
-    // more, on every loop iteration: what replaces it is an empty VM.
     let interface = interface_plus("91_refill.lua", &refilling_pane());
     let profile = Profile::new();
     let blocked_temp = profile.path("blocked-temp");
@@ -5605,10 +4895,6 @@ fn an_interface_that_refills_a_fresh_vm_is_retired_when_no_fallback_can_load() {
     assert!(tui.quit().success());
 }
 
-/// A pane that fills the VM to the byte when the interface is reloaded. The
-/// last of it goes in as two-byte strings made by C functions, which leave no
-/// garbage: once one fails, no emergency collection can make room for the
-/// next subscriber's instruction hook.
 const FILLER_PANE: &str = r#"local held = {}
 for i = 1, 4096 do held[i] = false end
 return {
@@ -5635,7 +4921,6 @@ return {
   end,
 }"#;
 
-/// A pane whose `interface.reloaded` handler never returns.
 const SPINNER_PANE: &str = r#"return {
   name = "spinner",
   slot = "sessions",
@@ -5661,8 +4946,6 @@ fn a_call_whose_instruction_budget_cannot_be_armed_does_not_freeze_the_interface
     tui.wait_for("spinner-idle");
 
     tui.send(F10);
-    // The full VM is rebuilt, filled again by the same event, and then put on
-    // the bundled interface: the recovery the memory limit already had.
     tui.wait_for("using the bundled interface");
     let log = tui.log_tail();
     assert!(
@@ -5678,8 +4961,6 @@ fn a_call_whose_instruction_budget_cannot_be_armed_does_not_freeze_the_interface
     assert!(tui.quit().success());
 }
 
-/// A pane that loads small and holds ~230 MiB from its first render on, so
-/// the build is small and the heap is not. Each VM draws its own token.
 const LAZY_RESIDENT_PANE: &str = r#"local held = {}
 local token = math.random(1, 999999999)
 return {
@@ -5764,8 +5045,6 @@ fn full_vm_with_unbuildable_interface(explicit: bool) {
         copy_tree(interface.path(), &ui);
         ui
     };
-    // No fallback can be created beneath a regular file. This is scoped to
-    // the child; test scratch and the operator's interface remain untouched.
     let blocked_temp = profile.path("blocked-temp");
     std::fs::write(&blocked_temp, "not a directory").expect("block fallback");
     let mut tui = Tui::spawn_with(&profile, 40, 120, |cmd| {
@@ -5847,8 +5126,6 @@ fn memory_fallback_keeps_disabled_bundled_mods_disabled() {
         cmd.env("THURBOX_UI_DIR", interface.path());
     });
     tui.wait_for("hog-idle");
-    // The palette proves the declaration is absent, independently of whether
-    // the layout happens to place this pane on screen.
     tui.send(CTRL_P);
     tui.wait_for("type to filter commands");
     tui.send(b"focus the agent terminal");
@@ -5930,23 +5207,14 @@ fn memory_fallback_reaps_programs_owned_by_panes_it_removed() {
     assert!(tui.quit().success());
 }
 
-// --- links handed back to the terminal thurbox itself runs in ----------------
-
 #[cfg(not(target_os = "macos"))]
 impl Tui {
-    /// A `Ctrl`-modified press and release at a 0-based cell. SGR adds 16 to
-    /// the button number for Control, which is what a terminal sends for the
-    /// chord thurbox answers as a link open.
     fn ctrl_press(&mut self, (x, y): (u16, u16)) {
         let (px, py) = (x + 1, y + 1);
         self.send(format!("\x1b[<16;{px};{py}M").as_bytes());
         self.send(format!("\x1b[<16;{px};{py}m").as_bytes());
     }
 
-    /// Poll the bytes written from `since` on until `needle` is among them.
-    ///
-    /// The frame assertions elsewhere cannot serve here: an OSC 8 wrapper
-    /// changes no glyph, so it exists only in the raw stream.
     fn wait_for_raw(&self, since: usize, needle: &str) {
         let deadline = Instant::now() + WAIT;
         while Instant::now() < deadline {
@@ -5958,7 +5226,6 @@ impl Tui {
         self.give_up(&format!("{needle:?} to be written to the terminal"));
     }
 
-    /// The message band: the row above the action band.
     fn message_band(&self) -> String {
         let lines: Vec<String> = self.frame().lines().map(str::to_string).collect();
         lines
@@ -5970,26 +5237,11 @@ impl Tui {
     }
 }
 
-/// On a host with no browser, both kinds of link are handed to the outer
-/// terminal — and the chord thurbox keeps for itself says what it did instead.
-///
-/// The escape is the only route to a browser for a thurbox reached over ssh:
-/// the machine it runs on has none, so the terminal the user is sitting at has
-/// to be told the cells are a link. That worked for an agent's OSC 8 runs and
-/// not for the bare URLs agents print far more often, which left the common
-/// case with nothing for the local terminal to open.
-///
-/// It has to be asserted out here. `hyperlink_paints` can be handed a link list
-/// in process and answer perfectly while the coordinator passes it none — the
-/// bytes on the pty are the only place the wiring shows.
-// macOS always opens a URL with `open`, so no environment makes it a host with
-// no browser, and a press there opens the link in the user's own browser.
+// macOS always opens a URL with `open`, so no environment makes it a host with no browser.
 #[cfg(not(target_os = "macos"))]
 #[test]
 fn both_kinds_of_link_reach_the_outer_terminal_on_a_host_with_no_browser() {
     let Some((_profile, mut tui)) = shell_session_with(|cmd| {
-        // A bare remote: no display and no BROWSER, so `open_url` refuses and
-        // the outer terminal is the only leg left.
         cmd.env_remove("DISPLAY");
         cmd.env_remove("WAYLAND_DISPLAY");
         cmd.env_remove("BROWSER");
@@ -5997,23 +5249,12 @@ fn both_kinds_of_link_reach_the_outer_terminal_on_a_host_with_no_browser() {
         return;
     };
 
-    // Both kinds, printed by the "agent". The label and the host go through
-    // shell variables so the line the shell ECHOES back does not carry the text
-    // the presses below are aimed at — a press landing on the echo would be
-    // resolving the command, not its output.
-    //
-    // The mark is taken before the command: the frame that first shows the
-    // links carries their OSC 8 runs in the same write, so a mark taken once
-    // the text shows can land after them, and no later frame need repaint
-    // those cells.
     let mark = tui.raw_len();
     tui.send(b"L=RICH; H=example.test; printf \"rich \\033]8;;https://$H/rich\\007${L}LINK\\033]8;;\\007 bare https://$H/bare\\n\"\r");
     tui.wait_for("RICHLINK");
     tui.wait_for("https://example.test/bare");
     tui.wait_for_raw(mark, "\x1b]8;;https://example.test/bare");
 
-    // 1. Both runs go out wrapped in OSC 8, so the user's own terminal can open
-    //    either one.
     let out = tui.raw_since(mark);
     assert!(
         out.contains("\x1b]8;;https://example.test/rich"),
@@ -6052,16 +5293,10 @@ fn both_kinds_of_link_reach_the_outer_terminal_on_a_host_with_no_browser() {
     assert!(tui.quit().success());
 }
 
-// --- what a paste looks like to the program it lands in ---------------------
-
-/// A terminal's own paste — Cmd+V, Ctrl+Shift+V — as the outer terminal sends
-/// it to thurbox, which turned bracketed paste on for itself.
 fn terminal_paste(text: &str) -> Vec<u8> {
     [b"\x1b[200~", text.as_bytes(), b"\x1b[201~"].concat()
 }
 
-/// Start `command` in the shell and wait for it to be reading: the echo of the
-/// command line, then a quiet stream.
 fn run_in_shell(tui: &mut Tui, command: &str, shown: &str) {
     tui.send(format!("{command}\r").as_bytes());
     tui.wait_for(shown);
@@ -6070,10 +5305,7 @@ fn run_in_shell(tui: &mut Tui, command: &str, shown: &str) {
 
 #[test]
 fn a_paste_into_an_app_without_bracketed_paste_has_no_markers() {
-    // The pane never asked for bracketed paste, so the markers are noise to
-    // it: `cat -v` showed `^[[200~tb-pasted^[[201~`, as does any `read`
-    // prompt, `dash` or REPL without readline. A multiplexer brackets a paste
-    // only for a pane that enabled mode 2004 — tmux's `paste-buffer -p`.
+    // tmux brackets a paste only for a pane that enabled mode 2004 (`paste-buffer -p`).
     let Some((_profile, mut tui)) = shell_session() else {
         return;
     };
@@ -6092,11 +5324,6 @@ fn a_paste_into_an_app_without_bracketed_paste_has_no_markers() {
 
 #[test]
 fn a_paste_into_an_app_with_bracketed_paste_is_one_frame_even_after_a_restart() {
-    // The twin: an app that enabled mode 2004 gets exactly one frame. Then the
-    // interface restarts under the running app — which turned the mode on
-    // before this process ever read its output — and the next paste must
-    // still be framed. Whatever decides must know the mode the pane is in,
-    // not only what this interface happened to see.
     let Some((profile, mut tui)) = shell_session() else {
         return;
     };
@@ -6127,15 +5354,11 @@ fn a_paste_into_an_app_with_bracketed_paste_is_one_frame_even_after_a_restart() 
     assert!(tui.quit().success());
 }
 
-/// A private X server, killed on drop. `None` where there is no `Xvfb`.
 struct Xvfb {
     child: Child,
     display: String,
 }
 
-/// The first line of `child`'s stdout that `wanted` accepts, read for at most
-/// [`WAIT`]; the child is killed when none comes, so a helper that hangs
-/// fails the test instead of stalling it.
 fn first_line(child: &mut Child, what: &str, wanted: fn(&str) -> bool) -> String {
     let stdout = child.stdout.take().expect("piped stdout");
     let (tx, rx) = std::sync::mpsc::channel();
@@ -6157,8 +5380,7 @@ fn first_line(child: &mut Child, what: &str, wanted: fn(&str) -> bool) -> String
 
 impl Xvfb {
     fn start() -> Option<Self> {
-        // `-displayfd 1`: the server picks a free display and writes its
-        // number to stdout once it is accepting connections.
+        // `-displayfd 1`: Xvfb writes its display number to stdout once it accepts connections.
         let mut child = Command::new("Xvfb")
             .args([
                 "-displayfd",
@@ -6190,15 +5412,8 @@ impl Drop for Xvfb {
     }
 }
 
-/// The environment variable [`clipboard_owner`] reads its text from.
 const SEED_CLIPBOARD: &str = "TBX_E2E_SEED_CLIPBOARD";
 
-/// Not a test: the process that owns the X clipboard for
-/// [`a_pasted_end_marker_cannot_submit_a_line`]. An X selection lives only as
-/// long as a client serves it, and the native read thurbox makes is the one
-/// route a terminal does not sanitise first, so this holds it from a process
-/// of its own — this test binary, re-run on this one test — until it is
-/// killed. Without the variable it does nothing, so `--ignored` runs are safe.
 #[test]
 #[ignore = "a helper process, started by a_pasted_end_marker_cannot_submit_a_line"]
 fn clipboard_owner() {
@@ -6213,7 +5428,6 @@ fn clipboard_owner() {
     }
 }
 
-/// [`clipboard_owner`], running on `display` with `text`, killed on drop.
 struct ClipboardOwner(Child);
 
 impl ClipboardOwner {
@@ -6244,12 +5458,6 @@ impl Drop for ClipboardOwner {
 
 #[test]
 fn a_pasted_end_marker_cannot_submit_a_line() {
-    // Security, not formatting. A native clipboard holding `ESC[201~` ended
-    // the bracketed paste early, and the CR after it reached bash as Enter:
-    // the probe ran `echo tb-pasted-onlyecho tb-INJECTED-ran`. Ctrl+V reads
-    // the clipboard itself, so no terminal stands in between to defang it.
-    // The `""` keeps the command's own echo from matching what running it
-    // would print.
     let Some(x) = Xvfb::start() else {
         eprintln!("skipping: Xvfb is not installed");
         return;
@@ -6265,8 +5473,7 @@ fn a_pasted_end_marker_cannot_submit_a_line() {
     }) else {
         return;
     };
-    // bash enables bracketed paste at its prompt (5.1 and later), which is
-    // what makes an early end marker the difference between text and Enter.
+    // bash 5.1 and later enables bracketed paste at its prompt.
     run_in_shell(
         &mut tui,
         "exec bash --norc --noprofile -i",
@@ -6283,17 +5490,9 @@ fn a_pasted_end_marker_cannot_submit_a_line() {
     assert!(tui.quit().success());
 }
 
-// --- a WSL session whose launcher shares the interface's terminal ----------
-
-/// Lua that throws on every other quarter second of the pane's own clock: the
-/// intermittent failure a pane whose data is half there produces, tick after
-/// tick.
 const FLAKY: &str =
     "if math.floor((ctx.elapsed or 0) * 4) % 2 == 0 then error('flaky failure') end";
 
-/// Put a `flaky` pane in a column beside the centre: `guard` is the Lua that
-/// decides whether this render throws, and `flaky pane ok` is what it draws
-/// when it does not.
 fn flaky_column(ui: &Path, guard: &str) {
     std::fs::write(
         ui.join("mods/31_flaky.lua"),
@@ -6437,10 +5636,6 @@ fn a_held_failure_counts_no_failures_and_the_pane_comes_back_by_itself() {
     assert!(tui.quit().success());
 }
 
-// --- key releases -----------------------------------------------------------
-
-/// What the `hold` probe pane has been handed: its event log, how often the
-/// press-only chord fired, and what the kernel says about key releases.
 fn hold_state(profile: &Profile) -> (String, u64, String) {
     let mut cmd = Command::new(env!("CARGO_BIN_EXE_thurbox-cli"));
     profile.apply(&mut cmd);
@@ -6477,8 +5672,6 @@ fn hold_interface() -> tempfile::TempDir {
     )
 }
 
-/// The kitty encodings of `ctrl+space`: press, repeat, release, and a release
-/// arriving after `ctrl` was already let go.
 const CTRL_SPACE_PRESS: &[u8] = b"\x1b[32;5u";
 const CTRL_SPACE_REPEAT: &[u8] = b"\x1b[32;5:2u";
 const CTRL_SPACE_RELEASE: &[u8] = b"\x1b[32;5:3u";
@@ -6502,17 +5695,12 @@ fn a_release_binding_gets_one_press_no_repeats_and_its_release() {
     tui.send(CTRL_SPACE_RELEASE);
     wait_hold(&profile, &tui, "press,release", "reported");
 
-    // The modifier is often let go first; the release still belongs to the
-    // chord that was pressed.
     tui.send(CTRL_SPACE_PRESS);
     tui.send(SPACE_RELEASE_CTRL_UP);
     wait_hold(&profile, &tui, "press,release,press,release", "reported");
 
-    // A release nobody is holding goes nowhere.
     tui.send(CTRL_SPACE_RELEASE);
 
-    // A press-only chord is untouched: no argument, and a repeat fires again
-    // exactly as an auto-repeated press always did — but its release does not.
     tui.send(b"\x1b[18~");
     tui.send(b"\x1b[18;1:2~");
     tui.send(b"\x1b[18;1:3~");
@@ -6531,9 +5719,6 @@ fn a_release_binding_gets_one_press_no_repeats_and_its_release() {
     tui.assert_keyboard_flags_popped();
 }
 
-/// kitty sends a text key's press and repeat as plain text even with event
-/// types reported, so once `ctrl` is let go a held `ctrl+space` repeats as a
-/// bare space. Until its release that is still the hold, and types nothing.
 #[test]
 fn a_held_chord_repeating_as_text_after_its_modifier_lifts_types_nothing() {
     let interface = hold_interface();
@@ -6556,14 +5741,11 @@ fn a_held_chord_repeating_as_text_after_its_modifier_lifts_types_nothing() {
     std::thread::sleep(Duration::from_millis(300));
     assert_eq!(spaces(&profile), 0, "the hold's repeats reached a binding");
 
-    // Once let go, a space is a space again.
     tui.send(b" ");
     wait_spaces(&profile, &tui, 1);
     assert!(tui.quit().success());
 }
 
-/// A terminal that accepted the request but sends no releases never ends a
-/// hold, so there a held chord's key must keep typing.
 #[test]
 fn a_terminal_that_sends_no_releases_keeps_a_held_chords_key_typing() {
     let interface = hold_interface();
@@ -6590,7 +5772,6 @@ fn wait_spaces(profile: &Profile, tui: &Tui, want: u64) {
     }
 }
 
-/// How many plain spaces reached the `hold` probe pane's `space` binding.
 fn spaces(profile: &Profile) -> u64 {
     let mut cmd = Command::new(env!("CARGO_BIN_EXE_thurbox-cli"));
     profile.apply(&mut cmd);
@@ -6610,8 +5791,6 @@ fn a_release_never_types_into_a_field_and_a_modal_keeps_its_press() {
     });
     tui.wait_for("No sessions yet");
 
-    // Pressed while help is open: the modal takes the press, so the release
-    // that follows has no holder and reaches nobody.
     tui.send(F1);
     tui.wait_for("Keybindings");
     tui.send(CTRL_SPACE_PRESS);
@@ -6619,8 +5798,6 @@ fn a_release_never_types_into_a_field_and_a_modal_keeps_its_press() {
     tui.wait_gone("Keybindings");
     tui.send(CTRL_SPACE_RELEASE);
 
-    // Typing with releases reported: each key's release must not type it a
-    // second time.
     tui.send(b"\x1b[47;5u");
     tui.wait_for("Search");
     for &key in b"qz" {
@@ -6691,16 +5868,14 @@ fn a_legacy_terminal_reports_no_releases_and_keeps_press_only_delivery() {
     });
     tui.wait_for("No sessions yet");
     wait_hold(&profile, &tui, "", "unsupported");
-    // A legacy terminal rejects kitty support by answering the following DA
-    // query, rather than leaving capability detection to its timeout.
+    // A legacy terminal rejects kitty support by answering the DA query that follows.
     assert!(tui.raw_since(0).contains("\x1b[?u\x1b[c"));
     assert_eq!(
         *tui.replies.lock().unwrap(),
         b"\x1b[?62;22c",
         "a legacy terminal must answer DA without advertising kitty flags"
     );
-    // `ctrl+space` in a legacy terminal is NUL. Every press is delivered, as
-    // a press, because nothing can say the key was ever let go.
+    // A legacy terminal sends NUL for `ctrl+space` and never reports its release.
     tui.send(b"\x00");
     wait_hold(&profile, &tui, "press", "unsupported");
     tui.send(b"\x00");
@@ -6708,9 +5883,6 @@ fn a_legacy_terminal_reports_no_releases_and_keeps_press_only_delivery() {
     assert!(tui.quit().success());
 }
 
-/// The loop's `frames` counter from the first perf snapshot captured after
-/// `after` (its `captured_at`, whole seconds since the epoch), with that
-/// snapshot's own `captured_at`.
 fn frames_after(profile: &Profile, tui: &Tui, after: u64) -> (u64, u64) {
     let deadline = Instant::now() + WAIT;
     while Instant::now() < deadline {
@@ -6744,17 +5916,10 @@ fn a_release_nobody_holds_draws_no_frame() {
         cmd.env("THURBOX_PERF_LOG", "1");
     });
     tui.wait_for("No sessions yet");
-    // Snapshots are published every few seconds. The idle rate comes from two
-    // consecutive ones after the first (whose window holds the boot's frames),
-    // and the window the releases are counted in starts at the second and ends
-    // at the first snapshot captured after the last release was written — so
-    // it holds every send, whatever the cadence.
     let (_, booted_at) = frames_after(&profile, &tui, 0);
     let (first, first_at) = frames_after(&profile, &tui, booted_at);
     let (start, start_at) = frames_after(&profile, &tui, first_at);
     let idle_per_sec = (start - first) as f64 / (start_at - first_at).max(1) as f64;
-    // Releases of a key nothing pressed, each in its own read so none share
-    // a batch.
     const RELEASES: u64 = 200;
     for _ in 0..RELEASES {
         tui.send(b"\x1b[120;1:3u");
@@ -6773,17 +5938,12 @@ fn a_release_nobody_holds_draws_no_frame() {
     tui.assert_keyboard_flags_popped();
 }
 
-/// Write an executable script.
 fn write_script(path: &Path, body: &str) {
     std::fs::create_dir_all(path.parent().expect("a parent")).expect("mkdir");
     std::fs::write(path, body).expect("write script");
     std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o755)).expect("chmod");
 }
 
-// --- the session features thurbox keeps on Fleet -----------------------------
-
-/// Leave a focused terminal for the session list: 0x08 is Ctrl+H, the
-/// reserved way out of a terminal and onto the list beside it.
 fn focus_the_list(tui: &mut Tui) {
     tui.send(b"\x08");
     tui.wait_until("the session list to be the focused one", |frame| {
@@ -6796,22 +5956,18 @@ fn focus_the_list(tui: &mut Tui) {
 
 #[test]
 fn ctrl_e_renames_the_selected_session_and_says_why_a_name_is_refused() {
-    // `Ctrl+E` opens a field holding the current name. A refused name is
-    // explained in the field; a good one lands in the list and in the Task's
-    // name label, where Fleet keeps a session's display name.
     let Some((profile, mut tui)) = shell_session() else {
         return;
     };
     focus_the_list(&mut tui);
 
-    // 0x05 is Ctrl+E; 0x15 is Ctrl+U, which clears the prefilled name.
-    tui.send(b"\x05");
+    tui.send(CTRL_E);
     tui.wait_for("Rename session");
-    tui.send(b"\x15");
+    tui.send(CTRL_U);
     tui.send(b"bad/name\r");
     tui.wait_for("Name contains invalid characters");
 
-    tui.send(b"\x15");
+    tui.send(CTRL_U);
     tui.send(b"renamed\r");
     tui.wait_gone("Rename session");
     tui.wait_until("the new name in the list", |_| {
@@ -6825,16 +5981,12 @@ fn ctrl_e_renames_the_selected_session_and_says_why_a_name_is_refused() {
     assert!(tui.quit().success());
 }
 
-/// The rows `first` and `second` are painted on, in that order.
 fn rows_of(tui: &Tui, first: &str, second: &str) -> Option<(u16, u16)> {
     Some((tui.session_row(first)?.1, tui.session_row(second)?.1))
 }
 
 #[test]
 fn a_session_moved_up_stays_there_across_a_restart() {
-    // `K` moves the selected session above its neighbour. The order is the
-    // interface's own (Fleet has no order of Tasks), so it is kept in a file
-    // of thurbox's and a restarted interface paints it the same way.
     let Some((profile, mut tui)) = shell_session_prepared(
         |profile| profile.fleet_session("second", &profile.path("repo")),
         |_| {},
@@ -6858,8 +6010,6 @@ fn a_session_moved_up_stays_there_across_a_restart() {
     });
 }
 
-/// Delete the selected session from the list: `Ctrl+D` (0x04), then `y` on
-/// the question.
 fn delete_from_the_list(tui: &mut Tui) {
     focus_the_list(tui);
     tui.send(b"\x04");
@@ -6869,10 +6019,6 @@ fn delete_from_the_list(tui: &mut Tui) {
 
 #[test]
 fn a_deleted_sessions_row_stays_gone_while_fleet_removes_it() {
-    // `fleet delete` only marks the Task. Fleet keeps it, marked, until its
-    // controller has released the session, which waits for the agent to be at
-    // rest; this `sh` agent never says it is. The row goes on the keystroke
-    // and must not come back while Fleet still lists the Task.
     let Some((profile, mut tui)) = shell_session() else {
         return;
     };
@@ -6924,9 +6070,6 @@ fn a_delete_fleet_refuses_keeps_the_row_and_says_why() {
 
 #[test]
 fn a_deletion_fleet_never_finishes_comes_back_marked_stuck() {
-    // A Task Fleet marked for deletion ten minutes ago and still lists is a
-    // teardown that has run far past the time one takes: its row is shown,
-    // marked, with why Fleet has not let it go, so it can be inspected.
     let profile = Profile::new();
     let marked = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -7758,14 +6901,10 @@ fn starting_a_paused_session_spins_in_its_pane_until_its_agent_is_attached() {
     assert!(tui.quit().success());
 }
 
-/// The companion shell is the user's `$SHELL`, and a zsh started in the
-/// profile's empty HOME opens its first-run wizard instead of a prompt.
 fn plain_shell(cmd: &mut Command) {
     cmd.env("SHELL", "/bin/sh");
 }
 
-/// Raise the Shell tab (Ctrl+T) and prove a live shell is behind it:
-/// `command` runs there and `marker` is what it prints.
 fn in_the_shell(tui: &mut Tui, command: &str, marker: &str) {
     tui.send(b"\x14");
     wait_for_view(tui, "Shell");
@@ -7775,8 +6914,6 @@ fn in_the_shell(tui: &mut Tui, command: &str, marker: &str) {
     tui.wait_for(marker);
 }
 
-/// The id of each companion shell window on the server of `profile`'s
-/// Fleet's runtime, where `fleet shell` opens it.
 fn shell_windows(profile: &Profile) -> Vec<String> {
     let windows = runtime_tmux(
         profile,
@@ -7789,7 +6926,6 @@ fn shell_windows(profile: &Profile) -> Vec<String> {
         .collect()
 }
 
-/// `tmux <args>` on the server of `profile`'s Fleet's runtime.
 fn runtime_tmux(profile: &Profile, args: &[&str]) -> std::process::Output {
     Command::new("tmux")
         .env("TMUX_TMPDIR", profile.server.tmpdir())
@@ -7800,7 +6936,6 @@ fn runtime_tmux(profile: &Profile, args: &[&str]) -> std::process::Output {
         .expect("run tmux")
 }
 
-/// A restarted interface on `profile`, its agent pane attached.
 fn restart(profile: &Profile) -> Tui {
     let tui = Tui::spawn_with(profile, 40, 120, plain_shell);
     tui.wait_until("the agent pane to be the focused one", |frame| {
@@ -7815,10 +6950,6 @@ fn restart(profile: &Profile) -> Tui {
 
 #[test]
 fn the_companion_shell_is_readopted_after_a_restart() {
-    // The shell outlives the interface in its own window on the runtime's
-    // server. A restarted interface asks `fleet shell` again and the runtime
-    // opens the same shell: the variable the first interface's shell set is
-    // still set, and no second shell window is made.
     let Some((profile, mut tui)) = shell_session_with(plain_shell) else {
         return;
     };
@@ -7833,21 +6964,16 @@ fn the_companion_shell_is_readopted_after_a_restart() {
 
 #[test]
 fn deleting_the_task_closes_its_companion_shell() {
-    // A shell outlives the interface, not its session: once Fleet deletes
-    // the Task, the runtime's stop closes its shell window.
     let Some((profile, mut tui)) = shell_session_with(plain_shell) else {
         return;
     };
     in_the_shell(&mut tui, "echo tb-doomed-\"\"shell", "tb-doomed-shell");
     assert_eq!(shell_windows(&profile).len(), 1);
-    // Fleet releases a session only once its agent says it is at rest.
     tui.send(b"\x14");
     wait_for_view(&tui, "Agent");
     let fleet = Path::new(env!("CARGO_BIN_EXE_thurbox-cli")).with_file_name("fleet");
     tui.send(format!("'{}' signal idle </dev/null\r", fleet.display()).as_bytes());
     profile.fleet(&["delete", "task", "probe"], "");
-    // The controller releases the session over a few passes, then the Task
-    // leaves the store.
     tui.wait_until("the session gone and its shell closed", |_| {
         let _ = Command::new(profile.bin.join("fleet"))
             .arg("reconcile")
@@ -7860,9 +6986,6 @@ fn deleting_the_task_closes_its_companion_shell() {
 
 #[test]
 fn a_shell_whose_window_went_while_thurbox_was_closed_is_replaced() {
-    // A window that went while the interface was closed (a tmux server
-    // restart, a kill from outside) must not be adopted as a shell that never
-    // prints: raising the tab gives a working one.
     let Some((profile, mut tui)) = shell_session_with(plain_shell) else {
         return;
     };
@@ -7877,9 +7000,6 @@ fn a_shell_whose_window_went_while_thurbox_was_closed_is_replaced() {
     assert!(tui.quit().success());
 }
 
-/// A `fleet` that records each verb it is called with in `calls`, answers
-/// `version` with no manager holding the lease and `supervisor` as the unit
-/// that runs one, and holds a `watch` open.
 fn fleet_with_no_manager(profile: &Profile, calls: &Path, supervisor: &str) {
     write_script(
         &profile.bin.join("fleet"),
@@ -7967,9 +7087,6 @@ fn a_local_thurbox_with_no_fleet_config_writes_none_and_names_fleet_init() {
 
 #[test]
 fn an_image_dropped_on_a_remote_session_is_refused_not_typed() {
-    // A drop is a paste of a local path, which names nothing on the Task's
-    // host, and nothing carries the file there yet. The interface says so on
-    // its error line and the agent never sees the path.
     if !have_tmux() {
         eprintln!("skipping: tmux is not installed");
         return;
@@ -8012,13 +7129,8 @@ fn an_image_dropped_on_a_remote_session_is_refused_not_typed() {
     assert!(tui.quit().success());
 }
 
-/// A remote machine's own image path, pasted into its session, names a file
-/// there and nothing here: it is typed, not refused as a local drop.
 #[test]
 fn a_remote_machines_own_image_path_is_typed_not_refused() {
-    // A drop is a paste of a local path, which names nothing on the Task's
-    // host, and nothing carries the file there yet. The interface says so on
-    // its error line and the agent never sees the path.
     if !have_tmux() {
         eprintln!("skipping: tmux is not installed");
         return;
@@ -8037,8 +7149,6 @@ fn a_remote_machines_own_image_path_is_typed_not_refused() {
     );
     profile.fleet(&["apply", "-f", "-"], &task);
     profile.reconcile();
-    // A path on the Task's host, which names nothing here: a paste, not a
-    // drop of this machine's files.
     let shot = std::path::PathBuf::from("/tb-remote-only/far-shot.png");
     assert!(!shot.exists());
 
@@ -8061,7 +7171,6 @@ fn a_remote_machines_own_image_path_is_typed_not_refused() {
     assert!(tui.quit().success());
 }
 
-/// The output of `git <args>` in `dir`, trimmed.
 fn git_out(dir: &Path, args: &[&str]) -> String {
     let mut cmd = Command::new("git");
     for var in GIT_LOCATION_ENV {
@@ -8072,18 +7181,11 @@ fn git_out(dir: &Path, args: &[&str]) -> String {
     String::from_utf8_lossy(&out.stdout).trim().to_string()
 }
 
-/// One repository the creation flow is to gather: its path, and whether it
-/// gets a worktree of its own (`alt+w` on its row, v2's `[wt]`).
 struct Pick<'a> {
     dir: &'a Path,
     worktree: bool,
 }
 
-/// Create a session through `Ctrl+N`, v2's flow: each repository added by
-/// its path and ticked (`[x]`), given a worktree where asked (`[wt]`), then
-/// the base branch when one has a worktree, the session's name, its branch,
-/// and the first agent offered. Every step title seen is pushed onto
-/// `titles`, in order.
 fn create_through_the_flow(
     profile: &Profile,
     picks: &[Pick<'_>],
@@ -8121,7 +7223,6 @@ fn create_through_the_flow(
             });
         }
     }
-    // Alt+Enter goes on from the path field, which still has the caret.
     tui.wait_until_quiet();
     tui.send(b"\x1b\r");
     tui.wait_gone("Select Repos");
@@ -8148,7 +7249,6 @@ fn create_through_the_flow(
     tui
 }
 
-/// A profile on a real Fleet, with a repository holding `main` and `dev`.
 fn profile_with_two_branches() -> Option<(Profile, PathBuf)> {
     if !have_tmux() {
         eprintln!("skipping: tmux is not installed");
@@ -8161,7 +7261,6 @@ fn profile_with_two_branches() -> Option<(Profile, PathBuf)> {
     Some((profile, repo))
 }
 
-/// The directory the runtime made for the Task `name`, once it has.
 fn workspace_dir(profile: &Profile, name: &str) -> PathBuf {
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
     loop {
@@ -8178,9 +7277,6 @@ fn workspace_dir(profile: &Profile, name: &str) -> PathBuf {
     }
 }
 
-/// The URL of every directory in the Task's workspace, as Fleet holds it,
-/// once Fleet has the Task: the flow's last key and the apply are not one
-/// step.
 fn workspace_urls(profile: &Profile, name: &str) -> serde_json::Value {
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
     loop {
@@ -8199,10 +7295,6 @@ fn workspace_urls(profile: &Profile, name: &str) -> serde_json::Value {
     }
 }
 
-/// Two repositories, each with a worktree: one URL each, on one branch, in
-/// the list's order as v2 gathered them (a repository just added is listed
-/// first). The first starts from the base branch asked for; the second from
-/// its own default.
 #[test]
 fn two_repositories_get_a_worktree_each_on_one_branch() {
     let Some((profile, repo)) = profile_with_two_branches() else {
@@ -8258,8 +7350,6 @@ fn two_repositories_get_a_worktree_each_on_one_branch() {
     assert!(tui.quit().success());
 }
 
-/// A repository ticked without a worktree runs as it is: `file://`, and
-/// neither branch question is asked.
 #[test]
 fn a_repository_without_a_worktree_runs_as_it_is() {
     let Some((profile, repo)) = profile_with_two_branches() else {
@@ -8320,8 +7410,6 @@ fn naming_an_existing_branch_checks_it_out() {
     assert!(tui.quit().success());
 }
 
-/// A directory with no repository is still a workspace, but `alt+w` refuses
-/// it a worktree in v2's words, and the session runs in it as it is.
 #[test]
 fn a_directory_with_no_repository_is_refused_a_worktree() {
     if !have_tmux() {
@@ -8361,8 +7449,6 @@ fn a_directory_with_no_repository_is_refused_a_worktree() {
     assert!(tui.quit().success());
 }
 
-/// A repository's existing worktrees open under it (`→`), and picking one
-/// runs the session in that checkout as it is.
 #[test]
 fn an_existing_worktree_is_opened_as_it_is() {
     let Some((profile, repo)) = profile_with_two_branches() else {
@@ -8390,7 +7476,6 @@ fn an_existing_worktree_is_opened_as_it_is() {
     tui.wait_until("the repository to be ticked", |frame| {
         repo_picker_selected(frame, "repo")
     });
-    // Untick it, back to the search, and open its worktrees.
     tui.send(b"\x1b[Z");
     tui.wait_until_quiet();
     tui.send(b" ");
@@ -8414,9 +7499,6 @@ fn an_existing_worktree_is_opened_as_it_is() {
     assert!(tui.quit().success());
 }
 
-/// `config` with a place `name` on another machine: an ssh place of the
-/// multiplexer runtime, reached through a stand-in `ssh` on the profile's
-/// `PATH` that runs the command here, as that machine would.
 fn remote_place(profile: &Profile, config: &str, name: &str) -> String {
     let built = Path::new(env!("CARGO_BIN_EXE_thurbox-cli"))
         .parent()
@@ -8437,18 +7519,10 @@ fn remote_place(profile: &Profile, config: &str, name: &str) -> String {
     )
 }
 
-/// A second Fleet, "box", for `profile`: its own store on Fleet's fake
-/// runtime under `<profile>/box`, reached only through a stand-in `ssh` on
-/// the profile's `PATH` that logs each remote command line to
-/// `<profile>/ssh.log`. Any other destination is refused as ssh refuses an
-/// unreachable machine (exit 255). The program box's Fleet runs, or `None`
-/// where the `fleet` binary is not built.
 fn fleet_on_box(profile: &Profile) -> Option<PathBuf> {
     fleet_on_box_with(profile, "[runtime]\nkind = \"fake\"\ndir = \"fake\"\n")
 }
 
-/// [`fleet_on_box`], with box's Fleet on the runtimes `runtime` (TOML)
-/// names.
 fn fleet_on_box_with(profile: &Profile, runtime: &str) -> Option<PathBuf> {
     let fleet = Path::new(env!("CARGO_BIN_EXE_thurbox-cli"))
         .parent()?
@@ -8495,11 +7569,6 @@ fn fleet_on_box_with(profile: &Profile, runtime: &str) -> Option<PathBuf> {
     Some(program)
 }
 
-/// On a Fleet on another machine, the repository step browses that
-/// machine's folders through Fleet (`fleet runtime browse` over box's link,
-/// from box's home), marks a git repository, and `alt+w` asks for a base
-/// branch from box's branches (`fleet runtime branches`), its default
-/// preselected. The session's worktree is made on box, from that base.
 #[test]
 fn the_new_session_modal_browses_a_remote_fleets_folders_and_branches() {
     if !have_tmux() {
@@ -8549,7 +7618,6 @@ fn the_new_session_modal_browses_a_remote_fleets_folders_and_branches() {
     tui.send(b"\t");
     tui.wait_for(&format!("{}/", home.display()));
     tui.wait_until_quiet();
-    // Browsing from box's home lists box's folders.
     tui.send(b"\t");
     tui.wait_for("src/");
     tui.send(b"src/");
@@ -8613,11 +7681,6 @@ fn the_new_session_modal_browses_a_remote_fleets_folders_and_branches() {
     assert!(tui.quit().success());
 }
 
-/// With several Fleets listed, the creation flow asks for the Fleet first,
-/// each one shown with how it is reached and whether it is up, then for a
-/// place of the Fleet picked: here "box", a Fleet on another machine that is
-/// not the first listed. The Task lands in box's store, through box's link,
-/// and its row joins the list.
 #[test]
 fn the_new_session_modal_creates_on_the_fleet_picked() {
     if !have_tmux() {
@@ -8637,9 +7700,6 @@ fn the_new_session_modal_creates_on_the_fleet_picked() {
     std::fs::write(&settings, toml).expect("three Fleets");
     let work = profile.path("box/work");
     std::fs::create_dir_all(&work).expect("a directory on box");
-    // A created session is followed, so the id it is awaited by shows: the
-    // agent pane leaves box's `review` for the new session only once
-    // `box:boxed` itself has landed.
     let mut review = Command::new(&box_fleet)
         .args(["apply", "-f", "-"])
         .stdin(Stdio::piped())
@@ -8678,8 +7738,6 @@ fn the_new_session_modal_creates_on_the_fleet_picked() {
     tui.wait_for("box itself");
     tui.send(b"\r");
     tui.wait_for("Repos on box/local");
-    // The path field starts at box's own home, read over box's link, and a
-    // typed `~` is that home too: never this machine's.
     tui.send(b"\t");
     let home = profile.path("box").display().to_string();
     tui.wait_for(&format!("{home}/"));
@@ -8728,9 +7786,6 @@ fn the_new_session_modal_creates_on_the_fleet_picked() {
             .any(|call| call.starts_with("box ") && call.ends_with("apply --create-only -f -")),
         "{calls}"
     );
-    // Within the 10 s a creation's refresh waits for its id: one awaited
-    // under the first Fleet (`air:boxed`) never lands, and the pane stays on
-    // no session.
     tui.wait_within(
         Duration::from_secs(8),
         "the pane to follow box:boxed",
@@ -8739,8 +7794,6 @@ fn the_new_session_modal_creates_on_the_fleet_picked() {
     assert!(tui.quit().success());
 }
 
-/// The hosts the creation flow offers are the ones Fleet defines (`fleet
-/// runtime hosts --json`).
 #[test]
 fn the_host_picker_lists_the_hosts_fleet_reports() {
     if !have_tmux() {
@@ -8762,9 +7815,6 @@ fn the_host_picker_lists_the_hosts_fleet_reports() {
     assert!(tui.quit().success());
 }
 
-/// Input that follows a held remote paste waits behind it: an `Enter` in the
-/// same batch submits the pasted path, and a second paste neither overtakes
-/// nor replaces the first.
 #[test]
 fn input_after_a_held_remote_paste_keeps_its_order() {
     if !have_tmux() {
@@ -8795,8 +7845,6 @@ fn input_after_a_held_remote_paste_keeps_its_order() {
             .is_some_and(|band| band.trim_start().starts_with("Agent"))
     });
     tui.wait_for("$ ");
-    // Two pastes of paths only the remote machine has, then Enter, in one
-    // write: the shell runs the two paths as one word, in order.
     tui.send(
         b"\x1b[200~/tb-remote-only/far-a.png\x1b[201~\x1b[200~/tb-remote-only/far-b.png\x1b[201~\r",
     );
@@ -8804,8 +7852,6 @@ fn input_after_a_held_remote_paste_keeps_its_order() {
     assert!(tui.quit().success());
 }
 
-/// A Fleet session's id is its Task's name, not a UUID: `session.focus`
-/// (what a notification click runs) still finds it.
 #[test]
 fn session_focus_finds_a_fleet_session_by_its_task_name() {
     let Some((profile, mut tui)) = shell_session() else {

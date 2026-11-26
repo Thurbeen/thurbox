@@ -1,38 +1,3 @@
-//! Harness profiles: how Fleet launches, resumes and trusts each coding
-//! agent, so that a runtime knows no harness and only starts an argv.
-//!
-//! A Task names its harness (`spec.harness`). Its profile gives:
-//!
-//! - **launch**: the argv that starts the agent in its workspace, with the
-//!   hooks that report its state through `fleet signal` ([`crate::signal`])
-//!   and the trust Fleet can give it at launch;
-//! - **resume**: the argv that starts it again on the conversation its
-//!   hooks reported;
-//! - **trust**: how the agent is trusted in its workspace, and how to read
-//!   a trust dialog on its screen, which Fleet never answers.
-//!
-//! - **payload**: the fields of a hook's JSON that `fleet signal` reads;
-//! - **screen**: the rule set that reads the agent's state off its screen
-//!   when its hooks do not say it ([`crate::screen`]);
-//! - **telemetry**: how the agent exports its own OpenTelemetry to the
-//!   collector Fleet exports to ([`Profile::telemetry`]).
-//!
-//! A profile is data: one TOML document per harness. A file under
-//! `<config dir>/harnesses/` replaces the bundled
-//! profile of the same name, or adds a harness. Any other harness name is
-//! run as a program, with no hooks, trust or resume Fleet knows
-//! ([`bare`]). The format is in docs/fleet/controllers/task.md, *Harness profiles*.
-//!
-//! Fleet ships the profiles of Claude Code, Codex, pi, opencode, kilo, omp,
-//! qwen, GitHub Copilot CLI and Kimi Code. pi, opencode, kilo, omp, qwen and
-//! Copilot take their hooks as a file: Fleet writes each under its own data
-//! dir (`fleet_runtime::assets`), and the launch names it, never the agent's
-//! config dir. Kimi Code takes none at launch: its `[install]` table is what
-//! `fleet integration` writes into its config dir ([`crate::integration`]).
-//!
-//! A harness with no prompt hook cannot prove a delivery: its runtime's
-//! answer is all Fleet has.
-
 use std::collections::BTreeMap;
 use std::sync::OnceLock;
 
@@ -40,77 +5,45 @@ use serde::Deserialize;
 
 mod bundled;
 
-/// The variable Fleet names a session's harness in at spawn, so that
-/// `fleet signal` reads the payload fields of that harness's profile.
 pub const HARNESS_ENV: &str = "FLEET_HARNESS";
 
-/// The directory under Fleet's config dir that holds the user's profiles.
 pub const USER_DIR: &str = "harnesses";
 
-/// The directory under Fleet's data dir that holds the plugin files Fleet
-/// ships for the harnesses that take their hooks as a file
-/// (`fleet_runtime::assets`).
 pub const ASSET_DIR: &str = "harness-assets";
 
-/// The variable Fleet names that directory in at spawn, so `fleet signal`
-/// reads the profiles the session was launched with, whatever config the
-/// hook's own `fleet` would find.
 pub const HARNESS_DIR_ENV: &str = "FLEET_HARNESS_DIR";
 
-/// The variable Fleet names the asset directory in at spawn
-/// ([`ASSET_DIR`], as `{asset:<name>}` names it), so a runtime that starts
-/// the session on another machine can copy the files there and name its
-/// copy instead.
 pub const ASSET_DIR_ENV: &str = "FLEET_ASSET_DIR";
 
-/// What the agent's hooks report, which decides how far Fleet trusts them.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Authority {
-    /// The hooks report working, idle and blocked.
     Full,
-    /// The hooks report some states (Codex's `notify`: idle and prompts).
     Partial,
-    /// The hooks report the conversation id only.
     Session,
-    /// No hooks.
     None,
 }
 
-/// How a harness is trusted in its workspace.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum Trust {
-    /// A launch override trusting one directory for the session.
     LaunchOverride,
-    /// None Fleet may use: a person trusts the directory once, and Fleet
-    /// reads the agent's dialog to say so.
     Dialog,
-    /// Fleet knows none for this harness.
     #[default]
     Unknown,
 }
 
-/// The `[launch]` table: what the launch argv adds after the program.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Launch {
-    /// The hooks reporting through `fleet signal`, and any other argument.
     #[serde(default)]
     pub args: Vec<String>,
-    /// Variables the session starts with. The Task's own environment wins.
     #[serde(default)]
     pub env: BTreeMap<String, String>,
-    /// The flag naming each other directory the session spans; none when
-    /// the harness takes no such flag.
     #[serde(default)]
     pub add_dir: Option<String>,
 }
 
-/// The `[resume]` table: the argv that starts the agent again on its
-/// conversation. Each `{program}` and `{conversation}` is replaced, and the
-/// argument `{launch_args}` is the launch argv after its program. Empty: a
-/// resume is a fresh start.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Resume {
@@ -118,11 +51,6 @@ pub struct Resume {
     pub args: Vec<String>,
 }
 
-/// The `[inbox]` table: the argv that hands the agent a message through its
-/// own inbox, on the session's place, instead of typing it. Each `{program}`,
-/// `{conversation}`, `{address}` and `{text}` is replaced; `{address}` is the
-/// value of the variable `address` names in the agent's hooks, which
-/// `fleet signal` reports. Omitted: every message is typed.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Inbox {
@@ -131,24 +59,15 @@ pub struct Inbox {
     pub args: Vec<String>,
 }
 
-/// The `[trust]` table.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct TrustSpec {
     #[serde(default)]
     pub mode: Trust,
-    /// The arguments that trust the session's root at launch; `{root}` is
-    /// replaced with the root, escaped for a double-quoted string.
     #[serde(default)]
     pub args: Vec<String>,
 }
 
-/// The `[payload]` table: the fields of a hook's JSON that `fleet signal`
-/// reads. Each prompt field is a string or a list of strings, and every one
-/// present is a prompt; the first conversation field that is a string is
-/// the conversation. An omitted list is the default one. `paste` names the
-/// tag an agent wraps a pasted text in, `<tag …>text</tag …>`: such a prompt
-/// is also reported as the text inside it, the one Fleet typed.
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Payload {
@@ -168,8 +87,6 @@ fn default_conversation_fields() -> Vec<String> {
     vec!["session_id".into(), "thread-id".into()]
 }
 
-/// The fields a hook is read with when its harness has no profile, or
-/// names none: Claude Code's and Codex's.
 impl Default for Payload {
     fn default() -> Payload {
         Payload {
@@ -180,9 +97,6 @@ impl Default for Payload {
     }
 }
 
-/// The `[screen]` table: the bundled rule set that reads the agent's state
-/// off its screen. Omitted: the set named as the profile, when Fleet ships
-/// one.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ScreenSpec {
@@ -190,52 +104,33 @@ pub struct ScreenSpec {
     pub rules: Option<String>,
 }
 
-/// The `[install]` table: the hooks `fleet integration install` writes
-/// into the agent's own config directory, for a harness that takes none at
-/// launch ([`crate::integration`]). Fleet writes only what it lists here.
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Install {
-    /// The version of what is written. A greater one makes an installed
-    /// integration outdated.
     pub version: u32,
-    /// The variables naming the agent's config directory, the first set
-    /// one winning, as the agent itself reads them.
     #[serde(default)]
     pub dir_env: Vec<String>,
-    /// The agent's config directory when no variable names one; a leading
-    /// `~/` is the user's home.
     pub dir: String,
-    /// The hooks run on Windows as written. Unset, `fleet integration`
-    /// refuses to install there: no Windows run has checked them.
     #[serde(default)]
     pub windows: bool,
-    /// Whole files Fleet owns, in a directory the agent merges.
     #[serde(default)]
     pub files: Vec<OwnedFile>,
-    /// Blocks Fleet appends to a file of the agent's, between two comment
-    /// lines naming Fleet.
     #[serde(default)]
     pub blocks: Vec<OwnedBlock>,
 }
 
-/// A file Fleet owns whole. `{version}` in its text is the install version.
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct OwnedFile {
-    /// Relative to the config directory.
     pub path: String,
     pub text: String,
 }
 
-/// A block Fleet owns in a file it shares with the user.
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct OwnedBlock {
-    /// Relative to the config directory.
     pub path: String,
     pub text: String,
-    /// What starts a comment line in that file.
     #[serde(default = "default_comment")]
     pub comment: String,
 }
@@ -244,40 +139,22 @@ fn default_comment() -> String {
     "#".into()
 }
 
-/// The `[telemetry]` table: the arguments and variables that make the agent
-/// export its own OpenTelemetry to Fleet's collector. Empty: the agent has
-/// no OpenTelemetry export Fleet knows, and gets none. In each value,
-/// `{endpoint}`, `{protocol}`, `{headers}` and `{resource}` are Fleet's
-/// ([`Collector`], [`Profile::telemetry`]).
 #[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct TelemetrySpec {
-    /// After the launch arguments. `{headers}` is refused here: a header
-    /// can be a secret, and an argument list is public on the machine.
     #[serde(default)]
     pub args: Vec<String>,
-    /// Under the Task's own environment. A variable whose value names
-    /// `{headers}` is left out when Fleet sends none.
     #[serde(default)]
     pub env: BTreeMap<String, String>,
 }
 
-/// Where Fleet's own telemetry goes, which an agent's goes to as well: the
-/// collector's base URL, the OTLP protocol and the request headers.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Collector {
-    /// The base URL, without a trailing `/`; a signal's path follows it.
     pub endpoint: String,
     pub protocol: String,
-    /// `OTEL_EXPORTER_OTLP_HEADERS` as Fleet was given it, when set.
     pub headers: Option<String>,
 }
 
-/// Whether `env` names a collector of its own: any variable, in any case,
-/// whose name holds `OTLP` and ends in `ENDPOINT`, such as
-/// `OTEL_EXPORTER_OTLP_ENDPOINT`, a signal's own endpoint or qwen's
-/// `QWEN_TELEMETRY_OTLP_ENDPOINT`. A session whose Task names one gets none
-/// of Fleet's collector: Fleet's headers would go to the other one.
 pub fn names_collector(env: &BTreeMap<String, String>) -> bool {
     env.keys().any(|k| {
         let k = k.to_ascii_uppercase();
@@ -285,21 +162,17 @@ pub fn names_collector(env: &BTreeMap<String, String>) -> bool {
     })
 }
 
-/// The arguments and variables [`Profile::telemetry`] renders.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct AgentTelemetry {
     pub args: Vec<String>,
     pub env: BTreeMap<String, String>,
 }
 
-/// One harness's profile: one TOML document.
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Profile {
     pub name: String,
-    /// The program the launch argv starts.
     pub program: String,
-    /// Other names a Task may give the harness.
     #[serde(default)]
     pub aliases: Vec<String>,
     pub authority: Authority,
@@ -313,7 +186,6 @@ pub struct Profile {
     pub payload: Payload,
     #[serde(default)]
     pub screen: ScreenSpec,
-    /// Only for a harness that takes no hooks at launch.
     #[serde(default)]
     pub install: Option<Install>,
     #[serde(default)]
@@ -322,7 +194,6 @@ pub struct Profile {
     pub inbox: Option<Inbox>,
 }
 
-/// Parse one profile.
 pub fn parse(text: &str) -> Result<Profile, String> {
     let p: Profile = toml::from_str(text).map_err(|e| e.to_string())?;
     if p.name.trim().is_empty() || p.program.trim().is_empty() {
@@ -357,8 +228,6 @@ pub fn parse(text: &str) -> Result<Profile, String> {
     Ok(p)
 }
 
-/// The profile of a harness Fleet has none for: its name is run as a
-/// program, with no hooks, trust or resume Fleet knows.
 pub fn bare(harness: &str) -> Profile {
     Profile {
         name: harness.to_string(),
@@ -376,8 +245,6 @@ pub fn bare(harness: &str) -> Profile {
     }
 }
 
-/// A set of profiles: the bundled ones, each replaced by a user profile of
-/// the same name.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Profiles {
     list: Vec<Profile>,
@@ -386,7 +253,6 @@ pub struct Profiles {
 }
 
 impl Profiles {
-    /// The profiles Fleet ships.
     pub fn bundled() -> Profiles {
         Profiles {
             list: bundled::ALL
@@ -398,32 +264,24 @@ impl Profiles {
         }
     }
 
-    /// These profiles, read with the user's from `dir`.
     pub fn from_dir(mut self, dir: String) -> Profiles {
         self.dir = Some(dir);
         self
     }
 
-    /// These profiles, with each `{asset:<name>}` naming `<dir>/<name>`:
-    /// the directory Fleet wrote its plugin files to.
     pub fn with_assets(mut self, dir: String) -> Profiles {
         self.assets = Some(dir);
         self
     }
 
-    /// The directory the user's profiles were read from, when any was.
     pub fn dir(&self) -> Option<&str> {
         self.dir.as_deref()
     }
 
-    /// The directory each `{asset:<name>}` names a file in, when one is set.
     pub fn assets(&self) -> Option<&str> {
         self.assets.as_deref()
     }
 
-    /// These profiles with `user`'s: a user profile replaces the one of the
-    /// same name, the last of several user profiles of one name wins, and a
-    /// user profile is found before a bundled one.
     pub fn with(self, user: Vec<Profile>) -> Profiles {
         let mut list: Vec<Profile> = Vec::new();
         for p in user {
@@ -443,9 +301,6 @@ impl Profiles {
         }
     }
 
-    /// The profile `harness` names, by name and then by alias; a bare one
-    /// for a harness none names. Each `{asset:<name>}` in its launch and
-    /// resume names the file in the asset directory, when one is set.
     pub fn get(&self, harness: &str) -> Profile {
         let mut p = self
             .list
@@ -467,12 +322,10 @@ impl Profiles {
         p
     }
 
-    /// Every profile, a user's before the bundled ones.
     pub fn list(&self) -> &[Profile] {
         &self.list
     }
 
-    /// Every name and alias, in order.
     pub fn names(&self) -> Vec<String> {
         self.list
             .iter()
@@ -482,9 +335,6 @@ impl Profiles {
     }
 }
 
-/// `arg` with each `{asset:<name>}` replaced by `<dir>/<name>`, its
-/// separators `/`: Node reads them on every platform, and a JSON string
-/// (opencode's config) holds them unescaped.
 fn name_assets(arg: &str, dir: &str) -> String {
     let mut out = String::new();
     let mut rest = arg;
@@ -503,26 +353,19 @@ fn name_assets(arg: &str, dir: &str) -> String {
 
 static INSTALLED: OnceLock<Profiles> = OnceLock::new();
 
-/// Make `profiles` the set [`profile`] reads, once per process and before
-/// any profile is read: the CLI installs the bundled profiles with the
-/// user's. `false` when a set was already in force.
 pub fn install(profiles: Profiles) -> bool {
     INSTALLED.set(profiles).is_ok()
 }
 
-/// The installed set, else the bundled one.
 pub fn installed() -> &'static Profiles {
     INSTALLED.get_or_init(Profiles::bundled)
 }
 
-/// The profile of `harness`, from the installed set, else the bundled one.
 pub fn profile(harness: &str) -> Profile {
     installed().get(harness)
 }
 
 impl Profile {
-    /// Whether the agent's hooks report each prompt it is given, so a
-    /// delivery can be proven by the agent rather than by the runtime.
     pub fn prompt_hook(&self) -> bool {
         matches!(self.authority, Authority::Full | Authority::Partial)
             && !self.payload.prompt.is_empty()
@@ -532,21 +375,14 @@ impl Profile {
         self.trust.mode
     }
 
-    /// The rule set that reads the agent's state off its screen: the one
-    /// `[screen]` names, else the one named as the profile; `None` when
-    /// Fleet ships neither, and the screen is never read.
     pub fn screen_rules(&self) -> Option<&'static crate::screen::Rules> {
         crate::screen::rules(self.screen.rules.as_deref().unwrap_or(&self.name))
     }
 
-    /// The arguments that install the hooks reporting through
-    /// `fleet signal`.
     pub fn hook_args(&self) -> Vec<String> {
         self.launch.args.clone()
     }
 
-    /// The arguments that trust `root` for this session, when the harness
-    /// takes one at launch.
     pub fn trust_args(&self, root: &str) -> Result<Vec<String>, String> {
         if self.trust.mode != Trust::LaunchOverride {
             return Ok(Vec::new());
@@ -561,9 +397,6 @@ impl Profile {
             .collect())
     }
 
-    /// The whole argv that starts the agent: the program, its hooks, the
-    /// trust of `trust_root`, and each other directory it spans. The
-    /// working directory is the runtime's to set.
     pub fn launch(
         &self,
         extra_dirs: &[String],
@@ -582,13 +415,6 @@ impl Profile {
         Ok(argv)
     }
 
-    /// The arguments and variables that make the agent export its own
-    /// telemetry to `collector`, tagged with the Task `task` of `uid`:
-    /// `{resource}` is `service.name=<harness>,fleet.task=<task>,fleet.uid=<uid>`,
-    /// each value percent-encoded. In an argument, `{endpoint}` is escaped
-    /// for a double-quoted TOML or JSON string; an endpoint with a control
-    /// character gives no arguments. Empty for a harness with no
-    /// `[telemetry]`.
     pub fn telemetry(&self, collector: &Collector, task: &str, uid: &str) -> AgentTelemetry {
         let resource = [
             ("service.name", self.name.as_str()),
@@ -625,8 +451,6 @@ impl Profile {
         AgentTelemetry { args, env }
     }
 
-    /// The argv that hands `text` to the agent's inbox, when the profile
-    /// has one and every value it names was reported.
     pub fn inbox(
         &self,
         address: Option<&str>,
@@ -649,15 +473,10 @@ impl Profile {
             .collect()
     }
 
-    /// Whether Fleet can start the agent again on its conversation: a stop
-    /// of one it cannot ends the conversation.
     pub fn resumes(&self) -> bool {
         !self.resume.args.is_empty()
     }
 
-    /// The argv that starts the agent again on `conversation`, from the one
-    /// it was launched with. Without a conversation, or for a harness Fleet
-    /// cannot resume, it is the launch argv: a fresh start.
     pub fn resume(&self, launch: &[String], conversation: Option<&str>) -> Vec<String> {
         let (Some(id), Some((program, rest))) = (conversation, launch.split_first()) else {
             return launch.to_vec();
@@ -680,8 +499,6 @@ impl Profile {
     }
 }
 
-/// `value` as an `OTEL_RESOURCE_ATTRIBUTES` value: each byte outside the
-/// unreserved set percent-encoded, so a `,` or `=` never splits it.
 fn percent_encode(value: &str) -> String {
     value
         .bytes()
@@ -694,8 +511,6 @@ fn percent_encode(value: &str) -> String {
         .collect()
 }
 
-/// `root` escaped for a double-quoted TOML or JSON string; `None` when it
-/// holds a control character, which no such string may.
 fn escape_root(root: &str) -> Option<String> {
     if root.chars().any(char::is_control) {
         return None;
@@ -703,16 +518,11 @@ fn escape_root(root: &str) -> Option<String> {
     Some(root.replace('\\', "\\\\").replace('"', "\\\""))
 }
 
-/// Codex's launch override trusting `root`, as its bundled profile's
-/// `[trust]` gives it.
 pub fn codex_override(root: &str) -> Result<String, String> {
     let args = Profiles::bundled().get("codex").trust_args(root)?;
     Ok(args.last().cloned().unwrap_or_default())
 }
 
-/// Claude Code's workspace-trust dialog on a plain screen `output`, current
-/// at the cursor: its header, both choices and its footer, the cursor
-/// between them. Old text in the scrollback is not a dialog.
 pub fn claude_trust_dialog(output: &str, cursor_row: usize) -> bool {
     let lines: Vec<&str> = output.lines().map(str::trim).collect();
     let Some(header) = lines.iter().rposition(|l| *l == "Accessing workspace:") else {
@@ -736,11 +546,6 @@ pub fn claude_trust_dialog(output: &str, cursor_row: usize) -> bool {
         && choice("Yes, I trust this folder")
 }
 
-/// Whether a plain visible screen `output` is Codex's initial empty
-/// composer under its welcome screen, the cursor at its start: Codex takes
-/// input, and reports nothing until its first turn ends. A trust dialog can
-/// follow the composer, so the caller also rules out
-/// [`codex_trust_dialog`].
 pub fn codex_initial_composer(output: &str, cursor_row: usize, cursor_col: usize) -> bool {
     cursor_col == 2
         && output.lines().nth(cursor_row).map(str::trim_end) == Some("› Ask Codex to do anything")
@@ -752,7 +557,6 @@ pub fn codex_initial_composer(output: &str, cursor_row: usize, cursor_col: usize
             .any(|l| l.trim() == "To get started, describe a task or try one of these commands:")
 }
 
-/// Whether the screen's foreground process is Codex.
 pub fn codex_process(foreground: &str) -> bool {
     matches!(
         foreground.rsplit(['/', '\\']).next(),
@@ -760,12 +564,6 @@ pub fn codex_process(foreground: &str) -> bool {
     )
 }
 
-/// Whether a plain visible screen `output` is Kimi Code's empty composer,
-/// the cursor just after its `>`: Kimi takes input, and starts its session,
-/// with the first hook, only at the first message. The welcome box above
-/// scrolls off a short pane, so only the composer's box and the `context:`
-/// footer under it are read. Kimi asks its folder trust before its
-/// composer, in a dialog [`codex_trust_dialog`] also matches.
 pub fn kimi_initial_composer(output: &str, cursor_row: usize, cursor_col: usize) -> bool {
     let lines: Vec<&str> = output.lines().collect();
     let Some(line) = lines.get(cursor_row) else {
@@ -789,8 +587,6 @@ pub fn kimi_initial_composer(output: &str, cursor_row: usize, cursor_col: usize)
             .any(|l| l.trim_start().starts_with("context: "))
 }
 
-/// Whether the screen's foreground process is Kimi Code, which names
-/// itself `kimi-code` once it runs.
 pub fn kimi_process(foreground: &str) -> bool {
     matches!(
         foreground.rsplit(['/', '\\']).next(),
@@ -798,12 +594,6 @@ pub fn kimi_process(foreground: &str) -> bool {
     )
 }
 
-/// Whether a plain visible screen `output` is GitHub Copilot CLI's empty
-/// composer, the cursor just after its `❯`: Copilot takes input, and
-/// starts its session, with the first hook, only at the first message. The
-/// composer is a bare `❯` between two full-width rules, with the `/ commands`
-/// footer under it. Copilot asks its folder trust before its composer, in
-/// the dialog [`copilot_trust_dialog`] matches.
 pub fn copilot_initial_composer(output: &str, cursor_row: usize, cursor_col: usize) -> bool {
     let lines: Vec<&str> = output.lines().collect();
     let rule = |at: Option<usize>| {
@@ -820,9 +610,7 @@ pub fn copilot_initial_composer(output: &str, cursor_row: usize, cursor_col: usi
             .any(|l| l.contains("· / commands"))
 }
 
-/// Whether the screen's foreground process is GitHub Copilot CLI. Its npm
-/// package starts as `node` running its loader, which leads the process
-/// group; the native binary is a child of it.
+// Copilot's npm package leads its process group as `node`; the native binary is a child.
 pub fn copilot_process(foreground: &str) -> bool {
     matches!(
         foreground.rsplit(['/', '\\']).next(),
@@ -830,8 +618,6 @@ pub fn copilot_process(foreground: &str) -> bool {
     )
 }
 
-/// Whether GitHub Copilot CLI's folder trust dialog is on a plain visible
-/// screen `output`: its question and its choice to remember the folder.
 pub fn copilot_trust_dialog(output: &str) -> bool {
     output
         .lines()
@@ -841,11 +627,6 @@ pub fn copilot_trust_dialog(output: &str) -> bool {
             .any(|l| l.contains("Yes, and remember this folder"))
 }
 
-/// Whether a plain visible screen `output` is Claude Code's empty composer,
-/// the cursor just after its `❯`: its placeholder between two full-width
-/// rules, with the `? for shortcuts` footer under it. Claude asks its
-/// workspace trust before its composer, in the dialog
-/// [`claude_trust_dialog`] matches.
 pub fn claude_initial_composer(output: &str, cursor_row: usize, cursor_col: usize) -> bool {
     let lines: Vec<&str> = output.lines().collect();
     let rule = |at: Option<usize>| {
@@ -864,8 +645,6 @@ pub fn claude_initial_composer(output: &str, cursor_row: usize, cursor_col: usiz
             .any(|l| l.contains("? for shortcuts"))
 }
 
-/// Whether the screen's foreground process is Claude Code: its native
-/// binary, or `node` running its npm package.
 pub fn claude_process(foreground: &str) -> bool {
     matches!(
         foreground.rsplit(['/', '\\']).next(),
@@ -873,10 +652,7 @@ pub fn claude_process(foreground: &str) -> bool {
     )
 }
 
-/// Whether Codex's trust dialog is on a plain visible screen `output`: its
-/// question and its trusting default. It can follow the composer, so it is
-/// looked for on the whole screen, not only at the cursor. Kimi Code's trust
-/// dialog asks in the same words.
+// Kimi Code's trust dialog asks in the same words as Codex's.
 pub fn codex_trust_dialog(output: &str) -> bool {
     let lines: Vec<&str> = output.lines().map(str::trim).collect();
     lines.iter().any(|l| l.starts_with("Trust this folder?"))
@@ -918,8 +694,6 @@ mod tests {
             ("UserPromptSubmit", "prompt"),
             ("Stop", "idle"),
             ("PreToolUse", "working"),
-            // Claude Code's notification is a permission prompt or a wait
-            // for input: the agent needs a person.
             ("Notification", "blocked"),
         ] {
             let command = settings["hooks"][event][0]["hooks"][0]["command"]
@@ -930,15 +704,13 @@ mod tests {
                 "{command}"
             );
         }
-        // Only a permission prompt needs a person: Claude Code also notifies
-        // after 60 s of input idle (`idle_prompt`), which is no attention.
+        // Claude Code also notifies after 60 s of input idle (`idle_prompt`).
         assert_eq!(
             settings["hooks"]["Notification"][0]["matcher"],
             "permission_prompt"
         );
         assert_eq!(&claude[3..], ["--add-dir", "/w/docs"]);
-        // Claude Code keeps the last of several `--settings`, so the hooks
-        // are one, and a resume keeps them one.
+        // Claude Code keeps the last of several `--settings`.
         let resumed = profile("claude").resume(&claude, Some("c1"));
         assert_eq!(resumed.iter().filter(|a| *a == "--settings").count(), 1);
 
@@ -1028,7 +800,6 @@ mod tests {
             ["opencode", "--standalone", "--session", "ses_1"]
         );
         assert!(pi.prompt_hook() && opencode.prompt_hook());
-        // Each names a file under the asset directory.
         for p in [&pi, &opencode] {
             let named = p
                 .launch
@@ -1038,7 +809,6 @@ mod tests {
                 .any(|a| a.contains("/data/harness-assets/"));
             assert!(named, "{}", p.name);
         }
-        // Without an asset directory a profile is left as written.
         assert_eq!(profile("pi").launch.args, ["-e", "{asset:fleet-pi.ts}"]);
         assert_eq!(
             name_assets(r"{asset:a} {asset:b/c}{asset:", r"C:\data"),
@@ -1076,7 +846,7 @@ mod tests {
         let launch = omp.launch(&["/w/docs".into()], Some("/w")).unwrap();
         let extension = "/data/harness-assets/fleet-omp.ts";
         assert_eq!(launch, ["omp", "-e", extension, "--add-dir", "/w/docs"]);
-        // Fleet never answers omp's first-run setup wizard.
+        // omp otherwise opens its first-run setup wizard.
         assert_eq!(omp.launch.env["OMP_SKIP_SETUP"], "1");
         assert_eq!(
             omp.resume(&launch, Some("01a1")),
@@ -1093,10 +863,7 @@ mod tests {
         let qwen = all.get("qwen");
         let launch = qwen.launch(&["/w/docs".into()], Some("/w")).unwrap();
         assert_eq!(launch, ["qwen", "--add-dir", "/w/docs"]);
-        // Merged with the system's, the user's and the project's settings,
-        // hooks included. Only the system defaults file is replaced: the
-        // system settings file keeps its own path, and its defaults path
-        // would otherwise follow the one given.
+        // qwen merges system, user and project settings; only its system defaults file is replaced.
         assert_eq!(
             qwen.launch.env,
             [(
@@ -1170,9 +937,6 @@ mod tests {
         assert!(!codex_trust_dialog("› Ask Codex to do anything"));
     }
 
-    /// Kimi Code 2.5.1's screen in an 80x24 pane once its folder is
-    /// trusted, its cursor at row 20, column 5; the welcome box's top has
-    /// scrolled off.
     const KIMI_READY: &str =
         " │                                                                            │
  │  ▐█▛█▛█▌  Welcome to Kimi Code!                                            │
@@ -1200,7 +964,6 @@ mod tests {
                                                            context: 0% (0/256k)
 ";
 
-    /// Kimi Code 2.5.1's first screen in a folder it does not trust yet.
     const KIMI_TRUST: &str = " ──────────────────────────────────────────────────
   Trust this folder?
   ↑↓ navigate · Enter select · Esc exit
@@ -1246,8 +1009,6 @@ mod tests {
         assert!(!kimi_process("codex"));
     }
 
-    /// GitHub Copilot CLI 1.0.105's screen in an 80x24 pane once its folder
-    /// is trusted, its cursor at row 21, column 2.
     const COPILOT_READY: &str = " [Current]  Sessions   Issues   Pull requests   Gists
 
   ╭─╮╭─╮
@@ -1274,8 +1035,6 @@ mod tests {
  ← open sidebar · Interactive · Manual Approval · / commands         fake-model
 ";
 
-    /// GitHub Copilot CLI 1.0.105's first screen in a folder it does not
-    /// trust yet, its three-line folder path shortened to one.
     const COPILOT_TRUST: &str = " [Current]  Sessions   Issues   Pull requests   Gists
 
                                                                                ┃
@@ -1342,9 +1101,6 @@ mod tests {
         }
     }
 
-    /// Each bundled profile's telemetry, rendered for one Task: the agent's
-    /// own switch, Fleet's collector, and the Task in its resource. No
-    /// profile sets a content switch or trace context.
     #[test]
     fn each_profile_renders_its_own_telemetry_for_fleets_collector() {
         let c = collector(Some("authorization=Bearer s"));
@@ -1434,7 +1190,6 @@ mod tests {
                 ("OTEL_RESOURCE_ATTRIBUTES", &resource("copilot")),
             ])
         );
-        // No OpenTelemetry export Fleet can turn on: nothing is injected.
         for none in ["pi", "kilo", "kimi", "aider"] {
             assert_eq!(render(none), AgentTelemetry::default(), "{none}");
         }
@@ -1481,7 +1236,6 @@ mod tests {
             claude.env["OTEL_RESOURCE_ATTRIBUTES"],
             "service.name=claude,fleet.task=a%2Cb%3Dc,fleet.uid=u%201"
         );
-        // An endpoint is escaped for Codex's TOML string.
         let quoted = Collector {
             endpoint: r#"http://c/"x""#.into(),
             ..collector(None)
@@ -1490,7 +1244,6 @@ mod tests {
             profile("codex").telemetry(&quoted, "t", "u").args[1]
                 .contains(r#"endpoint="http://c/\"x\"/v1/logs""#)
         );
-        // A header is never an argument.
         let base = "name = \"x\"\nprogram = \"x\"\nauthority = \"none\"\n";
         assert!(parse(&format!("{base}[telemetry]\nargs = [\"h={{headers}}\"]\n")).is_err());
         assert!(

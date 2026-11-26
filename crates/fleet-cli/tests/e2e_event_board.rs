@@ -1,10 +1,3 @@
-//! The event board end to end: `fleet init` ensures Board `shared`, and the
-//! real `fleet event publish` and `fleet event list` write and read its log
-//! on a throwaway store, with the refusals, the dedupe, the filters and the
-//! retention a reader relies on. Inside a session, `fleet event publish`
-//! appends to the session's outbox and opens no store, and TaskController
-//! ingests the outbox under the lease, as the Task whose outbox it is.
-
 mod support;
 
 use std::io::Write;
@@ -494,8 +487,6 @@ fn session_var(env: &Env, var: &str) -> String {
         .unwrap_or_else(|| panic!("{var} in the session's environment"))
 }
 
-/// `fleet event publish <args>` as the session runs it: with the variables
-/// Fleet passed it.
 fn publish_inside(env: &Env, vars: &[(&str, &str)], args: &[&str]) -> support::Run {
     let mut cmd = env.command(&[&["event", "publish"], args].concat());
     for (k, v) in vars {

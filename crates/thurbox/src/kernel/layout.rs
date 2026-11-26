@@ -1,20 +1,3 @@
-//! The constraint pass: resolve every rect **before** any mod renders.
-//!
-//! This is the one place the POC had to be inverted.
-//! The POC rendered every mod first and arranged the returned trees
-//! afterwards, which makes a mod's own rect unknowable while it is
-//! rendering — so percentage widths, wrapping, truncation and scroll-window
-//! derivation are all impossible. The prior v2 attempt named this its single
-//! biggest gap.
-//!
-//! Here the order is: arrangement (a Lua function of the available size) →
-//! slot rects → per-mod rects → *then* each mod is called and told the
-//! rect it is drawing into.
-//!
-//! The arrangement can do this without calling mods because a mod
-//! declares the space it wants **statically**, in its declaration table, not
-//! in its render output. That is what breaks the circularity.
-
 use std::collections::BTreeSet;
 
 use mlua::{Table, Value};
@@ -22,19 +5,6 @@ use ratatui::layout::Rect;
 
 use super::node::{divide, Axis, Size};
 
-/// The size an arrangement is resolved at when the question is *whether* a slot
-/// is placed rather than *where*.
-///
-/// Placement is size-dependent by design — the bundled arrangement drops the
-/// session column below `two_panel_min_cols` and the header below twenty rows —
-/// so "unplaced" is only a meaningful verdict at a size where the slot should
-/// have been placed. This is comfortably above every breakpoint the bundled
-/// arrangement has, and above a plausibly-raised `two_panel_min_cols`, so what
-/// is missing here is missing because nothing names it rather than because the
-/// screen is small.
-///
-/// Reported alongside any verdict drawn from it, so a surprising answer is
-/// explicable rather than mysterious.
 pub const REFERENCE: Rect = Rect {
     x: 0,
     y: 0,
@@ -42,21 +12,15 @@ pub const REFERENCE: Rect = Rect {
     height: 50,
 };
 
-/// How a slot's occupants share it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum SlotMode {
-    /// Every occupant is visible, sharing the slot by declared size.
     #[default]
     Stack,
-    /// One occupant is visible; the rest are selectable alternatives.
     Switch,
 }
 
-/// A node in the arrangement tree: either a named slot (a leaf) or a box that
-/// divides its rect among children.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Region {
-    /// Slot placed here, when this is a leaf.
     pub slot: Option<String>,
     pub axis: Axis,
     pub gap: u16,
@@ -76,30 +40,18 @@ impl Default for Region {
     }
 }
 
-/// Where one slot ended up.
 #[derive(Debug, Clone, PartialEq)]
 pub struct SlotRect {
     pub slot: String,
     pub rect: Rect,
 }
 
-/// Walk the arrangement, assigning a rect to every named slot.
-///
-/// A slot named more than once keeps its first placement; a slot named nowhere
-/// simply gets no rect, and its mods are not rendered (which is how a
-/// responsive arrangement hides a column at a narrow width).
 pub fn resolve(region: &Region, area: Rect) -> Vec<SlotRect> {
     let mut out = Vec::new();
     walk(region, area, &mut out);
     out
 }
 
-/// Which slots an arrangement places, without their rects.
-///
-/// The set a loaded mod's slot is compared against to answer the one failure
-/// no other signal reports: a mod whose slot the arrangement names nowhere
-/// loads without error, declares its keys, is granted its capabilities — and
-/// draws nothing. Every other check passes it.
 pub fn placed_slots(region: &Region, area: Rect) -> BTreeSet<String> {
     resolve(region, area)
         .into_iter()
@@ -155,10 +107,6 @@ fn walk(region: &Region, area: Rect, out: &mut Vec<SlotRect>) {
     }
 }
 
-/// Divide one slot's rect among the mods occupying it.
-///
-/// `sizes` are the mods' **declared** sizes, read from their declaration
-/// tables — never from their render output, which does not exist yet.
 pub fn divide_slot(area: Rect, axis: Axis, sizes: &[Size], gap: u16) -> Vec<Rect> {
     let total = match axis {
         Axis::Vertical => area.height,
@@ -190,23 +138,8 @@ pub fn divide_slot(area: Rect, axis: Axis, sizes: &[Size], gap: u16) -> Vec<Rect
     rects
 }
 
-/// Read an arrangement returned by `ui/layout.lua`.
-///
-/// Shape mirrors the view tree deliberately, so a mod author learns one set
-/// of sizing rules rather than two:
-///
-/// ```lua
-/// return function(ctx)
-///   if ctx.width < 80 then return { slot = "center" } end
-///   return { axis = "horizontal", children = {
-///       { slot = "sessions", pct = 30, min = 24, max = 48 },
-///       { slot = "center" },
-///   } }
-/// end
-/// ```
 pub fn region_from_lua(value: &Value, path: &str) -> Result<Region, String> {
     match value {
-        // A bare string names a slot — the terse form for a one-slot screen.
         Value::String(name) => Ok(Region {
             slot: Some(name.to_string_lossy()),
             ..Region::default()
@@ -253,7 +186,6 @@ fn region_from_table(table: &Table, path: &str) -> Result<Region, String> {
     };
     let gap = opt_u16(table, "gap", path)?.unwrap_or(0);
 
-    // Children live under `children`, or in the array part.
     let list = match table.get::<Value>("children") {
         Ok(Value::Table(t)) => Some(t),
         Ok(Value::Nil) => {
@@ -345,7 +277,6 @@ mod tests {
         let placed = resolve(&region, area(100, 30));
         assert_eq!(rect_of(&placed, "sessions").unwrap().width, 25);
         assert_eq!(rect_of(&placed, "center").unwrap().width, 75);
-        // Columns must abut, leaving no unpainted gutter.
         assert_eq!(rect_of(&placed, "center").unwrap().x, 25);
     }
 
@@ -360,8 +291,6 @@ mod tests {
 
     #[test]
     fn a_slot_named_nowhere_gets_no_rect() {
-        // This is how a responsive arrangement hides a column: it simply stops
-        // naming the slot below a threshold.
         let placed = resolve(&region_of("{ slot = \"center\" }"), area(60, 20));
         assert!(rect_of(&placed, "sessions").is_none());
         assert!(rect_of(&placed, "center").is_some());
@@ -403,7 +332,6 @@ mod tests {
 
     #[test]
     fn a_slot_is_divided_among_its_occupants_by_declared_size() {
-        // The session list slot holding a list plus a one-line summary.
         let sizes = [
             Size::default(),
             Size {
@@ -430,7 +358,6 @@ mod tests {
 
     #[test]
     fn the_narrow_arrangement_drops_the_side_column() {
-        // The behaviour v1 hardcoded in compute_layout, now a Lua branch.
         let lua = Lua::new();
         let arrange: mlua::Function = lua
             .load(

@@ -1,9 +1,5 @@
-//! The multiplexer choice is independent of the machine that runs a session.
-
 use super::{HostDef, Platform, Route};
 
-/// A name accepted in settings, hosts, and per-create commands. Implementations
-/// register separately; accepting a name here never claims its binary is usable.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub enum Multiplexer {
     Tmux,
@@ -13,9 +9,6 @@ pub enum Multiplexer {
 }
 
 impl Multiplexer {
-    /// Every name, in the order a choice lists them. The one source of the
-    /// multiplexer vocabulary: parsing, the choices offered and the route
-    /// grammar all read it.
     pub const ALL: [Self; 4] = [Self::Tmux, Self::Psmux, Self::Rmux, Self::Herdr];
 
     pub const fn name(self) -> &'static str {
@@ -27,10 +20,6 @@ impl Multiplexer {
         }
     }
 
-    /// Whether this multiplexer runs natively on a machine of `platform`.
-    /// psmux is a Windows program and tmux a POSIX one; a binary of either
-    /// name found on the other kind of machine is not something thurbox can
-    /// drive there.
     pub const fn runs_on(self, platform: Platform) -> bool {
         match self {
             Self::Tmux => matches!(platform, Platform::Posix),
@@ -39,14 +28,6 @@ impl Multiplexer {
         }
     }
 
-    /// The multiplexers a machine of `platform` offers, in [`Self::ALL`] order:
-    /// those that run there and were `found` installed.
-    ///
-    /// `found` is `None` when nobody has looked — a host whose probe has not
-    /// answered, or a native-Windows host, which has no `sh` to probe with.
-    /// That offers what the machine was already trusted to run: its platform
-    /// default and its configured `preference`, never an optional one nobody
-    /// has seen.
     pub fn available_on(
         platform: Platform,
         found: Option<&[Self]>,
@@ -61,9 +42,6 @@ impl Multiplexer {
             .collect()
     }
 
-    /// What a create uses when nothing names a multiplexer, among the
-    /// `available` ones: the platform default when it is there, else the first
-    /// one that is — a machine with only RMUX installed runs RMUX.
     pub fn preferred(platform: Platform, available: &[Self]) -> Option<Self> {
         let default = Self::default_for(platform);
         if available.contains(&default) {
@@ -82,9 +60,6 @@ impl Multiplexer {
             })
     }
 
-    /// What a machine of `platform` runs when nothing names a multiplexer: a
-    /// default policy for the unqualified route, never a gate on which
-    /// multiplexers a machine can be driven with.
     pub const fn default_for(platform: Platform) -> Self {
         match platform {
             Platform::Windows => Self::Psmux,
@@ -92,11 +67,6 @@ impl Multiplexer {
         }
     }
 
-    /// The one thing to do when this multiplexer's binary is missing here.
-    ///
-    /// Never a package-manager line thurbox has not verified: where the command
-    /// depends on a distribution, this names the package and links the
-    /// project's own install page instead of guessing an invocation.
     pub fn install_hint(self) -> String {
         match self {
             Self::Psmux => {
@@ -114,20 +84,15 @@ impl Multiplexer {
         }
     }
 
-    /// [`Self::default_for`] this machine.
     pub fn platform_default() -> Self {
         Self::default_for(Platform::local())
     }
 }
 
-/// What a create will use, before any worktree or pane is made. The host name
-/// stays separate from the multiplexer choice in both the API and the UI.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BackendChoice {
     pub host: Option<HostDef>,
     pub multiplexer: Multiplexer,
-    /// Where the session will run. Always qualified: a new row names its
-    /// multiplexer, so a later change of preference cannot reinterpret it.
     pub route: Route,
 }
 
@@ -142,7 +107,6 @@ impl BackendChoice {
             None => local_default,
         };
         let multiplexer = match explicit.or(configured).unwrap_or("default") {
-            // A host's own multiplexer, else this machine's.
             "default" => host
                 .as_ref()
                 .map_or(Multiplexer::platform_default(), |host| {
@@ -161,7 +125,6 @@ impl BackendChoice {
         })
     }
 
-    /// The key the row is written under.
     pub fn backend_type(&self) -> String {
         self.route.format()
     }

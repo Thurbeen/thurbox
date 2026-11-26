@@ -1,12 +1,3 @@
-//! The tmux adapter: tmux's answers to [`TmuxCompatible`].
-//!
-//! What tmux shares with the other multiplexers that speak its protocol is
-//! [`Server`], and tmux's own wording is [`TmuxCompatible`]'s defaults — its
-//! `-H` key encoding, its bracketed paste, its absence replies. Every way tmux
-//! differs from the others is a body here — its clipboard and mouse options,
-//! its UTF-8 flag, its version floor. Nothing here is psmux's, and nothing in
-//! the shared code asks whether a server is tmux.
-
 use std::sync::Arc;
 
 use anyhow::{anyhow, bail, Result};
@@ -19,18 +10,14 @@ use crate::tmux_compat::server::{parse_version, ConfigOption, Server, TmuxCompat
 use crate::tmux_compat::transport::TmuxTransport;
 use crate::{HostDef, Multiplexer, Platform};
 
-/// tmux.
 pub struct Tmux;
 
-/// A tmux server's session backend.
 pub type TmuxBackend = Server<Tmux>;
 
-/// tmux on this machine, whatever OS it is.
 pub fn local(settings: &MuxSettings) -> Arc<dyn SessionBackend> {
     Arc::new(TmuxBackend::local(settings))
 }
 
-/// tmux on `host`, reached through `launcher` on a machine of `platform`.
 pub fn on_host(
     host: &HostDef,
     launcher: HostLauncher,
@@ -57,11 +44,6 @@ impl TmuxCompatible for Tmux {
     const DISPLAY_FLAGS: &[&str] = &[PANE_STATE_UTF8_FLAG];
     const VERSION_FLOOR: Option<fn(&str, &str) -> Result<()>> = None;
 
-    /// The tmux floor, and never psmux under tmux's name: psmux installs a
-    /// `tmux` alias, and from 3.3.7 its banner says what it is. Driven as tmux
-    /// it is told `-s` and `-H` and waited on for an attach reply it never
-    /// sends. A psmux 3.3.6 prints only `tmux 3.3.6` and cannot be told apart
-    /// here.
     fn check_banner(banner: &str, _socket: &str) -> Result<()> {
         if banner
             .lines()
@@ -77,39 +59,16 @@ impl TmuxCompatible for Tmux {
 
     fn session_config(session: &str) -> Vec<ConfigOption> {
         let mut config = Vec::new();
-        // An app's OSC 52 copy does not need tmux: control mode hands thurbox
-        // the raw bytes in `%output` whatever `set-clipboard` says, and thurbox
-        // puts the focused pane's write on the user's clipboard itself
-        // (`TermSignals::copy_to_clipboard`). tmux never sends a control-mode
-        // client a selection, so `set-clipboard on` never delivered one here.
-        //
-        // What `on` did do was make tmux parse the write: keep it as a paste
-        // buffer, and answer every app's OSC 52 *read* (`?`) with the newest
-        // one — so an app in one session could read what an app in another had
-        // copied, local or on a remote host. `get-clipboard off` stops the
-        // answer only on tmux 3.7+; `external` stops tmux handling an app's
-        // OSC 52 at all on every tmux from the 3.2 floor up, and still
-        // forwards tmux's own copy-mode yanks to a terminal attached directly
-        // (which is what the `*:clipboard` feature below is for).
+        // `set-clipboard external` stops tmux answering an app's OSC 52 read from 3.2 up; `get-clipboard off` only from 3.7.
         config.push(ConfigOption::set(
             &["-s", "set-clipboard", "external"],
             false,
         ));
 
-        // Apps inside tmux can inspect this option before deciding whether to
-        // request mouse reports. With it off, a full-screen app may leave wheel
-        // capture disabled even though thurbox can forward those reports.
+        // Apps inside tmux read the `mouse` option before they request mouse reports.
         config.push(ConfigOption::set(&["-t", session, "mouse", "on"], true));
 
-        // The `*:clipboard` feature goes into a fixed slot, and only while that
-        // slot is empty. Appending it grew the list by one entry a run, since
-        // this runs on every spawn and the server outlives thurbox (#1278); an
-        // unconditional write to the slot would overwrite an entry the user's
-        // `~/.tmux.conf` put there. Reading the list from Rust first would cost
-        // a process per session create, and a format cannot test the whole
-        // array on 3.2 (`#{terminal-features}` expands to "") — but it can read
-        // one index. `-a` fills the first free index, so appended entries
-        // never land on this one.
+        // tmux 3.2 expands `#{terminal-features}` to "" but reads one index, and `-a` fills the first free index.
         let slot = format!("#{{{CLIPBOARD_FEATURE_SLOT}}}");
         let write = format!("set-option -qs {CLIPBOARD_FEATURE_SLOT} *:clipboard");
         config.push(ConfigOption {
@@ -134,28 +93,12 @@ impl TmuxCompatible for Tmux {
     const HOOK_STATUS: bool = true;
 }
 
-/// tmux's `-u` — "assume the terminal supports UTF-8".
-///
-/// tmux decides a client speaks UTF-8 from `LC_ALL`/`LC_CTYPE`/`LANG`, and
-/// sanitizes what it prints for one that does not: every control byte becomes
-/// `_`, the pane-state separator included. Under `LC_ALL=C` or no locale at all — a
-/// systemd unit, a cron job, most containers — the whole answer then parses as
-/// one field and every pane-state field reports null. `-u` sets the flag
-/// outright, so the separator survives whatever the environment says.
 const PANE_STATE_UTF8_FLAG: &str = "-u";
 
-/// The `terminal-features` slot thurbox writes `*:clipboard` into — see
-/// `session_config`. High enough that neither tmux's defaults nor a
-/// hand-appended list reaches it.
 const CLIPBOARD_FEATURE_SLOT: &str = "terminal-features[100]";
 
-/// Minimum tmux version required.
 const MIN_TMUX_VERSION: (u32, u32) = (3, 2);
 
-/// Enforce the minimum-version gate against a multiplexer's `-V` output.
-///
-/// The `>= 3.2` floor applies to a `tmux …` banner; any other banner from a
-/// binary that answered `-V` as tmux is accepted as-is.
 fn check_min_version(version_output: &str) -> Result<()> {
     let Some(version) = Tmux::banner_version(version_output) else {
         return Ok(());
@@ -177,12 +120,6 @@ mod tests {
     use super::*;
     use crate::StatusChannel;
 
-    /// A session on a WSL place gets the file its hooks report to and the
-    /// place's `PATH` through the `new-window` line itself: `-e` sets the
-    /// variable in the window, the login wrap assigns the `PATH`, and the
-    /// line travels over the control connection that `wsl.exe` launches, so
-    /// nothing depends on what `wsl.exe` passes of this machine's
-    /// environment (`WSLENV`).
     #[test]
     fn a_wsl_place_window_gets_the_signal_file_and_the_place_path() {
         let host = crate::HostDef {
@@ -215,22 +152,18 @@ mod tests {
             line.contains(" -e 'FLEET_SIGNAL_FILE=~/.local/state/fleet/signals/t1.u1.jsonl' "),
             "{line}"
         );
-        // A test reads no place's login `PATH`: `path_prepend` leads the
-        // inherited one.
         assert!(
             line.ends_with(
                 " /bin/sh -lc 'PATH=/opt/fleet/bin\"${PATH:+:$PATH}\"; export PATH; exec claude --resume c1'"
             ),
             "{line}"
         );
-        // The connection the line travels over enters the distro.
         let argv: Vec<String> = backend
             .mux_command(&["-C", "attach"])
             .expect("command")
             .get_args()
             .map(|a| a.to_string_lossy().into_owned())
             .collect();
-        // `--cd /` only from a Unix machine (`shell::wsl_command`).
         let enter: &[&str] = if cfg!(unix) {
             &["-d", "Ubuntu", "--cd", "/", "-e", "sh"]
         } else {
@@ -252,10 +185,6 @@ mod tests {
         assert!(check_min_version("tmux next").is_err());
     }
 
-    /// psmux installs a `tmux` alias, so the tmux adapter on a Windows
-    /// machine can reach psmux under tmux's name — and drive it with tmux's
-    /// grammar (`-s`, `-H`, an attach reply psmux never sends: the #1168 hang).
-    /// A banner that says psmux is refused instead.
     #[test]
     fn a_psmux_answering_as_tmux_is_refused() {
         let err = Tmux::check_banner("tmux 3.3.8\npsmux 3.3.8 (66cf613 2026-08-18)\n", "thurbox")
@@ -278,8 +207,7 @@ mod tests {
 
     #[test]
     fn min_version_accepts_non_tmux_clone() {
-        // psmux numbers itself independently and may not print a `tmux ` banner;
-        // once it answers `-V` it is accepted regardless of its own version.
+        // psmux numbers its own versions and may print no `tmux ` banner.
         assert!(check_min_version("psmux 0.3.1").is_ok());
         assert!(check_min_version("psmux 1.0").is_ok());
         assert!(check_min_version("pmux 0.1").is_ok());
@@ -296,9 +224,6 @@ mod tests {
         assert!(!backend.transport.is_remote());
     }
 
-    /// A route's multiplexer is the binary, whatever the host now prefers,
-    /// and the host itself stays as configured — its platform is not read off
-    /// the route.
     #[test]
     fn a_backend_for_a_route_runs_that_routes_binary() {
         let host = crate::HostDef {
@@ -323,9 +248,6 @@ mod tests {
         }
     }
 
-    /// Whether a backend polls for dead panes is what its multiplexer can
-    /// report — tmux announces `%window-close`, psmux does not — not the OS
-    /// thurbox was built for, nor the host's.
     #[test]
     fn liveness_polling_follows_close_events_not_the_build_os() {
         use crate::shell::simulate_local;
@@ -357,8 +279,6 @@ mod tests {
         }
     }
 
-    /// tmux's socket directory is thurbox's to choose on a POSIX machine —
-    /// a host's own data dir, resolved there — and not on a Windows one.
     #[test]
     fn a_posix_hosts_socket_goes_in_its_data_dir_and_a_windows_hosts_does_not() {
         use crate::tmux_compat::transport::SocketDir;
@@ -471,14 +391,10 @@ mod tests {
 
     #[test]
     fn a_deferred_prompt_quotes_a_socket_name_the_host_configured() {
-        // A socket the immediate commands pass as one argument must reach the
-        // server's shell as one word too, or the paste runs against no server.
         let tmux = Tmux::deferred_paste_script("tmux", "my sock", "%3", "hi").unwrap();
         assert_eq!(tmux.matches("-L 'my sock' send-keys").count(), 2, "{tmux}");
     }
 
-    /// tmux's `#{@...}` is a window's own, so a listing's stamps are read — on
-    /// this machine whatever OS it is, and on a host whatever it prefers.
     #[test]
     fn tmux_is_read_as_stamping_its_windows() {
         let winbox = crate::HostDef {
@@ -493,8 +409,6 @@ mod tests {
         assert!(TmuxBackend::local(&crate::settings::for_tests()).stamps_are_per_window());
     }
 
-    /// Inside a pane tmux resolves its own server and pane, so the command a
-    /// hook runs names neither, and splices into a JSON string as it stands.
     #[test]
     fn the_hook_command_needs_no_socket_or_pane() {
         let command = TmuxBackend::local(&crate::settings::for_tests())
@@ -503,7 +417,6 @@ mod tests {
         assert_eq!(command, "tmux set-option -p @thurbox_state ");
     }
 
-    /// tmux 3.8's own replies, captured on a scratch socket.
     #[cfg(unix)]
     #[test]
     fn tmuxs_own_absence_replies_read_as_absence() {

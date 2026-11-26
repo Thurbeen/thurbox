@@ -1,31 +1,15 @@
-//! `thurbox-cli version [--check]` — print the running version and, with
-//! `--check`, query GitHub for the newest release of this binary's major line
-//! (and report, never offer, a newer major).
-//!
-//! `--check` is gated behind the `[features] version_check` flag (on by
-//! default for 1.0, since thurbox now keeps itself current). When the flag is
-//! off, `--check` prints a one-line hint on how to enable it instead of
-//! reaching the network.
-//! A successful check also refreshes the on-disk cache the TUI badge reads.
-
 use clap::Args;
 use serde_json::json;
 
 use super::output::{kv, CommandOutput};
 
-/// `version` subcommand arguments.
 #[derive(Args, Debug)]
 pub struct VersionArgs {
-    /// Check GitHub for a newer release (requires `[features] version_check`).
+    #[arg(help = "Check GitHub for a newer release (requires `[features] version_check`)")]
     #[arg(long)]
     pub check: bool,
 }
 
-/// Run the `version` command. Takes no database — it only reads the compiled-in
-/// version and (with `--check`) the network.
-///
-/// `enabled` is `[features] version_check` as the process loaded it, and
-/// `fleet` the Fleet in force, which it reports beside the version.
 pub fn run(
     args: VersionArgs,
     enabled: bool,
@@ -34,8 +18,6 @@ pub fn run(
     let current = crate::update::version_check::current_version();
 
     if !args.check {
-        // Where this build's interface state lives and which tmux socket it
-        // names: what tells a sandbox apart from the real instance.
         return CommandOutput::new(
             json!({
                 "version": current,
@@ -128,8 +110,6 @@ mod tests {
 
     #[test]
     fn version_check_when_flag_disabled_prints_enable_hint() {
-        // The flag is on by default for 1.0, so exercise the disabled path
-        // directly, with the flag passed in — no network.
         let out = run(
             VersionArgs { check: true },
             false,

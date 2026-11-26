@@ -1,5 +1,3 @@
-//! The opt-in RMUX adapter over the shared tmux-compatible server.
-
 use std::sync::Arc;
 
 use anyhow::{bail, Result};
@@ -35,7 +33,6 @@ impl TmuxCompatible for Rmux {
     const WINDOW_OPTIONS: bool = true;
     const WINDOW_SETTINGS: bool = true;
     // RMUX does not end a pane stream when its window is killed externally.
-    // Poll liveness so an open TUI can relaunch that pane.
     const WINDOW_EVENTS: bool = false;
     const PANE_MONITORING: bool = false;
     const SNAPSHOTS: bool = true;
@@ -45,9 +42,7 @@ impl TmuxCompatible for Rmux {
     const CONDITIONAL_RESIZE: bool = true;
     const SERVER_SCOPE: &str = "-s";
     const DISPLAY_FLAGS: &[&str] = &[];
-    // RMUX 0.9.1 speaks wire version 5, which the 0.10.0 client (wire 8)
-    // rejects before it can ask that daemon to create a pane. `#{version}`
-    // reports tmux compatibility 3.4, so it cannot be used as an RMUX floor.
+    // RMUX 0.10.0 rejects a 0.9.1 daemon's wire, and `#{version}` reports tmux 3.4, so no floor reads it.
     const VERSION_FLOOR: Option<fn(&str, &str) -> Result<()>> = None;
 
     fn check_banner(banner: &str, _socket: &str) -> Result<()> {
@@ -65,11 +60,6 @@ impl TmuxCompatible for Rmux {
         Vec::new()
     }
 
-    /// tmux's replies and RMUX's own `session not found: `, bare as a one-shot
-    /// prints them or wrapped as control mode does:
-    /// `invalid target '%9': can't find pane: %9`. A wrapped reply counts only
-    /// when both copies of the target agree, rather than any refusal that
-    /// happens to mention a missing pane.
     fn answered_absent(answer: &str) -> Option<Missing> {
         let Some((target, reply)) = answer
             .strip_prefix("invalid target '")
@@ -100,7 +90,6 @@ impl TmuxCompatible for Rmux {
     const HOOK_STATUS: bool = true;
 }
 
-/// One bare RMUX reply ([`Rmux::answered_absent`]).
 fn rmux_answered_absent(answer: &str) -> Option<Missing> {
     tmux_answered_absent(answer).or_else(|| {
         answer
@@ -145,8 +134,6 @@ mod tests {
         );
     }
 
-    /// RMUX 0.10.0's own replies, captured on a scratch socket: bare as a one-shot
-    /// prints them, and wrapped in `invalid target '…': ` as control mode does.
     #[cfg(unix)]
     #[test]
     fn rmuxs_own_absence_replies_read_as_absence() {

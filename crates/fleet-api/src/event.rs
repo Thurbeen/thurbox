@@ -1,42 +1,22 @@
-//! Events on a [Board](crate::board): the envelope, its validation, and what
-//! a reader gets back. Field names follow CloudEvents.
-//!
-//! The publisher sets `type`, `subject`, `key`, `correlation` and `data`.
-//! Fleet sets `board`, `seq` (one total order per board, from 1), `time` and
-//! `source`. A second event with the `(source, key)` of one the board still
-//! holds is not appended: the publisher gets the first one back.
-
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::meta::{Millis, Object};
 
-/// Event types under this prefix are Fleet's own: only a controller
-/// publishes them.
 pub const RESERVED_PREFIX: &str = "fleet.";
 
 pub const MAX_TYPE_LEN: usize = 128;
-/// The most characters of `subject`, `key` and `correlation` each.
 pub const MAX_FIELD_CHARS: usize = 256;
 
-/// Who published an event. Fleet sets it; a publisher never names it.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(untagged)]
 pub enum Source {
-    /// `cli/<user>`: a person or a script outside any session, through the
-    /// manager's publish verb.
     Cli(CliSource),
-    /// A session's Task, whose outbox TaskController ingested the event
-    /// from.
     Task(TaskSource),
-    /// `controller/<name>`: a Fleet controller, the only publisher of the
-    /// [`RESERVED_PREFIX`].
     Controller(ControllerSource),
 }
 
 impl Source {
-    /// The source as `fleet event list --source` matches it: `cli/<user>`
-    /// or `task/<name>`.
     pub fn name(&self) -> String {
         match self {
             Source::Cli(c) => c.0.clone(),
@@ -45,8 +25,6 @@ impl Source {
         }
     }
 
-    /// Whether `other` is the same publisher, as a key's dedupe compares
-    /// them: a Task by its name and uid, whatever its lineage.
     pub fn same_publisher(&self, other: &Source) -> bool {
         match (self, other) {
             (Source::Cli(a), Source::Cli(b)) => a == b,
@@ -59,7 +37,6 @@ impl Source {
 
 pub const TASK_SOURCE_PREFIX: &str = "task/";
 
-/// A Task as an event names it.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct TaskRef {
@@ -67,7 +44,6 @@ pub struct TaskRef {
     pub uid: String,
 }
 
-/// The Task whose session published, and its ancestors, nearest first.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct TaskSource {
@@ -76,13 +52,8 @@ pub struct TaskSource {
     pub lineage: Vec<TaskRef>,
 }
 
-/// The most ancestors a [`TaskSource`] names.
 pub const MAX_LINEAGE: usize = 16;
 
-/// The source of an event `task`'s session published. Its lineage follows
-/// the parent labels ([`PARENT_LABEL`](crate::talk::PARENT_LABEL)) through
-/// `lookup`, nearest first. It stops at a parent `lookup` does not find
-/// under the labelled uid, after naming that parent.
 pub fn task_source<'a>(task: &'a Object, lookup: impl Fn(&str) -> Option<&'a Object>) -> Source {
     use crate::talk::{PARENT_LABEL, PARENT_UID_LABEL};
     let mut lineage = Vec::new();
@@ -109,7 +80,6 @@ pub fn task_source<'a>(task: &'a Object, lookup: impl Fn(&str) -> Option<&'a Obj
     })
 }
 
-/// `cli/<user>`, `user` non-empty and without `/`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(try_from = "String", into = "String")]
 pub struct CliSource(String);
@@ -145,7 +115,6 @@ impl From<CliSource> for String {
 
 pub const CONTROLLER_SOURCE_PREFIX: &str = "controller/";
 
-/// `controller/<field manager>`, such as `controller/task-controller`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(try_from = "String", into = "String")]
 pub struct ControllerSource(String);
@@ -175,7 +144,6 @@ impl From<ControllerSource> for String {
     }
 }
 
-/// What a publisher sets.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct Publish {
@@ -183,16 +151,13 @@ pub struct Publish {
     pub event_type: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub subject: Option<String>,
-    /// With `source`, what makes a retried publish the same event.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub key: Option<String>,
-    /// Ties events of one piece of work together.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub correlation: Option<String>,
     pub data: Value,
 }
 
-/// One entry of a board's log.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct Event {
@@ -226,14 +191,11 @@ impl Event {
         }
     }
 
-    /// Whether `publish` from `source` is this event again.
     pub fn same_key(&self, source: &Source, publish: &Publish) -> bool {
         publish.key.is_some() && self.key == publish.key && self.source.same_publisher(source)
     }
 }
 
-/// What an append answers for one publish: the event the board holds under
-/// it, and whether it was there already.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Appended {
@@ -241,19 +203,13 @@ pub struct Appended {
     pub duplicate: bool,
 }
 
-/// What a read answers.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub enum Page {
-    /// The events after the cursor, oldest first.
     Events(Vec<Event>),
-    /// The cursor is older than the log: the events up to `oldest - 1` are
-    /// gone. A reader resumes from `oldest - 1`, knowing it missed some.
     Expired { oldest: u64 },
 }
 
-/// Dot-separated segments of `a-z`, `0-9`, `_` and `-`, none empty, at most
-/// [`MAX_TYPE_LEN`] characters in all.
 pub fn validate_type(t: &str) -> Result<(), String> {
     let segment_ok = |s: &str| {
         !s.is_empty()
@@ -277,9 +233,6 @@ fn validate_field(name: &str, value: Option<&str>) -> Result<(), String> {
     }
 }
 
-/// Check a publish against the envelope's rules and the board's
-/// `maxDataBytes`. The [`RESERVED_PREFIX`] is refused: this check is for a
-/// publisher that is not a controller.
 pub fn validate_publish(p: &Publish, max_data_bytes: u64) -> Result<(), String> {
     if p.event_type.starts_with(RESERVED_PREFIX) {
         return Err(format!(
@@ -290,8 +243,6 @@ pub fn validate_publish(p: &Publish, max_data_bytes: u64) -> Result<(), String> 
     validate_envelope(p, max_data_bytes)
 }
 
-/// [`validate_publish`] for a publish from `source`: a
-/// [`Source::Controller`] may also use the [`RESERVED_PREFIX`].
 pub fn validate_publish_from(
     source: &Source,
     p: &Publish,
@@ -317,24 +268,15 @@ fn validate_envelope(p: &Publish, max_data_bytes: u64) -> Result<(), String> {
     Ok(())
 }
 
-/// The variable that names a session's outbox: the file `fleet event
-/// publish` appends to inside the session, which TaskController ingests.
 pub const EVENT_FILE_ENV: &str = "FLEET_EVENT_FILE";
 
-/// The outbox of the session whose signal file is `signal_file`: beside it,
-/// on the same host, under a name no signal file has.
 pub fn outbox_file(signal_file: &str) -> String {
     format!("{signal_file}.events")
 }
 
-/// The most bytes of one outbox line, its newline included.
 pub const MAX_OUTBOX_LINE: usize = 64 * 1024;
-/// The most bytes of an outbox one ingest reads, from the stored offset.
 pub const MAX_OUTBOX_READ: u64 = 512 * 1024;
 
-/// One line of a session's outbox: the board, and what a publisher sets.
-/// A field it does not name, such as a source or a Task, is ignored:
-/// Fleet names the source.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct OutboxLine {
@@ -362,9 +304,6 @@ impl OutboxLine {
         }
     }
 
-    /// The board and the publish, once they pass every check that needs no
-    /// store: the board's name, the envelope's rules and the reserved
-    /// prefix. The board's own `maxDataBytes` is checked at the append.
     pub fn checked(self) -> Result<(String, Publish), String> {
         crate::validate::validate_name(&self.board).map_err(|e| format!("board: {e}"))?;
         let publish = Publish {
@@ -378,7 +317,6 @@ impl OutboxLine {
         Ok((self.board, publish))
     }
 
-    /// The line as `fleet event publish` appends it, newline included.
     pub fn encode(&self) -> Result<Vec<u8>, String> {
         self.clone().checked()?;
         let mut line = serde_json::to_vec(self).map_err(|e| e.to_string())?;
@@ -393,39 +331,24 @@ impl OutboxLine {
     }
 }
 
-/// What a read of an outbox answers: the bytes from `start`, at most
-/// [`MAX_OUTBOX_READ`]. `start` is the offset asked for, or 0 when the file
-/// is shorter than it: the file was made again.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct OutboxRead {
     pub start: u64,
     pub bytes: Vec<u8>,
 }
 
-/// TaskController's place in a session's outbox (`Task.status.outbox`):
-/// the offset of the first line not ingested yet, how often the file was
-/// made again, and the lines it skipped.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct OutboxCursor {
     pub offset: u64,
-    /// Bumped when the outbox is shorter than `offset`: part of each key
-    /// derived from an offset, so a new file's lines are new events.
     #[serde(default, skip_serializing_if = "is_zero")]
     pub generation: u64,
-    /// Lines that did not parse or were refused, over the Task's life.
     #[serde(default, skip_serializing_if = "is_zero")]
     pub skipped: u64,
-    /// Why the last skipped line was skipped, and where it was, in the
-    /// current generation: a file made again clears it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub last_skipped: Option<String>,
-    /// The session is gone and a read since found every whole line in:
-    /// nothing reads the outbox again until the session is back.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub closed: bool,
-    /// The bytes at `offset` continue a line already skipped as too long:
-    /// they are passed over up to its newline, never read as a line.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub discarding: bool,
 }
@@ -435,15 +358,12 @@ fn is_zero(n: &u64) -> bool {
 }
 
 impl OutboxCursor {
-    /// Past the line that ends at `end`, which was skipped for `why`.
     pub fn skip(&mut self, offset: u64, end: u64, why: &str) {
         self.offset = end;
         self.skipped += 1;
         self.last_skipped = Some(format!("offset {offset}: {why}"));
     }
 
-    /// Why the line at `offset` was skipped, when it is the last line
-    /// skipped.
     pub fn skipped_at(&self, offset: u64) -> Option<&str> {
         self.last_skipped
             .as_deref()
@@ -451,23 +371,14 @@ impl OutboxCursor {
     }
 }
 
-/// One whole line of an outbox: where it starts and ends, and the board and
-/// publish it carries, or why it is skipped.
 #[derive(Debug, Clone, PartialEq)]
 pub struct OutboxEntry {
     pub offset: u64,
     pub end: u64,
     pub line: Result<(String, Publish), String>,
-    /// A line skipped before its newline was read: the cursor passes over
-    /// the rest of it (`OutboxCursor::discarding`).
     pub torn: bool,
 }
 
-/// The whole lines of `read`, oldest first, and the cursor they continue:
-/// `cursor`, or the start of a file made again under the next generation.
-/// A last line with no newline yet waits for it, unless it is already
-/// longer than [`MAX_OUTBOX_LINE`]. A line without a key gets one derived
-/// from its generation and offset, so ingesting it again appends nothing.
 pub fn ingest(cursor: &OutboxCursor, read: &OutboxRead) -> (OutboxCursor, Vec<OutboxEntry>) {
     let mut from = cursor.clone();
     if read.start < cursor.offset {
@@ -535,13 +446,10 @@ fn parse_line(bytes: &[u8], generation: u64, offset: u64) -> Result<(String, Pub
     Ok((board, publish))
 }
 
-/// The key Fleet gives the line at `offset` of an outbox at `generation`
-/// when the line names none.
 pub fn outbox_key(generation: u64, offset: u64) -> String {
     format!("outbox-{generation}-{offset}")
 }
 
-/// A filter value: exact, or a prefix when it ends in `*`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(transparent)]
 pub struct Pattern(String);
@@ -563,7 +471,6 @@ impl Pattern {
     }
 }
 
-/// What `fleet event list` keeps; an empty filter keeps every event.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Filter {
@@ -582,10 +489,6 @@ impl Filter {
         *self == Filter::default()
     }
 
-    /// The `fleet event list` options that keep what this filter keeps,
-    /// each as `--flag=value` with the value quoted for a POSIX shell, so a
-    /// value that starts with a dash stays a value, each with a leading
-    /// space.
     pub fn cli_args(&self) -> String {
         let options = [
             ("--type", self.event_type.as_ref().map(Pattern::as_str)),

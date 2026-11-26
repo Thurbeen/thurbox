@@ -1,4 +1,3 @@
-//! Plugin registration and sweeps. All untrusted plans pass pure admission first.
 use crate::{Manager, RunReport, Step};
 use fleet_api::plugin::{
     Manifest, Mutation, Plan, PluginConfig, Plugins, Probe, RESERVED, Registration,
@@ -199,7 +198,6 @@ impl Manager<'_> {
             .iter()
             .find(|k| k.kind == obj.kind)
             .expect("registered kind");
-        // Lost answers become explicit Unknown receipts. No pending intent is replayed.
         let mut recovered = obj.status.clone();
         if recovered.is_null() {
             recovered = json!({});
@@ -326,7 +324,6 @@ impl Manager<'_> {
                 let mut status = input_obj.status.clone();
                 status["host"] = json!({"observedAt":now,"generation":obj.metadata.generation,"error":e.to_string()});
                 status["notBefore"] = json!(now.saturating_add(definition.poll_ms));
-                // Record failures using the same admitted owner, without accepting any plugin writes.
                 let by =
                     fleet_controllers::plugin::admit(json!({}), reg, obj, &BTreeMap::new())?.writer;
                 self.store.update_status(
@@ -398,8 +395,6 @@ impl Manager<'_> {
             .creates
             .into_iter()
             .map(Mutation::Create)
-            // Before patches: `ifGeneration` names the generation the plan
-            // was computed against, which a patch would move.
             .chain(plan.amends.into_iter().map(Mutation::Amend))
             .chain(plan.patches.into_iter().map(Mutation::Patch))
             .chain(plan.appends.into_iter().map(Mutation::Append));

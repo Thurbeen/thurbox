@@ -1,6 +1,3 @@
-//! A view's end of a terminal stream: frames up to the process, frames down
-//! from it on a thread, each wait bounded.
-
 use std::io::Write;
 use std::process::{Child, ChildStdin, Command, Stdio};
 use std::sync::mpsc::{self, Receiver};
@@ -14,7 +11,6 @@ pub struct View {
     pub child: Child,
     stdin: Option<ChildStdin>,
     frames: Receiver<Down>,
-    /// Every output byte read so far, as text.
     pub text: String,
 }
 
@@ -52,7 +48,6 @@ impl View {
         stdin.flush().expect("flush");
     }
 
-    /// The next frame, within the bound.
     pub fn next(&mut self) -> Down {
         let frame = self.frames.recv_timeout(BOUND).unwrap_or_else(|e| {
             panic!(
@@ -73,7 +68,6 @@ impl View {
         frame
     }
 
-    /// Frames until one `done` accepts, which it returns.
     pub fn until(&mut self, what: &str, done: impl Fn(&Down) -> bool) -> Down {
         let deadline = Instant::now() + BOUND;
         loop {
@@ -89,7 +83,6 @@ impl View {
         }
     }
 
-    /// Frames until the text read so far holds `needle`.
     pub fn until_text(&mut self, needle: &str) {
         let deadline = Instant::now() + BOUND;
         while !self.text.contains(needle) {
@@ -98,7 +91,6 @@ impl View {
         }
     }
 
-    /// Close the view's side and wait for the process, within the bound.
     pub fn close(mut self) -> std::process::ExitStatus {
         drop(self.stdin.take());
         let deadline = Instant::now() + BOUND;

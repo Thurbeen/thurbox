@@ -1,22 +1,3 @@
-//! Live agent terminals behind session-backed surfaces.
-//!
-//! A mod places a `surface` naming a session; this attaches to that
-//! session's pane — the terminal stream `fleet attach` names for a Fleet Task
-//! — keeps a vt100 parser fed from it, and paints the result with `tui_term`.
-//!
-//! It reaches `crate::agent` through fully-qualified paths only, never `use`,
-//! so every crossing into the side-effect layer is visible at its call site —
-//! the rule `cli` already follows.
-//!
-//! The shared [`Terminals`] state and its per-frame [`Terminals::sync`] live
-//! here. Each job it runs has a file of its own: attaching a pane on a worker
-//! in `attach`, a Fleet session's stream in `fleet`, drawing a surface in `paint`, companion shells in `shells`,
-//! mod programs in `programs`, and link detection / selection reads / OSC 8
-//! re-printing in [`links`].
-//!
-//! Spawning sessions and sending them anything beyond keystrokes are not
-//! here: those are commands (`kernel::command`).
-
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::sync::mpsc::{Receiver, Sender};
@@ -46,28 +27,9 @@ pub use programs::{plan_keys, validate_program_name, KeysPlan, ProgramKey, Progr
 use paint::Painted;
 use programs::ProgramSlot;
 
-/// The suffix that addresses a session's companion shell as its own surface.
 const SHELL_SUFFIX: &str = "#shell";
 
-/// One mouse report, in the encoding the program inside the pane asked for.
-///
-/// `button` is xterm's Cb before the +32 offset: 0 for the left button, 32 for
-/// a move with it held, 64/65 for the wheel (a press with no release). Every
-/// encoding is emitted, because a program that asks for the mouse at all and
-/// is handed nothing is a pane the mouse is dead in: the alternate screen it
-/// is almost certainly on keeps no scrollback, so there is no local fallback
-/// to leave it to.
-///
-/// * `Sgr` (`?1006`) — `CSI < Cb ; Cx ; Cy M`, `m` for a release, and the only
-///   encoding with no size limit.
-/// * `Default` — xterm's original `CSI M` with each field offset by 32, which
-///   caps a coordinate at 223. Past that there is no legal report to send, so
-///   `None`: a truncated one would land the event on the wrong cell. A release
-///   here has no button of its own — the protocol spells every release 3.
-/// * `Utf8` (`?1005`) — the default encoding with each field written as a
-///   UTF-8 character rather than a byte, which lifts the cap to 2015. A pane
-///   attached after its app asked for it is put back in it
-///   (`mouse_seed_bytes`), so it must be answered as well as any other.
+// xterm's Cb before the +32 offset: 0 left button, 32 a move with it held, 64/65 the wheel.
 fn mouse_report(
     encoding: vt100::MouseProtocolEncoding,
     button: u32,
@@ -98,14 +60,6 @@ fn mouse_report(
     }
 }
 
-/// The session a surface name belongs to, and whether it names that session's
-/// companion shell.
-///
-/// The one place the `<id>#shell` spelling is read. What comes back says which
-/// **pane** was asked for and nothing about what else is on screen: the two are
-/// independent surfaces, and a name that resolved differently depending on
-/// which of them painted last is exactly the shared tab area this stopped
-/// being.
 fn split_surface(surface: &str) -> (&str, bool) {
     match surface.strip_suffix(SHELL_SUFFIX) {
         Some(id) => (id, true),
@@ -113,48 +67,29 @@ fn split_surface(surface: &str) -> (&str, bool) {
     }
 }
 
-/// The surface name of a session's companion shell.
-///
-/// Spelled here rather than at each caller so the suffix has one definition —
-/// the one the resolver on the other side of it reads back.
 pub fn shell_surface(session: &str) -> String {
     format!("{session}{SHELL_SUFFIX}")
 }
 
-/// A session we have attached to, and the painted state of each of its panes.
 struct Live {
     session: crate::backend::Session,
-    /// The agent's own pane.
     agent: Painted,
-    /// The companion shell's, independent of the agent's in every respect —
-    /// which slot it sits in, how big it is, and whether it is on screen at all.
     shell: Painted,
 }
 
 impl Live {
-    /// One of this session's two panes, by name.
     fn pane(&self, shell: bool) -> Pane<'_> {
         Pane { live: self, shell }
     }
 }
 
-/// One of a session's two panes: the agent's own, or its companion shell's.
-///
-/// A session has two surfaces, and nearly every question about one of them —
-/// how big it is, where it was painted, what it is showing, where a keystroke
-/// goes — is a question about exactly one. Carrying the pair around as a
-/// `&Live` and a loose `shell` flag is how a caller ends up asking the wrong
-/// one, which is the bug this whole module stopped having (#1220). This is that
-/// pair resolved once, with the answers hanging off it.
 #[derive(Clone, Copy)]
 struct Pane<'a> {
     live: &'a Live,
-    /// The companion shell rather than the agent.
     shell: bool,
 }
 
 impl<'a> Pane<'a> {
-    /// Where this pane was painted, and the size it was last told about.
     fn painted(&self) -> &'a Painted {
         if self.shell {
             &self.live.shell
@@ -163,8 +98,6 @@ impl<'a> Pane<'a> {
         }
     }
 
-    /// This pane's parser, or `None` when the shell was asked for and this
-    /// session has none.
     fn parser(&self) -> Option<&'a Arc<std::sync::Mutex<crate::backend::SessionParser>>> {
         match (self.shell, &self.live.session.shell_pane) {
             (true, Some(pane)) => Some(&pane.parser),
@@ -173,8 +106,6 @@ impl<'a> Pane<'a> {
         }
     }
 
-    /// Whether another thurbox is sizing this pane — see
-    /// [`paint_sized_elsewhere`].
     fn sized_elsewhere(&self) -> bool {
         match (self.shell, &self.live.session.shell_pane) {
             (true, Some(pane)) => pane.sized_elsewhere(),
@@ -183,8 +114,6 @@ impl<'a> Pane<'a> {
         }
     }
 
-    /// Take this pane's size back if the thurbox sizing it has gone — see
-    /// `WiredPane::retake_size`.
     fn retake_size(&self) {
         match (self.shell, &self.live.session.shell_pane) {
             (true, Some(pane)) => pane.retake_size(),
@@ -193,12 +122,6 @@ impl<'a> Pane<'a> {
         }
     }
 
-    /// Send bytes to this pane.
-    ///
-    /// The write half of [`Self::parser`], and it declines in exactly the case
-    /// that one does: a shell surface on a session that has no shell is an
-    /// error rather than a silent success, so no caller can be told a keystroke
-    /// reached a pane that is not there.
     fn send(&self, bytes: Vec<u8>) -> anyhow::Result<()> {
         match (self.shell, &self.live.session.shell_pane) {
             (true, Some(pane)) => pane.send_input(bytes),
@@ -207,8 +130,6 @@ impl<'a> Pane<'a> {
         }
     }
 
-    /// Push a size to this pane, reporting whether it reached the backend —
-    /// the render path memoizes only a size that did.
     fn resize(&self, rows: u16, cols: u16) -> bool {
         if self.shell {
             self.live.session.resize_shell(rows, cols)
@@ -217,13 +138,10 @@ impl<'a> Pane<'a> {
         }
     }
 
-    /// Whether this pane painted into a rect with room in it.
     fn on_screen(&self) -> bool {
         self.painted().on_screen()
     }
 
-    /// Whether the pane behind this surface is dead, as the backend reports it
-    /// now. `None` when there is no such pane or the backend cannot say.
     fn is_dead(&self) -> Option<bool> {
         if self.shell {
             return self.live.session.shell_is_dead()?.ok();
@@ -231,19 +149,14 @@ impl<'a> Pane<'a> {
         self.live.session.is_dead().ok()
     }
 
-    /// When this pane last produced output, as epoch milliseconds.
     fn last_output_at(&self) -> Option<u64> {
         Some(self.wired()?.last_output_at())
     }
 
-    /// [`Self::last_output_at`], moved too when the grid is rebuilt — the
-    /// stamp for what is read off the grid.
     fn content_stamp(&self) -> Option<u64> {
         Some(self.wired()?.content_stamp())
     }
 
-    /// The wired pane behind this surface, or `None` for a shell the session
-    /// does not have.
     fn wired(&self) -> Option<&'a crate::backend::pane::WiredPane> {
         if self.shell {
             return self.live.session.shell_pane.as_deref();
@@ -251,15 +164,11 @@ impl<'a> Pane<'a> {
         Some(&*self.live.session)
     }
 
-    /// Whether the parser holds this pane's grid. A pane that does not exist
-    /// has nothing to hold, which is the same as holding it.
     fn is_resident(&self) -> bool {
         self.wired()
             .is_none_or(crate::backend::pane::WiredPane::is_resident)
     }
 
-    /// How much output this pane's parser has taken — see
-    /// [`crate::backend::pane::WiredPane::output_seq`].
     fn output_seq(&self) -> Option<u64> {
         Some(self.wired()?.output_seq())
     }
@@ -269,132 +178,55 @@ impl<'a> Pane<'a> {
     }
 }
 
-/// One surface's extracted rows and the output stamp they were read at.
 type CachedRows = (u64, std::rc::Rc<Vec<String>>);
 
-/// Owns every live terminal, keyed by session id.
 pub struct Terminals {
-    /// The process's one registry, built at its composition root and shared
-    /// with the command bus: attach and every lifecycle command drive the same
-    /// backends.
     backends: std::sync::Arc<crate::backend::BackendRegistry>,
-    /// Extracted screen rows per surface, keyed on the output stamp they were
-    /// read at.
-    ///
-    /// One walk of a vt100 grid builds a `String` per row from a per-cell
-    /// `contents()` call — ~10,000 allocations for a 200×50 grid — and three
-    /// readers want the same rows on the same frame: the link scan, the
-    /// click-time URL resolve, and the OSC 8 repaint (which runs per painted
-    /// frame for every session that ever printed a link). Sharing one
-    /// extraction per output stamp turns that into a map hit for all but the
-    /// first asker. `RefCell` because every reader takes `&self` on the UI
-    /// thread.
     rows_cache: RefCell<HashMap<String, CachedRows>>,
     live: HashMap<String, Live>,
-    /// Backends whose control-mode connection has been opened. Readying is
-    /// blocking (an ssh connect for a remote host), so it happens once, lazily,
-    /// and only for a backend a session actually lives on.
     ready: RefCell<std::collections::HashSet<String>>,
-    /// Last-known activity/notification per session. Cached because the read is
-    /// generation-gated: an unchanged session reports nothing, so the previous
-    /// value has to be kept somewhere.
     meta: HashMap<String, AgentMeta>,
-    /// Moves only when [`Self::meta`] actually writes or drops an entry.
     meta_version: u64,
-    /// The sessions whose pane is **currently producing output**, refreshed by
-    /// [`Self::sync_printing`] once per publish.
-    ///
-    /// Membership only, and deliberately nothing else: it is the single fact
-    /// the interface needs to animate a `running` session on evidence rather
-    /// than on assumption, and it is published in a group of its own because
-    /// the answer moves with the agent's output while the session rows do not
-    /// (see `kernel::host::publish`).
     printing: std::collections::HashSet<String>,
-    /// Moves only when [`Self::printing`] gains or loses a session.
-    ///
-    /// The reason this is a set-membership version rather than the raw output
-    /// clock: `millis_since_output` changes on every byte, and gating a group
-    /// on that would rebuild it on every frame under a printing agent — the
-    /// exact cost the group gating exists to avoid.
     printing_version: u64,
     shelling: HashMap<String, shells::Shelling>,
     shelled: (Sender<shells::Shelled>, Receiver<shells::Shelled>),
     shell_results: Vec<ShellResult>,
     shells_after_start: HashMap<String, (u16, u16)>,
-    /// The runtime the interface runs on, so a worker can enter it.
-    ///
-    /// Adopting a pane wires its reader and writer as tokio tasks, which need a
-    /// reactor in scope — a bare thread has none, and the adopt panics there.
-    /// Captured once rather than looked up per attach so the failure mode is
-    /// "no runtime at construction", not a surprise mid-session.
     runtime: Option<tokio::runtime::Handle>,
     programs: HashMap<ProgramKey, ProgramSlot>,
     program_transitions: Vec<ProgramTransition>,
-    /// How long a session's pane may be off screen before its grid is dropped
-    /// ([`Self::evict_hidden`]); `None` keeps every grid for as long as the
-    /// pane runs. `settings.toml`'s `hidden_terminal_secs`.
     keep_hidden: Option<std::time::Duration>,
-    /// Lines of scrollback each pane's grid keeps: `settings.toml`'s
-    /// `scrollback_lines`, as the settings this was built with say.
     scrollback: usize,
-    /// What a local tmux pane is viewed through when `settings.toml`'s
-    /// `stream_panes` is on ([`Self::view_through`]).
     stream_view: Option<stream_pane::View>,
-    /// The Fleets a Fleet session's pane is attached through, by name: a
-    /// row's id names its Fleet ([`Self::attach_fleet_through`]).
     fleet: HashMap<String, crate::fleet_link::FleetLink>,
-    /// What stream panes say about input they dropped, for the interface
-    /// to report ([`Self::take_input_notices`]).
     input_notices: (Sender<String>, Receiver<String>),
-    /// The pane whose OSC 52 writes are accepted — the focused surface's, as of
-    /// the last [`Self::take_app_copy`] — and the last focus token handed out.
     app_copy_focus: Option<std::sync::Arc<crate::backend::pane::AppCopy>>,
     app_copy_tokens: u64,
-    /// The surface [`Self::focus`] last handed its size, and the pane behind
-    /// it — the edge it acts on.
     size_focus: Option<(String, String)>,
-    /// Attaches in flight and attaches that failed — see [`attach::Attach`].
     attach: attach::Attach,
 }
 
 impl Terminals {
-    /// Open each local tmux pane through `view`, a terminal stream, from now
-    /// on. A stream pane keeps its grid while hidden: it comes back only
-    /// through its stream.
     pub fn view_through(&mut self, view: stream_pane::View) {
         self.stream_view = Some(view);
         self.keep_hidden = None;
     }
 
-    /// What stream panes said since the last call about input they dropped
-    /// (`input dropped: <session> isn't reading`), for the interface to
-    /// report where it reports a command's error: a notice in the pane's
-    /// own grid would be painted over by a full-screen agent.
     pub fn take_input_notices(&self) -> Vec<String> {
         self.input_notices.1.try_iter().collect()
     }
 
-    /// Open each session of the Fleet `link` reaches through the terminal
-    /// stream `fleet attach` names (ADR-41); called once per listed Fleet. A
-    /// stream pane keeps its grid while hidden, as [`Self::view_through`]'s
-    /// do.
     pub fn attach_fleet_through(&mut self, link: crate::fleet_link::FleetLink) {
         self.fleet.insert(link.name().to_string(), link);
         self.keep_hidden = None;
     }
 
-    /// Make a failed attach again `interval` after it failed, rather than
-    /// the 20 s a host that was down is given: for a test that would
-    /// otherwise wait that out.
     #[doc(hidden)]
     pub fn retry_failed_attaches_after(&mut self, interval: std::time::Duration) {
         self.attach.retry_after = interval;
     }
 
-    /// Terminals over the process's registry. How that set is assembled — and
-    /// why nothing is readied when it is — is the composition root's, not the
-    /// kernel's. `settings` are the ones the process loaded: what a pane keeps
-    /// and how long a hidden one stays resident are fixed for its lifetime.
     pub fn with_registry(
         backends: std::sync::Arc<crate::backend::BackendRegistry>,
         settings: &crate::session::settings::Settings,
@@ -430,15 +262,9 @@ impl Terminals {
         }
     }
 
-    /// Attach to sessions that appeared, and drop those that went away.
-    ///
-    /// Called once per frame from the event loop. An attach is attempted once per
-    /// (session, pane) — so a pane that cannot be adopted does not retry 20×/s,
-    /// and a session whose pane only *becomes* known later is still picked up.
     pub fn sync(&mut self, snapshot: &Snapshot, rows: u16, cols: u16) {
         self.collect_attached(rows, cols);
         self.drop_lost_panes(snapshot);
-        // A surface that lost its parser takes its cached rows with it.
         self.rows_cache
             .borrow_mut()
             .retain(|surface, _| self.surface_parser(surface).is_some());
@@ -447,10 +273,6 @@ impl Terminals {
         self.settle_starts(snapshot);
         self.evict_hidden();
 
-        // Anything no longer in the snapshot has been deleted; dropping the
-        // Session detaches it without touching the pane. An attach still in
-        // flight is left to finish and discarded on arrival — a worker cannot
-        // be cancelled, and its result is matched against the live rows.
         let present: std::collections::HashSet<&str> = snapshot
             .sessions
             .iter()
@@ -468,20 +290,10 @@ impl Terminals {
         }
     }
 
-    /// Override `hidden_terminal_secs` for this instance: how long a pane may
-    /// be off screen before its grid is dropped, or `None` to keep every grid.
     pub fn keep_hidden_for(&mut self, keep: Option<std::time::Duration>) {
         self.keep_hidden = keep;
     }
 
-    /// Drop the grid of every session pane that has been off screen for longer
-    /// than `hidden_terminal_secs` — or was never shown — where its backend can
-    /// give it back ([`crate::backend::pane::WiredPane::evict`]).
-    ///
-    /// Off screen means not painted in the last frame *and* not painted for a
-    /// while: frames are drawn on demand, so a session on screen and quiet can
-    /// go a long time between paints, and its rect is what says it is still
-    /// there.
     fn evict_hidden(&self) {
         let Some(keep) = self.keep_hidden else {
             return;
@@ -501,28 +313,15 @@ impl Terminals {
         }
     }
 
-    /// The key a row's per-backend state is kept under: its route, which is
-    /// the serving backend's own name.
     fn key(&self, backend: &str) -> String {
         backend.to_string()
     }
 
-    /// The backend serving a row's route, if one is registered for it.
     fn backend_for(&self, backend: &str) -> Option<Arc<dyn crate::backend::SessionBackend>> {
         let route = crate::session::Route::parse(backend).ok()?;
         self.backends.get(&route).cloned()
     }
 
-    /// Let go of a session's terminal, so the next sync attaches afresh.
-    ///
-    /// Told rather than waited for. `has_exited` does now catch a killed pane —
-    /// tmux announces the window's close and the pane's reader ends with it — but
-    /// that is a notification arriving in its own time, and the restart knew
-    /// before it happened. This is how it says so, immediately.
-    ///
-    /// The recorded failure is cleared too, or the next attach would be held off
-    /// by the retry interval and the session would sit frozen for another 20s
-    /// after the pane it needs is already there.
     pub fn forget(&mut self, session: &str) {
         self.live.remove(session);
         if self.attach.failed.remove(session).is_some() {
@@ -530,60 +329,23 @@ impl Terminals {
         }
     }
 
-    /// Forward keystrokes to a session's pane.
-    ///
-    /// Returns false when the session is not attached, so the caller can leave
-    /// the key for something else rather than swallowing it silently.
     #[must_use = "the caller decides whether the keystroke was consumed from this"]
     pub fn send(&self, session: &str, bytes: Vec<u8>) -> bool {
-        // A shell surface is addressed `<id>#shell`, the same spelling
-        // `render_session` resolves — so the pane you are looking at is the one
-        // your keystrokes reach. Without this leg the shell drew but could not
-        // be typed into, which only became visible once it stopped being a pane
-        // of its own and became a tab of the terminal.
         match self.pane(session) {
             Some(pane) => pane.send(bytes).is_ok(),
             None => false,
         }
     }
 
-    /// The pane a surface name addresses.
-    ///
-    /// The one place a surface name becomes a pane: `<id>#shell` names the
-    /// companion shell and a bare id names the agent, and which one comes back
-    /// depends on the name and on nothing else. Resolving it against whichever
-    /// of the two painted last is what let a selection in one pane copy out of
-    /// the other.
     fn pane(&self, surface: &str) -> Option<Pane<'_>> {
         let (id, shell) = split_surface(surface);
         Some(self.live.get(id)?.pane(shell))
     }
 
-    /// Whether the pane a surface names is dead, as the backend reports it now.
-    ///
-    /// Resolves the surface the way [`Self::send`] and `surface_parser` do,
-    /// and for the same reason: a `<id>#shell` surface is the companion
-    /// shell pane, a bare id the session's own pane, and the two die apart. A
-    /// caller weighing whether to forward a keystroke or divert it must ask the
-    /// pane the keystroke would actually reach — asking the agent while the
-    /// shell is on screen judged the wrong pane and could delete a session out
-    /// from under a live shell. `None` when the session is not attached, has no
-    /// such pane, or the backend cannot say — every caller reads that as "not
-    /// known to be dead", so an unsure answer changes nothing.
     pub fn is_dead(&self, surface: &str) -> Option<bool> {
         self.pane(surface)?.is_dead()
     }
 
-    /// The OSC 52 writes the focused pane's app made since the last call,
-    /// oldest first — and the only pane whose writes are kept at all.
-    ///
-    /// `focused` is the surface raw input goes to, or `None` when no session
-    /// pane is taking the keys (a modal or a field has them, say). Focus moving to another pane, or to none, revokes
-    /// the old pane's gate before anything is read, so a background app — local
-    /// or on a remote host — never writes the user's clipboard, and a write it
-    /// made while hidden is not released when it is brought forward (see
-    /// [`crate::backend::pane::AppCopy`]). A program pane is not a session pane
-    /// and resolves to none here.
     pub fn take_app_copy(
         &mut self,
         focused: Option<&str>,
@@ -614,23 +376,6 @@ impl Terminals {
             .unwrap_or_default()
     }
 
-    /// Hand the focused surface its pane's size, once per focus gained.
-    ///
-    /// On a pane several instances show, a paint resizes only a pane that is
-    /// this instance's to size, and input is what hands the size over
-    /// (`WiredPane::send_input`). Focus says the same thing input does — the
-    /// user is at this instance — so a pane focused here takes the size of the
-    /// rect it was just painted into, and is not left at another instance's
-    /// size until the first keystroke. Called after the paint, so that rect is
-    /// this frame's.
-    ///
-    /// On the edge only: keeping the focus is not gaining it, or two instances
-    /// focused on one pane would take it from each other every frame. A pane
-    /// replaced under the focused surface is a new pane gaining it. `None`
-    /// (focus on a pane with no terminal, or on a modal) clears the edge, so
-    /// coming back is focusing again. A pane already at this size costs an
-    /// atomic comparison and sends nothing, and one nobody else shares was
-    /// already sized by its paint.
     pub fn focus(&mut self, surface: Option<&str>) {
         let Some(surface) = surface else {
             self.size_focus = None;
@@ -640,13 +385,9 @@ impl Terminals {
             Some(key) => self.programs.get(key).map(|slot| &*slot.pane),
             None => self.pane(surface).and_then(|pane| pane.wired()),
         };
-        // A surface with no pane yet — focused before it attached — is asked
-        // again next time rather than marked as handed its size.
         let Some(wired) = wired else {
             return;
         };
-        // Keyed on the pane as well as the surface: a restart replaces the pane
-        // under a name that keeps the focus, and the new pane has never had it.
         if self
             .size_focus
             .as_ref()
@@ -658,10 +399,6 @@ impl Terminals {
         self.size_focus = Some((surface.to_string(), wired.backend_id().to_string()));
     }
 
-    /// Where a surface was painted, and the parser it is showing.
-    ///
-    /// Every reader of a grid goes through [`Self::pane`] by way of this, so a
-    /// copy and a click on a link read the pane they were asked about.
     fn surface_parser(
         &self,
         surface: &str,
@@ -673,19 +410,7 @@ impl Terminals {
         Some((pane.painted(), pane.parser()?))
     }
 
-    /// The contents of one surface's terminal, as text.
-    ///
-    /// Named by surface, so `<id>#shell` reads the shell's screen and a bare id
-    /// reads the agent's. A pane that shows the shell asks for the shell — it
-    /// already spells that surface to render it — rather than relying on the
-    /// kernel to guess which of the two the user is reading.
-    ///
-    /// Read on the loop because its caller wants the answer now; the parser is
-    /// behind its own mutex, which is what lets the content search read the
-    /// same parsers on a worker instead ([`Self::search_sources`]).
     pub fn visible_text(&self, session: &str) -> Option<String> {
-        // A pane off screen long enough holds two cells rather than its
-        // screen; "nothing to copy" is the honest answer, not two blank rows.
         if !self.pane(session)?.is_resident() {
             return None;
         }
@@ -703,25 +428,6 @@ impl Terminals {
         Some(out)
     }
 
-    /// The terminals a content search reads, one [`search::Source`] per pane.
-    ///
-    /// **Both** of a session's panes, each under that session's id: a search
-    /// asks which session holds the text, and the answer is the same session
-    /// whether the agent printed it or the shell did. Scanning only whichever
-    /// pane happened to be on screen is what made a search's answer depend on
-    /// the arrangement.
-    ///
-    /// Only sessions with a live pane appear: an unreachable host or a session
-    /// whose pane has not been adopted has no parser to read. A pane whose grid
-    /// was dropped is searched all the same: its source reads it back from the
-    /// multiplexer, on the worker ([`super::search::Source::restore`]).
-    ///
-    /// An `Arc` clone and an atomic load per pane — the reading itself happens
-    /// on the search worker, under each parser's own lock, which is what the
-    /// lock is for: the reader thread already feeds the same parser from off
-    /// this thread.
-    ///
-    /// [`search::Source`]: super::search::Source
     pub fn search_sources(&self, sessions: &[String]) -> Vec<super::search::Source> {
         let scrollback = self.scrollback;
         sessions
@@ -759,20 +465,12 @@ impl Terminals {
             .collect()
     }
 
-    /// Whether a session has a shell pane open.
     pub fn has_shell(&self, session: &str) -> bool {
         self.live
             .get(session)
             .is_some_and(|live| live.session.shell_pane.is_some())
     }
 
-    /// Forget where every surface was painted, at the start of a frame.
-    ///
-    /// A rect is recorded while painting and was never taken back, so a session
-    /// whose surface stopped being drawn — a pane removed, an alternate no longer
-    /// selected, a mod that changed its mind — kept the rect it last held, and a
-    /// click or wheel tick landing there was routed to a session that is not on
-    /// screen. Cleared each frame, only what actually painted can be hit.
     pub fn forget_rects(&self) {
         for live in self.live.values() {
             live.agent.rect.set(Rect::default());
@@ -783,17 +481,7 @@ impl Terminals {
         }
     }
 
-    /// Where a surface was last painted, so a click can be mapped into its grid.
-    ///
-    /// `None` once that surface is not on screen: an empty rect cannot contain a
-    /// pointer, so a stale one would only ever be a wrong answer. A session's
-    /// two panes answer separately — `<id>#shell` is where the shell was
-    /// painted, a bare id where the agent was — so a point is resolved against
-    /// the pane it actually landed in.
     pub fn last_rect(&self, session: &str) -> Option<Rect> {
-        // A program surface keeps its rect on its own slot, so the one accessor
-        // answers for all three kinds — callers ask about "a surface", not about
-        // a session.
         if let Some(key) = self.program_key(session) {
             return self
                 .programs
@@ -806,10 +494,6 @@ impl Terminals {
             .map(|pane| pane.painted().rect.get())
     }
 
-    /// The grid row a surface painted at the top of its rect: 0, unless its
-    /// grid is taller than the rect and its bottom rows are what is shown
-    /// (another instance sizes the pane). A caller turning a point into a grid
-    /// position adds it.
     pub fn last_top(&self, surface: &str) -> u16 {
         if let Some(key) = self.program_key(surface) {
             return self
@@ -821,13 +505,6 @@ impl Terminals {
             .map_or(0, |pane| pane.painted().top.get())
     }
 
-    /// The pane under `(x, y)`: the session it belongs to, and which of that
-    /// session's two it is.
-    ///
-    /// Both panes are candidates and each is tested against its own rect. Which
-    /// one a pointer is over is not a question a session can answer for itself
-    /// once the two are on screen at once — asking it that way is what sent a
-    /// press in one pane to the program running in the other.
     fn pane_at(&self, x: u16, y: u16) -> Option<(&str, Pane<'_>)> {
         let position = Position::new(x, y);
         self.live.iter().find_map(|(id, live)| {
@@ -839,14 +516,6 @@ impl Terminals {
         })
     }
 
-    /// Hand a wheel tick to whatever terminal is under `(x, y)`, if that
-    /// terminal wants it.
-    ///
-    /// Modern agent TUIs (Claude Code, vim, htop) turn on mouse tracking and
-    /// scroll themselves; their alternate screen keeps no vt100 scrollback, so
-    /// scrolling locally would be a silent no-op. Forwarding is therefore tried
-    /// first and `false` means "nobody here wants it" — the caller then scrolls
-    /// the pane itself. v1 draws the same line in `try_forward_wheel_to_pty`.
     pub fn forward_wheel(&self, x: u16, y: u16, up: bool) -> bool {
         let Some((_, pane)) = self.pane_at(x, y) else {
             return false;
@@ -882,16 +551,6 @@ impl Terminals {
         }
     }
 
-    /// Hand a left press to the terminal under `(x, y)`, if the program
-    /// inside asked for the mouse — any tracking mode hears a press.
-    ///
-    /// The wheel above answers per tick; a button starts a *gesture*. So the
-    /// caller is told which SURFACE took the press — a bare id or `<id>#shell`
-    /// — and routes the moves and the release back by that name, the way any
-    /// pointer capture works: the surface that heard the press owns the button
-    /// until it comes back up, even when the drag wanders off the pane. The
-    /// name has to carry which pane, because the other one may be on screen too
-    /// and the gesture belongs to exactly one of them.
     pub fn forward_press(&self, x: u16, y: u16) -> Option<String> {
         let (id, pane) = self.pane_at(x, y)?;
         let key = if pane.shell {
@@ -903,8 +562,6 @@ impl Terminals {
             .then_some(key)
     }
 
-    /// A move with the button held, to the surface that took the press.
-    /// Only `?1002`/`?1003` ask to hear these.
     pub fn forward_motion(&self, surface: &str, x: u16, y: u16) -> bool {
         self.pane(surface).is_some_and(|pane| {
             self.forward_button(pane, x, y, 32, true, |mode| {
@@ -916,24 +573,16 @@ impl Terminals {
         })
     }
 
-    /// A move with no button down, to the terminal under `(x, y)` — only
-    /// `?1003` asks for these.
-    ///
-    /// Routed by position, like the wheel and unlike the gesture above: with
-    /// no button down there is no press to have chosen an owner, so the move
-    /// belongs to whatever pane the pointer is actually over.
     pub fn forward_move(&self, x: u16, y: u16) -> bool {
         let Some((_, pane)) = self.pane_at(x, y) else {
             return false;
         };
-        // 35 is "motion, no button": 3 under the 32 move flag.
+        // xterm: 35 is "motion, no button", 3 under the 32 move flag.
         self.forward_button(pane, x, y, 35, true, |mode| {
             mode == vt100::MouseProtocolMode::AnyMotion
         })
     }
 
-    /// The release that ends the gesture, to the surface that took the press.
-    /// Every mode past X10 (`?9`) asks to hear it.
     pub fn forward_release(&self, surface: &str, x: u16, y: u16) -> bool {
         self.pane(surface).is_some_and(|pane| {
             self.forward_button(pane, x, y, 0, false, |mode| {
@@ -942,12 +591,6 @@ impl Terminals {
         })
     }
 
-    /// Encode and send one button report, if the terminal's tracking mode
-    /// `wants` events of this kind.
-    ///
-    /// Coordinates are clamped into the pane rather than dropped: a drag that
-    /// crosses the border still means "as far as you go in that direction" to
-    /// the program tracking it, which is how every capture behaves.
     fn forward_button(
         &self,
         pane: Pane<'_>,
@@ -973,8 +616,6 @@ impl Terminals {
             return false;
         };
 
-        // The rect is the surface's own content area, as for the wheel; a
-        // surface no longer painted has an empty one and gets nothing.
         if !pane.on_screen() {
             return false;
         }
@@ -995,16 +636,10 @@ impl Terminals {
         }
     }
 
-    /// Whether a session currently has a live pane.
     pub fn is_attached(&self, session: &str) -> bool {
         self.live.contains_key(session)
     }
 
-    /// A session's backend plus pane id, for work that must run off this thread.
-    ///
-    /// Resolving a pane's root pid is a control-mode round trip, so the metrics
-    /// sampler needs the handle rather than the answer — the `Arc` is what lets
-    /// a worker ask without borrowing anything the loop owns.
     pub fn backend_handle(
         &self,
         session: &str,
@@ -1014,20 +649,6 @@ impl Terminals {
             .map(|live| live.session.backend_handle())
     }
 
-    /// When the pane behind a surface name last produced output, as epoch
-    /// milliseconds — moved as well when its grid is rebuilt, since that
-    /// changes the cells without the pane printing
-    /// ([`crate::backend::pane::WiredPane::content_stamp`]). `None` when
-    /// nothing is attached there. Compare it; do not read it as a time.
-    ///
-    /// This is the redraw signal for a *surface*: its cells live outside the
-    /// node tree, so tree equality cannot tell whether it changed. Comparing
-    /// this stamp against the one a renderer last painted at can — and it is a
-    /// single atomic load, which is why v1 reads the same field rather than
-    /// diffing screens.
-    ///
-    /// Accepts the `<id>#shell` spelling, so the view you are looking at is the
-    /// pane whose output is checked.
     pub fn output_stamp(&self, surface: &str) -> Option<u64> {
         if let Some(key) = self.program_key(surface) {
             return self
@@ -1038,12 +659,6 @@ impl Terminals {
         self.pane(surface)?.content_stamp()
     }
 
-    /// The [`output_seq`](crate::backend::pane::WiredPane::output_seq) of the
-    /// pane behind a surface name, `<id>#shell` and program surfaces included.
-    /// `None` when nothing is attached there.
-    ///
-    /// Exact where [`Self::output_stamp`] is not: it moves once per chunk the
-    /// parser took, and only after taking it. What an echo is waited on by.
     pub fn output_seq(&self, surface: &str) -> Option<u64> {
         if let Some(key) = self.program_key(surface) {
             return self.programs.get(key).map(|slot| slot.pane.output_seq());
@@ -1051,8 +666,6 @@ impl Terminals {
         self.pane(surface)?.output_seq()
     }
 
-    /// The cell behind [`Self::output_seq`] for a surface, which is how a
-    /// wake-up is armed for that pane alone (`backend::output_wake`).
     pub fn output_seq_cell(&self, surface: &str) -> Option<&std::sync::atomic::AtomicU64> {
         if let Some(key) = self.program_key(surface) {
             return self
@@ -1063,7 +676,6 @@ impl Terminals {
         self.pane(surface)?.output_seq_cell()
     }
 
-    /// Output generation of every attached pane, including hidden search sources.
     pub fn output_generation(&self) -> u64 {
         let sessions = self.live.values().fold(0u64, |acc, live| {
             acc.wrapping_add(live.session.output_seq()).wrapping_add(
@@ -1078,11 +690,6 @@ impl Terminals {
         })
     }
 
-    /// Redraw generation of the surfaces painted in the last frame.
-    ///
-    /// Hidden panes still parse output, but their cells cannot change the
-    /// screen. A newly shown surface restores its grid through the normal
-    /// paint path; input and layout changes already owe that first frame.
     pub fn visible_output_generation(&self) -> u64 {
         let sessions = self.live.values().fold(0u64, |acc, live| {
             let agent = if live.agent.on_screen() {
@@ -1108,28 +715,12 @@ impl Terminals {
             })
     }
 
-    /// Milliseconds since a session last produced output, if attached.
-    ///
-    /// The signal a change-driven repaint needs: no output and no input means
-    /// there is nothing new to paint.
     pub fn millis_since_output(&self, session: &str) -> Option<u64> {
         self.live
             .get(session)
             .map(|live| live.session.millis_since_last_output())
     }
 
-    /// Recompute which sessions are producing output, bumping
-    /// [`Self::printing_version`] only when the *set* changes.
-    ///
-    /// The same signal and the same bound the stuck-`working` fallback uses
-    /// ([`WORKING_QUIET_MS`]), for the same reason: a TUI agent animates its
-    /// in-progress line while a turn runs, so "printed within the window" is
-    /// what separates a turn in flight from a prompt waiting for input. No
-    /// process listing can make that distinction, which is why an interface
-    /// may animate a `running` session and a headless reader may not.
-    ///
-    /// Only live panes are considered — a session thurbox has not attached
-    /// cannot be observed printing, so it is simply absent and draws static.
     pub fn sync_printing(&mut self) {
         let printing: std::collections::HashSet<String> = self
             .live
@@ -1143,45 +734,24 @@ impl Terminals {
         }
     }
 
-    /// The sessions producing output as of the last [`Self::sync_printing`].
     pub fn printing(&self) -> &std::collections::HashSet<String> {
         &self.printing
     }
 
-    /// Moves only when [`Self::printing`]'s membership does.
     pub fn printing_version(&self) -> u64 {
         self.printing_version
     }
 
-    /// The activity text and attention notification each live agent last
-    /// emitted, keyed by session id.
-    ///
-    /// These come off the PTY, not the database, which is why they are read
-    /// here rather than in the snapshot: the reader thread parses the agent's
-    /// OSC window title (activity) and its OSC 9/777 message (notification).
-    /// `sync_agent_meta` gates on a generation counter, so an unchanged session
-    /// costs one atomic load rather than two mutex locks and two `String`
-    /// clones — the ADR-P10 reason v1 does the same.
     pub fn meta(&mut self) -> &HashMap<String, AgentMeta> {
         self.sync_meta();
         self.meta_map()
     }
 
-    /// The mutating half of [`Self::meta`], split out so a caller can end the
-    /// `&mut` borrow and then hold the map by reference — the publish path
-    /// used to clone the whole map (two `String`s per live session per frame)
-    /// purely to release the borrow, which is the exact per-frame clone the
-    /// ADR-P10 gating exists to avoid.
     pub fn sync_meta(&mut self) {
         let mut moved = false;
         for (id, live) in &mut self.live {
             if let Some((activity, notification)) = live.session.sync_agent_meta() {
                 let entry = self.meta.entry(id.clone()).or_default();
-                // Compared before assigning, not assigned blind. This runs on
-                // every publish, and a write that changed nothing would still
-                // move the version below and invalidate every cached tree —
-                // which is how a change-signal quietly becomes worthless
-                // (`frame-cost`).
                 if entry.activity != activity || entry.notification != notification {
                     entry.activity = activity;
                     entry.notification = notification;
@@ -1189,7 +759,6 @@ impl Terminals {
                 }
             }
         }
-        // A session that went away keeps no stale title.
         let before = self.meta.len();
         self.meta.retain(|id, _| self.live.contains_key(id));
         if moved || self.meta.len() != before {
@@ -1197,12 +766,10 @@ impl Terminals {
         }
     }
 
-    /// The map [`Self::sync_meta`] maintains, borrowed.
     pub fn meta_map(&self) -> &HashMap<String, AgentMeta> {
         &self.meta
     }
 
-    /// How many times [`Self::meta`] has actually changed an entry.
     pub fn meta_version(&self) -> u64 {
         self.meta_version
     }
@@ -1212,17 +779,12 @@ impl Terminals {
     }
 }
 
-/// What an agent reported about itself over its own terminal.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct AgentMeta {
-    /// The OSC window title, which agents use as a live activity line.
     pub activity: Option<String>,
-    /// The message from the most recent attention notification.
     pub notification: Option<String>,
 }
 
-/// property this module's sharing used to break (#1220).
-/// The agent pane and its companion shell are independent surfaces — the
 #[cfg(test)]
 mod decoupling;
 
@@ -1335,8 +897,6 @@ mod tests {
         let reused = host.reused_groups();
         for _ in 0..3 {
             for row in &snapshot.sessions {
-                // Expire each retry without sleeping: completed worker results
-                // must refresh the private timer without invalidating Lua.
                 terminals.attach.failed.get_mut(&row.id).unwrap().at -= ATTACH_RETRY_INTERVAL;
                 complete(&mut terminals, &row.id, "host unreachable");
                 assert!(render(&terminals).contains("host unreachable"));
@@ -1381,8 +941,6 @@ mod tests {
         assert_eq!(terminals.failed_version(), version + 2);
     }
 
-    /// A grid taller than its rect shows its bottom rows — where the newest
-    /// output and the prompt are — and a selection over them copies those rows.
     #[test]
     fn a_grid_taller_than_its_rect_shows_its_bottom() {
         use ratatui::widgets::Widget;
@@ -1425,8 +983,6 @@ mod tests {
         );
     }
 
-    /// A grid another instance sizes says so on its bottom row, right-aligned,
-    /// and a rect too narrow for the whole sentence gets as much as fits.
     #[test]
     fn a_pane_sized_elsewhere_says_whose_size_it_is() {
         for width in [80u16, 12] {
@@ -1473,30 +1029,25 @@ mod tests {
             mouse_report(E::Sgr, 65, 12, 3, true).expect("sgr"),
             b"\x1b[<65;12;3M".to_vec()
         );
-        // SGR keeps the button on a release — the final letter is what flips.
+        // SGR keeps the button on a release; the final letter is what flips.
         assert_eq!(
             mouse_report(E::Sgr, 0, 12, 3, false).expect("sgr"),
             b"\x1b[<0;12;3m".to_vec()
         );
-        // The original encoding offsets every field by 32. A program that asks
-        // for the mouse without asking for SGR used to be handed nothing, and
-        // its alternate screen leaves no scrollback to fall back on.
+        // The original `CSI M` encoding offsets every field by 32.
         assert_eq!(
             mouse_report(E::Default, 64, 12, 3, true).expect("default"),
             vec![0x1b, b'[', b'M', 96, 44, 35]
         );
-        // ...and it spells every release button 3, whatever went down.
+        // The original encoding spells every release button 3.
         assert_eq!(
             mouse_report(E::Default, 0, 12, 3, false).expect("default"),
             vec![0x1b, b'[', b'M', 35, 44, 35]
         );
-        // Past 223 there is no legal report, and a truncated one would land
-        // the event on the wrong cell.
+        // Past 223 the original encoding has no legal report.
         assert_eq!(mouse_report(E::Default, 64, 224, 3, true), None);
         assert!(mouse_report(E::Default, 64, 223, 223, true).is_some());
-        // `?1005` is the default encoding with each field a UTF-8 character,
-        // so a small coordinate reads the same and a large one takes two bytes
-        // instead of running out at 223.
+        // `?1005` writes each field as a UTF-8 character, so the 223 cap lifts.
         assert_eq!(
             mouse_report(E::Utf8, 64, 12, 3, true).expect("utf8"),
             b"\x1b[M`,#"
@@ -1764,8 +1315,6 @@ mod tests {
         }
     }
 
-    /// With `stream_panes` on, a session whose row names `local:tmux` (what a
-    /// new local session stores) attaches through the view program.
     #[cfg(unix)]
     #[test]
     fn a_local_tmux_row_attaches_through_the_stream_view() {
@@ -1773,7 +1322,6 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let marker = dir.path().join("viewed");
         let program = dir.path().join("runtime-mux");
-        // A stand-in view: it notes how it ran and closes without a hello.
         std::fs::write(
             &program,
             format!("#!/bin/sh\nprintf '%s ' \"$@\" > '{}'\n", marker.display()),
@@ -1798,7 +1346,6 @@ mod tests {
         let row = row("a", &route.format(), Some("%1"));
         assert_eq!(row.backend, "local:tmux");
         terminals.start_attach(&row, "%1".into(), 24, 80);
-        // The control-mode path would reach the fake's `adopt`, which panics.
         let _ = terminals
             .attach
             .attached
@@ -1827,8 +1374,6 @@ mod tests {
         terminals.sync(&snapshot(vec![row("a", "local:tmux", None)]), 24, 80);
         assert!(!terminals.is_attached("a"));
         assert_eq!(terminals.failure("a"), Some("session has no pane yet"));
-        // And the attempt is recorded as "there was no pane", which is what lets
-        // a window appearing later be picked up instead of latched out.
         assert_eq!(terminals.attach.failed["a"].pane, None);
     }
 

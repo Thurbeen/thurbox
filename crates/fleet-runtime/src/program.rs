@@ -1,12 +1,6 @@
-//! Where a program would be found on this machine, without running it: what
-//! `fleet doctor` reports for each harness's program.
-
 use std::ffi::OsStr;
 use std::path::{Path, PathBuf};
 
-/// The file `program` names: itself when it holds a path separator, else
-/// the first match in `path` (the `PATH` value), with each `PATHEXT`
-/// extension on Windows.
 pub fn find(program: &str, path: Option<&OsStr>) -> Option<PathBuf> {
     let candidate = Path::new(program);
     if candidate.components().count() > 1 || candidate.is_absolute() {
@@ -31,9 +25,6 @@ pub fn find(program: &str, path: Option<&OsStr>) -> Option<PathBuf> {
     })
 }
 
-/// The file a bare `program` names in the directory of `exe`: how one
-/// release's binaries find each other before `PATH`. `None` when `program`
-/// holds a path or the directory has no such file.
 pub fn beside(program: &str, exe: &Path) -> Option<PathBuf> {
     let candidate = Path::new(program);
     if candidate.components().count() != 1 || candidate.is_absolute() {

@@ -1,18 +1,3 @@
-//! End-to-end test of the kernel against the *real* bundled mods.
-//!
-//! Loads `ui/` exactly as the binary does, publishes a snapshot, resolves the
-//! arrangement and renders every mod into its resolved rect — so this fails
-//! if the kernel breaks *or* if a shipped mod does.
-//!
-//! The properties under test are the load-bearing design decisions:
-//!
-//! - **D1** the kernel exposes four node kinds, and the panes are built from
-//!   them via `ui/lib/widgets.lua` rather than from kernel widgets
-//! - **D2** a mod is told its own resolved rect, not the screen's
-//! - **D3** the agent pane places a `surface` it does not paint
-//! - **D5** mod reads are served from a snapshot and never block
-//! - isolation: a throwing mod costs its own pane, not the frame
-
 use std::path::PathBuf;
 
 use ratatui::backend::TestBackend;
@@ -27,26 +12,20 @@ use thurbox::kernel::registry::Registry;
 use thurbox::kernel::snapshot::{SessionRow, Snapshot};
 use thurbox::kernel::theme::Themes;
 
-/// The theme every test publishes with: whatever the environment resolves,
-/// which keeps these tests independent of the user's active choice.
 fn themes() -> Themes {
     Themes::load(None)
 }
 
-/// Publish a snapshot with the defaults every test wants.
 fn publish(host: &LuaHost, snapshot: &Snapshot) {
     publish_with(host, snapshot, &Default::default(), &[]);
 }
 
-/// [`publish`], naming the sessions whose panes are producing output — the
-/// evidence a `running` indicator animates on.
 fn publish_printing(host: &LuaHost, snapshot: &Snapshot, printing: &[&str]) {
     let printing: std::collections::HashSet<String> =
         printing.iter().map(|s| (*s).to_string()).collect();
     publish_full(host, snapshot, &Default::default(), &[], &printing);
 }
 
-/// Publish with attach errors and in-flight commands spelled out.
 fn publish_with(
     host: &LuaHost,
     snapshot: &Snapshot,
@@ -236,11 +215,6 @@ fn paint(host: &LuaHost, index: usize, width: u16, height: u16) -> Vec<String> {
     paint_node(&node, width, height)
 }
 
-/// Like `paint_node`, but keeps each cell's colours and modifiers. v1 marks the
-/// selected row by STYLE (a highlighted background), never by a marker glyph —
-/// see `tests/snapshots/v1_recordings__v1_session_list.snap`, whose rows carry
-/// no cursor character — so a symbols-only comparison cannot see the cursor
-/// move at all.
 fn paint_styles(host: &LuaHost, index: usize, width: u16, height: u16) -> Vec<String> {
     let node = host
         .render(index, ctx(width, height, true))
@@ -311,8 +285,6 @@ fn the_bundled_mods_load_and_claim_their_slots() {
         ],
         "the bundled set changed"
     );
-    // A strip of its own above the bands, so it can highlight the panes it is
-    // searching instead of covering them.
     assert_eq!(host.in_slot("search").len(), 1);
 
     assert_eq!(host.in_slot("sessions").len(), 1);
@@ -322,15 +294,11 @@ fn the_bundled_mods_load_and_claim_their_slots() {
         .map(|i| host.mods[*i].name.as_str())
         .collect();
     assert_eq!(centre, ["agent"], "{centre:?}");
-    // Help, settings and the theme picker are kernel modals, so they overlay
-    // rather than compete for this slot — and must never reappear as panes.
     for gone in ["themes", "help", "settings"] {
         assert!(!centre.contains(&gone), "{gone} is a modal, not a pane");
     }
     assert_eq!(host.slot_mode("center"), SlotMode::Switch);
 
-    // The panes hold focus; the creation flow does not, because it floats — a
-    // closed modal that could be tabbed to would be a pane drawing nothing.
     let focusable: Vec<&str> = host
         .focusable()
         .iter()
@@ -352,8 +320,6 @@ fn the_bundled_mods_load_and_claim_their_slots() {
         "a float must also be excluded from the focus ring, or Tab would land on \
          a pane that draws nothing"
     );
-    // And it takes no slot the arrangement places, so it never competes with the
-    // terminal for the centre.
     assert_eq!(
         host.in_slot("center").len(),
         1,
@@ -369,64 +335,40 @@ fn the_session_list_renders_real_snapshot_rows() {
 
     assert!(screen.contains("fix-osc52"), "{screen}");
     assert!(screen.contains("add-wsl-tests"), "{screen}");
-    // Grouped by repo, as v1 groups them.
     assert!(screen.contains("thurbox"), "{screen}");
     assert!(screen.contains("website"), "{screen}");
-    // v1's title is the bare word, with one status dot per session packed into
-    // the RIGHT side of the top border — it never spells out a count.
     assert!(screen.contains("Sessions"), "{screen}");
     assert!(!screen.contains("sessions · 4"), "{screen}");
 }
 
-/// R1 + R3, at the surface that had the bug. A session a driver launched an
-/// agent into reports nothing at all, and the interface drew the green hollow
-/// `idle` circle for it — "the agent says it is at rest" for an agent that was
-/// mid-turn. The three silences now each have their own glyph, and the agent
-/// found in the pane is named beside the one the row was created as.
 #[test]
 fn a_session_with_no_reported_status_never_draws_the_idle_dot() {
     let host = host();
-    // What a foreign driver leaves behind: a row created as a bare shell, an
-    // agent running in its pane, and nothing wired to report a turn.
     let mut driven = row("fm-worker", "thurbox", "idle");
     driven.agent = "zsh".to_string();
     driven.status = SessionState::Running;
     driven.detected_agent = Some("claude".to_string());
-    // Wired to report nothing, and it has said nothing.
     let mut uncovered = row("bare-shell", "thurbox", "idle");
     uncovered.agent = "zsh".to_string();
     uncovered.status = SessionState::Uncovered;
-    // Can report, and has not yet.
     let mut unreported = row("just-spawned", "thurbox", "idle");
     unreported.status = SessionState::Unreported;
 
     publish(&host, &snapshot(vec![driven, uncovered, unreported]));
     let screen = paint(&host, index_of(&host, "sessions"), 48, 12).join("\n");
 
-    // Not one row claims the agent said it is at rest.
     assert!(!screen.contains('○'), "an idle dot survived:\n{screen}");
-    // An agent IS there (◉), and the two silences read as absences (◌).
     assert!(screen.contains('◉'), "no running glyph in:\n{screen}");
     assert!(screen.contains('◌'), "no silence glyph in:\n{screen}");
-    // And the row says which agent, without saying what it is doing.
     assert!(screen.contains("claude"), "{screen}");
     assert!(screen.contains("no status reported"), "{screen}");
     assert!(!screen.contains("working"), "{screen}");
 
-    // The centre pane's title carries both names and the honest word.
     let title = paint(&host, index_of(&host, "agent"), 90, 8).join("\n");
     assert!(title.contains("zsh → claude"), "{title}");
     assert!(title.contains("Running"), "{title}");
 }
 
-/// A `running` indicator moves only on proof that something is moving.
-///
-/// The distinction the whole state exists to keep: no process listing can tell
-/// a turn in flight from a prompt waiting for input, so `running` on its own
-/// may not claim a spinner. Terminal output can tell them apart, and it is the
-/// same signal the stuck-`working` fallback already trusts — so the dot
-/// animates exactly while the pane is printing and is static the moment it
-/// stops.
 #[test]
 fn a_running_session_animates_only_while_its_pane_prints() {
     let host = host();
@@ -436,7 +378,6 @@ fn a_running_session_animates_only_while_its_pane_prints() {
     let id = driven.id.clone();
     let rows = snapshot(vec![driven]);
 
-    // Nothing is printing: the static fisheye, and not a spinner frame.
     publish_printing(&host, &rows, &[]);
     let quiet = paint(&host, index_of(&host, "sessions"), 48, 12).join("\n");
     assert!(quiet.contains('◉'), "no static running glyph in:\n{quiet}");
@@ -445,8 +386,6 @@ fn a_running_session_animates_only_while_its_pane_prints() {
         "a quiet pane animated, which claims a turn nobody observed:\n{quiet}"
     );
 
-    // The same row, with its pane producing output: the spinner, and the
-    // static glyph gone.
     publish_printing(&host, &rows, &[&id]);
     let busy = paint(&host, index_of(&host, "sessions"), 48, 12).join("\n");
     assert!(
@@ -456,14 +395,6 @@ fn a_running_session_animates_only_while_its_pane_prints() {
     assert!(!busy.contains('◉'), "the static glyph survived:\n{busy}");
 }
 
-/// The blast radius of the evidence, checked at its edges: `running` is the
-/// only status output can set in motion.
-///
-/// `uncovered` and `unreported` are absences — one agent reports nothing, the
-/// other has not reported yet — and an absence that spun would be asserting
-/// exactly the knowledge it lacks. A pane can print under either (a shell
-/// echoing, a session still booting), so the printing set alone must not move
-/// them.
 #[test]
 fn output_animates_running_and_nothing_else() {
     let host = host();
@@ -480,7 +411,6 @@ fn output_animates_running_and_nothing_else() {
         .collect();
     let rows = snapshot(vec![uncovered, unreported, resting]);
 
-    // Every one of them printing, and not one of them animating.
     let printing: Vec<&str> = ids.iter().map(String::as_str).collect();
     publish_printing(&host, &rows, &printing);
     let screen = paint(&host, index_of(&host, "sessions"), 48, 12).join("\n");
@@ -492,9 +422,6 @@ fn output_animates_running_and_nothing_else() {
     assert!(screen.contains('○'), "no idle glyph in:\n{screen}");
 }
 
-/// `working` is the agent's own report that a turn is running, so it animates
-/// whatever the pane is doing — the half that must not regress while `running`
-/// gains its own, narrower rule.
 #[test]
 fn a_working_session_animates_without_needing_the_pane() {
     let host = host();
@@ -509,16 +436,10 @@ fn a_working_session_animates_without_needing_the_pane() {
     );
 }
 
-/// One frame of `theme.spinner`, whichever the elapsed clock landed on.
 fn is_spinner_frame(c: char) -> bool {
     "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏".contains(c)
 }
 
-/// The follow-up: an agent IS in the pane (status `running`), but two
-/// registered profiles share its executable, so `classify_foreground`
-/// publishes `detected_agent: None` rather than an arbitrary first match. The
-/// row must still say an agent is running — never fall silent the way an
-/// `unreported` row does — while naming no one.
 #[test]
 fn a_running_session_with_no_determined_agent_says_so_without_a_name() {
     let host = host();
@@ -544,8 +465,6 @@ fn each_status_paints_its_own_glyph() {
     publish(&host, &sample());
     let screen = paint(&host, index_of(&host, "sessions"), 40, 12).join("\n");
 
-    // blocked ◆, done ●, idle ○ — working animates through the braille
-    // spinner, so it is asserted separately below.
     for glyph in ["◆", "●", "○"] {
         assert!(screen.contains(glyph), "expected {glyph} in:\n{screen}");
     }
@@ -576,8 +495,6 @@ fn the_working_spinner_advances_with_elapsed_time() {
 
 #[test]
 fn a_mod_is_told_its_own_rect_not_the_screens() {
-    // The session list budgets its name column against the width
-    // it was given, so a narrow pane must truncate where a wide one does not.
     let host = host();
     publish(
         &host,
@@ -592,9 +509,6 @@ fn a_mod_is_told_its_own_rect_not_the_screens() {
     let narrow = paint(&host, index, 28, 8).join("\n");
     let wide = paint(&host, index, 80, 8).join("\n");
 
-    // v1 clips a long session name to the pane rather than ellipsising it —
-    // `truncate_ellipsis` is reserved for the agent-status tail. So the
-    // property is "the narrow pane shows less", not "there is a … in it".
     assert!(
         !narrow.contains("a-very-long-session-name-that-will-not-fit"),
         "narrow pane should not fit the whole name:\n{narrow}"
@@ -614,8 +528,6 @@ fn a_long_list_windows_against_the_resolved_height() {
     publish(&host, &snapshot(rows));
 
     let screen = paint(&host, index_of(&host, "sessions"), 40, 10).join("\n");
-    // v1 marks overflow in the bottom border (`▼ 33`) rather than spending a
-    // content row on it, which is what the port reproduces.
     assert!(
         screen.contains('▼'),
         "a windowed list must mark what it hid:\n{screen}"
@@ -627,7 +539,6 @@ fn the_agent_pane_places_a_surface_it_does_not_paint() {
     let host = host();
     publish(&host, &sample());
 
-    // Selecting is the session list's job, and it publishes through the store.
     let sessions = index_of(&host, "sessions");
     host.render(sessions, ctx(40, 12, true))
         .expect("render list");
@@ -648,10 +559,7 @@ fn the_agent_pane_says_so_when_nothing_is_selected() {
     let host = host();
     publish(&host, &snapshot(Vec::new()));
     let screen = paint(&host, index_of(&host, "agent"), 50, 8).join("\n");
-    // v1 `ui::terminal_view` renders this exact phrase in the empty state.
     assert!(screen.contains("No active sessions"), "{screen}");
-    // The new-session chord is the session list's to name, read from the
-    // registry; a hard-coded copy here would go stale on a rebind.
     assert!(
         !screen.contains("Ctrl+N"),
         "the empty state hard-codes the new-session chord:\n{screen}"
@@ -660,7 +568,6 @@ fn the_agent_pane_says_so_when_nothing_is_selected() {
 
 #[test]
 fn the_arrangement_drops_the_side_column_when_narrow() {
-    // v1's compute_layout breakpoints, now living in ui/layout.lua.
     let host = host();
     let area = |w: u16| Rect {
         x: 0,
@@ -697,10 +604,6 @@ fn the_sessions_column_is_bounded_by_its_declared_min_and_max() {
         .iter()
         .find(|s| s.slot == "sessions")
         .expect("sessions slot");
-    // With no side column open, v1 stays on the TWO-panel 25/75 split however
-    // wide the terminal is (`compute_layout` only takes the three-panel branch
-    // when info/tasks/files is showing), so 25% of 400 is 100. The three-panel
-    // 18% is exercised by the parity test, which opens a column first.
     assert_eq!(sessions.rect.width, 100);
 }
 
@@ -739,8 +642,6 @@ fn an_unclaimed_key_is_left_for_the_kernel() {
 
 #[test]
 fn mod_reads_are_served_from_the_snapshot() {
-    // Reads never consult the database, so they cannot block.
-    // Rendering a thousand times touches nothing but the published table.
     let host = host();
     publish(&host, &sample());
     let index = index_of(&host, "sessions");
@@ -751,9 +652,6 @@ fn mod_reads_are_served_from_the_snapshot() {
 
 #[test]
 fn the_kernel_still_exposes_exactly_four_node_kinds() {
-    // The four-kind tripwire. If this fails, something was added to the kernel
-    // that should have been composed in ui/lib/widgets.lua — read the module
-    // docs before changing the number.
     assert_eq!(
         KINDS,
         ["text", "box", "input", "surface"],
@@ -763,8 +661,6 @@ fn the_kernel_still_exposes_exactly_four_node_kinds() {
 
 #[test]
 fn the_panes_are_built_from_primitives_not_kernel_widgets() {
-    // The other half of D1: the session list is a *list*, but there is no list
-    // node — it is boxes and text from the widget library.
     let host = host();
     publish(&host, &sample());
     let node = host
@@ -829,7 +725,6 @@ fn a_failed_reload_keeps_the_last_good_mods_running() {
     let mut host = LuaHost::new(dir.path());
     let reloads = host.reloads;
 
-    // Save a syntax error over it.
     std::fs::write(&file, "return { this is not lua").expect("write broken");
     host.reload();
 
@@ -838,7 +733,6 @@ fn a_failed_reload_keeps_the_last_good_mods_running() {
     let screen = paint(&host, index_of(&host, "pane"), 10, 1).join("\n");
     assert!(screen.contains("v1"), "the last good plugin keeps running");
 
-    // And repairing it recovers.
     std::fs::write(
         &file,
         r#"return { name = "pane", slot = "a", render = function() return { text = "v2" } end }"#,
@@ -852,8 +746,7 @@ fn a_failed_reload_keeps_the_last_good_mods_running() {
 
 #[test]
 fn an_unterminated_mod_is_interrupted_rather_than_hanging() {
-    // Lua 5.4 gives no set_interrupt, so the kernel builds this
-    // from a count hook. Without it, this test would never return.
+    // Lua 5.4 has no set_interrupt, so only the kernel's count hook stops this loop.
     let dir = tempfile::tempdir().expect("tempdir");
     let mods = dir.path().join("mods");
     std::fs::create_dir_all(&mods).expect("mkdir");
@@ -877,8 +770,6 @@ fn an_unterminated_mod_is_interrupted_rather_than_hanging() {
 
 #[test]
 fn mods_have_no_filesystem_or_process_access() {
-    // Enforcement by ABSENCE. `io`, `os` and the real `package`
-    // are simply not in the environment, so there is no binding to refuse.
     let dir = tempfile::tempdir().expect("tempdir");
     let mods = dir.path().join("mods");
     std::fs::create_dir_all(&mods).expect("mkdir");
@@ -933,7 +824,6 @@ fn mod_state_is_private_and_survives_a_reload() {
     assert!(paint(&host, index_of(&host, "a"), 10, 1)[0].contains("n=1"));
     assert!(paint(&host, index_of(&host, "b"), 10, 1)[0].contains("n=2"));
 
-    // Values persist across a rebuild of the whole VM.
     host.reload();
     assert!(host.error.is_none(), "{:?}", host.error);
     assert!(paint(&host, index_of(&host, "a"), 10, 1)[0].contains("n=1"));
@@ -1017,11 +907,7 @@ fn a_pane_without_a_surface_reports_no_session() {
 
 #[test]
 fn a_failed_attach_is_explained_in_the_pane() {
-    // A dead terminal must say why. "not attached" with no reason is the least
-    // useful thing a terminal can say.
     let host = host();
-    // Every session fails, so this does not depend on which row the list
-    // happens to select (it orders alphabetically within a repo).
     let errors: std::collections::HashMap<String, String> = sample()
         .sessions
         .iter()
@@ -1039,8 +925,6 @@ fn a_failed_attach_is_explained_in_the_pane() {
 
 #[test]
 fn a_session_backed_surface_falls_back_when_nothing_is_attached() {
-    // PlaceholderSurfaces has nothing live behind it, so the surface must draw
-    // the detached notice rather than leaving an empty rect.
     let host = host();
     publish(&host, &sample());
     host.render(index_of(&host, "sessions"), ctx(40, 12, true))
@@ -1051,18 +935,13 @@ fn a_session_backed_surface_falls_back_when_nothing_is_attached() {
     assert!(screen.contains("not attached"), "{screen}");
 }
 
-// --- command bus -----------------------------------------------------------
-
 use thurbox::kernel::command::{Command, InFlight, Phase};
 use thurbox::session::SessionState;
 
-/// Press a key and route it exactly as the binary does: registry first
-/// (declared actions), then raw `on_key`. Returns whatever commands it issued.
 fn press_key(host: &LuaHost, mod_name: &str, ch: char) {
     press_chord(host, mod_name, ch, false);
 }
 
-/// The same, with Ctrl held.
 fn press_ctrl_key(host: &LuaHost, mod_name: &str, ch: char) {
     press_chord(host, mod_name, ch, true);
 }
@@ -1104,7 +983,6 @@ fn deleting_from_the_session_list_asks_before_issuing_a_command() {
 
     let issued = ctrl_keys_to_commands(&host, "sessions", 'd');
     assert!(issued.is_empty());
-    // The confirmation answers what it drew, as it does every frame.
     host.render(index_of(&host, "confirm"), ctx(40, 12, false))
         .expect("draw the question");
     press_key(&host, "confirm", 'y');
@@ -1122,23 +1000,19 @@ fn deleting_from_the_session_list_asks_before_issuing_a_command() {
 
 #[test]
 fn shift_j_reorders_rather_than_moving_the_cursor() {
-    // Regression: a legacy terminal sends a bare "J" with no SHIFT modifier and
-    // the host lowercases the key name, so matching on key.shift silently fell
-    // through to plain-j cursor movement.
     let host = host();
     publish(&host, &sample());
     host.render(index_of(&host, "sessions"), ctx(40, 12, true))
         .expect("render");
 
-    // The move is computed over the rendered items and sent as one explicit
-    // order, because only this pane knows the grouping and nesting that decide
-    // what a move swaps.
     let issued = keys_to_commands(&host, "sessions", 'J');
-    assert_eq!(issued.len(), 1, "expected a reorder, got {issued:?}");
+    assert_eq!(
+        issued.len(),
+        1,
+        "a legacy terminal's bare \"J\" (no SHIFT) must reorder: got {issued:?}"
+    );
     assert_eq!(issued[0].kind(), "order");
 
-    // Moving UP needs a row above it in the same group: the first row is already
-    // at the top of the list, where v1 issues nothing either.
     press_key(&host, "sessions", 'j');
     host.drain_commands();
     let issued = keys_to_commands(&host, "sessions", 'K');
@@ -1160,12 +1034,6 @@ fn shift_s_sorts_within_each_repo_group() {
 
 #[test]
 fn a_group_cannot_be_moved_onto_another_machine() {
-    // The host axis is the outer one, so the group below the last local group
-    // belongs to another machine. Swapping the two would be accepted,
-    // persisted, and then undone by the next build re-clustering each group
-    // under its own host -- the failure the `group_by_repo` setting was
-    // reshaped to avoid, and here it cannot even be argued for: a session's
-    // machine is what it runs on, and grouping is only a view.
     let host = host();
     let mut remote = row("remote-build", "thurbox", "idle");
     remote.backend = "ssh:buildbox".to_string();
@@ -1181,22 +1049,16 @@ fn a_group_cannot_be_moved_onto_another_machine() {
     host.render(index_of(&host, "sessions"), ctx(40, 12, true))
         .expect("render");
 
-    // Onto the second of this machine's two groups, which is the last one
-    // before the boundary.
     press_key(&host, "sessions", 'j');
     press_key(&host, "sessions", 'j');
     host.drain_commands();
 
-    // Down from there is the boundary: nothing at all is issued, exactly as at
-    // the end of the list.
     let issued = keys_to_commands(&host, "sessions", 'J');
     assert!(
         issued.is_empty(),
         "a group may not be moved onto another machine, got {issued:?}"
     );
 
-    // Up from the same row still swaps, so the refusal is the host boundary
-    // and not a group edge having stopped working.
     let issued = keys_to_commands(&host, "sessions", 'K');
     assert_eq!(issued.len(), 1, "expected a reorder, got {issued:?}");
     assert_eq!(issued[0].kind(), "order");
@@ -1204,8 +1066,6 @@ fn a_group_cannot_be_moved_onto_another_machine() {
 
 #[test]
 fn the_top_row_cannot_move_up() {
-    // Not an error and not a no-op command: nothing is issued at all, so an
-    // order is never persisted for a move that did not happen.
     let host = host();
     publish(&host, &sample());
     host.render(index_of(&host, "sessions"), ctx(40, 12, true))
@@ -1216,8 +1076,6 @@ fn the_top_row_cannot_move_up() {
 
 #[test]
 fn the_arrows_navigate_the_session_list_like_j_and_k() {
-    // v1 binds `Action::SessionListNext` to `j` AND `Down` by default; v2
-    // declared only the letters, so arrow keys did nothing in the list.
     let host = host();
     publish(&host, &sample());
     let index = index_of(&host, "sessions");
@@ -1234,7 +1092,6 @@ fn the_arrows_navigate_the_session_list_like_j_and_k() {
             .resolve(&key, Some("sessions"))
             .unwrap_or_else(|| panic!("{name} is bound to nothing in the session list"));
         host.on_action(index, &binding.action).expect("action");
-        // The selection is republished while rendering, as the loop does.
         host.render(index, ctx(40, 12, true)).expect("render");
     };
 
@@ -1298,10 +1155,6 @@ fn a_malformed_command_is_reported_against_the_mod() {
 
 #[test]
 fn work_in_flight_is_drawn_instead_of_the_status() {
-    // Without this a rename looks like nothing happened until the next
-    // snapshot. v1 needed a whole PendingSpawn type for the same reason. A
-    // delete is the one command with no row left to annotate — see
-    // `a_session_being_deleted_leaves_the_list_at_once`.
     let host = host();
     let target = sample().sessions[0].id.clone();
     let inflight = vec![InFlight {
@@ -1338,19 +1191,13 @@ fn a_failed_command_is_drawn_as_failed() {
     let screen = paint(&host, index_of(&host, "sessions"), 46, 12).join("\n");
     assert!(screen.contains('✗'), "{screen}");
     assert!(screen.contains("failed"), "{screen}");
-    // And the row is still there to carry it. A delete that has been accepted
-    // takes its session out of the list at once; one that FAILED did not, and
-    // the row is the only thing that says so.
     assert!(screen.contains("fix-osc52"), "{screen}");
 }
 
 #[test]
 fn the_manual_order_is_published_so_a_reorder_is_visible() {
-    // Regression: display_order lived in the snapshot but was never published,
-    // so reorder commands wrote to the database and the list ignored them.
     let host = host();
     let mut snap = sample();
-    // Reverse the alphabetical order explicitly.
     for (position, row) in snap.sessions.iter_mut().enumerate() {
         row.display_order = Some(100 - position as i64);
     }
@@ -1370,8 +1217,6 @@ fn the_manual_order_is_published_so_a_reorder_is_visible() {
         "manual order ignored: expected {expected_first} first, got {first_session_line:?}"
     );
 }
-
-// --- theming ---------------------------------------------------------------
 
 #[test]
 fn the_theme_reaches_mods_as_roles() {
@@ -1408,10 +1253,6 @@ fn the_theme_reaches_mods_as_roles() {
     );
 }
 
-/// Does this line contain a literal colour rather than a role name?
-///
-/// A quoted `#rrggbb`, or one of ratatui's colour names. Deliberately not
-/// looking for a bare `#`, which in Lua is the length operator.
 fn hardcodes_colour(line: &str) -> bool {
     const NAMES: [&str; 8] = [
         "light-cyan",
@@ -1443,7 +1284,6 @@ fn no_bundled_mod_hardcodes_a_colour() {
                 continue;
             }
             let source = std::fs::read_to_string(&path).expect("read");
-            // theme.lua names roles; everything else must go through it.
             if path.file_name().is_some_and(|n| n == "theme.lua") {
                 continue;
             }
@@ -1457,7 +1297,6 @@ fn no_bundled_mod_hardcodes_a_colour() {
     );
 }
 
-/// Every uncommented line of `source` that names a colour, as `path:line: text`.
 fn colour_offenders(path: &std::path::Path, source: &str) -> Vec<String> {
     source
         .lines()
@@ -1467,12 +1306,8 @@ fn colour_offenders(path: &std::path::Path, source: &str) -> Vec<String> {
         .collect()
 }
 
-// --- registry --------------------------------------------------------------
-
 #[test]
 fn every_bundled_mod_declares_its_keys_as_data() {
-    // The declaration is what makes a key listable, rebindable and
-    // conflict-checkable. A pane that only implements on_key gets none of that.
     let host = host();
     let registry = registry(&host);
     assert!(!registry.bindings().is_empty());
@@ -1515,11 +1350,6 @@ fn a_rebound_key_routes_to_its_action() {
     };
     assert!(registry.resolve(&key, Some("sessions")).is_none());
 
-    // This registry was built here rather than read from `ui.json`, so the
-    // rebind stays in memory: a registry that never read the file cannot write
-    // it (`registry::Origin`). It used to, and a test run inherits the config
-    // directory of the session that spawned it — so this emptied the running
-    // interface's decisions.
     registry
         .rebind("sessions.delete", Some("z"))
         .expect("rebind");
@@ -1534,8 +1364,6 @@ fn a_rebound_key_routes_to_its_action() {
 
 #[test]
 fn capitals_route_the_same_from_either_terminal_encoding() {
-    // The portability trap, end to end: shift+J must reach the reorder action
-    // whether the terminal reports a bare "J" or "j" plus SHIFT.
     let host = host();
     let registry = registry(&host);
     let legacy = KeyPress {
@@ -1560,13 +1388,8 @@ fn capitals_route_the_same_from_either_terminal_encoding() {
     }
 }
 
-// --- guards ----------------------------------------------------------------
-
 #[test]
 fn the_lua_vm_stays_non_send() {
-    // With mlua's `send` feature off, "mods never touch the
-    // render thread" is a compile error rather than a review rule. Enabling it
-    // would silently remove that guarantee, so the dependency is asserted here.
     let manifest =
         std::fs::read_to_string(PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("Cargo.toml"))
             .expect("read Cargo.toml");
@@ -1576,7 +1399,8 @@ fn the_lua_vm_stays_non_send() {
         .expect("mlua dependency");
     assert!(
         !mlua_line.contains("\"send\""),
-        "mlua's send feature must stay off: {mlua_line}"
+        "mlua's send feature must stay off, so a mod reaching the render thread fails to \
+         compile: {mlua_line}"
     );
 }
 
@@ -1589,9 +1413,7 @@ fn the_granted_capability_set_matches_a_declared_list() {
         "store_writer",
         "command",
         "thurbox",
-        // Display width, which Lua cannot compute for itself: `#` counts bytes
-        // and `utf8.len` counts codepoints. Pure measurement — it reads
-        // nothing and reaches nothing.
+        // Lua's `#` counts bytes and `utf8.len` codepoints; neither is display width.
         "text",
     ];
 
@@ -1613,8 +1435,6 @@ fn the_granted_capability_set_matches_a_declared_list() {
     publish(&host, &snapshot(Vec::new()));
     let globals = host.reachable_globals(index_of(&host, "probe")).join(" ");
 
-    // Everything thurbox added must be on the list. Lua's own value types
-    // (string, table, math…) are the stdlib we deliberately opened.
     const STDLIB: [&str; 12] = [
         "_G",
         "_VERSION",
@@ -1632,10 +1452,21 @@ fn the_granted_capability_set_matches_a_declared_list() {
     for name in globals.split_whitespace() {
         let known = GRANTED.contains(&name)
             || STDLIB.contains(&name)
-            // Remaining base-library functions: pure computation, no capability.
             || [
-                "assert", "error", "next", "pcall", "xpcall", "rawequal", "rawget", "rawlen",
-                "rawset", "select", "setmetatable", "getmetatable", "unpack", "require",
+                "assert",
+                "error",
+                "next",
+                "pcall",
+                "xpcall",
+                "rawequal",
+                "rawget",
+                "rawlen",
+                "rawset",
+                "select",
+                "setmetatable",
+                "getmetatable",
+                "unpack",
+                "require",
             ]
             .contains(&name);
         assert!(
@@ -1654,11 +1485,6 @@ fn the_granted_capability_set_matches_a_declared_list() {
 
 #[test]
 fn every_session_field_reaches_lua() {
-    // Regression with teeth: `display_order` lived in the snapshot and the
-    // database, reorder commands wrote it correctly, and `publish` simply never
-    // emitted it — so the list sorted by a value that was always nil. The
-    // snapshot struct and the published table are two independent lists of
-    // fields, and nothing else checks they agree.
     let dir = tempfile::tempdir().expect("tempdir");
     let mods = dir.path().join("mods");
     std::fs::create_dir_all(&mods).expect("mkdir");
@@ -1684,8 +1510,7 @@ fn every_session_field_reaches_lua() {
     let mut snap = sample();
     snap.sessions[0].display_order = Some(3);
     snap.sessions[0].parent_id = Some("parent-id".into());
-    // A nil field does not appear in `pairs`, so every field under test needs a
-    // value for this to mean anything.
+    // Lua's `pairs` skips nil fields, so every field under test needs a value.
     snap.sessions[0].cwd = Some(PathBuf::from("/tmp/repo"));
     publish(&host, &snap);
 
@@ -1709,8 +1534,6 @@ fn every_session_field_reaches_lua() {
         );
     }
 }
-
-// --- session creation ------------------------------------------------------
 
 #[test]
 fn a_create_command_carries_what_the_flow_chose() {
@@ -1736,7 +1559,6 @@ fn a_create_command_carries_what_the_flow_chose() {
 #[test]
 fn a_bookmark_command_needs_a_path_and_an_explicit_verb() {
     use thurbox::kernel::command::{Args, BookmarkEdit, Command};
-    // Forgetting is destructive, so the verb is never inferred.
     let error = Command::parse(
         "bookmark",
         Args {
@@ -1778,7 +1600,6 @@ fn a_bookmark_command_needs_a_path_and_an_explicit_verb() {
             parsed,
             Command::Bookmark {
                 host: "ssh:devbox".into(),
-                // Trimmed, but the tilde is left for the target machine.
                 path: "~/src/thing".into(),
                 edit: expected,
             },
@@ -1789,8 +1610,6 @@ fn a_bookmark_command_needs_a_path_and_an_explicit_verb() {
 
 #[test]
 fn a_bookmark_write_is_published_with_the_path_it_writes() {
-    // The creation flow ties a failed write to the one it issued by this, since
-    // writes run independently and another one may fail meanwhile.
     use thurbox::kernel::command::{Args, Command};
     let command = Command::parse(
         "bookmark",
@@ -1832,8 +1651,7 @@ fn a_bookmark_clone_needs_a_url_that_cannot_pass_for_an_option() {
         let error = clone(missing).unwrap_err();
         assert!(error.contains("url"), "{error}");
     }
-    // `git clone -- <url>` already stops option parsing; refusing here says why
-    // instead of failing inside git.
+    // `git clone -- <url>` already stops option parsing; refusing here says why.
     let error = clone(Some("--upload-pack=touch /tmp/x")).unwrap_err();
     assert!(error.contains("url"), "{error}");
 }
@@ -1847,8 +1665,6 @@ fn creating_without_a_repo_is_refused() {
 
 #[test]
 fn a_pending_creation_draws_in_the_repo_it_will_land_in() {
-    // v1 needed a bespoke slot in its ordering code for this. Here the command
-    // carries its subject, so the list groups it like any other row.
     let host = host();
     let inflight = vec![InFlight {
         id: 1,
@@ -1864,7 +1680,6 @@ fn a_pending_creation_draws_in_the_repo_it_will_land_in() {
     let screen = paint(&host, index_of(&host, "sessions"), 46, 14).join("\n");
     assert!(screen.contains("creating"), "{screen}");
 
-    // And it sits under the repo row, not in a limbo of its own.
     let lines: Vec<&str> = screen.lines().collect();
     let header = lines
         .iter()
@@ -1882,23 +1697,12 @@ fn a_pending_creation_draws_in_the_repo_it_will_land_in() {
 
 #[test]
 fn a_pending_creation_draws_on_the_machine_it_was_asked_for() {
-    // A create carries no session yet, so the group it draws in comes from the
-    // two facts it does carry: the repo, and the host the flow picked.
-    //
-    // The host arrives as the picker spells it -- the BACKEND name, `ssh:<x>`
-    // -- while a session's machine is published bare. Compared as they came,
-    // the two never matched: a creation on `devbox` built a third group headed
-    // `ssh:devbox` beside the real `devbox`, naming a machine that does not
-    // exist, and the row still jumped when it landed.
     let host = host();
     let mut remote = row("remote-docs", "website", "idle");
     remote.backend = "ssh:buildbox".to_string();
     remote.remote_host = Some("buildbox".to_string());
     let world = snapshot(vec![row("fix-osc52", "thurbox", "working"), remote]);
 
-    // Built the way the bus builds it, from a real command: `Command::host()`
-    // is where the picker's spelling is settled, so an `InFlight` filled in by
-    // hand here would test the interface against a value nothing produces.
     let create = |subject: &str, on: Option<&str>| {
         let command = Command::parse(
             "create",
@@ -1930,7 +1734,6 @@ fn a_pending_creation_draws_on_the_machine_it_was_asked_for() {
             .unwrap_or_else(|| panic!("no {needle:?} in:\n{screen}"))
     };
 
-    // Asked for on the remote host, in the spelling the host picker carries.
     let screen = screen_for(&create("website", Some("ssh:buildbox")));
     assert!(
         !screen.contains("ssh:buildbox"),
@@ -1946,8 +1749,6 @@ fn a_pending_creation_draws_on_the_machine_it_was_asked_for() {
         "and draws inside it:\n{screen}"
     );
 
-    // The same repo, asked for here: a local website group is built above the
-    // host row, even though this machine holds no session of that repo.
     let screen = screen_for(&create("website", None));
     assert!(
         line_of(&screen, "creating") > line_of(&screen, "▾ website"),
@@ -1961,11 +1762,6 @@ fn a_pending_creation_draws_on_the_machine_it_was_asked_for() {
 
 #[test]
 fn creating_the_first_session_on_a_host_names_the_machine_straight_away() {
-    // Every row is local, so counting rows alone left the host axis off: the
-    // machine the creation named was dropped, the placeholder sat under a
-    // header naming no machine, and the row jumped the moment it landed and
-    // the whole list regrouped under it. Creating your first remote session is
-    // the ordinary way to reach that, not a corner.
     let host = host();
     let command = Command::parse(
         "create",
@@ -2013,10 +1809,6 @@ fn creating_the_first_session_on_a_host_names_the_machine_straight_away() {
 
 #[test]
 fn a_session_being_deleted_leaves_the_list_at_once() {
-    // The row is the delete's subject, so annotating it kept showing the very
-    // session you had just removed for as long as the worker took. It goes on
-    // the keystroke instead: the command is already accepted, and Ctrl+Z brings
-    // the session back rather than the row.
     let host = host();
     let sessions = index_of(&host, "sessions");
     let snapshot = sample();
@@ -2046,7 +1838,6 @@ fn a_session_being_deleted_leaves_the_list_at_once() {
         !screen.contains("delete"),
         "and nothing should be left saying so:\n{screen}"
     );
-    // The sessions it did not touch are untouched.
     assert!(screen.contains("add-wsl-tests"), "{screen}");
 }
 
@@ -2068,8 +1859,6 @@ fn a_creation_into_a_fresh_repo_brings_its_own_header() {
     assert!(screen.contains("brand-new"), "{screen}");
     assert!(screen.contains("creating"), "{screen}");
 }
-
-// --- navigation panes ------------------------------------------------------
 
 #[test]
 fn a_failing_decorator_leaves_the_pane_drawn() {
@@ -2100,21 +1889,14 @@ fn a_failing_decorator_leaves_the_pane_drawn() {
         .decorate(decorator, &node, ctx(20, 3, false))
         .expect_err("the decorator must fail");
     assert_eq!(error.owner, "bad");
-    // And the caller still has the original to draw.
     assert!(paint_node(&node, 20, 3).join("").contains("content"));
 }
 
-// --- code review -----------------------------------------------------------
-
 #[test]
 fn the_review_body_is_a_surface_not_a_tree() {
-    // The diff body is geometry-first, so it is cells. If this
-    // ever becomes a tree, the pane has stopped being able to do side-by-side
-    // and horizontal scrolling.
     let dir = tempfile::tempdir().expect("tempdir");
     let mods = dir.path().join("mods");
     std::fs::create_dir_all(&mods).expect("mkdir");
-    // A stand-in that renders the same shape the review pane does.
     std::fs::write(
         mods.join("10_body.lua"),
         r#"return { name = "body", slot = "a", render = function()
@@ -2140,9 +1922,6 @@ fn the_review_body_is_a_surface_not_a_tree() {
     assert!(screen.contains("+added"), "{screen}");
 }
 
-// --- text fields -----------------------------------------------------------
-
-/// Paint a tree and report where the caret ended up, if anywhere.
 fn painted_caret(node: &Node, width: u16, height: u16) -> Option<(u16, u16)> {
     let mut terminal = Terminal::new(TestBackend::new(width, height)).expect("terminal");
     terminal
@@ -2168,20 +1947,12 @@ fn field(value: &str, cursor: usize, focused: bool) -> Node {
 
 #[test]
 fn an_empty_focused_field_still_owns_the_caret() {
-    // The caret used to be keyed on the value being non-empty, so the field you
-    // had just opened showed none until the first keystroke and lost it again on
-    // the last backspace. A field showing its placeholder is still the field
-    // being typed into.
     assert_eq!(painted_caret(&field("", 0, true), 20, 1), Some((0, 0)));
     assert_eq!(painted_caret(&field("ab", 2, true), 20, 1), Some((2, 0)));
 }
 
 #[test]
 fn only_the_focused_field_owns_the_caret() {
-    // Two fields on one screen and one caret: the creation flow's repo step
-    // draws a search box and a path box together. Ownership is declared, not
-    // inferred from which one holds text — inferring it put the caret in the
-    // other box, and painting order decided the winner.
     let two = Node::Box {
         identity: Default::default(),
         size: Default::default(),
@@ -2207,13 +1978,8 @@ fn only_the_focused_field_owns_the_caret() {
     );
 }
 
-// --- terminal affordances --------------------------------------------------
-
 #[test]
 fn link_detection_has_one_definition() {
-    // One definition of what counts as a URL, in `kernel::terminal::links`
-    // (its only consumer since v1 was retired). Duplicating the scan per
-    // reader would have meant two.
     let rows = vec!["see https://example.com/x for more".to_string()];
     let found = thurbox::kernel::terminal::links::detect_urls(&rows);
     assert_eq!(found.len(), 1);
@@ -2249,7 +2015,6 @@ fn opening_a_link_and_copying_are_commands() {
 
 #[test]
 fn a_shell_is_a_second_surface_over_the_same_primitive() {
-    // No new node kind: the shell is `<id>#shell`, which the provider resolves.
     let host = host();
     publish(&host, &sample());
     host.render(index_of(&host, "sessions"), ctx(40, 12, true))
@@ -2257,8 +2022,6 @@ fn a_shell_is_a_second_surface_over_the_same_primitive() {
     let index = index_of(&host, "agent");
 
     host.on_action(index, "shell.open").expect("open");
-    // Two commands, because selecting a tab also brings its pane forward (v1
-    // `select_central_tab` focuses the centre for both terminal tabs).
     let issued = host.drain_commands();
     let kinds: Vec<&str> = issued.iter().map(|command| command.kind()).collect();
     assert!(kinds.contains(&"shell"), "{kinds:?}");
@@ -2268,7 +2031,6 @@ fn a_shell_is_a_second_surface_over_the_same_primitive() {
         .first_session_surface()
         .expect("the shell pane places a surface");
     assert!(session.ends_with("#shell"), "{session}");
-    // Still four primitives.
     for kind in collect_kinds(&node) {
         assert!(KINDS.contains(&kind), "{kind} is not a primitive");
     }
@@ -2280,7 +2042,6 @@ fn children_nest_under_their_parent_within_a_repo() {
 
     let host = host();
     let mut snap = sample();
-    // Make the second session a child of the first.
     let parent = snap.sessions[0].id.clone();
     snap.sessions[1].parent_id = Some(parent);
     publish(&host, &snap);
@@ -2305,7 +2066,6 @@ fn children_nest_under_their_parent_within_a_repo() {
 fn a_child_whose_parent_is_elsewhere_keeps_its_place() {
     let host = host();
     let mut snap = sample();
-    // A parent in another repo group entirely.
     snap.sessions[3].parent_id = Some(snap.sessions[0].id.clone());
     publish(&host, &snap);
 
@@ -2334,12 +2094,8 @@ fn a_stage_name_reaches_the_pending_row() {
     assert!(screen.contains("creating"), "{screen}");
 }
 
-// --- selection, copy, paste ------------------------------------------------
-
 #[test]
 fn selection_logic_has_one_implementation() {
-    // One implementation, in `kernel::selection` — every consumer is
-    // kernel/main side since v1 was retired. Same reasoning as link detection.
     use thurbox::kernel::selection::{PaneBounds, Selection, TermPos};
 
     let pane = PaneBounds::from_rect(Rect {
@@ -2357,8 +2113,6 @@ fn selection_logic_has_one_implementation() {
 
 #[test]
 fn a_selection_is_clamped_to_its_pane() {
-    // A drag that leaves the terminal must not select the session list beside
-    // it.
     use thurbox::kernel::selection::PaneBounds;
     let pane = PaneBounds::from_rect(Rect {
         x: 10,
@@ -2374,8 +2128,6 @@ fn a_selection_is_clamped_to_its_pane() {
 
 #[test]
 fn a_mod_earns_a_band_entry_by_declaring_one() {
-    // The whole extension point: one table field, and the pane knows nothing
-    // about how the band draws.
     let dir = tempfile::tempdir().expect("tempdir");
     let mods = dir.path().join("mods");
     std::fs::create_dir_all(&mods).expect("mkdir");
@@ -2432,7 +2184,6 @@ fn a_mod_that_becomes_unloadable_leaves_the_last_good_set_in_force() {
     };
     assert_eq!(entries_of(&host), ["Good"]);
 
-    // Break it, then reload.
     std::fs::write(&good, "this is not lua {{{").expect("write");
     host.reload();
 
@@ -2468,12 +2219,6 @@ fn a_band_is_never_a_focus_stop() {
 
 #[test]
 fn a_press_on_a_pane_border_arms_no_selection() {
-    // Why a selection felt trigger-happy: v2 fell back to the WHOLE SCREEN when
-    // a press was not over a terminal, so a press anywhere — a border, the gap
-    // between panes — armed a screen-wide selection, and one cell of pointer
-    // drift painted a band clear across the interface. v1 confines it to the
-    // pane's content area and clears the selection when the press is outside
-    // one.
     use thurbox::kernel::selection::PaneBounds;
     let pane = Rect {
         x: 10,
@@ -2482,7 +2227,6 @@ fn a_press_on_a_pane_border_arms_no_selection() {
         height: 6,
     };
 
-    // Inside: the content area, one cell in from every edge.
     let inner = PaneBounds::content_at(pane, 15, 6).expect("inside the pane");
     assert_eq!(
         inner.rect(),
@@ -2494,7 +2238,6 @@ fn a_press_on_a_pane_border_arms_no_selection() {
         }
     );
 
-    // On the border, on each of the four edges.
     for (x, y, edge) in [
         (10, 6, "left"),
         (29, 6, "right"),
@@ -2507,10 +2250,8 @@ fn a_press_on_a_pane_border_arms_no_selection() {
         );
     }
 
-    // Outside the pane entirely.
     assert!(PaneBounds::content_at(pane, 0, 0).is_none());
 
-    // A pane too small to have content.
     let sliver = Rect {
         x: 0,
         y: 0,
@@ -2522,10 +2263,6 @@ fn a_press_on_a_pane_border_arms_no_selection() {
 
 #[test]
 fn a_selection_is_painted_in_the_themes_own_colours() {
-    // v1 paints a selection with `selection_bg`/`selection_fg`. v2 used
-    // `REVERSED`, which inverts whatever each cell already had — so the same
-    // selection came out a different colour over styled text than over plain,
-    // and matched no palette.
     let themes = themes();
     let style = themes.selection_style();
 
@@ -2541,7 +2278,6 @@ fn a_selection_is_painted_in_the_themes_own_colours() {
          the rule: {style:?}"
     );
 
-    // And it is the palette's pair, not an invented colour.
     let roles = themes.roles();
     let expect = |role: &str| {
         thurbox::kernel::node::parse_color(roles.get(role).expect("role")).expect("a colour")

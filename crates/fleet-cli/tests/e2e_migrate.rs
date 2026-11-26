@@ -1,5 +1,3 @@
-//! `fleet migrate`: a Fleet 2 config and store become Fleet 3's, and the 2.x
-//! files stay as `.v2`, byte for byte.
 mod support;
 
 use std::collections::BTreeMap;

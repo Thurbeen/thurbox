@@ -1,9 +1,3 @@
-//! The `[telemetry]` table of a program's config file, and the one rule that
-//! merges it with the environment: an `OTEL_*` variable set to a non-empty
-//! value wins over the file's value for that variable. The file's headers go
-//! only to the file's endpoint, so a variable that names another collector
-//! drops them.
-
 use std::collections::BTreeMap;
 use std::fmt;
 use std::path::PathBuf;
@@ -20,52 +14,34 @@ const ENDPOINTS: [&str; 4] = [
     "OTEL_EXPORTER_OTLP_LOGS_ENDPOINT",
 ];
 
-/// The `[telemetry]` table: Fleet's `config.toml` and thurbox's
-/// `settings.toml` each have one, with these keys (docs/observability.md).
-/// Unknown keys are left to the file's own loader: Fleet refuses them
-/// ([`TelemetryConfig::KEYS`]), thurbox reports them.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TelemetryConfig {
-    /// The collector's base URL, as `OTEL_EXPORTER_OTLP_ENDPOINT`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub endpoint: Option<String>,
-    /// Only `http/protobuf`, the one protocol the programs speak.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub protocol: Option<String>,
-    /// Where the export headers are read from: never the headers themselves.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub headers: Option<HeadersSource>,
-    /// Export traces; on unless `false`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub traces: Option<bool>,
-    /// Export metrics; on unless `false`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub metrics: Option<bool>,
-    /// Export log records; off unless `true`. A program initialised with
-    /// [`crate::Logs::Config`] reads only this, never `OTEL_LOGS_EXPORTER`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub logs: Option<bool>,
-    /// More resource attributes, as `OTEL_RESOURCE_ATTRIBUTES`.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub resource: BTreeMap<String, String>,
 }
 
-/// A secret's source: a file that holds the `OTEL_EXPORTER_OTLP_HEADERS`
-/// value, `key=value` pairs separated by commas.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct HeadersSource {
-    /// An absolute path, read at each start of the program.
     pub file: PathBuf,
 }
 
 impl TelemetryConfig {
-    /// The keys of the table, for a loader that refuses any other.
     pub const KEYS: &'static [&'static str] = &[
         "endpoint", "protocol", "headers", "traces", "metrics", "logs", "resource",
     ];
 
-    /// The table's own rules; each error names the key, as
-    /// `telemetry.<key>`. The headers file is read later, at start.
     pub fn validate(&self) -> Result<(), String> {
         if let Some(endpoint) = &self.endpoint {
             if !endpoint.trim().starts_with("http://") {
@@ -182,12 +158,9 @@ impl FileVars {
     }
 }
 
-/// Where a value in force comes from.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Source {
-    /// The variable of that name.
     Env(String),
-    /// The `[telemetry]` table.
     File,
 }
 

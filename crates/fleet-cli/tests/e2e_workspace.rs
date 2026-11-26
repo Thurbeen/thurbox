@@ -1,9 +1,3 @@
-//! Acceptance: the runtime makes a Task's workspace, a list of URLs,
-//! through its `workspace` call before the first start; Fleet hands the
-//! spawn the ready `{host, dirs}`, and has the runtime release the workspace
-//! after the session. Every scenario runs the real `fleet` binary against
-//! the file store and the fake host, which keeps its workspaces as records.
-
 mod support;
 
 use std::fs;
@@ -75,11 +69,9 @@ fn fleet_materializes_the_workspace_spawns_into_it_and_cleans_it_after_release()
     );
     assert_eq!(env.calls("materialize"), 1);
 
-    // A second run changes nothing and makes nothing twice.
     env.reconcile().ok();
     assert_eq!((env.calls("materialize"), env.calls("spawn")), (1, 1));
 
-    // Deleting releases the session, then cleans the workspace, then lets go.
     env.host().set_at_rest(&key, true).unwrap();
     env.fleet(&["delete", "task", "t1"]).ok();
     env.reconcile().ok();
@@ -97,12 +89,10 @@ fn a_crash_mid_materialization_is_recovered_by_observing_the_key() {
     env.fault(Fault::new("materialize", "abort"));
     env.fleet(&["reconcile", "--lease-ttl-ms", "3000"])
         .crashed();
-    // The dead holder's lease must expire before the next manager can take it.
-    std::thread::sleep(std::time::Duration::from_millis(3_100));
+    let dead_holder_lease_expiry = std::time::Duration::from_millis(3_100);
+    std::thread::sleep(dead_holder_lease_expiry);
     assert_eq!(env.calls("materialize"), 1);
 
-    // The intent has no receipt: the next run finds the workspace under the
-    // key and adopts it, and never materializes it again.
     env.reconcile().ok();
     let st = env.status("t1");
     assert_eq!(st["phase"], "Briefed", "{st:#}");
@@ -130,8 +120,6 @@ fn a_lost_request_is_tried_again_under_the_same_workspace_key() {
     env.fault(Fault::new("materialize", "unknown"));
     env.reconcile().ok();
 
-    // The key reads absent: the request never landed, so it is tried again
-    // after the wait, and the Task goes on.
     let st = env.status("t1");
     assert_eq!(st["phase"], "Pending", "{st:#}");
     assert_condition(&st, "WorkspaceReady", "False", "MaterializeRetry");
@@ -165,8 +153,6 @@ fn a_refused_workspace_is_retried_then_stalls_and_spawns_nothing() {
     assert_eq!((env.calls("materialize"), env.calls("spawn")), (3, 0));
 }
 
-/// A `file://` URL is a directory the runtime uses as it is: it is made
-/// through the same call, and the session runs in it.
 #[test]
 fn a_file_url_is_its_directory_as_it_is() {
     let env = env("workspace-file");
@@ -202,8 +188,6 @@ fn an_empty_workspace_is_never_made() {
     );
 }
 
-/// A URL the host's runtime does not handle is refused before any spawn,
-/// spends no attempt, and waits for a runtime that handles it.
 #[test]
 fn a_url_the_runtime_does_not_handle_waits_and_spawns_nothing() {
     let env = env("workspace-unsupported");
@@ -223,8 +207,6 @@ fn a_url_the_runtime_does_not_handle_waits_and_spawns_nothing() {
     assert_eq!(env.calls("spawn"), 0);
 }
 
-/// A workspace is a list of absolute URLs. The shapes before it, and a list
-/// of paths, are refused when they are applied.
 #[test]
 fn a_workspace_that_is_not_a_list_of_urls_is_refused_at_apply() {
     let env = Env::new("workspace-old-shape");
@@ -241,8 +223,6 @@ fn a_workspace_that_is_not_a_list_of_urls_is_refused_at_apply() {
     }
 }
 
-/// The `[workspaces]` section is gone: each runtime makes its own
-/// workspaces, so a config that still has one is refused at load.
 #[test]
 fn a_workspaces_section_is_refused_at_load() {
     let env = Env::new("workspace-section");

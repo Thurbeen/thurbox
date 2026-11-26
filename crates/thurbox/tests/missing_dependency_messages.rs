@@ -1,20 +1,7 @@
-//! A spawn that fails because a binary is not installed must say which one,
-//! where thurbox looked, and what to do about it.
-//!
-//! The report this pins comes from a user whose local spawn failed with
-//! `tmux new-window exited exit status: 127 for window tb-test01`: a number,
-//! with nothing naming the missing binary, the directories searched, or the
-//! fix. The same setup answered `Failed to create tmux session` through the
-//! headless path — no better.
-//!
-//! Its own test binary because it sets `PATH` for the whole process, which a
-//! sibling test in the same binary would see.
-
 #![cfg(unix)]
 
 use std::collections::HashMap;
 
-/// Run `f` with `PATH` pointing at one directory that holds no multiplexer.
 fn without_a_multiplexer<T>(f: impl FnOnce() -> T) -> T {
     let dir = tempfile::tempdir().expect("tempdir");
     let saved = std::env::var_os("PATH");

@@ -1,23 +1,12 @@
-//! `thurbox-cli perf` — read the perf snapshot a running TUI publishes.
-//!
-//! The TUI writes a JSON snapshot (counters, frame/republish/tick timing
-//! percentiles, slow ops, startup phase breakdown, and the per-mod report)
-//! to `perf.json` in the data directory while perf timing is active —
-//! `THURBOX_PERF_LOG=1` or an open perf HUD (F12). `kernel::perf::snapshot_json`
-//! owns the shape; this renders it. This command prints the latest one, so a
-//! running instance can be inspected from outside without tailing
-//! `thurbox.log`. `--mods` prints the per-pane half. See
-//! `docs/thurbox/performance.md`.
-
 use serde_json::{json, Value};
 
 use super::output::{kv, CommandOutput};
 
 #[derive(clap::Args, Debug)]
 pub struct PerfArgs {
-    /// One row per loaded mod instead of the loop's totals: render and
-    /// handler time, reuse, runs, store writes and tree size, most expensive
-    /// first, with hints naming the likely cause.
+    #[arg(
+        help = "One row per loaded mod instead of the loop's totals: render and handler time, reuse, runs, store writes and tree size, most expensive first, with hints naming the likely cause"
+    )]
     #[arg(long)]
     pub mods: bool,
     #[arg(long, hide = true)]
@@ -27,15 +16,12 @@ pub struct PerfArgs {
 pub const DEPRECATED_PLUGINS_FLAG: &str =
     "thurbox-cli: `perf --plugins` is deprecated; use `perf --mods`";
 
-/// Human hint shown when no snapshot exists (or it can't be parsed).
 const NO_SNAPSHOT_HINT: &str = "No perf snapshot published. Run the TUI with THURBOX_PERF_LOG=1 \
      or open its perf HUD (F12), then retry.";
 
-/// Shown for a snapshot published by a thurbox that predates `--plugins`.
 const NO_MODS_HINT: &str = "This perf snapshot has no per-mod section: the running TUI \
      is older than `perf --mods`.";
 
-/// Run the `perf` command: print the last published snapshot.
 pub fn run(mods: bool) -> Result<CommandOutput, String> {
     let raw =
         crate::paths::perf_snapshot_file().and_then(|path| std::fs::read_to_string(path).ok());
@@ -63,7 +49,6 @@ fn u(v: &Value, path: &[&str]) -> u64 {
     cur.as_u64().unwrap_or(0)
 }
 
-/// Format a µs value compactly (mirrors the HUD's formatting).
 fn fmt_us(us: u64) -> String {
     if us < 1_000 {
         format!("{us}µs")
@@ -74,7 +59,6 @@ fn fmt_us(us: u64) -> String {
     }
 }
 
-/// Seconds since the snapshot was captured.
 fn age(s: &Value) -> u64 {
     let captured_at = u(s, &["captured_at"]);
     std::time::SystemTime::now()
@@ -84,8 +68,6 @@ fn age(s: &Value) -> u64 {
 }
 
 fn render_human(s: &Value) -> String {
-    // One row per histogram, so the three costs of a frame stay side by side:
-    // painting, the table rebuild that precedes it, and the rest of the loop.
     let histogram = |key: &str| {
         format!(
             "{} / {} / {}  ({} samples)",
@@ -161,7 +143,6 @@ fn render_human(s: &Value) -> String {
     out
 }
 
-/// The per-mod table, in the order the snapshot ranked it.
 fn render_mods(s: &Value) -> CommandOutput {
     let Some(rows) = s.get("plugins").and_then(Value::as_array) else {
         return CommandOutput::failed(json!({ "plugins": null }), NO_MODS_HINT, "no per-mod data");
@@ -289,13 +270,9 @@ mod tests {
         assert!(out.human.contains("pid 42"));
         assert!(out.human.contains("interface_reload"));
         assert!(out.human.contains("320ms"));
-        // A slow op names the pane that spent it.
         assert!(out.human.contains("files"));
-        // republish is reported beside frame: telling the table rebuild apart
-        // from the paint is the whole reason it has its own histogram.
         assert!(out.human.contains("republish"));
         assert!(out.human.contains("ui 40ms"));
-        // The two skip counters: a skipped frame is invisible in anything else.
         assert!(out.human.contains("renders skipped"));
         assert!(out.human.contains("88"));
         assert!(out.human.contains("groups reused"));
@@ -313,8 +290,6 @@ mod tests {
 
     #[test]
     fn a_wide_pane_name_keeps_the_columns_after_it_aligned() {
-        // Two rows with identical numbers: whatever the names are made of, both
-        // lines must occupy the same terminal columns.
         let _env = isolated();
         let row =
             |name: &str| format!(r#"{{"name":"{name}","total_us":1200,"renders":3,"reused":1}}"#);

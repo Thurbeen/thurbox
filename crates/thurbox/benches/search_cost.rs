@@ -1,34 +1,3 @@
-//! What a content search costs, over every session's full scrollback.
-//!
-//! Not a gate in CI — ADR-P5 keeps timing out of the suite; `kernel::search`'s
-//! unit tests and `tests/search.rs` hold the assertions that are
-//! deterministic. This is the instrument: it fills real vt100 parsers with
-//! agent-shaped output and times what the search does, so the numbers in
-//! `docs/thurbox/performance.md` can be re-measured rather than trusted.
-//!
-//! ```sh
-//! cargo bench --bench search_cost                          # 20 sessions × 1000
-//! THURBOX_BENCH_SESSIONS=20 THURBOX_BENCH_SCROLLBACK=10000 cargo bench --bench search_cost
-//! THURBOX_BENCH_CHECK=1 cargo bench --bench search_cost    # exit 1 over budget
-//! ```
-//!
-//! * **loop** — what the render thread pays to start a search: one `Source`
-//!   (an `Arc` clone and a stamp) per terminal. The rest is on the worker.
-//! * **lock** — the longest one parser was held while its history was read,
-//!   which is how long that session's reader thread (and its paint) could wait.
-//! * **cold** — the worker's first run: every history read, then matched. An
-//!   open strip pays this before anything is typed (it warms the cache).
-//! * **warm** — a new query over terminals that printed nothing since: the
-//!   histories come from the cache, so this is matching alone.
-//! * **typing** — a query typed a letter at a time, each letter a warm run:
-//!   the slowest letter is what keystroke-to-result costs on the worker.
-//! * **rescan** — the same query re-run after three agents printed, which an
-//!   open strip does once a second: only what they printed is read again.
-//!
-//! `THURBOX_BENCH_CHECK=1` exits non-zero when a budget below is exceeded —
-//! the "search must not slow the interface" contract (ADR-P26), as numbers a
-//! run on a quiet machine can be held to.
-
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -42,21 +11,15 @@ fn env(name: &str, fallback: usize) -> usize {
         .unwrap_or(fallback)
 }
 
-/// The longest a search may hold one terminal's lock.
 const LOCK_BUDGET: Duration = Duration::from_millis(1);
 
-/// The slowest a keystroke's run may be, once histories are read.
 const KEYSTROKE_BUDGET: Duration = Duration::from_millis(50);
 
-/// The slowest a once-a-second rescan may be.
 const RESCAN_BUDGET: Duration = Duration::from_millis(50);
 
 const ROWS: u16 = 50;
 const COLS: u16 = 200;
 
-/// Agent-shaped output: prose, paths, code and blank lines, deterministic so
-/// every run reads the same text. A line in forty mentions the needle, the way
-/// a word you search for appears a handful of times in a long session.
 fn fill(parser: &mut SessionParser, lines: usize, seed: usize) {
     const WORDS: [&str; 24] = [
         "the",
@@ -266,7 +229,6 @@ fn main() {
     println!("  typing  (slowest letter of {typed:?})  {}", ms(slowest));
     budget("typing", slowest, KEYSTROKE_BUDGET);
 
-    // Three agents print a burst, and the open strip re-runs its query.
     let mut rescans = Vec::new();
     let mut rows = 0;
     for round in 0..runs {

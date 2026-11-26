@@ -1,20 +1,7 @@
-//! What `settings.toml` controls in v2.
-//!
-//! The bug this file exists to prevent is not a wrong value — it is a setting
-//! that is *read nowhere*. `thurbox2` used to never publish what it loaded, so
-//! a process-wide copy handed out defaults and the entire file was ignored
-//! however carefully it had been written. Nothing about that failure was visible:
-//! every switch looked honoured because every default matched.
-//!
-//! So these tests assert the reach of a setting rather than its parsing: that the
-//! file is what is in force, that a change to it lands where it has to, and that a
-//! mod can see it.
-
 use thurbox::kernel::config::{Config, Reloaded};
 use thurbox::session::settings::Settings;
 use thurbox::session::SessionState;
 
-/// Isolate config and data into a tempdir, process-wide so a worker sees it too.
 fn isolate() -> tempfile::TempDir {
     let home = tempfile::tempdir().expect("tempdir");
     let config = home.path().join("config");
@@ -39,8 +26,6 @@ fn read_settings() -> String {
     let path = thurbox::config::settings::settings_config_path().expect("settings path");
     std::fs::read_to_string(path).expect("read settings.toml")
 }
-
-// ── The file reaches the interface at all ──────────────────────────────────
 
 #[test]
 fn the_file_is_what_is_in_force() {
@@ -67,16 +52,12 @@ fn the_file_is_what_is_in_force() {
 
 #[test]
 fn a_restart_only_value_is_in_force_as_loaded() {
-    // What every consumer of a restart-only value is built with: there is no
-    // process-wide copy to fall back on, so the loaded document is the answer.
     let _home = isolate();
     write_settings("git_poll_secs = 7\n");
 
     let (config, _) = Config::load();
     assert_eq!(config.in_force().git_poll_secs, 7);
 }
-
-// ── Reload ─────────────────────────────────────────────────────────────────
 
 #[test]
 fn a_live_change_on_disk_applies_without_a_restart() {
@@ -86,8 +67,6 @@ fn a_live_change_on_disk_applies_without_a_restart() {
     assert!(config.features().shell_pane);
 
     write_settings("[features]\nshell_pane = false\n");
-    // The poll is throttled and mtime-based; a fresh read is what the loop would
-    // eventually do, so drive `adopt` with what the file now says.
     let (fresh, _) = thurbox::config::settings::load_or_seed_with_warnings();
     assert_eq!(config.adopt(fresh), Reloaded::Live);
     assert!(!config.features().shell_pane);
@@ -95,8 +74,6 @@ fn a_live_change_on_disk_applies_without_a_restart() {
 
 #[test]
 fn a_clipboard_change_on_disk_is_taken_into_force() {
-    // Issue #1638: the reload said `Live` and kept the booted `[clipboard]`, so
-    // the next copy still went through the old provider.
     let _home = isolate();
     write_settings("[clipboard]\nprovider = \"auto\"\ncopy_on_select = true\n");
     let (mut config, _) = Config::load();
@@ -134,7 +111,6 @@ fn an_unreadable_file_keeps_what_was_in_force() {
     let (mut config, _) = Config::load();
     assert!(!config.features().shell_pane);
 
-    // Not valid TOML at all.
     write_settings("[features\nshell_pane = ???\n");
     let outcome = config.poll();
     assert!(
@@ -165,32 +141,18 @@ fn our_own_write_is_not_reported_as_an_outside_edit() {
     );
 }
 
-/// The settings panel edits the *file*, so it drafts from the file.
-///
-/// The bug: it drafted from what was in force, and a restart-only change is
-/// deliberately never taken into force. So one visit saved `mouse = false`
-/// correctly, and the next visit — any visit, changing anything — carried the
-/// stale `mouse = true` back into the document and reverted it. Two thirds of
-/// the panel's core rows are restart-only, which made "my settings do not
-/// survive a restart" the everyday symptom.
 #[test]
 fn a_saved_restart_only_change_is_not_reverted_by_the_next_save() {
     let _home = isolate();
     let (mut config, _) = Config::load();
 
-    // One visit to the panel: seed a draft, change a restart-only row, save.
-    // The loop adopts the draft and writes it, which is `App::apply_settings`.
     let mut draft = config.on_disk().clone();
     draft.features.mouse = false;
     assert_eq!(config.adopt(draft.clone()), Reloaded::NeedsRestart);
     thurbox::config::settings::save_settings(&draft).expect("save");
 
-    // The next visit, with the modal (and its draft) long since dropped: change
-    // something else entirely.
     let mut draft = config.on_disk().clone();
     draft.features.shell_pane = false;
-    // Still `NeedsRestart`: the earlier change is pending until the next launch,
-    // and saying otherwise would report it as applied.
     assert_eq!(config.adopt(draft.clone()), Reloaded::NeedsRestart);
     thurbox::config::settings::save_settings(&draft).expect("save");
 
@@ -202,8 +164,6 @@ fn a_saved_restart_only_change_is_not_reverted_by_the_next_save() {
     assert!(!next_launch.features.shell_pane, "and the live one landed");
 }
 
-/// The other half of the same rule: what is *in force* still refuses the
-/// restart-only change, or the split this all rests on would be gone.
 #[test]
 fn the_file_moves_ahead_of_what_is_in_force() {
     let _home = isolate();
@@ -222,8 +182,6 @@ fn the_file_moves_ahead_of_what_is_in_force() {
 
 #[test]
 fn saving_preserves_the_files_comments() {
-    // The seed is documented inline, and a save that regenerated the file would
-    // throw that away — which is why `save_settings` edits the document.
     let _home = isolate();
     write_settings(
         "# my notes about this profile\n\
@@ -240,9 +198,6 @@ fn saving_preserves_the_files_comments() {
     );
 }
 
-// ── What the switches do to the interface ──────────────────────────────────
-
-/// The bundled interface, loaded from the repo's own `ui/`.
 fn host() -> thurbox::kernel::host::LuaHost {
     let dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../ui");
     let host = thurbox::kernel::host::LuaHost::new(dir);
@@ -250,7 +205,6 @@ fn host() -> thurbox::kernel::host::LuaHost {
     host
 }
 
-/// One session with work at risk, so a confirmation has something to itemise.
 fn session_row() -> thurbox::kernel::snapshot::SessionRow {
     thurbox::kernel::snapshot::SessionRow {
         id: "11111111-1111-1111-1111-111111111111".into(),
@@ -356,7 +310,6 @@ fn press(host: &thurbox::kernel::host::LuaHost, mod_name: &str, chord: &str) {
     host.on_key(index, &key).expect("on_key");
 }
 
-/// Whether the confirmation is up, and what it says.
 fn confirmation(host: &thurbox::kernel::host::LuaHost, settings: &Settings) -> Option<String> {
     publish_with(host, settings);
     let index = host.index_of("confirm").expect("no confirm plugin");
@@ -418,7 +371,6 @@ fn deleting_confirms_and_itemises_the_loss() {
     let screen = confirmation(&host, &settings).expect("the confirmation must be up");
     assert!(screen.contains("fix-osc52"), "{screen}");
     assert!(screen.contains("for good"), "{screen}");
-    // What v1 itemises: uncommitted work, unpushed commits, the worktree.
     assert!(
         screen.contains("4 uncommitted or untracked file(s)"),
         "{screen}"
@@ -426,7 +378,6 @@ fn deleting_confirms_and_itemises_the_loss() {
     assert!(screen.contains("2 commit(s) not pushed"), "{screen}");
     assert!(screen.contains("worktree directory"), "{screen}");
 
-    // Answering it is what deletes, and it deletes for real.
     press(&host, "confirm", "y");
     assert_eq!(
         host.drain_commands(),
@@ -454,13 +405,8 @@ fn declining_the_confirmation_deletes_nothing() {
     assert!(confirmation(&host, &settings).is_none());
 }
 
-// ── Updates ────────────────────────────────────────────────────────────────
-
 #[test]
 fn with_both_update_switches_off_nothing_is_fetched_or_replaced() {
-    // The switch has to mean "do not go to the network", not "go, then discard":
-    // a machine with no route out must cost nothing, and a user who said no must
-    // not have binaries replaced.
     let _home = isolate();
     write_settings("[features]\nversion_check = false\nauto_update = false\n");
     let (config, _) = Config::load();
@@ -479,8 +425,6 @@ fn with_both_update_switches_off_nothing_is_fetched_or_replaced() {
 
 #[test]
 fn the_update_switches_are_editable_and_marked_as_needing_a_restart() {
-    // They are listed only because they now gate something; both take effect at
-    // the next launch, since the work runs once at startup.
     let _home = isolate();
     write_settings("");
     let (config, _) = Config::load();
@@ -516,7 +460,6 @@ fn a_raised_column_threshold_leaves_only_the_central_pane() {
     );
     assert!(placed.iter().any(|slot| slot == "center"), "{placed:?}");
 
-    // And the same width shows both columns at the default threshold.
     publish_with(&host, &Settings::default());
     let placed: Vec<String> = thurbox::kernel::layout::resolve(
         &host.arrangement(150, 40).expect("arrangement"),
@@ -528,8 +471,6 @@ fn a_raised_column_threshold_leaves_only_the_central_pane() {
     assert!(placed.iter().any(|slot| slot == "sessions"), "{placed:?}");
 }
 
-/// A v2 file names a key 3.0 no longer reads on every load. That notice must
-/// not stop a reload: a later edit to a live switch still applies.
 #[test]
 fn a_retired_key_does_not_block_a_live_reload() {
     let _home = isolate();
@@ -555,9 +496,6 @@ fn a_retired_key_does_not_block_a_live_reload() {
     assert!(!config.features().shell_pane, "the edit is in force");
 }
 
-/// The settings that drew v1's panels and the notification edges Fleet never
-/// reports are gone from thurbox 3.0. A file that still sets them keeps
-/// loading, says once per key that it is no longer read, and stays valid.
 #[test]
 fn a_file_setting_a_dropped_key_still_loads() {
     let _home = isolate();

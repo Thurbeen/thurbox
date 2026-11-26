@@ -1,16 +1,7 @@
-//! Native code-review data model + a unified-diff parser.
-//!
-//! Pure data (no local crate imports beyond `super`), matching the architecture
-//! rule for `session`. The `ui` layer renders these types directly (it may
-//! import `session` but never `git`); the `git diff` invocation lives in
-//! [`crate::git`].
-
 use super::SessionId;
 
-/// Maximum byte length of a review comment / summary body.
 pub const MAX_REVIEW_BODY_LEN: usize = 16 * 1024;
 
-/// Which side of the diff a line-anchored comment sits on.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Side {
     Old,
@@ -34,8 +25,6 @@ impl Side {
     }
 }
 
-/// A review comment's classification — the colored "type" badge. Mirrors
-/// tuicr's set (issue / suggestion / note / praise).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum Classification {
     Issue,
@@ -46,7 +35,6 @@ pub enum Classification {
 }
 
 impl Classification {
-    /// In selector / cycle order.
     pub const ALL: [Classification; 4] = [
         Classification::Issue,
         Classification::Suggestion,
@@ -54,7 +42,6 @@ impl Classification {
         Classification::Praise,
     ];
 
-    /// Stable token used in storage and markdown export.
     pub fn as_str(self) -> &'static str {
         match self {
             Classification::Issue => "issue",
@@ -64,7 +51,6 @@ impl Classification {
         }
     }
 
-    /// Human-facing label.
     pub fn label(self) -> &'static str {
         match self {
             Classification::Issue => "Issue",
@@ -78,33 +64,25 @@ impl Classification {
         Self::ALL.into_iter().find(|c| c.as_str() == s)
     }
 
-    /// Next classification in [`Self::ALL`] order, wrapping — drives the
-    /// in-modal cycle.
     pub fn next(self) -> Self {
         let i = Self::ALL.iter().position(|&c| c == self).unwrap_or(0);
         Self::ALL[(i + 1) % Self::ALL.len()]
     }
 
-    /// Previous classification, wrapping.
     pub fn prev(self) -> Self {
         let i = Self::ALL.iter().position(|&c| c == self).unwrap_or(0);
         Self::ALL[(i + Self::ALL.len() - 1) % Self::ALL.len()]
     }
 }
 
-/// Where a review comment is anchored.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum CommentAnchor {
-    /// A specific line on one side of a file's diff.
     Line { file: String, side: Side, line: u32 },
-    /// The file as a whole.
     File { file: String },
-    /// The review as a whole — the summary.
     Review,
 }
 
 impl CommentAnchor {
-    /// The file this comment concerns, if any (`None` for the review summary).
     pub fn file(&self) -> Option<&str> {
         match self {
             CommentAnchor::Line { file, .. } | CommentAnchor::File { file } => Some(file),
@@ -112,13 +90,10 @@ impl CommentAnchor {
         }
     }
 
-    /// Whether this is a file-level comment on `file`.
     pub fn anchors_file(&self, file: &str) -> bool {
         matches!(self, CommentAnchor::File { file: f } if f == file)
     }
 
-    /// Whether this line-level comment anchors to a diff line in `file` with the
-    /// given old/new line numbers (matched against the comment's side).
     pub fn anchors_line(&self, file: &str, old_no: Option<u32>, new_no: Option<u32>) -> bool {
         match self {
             CommentAnchor::Line {
@@ -134,8 +109,6 @@ impl CommentAnchor {
     }
 }
 
-/// A persisted review comment. The summary is just a [`CommentAnchor::Review`]
-/// comment, so one type/table covers line, file, and review-level remarks.
 #[derive(Debug, Clone)]
 pub struct ReviewComment {
     pub id: i64,
@@ -147,8 +120,6 @@ pub struct ReviewComment {
     pub updated_at: u64,
 }
 
-/// Validate a comment/summary body against the length bound. Pure so the UI and
-/// storage layers share one rule; returns a human-readable reason on rejection.
 pub fn validate_body(body: &str) -> Result<(), String> {
     if body.trim().is_empty() {
         return Err("comment body must not be empty".into());
@@ -163,8 +134,6 @@ pub fn validate_body(body: &str) -> Result<(), String> {
     Ok(())
 }
 
-// ── Diff model ───────────────────────────────────────────────────────────────
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DiffLineKind {
     Context,
@@ -172,8 +141,6 @@ pub enum DiffLineKind {
     Del,
 }
 
-/// A single line within a diff hunk, with its 1-based line numbers on each side
-/// (the side that doesn't contain the line is `None`).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DiffLine {
     pub kind: DiffLineKind,
@@ -186,7 +153,6 @@ pub struct DiffLine {
 pub struct DiffHunk {
     pub old_start: u32,
     pub new_start: u32,
-    /// The section heading after the `@@ … @@` ranges (often a function name).
     pub header: String,
     pub lines: Vec<DiffLine>,
 }
@@ -212,9 +178,7 @@ impl FileStatus {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DiffFile {
-    /// New path (or the old path for a deletion).
     pub path: String,
-    /// Old path, when it differs from `path` (a rename).
     pub old_path: Option<String>,
     pub status: FileStatus,
     pub hunks: Vec<DiffHunk>,
@@ -238,9 +202,6 @@ impl DiffFile {
     }
 }
 
-/// Parse `git diff` unified output into a list of [`DiffFile`]s. Tolerant of the
-/// metadata lines git emits (index / mode / rename / binary); unknown lines are
-/// skipped. Pure and unit-tested.
 pub fn parse_unified_diff(input: &str) -> Vec<DiffFile> {
     let mut files: Vec<DiffFile> = Vec::new();
     let mut cur: Option<DiffFile> = None;
@@ -250,7 +211,6 @@ pub fn parse_unified_diff(input: &str) -> Vec<DiffFile> {
 
     for line in input.lines() {
         if let Some(rest) = line.strip_prefix("diff --git ") {
-            // New file boundary: flush the pending hunk + file.
             push_hunk(&mut cur, &mut hunk);
             if let Some(f) = cur.take() {
                 files.push(f);
@@ -282,7 +242,6 @@ pub fn parse_unified_diff(input: &str) -> Vec<DiffFile> {
                 lines: Vec::new(),
             });
         } else if apply_file_metadata(f, line, hunk.is_some()) {
-            // A header/metadata line (mode / rename / `---` / `+++`) was consumed.
         } else if let Some(h) = hunk.as_mut() {
             push_body_line(h, line, &mut old_no, &mut new_no);
         }
@@ -295,42 +254,21 @@ pub fn parse_unified_diff(input: &str) -> Vec<DiffFile> {
     files
 }
 
-/// Push the pending hunk into the current file, if both are present.
 fn push_hunk(cur: &mut Option<DiffFile>, hunk: &mut Option<DiffHunk>) {
     if let (Some(f), Some(h)) = (cur.as_mut(), hunk.take()) {
         f.hunks.push(h);
     }
 }
 
-/// One changed file, as git itself reports it — complete, and independent of any cap
-/// on the diff text.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ChangedFile {
     pub path: String,
-    /// Where a rename came from.
     pub old_path: Option<String>,
     pub status: FileStatus,
     pub added: usize,
     pub removed: usize,
 }
 
-/// Join `--numstat -M -z` and `--name-status -M -z` into one list per file.
-///
-/// Two commands because neither is sufficient: `--numstat` carries the counts and
-/// cannot tell a deletion from a rewrite, `--name-status` carries the status and no
-/// counts. Joined on the **new path**, which is the identity git reports for a rename
-/// and the one a comment anchor will have to use.
-///
-/// Both are NUL-separated, and the two spell a rename differently — which is the whole
-/// reason to parse `-z` rather than the human output:
-///
-/// ```text
-/// --numstat      "1\t0\tCargo.toml"  "0\t0\t"  "README.md"  "GUIDE.md"
-/// --name-status  "A"  "Cargo.toml"     "R100"  "README.md"  "GUIDE.md"
-/// ```
-///
-/// A binary file's counts arrive as `-`, which is not zero and not a number; such a
-/// file is reported with zero counts rather than dropped, since it did change.
 pub fn parse_changed_files(numstat_z: &str, name_status_z: &str) -> Vec<ChangedFile> {
     let statuses = parse_name_status(name_status_z);
     let mut out = Vec::new();
@@ -342,7 +280,7 @@ pub fn parse_changed_files(numstat_z: &str, name_status_z: &str) -> Vec<ChangedF
         let Some(path) = numstat_path(parts.next().unwrap_or_default(), &mut fields) else {
             break;
         };
-        // `-` for a binary file: it changed, and it has no line counts.
+        // git numstat prints `-` for a binary file.
         let count = |field: &str| field.parse::<usize>().unwrap_or(0);
         let (status, old_path) = statuses
             .get(&path)
@@ -359,8 +297,6 @@ pub fn parse_changed_files(numstat_z: &str, name_status_z: &str) -> Vec<ChangedF
     out
 }
 
-/// The status half of [`parse_changed_files`]: `--name-status -z` into
-/// `new path -> (status, old path)`.
 fn parse_name_status(
     name_status_z: &str,
 ) -> std::collections::BTreeMap<String, (FileStatus, Option<String>)> {
@@ -374,7 +310,6 @@ fn parse_name_status(
             _ => FileStatus::Modified,
         };
         let Some(first) = fields.next() else { break };
-        // A rename or copy names both sides; everything else names one.
         if matches!(status, FileStatus::Renamed) {
             let Some(new_path) = fields.next() else { break };
             statuses.insert(new_path.to_string(), (status, Some(first.to_string())));
@@ -385,9 +320,6 @@ fn parse_name_status(
     statuses
 }
 
-/// The path a `--numstat -z` record names. An empty path field means the two
-/// following records are the old and new names; `-z` is what makes that
-/// unambiguous. `None` = the record was truncated mid-rename.
 fn numstat_path<'a>(field: &str, fields: &mut impl Iterator<Item = &'a str>) -> Option<String> {
     if !field.is_empty() {
         return Some(field.to_string());
@@ -396,11 +328,6 @@ fn numstat_path<'a>(field: &str, fields: &mut impl Iterator<Item = &'a str>) -> 
     fields.next().map(str::to_string)
 }
 
-/// Apply a file-header metadata line (mode / rename / `---` / `+++`) to `f`,
-/// returning whether it was consumed. `in_hunk` gates the `---`/`+++` arms to
-/// the pre-hunk region: inside a hunk a removed/added line whose *content*
-/// starts with `-- `/`++ ` (SQL/Lua/Haskell comment, signature delimiter)
-/// renders as `--- …`/`+++ …` and must stay a Del/Add body line.
 fn apply_file_metadata(f: &mut DiffFile, line: &str, in_hunk: bool) -> bool {
     if line.starts_with("new file mode") {
         f.status = FileStatus::Added;
@@ -416,8 +343,6 @@ fn apply_file_metadata(f: &mut DiffFile, line: &str, in_hunk: bool) -> bool {
         let p = p.trim();
         if p != "/dev/null" {
             let old = p.strip_prefix("a/").unwrap_or(p).to_string();
-            // Only record as old_path when it differs from the new path
-            // (renames already set it; identical paths leave it None).
             if f.old_path.is_none() && f.path != old {
                 f.old_path = Some(old);
             }
@@ -433,8 +358,6 @@ fn apply_file_metadata(f: &mut DiffFile, line: &str, in_hunk: bool) -> bool {
     true
 }
 
-/// Append a hunk body line (`+`/`-`/` `-prefixed) to `hunk`, advancing the
-/// per-side line counters. `\ No newline …` and stray metadata are ignored.
 fn push_body_line(hunk: &mut DiffHunk, line: &str, old_no: &mut u32, new_no: &mut u32) {
     let (kind, old, new) = match line.as_bytes().first() {
         Some(b'+') => (DiffLineKind::Add, None, Some(*new_no)),
@@ -456,9 +379,6 @@ fn push_body_line(hunk: &mut DiffHunk, line: &str, old_no: &mut u32, new_no: &mu
     }
 }
 
-/// Split `a/<old> b/<new>` (the tail of a `diff --git` line). Best-effort: git
-/// quotes paths with special characters, but the `---`/`+++` lines refine the
-/// paths afterward, so this only needs to handle the common unquoted case.
 fn split_diff_git_paths(rest: &str) -> (Option<String>, Option<String>) {
     if let Some(idx) = rest.find(" b/") {
         let old = rest[..idx].strip_prefix("a/").map(str::to_string);
@@ -469,7 +389,6 @@ fn split_diff_git_paths(rest: &str) -> (Option<String>, Option<String>) {
     }
 }
 
-/// Parse a `@@ -o,os +n,ns @@ header` line into the two start lines + heading.
 fn parse_hunk_header(line: &str) -> (u32, u32, String) {
     let mut old_start = 0;
     let mut new_start = 0;
@@ -490,7 +409,6 @@ fn parse_hunk_header(line: &str) -> (u32, u32, String) {
     (old_start, new_start, header)
 }
 
-/// Parse the start line of a `start,count` (or bare `start`) range token.
 fn parse_start(s: &str) -> u32 {
     s.split(',')
         .next()
@@ -498,25 +416,12 @@ fn parse_start(s: &str) -> u32 {
         .unwrap_or(0)
 }
 
-// ── Side-by-side pairing ─────────────────────────────────────────────────────
-
-/// One visual row of the paired (true side-by-side) layout: the old-side and
-/// new-side line indices within a hunk (`None` = a blank half-cell). A context
-/// line pairs with itself (`old == new`); within a change block a deletion and
-/// an addition align positionally (`del[k] ↔ add[k]`), and any uneven remainder
-/// is left half-blank. Every hunk line appears in exactly one [`SidePair`] on
-/// exactly one side.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct SidePair {
     pub old: Option<usize>,
     pub new: Option<usize>,
 }
 
-/// Collapse a hunk into paired side-by-side rows (see [`SidePair`]). Positional
-/// alignment — cheap, deterministic, and dependency-free (matching the
-/// heuristic, language-agnostic stance already taken for syntax highlighting).
-/// Pure so the row builder ([`crate::kernel`]) and the mod that renders it
-/// derive the exact same pairing and never disagree on which lines share a row.
 pub fn pair_hunk(hunk: &DiffHunk) -> Vec<SidePair> {
     let lines = &hunk.lines;
     let mut pairs = Vec::new();
@@ -530,9 +435,7 @@ pub fn pair_hunk(hunk: &DiffHunk) -> Vec<SidePair> {
                 });
                 i += 1;
             }
-            // A change block: the run of deletions, then the run of additions
-            // immediately after it (git emits `-` lines before `+` within a
-            // contiguous change). Align them positionally.
+            // git emits a change block's `-` lines before its `+` lines.
             _ => {
                 let del_start = i;
                 while i < lines.len() && lines[i].kind == DiffLineKind::Del {
@@ -559,16 +462,8 @@ pub fn pair_hunk(hunk: &DiffHunk) -> Vec<SidePair> {
 #[cfg(test)]
 mod tests {
 
-    /// The list of changed files comes from git, so it must survive git's own
-    /// spellings — and the two commands spell a rename differently, which is why
-    /// `-z` is parsed rather than the human output.
-    ///
-    /// The counts and the status arrive from *different* commands and are joined on
-    /// the new path: `--numstat` cannot tell a deletion from a rewrite, and
-    /// `--name-status` carries no counts.
     #[test]
     fn changed_files_join_counts_and_status_including_a_rename() {
-        // Exactly what git emits, NULs included (see the doc comment on the parser).
         let numstat = "1\t0\tCargo.toml\x000\t0\t\x00README.md\x00GUIDE.md\x002\t1\tsrc.rs\x00";
         let name_status = "A\x00Cargo.toml\x00R100\x00README.md\x00GUIDE.md\x00M\x00src.rs\x00";
 
@@ -580,7 +475,6 @@ mod tests {
         assert_eq!((files[0].added, files[0].removed), (1, 0));
         assert!(files[0].old_path.is_none());
 
-        // The rename: keyed on the NEW path, carrying where it came from.
         assert_eq!(files[1].path, "GUIDE.md");
         assert_eq!(files[1].status, FileStatus::Renamed);
         assert_eq!(files[1].old_path.as_deref(), Some("README.md"));
@@ -590,10 +484,6 @@ mod tests {
         assert_eq!((files[2].added, files[2].removed), (2, 1));
     }
 
-    /// The body half of the same route: a `--no-index` patch for an untracked file
-    /// whose path contains a space, which git terminates with a **TAB** on the
-    /// `+++` line. Trimmed, or every such file would be keyed on a path with an
-    /// invisible tab on the end and its comments would anchor to nothing.
     #[test]
     fn an_untracked_patch_with_a_spaced_path_keeps_the_path_clean() {
         let patch = "diff --git a/sub dir/has space.txt b/sub dir/has space.txt\n\
@@ -613,14 +503,6 @@ mod tests {
         );
     }
 
-    /// An **untracked** file reaches the list through `git diff --no-index --
-    /// /dev/null <path>`, and the two commands disagree about its shape: numstat
-    /// uses the *rename* form (an empty path field, then `/dev/null`, then the
-    /// real name) while name-status uses the plain `A` form.
-    ///
-    /// Both already parse — which is why `--no-index` was chosen over a temporary
-    /// index — and this pins that, because the coupling is invisible from either
-    /// side. Bytes captured verbatim from git.
     #[test]
     fn an_untracked_file_arrives_in_the_rename_shape_and_is_not_a_rename() {
         let numstat = "3\t0\t\x00/dev/null\x00new.txt\x00";
@@ -637,9 +519,6 @@ mod tests {
         );
     }
 
-    /// A binary file changed, and has no line counts. It is reported with zero rather
-    /// than dropped: `-` is not a number, and a file missing from the list is worse
-    /// than one with nothing to count.
     #[test]
     fn a_binary_file_is_listed_with_no_counts() {
         let files = parse_changed_files("-\t-\tlogo.png\x00", "M\x00logo.png\x00");
@@ -667,7 +546,6 @@ mod tests {
         };
         assert!(file_anchor.anchors_file("a.rs"));
         assert!(!file_anchor.anchors_file("b.rs"));
-        // A file-level anchor never matches a specific line.
         assert!(!file_anchor.anchors_line("a.rs", Some(1), Some(1)));
 
         let new_line = CommentAnchor::Line {
@@ -675,11 +553,9 @@ mod tests {
             side: Side::New,
             line: 5,
         };
-        // Matches only the new-side number on the right file.
         assert!(new_line.anchors_line("a.rs", None, Some(5)));
         assert!(!new_line.anchors_line("a.rs", Some(5), None));
         assert!(!new_line.anchors_line("b.rs", None, Some(5)));
-        // A line anchor is not a file-level anchor.
         assert!(!new_line.anchors_file("a.rs"));
 
         let old_line = CommentAnchor::Line {
@@ -690,7 +566,6 @@ mod tests {
         assert!(old_line.anchors_line("a.rs", Some(5), None));
         assert!(!old_line.anchors_line("a.rs", None, Some(5)));
 
-        // The review summary anchors to neither a file nor a line.
         assert!(!CommentAnchor::Review.anchors_file("a.rs"));
         assert!(!CommentAnchor::Review.anchors_line("a.rs", Some(1), Some(1)));
     }
@@ -728,10 +603,8 @@ index 111..222 100644
         assert_eq!(h.old_start, 1);
         assert_eq!(h.new_start, 1);
         assert_eq!(h.header, "fn foo");
-        // First context line is numbered on both sides.
         assert_eq!(h.lines[0].old_no, Some(1));
         assert_eq!(h.lines[0].new_no, Some(1));
-        // The removed line has only an old number.
         let removed = h
             .lines
             .iter()
@@ -739,7 +612,6 @@ index 111..222 100644
             .unwrap();
         assert_eq!(removed.old_no, Some(2));
         assert_eq!(removed.new_no, None);
-        // The first added line has only a new number.
         let added = h
             .lines
             .iter()
@@ -824,16 +696,11 @@ index 1..2 100644
         let files = parse_unified_diff(diff);
         assert_eq!(files[0].added_count(), 1);
         assert_eq!(files[0].deleted_count(), 1);
-        // The `\ No newline` markers are not counted as diff lines.
         assert_eq!(files[0].hunks[0].lines.len(), 2);
     }
 
     #[test]
     fn body_lines_starting_with_dashes_or_pluses_are_not_misparsed_as_headers() {
-        // A removed SQL/Lua comment (`-- …`) renders as `--- …`; an added one as
-        // `+++ …`. Inside a hunk these must stay Add/Del body lines and not be
-        // mistaken for the file's old/new path header (which would drop the line
-        // and desync line numbers for the rest of the file).
         let diff = "\
 diff --git a/q.sql b/q.sql
 index 1..2 100644
@@ -855,7 +722,6 @@ index 1..2 100644
         assert_eq!(f.added_count(), 1);
         assert_eq!(f.deleted_count(), 1);
         let h = &f.hunks[0];
-        // Context + Del + Add, line numbers intact.
         assert_eq!(h.lines.len(), 3);
         let del = h
             .lines
@@ -878,7 +744,6 @@ index 1..2 100644
         assert!(parse_unified_diff("").is_empty());
     }
 
-    /// Build a hunk from a compact `kind` list (`c`/`-`/`+`) for pairing tests.
     fn hunk_of(kinds: &str) -> DiffHunk {
         let (mut o, mut n) = (1u32, 1u32);
         let lines = kinds
@@ -920,7 +785,6 @@ index 1..2 100644
 
     #[test]
     fn pairs_context_with_itself() {
-        // Two context lines → two rows, each showing the same line on both sides.
         let pairs = pair_hunk(&hunk_of("cc"));
         assert_eq!(
             pairs,
@@ -939,7 +803,6 @@ index 1..2 100644
 
     #[test]
     fn pairs_even_change_block_positionally() {
-        // `c - - + + c` → context, then del[0]↔add[0], del[1]↔add[1], context.
         let pairs = pair_hunk(&hunk_of("c--++c"));
         assert_eq!(
             pairs,
@@ -966,7 +829,6 @@ index 1..2 100644
 
     #[test]
     fn uneven_block_leaves_remainder_half_blank() {
-        // 3 deletions, 1 addition: del[0]↔add[0], then two del-only rows.
         let pairs = pair_hunk(&hunk_of("---+"));
         assert_eq!(
             pairs,
@@ -989,7 +851,6 @@ index 1..2 100644
 
     #[test]
     fn pure_additions_and_deletions_pair_against_blanks() {
-        // Pure additions: every row is new-only (old blank).
         assert_eq!(
             pair_hunk(&hunk_of("++")),
             vec![
@@ -1003,7 +864,6 @@ index 1..2 100644
                 },
             ]
         );
-        // Pure deletions: every row is old-only (new blank).
         assert_eq!(
             pair_hunk(&hunk_of("--")),
             vec![
@@ -1025,8 +885,6 @@ index 1..2 100644
         let pairs = pair_hunk(&hunk);
         let mut seen = std::collections::HashSet::new();
         for p in &pairs {
-            // A context pair references the same line on both sides (old == new);
-            // an add/del pair references two distinct lines. Count distinct.
             let distinct: std::collections::HashSet<usize> =
                 [p.old, p.new].into_iter().flatten().collect();
             for li in distinct {

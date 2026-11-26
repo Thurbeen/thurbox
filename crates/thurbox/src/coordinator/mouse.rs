@@ -1,10 +1,3 @@
-//! Pointer input: hit-testing, hover, selection and links.
-//!
-//! Everything here reads `click_targets`, the identified nodes of the frame just
-//! painted, scanned in reverse so the innermost node under a point — and, across
-//! mods, the one painted last — wins. Bands keep their own list: a click on
-//! one must not focus a pane, and there is no mod index to record.
-
 use std::time::{Duration, Instant};
 
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
@@ -21,37 +14,19 @@ use crate::{App, ClickTarget, PointerGrab};
 
 impl App {
     pub(crate) fn on_mouse(&mut self, mouse: MouseEvent) {
-        // A press of any button is a press: it is what a double-click must
-        // not have between its two halves, whether or not the button below is
-        // one this loop answers.
         if let MouseEventKind::Down(_) = mouse.kind {
             self.click_train.begin();
         }
         match mouse.kind {
             MouseEventKind::Down(MouseButton::Left) => {
-                // A press starts a new gesture wherever it lands, so it also
-                // frees a capture whose release never arrived — the outer
-                // terminal owes one, but some emulators drop it on a focus
-                // loss mid-drag, and only the missing release could clear it
-                // otherwise. `on_click` re-arms it when this press is itself
-                // forwarded.
+                // Some emulators drop the release when focus is lost mid-drag.
                 self.pty_pointer = None;
-                // And it starts a new gesture before the last one's copy was
-                // made: that copy would read whatever this press selects.
                 self.copy_after_paint = false;
                 self.on_click(mouse.column, mouse.row, mouse.modifiers)
             }
-            // The other press a pane can be taught to answer. Nothing else in
-            // the loop reads it: it starts no selection, opens no link and runs
-            // no verb — see `on_context_click`.
             MouseEventKind::Down(MouseButton::Right) => {
                 self.on_context_click(mouse.column, mouse.row)
             }
-            // A pty holding the button comes first — the press already chose
-            // the program inside as the owner of this gesture. Then help's
-            // scrollbar, then a held node: while a scrollbar has the pointer,
-            // the movement is its owner's, not a selection over the text
-            // beside it.
             MouseEventKind::Drag(MouseButton::Left) => {
                 if let Some(surface) = self.pty_pointer.clone() {
                     self.terminals
@@ -70,10 +45,6 @@ impl App {
                 self.pointer_grab = None;
                 if let Some(selection) = &mut self.selection {
                     selection.dragging = false;
-                    // A press that never moved is a click, not a selection —
-                    // v1's rule on release. Keeping it armed made every later
-                    // `Ctrl+C` a copy of the whole screen instead of the
-                    // interrupt the shell was waiting for.
                     if selection.anchor == selection.cursor {
                         self.selection = None;
                     }
@@ -81,14 +52,6 @@ impl App {
             }
             MouseEventKind::ScrollUp => self.on_scroll(mouse.column, mouse.row, true),
             MouseEventKind::ScrollDown => self.on_scroll(mouse.column, mouse.row, false),
-            // A bare move only matters when it changes what is under the
-            // pointer. Anything else — and there is a LOT of it, one report per
-            // cell crossed — is dropped without touching `dirty`. A `?1003`
-            // terminal is the exception: it asked for exactly this stream, and
-            // gets it under the same guards the wheel forwards under — never
-            // beneath a modal or a held float. The hover still runs: the chips
-            // it lights sit on the pane's frame, outside the rect a forwarded
-            // move can land in, so the two never answer for the same cell.
             MouseEventKind::Moved => {
                 if !self.modals.is_open() && self.grabbed.is_none() {
                     self.terminals.forward_move(mouse.column, mouse.row);
@@ -99,12 +62,6 @@ impl App {
         }
     }
 
-    /// The text under `selection`, read from the terminal grid.
-    ///
-    /// The grid half of what `draw` computes at paint time — `draw` adds a
-    /// painted-buffer fall-back for a selection that lands outside every
-    /// terminal. Factored out so a mid-batch refresh reads from exactly the
-    /// same source the paint prefers.
     pub(crate) fn grid_selection_text(&self, selection: &Selection) -> Option<String> {
         self.surface_at(selection.pane.rect().x, selection.pane.rect().y)
             .filter(|(_, rect)| *rect == selection.pane.rect())
@@ -114,17 +71,6 @@ impl App {
             })
     }
 
-    /// Recompute `selected_text` from the grid mid-batch; report whether it moved.
-    ///
-    /// `draw` refreshes `selected_text` off the painted frame once per paint. A
-    /// whole input batch is drained between two paints, so a chord queued behind
-    /// the drag that made the selection would otherwise read the value the batch
-    /// published at its start — an empty or stale selection. Recomputing here,
-    /// from the same grid `draw` prefers, lets that chord read the finished
-    /// selection. A selection outside every terminal has no grid and only the
-    /// paint can read it: its text is left as the last paint set it, the field's
-    /// documented floor. The `anchor != cursor` filter mirrors `draw` — an
-    /// unextended selection is a click and carries no text.
     pub(crate) fn refresh_selection_text(&mut self) -> bool {
         let next = self
             .selection
@@ -140,39 +86,11 @@ impl App {
         changed
     }
 
-    /// A wheel tick, routed the way v1's `handle_mouse_scroll` routes one.
-    ///
-    /// Three legs, in order: an open modal owns the wheel outright; a live
-    /// terminal that asked for mouse tracking gets the tick forwarded to its
-    /// pty; otherwise the pane **under the pointer** scrolls — not the focused
-    /// one, so you can spin the wheel over a list without leaving the pane you
-    /// are working in.
-    ///
-    /// The pane is asked first through [`LuaHost::on_scroll`], and only what it
-    /// declines becomes an `up`/`down` keystroke — so a pane that already
-    /// declares those keys keeps scrolling by them and the wheel cannot come to
-    /// mean something its arrow keys do not (the reasoning behind the
-    /// `key:<chord>` click role). The hook exists because the pane that most
-    /// needs the wheel is the one pane that cannot declare `up`: a terminal
-    /// pane hands every unclaimed key to the agent.
-    ///
-    /// One notch of a wheel is **not** one report, so every leg that steps a
-    /// selection asks [`WheelNotch`] first — without it a single detent walked
-    /// the session list through three sessions and opened each one on the way.
-    /// A tick *forwarded to a pty* is deliberately left alone: there the three
-    /// reports are the three lines the terminal means to scroll, and the
-    /// program inside owns what they do.
     pub(crate) fn on_scroll(&mut self, x: u16, y: u16, up: bool) {
-        // The selection is in screen cells and the text under them is about
-        // to move; v1 drops it on every scroll for the same reason.
         self.selection = None;
         let code = if up { KeyCode::Up } else { KeyCode::Down };
         let key = KeyEvent::new(code, KeyModifiers::NONE);
 
-        // A modal takes the wheel, never the panes it covers. Help scrolls its
-        // text a line per report, which synthesizes no keystroke, so it is
-        // safe even while help is capturing a chord. Any other modal takes it
-        // as one selection step per notch.
         if self.modals.is_open() {
             if self.modals.on_wheel(up) {
                 self.dirty = true;
@@ -184,7 +102,6 @@ impl App {
             return;
         }
 
-        // A float owns the wheel for the same reason it owns clicks.
         if let Some(index) = self.grabbed {
             if self.wheel_notch.opens(Instant::now(), up) {
                 self.dispatch_key_to(index, &key);
@@ -199,19 +116,6 @@ impl App {
         }
 
         if let Some(target) = self.target_at(x, y) {
-            // The pane is offered the tick AS a tick before the keystroke
-            // below, because the pane that most needs the wheel is the one that
-            // cannot have those keys: a pane showing a live terminal hands
-            // every unclaimed key to the agent, so declaring `up` there would
-            // take the arrow keys from whatever is running in it. The wheel
-            // therefore did nothing at all over a terminal — unless the program
-            // inside had asked for the mouse, when `forward_wheel` above sends
-            // it the tick instead, which is why it looked like a fault only
-            // some people had.
-            //
-            // No notch: `on_scroll` is one report, exactly as a forwarded tick
-            // is, and the pane that wants a notch declines and takes the
-            // keystroke.
             let scroll = Scroll {
                 up,
                 x: x.saturating_sub(target.rect.x),
@@ -232,14 +136,7 @@ impl App {
         }
     }
 
-    /// Track the affordance under the pointer, repainting only when it changes.
     pub(crate) fn hover(&mut self, x: u16, y: u16) {
-        // A modal owns the pointer while it is up, exactly as it owns clicks.
-        // It has to be asked directly: it paints cell by cell and records no
-        // `click_targets`, so hit-testing them would find only the panes it
-        // covers — which are unreachable anyway, which is why the pane hover is
-        // dropped rather than left frozen under the dim. v1 draws the same line
-        // in `apply_hover_highlight`.
         if self.modals.is_open() {
             let moved = self.modals.on_hover(x, y);
             let dropped = self.hovered.take().is_some();
@@ -257,11 +154,6 @@ impl App {
             .map(|hit| hit.identity.clone())
             .or_else(|| self.target_at(x, y).map(|target| target.identity))
             .filter(|identity| !identity.is_empty());
-        // `thurbox.hover` is published, so its change has to move the epoch a
-        // pure pane's cached tree is keyed on — a repaint alone would hand the
-        // pane its old tree, and the affordance under the pointer would light
-        // only once something unrelated moved. Once per affordance crossed,
-        // never per cell.
         if under != self.hovered {
             self.hovered = under;
             self.note_published_change();
@@ -269,14 +161,7 @@ impl App {
         }
     }
 
-    /// A left press: modal, then link, then target, then a text selection.
-    ///
-    /// The order is v1's `handle_mouse_click`, minus the scrollbar leg it has
-    /// and this does not.
     pub(crate) fn on_click(&mut self, x: u16, y: u16, modifiers: KeyModifiers) {
-        // A system modal takes every click while it is up, the mouse half of
-        // capturing input: a press that misses its rows is swallowed rather
-        // than reaching the pane it covers.
         if self.modals.is_open() {
             let message = self.with_modal_world(|modals, world| modals.on_click(x, y, world));
             if let Some(message) = message {
@@ -286,13 +171,7 @@ impl App {
             return;
         }
 
-        // A chrome band's button, which is not a pane: pressing one runs its
-        // action and leaves focus where it was. v1's footer pills behave the same
-        // — you press Help without leaving the terminal you were in.
         if let Some(hit) = self.band_target_at(x, y) {
-            // A band is never under a float's hold, but a press on it still
-            // missed the float: told first, so a menu open when Help is pressed
-            // is not still there when Help closes.
             let missed = self.grabbed;
             match hit.identity.click_verb() {
                 Some(ClickVerb::Action(action)) => {
@@ -328,7 +207,6 @@ impl App {
         };
 
         if modifiers.contains(KeyModifiers::CONTROL) {
-            // A modified press is a link open, never the start of a selection.
             self.selection = None;
             self.open_clicked_link(x, y);
             return;
@@ -339,17 +217,7 @@ impl App {
                 return;
             }
         }
-        // A program that tracks the mouse hears the press itself — Claude
-        // Code selects and copies with its own handling, and thurbox drawing
-        // a selection over it would be two answers to one gesture. The click
-        // has already focused the pane above; only the selection leg is
-        // ceded. `Ctrl+Click` stays thurbox's (the link leg, earlier), the
-        // way modified presses conventionally bypass an application's mouse.
         if let Some(surface) = self.terminals.forward_press(x, y) {
-            // Whatever selection was armed elsewhere is over: this gesture is
-            // the program's, and keeping the old one would turn the next
-            // `Ctrl+C` into a copy of it — the same reason the modified press
-            // above drops it.
             self.selection = None;
             self.pty_pointer = Some(surface);
             return;
@@ -357,31 +225,11 @@ impl App {
         self.begin_selection(x, y);
     }
 
-    /// A RIGHT press, offered to the pane under it and to nobody else.
-    ///
-    /// Deliberately a much shorter road than [`Self::on_click`]: no verb is
-    /// resolved, no link is opened, no selection is begun and the focus does
-    /// not move. A right press means whatever the pane it landed in decides it
-    /// means, and a pane that declares no `on_context` never hears it — which
-    /// is what lets this be added without changing what any existing pane does.
-    ///
-    /// Not every terminal sends one: the emulator may bind the right button to
-    /// paste or to its own menu and never forward it. That is the user's
-    /// setting to make, and nothing here can tell the difference between a
-    /// button that was not pressed and one that was swallowed on the way.
     pub(crate) fn on_context_click(&mut self, x: u16, y: u16) {
-        // A system modal takes every press while it is up, the same rule its
-        // left half follows — but it has no context verb of its own, so this is
-        // swallowed rather than acted on.
         if self.modals.is_open() {
             return;
         }
 
-        // Held or free, a right press has only the one road. The float's rule
-        // still matters here: without it a menu opened by a right press could
-        // be re-opened by the next one on the pane beneath it, which reads as
-        // the menu having moved. A miss is told to the float instead, which is
-        // how a menu closes on a press elsewhere.
         match float_grab(self.grabbed, self.target_at(x, y)) {
             Grab::Free(Some(target)) | Grab::Held(target) => {
                 self.dispatch_context(target, x, y);
@@ -403,8 +251,6 @@ impl App {
         }
     }
 
-    /// Tell the float holding the pointer that a press missed it. Nothing else
-    /// hears the press: closing a menu must not also act on what was beneath.
     fn dispatch_outside(&mut self, float: usize, x: u16, y: u16) {
         let click = Click {
             screen_x: x,
@@ -422,16 +268,7 @@ impl App {
         }
     }
 
-    /// Act on a hit target. `true` means the press is spent.
-    ///
-    /// A press that only focused a pane returns `false`, so the *same* press
-    /// can still arm a drag-selection over the terminal it just focused — v1's
-    /// rule, and why `FocusPane(Terminal)` is one of its two non-consuming
-    /// click actions.
     pub(crate) fn dispatch_click(&mut self, target: ClickTarget, x: u16, y: u16) -> bool {
-        // Every click focuses the pane it landed in, before the target acts. In
-        // a `switch` slot that is also how a view is selected, so a tab pill
-        // and a Tab press bring the same pane forward.
         self.focus_mod(target.mod_index);
 
         match target.identity.click_verb() {
@@ -439,9 +276,6 @@ impl App {
                 self.run_clicked_action(&action, target.mod_index);
                 true
             }
-            // Replayed as a real keystroke, through the very handler the
-            // keyboard uses — so a click on a button cannot do something its
-            // key does not.
             Some(ClickVerb::Key(chord)) => {
                 if let Some(key) = key_event_from_chord(&chord) {
                     self.on_key(&key);
@@ -454,22 +288,11 @@ impl App {
                 }
                 true
             }
-            // The same opener a `Ctrl+Click` on an agent's link rides, so the
-            // two cannot open the same URL in two different places.
             Some(ClickVerb::Url(url)) => {
                 self.open_or_copy_link(&url);
                 true
             }
-            // A pane that paints itself cell by cell (the theme picker, the
-            // settings modal) has no per-row nodes to carry identity, so an
-            // identity-less hit must still reach it — with coordinates local to
-            // its rect, which is all it needs to map y back to a row. Without
-            // this the only such panes you could click were the ones built from
-            // `widgets.list`, which is exactly the half that worked.
             None => {
-                // A press on a drag handle takes hold of the pointer, so the
-                // moves that follow it reach this pane instead of painting a
-                // selection across the text the pane is about to scroll.
                 if target.identity.is_drag_handle() {
                     self.selection = None;
                     self.pointer_grab = Some(PointerGrab {
@@ -524,7 +347,6 @@ impl App {
         }
     }
 
-    /// The target under a point, innermost and topmost first.
     pub(crate) fn target_at(&self, x: u16, y: u16) -> Option<ClickTarget> {
         let position = ratatui::layout::Position::new(x, y);
         self.click_targets
@@ -534,11 +356,6 @@ impl App {
             .cloned()
     }
 
-    /// The band button under a point, if any.
-    ///
-    /// Scanned in reverse for the same reason the pane targets are: the last
-    /// recorded hit is the topmost, so overlapping entries resolve to the one
-    /// actually visible.
     pub(crate) fn band_target_at(&self, x: u16, y: u16) -> Option<thurbox::kernel::bands::Hit> {
         let position = ratatui::layout::Position::new(x, y);
         self.band_targets
@@ -548,13 +365,6 @@ impl App {
             .cloned()
     }
 
-    /// Which terminal surface a point falls in, and where that surface was
-    /// painted.
-    ///
-    /// Both of a session's panes are candidates, each against its own rect: a
-    /// selection or a `Ctrl+Click` in the shell's pane is about the shell's
-    /// grid, which is only true because the name that comes back says which of
-    /// the two it is.
     pub(crate) fn surface_at(&self, x: u16, y: u16) -> Option<(String, Rect)> {
         let position = ratatui::layout::Position::new(x, y);
         self.snapshots
@@ -574,12 +384,6 @@ impl App {
             .find(|(_, rect)| rect.contains(position))
     }
 
-    /// The content area of the pane under a point.
-    ///
-    /// The pane's rect is the click target carrying an EMPTY identity, which the
-    /// paint walk records before the tree — so this is the same geometry a click
-    /// falls back to. The border test itself is
-    /// `PaneBounds::content_at`, where it is unit-tested.
     pub(crate) fn pane_inner_at(&self, x: u16, y: u16) -> Option<Rect> {
         let position = ratatui::layout::Position::new(x, y);
         let pane = self
@@ -591,7 +395,6 @@ impl App {
         PaneBounds::content_at(pane, x, y).map(|bounds| bounds.rect())
     }
 
-    /// A press or a move, resolved into the node's own coordinate space.
     fn click_at(&self, target: &ClickTarget, x: u16, y: u16, dragging: bool, clicks: u8) -> Click {
         Click {
             id: target.identity.id.clone(),
@@ -608,13 +411,6 @@ impl App {
         }
     }
 
-    /// Deliver a move to the node holding the pointer. `false` when none is.
-    ///
-    /// Clamped to the held node's rect rather than hit-tested afresh: a drag
-    /// that wanders off a scrollbar is still that scrollbar's, which is what
-    /// every scrollbar does and the reason the rect is remembered at press
-    /// time. It is delivered as a further click — the same handler, one place —
-    /// with `dragging` set so a pane that cares can tell the two apart.
     pub(crate) fn drag_held(&mut self, x: u16, y: u16) -> bool {
         let Some(grab) = self.pointer_grab.clone() else {
             return false;
@@ -626,7 +422,6 @@ impl App {
         };
         let bounds = PaneBounds::from_rect(grab.rect);
         let (x, y) = bounds.clamp(x, y);
-        // A move under a press is not another press.
         let click = self.click_at(&target, x, y, true, 1);
         match self.host.on_click(grab.mod_index, &click) {
             Ok(_) => {}
@@ -636,35 +431,12 @@ impl App {
         true
     }
 
-    /// Arm a drag-to-select over the terminal surface under the point.
-    ///
-    /// Confined to that surface's own rect: a drag that leaves the pane clamps
-    /// rather than selecting the session list beside it.
     pub(crate) fn begin_selection(&mut self, x: u16, y: u16) {
-        // Anywhere, not only over a terminal. v1 selects across the whole
-        // interface and decides how to READ it afterwards — the vt100 grid when
-        // the selection sits in a terminal, the painted frame otherwise
-        // (`apply_selection_highlight`). v2 refused to start one outside a
-        // terminal "because it could not be copied from", which was only true
-        // while nothing read the frame buffer.
-        //
-        // But it is confined to ONE PANE, as v1 confines it
-        // (`pane_rects` → `border_block.inner`). Falling back to the whole
-        // screen is what made it feel trigger-happy: a press in the session list
-        // armed a screen-wide selection, so a single cell of pointer drift
-        // painted a band clear across the interface instead of a few columns of
-        // the list.
-        //
-        // Anchoring to the surface rect when there is one keeps grid extraction
-        // exact: the pane rect is what converts screen coordinates into grid
-        // coordinates.
         let rect = match self.surface_at(x, y) {
             Some((_, rect)) => Some(rect),
             None => self.pane_inner_at(x, y),
         };
         let Some(rect) = rect else {
-            // Not inside any pane's content — a border, or a gap. v1 clears the
-            // selection here rather than starting one.
             self.selection = None;
             return;
         };
@@ -690,17 +462,6 @@ impl App {
         };
     }
 
-    /// Copy a released drag, when `[clipboard] copy_on_select` is on.
-    ///
-    /// Run at the release for a terminal, whose text the grid gives at once,
-    /// and after the next paint for any other pane (`copy_after_paint`), whose
-    /// text only that paint reads. In the second case a key in between has
-    /// already dropped the selection and taken the gesture, so nothing is
-    /// copied. Silent when there is nothing to copy or `provider = "none"` turned
-    /// copying off: a drag is not a request for a toast the way a key is.
-    /// The selection stays highlighted — it shows what was copied, and a pane
-    /// reading `thurbox.selection` still sees it — until the next key, click
-    /// or wheel tick drops it; `on_key` keeps `Ctrl+C` from copying it twice.
     pub(crate) fn copy_on_select(&mut self) {
         let settings = self.config.in_force().clipboard;
         if !settings.copy_on_select || settings.provider == ClipboardProvider::None {
@@ -716,17 +477,7 @@ impl App {
         self.toast(message);
     }
 
-    /// Copy the selection to the clipboard.
-    ///
-    /// Only the selection: there is deliberately no fall-back to the whole
-    /// visible screen. That fall-back fired whenever the selection was empty
-    /// — which, until a click stopped arming one, was after every click into
-    /// a terminal — so `Ctrl+C` in a shell pushed tens of kilobytes of OSC 52
-    /// at the outer terminal and never interrupted anything. A pane that
-    /// wants the screen copied has `command("copy")` for it.
     pub(crate) fn copy_selection(&mut self) {
-        // The selection was read off the frame that painted it, whichever pane
-        // that was.
         let message = match self.selected_text.clone() {
             Some(text) if !text.trim().is_empty() => {
                 let outcome = thurbox::clipboard::copy(
@@ -742,15 +493,6 @@ impl App {
         self.selection = None;
     }
 
-    /// Open the link under a `Ctrl+Click`, if there is one.
-    ///
-    /// Silent when there is not: v1 emits no toast for a control-click on plain
-    /// text, because the chord is also how you click *through* the terminal.
-    ///
-    /// A pane's `url:` node is resolved as well as a session's OSC 8 run. The
-    /// re-printed escapes already hand the chord to the outer terminal wherever
-    /// it understands them, so this leg is what makes the same press work in an
-    /// emulator that does not — or on a bare tty.
     pub(crate) fn open_clicked_link(&mut self, x: u16, y: u16) {
         if let Some(url) = self.clicked_node_url(x, y) {
             self.open_or_copy_link(&url);
@@ -766,16 +508,6 @@ impl App {
         }
     }
 
-    /// The link a painted node declares under a point.
-    ///
-    /// Bands before panes, the order `on_click` resolves a plain press in. But
-    /// **every** target under the point is considered, innermost first, rather
-    /// than only the topmost one: a `url:` box with a styled child inside it
-    /// records the child last, so the topmost-only rule the other verbs follow
-    /// would leave the chord finding nothing over cells the paint pass had
-    /// already wrapped in OSC 8 — the two legs of one verb disagreeing, with
-    /// nothing to see. `Ctrl+Click` is a link gesture and nothing else, so
-    /// looking past a node that declares no link costs no other behaviour.
     pub(crate) fn clicked_node_url(&self, x: u16, y: u16) -> Option<String> {
         let position = ratatui::layout::Position::new(x, y);
         let bands = self
@@ -797,12 +529,6 @@ impl App {
             })
     }
 
-    /// Open a link, or copy it where nothing can open one.
-    ///
-    /// v1's `open_ctrl_clicked_url`. A remote host or a bare tty has no
-    /// browser, so the clipboard's OSC 52 leg carries the URL back to the
-    /// user's own machine instead — the same leg `Ctrl+C` rides — and the toast
-    /// says which of the two happened.
     pub(crate) fn open_or_copy_link(&mut self, url: &str) {
         let opened = open_url(url);
         let message = match opened {
@@ -828,10 +554,6 @@ impl App {
     pub(crate) fn paint_outer_hyperlinks(&mut self, buf: &ratatui::buffer::Buffer) {
         let mut paints = Vec::new();
         for row in &self.snapshots.current().sessions {
-            // Both panes: a shell in a slot of its own paints links the outer
-            // terminal should know about exactly as the agent's does, and a
-            // surface not painted this frame contributes nothing anyway.
-            // `refresh_links` scans both, so each gets its own scanned list.
             for surface in [
                 row.id.clone(),
                 thurbox::kernel::terminal::shell_surface(&row.id),
@@ -859,12 +581,7 @@ impl App {
                 buf, rect, &url,
             ));
         }
-        // OSC 8 binds the URL to the cells, not to the frame, so an unchanged
-        // frame owes the terminal nothing: the links it was told about last
-        // time are still attached to those cells. Re-sending them anyway is
-        // what a settled screen full of bare URLs used to cost over ssh — see
-        // `App::last_link_paints`, which also owns the one case where
-        // identical paints must still be sent.
+        // OSC 8 binds a URL to the cells, so an unchanged frame owes the terminal nothing.
         if paints != self.last_link_paints {
             if !paints.is_empty() {
                 let _ = thurbox::kernel::terminal::paint_hyperlinks(&paints);
@@ -887,20 +604,9 @@ impl App {
     }
 }
 
-/// What a press may still reach once a float has had its say.
-///
-/// A float owns the pointer while it is up — the mouse half of what makes it a
-/// modal rather than a pane drawn on top — so a press that misses it is
-/// swallowed rather than reaching what it covers. Both buttons ask
-/// [`float_grab`], so a left and a right press cannot come to disagree about
-/// what a float swallows or whom a miss is told to.
 enum Grab {
-    /// No float is up; the press goes on down its own path.
     Free(Option<ClickTarget>),
-    /// A float is up and the press landed on it.
     Held(ClickTarget),
-    /// A float is up and the press missed it: spent, and told to that float
-    /// (`on_outside`) so a menu can close.
     Outside(usize),
 }
 
@@ -914,33 +620,15 @@ fn float_grab(grabbed: Option<usize>, target: Option<ClickTarget>) -> Grab {
     }
 }
 
-/// How close two reports have to be to belong to the same wheel notch.
-///
-/// A detent's reports are written in one go — microseconds apart, well inside
-/// this — while nobody can turn a wheel twice in 20 ms. So nothing a person
-/// meant as two steps is folded into one, and a held spin still steps fifty
-/// times a second.
+// ghostty, kitty and xterm send one wheel report per scroll line, back to back: three per detent.
 const WHEEL_NOTCH: Duration = Duration::from_millis(20);
 
-/// The wheel notch in progress: when its first report arrived, and which way it
-/// pointed.
-///
-/// A terminal turns one detent into its line-scroll count — three, for ghostty,
-/// kitty and xterm — and under mouse reporting sends that many reports back to
-/// back. The report that opens a notch steps; the ones riding behind it do not.
 #[derive(Default)]
 pub(crate) struct WheelNotch {
-    /// The report that opened the notch in progress, if one is open.
     opened: Option<(Instant, bool)>,
 }
 
 impl WheelNotch {
-    /// Whether this report opens a new notch, recording it when it does.
-    ///
-    /// Timed from the last report that *stepped*, never from the ones dropped
-    /// behind it: extending the window on every report would let a continuous
-    /// spin hold it open forever and stop the list dead. A direction change
-    /// always opens one — the reports of a single detent all point the same way.
     fn opens(&mut self, now: Instant, up: bool) -> bool {
         if let Some((at, direction)) = self.opened {
             if direction == up && now.duration_since(at) < WHEEL_NOTCH {
@@ -952,13 +640,9 @@ impl WheelNotch {
     }
 }
 
-/// How long the second press of a double-click may follow the first. The
-/// desktop default on macOS and Windows is 500 ms; 400 ms leaves a margin so
-/// two deliberate selections a half-second apart are not read as an open.
+// Under the 500 ms desktop default of macOS and Windows.
 const DOUBLE_CLICK: Duration = Duration::from_millis(400);
 
-/// One press that reached a node: when, on which pane, on which node, and how
-/// many it made.
 struct Press {
     at: Instant,
     mod_index: usize,
@@ -966,40 +650,17 @@ struct Press {
     clicks: u8,
 }
 
-/// The presses in progress on one node, for telling a double-click from two
-/// clicks.
-///
-/// Kept here rather than in Lua because a pane has no clock outside `render`,
-/// and `elapsed` there marks a pure pane as animated. Counting in the
-/// coordinator gives every pane the same answer from one place.
-///
-/// A node is the same node by its **id**, never by its whole identity: the
-/// first click selects the row, and the repaint before the second gives it a
-/// `selected` class — the classes are exactly the half that a click rewrites.
 #[derive(Default)]
 pub(crate) struct ClickTrain {
-    /// The press before the one in progress, when it reached a node.
     previous: Option<Press>,
-    /// The press in progress, once it has reached a node.
     last: Option<Press>,
 }
 
 impl ClickTrain {
-    /// Every press starts here, whatever it lands on. What the last press
-    /// reached becomes the only thing this one can repeat, and a press that
-    /// then reaches no node — the chrome, a modal, a terminal, a right press —
-    /// leaves nothing behind, so a click on a row, one elsewhere and one on the
-    /// row again are what they look like: two clicks.
     pub(crate) fn begin(&mut self) {
         self.previous = self.last.take();
     }
 
-    /// How many presses this one makes on its node: 2 for the second press on
-    /// the same node within [`DOUBLE_CLICK`] of the first, 1 otherwise.
-    ///
-    /// A third quick press starts over at 1 rather than counting to 3, so a
-    /// pane that opens on 2 opens once. A node with no id has nothing to be
-    /// the same as, and every press on it is a first.
     fn count(&mut self, now: Instant, mod_index: usize, identity: &Identity) -> u8 {
         let Some(id) = identity.id.clone() else {
             return 1;
@@ -1021,7 +682,6 @@ impl ClickTrain {
     }
 }
 
-/// The toast a selection copy reports.
 fn copy_message(
     text: &str,
     outcome: Result<thurbox::clipboard::CopyRoute, thurbox::clipboard::CopyError>,
@@ -1052,9 +712,6 @@ mod tests {
         target.as_ref().map(|target| target.mod_index)
     }
 
-    /// Both presses answer to this one rule, so a left and a right press can
-    /// never disagree about what a float swallows — or about whom a miss is
-    /// told to.
     #[test]
     fn a_float_holds_every_press_and_hands_on_only_its_own() {
         match float_grab(None, painted_by(3)) {
@@ -1075,9 +732,6 @@ mod tests {
         }
     }
 
-    /// Ghostty, kitty and xterm send one report per line of their scroll
-    /// setting: three for one detent. Each report steps the selection and opens
-    /// what it lands on, so the tail of the burst has to go.
     #[test]
     fn a_burst_of_reports_is_one_notch() {
         let start = Instant::now();
@@ -1091,16 +745,11 @@ mod tests {
         assert_eq!(steps, 1, "one detent must move the selection once");
     }
 
-    /// The window is timed from the report that stepped, not from the ones
-    /// dropped behind it — otherwise a continuous spin holds it open and the
-    /// list never moves again.
     #[test]
     fn a_held_spin_keeps_stepping() {
         let start = Instant::now();
         let mut notch = WheelNotch::default();
         let mut steps = 0;
-        // A report every 5 ms for a fifth of a second: a burst per notch that
-        // never stops.
         for tick in 0..40 {
             if notch.opens(start + Duration::from_millis(tick * 5), false) {
                 steps += 1;
@@ -1133,15 +782,11 @@ mod tests {
         }
     }
 
-    /// One press, start to finish: it begins wherever it lands and is counted
-    /// on the node it reached.
     fn press(train: &mut ClickTrain, at: Instant, mod_index: usize, identity: &Identity) -> u8 {
         train.begin();
         train.count(at, mod_index, identity)
     }
 
-    /// The gesture every desktop teaches: press twice on the same thing, fast,
-    /// and the second press means "open" rather than "select again".
     #[test]
     fn a_second_press_on_the_same_node_within_the_window_is_a_double_click() {
         let start = Instant::now();
@@ -1153,9 +798,6 @@ mod tests {
         );
     }
 
-    /// The first press selects the row, and the repaint in between gives it a
-    /// `selected` class. The node is the same node: only its id says so, and
-    /// the classes are exactly the half that selection rewrites.
     #[test]
     fn a_row_that_gained_a_class_between_two_presses_still_doubles() {
         let start = Instant::now();
@@ -1177,8 +819,6 @@ mod tests {
         assert_eq!(press(&mut train, start + DOUBLE_CLICK, 1, &row("a")), 1);
     }
 
-    /// Two quick presses on two different rows are two selections, not an
-    /// open of the second — and the second row's own count starts from there.
     #[test]
     fn a_press_on_another_node_starts_over() {
         let start = Instant::now();
@@ -1194,9 +834,6 @@ mod tests {
         );
     }
 
-    /// A press that reached no node — the chrome, a modal, a terminal — is
-    /// still a press: two clicks on a row with one of those in between are two
-    /// clicks, not an open.
     #[test]
     fn a_press_that_reaches_no_node_between_two_presses_starts_over() {
         let start = Instant::now();
@@ -1209,7 +846,6 @@ mod tests {
         );
     }
 
-    /// The same node id in another pane is another node.
     #[test]
     fn the_same_id_in_another_pane_starts_over() {
         let start = Instant::now();
@@ -1221,9 +857,6 @@ mod tests {
         );
     }
 
-    /// A triple-click is a double-click and a fresh single: counting on to 3
-    /// would make a pane that opens on 2 open once, and one that treats
-    /// `>= 2` as open, twice.
     #[test]
     fn a_third_quick_press_is_a_new_single() {
         let start = Instant::now();
@@ -1239,8 +872,6 @@ mod tests {
         );
     }
 
-    /// A press on a node with no id has nothing to be the same as: two of them
-    /// in a row are two presses, whatever the pane does with the coordinates.
     #[test]
     fn a_node_without_an_id_never_doubles() {
         let start = Instant::now();

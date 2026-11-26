@@ -1,21 +1,3 @@
-//! Owns the Lua VM, the mods loaded into it, and the slots they compose into.
-//!
-//! A reload throws the whole VM away and builds a fresh one. If the new VM
-//! fails to build, the previous one keeps running and the error is surfaced —
-//! so a typo costs a red pane, never the session you were watching.
-//!
-//! Two isolation rules make this safe to work in, and both are spec
-//! requirements rather than niceties:
-//!
-//! - A mod whose `render` throws is replaced by an error panel **in its own
-//!   rect**. Its neighbours keep drawing and keep their state.
-//! - A mod that never returns is *interrupted*. Luau would have donated
-//!   this; on Lua 5.4 it is ours to build, so every call runs
-//!   under an instruction-count hook and a memory ceiling.
-//!
-//! The VM is deliberately not `Send` — mlua's `send` feature stays off, which
-//! makes "mods never touch the render thread" a compile error.
-
 use std::cell::RefCell;
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::fs;
@@ -44,21 +26,14 @@ use self::load::{load_arrangement, load_mod, new_vm, read_float, Budget};
 use self::publish::run_to_lua;
 use super::perf::Hook;
 
-/// Instructions a single mod call may execute before it is interrupted.
-///
-/// Generous — a session list formatting a few hundred rows uses a tiny
-/// fraction — but finite, so `while true do end` costs one red pane instead of
-/// the application.
 pub const INSTRUCTION_BUDGET: u32 = 20_000_000;
 
 static BUDGET_OVERRIDE: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
 
-/// Set the per-call instruction budget. Zero restores the default.
 pub fn set_instruction_budget(instructions: u32) {
     BUDGET_OVERRIDE.store(instructions, std::sync::atomic::Ordering::Relaxed);
 }
 
-/// The budget in force.
 pub fn instruction_budget() -> u32 {
     match BUDGET_OVERRIDE.load(std::sync::atomic::Ordering::Relaxed) {
         0 => INSTRUCTION_BUDGET,
@@ -66,15 +41,12 @@ pub fn instruction_budget() -> u32 {
     }
 }
 
-/// Override for [`MEMORY_LIMIT`], for the same reasons.
 static MEMORY_OVERRIDE: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
 
-/// Set the mod VM's memory ceiling. Zero restores the default.
 pub fn set_memory_limit(bytes: usize) {
     MEMORY_OVERRIDE.store(bytes, std::sync::atomic::Ordering::Relaxed);
 }
 
-/// The memory ceiling in force.
 pub fn memory_limit() -> usize {
     match MEMORY_OVERRIDE.load(std::sync::atomic::Ordering::Relaxed) {
         0 => MEMORY_LIMIT,
@@ -82,33 +54,22 @@ pub fn memory_limit() -> usize {
     }
 }
 
-/// Ceiling on the mod VM's heap. Exceeding it fails the allocation as a
-/// mod error rather than aborting the process.
 pub const MEMORY_LIMIT: usize = 256 * 1024 * 1024;
 
-/// Why a mod VM should be rebuilt — [`LuaHost::memory_pressure`].
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum MemoryPressure {
-    /// The live heap is within a thirty-second of the ceiling: allocations are
-    /// failing, or are about to, whatever size the interface loaded at.
     Exhausted,
-    /// Past nine-tenths of the ceiling and grown by a twentieth of it since
-    /// the heap was last accepted as resident: what a leak looks like.
     Grown,
 }
 
 fn mod_stdlib() -> StdLib {
-    // UTF8 is pure computation with no capability risk, and text handling
-    // needs it: Lua's `#` counts bytes, so without it a mod measuring a name
-    // like "Rosé Pine" pads it one column short.
+    // Lua's `#` counts bytes: `utf8` is what measures display text.
     StdLib::STRING | StdLib::TABLE | StdLib::MATH | StdLib::COROUTINE | StdLib::UTF8
 }
 
-/// A value that survives a reload, mirrored on the Rust side.
 #[derive(Clone, Debug, PartialEq)]
 enum Persisted {
     Bool(bool),
-    /// Integers stay integers, or `state.n = 1` would come back as `1.0`.
     Int(i64),
     Num(f64),
     Str(String),
@@ -116,27 +77,20 @@ enum Persisted {
 }
 
 type Shared = Rc<RefCell<BTreeMap<String, Persisted>>>;
-/// `store`/`state` assignments so far, and how many of them assigned a table.
 type WriteCount = Rc<std::cell::Cell<(u64, u64)>>;
 type StateVersion = Rc<std::cell::Cell<u64>>;
 type Private = Rc<RefCell<BTreeMap<(String, String), Persisted>>>;
 type Queue = Rc<RefCell<Vec<(Vec<String>, Command)>>>;
 
-/// Run answers, keyed by the mod that asked and then by its own key.
 pub type RunAnswers = std::collections::HashMap<String, Vec<(String, super::runs::Run)>>;
-/// Each session's working directory, so a file read can be rooted at one.
-/// Refreshed with the snapshot; a session not in here cannot be browsed.
 type Roots = Rc<RefCell<BTreeMap<String, PathBuf>>>;
 type FileWants = Rc<RefCell<BTreeMap<String, std::collections::HashSet<super::files::ReadKey>>>>;
 
-/// Which phase a mod failed in — required so every failure is attributable.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Phase {
     Load,
     Render,
     Key,
-    /// An `on_event` handler — off the render path, so its failure is reported
-    /// once per event rather than painted into a pane every frame.
     Event,
 }
 
@@ -151,7 +105,6 @@ impl Phase {
     }
 }
 
-/// A failure attributed to a mod and a phase.
 #[derive(Debug, Clone, PartialEq)]
 pub struct ModError {
     pub owner: String,
@@ -171,84 +124,29 @@ impl std::fmt::Display for ModError {
     }
 }
 
-/// The arrangement, resolved once per reload rather than per frame.
 enum Arrangement {
-    /// No `ui/layout.lua` — the kernel supplies a default.
     Missing,
-    /// The file returned an arrangement directly.
     Static(Region),
-    /// The file returned a function of the available size. This is what makes
-    /// the arrangement responsive, so it is called per frame — but *loaded*
-    /// once.
     Dynamic(Function),
 }
 
-/// A loaded mod.
 pub struct Mod {
     pub name: String,
     pub file: String,
-    /// Path relative to the interface directory — the identity every command
-    /// about this file uses, since the file name is the only name a mod
-    /// always has (it may declare no `name`, and two may declare the same one).
     pub path: String,
     pub slot: String,
     pub focusable: bool,
-    /// Declared `pure = true`: this pane's render is a function of the published
-    /// tables and its render context, and of nothing else.
-    ///
-    /// An assertion the author makes, not a property the kernel can check — a
-    /// render may write to `store` or read a per-frame clock, and neither is
-    /// visible from outside the VM. Declaring it buys not being called on a
-    /// frame where nothing it can read has changed; declaring it wrongly buys a
-    /// pane painted from a stale tree. Opt-in for exactly that reason: a pane
-    /// that says nothing behaves as it always has (`frame-cost`).
     pub pure: bool,
-    /// Declared `input = "session"`: while this mod holds focus, keys it
-    /// does not handle are forwarded to the session its surface names.
-    ///
-    /// This is how the terminal pane stays an ordinary mod. The kernel does
-    /// not know which mod "is" the terminal — it knows this one asked for
-    /// raw input, and which session the tree it just returned pointed at.
     pub session_input: bool,
-    /// Space this mod asks of its slot. Declared **statically** here rather
-    /// than in render output — that is what lets the layout pass resolve rects
-    /// before any mod runs.
     pub size: Size,
-    /// Slot whose rendered tree this mod may transform.
-    ///
-    /// Cross-mod decoration: a decorator receives another mod's tree
-    /// and returns a modified one, matching on the identity nodes already
-    /// carry. No selector engine — that was the largest available instance of
-    /// the mistake this whole design exists to avoid.
     pub decorates: Option<String>,
-    /// Whether this mod is allowed to float. Declared statically so the
-    /// kernel knows to render it *after* the arrangement, without having to
-    /// render it once to find out.
     pub floats: bool,
-    /// Declared `strip = true`: a full-width row the bundled arrangement places
-    /// above the bars, `size.len` rows high (one when unsaid), without the user
-    /// editing `layout.lua` — published to the arrangement as `ctx.strips`.
     pub strip: bool,
-    /// Keys this mod declared, as data — enumerable without invoking it.
     pub bindings: Vec<Binding>,
-    /// Settings this mod accepts.
     pub settings: Vec<Setting>,
-    /// Action-band entries this mod contributes.
     pub pills: Vec<Pill>,
-    /// Capabilities this mod declared it needs.
-    ///
-    /// Declaring one is not being granted it: the kernel installs a capability
-    /// only for a mod the user has *trusted* with it. Kept as data so the
-    /// interface's own file list can say which files ask to run programs
-    /// without anyone reading their source.
     pub capabilities: Vec<Capability>,
-    /// Events this mod subscribed to, each validated at load against
-    /// [`super::events::KERNEL_EVENTS`] or the `user.` form.
-    ///
-    /// Data, like `keys`: a handler with no list receives nothing, so what a
-    /// mod listens for is enumerable without calling it.
     pub events: Vec<String>,
-    /// Actions this mod wants reachable without a chord — the palette's rows.
     pub commands: Vec<CommandDecl>,
     pub actions: Vec<ActionDecl>,
     order: f64,
@@ -256,36 +154,11 @@ pub struct Mod {
     env: Env,
 }
 
-/// Something a mod may ask to be able to do that ordinary Lua here cannot.
-///
-/// The enum exists so a third is a compile error at every place that decides
-/// about the first two, rather than a string compared in four places.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Capability {
-    /// Run a program on the user's behalf and read its output.
     Run,
-    /// Keep an interactive program in a pane and feed it the user's keystrokes.
-    ///
-    /// Deliberately **not** part of [`Capability::Run`]. `run` is bounded on every
-    /// axis that matters — a capped amount of output, a timeout, a limit on how
-    /// many run at once — and an interactive program has none of those by design,
-    /// and holds the keyboard as well. Someone who trusted a pane to poll `top`
-    /// every few seconds did not agree to "may hold a process open indefinitely
-    /// and feed it what I type", so the grant is asked for separately.
     Program,
-    /// Drive an agent, or lose something for good.
-    ///
-    /// The verbs listed in [`crate::kernel::command::Command::requires`]:
-    /// `send` and `dispatch` put words in an agent's mouth, `create`, `fork` and
-    /// `restart` launch one, a force `delete` removes a worktree nothing restores, and `mod` rewrites
-    /// a file of the interface. A pane holding none of these can still ask the
-    /// user through the bundled confirmation, which words the change itself and
-    /// issues it only on their `y`.
     Sessions,
-    /// Read a session's files: `files.list` and `files.read`.
-    ///
-    /// A worktree holds `.env` files and keys, so reading one is not something
-    /// every pane that draws a list may do.
     Files,
 }
 
@@ -299,12 +172,6 @@ impl Capability {
         }
     }
 
-    /// What granting this lets a file do, in words, for the list where the user
-    /// decides about it.
-    ///
-    /// Distinguishing the two is the whole point: "runs programs" would describe
-    /// both, and the difference — whether it also takes your keystrokes and stays
-    /// running — is exactly what a reader needs before pressing `t`.
     pub fn describe(self) -> &'static str {
         match self {
             Capability::Run => "runs programs and reads their output",
@@ -314,11 +181,6 @@ impl Capability {
         }
     }
 
-    /// Parse a declared name, or refuse it.
-    ///
-    /// Refused rather than ignored: a mod declaring `capabilities = { "rnu" }`
-    /// would otherwise load, be granted nothing, and look like the capability is
-    /// broken.
     pub fn parse(name: &str) -> Option<Self> {
         match name {
             "run" => Some(Capability::Run),
@@ -329,7 +191,6 @@ impl Capability {
         }
     }
 
-    /// Every capability, for a message naming what was available.
     pub const ALL: [Capability; 4] = [
         Capability::Run,
         Capability::Program,
@@ -338,7 +199,6 @@ impl Capability {
     ];
 }
 
-/// A key, flattened to what Lua needs to know about it.
 #[derive(Debug, Clone, Default)]
 pub struct KeyPress {
     pub name: String,
@@ -346,98 +206,38 @@ pub struct KeyPress {
     pub ctrl: bool,
     pub alt: bool,
     pub shift: bool,
-    /// The macOS Command key (crossterm's `SUPER`).
-    ///
-    /// Carried rather than dropped, which it was until issue #1024: a `Cmd`
-    /// chord arrived as the bare letter, so `cmd+c` could be written in a
-    /// binding and never fire. It reaches a terminal at all only under the
-    /// kitty keyboard protocol — see [`super::clipboard`].
+    // crossterm's `SUPER`: the macOS Command key, reported only under the kitty keyboard protocol.
     pub cmd: bool,
 }
 
-/// A click resolved onto a node one mod painted.
-///
-/// The counterpart to [`KeyPress`], and deliberately shaped like one: the
-/// kernel hit-tests the tree it just painted, attributes the node to the mod
-/// that returned it, and hands over the identity plus where inside the node the
-/// press landed. It carries no rect — a mod that knows *which* node was hit
-/// does not need to be told again where that node was.
 #[derive(Debug, Clone, Default)]
 pub struct Click {
     pub id: Option<String>,
     pub classes: Vec<String>,
     pub role: Option<String>,
-    /// Column and row within the clicked node's own rect. What v1 needed for a
-    /// side-by-side diff row, where which half you clicked is the answer.
     pub x: u16,
     pub y: u16,
-    /// The node's own size, so a coordinate can be resolved against the shape
-    /// it landed in without the pane storing geometry from its last render —
-    /// which a `pure` pane cannot do at all, since `render` may not write.
     pub w: u16,
     pub h: u16,
-    /// The cell the press landed on, on the SCREEN rather than in the node.
-    /// What a menu opened at the pointer is anchored to (`float.at`): a pane
-    /// knows neither where its slot sits nor where the node landed in it.
     pub screen_x: u16,
     pub screen_y: u16,
-    /// Whether this is the pointer moving under a press it already took, rather
-    /// than the press itself. Set only for a node that declared
-    /// [`super::node::Identity::is_drag_handle`].
     pub dragging: bool,
-    /// 2 for the second press on the same node in quick succession, 1 for any
-    /// other press. Counted by the coordinator (`coordinator::mouse::ClickTrain`),
-    /// because a pane has no clock outside `render`. A third quick press is 1
-    /// again, so a pane that opens on 2 opens once.
     pub clicks: u8,
 }
 
-/// A wheel tick resolved onto the pane under the pointer.
-///
-/// Its own hook rather than a synthesized `up`/`down` keystroke, because the
-/// one pane that most needs the wheel is the one that cannot have those keys: a
-/// pane showing a live terminal hands every unclaimed key to the agent, so
-/// declaring `up` there would take the arrow keys away from whatever is running
-/// in it. Every pane that *can* declare them still does, and the kernel falls
-/// back to the keystroke when this hook declines — so a list keeps scrolling by
-/// the same code path its arrow keys use.
-///
-/// One report, not one notch. A detent is several reports and each is one line,
-/// which is exactly what the tick means when it is forwarded to a pty instead
-/// ([`super::terminal::Terminals::forward_wheel`]); a pane that steps a
-/// *selection* wants the notch and takes the keystroke fallback, where the
-/// kernel already applies one.
 #[derive(Debug, Clone, Copy, Default)]
 pub struct Scroll {
-    /// Which way the wheel turned.
     pub up: bool,
-    /// Column and row within the scrolled node's own rect, as [`Click`] carries
-    /// them — a pane with more than one scrollable region needs to know which.
     pub x: u16,
     pub y: u16,
 }
 
-/// A mod that is floating this frame, and how much room it wants.
-///
-/// Floating is a property of what the mod *returned*, not of the mod — a
-/// modal appears by returning a float node and disappears by not doing so, with
-/// no separate open/close channel for the kernel to keep in sync.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Float {
-    /// Share of the screen, 0..100. Clamped when rendered.
     pub width_pct: f64,
     pub height_pct: f64,
-    /// Exact columns, when the mod knows them. Wins over the percentage.
-    ///
-    /// A modal framing a list of a known length wants a size in cells, not a
-    /// share of the screen: sized by percentage its frame drifts away from its
-    /// content as the terminal grows. v1's modals are a fixed width with the
-    /// height fitted to what is inside them, and this is how a mod says so.
     pub cols: Option<u16>,
     pub rows: Option<u16>,
-    /// The screen cell to open at, instead of the centre: a menu opened by a
-    /// press is drawn where the press was. Where it would run off the area it
-    /// opens the other way round, then is held inside it (`App::float_rect`).
     pub at: Option<(u16, u16)>,
 }
 
@@ -453,128 +253,40 @@ impl Default for Float {
     }
 }
 
-/// What a mod produced this frame.
-///
-/// The tree is behind an `Rc` so a pure-pane cache *hit* costs a refcount bump
-/// rather than a deep clone of the whole node tree — and so the settle diff
-/// can short-circuit on pointer identity: the same `Rc` handed out twice IS
-/// the same tree, with no per-node comparison needed (ADR-P16's cache saved
-/// the Lua call and the conversion but still paid two tree-sized clones per
-/// pane per frame).
 #[derive(Debug, Clone)]
 pub struct Rendered {
     pub node: std::rc::Rc<Node>,
-    /// Set when the mod asked to float above the arrangement.
     pub float: Option<Float>,
 }
 
-/// Everything published to mods in one frame.
-///
-/// A struct rather than a parameter list because this grew from two to six in
-/// the course of one change, and each growth churned every call site. Adding
-/// something mods can read should not be an edit to every test.
-/// The version each published source stood at when a frame was published.
-///
-/// A group rebuilt at one epoch and asked for again at the same one cannot have
-/// differed, which is the whole of the gate (`frame-cost`). Each group names the
-/// fields it is built from rather than taking the whole struct, so a source that
-/// moves every frame only invalidates what actually reads it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct Epoch {
-    /// `SnapshotStore::version`.
     pub snapshot: u64,
-    /// `Themes::version`.
     pub themes: u64,
-    /// `Registry::version`.
     pub registry: u64,
-    /// `Terminals::meta_version`.
     pub meta: u64,
-    /// `Terminals::failed_version`.
     pub failed: u64,
-    /// The loop's own `data_epoch` — the worker stores, links, screen text.
     pub data: u64,
-    /// The shared animation clock, which advances **only while something is
-    /// actually animating** (a working session, a command in flight).
-    ///
-    /// A free-running clock here was a bug worth naming: it moved 8 times a
-    /// second whether or not anything on screen was moving, so at the 4fps idle
-    /// floor every pure pane missed its cache on every frame and re-ran for a
-    /// byte-identical tree. `frame-cost` requires an idle interface to rebuild
-    /// neither its groups nor its panes; a clock that never stops makes that
-    /// impossible to satisfy.
     pub animation: u64,
-    /// `Terminals::printing_version` — moves only when the set of sessions
-    /// producing output gains or loses a member.
-    ///
-    /// Its own slot rather than a field on the session rows: what is printing
-    /// changes with an agent's output, and the `sessions` group is the largest
-    /// one published. Gating that group on this would rebuild a table per
-    /// session on every change of output, which is the cost the gating exists
-    /// to prevent — so the fact travels in a group of its own that costs one
-    /// small table.
     pub printing: u64,
-    /// The published wall clock; only its readers invalidate on a tick.
     pub taken_at: u64,
-    /// `Metrics::version`; only its readers invalidate on a sample.
     pub metrics: u64,
 }
 
-/// The versions one group is built from, compared exactly.
-///
-/// A fixed array rather than a hash of them: a hash collision here would reuse a
-/// stale group, and "astronomically unlikely" is the wrong guarantee for a
-/// wrong answer nobody can see. Unused slots stay zero.
 type GroupKey = [u64; 4];
 
-/// How often the shared animation clock may advance, in Hz.
-///
-/// Set to the rate `theme.spinner_frame` advances the working spinner at
-/// (`math.floor(elapsed * 8)`), so a cached tree is dropped exactly when the
-/// spinner would move to its next frame and never merely because time passed.
-/// Changing one without the other either freezes the animation or re-renders
-/// for nothing. The loop owns the counter — see [`Epoch::animation`].
 pub const ANIMATION_HZ: f64 = 8.0;
 
 type TreeKey = (Epoch, u16, u16, bool, u64);
 
-/// A pure pane's cached tree, and whether the clock is part of what keyed it.
-///
-/// [`Epoch::animation`] advances eight times a second for as long as any session
-/// is `working`, which is most of the time on a machine with an agent running.
-/// It is in [`TreeKey`], so every pure pane used to be re-rendered at that rate
-/// however little it had to do with a spinner — measured at +51% CPU under load
-/// (`docs/thurbox/performance.md`, ADR-P21).
-///
-/// Every other TUI scopes animation to the thing that animates, and gets the
-/// coupling for free because the animating widget is the one that asks to be
-/// redrawn: a Textual widget calls `self.set_interval(1/60, self.refresh)` on
-/// *itself*, a Bubble Tea spinner returns its own tick command, fidget.nvim's
-/// `Anime` is the closure that reads `now`, and lualine redraws the statusline
-/// alone. thurbox's panes do not ask — the kernel calls them — so the coupling
-/// has to be observed instead: a tree can only depend on the clock if the render
-/// that built it read `ctx.elapsed`, and the ctx table's metatable is what
-/// notices. A pane that did not read it is served across an animation tick.
-///
-/// Deliberately detected rather than declared. A declaration defaulting to "does
-/// not animate" freezes any pane whose author never read the release note, with
-/// no error anywhere; one defaulting to "does" recovers almost nothing. Detection
-/// cannot be wrong in either direction: the flag is recorded from the render that
-/// produced the very tree being cached, and a pane that starts or stops reading
-/// the clock re-keys itself on the render where it does.
 struct CachedTree {
     key: TreeKey,
     rendered: Rendered,
-    /// Whether the render that produced `rendered` read `ctx.elapsed`.
     reads_clock: bool,
     reads_sample: u8,
 }
 
 impl CachedTree {
-    /// Whether this tree answers for `want`.
-    ///
-    /// Volatile inputs are compared only for a tree that read them. Masked on
-    /// *both* sides rather than skipped on one, so the comparison stays a plain
-    /// equality and cannot drift as `TreeKey` grows.
     fn answers(&self, want: &TreeKey) -> bool {
         let (mut mine, mut theirs) = (self.key, *want);
         if !self.reads_clock {
@@ -594,13 +306,6 @@ impl CachedTree {
 }
 
 impl Epoch {
-    /// An epoch that matches no previous one, so every group is rebuilt.
-    ///
-    /// For a caller that holds no versions to report — a test, or any publish
-    /// outside the render loop. Without it such a caller would publish
-    /// `Epoch::default()` twice with *different* data and be handed the first
-    /// one's groups back, which is the stale answer this whole mechanism exists
-    /// to make impossible.
     pub fn always_fresh() -> Self {
         use std::sync::atomic::{AtomicU64, Ordering};
         static NEXT: AtomicU64 = AtomicU64::new(1);
@@ -621,110 +326,33 @@ impl Epoch {
 }
 
 pub struct Published<'a> {
-    /// Where each source stood, so a group that could not have changed is not
-    /// rebuilt. See [`Epoch`].
     pub epoch: Epoch,
     pub snapshot: &'a Snapshot,
-    /// Why a session's terminal is not live, keyed by session.
     pub attach_errors: &'a std::collections::HashMap<String, String>,
-    /// The starts the user asked for that no live pane has settled yet,
-    /// keyed by session.
     pub starts: &'a std::collections::HashMap<String, super::terminal::Start>,
-    /// The sessions whose pane is producing output right now.
-    ///
-    /// The evidence a `running` session's indicator animates on: process
-    /// inspection alone cannot tell a turn in flight from a prompt waiting for
-    /// input, and this can. Only a surface holding the terminals can answer it,
-    /// which is why it is published rather than derived in a pane.
     pub printing: &'a std::collections::HashSet<String>,
     pub inflight: &'a [InFlight],
     pub themes: &'a Themes,
     pub registry: &'a Registry,
     pub diffs: &'a super::diff::DiffStore,
-    /// Links visible in each session's terminal, keyed by session.
     pub links: &'a std::collections::HashMap<String, Vec<(String, usize, usize)>>,
-    /// The last finished content search — `None` unless a mod asked
-    /// (`kernel::search::WANT_CONTENT`). Serving it only on demand is what keeps
-    /// every agent's history off every frame.
     pub search: Option<&'a super::search::Answer>,
-    /// Machine, per-agent and account metrics, as far as they have been sampled.
     pub metrics: &'a super::metrics::Metrics,
-    /// Rows the message band needs — 0 while it has nothing to say.
-    ///
-    /// Published because the ARRANGEMENT needs it: whether a band takes a row is
-    /// placement, which `ui/layout.lua` decides. What the band then shows is not,
-    /// so the message itself stays kernel-side.
     pub status_rows: u16,
-    /// What each live agent reported over its own terminal — the activity line
-    /// and the attention message. Keyed by session; absent for a session with
-    /// no live pane.
     pub meta: &'a std::collections::HashMap<String, super::terminal::AgentMeta>,
-    /// Whether opening a link will actually open anything here.
     pub can_open: bool,
-    /// The identity under the pointer, so a pane can light its own affordance.
-    ///
-    /// Published rather than resolved in the kernel because only the pane that
-    /// drew a thing knows how it should look highlighted — the kernel knows
-    /// where it is, not what it means.
     pub hovered: Option<&'a super::node::Identity>,
-    /// The focused mod's name, so a pane can report focus it does not hold.
-    ///
-    /// `ctx.focused` is per-mod and answers "am I focused?"; the footer has
-    /// to name whoever IS, and it is not focusable itself. v1 reads the same
-    /// thing off `App::focus`.
     pub focus: Option<&'a str>,
-    /// The mouse text selection, so a pane can read what the user has selected —
-    /// the coordinator otherwise keeps it only for `copy_selection`. `None` is
-    /// published as an empty string, so a pane reads a cleared selection as
-    /// cleared rather than as the last one.
-    ///
-    /// A bare scalar like `focus`, not a group: it moves no epoch and bumps no
-    /// state version, so a pane painting the live selection must be impure (read
-    /// it every frame) — a pure pane would be served its cached tree until some
-    /// other signal ticked. A pane that reads it in a key handler — to comment on
-    /// the selection under a chord — is never cached and sees it at once.
-    ///
-    /// A handler reads the selection the drag just made, even a chord drained in
-    /// the same input batch as that drag: a left drag recomputes its text from
-    /// the grid and re-publishes it before the next event runs (see
-    /// `coordinator::input` and `refresh_selection_text`), so the
-    /// comment-on-selection gesture never reads the pre-drag value. A selection
-    /// outside every terminal has no grid to read mid-batch and falls back to the
-    /// last completed paint.
     pub selection: Option<&'a str>,
-    /// The interface's own files: where each came from and which are running.
-    ///
-    /// Published rather than drawn by the kernel, so the pane that lists the
-    /// panes is an ordinary mod holding no capability a user's own could not
-    /// have — which is the standing rule for bundled mods, and the only
-    /// honest test of it (design D4).
     pub inventory: &'a [super::inventory::Row],
-    /// The directory the interface was loaded from.
-    ///
-    /// A `./ui` beside the working directory wins over the user's own copy, so
-    /// edits that "did nothing" are usually edits to a file that is not the one
-    /// running. Reporting it is the whole fix (design D7).
     pub ui_dir: &'a str,
-    /// The settings in force — the live half as last read, the restart-only half
-    /// as published at startup (`kernel::config`).
-    ///
-    /// Published because the arrangement needs some of it *before* any mod
-    /// runs (the column thresholds), and because a pane must be able to honour a
-    /// feature switch the kernel has no knowledge of.
     pub settings: &'a crate::session::settings::Settings,
-    /// What the creation flow asked about, and the answers so far.
-    ///
-    /// Published as a pair rather than the whole store because only what is
-    /// *currently* asked for is published: a flow that is closed asks nothing, so
-    /// these three tables are empty and cost a table each.
     pub repos: &'a super::repos::RepoStore,
     pub wants: &'a super::repos::Wants,
 }
 
-/// What a mod is told about the frame it is rendering into.
 #[derive(Debug, Clone, Copy)]
 pub struct RenderContext {
-    /// The mod's **own** resolved width, not the screen's.
     pub width: u16,
     pub height: u16,
     pub focused: bool,
@@ -735,117 +363,56 @@ pub struct RenderContext {
 pub struct LuaHost {
     lua: Lua,
     ui_dir: PathBuf,
-    /// The epoch the last publish ran at, so `render` can key a tree on it
-    /// without the loop passing it twice.
     epoch: RefCell<Option<Epoch>>,
-    /// How many pane renders and published groups were served from a cache.
-    ///
-    /// A skip is unobservable in what gets painted — that is the whole
-    /// correctness claim — so it is only ever visible as a count. Published
-    /// through the perf snapshot, and what `tests/kernel_frame_cost.rs` asserts
-    /// on, since it has nothing else to assert on (`frame-cost`).
     skipped_renders: std::cell::Cell<u64>,
-    /// The heap taken as this interface's own — see [`Self::memory_pressure`].
     resident: std::cell::Cell<usize>,
-    /// Full collections [`Self::memory_pressure`] has paid for.
     pressure_collections: std::cell::Cell<u64>,
-    /// The heap the last of those left, so the next waits for new garbage.
     collected: std::cell::Cell<usize>,
     reused_groups: std::cell::Cell<u64>,
     perf_timing: std::cell::Cell<bool>,
     mod_perf: RefCell<super::perf::ModTable>,
-    /// Whether the loop has seen no input for a while, for `idle_renders`.
     idle: std::cell::Cell<bool>,
     op_open: std::cell::Cell<bool>,
     op_heaviest: RefCell<Option<(String, std::time::Duration)>>,
-    /// Every `store`/`state` write, counted in the VM's `__newindex`; a render's
-    /// share is the difference across the call.
     store_writes: WriteCount,
     trees: RefCell<HashMap<usize, CachedTree>>,
-    /// The clock the current render is being handed, and whether it read it.
-    ///
-    /// `ctx.elapsed` is served through the ctx table's metatable rather than set
-    /// as a field, so asking for it is observable. That is the whole mechanism
-    /// behind [`CachedTree::reads_clock`] — see it for why the kernel wants to
-    /// know.
     clock: Rc<std::cell::Cell<f64>>,
     clock_read: Rc<std::cell::Cell<bool>>,
     sample_read: Rc<std::cell::Cell<u8>>,
-    /// Every render's `sample_read` since [`Self::take_diffs_read`] last asked,
-    /// a cached tree counting with the flags of the render that built it.
     rendered_reads: std::cell::Cell<u8>,
-    /// Published groups, each with the epoch it was built at.
-    ///
-    /// The outer `thurbox` table is still assembled fresh every frame from
-    /// these; only the nested group values are reused. That is deliberate — it
-    /// means a gating mistake can produce a stale *group* but never a torn
-    /// table, and it keeps the change local to the group builders
-    /// (`frame-cost`).
     groups: RefCell<HashMap<&'static str, (GroupKey, Value)>>,
     store: Shared,
     state: Private,
-    /// Bumped by every `store`/`state` write; part of a pure pane's tree key.
     state_version: StateVersion,
     current: Rc<RefCell<String>>,
     current_path: Rc<RefCell<String>>,
-    /// Session working directories, the roots a file read is confined to.
     roots: Roots,
     file_reads: Rc<RefCell<super::files::ReadStore>>,
     file_wants: FileWants,
     file_rendered: RefCell<BTreeSet<String>>,
-    /// The snapshot version [`Roots`] was last rebuilt from, so publish skips
-    /// re-cloning every session's cwd on frames where the snapshot stood still.
     roots_snapshot: std::cell::Cell<Option<u64>>,
     queue: Queue,
-    /// See [`Self::acting_for`].
     behalf: Rc<RefCell<Option<Vec<String>>>>,
     runs: Rc<RefCell<Vec<(String, super::runs::Request)>>>,
-    /// Paths the user trusted, as `set_trusted` last recorded them.
     trusted: Rc<RefCell<Vec<String>>>,
-    /// Paths the user turned off. Read by `build`, which simply does not load
-    /// them — which is the whole implementation of being disabled (design D2).
     disabled: Rc<RefCell<Vec<String>>>,
     run_answers: Rc<RefCell<RunAnswers>>,
     pub mods: Vec<Mod>,
     index: ModIndex,
     layout: Arrangement,
-    /// The last resolved arrangement, with everything it was resolved from.
-    ///
-    /// `layout.lua` runs through the VM and its result is converted node by
-    /// node, every frame, from inputs that move rarely: the screen size, the
-    /// occupied slots (fixed per reload), `store` (the panel toggles — covered
-    /// by the state version), and the published tables it may consult (covered
-    /// by the epoch, plus the chrome band's row count, which is published as a
-    /// bare scalar and so carries no version of its own).
     layout_cache: RefCell<Option<(LayoutKey, std::rc::Rc<Region>)>>,
-    /// The `status_rows` last published, the one arrangement input with no
-    /// version — see [`Self::arrangement`]'s cache key.
     last_status_rows: std::cell::Cell<u16>,
-    /// The last build error. Transactional reloads retain the last good mods;
-    /// a failed fresh build has none.
     pub error: Option<String>,
     pub reloads: u32,
-    /// Published as `thurbox.keyboard.releases`; the loop learns it from the
-    /// terminal and sets it with [`Self::set_key_releases`].
     key_releases: std::cell::Cell<KeyReleases>,
 }
 
-/// Whether this terminal tells thurbox when a key is let go, as
-/// `thurbox.keyboard.releases` publishes it.
-///
-/// Three states rather than a flag because "it should" and "it did" differ: a
-/// terminal can accept the kitty flag that asks for releases and still never
-/// send one, so a mod offering a hold says so only once a release has
-/// actually arrived, and treats `negotiated` as worth trying with a fallback.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+// Releases need the kitty keyboard protocol, except on Windows, whose console always reports them.
 pub enum KeyReleases {
-    /// Nothing asked for them: no kitty keyboard protocol, and not Windows.
     #[default]
     Unsupported,
-    /// Asked for and accepted (or Windows, whose console always reports them),
-    /// but none seen yet.
     Negotiated,
-    /// A release has been seen in this run.
     Reported,
 }
 
@@ -859,18 +426,14 @@ impl KeyReleases {
     }
 }
 
-/// What [`LuaHost::arrangement`]'s cache is keyed by. Compared exactly, like a
-/// [`GroupKey`]: a stale arrangement is wrong rects, not a slow frame.
 type LayoutKey = (u16, u16, u32, Option<Epoch>, u64, u16);
 
-/// See [`LuaHost::index`].
 #[derive(Default)]
 struct ModIndex {
     focusable: Vec<usize>,
     floating: Vec<usize>,
     slots: HashMap<String, Vec<usize>>,
     decorators: HashMap<String, Vec<usize>>,
-    /// Slot -> declared mode. Absent = stack, so the common case needs no entry.
     modes: HashMap<String, SlotMode>,
 }
 
@@ -888,8 +451,6 @@ impl ModIndex {
                 Some(slot) => index.decorators.entry(slot.clone()).or_default().push(i),
                 None => index.slots.entry(loaded.slot.clone()).or_default().push(i),
             }
-            // `slot_mode` is a static declaration, read once here instead of
-            // through the Lua table on every placement query.
             if let Ok(Value::String(mode)) = loaded.def.get::<Value>("slot_mode") {
                 if mode.to_string_lossy() == "switch" {
                     index.modes.insert(loaded.slot.clone(), SlotMode::Switch);
@@ -905,15 +466,10 @@ impl LuaHost {
         Self::new_with_disabled(ui_dir, Vec::new())
     }
 
-    /// Build an independent VM with the same disabled mods. A failed build
-    /// leaves an empty fresh VM carrying the error, never this host's heap.
     pub fn fresh_from(&self, ui_dir: impl Into<PathBuf>) -> Self {
         Self::new_with_disabled(ui_dir, self.disabled.borrow().clone())
     }
 
-    /// An independent empty VM carrying `error`, with the same disabled
-    /// mods: what replaces a full VM when no interface can go in, without
-    /// building the one that filled it again.
     pub fn retired(&self, error: String) -> Self {
         let mut host = Self::unbuilt(self.ui_dir.clone(), self.disabled.borrow().clone());
         host.error = Some(error);
@@ -975,14 +531,6 @@ impl LuaHost {
         }
     }
 
-    /// Rebuild the VM from disk. On failure the previous VM keeps running.
-    /// Rebuild from a different directory than the one this host was built from.
-    ///
-    /// The recovery floor needs it. [`Self::reload`] rebuilds from `self.ui_dir`,
-    /// so a host built from the bundled fallback rebuilds the *fallback* — the
-    /// user's fix to their own copy would change nothing, with nothing on screen
-    /// to say why. Pointing the host back at the authoritative directory on every
-    /// reload is what makes the floor a state rather than a one-way door.
     pub fn reload_from(&mut self, ui_dir: impl Into<PathBuf>) {
         self.ui_dir = ui_dir.into();
         self.reload();
@@ -991,10 +539,6 @@ impl LuaHost {
     pub fn reload(&mut self) {
         match self.build() {
             Ok((lua, mods, layout)) => {
-                // Before the VM they point into is dropped: a cached group is a
-                // handle into `self.lua`, so carrying one across a reload would
-                // hand the next publish a value belonging to a Lua that no
-                // longer exists.
                 self.forget_groups();
                 self.file_wants.borrow_mut().clear();
                 self.lua = lua;
@@ -1042,7 +586,6 @@ impl LuaHost {
             .filter_map(|entry| entry.ok().map(|entry| entry.path()))
             .filter(|path| path.extension().is_some_and(|ext| ext == "lua"))
             .collect();
-        // Sorted so `order` ties break by filename, deterministically.
         files.sort();
 
         let nested: Vec<String> = super::packages::read_spec(&self.ui_dir)
@@ -1076,12 +619,6 @@ impl LuaHost {
             mods.push(load_mod(&lua, &parts, &path, &relative)?);
         }
         drop(disabled);
-        // An EMPTY directory is not an error: removing every pane is something
-        // a user may do, and faulting here would summon the recovery floor,
-        // which would deliver the bundled interface again — the system undoing
-        // the removal it was just asked to make (design D6). A *missing*
-        // directory still is one: delivery always creates it, so its absence
-        // means the interface directory is not one.
         mods.sort_by(|a, b| a.order.total_cmp(&b.order));
         let mut actions = std::collections::HashMap::<String, (String, String)>::new();
         for loaded in &mods {
@@ -1112,17 +649,11 @@ impl LuaHost {
         Ok((lua, mods, layout))
     }
 
-    /// Every declaration from every loaded mod, for the registry.
     pub fn declarations(&self) -> (Vec<Binding>, Vec<Setting>) {
         let (bindings, settings, _) = self.all_declarations();
         (bindings, settings)
     }
 
-    /// [`Self::declarations`] including the action-band entries.
-    ///
-    /// Every declaration is collected the same way and at the same moment — at
-    /// load and reload — which is what lets a band paint from data already in
-    /// hand rather than by asking a mod while it draws.
     pub fn all_declarations(&self) -> (Vec<Binding>, Vec<Setting>, Vec<Pill>) {
         let mut bindings = Vec::new();
         let mut settings = Vec::new();
@@ -1135,12 +666,6 @@ impl LuaHost {
         (bindings, settings, pills)
     }
 
-    /// Call a mod's `on_action` with a declared action id.
-    ///
-    /// Separate from `on_key`: a declared key is routed by the registry, which
-    /// is what lets it be rebound, listed in help, and conflict-checked. Raw
-    /// `on_key` stays for panes that need every keystroke (the terminal).
-    /// Run `f` as a request from the mod at `issuer`: see [`Self::acting_for`].
     pub fn on_behalf_of<T>(&self, issuer: &str, f: impl FnOnce() -> T) -> T {
         let previous = self.acting_for(Some(vec![issuer.to_string()]));
         let out = f();
@@ -1148,19 +673,6 @@ impl LuaHost {
         out
     }
 
-    /// Mark what runs from now on as a request made by `chain` — the mod
-    /// that first asked, then each that passed it on — or clear the mark with
-    /// `None`, returning the mark it replaces.
-    ///
-    /// `command("action")` runs the named action's own handler, which may
-    /// hold a grant the asker does not, or lack one the asker holds. While it
-    /// runs for that chain, every command it issues carries the chain with the
-    /// handler added, and the gate allows it only with what every mod in it
-    /// holds (`Command::refusal_by`): a pane with no grant cannot have a
-    /// trusted one `send` for it, through any number of hops, and a trusted
-    /// pane does not lend its grant to a handler it asks. Only the handler's
-    /// own commands are marked — another mod's finalizer run meanwhile
-    /// keeps its own name. A key or a click the user made runs it unmarked.
     pub fn acting_for(&self, chain: Option<Vec<String>>) -> Option<Vec<String>> {
         std::mem::replace(&mut *self.behalf.borrow_mut(), chain)
     }
@@ -1169,8 +681,6 @@ impl LuaHost {
         self.on_action_with_args(index, action, &[])
     }
 
-    /// Handler presence is checked without invoking user code. A gesture with
-    /// no action handler cannot be promised through the external catalog.
     pub fn action_handler_present(&self, index: usize) -> bool {
         self.mods.get(index).is_some_and(|loaded| {
             matches!(loaded.def.get::<Value>("on_action"), Ok(Value::Function(_)))
@@ -1187,8 +697,6 @@ impl LuaHost {
             .collect()
     }
 
-    /// Pass a validated, typed argument table to a mod action. Existing
-    /// one-argument Lua handlers ignore the second argument.
     pub fn on_action_with_args(
         &self,
         index: usize,
@@ -1252,12 +760,10 @@ impl LuaHost {
         handled.map_err(|e| fail(clean_error(&e)))
     }
 
-    /// Index of a mod by name.
     pub fn index_of(&self, name: &str) -> Option<usize> {
         self.mods.iter().position(|p| p.name == name)
     }
 
-    /// The name of the mod at a path — what an event's `source` carries.
     pub fn name_of_path(&self, path: &str) -> Option<&str> {
         self.mods
             .iter()
@@ -1265,7 +771,6 @@ impl LuaHost {
             .map(|loaded| loaded.name.as_str())
     }
 
-    /// Every chord-less command every loaded mod declared.
     pub fn commands(&self) -> Vec<CommandDecl> {
         self.mods
             .iter()
@@ -1280,7 +785,6 @@ impl LuaHost {
             .collect()
     }
 
-    /// Indices of the mods subscribed to an event, in load order.
     pub fn subscribers(&self, event: &str) -> Vec<usize> {
         self.mods
             .iter()
@@ -1290,24 +794,9 @@ impl LuaHost {
             .collect()
     }
 
-    /// Hand one event to every mod subscribed to it.
-    ///
-    /// The payload table is built **once** and shared: a handler that mutates it
-    /// changes what a later subscriber reads, which is the same contract a
-    /// published table already has — and building it per subscriber would be a
-    /// table per mod per event for a value nobody is meant to write.
-    ///
-    /// Every subscriber is called whatever the earlier ones did: a handler that
-    /// throws or overruns its budget costs itself, reported against its mod
-    /// with the event's name, and the next handler still runs. Return values are
-    /// ignored — a handler cannot answer, only enqueue commands and write state.
     pub fn dispatch_event(&self, event: &Event) -> Vec<ModError> {
         let subscribers = match &event.only {
             None => self.subscribers(&event.name),
-            // Addressed. Filtered on `path` because that is the identity a
-            // program pane is keyed by — trust, the disabled set and `run`'s
-            // attribution all use the same one, and a declared `name` is
-            // neither unique nor stable.
             Some(path) => self
                 .subscribers(&event.name)
                 .into_iter()
@@ -1374,8 +863,7 @@ impl LuaHost {
                     Value::String(self.lua.create_string(text).map_err(|e| e.to_string())?)
                 }
                 Field::Bool(flag) => Value::Boolean(*flag),
-                // An integral number goes in as an integer, or `count = 2` reads
-                // back as `2.0` — the same care `state` takes with its values.
+                // An integral number goes in as a Lua integer, or `count = 2` reads back as `2.0`.
                 Field::Number(n) if n.fract() == 0.0 && n.abs() < (i64::MAX as f64) => {
                     Value::Integer(*n as i64)
                 }
@@ -1393,21 +881,10 @@ impl LuaHost {
         Ok(table)
     }
 
-    /// Indices of the mods occupying one slot, in render order.
-    ///
-    /// A decorator is not an occupant: it draws INTO another mod's tree, so
-    /// it is indexed under `ModIndex::decorators` instead — otherwise it
-    /// would take the default slot and compete for the centre with the pane it
-    /// exists to decorate.
     pub fn in_slot(&self, slot: &str) -> &[usize] {
         self.index.slots.get(slot).map(Vec::as_slice).unwrap_or(&[])
     }
 
-    /// Indices of mods decorating `slot`, in render order.
-    ///
-    /// Render order is the deterministic order the spec requires: it follows
-    /// each mod's declared `order`, so two decorators on one slot apply the
-    /// same way every run.
     pub fn decorators_of(&self, slot: &str) -> &[usize] {
         self.index
             .decorators
@@ -1416,10 +893,6 @@ impl LuaHost {
             .unwrap_or(&[])
     }
 
-    /// Ask a decorator to transform a tree.
-    ///
-    /// Returns the original on failure rather than propagating: a decorator
-    /// that throws must cost its decoration, not the pane it was decorating.
     pub fn decorate(
         &self,
         index: usize,
@@ -1462,11 +935,6 @@ impl LuaHost {
         convert::to_node(&value, &loaded.path).map_err(fail)
     }
 
-    /// A string a mod left in the shared `store`, if it put one there.
-    ///
-    /// Selection and search query belong to their mods. Reading the store
-    /// keeps the instance-scoped UI state projection aligned with what those
-    /// mods actually show.
     pub fn shared_string(&self, key: &str) -> Option<String> {
         match self.store.borrow().get(key) {
             Some(Persisted::Str(text)) => Some(text.clone()),
@@ -1474,7 +942,6 @@ impl LuaHost {
         }
     }
 
-    /// Small, explicitly declared UI projections; no shared or private store is exposed.
     pub fn ui_states(&self) -> std::collections::BTreeMap<String, serde_json::Value> {
         let mut states = std::collections::BTreeMap::new();
         for loaded in &self.mods {
@@ -1512,11 +979,6 @@ impl LuaHost {
         self.state_version.get()
     }
 
-    /// Read a boolean out of the shared `store`.
-    ///
-    /// The panel flags live there (`panels.<name>`) because the arrangement has
-    /// to read them before any mod runs, so this is how a caller outside Lua
-    /// asks whether a column is open.
     pub fn shared_bool(&self, key: &str) -> Option<bool> {
         match self.store.borrow().get(key) {
             Some(Persisted::Bool(value)) => Some(*value),
@@ -1524,18 +986,6 @@ impl LuaHost {
         }
     }
 
-    /// Put a string into the shared `store`, for a request that arrives from
-    /// outside any mod.
-    ///
-    /// Focus requests and instance-scoped UI actions use this path. A request
-    /// is written into the store rather than applied directly because selection belongs to the
-    /// session list, which republishes it every frame; anything the kernel set
-    /// behind its back would be overwritten immediately.
-    /// Bumps the state version exactly as the Lua `__newindex` path does —
-    /// without it, a pure pane consuming the key is served its cached tree on a
-    /// frame where nothing else moved, and the request sits unconsumed until
-    /// some unrelated signal ticks the epoch (the failure ADR-P16 records for
-    /// `thurbox.commands`).
     pub fn set_shared_string(&self, key: &str, value: &str) {
         let moved = {
             let mut store = self.store.borrow_mut();
@@ -1553,29 +1003,12 @@ impl LuaHost {
         }
     }
 
-    /// Overwrite just `thurbox.selection` on the already-published snapshot.
-    ///
-    /// A drag mutates the selection mid input-batch, and a chord queued behind
-    /// it in the same batch must read the finished text — but rerunning the
-    /// whole republish per drag report is the expensive path (terminal sync,
-    /// links, search, trust, inventory), and none of that moved. This patches
-    /// the one scalar in place, in the published table's backing (so no
-    /// `state_version` bump — a pure pane reading `selection` is
-    /// deliberately not invalidated, matching the field's last-painted
-    /// contract). A no-op before the first publish, when the global is still
-    /// absent.
     pub fn set_published_selection(&self, selection: &str) {
-        // Into the backing table: the published proxy refuses every write.
         if let Some(table) = api::published_backing(&self.lua) {
             let _ = table.raw_set("selection", selection);
         }
     }
 
-    /// Put a boolean into the shared `store`.
-    ///
-    /// The counterpart to [`Self::shared_bool`], and used for the same panel
-    /// flags: [`Self::placed_slots`] opens every column before resolving the
-    /// arrangement, because a pane behind a closed toggle is not a missing pane.
     pub fn set_shared_bool(&self, key: &str, value: bool) {
         let moved = {
             let mut store = self.store.borrow_mut();
@@ -1593,12 +1026,10 @@ impl LuaHost {
         }
     }
 
-    /// Indices of mods that may float, in render order.
     pub fn floating(&self) -> &[usize] {
         &self.index.floating
     }
 
-    /// Indices of every focusable mod, in render order.
     pub fn focusable(&self) -> &[usize] {
         &self.index.focusable
     }
@@ -1608,11 +1039,6 @@ impl LuaHost {
         self.current_path.borrow_mut().clear();
     }
 
-    /// Every name the mod at `index` can reach as a global: its own
-    /// environment's and the shared ones beneath it.
-    ///
-    /// For the test that pins the mod environment. Lua cannot list the shared
-    /// half itself — the environment's metatable is sealed — so it is read here.
     #[doc(hidden)]
     pub fn reachable_globals(&self, index: usize) -> Vec<String> {
         let mut names = std::collections::BTreeSet::new();
@@ -1630,20 +1056,10 @@ impl LuaHost {
         names.into_iter().collect()
     }
 
-    /// May this mod use `capability`?
-    ///
-    /// Two conditions, and both are needed: the file **declared** it, and the user
-    /// **trusted** that file. One predicate rather than the check written out at
-    /// each site, because the capabilities must not be able to drift apart — a
-    /// grant for one is not a grant for the other, and the way that breaks is a
-    /// second site that checks trust and forgets to check which capability was
-    /// asked for.
     pub fn may(&self, loaded: &Mod, capability: Capability) -> bool {
         loaded.capabilities.contains(&capability) && self.trusted.borrow().contains(&loaded.path)
     }
 
-    /// [`Self::may`], for a mod named by its path — the identity a queued
-    /// command carries, since the command is honoured after the call that made it.
     pub fn may_path(&self, path: &str, capability: Capability) -> bool {
         self.mods
             .iter()
@@ -1705,33 +1121,18 @@ impl LuaHost {
         let _ = loaded.env.thurbox.raw_set("granted", table);
     }
 
-    /// Hand over the retained run answers.
-    ///
-    /// Keyed by mod, and published per mod in `enter` rather than into one
-    /// shared table: a mod reading another's `docker` output would be a
-    /// capability nobody granted.
     pub fn set_runs(&self, answers: RunAnswers) {
         *self.run_answers.borrow_mut() = answers;
     }
 
-    /// Record which mods the user has turned off, by their path.
-    ///
-    /// Handed in for the same reason trust is: the decision is persisted with
-    /// the interface's other user preferences, and the host has no business
-    /// opening that file. Takes effect on the next `reload`.
     pub fn set_disabled(&self, paths: Vec<String>) {
         *self.disabled.borrow_mut() = paths;
     }
 
-    /// Record which mods the user has trusted, by their path.
-    ///
-    /// Handed in rather than read here: trust is persisted with the interface's
-    /// other user decisions, and the host has no business opening that file.
     pub fn set_trusted(&self, paths: Vec<String>) {
         *self.trusted.borrow_mut() = paths;
     }
 
-    /// Collect file-text answers; callers invalidate pure trees when this changes.
     pub fn poll_files(&self) -> bool {
         let roots = self.roots.borrow();
         let mut wants = self.file_wants.borrow_mut();
@@ -1747,7 +1148,6 @@ impl LuaHost {
         reads.poll() || retired
     }
 
-    /// Retire dependencies of panes no longer painted, preserving pure-cache hits.
     pub fn end_files_frame(&self) {
         let rendered = self.file_rendered.take();
         self.file_wants
@@ -1755,8 +1155,6 @@ impl LuaHost {
             .retain(|owner, _| rendered.contains(owner));
     }
 
-    /// Take asks only; callers serving execution must use
-    /// [`Self::drain_run_requests`] to preserve forget ordering.
     pub fn drain_runs(&self) -> Vec<(String, super::runs::Ask)> {
         self.drain_run_requests()
             .into_iter()
@@ -1767,7 +1165,6 @@ impl LuaHost {
             .collect()
     }
 
-    /// Take execution/eviction operations from loaded owners in Lua call order.
     pub fn drain_run_requests(&self) -> Vec<(String, super::runs::Request)> {
         let mut asked = std::mem::take(&mut *self.runs.borrow_mut());
         asked.retain(|(owner, _)| self.mods.iter().any(|loaded| loaded.path == *owner));
@@ -1789,8 +1186,6 @@ impl LuaHost {
             .collect()
     }
 
-    /// [`Self::drain_commands`], each with the path of the mod it was
-    /// first asked for by — the head of its chain ([`Self::drain_requests`]).
     pub fn drain_issued(&self) -> Vec<(String, Command)> {
         self.drain_requests()
             .into_iter()
@@ -1798,13 +1193,10 @@ impl LuaHost {
             .collect()
     }
 
-    /// [`Self::drain_commands`], each with the chain of mods it was made by
-    /// ([`Self::acting_for`]) — what [`Command::refusal_by`] checks.
     pub fn drain_requests(&self) -> Vec<(Vec<String>, Command)> {
         std::mem::take(&mut *self.queue.borrow_mut())
     }
 
-    /// What `thurbox.keyboard.releases` says from the next publish on.
     pub fn set_key_releases(&self, releases: KeyReleases) {
         self.key_releases.set(releases);
     }
@@ -1815,68 +1207,39 @@ impl LuaHost {
         key: GroupKey,
         build: impl FnOnce() -> Result<Value, String>,
     ) -> Result<Value, String> {
-        // Scoped so `build` can touch the cache without a double borrow.
         if let Some((built_at, value)) = self.groups.borrow().get(name) {
             if *built_at == key {
                 self.reused_groups.set(self.reused_groups.get() + 1);
                 return Ok(value.clone());
             }
         }
-        // Frozen before it is cached: a group is reused across frames, so a
-        // write into it would outlive the frame and reach every reader.
         let value = api::freeze(&self.lua, build()?).map_err(|e| e.to_string())?;
         self.groups.borrow_mut().insert(name, (key, value.clone()));
         Ok(value)
     }
 
-    /// Forget every cached group, so the next publish rebuilds all of them.
-    ///
-    /// Called where the VM itself is replaced: the cached values are handles
-    /// into the Lua that is going away.
     pub fn forget_groups(&self) {
         self.groups.borrow_mut().clear();
         self.trees.borrow_mut().clear();
     }
 
-    /// Pane renders skipped because a pure pane's tree still stood.
     pub fn skipped_renders(&self) -> u64 {
         self.skipped_renders.get()
     }
 
-    /// Bytes the mod VM holds now — what [`memory_limit`] is measured
-    /// against, shared by every mod.
     pub fn used_memory(&self) -> usize {
         self.lua.used_memory()
     }
 
-    /// Whether the VM is full enough that it should be rebuilt rather than
-    /// called again — see [`MemoryPressure`].
     pub fn near_memory_limit(&self) -> bool {
         self.memory_pressure().is_some()
     }
 
-    /// Why the VM should be rebuilt, if it should.
-    ///
-    /// A heap at the ceiling that a collection cannot bring down never comes
-    /// back: each allocation runs a full emergency collection and then fails,
-    /// so every mod call pays one on every frame — a frozen interface, for
-    /// as long as the process lives. Only a new VM returns the memory.
-    ///
-    /// Measured on the live heap. `used_memory` counts garbage not yet
-    /// collected, and with a large resident heap the collector's next cycle
-    /// lies past the ceiling, so garbage drifts up to it before anything is
-    /// freed: a stable interface would read as full. The cheap reading only
-    /// decides whether to pay for a full collection and read again.
-    ///
-    /// Size alone is not pressure either. An interface that holds most of the
-    /// VM from load works, and a new VM comes back just as full, so rebuilding
-    /// it replaced the VM on every loop iteration. Below the margin under the
-    /// ceiling, only growth past [`Self::accept_resident_memory`]'s baseline
-    /// counts.
     pub fn memory_pressure(&self) -> Option<MemoryPressure> {
         let ceiling = memory_limit();
+        let exhaustion_margin = ceiling - ceiling / 32;
         let assess = |used: usize| {
-            if used >= ceiling - ceiling / 32 {
+            if used >= exhaustion_margin {
                 Some(MemoryPressure::Exhausted)
             } else if used >= ceiling / 10 * 9
                 && used >= self.resident.get().saturating_add(ceiling / 20)
@@ -1888,17 +1251,12 @@ impl LuaHost {
         };
         let used = self.lua.used_memory();
         assess(used)?;
-        // A live heap parked just under the growth threshold would otherwise
-        // buy a full collection on every frame: the next waits for a share of
-        // new garbage. Never inside the exhaustion margin, though: there a
-        // failing allocation leaves no garbage to move the gate, so pacing
-        // would hide a full VM for good.
-        if used < ceiling - ceiling / 32 && used < self.collected.get().saturating_add(ceiling / 64)
-        {
+        let outside_exhaustion_margin = used < exhaustion_margin;
+        let too_little_new_garbage = used < self.collected.get().saturating_add(ceiling / 64);
+        if outside_exhaustion_margin && too_little_new_garbage {
             return None;
         }
-        // A collection can itself fail on a full heap; what is left is then
-        // what gets measured, which is the answer either way.
+        // A collection can itself fail on a full Lua heap; what is left is measured either way.
         let _ = self.lua.gc_collect();
         self.pressure_collections
             .set(self.pressure_collections.get() + 1);
@@ -1907,26 +1265,18 @@ impl LuaHost {
         assess(live)
     }
 
-    /// Full collections [`Self::memory_pressure`] has paid for.
     pub fn pressure_collections(&self) -> u64 {
         self.pressure_collections.get()
     }
 
-    /// Take the heap as this interface's resident size, so only growth past
-    /// it is [`MemoryPressure::Grown`]. Set on every build, where the count
-    /// still includes the load's garbage and so errs high; the loop also sets
-    /// it, on a just-collected heap, when a rebuild did not bring it down.
     pub fn accept_resident_memory(&self) {
         self.resident.set(self.lua.used_memory());
     }
 
-    /// Published groups served from the cache rather than rebuilt.
     pub fn reused_groups(&self) -> u64 {
         self.reused_groups.get()
     }
 
-    /// Record per-mod cost or stop. Turning it on starts a fresh window, so
-    /// what an opened HUD shows is what happened while it was open.
     pub fn set_perf_timing(&self, on: bool) {
         if on && !self.perf_timing.get() {
             self.mod_perf.borrow_mut().clear();
@@ -1934,39 +1284,30 @@ impl LuaHost {
         self.perf_timing.set(on);
     }
 
-    /// Whether renders from now on happen while the interface is idle.
     pub fn set_idle(&self, idle: bool) {
         self.idle.set(idle);
     }
 
-    /// Count one painted frame, the denominator of every per-mod share.
     pub fn note_frame(&self, took: std::time::Duration) {
         if self.perf_timing.get() {
             self.mod_perf.borrow_mut().note_frame(took);
         }
     }
 
-    /// Start a new per-mod window, alongside the loop's `perf_window`.
     pub fn reset_mod_perf(&self) {
         self.mod_perf.borrow_mut().clear();
     }
 
-    /// Start watching mod calls for [`Self::end_op`].
     pub fn begin_op(&self) {
         self.op_open.set(true);
         self.op_heaviest.replace(None);
     }
 
-    /// The mod whose single call was the longest since [`Self::begin_op`].
-    ///
-    /// The longest call, not the most total time: an op is one user action, and
-    /// the pane that stalled it is the one call that took the time.
     pub fn end_op(&self) -> Option<String> {
         self.op_open.set(false);
         self.op_heaviest.take().map(|(name, _)| name)
     }
 
-    /// Every loaded mod's cost this window, most expensive first.
     pub fn mod_report(&self) -> super::perf::ModReport {
         super::perf::mod_report(
             &self.mod_perf.borrow(),
@@ -1979,8 +1320,6 @@ impl LuaHost {
         )
     }
 
-    /// Count a program starting or finishing, in the window its start belongs
-    /// to — see [`super::perf::ModTable::note_run`].
     pub fn note_run(&self, event: &super::runs::RunEvent) {
         if self.perf_timing.get() {
             self.mod_perf.borrow_mut().note_run(event);
@@ -1991,7 +1330,6 @@ impl LuaHost {
         (self.perf_timing.get() || self.op_open.get()).then(std::time::Instant::now)
     }
 
-    /// Feed a finished call to an open op; its duration when timing is on.
     fn call_finished(
         &self,
         loaded: &Mod,
@@ -2023,25 +1361,14 @@ impl LuaHost {
         stats.failures += u64::from(failed);
     }
 
-    /// Whether any pane rendered since the last call read `thurbox.diffs`, and
-    /// start counting again. Asked once per painted frame, so it answers
-    /// "does a pane on screen show a diff": only placed panes render, plus the
-    /// floating mods, which render every frame to say whether they float —
-    /// one that reads the diffs while closed keeps them fetched, as before.
     pub fn take_diffs_read(&self) -> bool {
         self.rendered_reads.take() & api::READ_DIFFS != 0
     }
 
-    /// The epoch of the most recent publish, which a pure pane's tree is keyed
-    /// on. `None` before anything has been published.
     fn published_epoch(&self) -> Option<Epoch> {
         *self.epoch.borrow()
     }
 
-    /// Render one mod into its resolved rect.
-    ///
-    /// Failures are returned rather than propagated, so the caller can paint an
-    /// error panel in this mod's rect and carry on with the others.
     pub fn render(&self, index: usize, ctx: RenderContext) -> Result<Rendered, ModError> {
         let loaded = self.mods.get(index).ok_or_else(|| ModError {
             owner: format!("#{index}"),
@@ -2053,11 +1380,6 @@ impl LuaHost {
             self.file_rendered.borrow_mut().insert(loaded.path.clone());
         }
 
-        // A pure pane asked at the same epoch, in the same rect, with the same
-        // focus, would return what it returned last time — so return that,
-        // skipping both the Lua call and the conversion. Measured, this is the
-        // largest single cost in a frame: the session list rebuilt a
-        // byte-identical tree on every frame under load (`frame-cost`).
         let key = self.published_epoch().map(|epoch| {
             (
                 epoch,
@@ -2136,8 +1458,6 @@ impl LuaHost {
         table
             .set("focused", ctx.focused)
             .map_err(|e| fail(e.to_string()))?;
-        // NOT set as a field: `elapsed` is served through the metatable installed
-        // below, so that reading it is observable. See `CachedTree`.
         self.clock.set(ctx.elapsed);
         self.clock_read.set(false);
         self.sample_read.set(0);
@@ -2162,8 +1482,6 @@ impl LuaHost {
         let value = result.map_err(|e| fail(clean_error(&e)))?;
         let float = read_float(&value).map_err(fail)?;
         let node = convert::to_node(&value, &loaded.path).map_err(fail)?;
-        // Behind the `Rc` from birth, so caching it and every later hand-out
-        // is a refcount bump — see [`Rendered`].
         let rendered = Rendered {
             node: std::rc::Rc::new(node),
             float,
@@ -2175,9 +1493,6 @@ impl LuaHost {
                     CachedTree {
                         key,
                         rendered: rendered.clone(),
-                        // Read from the render that just produced this tree, so
-                        // the flag and the tree can never describe different
-                        // versions of the pane.
                         reads_clock: self.clock_read.get(),
                         reads_sample: self.sample_read.get(),
                     },
@@ -2187,8 +1502,6 @@ impl LuaHost {
         Ok(rendered)
     }
 
-    /// Offer the native cycle to a floating mod. A missing hook or `false`
-    /// leaves the ordinary pane cycle in charge. Uses the key hook's budget.
     pub fn on_focus_cycle(&self, index: usize, direction: &str) -> Result<bool, ModError> {
         if !self.mods.get(index).is_some_and(|loaded| loaded.floats) {
             return Ok(false);
@@ -2196,7 +1509,6 @@ impl LuaHost {
         self.boolean_key_hook(index, "on_focus_cycle", |_| Ok(direction))
     }
 
-    /// Offer a key to one mod. `Ok(true)` means it consumed the key.
     pub fn on_key(&self, index: usize, key: &KeyPress) -> Result<bool, ModError> {
         self.boolean_key_hook(index, "on_key", |lua| {
             let table = lua.create_table()?;
@@ -2237,45 +1549,18 @@ impl LuaHost {
         handled.map_err(|e| fail(clean_error(&e)))
     }
 
-    /// Offer a click to the mod that painted the node under it.
-    ///
-    /// Reached only for identity the kernel has no verb for — a list row, say.
-    /// The verbs it does know ([`super::node::ClickVerb`]) are answered by the
-    /// loop itself, so a footer pill or a modal button needs no `on_click` at
-    /// all and cannot behave differently from its key.
     pub fn on_click(&self, index: usize, click: &Click) -> Result<bool, ModError> {
         self.pointer_hook(index, click, "on_click")
     }
 
-    /// Offer a RIGHT press to the mod that painted the node under it.
-    ///
-    /// Its own hook rather than a `button` field on [`Click`], because the two
-    /// presses do not mean the same thing to anyone. Every `on_click` written
-    /// so far reads "act on this row" — open the file, run the action — and a
-    /// right press that arrived there would do exactly that, on every pane, the
-    /// moment the kernel started forwarding it. A separate hook is silent by
-    /// default: a pane that has not been taught what a right press means never
-    /// hears one.
-    ///
-    /// For the same reason the kernel does NOT resolve its own verbs here: a
-    /// pill's action is what its LEFT press and its key do, and a right press
-    /// on it means nothing until somebody says so.
     pub fn on_context(&self, index: usize, click: &Click) -> Result<bool, ModError> {
         self.pointer_hook(index, click, "on_context")
     }
 
-    /// Tell the float holding the pointer that a press — either button —
-    /// landed outside it.
-    ///
-    /// The press is spent either way; this only lets the float react, which a
-    /// menu needs in order to close. Its own hook for `on_context`'s reason: a
-    /// float written before it existed is told nothing, so every modal keeps
-    /// swallowing a stray press exactly as it did.
     pub fn on_outside(&self, index: usize, click: &Click) -> Result<bool, ModError> {
         self.pointer_hook(index, click, "on_outside")
     }
 
-    /// The body every pointer hook shares: same payload, different name.
     fn pointer_hook(&self, index: usize, click: &Click, hook: &str) -> Result<bool, ModError> {
         let Some(loaded) = self.mods.get(index) else {
             return Ok(false);
@@ -2327,11 +1612,6 @@ impl LuaHost {
         handled.map_err(|e| fail(clean_error(&e)))
     }
 
-    /// Offer a wheel tick to the mod whose pane is under the pointer.
-    ///
-    /// Declining (`false`, or declaring no `on_scroll` at all) is what puts the
-    /// tick back on the keystroke path, so a pane that already scrolls by
-    /// `up`/`down` needs nothing here. See [`Scroll`].
     pub fn on_scroll(&self, index: usize, scroll: &Scroll) -> Result<bool, ModError> {
         let Some(loaded) = self.mods.get(index) else {
             return Ok(false);
@@ -2366,20 +1646,7 @@ impl LuaHost {
         handled.map_err(|e| fail(clean_error(&e)))
     }
 
-    /// The arrangement at this size.
-    ///
-    /// `ui/layout.lua` is loaded once per *reload*, not once per frame. Reading
-    /// it every frame both wasted a syscall on the render path and — because
-    /// inotify reports reads — made the host look like it was editing its own
-    /// mods, which kept the reload debounce rolling forward forever.
     pub fn arrangement(&self, width: u16, height: u16) -> Result<std::rc::Rc<Region>, String> {
-        // The dynamic arrangement is a Lua call plus a node-by-node conversion,
-        // and the static one a whole-Region clone — per frame, from inputs
-        // that move rarely. Everything the Lua function can consult is in the
-        // key: `store` through the state version, the published tables through
-        // the epoch, `chrome.status_rows` (a bare scalar with no version)
-        // recorded at publish, and the occupied slots through the reload
-        // counter.
         let key: LayoutKey = (
             width,
             height,
@@ -2400,8 +1667,6 @@ impl LuaHost {
 
     fn resolve_arrangement(&self, width: u16, height: u16) -> Result<Region, String> {
         match &self.layout {
-            // No layout.lua: everything to the centre, with a one-line footer.
-            // A missing file is a fresh checkout, not an error.
             Arrangement::Missing => Ok(Region {
                 children: vec![
                     Region {
@@ -2439,19 +1704,6 @@ impl LuaHost {
         }
     }
 
-    /// Slots a loaded mod would actually paint into, as `{ [slot] = true }`.
-    ///
-    /// Published to the arrangement so it can decline to reserve a rect nothing
-    /// will fill. Without it the two switches that remove a pane disagree: the
-    /// panel toggle is arrangement state and the disabled set is delivery state,
-    /// and `layout.lua` could only see the first — so turning a mod off left
-    /// its column reserved and empty, which is the opposite of the promise that
-    /// the arrangement closes up around what is left.
-    ///
-    /// Floats and decorators are excluded for the same reason they are excluded
-    /// from [`Self::in_slot`]: a float draws *above* the arrangement and a
-    /// decorator draws *into* another mod's tree, so neither one filling a
-    /// slot is a reason to carve space out of the screen for it.
     pub fn occupied_slots(&self) -> BTreeSet<&str> {
         self.mods
             .iter()
@@ -2460,24 +1712,6 @@ impl LuaHost {
             .collect()
     }
 
-    /// Slots a loaded mod occupies that the arrangement places nowhere.
-    ///
-    /// The failure this answers is invisible to every other check: such a mod
-    /// compiles, declares its keys, appears in the inventory and draws nothing.
-    /// Reported by slot; the caller names the files, since it is the one holding
-    /// the mod list the user recognises.
-    ///
-    /// Two kinds of mod are excluded before the question is asked, because
-    /// neither is broken and reporting them would train the reader to ignore the
-    /// answer. [`Self::occupied_slots`] already drops **floats** (they draw above
-    /// the arrangement) and **decorators** (they draw into another mod's
-    /// tree); a **disabled** mod never reaches `mods` at all, since being
-    /// disabled is implemented as not loading the file.
-    ///
-    /// A third kind is handled by [`Self::placed_slots`], which this defers to: a
-    /// pane behind a **closed panel toggle**. `search` starts closed, so the
-    /// bundled arrangement legitimately names no `search` slot until something
-    /// opens it — which would make the interface we ship fail its own check.
     pub fn unplaced_slots(&self, area: Rect) -> Result<Vec<String>, String> {
         let occupied: BTreeSet<String> = self
             .occupied_slots()
@@ -2491,13 +1725,6 @@ impl LuaHost {
             .collect())
     }
 
-    /// Slots the arrangement places at `area`, with every panel toggle opened.
-    ///
-    /// Extracted so "placed" means one thing: the check that fails an install and
-    /// the listing that reports a pane's state resolve the same arrangement at the
-    /// same size. Reported as its own answer because *placement is knowable without
-    /// a frame* — what needs one is which occupant of a placed slot is in front,
-    /// and that is a separate question.
     pub fn placed_slots(&self, area: Rect) -> Result<BTreeSet<String>, String> {
         let occupied: Vec<String> = self
             .occupied_slots()
@@ -2511,20 +1738,6 @@ impl LuaHost {
         Ok(super::layout::placed_slots(&region, area))
     }
 
-    /// Every slot a loaded strip names, once, as `{ slot, len }` in load order —
-    /// what the bundled arrangement places above the bars.
-    ///
-    /// This is how a pane that needs a row of its own arrives on screen without
-    /// `mod install` writing `layout.lua`, which it never does: placement is
-    /// the user's, so the arrangement still decides, by iterating this list in
-    /// the file the user owns. Floats and decorators are excluded for the reason
-    /// [`Self::occupied_slots`] gives — neither paints into a carved-out rect.
-    ///
-    /// One entry per SLOT, not per pane: the arrangement places a slot once and
-    /// its occupants share that rect, so an entry per pane reserved rows nothing
-    /// drew into while the panes split a rect sized for one. `len` is what the
-    /// draw path needs — every occupant's rows for a stack, the tallest for a
-    /// switch, which shows one at a time.
     pub fn strips(&self) -> Vec<(&str, u16)> {
         let mut strips: Vec<(&str, u16)> = Vec::new();
         for loaded in &self.mods {
@@ -2570,26 +1783,6 @@ impl LuaHost {
         Ok(table)
     }
 
-    /// Why this pane may be impossible to find, if it may be.
-    ///
-    /// The one install that cannot demonstrate itself. A pane whose slot no
-    /// arrangement places fails `mod check` loudly. A pane that is the **alternate
-    /// occupant of a `switch` slot** passes every check, reports `installed`, and
-    /// shows the user nothing: the slot's first occupant draws, and this one waits to
-    /// be focused. Somebody who installs it, follows its README and launches sees an
-    /// unchanged screen and reasonably concludes the install failed.
-    ///
-    /// The kernel already offers three ways to reach it — the action band, `F1`, and
-    /// a `focus:<mod>` click role — but none of them is automatic. The focus
-    /// cycle is not one: it stops once per switch slot, on the default occupant
-    /// (`kernel::focus::next_in_cycle`).
-    /// A **pill** is: it is declared data the band enumerates without invoking
-    /// anything. So the answer is not new machinery, it is telling the author, and
-    /// this is the predicate both the check and the install report consult so they
-    /// cannot disagree.
-    ///
-    /// `None` when the pane draws by default, or when it declares a pill and is
-    /// therefore advertised.
     pub fn undiscoverable(&self, index: usize) -> Option<String> {
         let loaded = self.mods.get(index)?;
         if loaded.floats || loaded.decorates.is_some() {
@@ -2598,7 +1791,6 @@ impl LuaHost {
         if self.slot_mode(&loaded.slot) != SlotMode::Switch {
             return None;
         }
-        // The first occupant of a switch slot is the one that draws.
         if self.in_slot(&loaded.slot).first() == Some(&index) {
             return None;
         }
@@ -2614,10 +1806,6 @@ impl LuaHost {
         ))
     }
 
-    /// The one pane of a `switch` slot the focus cycle stops on: its first
-    /// focusable occupant, which is the one it shows by default. A float named
-    /// into the slot is not one — it draws over the arrangement, not in the slot —
-    /// and letting it win took the slot's real pane out of the cycle.
     pub fn switch_default(&self, slot: &str) -> Option<usize> {
         self.in_slot(slot).iter().copied().find(|index| {
             let loaded = &self.mods[*index];
@@ -2625,11 +1813,6 @@ impl LuaHost {
         })
     }
 
-    /// Slot mode, declared by any mod in the slot. Stack unless one says
-    /// otherwise, so the common case needs no declaration. Read off the index
-    /// built at load — the declaration is static, and answering it through the
-    /// Lua table cost a metamethod-capable read per slot member per placement
-    /// query, several queries per frame.
     pub fn slot_mode(&self, slot: &str) -> SlotMode {
         self.index
             .modes

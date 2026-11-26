@@ -1,4 +1,3 @@
-//! Release policy and reproducible packaging, shared by CI and fixture tests.
 use crate::{Result, exec};
 use clap::Subcommand;
 use semver::Version;
@@ -33,7 +32,7 @@ pub enum Command {
         directory: PathBuf,
     },
     Smoke {
-        /// Run offline initialization in a new, isolated user directory.
+        #[arg(help = "Run offline initialization in a new, isolated user directory")]
         #[arg(long)]
         first_run_dir: Option<PathBuf>,
         #[arg(long)]

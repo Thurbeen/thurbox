@@ -1,16 +1,3 @@
-//! The manager's spans and metrics, through the OpenTelemetry API alone: a
-//! no-op until the CLI installs a provider, so a run without telemetry
-//! records nothing and pays almost nothing.
-//!
-//! Each span is current while it runs. A pass is a child of the command
-//! that ran it. An object's reconcile is in the object's own trace, whose
-//! id is derived from the object's uid, and links to its pass: every
-//! reconcile of one Task, over every command and pass, is one trace, from
-//! its spawn to its release. An effect or a forge poll is a child of its
-//! reconcile, and a runtime call a child of its effect. Attributes are an object's
-//! identity, names of kinds and outcomes: never a brief, a message, an
-//! environment value or an error's text.
-
 use std::collections::BTreeMap;
 use std::sync::{Mutex, OnceLock};
 
@@ -40,7 +27,6 @@ struct Instruments {
     manager: Gauge<u64>,
 }
 
-/// Built on first use, after the CLI installed the providers.
 fn instruments() -> &'static Instruments {
     static INSTRUMENTS: OnceLock<Instruments> = OnceLock::new();
     INSTRUMENTS.get_or_init(|| {
@@ -93,7 +79,6 @@ fn instruments() -> &'static Instruments {
     })
 }
 
-/// A span current until dropped, ended on drop.
 pub(crate) struct Current {
     _guard: ContextGuard,
 }
@@ -110,9 +95,6 @@ impl Current {
         }
     }
 
-    /// A span in `obj`'s own trace, linked to the span current now (its
-    /// pass). Without a valid current span, as when nothing is exported, it
-    /// is an ordinary child, so a run without telemetry carries no context.
     fn start_in_trace_of(obj: &Object, name: String, attributes: Vec<KeyValue>) -> Current {
         let current = Context::current();
         let pass = current.span().span_context().clone();
@@ -142,8 +124,6 @@ impl Drop for Current {
     }
 }
 
-/// FNV-1a over `bytes`, 128 bits wide: stable across builds and releases,
-/// which `std`'s hasher is not.
 fn fnv1a(bytes: &[u8]) -> u128 {
     const OFFSET: u128 = 0x6c62_272e_07bb_0142_62b8_2175_6295_c58d;
     const PRIME: u128 = 0x0000_0000_0100_0000_0000_0000_0000_013b;
@@ -152,10 +132,6 @@ fn fnv1a(bytes: &[u8]) -> u128 {
         .fold(OFFSET, |h, b| (h ^ u128::from(*b)).wrapping_mul(PRIME))
 }
 
-/// The context every reconcile of `obj` starts under: a trace id and a
-/// parent span id derived from its uid, which stays the object's for its
-/// whole life. The parent stands for the object itself and is never
-/// exported, so a trace view shows the reconciles as its top spans.
 fn object_context(obj: &Object) -> SpanContext {
     let hash = fnv1a(obj.metadata.uid.as_bytes()).max(1);
     let span = (hash as u64).max(1);
@@ -168,7 +144,6 @@ fn object_context(obj: &Object) -> SpanContext {
     )
 }
 
-/// An object's identity, as every span about it carries.
 fn identity(obj: &Object) -> Vec<KeyValue> {
     let m = &obj.metadata;
     vec![
@@ -179,16 +154,12 @@ fn identity(obj: &Object) -> Vec<KeyValue> {
     ]
 }
 
-/// Count one `fleet amend` by outcome: `appended`, or why it was refused.
 pub(crate) fn amendment(outcome: &'static str) {
     instruments()
         .amendments
         .add(1, &[KeyValue::new("fleet.outcome", outcome)]);
 }
 
-/// The names `values` serialize to, as a Task's status spells them: every
-/// phase or session state, so a gauge reports a zero rather than keeping a
-/// count no Task holds any more.
 fn names<T: serde::Serialize>(values: &[T]) -> Vec<String> {
     values
         .iter()
@@ -207,8 +178,6 @@ fn session_states() -> &'static [String] {
     STATES.get_or_init(|| names(SessionState::ALL))
 }
 
-/// Record on `gauge` how many `tasks` hold each of `values`, as `of` reads
-/// one, under the attribute `key`.
 fn count<'a>(
     gauge: &Gauge<u64>,
     key: &'static str,
@@ -225,7 +194,6 @@ fn count<'a>(
     }
 }
 
-/// What `fleet.manager.info` names this process by, besides its pid.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Engine {
     pub version: String,
@@ -234,14 +202,10 @@ pub struct Engine {
 
 static ENGINE: OnceLock<Engine> = OnceLock::new();
 
-/// Name this process for `fleet.manager.info`. Until it is named, as in a
-/// test that drives a [`crate::Manager`] in process, nothing is recorded.
 pub fn identify(engine: Engine) {
     let _ = ENGINE.set(engine);
 }
 
-/// Record whether this process holds the manager lease: 1 under the
-/// lease it holds or not, and 0 under the other, so no process shows as both.
 pub fn manager_lease(held: bool) {
     let Some(engine) = ENGINE.get() else {
         return;
@@ -323,8 +287,6 @@ fn observe_inbox(observer: &dyn AsyncInstrument<u64>) {
     backlogs.retain(|_, backlog| !backlog.gone);
 }
 
-/// One pass over every kind; records the Tasks' inbox depth, phases and
-/// session states as it starts.
 pub(crate) fn pass(number: u32, tasks: &[Object]) -> Current {
     let i = instruments();
     inbox_depth(tasks);
@@ -349,8 +311,6 @@ pub(crate) fn pass(number: u32, tasks: &[Object]) -> Current {
     )
 }
 
-/// Run one controller's reconcile of `obj` as the span `reconcile KIND`,
-/// and record its duration and outcome.
 pub(crate) fn reconcile(
     controller: &'static str,
     obj: &Object,
@@ -384,8 +344,6 @@ pub(crate) fn reconcile(
     step
 }
 
-/// The effect's kind: a Brief under the Task's brief key is the brief, any
-/// other Brief delivers an inbox entry.
 fn effect_kind(effect: &Effect) -> &'static str {
     match &effect.action {
         Action::Brief { .. } if !effect.key.ends_with("/brief") => "deliver",
@@ -429,7 +387,6 @@ fn effect_outcome(outcome: &Observation<EffectOutcome>) -> &'static str {
     }
 }
 
-/// Perform one effect as the span `effect KIND`, and count it by outcome.
 pub(crate) fn effect(
     obj: &Object,
     effect: &Effect,
@@ -438,9 +395,6 @@ pub(crate) fn effect(
     effect_named(obj, effect_kind(effect), perform)
 }
 
-/// Perform one effect of kind `kind` as the span `effect KIND`, and count it
-/// by outcome: an effect planned outside an [`Effect`], as a CronTask's
-/// create is.
 pub(crate) fn effect_named(
     obj: &Object,
     kind: &'static str,
@@ -474,8 +428,6 @@ fn uncertainty(kind: Uncertainty) -> &'static str {
     }
 }
 
-/// Poll one change on a forge as the span `forge poll`, and count the call
-/// by host and outcome. A throttle is the outcome `throttled`.
 pub(crate) fn forge_poll(
     obj: &Object,
     host: &str,

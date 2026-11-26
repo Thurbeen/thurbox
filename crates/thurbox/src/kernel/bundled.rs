@@ -1,47 +1,12 @@
-//! The default interface, compiled into the binary.
-//!
-//! With no pane in the kernel, a broken mod directory means
-//! no interface *at all* — a failure mode v1 could not have. The embedded
-//! copies make a blank screen unreachable while keeping the shipped interface
-//! readable and editable as ordinary files, which matters when extensibility is
-//! the point.
-//!
-//! Four rules, in order:
-//!
-//! 1. a copy on disk wins, so your edits are what runs;
-//! 2. an *unmodified* bundled file is updated on upgrade, so fixes arrive;
-//! 3. a *modified* one is never overwritten — it is preserved and reported;
-//! 4. a *deleted* one stays deleted, because deleting it is how you remove it.
-//!
-//! Telling those apart needs a record of what was last written, which is what
-//! the manifest is for. (4) is the one that is not obvious: it is exactly the
-//! case of a file we know we wrote and can no longer find, and without it the
-//! interface would re-deliver itself on every start and no bundled pane could
-//! ever be removed (v2-mod-lifecycle design D1).
-
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Component, Path, PathBuf};
 
-/// Every file that makes up the default interface.
-///
-/// Listed explicitly rather than globbed at build time: a file that silently
-/// stops shipping is worse than one that fails to compile, and `include_str!`
-/// gives the latter.
 pub const BUNDLED: &[(&str, &str)] = &[
-    // Not code. It is here because this directory is the working copy an agent is
-    // pointed at when someone asks it to change a pane, and the rules that matter
-    // — four node kinds, ask-every-frame, `run` absent until trusted — are not
-    // guessable from the Lua beside it.
     ("README.md", include_str!("../../../../ui/README.md")),
     ("AGENTS.md", include_str!("../../../../ui/AGENTS.md")),
     ("CLAUDE.md", include_str!("../../../../ui/CLAUDE.md")),
     ("GEMINI.md", include_str!("../../../../ui/GEMINI.md")),
     ("layout.lua", include_str!("../../../../ui/layout.lua")),
-    // Not code either: the API as lua-language-server types. It ships because a
-    // pane is edited in the user's own interface directory, and luals loads a
-    // `---@meta` file that is simply *in* the workspace — so delivering it is
-    // what gives an author (or an agent) `lua-language-server --check .` there
-    // with no config to write. Nothing requires it; the VM never sees it.
     (
         "lib/thurbox.d.lua",
         include_str!("../../../../ui/lib/thurbox.d.lua"),
@@ -134,20 +99,12 @@ pub const BUNDLED: &[(&str, &str)] = &[
     ),
 ];
 
-/// Records which version of each bundled file was last written, so a user's
-/// edits can be told from a stale copy — and, once written, so its absence can
-/// be told from never having delivered it at all.
 pub const MANIFEST: &str = ".bundled.json";
 
-/// What the manifest remembers about one shipped file.
-///
-/// The written form is a bare digest string.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(untagged)]
 enum Record {
-    /// Digest of the contents last written here.
     Written(String),
-    /// The user deleted this file; it is never written again.
     Removed { removed: bool },
 }
 
@@ -167,7 +124,6 @@ impl Record {
         }
     }
 
-    /// This record as the delivery decision reads it — see [`decide`].
     fn delivered(&self) -> Delivered<'_> {
         match self {
             Record::Written(digest) => Delivered::Digest(digest.as_str()),
@@ -176,29 +132,13 @@ impl Record {
     }
 }
 
-/// Where a file in the interface directory came from, as far as delivery knows.
-///
-/// Not `Copy`: [`Source::Installed`] carries the source it came from, because
-/// naming it is the whole point of the case. A capability is granted **per file**,
-/// so "who shipped this" is the question to answer before granting one — and
-/// until this existed, a third-party pane and one the user wrote themselves were
-/// the same answer.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Source {
-    /// Shipped, and byte-identical to what this binary carries.
     Bundled,
-    /// Shipped, and since changed by the user.
     Edited,
-    /// The user's own file. Delivery never touches it.
     User,
-    /// Shipped, and deleted by the user. Restorable from the binary.
     Removed,
-    /// Installed from a source the spec names, and still what that source
-    /// delivered.
     Installed { src: String },
-    /// Installed from a source the spec names, and since changed — locally, or
-    /// upstream under the same pin. Either way the contents are no longer the ones
-    /// the version delivered, which is what a capability grant was made against.
     InstalledEdited { src: String },
 }
 
@@ -214,7 +154,6 @@ impl Source {
         }
     }
 
-    /// The source this file was installed from, when it was.
     pub fn installed_from(&self) -> Option<&str> {
         match self {
             Source::Installed { src } | Source::InstalledEdited { src } => Some(src.as_str()),
@@ -222,29 +161,17 @@ impl Source {
         }
     }
 
-    /// Is this a file the user wrote, rather than one delivered to them?
-    ///
-    /// The question the Interface tab asks before offering to restore a file from
-    /// the binary — which it cannot do for a file that never came from there.
-    /// Asked as a question rather than compared against `User` so that an
-    /// installed file is not silently treated as the user's own.
     pub fn is_theirs(&self) -> bool {
         matches!(self, Source::User)
     }
 }
 
-/// What materializing did, for reporting to the user.
 #[derive(Debug, Default, PartialEq, Eq)]
 pub struct Report {
-    /// Files created because they were absent.
     pub written: Vec<String>,
-    /// Files replaced because they matched what we last wrote.
     pub updated: Vec<String>,
-    /// Files left alone because the user had changed them.
     pub preserved: Vec<String>,
-    /// Files the user deleted, recorded so they are not written again.
     pub removed: Vec<String>,
-    /// Files we wrote that this binary no longer carries, and took back.
     pub retired: Vec<String>,
     pub errors: Vec<String>,
 }
@@ -260,18 +187,6 @@ impl Report {
     }
 }
 
-/// A stable digest of a file's contents.
-///
-/// FNV-1a: not cryptographic, and does not need to be — it answers "did the
-/// user change this file", where the adversary is a stray editor, not an
-/// attacker.
-///
-/// Trust drift (`kernel::registry`) reads it for the same question and takes
-/// the same limit: it reports that a trusted file **changed**, not that it was
-/// tampered with. Nothing in the security story rests on it — someone who can
-/// write to the interface directory can also add a mod of their own, so a
-/// stronger hash here would buy a guarantee the rest of the design already
-/// declines to make.
 pub fn digest(text: &str) -> String {
     let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
     for byte in text.as_bytes() {
@@ -281,8 +196,6 @@ pub fn digest(text: &str) -> String {
     format!("{hash:016x}")
 }
 
-/// Write the bundled interface into `dir`, preserving anything the user edited
-/// and re-writing nothing they deleted.
 pub fn materialize(dir: &Path) -> Report {
     let mut report = Report::default();
     let mut manifest = read_manifest(dir);
@@ -299,8 +212,6 @@ pub fn materialize(dir: &Path) -> Report {
     report
 }
 
-/// Bring one bundled file in `dir` into line with what the manifest recorded
-/// delivering, and note what was done.
 fn deliver(
     dir: &Path,
     relative: &str,
@@ -349,12 +260,6 @@ fn deliver(
     }
 }
 
-/// Shipped files whose edited copy is moved aside, not kept loading, once this
-/// binary stops shipping them.
-///
-/// `mods/80_restore.lua` listed deleted sessions to restore, which Fleet's
-/// engine refuses: kept loading, an edited copy offers a list that is always
-/// empty and a verb that always fails.
 const WITHDRAWN: &[&str] = &["mods/80_restore.lua"];
 
 fn retire(dir: &Path, manifest: &mut BTreeMap<String, Record>, report: &mut Report) {
@@ -380,10 +285,8 @@ fn retire(dir: &Path, manifest: &mut BTreeMap<String, Record>, report: &mut Repo
                     Err(e) => report.errors.push(format!("{}: {e}", path.display())),
                 }
             }
-            // Theirs, but a pane that cannot work without what went with it:
-            // kept aside rather than loaded.
             Ok(_) if WITHDRAWN.contains(&relative.as_str()) => {
-                // Never over a backup already there: `rename` would replace it.
+                // Never over an existing backup: `rename` replaces its destination.
                 let aside = std::iter::once(format!("{relative}.bak"))
                     .chain((2..).map(|n| format!("{relative}.bak.{n}")))
                     .find(|name| !dir.join(name).exists())
@@ -398,12 +301,10 @@ fn retire(dir: &Path, manifest: &mut BTreeMap<String, Record>, report: &mut Repo
                     Err(e) => report.errors.push(format!("{}: {e}", path.display())),
                 }
             }
-            // Theirs now — it outlived the release that shipped it.
             Ok(_) => {
                 manifest.remove(&relative);
                 report.preserved.push(relative);
             }
-            // Gone already, or a tombstone for something no longer shipped.
             Err(_) => {
                 manifest.remove(&relative);
             }
@@ -411,26 +312,9 @@ fn retire(dir: &Path, manifest: &mut BTreeMap<String, Record>, report: &mut Repo
     }
 }
 
-/// How deep `lib/` is walked.
-///
-/// A package's modules live one level down (`lib/<package>/…`); the extra level is
-/// for a package that groups its own, and the bound is here at all so a symlink
-/// loop cannot make the inventory — the recovery tool — hang.
 const LIB_DEPTH: usize = 3;
 
-/// One file's identity within the interface directory, from an absolute path.
-///
-/// Trust, the disabled set and the rebindings are stored **absolute** (a repo's
-/// `./ui` and the config directory's are different sets of files and must not
-/// share them), while everything that reads a file — `build`, the spec, the lock,
-/// the inventory — keys on the path relative to the directory with **`/`**
-/// separators. This is the conversion between the two, and it exists in one place
-/// because getting it wrong is invisible on Linux: `Path::join` writes a `\` on
-/// Windows, so a hand-rolled strip yields `mods\90_notes.lua`, which matches
-/// nothing and fails silently. That is exactly how "turn a mod off" came to be
-/// a no-op on Windows.
-///
-/// `None` when `absolute` is not inside `dir`, or is `dir` itself.
+// `Path::join` writes `\` on Windows: identities always use `/`.
 pub fn relative_to(dir: &Path, absolute: &str) -> Option<String> {
     let root = dir.to_string_lossy();
     let rest = absolute.strip_prefix(root.as_ref())?;
@@ -441,11 +325,6 @@ pub fn relative_to(dir: &Path, absolute: &str) -> Option<String> {
     (!relative.is_empty()).then_some(relative)
 }
 
-/// Lua files under `root`, as paths relative to it, sorted.
-///
-/// Sorted so the inventory's order is deterministic rather than the filesystem's,
-/// and separators normalised to `/` because that is the identity trust, the
-/// disabled set, the lock and the spec all use.
 fn lua_files(root: &Path, depth: usize) -> Vec<String> {
     fn walk(base: &Path, at: &Path, depth: usize, out: &mut Vec<String>) {
         if depth == 0 {
@@ -480,7 +359,6 @@ fn lua_files(root: &Path, depth: usize) -> Vec<String> {
     out
 }
 
-/// Where one file's `current` contents came from.
 fn source_of(
     relative: &str,
     current: &str,
@@ -490,15 +368,9 @@ fn source_of(
     match bundled.get(relative) {
         Some(shipped) if *shipped == current => Source::Bundled,
         Some(_) => Source::Edited,
-        // Shipped takes precedence deliberately: a package that delivered over
-        // a bundled path is still, to delivery, a shipped file that changed —
-        // and `install` refuses that destination anyway.
         None => match lock.covering(relative) {
             Some(entry) => {
                 let src = entry.src.clone();
-                // A managed file whose contents are not the ones its version
-                // delivered. Locally edited, or re-tagged upstream; the
-                // inventory cannot tell which, and says only that they differ.
                 if entry.digest(relative) == Some(digest(current).as_str()) {
                     Source::Installed { src }
                 } else {
@@ -510,13 +382,8 @@ fn source_of(
     }
 }
 
-/// Every file of the interface in `dir` that [`sources`] classifies from its
-/// contents, as `(relative, path)`, in the order it classifies them.
 fn interface_files(dir: &Path, spec: &crate::session::mod_spec::ModSpec) -> Vec<(String, PathBuf)> {
     let mut files = Vec::new();
-    // Every top-level file we ship, not `layout.lua` by name: a shipped file the
-    // inventory cannot see is one the Interface tab cannot restore, and the tab's
-    // whole claim is that it lists every file.
     for (relative, _) in BUNDLED {
         if relative.contains('/') {
             continue;
@@ -526,12 +393,6 @@ fn interface_files(dir: &Path, spec: &crate::session::mod_spec::ModSpec) -> Vec<
             files.push(((*relative).to_string(), path));
         }
     }
-    // `mods/` flat, `lib/` deep. Not an inconsistency: `build` reads only the
-    // top level of `mods/`, so a nested file there is never loaded and
-    // reporting it would be a pane that "failed" nobody asked to load — while
-    // `require` splits a module name on every dot, so `lib/<vendor>/util.lua` is
-    // requirable and is where a package puts its own modules without colliding
-    // with `lib/theme.lua`.
     for name in lua_files(&dir.join("mods"), 1) {
         files.push((format!("mods/{name}"), dir.join("mods").join(&name)));
     }
@@ -551,16 +412,8 @@ fn interface_files(dir: &Path, spec: &crate::session::mod_spec::ModSpec) -> Vec<
     files
 }
 
-/// Where each file of the interface in `dir` came from.
-///
-/// Keyed by path relative to `dir`. Covers the three places the interface lives
-/// — the arrangement, `lib/` and `mods/` — plus every bundled file the user
-/// deleted, which by definition is not on disk to be found.
 pub fn sources(dir: &Path) -> BTreeMap<String, Source> {
     let bundled: BTreeMap<&str, &str> = BUNDLED.iter().copied().collect();
-    // A directory with no lock has nothing installed, and a malformed one must not
-    // make the inventory unavailable — the inventory is the recovery tool, so it
-    // degrades to "I do not know where this came from" rather than refusing.
     let lock = super::packages::read_lock(dir).unwrap_or_default();
     let spec = super::packages::read_spec(dir).unwrap_or_default();
     let mut out = BTreeMap::new();
@@ -573,10 +426,6 @@ pub fn sources(dir: &Path) -> BTreeMap<String, Source> {
         out.insert(relative, source);
     }
 
-    // The spec, which is part of what the interface is made of and is the one file
-    // here a person maintains by hand. The LOCK is deliberately absent, along with
-    // `.bundled.json` and `ui.json`: bookkeeping nobody edits is not something the
-    // tab has to account for, and listing it would only offer actions that refuse.
     let spec = crate::session::mod_spec::SPEC_FILE;
     if dir.join(spec).is_file() {
         out.insert(spec.to_string(), Source::User);
@@ -590,15 +439,6 @@ pub fn sources(dir: &Path) -> BTreeMap<String, Source> {
     out
 }
 
-/// Write one embedded file back, clearing whatever the manifest recorded.
-///
-/// Covers both undo cases at once — a file the user deleted and one they edited
-/// — because both are "put back what we ship and forget what happened to it".
-///
-/// An edited `layout.lua` is moved aside first, and the result says where. A
-/// restore is the user's act, but a pane's `command("mod", …)` can ask for
-/// one as well as the Interface tab, so it must never be the step that loses an
-/// arrangement: every other pane depends on that one file.
 pub fn restore(dir: &Path, relative: &str) -> Result<Option<PathBuf>, String> {
     let path = checked(dir, relative)?;
     let contents = BUNDLED
@@ -630,8 +470,6 @@ pub fn restore(dir: &Path, relative: &str) -> Result<Option<PathBuf>, String> {
         std::fs::create_dir_all(parent).map_err(|e| format!("{}: {e}", parent.display()))?;
     }
     if let Err(e) = crate::paths::write_atomically(&path, contents) {
-        // A restore that cannot write must leave the edit where it was, not
-        // leave the interface with no arrangement at all.
         if let Some(backup) = &backup {
             let _ = std::fs::rename(backup, &path);
         }
@@ -643,7 +481,6 @@ pub fn restore(dir: &Path, relative: &str) -> Result<Option<PathBuf>, String> {
     Ok(backup)
 }
 
-/// The arrangement, the one file whose restore keeps a backup.
 const LAYOUT: &str = "layout.lua";
 
 fn free_backup_path(dir: &Path) -> PathBuf {
@@ -657,10 +494,6 @@ fn free_backup_path(dir: &Path) -> PathBuf {
         .expect("an unused backup name")
 }
 
-/// Delete one file of the interface.
-///
-/// A bundled file is tombstoned so delivery leaves it alone from here on; a
-/// user's own file is simply gone, and nothing records it — we never wrote it.
 pub fn remove(dir: &Path, relative: &str) -> Result<(), String> {
     let path = checked(dir, relative)?;
     std::fs::remove_file(&path).map_err(|e| format!("{}: {e}", path.display()))?;
@@ -693,42 +526,24 @@ pub(crate) enum Action {
     Write,
     Update,
     Preserve,
-    /// Present and identical: nothing to write, but record that it is ours.
     Settle,
-    /// Ours, and gone: remember that, and never write it again.
     Tombstone,
-    /// Already recorded as removed.
     Leave,
 }
 
-/// What delivery last did with one file, as the decision needs to know it.
-///
-/// Deliberately not [`Record`], which is the manifest's *on-disk* shape: the same
-/// decision governs a file that arrived from a package, whose record lives in a
-/// lockfile rather than in `.bundled.json`. Stating the decision over this
-/// instead is what lets the two delivery paths share one implementation of "do
-/// not clobber my edits, remember what I deleted" rather than growing a second
-/// copy of the only subtle logic here.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Delivered<'a> {
-    /// Never delivered to this path.
     Never,
-    /// Delivered, and these were the contents.
     Digest(&'a str),
-    /// Delivered, and since deleted by the user.
     Tombstoned,
 }
 
 pub(crate) fn decide(existing: Option<&str>, delivered: Delivered<'_>, payload: &str) -> Action {
     match (existing, delivered) {
-        // Never delivered here: a first run, or a file new in this release.
         (None, Delivered::Never) => Action::Write,
-        // Already known to be gone. Say nothing; it was said once.
         (None, Delivered::Tombstoned) => Action::Leave,
-        // We wrote it and it is no longer there: the user removed it.
         (None, Delivered::Digest(_)) => Action::Tombstone,
         (Some(current), _) if current == payload => Action::Settle,
-        // Replace only what we last wrote and the user has not touched.
         (Some(current), Delivered::Digest(recorded)) if recorded == digest(current) => {
             Action::Update
         }
@@ -749,14 +564,6 @@ fn write_manifest(dir: &Path, manifest: &BTreeMap<String, Record>) -> Result<(),
         .map_err(|e| format!("{}: {e}", dir.join(MANIFEST).display()))
 }
 
-/// Copy each delivery record `rename` gives a new path to, unless a record is
-/// already there, so an edited file stays edited and a deleted one deleted
-/// under its new name; and drop each record `forget` names, so delivery never
-/// takes back a file kept outside the interface.
-///
-/// The old record stays beside its copy: until the files move, the directory
-/// still reads as it did, and once they have moved delivery drops a record
-/// whose file is gone. Writes nothing when nothing changed.
 pub fn rename_records(
     dir: &Path,
     rename: impl Fn(&str) -> Option<String>,
@@ -779,33 +586,15 @@ pub fn rename_records(
     write_manifest(dir, &manifest)
 }
 
-/// Which rule chose the interface directory.
-///
-/// Reported alongside the path because "where" without "why" is what makes the
-/// wrong-directory mistake so easy to repeat: a session that sees the user's copy
-/// when it expected a checkout's `./ui` learns nothing from the path alone.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Chosen {
-    /// `THURBOX_UI_DIR` named it.
     Override,
-    /// A `ui` directory beside the working directory, named by `THURBOX_UI_DIR`.
-    ///
-    /// Kept as a distinct reason from [`Chosen::Override`] purely so the report can
-    /// say "the checkout" when the override happens to point at one. It is no
-    /// longer reachable without the variable: an automatic `./ui` rule made the
-    /// interface the one config that ignored the `thurbox` / `thurbox-dev` split,
-    /// so `cargo run` in the repository read `~/.config/thurbox-dev` for agents,
-    /// settings, themes and the database and the *checkout* for its panes.
     Checkout,
-    /// The user's own copy, materialized from the embedded interface.
     UserCopy,
-    /// The embedded interface in a throwaway directory, because the user's copy
-    /// could not be written.
     Fallback,
 }
 
 impl Chosen {
-    /// A short name for reports and machine output.
     pub fn as_str(self) -> &'static str {
         match self {
             Chosen::Override => "override",
@@ -815,7 +604,6 @@ impl Chosen {
         }
     }
 
-    /// Why this directory, in words.
     pub fn reason(self) -> &'static str {
         match self {
             Chosen::Override => "THURBOX_UI_DIR names it",
@@ -826,25 +614,10 @@ impl Chosen {
     }
 }
 
-/// The interface directory, and which rule chose it.
-///
-/// Two rules, in order: `THURBOX_UI_DIR`, then the user's own copy —
-/// materialized from the embedded interface on first run, preserving anything
-/// they edited. There is deliberately no automatic `./ui` rule; the comment on
-/// the branch below says why. A missing or unwritable config directory is not
-/// fatal: the embedded copies are written somewhere throwaway and used from
-/// there, because no interface at all is the one outcome worth avoiding.
-///
-/// Lives here rather than in the interface binary so that anything asking "which
-/// directory is live" gets the same answer the interface will use — two
-/// implementations of that is the mistake this exists to prevent.
 pub fn resolve(materialize_user_copy: bool) -> Result<(PathBuf, Chosen, Report), String> {
     if let Some(dir) = std::env::var_os("THURBOX_UI_DIR") {
         let dir = PathBuf::from(dir);
         if dir.is_dir() {
-            // Reported as the checkout when that is plainly what it is, so the
-            // answer to "which interface am I running" names the thing the reader
-            // recognises rather than just the mechanism.
             let chosen = if dir.file_name().is_some_and(|name| name == "ui")
                 && dir.join("mods").is_dir()
                 && Path::new("Cargo.toml").is_file()
@@ -860,16 +633,7 @@ pub fn resolve(materialize_user_copy: bool) -> Result<(PathBuf, Chosen, Report),
             dir.display()
         ));
     }
-    // No automatic `./ui` rule. It existed so a checkout could edit its own
-    // interface, and the cost was that the interface stopped following the config
-    // path every other setting follows: `cargo run` from the repository loaded the
-    // repository's panes while reading `~/.config/thurbox-dev` for everything else,
-    // silently, with nothing on screen to say which. Editing a checkout's interface
-    // is now an explicit `THURBOX_UI_DIR=ui` (see `just tui-ui`), which is the same
-    // request stated out loud.
     if let Some(dir) = user_ui_dir() {
-        // Only the interface writes; a report is a read, and must not create a
-        // profile as a side effect of being asked a question.
         if !materialize_user_copy {
             return Ok((absolute(dir), Chosen::UserCopy, Report::default()));
         }
@@ -881,52 +645,22 @@ pub fn resolve(materialize_user_copy: bool) -> Result<(PathBuf, Chosen, Report),
     Ok((fallback_dir()?, Chosen::Fallback, Report::default()))
 }
 
-/// Make a resolved interface directory an absolute identity.
-///
-/// Trust, the disabled set and every rebinding are keyed by `ui_dir.join(file)`
-/// and compared verbatim, so a **relative** directory is not an identity: `ui` in
-/// one checkout and `ui` in another produce the same key, and trusting
-/// `mods/70_tools.lua` in one repository would silently grant `run` to a
-/// different file of the same name in the next.
-///
-/// Resolved against the working directory rather than *canonicalised*, which is
-/// what `watch::Watcher::new` does for its own purposes. Canonicalising is wrong
-/// here because this path is also shown to people and stored: on Windows it
-/// returns an extended-length path (`\\?\D:\…`), which then appears in the
-/// repository list and the Interface tab, and on macOS it resolves `/var` to
-/// `/private/var`, so the directory the user typed is not the one reported back.
-/// This needs a stable identity, not the shortest true path — symlinks and all.
 fn absolute(dir: PathBuf) -> PathBuf {
     if dir.is_absolute() {
         return dir;
     }
     match std::env::current_dir() {
         Ok(cwd) => cwd.join(dir),
-        // No working directory to resolve against is not a reason to have no
-        // interface; the key is merely weaker than it wanted to be.
         Err(_) => dir,
     }
 }
 
-/// Where the user's copy of the interface lives.
 pub fn user_ui_dir() -> Option<PathBuf> {
     crate::paths::config_file().and_then(|config| config.parent().map(|dir| dir.join("ui")))
 }
 
-/// A throwaway directory holding the embedded interface, for use when the
-/// user's copy will not load.
-///
-/// Materializing into a fresh directory rather than loading from memory keeps
-/// one loading path in the host: whatever ran before still runs, and `require`
-/// resolves the same way. It is fresh, so it carries no manifest and therefore
-/// none of the user's removals — the recovery floor is the whole interface.
 pub fn fallback_dir() -> Result<PathBuf, String> {
-    // Created **exclusively**, not `create_dir_all`ed into. The name is
-    // predictable (a pid), the system temp directory is world-writable, and
-    // `materialize` deliberately preserves files it finds — so a directory
-    // pre-created by somebody else would hand thurbox their Lua as its whole
-    // interface, with whatever the user has trusted. A directory we did not create
-    // is not ours to load from, so move to the next name rather than adopt it.
+    // The system temp dir is world-writable: create exclusively, never adopt a directory found there.
     let base = std::env::temp_dir();
     let pid = std::process::id();
     let mut refused = Vec::new();
@@ -959,16 +693,9 @@ pub fn fallback_dir() -> Result<PathBuf, String> {
 mod tests {
     use super::*;
 
-    /// The decision matrix, arm by arm.
-    ///
-    /// Tested here rather than only through `materialize` because both delivery
-    /// paths now depend on it — a package install asks the same question about a
-    /// file recorded in a lockfile — and a matrix reached only through the
-    /// filesystem is one whose arms are easy to leave uncovered.
     mod decide {
         use super::*;
 
-        /// Contents whose digest a record can be built from.
         const OLD: &str = "-- v1\n";
         const NEW: &str = "-- v2\n";
         const MINE: &str = "-- mine\n";
@@ -989,7 +716,6 @@ mod tests {
 
         #[test]
         fn nothing_there_and_already_tombstoned_is_left() {
-            // And said once, not once per launch.
             assert_eq!(decide(None, Delivered::Tombstoned, NEW), Action::Leave);
         }
 
@@ -1014,7 +740,6 @@ mod tests {
 
         #[test]
         fn a_file_the_user_changed_is_preserved() {
-            // The load-bearing arm: whatever we would rather write, an edit stays.
             let recorded = digest(OLD);
             assert_eq!(
                 decide(Some(MINE), Delivered::Digest(&recorded), NEW),
@@ -1024,14 +749,11 @@ mod tests {
 
         #[test]
         fn a_file_we_never_wrote_is_preserved() {
-            // Someone else's file at a path we now ship. Never overwritten.
             assert_eq!(decide(Some(MINE), Delivered::Never, NEW), Action::Preserve);
         }
 
         #[test]
         fn a_tombstone_does_not_authorise_overwriting_what_replaced_it() {
-            // Deleted, then a file of their own put at the same path. The
-            // tombstone says "do not write here", not "this one is ours".
             assert_eq!(
                 decide(Some(MINE), Delivered::Tombstoned, NEW),
                 Action::Preserve
@@ -1040,9 +762,6 @@ mod tests {
 
         #[test]
         fn putting_back_an_identical_copy_readopts_it() {
-            // Deleted, then restored byte-identically. Theirs by the edit rule and
-            // ours by the deletion rule; `Settle` before `Update` resolves it in
-            // favour of adopting it, so the next release can update it again.
             assert_eq!(
                 decide(Some(NEW), Delivered::Tombstoned, NEW),
                 Action::Settle
@@ -1050,13 +769,6 @@ mod tests {
         }
     }
 
-    /// The absolute→relative conversion, including the Windows separator.
-    ///
-    /// Written with literal `\` rather than by joining paths, so it runs the
-    /// Windows case on Linux too: `Path::join` writes `/` here, which is exactly
-    /// why a hand-rolled strip looked correct on every developer machine while
-    /// "turn a mod off" was a silent no-op on Windows. Caught by a Windows CI
-    /// run, and this is what stops it coming back.
     #[test]
     fn a_stored_path_becomes_the_identity_the_loader_compares() {
         let dir = Path::new("/home/me/.config/thurbox/ui");
@@ -1065,7 +777,7 @@ mod tests {
             Some("mods/90_notes.lua")
         );
 
-        // A Windows root, with the separators `Path::join` would have written.
+        // A Windows root, with the separators `Path::join` writes there.
         let windows = Path::new(r"C:\Users\me\AppData\Roaming\thurbox\ui");
         assert_eq!(
             relative_to(
@@ -1077,9 +789,6 @@ mod tests {
             "`build` keys on `mods/<name>`, so a backslash here matches nothing"
         );
 
-        // Not inside the directory, and the directory itself: neither is a file
-        // identity, and returning `""` for the second is how an empty entry used
-        // to reach the disabled set.
         assert_eq!(relative_to(dir, "/elsewhere/mods/x.lua"), None);
         assert_eq!(relative_to(dir, "/home/me/.config/thurbox/ui"), None);
         assert_eq!(relative_to(dir, "/home/me/.config/thurbox/ui/"), None);
@@ -1110,8 +819,6 @@ mod tests {
             "and the gate for every edit"
         );
 
-        // The per-agent files point at it rather than repeating it: two copies
-        // drift, and the stale one is the one somebody reads.
         for pointer in ["CLAUDE.md", "GEMINI.md"] {
             let contents = file(pointer);
             assert!(contents.contains("AGENTS.md"), "{pointer} must point at it");
@@ -1124,7 +831,6 @@ mod tests {
 
     #[test]
     fn the_bundle_covers_the_whole_interface() {
-        // A file that stops shipping is worse than one that fails to compile.
         let names: Vec<&str> = BUNDLED.iter().map(|(name, _)| *name).collect();
         for required in [
             "layout.lua",
@@ -1158,26 +864,17 @@ mod tests {
         assert!(report.is_empty(), "{report:?}");
     }
 
-    /// A file new in this release reaches a directory that already exists.
-    ///
-    /// The upgrade path, and the one that matters for guidance in particular:
-    /// `AGENTS.md` is worth nothing if only fresh installs get it. Delivery
-    /// re-runs on every launch, and a path never written here is `Write` — while an
-    /// edited neighbour is still left alone in the same pass.
     #[test]
     fn a_file_new_in_this_release_reaches_an_existing_directory() {
         let dir = tempfile::tempdir().expect("tempdir");
         materialize(dir.path());
 
-        // Look like an older delivery: the file was never written, and the manifest
-        // never knew about it.
         let newcomer = "AGENTS.md";
         std::fs::remove_file(dir.path().join(newcomer)).expect("remove");
         let mut manifest = read_manifest(dir.path());
         manifest.remove(newcomer);
         write_manifest(dir.path(), &manifest).expect("write manifest");
 
-        // And carry an edit into the upgrade, which must survive it.
         let edited = dir.path().join("mods/10_sessions.lua");
         std::fs::write(&edited, "-- mine\n").expect("edit");
 
@@ -1205,8 +902,6 @@ mod tests {
         let edited = dir.path().join("lib/theme.lua");
         std::fs::write(&edited, "-- mine\nreturn {}").expect("edit");
 
-        // A newer binary would carry different contents; materializing again
-        // must not clobber the edit.
         let report = materialize(dir.path());
         assert_eq!(report.preserved, vec!["lib/theme.lua"]);
         assert_eq!(
@@ -1220,8 +915,6 @@ mod tests {
         let dir = tempfile::tempdir().expect("tempdir");
         materialize(dir.path());
 
-        // Simulate the previous release having shipped different contents: the
-        // file on disk differs, but the manifest says we wrote it.
         let path = dir.path().join("lib/theme.lua");
         let older = "-- an older release\nreturn {}";
         std::fs::write(&path, older).expect("write");
@@ -1245,7 +938,6 @@ mod tests {
         assert_eq!(report.removed, vec!["mods/10_sessions.lua"]);
         assert!(!path.exists());
 
-        // And it is said once, not on every start.
         let report = materialize(dir.path());
         assert!(report.is_empty(), "{report:?}");
         assert!(!path.exists());
@@ -1258,7 +950,6 @@ mod tests {
         std::fs::remove_file(dir.path().join("lib/theme.lua")).expect("remove");
         materialize(dir.path());
 
-        // A newer release carrying different contents still must not write it.
         let mut manifest = read_manifest(dir.path());
         assert!(manifest["lib/theme.lua"].is_removed());
         manifest.insert("mods/20_agent.lua".into(), Record::Written("stale".into()));
@@ -1276,7 +967,6 @@ mod tests {
         std::fs::remove_file(dir.path().join("mods/10_sessions.lua")).expect("remove");
         materialize(dir.path());
 
-        // The record lives with the directory, so losing one loses the other.
         std::fs::remove_dir_all(dir.path()).expect("discard");
         std::fs::create_dir_all(dir.path()).expect("recreate");
 
@@ -1306,7 +996,6 @@ mod tests {
         let dir = tempfile::tempdir().expect("tempdir");
         materialize(dir.path());
 
-        // Two files from a release that shipped them and this one does not.
         let untouched = dir.path().join("mods/40_gone.lua");
         let claimed = dir.path().join("mods/41_kept.lua");
         std::fs::write(&untouched, "return {}").expect("write");
@@ -1359,7 +1048,6 @@ mod tests {
         );
         assert!(!read_manifest(dir.path()).contains_key("mods/80_restore.lua"));
 
-        // Once more, over the backup that is now there: it is not replaced.
         std::fs::write(&pane, "-- again\nreturn {}").expect("write");
         let mut manifest = read_manifest(dir.path());
         manifest.insert(
@@ -1380,8 +1068,6 @@ mod tests {
 
     #[test]
     fn a_legacy_manifest_still_protects_an_edit() {
-        // Earlier releases wrote `path -> "digest"`. Failing to read that would
-        // silently overwrite every edit on the upgrade that changed the format.
         let dir = tempfile::tempdir().expect("tempdir");
         std::fs::create_dir_all(dir.path().join("lib")).expect("mkdir");
         let path = dir.path().join("lib/theme.lua");
@@ -1410,7 +1096,6 @@ mod tests {
         assert!(!dir.path().join(removed).exists());
         restore(dir.path(), removed).expect("restore");
         assert!(dir.path().join(removed).exists());
-        // And delivery agrees it is ours again, rather than re-tombstoning it.
         let report = materialize(dir.path());
         assert!(report.is_empty(), "{report:?}");
 
@@ -1429,7 +1114,6 @@ mod tests {
 
         remove(dir.path(), mine).expect("remove");
         assert!(!read_manifest(dir.path()).contains_key(mine));
-        // Nothing to restore: we never shipped it.
         assert!(restore(dir.path(), mine).is_err());
     }
 
@@ -1463,9 +1147,6 @@ mod tests {
         assert_eq!(sources["mods/20_agent.lua"], Source::Removed);
     }
 
-    /// A file the user did not write is a different answer from one they did,
-    /// because a capability is granted per file and the source is the fact to know
-    /// before granting it.
     #[test]
     fn an_installed_file_names_the_source_it_came_from() {
         let dir = tempfile::tempdir().expect("tempdir");
@@ -1509,12 +1190,8 @@ mod tests {
             "an installed pane is not the user's own file"
         );
         assert_eq!(fresh["mods/75_atlas.lua"].installed_from(), Some("atlas"));
-        // A module the package brought is traceable too — otherwise a `lib/` file
-        // somebody else shipped reads as one the user wrote.
         assert_eq!(fresh["lib/atlas/util.lua"].installed_from(), Some("atlas"));
 
-        // Changed since: locally, or re-tagged upstream. The inventory cannot tell
-        // which, and says only that the contents are no longer the version's.
         std::fs::write(dir.path().join("mods/75_atlas.lua"), "-- mine\n").expect("edit");
         let after = sources(dir.path());
         assert_eq!(
@@ -1528,9 +1205,6 @@ mod tests {
 
     #[test]
     fn the_spec_is_inventoried_and_the_lock_is_not() {
-        // The spec is part of what the interface is made of and a person maintains
-        // it. The lock is bookkeeping, like `.bundled.json` and `ui.json`, and
-        // listing it would only offer actions that refuse.
         let dir = tempfile::tempdir().expect("tempdir");
         materialize(dir.path());
         super::super::packages::add_to_spec(
@@ -1550,8 +1224,6 @@ mod tests {
         assert!(!sources.contains_key(MANIFEST));
     }
 
-    /// A malformed lock must not take the inventory with it: the inventory is the
-    /// recovery tool, so it degrades to "I do not know" rather than refusing.
     #[test]
     fn a_broken_lock_does_not_break_the_inventory() {
         let dir = tempfile::tempdir().expect("tempdir");
@@ -1568,10 +1240,6 @@ mod tests {
         assert_eq!(sources["mods/50_mine.lua"], Source::User);
     }
 
-    /// Removes a directory when it drops. [`fallback_dir`] hands back a plain
-    /// path — the recovery interface has to outlive the call — so a test that
-    /// asks for one owns its removal, including when an assertion panics
-    /// first.
     struct RemoveOnDrop(PathBuf);
 
     impl Drop for RemoveOnDrop {
@@ -1593,10 +1261,6 @@ mod tests {
         assert_ne!(digest("a"), digest("b"));
     }
 
-    /// The recovery floor must never adopt a directory somebody else made. The
-    /// name is a pid in a world-writable temp directory and `materialize`
-    /// preserves what it finds, so adopting one would load a stranger's Lua as the
-    /// whole interface — under whatever the user has already trusted.
     #[test]
     fn the_fallback_refuses_a_directory_it_did_not_create() {
         let planted =
@@ -1630,12 +1294,7 @@ mod tests {
             "a relative interface directory is not an identity: {}",
             resolved.display()
         );
-        // The second half of the contract, and the one that is easy to lose:
-        // an already-absolute directory comes back *unchanged*. Canonicalising
-        // would satisfy the assertion above while returning something else --
-        // an extended-length `\\?\D:\…` on Windows, `/private/var` for `/var` on
-        // macOS -- and this path is shown in the repository list and the
-        // Interface tab, so it has to be the directory the user named.
+        // Canonicalising would return `\\?\D:\…` on Windows and `/private/var` for `/var` on macOS.
         assert_eq!(
             resolved,
             dir.path(),

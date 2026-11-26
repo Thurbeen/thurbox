@@ -1,19 +1,3 @@
-//! Keys, and where each one goes.
-//!
-//! Every chord resolves through one registry (`kernel::registry`), and the order
-//! here is the whole of the policy: a modal first (it captures), then the
-//! kernel's reserved chords, then copy and paste, then an exclusive grab, then a
-//! mod's declared binding, then the focused mod's raw `on_key` hook, and
-//! only then the key goes to whatever surface the focused pane shows. A
-//! mod-scoped claim never outranks a global one — which is why search cannot
-//! take `Ctrl+N` from new-session.
-//!
-//! Copy and paste sit that high because they must work from any pane, and low
-//! enough to be *bindings* rather than literal key arms: they are declared
-//! (`kernel::clipboard`), so help lists them and they can be moved — onto
-//! `Cmd+C` on a Mac, which is the point of carrying the Command modifier at
-//! all.
-
 use std::error::Error;
 use std::time::Instant;
 
@@ -37,9 +21,6 @@ impl App {
         let mut published = false;
         let mut waited = false;
         loop {
-            // Only the first read waits; the rest take what is already queued —
-            // except while the paste coalescer holds a key it cannot yet
-            // decide about, which is worth a few milliseconds of the batch.
             let waited_before = waited;
             let timeout = if waited {
                 self.paste_burst.drain_timeout()
@@ -55,20 +36,11 @@ impl App {
             let event = match read {
                 Ok(Some(event)) => {
                     *input_failures = 0;
-                    // Anything the user does puts the loop back on the fast
-                    // poll, so the frames that follow a keystroke are not paced
-                    // by the idle timeout.
                     self.last_activity = Instant::now();
                     event
                 }
                 Ok(None) => break,
-                // Input is not worth the process. A terminal can hand
-                // crossterm a sequence it cannot parse — a burst of keys
-                // interleaving with a mouse report is enough — and
-                // propagating that error exited thurbox with every session
-                // detached. Logged, dropped, and retried next iteration; only
-                // a stream that keeps failing (a closed stdin, say) is fatal,
-                // since polling a dead terminal would otherwise spin.
+                // crossterm errors on sequences it cannot parse (keys mixed with a mouse report).
                 Err(e) => {
                     *input_failures += 1;
                     tracing::warn!("reading input failed: {e}");
@@ -79,49 +51,22 @@ impl App {
                 }
             };
             match event {
-                // Where the terminal reports no paste of its own, one arrives
-                // here as keys and has to be recognised as one — the coalescer
-                // hands back whichever of the two this turned out to be.
                 Event::Key(key) => self.read_key(key, &mut published),
-                // Dropped rather than merely uncaptured when the feature is
-                // off, so the flag stays authoritative even if a terminal
-                // reports mouse events unasked. v1 does the same in
-                // `App::update`.
                 Event::Mouse(mouse) if self.mouse => {
                     self.publish_for_batch(&mut published);
-                    // Read before `on_mouse` consumes the event: only a left
-                    // press, drag or release can move the selection, so a bare
-                    // move or a wheel tick pays for no grid read.
                     let may_move_selection = matches!(
                         mouse.kind,
                         MouseEventKind::Down(MouseButton::Left)
                             | MouseEventKind::Drag(MouseButton::Left)
                             | MouseEventKind::Up(MouseButton::Left)
                     );
-                    // A release that ends a drag still in progress — not one
-                    // forwarded to a pty, and not a second release of a
-                    // selection already finished.
                     let ends_drag = mouse.kind == MouseEventKind::Up(MouseButton::Left)
                         && self.selection.as_ref().is_some_and(|s| s.dragging);
                     self.on_mouse(mouse);
-                    // The drag builds the selection here, but `selected_text` is
-                    // only recomputed at paint time — so a chord queued behind it
-                    // in this same batch would read the pre-drag selection.
-                    // Refresh from the grid now and patch just the published
-                    // scalar: a multi-cell drag reports once per crossed cell, so
-                    // forcing a full republish here would rerun terminal sync,
-                    // links, search, trust and inventory per cell. See
-                    // `refresh_selection_text` and `LuaHost::set_published_selection`.
                     if may_move_selection && self.refresh_selection_text() {
                         self.host
                             .set_published_selection(self.selected_text.as_deref().unwrap_or(""));
                     }
-                    // `on_mouse` has already dropped a release that never
-                    // moved, so a click reaches here with no selection. A
-                    // terminal's text came off its grid in the refresh above, so
-                    // it is copied now, before a key queued behind the release
-                    // can drop it; any other pane's text exists only once the
-                    // next paint has read it.
                     if ends_drag {
                         match self.selection.clone() {
                             Some(sel) if self.grid_selection_text(&sel).is_some() => {
@@ -136,9 +81,6 @@ impl App {
                     }
                     self.note_input();
                 }
-                // A bracketed paste from the terminal itself. Routed to
-                // whatever has focus, exactly as `ctrl+v` is: a modal's
-                // text field if one is open, else the focused terminal.
                 Event::Paste(text) => {
                     self.publish_for_batch(&mut published);
                     self.on_paste(text);
@@ -151,19 +93,13 @@ impl App {
                 _ => {}
             }
         }
-        // Nothing is queued behind the batch, so a run being watched has to go
-        // somewhere: a paste, or the keys it was made of.
         for input in self.paste_burst.flush() {
             self.apply_input(input, &mut published);
         }
         Ok(())
     }
 
-    /// One key event off the terminal: press, repeat or release.
     fn read_key(&mut self, key: KeyEvent, published: &mut bool) {
-        // Before anything else looks at it, so the coalescer, the registry,
-        // the fields and the pty encoder all see the same keystroke. See
-        // `resolve_altgr`.
         let key = resolve_altgr(key, cfg!(windows));
         let before = self.holds.releases;
         let inputs = sort_key(
@@ -174,8 +110,6 @@ impl App {
             cfg!(windows),
         );
         if self.holds.releases != before {
-            // Published through the data epoch, so a pure pane reading
-            // `thurbox.keyboard` is not served its old tree.
             self.data_epoch = self.data_epoch.wrapping_add(1);
             self.dirty = true;
         }
@@ -184,13 +118,7 @@ impl App {
         }
     }
 
-    /// Dispatch one resolved input, publishing `thurbox.*` once per batch.
     fn apply_input(&mut self, input: Input, published: &mut bool) {
-        // A release is routed here, in the order the coalescer gives it back,
-        // rather than on arrival: a press it is still holding has not opened
-        // its hold yet. See `sort_key`. One nobody holds — nearly every
-        // release, on a terminal that reports them for every key — costs
-        // nothing: no publish, and no activity that would repaint.
         if let Input::Key(key) = &input {
             if key.kind == KeyEventKind::Release {
                 if let Some((mod_name, action)) = self.holds.release_target(key) {
@@ -211,19 +139,7 @@ impl App {
 
     pub(crate) fn on_key(&mut self, key: &KeyEvent) {
         let press = to_press(key);
-        // Resolved once, and used twice: it decides both whether the selection
-        // survives this keystroke and, further down, whether the loop runs the
-        // action itself.
         let kernel_action = self.kernel_action(&press);
-        // Any key press clears the selection and still does what it does —
-        // v1's rule. The one exception is the copy chord, which is what the
-        // selection is for; it clears it itself once the copy is made. Asked of
-        // the registry rather than matched literally, so the exception follows a
-        // rebound copy instead of staying on `Ctrl+C`.
-        //
-        // Under copy-on-select the release already copied, so the chord is no
-        // exception: it clears the selection like any key, finds none, and
-        // falls through as the interrupt (Herdr's rule).
         let is_copy = kernel_action.as_deref() == Some(clipboard::COPY_ACTION)
             && !self.config.in_force().clipboard.copy_on_select;
         if !is_copy && self.selection.take().is_some() {
@@ -250,9 +166,6 @@ impl App {
         if self.dispatch_session_input(key) {
             return;
         }
-        // An `Esc` no pane claimed means "leave this one" — the v2 spelling of
-        // v1 closing a modal, since a centre-slot pane is dismissed by focusing
-        // whatever you came from.
         if key.code == KeyCode::Esc && self.focus_return != self.focus {
             let back = self.focus_return;
             self.focus_return = self.focus;
@@ -260,23 +173,8 @@ impl App {
                 self.focus = back;
             }
         }
-
-        // Anything else is DROPPED. An unclaimed key does nothing.
-        //
-        // This used to quit on a bare `q` or `Esc`, which meant Escaping out of
-        // the theme picker -- or any pane that does not claim Esc -- killed the
-        // application. Quit is Ctrl+Q, reserved at the top of this function;
-        // v1 has no bare-key quit either.
     }
 
-    /// A system modal takes input before anything else — that is what makes it
-    /// modal rather than a pane drawn on top.
-    ///
-    /// Two things still get through: the escape route (quit, reload, the perf
-    /// HUD), and another modal's own opening chord, since opening one closes
-    /// another. While help is capturing, neither does — binding `ctrl+q` has to
-    /// be possible, and the kernel can allow it because it knows the capture
-    /// lasts exactly one keystroke.
     pub(crate) fn dispatch_to_modal(&mut self, key: &KeyEvent) -> bool {
         if !self.modals.is_open() {
             return false;
@@ -349,20 +247,6 @@ impl App {
         }
     }
 
-    /// Hand on a declined paste the rest of `on_key` cannot deliver.
-    ///
-    /// Declining is how the chord reaches the agent, which fetches the image
-    /// itself — and it works because the press falls through to
-    /// [`Self::dispatch_session_input`], which encodes it for the pty. `Cmd+V`
-    /// has no such encoding: `key_to_bytes` returns `None` for every chord
-    /// carrying `SUPER`, so on macOS the chord a person actually presses was
-    /// dropped in silence, where before this it at least produced a (wrong)
-    /// hint. The byte is synthesised here instead, the way
-    /// [`Self::deliver_probed_paste`] does for an answer that arrives after the
-    /// press is gone.
-    ///
-    /// Only where the fall-through would itself have delivered: no overlay
-    /// owning typed input, and a focused pane that asked for raw session input.
     fn hand_unencodable_paste_over(&mut self, key: &KeyEvent) -> bool {
         if reaches_the_pty(key) {
             return false;
@@ -376,22 +260,12 @@ impl App {
         self.send_to_surface(&surface, vec![CTRL_V])
     }
 
-    /// Run the kernel's own clipboard actions, or report that this was not one.
-    ///
-    /// `Some(false)` is the load-bearing answer, and both chords use it: copy
-    /// with **no selection** declines, so `Ctrl+C` falls through to the focused
-    /// agent and still interrupts a turn; paste with **nothing pasteable**
-    /// declines for the reason [`Self::paste_into_focused`] gives. Decided per
-    /// press rather than by the binding — see [`thurbox::kernel::clipboard`].
     pub(crate) fn run_clipboard_action(&mut self, action: &str) -> Option<bool> {
         match action {
             clipboard::COPY_ACTION => {
                 if self.selection.is_none() {
                     return Some(false);
                 }
-                // No focused session required: a selection over the session
-                // list, a modal or the footer is still a selection, and v1
-                // copies it.
                 self.copy_selection();
                 Some(true)
             }
@@ -400,10 +274,6 @@ impl App {
         }
     }
 
-    /// A float takes every key while it is up — that is what makes it a modal
-    /// rather than merely a pane drawn on top.
-    ///
-    /// The reserved chords still work, so a modal can never trap you.
     pub(crate) fn dispatch_grabbed(&mut self, press: &KeyPress) -> bool {
         let Some(mod_name) = self
             .grabbed
@@ -456,21 +326,10 @@ impl App {
         else {
             return false;
         };
-        // v1's terminal passthrough: a chord the agent's own line editing needs
-        // is left to the pty while a terminal has focus, and the command stays
-        // reachable from every other pane (and its F-key alternate). Gated on
-        // the bound chord, so rebinding a passthrough action onto a free key
-        // makes it work in the terminal again.
-        //
-        // A dead pane is the exception: an agent that exited (a `/exit`, and
-        // the window kept by `remain-on-exit`) is doing no line editing, and
-        // tmux takes `send-keys` into a dead pane without complaint — so the
-        // deferred chord vanished and `Ctrl+D` could not delete the session it
-        // was looking at. There the chord keeps its list meaning. The backend
-        // is asked only here, on the chord itself, never on the render path.
         let defer_to_agent = passthrough
             && self.focused_wants_session_input()
             && is_ctrl_letter_chord(&canonical_chord(press))
+            // tmux accepts `send-keys` into a dead pane and drops the keys silently.
             && !self.focused_terminal_is_dead();
         if defer_to_agent {
             return false;
@@ -526,7 +385,6 @@ impl App {
             match self.host.on_key(index, press) {
                 Ok(true) => return true,
                 Ok(false) => {}
-                // A throwing handler must not swallow the key or the app.
                 Err(e) => self.errors.push(e),
             }
         }
@@ -547,33 +405,14 @@ impl App {
             self.held_input.hold_bytes(surface, bytes);
             return true;
         }
-        let delivered = self.send_to_surface(&surface, bytes);
-        // Delivered means consumed, which is what the rule above says and what
-        // this now enforces. Falling through sent `Esc` to a program AND
-        // dismissed the pane under it in one keypress — a game opening its menu
-        // on a pane nobody is looking at.
-        //
-        // Gated on delivery rather than on having tried, because both sends
-        // already report it: a surface naming a session that is no longer live
-        // must not swallow the key, or `Esc` traps the user in a pane showing a
-        // dead terminal.
-        delivered
+        self.send_to_surface(&surface, bytes)
     }
 
-    /// The modal this keystroke opens, if it is one of the kernel's own chords.
-    ///
-    /// Resolved through the registry rather than matched literally, so a
-    /// rebound chord keeps opening its modal — including from inside another
-    /// one.
     pub(crate) fn modal_chord(&self, key: &KeyEvent) -> Option<ModalKind> {
         ModalKind::from_action(&self.kernel_action(&to_press(key))?)
     }
 
-    /// Hand a keystroke to the open modal, and report whatever it says.
     pub(crate) fn dispatch_modal_key(&mut self, key: &KeyEvent) {
-        // The registry's spelling of this keystroke, so a captured chord is
-        // stored in the vocabulary the registry will later match — the three
-        // encodings of `ctrl+/` folded into one, a capital folded to `shift+`.
         let chord = canonical_chord(&to_press(key));
         let message = self.with_modal_world(|modals, world| modals.on_key(key, &chord, world));
         if let Some(message) = message {
@@ -582,17 +421,6 @@ impl App {
         self.dirty = true;
     }
 
-    /// Run `act` against the modal layer with everything a modal may write to.
-    ///
-    /// The database is opened only for the theme picker, which is the one modal
-    /// that persists outside the registry — a connection per keystroke would
-    /// otherwise be paid by every keypress in help.
-    /// Open or close a system modal.
-    ///
-    /// Goes through `abandon` first because a modal may have applied something
-    /// while it was open — the theme picker previews on every cursor move — and
-    /// closing it by its own chord is no more a choice than closing it with
-    /// `Esc`.
     pub(crate) fn toggle_modal(&mut self, kind: ModalKind) {
         self.with_modal_world(|modals, world| {
             if modals.kind() == Some(kind) {
@@ -628,10 +456,6 @@ impl App {
                 self.toggle_modal(kind);
                 return;
             }
-            // Chosen by name rather than pressed, so a decline falls through to
-            // nothing and would look like a dead row: say why instead. Both
-            // chords can decline and they decline for different reasons, so the
-            // message follows the action rather than assuming copy.
             match self.run_clipboard_action(action) {
                 Some(true) => return,
                 Some(false) => {
@@ -681,39 +505,22 @@ impl App {
         }
     }
 
-    /// Deliver pasted text to whatever has focus.
-    ///
-    /// One path for both routes — `ctrl+v` and the terminal's own paste — so the
-    /// two cannot come to behave differently. A surface that takes typing gets
-    /// the characters replayed as keystrokes, which is how it already receives
-    /// them; a terminal gets the text as one paste, which its multiplexer
-    /// brackets for an app that enabled bracketed paste, so a prompt with
-    /// newlines in it does not fire on the first one.
     pub(crate) fn on_paste(&mut self, text: String) {
         if text.is_empty() {
             return;
         }
 
-        // A modal or a float owns typed input while it is up, so it owns a paste
-        // too. Control characters are dropped rather than replayed: `Enter` into
-        // a filter or a name field would submit it mid-paste.
         if self.modals.is_open() {
             for ch in text.chars().filter(|ch| !ch.is_control()) {
                 self.dispatch_modal_key(&KeyEvent::new(KeyCode::Char(ch), KeyModifiers::NONE));
             }
             return;
         }
-        // And so does a pane holding the caret in a field of its own — the
-        // search strip. It is not a surface, so this went to the terminal
-        // behind it, or with none on screen was refused.
         let typing = if self.focused_typing {
             self.host.focusable().get(self.focus).copied()
         } else {
             None
         };
-        // Straight to `on_key`, past the registry: a paste is text, and a pane
-        // that binds a key a paste can hold — the new-session float's `j`/`k`/`space` — would
-        // otherwise run the action for every one pasted instead of typing it.
         if let Some(index) = self.grabbed.or(typing) {
             for ch in text.chars().filter(|ch| !ch.is_control()) {
                 let press = to_press(&KeyEvent::new(KeyCode::Char(ch), KeyModifiers::NONE));
@@ -740,13 +547,6 @@ impl App {
         self.paste_text_into(&surface, &text);
     }
 
-    /// Hold a paste of image paths into a session on another machine until a
-    /// worker has asked whether the files are this machine's
-    /// ([`Self::poll_remote_drop`]). A drop of local files is their local
-    /// paths, which name nothing there, and nothing yet carries a file to a
-    /// Fleet Task's host. A path the remote machine has, typed into its own
-    /// session, is ordinary text. Asked off the loop: a mount that does not
-    /// answer must not stall it.
     fn holds_a_remote_image_paste(&mut self, surface: &str, text: &str) -> bool {
         let session = surface.strip_suffix("#shell").unwrap_or(surface);
         let remote = self
@@ -773,10 +573,6 @@ impl App {
         true
     }
 
-    /// Release held input in the order it came, each surface up to its first
-    /// paste whose answer is still out ([`HeldInput::release`]): this
-    /// machine's files are refused on the error line and never typed;
-    /// anything else is typed as the text it is.
     pub(crate) fn poll_remote_drop(&mut self) {
         for release in self.held_input.release(std::time::Instant::now()) {
             match release {
@@ -793,20 +589,6 @@ impl App {
         }
     }
 
-    /// Send `text` to one surface as a paste, made safe by [`paste_safe`].
-    ///
-    /// The frame is the backend's signal that this is a paste, not the bytes
-    /// the app receives: the multiplexer re-frames it only when the app turned
-    /// bracketed paste on (`control_mode::ControlModeWriter`).
-    ///
-    /// Takes the surface rather than reading the focus, because not every paste
-    /// is delivered in the same turn it was asked for: the WSL image probe
-    /// answers ~0.42 s later, and the pane the press was aimed at is the one it
-    /// belongs in — see [`Self::poll_image_probe`].
-    ///
-    /// A *surface*, not a session, so a paste lands where a keystroke would:
-    /// `dispatch_session_input` routes by what the pane is showing, and a pane
-    /// showing a mod's program used to take typing and refuse pastes.
     fn paste_text_into(&mut self, surface: &str, text: &str) {
         let text = paste_safe(text);
         if text.is_empty() {
@@ -825,47 +607,14 @@ impl App {
         });
     }
 
-    /// Paste the clipboard into the focused session's terminal, or decline the
-    /// chord when there is no text to paste.
-    ///
-    /// Sent as a paste, bracketed for an app that asked, so a multi-line paste
-    /// arrives as text rather than as a series of submissions — an agent prompt with newlines in it
-    /// would otherwise fire on the first one.
-    ///
-    /// **A local clipboard holding no text is not an error, it is someone else's
-    /// paste.** An image is the case that matters: thurbox can only send text, so
-    /// swallowing `Ctrl+V` there means the press does nothing at all — which is
-    /// what "pasting a screenshot into claude through thurbox does nothing" was.
-    /// The agent in the pane does know how to fetch it: Claude Code reads the
-    /// clipboard itself when it sees `Ctrl+V`, shelling out to `xclip`/`wl-paste`
-    /// (and, under WSL, to PowerShell). Declining lets the press reach it.
-    ///
-    /// No clipboard **at all** — the SSH case — still gets the hint instead:
-    /// there is nothing on that machine for the agent to read either, and the
-    /// route that does work is the terminal's own paste chord, which arrives as
-    /// `Event::Paste`. There is no OSC 52 read fallback because terminals
-    /// disable clipboard *reads* by default and probing for one can stall for
-    /// seconds.
     pub(crate) fn paste_into_focused(&mut self) -> bool {
-        // Inside WSL the local clipboard is not the one being copied into, so
-        // this press cannot be answered here at all: Windows has to be asked,
-        // and asking costs ~0.42 s. The press is claimed, the answer acts on it
-        // — [`Self::poll_image_probe`].
-        //
-        // Not while an overlay owns typed input, though: a float's name field
-        // cannot take a picture, so the question has no answer worth 0.42 s —
-        // and asking anyway used to *swallow* the press, because the clipboard
-        // stage runs before `dispatch_grabbed` and the answer then found the
-        // float still up. Pasting a repository path into the new-session wizard
-        // did nothing at all under WSL.
+        // Under WSL the clipboard holding an image is Windows', and asking it takes ~0.42 s.
         if thurbox::clipboard::ImageProbe::applies() && !self.overlay_owns_input() {
             return self.ask_windows_about_this_press();
         }
         self.paste_text_or_decline()
     }
 
-    /// Whether a modal, a float or a pane's own field is taking typed input
-    /// right now — somewhere a paste is typing, and a picture cannot go.
     pub(crate) fn overlay_owns_input(&self) -> bool {
         self.modals.is_open() || self.grabbed.is_some() || self.focused_typing
     }
@@ -886,25 +635,11 @@ impl App {
         delivered
     }
 
-    /// Claim this press and put the question to Windows, remembering where the
-    /// press was aimed.
-    ///
-    /// The target is resolved **now**: the answer is ~0.42 s away, which is long
-    /// enough to focus another pane, and a paste that lands in a pane it was not
-    /// aimed at corrupts whatever is being typed there — the same failure, in
-    /// the other direction, as pasting stale text.
-    ///
-    /// Nothing focused is answered at once rather than by asking: the press has
-    /// nowhere to land whatever Windows says.
     fn ask_windows_about_this_press(&mut self) -> bool {
         let Some(surface) = self.focused_surface.clone() else {
             self.report(NOTHING_TO_PASTE_INTO, Level::Error);
             return true;
         };
-        // Key auto-repeat outruns the answer: holding `Ctrl+V` makes presses at
-        // tens a second against a question that takes a fifth of a second, and
-        // every one of them is a paste owed. Past this many the repeat is no
-        // longer someone asking for another paste.
         if self.paste_targets.len() >= MAX_WAITING_PASTES {
             tracing::debug!(
                 "{MAX_WAITING_PASTES} pastes are already waiting on Windows; dropping this press"
@@ -913,28 +648,11 @@ impl App {
         }
         self.paste_targets.push(surface);
         if self.image_probe.ask() {
-            // This question describes the clipboard as it is now, so it answers
-            // for the presses made by now — no more. A press that arrives while
-            // it is out gets one of its own, asked when this one comes back.
             self.probed_presses = self.paste_targets.len();
         }
         true
     }
 
-    /// Paste the clipboard's text, or decline the chord when there is none.
-    ///
-    /// Declining is what makes an image paste work at all. thurbox can only
-    /// send text, so swallowing the press there means it does nothing — which
-    /// is what "pasting a screenshot into claude through thurbox does nothing"
-    /// was. The agent in the pane *can* fetch an image, and does so on seeing
-    /// the paste chord itself, so the press is worth more to it than to us.
-    ///
-    /// No clipboard **at all** — the SSH case — is the one decline that would
-    /// help nobody: there is nothing on that machine for the agent to read
-    /// either. That gets the hint pointing at the terminal's own paste, which
-    /// arrives as `Event::Paste`. There is no OSC 52 read fallback, because
-    /// terminals disable clipboard *reads* by default and probing for one can
-    /// stall for seconds.
     fn paste_text_or_decline(&mut self) -> bool {
         let text = thurbox::clipboard::paste(self.clipboard.as_mut());
         match (paste_route(self.clipboard.is_some(), text.is_some()), text) {
@@ -950,19 +668,6 @@ impl App {
         }
     }
 
-    /// Act on what Windows said about its clipboard, for the presses that
-    /// question was asked for.
-    ///
-    /// Only those: the answer describes the clipboard as it was when the
-    /// question went out, and what is copied can change while it is out — the
-    /// round trip is ~0.42 s, and a wedged one runs to its five-second
-    /// deadline. Applying it to a press made *after* it was asked is how an
-    /// image copied in between gets pasted as the text that preceded it, which
-    /// is the failure this whole path exists to prevent. Those presses are kept
-    /// and a fresh question is put for them here.
-    ///
-    /// Each press is delivered to the session it was aimed at, in the order
-    /// they were made.
     pub(crate) fn poll_image_probe(&mut self) {
         let Some(verdict) = self.image_probe.poll() else {
             return;
@@ -979,26 +684,9 @@ impl App {
         }
     }
 
-    /// One press, answered.
-    ///
-    /// A picture is given to the agent, which reads it itself — and so is an
-    /// answer that never came, because an unanswerable question must not become
-    /// "paste the text" when the text under WSL is the stale one this path
-    /// exists to stop. The hand-off is a literal `Ctrl+V` byte rather than a
-    /// fall-through to the chord, since by now the key press is long gone; that
-    /// byte is what Claude Code watches for before reading the clipboard itself
-    /// (`xclip`/`wl-paste`, or PowerShell under WSL).
-    ///
-    /// Delivered even if a modal or a float has gone up since: this press
-    /// already named its destination, so putting it there is not a leak past
-    /// the overlay but the thing that was asked for. What an overlay prevents
-    /// is the *question* — see [`Self::paste_into_focused`].
     fn deliver_probed_paste(&mut self, verdict: thurbox::clipboard::Verdict, surface: &str) {
         use thurbox::clipboard::Verdict;
         if verdict == Verdict::NotImage {
-            // The same decision the unprobed press makes, read from the same
-            // function: what Windows answered says only whether this press is
-            // thurbox's to handle, never what handling it looks like.
             let text = thurbox::clipboard::paste(self.clipboard.as_mut());
             match (paste_route(self.clipboard.is_some(), text.is_some()), text) {
                 (PasteRoute::Hint, _) => {
@@ -1012,11 +700,6 @@ impl App {
                 _ => {}
             }
         }
-        // Said out loud, because this is the one delivery the person may not
-        // see happen: the press can land behind a modal or a float that went up
-        // while the question was out, and what arrives there is a byte the
-        // agent acts on rather than text appearing in a prompt. The text path
-        // (`paste_text_into`) already reports itself the same way.
         if self.send_to_surface(surface, vec![CTRL_V]) {
             self.toast(match verdict {
                 Verdict::Image => "image left to the agent to fetch",
@@ -1028,33 +711,14 @@ impl App {
     }
 }
 
-/// What a paste press does with the clipboard this machine has.
-///
-/// Two facts decide it, and this is the only place they are read together —
-/// the press that asks Windows first ends up here too, since the verdict says
-/// only whose press it is, never what to do with it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum PasteRoute {
-    /// No local clipboard at all: the SSH case, where the terminal's own paste
-    /// is the way through and neither thurbox nor the agent can read anything.
     Hint,
-    /// Text thurbox can carry itself.
     Send,
-    /// Something thurbox cannot carry — a picture, or a clipboard it cannot
-    /// read. The chord is worth more to the agent, which fetches it itself.
     GiveToAgent,
 }
 
-/// `text` with every control character removed except the three a paste carries
-/// as content: tab, line feed and carriage return.
-///
-/// **Removed, not shown.** An `ESC[201~` inside the text ends a bracketed
-/// paste early, and the CR after it is then Enter — a clipboard that ran a
-/// command. Without ESC no marker can be spelt, and no other sequence either;
-/// what follows the ESC stays, as text (`[201~`). The other C0 controls, DEL
-/// and C1 go too: `^C` or `^D` inside a paste would act as the key. A
-/// terminal's own paste is sanitised by the terminal first, but `Ctrl+V` reads
-/// the native clipboard directly, so this is the only filter that route has.
+// An `ESC[201~` in the text ends a bracketed paste early; `Ctrl+V` reads the clipboard unsanitised.
 fn paste_safe(text: &str) -> std::borrow::Cow<'_, str> {
     let keep = |ch: char| !ch.is_control() || matches!(ch, '\t' | '\n' | '\r');
     if text.chars().all(keep) {
@@ -1072,56 +736,19 @@ fn paste_route(clipboard_present: bool, yielded_text: bool) -> PasteRoute {
     }
 }
 
-/// Whether declining this press hands it to the agent by itself.
-///
-/// A declined chord reaches the pane through `dispatch_session_input`, which
-/// can only send what `key_to_bytes` encodes. `SUPER` chords have no legacy
-/// encoding at all, so `Cmd+V` — the paste chord on macOS — falls through to
-/// nothing.
+// `SUPER` chords have no legacy terminal encoding, so macOS `Cmd+V` never reaches the pty.
 fn reaches_the_pty(key: &KeyEvent) -> bool {
     key_to_bytes(key.code, key.modifiers).is_some()
 }
 
-/// The paste chord as one byte on the wire — what an agent watches for before
-/// reading the clipboard itself, and the only spelling of a paste that survives
-/// both a press that has no pty encoding and an answer that arrives after the
-/// press is gone.
+// Claude Code reads the clipboard itself when it sees this byte.
 const CTRL_V: u8 = 0x16;
 
-/// What a paste with nothing focused says. One message, because it is one
-/// situation: the press was made with no session's terminal in front of it.
 const NOTHING_TO_PASTE_INTO: &str = "nothing to paste into — focus a session's terminal first";
 
-/// How many presses may be waiting on one answer. Well above a person pressing
-/// `Ctrl+V` twice and well below what auto-repeat produces in the ~0.42 s the
-/// answer takes.
 const MAX_WAITING_PASTES: usize = 8;
 
-/// Undo Windows' spelling of AltGr, which is `Ctrl+Alt`.
-///
-/// The Windows console reports an AltGr press as left-Ctrl plus right-Alt and
-/// crossterm passes that through, so every character a layout hides behind
-/// AltGr arrives carrying two modifiers. Nothing downstream types one: a text
-/// field swallows any key with `ctrl` or `alt` on it rather than inserting it,
-/// and `agent::input::key_to_bytes` wraps it in an ESC, so a focused agent
-/// reads `Alt+\` where a backslash was typed. On an AZERTY keyboard that is
-/// `\` and `|`; on a German one `@`, `[`, `]`, `{`, `}` and `~` — characters
-/// a path or a shell command cannot do without, and they worked in no field
-/// and no terminal.
-///
-/// Crossterm has already resolved the layout, so the character on the event
-/// **is** the one that was typed and the modifiers only describe how it was
-/// reached. They are dropped for a character no keyboard produces unshifted:
-/// punctuation, or a non-ASCII letter (Polish `ą`, a `€`). An ASCII letter or
-/// digit is left alone, so a real `Ctrl+Alt+d` chord still resolves as one —
-/// no layout puts a bare ASCII alphanumeric behind AltGr, since that is the
-/// key's own unmodified output.
-///
-/// `windows` is a parameter rather than a `cfg!` inside so the rule is
-/// testable on any platform, as [`super::paste::PasteBurst`] does for the same
-/// reason. Elsewhere AltGr is a level-3 shift the terminal composes before
-/// thurbox ever sees it, and `Ctrl+Alt+<punctuation>` is a chord someone may
-/// have rebound onto.
+// The Windows console reports AltGr as Ctrl+Alt, and crossterm passes that through.
 fn resolve_altgr(key: KeyEvent, windows: bool) -> KeyEvent {
     if !windows {
         return key;
@@ -1142,47 +769,12 @@ fn resolve_altgr(key: KeyEvent, windows: bool) -> KeyEvent {
     }
 }
 
-/// The keys pressed on a binding that asked for its release, until they are
-/// let go — and what the terminal has shown about reporting releases at all.
-///
-/// The whole of the release contract is here, so it can be read in one place:
-///
-/// * a **release** is delivered only for a key some binding is holding, to the
-///   mod that took the press — matched by the key alone, because the
-///   modifier is often let go first (`ctrl` up, then `space`). Every other
-///   release is dropped: none reaches a modal, a raw handler, a field or a
-///   session's terminal;
-/// * a **repeat** of a held key is swallowed — a hold is one gesture. Windows
-///   reports auto-repeat as presses, so there a press of a held key is one too.
-///   A repeat of any other key is passed on as the press a legacy terminal
-///   would have sent, so holding a key down still repeats it everywhere else;
-/// * a **press** is otherwise untouched. A held key pressed again with no
-///   release in between (the terminal lost focus mid-hold) is a new press and
-///   is delivered — except on Windows, where it cannot be told from
-///   auto-repeat; there the release that follows it ends the hold. Once the
-///   terminal has sent a release, a press of a held key with other modifiers
-///   than the chord's is its repeat: kitty sends a text key's repeat as plain
-///   text, so once `ctrl` is let go a held `ctrl+space` repeats as a bare
-///   space, and that must not type one. Before any release has arrived it is
-///   delivered, since a terminal that accepted the request but sends no
-///   releases would otherwise never get that key back.
-///
-/// Nothing here infers a release from time: no release, no release event.
 #[derive(Debug, Default)]
 pub(crate) struct Holds {
     held: Vec<(KeyCode, KeyModifiers, String, String)>,
     pub(crate) releases: KeyReleases,
 }
 
-/// One key event, as it arrived, into the inputs to dispatch in order.
-///
-/// A press or repeat is routed first — a repeat of a held key goes no further,
-/// any other is a press — and then joins the coalescer. A release goes into the
-/// coalescer as it is, so it comes back out behind a press the coalescer is
-/// still holding (a plain character waits there in case a paste follows), and
-/// is routed to its holder only when dispatched: routed on arrival, it would
-/// find nothing held yet and be dropped, and the press dispatched after it
-/// would stay held.
 pub(crate) fn sort_key(
     burst: &mut PasteBurst,
     holds: &mut Holds,
@@ -1200,21 +792,13 @@ pub(crate) fn sort_key(
     }
 }
 
-/// What [`Holds::route`] made of one key event.
 #[derive(Debug, PartialEq, Eq)]
 pub(crate) enum Route {
-    /// Dispatch it as a press, through the coalescer and `on_key`.
     Press(KeyEvent),
-    Release {
-        owner: String,
-        action: String,
-    },
-    /// Nothing receives it.
+    Release { owner: String, action: String },
     Drop,
 }
 
-/// The key a hold is remembered by: a letter in either case is one key, since
-/// a release can arrive with or without the shift that was down at the press.
 fn hold_key(code: KeyCode) -> KeyCode {
     match code {
         KeyCode::Char(c) => KeyCode::Char(c.to_ascii_lowercase()),
@@ -1226,8 +810,7 @@ impl Holds {
     pub(crate) fn route(&mut self, key: &KeyEvent, windows: bool) -> Route {
         let code = hold_key(key.code);
         let held = self.held.iter().position(|(held, ..)| *held == code);
-        // Only once a release has arrived: a terminal that never sends one
-        // never ends the hold, and would eat that key for good.
+        // kitty sends a held key's repeat as plain text once `ctrl` is let go.
         let repeat = held.is_some_and(|at| self.held[at].1 != key.modifiers)
             && self.releases == KeyReleases::Reported;
         match key.kind {
@@ -1242,6 +825,7 @@ impl Holds {
                 }
             }
             KeyEventKind::Repeat if held.is_some() => Route::Drop,
+            // Windows reports auto-repeat as presses.
             KeyEventKind::Press if (windows && held.is_some()) || repeat => Route::Drop,
             KeyEventKind::Press | KeyEventKind::Repeat => Route::Press(KeyEvent {
                 kind: KeyEventKind::Press,
@@ -1277,39 +861,19 @@ impl Holds {
     }
 }
 
-/// How long a remote paste waits for the answer about its paths before it
-/// is typed as the text it is: a mount that never answers must not hold a
-/// terminal's input for good.
 pub(crate) const HELD_PASTE_WAIT: std::time::Duration = std::time::Duration::from_secs(2);
 
-/// Terminal input waiting behind a paste of image paths into a remote
-/// session, oldest first ([`App::poll_remote_drop`]).
 #[derive(Default)]
 pub(crate) struct HeldInput {
     queue: std::collections::VecDeque<Held>,
 }
 
 enum Held {
-    /// A paste; `answer` is out while a worker asks whether its paths are
-    /// this machine's files, and absent for a paste that only waits its turn.
     Paste {
         surface: String,
         text: String,
         answer: Option<std::sync::mpsc::Receiver<bool>>,
         deadline: std::time::Instant,
-    },
-    /// A keystroke's bytes.
-    Bytes { surface: String, bytes: Vec<u8> },
-}
-
-/// What [`HeldInput::release`] hands back, in the order it was held.
-#[derive(Debug, PartialEq, Eq)]
-pub(crate) enum Release {
-    /// The paste named this machine's files: refused, never typed.
-    Refuse,
-    Paste {
-        surface: String,
-        text: String,
     },
     Bytes {
         surface: String,
@@ -1317,8 +881,14 @@ pub(crate) enum Release {
     },
 }
 
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) enum Release {
+    Refuse,
+    Paste { surface: String, text: String },
+    Bytes { surface: String, bytes: Vec<u8> },
+}
+
 impl HeldInput {
-    /// Whether input for `surface` must wait its turn.
     pub(crate) fn holds(&self, surface: &str) -> bool {
         self.queue.iter().any(|held| held.surface() == surface)
     }
@@ -1342,10 +912,6 @@ impl HeldInput {
         self.queue.push_back(Held::Bytes { surface, bytes });
     }
 
-    /// Everything that may go now, oldest first. A surface's input stops at
-    /// its first paste whose answer is still out and not yet past its bound;
-    /// another surface's input goes on. A paste whose check never answered
-    /// is typed as the text it is.
     pub(crate) fn release(&mut self, now: std::time::Instant) -> Vec<Release> {
         let mut out = Vec::new();
         let mut waiting: Vec<String> = Vec::new();
@@ -1499,7 +1065,6 @@ mod tests {
             holds.route(&space(KeyEventKind::Repeat), false),
             Route::Drop
         );
-        // Ctrl let go first: the release still finds the hold.
         assert_eq!(
             holds.route(
                 &event(
@@ -1552,10 +1117,8 @@ mod tests {
     #[test]
     fn a_held_chords_text_repeat_is_swallowed_and_the_chord_itself_presses_again() {
         let mut holds = holding(KeyReleases::Reported);
-        // kitty, `ctrl` let go first: the repeat arrives as plain text.
         let bare = event(KeyCode::Char(' '), KeyModifiers::NONE, KeyEventKind::Press);
         assert_eq!(holds.route(&bare, false), Route::Drop);
-        // The chord pressed again with no release between is a new press.
         let chord = event(
             KeyCode::Char(' '),
             KeyModifiers::CONTROL,
@@ -1571,11 +1134,6 @@ mod tests {
         assert_eq!(holds.route(&bare, false), Route::Press(bare));
     }
 
-    /// The Windows coalescer holds a plain character back for a few
-    /// milliseconds in case a paste follows. A quick tap of a plain-key
-    /// release binding puts its release behind that press: were the release
-    /// routed on arrival, nothing would be held yet, the release would be
-    /// dropped, and the press dispatched after it would stay held forever.
     #[test]
     fn a_release_waits_behind_its_press_in_the_coalescer() {
         let mut burst = super::super::paste::PasteBurst::new(true);
@@ -1599,9 +1157,6 @@ mod tests {
         inputs.extend(burst.flush());
         assert_eq!(inputs, vec![Input::Key(press), Input::Key(release)]);
 
-        // Dispatched in that order — the press taken by a release binding (as
-        // `dispatch_declared` records it), then the release through the same
-        // `release_target` `apply_input` asks — the hold is opened and closed.
         holds.hold(press.code, press.modifiers, "p".into(), "p.talk".into());
         assert_eq!(
             holds.release_target(&release),
@@ -1615,9 +1170,6 @@ mod tests {
         );
     }
 
-    /// A press reported shifted and its release unshifted are one key: the
-    /// release keeps its place behind the press in the coalescer and closes
-    /// the hold the press opened.
     #[test]
     fn a_shifted_press_is_closed_by_its_unshifted_release() {
         let mut burst = super::super::paste::PasteBurst::new(true);
@@ -1668,10 +1220,6 @@ mod tests {
         );
     }
 
-    /// The half of this change that reaches every platform: a reachable
-    /// clipboard holding no text hands the press on instead of swallowing it,
-    /// which is what made pasting an image do nothing at all. Put `Some(true)`
-    /// back in `run_clipboard_action` and this is what says so.
     #[test]
     fn a_clipboard_with_nothing_to_paste_hands_the_press_on() {
         assert_eq!(paste_route(true, false), PasteRoute::GiveToAgent);
@@ -1684,10 +1232,6 @@ mod tests {
         );
     }
 
-    /// And handing it on is only a hand-off for a chord the pty can carry.
-    ///
-    /// `Cmd+V` cannot be encoded, so a decline drops it: on macOS that is the
-    /// chord the paste binding is actually on.
     #[test]
     fn a_cmd_chord_cannot_be_handed_on_by_declining_it() {
         let cmd_v = KeyEvent::new(KeyCode::Char('v'), KeyModifiers::SUPER);
@@ -1703,8 +1247,6 @@ mod tests {
         KeyEvent::new(KeyCode::Char(ch), KeyModifiers::CONTROL | KeyModifiers::ALT)
     }
 
-    /// The reported bug: AltGr+8 on an AZERTY layout is a backslash, and it has
-    /// to reach a field and a pty as one.
     #[test]
     fn altgr_punctuation_is_typed_rather_than_treated_as_a_chord() {
         for ch in ['\\', '|', '@', '[', ']', '{', '}', '~', '#', '€', 'ą'] {
@@ -1715,8 +1257,6 @@ mod tests {
                 "{ch:?} kept {:?}",
                 resolved.modifiers
             );
-            // And the pty encoding is the character itself, not an ESC-wrapped
-            // one — which is what a focused agent actually receives.
             assert_eq!(
                 thurbox::agent::input::key_to_bytes(resolved.code, resolved.modifiers),
                 Some(ch.to_string().into_bytes()),
@@ -1724,8 +1264,6 @@ mod tests {
         }
     }
 
-    /// A chord someone could genuinely press, and could have rebound onto: no
-    /// layout puts a bare ASCII alphanumeric behind AltGr, so it is left whole.
     #[test]
     fn a_real_ctrl_alt_chord_is_left_alone() {
         for ch in ['d', 'D', '7'] {
@@ -1733,15 +1271,11 @@ mod tests {
         }
     }
 
-    /// Off the Windows console AltGr is a level-3 shift the terminal composes
-    /// itself, so `Ctrl+Alt` there means what it says.
     #[test]
     fn other_platforms_keep_ctrl_alt_as_a_chord() {
         assert_eq!(resolve_altgr(altgr('\\'), false), altgr('\\'));
     }
 
-    /// Only the pair is an AltGr artifact: either modifier on its own is a
-    /// chord in the ordinary way, `alt+p` among them.
     #[test]
     fn one_modifier_alone_is_never_altgr() {
         for modifiers in [KeyModifiers::CONTROL, KeyModifiers::ALT] {
@@ -1750,8 +1284,6 @@ mod tests {
         }
     }
 
-    /// Shift rides along on some layouts (AltGr+Shift is a fourth level); only
-    /// the Ctrl+Alt pair is removed, so what is left still says so.
     #[test]
     fn a_fourth_level_press_keeps_its_shift() {
         let key = KeyEvent::new(

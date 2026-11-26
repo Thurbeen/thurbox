@@ -1,19 +1,3 @@
-//! Machine and per-agent metrics, sampled off the render path.
-//!
-//! Everything here touches the world: `sysinfo` walks `/proc`, and resolving a
-//! session's root pid is a control-mode round trip. So this is the fifth
-//! instance of the kernel's worker pattern — sample on a thread, publish the
-//! result, let the UI read whatever is currently known.
-//!
-//! Account quotas are not sampled here (#1601). Asking a provider means reading
-//! credentials and calling its API, which belongs to a mod the user installs
-//! and grants `run` — `thurbox-info-panel` does it with `quota-axi` — not to a
-//! core that would do it for every session whether anything reads the answer.
-//!
-//! Absence is a real state and is kept distinct from zero: a session whose agent
-//! writes no statusline file has no metrics, which must not render as an agent
-//! that has spent nothing.
-
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::mpsc::{channel, Receiver, Sender};
@@ -22,70 +6,45 @@ use std::time::{Duration, Instant};
 
 use crate::session::AgentMetrics;
 
-/// How often the machine and statusline sample is retaken. v1's
-/// `METRICS_REFRESH_TICKS` at its ~10ms tick.
 const SAMPLE_INTERVAL: Duration = Duration::from_secs(1);
 
-/// Machine-wide and per-session resource use.
-///
-/// The kernel's own type rather than v1's `ui::info_panel::SystemMetrics`: the
-/// kernel may not reference `ui`, and this is published data, not a widget's
-/// input.
 #[derive(Debug, Clone, Copy, Default, PartialEq)]
 pub struct SystemMetrics {
-    /// Whole-machine CPU, 0-100.
     pub cpu_percent: f32,
     pub memory_used: u64,
     pub memory_total: u64,
 }
 
-/// One session's own resource use, sampled from its pane's root process.
 #[derive(Debug, Clone, Copy, Default, PartialEq)]
 pub struct SessionResources {
-    /// The process's CPU, which may exceed 100 across cores.
     pub cpu_percent: f32,
     pub memory_bytes: u64,
 }
 
-/// One session's sampling inputs, reduced to what crosses a thread boundary:
-/// its id, where its statusline file is, and the handle its pid is resolved
-/// through.
 type SampleInput = (
     String,
     Option<PathBuf>,
     Option<(Arc<dyn crate::backend::SessionBackend>, String)>,
 );
 
-/// What a sample worker reports back.
 struct Sample {
     system: SystemMetrics,
     resources: HashMap<String, SessionResources>,
     agents: HashMap<String, AgentMetrics>,
-    /// The collector, handed back so it keeps its CPU-delta state: a percentage
-    /// is a difference between two samples, so a fresh collector reads zero.
     collector: Box<sysinfo::System>,
 }
 
-/// What one session's sample needs: where to find its statusline file, and how
-/// to resolve its root pid.
 pub struct Subject {
     pub session: String,
-    /// The agent's own session id names its statusline file.
     pub agent_session_id: Option<String>,
-    /// Backend plus pane id, for the pid lookup. Absent for a session with no
-    /// live pane, which then contributes no per-session numbers.
     pub pane: Option<(Arc<dyn crate::backend::SessionBackend>, String)>,
 }
 
-/// Everything the info panel reads, and the workers that keep it current.
 pub struct Metrics {
     version: u64,
     system: SystemMetrics,
     resources: HashMap<String, SessionResources>,
     agents: HashMap<String, AgentMetrics>,
-    /// Parked between samples so CPU deltas survive. `None` while a worker has
-    /// it, which is also what keeps a second sample from starting, and for good
-    /// on a system sysinfo does not support.
     collector: Option<Box<sysinfo::System>>,
     last_sample: Option<Instant>,
     tx: Sender<Sample>,
@@ -107,7 +66,6 @@ impl Metrics {
         }
     }
 
-    /// Serial of the latest accepted sample, independent of other workers.
     pub fn version(&self) -> u64 {
         self.version
     }
@@ -124,35 +82,16 @@ impl Metrics {
         self.agents.get(session)
     }
 
-    /// Whether the next [`Self::sample`] would actually start work — the
-    /// machine sample is due.
-    ///
-    /// Asked before the subject list is built: assembling it clones two
-    /// strings per session, and doing that on every 10 ms iteration for a
-    /// once-per-second consumer was the same waste `serve_runs` already
-    /// refuses one function away.
     pub fn wants_sample(&self) -> bool {
         self.last_sample
             .is_none_or(|at| at.elapsed() >= SAMPLE_INTERVAL)
     }
 
-    /// Start a sample if one is due and none is running.
-    ///
-    /// Gate with [`Self::wants_sample`]; the interval and the parked collector
-    /// both re-check here, so an unguarded call is still safe. The per-session
-    /// prune rides the same cadence — a deleted session's numbers linger at
-    /// most one interval longer, which nothing renders.
     pub fn sample(&mut self, subjects: Vec<Subject>) {
         self.forget_gone(&subjects);
         self.sample_machine(&subjects);
     }
 
-    /// Drop per-session numbers for sessions that no longer exist.
-    ///
-    /// [`Self::poll`] *merges* each sample rather than replacing it, so a session
-    /// whose statusline was unreadable this round keeps what it last reported —
-    /// which means a deleted one keeps it for the life of the process. `Notifier`
-    /// prunes its own per-session bookkeeping off the same live set.
     fn forget_gone(&mut self, subjects: &[Subject]) {
         let live: std::collections::HashSet<&str> = subjects
             .iter()
@@ -169,14 +108,11 @@ impl Metrics {
         if !due {
             return;
         }
-        // An absent collector means a sample is already in flight: a slow one
-        // delays the next rather than stacking a second walk of /proc onto it.
         let Some(collector) = self.collector.take() else {
             return;
         };
         self.last_sample = Some(Instant::now());
 
-        // Only what the worker needs, so nothing borrows `self` across threads.
         let work: Vec<SampleInput> = subjects
             .iter()
             .map(|subject| {
@@ -197,15 +133,11 @@ impl Metrics {
         });
     }
 
-    /// Fold finished samples in. Returns true when anything arrived, so the
-    /// caller can repaint.
     pub fn poll(&mut self) -> bool {
         let mut changed = false;
         while let Ok(sample) = self.rx.try_recv() {
             self.system = sample.system;
             self.resources = sample.resources;
-            // Merged rather than replaced: a session whose file was unreadable
-            // this round keeps what it last reported instead of blanking.
             self.agents.extend(sample.agents);
             self.collector = Some(sample.collector);
             changed = true;
@@ -223,19 +155,15 @@ impl Default for Metrics {
     }
 }
 
-/// The statusline JSON an agent writes for a session, if the directory resolves.
 fn statusline_file(agent_session_id: &str) -> Option<PathBuf> {
     crate::paths::metrics_directory().map(|dir| dir.join(format!("{agent_session_id}.json")))
 }
 
-/// One backend and its sampled panes, as `(session, pane_id)` pairs — the unit
-/// the batched pid lookup in [`pane_pids`] groups subjects into.
 type BackendPanes = (
     Arc<dyn crate::backend::SessionBackend>,
     Vec<(String, String)>,
 );
 
-/// Take one sample. Runs on a worker thread.
 fn collect(mut collector: Box<sysinfo::System>, subjects: Vec<SampleInput>) -> Sample {
     collector.refresh_cpu_all();
     collector.refresh_memory();
@@ -255,19 +183,10 @@ fn collect(mut collector: Box<sysinfo::System>, subjects: Vec<SampleInput>) -> S
     }
 }
 
-/// Each sampled session's pane pid, batched per backend.
-///
-/// Each single-pane lookup is a control-mode round trip serialized on the
-/// connection mutex keystrokes share, so asking per session per second scaled
-/// the contention with the session count. One `pane_pids` call per backend
-/// answers for all of its sessions; a backend without the batched command
-/// falls back to the per-pane lookup.
 fn pane_pids(subjects: &[SampleInput]) -> Vec<(String, u32)> {
     let mut by_backend: HashMap<usize, BackendPanes> = HashMap::new();
     for (session, _, pane) in subjects {
         if let Some((backend, pane_id)) = pane {
-            // Keyed by the Arc's address: backends carry no id of their own
-            // here, and two subjects on one host share the same Arc.
             let key = Arc::as_ptr(backend).cast::<()>() as usize;
             by_backend
                 .entry(key)
@@ -292,8 +211,6 @@ fn pane_pids(subjects: &[SampleInput]) -> Vec<(String, u32)> {
     pids
 }
 
-/// CPU and memory for each pid, from one process refresh over all of them
-/// rather than one walk per session.
 fn process_resources(
     collector: &mut sysinfo::System,
     pids: &[(String, u32)],
@@ -324,8 +241,6 @@ fn process_resources(
     resources
 }
 
-/// Each session's statusline metrics. Best-effort: an agent that writes no
-/// statusline file simply has no metrics, which the panel renders as absence.
 fn statusline_metrics(subjects: Vec<SampleInput>) -> HashMap<String, AgentMetrics> {
     let mut agents = HashMap::new();
     for (session, statusline, _) in subjects {
@@ -344,8 +259,6 @@ mod tests {
     use super::*;
     use std::path::Path;
 
-    /// Pane pids from a table: batched, or — for a backend without the batched
-    /// command — one pane at a time.
     struct Panes {
         pids: HashMap<String, u32>,
         batched: bool,
@@ -566,7 +479,6 @@ mod tests {
         std::fs::write(&good, "{}").expect("write");
         let bad = dir.path().join("bad.json");
         std::fs::write(&bad, "not json").expect("write");
-        // This test's own process: a pid sysinfo is certain to find.
         let me = std::process::id();
         let batched: Arc<dyn crate::backend::SessionBackend> = Arc::new(Panes {
             pids: HashMap::from([("%1".to_string(), me)]),

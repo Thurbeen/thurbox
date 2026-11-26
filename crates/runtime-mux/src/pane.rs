@@ -26,50 +26,18 @@ pub(crate) fn now_millis() -> u64 {
         .as_millis() as u64
 }
 
-/// The smallest grid a `vt100` parser may be given, as `(rows, cols)`.
-///
-/// Two, not one, and the difference is a crash. `set_size(0, _)` underflows
-/// outright, which is why every size here used to be clamped at 1 — but a
-/// **one-row** grid underflows in `row_inc_scroll` the moment output wraps, and a
-/// **one-column** grid underflows in `col_wrap` (`cols - width`) the moment a
-/// double-width character arrives, which for an agent that prints emoji is the
-/// first line it writes. A cramped layout really does compute those rects — a
-/// pane one column wide is what a 20-column terminal with the session list open
-/// leaves for the terminal — and the panic lands on the *reader* thread, so the
-/// process survives while that session's pane is blank for the rest of the run:
-/// the unwind poisons the parser mutex, and every reader of it (paint, links,
-/// selection, copy) treats a poisoned lock as "no live terminal".
-///
-/// Nothing is readable at two columns either, so clamping loses nothing a
-/// smaller grid would have shown.
 fn vt_floor(rows: u16, cols: u16) -> (u16, u16) {
     (rows.max(2), cols.max(2))
 }
 
-/// Length of the prefix of `buf` that is safe to feed to the vt100 parser
-/// without splitting a UTF-8 character. Returns `buf.len()` unless `buf` ends
-/// with the start of a multi-byte character whose continuation bytes have not
-/// all arrived yet, in which case it returns the offset of that incomplete
-/// lead byte (so the caller can carry the tail to the next read).
-///
-/// Only a *plausibly-complete-able* truncated tail is held back: a lead byte
-/// missing some of its continuations. A malformed tail (continuation bytes with
-/// no lead, or a fully-present sequence) is passed through as-is, so garbage is
-/// never buffered unboundedly — the carry is at most 3 bytes (a 4-byte char
-/// missing its last byte).
 fn utf8_ready_prefix_len(buf: &[u8]) -> usize {
     let len = buf.len();
-    // A truncated tail is at most 3 bytes, so only the last 3 can matter.
     let start = len.saturating_sub(3);
     let mut i = len;
     while i > start {
         i -= 1;
         let b = buf[i];
-        // Anything that is not a UTF-8 continuation byte (0x80..=0xbf) starts a
-        // character — ASCII or a multi-byte lead.
         if !(0x80..=0xbf).contains(&b) {
-            // A lead byte (or ASCII). Determine the sequence's expected length;
-            // if not all of it is present yet, cut before it.
             let expected = match b {
                 0x00..=0x7f => 1,
                 0xc0..=0xdf => 2,
@@ -78,87 +46,36 @@ fn utf8_ready_prefix_len(buf: &[u8]) -> usize {
             };
             return if len - i < expected { i } else { len };
         }
-        // Continuation byte (0x80..=0xbf): keep scanning back for its lead.
     }
-    // No lead byte within the last 3 bytes — malformed tail; don't hold it back.
     len
 }
 
-/// Captures terminal signals the agent emits into shared cells read by the app
-/// layer (mirrors the `last_output_at` side channel). The parser fires these
-/// callbacks while processing the PTY byte stream:
-///
-/// - **Title** (OSC `0`/`1`/`2`) → live activity text.
-/// - **Attention** — a terminal bell (`BEL`) or a desktop-notification escape
-///   (OSC `9`, OSC `777`) means the agent finished or needs input. We record
-///   the time of the latest such signal, plus its message text when the OSC
-///   carries one. This is how we surface a real "needs attention" state instead
-///   of timing-only Busy/Waiting.
-/// - **Hyperlinks** (OSC `8`) → the target of each rich-text link the agent
-///   printed, which `vt100` itself discards (see the `osc8` module).
-/// - **Clipboard writes** (OSC `52`) → held in [`AppCopy`] while the pane has
-///   the user's focus, and dropped otherwise. Reads (`?`) are never answered.
 #[derive(Clone, Default)]
 pub struct TermSignals {
     title: Arc<Mutex<Option<String>>>,
-    /// `now_millis()` of the most recent attention signal; `0` = none yet.
     attention_at: Arc<AtomicU64>,
-    /// Message text from the most recent OSC 9/777 notification, if any.
     notification: Arc<Mutex<Option<String>>>,
-    /// Generation counter bumped after every title/notification write, so the
-    /// per-tick status refresh can skip the mutex locks + String clones while
-    /// nothing changed (ADR-P10; see [`Session::sync_agent_meta`]).
     meta_gen: Arc<AtomicU64>,
-    /// OSC 8 hyperlink runs the agent printed. Unlike the cells above this is
-    /// not shared state: readers reach it through the parser lock they already
-    /// take to read the screen ([`Self::hyperlinks`]).
     hyperlinks: HyperlinkTable,
-    /// The OSC 8 run whose closing sequence has not arrived yet.
     pending_link: Option<osc8::PendingHyperlink>,
-    /// Where an OSC 52 write goes — see [`AppCopy`].
     app_copy: Arc<AppCopy>,
 }
 
-/// An app's OSC 52 clipboard write, as its pane printed it: the target letters
-/// and the base64 payload, neither of them checked yet. The coordinator decides
-/// what is a copy (`clipboard::app_copy_text`), since the limit that decides it
-/// is the outer terminal's.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AppCopyRequest {
     pub target: Vec<u8>,
     pub data: Vec<u8>,
 }
 
-/// How many OSC 52 writes a focused pane may have waiting at once. A few,
-/// rather than the newest, because which of them is a copy is decided later:
-/// a valid write followed in the same burst by one that will be refused (a
-/// primary-selection-only write, say) must still land. Past this the oldest
-/// go, so an app flooding the stream holds a bounded amount.
 const PENDING_APP_COPIES: usize = 8;
 
-/// The one gate between an app printing OSC 52 and the user's clipboard.
-///
-/// A write is kept only while the pane holds a focus token, and handed out
-/// only under the token it was kept under. The token is what makes "focused"
-/// exact across threads: the parser runs on the pane's reader thread and
-/// focus moves on the UI thread, so a write the reader checked just before
-/// focus left carries the old token and is refused, and a pane brought back to
-/// the front gets a new token, so nothing it printed while hidden is released.
-/// Shared by the pane and its parser's [`TermSignals`], which moves with the
-/// callbacks when a grid is dropped and rebuilt — so a pane focused while its
-/// grid is still on its way back reads its writes all the same.
 #[derive(Debug, Default)]
 pub struct AppCopy {
-    /// The token focus gave this pane; `0` while it has none.
     focus: AtomicU64,
-    /// The writes made since the last take, oldest first, each with the token
-    /// it was made under.
     pending: Mutex<std::collections::VecDeque<(u64, AppCopyRequest)>>,
 }
 
 impl AppCopy {
-    /// Accept writes from now on, under `token` (nonzero, never reused),
-    /// discarding anything held from before.
     pub fn focus(&self, token: u64) {
         if let Ok(mut pending) = self.pending.lock() {
             pending.clear();
@@ -166,7 +83,6 @@ impl AppCopy {
         self.focus.store(token, Ordering::Release);
     }
 
-    /// Refuse writes from now on, and discard the one held.
     pub fn blur(&self) {
         self.focus.store(0, Ordering::Release);
         if let Ok(mut pending) = self.pending.lock() {
@@ -174,8 +90,6 @@ impl AppCopy {
         }
     }
 
-    /// The writes made since the last call under the token the pane holds
-    /// now, oldest first.
     pub fn take(&self) -> Vec<AppCopyRequest> {
         let held = self.focus.load(Ordering::Acquire);
         let Ok(mut pending) = self.pending.lock() else {
@@ -214,20 +128,13 @@ impl TermSignals {
         if let Ok(mut guard) = self.title.lock() {
             *guard = (!s.is_empty()).then_some(s);
         }
-        // After the write, so a reader that observes the new generation also
-        // observes the new value.
         self.meta_gen.fetch_add(1, Ordering::Release);
     }
 
-    /// The OSC 8 runs captured from the agent's output — the targets of its
-    /// rich-text links, of which the screen holds only the labels. Resolve a
-    /// clicked cell against it with [`HyperlinkTable::resolve`], or list what is
-    /// on screen with [`HyperlinkTable::visible_runs`].
     pub fn hyperlinks(&self) -> &HyperlinkTable {
         &self.hyperlinks
     }
 
-    /// Mark an attention signal, optionally with notification message text.
     fn signal_attention(&self, message: Option<String>) {
         self.attention_at.store(now_millis(), Ordering::Relaxed);
         if let Some(msg) = message {
@@ -246,22 +153,17 @@ impl vt100::Callbacks for TermSignals {
     }
 
     fn set_window_icon_name(&mut self, _: &mut vt100::Screen, icon_name: &[u8]) {
-        // Some CLIs emit only OSC `1` (icon name); treat it as the title too.
+        // Some CLIs emit only OSC 1 (icon name) for their title.
         self.store_title(icon_name);
     }
 
     fn audible_bell(&mut self, _: &mut vt100::Screen) {
-        // BEL: the cross-agent "done / needs you" signal (e.g. Claude's
-        // `preferredNotifChannel terminal_bell`). No message text.
+        // BEL is the agents' "needs you" signal, e.g. Claude's `preferredNotifChannel terminal_bell`.
         self.signal_attention(None);
     }
 
     fn unhandled_osc(&mut self, screen: &mut vt100::Screen, params: &[&[u8]]) {
-        // Desktop-notification escapes carry the agent's status message.
-        //   OSC 9 ; <message>
-        //   OSC 777 ; notify ; <title> ; <body>
-        // A hyperlink pair brackets its label's glyphs.
-        //   OSC 8 ; <params> ; <uri>   …label…   OSC 8 ; ;
+        // OSC 9 ; <message> and OSC 777 ; notify ; <title> ; <body> carry a desktop notification.
         match params {
             [b"9", msg] => self.signal_attention(Some(String::from_utf8_lossy(msg).into_owned())),
             [b"777", kind, rest @ ..] if kind.eq_ignore_ascii_case(b"notify") => {
@@ -284,30 +186,18 @@ impl vt100::Callbacks for TermSignals {
         self.app_copy.offer(ty, data);
     }
 
-    // `paste_from_clipboard` keeps vt100's no-op: an app is never told what is
-    // on the clipboard, and tmux is kept from answering either
-    // (`set-clipboard external`, `Tmux::session_config` in `tmux`).
+    // vt100's `paste_from_clipboard` stays a no-op; tmux is kept from answering by `set-clipboard external`.
 }
 
-/// Session terminal parser, specialized to capture terminal signals via
-/// [`TermSignals`]. The captured `Screen` is callback-independent, so
-/// rendering is unaffected.
 pub type SessionParser = vt100::Parser<TermSignals>;
 
-/// Internal bundle of I/O handles before wiring.
 struct SessionIo {
     output: PaneOutput,
     input: Box<dyn Write + Send>,
     backend_id: String,
-    /// Whether these handles came from a fresh spawn or an adopt.
     mode: WireMode,
-    /// Replayed-history bytes at the front of `output`, from
-    /// [`AdoptedSession::seed_len`] (always 0 for a spawn).
     seed_len: usize,
-    /// Whether the parser starts with its grid, or without one until it is
-    /// first asked for ([`Session::adopt_dormant`]).
     resident: bool,
-    /// Where the pane's real size is reported, when the backend can say.
     size: Option<PaneSize>,
 }
 
@@ -337,20 +227,12 @@ impl SessionIo {
     }
 }
 
-/// Whether we are wiring a freshly-spawned process or reconnecting to an
-/// already-running one. Controls the initial `last_output_at`: a fresh spawn
-/// is legitimately starting up (recent activity → `Busy`), whereas an adopt's
-/// first output is the forced SIGWINCH repaint, which must not be mistaken for
-/// real agent activity.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum WireMode {
     Spawn,
     Adopt,
 }
 
-/// Initial `last_output_at` for a session being wired in `mode`. `Spawn` uses
-/// "now" (fresh process is active); `Adopt` uses `0` (stale) so the post-adopt
-/// repaint doesn't read as activity — the first *real* output flips it to busy.
 fn initial_output_at(mode: WireMode) -> u64 {
     match mode {
         WireMode::Spawn => now_millis(),
@@ -358,14 +240,8 @@ fn initial_output_at(mode: WireMode) -> u64 {
     }
 }
 
-/// Max pending input messages per session before sends fail fast. Each
-/// message is one key/paste payload; a full queue means the tmux stdin
-/// writer has stalled, and dropping with an error beats unbounded growth.
 const INPUT_CHANNEL_CAPACITY: usize = 1024;
 
-/// Queue input without ever blocking — `send_input` is called from the
-/// render/update path, so a stalled writer must surface as an error, not a
-/// hang.
 fn send_to_input_channel(tx: &mpsc::Sender<Vec<u8>>, data: Vec<u8>, what: &str) -> Result<()> {
     use tokio::sync::mpsc::error::TrySendError;
     tx.try_send(data).map_err(|e| match e {
@@ -374,10 +250,6 @@ fn send_to_input_channel(tx: &mpsc::Sender<Vec<u8>>, data: Vec<u8>, what: &str) 
     })
 }
 
-/// The shared cells [`TermSignals`] writes from the reader thread; a
-/// [`Session`] keeps its own handles to read them back (`agent_title`,
-/// `needs_attention`, …). Shell and program panes drop theirs — the parser's
-/// `TermSignals` owns its own clones, so nothing dangles.
 struct SignalCells {
     last_title: Arc<Mutex<Option<String>>>,
     attention_at: Arc<AtomicU64>,
@@ -397,7 +269,6 @@ impl SignalCells {
         }
     }
 
-    /// The [`TermSignals`] callback bundle writing into these cells.
     fn term_signals(&self) -> TermSignals {
         TermSignals {
             title: Arc::clone(&self.last_title),
@@ -410,35 +281,16 @@ impl SignalCells {
     }
 }
 
-/// The grid a pane is left with while it has none of its own ([`WiredPane::evict`]):
-/// the smallest `vt_floor` allows. It still reads every byte, which is what
-/// keeps the title, a bell, a notification and the input modes current.
 const DORMANT_GRID: (u16, u16) = (2, 2);
 
-/// How long an unanswered snapshot request stands before it may be asked
-/// again. The answer comes back on the reader thread, so an answer that never
-/// comes — a full pane channel dropped it, the command failed — shows up only
-/// as this running out.
 const SNAPSHOT_RETRY_MS: u64 = 2_000;
 
-/// Whether a pane's parser holds its grid, and the handshake for getting it
-/// back. Shared by the pane and its reader thread, which is where a snapshot
-/// is installed.
 #[derive(Default)]
 struct Residency {
-    /// Set by [`WiredPane::evict`], cleared when a snapshot is installed.
     dormant: AtomicBool,
-    /// `now_millis()` of the snapshot request still unanswered; `0` for none.
     requested_at: AtomicU64,
-    /// Moves every time the grid is rebuilt, so what was read off the grid
-    /// before stops matching ([`WiredPane::content_stamp`]). Not when it is
-    /// dropped: nothing reads a pane off screen off its grid, and a drop that
-    /// moved it would cost a frame for a pane nobody is looking at.
     changes: AtomicU64,
-    /// Wakes a caller waiting on a snapshot ([`WiredPane::wait_resident`]).
     landed: (Mutex<()>, std::sync::Condvar),
-    /// Lines of scrollback a grid of this pane keeps, given at construction:
-    /// the reader thread rebuilds the grid from a snapshot with it.
     scrollback: usize,
 }
 
@@ -463,9 +315,6 @@ impl Residency {
     }
 }
 
-/// The state a grid carries that its cells do not: the pen, the input modes a
-/// keystroke is encoded by, whether the cursor is hidden, and which screen is
-/// up. Replayed into a parser that replaces it, in either direction.
 fn carried_state(screen: &vt100::Screen) -> Vec<u8> {
     let mut out = Vec::new();
     if screen.alternate_screen() {
@@ -479,15 +328,6 @@ fn carried_state(screen: &vt100::Screen) -> Vec<u8> {
     out
 }
 
-/// Terminal bytes that rebuild the pane `snapshot` describes, on a parser of
-/// its size: the normal screen's history and rows, then the alternate screen
-/// if it is up, then the cursor, then what `dormant` kept track of meanwhile
-/// (the pen, the input modes and the cursor's visibility).
-///
-/// Every row is written, blank ones included, so the last row of the capture
-/// lands on the bottom row of the screen and the rows above it scroll into the
-/// history in order — the screen is the pane's, not the capture's text pushed
-/// to the top. Wrapped rows arrive joined and wrap again at the same width.
 pub fn snapshot_seed(snapshot: &PaneSnapshot, dormant: &vt100::Screen) -> Vec<u8> {
     let mut out = Vec::new();
     let write_rows = |out: &mut Vec<u8>, rows: &[String]| {
@@ -513,8 +353,6 @@ pub fn snapshot_seed(snapshot: &PaneSnapshot, dormant: &vt100::Screen) -> Vec<u8
     out
 }
 
-/// A parser holding the pane `snapshot` describes, for a reader that wants it
-/// as it stands (the content search) and not as the pane's own grid.
 pub fn parser_from_snapshot(snapshot: &PaneSnapshot, scrollback: usize) -> SessionParser {
     let (rows, cols) = vt_floor(snapshot.rows, snapshot.cols);
     let blank = vt100::Parser::new(
@@ -532,13 +370,6 @@ pub fn parser_from_snapshot(snapshot: &PaneSnapshot, scrollback: usize) -> Sessi
     parser
 }
 
-/// The wired I/O every pane kind shares: the vt100 parser the reader loop
-/// feeds, the writer channel, the exit flag, the output stamp, and the backend
-/// pane they belong to. [`ShellPane`], [`ProgramPane`] and [`Session`] each
-/// *embed* one (composition — a trait would only re-declare these fields) and
-/// `Deref` to it, so existing call sites (`session.parser`,
-/// `shell.backend_id`, `pane.send_input(..)`) keep working unchanged while
-/// the accessors exist once.
 struct ReaderSignals {
     exited: Arc<AtomicBool>,
     last_output_at: Arc<AtomicU64>,
@@ -548,59 +379,28 @@ struct ReaderSignals {
 pub struct WiredPane {
     pub parser: Arc<Mutex<SessionParser>>,
     input_tx: mpsc::Sender<Vec<u8>>,
-    /// The backend pane this is. For a shell pane it is read so it can be
-    /// *persisted*: the window outlives the interface, and re-adopting it on
-    /// the next start is what stops a restart forgetting the shell and
-    /// orphaning its window. A program pane's is deliberately not persisted —
-    /// its window *name* is the identity that survives a restart
-    /// (`identity::program_window_name`), because a deterministic name cannot go
-    /// stale where a stored id can.
     pub(crate) backend_id: String,
     exited: Arc<AtomicBool>,
     last_output_at: Arc<AtomicU64>,
-    /// How many chunks of output the parser has taken — see
-    /// [`Self::output_seq`].
     output_seq: Arc<AtomicU64>,
-    /// Which pane kind this is, for input-channel error messages.
     label: &'static str,
-    /// Whether `parser` holds this pane's grid right now — see [`Self::evict`].
     residency: Arc<Residency>,
-    /// The backend input is claimed through — `None` where there is no live
-    /// pane to size (a placeholder, a test stub).
     backend: Option<Arc<dyn SessionBackend>>,
-    /// The pane's real size, where the backend reports it.
     size: Option<PaneSize>,
-    /// The size last asked for from the rect this pane is painted into
-    /// ([`pack_size`]; 0 before the first).
     wanted: AtomicU32,
-    /// The OSC 52 writes this pane's app makes — see [`AppCopy`].
     app_copy: Arc<AppCopy>,
 }
 
 impl WiredPane {
-    /// The gate this pane's OSC 52 writes go through.
     pub fn app_copy(&self) -> &Arc<AppCopy> {
         &self.app_copy
     }
 
-    /// Send input, taking the pane's size first when it is not the size of the
-    /// rect it is painted into here.
-    ///
-    /// Input is what says which instance the user is at: on a pane several
-    /// instances show, the one being typed into sizes it and the others follow
-    /// (tmux's own `window-size latest`, with keystrokes as the activity). A
-    /// pane already at this instance's size needs nothing, so a claim is one
-    /// atomic comparison per keystroke and a message only when it changes
-    /// something.
     pub fn send_input(&self, data: Vec<u8>) -> Result<()> {
         self.claim_size();
         send_to_input_channel(&self.input_tx, data, self.label)
     }
 
-    /// Size the pane to the rect it was last painted into here, and become the
-    /// instance that sizes it — the user is at this one. Called before input,
-    /// and on focus (`Terminals::focus`). Nothing is sent for a pane already
-    /// that size, nor before the pane has been painted.
     pub fn claim_size(&self) {
         let (Some(backend), Some(size)) = (&self.backend, &self.size) else {
             return;
@@ -617,14 +417,6 @@ impl WiredPane {
         }
     }
 
-    /// Take the pane's size back when the client that was sizing it has gone.
-    ///
-    /// Nothing else would: this instance's rect has not changed, so the render
-    /// path has no reason to ask, and a pane left at the departed instance's
-    /// size would stay letterboxed until the next keystroke. Called by the
-    /// render path per painted pane, and costs it one atomic load unless there
-    /// is something to do — which is one resize, to the size this instance
-    /// already asked for.
     pub fn retake_size(&self) {
         let (Some(backend), Some(size)) = (&self.backend, &self.size) else {
             return;
@@ -644,71 +436,30 @@ impl WiredPane {
         }
     }
 
-    /// Whether the pane is being sized by another client — a hint for saying
-    /// why the grid is not the size of its rect. See [`PaneSize::sized_elsewhere`].
     pub fn sized_elsewhere(&self) -> bool {
         self.size.as_ref().is_some_and(PaneSize::sized_elsewhere)
     }
 
-    /// When this pane last produced live output, as epoch milliseconds.
-    ///
-    /// The *activity* signal — quiescence, "printing", how long a pane has
-    /// been quiet — stored after a read of live bytes and monotonic
-    /// non-decreasing, since the reader thread only ever stores `now`. Not the
-    /// loop's redraw signal: that is [`Self::output_seq`], because a
-    /// millisecond cannot tell two chunks apart.
     pub fn last_output_at(&self) -> u64 {
         self.last_output_at.load(Ordering::Relaxed)
     }
 
-    /// A count that moves every time the parser has taken more output,
-    /// replayed history included.
-    ///
-    /// **The redraw signal**, where [`Self::last_output_at`] is the activity
-    /// one. A millisecond stamp cannot tell two chunks inside one millisecond
-    /// apart, so a frame painted between them never learnt of the second; and
-    /// it was stored *before* the parse, so a loop that woke on it quickly
-    /// enough painted the grid without the bytes that woke it. This is bumped
-    /// after the parse, once per chunk, so a changed count always means a grid
-    /// with more in it.
     pub fn output_seq(&self) -> u64 {
         self.output_seq.load(Ordering::Acquire)
     }
 
-    /// The cell behind [`Self::output_seq`], which is how
-    /// [`crate::output_wake::arm`] names this pane.
     pub fn output_seq_cell(&self) -> &AtomicU64 {
         &self.output_seq
     }
 
-    /// Whether the pane's process/stream has ended.
-    ///
-    /// Read from the reader loop's flag rather than by asking the backend, so
-    /// the answer costs an atomic load on a render path. What it enables is
-    /// reporting "this exited" instead of painting the frozen grid it left
-    /// behind.
     pub fn has_exited(&self) -> bool {
         self.exited.load(Ordering::SeqCst)
     }
 
-    /// The backend-specific pane identifier.
     pub fn backend_id(&self) -> &str {
         &self.backend_id
     }
 
-    /// Ask the backend to size the pane to its rect, and size the local vt100
-    /// grid with it where the backend cannot report the pane's real size.
-    ///
-    /// Floored for the reason `vt_floor` documents: a cramped layout really
-    /// does compute a one-cell rect, and a grid that small is where vt100
-    /// underflows on the next byte written into it. A pane with no grid is
-    /// resized at the backend only: its grid comes back at whatever size the
-    /// pane has when it does.
-    ///
-    /// Where the backend reports the pane's real size, the grid is left to that
-    /// report rather than set here: the resize may be declined (another client
-    /// is sizing the pane), and when it is not, the report arrives in the
-    /// output stream at the point the program starts writing for the new size.
     pub fn resize(&self, backend: &dyn SessionBackend, rows: u16, cols: u16) -> Result<()> {
         let (rows, cols) = vt_floor(rows, cols);
         self.wanted.store(pack_size(rows, cols), Ordering::Relaxed);
@@ -725,28 +476,15 @@ impl WiredPane {
         Ok(())
     }
 
-    /// Whether the parser holds this pane's grid, rather than the two cells it
-    /// is left with off screen ([`Self::evict`]).
     pub fn is_resident(&self) -> bool {
         self.residency.is_resident()
     }
 
-    /// [`Self::last_output_at`], moved as well whenever the grid is rebuilt:
-    /// the stamp for anything read off the grid, which a rebuild changes
-    /// without the pane printing anything.
     pub fn content_stamp(&self) -> u64 {
         self.last_output_at()
             .wrapping_add(self.residency.changes.load(Ordering::Acquire))
     }
 
-    /// Drop this pane's grid and history, keeping two cells that go on
-    /// reading its output for what does not need a grid: the title, a bell, a
-    /// notification, the input modes, and when it last printed. Returns
-    /// whether there was a grid to drop.
-    ///
-    /// Only for a pane whose backend can give the grid back exactly
-    /// ([`Capabilities::supports_snapshots`](crate::Capabilities::supports_snapshots)): [`Self::restore`] asks for it,
-    /// and the reader loop rebuilds it where the answer lands in the stream.
     pub fn evict(&self) -> bool {
         let Ok(mut parser) = self.parser.lock() else {
             return false;
@@ -755,8 +493,6 @@ impl WiredPane {
             return false;
         }
         let mut signals = std::mem::take(parser.callbacks_mut());
-        // Positions on a grid that is going; the rebuild records them again
-        // from whatever links the capture carries.
         signals.hyperlinks = HyperlinkTable::default();
         signals.pending_link = None;
         let carried = carried_state(parser.screen());
@@ -772,10 +508,6 @@ impl WiredPane {
         true
     }
 
-    /// Ask for this pane's grid back, unless it has one or has already asked
-    /// within `SNAPSHOT_RETRY_MS`. Returns at once, and whether this call is
-    /// the one that asked; the grid arrives on the reader thread
-    /// ([`Self::wait_resident`]).
     pub fn restore(&self, backend: &dyn SessionBackend) -> bool {
         if self.is_resident() {
             return false;
@@ -797,8 +529,6 @@ impl WiredPane {
         }
     }
 
-    /// Wait up to `budget` for the grid [`Self::restore`] asked for. Returns
-    /// whether the pane has one.
     pub fn wait_resident(&self, budget: std::time::Duration) -> bool {
         let deadline = std::time::Instant::now() + budget;
         let (lock, landed) = &self.residency.landed;
@@ -819,7 +549,6 @@ impl WiredPane {
     }
 }
 
-/// A companion shell pane running alongside an agent session.
 pub struct ShellPane {
     wired: WiredPane,
 }
@@ -831,19 +560,9 @@ impl std::ops::Deref for ShellPane {
     }
 }
 
-/// A program a plugin asked for, running in a pane of its own.
-///
-/// The same wired I/O as [`ShellPane`], reached through the same
-/// `Session::wire_up`, so the subtle part (a `vt100` parser fed by a reader
-/// task, a writer channel, an exit flag and an output stamp) exists once. What it
-/// is *not* is a shell, and not a session: it belongs to a plugin, holds a program
-/// that plugin named, and carries its own backend handle so it can be resized and
-/// killed without a `Session` to route through.
 pub struct ProgramPane {
     wired: WiredPane,
-    /// Kept so the pane can resize and kill itself.
     backend: Arc<dyn SessionBackend>,
-    /// What is running, for reporting.
     pub program: String,
 }
 
@@ -855,7 +574,6 @@ impl std::ops::Deref for ProgramPane {
 }
 
 impl ProgramPane {
-    /// Start `program` in a new pane on `backend`.
     #[allow(clippy::too_many_arguments)]
     pub fn spawn(
         backend: Arc<dyn SessionBackend>,
@@ -869,8 +587,6 @@ impl ProgramPane {
         scrollback: usize,
     ) -> Result<Self> {
         let spawned = backend.spawn(window_name, program, args, cwd, env, rows, cols)?;
-        // No session id: a program belongs to a plugin, and the role is what
-        // keeps its window from ever resolving as somebody's agent.
         if let Err(e) = backend.stamp_window(&spawned.backend_id, "", WindowRole::Program) {
             debug!("could not stamp the program window {window_name}: {e:#}");
         }
@@ -890,8 +606,6 @@ impl ProgramPane {
         })
     }
 
-    /// Reconnect to a pane that is already running — the restart path, where the
-    /// window was found again by its deterministic name.
     pub fn adopt(
         backend: Arc<dyn SessionBackend>,
         backend_id: &str,
@@ -917,9 +631,6 @@ impl ProgramPane {
         })
     }
 
-    /// Whether the pane was resized. A caller that memoizes the size it asked
-    /// for reads this, so a refused resize is asked again on the next frame
-    /// rather than remembered as done — see [`Session::resize`].
     pub fn resize(&self, rows: u16, cols: u16) -> bool {
         if let Err(e) = self.wired.resize(self.backend.as_ref(), rows, cols) {
             tracing::debug!(
@@ -931,7 +642,6 @@ impl ProgramPane {
         true
     }
 
-    /// End the program and take its window with it.
     pub fn kill(&self) {
         if let Err(e) = self.backend.kill(&self.wired.backend_id) {
             tracing::warn!(
@@ -942,23 +652,17 @@ impl ProgramPane {
     }
 }
 
-/// What a pane knows of the session it belongs to: the identity its windows
-/// are stamped with and where they run. The session's own record (its agent,
-/// worktrees, status) is the embedder's, never the runtime's.
 #[derive(Debug, Clone)]
 pub struct PaneInfo {
     pub id: SessionId,
     pub name: String,
-    /// The directory a companion shell pane opens in.
     pub cwd: Option<std::path::PathBuf>,
     pub backend_id: Option<String>,
     pub shell_backend_id: Option<String>,
-    /// The host the session runs on, or `None` for this machine.
     pub remote_host: Option<String>,
 }
 
 impl PaneInfo {
-    /// A pane of a new session called `name`, with a fresh identity.
     pub fn new(name: String) -> Self {
         Self {
             id: SessionId::default(),
@@ -971,37 +675,15 @@ impl PaneInfo {
     }
 }
 
-/// A running session connected to a backend.
 pub struct Session {
     pub info: PaneInfo,
     wired: WiredPane,
     backend: Arc<dyn SessionBackend>,
-    /// Where the companion shell runs when that is not `backend`: a
-    /// session whose agent pane is a stream (a Fleet session's, ADR-41) cannot
-    /// open a window, so its shell is a window of a multiplexer on the same
-    /// machine. `None`: the agent's own backend.
     shell_backend: Option<Arc<dyn SessionBackend>>,
-    /// The reader thread's title / attention / notification cells, shared with
-    /// the parser's [`TermSignals`] (which bumps `meta_gen` on every write).
     signals: SignalCells,
-    /// The generation last consumed by [`Self::sync_agent_meta`]. Starts at
-    /// `u64::MAX` so the first tick always syncs.
     last_synced_meta_gen: u64,
-    /// `now_millis()` of the last attention acknowledgement (set while the
-    /// session is the active one). Attention is pending when
-    /// `attention_at > attention_ack_at`.
     attention_ack_at: u64,
     pub shell_pane: Option<ShellPane>,
-    /// True for a **placeholder** session: a persisted remote session whose host
-    /// is currently unreachable, so it has no live backend pane / reader / writer
-    /// (its `input_tx` is a dead channel and its `parser` holds a static "host
-    /// unreachable" notice), replaced in place by the real adopted session once
-    /// the host recovers.
-    ///
-    /// **Unused in v2.** Its only caller was v1's remote-restore loop, which went
-    /// with `src/app`; thurbox derives an unreachable session from "a remote
-    /// session with no live pane" instead, so nothing constructs a placeholder
-    /// and this is only ever `false`.
     placeholder: bool,
 }
 
@@ -1013,25 +695,10 @@ impl std::ops::Deref for Session {
 }
 
 impl Session {
-    /// Whether the backend reports this session's pane as exited.
-    ///
-    /// A round trip, unlike [`WiredPane::has_exited`]: that atomic flag flips
-    /// on the reader's EOF, and a window kept by `remain-on-exit` never
-    /// delivers one — the pane an agent exited out of is still there, and only
-    /// the backend can still be asked. Off the render path for that cost;
-    /// called on the deliberate chord that must tell a dead pane from a live
-    /// one.
     pub fn is_dead(&self) -> Result<bool> {
         Ok(self.backend.is_dead(self.backend_id())?)
     }
 
-    /// Whether the backend reports this session's companion shell pane as dead.
-    ///
-    /// `None` when there is no shell pane. Asked of the shell's own backend id,
-    /// not the agent's: the two panes die apart (an agent can `/exit` while its
-    /// shell runs on, and the reverse), so a caller acting on the surface the
-    /// user is looking at must ask the pane that surface names — the same pane
-    /// the embedder's input would deliver to.
     pub fn shell_is_dead(&self) -> Option<Result<bool>> {
         self.shell_pane.as_ref().map(|shell| {
             self.shell_backend()
@@ -1040,9 +707,6 @@ impl Session {
         })
     }
 
-    /// Reconnect to an existing backend session. `seed` is the optional
-    /// pre-captured pane state (see [`PaneStream::capture_history`](crate::PaneStream::capture_history));
-    /// `None` = the backend captures it during the adopt.
     #[allow(clippy::too_many_arguments)]
     pub fn adopt(
         name: String,
@@ -1076,12 +740,6 @@ impl Session {
         ))
     }
 
-    /// [`Self::adopt`] over IO opened elsewhere: an embedder's own stream to
-    /// the pane, such as a terminal stream, in place of the backend's
-    /// connection. The backend still answers for the pane's size and state.
-    ///
-    /// The pane starts without a grid: a terminal stream's first frame is the
-    /// screen as a snapshot, and only a pane without a grid installs one.
     #[allow(clippy::too_many_arguments)]
     pub fn adopt_io(
         name: String,
@@ -1101,12 +759,6 @@ impl Session {
         Self::wire_io(info, rows, cols, io, backend, scrollback)
     }
 
-    /// [`Self::adopt`] for a session nobody is looking at: no history is
-    /// captured and no grid is built — only its title and mouse modes are replayed. The parser starts as the two cells
-    /// [`WiredPane::evict`] leaves, and the grid is fetched on the first
-    /// [`WiredPane::restore`] — which, for a session that is never shown, is
-    /// never. Only for a backend that
-    /// [`supports_snapshots`](crate::Capabilities::supports_snapshots).
     #[allow(clippy::too_many_arguments)]
     pub fn adopt_dormant(
         name: String,
@@ -1116,10 +768,6 @@ impl Session {
         backend: &Arc<dyn SessionBackend>,
         scrollback: usize,
     ) -> Result<Self> {
-        // Only the title and modes, not `None`: `None` is the backend capturing
-        // the whole history itself. The seed goes through the stream like any
-        // other, so the two cells' callbacks report it and `seed_len` keeps it
-        // from reading as output.
         let adopted =
             backend.adopt(backend_id, rows, cols, Some(backend.state_seed(backend_id)))?;
         let mut info = PaneInfo::new(name);
@@ -1150,13 +798,10 @@ impl Session {
         })
     }
 
-    /// Whether this session's backend can give a dropped grid back
-    /// ([`WiredPane::evict`]).
     pub fn supports_snapshots(&self) -> bool {
         !self.placeholder && self.backend.capabilities().supports_snapshots
     }
 
-    /// The agent's pane, or its companion shell's.
     fn wired_pane(&self, shell: bool) -> Option<&WiredPane> {
         if shell {
             self.shell_pane.as_ref().map(|pane| &pane.wired)
@@ -1165,10 +810,6 @@ impl Session {
         }
     }
 
-    /// [`WiredPane::evict`] one of this session's panes.
-    ///
-    /// A pane with no grid streams no output where its backend can hold it
-    /// back ([`PaneStream::hide_output`](crate::PaneStream::hide_output)).
     pub fn evict_pane(&self, shell: bool) -> bool {
         let Some(pane) = self.wired_pane(shell) else {
             return false;
@@ -1183,15 +824,11 @@ impl Session {
         true
     }
 
-    /// [`WiredPane::restore`] one of this session's panes, reporting whether
-    /// this call asked.
     pub fn restore_pane(&self, shell: bool) -> bool {
         self.wired_pane(shell)
             .is_some_and(|pane| pane.restore(self.backend_of(shell).as_ref()))
     }
 
-    /// Create parser, spawn reader/writer loops for the given I/O handles.
-    /// `label` names the pane kind in input-channel error messages.
     fn wire_up(
         rows: u16,
         cols: u16,
@@ -1201,15 +838,7 @@ impl Session {
         scrollback: usize,
     ) -> (WiredPane, SignalCells) {
         let signals = SignalCells::new();
-        // The floor applies at construction too: a session first painted into a
-        // one-column pane would otherwise panic on its first line of output,
-        // before any resize could correct it.
         let (rows, cols) = vt_floor(rows, cols);
-        // The rect the caller is about to paint into, which the render path's
-        // own memo starts from too — so the first claim knows it. Taken before
-        // a dormant pane's grid size replaces `rows`/`cols`: the memo matches
-        // the rect, so no paint resizes the pane to correct it, and a claim
-        // would size it to the dormant grid.
         let wanted = pack_size(rows, cols);
         let (residency, (rows, cols), kept) = if io.resident {
             (Residency::resident(scrollback), (rows, cols), scrollback)
@@ -1268,7 +897,6 @@ impl Session {
         (wired, signals)
     }
 
-    /// Wire up parser, reader loop, and writer loop for a new session.
     fn wire_io(
         info: PaneInfo,
         rows: u16,
@@ -1291,12 +919,6 @@ impl Session {
         }
     }
 
-    /// Build a **placeholder** session for a persisted remote session whose host
-    /// is currently unreachable. It carries no live backend pane: the reader /
-    /// writer loops are never spawned, `input_tx` is a dead channel (keystrokes
-    /// are silently dropped), and the `parser` is seeded with a static notice.
-    /// It stands in until the host recovers and [`Self::adopt`] replaces it in
-    /// place.
     pub fn placeholder(
         mut info: PaneInfo,
         rows: u16,
@@ -1324,8 +946,6 @@ impl Session {
             p.process(notice.as_bytes());
         }
 
-        // A dead input channel: the receiver is dropped immediately, so any
-        // keystroke `try_send` fails fast and the byte is discarded.
         let (input_tx, _dead_rx) = mpsc::channel(INPUT_CHANNEL_CAPACITY);
 
         Self {
@@ -1354,37 +974,10 @@ impl Session {
         }
     }
 
-    /// Whether this is a placeholder for an unreachable remote session (no live
-    /// backend pane). See [`Self::placeholder`].
     pub fn is_placeholder(&self) -> bool {
         self.placeholder
     }
 
-    /// Blocking read loop feeding the vt100 parser. Runs on a
-    /// `spawn_blocking` thread and exits only when `reader` ends.
-    /// Lifecycle contract: every path that retires a `Session` must call
-    /// `kill()`/`detach()` so the backend unregisters the pane and this
-    /// thread sees the stream end — a silent drop leaks the thread (blocked
-    /// waiting for the next chunk) for the process lifetime.
-    ///
-    /// `seed_len` is the number of bytes at the front of `reader` that are
-    /// replayed history (an adopt's scrollback seed, chained ahead of the
-    /// live stream — see `PaneStream::adopt` on the tmux-protocol server) rather
-    /// than genuine pane activity. Those bytes still reach the parser, but
-    /// must not stamp `last_output_at`: a restart/reattach replaying hours of
-    /// scrollback would otherwise look identical to the agent having just
-    /// printed, defeating [`initial_output_at`]'s deliberate staleness for
-    /// `WireMode::Adopt` the instant the reader's first bytes arrive.
-    ///
-    /// A snapshot the pane asked for ([`WiredPane::restore`]) arrives here too,
-    /// between two chunks of output, at exactly the point of the stream it
-    /// describes — so installing it before the next chunk is what keeps a
-    /// rebuilt grid from
-    /// losing or repeating a byte. A partial character held in `carry` stays
-    /// held: its first bytes came before the snapshot, which cannot show a
-    /// character tmux has not finished either, and the rest come after. Not
-    /// across a resync: the rest of that character may be in the output it
-    /// replaces.
     fn reader_loop(
         reader: PaneOutput,
         parser: Arc<Mutex<SessionParser>>,
@@ -1393,21 +986,9 @@ impl Session {
         mut seed_len: usize,
         size: Option<PaneSize>,
     ) {
-        // Bytes of a trailing, not-yet-complete UTF-8 character held back from
-        // the previous chunk. The agent's output is a single byte stream, but
-        // tmux's `%output` framing (and the OS read boundary under it) can fall
-        // in the middle of a multi-byte character. vt100 is NOT robust to a
-        // `process()` chunk that ends mid-codepoint — it can swallow a following
-        // control byte (e.g. a newline), misplacing later output — so we never
-        // hand it a truncated tail. `carry` is at most 3 bytes (a 4-byte char
-        // missing one).
+        // vt100 can swallow the next control byte after a chunk that ends mid-codepoint.
         let mut carry: Vec<u8> = Vec::new();
         for chunk in reader {
-            // Taken between chunks, never during one: a reported size is a
-            // chunk of its own (`PaneChunk::Resized`), so every byte before it
-            // is already in the grid and none after it is. A pane with no grid
-            // has nothing to resize; the grid it gets back is built at the
-            // pane's size as tmux reports it then.
             if let Some((rows, cols)) = size.as_ref().and_then(PaneSize::take) {
                 let (rows, cols) = vt_floor(rows, cols);
                 if let Ok(mut p) = parser.lock() {
@@ -1425,11 +1006,6 @@ impl Session {
                     let ready = utf8_ready_prefix_len(&data);
                     carry = data.split_off(ready);
                     Self::feed_parser(&parser, &data);
-                    // Bytes beyond the seed boundary are live activity; a chunk
-                    // that is entirely within the seed is not. Activity records
-                    // the chunk even when its trailing character is still
-                    // buffered. The redraw sequence moves only when the parser
-                    // has taken a complete prefix, and after it has done so.
                     if seed_len < n {
                         signals
                             .last_output_at
@@ -1441,8 +1017,6 @@ impl Session {
                         crate::output_wake::notify(&signals.output_seq);
                     }
                 }
-                // A hidden pane's title and modes: parsed, never taken for
-                // output, since what they say is state the pane already had.
                 PaneChunk::State(state) => Self::feed_parser(&parser, &state),
                 PaneChunk::Snapshot(snapshot) => {
                     Self::install(&parser, &residency, &snapshot, false);
@@ -1457,28 +1031,16 @@ impl Session {
             }
         }
         debug!("Session reader: stream ended");
-        // Flush any leftover partial UTF-8 sequence, since no more bytes are
-        // coming to complete it.
         Self::feed_parser(&parser, &carry);
         signals.output_seq.fetch_add(1, Ordering::Release);
         signals.exited.store(true, Ordering::SeqCst);
     }
 
-    /// A rebuilt grid is new content to paint, like output.
     fn rebuilt(signals: &ReaderSignals) {
         signals.output_seq.fetch_add(1, Ordering::Release);
         crate::output_wake::notify(&signals.output_seq);
     }
 
-    /// Rebuild a dropped grid from `snapshot`, in place of the two cells that
-    /// stood in for it, and wake whoever is waiting for it.
-    ///
-    /// A pane that has its grid already ignores a snapshot: that grid is
-    /// exact, and one rebuilt from a capture is only as exact as tmux's —
-    /// unless it is a `resync`, which comes because output was dropped from
-    /// that grid. A pane without a grid takes a resync only when it asked for
-    /// its grid back ([`WiredPane::restore`]), whose answer this is then:
-    /// otherwise there is no grid to correct.
     fn install(
         parser: &Mutex<SessionParser>,
         residency: &Residency,
@@ -1494,7 +1056,6 @@ impl Session {
             if rebuild {
                 let seed = snapshot_seed(snapshot, parser.screen());
                 let mut signals = std::mem::take(parser.callbacks_mut());
-                // Positions on the grid being replaced, as `evict` drops them.
                 signals.hyperlinks = HyperlinkTable::default();
                 signals.pending_link = None;
                 let (rows, cols) = vt_floor(snapshot.rows, snapshot.cols);
@@ -1512,13 +1073,10 @@ impl Session {
         }
         residency.requested_at.store(0, Ordering::Release);
         let (lock, landed) = &residency.landed;
-        // Taken so a waiter cannot check the flag, miss this wake-up and then
-        // sleep out its budget.
         let _guard = lock.lock();
         landed.notify_all();
     }
 
-    /// Hand `bytes` to the parser, unless there are none — which takes no lock.
     fn feed_parser(parser: &Mutex<SessionParser>, bytes: &[u8]) {
         if bytes.is_empty() {
             return;
@@ -1528,11 +1086,6 @@ impl Session {
         }
     }
 
-    /// Hand `input_rx` to a thread of its own that writes it to the pane.
-    ///
-    /// A thread and not a task: a write can block — a pipe to a server that
-    /// stopped reading, a psmux paste running a process of its own — and on
-    /// the async runtime it held a worker for as long as it did.
     fn spawn_writer(mut writer: Box<dyn Write + Send>, mut input_rx: mpsc::Receiver<Vec<u8>>) {
         let spawned = std::thread::Builder::new()
             .name("pane-writer".into())
@@ -1554,30 +1107,7 @@ impl Session {
         }
     }
 
-    /// Resize the agent's own pane and grid — and **only** that one.
-    /// (`send_input` / `has_exited` / `last_output_at` / `backend_id` come from
-    /// the embedded [`WiredPane`].)
-    ///
-    /// Reports whether it reached the backend. The command is sent rather than
-    /// asked (see `tmux_compat::Server::resize`), so what can still fail is the sending
-    /// — a connection that is gone or not yet started. The render path memoizes
-    /// the size it asked for to keep a round trip off every frame, and a
-    /// memoized failure would leave the agent wrapping at the old width with
-    /// nothing to trigger another attempt, so it memoizes only on `true`.
-    ///
-    /// The companion shell is sized by [`Self::resize_shell`] and by nothing
-    /// else. This used to size both, on the assumption that the two take turns
-    /// in one rect — true while the shell was a second tab of the centre, and
-    /// false the moment an arrangement gives the shell a slot of its own. A
-    /// shell in a 35% column then dragged the agent holding `center` down to
-    /// its width, every frame, and the agent rendered at the shell's size
-    /// (#1220). A pane's size comes from the rect that pane is painted into;
-    /// there is no size the two share.
     pub fn resize(&self, rows: u16, cols: u16) -> bool {
-        // A placeholder has no live pane; only resize its local notice buffer.
-        // Talking to the (possibly-down) backend here would issue a blocking
-        // ssh resize on the UI thread — the freeze we're avoiding. Floored for
-        // the reason `WiredPane::resize` (the live path) documents.
         if self.placeholder {
             let (rows, cols) = vt_floor(rows, cols);
             if let Ok(mut parser) = self.wired.parser.lock() {
@@ -1585,7 +1115,6 @@ impl Session {
                     .screen_mut()
                     .set_size(rows.try_into().unwrap(), cols.try_into().unwrap());
             }
-            // Nothing to reach, and nothing to ask again for.
             return true;
         }
         if let Err(e) = self.wired.resize(self.backend.as_ref(), rows, cols) {
@@ -1595,25 +1124,10 @@ impl Session {
         true
     }
 
-    /// Resize the companion shell's pane and grid, if there is one.
-    ///
-    /// The shell's half of [`Self::resize`], separate because the two panes are
-    /// separate surfaces: each is sized from the rect it was painted into, and
-    /// neither's geometry is derived from the other's. Reports what that one
-    /// reports, and for the same reason — the render path memoizes only a size
-    /// that reached the backend.
     pub fn resize_shell(&self, rows: u16, cols: u16) -> bool {
         let Some(shell) = &self.shell_pane else {
-            // No shell, so nothing to reach and nothing left at a stale width.
             return true;
         };
-        // [`Self::resize`]'s placeholder branch, spelled out here too — grid
-        // included. Reporting `true` without sizing the local buffer would let
-        // the render path memoize a size the parser never took, leaving the
-        // pane wrapped at the old width with nothing to ask again: the #1220
-        // failure, one pane down. Nothing constructs a placeholder in v2 (see
-        // the field), so this costs a branch and buys the two halves being
-        // unable to come apart if one ever does.
         if self.placeholder {
             let (rows, cols) = vt_floor(rows, cols);
             if let Ok(mut parser) = shell.parser.lock() {
@@ -1633,16 +1147,11 @@ impl Session {
         true
     }
 
-    /// Force the session into the "process exited" state, for tests that need to
-    /// exercise the exited → `Idle` status branch.
     #[cfg(test)]
     pub fn mark_exited_for_test(&self) {
         self.wired.exited.store(true, Ordering::SeqCst);
     }
 
-    /// Backdate the session's last-output timestamp by `ms`, for tests that need
-    /// to exercise the output-quiescence fallback (a stuck `working` state going
-    /// quiet → `Idle`).
     #[cfg(test)]
     pub fn backdate_output_for_test(&self, ms: u64) {
         let now = now_millis();
@@ -1655,19 +1164,10 @@ impl Session {
         now_millis().saturating_sub(self.wired.last_output_at.load(Ordering::Relaxed))
     }
 
-    /// Latest OSC window title the agent emitted, if any (live activity text).
     pub fn agent_title(&self) -> Option<String> {
         self.signals.last_title.lock().ok().and_then(|t| t.clone())
     }
 
-    /// Read the agent's title + notification **only when they changed** since
-    /// the last call: `None` means unchanged (reuse the previously-synced
-    /// values), `Some` carries the fresh pair. The reader thread bumps a
-    /// generation counter on every write (`TermSignals::meta_gen`), so the
-    /// ~100 Hz status refresh pays one atomic load per session instead of two
-    /// mutex locks + two `String` clones (ADR-P10). A generation observed
-    /// before its write completes only delays the sync by one ~10 ms tick —
-    /// the counter is bumped *after* the value write, never before.
     pub fn sync_agent_meta(&mut self) -> Option<(Option<String>, Option<String>)> {
         let gen = self.signals.meta_gen.load(Ordering::Acquire);
         if gen == self.last_synced_meta_gen {
@@ -1677,13 +1177,10 @@ impl Session {
         Some((self.agent_title(), self.notification()))
     }
 
-    /// Whether the agent has signalled for attention (bell / OSC 9 / OSC 777)
-    /// since it was last acknowledged. Cleared via [`Self::acknowledge_attention`].
     pub fn needs_attention(&self) -> bool {
         self.signals.attention_at.load(Ordering::Relaxed) > self.attention_ack_at
     }
 
-    /// Message text from the latest attention notification, if any.
     pub fn notification(&self) -> Option<String> {
         self.signals
             .notification
@@ -1692,28 +1189,22 @@ impl Session {
             .and_then(|n| n.clone())
     }
 
-    /// Acknowledge any pending attention signal (called while the session is
-    /// the active/selected one — the user is already looking at it).
     pub fn acknowledge_attention(&mut self) {
         self.attention_ack_at = now_millis();
     }
 
-    /// Return the backend name.
     pub fn backend_name(&self) -> &str {
         self.backend.name()
     }
 
-    /// Return the PID of the process running in this session's backend pane.
     pub fn pane_pid(&self) -> Result<Option<u32>> {
         Ok(self.backend.pane_pid(&self.wired.backend_id)?)
     }
 
-    /// The backend the companion shell runs on.
     fn shell_backend(&self) -> &Arc<dyn SessionBackend> {
         self.shell_backend.as_ref().unwrap_or(&self.backend)
     }
 
-    /// The backend of the agent's pane, or of its companion shell's.
     fn backend_of(&self, shell: bool) -> &Arc<dyn SessionBackend> {
         match shell {
             true => self.shell_backend(),
@@ -1721,16 +1212,11 @@ impl Session {
         }
     }
 
-    /// Clone the backend handle + id so a background task can query the pane
-    /// PID (a control-mode round-trip, slow for remote SSH backends) off the UI
-    /// thread. The backend is `Send + Sync`, so the clone is cheap to move.
     pub fn backend_handle(&self) -> (Arc<dyn SessionBackend>, String) {
         (Arc::clone(&self.backend), self.wired.backend_id.clone())
     }
 
-    /// Kill/destroy the backend session (for Ctrl+X close).
     pub fn kill(&self) {
-        // A placeholder owns no live backend pane (see `placeholder`).
         if self.placeholder {
             return;
         }
@@ -1740,10 +1226,7 @@ impl Session {
         }
     }
 
-    /// Detach from the backend session without killing it (for Ctrl+Q quit).
     pub fn detach(self) {
-        // A placeholder owns no live backend pane — detaching would issue a
-        // blocking ssh call (possibly to a down host) for nothing.
         if self.placeholder {
             return;
         }
@@ -1759,10 +1242,6 @@ impl Session {
         debug!("Session detached");
     }
 
-    /// A companion shell over a stream the caller opened, `adopted`, whose
-    /// input, resize and detach go through `backend`: the shell a session's
-    /// runtime keeps, which the caller found again or had it open. Built off
-    /// the loop; installed with [`Self::install_shell_over`].
     pub fn shell_over(
         adopted: AdoptedSession,
         backend: &Arc<dyn SessionBackend>,
@@ -1771,10 +1250,6 @@ impl Session {
         cols: u16,
         scrollback: usize,
     ) -> ShellPane {
-        // Without its grid until the stream's first snapshot, as an agent's
-        // stream pane (`adopt_io`): that snapshot is the shell's screen, with
-        // what it showed before this view came. A stream with no screen keeper
-        // sends a blank one.
         let io = SessionIo {
             resident: false,
             ..SessionIo::adopted(adopted, backend_id)
@@ -1783,21 +1258,16 @@ impl Session {
         ShellPane { wired }
     }
 
-    /// Install `shell`, a [`Self::shell_over`] answer, with `backend` as the
-    /// one its input, resize and detach go through. It replaces a shell
-    /// already there.
     pub fn install_shell_over(&mut self, shell: ShellPane, backend: Arc<dyn SessionBackend>) {
         self.shell_backend = Some(backend);
         self.install_shell(shell);
     }
 
-    /// Install a worker's answer after its owner has checked it is still wanted.
     pub fn install_shell(&mut self, shell: ShellPane) {
         self.info.shell_backend_id = Some(shell.backend_id.clone());
         self.shell_pane = Some(shell);
     }
 
-    /// Kill the shell pane if it exists.
     fn kill_shell_pane(&self) {
         if let Some(shell) = &self.shell_pane {
             if let Err(e) = self.shell_backend().kill(&shell.wired.backend_id) {
@@ -1806,24 +1276,17 @@ impl Session {
         }
     }
 
-    /// Create a lightweight stub for unit tests (no real backend process).
     #[cfg(any(test, feature = "test-support"))]
     pub fn stub(name: &str, backend: &Arc<dyn SessionBackend>) -> Self {
         Self::stub_with_input_rx(name, backend).0
     }
 
-    /// Like [`Self::stub`], but also returns the input-channel receiver so a
-    /// test can inspect bytes the app sends to the PTY. The caller must keep
-    /// the receiver alive for `send_input` to succeed.
     #[cfg(any(test, feature = "test-support"))]
     pub fn stub_with_input_rx(
         name: &str,
         backend: &Arc<dyn SessionBackend>,
     ) -> (Self, mpsc::Receiver<Vec<u8>>) {
         let (input_tx, input_rx) = mpsc::channel(INPUT_CHANNEL_CAPACITY);
-        // Wire TermSignals to the session's accessor cells exactly like
-        // `wire_up`, so bytes injected via `feed_output_for_test` drive
-        // `agent_title`/`needs_attention` the same way live PTY output does.
         let signals = SignalCells::new();
         let parser = Arc::new(Mutex::new(vt100::Parser::new_with_callbacks(
             24.try_into().unwrap(),
@@ -1858,15 +1321,8 @@ impl Session {
         (session, input_rx)
     }
 
-    /// Feed raw agent-output bytes into the session exactly as the reader loop
-    /// would: bump `last_output_at` and run the bytes through the vt100 parser
-    /// (firing `TermSignals` callbacks). This is the test seam for everything
-    /// downstream of PTY output — terminal rendering, the output-change redraw
-    /// detector, OSC title/bell signals, and buffer-content search.
     #[cfg(any(test, feature = "test-support"))]
     pub fn feed_output_for_test(&self, bytes: &[u8]) {
-        // Strictly-increasing bump: two feeds within the same millisecond must
-        // still read as *new* output to `App::detect_output_redraw`'s signature.
         let prev = self.wired.last_output_at.load(Ordering::Relaxed);
         self.wired
             .last_output_at
@@ -1882,12 +1338,10 @@ impl Session {
 mod tests {
     use super::*;
 
-    /// A pane stream that hands over `chunks` and then ends.
     fn output(chunks: Vec<PaneChunk>) -> PaneOutput {
         Box::new(chunks.into_iter())
     }
 
-    /// A parser wired to `copy`, fed one OSC 52 write of `text`.
     fn print_copy(copy: &Arc<AppCopy>, text: &str) {
         let mut parser = vt100::Parser::new_with_callbacks(
             4.try_into().unwrap(),
@@ -1921,14 +1375,11 @@ mod tests {
         assert_eq!(copy.take(), [request("focused"), request("and-again")]);
         assert_eq!(copy.take(), [], "taken once");
 
-        // Made under focus, then focus left and came back: the write belongs
-        // to a focus that ended.
         print_copy(&copy, "before-blur");
         copy.blur();
         copy.focus(2);
         assert_eq!(copy.take(), []);
 
-        // The reader read token 2, focus moved on to 3, then the write landed.
         copy.focus(3);
         copy.pending
             .lock()
@@ -1957,9 +1408,6 @@ mod tests {
         assert!(err.to_string().contains("full"), "got: {err}");
     }
 
-    /// A pane's input can block — a pipe to a server that stopped reading, a
-    /// psmux paste running its own process — and the async runtime must not
-    /// be what waits for it.
     #[test]
     fn a_blocked_pane_write_leaves_the_runtime_free() {
         struct Stuck(std::sync::mpsc::Receiver<()>);
@@ -2003,12 +1451,7 @@ mod tests {
 
     #[test]
     fn a_grid_at_the_floor_survives_what_an_agent_prints() {
-        // The floor is not cosmetic: at one row vt100 underflows in
-        // `row_inc_scroll` as soon as output wraps, and at one column it
-        // underflows in `col_wrap` as soon as a double-width character arrives.
-        // Both used to be reachable — a one-cell pane is what a cramped layout
-        // hands a session — and both killed the reader thread, which poisons the
-        // parser mutex and blanks that pane for the rest of the run.
+        // vt100 underflows in `row_inc_scroll` at one row and in `col_wrap` at one column.
         for (rows, cols) in [(0, 0), (1, 1), (1, 2), (2, 1), (1, 40), (3, 1)] {
             let (rows, cols) = vt_floor(rows, cols);
             let mut parser =
@@ -2016,8 +1459,6 @@ mod tests {
             parser
                 .screen_mut()
                 .set_size(rows.try_into().unwrap(), cols.try_into().unwrap());
-            // A wide character (the `col_wrap` path) and enough plain text to
-            // wrap and scroll (the `row_inc_scroll` path).
             parser.process("🚀 done\r\n".repeat(4).as_bytes());
             parser.process("hello world hello world".as_bytes());
         }
@@ -2032,7 +1473,6 @@ mod tests {
     #[test]
     fn now_millis_returns_reasonable_value() {
         let ms = now_millis();
-        // Should be after 2024-01-01 (1704067200000 ms since epoch).
         assert!(ms > 1_704_067_200_000);
     }
 
@@ -2040,48 +1480,31 @@ mod tests {
     fn utf8_ready_prefix_passes_complete_input() {
         assert_eq!(utf8_ready_prefix_len(b""), 0);
         assert_eq!(utf8_ready_prefix_len(b"hello"), 5);
-        // "é" = c3 a9, complete.
         assert_eq!(utf8_ready_prefix_len(&[b'a', 0xc3, 0xa9]), 3);
-        // "你好" complete (two 3-byte chars).
         assert_eq!(utf8_ready_prefix_len("你好".as_bytes()), 6);
     }
 
     #[test]
     fn utf8_ready_prefix_holds_back_truncated_tail() {
-        // Lone 2-byte lead → hold all of it.
         assert_eq!(utf8_ready_prefix_len(&[b'a', 0xc3]), 1);
-        // 3-byte lead with one continuation, missing one → hold the two.
         assert_eq!(utf8_ready_prefix_len(&[b'x', 0xe4, 0xbd]), 1);
-        // 4-byte lead alone, and with 1 and 2 continuations → all held.
         assert_eq!(utf8_ready_prefix_len(&[b'x', 0xf0]), 1);
         assert_eq!(utf8_ready_prefix_len(&[b'x', 0xf0, 0x9f]), 1);
         assert_eq!(utf8_ready_prefix_len(&[b'x', 0xf0, 0x9f, 0x8e]), 1);
-        // Same 4-byte char, fully present → nothing held.
         assert_eq!(utf8_ready_prefix_len(&[b'x', 0xf0, 0x9f, 0x8e, 0x89]), 5);
-        // The realistic read-boundary case: a complete "é" (c3 a9) followed by
-        // the lead byte of the next char → hold only that fresh lead.
         assert_eq!(utf8_ready_prefix_len(&[0xc3, 0xa9, 0xe6]), 2);
     }
 
     #[test]
     fn utf8_ready_prefix_does_not_buffer_garbage() {
-        // Continuation bytes with no lead in the last 3 → pass through (no
-        // unbounded carry).
         assert_eq!(utf8_ready_prefix_len(&[0x80, 0x80, 0x80, 0x80]), 4);
     }
 
-    /// Property/regression tests for the reader-loop UTF-8 carry: feeding the
-    /// vt100 parser through `utf8_ready_prefix_len`-bounded chunks must render
-    /// identically to feeding the whole stream, for any chunking — proving
-    /// thurbox's read boundaries can never glitch valid agent output. vt100 on
-    /// its own does NOT have this property (it can swallow a newline that
-    /// follows a mid-codepoint chunk boundary); the carry is what restores it.
     mod utf8_chunking {
         use proptest::prelude::*;
 
         use super::utf8_ready_prefix_len;
 
-        /// vt100 screen as normalized, right-trimmed visible rows.
         fn rows(p: &vt100::Parser) -> Vec<String> {
             let s = p.screen();
             let (r, c) = s.size();
@@ -2104,7 +1527,6 @@ mod tests {
             rows(&p)
         }
 
-        /// Replays the reader-loop carry logic over `bytes` cut into `sizes`.
         fn carry_chunked(bytes: &[u8], sizes: &[usize]) -> Vec<String> {
             let mut p = vt100::Parser::new(10.try_into().unwrap(), 38.try_into().unwrap(), 0);
             let mut carry: Vec<u8> = Vec::new();
@@ -2129,20 +1551,12 @@ mod tests {
             rows(&p)
         }
 
-        /// The exact minimal case that exposed the vt100 mid-codepoint bug:
-        /// "f" + lead of "é" delivered in one read, then "é"-tail + "\n日本語"
-        /// in the next. Without the carry the newline is swallowed and 日本語
-        /// lands on the wrong row.
         #[test]
         fn regression_midcodepoint_newline_widechars() {
-            // f é \n 日本語. Chunked [2, 100] so the first read ends on "f" plus
-            // the lead byte of "é" and the rest arrives next.
             let bytes = b"f\xc3\xa9\n\xe6\x97\xa5\xe6\x9c\xac\xe8\xaa\x9e";
             assert_eq!(carry_chunked(bytes, &[2, 100]), whole(bytes));
         }
 
-        /// Strategy producing valid-UTF-8 agent output: text, CSI/OSC escapes,
-        /// wide/combining chars, newlines.
         fn valid_utf8_output() -> impl Strategy<Value = Vec<u8>> {
             let token = prop_oneof![
                 proptest::string::string_regex("[ -~]{0,8}")
@@ -2174,9 +1588,6 @@ mod tests {
         }
 
         proptest! {
-            /// For valid UTF-8, the carry makes vt100 rendering independent of how
-            /// the byte stream is chunked across reads — the core guarantee that
-            /// thurbox's transport/read boundaries never corrupt agent output.
             #[test]
             fn carry_makes_chunking_invariant(
                 bytes in valid_utf8_output(),
@@ -2189,25 +1600,15 @@ mod tests {
 
     #[test]
     fn wire_mode_adopt_starts_stale_spawn_starts_fresh() {
-        // Mirrors `App::refresh_session_statuses`: a session is `Busy` while
-        // `now - last_output_at <= ACTIVITY_TIMEOUT_MS` (1000 ms in app/mod.rs).
         const ACTIVITY_TIMEOUT_MS: u64 = 1000;
 
-        // Adopt: stale timestamp so the post-adopt SIGWINCH repaint doesn't
-        // read as activity → NOT busy.
         let adopt = initial_output_at(WireMode::Adopt);
         assert!(now_millis().saturating_sub(adopt) > ACTIVITY_TIMEOUT_MS);
 
-        // Spawn: "now" so a fresh process counts as active → busy.
         let spawn = initial_output_at(WireMode::Spawn);
         assert!(now_millis().saturating_sub(spawn) <= ACTIVITY_TIMEOUT_MS);
     }
 
-    /// The staleness `wire_mode_adopt_starts_stale_spawn_starts_fresh` sets up
-    /// used to be destroyed the instant the reader thread's first read landed,
-    /// because that read is the replayed scrollback seed on an adopt — see
-    /// [`Session::reader_loop`]'s `seed_len` doc. Replaying only the seed must
-    /// leave `last_output_at` untouched.
     #[test]
     fn reader_loop_does_not_stamp_output_for_replayed_scrollback() {
         let parser = Arc::new(Mutex::new(vt100::Parser::new_with_callbacks(
@@ -2241,8 +1642,6 @@ mod tests {
         );
     }
 
-    /// A pane is released only when another client WAS sizing it and no longer
-    /// is — never on a first report, and once per release.
     #[test]
     fn a_pane_is_released_once_when_its_sizer_goes() {
         let size = PaneSize::default();
@@ -2255,9 +1654,6 @@ mod tests {
         assert!(!size.take_released(), "taken once");
     }
 
-    /// A size the backend reports lands between the bytes written before it and
-    /// the bytes written after — the old line is not re-wrapped at the new
-    /// width, and the new one is.
     #[test]
     fn reader_loop_resizes_the_grid_where_the_stream_says() {
         let parser = Arc::new(Mutex::new(vt100::Parser::new_with_callbacks(
@@ -2267,7 +1663,6 @@ mod tests {
             TermSignals::default(),
         )));
         let size = PaneSize::default();
-        // Reported as the backend's stream does, as the chunk is handed over.
         let reports = size.clone();
         let script = vec![
             b"aaaaaaaaaaaaaaa\r\n".to_vec().into(),
@@ -2303,10 +1698,6 @@ mod tests {
         assert_eq!(size.current(), pack_size(4, 10));
     }
 
-    /// A reader whose output was dropped ends up with whatever a cut escape
-    /// sequence left on its grid; the resync that follows replaces that grid,
-    /// resident as it is, and the output after it lands on the replacement. A
-    /// plain snapshot still leaves a resident grid alone.
     #[test]
     fn reader_loop_replaces_a_resident_grid_with_a_resync() {
         let snapshot = || {
@@ -2345,7 +1736,6 @@ mod tests {
             (screen.contents(), screen.cell(0, 0).unwrap().fgcolor())
         };
 
-        // `\x1b[` and then, after the gap, `!`: parsed as one sequence.
         let (contents, _) = run(vec![bytes(b"old\x1b["), bytes(b"!")]);
         assert_eq!(contents, "old", "the gap corrupts the grid");
 
@@ -2360,8 +1750,6 @@ mod tests {
         let (contents, _) = run(vec![bytes(b"old"), PaneChunk::Snapshot(snapshot())]);
         assert_eq!(contents, "old", "a plain snapshot keeps a resident grid");
 
-        // A character's first byte held from before the gap must not join
-        // bytes that follow the resync, even ones that would complete it.
         let (contents, _) = run(vec![
             bytes(b"old\xc3"),
             PaneChunk::Resync(snapshot()),
@@ -2375,10 +1763,6 @@ mod tests {
         );
     }
 
-    /// The redraw signal moves for the replayed seed too, and only once the
-    /// bytes are in the grid: an attach that parsed its history after the first
-    /// frame must still be painted, and a count read as "moved" must never
-    /// describe a grid that does not have the bytes yet.
     #[test]
     fn reader_loop_moves_the_output_seq_after_each_parse_seed_included() {
         let parser = Arc::new(Mutex::new(vt100::Parser::new_with_callbacks(
@@ -2414,9 +1798,6 @@ mod tests {
             .contains("replayed history"));
     }
 
-    /// A read boundary may split a UTF-8 character. Until its remaining bytes
-    /// arrive the parser has taken nothing, so the redraw sequence must not
-    /// claim that an echo is drawable yet.
     #[test]
     fn reader_loop_waits_for_a_split_character_before_moving_output_seq() {
         struct SplitReader {
@@ -2490,9 +1871,6 @@ mod tests {
         assert!(seq.load(Ordering::Acquire) > 0);
     }
 
-    /// A character split across two reads reaches the parser whole, and the
-    /// loop marks the session exited once the stream ends — even when it ends
-    /// on half a character, which is flushed rather than kept back forever.
     #[test]
     fn reader_loop_carries_a_split_character_and_marks_the_end() {
         let parser = Arc::new(Mutex::new(vt100::Parser::new_with_callbacks(
@@ -2504,8 +1882,6 @@ mod tests {
         let exited = Arc::new(AtomicBool::new(false));
         let last_output_at = Arc::new(AtomicU64::new(0));
 
-        // "é" is 0xC3 0xA9: the first read ends on its lead byte, and the
-        // stream ends on the lead byte of "日".
         let reader = output(vec![
             b"f\xc3".to_vec().into(),
             b"\xa9\r\nok\xe6".to_vec().into(),
@@ -2529,8 +1905,6 @@ mod tests {
         assert!(last_output_at.load(Ordering::Relaxed) > 0);
     }
 
-    /// The other half: once the seed is exhausted, genuinely live bytes still
-    /// stamp `last_output_at` normally.
     #[test]
     fn reader_loop_stamps_output_for_live_bytes_after_the_seed() {
         let parser = Arc::new(Mutex::new(vt100::Parser::new_with_callbacks(
@@ -2565,15 +1939,6 @@ mod tests {
         );
     }
 
-    /// The consequence of the two tests above that an embedder relies on: a
-    /// session that has genuinely been `blocked` for hours must still read
-    /// `blocked` after a restart/reattach replays its scrollback with no new
-    /// live output. thurbox folds a hook state into `working`/`idle` only once
-    /// the pane has been quiet for less than the state's age
-    /// (`session::with_output_quiescence`), so the replay must leave the pane
-    /// quiet for at least that long. Before the fix, the seed replay stamped
-    /// `last_output_at` to "now", making the pane look quiet for ~0ms against
-    /// an hours-old `hook_state_at`.
     #[test]
     fn adopted_scrollback_replay_does_not_outlive_a_standing_blocked_state() {
         let parser = Arc::new(Mutex::new(vt100::Parser::new_with_callbacks(
@@ -2601,7 +1966,7 @@ mod tests {
         );
 
         let quiet_for_ms = now_millis().saturating_sub(last_output_at.load(Ordering::Relaxed));
-        let state_age_ms = 3 * 60 * 60 * 1000; // hook_state_at stamped 3 hours ago
+        let state_age_ms = 3 * 60 * 60 * 1000;
 
         assert!(
             quiet_for_ms >= state_age_ms,
@@ -2622,24 +1987,18 @@ mod tests {
                 ..Default::default()
             },
         );
-        // OSC 2 (set window title), BEL-terminated.
         parser.process(b"\x1b]2;working on tests\x07");
         assert_eq!(title.lock().unwrap().as_deref(), Some("working on tests"));
 
-        // OSC 0 (set icon name + title) updates it too.
         parser.process(b"\x1b]0;done\x07");
         assert_eq!(title.lock().unwrap().as_deref(), Some("done"));
 
-        // ST-terminated, which is what the adopt-time replay of a pane title
-        // emits (`title_seed_bytes`) — the restored activity line depends on
-        // this arriving through the same callback a live title does.
         parser.process(b"\x1b]2;restored from the pane title\x1b\\");
         assert_eq!(
             title.lock().unwrap().as_deref(),
             Some("restored from the pane title")
         );
 
-        // An empty title clears the cell rather than storing "".
         parser.process(b"\x1b]2;\x07");
         assert_eq!(*title.lock().unwrap(), None);
     }
@@ -2661,19 +2020,16 @@ mod tests {
 
         assert_eq!(attention_at.load(Ordering::Relaxed), 0);
 
-        // Terminal bell → attention, no message.
         parser.process(b"\x07");
         assert!(attention_at.load(Ordering::Relaxed) > 0);
         assert_eq!(*notification.lock().unwrap(), None);
 
-        // OSC 9 desktop notification → attention + message text.
         parser.process(b"\x1b]9;Claude is waiting for your input\x07");
         assert_eq!(
             notification.lock().unwrap().as_deref(),
             Some("Claude is waiting for your input")
         );
 
-        // OSC 777 notify form → attention + joined title/body.
         parser.process(b"\x1b]777;notify;Claude;Task done\x07");
         assert_eq!(
             notification.lock().unwrap().as_deref(),

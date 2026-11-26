@@ -1,4 +1,3 @@
-//! Acceptance tests exercise the actual tooling binary against private files.
 use fleet_exec::{Outcome, Spec, run};
 use serde_json::json;
 use std::fs;
@@ -7,9 +6,7 @@ use std::sync::atomic::{AtomicU32, Ordering};
 use std::time::Duration;
 static SEQ: AtomicU32 = AtomicU32::new(0);
 
-/// The variables that point git at another repository than its working
-/// directory. A commit hook exports them, and a child keeping them would run
-/// its `git config` on this repository instead of its scratch one.
+// A commit hook exports these, and a child keeping them runs `git config` on this repository.
 const GIT_LOCATION: &[&str] = &[
     "GIT_DIR",
     "GIT_WORK_TREE",
@@ -21,7 +18,6 @@ const GIT_LOCATION: &[&str] = &[
     "GIT_NAMESPACE",
 ];
 
-/// A child of these tests: `program`, blind to git's location variables.
 fn scratch(program: impl Into<std::ffi::OsString>, timeout: Duration) -> Spec {
     let mut s = Spec::new(program, timeout);
     s.env_remove = GIT_LOCATION.iter().map(|v| v.to_string()).collect();
@@ -85,8 +81,6 @@ impl Env {
         self.git(&["config", "user.name", "Fixture"]);
         self.git(&["config", "user.email", "fixture@example.invalid"]);
         self.git(&["config", "commit.gpgsign", "false"]);
-        // The release decision is cocogitto's, read from the repository's own
-        // configuration.
         let cog = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../cog.toml");
         self.write("cog.toml", &fs::read_to_string(cog).unwrap());
         self.write("crates/demo.rs", "pub fn shipped() {}\n");
@@ -282,7 +276,6 @@ fn windows_is_not_a_release_target_and_no_workflow_runs_on_it() {
         let (ok, out) = package(t);
         assert!(ok, "{out}");
     }
-    // All supported archives are required for a complete release.
     let (ok, out) = e.call(
         &["release", "checksums", "--version", "v1.2.3", "dist"],
         &[],
@@ -290,12 +283,9 @@ fn windows_is_not_a_release_target_and_no_workflow_runs_on_it() {
     assert!(ok, "{out}");
     let sums = fs::read_to_string(e.0.join("dist/fleet-v1.2.3-checksums.txt")).unwrap();
     assert_eq!(sums.lines().count(), supported.len(), "{sums}");
-    // A Linux-only CI satisfies the workflow gate.
     e.write(".github/workflows/ci.yml", CI);
     let (ok, out) = e.call(&["workflow"], &[]);
     assert!(ok, "{out}");
-    // Fleet's release workflows build exactly the supported targets and run
-    // no job on Windows (thurbox's own CI does; Fleet is not tested there).
     let workflows = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/workflows");
     let cd: serde_json::Value =
         serde_saphyr::from_str(&fs::read_to_string(workflows.join("cd.yml")).unwrap()).unwrap();
@@ -363,9 +353,6 @@ fn title_and_suite_validation_are_executable() {
     }
 }
 
-/// The installer runs on Linux and macOS only: the release builds no Windows
-/// target (`windows_is_not_a_release_target_and_no_workflow_runs_on_it`), and
-/// its script refuses one.
 #[cfg(unix)]
 fn installer(e: &Env, args: &[&str]) -> (bool, String) {
     installer_with(e, args, Some("v1.2.3"))
@@ -469,7 +456,6 @@ fn platform(e: &Env, system: &str, machine: &str) {
 fn installer_selects_native_archives_and_refuses_unsupported_platforms() {
     let e = Env::new();
     install_fixture(&e);
-    // The fixture executable is native to the test host. Only uname is stubbed.
     for (system, machine, target) in [
         ("Linux", "x86_64", "x86_64-unknown-linux-musl"),
         ("Linux", "amd64", "x86_64-unknown-linux-musl"),
@@ -542,7 +528,6 @@ fn concurrent_install_and_wrong_version_preserve_existing_binary() {
     assert!(!ok && out.contains("lock"), "{out}");
     assert_eq!(before, fs::read(&binary).unwrap());
     fs::remove_dir(e.0.join("bin/.fleet-install.lock")).unwrap();
-    // A correctly checksummed archive carrying the wrong version is still refused.
     fs::rename(e.0.join("releases/v1.2.3"), e.0.join("releases/v2.0.0")).unwrap();
     for t in [
         "x86_64-unknown-linux-musl",
@@ -582,7 +567,6 @@ fn concurrent_install_and_wrong_version_preserve_existing_binary() {
         .0
     );
     fs::rename(e.0.join("releases/v2.0.0"), e.0.join("releases/v1.2.3")).unwrap();
-    // Installer below is explicitly asked for a different release via direct fixture call.
     let repo = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
     let mut s = scratch("sh", Duration::from_secs(30)).arg(
         repo.join("scripts/fleet/install-release.sh")
@@ -721,7 +705,6 @@ fn release_and_title_workflows_keep_native_platform_and_trust_promises() {
         ),
     );
     assert!(!e.call(&["workflow"], &[]).0);
-    // An additional runner doing only Rust still owes every Rust check.
     let rust = "rust-fmt rust-lint rust-test rust-doc rust-deny";
     let extra = format!(
         "  arm:\n    runs-on: ubuntu-26.04-arm\n    timeout-minutes: 20\n    steps: [{{run: 'cargo xtask check {rust}'}}]\n"
@@ -895,9 +878,7 @@ fn swallowed_ci_and_release_test_failures_cannot_count_as_validation() {
 
 #[test]
 fn the_gate_never_rebuilds_the_binary_it_runs_from() {
-    // `cargo xtask check` runs fleet-dev while its own `cargo test` rebuilds
-    // the workspace, fleet-dev included. Windows refuses to replace a running
-    // executable, so the alias builds fleet-dev in a target dir of its own.
+    // Windows refuses to replace a running executable.
     let config = include_str!("../../../.cargo/config.toml");
     let alias = config
         .lines()
@@ -909,8 +890,6 @@ fn the_gate_never_rebuilds_the_binary_it_runs_from() {
 #[cfg(unix)]
 #[test]
 fn v2_installs_only_when_a_version_is_named() {
-    // Fleet v1 stays frozen; v2 is installed by explicitly naming
-    // its version. The installer never resolves "latest", which could be v1.
     let e = Env::new();
     install_fixture(&e);
     let (ok, out) = installer_with(&e, &[], None);
@@ -919,7 +898,6 @@ fn v2_installs_only_when_a_version_is_named() {
     assert!(!out.contains("latest"), "{out}");
     let binary = e.0.join("bin/fleet");
     assert!(!binary.exists());
-    // Removing an install needs no version.
     let (ok, out) = installer_with(&e, &["--uninstall"], None);
     assert!(ok, "{out}");
 }
@@ -1003,9 +981,6 @@ fn release_fixture_checksum_recipe_installs() {
 #[cfg(unix)]
 #[test]
 fn published_installer_installs_its_own_release() {
-    // The README's one-liner fetches the latest release's installer with no
-    // FLEET_VERSION. The copy the release publishes names that release, so
-    // the version stays explicit while the repository script still requires one.
     let e = Env::new();
     install_fixture(&e);
     let repo = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
@@ -1013,7 +988,6 @@ fn published_installer_installs_its_own_release() {
     fs::create_dir_all(e.0.join("dist")).unwrap();
     fs::copy(
         repo.join("scripts/fleet/install-release.sh"),
-        // Where the release recipe, written for Fleet's own repository, finds it.
         e.0.join("scripts/install-release.sh"),
     )
     .unwrap();
@@ -1044,8 +1018,6 @@ fn published_installer_installs_its_own_release() {
     assert!(e.0.join("bin/fleet").exists());
 }
 
-/// Runs one `run:` step of the repository's own cd.yml under bash, the way
-/// the runner does, with the real git and cog and a local fake for `gh`.
 #[cfg(unix)]
 fn release_step(e: &Env, job: &str, step: &str, env: &[(&str, &str)]) -> (bool, String) {
     use std::os::unix::fs::PermissionsExt;
@@ -1059,8 +1031,7 @@ fn release_step(e: &Env, job: &str, step: &str, env: &[(&str, &str)]) -> (bool, 
         .and_then(|s| s["run"].as_str())
         .unwrap_or_else(|| panic!("cd.yml has no {job}/{step} step"))
         .to_string();
-    // The fake forge behaves like `gh release create --verify-tag`: the tag
-    // must already exist.
+    // `gh release create --verify-tag` refuses a tag that does not exist yet.
     e.write(
         "fakes/gh",
         "#!/bin/sh\nv=$3\ngit rev-parse -q --verify \"refs/tags/$v\" >/dev/null || { echo \"tag $v does not exist\" >&2; exit 1; }\ncase \" $* \" in *\" --verify-tag \"*) ;; *) echo 'gh would create the tag' >&2; exit 1 ;; esac\necho \"released $v\"\n",
@@ -1130,7 +1101,6 @@ fn a_push_to_main_tags_and_publishes_what_cocogitto_decides() {
     );
     let e = Env::new();
     e.repo();
-    // Runner files stay out of the status cog checks, as in a clean checkout.
     e.write(
         ".git/info/exclude",
         "fakes/\noutput\nsummary\norigin.git/\ndist/\nno-config\nonly-git/\n",
@@ -1166,7 +1136,6 @@ fn a_push_to_main_tags_and_publishes_what_cocogitto_decides() {
     let newest = [("TARGET", "v2.2.0"), ("PRERELEASE", "false")];
     let (ok, out) = step("Is this the highest version ever tagged", &newest);
     assert!(ok && out.contains("newest=true"), "newest: {out}");
-    // Only main publishes, and readiness fails closed.
     let (ok, out) = release_step(
         &e,
         "check-release",
@@ -1192,13 +1161,10 @@ fn a_push_to_main_tags_and_publishes_what_cocogitto_decides() {
         "missing readiness: {out}"
     );
     e.git(&["checkout", "-q", "--", ".github/release-readiness.toml"]);
-    // create-tag: the action runs `cog bump <bump_args>`, then the tag is pushed.
     let mut bump =
         scratch("cog", Duration::from_secs(60)).args(["bump", "--auto", "--disable-bump-commit"]);
     bump.cwd = Some(e.0.clone());
     assert!(run(&bump).success_text().is_some(), "cog bump");
-    // The create-tag job's checkout is thrown away, with the changelog cog
-    // staged there; later jobs check out clean.
     e.git(&["reset", "-q", "--hard"]);
     let (ok, out) = release_step(
         &e,
@@ -1238,8 +1204,6 @@ fn a_push_to_main_tags_and_publishes_what_cocogitto_decides() {
         ],
     );
     assert!(ok && out.contains("released v2.2.0"), "publish: {out}");
-    // Re-running the released push releases nothing, and so does a push
-    // with no releasable commit.
     let (ok, out) = step("Parse release decision", &[]);
     assert!(ok && out.contains("should_release=false"), "rerun: {out}");
     e.write("docs/notes.md", "# Notes\n");
@@ -1249,7 +1213,6 @@ fn a_push_to_main_tags_and_publishes_what_cocogitto_decides() {
         ok && out.contains("should_release=false"),
         "docs push: {out}"
     );
-    // A releasable type that ships nothing is held by the relevance gate.
     e.write("README.md", "docs only");
     e.commit("fix: prose");
     let (ok, out) = step("Parse release decision", &[]);
@@ -1259,7 +1222,6 @@ fn a_push_to_main_tags_and_publishes_what_cocogitto_decides() {
         &[("VERSION", "v2.2.1")],
     );
     assert!(ok && out.contains("shipped=false"), "docs only: {out}");
-    // A forced prerelease is marked as one and never latest.
     let (ok, out) = release_step(
         &e,
         "check-release",
@@ -1291,7 +1253,6 @@ fn a_push_to_main_tags_and_publishes_what_cocogitto_decides() {
         ok && out.contains("newest=false"),
         "maintenance newest: {out}"
     );
-    // A missing cog is an unknown decision, never "no release".
     fs::create_dir_all(e.0.join("only-git")).unwrap();
     for tool in ["bash", "git"] {
         let found = run(
@@ -1308,9 +1269,7 @@ fn a_push_to_main_tags_and_publishes_what_cocogitto_decides() {
 
 #[test]
 fn claude_code_finds_the_repository_skills_through_a_tracked_link() {
-    // Codex reads project skills from .agents/skills, Claude Code only from
-    // .claude/skills: a session on either harness must find the same skills.
-    // Each skill is linked one by one, so a link is tracked per skill.
+    // Codex reads project skills from .agents/skills, Claude Code only from .claude/skills.
     let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
     let mut skills = 0;
     for entry in fs::read_dir(root.join(".agents/skills")).unwrap() {
@@ -1336,9 +1295,6 @@ fn claude_code_finds_the_repository_skills_through_a_tracked_link() {
     assert!(skills > 0, "the repository has no skills");
 }
 
-/// Run in a child by
-/// `a_git_helper_never_touches_the_repository_its_parent_names`, which
-/// passes it a `GIT_DIR` as a commit hook would.
 #[test]
 #[ignore = "run in a child by a_git_helper_never_touches_the_repository_its_parent_names"]
 fn git_helper_under_an_inherited_git_dir() {

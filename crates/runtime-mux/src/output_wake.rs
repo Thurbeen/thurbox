@@ -1,25 +1,7 @@
-//! A way for agent output to wake the render loop.
-//!
-//! The loop sleeps in the terminal's input poll, which only the terminal can
-//! wake, so output landing mid-sleep waited out the rest of it. While the loop
-//! is waiting on a keystroke's echo it sleeps in `poll(2)` on the terminal
-//! **and** on this self-pipe instead, and the reader loop of the one pane the
-//! echo is owed by writes a byte into it after parsing. Every other pane — and
-//! every pane while nothing is owed — pays one atomic load: a session flooding
-//! output beside the one being typed into must not wake the loop per chunk.
-//!
-//! Unix only. Elsewhere [`read_fd`] is absent and the loop keeps polling the
-//! terminal in short slices.
-
 use std::sync::atomic::{AtomicPtr, AtomicU64, Ordering};
 
-/// The output counter of the pane an echo is owed by, as an address. Only ever
-/// compared, never dereferenced, so a pane dropped while armed costs at most
-/// one spurious wake-up.
 static ARMED: AtomicPtr<AtomicU64> = AtomicPtr::new(std::ptr::null_mut());
 
-/// Ask the reader loop feeding `seq` to wake the render loop on its next
-/// output — or, with `None`, none of them.
 pub fn arm(seq: Option<&AtomicU64>) {
     let target = seq.map_or(std::ptr::null_mut(), |seq| {
         (seq as *const AtomicU64).cast_mut()
@@ -32,7 +14,6 @@ mod pipe {
     use std::os::fd::{AsRawFd, FromRawFd, OwnedFd, RawFd};
     use std::sync::OnceLock;
 
-    /// `(read, write)`, both non-blocking; `None` if the pipe could not be made.
     fn ends() -> Option<&'static (OwnedFd, OwnedFd)> {
         static PIPE: OnceLock<Option<(OwnedFd, OwnedFd)>> = OnceLock::new();
         PIPE.get_or_init(|| {
@@ -62,7 +43,6 @@ mod pipe {
 
     pub(super) fn poke() {
         if let Some((_, write)) = ends() {
-            // A full pipe already holds a wake-up, so a failed write loses none.
             // SAFETY: a one-byte write from a valid buffer to an owned fd.
             let _ = unsafe { libc::write(write.as_raw_fd(), [1u8].as_ptr().cast(), 1) };
         }
@@ -78,12 +58,7 @@ mod pipe {
     }
 }
 
-/// Called by a reader loop once it has parsed a chunk of output into the pane
-/// whose counter is `seq`.
 pub fn notify(seq: &AtomicU64) {
-    // SeqCst, pairing with `arm`: the loop arms, then reads the output
-    // sequence; a reader bumps the sequence, then reads this. One of the two
-    // sees the other, so an echo is never both unannounced and unnoticed.
     std::sync::atomic::fence(Ordering::SeqCst);
     if std::ptr::eq(ARMED.load(Ordering::SeqCst), seq) {
         #[cfg(unix)]
@@ -91,13 +66,11 @@ pub fn notify(seq: &AtomicU64) {
     }
 }
 
-/// The descriptor that becomes readable when armed output arrives.
 #[cfg(unix)]
 pub fn read_fd() -> Option<std::os::fd::RawFd> {
     pipe::read_fd()
 }
 
-/// Empty the pipe, so the next wait sleeps until the next output.
 #[cfg(unix)]
 pub fn drain() {
     pipe::drain();
@@ -107,7 +80,6 @@ pub fn drain() {
 mod tests {
     use super::*;
 
-    /// Whether the pipe holds a wake-up, emptying it either way.
     fn woken() -> bool {
         let mut fds = [libc::pollfd {
             fd: read_fd().expect("pipe"),

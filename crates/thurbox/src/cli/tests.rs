@@ -1,6 +1,3 @@
-//! `cli`'s own tests — argument parsing and output-format selection over the
-//! dispatcher, kept in a sibling file (the `git/tests.rs` pattern).
-
 use super::*;
 use clap::Parser;
 
@@ -112,9 +109,6 @@ fn version_flag_reports_the_injected_version_not_the_dev_marker() {
         "--version must print the version the `version` subcommand reports"
     );
 
-    // The bare `version,` attribute is the bug: it silently reads
-    // CARGO_PKG_VERSION, which this project pins to the `0.0.0-dev` marker and
-    // never bumps, so every release shipped a `--version` claiming a dev build.
     let src = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/cli/mod.rs"),
     )
@@ -133,16 +127,12 @@ fn version_flag_reports_the_injected_version_not_the_dev_marker() {
 #[test]
 fn fields_flag_names_the_columns_a_list_shows() {
     assert_eq!(parse_fields("name,agent"), vec!["name", "agent"]);
-    // Spaces around a comma are how a person writes it, so accept them.
     assert_eq!(parse_fields("name, agent "), vec!["name", "agent"]);
-    // A trailing comma must not become a column with no name.
     assert_eq!(parse_fields("name,"), vec!["name"]);
 }
 
 #[test]
 fn fields_all_clears_the_projection() {
-    // Empty is the renderer's own spelling of "no projection", so `all` needs
-    // no second branch downstream.
     assert!(parse_fields("all").is_empty());
     assert!(parse_fields("ALL").is_empty());
 }

@@ -1,11 +1,3 @@
-//! The outbox step of a sweep: TaskController ingests the outbox of each
-//! Task's session into the boards, under the lease, as the Task whose
-//! session it is. The events are appended first, then the new offset is
-//! written to `Task.status.outbox`: a run that stops between the two reads
-//! the same lines again, and their keys append nothing. What the step
-//! learns, whether every whole line is in, is the `outbox_drained`
-//! observation, which holds a released Task until its outbox is read.
-
 use fleet_api::event::{self, MAX_OUTBOX_READ, OutboxCursor, OutboxRead};
 use fleet_api::session::SessionState;
 use fleet_api::task::{self, SessionRef};
@@ -16,11 +8,8 @@ use crate::{Manager, RunReport};
 
 const CURSOR_WRITE_TRIES: u32 = 5;
 
-/// The most lines one append takes: well inside a pass, and one lock, one
-/// lease renewal and one fsync per segment for them all.
 const MAX_RUN: usize = 256;
 
-/// Consecutive whole lines for one board, appended together.
 #[derive(Default)]
 struct Run {
     board: Option<String>,
@@ -34,7 +23,6 @@ struct RunLine {
 }
 
 impl Run {
-    /// Whether a line for `board` can join this run.
     fn takes(&self, board: &str) -> bool {
         self.board.as_deref().is_none_or(|b| b == board) && self.lines.len() < MAX_RUN
     }
@@ -49,8 +37,6 @@ impl Run {
     }
 }
 
-/// A store answer that refuses the events themselves, not one that leaves
-/// them unknown: the line is skipped.
 pub(crate) fn refused(e: &StoreError) -> bool {
     matches!(
         e,
@@ -58,8 +44,6 @@ pub(crate) fn refused(e: &StoreError) -> bool {
     )
 }
 
-/// The lease lost or a full disk ends the sweep; any other error stops this
-/// ingest.
 fn stopped_by(e: StoreError) -> Result<Option<StoreError>, StoreError> {
     match e {
         StoreError::LeaseLost(_) | StoreError::Full(_) => Err(e),
@@ -67,16 +51,12 @@ fn stopped_by(e: StoreError) -> Result<Option<StoreError>, StoreError> {
     }
 }
 
-/// What one ingest did: the Task as written, when its cursor moved, and
-/// whether the outbox holds no whole line still to ingest.
 pub(crate) struct Ingested {
     pub(crate) written: Option<Object>,
     pub(crate) drained: Observation<bool>,
 }
 
 impl Ingested {
-    /// A Concluded Task's outbox between its rechecks: not read, and no
-    /// TaskController reconcile asks about it.
     pub(crate) fn unread() -> Ingested {
         Ingested::unchanged(Observation::Known(true))
     }
@@ -90,13 +70,6 @@ impl Ingested {
 }
 
 impl Manager<'_> {
-    /// Ingest the outbox of `task`'s session, if it has one. The sweep asks
-    /// for a Concluded Task that is not being deleted only when it is due
-    /// for its session recheck. A gone
-    /// session's outbox is read until a read finds every whole line in
-    /// (`status.outbox.closed`), and while its Task is being deleted. An
-    /// outbox that cannot be read concludes nothing: the cursor stays, and
-    /// `drained` is Unknown. The lease is renewed before each read.
     pub(crate) fn ingest_outbox(
         &self,
         task: &Object,
@@ -186,11 +159,6 @@ impl Manager<'_> {
         })
     }
 
-    /// Append `run` in one call, under one lock and one lease renewal, and
-    /// move `next` past it. A run the store refuses whole is appended one
-    /// line at a time, so a refused line is skipped and counted and the
-    /// others land. Answers the error that stopped it, which leaves `next`
-    /// at the last line in.
     fn append_run(
         &self,
         run: &mut Run,
@@ -236,11 +204,6 @@ impl Manager<'_> {
         Ok(None)
     }
 
-    /// Write `next` to the Task's `status.outbox`, re-reading the Task and
-    /// trying again when another writer, such as the worker, wrote first:
-    /// the events are already appended, and a cursor left behind would
-    /// read them again after retention dropped their keys. `None` when the
-    /// Task is gone, or still moving after `CURSOR_WRITE_TRIES`.
     fn write_cursor(
         &self,
         task: &Object,
@@ -280,9 +243,6 @@ impl Manager<'_> {
         Ok(None)
     }
 
-    /// The session's outbox from `from`: through the runtime when only it
-    /// reaches the host, else through the signal port. `None` with neither,
-    /// where no session was given an outbox.
     fn read_outbox(
         &self,
         session: &SessionRef,

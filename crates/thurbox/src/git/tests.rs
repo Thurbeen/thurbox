@@ -1,8 +1,3 @@
-//! `git`'s tests, kept together.
-//!
-//! They were one module before the file was split and they stay one: the
-//! helpers that build scratch repositories serve every file's tests.
-
 use super::*;
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -12,10 +7,6 @@ use crate::session::HostDef;
 
 #[test]
 fn git_program_scrubs_inherited_location_env() {
-    // Git exports these to hook processes; git_program must mark every one
-    // for removal so an inherited hook environment can't redirect a
-    // path-targeted git call to the wrong repo (the bug that corrupted the
-    // index when the suite ran under the pre-commit `cargo nextest` hook).
     let cmd = git_program();
     let removed: std::collections::HashSet<&str> = cmd
         .get_envs()
@@ -27,7 +18,6 @@ fn git_program_scrubs_inherited_location_env() {
     }
 }
 
-/// A throwaway repository with one commit, to clone from.
 fn seed_repo(dir: &Path, file: &str, contents: &str) -> String {
     std::fs::create_dir_all(dir.parent().unwrap_or(dir)).ok();
     run_git(
@@ -54,14 +44,10 @@ fn seed_repo(dir: &Path, file: &str, contents: &str) -> String {
     head_commit(dir).expect("head")
 }
 
-/// A clone delivers whatever the repository holds — including bytes no text
-/// path could carry — and reports the commit, not the ref.
 #[test]
 fn cloning_a_mod_delivers_its_files_and_reports_the_commit() {
     let tmp = tempfile::tempdir().expect("tempdir");
     let origin = tmp.path().join("origin");
-    // A pane in a nested directory, and a non-UTF-8 payload beside it: the exact
-    // pair the text fetch path corrupts.
     let commit = seed_repo(&origin, "mods/40_x.lua", "return {}\n");
     std::fs::write(origin.join("payload.bin"), [0x00u8, 0xff, 0xfe, 0x01]).expect("write");
     for args in [vec!["add", "-A"], vec!["commit", "-m", "payload"]] {
@@ -97,14 +83,6 @@ fn cloning_over_something_that_exists_is_refused() {
     assert!(dest.join("mine.lua").is_file(), "and leaves it alone");
 }
 
-/// The two questions asked of a pin, and what each is for.
-///
-/// `names_a_commit` picks the route, and everything hex from git's own
-/// abbreviation up to a full **sha256** id takes the long one: a sha256 id is a
-/// commit like any other, and reading only sha1's length as one handed 64
-/// characters to `clone --branch` as a name that is not there.
-/// `abbreviated_object_id` picks the *explanation* for a failure — a shape, not a
-/// verdict, since `20240115` is both a plausible prefix and an ordinary tag.
 #[test]
 fn a_pin_is_routed_by_length_and_explained_by_shape() {
     let sha1 = "0123456789abcdef0123456789abcdef01234567";
@@ -114,9 +92,6 @@ fn a_pin_is_routed_by_length_and_explained_by_shape() {
         assert!(!abbreviated_object_id(id), "{id}");
     }
 
-    // A prefix of either hash takes the same route as the id it truncates — which
-    // is what lets the failure be explained as the prefix it is. The 41-to-63
-    // band is the one that used to fall through to `--branch`.
     for prefix in [
         &sha1[..7],
         &sha1[..8],
@@ -128,15 +103,12 @@ fn a_pin_is_routed_by_length_and_explained_by_shape() {
         assert!(abbreviated_object_id(prefix), "{prefix}");
     }
 
-    // Names, all of them: a branch, a tag, a hex word shorter than git's own
-    // abbreviation, and a hex-looking string longer than any object id.
     for name in ["main", "v1.2.3", "feature/x", "decade", &sha256.repeat(2)] {
         assert!(!names_a_commit(name), "{name}");
         assert!(!abbreviated_object_id(name), "{name}");
     }
 }
 
-/// The property that makes git the right owner of "your edits are yours".
 #[test]
 fn an_edited_working_copy_reports_itself_dirty() {
     let tmp = tempfile::tempdir().expect("tempdir");
@@ -153,8 +125,6 @@ fn an_edited_working_copy_reports_itself_dirty() {
     );
 }
 
-/// A clone must never be able to sit waiting for a passphrase: an install runs
-/// from the command drain, so a prompt is a frozen interface.
 #[test]
 fn git_operations_refuse_to_prompt() {
     let mut cmd = git_program();
@@ -198,8 +168,6 @@ fn split_untracked_diff_separates_numstat_from_patch() {
 
 #[test]
 fn split_untracked_diff_ignores_the_marker_inside_a_path() {
-    // A path containing the literal header text must not split the output
-    // early: only a `diff --git` at the start or after a terminator counts.
     let combined = "1\t0\tdiff --git trap.txt\0diff --git a/x b/x\n+hi\n";
     let (counts, patch) = split_untracked_diff(combined);
     assert_eq!(counts, "1\t0\tdiff --git trap.txt\0");
@@ -208,11 +176,8 @@ fn split_untracked_diff_ignores_the_marker_inside_a_path() {
 
 #[test]
 fn split_untracked_diff_empty_and_patchless_inputs() {
-    // A vanished file produces no output at all.
     assert_eq!(split_untracked_diff(""), ("", ""));
-    // Stat records with no patch stay whole on the numstat side.
     assert_eq!(split_untracked_diff("1\t0\ta.txt\0"), ("1\t0\ta.txt\0", ""));
-    // A bare patch (no --numstat) is all patch.
     let (counts, patch) = split_untracked_diff("diff --git a/x b/x\n+hi\n");
     assert_eq!(counts, "");
     assert!(patch.starts_with("diff --git"));
@@ -242,7 +207,6 @@ fn parse_status_v2_clean_repo_with_upstream_in_sync() {
                # branch.upstream origin/main\n\
                # branch.ab +0 -0\n";
     let status = parse_status_v2(out);
-    // Headers alone are not dirt.
     assert!(!status.dirty);
     assert_eq!(status.untracked, 0);
     assert_eq!(status.ahead_behind, Some((0, 0)));
@@ -250,8 +214,6 @@ fn parse_status_v2_clean_repo_with_upstream_in_sync() {
 
 #[test]
 fn parse_status_v2_without_upstream_reports_no_ab() {
-    // No upstream configured (or its ref gone): git omits `# branch.ab`, and
-    // the caller must fall back to the resolve_base_ref probe chain.
     let out = "# branch.oid 1234abcd\n\
                # branch.head detached\n\
                ? scratch.txt\n";
@@ -265,7 +227,6 @@ fn parse_status_v2_without_upstream_reports_no_ab() {
 fn scan_child_repos_finds_git_subdirs_sorted_skipping_others() {
     let tmp = tempfile::tempdir().unwrap();
     let root = tmp.path();
-    // Two git repos (.git dir), one plain dir, one hidden git dir.
     for name in ["beta", "alpha"] {
         std::fs::create_dir_all(root.join(name).join(".git")).unwrap();
     }
@@ -282,7 +243,7 @@ fn scan_child_repos_detects_git_file_worktree() {
     let root = tmp.path();
     let wt = root.join("worktree");
     std::fs::create_dir_all(&wt).unwrap();
-    // Worktree checkouts use a `.git` *file*, not a directory.
+    // git worktree checkouts use a `.git` file, not a directory.
     std::fs::write(wt.join(".git"), "gitdir: /somewhere\n").unwrap();
 
     assert!(is_git_repo(&wt));
@@ -297,9 +258,6 @@ fn scan_child_repos_missing_parent_is_empty() {
 
 #[test]
 fn resolve_base_ref_none_without_remote() {
-    // A repo with no upstream and no remote refs resolves to no base ref,
-    // so sync surfaces an error rather than rebasing onto a missing
-    // `origin/main`.
     let tmp = tempfile::tempdir().unwrap();
     let repo = tmp.path();
     let git = |args: &[&str]| {
@@ -327,8 +285,6 @@ fn resolve_base_ref_none_without_remote() {
 
 #[test]
 fn resolve_base_ref_prefers_upstream() {
-    // A branch tracking an upstream resolves to `@{upstream}`, ahead of the
-    // origin/HEAD and origin/main fallbacks.
     let tmp = tempfile::tempdir().unwrap();
     let remote = tmp.path().join("remote.git");
     let work = tmp.path().join("work");
@@ -345,11 +301,9 @@ fn resolve_base_ref_prefers_upstream() {
         );
     };
 
-    // Bare remote to push to.
     std::fs::create_dir_all(&remote).unwrap();
     run(&remote, &["init", "-q", "--bare"]);
 
-    // Working repo with one commit, pushed with upstream tracking (`-u`).
     std::fs::create_dir_all(&work).unwrap();
     run(&work, &["init", "-q"]);
     run(&work, &["config", "user.email", "t@example.com"]);
@@ -366,8 +320,6 @@ fn resolve_base_ref_prefers_upstream() {
 
     assert_eq!(resolve_base_ref(&work), Some("@{upstream}".to_string()));
 }
-
-// ── stderr, and the host launcher ───────────────────────────────
 
 fn host(dest: &str, wt_dir: Option<&str>) -> HostDef {
     HostDef {
@@ -397,7 +349,6 @@ fn git_command_local_uses_git_with_args() {
     assert_eq!(cmd.get_current_dir(), Some(Path::new("/repo")));
 }
 
-/// A Windows host, declared the only way thurbox declares one.
 fn windows_host() -> HostDef {
     HostDef {
         name: "winbox".into(),
@@ -407,7 +358,6 @@ fn windows_host() -> HostDef {
     }
 }
 
-/// The advisory OpenSSH ≥ 10 prints on stderr for every non-PQ connection.
 const PQ_ADVISORY: &str = "\
 ** WARNING: connection is not using a post-quantum key exchange algorithm.
 ** This session may be vulnerable to \"store now, decrypt later\" attacks.
@@ -415,9 +365,6 @@ const PQ_ADVISORY: &str = "\
 
 #[test]
 fn the_post_quantum_advisory_is_not_reported_as_the_error() {
-    // Verbatim, this block is FIRST in the buffer, so every failure
-    // read as "connection is not using a post-quantum key…" and the real
-    // cause was pushed below the fold — or off the end of a narrow band.
     let stderr = format!("{PQ_ADVISORY}\nfatal: not a git repository");
     assert_eq!(
         reportable_stderr(stderr.as_bytes()),
@@ -427,14 +374,11 @@ fn the_post_quantum_advisory_is_not_reported_as_the_error() {
 
 #[test]
 fn an_advisory_alone_leaves_nothing_to_report() {
-    // Not the advisory again as a consolation prize: empty, so the caller
-    // reports the exit status, which at least concerns the failure.
     assert_eq!(reportable_stderr(PQ_ADVISORY.as_bytes()), "");
 }
 
 #[test]
 fn posix_stderr_is_passed_through_untouched() {
-    // No advisory: the stderr must be unaffected.
     assert_eq!(
         reportable_stderr(b"sh: 1: cd: can't cd to /nope"),
         "sh: 1: cd: can't cd to /nope"
@@ -443,8 +387,7 @@ fn posix_stderr_is_passed_through_untouched() {
 
 #[test]
 fn the_advisory_is_filtered_off_crlf_output_too() {
-    // ssh's real output is CRLF-terminated, which is how it arrives from a
-    // Windows host — the filter must not depend on bare LF.
+    // ssh output from a Windows host is CRLF-terminated.
     let stderr = "** WARNING: connection is not using a post-quantum \
                   key exchange algorithm.\r\n\
                   ** The server may need to be upgraded.\r\n\
@@ -457,7 +400,6 @@ fn the_advisory_is_filtered_off_crlf_output_too() {
 
 #[test]
 fn a_line_merely_containing_asterisks_is_not_an_advisory() {
-    // Only a LEADING `**` marks one; git's own output must survive.
     let stderr = "error: pathspec '**/*.rs' did not match any file";
     assert_eq!(reportable_stderr(stderr.as_bytes()), stderr);
 }
@@ -466,7 +408,6 @@ fn a_line_merely_containing_asterisks_is_not_an_advisory() {
 fn a_psmux_host_is_a_windows_host_and_a_wsl_distro_is_not() {
     assert!(windows_host().is_windows());
     assert!(!host("me@box", None).is_windows());
-    // A distro runs `tmux` inside Linux, whatever the machine hosting it.
     assert!(!HostDef::wsl("Ubuntu").is_windows());
 }
 
@@ -474,10 +415,7 @@ fn a_psmux_host_is_a_windows_host_and_a_wsl_distro_is_not() {
 fn the_powershell_payload_is_utf16le_base64_so_no_shell_can_rewrite_it() {
     use base64::Engine as _;
 
-    // ssh space-joins its args for the host's default sshd shell to parse,
-    // and that shell is commonly PowerShell, which expands `$…` inside
-    // double quotes: a probe reading `$PSVersionTable` came back with the
-    // OUTER shell's expansion substituted in. Base64 has nothing to expand.
+    // sshd hands the joined args to PowerShell, which expands `$` inside double quotes.
     let script = "$d='C:/a'; Write-Output \"$d & 'x'\"";
     let cmd = crate::shell::HostShell::run_on_host(&windows_host(), script);
     let (_, args) = program_and_args(&cmd);
@@ -519,8 +457,6 @@ fn list_dir_entries_flags_git_repos_and_follows_symlinks() {
     let DirListing::Entries(entries) = list_dir_entries(&root.display().to_string()) else {
         panic!("existing dir must not be Missing");
     };
-    // Hidden entries included (the picker filters); files excluded; a
-    // symlink to a dir is listed.
     assert!(entries.contains(&(".hidden".to_string(), false)));
     assert!(entries.contains(&("repo".to_string(), true)));
     assert!(entries.contains(&("plain".to_string(), false)));
@@ -533,8 +469,6 @@ fn list_dir_entries_flags_git_repos_and_follows_symlinks() {
         DirListing::Missing
     );
 }
-
-// ── parse_repo_name_from_url ────────────────────────────────────
 
 #[test]
 fn parse_ssh_url() {
@@ -575,16 +509,12 @@ fn parse_ssh_url_no_user_path() {
 
 #[test]
 fn parse_url_trailing_slash() {
-    // Trailing slash produces empty last segment — rsplit('/').next() = ""
     assert_eq!(
         parse_repo_name_from_url("https://github.com/org/repo/"),
         None
     );
 }
 
-// ── listing the worktrees a repo already has ───────────────────────────────
-
-/// Run `git` in `dir`, failing the test on anything but a clean exit.
 fn git_in(dir: &Path, args: &[&str]) {
     let out = git_program()
         .args(args)
@@ -598,20 +528,12 @@ fn git_in(dir: &Path, args: &[&str]) {
     );
 }
 
-/// Write `file` with `contents` and commit it.
 fn commit_file(dir: &Path, file: &str, contents: &str, msg: &str) {
     std::fs::write(dir.join(file), contents).unwrap();
     git_in(dir, &["add", "-A"]);
     git_in(dir, &["commit", "-qm", msg]);
 }
 
-/// A scratch repo with a bare `origin`: `main` at one commit and a `feature`
-/// branch three commits ahead, pushed with tracking the way an open pull
-/// request leaves it. Checked out on `feature`.
-///
-/// A caller lands the branch however its forge would — never by moving
-/// `feature` itself, because a forge squashes or replays on its own copy and
-/// the worktree keeps the commits it always had — then calls [`land`].
 fn pr_repo(tmp: &Path) -> PathBuf {
     let remote = tmp.join("remote.git");
     let work = tmp.join("work");
@@ -639,10 +561,6 @@ fn pr_repo(tmp: &Path) -> PathBuf {
     work
 }
 
-/// Publish local `main` and delete the branch on the remote — what a forge
-/// does once a pull request merges, and what strips the worktree's upstream so
-/// its ahead count starts counting against the default branch. Leaves the
-/// worktree back on `feature`.
 fn land(work: &Path) {
     git_in(work, &["push", "-q", "origin", "main"]);
     git_in(work, &["push", "-q", "origin", "--delete", "feature"]);
@@ -650,10 +568,6 @@ fn land(work: &Path) {
     git_in(work, &["fetch", "-q", "--prune", "origin"]);
 }
 
-/// [`pr_repo`] with the branch squash-merged and the default branch moved on
-/// afterwards: the shape every merged PR leaves behind here — the work is on
-/// `origin/main` as one new commit, and the branch's own commits are ancestors
-/// of nothing.
 fn squash_merged_repo(tmp: &Path) -> PathBuf {
     let work = pr_repo(tmp);
     git_in(&work, &["checkout", "-q", "main"]);
@@ -666,11 +580,6 @@ fn squash_merged_repo(tmp: &Path) -> PathBuf {
 
 #[test]
 fn a_squash_merged_branch_reports_itself_merged() {
-    // The case v1 got right and the delete confirmation must: every commit on
-    // this branch landed on `origin/main` as one squashed commit, so a delete
-    // walks away from nothing — even though not one of them is an ancestor of
-    // the default branch, which is why `merge-base --is-ancestor` alone is not
-    // an answer.
     let tmp = tempfile::tempdir().unwrap();
     let work = squash_merged_repo(tmp.path());
 
@@ -687,8 +596,6 @@ fn an_unmerged_branch_reports_itself_unmerged() {
     assert_eq!(merged_into_default(&work), Some(false));
 }
 
-/// How many loose objects the repository at `dir` holds. `git count-objects`
-/// counts exactly those — the ones a probe commit adds and a pack never holds.
 fn loose_objects(dir: &Path) -> usize {
     let out = run_git_capture(&["count-objects"], dir).expect("count-objects");
     out.split_whitespace()
@@ -699,19 +606,6 @@ fn loose_objects(dir: &Path) -> usize {
 
 #[test]
 fn re_statting_an_unmerged_worktree_writes_no_further_objects() {
-    // The squash check squares the branch off with `commit-tree`, and this is
-    // the caller that re-asks: for as long as a session sits on unmerged work,
-    // every recheck of that answer runs it again. So the probe commit has to
-    // hash the same every time, or each one leaves a loose object: 28k of them
-    // in one repository here — back when the recheck was every five seconds and
-    // the answer was cached for no time at all — past the point where `git gc
-    // --auto` gives up and writes `.git/gc.log`. The recheck is a minute apart
-    // now (`snapshot`'s `MERGE_RECHECK`), which makes the leak slower rather
-    // than bounded.
-    //
-    // Deliberately `worktree_stats` rather than `merged_into_default`: the leak
-    // is a property of the polled path, and a future git call added to that
-    // path has to answer to this test too.
     let tmp = tempfile::tempdir().unwrap();
     let work = squash_merged_repo(tmp.path());
     git_in(&work, &["checkout", "-q", "-b", "wip", "origin/main"]);
@@ -725,10 +619,7 @@ fn re_statting_an_unmerged_worktree_writes_no_further_objects() {
     );
     let settled = loose_objects(&work);
 
-    // Across a tick of the clock, and that is the whole test: a git commit
-    // timestamp is whole seconds, so a probe that inherits "now" hashes the
-    // same within one second and differently after it. Re-asking straight away
-    // writes one object either way and the bug hides.
+    // git commit timestamps are whole seconds, so the probe must be re-asked across a tick.
     sleep_past_the_second();
     assert_eq!(
         worktree_stats(&work, None).and_then(|s| s.merged),
@@ -742,9 +633,6 @@ fn re_statting_an_unmerged_worktree_writes_no_further_objects() {
     );
 }
 
-/// Sleep just past the next whole second, so a git timestamp taken after this
-/// returns differs from one taken before it. Under half a second on average,
-/// rather than the flat second a fixed sleep would cost.
 fn sleep_past_the_second() {
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -755,8 +643,6 @@ fn sleep_past_the_second() {
 
 #[test]
 fn a_branch_already_on_the_default_reports_itself_merged() {
-    // Nothing of its own: the fast path (`--is-ancestor`) answers before the
-    // patch-id comparison is ever paid for.
     let tmp = tempfile::tempdir().unwrap();
     let work = squash_merged_repo(tmp.path());
     git_in(&work, &["checkout", "-q", "-b", "spike", "origin/main"]);
@@ -766,8 +652,6 @@ fn a_branch_already_on_the_default_reports_itself_merged() {
 
 #[test]
 fn a_merge_commit_branch_reports_itself_merged() {
-    // Strategy 1, `git merge --no-ff`: the branch tip stays reachable from the
-    // default branch, so the ancestor check answers before a patch is compared.
     let tmp = tempfile::tempdir().unwrap();
     let work = pr_repo(tmp.path());
     assert_eq!(
@@ -788,7 +672,6 @@ fn a_merge_commit_branch_reports_itself_merged() {
 
 #[test]
 fn a_fast_forwarded_branch_reports_itself_merged() {
-    // Strategy 2: the default branch simply moves onto the branch tip.
     let tmp = tempfile::tempdir().unwrap();
     let work = pr_repo(tmp.path());
     assert_eq!(
@@ -806,11 +689,6 @@ fn a_fast_forwarded_branch_reports_itself_merged() {
 
 #[test]
 fn a_squash_landed_after_the_default_moved_reports_itself_merged() {
-    // Strategy 3, in its harder shape: `main` gained an unrelated commit
-    // *before* the squash landed, so the squashed commit's parent is not the
-    // merge base. Both diffs still carry only the branch's own work, so the
-    // patch-ids match anyway — which is what makes the squash check survive a
-    // moving default branch.
     let tmp = tempfile::tempdir().unwrap();
     let work = pr_repo(tmp.path());
     assert_eq!(
@@ -828,14 +706,9 @@ fn a_squash_landed_after_the_default_moved_reports_itself_merged() {
     assert_eq!(merged_into_default(&work), Some(true));
 }
 
-/// Replay `feature` onto `main` under a throwaway branch name, the way a forge
-/// does the work on its own copy: every commit gets a new sha and the
-/// worktree's `feature` never moves. Leaves the replayed branch checked out as
-/// `landing` for the caller to merge.
 fn replay_feature_onto_main(work: &Path) {
     git_in(work, &["checkout", "-q", "main"]);
-    // Something for the replay to land on, or the rebase is a fast-forward
-    // that reuses the very shas the test is trying to leave behind.
+    // Without a commit to land on, git rebase fast-forwards and keeps the old shas.
     commit_file(work, "unrelated.txt", "unrelated", "someone else's PR");
     git_in(work, &["checkout", "-q", "-b", "landing", "feature"]);
     git_in(work, &["rebase", "-q", "main"]);
@@ -843,10 +716,6 @@ fn replay_feature_onto_main(work: &Path) {
 
 #[test]
 fn a_rebase_merged_branch_reports_itself_merged() {
-    // Strategy 4 (GitHub "Rebase and merge", GitLab fast-forward-after-rebase).
-    // No commit of the branch is an ancestor of the default branch, the trees
-    // differ, and no single commit upstream carries the branch as one patch —
-    // per-commit patch-ids are the only evidence left.
     let tmp = tempfile::tempdir().unwrap();
     let work = pr_repo(tmp.path());
     assert_eq!(
@@ -866,9 +735,6 @@ fn a_rebase_merged_branch_reports_itself_merged() {
 
 #[test]
 fn a_semi_linear_merge_reports_itself_merged() {
-    // Strategy 5 (GitLab's semi-linear merge): the same replay as strategy 4,
-    // capped with a merge commit rather than a fast-forward, so the same
-    // per-commit evidence has to carry it.
     let tmp = tempfile::tempdir().unwrap();
     let work = pr_repo(tmp.path());
     assert_eq!(
@@ -891,12 +757,6 @@ fn a_semi_linear_merge_reports_itself_merged() {
 
 #[test]
 fn a_branch_whose_tree_matches_the_default_reports_itself_merged() {
-    // Not a merge strategy but the answer to all of them: whatever route the
-    // content took, a branch whose tree already equals the default branch's has
-    // nothing a delete could lose. Here the work was reimplemented on `main` by
-    // hand, split across a different number of commits and without the branch's
-    // intermediate state of `one.txt` — so neither the per-commit patch-ids nor
-    // the squared-off one match, and the tree is the only evidence there is.
     let tmp = tempfile::tempdir().unwrap();
     let work = pr_repo(tmp.path());
     commit_file(&work, "one.txt", "final", "polish one.txt");
@@ -917,9 +777,6 @@ fn a_branch_whose_tree_matches_the_default_reports_itself_merged() {
 
 #[test]
 fn an_unmerged_branch_stays_unmerged_when_the_default_moves_on() {
-    // The false positive every one of these checks has to avoid: the default
-    // branch grew a commit, but not this branch's. Nothing here is safe to
-    // throw away.
     let tmp = tempfile::tempdir().unwrap();
     let work = pr_repo(tmp.path());
 
@@ -934,10 +791,6 @@ fn an_unmerged_branch_stays_unmerged_when_the_default_moves_on() {
 
 #[test]
 fn a_branch_with_nothing_ahead_is_never_asked() {
-    // The `ahead > 0` gate in `worktree_stats`: a branch with no commits of its
-    // own has nothing a delete could lose, so the merge check — several `git`
-    // runs, one of which writes an object — is not paid for at all, and
-    // `merged` stays unknown rather than answered.
     let tmp = tempfile::tempdir().unwrap();
     let work = squash_merged_repo(tmp.path());
     git_in(&work, &["checkout", "-q", "-b", "spike", "origin/main"]);
@@ -949,8 +802,6 @@ fn a_branch_with_nothing_ahead_is_never_asked() {
 
 #[test]
 fn merged_into_default_is_unknown_without_a_remote_default() {
-    // No `origin` at all: the question cannot be answered, and `None` says so
-    // rather than claiming the work is safe to throw away.
     let tmp = tempfile::tempdir().unwrap();
     let repo = tmp.path().join("solo");
     std::fs::create_dir_all(&repo).unwrap();
@@ -965,8 +816,6 @@ fn merged_into_default_is_unknown_without_a_remote_default() {
 
 #[test]
 fn parse_status_v2_reads_the_head_oid() {
-    // `# branch.oid` is the commit every other number in the same run
-    // describes, and it arrives free — no `rev-parse` of its own.
     let status = parse_status_v2(
         "# branch.oid cf2c3b773317d32908f7ec947f2adca2afdded09\n\
          # branch.head feature\n\
@@ -981,21 +830,13 @@ fn parse_status_v2_reads_the_head_oid() {
 
 #[test]
 fn parse_status_v2_without_a_head_oid_reports_none() {
-    // An unborn branch has no commit yet, and `# branch.oid (initial)` is what
-    // git prints for it — not a sha, so not an answer.
+    // git prints `# branch.oid (initial)` for an unborn branch.
     let status = parse_status_v2("# branch.oid (initial)\n# branch.head main\n");
     assert_eq!(status.head, None);
 }
 
 #[test]
 fn a_merged_answer_is_reused_only_for_the_commit_it_was_computed_for() {
-    // The regression. `merged` is a fact about HEAD, not about the worktree:
-    // it flips back to false the moment the session commits again on top of a
-    // branch that had landed. Keyed on the session instead of the commit, the
-    // first `Some(true)` latches — `worktree_stats` returns it, the caller
-    // stores it, and it feeds itself the same answer forever, so `at_risk`
-    // stops warning about commits that exist nowhere else and the session is
-    // torn down with no question asked.
     let tmp = tempfile::tempdir().unwrap();
     let work = squash_merged_repo(tmp.path());
     let run = |args: &[&str]| {
@@ -1011,7 +852,6 @@ fn a_merged_answer_is_reused_only_for_the_commit_it_was_computed_for() {
     assert_eq!(landed.merged, Some(true), "the branch was squash-merged");
     let landed_head = landed.head.clone().expect("a committed branch has a head");
 
-    // The session keeps working: one more commit, on nothing but this branch.
     std::fs::write(work.join("followup.txt"), "follow-up").unwrap();
     run(&["add", "-A"]);
     run(&["commit", "-qm", "follow-up work, merged nowhere"]);
@@ -1037,10 +877,6 @@ fn a_merged_answer_is_reused_only_for_the_commit_it_was_computed_for() {
 
 #[test]
 fn a_merged_answer_is_reused_when_head_has_not_moved() {
-    // The other half: a settled worktree is the whole point of the cache, and
-    // it must actually skip the check. Proven by handing the key to a worktree
-    // the check would call *unmerged* — only the short-circuit can answer
-    // `true` here.
     let tmp = tempfile::tempdir().unwrap();
     let work = squash_merged_repo(tmp.path());
     let run = |args: &[&str]| {
@@ -1077,16 +913,6 @@ fn a_merged_answer_is_reused_when_head_has_not_moved() {
 
 #[test]
 fn an_unmerged_answer_is_reused_while_head_stands_still() {
-    // The polling cost issue #1167 measured. `merged: Some(false)` is what a
-    // session answers for as long as its pull request is open — most of its
-    // life — and reaching it costs seven subprocesses (`symbolic-ref`,
-    // `merge-base --is-ancestor`, `diff --quiet`, `merge-base`, two `cherry`s
-    // and a `commit-tree`) on top of the two the stat already pays. Remembered
-    // for `true` only, that ran per session every five seconds, forever.
-    //
-    // Proven the way the `true` half is: hand the key back after taking the
-    // repository's ability to answer the question away, so only the
-    // short-circuit can produce `Some(false)`.
     let tmp = tempfile::tempdir().unwrap();
     let work = squash_merged_repo(tmp.path());
     git_in(&work, &["checkout", "-q", "-b", "wip", "origin/main"]);
@@ -1096,8 +922,6 @@ fn an_unmerged_answer_is_reused_while_head_stands_still() {
     assert_eq!(fresh.merged, Some(false), "genuinely unmerged");
     let head = fresh.head.clone().expect("head");
 
-    // No remote, no default branch to measure against: the check can no longer
-    // reach an answer at all.
     git_in(&work, &["remote", "remove", "origin"]);
     assert_eq!(
         worktree_stats(&work, None).and_then(|s| s.merged),
@@ -1119,8 +943,6 @@ fn an_unmerged_answer_is_reused_while_head_stands_still() {
         "the key matches HEAD, so the stored answer stands without re-asking"
     );
 
-    // And it retires with the commit it belongs to, exactly as a `true` does:
-    // an answer about HEAD may not outlive HEAD.
     commit_file(&work, "more.txt", "more", "more work");
     assert_eq!(
         worktree_stats(
@@ -1138,11 +960,6 @@ fn an_unmerged_answer_is_reused_while_head_stands_still() {
 
 #[test]
 fn an_untracked_only_status_needs_no_numstat() {
-    // `git diff --numstat HEAD` is the second subprocess every stat pays, and
-    // the status that precedes it already determines the answer: with no `1`,
-    // `2` or `u` record, no tracked file differs from HEAD and the diff is
-    // empty by construction. `tracked` is what lets the caller skip the run, so
-    // the parse has to tell an untracked-only tree from a changed one.
     let untracked_only = "# branch.oid abc123\n# branch.head wip\n? new.txt\n";
     let status = parse_status_v2(untracked_only);
     assert!(status.dirty, "an untracked file still dirties the tree");
@@ -1163,9 +980,6 @@ fn an_untracked_only_status_needs_no_numstat() {
 
 #[test]
 fn an_untracked_file_reports_dirty_with_no_diff_of_its_own() {
-    // The skip above must not cost the answer: an untracked file moves
-    // `untracked`/`dirty` and nothing else, which is what `diff HEAD` would
-    // have said had it run.
     let tmp = tempfile::tempdir().unwrap();
     let work = pr_repo(tmp.path());
     std::fs::write(work.join("scratch.txt"), "not added").unwrap();
@@ -1180,14 +994,6 @@ fn an_untracked_file_reports_dirty_with_no_diff_of_its_own() {
     );
 }
 
-/// Run `f` with a counting shim ahead of the real `git` on `PATH`, and report
-/// how many `git` processes it started.
-///
-/// The cost this path is judged on is a **process count** — that is what an
-/// endpoint-protection agent scans and what issue #1167 measured with `ps` —
-/// so it is counted directly rather than inferred from the code. The shim
-/// delegates to the real binary, so the answers under measurement are the real
-/// ones.
 #[cfg(unix)]
 fn count_git<T>(at: &Path, f: impl FnOnce() -> T) -> (T, usize) {
     use std::os::unix::fs::PermissionsExt;
@@ -1209,8 +1015,7 @@ fn count_git<T>(at: &Path, f: impl FnOnce() -> T) -> (T, usize) {
     .unwrap();
     std::fs::set_permissions(&shim, std::fs::Permissions::from_mode(0o755)).unwrap();
 
-    // Prepended rather than replacing: git resolves its own helpers through the
-    // environment it was started with.
+    // git resolves its own helpers through the PATH it starts with.
     let path = format!(
         "{}:{}",
         bin.display(),
@@ -1226,14 +1031,6 @@ fn count_git<T>(at: &Path, f: impl FnOnce() -> T) -> (T, usize) {
 #[test]
 #[cfg(unix)]
 fn a_polled_stat_costs_nine_subprocesses_cold_and_two_warm() {
-    // The measurement behind ADR-P25, and the regression gate on it: these
-    // counts are deterministic, so they are asserted rather than described.
-    //
-    // The worktree is the shape a session spends most of its life in — ahead of
-    // the default branch, pushed, not landed — with one staged change so the
-    // numstat has something to report. `set-head` gives `origin` the advertised
-    // HEAD a clone would have, without which the fixture pays one extra
-    // `rev-parse` that a real worktree does not.
     let tmp = tempfile::tempdir().unwrap();
     let work = squash_merged_repo(tmp.path());
     git_in(&work, &["remote", "set-head", "origin", "main"]);
@@ -1266,7 +1063,6 @@ fn a_polled_stat_costs_nine_subprocesses_cold_and_two_warm() {
         "with the answer in hand a poll is the status and the numstat"
     );
 
-    // And with nothing tracked changed, the numstat is a foregone conclusion.
     git_in(&work, &["checkout", "-q", "--", "wip.txt"]);
     let (clean, clean_calls) = count_git(tmp.path(), || {
         worktree_stats(
@@ -1281,8 +1077,6 @@ fn a_polled_stat_costs_nine_subprocesses_cold_and_two_warm() {
     assert!(!clean.dirty);
     assert_eq!(clean_calls, 1, "one status, and it answered everything");
 }
-
-// ── creating a directory for a new repository ──────────────────────────────
 
 #[test]
 fn a_new_directory_is_created_empty_or_initialised() {
@@ -1361,9 +1155,6 @@ fn an_existing_empty_directory_is_used_and_kept_when_the_clone_fails() {
     );
 }
 
-/// A repository git cannot read, here one whose `.git` names no repository,
-/// is a failure to show, not a directory with no repository: the flow must
-/// keep its worktree choices.
 #[test]
 fn a_repository_git_cannot_read_is_a_failure_not_a_plain_directory() {
     let dir = tempfile::tempdir().expect("tempdir");
@@ -1377,9 +1168,6 @@ fn a_repository_git_cannot_read_is_a_failure_not_a_plain_directory() {
     );
 }
 
-/// A clone of a new upstream, and the upstream moved on past it: both the
-/// clone's `main` and its `origin/main` are behind. Returns the upstream, the
-/// clone, and the upstream's new `main`.
 fn behind_clone(dir: &Path, branch: &str) -> (PathBuf, PathBuf, String) {
     let upstream = dir.join("upstream");
     seed_repo(&upstream, "README", "one\n");
@@ -1400,9 +1188,6 @@ fn behind_clone(dir: &Path, branch: &str) -> (PathBuf, PathBuf, String) {
     (upstream, clone, moved)
 }
 
-/// A new worktree starts from the upstream as it is now: the fetch brings the
-/// upstream's new tip, and the default is the remote-tracking `origin/main`,
-/// not the clone's own `main`, which the upstream has moved past.
 #[test]
 fn the_default_base_is_the_freshly_fetched_origin_default_branch() {
     let dir = tempfile::tempdir().expect("tempdir");
@@ -1419,8 +1204,6 @@ fn the_default_base_is_the_freshly_fetched_origin_default_branch() {
     assert_eq!(fetched.trim(), moved, "origin/main is the fetched tip");
 }
 
-/// An upstream that changed its default branch is followed: the fetch moves
-/// `origin/HEAD`, so the default is the upstream's new one.
 #[test]
 fn the_default_follows_an_upstream_that_changed_its_default_branch() {
     let dir = tempfile::tempdir().expect("tempdir");
@@ -1438,7 +1221,6 @@ fn the_default_follows_an_upstream_that_changed_its_default_branch() {
     assert_eq!(read.default.as_deref(), Some("origin/develop"), "{read:?}");
 }
 
-/// With no `origin/HEAD`, the default is `origin/main`, else `origin/master`.
 #[test]
 fn without_origin_head_the_default_is_origin_main_then_master() {
     for branch in ["main", "master"] {
@@ -1454,8 +1236,6 @@ fn without_origin_head_the_default_is_origin_main_then_master() {
     }
 }
 
-/// A fetch from an origin that accepts the connection and never answers gives
-/// up at its deadline, so the picker falls back to the refs already there.
 #[test]
 fn a_fetch_from_an_origin_that_never_answers_gives_up() {
     let silent = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
@@ -1481,8 +1261,6 @@ fn a_fetch_from_an_origin_that_never_answers_gives_up() {
     drop(silent);
 }
 
-/// A repository's own `core.sshCommand` (a wrapper, a key, a proxy) is the one
-/// the picker's fetch runs: thurbox's ssh options never replace it.
 #[cfg(unix)]
 #[test]
 fn a_fetch_keeps_the_repositorys_own_ssh_command() {
@@ -1514,7 +1292,6 @@ fn a_fetch_keeps_the_repositorys_own_ssh_command() {
     assert!(marker.exists(), "the configured ssh command was not run");
 }
 
-/// A repository with no `origin` has nothing to fetch, and that is no error.
 #[test]
 fn a_repository_with_no_origin_fetches_nothing() {
     let dir = tempfile::tempdir().expect("tempdir");
@@ -1525,8 +1302,6 @@ fn a_repository_with_no_origin_fetches_nothing() {
     );
 }
 
-/// A repository with no `origin` lists its own branches and defaults to the
-/// one checked out, as before.
 #[test]
 fn a_repository_with_no_origin_defaults_to_its_checked_out_branch() {
     let dir = tempfile::tempdir().expect("tempdir");

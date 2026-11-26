@@ -1,13 +1,8 @@
-//! `lib.repo_picker`'s calls an edited pane may still make in their older
-//! forms: a call that worked keeps working (`ui/AGENTS.md`).
-
 use thurbox::kernel::host::{LuaHost, Published, RenderContext};
 use thurbox::kernel::registry::Registry;
 use thurbox::kernel::snapshot::Snapshot;
 use thurbox::kernel::theme::Themes;
 
-/// What a probe pane in a copy of the bundled interface stores after running
-/// `lua` at load, which sets `store["probe.result"]`.
 fn probe(lua: &str) -> String {
     let dir = tempfile::tempdir().expect("tempdir");
     let report = thurbox::kernel::bundled::materialize(dir.path());
@@ -76,9 +71,6 @@ return {{
         .expect("the probe stores its result")
 }
 
-/// `chosen(rows)` and `chosen(rows, selected)` were the whole call before
-/// worktree mode took a third table: both still answer, with nothing taking
-/// a worktree.
 #[test]
 fn chosen_takes_its_older_forms() {
     let shown = probe(

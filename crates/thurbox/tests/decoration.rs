@@ -1,17 +1,3 @@
-//! Decoration must not cost a pane its styling.
-//!
-//! Regression: `to_lua` deliberately dropped each run's `Style` on the way out
-//! to a decorator, on the reasoning that a decorator "sets the styles it
-//! wants". But a decorator is handed the tree and returns one, so whatever the
-//! boundary drops is dropped from the pane — and the common case is a
-//! decorator that returns its input *untouched* (search, whenever its query is
-//! empty). The session list is decorated by search, so every colour it drew was
-//! being thrown away on every frame: it rendered in the terminal's default
-//! foreground while every undecorated pane was themed correctly.
-//!
-//! The bug was invisible to the existing tests because they render a mod
-//! directly, which never crosses the decoration boundary.
-
 use ratatui::style::{Color, Modifier, Style};
 
 use thurbox::kernel::convert::{to_lua, to_node};
@@ -48,7 +34,6 @@ fn styled_tree() -> Node {
     }
 }
 
-/// The round trip a decorator sits inside: Node → Lua → Node.
 fn round_trip(node: &Node) -> Node {
     let lua = mlua::Lua::new();
     let value = to_lua(&lua, node).expect("to_lua");
@@ -84,9 +69,6 @@ fn a_style_survives_the_trip_out_to_a_decorator_and_back() {
 
 #[test]
 fn a_node_style_survives_the_trip_out_to_a_decorator_and_back() {
-    // The selection bar lives on the node now rather than on every span, so the
-    // boundary has to carry it there too — a decorator that returns its input
-    // untouched must not flatten the row the cursor is on.
     let mut before = styled_tree();
     let Node::Text { style, .. } = &mut before else {
         unreachable!("styled_tree is a text node");
@@ -110,16 +92,12 @@ fn a_node_style_survives_the_trip_out_to_a_decorator_and_back() {
 
 #[test]
 fn an_untouched_tree_comes_back_unchanged() {
-    // The strongest form of the rule, and the case that actually broke: a
-    // decorator that changes nothing must cost nothing.
     let before = styled_tree();
     assert_eq!(round_trip(&before), before);
 }
 
 #[test]
 fn an_unstyled_run_stays_unstyled() {
-    // The inverse guard: the fix must not invent a style for a plain run, or
-    // every unstyled span would start carrying a table through the tree diff.
     let node = Node::Text {
         identity: Identity::default(),
         size: Default::default(),
@@ -166,9 +144,6 @@ fn every_field_survives_the_trip_out_and_back() {
             border_style: Style::default().fg(Color::Magenta),
             style: Style::default().bg(Color::Indexed(17)),
             padding: 1,
-            // The border overlay round-trips too, and a run's identity with it:
-            // the session list's dot strip and the agent pane's tab chips live
-            // here, and the search pane decorates both.
             overlay: Some(Box::new(Overlay {
                 top_left: vec![Run {
                     text: " ◀ F9 ".into(),

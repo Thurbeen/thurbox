@@ -1,33 +1,7 @@
-//! References between the repository's documents resolve, and retired names
-//! stay retired.
-//!
-//! A renamed document leaves its old name behind in every file that cited it,
-//! and nothing else notices: a Markdown link to a missing file still renders,
-//! a backticked `docs/X.md` is only text, and a skill naming a symbol that was
-//! deleted reads as authoritative. This reads every tracked text file and
-//! fails on:
-//!
-//! - a relative Markdown link whose target does not exist;
-//! - a `docs/<NAME>.md` or `.agents/skills/<name>` path that does not exist,
-//!   in any text file — a doc comment, a skill, a workflow, the website;
-//! - a `github.com/Thurbeen/thurbox/blob/main/<path>` link whose path does not
-//!   exist here;
-//! - a `src/<path>` in a Markdown file that does not exist in `crates/thurbox`,
-//!   unless it is another project's ([`FOREIGN_SOURCES`]);
-//! - a name in [`RETIRED`], anywhere;
-//! - a stated minimum Rust version other than `crates/thurbox/Cargo.toml`'s
-//!   `rust-version`.
-//!
-//! Historical prose about code that went with v1 (`src/app`, `src/ui`) is not
-//! checked: it says where something used to be, which is the point of it.
-
 use std::path::{Path, PathBuf};
 
 use regex::Regex;
 
-/// Names that no longer exist and must not be cited again, each with what
-/// replaced it. A name belongs here once nothing in the tree mentions it — a
-/// historical mention elsewhere would fail this test, so such a name stays off.
 const RETIRED: &[(&str, &str)] = &[
     ("V2-KERNEL", "docs/thurbox/kernel.md"),
     (
@@ -42,35 +16,21 @@ const RETIRED: &[(&str, &str)] = &[
     ("RemoteSignalTarget", "StatusChannel::hook_signal_command"),
 ];
 
-/// `src/` paths that Markdown cites from another project's tree, not this one.
 const FOREIGN_SOURCES: &[&str] = &[
     // psmux's, where it picks the shell a window command runs through.
     "src/pane.rs",
 ];
 
-/// A source path in this repository, not the tail of a longer one
-/// (`vendor/crossterm/src/…`). It ends on a name character, so a sentence's
-/// full stop or a directory's trailing slash is not part of it.
 const SRC_PATH: &str = r"(?:^|[^\w.~/-])(src/[\w./-]*\w)";
 
-/// A minimum Rust version as prose states one: `MSRV: 1.95,`, `MSRV is 1.95.`,
-/// `Rust 1.95+`. A toolchain a measurement ran on (`Rust 1.99.1`) is not one.
 const MSRV_CLAIM: &str = r"(?:MSRV(?: is)?:? |Rust )(1\.\d+)[+,.](?:\D|$)";
 
-/// A decision of `docs/thurbox/architecture.md` as text cites one: `ADR-25`,
-/// `ADR-8b`. The performance decisions (`ADR-P6`) are another document's.
 const DECISION: &str = r"\b(ADR-\d+[a-z]?)\b";
 
-/// A decision of `docs/thurbox/performance.md` as text cites one: `ADR-P16`.
 const PERF_DECISION: &str = r"\b(ADR-P\d+)\b";
 
-/// Tracked paths never read: fixtures that are deliberately old or broken,
-/// and `.claude/skills`, whose entries are links into `.agents/skills` (read
-/// under that name).
 const SKIP_PREFIXES: &[&str] = &["crates/thurbox/tests/fixtures/", ".claude/"];
 
-/// The location variables git exports to hook processes: a suite run from
-/// this repository's own pre-commit hook would otherwise ask another index.
 const GIT_LOCATION_ENV: [&str; 8] = [
     "GIT_DIR",
     "GIT_WORK_TREE",
@@ -87,21 +47,10 @@ const TEXT_EXTENSIONS: &[&str] = &[
     "json",
 ];
 
-/// A document's path in the repository, not the tail of a longer one:
-/// `~/.agents/skills/…` is a user's install location, `website/docs/…` is
-/// another tree, and a `docs/notes.md` outside a component directory is a
-/// demo repository's. A document lives at `docs/README.md` or under one
-/// component's directory (`docs/thurbox/`, `docs/fleet/`, `docs/runtime/`);
-/// an upper-case `docs/<NAME>.md` is still matched, so a reference to a
-/// document from before the component layout fails rather than passes.
 const DOC_PATH: &str = r"(?:^|[^\w.~/-])(docs/[A-Z][A-Z0-9_-]*\.md|docs/(?:thurbox|fleet|runtime)/[\w/.-]*\w\.md|\.agents/skills/[a-z0-9-]+)";
 
-/// A Markdown inline link's target: up to whitespace, a fragment or the
-/// closing parenthesis, whatever title follows it.
 const MD_LINK: &str = r"\]\(([^)\s#]+)[^)]*\)";
 
-/// A bare `src/…` in a document is thurbox's: the documents name the
-/// interface's sources from its crate, the way its own code does.
 fn crate_root() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
 }
@@ -110,8 +59,6 @@ fn root() -> PathBuf {
     PathBuf::from(concat!(env!("CARGO_MANIFEST_DIR"), "/../.."))
 }
 
-/// The tracked files, relative to the root. Tracked rather than walked, so a
-/// scratch file or build output in an ignored directory cannot fail the suite.
 fn tracked() -> Vec<String> {
     let mut git = std::process::Command::new("git");
     git.args(["ls-files", "-z"]).current_dir(root());
@@ -132,8 +79,6 @@ fn tracked() -> Vec<String> {
         .collect()
 }
 
-/// Every text file but this one, whose examples are the stale references the
-/// checks look for, as (path relative to the root, contents).
 fn texts() -> Vec<(String, String)> {
     let this = file!().replace('\\', "/");
     tracked()
@@ -208,9 +153,6 @@ fn every_document_path_names_a_document() {
     );
 }
 
-/// Documents name source files to send a reader there, so a file that moved
-/// strands them. v1's `src/app` and `src/ui` are history, and history keeps
-/// its old paths.
 #[test]
 fn every_source_path_in_a_document_exists() {
     let path = Regex::new(SRC_PATH).unwrap();
@@ -218,7 +160,6 @@ fn every_source_path_in_a_document_exists() {
     for (rel, text) in texts().iter().filter(|(rel, _)| rel.ends_with(".md")) {
         for m in path.captures_iter(text).map(|m| m.get(1).unwrap()) {
             let target = m.as_str();
-            // By directory, so `src/ui_control.rs` is still checked.
             let v1 = ["src/app", "src/ui"].iter().any(|dir| {
                 target == *dir
                     || target
@@ -260,10 +201,6 @@ fn retired_names_stay_retired() {
     );
 }
 
-/// A decision is cited by its number (`ADR-25`), which is a heading of
-/// `docs/thurbox/architecture.md`. A decision deleted or moved elsewhere
-/// leaves its number behind in comments and documents, which then send a
-/// reader nowhere.
 #[test]
 fn every_cited_decision_is_in_architecture_md() {
     let architecture = std::fs::read_to_string(root().join("docs/thurbox/architecture.md"))
@@ -297,9 +234,6 @@ fn every_cited_decision_is_in_architecture_md() {
     );
 }
 
-/// A performance decision is cited by its number (`ADR-P16`), which is a
-/// heading of `docs/thurbox/performance.md`. One deleted from there leaves its
-/// number behind exactly as an architecture decision does.
 #[test]
 fn every_cited_performance_decision_is_in_performance_md() {
     let performance = std::fs::read_to_string(root().join("docs/thurbox/performance.md"))
@@ -333,9 +267,6 @@ fn every_cited_performance_decision_is_in_performance_md() {
     );
 }
 
-/// The supported Rust is whatever the manifest declares. A copy anywhere else
-/// drifts the moment a dependency raises the floor, as `1.75` did for years
-/// after the lockfile needed 1.95.
 #[test]
 fn every_stated_rust_version_is_the_manifests() {
     let manifest =
@@ -365,8 +296,6 @@ fn every_stated_rust_version_is_the_manifests() {
     );
 }
 
-/// The checks above are only as good as their patterns, so each is shown a
-/// reference it must catch.
 #[test]
 fn the_patterns_catch_what_they_are_for() {
     let path = Regex::new(DOC_PATH).unwrap();

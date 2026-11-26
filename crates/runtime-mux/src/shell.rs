@@ -1,33 +1,11 @@
-//! Small shell/SSH command helpers shared across modules.
-//!
-//! Centralizes two things that would otherwise be duplicated wherever thurbox
-//! shells out over SSH: POSIX single-quote escaping for tokens that a remote
-//! login shell will re-split, and construction of the `ssh <opts> <dest>`
-//! command prefix.
-
 use std::process::Command;
 
 use crate::Platform;
 
-/// The line the setup script prints, on the pane, when a step fails — and the
-/// text a launch-failure check looks for to tell a failed setup from an agent
-/// that died on its own. Followed by `<step> failed (exit <status>)`.
 pub const SETUP_FAILURE_MARKER: &str = "thurbox: setup step ";
 
-/// `$0` of the setup shell, as `ps` shows it while the setup runs.
 const SETUP_ARGV0: &str = "thurbox-setup";
 
-/// The `(command, args)` that runs `setup` and then becomes the agent.
-///
-/// `sh -c SCRIPT thurbox-setup COMMAND ARGS…`: the script runs each step in
-/// turn under `set -e` and then `exec "$@"`, so the agent replaces the shell
-/// — same pid, same pane, same environment — and anything appended to `args`
-/// after this still reaches it. The steps are inlined rather than each given
-/// its own `sh -c` so that `set -e` judges them as a script would: a guard
-/// such as `[ -f x ] && x` does not fail the launch when `x` is absent, while
-/// `x` failing does. A failing step leaves [`SETUP_FAILURE_MARKER`] and its
-/// exit status on the pane and ends the shell with that status; the agent
-/// never starts. No setup returns the launch unchanged.
 pub fn wrap_with_setup(setup: &[String], command: &str, args: &[String]) -> (String, Vec<String>) {
     if setup.is_empty() {
         return (command.to_string(), args.to_vec());
@@ -57,14 +35,6 @@ pub fn wrap_with_setup(setup: &[String], command: &str, args: &[String]) -> (Str
     ("sh".to_string(), wrapped)
 }
 
-/// The platform of the machine this thurbox runs on: [`Platform::local`], or in
-/// a test the one `simulate_local` pins.
-///
-/// Every decision a test must be able to make as the other OS — which shell,
-/// which multiplexer is the default, whether a socket directory exists — reads
-/// the local platform here rather than off `Platform::local` itself, so a Linux
-/// test run covers what a Windows build decides (and the reverse). Here and not
-/// in `host` because a simulation is process state, and `host` holds none.
 pub fn local_platform() -> Platform {
     #[cfg(any(test, feature = "test-support"))]
     if let Some(simulated) = SIMULATED_LOCAL.with(std::cell::Cell::get) {
@@ -79,9 +49,6 @@ thread_local! {
         const { std::cell::Cell::new(None) };
 }
 
-/// Run `f` as though this thurbox were built for `platform`. Only
-/// [`local_platform`] answers differently: code gated on `cfg(windows)` itself
-/// is not simulated, which is why no backend decision may be.
 #[cfg(any(test, feature = "test-support"))]
 pub fn simulate_local<T>(platform: Platform, f: impl FnOnce() -> T) -> T {
     let saved = SIMULATED_LOCAL.with(|s| s.replace(Some(platform)));
@@ -90,20 +57,10 @@ pub fn simulate_local<T>(platform: Platform, f: impl FnOnce() -> T) -> T {
     out
 }
 
-/// Characters that never need quoting in a POSIX shell word.
 fn is_safe_shell_char(c: char) -> bool {
     c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.' | '/' | ':' | '=' | ',')
 }
 
-/// POSIX single-quote escaping for one shell word.
-///
-/// Simple tokens (paths, branch names, flags) pass through unquoted; anything
-/// with whitespace or shell metacharacters is wrapped in single quotes (with
-/// embedded quotes escaped). An empty string becomes `''`.
-///
-/// Note: this does **not** strip newlines. Callers feeding a line-delimited
-/// protocol (e.g. tmux control mode) must handle newlines themselves before
-/// quoting — see [`crate::tmux_compat::control_mode::shell_escape`].
 pub fn posix_quote(s: &str) -> String {
     if !s.is_empty() && s.chars().all(is_safe_shell_char) {
         return s.to_string();
@@ -111,22 +68,6 @@ pub fn posix_quote(s: &str) -> String {
     format!("'{}'", s.replace('\'', "'\\''"))
 }
 
-/// Defensive `ssh` options thurbox appends to **every** ssh invocation so a
-/// broken, unreachable, or password-only host fails fast and non-interactively
-/// instead of freezing the single-threaded TUI.
-///
-/// - `BatchMode=yes` — never fall back to a password/keyboard-interactive
-///   prompt. Such a prompt reads from the controlling `/dev/tty` (the terminal
-///   ratatui owns), so it would corrupt the display and steal keystrokes; with
-///   BatchMode ssh fails immediately instead.
-/// - `ConnectTimeout=5` — bound the connect phase for an unreachable host.
-/// - `ServerAliveInterval=5` + `ServerAliveCountMax=1` — bound a *hung
-///   established* connection (e.g. a mid-session network drop on the long-lived
-///   control-mode ssh), so it is detected in ~5s rather than hanging until the
-///   OS TCP timeout.
-///
-/// These are appended **after** the caller's own `ssh_opts`; ssh honors the
-/// first occurrence of each option, so a user-configured value still wins.
 pub const SSH_HARDENING_OPTS: [&str; 8] = [
     "-o",
     "BatchMode=yes",
@@ -138,20 +79,6 @@ pub const SSH_HARDENING_OPTS: [&str; 8] = [
     "ServerAliveCountMax=1",
 ];
 
-/// Connection-multiplexing options, appended with the hardening set when the
-/// user's `~/.ssh` directory exists (that is where the control socket lives).
-///
-/// Without a master connection every remote git call, probe and provisioning
-/// step pays a full TCP + auth handshake — ~300 ms to a LAN host, measured in
-/// `docs/thurbox/performance.md` — and several paths make many such calls in a row.
-/// With one, the second and later round trips cost single-digit milliseconds.
-///
-/// `%C` is ssh's hash of host+port+user, so the socket path stays short
-/// (`sun_path` caps at ~104 bytes) and collision-free; the `~` is expanded by
-/// ssh itself. `ControlMaster=auto` degrades to a plain connection when the
-/// socket cannot be created, and — like the hardening set — these are appended
-/// after the caller's `ssh_opts`, so a user-configured `ControlMaster`/
-/// `ControlPath`/`ControlPersist` still wins.
 pub const SSH_MULTIPLEX_OPTS: [&str; 6] = [
     "-o",
     "ControlMaster=auto",
@@ -161,12 +88,6 @@ pub const SSH_MULTIPLEX_OPTS: [&str; 6] = [
     "ControlPath=~/.ssh/thurbox-%C",
 ];
 
-/// Whether `~/.ssh` exists, probed once per process.
-///
-/// The multiplexing socket lives there; on a machine without the directory the
-/// options are omitted entirely rather than risking a per-connection
-/// `muxserver_listen` warning on stderr, which remote error reporting would
-/// otherwise have to filter.
 fn ssh_dir_exists() -> bool {
     static EXISTS: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
     *EXISTS.get_or_init(|| {
@@ -177,10 +98,6 @@ fn ssh_dir_exists() -> bool {
     })
 }
 
-/// The options [`ssh_command`] appends after the caller's own: the hardening
-/// set, plus the multiplexing set when `~/.ssh` exists to hold the control
-/// socket. Public so tests can build exact expectations without re-deriving
-/// the directory probe.
 pub fn ssh_appended_opts() -> Vec<&'static str> {
     let mut opts: Vec<&'static str> = SSH_HARDENING_OPTS.to_vec();
     if ssh_dir_exists() {
@@ -189,13 +106,6 @@ pub fn ssh_appended_opts() -> Vec<&'static str> {
     opts
 }
 
-/// Build an `ssh <opts> <hardening> <destination>` [`Command`], ready for the
-/// caller to append the remote command and its arguments.
-///
-/// Every thurbox ssh use is non-interactive, so [`SSH_HARDENING_OPTS`] is always
-/// applied (after the caller's `ssh_opts`, which therefore take precedence),
-/// and [`SSH_MULTIPLEX_OPTS`] follows whenever `~/.ssh` exists to hold the
-/// control socket.
 pub fn ssh_command(destination: &str, ssh_opts: &[String]) -> Command {
     let mut cmd = Command::new("ssh");
     cmd.args(ssh_opts);
@@ -204,43 +114,14 @@ pub fn ssh_command(destination: &str, ssh_opts: &[String]) -> Command {
     cmd
 }
 
-/// PowerShell single-quote escaping for one argument.
-///
-/// Inside single quotes PowerShell interprets nothing except a doubled quote,
-/// so this is the whole rule — unlike [`posix_quote`] there is no safe-token
-/// fast path, because the callers embed the result in larger PowerShell
-/// expressions where a bare token could be re-parsed. One implementation for
-/// what had grown three (`tmux`, thurbox's remote git, and a near-copy in
-/// `notifications`).
 pub fn powershell_quote(s: &str) -> String {
     format!("'{}'", s.replace('\'', "''"))
 }
 
-/// A Windows PowerShell script as one program invocation:
-/// `powershell.exe -NoLogo -EncodedCommand <base64 of its UTF-16LE text>`.
-///
-/// A psmux window command is a single string run by whichever shell psmux
-/// resolves — since psmux 3.4.0 (#683) `$SHELL` first, which Windows OpenSSH
-/// sets to `cmd.exe` for every process it starts, so a server started over
-/// ssh hands a bare PowerShell script to `cmd.exe /C` and the window dies.
-/// Naming the interpreter makes the script run in PowerShell whatever that
-/// shell is. Encoded, the string is letters, digits, `+`, `/` and `=` only,
-/// which no layer between here and the pane — ssh, a `cmd.exe` login shell,
-/// psmux's tokenizer, a shell psmux may still route it through — reads as
-/// syntax. No `-NoProfile`: psmux ran the script as
-/// `powershell -NoLogo -Command`, which loads the profile, and still does.
-///
-/// Encoding makes the line `39 + 4 * ceil(2n / 3)` chars for a script of `n`
-/// UTF-16 units, about 2.7 times the script, so it is measured here, the one
-/// place it is built: a line past [`WINDOWS_CMD_LINE_MAX`] is refused with
-/// [`CommandLineTooLong`] rather than handed to a host that fails to start it
-/// without saying why.
 pub fn powershell_launcher(script: &str) -> Result<String, CommandLineTooLong> {
     encoded_powershell("-NoLogo", script)
 }
 
-/// `powershell.exe <switches> -EncodedCommand <base64>`, refused past
-/// [`WINDOWS_CMD_LINE_MAX`].
 fn encoded_powershell(switches: &str, script: &str) -> Result<String, CommandLineTooLong> {
     use base64::Engine as _;
     let utf16: Vec<u8> = script.encode_utf16().flat_map(u16::to_le_bytes).collect();
@@ -257,16 +138,8 @@ fn encoded_powershell(switches: &str, script: &str) -> Result<String, CommandLin
     Ok(line)
 }
 
-/// The longest command line `cmd.exe` runs (it answers "The command line is
-/// too long." past it), and the bound used for every Windows host rather than
-/// `CreateProcess`'s 32,767: Windows OpenSSH runs a one-shot ssh command
-/// through its default login shell, `cmd.exe`, and a psmux server started
-/// over ssh has `$SHELL=cmd.exe` for any window it routes through a shell. A
-/// line that only fits a local server would fail the same agent on a host.
 pub const WINDOWS_CMD_LINE_MAX: usize = 8191;
 
-/// A command line longer than a Windows host will run, refused before it is
-/// sent.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CommandLineTooLong {
     pub len: usize,
@@ -285,9 +158,6 @@ impl std::fmt::Display for CommandLineTooLong {
 
 impl std::error::Error for CommandLineTooLong {}
 
-/// Remove this process's telemetry variables from `cmd`: the caller's
-/// `OTEL_*` identity and `TRACEPARENT` are not a session's, nor a place's
-/// (docs/observability.md).
 pub fn strip_telemetry_env(cmd: &mut Command) {
     for (var, _) in std::env::vars_os() {
         if is_telemetry_var(&var.to_string_lossy()) {
@@ -296,9 +166,6 @@ pub fn strip_telemetry_env(cmd: &mut Command) {
     }
 }
 
-/// Whether `var` configures or carries telemetry for the process that holds
-/// it: an `OTEL_*` variable, or W3C trace context. In any case: Windows
-/// reads an environment name case-insensitively.
 pub(crate) fn is_telemetry_var(var: &str) -> bool {
     var.get(..5)
         .is_some_and(|prefix| prefix.eq_ignore_ascii_case("OTEL_"))
@@ -306,15 +173,6 @@ pub(crate) fn is_telemetry_var(var: &str) -> bool {
         || var.eq_ignore_ascii_case("TRACESTATE")
 }
 
-/// A launcher for a command on an off-local host: `ssh <opts> <dest>` or
-/// `wsl.exe -d <distro>`.
-///
-/// One implementation of a construction that had grown several copies —
-/// thurbox's remote git launcher, its `sh -c` helper and the
-/// transport's prefix branch — each one
-/// more place for the two quoting rules below to drift apart. It launches, and
-/// nothing else: it names no multiplexer and adds no `-L`, so the tmux
-/// transport and a plain `git` or `sh -c` call build on the same one.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum HostLauncher {
     Ssh {
@@ -327,8 +185,6 @@ pub enum HostLauncher {
 }
 
 impl HostLauncher {
-    /// How `host` is reached: its WSL distro, else its ssh destination. The
-    /// one conversion from a host entry to a launcher.
     pub fn for_host(host: &crate::HostDef) -> Self {
         if host.is_wsl() {
             Self::Wsl {
@@ -342,7 +198,6 @@ impl HostLauncher {
         }
     }
 
-    /// The program this launcher runs on this machine.
     pub fn program(&self) -> &'static str {
         match self {
             Self::Ssh { .. } => "ssh",
@@ -350,10 +205,6 @@ impl HostLauncher {
         }
     }
 
-    /// The bare launcher, ready for the caller to append the remote command.
-    /// Both transports join and shell-interpret whitespace-free trailing
-    /// tokens identically, so callers append the same POSIX-quoted words.
-    /// It carries none of this process's telemetry ([`strip_telemetry_env`]).
     pub fn command(&self) -> Command {
         let mut cmd = match self {
             Self::Ssh {
@@ -366,23 +217,6 @@ impl HostLauncher {
         cmd
     }
 
-    /// Run a multi-statement POSIX script via `sh -c` on the host.
-    ///
-    /// The two branches encode the transports' one real difference:
-    ///
-    /// - **`wsl.exe`** needs `--exec` (`-e`), which skips its command-line
-    ///   processing entirely: argv reaches the in-distro process verbatim, so
-    ///   the script travels as one **unquoted** arg and `sh -c` parses the
-    ///   `posix_quote`d paths inside it exactly like the ssh path. Without
-    ///   `-e`, `wsl.exe` mangles the script — it substitutes `$…` even inside
-    ///   a preserved argument, and pre-quoting makes the in-distro shell treat
-    ///   the quoted blob as one command word ("not found").
-    /// - **`ssh`** space-joins its trailing args into one string the remote
-    ///   login shell re-splits, so the script must be POSIX-quoted to survive
-    ///   as a single `sh -c` argument.
-    ///
-    /// POSIX hosts only — a native-Windows host has no `sh`; see
-    /// [`HostShell::run_script`].
     pub fn shell_c(&self, script: &str) -> Command {
         let mut cmd = self.command();
         match self {
@@ -398,9 +232,6 @@ impl HostLauncher {
         cmd
     }
 
-    /// [`Self::shell_c`] with positional parameters: `sh -c <script> <args…>`,
-    /// so the first of `args` is the script's `$0`. Each one arrives as the
-    /// single word it is here, by the same rule as the script.
     pub fn shell_c_args(&self, script: &str, args: &[&str]) -> Command {
         let mut cmd = self.shell_c(script);
         for arg in args {
@@ -413,27 +244,10 @@ impl HostLauncher {
     }
 }
 
-/// The script a WSL launch runs before the program: the profile files a
-/// login `sh` reads, each only when it is there (sourcing a missing file
-/// ends a POSIX `sh`), for their `PATH`, with their output discarded and
-/// stdin closed to them (a profile that reads must not eat the program's
-/// input); then the program itself, `$@`, with stdin, stdout and stderr its
-/// own.
 pub const WSL_PROFILE_EXEC: &str =
     "[ -r /etc/profile ] && . /etc/profile </dev/null >/dev/null 2>&1; \
      [ -r \"$HOME/.profile\" ] && . \"$HOME/.profile\" </dev/null >/dev/null 2>&1; exec \"$@\"";
 
-/// `program` with `args`: run on this machine when there is no `launcher`, or
-/// on the host it reaches.
-///
-/// Over ssh the tokens are re-split by the host's login shell, so each one is
-/// POSIX-quoted to arrive intact (a simple token passes unchanged); through
-/// WSL each word is its own argument of `wsl.exe --exec`, after
-/// [`WSL_PROFILE_EXEC`];
-/// a native-Windows host's shell is not POSIX, see [`launch_on_windows`].
-/// Nothing is added: a multiplexer's own flags — tmux's `-L <socket>` among
-/// them — are its adapter's to write, so a launcher carries any adapter's
-/// command line exactly as the adapter wrote it.
 pub fn launch(launcher: Option<&HostLauncher>, program: &str, args: &[&str]) -> Command {
     match launcher {
         None => {
@@ -441,12 +255,7 @@ pub fn launch(launcher: Option<&HostLauncher>, program: &str, args: &[&str]) -> 
             cmd.args(args);
             cmd
         }
-        // Each word is its own argument of `--exec`, which hands argv over
-        // verbatim, so no quoting and a spaced path stays one word. A small
-        // `sh` runs first to read the profile a login shell would, for the
-        // `PATH` set there (`~/.cargo/bin`), with its output discarded so a
-        // profile that prints never reaches the program's stdout, then
-        // `exec`s the words.
+        // `wsl.exe --exec` hands argv over verbatim; a small `sh` first reads the login profile for its `PATH`.
         Some(launcher @ HostLauncher::Wsl { .. }) => {
             let mut cmd = launcher.command();
             cmd.args(["--exec", "sh", "-c", WSL_PROFILE_EXEC, "sh", program])
@@ -463,23 +272,6 @@ pub fn launch(launcher: Option<&HostLauncher>, program: &str, args: &[&str]) -> 
     }
 }
 
-/// [`launch`] on a native-Windows host, whose login shell — `cmd.exe` by
-/// Windows OpenSSH's default, PowerShell when configured — re-reads the line
-/// ssh hands it. No one quoting survives both: `cmd.exe` ignores the single
-/// quotes [`posix_quote`] writes, so a `|` inside them starts a pipe (issue
-/// #1460).
-///
-/// Words every such shell passes through unchanged (`is_bare_windows_word`)
-/// go as they are, which keeps a control-mode attach and a `send-paste`'s
-/// base64 at their own length. Any other line runs as an encoded PowerShell
-/// script, whose base64 no shell reads as syntax. The script starts `program`
-/// itself with the arguments as one command line quoted for the C runtime
-/// ([`windows_arg_quote`]): PowerShell 5.1's own native-argument quoting drops
-/// an empty argument and splits one at an embedded `"`. The child inherits
-/// stdin, stdout and stderr, so its bytes reach this machine untouched and its
-/// exit status is the script's. Progress output is silenced, since PowerShell
-/// writes it to stderr as a CLIXML document that a multiplexer whose stderr
-/// is its failure channel would read as an error.
 pub fn launch_on_windows(
     launcher: &HostLauncher,
     program: &str,
@@ -501,26 +293,6 @@ pub fn launch_on_windows(
     Ok(cmd)
 }
 
-/// A PowerShell script that runs `program` with `args` on a Windows host, in
-/// `dir` when given, with `path_prepend` put first on its `Path`, after
-/// `prelude`: statements of the caller's own, such as making the directory
-/// a copy goes to. `after` runs once the launch ends, however it ends:
-/// with `$LASTEXITCODE` the program's exit code, or unset when no program
-/// started (it was not found, or did not start), after which the script
-/// fails with the error on screen. A `~` leading an entry of `path_prepend` is the user's
-/// profile directory.
-///
-/// The program is found as PowerShell finds a command (`Get-Command`), so
-/// an npm `.cmd` shim or a `.ps1` script on the `Path` is found as an `.exe`
-/// is. The arguments ride the script once, as a PowerShell array, and are
-/// quoted on the place for the kind found there ([`WINDOWS_QUOTERS`]):
-///
-/// - an `.exe` gets one command line quoted for the C runtime, which splits
-///   it back into exactly the arguments given;
-/// - a `.cmd` or `.bat` runs under `cmd.exe /d /v:off /s /c`, with each
-///   argument quoted so that `cmd.exe` reads no metacharacter or expansion
-///   in it (Rust std's rules for a batch file, its fix of CVE-2024-24576);
-/// - a `.ps1` runs under `powershell -File`, with the C runtime's line.
 pub fn windows_program_script<S: AsRef<str>>(
     program: &str,
     args: &[S],
@@ -537,8 +309,7 @@ pub fn windows_program_script<S: AsRef<str>>(
     let dir = dir
         .map(|d| format!("$s.WorkingDirectory={}\n", powershell_quote(d)))
         .unwrap_or_default();
-    // Terse on purpose: the script rides the command line base64'd from
-    // UTF-16, about 2.7 bytes per character, inside WINDOWS_CMD_LINE_MAX.
+    // The script rides the command line base64'd from UTF-16, inside WINDOWS_CMD_LINE_MAX.
     format!(
         "$ProgressPreference='SilentlyContinue'\n\
          {path}{prelude}\
@@ -564,24 +335,10 @@ pub fn windows_program_script<S: AsRef<str>>(
     )
 }
 
-/// The two quoting rules a Windows script applies on the place, as
-/// PowerShell script blocks:
-///
-/// - `$q`: one argument for the C runtime ([`windows_arg_quote`]'s rule):
-///   as it is when it holds no whitespace or `"`; else one quoted
-///   region, each `"` escaped with the backslashes before it doubled, and
-///   the trailing backslashes doubled;
-/// - `$k`: one argument for `cmd.exe`: always one quoted region, each `"`
-///   doubled with the backslashes before it doubled, each `%` (and CR)
-///   preceded by `%%cd:~,` so no `%NAME%` expands (`%cd:~,%` is an empty
-///   substring), and a newline as a space, since `cmd.exe` ends a command
-///   at one. `!` needs nothing under `/v:off`.
 pub const WINDOWS_QUOTERS: &str = "$q={param($a)if($a-and$a-notmatch'[\\s\"]'){return $a};$o='\"';$b=0;foreach($h in $a.ToCharArray()){if($h-eq'\\'){$b++}elseif($h-eq'\"'){$o+='\\'*(2*$b+1)+'\"';$b=0}else{$o+='\\'*$b+$h;$b=0}};$o+'\\'*(2*$b)+'\"'}
 $k={param($a)$o='\"';$b=0;foreach($h in $a.ToCharArray()){if($h-eq'\\'){$b++;$o+='\\';continue};if($h-eq'\"'){$o+='\\'*$b+'\"'}elseif($h-eq'%'-or$h-eq[char]13){$o+='%%cd:~,'};$b=0;if($h-eq[char]10){$o+=' '}else{$o+=$h}};$o+'\\'*$b+'\"'}
 ";
 
-/// The PowerShell statement that puts `dirs` first on `$env:Path`, empty
-/// for none. A leading `~` is `$env:USERPROFILE`.
 pub fn windows_path_prepend(dirs: &[String]) -> String {
     if dirs.is_empty() {
         return String::new();
@@ -599,7 +356,6 @@ pub fn windows_path_prepend(dirs: &[String]) -> String {
     )
 }
 
-/// `powershell.exe -NoProfile -EncodedCommand <script>` on this machine.
 pub fn local_powershell(script: &str) -> Command {
     use base64::Engine as _;
     let utf16: Vec<u8> = script.encode_utf16().flat_map(u16::to_le_bytes).collect();
@@ -611,15 +367,6 @@ pub fn local_powershell(script: &str) -> Command {
     cmd
 }
 
-/// PowerShell that starts the program `file_name` (a PowerShell expression)
-/// with `args`, waits for it and exits with its status. The arguments are one
-/// command line quoted for the C runtime ([`windows_arg_quote`]) rather than
-/// handed to `&`: PowerShell 5.1's native-argument passing drops an empty
-/// argument and splits one at an embedded `"`. The child inherits stdin,
-/// stdout and stderr, so a console program keeps the console.
-///
-/// `extra` runs after the start info is filled and before the program
-/// starts, for a caller that sets more of it (`$s`).
 fn start_process_script<S: AsRef<str>>(file_name: &str, args: &[S], extra: &str) -> String {
     let line = args
         .iter()
@@ -639,21 +386,9 @@ fn start_process_script<S: AsRef<str>>(file_name: &str, args: &[S], extra: &str)
     )
 }
 
-/// The shell a host runs thurbox's own scripts in, decided once from the
-/// host's [`Platform`] (#1473).
-///
-/// Every place that writes a script for a host, quotes a word for one or
-/// starts a program on one asks this instead of branching on the platform
-/// itself, so a dialect rule — the quoting, the launcher, the
-/// command-line bound, the interactive shell — has one home. It is not a
-/// multiplexer dialect (ADR-31 rejects one): a psmux and a tmux server on the
-/// same Windows host get the same `HostShell`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum HostShell {
-    /// `sh`: Linux, macOS, a WSL distro.
     Posix,
-    /// Windows PowerShell 5.1, which every native-Windows host has, whatever
-    /// login shell its OpenSSH server runs.
     PowerShell,
 }
 
@@ -665,17 +400,14 @@ impl HostShell {
         }
     }
 
-    /// The shell of `host` ([`HostDef::platform`](crate::HostDef::platform)).
     pub fn for_host(host: &crate::HostDef) -> Self {
         Self::for_platform(host.platform())
     }
 
-    /// The shell of the machine thurbox runs on.
     pub fn local() -> Self {
         Self::for_platform(local_platform())
     }
 
-    /// One word as this shell reads it back unchanged.
     pub fn quote(self, word: &str) -> String {
         match self {
             Self::Posix => posix_quote(word),
@@ -683,17 +415,6 @@ impl HostShell {
         }
     }
 
-    /// Run a multi-statement `script` in this shell on the host `launcher`
-    /// reaches: `sh -c` ([`HostLauncher::shell_c`]), or
-    /// `powershell -NoProfile -EncodedCommand <base64>`.
-    ///
-    /// Encoded rather than `-Command` because the script crosses two shells
-    /// that both rewrite it: ssh space-joins its trailing args into one string
-    /// the host's login shell parses — `cmd.exe` by Windows OpenSSH's default,
-    /// PowerShell when configured, which expands `$…` inside double quotes (a
-    /// probe reading `$PSVersionTable` once came back with the *outer* shell's
-    /// expansion substituted into it). Base64 of the UTF-16LE text is
-    /// `[A-Za-z0-9+/=]` only, so neither finds anything to interpret.
     pub fn run_script(self, launcher: &HostLauncher, script: &str) -> Command {
         match self {
             Self::Posix => launcher.shell_c(script),
@@ -708,16 +429,10 @@ impl HostShell {
         }
     }
 
-    /// A script in `host`'s own shell, run on it: [`Self::run_script`] over
-    /// the host's [`HostLauncher`].
     pub fn run_on_host(host: &crate::HostDef, script: &str) -> Command {
         Self::for_host(host).run_script(&HostLauncher::for_host(host), script)
     }
 
-    /// `program` with `args` on the host `launcher` reaches, each argument
-    /// arriving as the one word it is here: [`launch`] on a POSIX host,
-    /// [`launch_on_windows`] — refused past [`WINDOWS_CMD_LINE_MAX`] — on a
-    /// Windows one.
     pub fn launch(
         self,
         launcher: &HostLauncher,
@@ -730,10 +445,6 @@ impl HostShell {
         }
     }
 
-    /// The program a bare shell pane runs: on this machine (`remote` false)
-    /// its own `$SHELL` or `%COMSPEC%`; on a host one that exists there by
-    /// construction — `/bin/sh` (the local `$SHELL` may not be installed
-    /// there) or `powershell`.
     pub fn default_shell(self, remote: bool) -> String {
         match (remote, self) {
             (false, Self::PowerShell) => {
@@ -747,28 +458,6 @@ impl HostShell {
         }
     }
 
-    /// `(command, args)` that runs an agent definition's `setup` steps in
-    /// this shell, then the agent itself with `args`.
-    ///
-    /// POSIX: [`wrap_with_setup`],
-    /// `sh -c` under `set -e`. PowerShell: one encoded script
-    /// ([`powershell_launcher`], so bounded by [`WINDOWS_CMD_LINE_MAX`]) that
-    /// runs each step — a native step's non-zero exit and a terminating error
-    /// both stop it — then starts the agent (`start_process_script`, so its
-    /// arguments arrive exactly) and exits with its status. A failed step
-    /// writes the same
-    /// [`SETUP_FAILURE_MARKER`]
-    /// line the POSIX wrapper does, which is what classifies the launch
-    /// failure as the setup's. A step that leaves through its own `exit` is
-    /// caught by the `finally`, which PowerShell runs on an `exit` as well,
-    /// and which reports only while a step is still running.
-    ///
-    /// The agent is looked up first: `ProcessStartInfo` does not search
-    /// `PATH` for an npm `.cmd` shim the way `&` does, and a `.ps1` wrapper is
-    /// run through `powershell.exe -File`. It starts in PowerShell's current
-    /// location, so a `Set-Location` in a step carries into it the way a `cd`
-    /// does on POSIX; the process's own directory does not follow
-    /// `Set-Location`.
     pub fn wrap_setup(
         self,
         setup: &[String],
@@ -826,8 +515,6 @@ impl HostShell {
         Ok((program, words.collect()))
     }
 
-    /// `command` run in the host user's home directory, its failure — a
-    /// native program's non-zero exit or a PowerShell error — the script's.
     pub fn in_home(self, command: &str) -> String {
         match self {
             Self::Posix => format!("cd \"$HOME\" && {command}"),
@@ -839,9 +526,6 @@ impl HostShell {
         }
     }
 
-    /// A user hook's `command` as a script for this shell on a host: `env`
-    /// set, then run in `cwd`. A host's shell is reached over ssh, which
-    /// carries no environment, so the variables travel inside the script.
     pub fn hook_script(self, command: &str, cwd: Option<&str>, env: &[(String, String)]) -> String {
         let mut script = String::new();
         match self {
@@ -875,10 +559,6 @@ impl HostShell {
     }
 }
 
-/// Whether `word` reaches a program unchanged, unquoted, through each login
-/// shell a Windows OpenSSH server may run a command in: `cmd.exe`,
-/// PowerShell and a POSIX `sh`. Not `,`, which PowerShell reads as an array
-/// and passes as two arguments.
 fn is_bare_windows_word(word: &str) -> bool {
     !word.is_empty()
         && word.chars().all(|c| {
@@ -886,11 +566,6 @@ fn is_bare_windows_word(word: &str) -> bool {
         })
 }
 
-/// One argument as a Windows program's C runtime reads it back out of the
-/// single command line `CreateProcess` hands it — the MSVC rules psmux, git
-/// and every Rust program split argv by. Quoted only when it has to be (empty,
-/// whitespace or a `"`); inside the quotes a `"`, and the backslashes before
-/// it or before the closing quote, are escaped.
 pub fn windows_arg_quote(s: &str) -> String {
     if !s.is_empty() && !s.contains([' ', '\t', '\n', '\x0b', '"']) {
         return s.to_string();
@@ -917,46 +592,6 @@ pub fn windows_arg_quote(s: &str) -> String {
     out
 }
 
-/// Build a `wsl.exe -d <distro>` [`Command`], ready for the caller to append
-/// the in-distro command and its arguments.
-///
-/// This is the WSL analogue of [`ssh_command`], but `wsl.exe`'s argument
-/// forwarding is subtly different from ssh's plain space-join (observed against
-/// current `wsl.exe`; callers that need argv to arrive verbatim bypass the
-/// shell entirely by appending `-e`/`--exec` — see [`HostLauncher::shell_c`]):
-///
-/// - a **whitespace-free** token reaches the in-distro shell for interpretation
-///   exactly like over ssh — POSIX-quote it the same way (the shell strips the
-///   quotes; metacharacters like `%(…)` survive);
-/// - an argument **containing whitespace** is preserved as a single word — do
-///   *not* pre-quote a multi-word `sh -c` script for WSL, or the quotes arrive
-///   literally and the shell treats the whole blob as one command name (see
-///   [`HostLauncher::shell_c`], which branches on this).
-///
-/// No `--` separator is used (none of thurbox's commands start with a `-`,
-/// matching the SSH path which also omits it).
-///
-/// `wsl.exe` inherits the **caller's** current directory and tries to `chdir`
-/// to the same path inside the target distro — which fails when thurbox itself
-/// runs inside *another* WSL distro (the caller's cwd, e.g. `/home/me/repo`,
-/// doesn't exist on the target). That failure prints a `WSL Relay ERROR:
-/// CreateProcessCommon chdir(...) failed` on stderr and corrupts the tmux
-/// control-mode handshake, so the agent window never launches.
-///
-/// A Unix caller therefore passes `--cd /` (a landing dir every distro has),
-/// which is safe because every caller overrides the real working dir anyway
-/// (`git -C <path>`, tmux `new-window -c <path>`). We use `--cd /` rather than
-/// only pinning the child's `current_dir("/")`: when the caller distro's name
-/// is a **prefix of a sibling distro** (e.g. calling into `MagicDebian` from a
-/// host that also has `MagicDebianPerso`), `wsl.exe`'s cwd back-translation
-/// mangles the pinned path into `<sibling-suffix>` + cwd — producing
-/// `chdir(Perso/home/…)` — so `current_dir("/")` alone does *not* suppress the
-/// error. `--cd /` bypasses that translation entirely. `--cd` is a Store/WSL2
-/// flag; the Unix-caller case is always WSL2 (thurbox is running inside a
-/// distro), so the legacy Windows-10-inbox concern doesn't apply here. A native
-/// Windows caller keeps the inherit behavior (its `C:\…` cwd maps to
-/// `/mnt/c/…` under default automount; there is no universally-valid Windows
-/// pin, and `--cd` would trade this edge case for a hard legacy failure).
 pub fn wsl_command(distro: &str) -> Command {
     let mut cmd = wsl_exe();
     cmd.arg("-d").arg(distro);
@@ -965,20 +600,6 @@ pub fn wsl_command(distro: &str) -> Command {
     cmd
 }
 
-/// `wsl.exe` with no arguments yet, kept off the interface's terminal.
-///
-/// A `wsl.exe` child takes keyboard input from the console it is attached to
-/// even when its stdin, stdout and stderr are all redirected. Measured on
-/// Windows 11: a console reader received 0 of 8 keys while `wsl.exe -d <distro>
-/// sleep 40` ran beside it, and 8 of 8 when the same child was started with
-/// `CREATE_NO_WINDOW`. A control-mode connection is such a child for as long as
-/// a WSL session is attached, so the interface stopped answering the keyboard
-/// the moment one connected. Every `wsl.exe` thurbox starts talks to it over
-/// pipes only, so none of them needs the terminal.
-///
-/// Inside a WSL distro, where interop puts `wsl.exe` on `PATH`, the same child
-/// is started in a session of its own, so it has no controlling terminal to
-/// read either.
 pub fn wsl_exe() -> Command {
     let mut cmd = Command::new("wsl.exe");
     off_the_terminal(&mut cmd);
@@ -988,7 +609,6 @@ pub fn wsl_exe() -> Command {
 #[cfg(windows)]
 fn off_the_terminal(cmd: &mut Command) {
     use std::os::windows::process::CommandExt;
-    /// The child gets a console of its own, with no window, instead of ours.
     const CREATE_NO_WINDOW: u32 = 0x0800_0000;
     cmd.creation_flags(CREATE_NO_WINDOW);
 }
@@ -1009,10 +629,6 @@ fn off_the_terminal(cmd: &mut Command) {
 
 #[cfg(test)]
 mod tests {
-    /// A command on a place carries none of this process's telemetry: ssh
-    /// and `wsl.exe` forward little by default, and an operator's
-    /// `SendEnv` or `WSLENV` must not hand the caller's `OTEL_*` identity
-    /// or `TRACEPARENT` to a session there (docs/observability.md).
     #[test]
     fn a_command_on_a_place_carries_no_telemetry() {
         std::env::set_var("OTEL_SERVICE_NAME", "fleet");
@@ -1044,9 +660,6 @@ mod tests {
         }
     }
 
-    /// Through WSL each word is its own argument of `--exec`, after a small
-    /// `sh` script that reads the profile for `PATH` and then `exec`s them:
-    /// no quoting, so a spaced path stays one word.
     #[test]
     fn a_wsl_launch_hands_each_word_to_the_profile_script() {
         let launcher = HostLauncher::Wsl {
@@ -1076,10 +689,6 @@ mod tests {
         );
     }
 
-    /// The script a WSL launch runs, run here by `sh`: a profile that prints
-    /// and puts a directory on `PATH` lends the `PATH`, and none of its
-    /// output reaches the program's stdout, which a JSON answer or a stream
-    /// would not survive.
     #[cfg(unix)]
     #[test]
     fn the_wsl_profile_script_lends_the_path_and_keeps_stdout_clean() {
@@ -1109,10 +718,6 @@ mod tests {
         assert!(out.stderr.is_empty(), "{out:?}");
     }
 
-    /// A distro with no `/etc/profile` still runs the program: a missing
-    /// file would end a POSIX `sh` that sourced it unguarded. And a profile
-    /// that reads stdin reads nothing: the program's input (a Task on
-    /// stdin, a stream's frames) is the program's.
     #[cfg(unix)]
     #[test]
     fn the_wsl_profile_script_needs_no_etc_profile_and_leaves_stdin_alone() {
@@ -1144,8 +749,6 @@ mod tests {
     }
     use super::*;
 
-    /// `path_prepend` goes first on a Windows `Path`, each entry quoted, a
-    /// leading `~` read as the user's profile; none adds nothing.
     #[test]
     fn a_windows_path_prepend_reads_tilde_as_the_profile() {
         assert_eq!(windows_path_prepend(&[]), "");
@@ -1155,8 +758,6 @@ mod tests {
         );
     }
 
-    /// The program, its directory and its argument line are each one quoted
-    /// PowerShell string, so a `'` in any of them stays text.
     #[test]
     fn a_windows_program_script_quotes_its_program_directory_and_arguments() {
         let script = windows_program_script(
@@ -1181,9 +782,6 @@ mod tests {
         );
     }
 
-    /// A batch shim runs under `cmd.exe /v:off` with its arguments quoted
-    /// by `$k` on the place; an `.exe` and a `.ps1` get `$q`'s C-runtime
-    /// line. The rules themselves are checked on a real Windows place.
     #[test]
     fn each_kind_of_windows_program_gets_its_own_quoting() {
         let script = windows_program_script("shim", &["left&right", "%PATH%"], None, &[], "", "");
@@ -1203,8 +801,6 @@ mod tests {
         );
     }
 
-    /// A PowerShell to run the quoting blocks in: Windows PowerShell on
-    /// Windows, where every host has it, else `pwsh` when it is on `PATH`.
     fn a_powershell() -> Option<&'static str> {
         if cfg!(windows) {
             return Some("powershell.exe");
@@ -1214,10 +810,6 @@ mod tests {
         found.then_some("pwsh")
     }
 
-    /// `line` split by the C runtime's rules (UCRT, Rust, Go): whitespace
-    /// parts arguments outside quotes; `2n` backslashes before a `"` are
-    /// `n` and the quote toggles, `2n+1` are `n` and a literal `"`; inside
-    /// quotes `""` is one `"`.
     fn crt_argv(line: &str) -> Vec<String> {
         let chars: Vec<char> = line.chars().collect();
         let (mut args, mut arg, mut inside, mut any, mut i) =
@@ -1265,10 +857,6 @@ mod tests {
         args
     }
 
-    /// What `cmd.exe /v:off /c` does to `line`: the metacharacters it reads
-    /// outside quotes, each `%name%` it looks up, and the line it then runs.
-    /// A command line leaves `%%` and an unset `%name%` as they are, and
-    /// `%cd:~,%` is an empty substring of the current directory.
     fn cmd_reads(line: &str) -> (Vec<char>, Vec<String>, String) {
         let (mut outside, mut looked_up, mut out) = (Vec::new(), Vec::new(), String::new());
         let chars: Vec<char> = line.chars().collect();
@@ -1304,12 +892,6 @@ mod tests {
         (outside, looked_up, out)
     }
 
-    /// The quoting blocks a Windows script runs on the place, run here in a
-    /// real PowerShell on awkward arguments: `$q`'s line splits back to the
-    /// argument by the C runtime's rules, and `$k`'s line keeps `cmd.exe`
-    /// inside its quotes, expands no `%NAME%`, and then splits back to the
-    /// argument too (a newline as a space). Skipped, and said so, on a
-    /// machine without PowerShell; CI's Windows job always has it.
     #[test]
     fn the_windows_quoters_round_trip_awkward_arguments_in_powershell() {
         use base64::Engine as _;
@@ -1383,10 +965,6 @@ mod tests {
         }
     }
 
-    /// The script's `after` step runs however the launch ends, run here in a
-    /// real PowerShell: with the program's exit code when it ran, and with
-    /// no status when no program was found, after which the script still
-    /// fails. Skipped, and said so, without PowerShell.
     #[test]
     fn the_after_step_runs_even_when_no_program_starts() {
         use base64::Engine as _;
@@ -1425,9 +1003,6 @@ mod tests {
         );
     }
 
-    /// The arguments ride the script once, so an `exec` with a 1,500-char
-    /// argument stays inside the command line a Windows place runs, base64
-    /// of UTF-16 and all.
     #[test]
     fn a_long_argument_rides_the_windows_script_once() {
         let long = "x".repeat(1500);
@@ -1442,9 +1017,6 @@ mod tests {
         assert!(line <= WINDOWS_CMD_LINE_MAX, "{line} chars");
     }
 
-    /// A Windows program is resolved as PowerShell resolves a command, so an
-    /// npm `.cmd` shim or a `.ps1` script is found, and each runs under its
-    /// own interpreter; an `.exe` runs as it is.
     #[test]
     fn a_windows_program_is_resolved_and_run_by_its_kind() {
         let script = windows_program_script("codex", &["exec"], None, &[], "", "");
@@ -1475,8 +1047,6 @@ mod tests {
         }
     }
 
-    /// The last script that fits, and the first that does not: refused with
-    /// the length it would have had.
     #[test]
     fn a_powershell_launch_past_the_windows_limit_is_refused() {
         let fits = (WINDOWS_CMD_LINE_MAX - 39) / 4 * 3 / 2;
@@ -1491,9 +1061,6 @@ mod tests {
         );
     }
 
-    /// The cases PowerShell 5.1's own argument passing gets wrong, measured
-    /// against Windows PowerShell 5.1: an empty argument vanished, `a"b`
-    /// arrived as `ab`, and `a b\` as `a b"`.
     #[test]
     fn a_windows_argument_is_quoted_for_the_c_runtime() {
         for (arg, quoted) in [
@@ -1526,9 +1093,6 @@ mod tests {
         args[dest + 1..].to_vec()
     }
 
-    /// Words every Windows login shell passes through go unchanged, so a
-    /// control-mode attach keeps its stdin on psmux itself and a `send-paste`
-    /// keeps its base64 payload at its own length.
     #[test]
     fn a_line_of_plain_words_reaches_a_windows_host_as_it_is() {
         for args in [
@@ -1542,8 +1106,6 @@ mod tests {
         }
     }
 
-    /// `cmd.exe` expands a `%name%` pair, and `,` is a PowerShell array: a
-    /// line with either is encoded, never sent bare.
     #[test]
     fn a_line_any_windows_shell_could_read_as_syntax_is_encoded() {
         for args in [
@@ -1568,9 +1130,6 @@ mod tests {
         }
     }
 
-    /// How a host is reached is its kind and nothing else: neither its OS nor
-    /// its multiplexer changes the launcher, and the launcher names neither —
-    /// no multiplexer binary and no `-L`, which are the transport's to add.
     #[test]
     fn a_launcher_follows_the_hosts_kind_alone() {
         use crate::{HostDef, HostKind, Multiplexer, Platform};
@@ -1635,8 +1194,6 @@ mod tests {
             .get_args()
             .map(|a| a.to_string_lossy().into_owned())
             .collect();
-        // Caller opts first, the appended set (hardening + multiplexing when
-        // the machine has an `~/.ssh`), destination last.
         let mut expected: Vec<&str> = vec!["-p", "2222"];
         expected.extend(ssh_appended_opts());
         expected.push("me@box");
@@ -1645,8 +1202,7 @@ mod tests {
 
     #[test]
     fn ssh_command_hardening_follows_user_opts_so_user_wins() {
-        // ssh honors the first occurrence of an option, so a user-set
-        // ConnectTimeout must precede ours in the arg list.
+        // ssh honors the first occurrence of an option.
         let cmd = ssh_command("me@box", &["-o".into(), "ConnectTimeout=30".into()]);
         let args: Vec<String> = cmd
             .get_args()
@@ -1658,12 +1214,6 @@ mod tests {
         assert!(args.iter().any(|a| a == "BatchMode=yes"));
     }
 
-    /// The flag [`wsl_exe`] starts every `wsl.exe` with keeps the child out of
-    /// this process's console, the one whose keyboard an attached WSL session
-    /// used to take. Asked of the console itself: every process attached to it
-    /// is in `GetConsoleProcessList`. `ping` stands in for `wsl.exe`, which a
-    /// runner need not have. A child started without the flag is checked too,
-    /// so a console that lists nothing cannot make this pass.
     #[cfg(windows)]
     #[test]
     fn a_child_kept_off_the_terminal_is_not_attached_to_our_console() {
@@ -1696,9 +1246,7 @@ mod tests {
             }
             cmd.spawn().expect("spawn ping")
         };
-        // A child joins the console while it starts up, after `spawn` has
-        // returned, so the list is read once the unflagged child is on it —
-        // started second, so the flagged one has had at least as long.
+        // A Windows child joins the console after `spawn` has returned.
         let mut kept_off = start(true);
         let mut sharing = start(false);
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
@@ -1731,23 +1279,14 @@ mod tests {
             .get_args()
             .map(|a| a.to_string_lossy().into_owned())
             .collect();
-        // A Unix caller passes `--cd /` so wsl.exe doesn't inherit (and fail to
-        // chdir to) a caller cwd that doesn't exist in the target distro.
-        // Pinning only the child cwd is insufficient — wsl.exe back-translates
-        // it through the caller-distro name and, with a prefix-sibling distro,
-        // yields a mangled `chdir(<suffix>/…)`; `--cd /` bypasses that.
+        // wsl.exe back-translates the caller's cwd through the distro name; `--cd /` bypasses that.
         #[cfg(unix)]
         assert_eq!(args, ["-d", "Ubuntu", "--cd", "/"]);
         #[cfg(windows)]
         assert_eq!(args, ["-d", "Ubuntu"]);
-        // The child cwd is left to the OS default; the translation control is
-        // the `--cd` flag, not the caller's process cwd.
         assert_eq!(cmd.get_current_dir(), None);
     }
 
-    /// Words each host shell has to carry intact: separators, quotes of both
-    /// kinds, `cmd.exe`'s `%…%` and `|`, PowerShell's `$` and backtick, an
-    /// empty word, a trailing backslash, non-ASCII.
     const QUOTING_TABLE: &[&str] = &[
         "plain",
         "",
@@ -1771,8 +1310,6 @@ mod tests {
         }
     }
 
-    /// What ssh hands the host's login shell: the words after the
-    /// destination, space-joined.
     fn remote_line(cmd: &Command) -> String {
         let args: Vec<String> = cmd
             .get_args()
@@ -1785,8 +1322,6 @@ mod tests {
         args[at + 1..].join(" ")
     }
 
-    /// The table through the POSIX host shell, read back by a real `sh` the
-    /// way the host's login shell reads ssh's line.
     #[cfg(unix)]
     #[test]
     fn the_quoting_table_survives_a_posix_host_shell() {
@@ -1811,10 +1346,6 @@ mod tests {
         }
     }
 
-    /// The table through the Windows host shell. Whichever of `cmd.exe` and
-    /// PowerShell logs in, a line is either words both pass bare or one
-    /// encoded PowerShell script, so the check is the script itself: its
-    /// argument line, split back by the C runtime's rules, is the table.
     #[test]
     fn the_quoting_table_survives_a_windows_host_shell() {
         let launch = HostShell::PowerShell
@@ -1852,8 +1383,6 @@ mod tests {
         }
     }
 
-    /// A short line of bare words stays bare on a Windows host: control mode
-    /// and `send-paste` keep their own length.
     #[test]
     fn bare_words_reach_a_windows_host_unencoded() {
         let launch = HostShell::PowerShell
@@ -1862,8 +1391,6 @@ mod tests {
         assert_eq!(remote_line(&launch), "psmux -L thurbox list-windows");
     }
 
-    /// A user hook's script on a POSIX host: its environment and working
-    /// directory arrive with values no shell may reinterpret.
     #[cfg(unix)]
     #[test]
     fn a_posix_hook_script_carries_env_and_cwd() {
@@ -1894,7 +1421,6 @@ mod tests {
         assert_eq!(&words[1..], QUOTING_TABLE);
     }
 
-    /// A Windows setup is one launch line, bounded like every other one.
     #[test]
     fn a_windows_setup_past_the_line_limit_is_refused() {
         let step = "x".repeat(WINDOWS_CMD_LINE_MAX);
@@ -1904,9 +1430,6 @@ mod tests {
         assert!(err.len > err.max, "{err}");
     }
 
-    /// The agent behind a Windows setup gets its arguments exactly: an empty
-    /// one and one holding `"` survive, as PowerShell 5.1's `&` would not
-    /// let them.
     #[test]
     fn a_windows_setup_hands_the_agent_its_exact_arguments() {
         let args: Vec<String> = ["", "say \"hi\"", "two words", "C:\\dir\\"]
@@ -1925,9 +1448,6 @@ mod tests {
         assert_eq!(crt_split(&powershell_unquote(arguments)), args, "{script}");
     }
 
-    /// The agent starts where the steps left PowerShell: a `Set-Location` in
-    /// setup carries into it, as a `cd` does on POSIX. A `.ps1` wrapper is an
-    /// agent too, run through `powershell.exe -File`.
     #[test]
     fn a_windows_setup_keeps_the_location_and_runs_a_script_agent() {
         let (_, words) = HostShell::PowerShell
@@ -1948,9 +1468,6 @@ mod tests {
         assert!(script.contains("-NoLogo -File"), "{script}");
     }
 
-    /// A step that leaves with its own `exit` still reports as the setup's
-    /// failure: the marker is written on the way out by a `finally`, which
-    /// PowerShell runs for an `exit` too, and only while a step is running.
     #[test]
     fn a_windows_setup_marks_a_step_that_exits_on_its_own() {
         let (_, words) = HostShell::PowerShell
@@ -1979,7 +1496,6 @@ mod tests {
         String::from_utf16(&units).unwrap()
     }
 
-    /// A PowerShell single-quoted literal's value.
     fn powershell_unquote(s: &str) -> String {
         s.strip_prefix('\'')
             .and_then(|s| s.strip_suffix('\''))
@@ -1987,7 +1503,6 @@ mod tests {
             .replace("''", "'")
     }
 
-    /// The MSVC C runtime's argv split of a command line.
     fn crt_split(line: &str) -> Vec<String> {
         let mut out = Vec::new();
         let mut chars = line.chars().peekable();

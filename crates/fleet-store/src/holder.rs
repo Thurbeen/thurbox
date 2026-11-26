@@ -1,15 +1,6 @@
-//! The lease holders Fleet names after a process of this machine:
-//! `fleet-up-<pid>@<boot id>` and `fleet-<pid>@<boot id>`. The file store
-//! lives on this machine, so a holder so named from another boot is
-//! provably dead, with every process it started. A holder gone on this
-//! boot is dead once the process groups it recorded are stopped.
-
 use std::fs;
 use std::path::{Path, PathBuf};
 
-/// The holder name for the calling process: `fleet-up-<pid>@<boot id>`
-/// for `fleet up`, `fleet-<pid>@<boot id>` otherwise. Without a boot id
-/// the name has no `@` part and is never judged dead.
 pub fn local(serving: bool) -> String {
     let prefix = if serving { "fleet-up" } else { "fleet" };
     let pid = std::process::id();
@@ -19,18 +10,10 @@ pub fn local(serving: bool) -> String {
     }
 }
 
-/// Whether `holder` has the shape [`local`] gives, which a holder chosen
-/// by hand must not take.
 pub fn is_reserved(holder: &str) -> bool {
     parse(holder).is_some()
 }
 
-/// `true` only when the holder is proven dead with every process it
-/// started: it names another boot of this machine, or it names a process
-/// of this boot that is gone and whose record directory under `root`
-/// ([`children_dir`]) is empty. A holder of any other shape, a process
-/// that left no record directory, or a check the platform cannot make, is
-/// never dead.
 pub fn is_dead(holder: &str, root: &Path) -> bool {
     match judge(holder) {
         Judged::OtherBoot => true,
@@ -41,9 +24,6 @@ pub fn is_dead(holder: &str, root: &Path) -> bool {
     }
 }
 
-/// Whether the next manager may take the lease from `holder`: it is dead,
-/// or it is gone on this boot and left a record directory, whose groups the
-/// next manager stops first.
 pub fn is_takeable(holder: &str, root: &Path) -> bool {
     match judge(holder) {
         Judged::OtherBoot => true,
@@ -52,25 +32,18 @@ pub fn is_takeable(holder: &str, root: &Path) -> bool {
     }
 }
 
-/// Where the holder named after a process records the process groups it
-/// starts: `<root>/children/<pid>@<boot id>`.
 pub fn children_dir(root: &Path, holder: &str) -> Option<PathBuf> {
     let (pid, boot) = parse(holder)?;
     Some(root.join(CHILDREN).join(format!("{pid}@{boot}")))
 }
 
-/// A record directory under `<root>/children` whose process is gone.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LeftBehind {
     pub dir: PathBuf,
-    /// Its process ran on this boot: its groups may still run.
     pub this_boot: bool,
-    /// It names the holder of the lease, whose taker judges it by it.
     pub holds_lease: bool,
 }
 
-/// Every record directory whose process is gone; `lease_holder` is the
-/// holder `lease.json` names.
 pub fn left_behind(root: &Path, lease_holder: Option<&str>) -> Vec<LeftBehind> {
     let Some(current) = boot_id() else {
         return Vec::new();
@@ -96,7 +69,6 @@ pub fn left_behind(root: &Path, lease_holder: Option<&str>) -> Vec<LeftBehind> {
         .collect()
 }
 
-/// Remove a record directory and the records in it.
 pub fn forget(dir: &Path) -> std::io::Result<()> {
     fs::remove_dir_all(dir)
 }
@@ -130,7 +102,6 @@ fn alive(pid: &str) -> bool {
     Path::new("/proc").join(pid).exists()
 }
 
-/// This machine's current boot id; `None` where the platform gives none.
 #[cfg(target_os = "linux")]
 pub fn boot_id() -> Option<String> {
     std::fs::read_to_string("/proc/sys/kernel/random/boot_id")

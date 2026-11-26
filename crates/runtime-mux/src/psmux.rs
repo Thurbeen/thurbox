@@ -1,18 +1,3 @@
-//! The psmux adapter: psmux's answers to [`TmuxCompatible`].
-//!
-//! psmux is a native-Windows clone of tmux that speaks its command and
-//! control-mode protocol — with the divergences measured against it (docs/runtime/runtime-mux.md)
-//! and kept here: its keystrokes go as key-names and `-l` literals (compatible
-//! with versions before `send-keys -H`), a paste through its own `send-paste`, a window's command and
-//! environment as one PowerShell token, and its server option scope, version
-//! floor and control-mode framing are its own. What it shares with tmux is
-//! [`Server`]; nothing here is tmux's, and nothing in the shared code asks
-//! whether a server is psmux.
-//!
-//! An adapter for a multiplexer, not for an OS: psmux is the default on a
-//! Windows machine ([`Multiplexer::default_for`]), and drives a host of any
-//! platform the same way.
-
 use std::collections::HashMap;
 use std::process::Command;
 use std::sync::Arc;
@@ -33,18 +18,14 @@ use crate::tmux_compat::server::{
 use crate::tmux_compat::transport::TmuxTransport;
 use crate::{HostDef, Multiplexer, Platform};
 
-/// psmux.
 pub struct Psmux;
 
-/// A psmux server's session backend.
 pub type PsmuxBackend = Server<Psmux>;
 
-/// psmux on this machine, whatever OS it is.
 pub fn local(settings: &MuxSettings) -> Arc<dyn SessionBackend> {
     Arc::new(PsmuxBackend::local(settings))
 }
 
-/// psmux on `host`, reached through `launcher` on a machine of `platform`.
 pub fn on_host(
     host: &HostDef,
     launcher: HostLauncher,
@@ -57,53 +38,27 @@ pub fn on_host(
 impl TmuxCompatible for Psmux {
     const MULTIPLEXER: Multiplexer = Multiplexer::Psmux;
 
-    /// `set-option -w -t <pane> @k v` stores one option for the whole server
-    /// and `#{@k}` expands to it on every window (measured against psmux 3.3.6
-    /// — docs/runtime/runtime-mux.md), so a stamp read back from psmux identifies nothing.
     const WINDOW_OPTIONS: bool = false;
 
-    /// psmux has neither `remain-on-exit` nor `window-size`, so an agent that
-    /// exits takes its window with it: the agent window reports its own exit
-    /// instead (`EXIT_REPORT`).
     const WINDOW_SETTINGS: bool = false;
 
-    /// psmux sends `%window-close`, but not one to act on: on 3.3.7 a close
-    /// was measured naming a window still alive while the one that went was
-    /// never named, so a close is only a hint, confirmed against the session's
-    /// panes before any reader ends (`Self::control_policy`). No
-    /// `%layout-change` that reports a pane's size either.
     const WINDOW_EVENTS: bool = false;
 
-    /// Unsupported tmux target syntax prints `ERROR:` on stdout and exits 0
-    /// on psmux 3.3.8.
     const EXIT_ZERO_ERRORS: bool = true;
 
-    /// psmux numbers panes and windows per session (psmux #569), and its socket
-    /// hosts a `__warm__` session beside thurbox's with the same numbers.
     const SESSION_SCOPED_IDS: bool = true;
 
-    /// psmux 3.3.7 resolves `kill-window -t thurbox:.%8` to the session's
-    /// ACTIVE window (fixed in 3.3.8, dc183e3), where `kill-pane` with the same
-    /// target kills `%8`. A thurbox window holds one pane, so that is its
-    /// window gone.
     const KILL_BY_PANE: bool = true;
     const PANE_MONITORING: bool = true;
 
-    /// Nothing has verified that a psmux reply queues behind the pane output
-    /// ahead of it, and its blocks are framed the old way
-    /// ([`ControlPolicy::tagged_blocks`]).
     const SNAPSHOTS: bool = false;
 
-    /// Not verified to take a `;` list as one invocation: each option is set
-    /// on its own.
     const COMMAND_LISTS: bool = false;
     const COMMAND_LIST_SINGLE_REPLY: bool = false;
 
-    // A cold psmux server can refuse `new-session` or disappear before the
-    // first `set-option`, even when its `new-session` client exited successfully.
+    // A cold psmux server can refuse `new-session` or vanish before the first `set-option`.
     const COLD_START_ATTEMPTS: usize = 3;
 
-    /// The server can become reachable well after a failed create client exits.
     const COLD_START_GRACE: std::time::Duration = if cfg!(test) {
         std::time::Duration::from_secs(2)
     } else {
@@ -112,59 +67,33 @@ impl TmuxCompatible for Psmux {
 
     const RETRY_NO_SERVER_ERROR: bool = true;
 
-    /// Supplying `-x/-y` prevents psmux from claiming its warm server. The
-    /// placeholder's dimensions do not control agent windows.
     const BOOTSTRAP_SIZE_ARGS: &[&str] = &[];
 
-    /// `has-session` deletes the port file on a refused connection even when
-    /// the server is still starting. `list-windows` leaves it for that server.
     const SESSION_PROBE_COMMAND: &str = "list-windows";
 
-    /// psmux's `new-window -P -F` support is unverified against the documented
-    /// divergences (docs/runtime/runtime-mux.md), and `{end}` is tmux's
-    /// shorthand: the one-shot path targets the session and finds the window by
-    /// its name.
     const ONE_SHOT_SPAWN_ANSWERS: bool = false;
-    /// Not measured on psmux: its window's environment rides in the
-    /// PowerShell script on the argv.
     const SPAWN_ON_STDIN: bool = false;
 
-    /// psmux has no `remain-on-exit`. Long enough for a Windows PowerShell
-    /// with a light profile to start and fail to find the program it was told
-    /// to run; a slow profile (conda, oh-my-posh) can outlast it, which only
-    /// misses a dead window — it never refuses a live one.
     const SPAWN_SETTLE: Option<std::time::Duration> = Some(if cfg!(test) {
         std::time::Duration::from_millis(20)
     } else {
         std::time::Duration::from_millis(1500)
     });
 
-    /// No `if-shell -F` to decide with: the last instance to paint wins.
     const CONDITIONAL_RESIZE: bool = false;
 
-    /// psmux 3.3.8 refuses `-s` ("unknown flag -s") and keeps one option table
-    /// anyway, so it gets `-g`, which 3.3.7 and 3.3.8 both take.
     const SERVER_SCOPE: &str = "-g";
 
-    /// Without `-t`, psmux may route `set-option -g` to `__default` even when
-    /// the thurbox session is live under the same socket.
     const SERVER_OPTIONS_NEED_TARGET: bool = true;
 
-    /// psmux has no locale sanitizing, and need not know tmux's `-u`.
     const DISPLAY_FLAGS: &[&str] = &[];
 
     const VERSION_FLOOR: Option<fn(&str, &str) -> Result<()>> = Some(check_psmux_version);
 
-    /// The 3.3.8 floor, on the binary that would start a server: psmux numbers
-    /// itself independently, so this is its own floor and never tmux's. The
-    /// binary and the running server are both held to it again before a pane
-    /// is named ([`Self::VERSION_FLOOR`]).
     fn check_banner(banner: &str, _socket: &str) -> Result<()> {
         check_psmux_binary(banner)
     }
 
-    /// psmux's own name, or tmux's on the alias it installs: 3.3.7 prints
-    /// both, 3.3.6 only the second.
     fn banner_version(banner: &str) -> Option<&str> {
         named_version(banner, &["psmux", "tmux"])
     }
@@ -176,24 +105,14 @@ impl TmuxCompatible for Psmux {
         Ok(())
     }
 
-    /// Nothing beyond the shared options: psmux has no OSC 52 clipboard
-    /// forwarding (a local Windows session copies via the native clipboard path
-    /// instead) and no `mouse` option to set.
     fn session_config(_session: &str) -> Vec<ConfigOption> {
         Vec::new()
     }
 
-    /// psmux's tokenizer can't read POSIX `'\''` escapes, so a `-c`/`-n` value
-    /// gets the double-quote framing it does parse.
     fn quote(arg: &str) -> String {
         psmux_quote(arg)
     }
 
-    /// tmux's replies, psmux's own `session not found: `, and its
-    /// `psmux: no server running on session`, bare or naming the socket it
-    /// looked for in single quotes. The unquoted form a nested client's
-    /// leaked target produces (`MUX_NESTING_ENV`) is not one of these: it
-    /// names a socket thurbox never asked for.
     fn answered_absent(answer: &str) -> Option<Missing> {
         const NO_SERVER: &str = "psmux: no server running on session";
         if answer == NO_SERVER {
@@ -217,15 +136,10 @@ impl TmuxCompatible for Psmux {
         tmux_answered_absent(answer)
     }
 
-    /// None: psmux ignores `new-window -e`, so the environment is folded into
-    /// the window's script (`psmux_window_powershell`).
     fn env_flags(_env: &HashMap<String, String>) -> String {
         String::new()
     }
 
-    /// The values go to a file in the user's own temp directory on the
-    /// server's machine, over the stdin of the command that writes it; the
-    /// window's script names only the file.
     fn private_env(
         server: &Server<Self>,
         env: &HashMap<String, String>,
@@ -253,8 +167,6 @@ impl TmuxCompatible for Psmux {
         psmux_window_command(window_name, command, args, env)
     }
 
-    /// One argv token: the environment and the program as the PowerShell
-    /// launch `psmux_window_program` builds, since `-e` would be ignored.
     fn push_window_program(
         cmd: &mut Command,
         window_name: &str,
@@ -266,12 +178,6 @@ impl TmuxCompatible for Psmux {
         Ok(())
     }
 
-    /// psmux's own `send-paste`, which wraps and writes the payload itself (see
-    /// `PsmuxPaste` for why key-encoded markers do not survive there): a raw
-    /// newline inside a psmux command argument is cut by the server's
-    /// line-oriented read, so a multi-line prompt arrived truncated *and* its
-    /// tail ran as a psmux command (psmux #560). One per `paste_chunks`
-    /// piece, as `PsmuxPaste::deliver` sends them.
     fn paste_args(target: &str, text: &str) -> Vec<Vec<String>> {
         paste_chunks(text)
             .into_iter()
@@ -283,41 +189,12 @@ impl TmuxCompatible for Psmux {
         deferred_paste_script(mux, socket, target, text)
     }
 
-    /// Key-names and `-l` literals for keystrokes, and a paste out of band
-    /// (`PsmuxPaste`).
     fn pane_input(transport: &TmuxTransport, socket: &str) -> Arc<dyn PaneInput> {
         Arc::new(PsmuxInput {
             paste: PsmuxPaste::new(transport.clone(), socket.to_string()),
         })
     }
 
-    /// No implicit attach reply, untagged blocks, no subscriptions.
-    ///
-    /// tmux answers the `attach-session` carried on argv with a `%begin`/`%end`
-    /// block of its own. **psmux does not** (measured against psmux
-    /// 3.3.6 — docs/runtime/runtime-mux.md): its command counter starts at 1
-    /// for the *client's* first command, so the attach is never numbered at
-    /// all.
-    ///
-    /// ```text
-    /// $ printf 'display-message -p first\ndisplay-message -p second\n' \
-    ///     | psmux -L s -C attach-session -t thurbox
-    /// %begin 1789657328 1 1     <- the first command sent, not the attach
-    /// %begin 1789657328 2 1
-    /// ```
-    ///
-    /// Draining there waits on a `read_until` for a block that never comes, which
-    /// is the whole of issue #1168's headline symptom: `ensure_ready` never
-    /// returns, so the discovery worker never reports, `Terminals::discovered`
-    /// stays empty, and **every** session renders "session has no pane yet" with
-    /// nothing logged — the interface never attaches a single pane on Windows. The
-    /// blocking read ends only when psmux closes the pipe, which is the other face
-    /// of it ("control mode closed before sending its implicit attach response").
-    ///
-    /// No format subscriptions either, so a remote psmux connection **polls**
-    /// the hook-state option — but only where a producer can exist: a *remote*
-    /// psmux host, once its status channel is open ([`Self::HOOK_STATUS`]). A
-    /// local psmux session signals via `thurbox-cli` straight into the DB.
     fn control_policy(transport: &TmuxTransport, session: &str) -> ControlPolicy {
         ControlPolicy {
             flow_control_command: Some("refresh-client -f pause-after=5"),
@@ -331,24 +208,8 @@ impl TmuxCompatible for Psmux {
         }
     }
 
-    /// **Closed.** The channel rests on behaviours not yet proven against
-    /// psmux 3.3.6 — an in-pane `set-option -p` without `-t` (no
-    /// `$TMUX_PANE` guarantee), `#{@user_option}` expansion for the poller,
-    /// and claude accepting a forward-slash `--settings` path on Windows.
-    /// Closed means the old strip behaviour exactly: hook configs are not
-    /// shipped, the agent launches clean (surfaced as
-    /// `SessionInfo::hook_wiring`), and a psmux host's sessions report no
-    /// status — unknown, not idle. `scripts/dev/e2e/windows-vm.sh test` probes
-    /// the first two and holds them against this constant, which it reads
-    /// from this file; open it only with evidence for all three.
     const HOOK_STATUS: bool = false;
 
-    /// psmux has no `TMUX_TMPDIR`-style socket directory — every `-L <name>`
-    /// resolves machine-wide — and no `$TMUX` to find its server by, so the
-    /// socket is baked into the command. The name is user-authored
-    /// (the host entry) yet spliced into JSON/JS/TOML hook text and tokenized by
-    /// psmux unquoted, so it keeps only `[A-Za-z0-9._-]`: a violating name
-    /// lands dark on a wrong socket rather than corrupting the shipped file.
     fn hook_signal_command(server: &Server<Self>) -> String {
         let socket = server.socket();
         let safe: String = socket
@@ -374,8 +235,6 @@ impl TmuxCompatible for Psmux {
     }
 }
 
-/// The control-mode command listing the panes `session` still has, which a
-/// `%window-close` is checked against ([`ControlPolicy::confirm_close`]).
 fn live_panes_command(session: &str) -> String {
     format!(
         "list-panes -s -t {} -F {}",
@@ -384,8 +243,6 @@ fn live_panes_command(session: &str) -> String {
     )
 }
 
-/// psmux's pane input: [`psmux_send_keys_commands`] for keystrokes, and a
-/// whole bracketed paste through [`PsmuxPaste`].
 struct PsmuxInput {
     paste: PsmuxPaste,
 }
@@ -404,28 +261,8 @@ impl PaneInput for PsmuxInput {
     }
 }
 
-/// The first psmux whose server both gives every new pane its own console and
-/// reads the pane target thurbox names every pane by.
-///
-/// Before 3.3.7 (psmux#450) the server's console attach/detach — which every
-/// `send-keys C-c`, bracketed paste and mouse or VT injection performs — left
-/// its std handle slots on freed, recycled values, and each pane born after
-/// that inherits them. The pane's shell and the agent it launches then have a
-/// stdin that is not the pane at all: Claude Code reports "stdin is unreadable
-/// (EISDIR)" (ENOTCONN, …, depending on what the value was recycled into),
-/// falls into `--print` and exits, and nothing it writes reaches the pane.
-/// Measured on Windows 11: after a burst of `send-keys C-c`, every window 3.3.6
-/// created was born that way and every one 3.3.8 created was not.
-///
-/// 3.3.7 reads the pane-slot target (`thurbox:.%3`, `qualify_target`) as
-/// naming no pane and runs the command on the session's active pane (#1557):
-/// keystrokes typed into another session, `display-message` answering for it,
-/// `kill-pane` ending it. 3.3.8 resolves it to the pane it names.
 const MIN_PSMUX_VERSION: (u32, u32, u32) = (3, 3, 8);
 
-/// Refuse a psmux server older than [`MIN_PSMUX_VERSION`] by its `#{version}`
-/// answer (a bare `3.3.6`), which the gate has already read strictly; the
-/// binary's `-V` is [`check_psmux_binary`]'s.
 fn check_psmux_version(version_output: &str, socket: &str) -> Result<()> {
     match psmux_version(version_output) {
         Some(v) if v < MIN_PSMUX_VERSION => bail!(
@@ -446,9 +283,6 @@ fn check_psmux_version(version_output: &str, socket: &str) -> Result<()> {
     }
 }
 
-/// Refuse a psmux binary older than [`MIN_PSMUX_VERSION`] by its `-V`, with
-/// advice about the binary alone: nothing has been started by it, and
-/// restarting a server would not change which binary runs.
 fn check_psmux_binary(banner: &str) -> Result<()> {
     match psmux_version(banner) {
         Some(v) if v < MIN_PSMUX_VERSION => bail!(
@@ -466,9 +300,6 @@ fn check_psmux_binary(banner: &str) -> Result<()> {
     }
 }
 
-/// The version a `-V` banner or a `#{version}` answer names, read leniently:
-/// the last line that has one, `psmux ` or `tmux ` before it, a pre-release
-/// suffix ignored. `None` when nothing in it reads as a version.
 fn psmux_version(output: &str) -> Option<(u32, u32, u32)> {
     output.lines().rev().find_map(|line| {
         let line = line.trim();
@@ -477,38 +308,11 @@ fn psmux_version(output: &str) -> Option<(u32, u32, u32)> {
     })
 }
 
-/// What an agent window runs once its agent returns: the exit status, piped to
-/// `thurbox-cli session exited`, which records it with the pane's last lines.
-///
-/// psmux has no `remain-on-exit`, so the window closes with the PowerShell that
-/// launched the agent, and nothing outside it can learn the status or read the
-/// screen afterwards — every exit reads as a window that simply vanished. The
-/// window is still open while this runs, which is what leaves the screen there
-/// to capture.
-///
-/// It runs however the launch ends ([`crate::shell::windows_program_script`]
-/// runs it in a `finally`), so a program that is not found still reports,
-/// with no status.
-///
-/// Piped rather than passed as an argument: `LASTEXITCODE` is unset when the
-/// program never ran, and an empty argument is dropped by Windows PowerShell
-/// 5.1, so an empty pipe is the one spelling that says "no status" the same
-/// way everywhere. `Get-Variable` keeps the string `$`-free, as `Set-Item`
-/// does for the environment. A machine with no `thurbox-cli` on PATH prints an
-/// error into a window that is closing anyway.
 const EXIT_REPORT: &str =
     "Get-Variable LASTEXITCODE -ValueOnly -ErrorAction Ignore | thurbox-cli session exited";
 
-/// The key [`TmuxCompatible::private_env`] hands a psmux window's script in
-/// place of the environment: the file that holds it. Not a valid variable
-/// name, so it never names one.
 const ENV_FILE: &str = "=runtime-mux-env-file";
 
-/// Writes the bytes whose base64 it reads from stdin (a UTF-8 JSON object)
-/// to a new file under `%LOCALAPPDATA%\\runtime-mux`, and prints its path.
-/// The file is created with an ACL of its own: only this user, its owner,
-/// may open it, whatever the directory allows. Base64 keeps the bytes clear
-/// of the console's code page.
 const STASH_SCRIPT: &str = "$ErrorActionPreference = 'Stop'\n\
     $b = [Console]::In.ReadToEnd().Trim()\n\
     $d = Join-Path $env:LOCALAPPDATA 'runtime-mux'\n\
@@ -524,12 +328,8 @@ const STASH_SCRIPT: &str = "$ErrorActionPreference = 'Stop'\n\
     try { $f.Write($bytes, 0, $bytes.Length) } finally { $f.Close() }\n\
     [Console]::Out.Write($p)";
 
-/// The longest a write or a removal of a window's environment file may take:
-/// it is one ssh round trip, and window creation waits on it.
 const STASH_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
 
-/// What the stash of `env` sends: the command, which carries no value, and
-/// its stdin.
 fn stash_request(
     transport: &crate::tmux_compat::transport::TmuxTransport,
     env: &HashMap<String, String>,
@@ -542,8 +342,6 @@ fn stash_request(
     )
 }
 
-/// `env` written to a private file on the server's machine
-/// ([`STASH_SCRIPT`]): its path there.
 fn stash_env(
     transport: &crate::tmux_compat::transport::TmuxTransport,
     env: &HashMap<String, String>,
@@ -561,8 +359,6 @@ fn stash_env(
     Ok(path)
 }
 
-/// Remove the environment file `file` on the server's machine. Best effort,
-/// bounded like the write.
 fn remove_env_file(transport: &crate::tmux_compat::transport::TmuxTransport, file: &str) {
     let script = format!(
         "Remove-Item -LiteralPath {} -Force -ErrorAction SilentlyContinue",
@@ -577,9 +373,6 @@ fn remove_env_file(transport: &crate::tmux_compat::transport::TmuxTransport, fil
     }
 }
 
-/// `cmd` with `input` on its stdin, run to its end or killed and reaped at
-/// `timeout`. The input is written from a thread of its own, so a command
-/// that does not read never blocks the wait.
 fn run_fed_bounded(
     mut cmd: Command,
     input: Vec<u8>,
@@ -638,8 +431,6 @@ fn run_fed_bounded(
     })
 }
 
-/// The PowerShell that sets the window's environment from the file `file`
-/// and removes it, stopping the window if it cannot.
 fn env_loader(file: &str) -> String {
     format!(
         "$ErrorActionPreference = 'Stop'; $f = {}; \
@@ -650,32 +441,6 @@ fn env_loader(file: &str) -> String {
     )
 }
 
-/// Build the PowerShell script a psmux window runs: set the env vars, then
-/// launch the agent — and, in an agent window, report its exit
-/// ([`EXIT_REPORT`]).
-///
-/// psmux ignores `new-window -e` — env vars never reach the window's
-/// process — so they are folded into the script itself (`Set-Item Env:K
-/// 'v'; …`). Quoting is PowerShell **single** quotes (`''` = literal `'`),
-/// so an env value — the session name in `THURBOX_SESSION_NAME` included —
-/// arrives exactly. The script is the window's command line, which any
-/// process can read, so `Server` hands it the [`ENV_FILE`] its values went
-/// to instead ([`TmuxCompatible::private_env`]), and the script loads that
-/// file.
-///
-/// The program starts as `exec` starts one on a Windows place
-/// ([`crate::shell::windows_program_script`]): found with `Get-Command`,
-/// its arguments carried once and quoted on the place for the kind of
-/// program found there, so a native program reads back exactly the
-/// arguments it was given. The `&` operator would hand them through
-/// PowerShell 5.1's own native-argument binder, which drops an empty
-/// argument and re-splits one holding a `"`.
-///
-/// The script is not what the window runs: psmux runs a single-string window
-/// command through the shell it resolves, which is `cmd.exe` on a server
-/// started over Windows OpenSSH (psmux 3.4.0 #683, `cached_shell` and
-/// `build_command` in its `src/pane.rs`). [`psmux_window_program`] names the
-/// interpreter around it.
 fn psmux_window_powershell(
     window_name: &str,
     command: &str,
@@ -683,7 +448,6 @@ fn psmux_window_powershell(
     env: &HashMap<String, String>,
 ) -> String {
     let mut prelude = String::new();
-    // Sort for a deterministic command (HashMap iteration order isn't).
     let mut pairs: Vec<_> = env.iter().collect();
     pairs.sort();
     for (k, v) in pairs {
@@ -704,26 +468,6 @@ fn psmux_window_powershell(
     crate::shell::windows_program_script(command, args, None, &[], &prelude, &after)
 }
 
-/// The program a psmux window runs: [`psmux_window_powershell`] handed to
-/// `powershell.exe` explicitly ([`powershell_launcher`]), so it runs in
-/// PowerShell whichever shell psmux would have picked.
-///
-/// Two callers deliver it as **one unit** (both needed because psmux drops
-/// what tmux would keep):
-/// - [`psmux_window_command`] wraps it in double quotes for a control-mode
-///   `new-window` line, whose parser keeps only the *first* trailing token
-///   (tmux joins them).
-/// - the headless spawn passes it verbatim as a single argv token
-///   ([`TmuxCompatible::push_window_program`]; the argv path joins trailing
-///   tokens fine, but still ignores `-e`).
-///
-/// Either way psmux 3.4.0 spawns it directly — a bare program with
-/// arguments and no shell metacharacter (`try_direct_spawn`) — and an older
-/// one through its shell, where the encoded script means nothing either.
-///
-/// Agent `args` and `env` come from config with no bound, so a long one can
-/// take the program past what that shell runs: refused here with
-/// [`crate::shell::CommandLineTooLong`], before anything reaches psmux.
 fn psmux_window_program(
     window_name: &str,
     command: &str,
@@ -734,8 +478,6 @@ fn psmux_window_program(
         .with_context(|| format!("window {window_name} cannot start on a Windows host"))
 }
 
-/// [`psmux_window_program`] framed as one **double-quoted** control-mode
-/// token for a `new-window` line.
 fn psmux_window_command(
     window_name: &str,
     command: &str,
@@ -748,18 +490,8 @@ fn psmux_window_command(
     ))
 }
 
-/// The `run-shell` script that pastes the prompt, waits a beat, then presses
-/// Enter: PowerShell, since psmux's `run-shell` is not a POSIX shell, with the
-/// prompt travelling as psmux's own base64 `send-paste` payload (see
-/// [`send_paste_args`]), which also keeps the script free of the prompt's
-/// newlines and quotes.
-///
-/// The whole prompt rides in that one line, so a script past
-/// [`WINDOWS_CMD_LINE_MAX`] is refused with [`CommandLineTooLong`]: one
-/// `run-shell` cannot be chunked, and two scheduled `-b` would race.
 fn deferred_paste_script(mux: &str, socket: &str, target: &str, text: &str) -> Result<String> {
-    // Only the socket: a quoted program name is a string to PowerShell,
-    // not a command, and a multiplexer's binary name needs no quoting.
+    // PowerShell reads a quoted program name as a string, not a command.
     let socket = powershell_quote(socket);
     let t = powershell_quote(target);
     let payload = base64::engine::general_purpose::STANDARD.encode(text.as_bytes());
@@ -778,29 +510,8 @@ fn deferred_paste_script(mux: &str, socket: &str, target: &str, text: &str) -> R
     Ok(script)
 }
 
-/// Shift+Enter as `agent::input::key_to_bytes` encodes it.
-///
-/// Under psmux it is typed as Ctrl+J, the one newline key every agent probed
-/// in a psmux pane (psmux 3.3.8, Windows 11) takes as one. ConPTY drops
-/// `CSI 13;2u` before an app that reads console key events sees it (vibe's
-/// Rust TUI, PowerShell's line editor: nothing happened); win32-input-mode's
-/// Shift+Enter reaches an app that reads VT bytes as a bare CR, which Claude
-/// Code took as Enter and submitted the prompt. Ctrl+J inserted a newline in
-/// vibe, Claude Code and PowerShell alike. On a selection menu it is Enter.
 const SHIFT_ENTER: &[u8] = b"\x1b[13;2u";
 
-/// Build the psmux-compatible `send-keys` command line(s) for `buf`.
-///
-/// psmux supports `send-keys -l` (literal text) and key-names (`Enter`, `Tab`,
-/// `Escape`, `BSpace`, `C-<letter>`, …). Encode the
-/// input with those primitives: contiguous printable/UTF-8 runs go
-/// out as one `-l` literal command, each control byte as its key-name. Navigation
-/// sequences use one named key command: splitting ESC from the rest makes psmux
-/// dispatch a standalone Escape before the arrow sequence reaches the pane.
-/// Shift+Enter (`CSI 13;2u`) is sent as `C-j` (see `SHIFT_ENTER`). Every other
-/// escape sequence — a mouse report, an Alt chord, a modified F-key — goes out
-/// whole as one literal (`psmux_escape_sequence`): split, the pane got
-/// `[<35;…M` typed into it, with the ESC lost.
 pub fn psmux_send_keys_commands(pane_id: &str, buf: &[u8]) -> Vec<String> {
     let mut cmds = Vec::new();
     let mut literal: Vec<u8> = Vec::new();
@@ -838,9 +549,6 @@ pub fn psmux_send_keys_commands(pane_id: &str, buf: &[u8]) -> Vec<String> {
     cmds
 }
 
-/// Recognize the xterm navigation encodings produced by `key_to_bytes`, plus
-/// SS3 cursor keys when an application has enabled DECCKM. psmux owns the
-/// pane's cursor mode and emits the right form for an unmodified named key.
 fn psmux_navigation_key(buf: &[u8]) -> Option<(usize, String)> {
     let prefix = buf.get(..2)?;
     if prefix != b"\x1b[" && prefix != b"\x1bO" {
@@ -874,7 +582,6 @@ fn psmux_navigation_key(buf: &[u8]) -> Option<(usize, String)> {
         };
         return Some((4, name.to_string()));
     }
-    // The longest supported form has four bytes after CSI (for example 5;5~).
     let nav = &body[..body.len().min(4)];
     let semicolon = nav.iter().position(|&b| b == b';')?;
     let suffix_pos = nav
@@ -915,16 +622,6 @@ fn psmux_navigation_key(buf: &[u8]) -> Option<(usize, String)> {
     Some((suffix_pos + 3, name))
 }
 
-/// A complete escape sequence at the head of `buf` that has no psmux key-name,
-/// as its length and the `send-keys -l` arguments that type it whole: the ESC
-/// as psmux's `0x1b` codepoint token, the rest as a literal. `None` for a lone
-/// or unfinished ESC, which stays the `Escape` key.
-///
-/// One literal is what reaches the pane as one read (verified on psmux 3.3.8
-/// over control mode); `send-keys -H` would too, but psmux 3.3.6 lacked it.
-/// Recognised: a CSI sequence (with xterm's `CSI M` mouse report, whose three
-/// fields follow the final byte), an SS3 key, and an Alt chord (ESC + one
-/// printable character).
 fn psmux_escape_sequence(buf: &[u8]) -> Option<(usize, String)> {
     if buf.first() != Some(&0x1b) {
         return None;
@@ -947,8 +644,7 @@ fn psmux_escape_sequence(buf: &[u8]) -> Option<(usize, String)> {
             }
             let end = 2 + params + inter + 1;
             if fin == b'M' && params + inter == 0 {
-                // xterm's default/UTF-8 mouse encoding: three fields, each one
-                // character offset by 32, after the final byte.
+                // xterm's default mouse encoding: three fields, each one character offset by 32.
                 let (fields, used) = mouse_fields(&buf[end..])?;
                 let mut args = vec!["0x1b".to_string(), psmux_quote("[M")];
                 args.extend(fields.iter().map(|c| format!("0x{:x}", *c as u32)));
@@ -963,8 +659,6 @@ fn psmux_escape_sequence(buf: &[u8]) -> Option<(usize, String)> {
             }
             (3, &buf[1..3])
         }
-        // Alt + a printable character (UTF-8 included); Alt + a control byte
-        // stays Escape and that byte's key-name.
         first => {
             let end = 1 + utf8_width(first);
             let ch = std::str::from_utf8(buf.get(1..end)?).ok()?.chars().next()?;
@@ -978,11 +672,6 @@ fn psmux_escape_sequence(buf: &[u8]) -> Option<(usize, String)> {
     Some((len, format!("0x1b {}", psmux_literal_args(rest))))
 }
 
-/// The three fields of a `CSI M` mouse report: each a UTF-8 character (`?1005`)
-/// or, where the bytes are not UTF-8, a single raw byte (the default encoding's
-/// 8-bit coordinates), with the bytes they took. psmux types a field as its
-/// codepoint, so a raw byte past 0x7f — a coordinate past 95 in the default
-/// encoding — arrives as that codepoint's UTF-8; such an app should ask for SGR.
 fn mouse_fields(buf: &[u8]) -> Option<([char; 3], usize)> {
     let mut fields = ['\0'; 3];
     let mut used = 0;
@@ -1004,7 +693,6 @@ fn mouse_fields(buf: &[u8]) -> Option<([char; 3], usize)> {
     Some((fields, used))
 }
 
-/// The length of the UTF-8 sequence `first` leads, read from its lead byte.
 fn utf8_width(first: u8) -> usize {
     match first {
         0xc0..=0xdf => 2,
@@ -1014,33 +702,17 @@ fn utf8_width(first: u8) -> usize {
     }
 }
 
-/// Map a control byte to the psmux key-name that injects exactly that byte, or
-/// `None` for a printable / UTF-8 byte (which joins an `-l` literal run).
 fn psmux_key_name(b: u8) -> Option<String> {
     Some(match b {
         b'\r' => "Enter".to_string(),
         b'\t' => "Tab".to_string(),
         0x1b => "Escape".to_string(),
         0x7f => "BSpace".to_string(),
-        // Ctrl+letter: 0x01..=0x1a → C-a..C-z (covers e.g. LF 0x0a → C-j).
         0x01..=0x1a => format!("C-{}", (b'a' + b - 1) as char),
         _ => return None,
     })
 }
 
-/// Emit the pending printable run as one or more `send-keys -l -N 1` commands
-/// and clear it. Long runs are split at `SEND_KEYS_CHUNK_BYTES` (on char
-/// boundaries) so no control-mode line gets over-long.
-///
-/// The `-N 1` is load-bearing, not a stray repeat count. psmux's control-mode
-/// reader runs every line through a send-coalescing pass
-/// (`coalesce_send_commands` in psmux) that decodes each send's bytes and
-/// re-emits them re-quoted with the POSIX `'\''` escape — which psmux's own
-/// tokenizer cannot read back, so any `'` in the text arrived in the pane as
-/// `\` (`it's` was typed as `it\s`), regardless of how the client framed it.
-/// The decoder bails on a `-N` flag, letting the original line reach the
-/// direct send-keys handler, whose single parse handles the argument encoding
-/// of [`psmux_literal_args`] correctly. Verified against psmux 3.3.6.
 fn flush_psmux_literal(pane_id: &str, literal: &mut Vec<u8>, cmds: &mut Vec<String>) {
     if literal.is_empty() {
         return;
@@ -1066,21 +738,6 @@ fn flush_psmux_literal(pane_id: &str, literal: &mut Vec<u8>, cmds: &mut Vec<Stri
     literal.clear();
 }
 
-/// Encode one printable run as the argument list of a psmux `send-keys -l`
-/// command.
-///
-/// Quoting alone is not enough, because psmux classifies arguments *after*
-/// tokenizing (which strips the quotes) and drops every one that
-/// `starts_with('-')` as an unknown flag — so a typed `-` never reached the
-/// pane (issue #920). It also rewrites any argument shaped like tmux's `0xNN`
-/// hex codepoint (the encoding iTerm2's gateway sends) into the character it
-/// names, so a run literally spelling `0x41` would arrive as `A`.
-///
-/// Both are escaped by emitting the offending *leading* character as its own
-/// `0xNN` argument: psmux converts that back to the same character and, in
-/// literal mode, joins the arguments with no separator, so the run is
-/// reassembled exactly. Escaping repeats until the remainder is safe — `--x`
-/// needs both hyphens escaped, and `-0x41` needs the hyphen and then the `0`.
 fn psmux_literal_args(run: &str) -> String {
     let mut args: Vec<String> = Vec::new();
     let mut rest = run;
@@ -1097,8 +754,6 @@ fn psmux_literal_args(run: &str) -> String {
     args.join(" ")
 }
 
-/// Whether psmux would read `arg` as anything other than the literal text it
-/// spells: a flag (any leading `-`, quoted or not) or a `0xNN` hex codepoint.
 fn psmux_arg_is_reinterpreted(arg: &str) -> bool {
     if arg.starts_with('-') {
         return true;
@@ -1108,18 +763,6 @@ fn psmux_arg_is_reinterpreted(arg: &str) -> bool {
         .is_some_and(|hex| !hex.is_empty() && hex.chars().all(|c| c.is_ascii_hexdigit()))
 }
 
-/// Double-quote `s` for a psmux `send-keys -l` argument. Always quotes, even a
-/// bare word, so whitespace never splits the run into several arguments (a
-/// leading `-` needs more than quoting — see `psmux_literal_args`). Double
-/// quotes — not POSIX single quotes — because psmux's tokenizer has no working
-/// escape for a `'` inside `'…'`, but inside `"…"` it passes `'` through and
-/// reads exactly two escapes: `\"` (literal quote) and `\\` (literal
-/// backslash); any other backslash stays literal, so both are escaped here. A
-/// literal run never contains a newline (LF and CR map to key-names), but the
-/// control-mode line is `\n`-delimited, so newlines are replaced defensively.
-/// Also the argument encoding for any other psmux control-mode line (e.g.
-/// `new-window -c/-n`, [`TmuxCompatible::quote`]) — same tokenizer, so a POSIX
-/// `'\''` escape would arrive mangled there too.
 pub fn psmux_quote(s: &str) -> String {
     format!(
         "\"{}\"",
@@ -1129,23 +772,10 @@ pub fn psmux_quote(s: &str) -> String {
     )
 }
 
-/// Max text bytes per `send-paste` command: the most whose line stays within
-/// [`WINDOWS_CMD_LINE_MAX`] in its longest form. A paste to a host's server is
-/// a one-shot ssh command, and when the host's socket name is not a word
-/// every Windows login shell passes through, `launch_on_windows` runs it as an
-/// encoded PowerShell script: base64, then UTF-16, then base64 again, so a
-/// payload byte costs 32/9 chars (issue #1503). Sized for that rather than the
-/// bare line, since the socket name comes unvalidated from the host entry.
 const PASTE_CHUNK_BYTES: usize = (WINDOWS_CMD_LINE_MAX - PASTE_LINE_RESERVE) * 9 / 32;
 
-/// What an encoded `send-paste` line spends besides its payload: the
-/// `powershell.exe … -EncodedCommand` prefix, the launch script around the
-/// argv, the `psmux` program name, `-L <socket>` and `send-paste -t <pane>`.
 const PASTE_LINE_RESERVE: usize = 2048;
 
-/// Split `text` into `send-paste`-sized pieces on **char** boundaries: psmux
-/// decodes the payload as UTF-8 and drops it whole if that fails, so a
-/// multi-byte character must never straddle two chunks.
 fn paste_chunks(text: &str) -> Vec<&str> {
     if text.len() <= PASTE_CHUNK_BYTES {
         return vec![text];
@@ -1163,13 +793,6 @@ fn paste_chunks(text: &str) -> Vec<&str> {
     chunks
 }
 
-/// The `send-paste` argv delivering `text` into `pane_id`.
-///
-/// The payload is standard base64 — psmux's own client encodes a paste the same
-/// way, and it is what the server decodes. It also keeps CR/LF off the wire: a
-/// raw newline inside a psmux command argument is cut by the server's
-/// line-oriented read, which delivers a truncated payload and then executes the
-/// tail as a psmux command (psmux #560).
 fn send_paste_args(pane_id: &str, text: &str) -> Vec<String> {
     vec![
         "send-paste".to_string(),
@@ -1179,20 +802,6 @@ fn send_paste_args(pane_id: &str, text: &str) -> Vec<String> {
     ]
 }
 
-/// Out-of-band paste channel for a psmux backend.
-///
-/// psmux's control-mode dispatcher implements no paste command at all
-/// (`paste-buffer`, `set-buffer` and psmux's own `send-paste` are CLI/server
-/// only), and its `send-keys` encoding cannot carry a paste: every embedded CR
-/// goes out as the `Enter` key, and the markers reach the pane as separate
-/// writes rather than around the text — a pasted stack trace was submitted one
-/// line at a time (issue #916).
-///
-/// So a paste is handed to psmux's *own* paste path with a one-shot
-/// `psmux send-paste` (the same command psmux's client uses for a Ctrl+Shift+V):
-/// it normalizes CRLF for ConPTY, writes the markers contiguously with the text,
-/// and adds them only when the pane's app actually enabled bracketed paste.
-/// Verified present since psmux 3.3.6.
 #[derive(Debug, Clone)]
 struct PsmuxPaste {
     transport: TmuxTransport,
@@ -1204,16 +813,6 @@ impl PsmuxPaste {
         Self { transport, socket }
     }
 
-    /// Deliver `text` to `pane_id` as a paste. Blocks until psmux has applied it
-    /// (the psmux CLI round-trips a barrier before exiting), so a keystroke
-    /// written to control mode afterwards cannot overtake it. Callers reach this
-    /// through the session's writer thread, never the UI thread, so the wait only
-    /// holds back that session's own later input — the ordering we want.
-    ///
-    /// A paste past [`PASTE_CHUNK_BYTES`] goes out as several commands, each its
-    /// own paste — the text still arrives whole and no CR submits. An error on a
-    /// *later* chunk is reported but not returned: the first chunk is in the
-    /// pane already.
     fn deliver(&self, pane_id: &str, text: &str) -> Result<()> {
         for (i, chunk) in paste_chunks(text).into_iter().enumerate() {
             if let Err(e) = self.send_one(pane_id, chunk) {
@@ -1252,7 +851,6 @@ impl PsmuxPaste {
 mod tests {
     use super::*;
 
-    /// The text of every `-EncodedCommand` in `argv`, decoded.
     fn decoded(argv: &[String]) -> String {
         argv.iter()
             .flat_map(|a| a.split(' '))
@@ -1270,9 +868,6 @@ mod tests {
             .join("\n")
     }
 
-    /// A write of the environment that never answers is killed and reaped
-    /// at its bound, and answers an error: a stalled ssh never holds up a
-    /// window's creation. Asserted on the answer, not on a clock.
     #[cfg(unix)]
     #[test]
     fn a_stalled_environment_write_is_killed_at_its_bound() {
@@ -1293,9 +888,6 @@ mod tests {
         assert_eq!(out.stdout, b"sent");
     }
 
-    /// The environment file is created with an owner-only ACL of its own,
-    /// in the user's local app data: never in a temp directory whose
-    /// permissions another user may share.
     #[test]
     fn the_environment_file_is_created_owner_only() {
         assert!(!STASH_SCRIPT.contains("GetTempPath"), "{STASH_SCRIPT}");
@@ -1308,8 +900,6 @@ mod tests {
         );
     }
 
-    /// The arguments a window's script carries: its `$argv = @(…)` array
-    /// of PowerShell single-quoted strings, read back.
     fn script_argv(script: &str) -> Vec<String> {
         let rest = script
             .split_once("$v=@(")
@@ -1341,8 +931,6 @@ mod tests {
         }
     }
 
-    /// The arguments psmux tests a launch with: every character a shell or
-    /// a quoting layer between here and the program might read.
     const AWKWARD_ARGS: &[&str] = &[
         "plain",
         "with space",
@@ -1363,11 +951,6 @@ mod tests {
         "\"",
     ];
 
-    /// A psmux window's program gets its arguments byte-exact: the window's
-    /// script carries each one once, as a PowerShell literal, and quotes it
-    /// on the place for the program it finds there
-    /// ([`crate::shell::windows_program_script`]; the quoting is checked on
-    /// a real Windows place).
     #[test]
     fn a_psmux_window_hands_a_program_its_arguments_byte_exact() {
         let args: Vec<String> = AWKWARD_ARGS.iter().map(|a| a.to_string()).collect();
@@ -1382,9 +965,6 @@ mod tests {
         );
     }
 
-    /// A psmux window's environment is in no process's arguments, here or
-    /// on the place: the stash command carries none of it (its values go on
-    /// stdin), and the window's program names only the file they went to.
     #[test]
     fn a_psmux_windows_environment_is_in_no_argv() {
         let secret = "s3cret-value-42";
@@ -1551,7 +1131,6 @@ mod tests {
         )
     }
 
-    /// A psmux whose `list-windows` writes `stderr` and exits `code`.
     #[cfg(unix)]
     fn listing_backend(root: &tempfile::TempDir, stderr: &str, code: i32) -> PsmuxBackend {
         use std::os::unix::fs::PermissionsExt;
@@ -1569,8 +1148,6 @@ mod tests {
         )
     }
 
-    /// A psmux that appends each command line it runs to `log` and answers a
-    /// pane as live.
     #[cfg(unix)]
     fn recording_backend(root: &tempfile::TempDir) -> (PsmuxBackend, std::path::PathBuf) {
         use std::os::unix::fs::PermissionsExt;
@@ -1596,9 +1173,6 @@ mod tests {
         (backend, log)
     }
 
-    /// `session send` is a one-shot `send-paste` per chunk, so a long text
-    /// never puts a line past what a Windows host's `cmd.exe` runs — and still
-    /// arrives whole (issue #1489).
     #[cfg(unix)]
     #[test]
     fn a_long_send_text_goes_out_in_lines_a_windows_host_runs() {
@@ -1624,8 +1198,6 @@ mod tests {
         assert_eq!(String::from_utf8(sent).expect("utf-8"), text);
     }
 
-    /// A deferred prompt whose `run-shell` script is past the Windows limit is
-    /// refused with the reason, before anything reaches psmux (issue #1489).
     #[cfg(unix)]
     #[test]
     fn a_deferred_prompt_past_the_windows_command_line_is_refused() {
@@ -1644,7 +1216,6 @@ mod tests {
         assert!(!log.exists(), "{}", std::fs::read_to_string(&log).unwrap());
     }
 
-    /// A prompt that fits is still scheduled as one `run-shell`.
     #[cfg(unix)]
     #[test]
     fn a_deferred_prompt_that_fits_is_scheduled() {
@@ -1659,9 +1230,6 @@ mod tests {
         assert!(lines.contains("run-shell -b -d 1"), "{lines}");
     }
 
-    /// psmux 3.3.8 exits 1 with this wording when its server is gone. That is
-    /// its answer that nothing is there — what lets a restart respawn a
-    /// session whose server died — not a listing that went unanswered.
     #[cfg(unix)]
     #[test]
     fn psmux_no_server_reply_is_an_empty_listing() {
@@ -1674,7 +1242,6 @@ mod tests {
         assert!(backend.discover_answered().expect("absence").is_empty());
     }
 
-    /// The same words behind exit 0 are a hidden failure, not an answer.
     #[cfg(unix)]
     #[test]
     fn psmux_stderr_behind_a_zero_exit_is_still_an_error() {
@@ -1859,10 +1426,6 @@ mod tests {
         assert!(root.path().join("attempts.window_created").exists());
     }
 
-    /// psmux keeps no window once its program exits, so `new-window`
-    /// succeeding says nothing about whether the program started: a window
-    /// gone by the time it is looked for again is a failed create, not a
-    /// session reported `created` with nothing behind it.
     #[cfg(unix)]
     #[test]
     fn psmux_refuses_a_window_that_died_at_once() {
@@ -1896,9 +1459,6 @@ mod tests {
         }
     }
 
-    /// A namesake is allowed, and psmux windows carry no stamp, so a live
-    /// `tb-check` that was there before says nothing about the new one: a
-    /// window that never showed up is refused next to it (issue #1456).
     #[cfg(unix)]
     #[test]
     fn psmux_refuses_a_dead_window_next_to_a_live_namesake() {
@@ -1913,8 +1473,6 @@ mod tests {
         assert!(error.contains("tb-check exited"), "{error}");
     }
 
-    /// The new window's pane is the one checked after the settle, not any live
-    /// pane under its name.
     #[cfg(unix)]
     #[test]
     fn psmux_refuses_its_own_pane_dying_while_a_namesake_lives() {
@@ -1929,9 +1487,6 @@ mod tests {
         assert!(error.contains("tb-check exited"), "{error}");
     }
 
-    /// An agent whose window program is past what `cmd.exe` will run is
-    /// refused with the reason, before anything reaches psmux — not created as
-    /// a window that dies at once and reads as a dead spawn (issue #1457).
     #[cfg(unix)]
     #[test]
     fn psmux_refuses_a_window_program_past_the_windows_command_line() {
@@ -2000,16 +1555,11 @@ mod tests {
         assert_eq!(attempt_count(&root), 3);
     }
 
-    /// psmux 3.3.8 answers `set-option -s` with "unknown flag -s", which failed
-    /// every session setup against it; 3.3.7 took either scope.
     #[test]
     fn psmux_server_options_are_set_in_the_global_scope() {
         assert_eq!(Psmux::SERVER_SCOPE, "-g");
     }
 
-    /// A psmux 3.3.6 server hands panes born after a `send-keys C-c` std
-    /// handles that are no longer the pane's console, and the agent reports
-    /// "stdin is unreadable (EISDIR)" and exits.
     #[test]
     fn psmux_older_than_the_floor_is_refused_with_the_upgrade() {
         let err = check_psmux_version("3.3.6", "thurbox")
@@ -2023,10 +1573,6 @@ mod tests {
         assert!(check_psmux_version("3.2.9", "thurbox").is_err());
     }
 
-    /// The binary is held to the floor before it starts a server, as the
-    /// running server is before a pane is named: a backend's
-    /// `check_available` is asked first, so an old psmux is refused there too,
-    /// with the binary's advice and never the server's `kill-server`.
     #[test]
     fn an_old_psmux_banner_is_refused_before_a_server_starts() {
         let err = Psmux::check_banner("tmux 3.3.6\n", "thurbox")
@@ -2037,9 +1583,6 @@ mod tests {
         assert!(Psmux::check_banner("tmux 3.3.8\npsmux 3.3.8 (x)\n", "thurbox").is_ok());
     }
 
-    /// An old binary is refused whatever server it would talk to: psmux
-    /// before 3.3.8 reads a `-t` in the client, so a new server behind it
-    /// does not make it safe (`an_old_psmux_client_names_no_pane_to_a_new_server`).
     #[test]
     fn an_old_binary_is_refused_beside_a_new_server() {
         let err = Psmux::check_banner("tmux 3.3.7\npsmux 3.3.7 (x)\n", "thurbox")
@@ -2060,11 +1603,6 @@ mod tests {
         );
     }
 
-    /// psmux 3.3.7 reads the pane-slot target thurbox names every pane by
-    /// (`thurbox:.%3`) as naming no pane, and runs the command on the session's
-    /// active one (measured on Windows 11, #1557): keystrokes typed into
-    /// another session, `display-message` answering for it, `kill-pane` ending
-    /// it. 3.3.8 resolves the same spelling to the pane it names.
     #[test]
     fn psmux_3_3_7_is_refused_for_the_pane_targets_it_misreads() {
         let err = check_psmux_version("3.3.7", "thurbox")
@@ -2076,15 +1614,11 @@ mod tests {
         assert!(err.contains("`psmux -L thurbox kill-server`"), "{err}");
     }
 
-    /// A stand-in psmux whose server answers `#{version}` with `version`, and
-    /// which logs every command line it is given beside itself (`psmux.log`).
     #[cfg(unix)]
     fn psmux_answering(version: &str) -> (tempfile::TempDir, PsmuxBackend, std::path::PathBuf) {
         psmux_asked_its_version(&format!("echo '{version}'"))
     }
 
-    /// [`psmux_answering`], running `answer` — shell — for the version, behind
-    /// a psmux 3.3.8 client.
     #[cfg(unix)]
     fn psmux_asked_its_version(
         answer: &str,
@@ -2092,7 +1626,6 @@ mod tests {
         psmux_with_client("printf 'tmux 3.3.8\\npsmux 3.3.8 (test)\\n'", answer)
     }
 
-    /// [`psmux_asked_its_version`] behind a client whose `-V` runs `banner`.
     #[cfg(unix)]
     fn psmux_with_client(
         banner: &str,
@@ -2120,9 +1653,6 @@ mod tests {
         (root, backend, mux.with_extension("log"))
     }
 
-    /// The server a binary upgrade left running keeps its old code, so the
-    /// floor is held against the server before any pane is named to it — here
-    /// by `session key`, which never opens control mode.
     #[cfg(unix)]
     #[test]
     fn no_pane_on_a_too_old_psmux_server_is_addressed() {
@@ -2136,8 +1666,6 @@ mod tests {
         assert!(!sent.contains("%2"), "a pane was named to it:\n{sent}");
     }
 
-    /// A kill is the most destructive thing a pane can be named for, and on
-    /// 3.3.7 it ended the active pane instead: it is gated like any other.
     #[cfg(unix)]
     #[test]
     fn no_pane_on_a_too_old_psmux_server_is_killed() {
@@ -2148,9 +1676,6 @@ mod tests {
         assert!(!sent.contains("kill"), "a kill was sent:\n{sent}");
     }
 
-    /// A one-shot answer is not kept: with no connection, nothing would say
-    /// the server it came from had been replaced. A connection's is (see
-    /// `each_new_connection_asks_the_server_its_version_once`).
     #[cfg(unix)]
     #[test]
     fn a_one_shot_admission_is_asked_for_each_pane() {
@@ -2161,8 +1686,6 @@ mod tests {
         assert_eq!(sent.matches("#{version}").count(), 2, "{sent}");
     }
 
-    /// psmux before 3.3.8 reads `-t` in the client too, so an old binary in
-    /// front of a new server names nothing either.
     #[cfg(unix)]
     #[test]
     fn an_old_psmux_client_names_no_pane_to_a_new_server() {
@@ -2179,9 +1702,6 @@ mod tests {
         assert!(!sent.contains("%2"), "a pane was named:\n{sent}");
     }
 
-    /// A pre-release binary is not held to the floor by reading past its own
-    /// line to an older one, nor by dropping its suffix: a `3.3.8-dev` may
-    /// predate the fix.
     #[cfg(unix)]
     #[test]
     fn a_pre_release_psmux_binary_names_no_pane() {
@@ -2200,7 +1720,6 @@ mod tests {
         }
     }
 
-    /// An answer a floor cannot read is not a version new enough.
     #[cfg(unix)]
     #[test]
     fn an_unreadable_version_names_no_pane() {
@@ -2214,9 +1733,6 @@ mod tests {
         }
     }
 
-    /// A server that is there but does not say what it is — a busy one whose
-    /// answer timed out — still runs whatever is sent next, so nothing is named
-    /// to it.
     #[cfg(unix)]
     #[test]
     fn a_server_that_fails_to_say_its_version_is_named_no_pane() {
@@ -2234,8 +1750,6 @@ mod tests {
         assert!(!sent.contains("%2"), "a pane was named to it:\n{sent}");
     }
 
-    /// A psmux client before 3.3.8 answers a server that stalled with nothing
-    /// at status 0, and that server still runs what is sent next.
     #[cfg(unix)]
     #[test]
     fn an_empty_answer_for_the_version_names_no_pane() {
@@ -2246,8 +1760,6 @@ mod tests {
         assert!(!sent.contains("%2"), "a pane was named to it:\n{sent}");
     }
 
-    /// No server at all has no pane to misroute to; the answer is not kept, so
-    /// the server a later command starts is asked.
     #[cfg(unix)]
     #[test]
     fn no_server_is_let_through_and_asked_again() {
@@ -2260,11 +1772,6 @@ mod tests {
         assert_eq!(sent.matches("#{version}").count(), 2, "{sent}");
     }
 
-    /// psmux reports some failures on stdout with status 0
-    /// ([`Psmux::EXIT_ZERO_ERRORS`]). One saying the session is not there is
-    /// the absence a refusal on stderr would be; `can't find window` is also
-    /// what 3.3.8 says of a live server refusing a target, and refuses, as
-    /// does any other.
     #[cfg(unix)]
     #[test]
     fn a_status_zero_error_for_the_version_lets_through_only_a_missing_session() {
@@ -2286,11 +1793,6 @@ mod tests {
         }
     }
 
-    /// A bare `kill-window -t @7` killed another session's `@7` (measured on
-    /// psmux 3.3.7), and 3.3.7 sent a `kill-window -t thurbox:.%8` to the
-    /// session's active window (fixed in 3.3.8, dc183e3). A pane's window goes
-    /// by `kill-pane` on the qualified pane; a window by id goes qualified; a
-    /// window by name is already qualified and is left as it is.
     #[test]
     fn a_psmux_kill_reaches_the_pane_it_names_in_thurboxs_session() {
         let psmux = PsmuxBackend::local(&crate::settings::for_tests());
@@ -2309,16 +1811,12 @@ mod tests {
         );
     }
 
-    /// Every pane a psmux command names goes out in thurbox's session, never as
-    /// a bare `%N` the server could route to its `__warm__` session.
     #[test]
     fn a_psmux_pane_target_names_thurboxs_session() {
         let psmux = PsmuxBackend::local(&crate::settings::for_tests());
         assert_eq!(psmux.spell_target("%2"), format!("{}:.%2", psmux.session));
     }
 
-    /// A close is confirmed against the session's own panes, listed in the
-    /// framing psmux's tokenizer reads.
     #[test]
     fn a_psmux_close_is_confirmed_against_the_sessions_panes() {
         let policy = Psmux::control_policy(&TmuxTransport::local("psmux"), "thurbox");
@@ -2328,19 +1826,12 @@ mod tests {
         );
     }
 
-    /// A banner this cannot read says nothing about the fix, so the early check
-    /// a server is started behind lets it through. No pane is named behind it,
-    /// though: the gate before every pane (`admit_server`) takes only a
-    /// version it can read — `3.3.9-dev` included, which it refuses.
     #[test]
     fn an_unreadable_psmux_banner_is_not_refused() {
         assert!(Psmux::check_banner("", "thurbox").is_ok());
         assert!(Psmux::check_banner("psmux (dev build)", "thurbox").is_ok());
     }
 
-    /// psmux gets its own `send-paste`: the bracketed markers are psmux's to add,
-    /// and the base64 payload keeps the prompt's newlines off a command wire that
-    /// would otherwise cut the line and run the tail as a command (psmux #560).
     #[test]
     fn paste_prompt_args_uses_send_paste_for_psmux() {
         let args = Psmux::paste_args("thurbox:tb-demo", "line one\nline two").concat();
@@ -2356,7 +1847,6 @@ mod tests {
         assert!(!args.iter().any(|a| a.contains('\n') || a.contains('\x1b')));
     }
 
-    /// The script a window program hands `powershell.exe`, decoded back.
     fn decoded_script(program: &str) -> String {
         let encoded = program
             .strip_prefix("powershell.exe -NoLogo -EncodedCommand ")
@@ -2386,11 +1876,6 @@ mod tests {
         assert_eq!(script_argv(&script), args, "{script}");
     }
 
-    /// The window runs PowerShell by name, whatever shell psmux resolves: on a
-    /// server started over Windows OpenSSH that shell is `cmd.exe`, which
-    /// killed every window handed a bare PowerShell script. Nothing in the
-    /// program is syntax to `cmd.exe`, PowerShell or psmux's tokenizer, and it
-    /// is the same program on the control-mode and the headless argv path.
     #[test]
     fn the_window_program_names_powershell_and_carries_no_shell_syntax() {
         let mut env = HashMap::new();
@@ -2420,9 +1905,6 @@ mod tests {
         assert_eq!(argv, [program]);
     }
 
-    /// An ordinary agent window — every `THURBOX_*` variable a spawn sets, a
-    /// pinned session id and the exit report — is well inside the limit
-    /// a Windows host puts on its program (issue #1457).
     #[test]
     fn a_typical_agent_window_fits_a_windows_command_line_with_room() {
         let id = "0b9f3c62-7d1e-4a55-9a43-2f6c1e8d7b10";
@@ -2453,8 +1935,6 @@ mod tests {
 
     #[test]
     fn psmux_window_script_folds_env_as_set_item() {
-        // Sorted for determinism. Values with spaces survive the PS single
-        // quotes.
         let mut env = HashMap::new();
         env.insert("THURBOX_SESSION".to_string(), "id-1".to_string());
         env.insert(
@@ -2472,8 +1952,6 @@ mod tests {
         );
     }
 
-    /// An agent window reports its program's exit code once it ends; a
-    /// shell window does not.
     #[test]
     fn an_agent_window_reports_its_exit() {
         let script = psmux_window_powershell("tb-x", "claude", &[], &HashMap::new());
@@ -2496,8 +1974,6 @@ mod tests {
         }
     }
 
-    /// A `'` doubles inside PowerShell's quotes, and a newline stays in its
-    /// argument: the script carries the arguments as they are.
     #[test]
     fn psmux_window_script_escapes_and_sanitizes() {
         let args = vec!["it's".to_string(), "say hi\nnow".to_string()];
@@ -2510,9 +1986,6 @@ mod tests {
         assert!(script.contains("$v=@('it''s', 'say hi\nnow')"), "{script}");
     }
 
-    /// An environment value never rides a command line — it is a PowerShell
-    /// literal inside the encoded script — so it arrives exactly, quotes and
-    /// newlines included.
     #[test]
     fn an_env_value_keeps_its_double_quotes() {
         let name = "review \"API\"\nnext";
@@ -2524,11 +1997,6 @@ mod tests {
         );
     }
 
-    /// The window program psmux would run, on a real Windows PowerShell 5.1,
-    /// launching a node probe directly and through a `.cmd` shim (how npm
-    /// installs an agent): the probe reads a hostile session name back exactly
-    /// from its argv and its environment, and the shim's `cmd.exe` runs
-    /// nothing the name spells.
     #[cfg(windows)]
     #[test]
     fn a_native_window_hands_its_child_the_exact_name() {
@@ -2583,8 +2051,7 @@ mod tests {
 
     #[test]
     fn login_wrap_is_noop_for_psmux_remote() {
-        // A Windows SSH host (multiplexer = "psmux") has no `/bin/sh`; wrapping
-        // would replace the agent command with one that can't start at all.
+        // A Windows SSH host has no `/bin/sh` to wrap the agent command in.
         let host = crate::HostDef {
             name: "winbox".into(),
             destination: "me@winbox".into(),
@@ -2605,7 +2072,6 @@ mod tests {
     fn a_deferred_prompt_names_the_servers_own_mux_and_socket() {
         let psmux = deferred_paste_script("psmux", "sock", "%3", "it's\nhere").expect("fits");
         assert!(psmux.starts_with("powershell -NoProfile -Command \"psmux -L 'sock' send-paste"));
-        // Base64: the prompt's newline and quote never reach the script.
         assert!(!psmux.contains("it's"), "{psmux}");
     }
 
@@ -2616,13 +2082,6 @@ mod tests {
         assert!(psmux.contains("psmux -L 'my sock' send-keys"), "{psmux}");
     }
 
-    /// tmux answers the `attach-session` carried on argv with a `%begin`/`%end`
-    /// block of its own; psmux does not, and its command counter proves it —
-    /// the client's first command is numbered 1, so the attach was never
-    /// numbered (docs/runtime/runtime-mux.md). Draining a block psmux will never send
-    /// is a blocking read that returns only when psmux closes the pipe. Nor
-    /// does psmux subscribe, frame its blocks with tags, or have a producer for
-    /// a status poll while the hook rewrite is gated off.
     #[test]
     fn a_psmux_connection_expects_only_what_psmux_does() {
         let ssh = TmuxTransport::remote(
@@ -2642,8 +2101,7 @@ mod tests {
                 transport.is_remote() && Psmux::HOOK_STATUS
             );
         }
-        // The session name is user-authored host entry text, quoted whole
-        // rather than stripped of what psmux's tokenizer reads as escapes.
+        // psmux's tokenizer reads escapes in the session name, so it is quoted whole.
         assert_eq!(
             Psmux::hook_poll_command("a\"b\\c"),
             "list-panes -s -t \"a\\\"b\\\\c\" -F \"#{pane_id} #{@thurbox_state}\""
@@ -2654,8 +2112,6 @@ mod tests {
         );
     }
 
-    /// The line ssh hands a Windows host's login shell: its words after the
-    /// destination, space-joined, as ssh sends them.
     fn host_line(cmd: &Command) -> String {
         let args: Vec<String> = cmd
             .get_args()
@@ -2665,12 +2121,6 @@ mod tests {
         args[dest + 1..].join(" ")
     }
 
-    /// Windows OpenSSH runs a one-shot command through its login shell —
-    /// `cmd.exe` by default, PowerShell when configured — and `cmd.exe`
-    /// ignores single quotes, so a POSIX-quoted `'#{pane_id}|#{window_name}'`
-    /// was a pipe into a command named `'#{window_name}'`, and remote teardown
-    /// could not list the host's windows (issue #1460). The line must be words
-    /// no shell reads as syntax, and still carry psmux's argv exactly.
     #[test]
     fn a_one_shot_reaches_a_windows_login_shell_as_plain_words() {
         let host = HostDef {
@@ -2714,11 +2164,6 @@ mod tests {
         );
     }
 
-    /// A full chunk's line fits the Windows command line a one-shot runs in
-    /// (issue #1457) — bare, and as the encoded PowerShell script a socket
-    /// name with a space (or `@`, `,` …) sends it as, about 3.6 times its
-    /// payload. Sized for the bare line only, a paste over ~2 KB to such a
-    /// host was refused (issue #1503).
     #[test]
     fn a_full_paste_chunk_fits_a_windows_command_line() {
         for (socket, encoded) in [(None, false), (Some("my sock"), true)] {
@@ -2740,8 +2185,6 @@ mod tests {
         }
     }
 
-    /// One stamp read back from psmux is every window's (docs/runtime/runtime-mux.md), so nothing
-    /// is read as a stamp, written as one, or retained by window option.
     #[test]
     fn psmux_is_never_read_as_stamping_its_windows() {
         let host = crate::HostDef {
@@ -2763,15 +2206,10 @@ mod tests {
         }
     }
 
-    // --- psmux send-keys encoding tests ---
-    //
-    // Regression: psmux 3.3.6 has no `send-keys -H`, so on Windows the hex path
-    // injected the literal text "62" when the user typed `b` (0x62), and Enter /
-    // Backspace did nothing. The psmux encoding must use `-l` literals + key-names.
+    // psmux 3.3.6 has no `send-keys -H`, so keys go as `-l` literals and key-names.
 
     #[test]
     fn psmux_printable_char_uses_literal_not_hex() {
-        // Typing `b` must inject `b`, not the literal text "62".
         assert_eq!(
             psmux_send_keys_commands("%1", b"b"),
             vec!["send-keys -t %1 -l -N 1 \"b\"\n".to_string()]
@@ -2809,19 +2247,19 @@ mod tests {
     #[test]
     fn psmux_ctrl_letters_map_to_c_prefix() {
         assert_eq!(
-            psmux_send_keys_commands("%1", &[0x03]), // Ctrl+C
+            psmux_send_keys_commands("%1", &[0x03]),
             vec!["send-keys -t %1 C-c\n".to_string()]
         );
         assert_eq!(
-            psmux_send_keys_commands("%1", &[0x01]), // Ctrl+A
+            psmux_send_keys_commands("%1", &[0x01]),
             vec!["send-keys -t %1 C-a\n".to_string()]
         );
         assert_eq!(
-            psmux_send_keys_commands("%1", &[0x1a]), // Ctrl+Z
+            psmux_send_keys_commands("%1", &[0x1a]),
             vec!["send-keys -t %1 C-z\n".to_string()]
         );
         assert_eq!(
-            psmux_send_keys_commands("%1", &[0x0a]), // LF → Ctrl+J
+            psmux_send_keys_commands("%1", &[0x0a]),
             vec!["send-keys -t %1 C-j\n".to_string()]
         );
     }
@@ -2874,14 +2312,12 @@ mod tests {
     #[test]
     fn psmux_unnamed_escape_sequences_are_typed_whole() {
         for (bytes, args) in [
-            // A mouse report: split, the pane got `[<35;10;5M` and no ESC.
             (&b"\x1b[<35;10;5M"[..], "0x1b \"[<35;10;5M\""),
             (&b"\x1b[<0;10;5m"[..], "0x1b \"[<0;10;5m\""),
             (&b"\x1b[15;5~"[..], "0x1b \"[15;5~\""),
             (&b"\x1bOP"[..], "0x1b \"OP\""),
             (&b"\x1bb"[..], "0x1b \"b\""),
             ("\x1bé".as_bytes(), "0x1b \"é\""),
-            // A leading `-` is still kept from reading as a flag.
             (&b"\x1b-"[..], "0x1b 0x2d"),
             (&b"\x1b[M #!"[..], "0x1b \"[M\" 0x20 0x23 0x21"),
         ] {
@@ -2896,7 +2332,7 @@ mod tests {
 
     #[test]
     fn psmux_shift_enter_is_ctrl_j() {
-        // Typed whole, `CSI 13;2u` did nothing in vibe's TUI or PowerShell.
+        // Typed whole, `CSI 13;2u` does nothing in a TUI or PowerShell on psmux.
         assert_eq!(
             psmux_send_keys_commands("%1", b"a\x1b[13;2ub"),
             vec![
@@ -2913,7 +2349,6 @@ mod tests {
             psmux_send_keys_commands("%1", b"\x1b\x1b"),
             vec!["send-keys -t %1 Escape\n", "send-keys -t %1 Escape\n"]
         );
-        // Alt + a control byte: Escape, then that byte's key-name.
         assert_eq!(
             psmux_send_keys_commands("%1", b"\x1b\r"),
             vec!["send-keys -t %1 Escape\n", "send-keys -t %1 Enter\n"]
@@ -2941,10 +2376,7 @@ mod tests {
 
     #[test]
     fn psmux_literal_single_quote_survives() {
-        // Regression: psmux's send-coalescing re-quoted literals with the
-        // POSIX `'\''` escape its own parser can't read back, so `it's` was
-        // typed into the pane as `it\s`. The `-N 1` opts out of coalescing and
-        // the double-quote framing passes `'` through untouched.
+        // psmux's send-coalescing re-quotes with POSIX `'\''`, which its own parser cannot read back.
         assert_eq!(
             psmux_send_keys_commands("%1", b"it's"),
             vec!["send-keys -t %1 -l -N 1 \"it's\"\n".to_string()]
@@ -2953,8 +2385,7 @@ mod tests {
 
     #[test]
     fn psmux_literal_escapes_backslash_and_double_quote() {
-        // psmux's double-quote tokenizer reads exactly `\"` and `\\`; both
-        // must be escaped so Windows paths and quoted text round-trip.
+        // psmux's double-quote tokenizer reads exactly `\"` and `\\`.
         assert_eq!(
             psmux_send_keys_commands("%1", br#"say "hi" C:\p"#),
             vec!["send-keys -t %1 -l -N 1 \"say \\\"hi\\\" C:\\\\p\"\n".to_string()]
@@ -2963,15 +2394,11 @@ mod tests {
 
     #[test]
     fn psmux_literal_escapes_a_leading_hyphen() {
-        // Regression (#920): psmux classifies arguments after tokenizing, so
-        // the quotes are gone by the time it drops everything starting with
-        // `-` as a flag — a typed `-` was silently swallowed. It comes back as
-        // psmux's own `0xNN` codepoint form, which decodes to the same char.
+        // psmux drops any argument starting with `-` as a flag after it strips the quotes.
         assert_eq!(
             psmux_send_keys_commands("%1", b"-"),
             vec!["send-keys -t %1 -l -N 1 0x2d\n".to_string()]
         );
-        // Only the leading hyphens need escaping; the rest stays one literal.
         assert_eq!(
             psmux_send_keys_commands("%1", b"--flag=a-b"),
             vec!["send-keys -t %1 -l -N 1 0x2d 0x2d \"flag=a-b\"\n".to_string()]
@@ -2980,18 +2407,15 @@ mod tests {
 
     #[test]
     fn psmux_literal_escapes_a_hex_codepoint_lookalike() {
-        // psmux rewrites a `0xNN` argument into the character it names, so a
-        // run literally spelling `0x41` would have arrived as `A`.
+        // psmux rewrites a `0xNN` argument into the character it names.
         assert_eq!(
             psmux_send_keys_commands("%1", b"0x41"),
             vec!["send-keys -t %1 -l -N 1 0x30 \"x41\"\n".to_string()]
         );
-        // A hyphen ahead of one still leaves a lookalike behind it.
         assert_eq!(
             psmux_send_keys_commands("%1", b"-0x41"),
             vec!["send-keys -t %1 -l -N 1 0x2d 0x30 \"x41\"\n".to_string()]
         );
-        // Not a lookalike: text past the hex digits is ordinary literal text.
         assert_eq!(
             psmux_send_keys_commands("%1", b"0x41z"),
             vec!["send-keys -t %1 -l -N 1 \"0x41z\"\n".to_string()]
@@ -3006,7 +2430,6 @@ mod tests {
 
     #[test]
     fn psmux_mixed_text_then_enter() {
-        // The common "type a command and submit" path.
         assert_eq!(
             psmux_send_keys_commands("%1", b"ls\r"),
             vec![
@@ -3018,9 +2441,6 @@ mod tests {
 
     #[test]
     fn psmux_bracketed_paste_keeps_markers_whole() {
-        // The markers are typed whole like any other sequence, but a paste
-        // still never takes this encoding: each CR in it would be Enter. The
-        // writer sends it through `PsmuxPaste` instead.
         assert_eq!(
             psmux_send_keys_commands("%1", b"\x1b[200~hi\x1b[201~"),
             vec![
@@ -3031,8 +2451,6 @@ mod tests {
         );
     }
 
-    // --- psmux out-of-band paste ---
-
     #[test]
     fn paste_chunks_keeps_an_ordinary_paste_whole() {
         assert_eq!(paste_chunks("one\ntwo"), vec!["one\ntwo"]);
@@ -3040,12 +2458,8 @@ mod tests {
         assert_eq!(paste_chunks(&exact), vec![exact.as_str()]);
     }
 
-    /// A huge paste is split so no single command line exceeds Windows'
-    /// `cmd.exe` cap — losslessly, and never mid-character (psmux drops a
-    /// payload that isn't valid UTF-8).
     #[test]
     fn paste_chunks_splits_large_input_on_char_boundaries() {
-        // Multi-byte chars straddling the cut: 2 bytes each, odd-sized prefix.
         let text = format!("{}{}", "a", "é".repeat(PASTE_CHUNK_BYTES));
         let chunks = paste_chunks(&text);
         assert!(chunks.len() > 1);
@@ -3061,8 +2475,6 @@ mod tests {
         );
     }
 
-    /// The payload must never put a raw CR/LF (or a quote) on psmux's
-    /// line-oriented command wire — base64 is what keeps it off (psmux #560).
     #[test]
     fn send_paste_args_payload_is_wire_safe() {
         let args = send_paste_args("%1", "first\r\nsecond \"quoted\" \\ '");
@@ -3088,10 +2500,9 @@ mod tests {
 
     #[test]
     fn psmux_long_run_splits_on_char_boundary() {
-        let input = "é".repeat(400); // 800 bytes, each char 2 bytes
+        let input = "é".repeat(400);
         let cmds = psmux_send_keys_commands("%1", input.as_bytes());
         assert!(cmds.len() > 1, "expected a long run to span >1 command");
-        // Reassemble the quoted literals back into the original text.
         let mut text = String::new();
         for cmd in &cmds {
             let inner = cmd
@@ -3104,10 +2515,6 @@ mod tests {
         assert_eq!(text, input);
     }
 
-    /// The channel is closed until psmux is proven (see [`Psmux::HOOK_STATUS`]),
-    /// and closed is an answer every caller can see: no hook command, nothing
-    /// recorded, a listing refused rather than read as every pane quiet — and
-    /// none of it runs a process to find that out.
     #[test]
     fn a_closed_status_channel_offers_and_reads_nothing() {
         let host = crate::HostDef {
@@ -3126,8 +2533,6 @@ mod tests {
         }
     }
 
-    /// The form the channel would use once open: the socket baked in, made
-    /// safe to splice into a hook file, and never empty.
     #[test]
     fn the_hook_command_names_a_safe_socket() {
         let host = |socket: &str| crate::HostDef {
@@ -3156,7 +2561,6 @@ mod tests {
         );
     }
 
-    /// psmux's own replies, the ones its tests here are built on.
     #[cfg(unix)]
     #[test]
     fn psmuxs_own_absence_replies_read_as_absence() {
@@ -3175,7 +2579,6 @@ mod tests {
 
     #[test]
     fn a_banner_names_the_version_on_its_last_line_that_has_one() {
-        // psmux's banner, the one the version question is asked of.
         let banner_version = |banner| {
             Psmux::banner_version(banner)
                 .filter(|v| crate::tmux_compat::server::is_version_answer(v))
@@ -3192,8 +2595,6 @@ mod tests {
             "psmux",
             "psmux dev",
             "ERROR: x",
-            // The last line names a pre-release, and an earlier one is not
-            // read in its place.
             "tmux 3.3.7\npsmux 3.3.8-dev (x)\n",
             "tmux 3.3.9\npsmux 3.3.9-dev (x)\n",
         ] {

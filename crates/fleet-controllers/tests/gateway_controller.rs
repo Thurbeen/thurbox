@@ -1,9 +1,3 @@
-//! GatewayController as a pure function: a Task, the Conversation its
-//! labels name and the Tasks that name it as their parent go in; a plan
-//! comes out, whose status is `status.gateway` and whose appends are the
-//! inbox entries that land with it. Each case is one transition of the
-//! tie, one relay, or one reason nothing moves.
-
 use std::collections::BTreeMap;
 
 use fleet_api::condition::{Condition, ConditionStatus};
@@ -65,8 +59,6 @@ fn defaults() -> GatewayDefaults {
     }
 }
 
-/// A Task carrying the conversation labels, with `gateway` and the rest
-/// of its status as given.
 fn task(gateway: Option<GatewayStatus>, st: TaskStatus) -> Object {
     let st = TaskStatus { gateway, ..st };
     serde_json::from_value(json!({
@@ -81,7 +73,6 @@ fn task(gateway: Option<GatewayStatus>, st: TaskStatus) -> Object {
     .unwrap()
 }
 
-/// A Task with no labels at all.
 fn plain(name: &str, uid: &str, labels: Value, st: TaskStatus) -> Object {
     serde_json::from_value(json!({
         "apiVersion": "fleet/v1alpha1",
@@ -93,8 +84,6 @@ fn plain(name: &str, uid: &str, labels: Value, st: TaskStatus) -> Object {
     .unwrap()
 }
 
-/// A verified tie, as the controller leaves it: the `Tied` condition with
-/// it, so a pass that finds nothing new writes nothing.
 fn tied() -> Option<GatewayStatus> {
     let mut conditions = Vec::new();
     fleet_api::condition::set_condition(
@@ -157,7 +146,6 @@ fn person(id: u64, seq: u64, author: &str, text: &str) -> StoredMessage {
     msg(id, seq, author, AuthorKind::Person, text)
 }
 
-/// A Conversation Tied to the Task, at `revision`, holding `messages`.
 fn conversation(revision: u64, messages: Vec<StoredMessage>) -> Object {
     conversation_with(
         CONV_UID,
@@ -271,8 +259,6 @@ fn thread() -> Vec<StoredMessage> {
     ]
 }
 
-// --- The tie. -----------------------------------------------------------
-
 #[test]
 fn a_labelled_task_asks_for_its_conversation_and_its_children_then_nothing() {
     let t = task(None, TaskStatus::default());
@@ -294,8 +280,6 @@ fn a_labelled_task_asks_for_its_conversation_and_its_children_then_nothing() {
         ]
     );
     assert!(probes(&t, observed(Observation::Known(None))).is_empty());
-    // A Task without the labels still asks for its children, and nothing
-    // else: it may be a parent.
     let p = plain("p", "p1", json!({}), TaskStatus::default());
     assert_eq!(
         probes(&p, GatewayObservations::default()),
@@ -307,7 +291,6 @@ fn a_labelled_task_asks_for_its_conversation_and_its_children_then_nothing() {
             ]),
         }]
     );
-    // A Task that never talks gets no status at all.
     let (plan, _) = run(&p, observed(Observation::Known(None)));
     assert_eq!(plan, Plan::default());
 }
@@ -315,7 +298,6 @@ fn a_labelled_task_asks_for_its_conversation_and_its_children_then_nothing() {
 #[test]
 fn the_tie_is_verified_against_the_conversations_task_and_waits_until_it_names_this_task() {
     let t = task(None, TaskStatus::default());
-    // Names nobody yet: waiting, and nothing is relayed.
     let untied = conversation_with(CONV_UID, None, 1, thread(), 0);
     let (plan, gw) = run(&t, observed(Observation::Known(Some(untied))));
     assert!(plan.appends.is_empty());
@@ -333,7 +315,6 @@ fn the_tie_is_verified_against_the_conversations_task_and_waits_until_it_names_t
         (ConditionStatus::False, "Waiting")
     );
     assert!(gw.conditions.iter().all(|c| c.type_ != "NeedsAttention"));
-    // Pending with this Task's name but no uid yet: still waiting.
     let pending = conversation_with(
         CONV_UID,
         Some(Tie {
@@ -349,7 +330,6 @@ fn the_tie_is_verified_against_the_conversations_task_and_waits_until_it_names_t
     );
     let (_, gw) = run(&t, observed(Observation::Known(Some(pending))));
     assert_eq!(gw.conversation.unwrap().state, TieState::Waiting);
-    // Names this Task: tied, and the join goes out in the same plan.
     let (plan, gw) = run(
         &t,
         observed(Observation::Known(Some(conversation(1, thread())))),
@@ -426,12 +406,10 @@ fn a_readably_gone_recreated_or_retied_conversation_raises_conversation_gone_and
         )),
         "tied to Task/conv-3f9a1c0d2b7e-2",
     );
-    // Gone is stable: the same observation again plans no write.
     let (_, gone) = run(&t, observed(Observation::Known(None)));
     let again = task(Some(gone.clone()), TaskStatus::default());
     let (plan, _) = run(&again, observed(Observation::Known(None)));
     assert_eq!(plan, Plan::default());
-    // And the Conversation naming this Task again lifts it, cursor intact.
     let (plan, gw) = run(
         &again,
         observed(Observation::Known(Some(conversation(3, thread())))),
@@ -441,8 +419,6 @@ fn a_readably_gone_recreated_or_retied_conversation_raises_conversation_gone_and
     assert!(plan.appends.is_empty(), "nothing new above the cursor");
     assert_eq!(cond(&gw, "NeedsAttention").reason, "Resolved");
 }
-
-// --- The join and the relay. ---------------------------------------------
 
 #[test]
 fn the_join_carries_the_whole_retained_thread_oldest_first_from_cursor_zero() {
@@ -500,8 +476,6 @@ fn the_join_carries_the_whole_retained_thread_oldest_first_from_cursor_zero() {
         e.text
     );
     assert_eq!((gw.cursor, gw.seen, gw.gaps), (1, 1, 0));
-    // A mirror that already dropped older messages says so at the join,
-    // without a gap: nothing above cursor 0 was ever relayed.
     let dropped = conversation_with(
         CONV_UID,
         Some(Tie {
@@ -557,7 +531,6 @@ fn the_relay_carries_only_what_is_above_the_cursor_and_moves_it_to_the_revision(
     );
     assert_eq!((gw.cursor, gw.seen), (2, 2));
     assert_eq!(e.about.as_ref().unwrap().revision, 2);
-    // Nothing above the cursor: no write at all.
     let t = task(tied_at(2), TaskStatus::default());
     let mut messages = thread();
     messages.push(person(T0 + 400_000, 2, ALEX, "It fails at 02:00 UTC."));
@@ -628,7 +601,6 @@ fn an_edited_message_is_relayed_again_marked_as_an_edit() {
 
 #[test]
 fn context_messages_wait_for_the_next_admitted_one_and_go_first_under_a_header() {
-    // Only a stranger wrote: the mirror was read, the cursor stays, no entry.
     let t = task(tied_at(1), TaskStatus::default());
     let mut messages = thread();
     messages.push(person(
@@ -644,14 +616,12 @@ fn context_messages_wait_for_the_next_admitted_one_and_go_first_under_a_header()
     assert!(plan.appends.is_empty());
     assert_eq!((gw.cursor, gw.seen), (1, 2), "{gw:#?}");
     assert!(plan.status.is_some(), "the read is recorded");
-    // Judged already: the same revision plans nothing more.
     let read = task(Some(gw), TaskStatus::default());
     let (plan, _) = run(
         &read,
         observed(Observation::Known(Some(conversation(2, messages.clone())))),
     );
     assert_eq!(plan, Plan::default());
-    // Then Alex writes: both go out, the stranger's first as content.
     messages.push(person(
         T0 + 500_000,
         3,
@@ -758,7 +728,6 @@ fn messages_rotated_out_before_they_were_relayed_are_a_gap_until_the_next_clean_
         (na.status, na.reason.as_str()),
         (ConditionStatus::True, "RelayGap")
     );
-    // The next relay that carries something clears it.
     let after = task(Some(gw), TaskStatus::default());
     messages.push(person(T0 + 950_000, 10, ALEX, "yes"));
     let clean = conversation_with(
@@ -975,8 +944,6 @@ fn a_relay_answers_an_open_question_with_the_first_admitted_message_written_afte
     );
 }
 
-// --- Children. -----------------------------------------------------------
-
 fn child(name: &str, uid: &str, rv: u64, st: TaskStatus) -> Object {
     let mut c = plain(
         name,
@@ -1067,12 +1034,10 @@ fn a_childs_declarations_and_result_each_become_one_entry_in_its_parents_inbox()
         gw.conversation.is_none() && gw.conditions.is_empty(),
         "{gw:#?}"
     );
-    // Read: nothing more until the child changes.
     assert!(!GatewayController::child_due(&gw, &c));
     let p = parent(Some(gw.clone()));
     let (plan, _) = run(&p, with_children(vec![c.clone()]));
     assert_eq!(plan, Plan::default());
-    // The result, once per generation.
     let mut c2 = c.clone();
     let mut st: TaskStatus = serde_json::from_value(c2.status.clone()).unwrap();
     st.result = Some(TaskResult {
@@ -1097,7 +1062,6 @@ fn a_childs_declarations_and_result_each_become_one_entry_in_its_parents_inbox()
     );
     assert_eq!(gw.children["c"].result, Some(1));
     assert_eq!(gw.children["c"].seen, 13);
-    // A new incarnation under the name starts afresh, under its own uid.
     let c3 = child(
         "c",
         "k2",
@@ -1110,8 +1074,6 @@ fn a_childs_declarations_and_result_each_become_one_entry_in_its_parents_inbox()
     let (plan, gw) = run(&parent(Some(gw)), with_children(vec![c3]));
     assert_eq!(one_entry(&plan).key, "task/p/p1/gateway/child/k2/0");
     assert_eq!(gw.children["c"].uid, "k2");
-    // A child gone from the listing leaves the map, and an empty map is no
-    // status at all.
     let (plan, gw) = run(&parent(Some(gw)), with_children(Vec::new()));
     assert!(gw.children.is_empty());
     assert!(gw.is_empty());
@@ -1259,7 +1221,6 @@ fn more_unread_items_than_the_inbox_holds_go_out_in_batches_the_store_accepts() 
         children: Some(Observation::Known(vec![c.clone()])),
         ..GatewayObservations::default()
     };
-    // Every planned append passes the store's own check in turn.
     let accepted = |inbox: &[InboxEntry], plan: &Plan| {
         let mut inbox = inbox.to_vec();
         for e in &plan.appends {
@@ -1267,7 +1228,6 @@ fn more_unread_items_than_the_inbox_holds_go_out_in_batches_the_store_accepts() 
             inbox.push(e.clone());
         }
     };
-    // Five undelivered: room for sixteen, the relay first.
     let inbox = undelivered(5);
     let t = task(
         tied_at(1),
@@ -1288,7 +1248,6 @@ fn more_unread_items_than_the_inbox_holds_go_out_in_batches_the_store_accepts() 
     assert_eq!(gw.children["c"].declared, 15);
     assert_eq!(gw.children["c"].result, None);
     assert!(GatewayController::child_due(&gw, &c), "the rest waits");
-    // Delivered: the rest and the result.
     let t = task(Some(gw), TaskStatus::default());
     let (plan, gw) = run(&t, obs());
     accepted(&[], &plan);
@@ -1298,8 +1257,6 @@ fn more_unread_items_than_the_inbox_holds_go_out_in_batches_the_store_accepts() 
     assert_eq!(gw.children["c"].result, Some(1));
     assert!(!GatewayController::child_due(&gw, &c));
 }
-
-// --- Due. ----------------------------------------------------------------
 
 #[test]
 fn due_follows_the_tie_the_conversations_revision_and_the_children() {
@@ -1400,11 +1357,6 @@ fn due_follows_the_tie_the_conversations_revision_and_the_children() {
     );
 }
 
-// ----------------------------------------------------------------------
-// Posting: one keyed post at a time, refusals retried, unknown outcomes
-// recovered or held, change news, and the open of a thread.
-// ----------------------------------------------------------------------
-
 mod posting {
     use super::*;
     use fleet_api::conversation::EffectRecord;
@@ -1416,15 +1368,12 @@ mod posting {
         format!("task/{TASK}/{TASK_UID}/gateway/{item}")
     }
 
-    /// The tied Conversation, with its parsed address, as the manager reads
-    /// it.
     fn thread_conv() -> Object {
         let mut c = conversation(1, vec![person(T0, 1, ALEX, "hi")]);
         c.status["ref"] = serde_json::to_value(ConversationRef::split(ADDRESS).unwrap()).unwrap();
         c
     }
 
-    /// The account's capabilities, as the probe's answer by account.
     fn caps(marker: Marker) -> BTreeMap<String, Observation<Capabilities>> {
         BTreeMap::from([(
             ACCOUNT.to_string(),
@@ -1465,7 +1414,6 @@ mod posting {
             .collect()
     }
 
-    /// A tied Task that read through `declared` and carries `posts`.
     fn speaking(
         declared: Vec<Value>,
         read: u64,
@@ -1527,7 +1475,6 @@ mod posting {
                 why: "429".into(),
             }))
         };
-        // Inside the delay: held, and nothing later goes out.
         let t = speaking(
             comments(&["c1", "c2"]),
             1,
@@ -1536,7 +1483,6 @@ mod posting {
         );
         let (plan, _) = run(&t, obs_with(caps(Marker::Metadata)));
         assert!(plan.effects.is_empty(), "{plan:?}");
-        // Past the delay: sent again under the same key.
         let t = speaking(
             comments(&["c1", "c2"]),
             1,
@@ -1546,7 +1492,6 @@ mod posting {
         let (plan, gw) = run(&t, obs_with(caps(Marker::Metadata)));
         assert_eq!(post_keys(&plan), vec![key("comment/c1")]);
         assert_eq!(gw.posts[&key("comment/c1")].attempts, 2);
-        // Three refusals: PostFailed, and the next declaration goes out.
         let t = speaking(
             comments(&["c1", "c2"]),
             1,
@@ -1654,7 +1599,6 @@ mod posting {
                 at: NOW - 900
             })
         );
-        // A complete read without the marker: it never landed.
         found.key = Some("someone else's".into());
         let obs = GatewayObservations {
             history: Some(history(vec![found])),
@@ -1665,7 +1609,6 @@ mod posting {
         assert_eq!(gw.posts[&key("comment/c1")].attempts, 2);
     }
 
-    /// `defaults()` with the log channel `fake:C0456EFGH` on the account.
     pub(super) fn logs_defaults() -> GatewayDefaults {
         GatewayDefaults {
             logs: Some(fleet_api::gateway::LogDestination {
@@ -1806,10 +1749,8 @@ mod posting {
         assert!(text.contains("May I?"));
         assert_eq!(gw.declared, 2, "the Comment before it is skipped");
         assert_eq!(gw.conversation.as_ref().unwrap().state, TieState::Opening);
-        // Without a questions route nothing opens and nothing is written.
         let (plan, _) = run_with(&t, obs.clone(), defaults());
         assert!(plan.effects.is_empty() && plan.status.is_none(), "{plan:?}");
-        // A wildcard route opens in the first channel id it lists.
         let mut wild = questions_defaults();
         let r = wild.routes.get_mut(ROUTE).unwrap();
         r.channels = vec!["*".into(), "C0789IJKL".into()];
@@ -1818,7 +1759,6 @@ mod posting {
             panic!("{plan:?}")
         };
         assert_eq!(channel.address(), "fake:C0789IJKL");
-        // A labelled route with no channel id cannot ask: it says so.
         wild.routes.get_mut(ROUTE).unwrap().channels = vec!["*".into()];
         let (plan, _) = run_with(&t, obs, wild);
         assert!(plan.effects.is_empty(), "{plan:?}");
@@ -1867,7 +1807,6 @@ mod posting {
             gw.conditions.iter().any(|c| c.reason == "PostFailed"),
             "{gw:?}"
         );
-        // Opened, then three receives failed: abandoned, ReceiveFailed.
         let mut opened = record(
             1,
             NOW - 60_000,
@@ -1903,7 +1842,6 @@ mod posting {
                 .any(|c| c.message.contains("ReceiveFailed")),
             "{gw:?}"
         );
-        // Opened, the receive landed: waiting for the Conversation to name it.
         let mut received = record(
             1,
             NOW - 50_000,
@@ -1935,8 +1873,6 @@ mod posting {
         assert_eq!(gw.questions["q1"].at, NOW - 59_000);
     }
 
-    /// Fleet's post under `key`, or part `n` of `total` of it, as a
-    /// history read or the mirror reports it.
     fn fleet_message(id: &str, at: u64, marker: &str) -> fleet_api::gateway::Message {
         fleet_api::gateway::Message {
             id: id.into(),
@@ -1988,7 +1924,6 @@ mod posting {
                 &["c1"],
             )
         };
-        // Every part in a complete read: posted, named by the first part.
         let obs = GatewayObservations {
             history: Some(history(vec![
                 part(1, NOW - 900),
@@ -2011,8 +1946,6 @@ mod posting {
             "the thread moves on"
         );
         assert!(attention(&gw).is_none(), "{gw:?}");
-        // Two parts of three: never repeated, never finished, a person
-        // decides; the next post waits.
         let obs = GatewayObservations {
             history: Some(history(vec![part(1, NOW - 900), part(2, NOW - 800)])),
             ..obs_with(caps(Marker::Metadata))
@@ -2024,8 +1957,6 @@ mod posting {
         assert_eq!(na.reason, "PostUnconfirmed");
         assert!(na.message.contains("2 of 3 parts landed (1, 2)"), "{na:?}");
         assert_eq!(gw.declared, 1, "c2 waits");
-        // The mirror holds one part, on a nonce platform inside the window:
-        // a resend under the same key finishes it.
         let mut conv = thread_conv();
         let mut stored = person(T0 + 1, 2, ALEX, "x");
         stored.author = Author {
@@ -2045,7 +1976,6 @@ mod posting {
         let (plan, gw) = run(&unsettled(), obs);
         assert_eq!(post_keys(&plan), vec![k.clone()], "{plan:?}");
         assert_eq!(gw.posts[&k].attempts, 2);
-        // Past the window, the part that landed is named.
         let late = speaking(
             comments(&["c1", "c2"]),
             1,
@@ -2074,7 +2004,6 @@ mod posting {
                 "the bound ran out",
             ))
         };
-        // Two reads could not complete: the third is counted and named.
         let obs = GatewayObservations {
             history: incomplete(),
             ..obs_with(caps(Marker::Metadata))
@@ -2085,7 +2014,6 @@ mod posting {
         let na = attention(&gw).expect("attention");
         assert_eq!(na.reason, "RecoveryIncomplete");
         assert!(na.message.contains("3 recovery reads"), "{na:?}");
-        // One read short of it, nothing is raised yet.
         let mut r = record(1, NOW - 1_000, Some(Observation::unknown("timeout")));
         r.recovery = 1;
         let early = speaking(comments(&["c1"]), 1, vec![(k.clone(), r)], &["c1"]);
@@ -2096,7 +2024,6 @@ mod posting {
         let (_, gw) = run(&early, obs);
         assert_eq!(gw.posts[&k].recovery, 2);
         assert!(attention(&gw).is_none(), "{gw:?}");
-        // A read that completes settles the post and clears the condition.
         let (_, named) = run(
             &t,
             GatewayObservations {
@@ -2122,7 +2049,6 @@ mod posting {
             })
         );
         assert!(attention(&gw).is_none(), "{gw:?}");
-        // A platform that reads no history after all: a person decides.
         let obs = GatewayObservations {
             history: Some(fleet_api::gateway::HistoryObservation::Unsupported),
             ..obs_with(caps(Marker::Metadata))
@@ -2132,11 +2058,6 @@ mod posting {
         assert_eq!(attention(&gw).unwrap().reason, "PostUnconfirmed");
     }
 }
-
-// ----------------------------------------------------------------------
-// Logging: results and change news leave the thread for the log channel,
-// for every Task, in a lane of their own.
-// ----------------------------------------------------------------------
 
 mod logging {
     use super::posting::logs_defaults;
@@ -2197,8 +2118,6 @@ mod logging {
         }
     }
 
-    /// A tied Task that declared one Comment and reported a result, with
-    /// `posts` already recorded.
     fn tied_with(posts: Vec<(String, EffectRecord)>, read: u64, posted: &[&str]) -> Object {
         let gw = tied_at(1).map(|g| GatewayStatus {
             declared: read,
@@ -2251,8 +2170,6 @@ mod logging {
 
     #[test]
     fn a_held_log_post_holds_back_no_thread_post_and_the_reverse() {
-        // The log post's outcome is unknown and not yet found: the Comment
-        // still goes out in the thread.
         let t = tied_with(
             vec![(
                 key(TASK, TASK_UID, "result/1"),
@@ -2276,7 +2193,6 @@ mod logging {
             vec![(key(TASK, TASK_UID, "comment/c1"), "post")],
             "{plan:?}"
         );
-        // A thread post's outcome is unknown: the result is still logged.
         let t = tied_with(
             vec![(
                 key(TASK, TASK_UID, "comment/c1"),
@@ -2431,7 +2347,6 @@ mod logging {
             changes: BTreeMap::from([("cr-7".to_string(), Observation::Known(Some(c)))]),
             ..obs()
         };
-        // Still a draft: no notice in the thread; the Draft goes to the log.
         let (plan, gw) = run_with(&t, with(cr("draft", false)), logs_defaults());
         assert_eq!(
             effects(&plan),
@@ -2440,7 +2355,6 @@ mod logging {
         );
         assert_eq!(gw.logged, 1);
         assert!(gw.ready.is_empty());
-        // Ready: one notice in the thread, with the URL, once.
         let t = task(Some(gw), st);
         let (plan, gw) = run_with(&t, with(cr("open", true)), logs_defaults());
         let thread: Vec<_> = plan
@@ -2482,8 +2396,6 @@ mod logging {
     }
 }
 
-// --- Reactions. ---------------------------------------------------------
-
 mod reactions {
     use super::*;
     use fleet_api::conversation::EffectRecord;
@@ -2502,7 +2414,6 @@ mod reactions {
         ))
     }
 
-    /// The tied Conversation at `revision`, with its parsed address.
     fn conv(revision: u64, messages: Vec<StoredMessage>) -> Object {
         let mut c = conversation(revision, messages);
         c.status["ref"] = serde_json::to_value(ConversationRef::split(ADDRESS).unwrap()).unwrap();
@@ -2554,7 +2465,6 @@ mod reactions {
         }))
     }
 
-    /// The React effects a plan carries, as (key, reaction, on).
     fn reacts(plan: &Plan) -> Vec<(String, String, bool)> {
         plan.effects
             .iter()
@@ -2609,7 +2519,6 @@ mod reactions {
             BTreeMap::from([(alex.clone(), Mark::Working)])
         );
         assert_eq!(gw.posts[&react(&alex, "working", true)].attempts, 1);
-        // The probes ask the account's capabilities for the relay to come.
         let input = GatewayInput {
             task: &t,
             observations: observed(Observation::Known(Some(conv(1, thread())))),
@@ -2637,8 +2546,6 @@ mod reactions {
         let failed = Some(Observation::Known(EffectOutcome::Failed {
             why: "rate limited".into(),
         }));
-        // (the Conversation's mark, its working record's outcome, whether
-        // the join reacts itself)
         for (admitted, outcome, reacts_itself) in [
             (Some(Mark::Working), landed.clone(), false),
             (Some(Mark::Working), failed, true),
@@ -2672,7 +2579,6 @@ mod reactions {
                 BTreeMap::from([(alex.clone(), Mark::Working)]),
                 "{what}"
             );
-            // A thread post then replies to it, as to any working mark.
             let mut replied = gw.clone();
             for r in replied.posts.values_mut() {
                 r.receipt = Some(Receipt {
@@ -2791,7 +2697,6 @@ mod reactions {
         assert_eq!(got, want);
         assert!(gw.reactions.marks.values().all(|m| *m == Mark::Replied));
         assert!(gw.reactions.replies.is_empty());
-        // Once the reactions' receipts landed, the post is not counted again.
         let mut gw = gw;
         gw.posts.retain(|k, _| !k.contains("/react/"));
         assert!(!GatewayController::due(
@@ -2836,8 +2741,6 @@ mod reactions {
             gw.reactions.replies.iter().cloned().collect::<Vec<_>>(),
             vec![key("comment/c0")]
         );
-        // So the next pass, once the reaction's receipt landed, replies to
-        // nothing.
         let mut gw = gw;
         gw.posts.retain(|k, _| !k.contains("/react/"));
         let t = task(Some(gw), TaskStatus::default());
@@ -2853,7 +2756,6 @@ mod reactions {
             record("post", NOW - 2_000, posted(NOW - 2_000), 1),
         );
         let t = task(Some(gw), TaskStatus::default());
-        // Alex's message was removed: the mirror holds only the other one.
         let (plan, gw) = run(
             &t,
             with_caps(conv(2, vec![person(T0, 1, "U0456EFGH", "x")]), caps(true)),
@@ -2919,8 +2821,6 @@ mod reactions {
                 1,
             ),
         );
-        // Its working reaction never answered, and the message is replied
-        // to since: adding it now would undo the removal.
         gw.posts.insert(
             working.clone(),
             record("react", NOW - 40_000, Some(Observation::unknown("lost")), 1),
@@ -2990,11 +2890,9 @@ mod reactions_gone {
             },
         );
         let t = task(Some(gw.clone()), TaskStatus::default());
-        // Unknown: nothing moves.
         let (_, kept) = run(&t, observed(Observation::unknown("store unreadable")));
         assert!(kept.posts.contains_key(&k));
         assert!(!kept.reactions.is_empty());
-        // Readably gone: the marks and the record go.
         let (_, gone) = run(&t, observed(Observation::Known(None)));
         assert!(gone.conversation.is_none());
         assert!(!gone.posts.contains_key(&k), "{gone:#?}");

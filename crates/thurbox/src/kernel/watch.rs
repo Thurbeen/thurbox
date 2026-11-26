@@ -1,17 +1,9 @@
-//! Watches the mod directory and reports that something changed.
-//!
-//! Deliberately dumb: it answers "has anything changed since you last asked?"
-//! and the caller decides when to act. Editors save in bursts — write, then
-//! rename, then chmod — so the caller debounces rather than reloading three
-//! times per keystroke.
-
 use std::path::Path;
 use std::sync::mpsc::{channel, Receiver};
 
 use notify::{Event, EventKind, RecommendedWatcher, RecursiveMode, Watcher as _};
 
 pub struct Watcher {
-    /// Held so the watcher thread stays alive; never read.
     _watcher: RecommendedWatcher,
     events: Receiver<notify::Result<Event>>,
 }
@@ -20,9 +12,7 @@ impl Watcher {
     pub fn new(dir: &Path) -> notify::Result<Self> {
         let (tx, events) = channel();
         let mut watcher = notify::recommended_watcher(tx)?;
-        // Canonicalized first: a relative path is resolved against the process
-        // cwd by the backend, and the events it then reports do not reliably
-        // match — so a relative `ui` watches successfully but never fires.
+        // notify resolves a relative path against the cwd, and its events then fail to match.
         let dir = dir.canonicalize().unwrap_or_else(|_| dir.to_path_buf());
         watcher.watch(&dir, RecursiveMode::Recursive)?;
         Ok(Self {
@@ -31,16 +21,9 @@ impl Watcher {
         })
     }
 
-    /// Drain the queue and report whether anything happened.
-    ///
-    /// Drains fully rather than taking one event, so a burst collapses into a
-    /// single answer and the caller's debounce window starts from the last
-    /// event rather than the first.
     pub fn changed(&self) -> bool {
         let mut changed = false;
         while let Ok(event) = self.events.try_recv() {
-            // A watch error still means "look again" — the alternative is
-            // silently going stale.
             match event {
                 Ok(event) if is_noise(&event) => {}
                 _ => changed = true,
@@ -50,11 +33,6 @@ impl Watcher {
     }
 }
 
-/// Events that never affect what is loaded.
-///
-/// An event carrying no paths is *not* noise: it is a backend telling us it
-/// lost track (an overflow or rescan), which is exactly when a reload matters
-/// most. `all()` on an empty iterator is `true`, so that case is handled first.
 fn is_noise(event: &Event) -> bool {
     if matches!(event.kind, EventKind::Access(_)) {
         return true;
@@ -63,16 +41,7 @@ fn is_noise(event: &Event) -> bool {
         return false;
     }
     event.paths.iter().all(|path| {
-        // Version-control bookkeeping is not an interface edit. The directory is
-        // watched RECURSIVELY, so without this every `git` operation anywhere under
-        // it — an index lock, a ref update, a pack — looks like an edit.
-        //
-        // This is not only for installed mods that arrive as a clone: putting
-        // your own interface under version control is a reasonable thing to do, and
-        // it currently makes your own commits fight the reload. And the symptom is
-        // the surprising one this function's other carve-out documents — a burst of
-        // events keeps the debounce window rolling forward, so the reload does not
-        // fire *more*, it stops firing at all while git is busy.
+        // The watch is recursive, so every git operation under it (index lock, ref update, pack) emits events.
         if path
             .components()
             .any(|part| part.as_os_str() == std::ffi::OsStr::new(".git"))
@@ -128,8 +97,6 @@ mod tests {
 
     #[test]
     fn a_file_merely_named_like_git_is_not_noise() {
-        // The test is a path COMPONENT, not a substring: a pane may legitimately be
-        // called `.gitignore.lua`, and a directory `mygit/` is not `.git/`.
         assert!(!is_noise(&event(&["/ui/mods/.gitignore.lua"])));
         assert!(!is_noise(&event(&["/ui/mygit/mods/a.lua"])));
         assert!(!is_noise(&event(&["/ui/lib/.gitkeep.lua"])));
@@ -145,9 +112,7 @@ mod tests {
 
     #[test]
     fn reading_a_file_is_not_a_change() {
-        // The bug this guards: the host reads layout.lua every frame, inotify
-        // reports each read as an access event, and treating those as edits
-        // rolls the debounce window forward forever so the reload never fires.
+        // inotify reports each read of layout.lua as an access event.
         let read = Event {
             kind: EventKind::Access(AccessKind::Read),
             paths: vec![PathBuf::from("/ui/layout.lua")],
@@ -158,7 +123,6 @@ mod tests {
 
     #[test]
     fn a_mixed_batch_is_not_noise() {
-        // One real edit among scratch files still has to trigger a reload.
         assert!(!is_noise(&event(&["/ui/mods/a.lua~", "/ui/mods/a.lua"])));
     }
 
@@ -175,7 +139,6 @@ mod live_tests {
     use super::*;
     use std::time::{Duration, Instant};
 
-    /// Does the watcher actually observe an edit to a nested file?
     #[test]
     fn an_edit_to_a_nested_file_is_observed() {
         let dir = tempfile::tempdir().expect("tempdir");

@@ -1,6 +1,3 @@
-//! `fleet service` on Windows: Fleet writes and drives the one Task
-//! Scheduler task that runs `fleet up` at logon. The test stub stands in for
-//! `schtasks` on a private PATH, so no test touches the operator's tasks.
 #![cfg(windows)]
 
 mod support;

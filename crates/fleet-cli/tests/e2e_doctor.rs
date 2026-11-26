@@ -1,8 +1,3 @@
-//! `fleet doctor`: one line per check, ok, info, warn or fail, with a fix,
-//! and a non-zero exit only on a fail. The real `fleet` binary, a stub
-//! harness profile whose integration is outdated, a PATH of the test's own
-//! and a runtime program that is not there.
-
 mod support;
 
 use std::fs;
@@ -31,8 +26,6 @@ text = '{{"version":{{version}}}}'
     )
 }
 
-/// An environment with the stub's integration installed at version 1, then
-/// its profile raised to version 2, and only `stub-agent` on PATH.
 fn setup(name: &str) -> Env {
     let mut env = Env::new(name);
     let harnesses = env.root.join("harnesses");
@@ -88,8 +81,6 @@ fn an_unreachable_runtime_fails_and_the_rest_are_reported_with_their_fix() {
     assert_eq!(integration["hint"], "fleet integration install stub");
 
     assert_eq!(check(&report, "harness", "stub")["level"], "ok");
-    // A bundled harness whose program is not on PATH: users install only
-    // the agents they run.
     let claude = check(&report, "harness", "claude");
     assert_eq!(claude["level"], "info", "{report:#}");
 
@@ -142,7 +133,6 @@ fn a_runtime_table_fleet_cannot_open_fails() {
     }
 }
 
-/// Every file and directory under `dir`, a file with its bytes.
 fn tree(dir: &std::path::Path) -> std::collections::BTreeMap<PathBuf, Option<Vec<u8>>> {
     let mut found = std::collections::BTreeMap::new();
     let mut todo = vec![dir.to_path_buf()];
@@ -161,10 +151,6 @@ fn tree(dir: &std::path::Path) -> std::collections::BTreeMap<PathBuf, Option<Vec
     found
 }
 
-/// The stub's integration installed with a block in the user's own config,
-/// then its profile replaced by `after`: `None` removes it, `Some` is the
-/// profile's new text. Returns the agent's config directory as it was
-/// before the install.
 fn left_behind(
     name: &str,
     after: Option<&str>,
@@ -194,8 +180,6 @@ fn left_behind(
     (env, home, before)
 }
 
-/// The warn row doctor gives a ledger entry no harness profile installs,
-/// and its hint, which is a `fleet` command line.
 fn left_behind_row(env: &Env) -> String {
     let report = env.fleet(&["doctor", "--json"]).ok().json();
     let row = check(&report, "integration", "stub");
@@ -251,8 +235,6 @@ fn an_unreadable_ledger_fails_even_when_no_profile_installs_anything() {
     let env = Env::new("doctor-unreadable-ledger");
     let harnesses = env.root.join("harnesses");
     fs::create_dir_all(&harnesses).expect("harnesses");
-    // The one bundled profile with an `[install]` table, replaced by one
-    // without it: no profile row reads the ledger.
     fs::write(
         harnesses.join("kimi.toml"),
         "name = \"kimi\"\nprogram = \"kimi\"\nauthority = \"full\"\n",
@@ -267,8 +249,6 @@ fn an_unreadable_ledger_fails_even_when_no_profile_installs_anything() {
     assert_eq!(row["level"], "fail", "{report:#}");
 }
 
-/// A place its runtime's manifest reports not ready fails, with the
-/// runtime's why; the ready one beside it passes.
 #[cfg(unix)]
 #[test]
 fn a_place_its_runtime_reports_not_ready_fails_with_why() {
@@ -308,8 +288,6 @@ echo '{"known":{"protocol":2,"verbs":["manifest","start","inspect","stop"],"plac
     );
 }
 
-/// With no `local` place, doctor says so: a warning, since a config of
-/// remote places alone is whole.
 #[test]
 fn a_config_without_a_local_place_is_a_warning() {
     let env = setup("doctor-no-local");
@@ -382,8 +360,6 @@ fn cli_version(env: &Env) -> String {
         .to_string()
 }
 
-/// The update evidence of #1909: the manager kept the old release while the
-/// CLI moved on. Doctor warns and names the restart; `version` flags it.
 #[cfg(unix)]
 #[test]
 fn a_manager_on_another_release_than_the_cli_is_a_version_skew() {

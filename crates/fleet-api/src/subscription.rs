@@ -1,15 +1,3 @@
-//! Subscriptions: a Task asks to hear of the events on a Board that a
-//! filter keeps (`Task.spec.subscriptions`). TaskController keeps one cursor
-//! per subscription in `Task.status.subscriptions`. When a subscription has
-//! events past its cursor that its filter keeps, or its cursor fell behind
-//! the Board's oldest event, TaskController queues one `event-notice` digest
-//! in the Task's inbox: the Board, the count and the seq range. The session
-//! reads the events itself, with `fleet event list --after`.
-//!
-//! While a subscription's notice is still to deliver, the subscription waits:
-//! its cursor stays, and the next notice covers every event since. So a
-//! subscription has at most one notice still to deliver.
-
 use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
@@ -19,36 +7,25 @@ use crate::inbox::{DeliveryAttempt, InboxEntry};
 use crate::meta::Millis;
 use crate::plan::effect_key;
 
-/// The most subscriptions one Task holds.
 pub const MAX_SUBSCRIPTIONS: usize = 16;
 
-/// The source prefix of a notice: `board/<board>`.
 pub const BOARD_SOURCE_PREFIX: &str = "board/";
 
-/// The most events one pass reads for one subscription. A notice covers at
-/// most these; the next pass goes on from where this one stopped.
 pub const MAX_SCAN: usize = 10_000;
 
-/// The most events `fleet event list` prints when no `--limit` is given.
 const LIST_DEFAULT_LIMIT: u64 = 100;
 
-/// One subscription of a Task.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct Subscription {
     pub board: String,
-    /// What `fleet event list` would keep; empty keeps every event.
     #[serde(default, skip_serializing_if = "Filter::is_empty")]
     pub filter: Filter,
-    /// The seq of the last event the Task knows of already. Absent: the
-    /// Board's head when TaskController first reads the subscription.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub after: Option<u64>,
 }
 
 impl Subscription {
-    /// Whether `cursor` belongs to this subscription: the same Board and
-    /// filter. `after` only places a new cursor.
     pub fn owns(&self, cursor: &SubscriptionCursor) -> bool {
         self.board == cursor.board && self.filter == cursor.filter
     }
@@ -58,8 +35,6 @@ impl Subscription {
     }
 }
 
-/// Check a Task's subscriptions: at most [`MAX_SUBSCRIPTIONS`], each naming
-/// a valid Board, no two with the same Board and filter.
 pub fn validate(subscriptions: &[Subscription]) -> Result<(), String> {
     if subscriptions.len() > MAX_SUBSCRIPTIONS {
         return Err(format!(
@@ -80,14 +55,11 @@ pub fn validate(subscriptions: &[Subscription]) -> Result<(), String> {
     Ok(())
 }
 
-/// `Task.status.subscriptions`: TaskController's.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct SubscriptionsStatus {
-    /// Notices queued over the Task's life; the next one's key.
     #[serde(default, skip_serializing_if = "is_zero")]
     pub notices: u64,
-    /// One per subscription in the spec, in its order.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub cursors: Vec<SubscriptionCursor>,
 }
@@ -102,30 +74,20 @@ impl SubscriptionsStatus {
     }
 }
 
-/// Where one subscription has read to.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct SubscriptionCursor {
     pub board: String,
     #[serde(default, skip_serializing_if = "Filter::is_empty")]
     pub filter: Filter,
-    /// The Board's uid when the cursor was placed; absent while the Board
-    /// was not there. A Board made again is read from its first event.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub board_uid: Option<String>,
-    /// The seq of the last event read, kept or not.
     pub after: u64,
-    /// The key of the last notice queued for this subscription.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub notice: Option<String>,
 }
 
 impl SubscriptionCursor {
-    /// The cursor `sub` reads from, given the cursor `prev` it had and the
-    /// Board's uid now (`None`: no Board). A cursor of the same Board goes
-    /// on. A new cursor starts at `sub.after`, else at `head()`. A Board
-    /// made, deleted or made again since is read from its first event. Asks
-    /// `head` only for a new cursor on a Board that is there.
     pub fn place<E>(
         sub: &Subscription,
         prev: Option<&SubscriptionCursor>,
@@ -150,8 +112,6 @@ impl SubscriptionCursor {
         })
     }
 
-    /// Whether this subscription's last notice is still to deliver: in the
-    /// inbox and not given up on.
     pub fn waiting(
         &self,
         inbox: &[InboxEntry],
@@ -163,9 +123,6 @@ impl SubscriptionCursor {
     }
 }
 
-/// What a notice tells: the Board, how many events past the cursor the
-/// filter keeps, the first and last of their seqs, and the oldest seq the
-/// Board held when the cursor was behind it.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct EventNotice {
@@ -175,12 +132,10 @@ pub struct EventNotice {
     pub first: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub last: Option<u64>,
-    /// The events before this seq expired before the Task read them.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub expired_before: Option<u64>,
 }
 
-/// What one pass read for a subscription, from its cursor on.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Scan {
     pub read: usize,
@@ -191,8 +146,6 @@ pub struct Scan {
 }
 
 impl Scan {
-    /// Count the events of one page that `filter` keeps, and move `after`
-    /// past each event of it.
     pub fn page(&mut self, after: &mut u64, filter: &Filter, events: &[Event]) {
         for e in events {
             *after = e.seq;
@@ -205,14 +158,11 @@ impl Scan {
         }
     }
 
-    /// The Board no longer holds the events before `oldest`: `after` goes
-    /// on from just before it, and the notice says so.
     pub fn expired(&mut self, after: &mut u64, oldest: u64) {
         *after = oldest.saturating_sub(1);
         self.expired_before = Some(oldest);
     }
 
-    /// The notice this read owes, if any.
     pub fn notice(&self, board: &str) -> Option<EventNotice> {
         if self.count == 0 && self.expired_before.is_none() {
             return None;
@@ -227,14 +177,11 @@ impl Scan {
     }
 }
 
-/// The key of the `n`th notice queued for a Task:
-/// `task/<name>/<uid>/notice/<n>`.
 pub fn notice_key(name: &str, uid: &str, n: u64) -> String {
     let base = effect_key(crate::task::KIND, name, uid, "notice", None);
     format!("{base}/{n}")
 }
 
-/// The inbox entry that delivers `notice` for a subscription with `filter`.
 pub fn notice_entry(key: String, notice: EventNotice, filter: &Filter, now: Millis) -> InboxEntry {
     InboxEntry {
         key,

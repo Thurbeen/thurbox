@@ -1,23 +1,3 @@
-//! Implementations of the gateway contract ([`fleet_api::gateway::Gateway`]).
-//!
-//! - [`SlackGateway`]: Slack's Web API through an externally authenticated
-//!   `curl`, one bounded process per call.
-//! - [`DiscordGateway`]: Discord's REST API the same way.
-//! - [`FakeGateway`]: a file-backed chat platform for tests and trials. It
-//!   runs no process and reaches no network, and it models every
-//!   `capabilities` combination a real platform can present.
-//! - [`GatewayAccounts`]: the adapters of a configuration's
-//!   `[gateway.accounts]`, chosen by the account a call names.
-//! - [`listener_account`]: what a listener needs to connect to an account,
-//!   with the digest its heartbeats carry.
-//!
-//! This is the only crate that knows a chat platform's client exists. A
-//! platform adapter makes bounded calls, each one process through
-//! fleet-exec with its tree killed past the bound: no WebSocket, no resident
-//! connection, no background thread. The listener outside Fleet holds the
-//! connection. Credentials stay with the external client's own
-//! configuration: Fleet passes none and stores none.
-
 pub mod curl;
 pub mod discord;
 pub mod fake;
@@ -40,7 +20,6 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 pub use slack::SlackGateway;
 
-/// Which adapter serves a platform.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Platform {
     Discord,
@@ -66,11 +45,9 @@ impl Platform {
         }
     }
 
-    /// The platforms this build has, in the words `fleet version` prints.
     pub const ALL: &[&str] = &[discord::KIND, fake::KIND, slack::KIND];
 }
 
-/// The configured accounts, one adapter each.
 pub struct GatewayAccounts {
     accounts: BTreeMap<String, (AccountConfig, Box<dyn Gateway>)>,
     call_timeout: Duration,
@@ -86,11 +63,6 @@ impl std::fmt::Debug for GatewayAccounts {
 }
 
 impl GatewayAccounts {
-    /// Build one adapter per account. `call_timeout` bounds every platform
-    /// call. The checks here are the platform's own: a platform this build
-    /// lacks, an `inbound` its listener cannot deliver by, a fake without a
-    /// dir, a Slack account without a curl config. The pure rules ran at
-    /// config load. Opening an adapter calls no platform.
     pub fn new(
         accounts: BTreeMap<String, AccountConfig>,
         call_timeout: Duration,
@@ -153,7 +125,6 @@ impl GatewayAccounts {
         self.accounts.keys().map(String::as_str)
     }
 
-    /// The bound every platform call gets.
     pub fn call_timeout(&self) -> Duration {
         self.call_timeout
     }
@@ -170,8 +141,6 @@ impl GatewayAccounts {
         format!("account {account} is not configured under [gateway.accounts]")
     }
 
-    /// Whether the account's adapter reads `channel` as a channel id: the
-    /// platform's own address rules, with no platform call.
     pub fn check_channel(&self, account: &str, channel: &str) -> Result<(), String> {
         let (cfg, _) = self
             .accounts
@@ -210,8 +179,6 @@ impl Gateway for GatewayAccounts {
         }
     }
 
-    /// Pure reading dispatches on the configuration's platform, so a
-    /// receive verb can read an envelope for any configured account.
     fn event(&self, account: &AccountConfig, envelope: &Envelope) -> Observation<Option<Delivery>> {
         match self
             .accounts
@@ -263,7 +230,6 @@ impl Gateway for GatewayAccounts {
     ) -> Observation<EffectOutcome> {
         match self.adapter(account) {
             Some(g) => g.open(account, channel, text, intent_key),
-            // Nothing ran: a Known refusal, not a question.
             None => Observation::Known(EffectOutcome::Failed {
                 why: Self::not_configured(account),
             }),
@@ -321,10 +287,6 @@ impl Gateway for GatewayAccounts {
     }
 }
 
-/// A new directory under `parent` that only this user can enter: mode
-/// 0700 on Unix, made by one `mkdir` that fails when the path exists, so no
-/// other user can have put a link or a file there first. Its name is
-/// `<stem>-<pid>-<nanos>-<n>`, unique to the call.
 pub fn fresh_private_dir(parent: &Path, stem: &str) -> std::io::Result<PathBuf> {
     std::fs::create_dir_all(parent)?;
     let nanos = std::time::SystemTime::now()
@@ -360,8 +322,6 @@ fn private_dir_builder() -> std::fs::DirBuilder {
     std::fs::DirBuilder::new()
 }
 
-/// A new file at `path` that only this user can read, made only when
-/// nothing is there: mode 0600 on Unix.
 pub fn fresh_private_file(path: &Path) -> std::io::Result<std::fs::File> {
     let mut options = std::fs::OpenOptions::new();
     options.write(true).create_new(true);
@@ -370,9 +330,6 @@ pub fn fresh_private_file(path: &Path) -> std::io::Result<std::fs::File> {
     options.open(path)
 }
 
-/// The name a fetched file is saved under: the platform's name with every
-/// character but ASCII letters, digits, `.`, `-` and `_` made `_`, no
-/// leading dot, at most 100 bytes; the file's id when nothing is left.
 pub fn saved_name(id: &str, name: &str) -> String {
     let clean: String = name
         .chars()
@@ -398,12 +355,6 @@ pub fn saved_name(id: &str, name: &str) -> String {
     }
 }
 
-/// What a listener starts from, as `fleet gateway account NAME --json` will
-/// print it: the account's name, platform, workspace, bot and inbound
-/// method, the Gateway intents of a Discord account, and the digest of
-/// exactly those, which the listener's heartbeats
-/// carry so Fleet can tell a listener on an old configuration. The client
-/// and credential keys are Fleet's side and do not move the digest.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ListenerAccount {
@@ -413,14 +364,11 @@ pub struct ListenerAccount {
     pub team: Option<String>,
     pub bot: String,
     pub inbound: Inbound,
-    /// Discord only: the Gateway intents the listener identifies with.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub intents: Option<u64>,
-    /// `sha256:<64 hex>` over the other fields.
     pub digest: String,
 }
 
-/// The listener-facing view of an account, with its digest.
 pub fn listener_account(name: &str, account: &AccountConfig) -> ListenerAccount {
     #[derive(Serialize)]
     #[serde(rename_all = "camelCase")]
@@ -460,7 +408,6 @@ pub fn listener_account(name: &str, account: &AccountConfig) -> ListenerAccount 
     }
 }
 
-/// The digest alone.
 pub fn account_digest(name: &str, account: &AccountConfig) -> String {
     listener_account(name, account).digest
 }
@@ -573,7 +520,6 @@ mod tests {
         );
         assert!(accounts.check_channel("discord-main", "C0456EFGH").is_err());
         assert!(accounts.check_channel("nobody", "C0456EFGH").is_err());
-        // Discord links a thread under its guild; Slack makes no link.
         let thread =
             ConversationRef::split("discord:1300000000000000000:1300000000000000001").unwrap();
         assert_eq!(

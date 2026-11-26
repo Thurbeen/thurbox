@@ -1,14 +1,3 @@
-//! ListenerController: judges one account's listener program from the
-//! heartbeats and refusals the receive verb recorded on its Listener, and
-//! the account's identity from the platform. Fleet's calls are outbound, so
-//! reaching the platform proves nothing about inbound delivery: the beats
-//! do, against the configuration Fleet runs.
-//!
-//! Pure: it reads the Listener and what the probes saw, and returns a Plan
-//! whose `status` is the three conditions and the bookkeeping, and whose
-//! `delete` retires a Listener whose account left the config. It performs
-//! no effect.
-
 use fleet_api::condition::{ConditionStatus, set_condition, settle_transitions};
 use fleet_api::gateway::{Capabilities, GatewayDefaults, Identity};
 use fleet_api::listener::{self, Accepted, BeatState, ListenerSpec, ListenerStatus, STALE_BEATS};
@@ -18,18 +7,14 @@ use fleet_api::store::FieldManager;
 use fleet_api::validate::typed;
 use fleet_api::{Observation, StoreError};
 
-/// What one reconcile of one Listener reads.
 #[derive(Debug, Clone)]
 pub struct ListenerInput<'a> {
     pub object: &'a Object,
     pub observations: ListenerObservations,
     pub now: Millis,
-    /// The `[gateway]` timings, and the account the spec names while the
-    /// config has it, with its digest.
     pub defaults: GatewayDefaults,
 }
 
-/// The answers to the probes; `None` means "not asked".
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct ListenerObservations {
     pub capabilities: Option<Observation<Capabilities>>,
@@ -39,28 +24,17 @@ pub struct ListenerObservations {
 #[derive(Debug, Clone, Copy, Default)]
 pub struct ListenerController;
 
-/// Condition types ListenerController writes.
 pub mod conditions {
-    /// The account is valid and some route uses it.
     pub const ACCEPTED: &str = "Accepted";
-    /// The platform's `whoami` is the configured bot, and `capabilities`
-    /// answered.
     pub const RESOLVED: &str = "Resolved";
-    /// Some instance beat `connected`, on the current digest, within three
-    /// `gateway.beatMs`, and no envelope was refused for the listener's
-    /// own fault in that time.
     pub const INBOUND_READY: &str = "InboundReady";
 }
 use conditions::*;
 
 impl ListenerController {
-    /// The kind this controller reconciles and the field manager it writes as.
     pub const KIND: &'static str = listener::KIND;
     pub const MANAGER: FieldManager = FieldManager::ListenerController;
 
-    /// Whether the manager should run this controller on the object now:
-    /// a beat or refusal was recorded since the last pass, or `notBefore`
-    /// passed. A deleting Listener is never due.
     pub fn due(object: &Object, now: Millis) -> bool {
         if object.is_deleting() {
             return false;
@@ -71,8 +45,6 @@ impl ListenerController {
         st.beat_revision > st.seen || st.not_before.is_none_or(|t| t <= now)
     }
 
-    /// What the next `reconcile` needs observed: the account's capabilities
-    /// and Fleet's identity there, every `gateway.pollMs`.
     pub fn probes(&self, input: &ListenerInput<'_>) -> Result<Vec<Probe>, StoreError> {
         if input.object.is_deleting() || input.defaults.account.is_none() {
             return Ok(Vec::new());
@@ -104,8 +76,6 @@ impl ListenerController {
         }
         let (_, before) = decode(input.object)?;
         let Some(account) = &input.defaults.account else {
-            // The account left the config: the manager creates the Listener
-            // again if it returns.
             return Ok(Plan {
                 delete: true,
                 ..Plan::default()
@@ -118,7 +88,6 @@ impl ListenerController {
             set_condition(&mut st.conditions, t, s, reason, message, generation, now);
         };
 
-        // Accepted: the digest the config loaded, and whether a route uses it.
         let accepted_at = match &st.accepted {
             Some(a) if a.digest == account.digest => a.at,
             _ => now,
@@ -145,7 +114,6 @@ impl ListenerController {
             );
         }
 
-        // Resolved: the platform's identity against the configured bot.
         match (&input.observations.whoami, &input.observations.capabilities) {
             (Some(Observation::Known(identity)), Some(Observation::Known(_))) => {
                 st.observed_at = Some(now);
@@ -184,11 +152,9 @@ impl ListenerController {
                     why,
                 );
             }
-            // Not asked this pass: what was recorded stands.
             _ => {}
         }
 
-        // InboundReady: the beats against the window and the digest.
         let window = input.defaults.beat_ms.saturating_mul(STALE_BEATS);
         let fresh = |at: Millis| now.saturating_sub(at) <= window;
         let current = |digest: &str| digest == account.digest;
@@ -246,8 +212,6 @@ impl ListenerController {
         cond(&mut st, INBOUND_READY, status, reason, message.into());
 
         st.seen = st.beat_revision;
-        // The next poll: one interval after the last Known answer, or after
-        // an Unknown one asked this pass; at once when nothing was asked yet.
         let asked =
             input.observations.whoami.is_some() || input.observations.capabilities.is_some();
         let next_poll = match st.observed_at {

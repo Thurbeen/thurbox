@@ -1,33 +1,3 @@
-//! A program pane must notice that its program ended.
-//!
-//! The regression this guards was silent in every direction. tmux control mode
-//! announces a pane's death only as `%window-close` / `%unlinked-window-close`
-//! — by WINDOW — while output is streamed by PANE, and nothing related the two,
-//! so the notification was parsed as `Notification::Other` and dropped. The
-//! pane's channel then simply went quiet, which is indistinguishable from a
-//! program with nothing to say: `has_exited` stayed false for ever.
-//!
-//! Everything downstream is built on that flag. `program.exited` never fired,
-//! so a pane could not move on from a finished program; the surface kept
-//! painting the grid it left behind; and `start_program` — idempotent by
-//! design, because mods ask on every frame — kept answering `Ok(())` to
-//! every request to start it again. Quitting the editor with `:q` therefore
-//! made its pane unopenable for the rest of the session, with nothing in the
-//! log to say why.
-//!
-//! Driven through a real tmux pane because the thing that was wrong is the
-//! protocol reading, not the bookkeeping around it: a test that set the flag
-//! itself would have passed all along. Skipped when tmux is absent — a missing
-//! multiplexer is an environment fact, not a regression.
-//!
-//! The session is created with **`remain-on-exit on`**, which is not decoration:
-//! it is what thurbox sets for its own session (`SESSION_OPTS`), so that a dead
-//! agent leaves a readable window behind. With that option a window does NOT
-//! close when its program ends — the pane simply goes dead and stays — and the
-//! close notification never comes. The first version of this test used tmux's
-//! default (`off`), passed, and proved nothing about the machine it was written
-//! for. A test of this has to stand in the session the program actually runs in.
-
 #![cfg(unix)]
 
 use std::collections::HashMap;
@@ -39,17 +9,13 @@ use thurbox::backend::pane::ProgramPane;
 use thurbox::backend::tmux::TmuxBackend;
 use thurbox::backend::SessionBackend;
 
-/// The guard every tmux server in this file is reaped by — see its own doc.
 #[path = "../../runtime-mux/tests/support/tmux_server.rs"]
 mod tmux_server;
 
 use tmux_server::TmuxServer;
 
-/// A throwaway socket, so this never touches the real one.
 const SOCKET: &str = "thurbox-program-exit-e2e";
 
-/// Generous next to the notification, which arrives with the exit: the budget is
-/// for a loaded machine starting a tmux server, not for the signal itself.
 const DEADLINE: Duration = Duration::from_secs(10);
 
 fn have_tmux() -> bool {
@@ -60,17 +26,13 @@ fn have_tmux() -> bool {
         .unwrap_or(false)
 }
 
-// The blocking `Command::output` calls are safe here because this test uses
-// `#[tokio::test(flavor = "multi_thread")]`: the body runs on its own thread
-// (`block_on(body)`), while spawned tasks run on worker threads.
+// Blocking calls are safe: tokio multi_thread runs the test body on its own thread.
 fn start_session(server: &TmuxServer) -> std::process::Output {
     let started = server.tmux(&["new-session", "-d", "-s", "thurbox", "-x", "80", "-y", "24"]);
     let _ = server.tmux(&["set-option", "-t", "thurbox", "remain-on-exit", "on"]);
     started
 }
 
-/// A tokio runtime is required, not decorative: wiring a pane spawns its writer
-/// task, and without one the spawn panics before anything can be observed.
 #[tokio::test(flavor = "multi_thread")]
 async fn a_program_that_ends_reports_that_it_ended() {
     if !have_tmux() {
@@ -98,20 +60,7 @@ async fn a_program_that_ends_reports_that_it_ended() {
         panic!("tmux control mode would not start: {e:#}");
     }
 
-    // Prints, lives for a moment, then ends on its own — the shape of an editor
-    // being quit, as opposed to a pane someone killed from outside. The moment
-    // is not padding: a program that exits instantly takes its pane with it
-    // before `spawn` can size the window, and the spawn fails with "can't find
-    // pane" — which this test used to report as a skipped environment and pass
-    // on, proving nothing at all.
-    //
-    // A second, longer than that: the program had to outlive whatever stood
-    // between its window existing and `pane_windows` knowing about it, because
-    // a death inside that gap is announced once, to nobody, and never again.
-    // That gap used to be a serialized `display-message` round trip, which is
-    // why this budget kept being raised — 1s, then 3s, then 8s — without ever
-    // being enough. `new-window` now answers with the window id itself, so the
-    // gap is local work, and a second is a second again.
+    // tmux drops the pane of a program that exits before the window is sized, so it lives a moment.
     let pane = ProgramPane::spawn(
         std::sync::Arc::clone(&backend) as std::sync::Arc<dyn SessionBackend>,
         "tbp-test-exiting",
@@ -126,10 +75,7 @@ async fn a_program_that_ends_reports_that_it_ended() {
     let pane = match pane {
         Ok(pane) => pane,
         Err(e) => {
-            // Not a skip. The header already records what a skip here cost
-            // once: a spawn failing because the pane died too fast was read as
-            // a missing environment and passed, proving nothing at all.
-            panic!("the program pane could not be spawned: {e:#}");
+            panic!("the program pane could not be spawned with tmux installed: {e:#}");
         }
     };
 

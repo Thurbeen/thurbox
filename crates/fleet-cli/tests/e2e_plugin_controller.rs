@@ -468,8 +468,6 @@ fn a_plugin_amends_its_own_task_once_per_generation_and_reopens_it() {
     support::assert_condition(&st, "Concluded", "False", "Amended");
     assert_eq!(child["status"]["brief"]["generation"], 2);
 
-    // The same plan again, as a repeated or recovered pass: a refused verb,
-    // recorded on the plugin object, and nothing appended.
     scenario(&env, amend);
     env.expire_wait_of("Issue", "issue-1");
     env.reconcile().ok();

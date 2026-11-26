@@ -1,89 +1,33 @@
-//! User-tunable settings (`~/.config/thurbox/settings.toml`): scalar knobs
-//! plus the `[features]` whole-feature switches.
-//!
-//! Pure data + parsing, per the `session/` architecture rule; the file IO and
-//! seeding live in `crate::config::settings`. Only knobs a user
-//! plausibly wants to change are exposed — timing/buffer internals stay
-//! hardcoded. There is no process-wide copy: each binary loads the file once
-//! and hands the value to what it builds (`session` holds no state, #1477).
-
 use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
 
-/// Settings loaded from `settings.toml`. Every field has a default, so
-/// an absent file (the common case) behaves exactly like before the file
-/// existed. Unknown keys are tolerated but reported: the loader names every
-/// unrecognized key in a startup warning.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Settings {
-    /// Config-format version, for future migrations. Currently `1`.
     #[serde(default)]
     pub config_version: Option<u32>,
-    /// Scrollback lines kept per session terminal (vt100 parser history).
     #[serde(default = "default_scrollback_lines")]
     pub scrollback_lines: usize,
-    /// How long a session's terminal may stay off screen before the interface
-    /// drops its grid and history, in seconds. tmux keeps both anyway, and the
-    /// grid is rebuilt from it the next time the session is shown or searched.
-    /// A session never shown since the interface started holds none at all.
-    /// `0` keeps every session's grid for as long as it runs.
-    ///
-    /// The memory it saves is per session: a grid is 32 bytes a cell, so a
-    /// 200-column session with its default 1,000 lines of history filled holds
-    /// about 6 MiB of them.
     #[serde(default = "default_hidden_terminal_secs")]
     pub hidden_terminal_secs: u64,
-    /// Open each local tmux session's pane through a terminal stream,
-    /// `runtime-mux view`, instead of thurbox's own control-mode connection
-    /// (docs/runtime/README.md#the-terminal-stream). Off until it measures as
-    /// fast. A stream pane keeps its grid while hidden: `hidden_terminal_secs`
-    /// does not apply.
     #[serde(default)]
     pub stream_panes: bool,
-    /// Terminal width (columns) below which only the terminal pane renders.
     #[serde(default = "default_two_panel_min_cols")]
     pub two_panel_min_cols: u16,
-    /// How often each session's git working tree is re-examined, in seconds.
-    /// `0` turns the polling off: no diffstat, no ahead/behind, no `git`.
-    ///
-    /// The one number that governs how much `git` thurbox runs, because the
-    /// work is per session: every session costs a `git status` plus, while its
-    /// branch is ahead and unlanded, the merge check's handful of subprocesses,
-    /// all of it repeated on this interval. Worth raising on an instance
-    /// holding many sessions, and worth turning off where a subprocess is
-    /// expensive for reasons outside thurbox — an endpoint-protection agent
-    /// that scans every process launch (issue #1167).
     #[serde(default = "default_git_poll_secs")]
     pub git_poll_secs: u64,
-    /// Per-feature on/off switches (`[features]` table). Absent table = all
-    /// enabled.
     #[serde(default)]
     pub features: FeatureFlags,
-    /// Desktop-notification settings (`[notifications]` table). Absent table =
-    /// defaults (fire on `Attention`, skip the currently-focused session, 5s
-    /// per-session dedup).
     #[serde(default)]
     pub notifications: NotificationSettings,
-    /// Clipboard settings (`[clipboard]` table). Absent = `auto` transport,
-    /// copy-on-select on.
     #[serde(default)]
     pub clipboard: ClipboardSettings,
-    /// The Fleets that manage sessions (`[fleets.<name>]` tables). None
-    /// listed: the one on this machine, [`IMPLIED_FLEET`] ([`Self::fleets`]).
     #[serde(default, deserialize_with = "fleet_names")]
     pub fleets: BTreeMap<String, FleetDef>,
-    /// The interface's own OpenTelemetry export (`[telemetry]` table); an
-    /// `OTEL_*` variable wins over each of its values. Fleet's export is
-    /// Fleet's config file's (docs/observability.md).
     #[serde(default)]
     pub telemetry: otel_env::TelemetryConfig,
 }
 
-/// Keys an older `settings.toml` may hold that thurbox no longer reads, each
-/// with the reason. The loader names one it finds as retired rather than
-/// unknown, and `thurbox-cli config validate` passes a file holding one: a v2
-/// file keeps loading (ADR-41).
 pub const RETIRED_KEYS: &[(&str, &str)] = &[
     (
         "multiplexer",
@@ -120,13 +64,8 @@ pub const RETIRED_KEYS: &[(&str, &str)] = &[
     ("fleet", "the Fleets are listed as [fleets.<name>]"),
 ];
 
-/// Keys an older `settings.toml` may hold that are accepted and ignored with
-/// no warning: v1's switches for panels that are now mods, kept loading
-/// quietly since 2.0.
 pub const IGNORED_KEYS: &[&str] = &["features.tasks"];
 
-/// The retired key `path` is, or lies under (`remote.transitive_sessions` is
-/// `remote`'s), with the reason it is no longer read.
 pub fn retired_key(path: &str) -> Option<(&'static str, &'static str)> {
     RETIRED_KEYS.iter().copied().find(|(key, _)| {
         path == *key
@@ -136,8 +75,6 @@ pub fn retired_key(path: &str) -> Option<(&'static str, &'static str)> {
     })
 }
 
-/// `[fleets]`, each name checked: a session's id is `<fleet>:<task>`, so a
-/// Fleet's name holds no `:`, and is not empty.
 fn fleet_names<'de, D: serde::Deserializer<'de>>(
     deserializer: D,
 ) -> Result<BTreeMap<String, FleetDef>, D::Error> {
@@ -154,24 +91,14 @@ fn fleet_names<'de, D: serde::Deserializer<'de>>(
     }
 }
 
-/// The name of the Fleet thurbox reaches when `settings.toml` lists none:
-/// `fleet` on this machine.
 pub const IMPLIED_FLEET: &str = "local";
 
-/// One Fleet thurbox reaches (`[fleets.<name>]`), ADR-41: each session is a
-/// Task of a Fleet, which the interface reads through `fleet watch` and acts
-/// on through `fleet apply`, `send` and `delete`. Read at startup only.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct FleetDef {
-    /// How `fleet` is run: on this machine, over ssh, or in a WSL distro.
     #[serde(default)]
     pub transport: FleetTransport,
-    /// The `fleet` binary: a name on `PATH` or a path, on the machine the
-    /// transport reaches. ssh runs it with that machine's non-login `PATH`.
     #[serde(default = "default_fleet_program")]
     pub program: String,
-    /// The config file that Fleet reads, as `fleet --config <path>`. `None`:
-    /// Fleet's own rule (`FLEET_CONFIG`, then its per-user file).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub config: Option<String>,
 }
@@ -190,13 +117,6 @@ fn default_fleet_program() -> String {
     "fleet".to_string()
 }
 
-/// How a Fleet's `fleet` is run: `"local"`, `{ ssh = "me@box", ssh_opts =
-/// [...] }` or `{ wsl = "Ubuntu" }`.
-///
-/// Read by hand rather than as an untagged enum: untagged buffers the table,
-/// so a misspelt key (`ssh_opt`) would load silently as a transport without
-/// it. Here the table is one struct, whose unknown keys the loader reports,
-/// and a table naming no transport or two is refused.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(untagged)]
 pub enum FleetTransport {
@@ -211,7 +131,6 @@ pub enum FleetTransport {
     },
 }
 
-/// The one word a local transport is spelled with.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Local {
@@ -224,8 +143,6 @@ impl Default for FleetTransport {
     }
 }
 
-/// A transport table as written, before it is checked to name exactly one
-/// transport.
 #[derive(Deserialize)]
 struct TransportTable {
     ssh: Option<String>,
@@ -314,10 +231,6 @@ impl FleetTransport {
 }
 
 impl Settings {
-    /// The Fleets thurbox reaches, by name: those `[fleets]` lists, or, when
-    /// it lists none, [`IMPLIED_FLEET`] on this machine. Once one is listed
-    /// only the listed ones are used, so a machine that is only a client
-    /// lists no local Fleet.
     pub fn fleets(&self) -> Vec<(String, FleetDef)> {
         if self.fleets.is_empty() {
             return vec![(IMPLIED_FLEET.to_string(), FleetDef::default())];
@@ -328,108 +241,51 @@ impl Settings {
             .collect()
     }
 
-    /// The one Fleet the interface uses until it follows several: the first
-    /// of [`Self::fleets`] by name.
     pub fn fleet_in_force(&self) -> (String, FleetDef) {
         self.fleets().swap_remove(0)
     }
 }
 
-/// Whole-feature switches (`[features]` in settings.toml). Each flag hides the
-/// feature's UI and blocks its keybinding. Data and `thurbox-cli` surfaces stay
-/// fully functional regardless, so re-enabling a flag is lossless.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct FeatureFlags {
-    /// Per-session shell pane toggle (Ctrl+T).
     #[serde(default = "default_true")]
     pub shell_pane: bool,
-    /// Perf HUD overlay (F12): live perf counters + frame/tick timing. Opening
-    /// it also turns on wall-clock timing collection (see docs/thurbox/performance.md).
     #[serde(default = "default_true")]
     pub perf_hud: bool,
-    /// Mouse support: terminal mouse capture plus all click/scroll/hover
-    /// handling (click-to-select, drag selection, Ctrl+Click URLs,
-    /// scrollbars). Disable to keep the terminal's native mouse behavior
-    /// (e.g. its own text selection).
     #[serde(default = "default_true")]
     pub mouse: bool,
-    /// OS desktop notifications when a session needs the user's attention.
-    /// Disabled = no notifications fire and the dispatcher thread never
-    /// starts (zero overhead). Linux gets click-to-focus; macOS shows a
-    /// passive banner only (the modern API requires a signed app bundle).
     #[serde(default = "default_true")]
     pub notifications: bool,
-    /// Version-update check: the TUI header "update available" badge and the
-    /// `thurbox-cli version --check` command. **On by default for 1.0** — it
-    /// makes a network call to GitHub to learn when a newer release is
-    /// available. Turn it off with `[features] version_check = false`.
     #[serde(default = "default_true")]
     pub version_check: bool,
-    /// Silent auto-update: the TUI silently downloads, verifies, and replaces
-    /// the installed binaries on startup when a newer release exists, and the
-    /// `thurbox-cli update` command does the same on demand. **On by default for 1.0** — opt out with `[features]
-    /// auto_update = false`; it makes a network call and replaces files on
-    /// disk. The new version applies on the next launch.
     #[serde(default = "default_true")]
     pub auto_update: bool,
 }
 
-/// Which OS-notification delivery backend to use (`[notifications] backend`).
-/// `Auto` (the default) detects the right one at startup: dbus on a normal
-/// Linux desktop, a Windows toast (via `powershell.exe`) under WSL when no
-/// dbus notification daemon is reachable, the native banner on macOS. The
-/// other variants force a specific path, and `Off` disables delivery entirely
-/// without touching the `[features] notifications` switch.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "lowercase")]
 pub enum NotificationBackend {
-    /// Detect the best backend for the host at startup.
     #[default]
     Auto,
-    /// Force the freedesktop dbus path (`org.freedesktop.Notifications`).
     Dbus,
-    /// Force the WSL → Windows toast path (`powershell.exe`).
     Windows,
-    /// Disable delivery (the dispatcher still starts but drops every
-    /// notification — a soft off-switch distinct from `[features]`).
     Off,
 }
 
-/// Which clipboard transport to use (`[clipboard] provider`). `Auto` (the
-/// default) tries the local display server first and falls back to OSC 52,
-/// which reaches the terminal emulator's clipboard through any number of SSH
-/// hops. The forcing variants exist because no auto-detection is right for
-/// everyone: `Native` suits a local desktop whose terminal mangles OSC 52,
-/// `Osc52` suits a machine with a stale/unwanted local clipboard, and `None`
-/// disables writes entirely.
-///
-/// Copy only — clipboard *reads* never use OSC 52 (see [`crate::clipboard`]).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "lowercase")]
 pub enum ClipboardProvider {
-    /// Native clipboard when it works, OSC 52 otherwise.
     #[default]
     Auto,
-    /// Local display server only; never emit OSC 52.
     Native,
-    /// OSC 52 only; skip the native clipboard.
     Osc52,
-    /// Disable clipboard writes.
     None,
 }
 
-/// Clipboard settings (`[clipboard]` in settings.toml).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ClipboardSettings {
-    /// Transport selection. See [`ClipboardProvider`].
     #[serde(default)]
     pub provider: ClipboardProvider,
-    /// Copy a mouse selection when the drag is released, with no key pressed.
-    ///
-    /// On by default, as in Herdr, Zellij and WezTerm: it is the one copy no
-    /// terminal emulator can intercept, which is what macOS needs where the
-    /// terminal keeps `Cmd+C` for itself. While it is on, `Ctrl+C` is always
-    /// the interrupt; turned off, `Ctrl+C` copies a selection instead.
     #[serde(default = "default_true")]
     pub copy_on_select: bool,
 }
@@ -443,31 +299,16 @@ impl Default for ClipboardSettings {
     }
 }
 
-/// How `Ctrl+O` launches the editor (the DB `editor_mode` key, set via
-/// `thurbox-cli editor mode`). `Auto` (the default) detects terminal vs GUI
-/// editors from the command name and gives terminal editors (vim, nano,
-/// `ttt`, helix, …) a real TTY — a floating `tmux display-popup` when thurbox
-/// runs inside tmux, or a TUI-suspend-and-resume when it does not — while GUI
-/// editors (`code`, `zed`, …) stay detached (the classic behavior). `Terminal`
-/// forces the TTY path for every editor; `Gui` forces the detached spawn.
-/// Stored in SQLite (not `settings.toml`) so it applies live, like
-/// `editor_command`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "lowercase")]
 pub enum EditorMode {
-    /// Detect from the command name (curated terminal/GUI lists).
     #[default]
     Auto,
-    /// Always give the editor a real TTY (popup / suspend).
     Terminal,
-    /// Always spawn detached (the pre-terminal-support behavior).
     Gui,
 }
 
 impl EditorMode {
-    /// Parse a stored `editor_mode` value, tolerating any case; `None`,
-    /// empty, or an unrecognized value yields the default (`Auto`). Used by
-    /// the DB getter so a corrupted row can't panic the TUI.
     pub fn parse_stored(stored: Option<&str>) -> Self {
         match stored.map(str::trim) {
             Some(s) => match s.to_ascii_lowercase().as_str() {
@@ -479,7 +320,6 @@ impl EditorMode {
         }
     }
 
-    /// The value written back to the DB (canonical, lowercase).
     pub fn as_db_value(self) -> &'static str {
         match self {
             EditorMode::Auto => "auto",
@@ -489,25 +329,14 @@ impl EditorMode {
     }
 }
 
-/// Knobs for the OS notification feature (`[notifications]` table). All
-/// fields have defaults so an empty / absent table behaves like the seeded
-/// configuration.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct NotificationSettings {
-    /// Skip notifications for the session currently in focus (you're already
-    /// looking at it). Defaults on; flip off if you run thurbox in a
-    /// background window and want every transition surfaced.
     #[serde(default = "default_true")]
     pub suppress_for_active: bool,
-    /// Play the OS default notification sound.
     #[serde(default = "default_true")]
     pub sound: bool,
-    /// Per-session floor between two notifications, in seconds. Prevents an
-    /// agent that flips Attention → Busy → Attention from spamming.
     #[serde(default = "default_notification_min_interval_secs")]
     pub min_interval_secs: u64,
-    /// Delivery backend. `auto` (default) detects dbus vs. Windows-toast vs.
-    /// macOS at startup; `dbus`/`windows` force one; `off` disables delivery.
     #[serde(default)]
     pub backend: NotificationBackend,
 }
@@ -544,7 +373,6 @@ impl Default for FeatureFlags {
     }
 }
 
-/// The scrollback a terminal keeps when `settings.toml` names none.
 pub fn default_scrollback_lines() -> usize {
     1000
 }
@@ -558,27 +386,19 @@ fn default_git_poll_secs() -> u64 {
     5
 }
 
-/// When a change to a field of [`Settings`] takes effect in a running interface.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Applies {
-    /// Read where it is used, every time, so an edit is in force at once.
     Live,
-    /// Consumed once, at startup, by something that cannot be redone mid-run.
     NextLaunch,
 }
 
-/// One row of [`FIELDS`]: a field of `settings.toml` and when it takes effect.
 pub struct Field {
-    /// The path the file spells it as: a top-level key, a `[features]` flag
-    /// (`features.mouse`), or a whole table.
     pub key: &'static str,
-    /// When a change to it takes effect.
     pub applies: Applies,
     differs: fn(&Settings, &Settings) -> bool,
     take: fn(&mut Settings, &Settings),
 }
 
-/// A row comparing and copying the field at `$path` as a whole.
 macro_rules! field {
     ($applies:ident, $first:ident $(. $rest:ident)*) => {
         Field {
@@ -590,57 +410,32 @@ macro_rules! field {
     };
 }
 
-/// Every field of `settings.toml`, and when a change to it takes effect.
-///
-/// The one place that says so: [`Settings::restart_only_differs`] and
-/// [`Settings::with_live_from`] (what `kernel::config::adopt` takes into force)
-/// both read it, so a field cannot be live in one and restart-only in the
-/// other. Two hand-kept lists did drift — `[clipboard]` was held as booted
-/// and reported live (issue #1638). A test fails until a new field has a row.
 pub const FIELDS: &[Field] = &[
     field!(Live, config_version),
-    // Every terminal's parser is built with it.
     field!(NextLaunch, scrollback_lines),
-    // The terminals read these once, when they are built.
     field!(NextLaunch, hidden_terminal_secs),
-    // The attach worker reads it once, when the terminals are built.
     field!(NextLaunch, stream_panes),
     field!(NextLaunch, two_panel_min_cols),
-    // Pruned once, at startup.
-    // The git-stat cache is built with it, and a cache that re-read it would
-    // also have to re-age every entry.
     field!(NextLaunch, git_poll_secs),
-    // The feature switches that only gate whether a surface is drawn, which is
-    // decided per frame.
     field!(Live, features.shell_pane),
     field!(Live, features.perf_hud),
-    // Capture is an escape already sent, the notifier is a thread already
-    // started (or not), and the update work ran at startup.
     field!(NextLaunch, features.mouse),
     field!(NextLaunch, features.notifications),
     field!(NextLaunch, features.version_check),
     field!(NextLaunch, features.auto_update),
-    // The dispatcher thread is started once with the backend it resolved.
     field!(NextLaunch, notifications),
-    // Read at every copy.
     field!(Live, clipboard),
-    // The engine's source and executor are chosen once, at boot (ADR-41).
     field!(NextLaunch, fleets),
     field!(NextLaunch, telemetry),
 ];
 
 impl Settings {
-    /// Whether any [`Applies::NextLaunch`] field of [`FIELDS`] differs between
-    /// `self` and `other`. Drives the "some changes apply after restart" hint
-    /// shown by the settings panel and the live-reload toast.
     pub fn restart_only_differs(&self, other: &Settings) -> bool {
         FIELDS
             .iter()
             .any(|f| f.applies == Applies::NextLaunch && (f.differs)(self, other))
     }
 
-    /// `self` with every [`Applies::Live`] field of [`FIELDS`] taken from
-    /// `fresh`, and every [`Applies::NextLaunch`] field left as it is.
     pub fn with_live_from(&self, fresh: &Settings) -> Settings {
         let mut adopted = self.clone();
         for field in FIELDS.iter().filter(|f| f.applies == Applies::Live) {
@@ -672,8 +467,6 @@ impl Default for Settings {
 mod tests {
     use super::*;
 
-    /// No `[fleets]`: the one Fleet on this machine. Once one is listed only
-    /// the listed ones are used, and the interface uses the first by name.
     #[test]
     fn the_local_fleet_is_implied_only_when_none_is_listed() {
         let none: Settings = toml::from_str("").unwrap();
@@ -740,8 +533,6 @@ mod tests {
         assert_eq!(s.notifications.backend, NotificationBackend::Auto);
     }
 
-    /// Each key set in a document changes that setting alone: everything it
-    /// leaves out, an empty table included, keeps its default.
     #[test]
     fn a_key_overrides_only_its_own_setting() {
         let with = |edit: fn(&mut Settings)| {
@@ -816,8 +607,6 @@ mod tests {
         }
     }
 
-    /// A value of the wrong type, or a name no variant has, is refused, and
-    /// the error says which key or name it was.
     #[test]
     fn a_value_of_the_wrong_type_or_name_is_rejected() {
         for (document, key) in [
@@ -845,12 +634,10 @@ mod tests {
     fn restart_only_differs_ignores_live_flags_but_catches_restart_ones() {
         let base = Settings::default();
 
-        // A live UI-panel flag is not a restart-only difference.
         let mut live = base.clone();
         live.features.shell_pane = !live.features.shell_pane;
         assert!(!base.restart_only_differs(&live));
 
-        // A restart-only feature flag, a scalar, and a notification knob all are.
         let mut mouse = base.clone();
         mouse.features.mouse = !mouse.features.mouse;
         assert!(base.restart_only_differs(&mouse));
@@ -863,17 +650,11 @@ mod tests {
         notif.notifications.sound = !notif.notifications.sound;
         assert!(base.restart_only_differs(&notif));
 
-        // Identical settings never differ.
         assert!(!base.restart_only_differs(&base.clone()));
     }
 
     #[test]
     fn every_feature_flag_is_classified_restart_or_live() {
-        // Destructuring WITHOUT `..` makes a newly-added feature flag fail to
-        // compile here until it is explicitly classified below — the safety net
-        // that stops a startup-wired flag from defaulting to "applies live" by
-        // omission in `restart_only_differs` (which would wrongly toast "applied
-        // live"). Each binding is consumed by `cases`, so none goes unused.
         let FeatureFlags {
             shell_pane,
             perf_hud,
@@ -882,9 +663,6 @@ mod tests {
             version_check,
             auto_update,
         } = FeatureFlags::default();
-        // Consume every binding so the no-`..` destructure above stays a hard
-        // compile-time guard (an unused binding would otherwise be the only
-        // warning, not an error).
         let _ = (
             shell_pane,
             perf_hud,
@@ -894,9 +672,6 @@ mod tests {
             auto_update,
         );
 
-        // `live` flags gate UI panels read from `App.features` every frame, so
-        // flipping one is NOT a restart-only difference; the rest are read once
-        // at startup and MUST register as one.
         let live: [fn(&mut FeatureFlags); 2] = [
             |f| f.shell_pane = !f.shell_pane,
             |f| f.perf_hud = !f.perf_hud,
@@ -924,9 +699,6 @@ mod tests {
 
     #[test]
     fn every_field_has_exactly_one_row() {
-        // A field with no row is neither taken live nor reported as needing a
-        // restart: the silent half of #1638. Each top-level key is a row, or
-        // (for `[features]`) each of its keys is.
         let value = serde_json::to_value(Settings::default()).unwrap();
         let mut keys = Vec::new();
         for (key, inner) in value.as_object().unwrap() {
@@ -945,8 +717,6 @@ mod tests {
 
     #[test]
     fn a_next_launch_row_is_never_taken_and_a_live_one_always_is() {
-        // Two settings that disagree on every field: a row's `take` must make
-        // it agree, and only a live row may be taken.
         let base = Settings::default();
         let other: Settings = toml::from_str(
             "config_version = 2\nscrollback_lines = 1\n\

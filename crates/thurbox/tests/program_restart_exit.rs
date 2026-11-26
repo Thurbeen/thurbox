@@ -1,23 +1,3 @@
-//! A program that is restarted still reports that it ended.
-//!
-//! `program.exited` is derived by comparing the program panes held now against
-//! the ones held at the previous look: a key whose pane reports `has_exited` and
-//! was seen running before is an ending. The loop, though, applies the commands
-//! mods enqueued **before** it derives — and a mod that asks for its
-//! program on every frame (the documented pattern, which is what makes
-//! `start_program` idempotent) asks again on the very frame after its program
-//! died. `start_program` then replaces the finished slot, and the derivation
-//! that runs a few lines later is handed a *live* pane under the same key. No
-//! transition, no event: the mod that restarted the program is never told the
-//! old one finished, which is exactly the mod that most needs to know.
-//!
-//! So the ending is recorded where the slot is overwritten, and drained where
-//! the transition is derived. Asserted through the real restart path on a real
-//! pane, because the claim is that the replacement *reaches* the recording —
-//! setting the flag by hand would have passed before the fix too.
-//!
-//! Skipped when tmux is absent: a missing multiplexer is an environment fact.
-
 #![cfg(unix)]
 
 use std::process::Command;
@@ -25,7 +5,6 @@ use std::time::{Duration, Instant};
 
 use thurbox::kernel::terminal::{ProgramKey, ProgramTransition, Terminals};
 
-/// The guard every tmux server in this file is reaped by — see its own doc.
 #[path = "../../runtime-mux/tests/support/tmux_server.rs"]
 mod tmux_server;
 
@@ -33,8 +12,6 @@ use tmux_server::TmuxServer;
 
 const SOCKET: &str = "thurbox-program-restart-e2e";
 
-/// Generous next to the exit itself: the budget is for a loaded machine starting
-/// a tmux server, not for the notification.
 const DEADLINE: Duration = Duration::from_secs(10);
 
 fn have_tmux() -> bool {
@@ -62,18 +39,10 @@ async fn restarting_a_finished_program_still_reports_the_ending() {
         &Default::default(),
     );
 
-    // Lives for a moment, then ends on its own — an editor being quit. Not
-    // instant: a program that exits before tmux has sized the window takes the
-    // pane with it and the spawn fails outright, which would turn this into a
-    // skip that proves nothing. The registration round trip it also used to
-    // have to outlive is gone — `new-window` answers with the window id — so
-    // this is back to the moment it was written as.
+    // tmux drops the pane of a program that exits before the window is sized, so it lives a moment.
     let short = ["-c".to_string(), "printf started; sleep 1".to_string()];
     if let Err(e) = terminals.start_program(&key, "sh", &short, Some(dir.path()), 24, 80) {
-        // Not a skip: tmux is installed, so a pane that would not start is the
-        // path under test being broken — and a skip would pass it off as a
-        // machine without a multiplexer.
-        panic!("the program pane could not be started: {e}");
+        panic!("the program pane could not be started with tmux installed: {e}");
     }
 
     let exited = |terminals: &Terminals| {
@@ -90,9 +59,6 @@ async fn restarting_a_finished_program_still_reports_the_ending() {
         panic!("the program never reported that it ended; nothing to restart over");
     }
 
-    // The iteration that spawned it: one transition, the spawn. Drained here so
-    // the restart below is read exactly as the loop would read it — a fresh log,
-    // holding only what the restart itself puts there.
     assert_eq!(
         terminals.take_program_transitions(),
         vec![ProgramTransition::Started(key.clone())],
@@ -114,9 +80,6 @@ async fn restarting_a_finished_program_still_reports_the_ending() {
         "the restart left no live pane, so this asserts nothing about a \
          replacement"
     );
-    // The order is asserted, not just the contents: the deriver reads this log
-    // in sequence, and a replacement that arrived *after* the spawn beside it
-    // would be read as a fresh death — the same ending announced twice.
     assert_eq!(
         transitions,
         vec![

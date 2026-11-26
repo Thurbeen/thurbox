@@ -14,40 +14,18 @@ use crate::kernel::registry::{
     Value as SettingValue,
 };
 
-/// Build a VM with the deliberate stdlib set and the memory ceiling.
 pub(super) fn new_vm() -> mlua::Result<Lua> {
     let lua = Lua::new_with(mod_stdlib(), mlua::LuaOptions::default())?;
     lua.set_memory_limit(memory_limit())?;
     Ok(lua)
 }
 
-/// How often the count hook fires. The budget is checked per batch rather than
-/// per instruction, because a hook on every instruction would dominate the
-/// frame cost.
 const HOOK_INTERVAL: u32 = 100_000;
 
-/// Marker in the abort error, so [`clean_error`] can recognise its own work
-/// rather than pattern-matching on VM prose.
 pub(super) const BUDGET_EXCEEDED: &str = "thurbox: instruction budget exceeded";
 
-/// Marker in the error [`Budget::arm`] returns when the hook cannot be
-/// installed, for [`clean_error`] in the same way.
 pub(super) const BUDGET_UNARMED: &str = "thurbox: instruction budget could not be armed";
 
-/// Arms the instruction-count hook for the duration of one mod call.
-///
-/// This is the Lua 5.4 half of the instruction bound. Luau donates
-/// `set_interrupt`; stock Lua does not, so the equivalent is a count hook that
-/// raises an error once the budget is spent — which unwinds the mod call
-/// and surfaces as an ordinary mod failure. It is what stops
-/// `while true do end` from taking the render loop with it.
-///
-/// Disarmed on drop, so the budget is per call rather than per VM.
-///
-/// Installing the hook allocates, so on a full VM it can fail. [`Budget::arm`]
-/// then returns the error and the caller does not make the call: an unbounded
-/// call that never returns would freeze the render loop, while a refused one
-/// is an ordinary mod failure the memory recovery can act on.
 pub(super) struct Budget<'a> {
     lua: &'a Lua,
 }
@@ -128,8 +106,6 @@ pub(super) fn load_mod(
     let name: String = def
         .get::<Option<String>>("name")
         .map_err(|e| format!("{file}.name: {e}"))?
-        // Strip a numeric ordering prefix, so `20_session_list.lua` is named
-        // `session_list` without the author repeating themselves.
         .unwrap_or_else(|| {
             file.split_once('_')
                 .filter(|(prefix, _)| prefix.chars().all(|c| c.is_ascii_digit()))
@@ -144,8 +120,6 @@ pub(super) fn load_mod(
         .get::<Option<u32>>("requires_api")
         .map_err(|e| format!("{file}.requires_api: {e}"))?;
     if let Some(needed) = requires_api.filter(|needed| *needed > API) {
-        // `{file}:` first, which is what lets the inventory pin the failure on
-        // this file (`inventory::blames`).
         return Err(format!(
             "{file}: requires_api = {needed}, but this thurbox serves plugin API {API}; \
              update thurbox, or use a version of the plugin written for API {API}"
@@ -215,9 +189,6 @@ pub(super) fn load_mod(
         .map_err(|e| format!("{file}.ui_state: {e}"))?;
     let actions = read_actions(&def, &name)?;
 
-    // A decorator transforms another pane's tree and draws nothing of its own,
-    // so requiring `render` of one would mean writing a stub that returns
-    // nothing — which the loader would then treat as an occupant of a slot.
     if !def.contains_key("render").unwrap_or(false) && decorates.is_none() {
         return Err(format!(
             "{file}: a mod must define a render function, or decorate another"
@@ -345,12 +316,6 @@ fn read_actions(def: &Table, mod_name: &str) -> Result<Vec<ActionDecl>, String> 
     Ok(out)
 }
 
-/// Read `events = { "session.status", … }` off a declaration.
-///
-/// Each name is checked against the kernel's enumeration (or the `user.` form)
-/// here, at load, because a subscription to a name nothing emits is a handler
-/// that never fires — the one failure with no symptom at all. Refused the way
-/// an unknown capability is, with the file named and the alternatives listed.
 fn read_events(def: &Table, file: &str) -> Result<Vec<String>, String> {
     let declared: Option<Vec<String>> = def
         .get("events")
@@ -366,11 +331,6 @@ fn read_events(def: &Table, file: &str) -> Result<Vec<String>, String> {
     Ok(out)
 }
 
-/// Read `commands = { { action = …, desc = … } }` — the palette's rows.
-///
-/// Same shape as a key without the chord: the action id is the one `on_action`
-/// is called back with, so a command and a key for one action are one thing
-/// reached two ways.
 fn read_commands(def: &Table, mod_name: &str) -> Result<Vec<CommandDecl>, String> {
     let raw: Value = def
         .get("commands")
@@ -399,11 +359,6 @@ fn read_commands(def: &Table, mod_name: &str) -> Result<Vec<CommandDecl>, String
     Ok(commands)
 }
 
-/// Read `capabilities = { "run" }` off a declaration.
-///
-/// An unknown name fails the load with the file named, which is the same
-/// treatment a malformed key or setting gets: a declaration the kernel cannot
-/// honour is a mistake to report, not one to route around.
 fn read_capabilities(def: &Table, file: &str) -> Result<Vec<Capability>, String> {
     let declared: Option<Vec<String>> = def
         .get("capabilities")
@@ -485,9 +440,6 @@ fn read_bindings(def: &Table, mod_name: &str) -> Result<Vec<Binding>, String> {
             .get::<Option<String>>("key")
             .map_err(|e| format!("{where_}.key: {e}"))?
             .ok_or_else(|| format!("{where_}: needs a key"))?;
-        // An empty chord would never fire and — because a chord-less command
-        // the user binds is synthesised with an empty *default* — would be
-        // dropped on the next override pass. Refused, like a missing one.
         if chord.trim().is_empty() {
             return Err(format!("{where_}: needs a key"));
         }
@@ -502,9 +454,6 @@ fn read_bindings(def: &Table, mod_name: &str) -> Result<Vec<Binding>, String> {
         let scope: Option<String> = entry
             .get::<Option<String>>("scope")
             .map_err(|e| format!("{where_}.scope: {e}"))?;
-        // Declared per key rather than inferred from the chord: whether the
-        // agent needs `Ctrl+X` is a fact about the agent, not about the
-        // keyboard, and v1 spells it out one action at a time for that reason.
         let passthrough: bool = entry
             .get::<Option<bool>>("passthrough")
             .map_err(|e| format!("{where_}.passthrough: {e}"))?
@@ -627,8 +576,6 @@ fn read_pills(def: &Table, mod_name: &str) -> Result<Vec<Pill>, String> {
             .get::<Option<String>>("label")
             .map_err(|e| format!("{where_}.label: {e}"))?
             .ok_or_else(|| format!("{where_}: needs a label"))?;
-        // Unprioritised entries sort last among themselves, which is a sane
-        // default for a pane that does not care where it lands.
         let priority: i64 = entry
             .get::<Option<i64>>("priority")
             .map_err(|e| format!("{where_}.priority: {e}"))?

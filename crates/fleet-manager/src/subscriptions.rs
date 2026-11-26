@@ -1,10 +1,3 @@
-//! The subscriptions step of a sweep: TaskController reads each Board a
-//! Task subscribes to, after the subscription's cursor, and queues one
-//! `event-notice` per subscription with news. The cursors and the notices
-//! land in one write under the lease (`Store::record_relay`), so a stop
-//! between them cannot happen. A Board that cannot be read moves nothing:
-//! its cursor stays, and no notice is queued for it.
-
 use std::collections::BTreeMap;
 
 use fleet_api::board;
@@ -35,9 +28,6 @@ fn field<T: DeserializeOwned + Default>(
 }
 
 impl Manager<'_> {
-    /// Read the Boards `task` subscribes to and queue the notices they owe.
-    /// Nothing is read for a Task being deleted, Concluded or Releasing: its
-    /// cursors wait. Answers the Task as written, when anything moved.
     pub(crate) fn notify_subscriptions(
         &self,
         task: &Object,
@@ -155,9 +145,6 @@ impl Manager<'_> {
         }
     }
 
-    /// Read `board` after `after`, up to its head or [`MAX_SCAN`] events,
-    /// moving `after` past each event read and renewing the lease before
-    /// each page. An error leaves the caller's cursor to discard.
     fn scan(
         &self,
         board: &str,

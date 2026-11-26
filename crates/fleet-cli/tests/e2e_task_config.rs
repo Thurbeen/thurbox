@@ -367,11 +367,8 @@ fn a_launch_frozen_from_the_default_config_is_kept_when_the_config_goes_before_i
     ))
     .ok();
     e.apply(task("t1", true)).ok();
-    // One pass freezes the private launch, then records it in status.
     e.fleet(&["reconcile", "--max-passes", "1"]).ok();
     assert_eq!(e.status("t1")["execution"]["pauseAfterMs"], 60000);
-    // As a manager stopped between those two writes: the private launch is
-    // saved, the status is not. Then the default goes.
     let path = e.object_path("Task", "t1");
     let mut obj: serde_json::Value =
         serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
@@ -390,11 +387,9 @@ fn a_task_with_no_configref_takes_its_harness_model_and_env_from_the_default_con
     let spec = bare["spec"].as_object_mut().unwrap();
     spec.remove("harness");
     spec.remove("host");
-    // With no default to give one, a Task with no harness is refused.
     e.apply(bare.clone())
         .code(1)
         .stderr_has("TaskConfig default");
-    // The default gives it, applied in the same batch or before.
     let default = object(
         "TaskConfig",
         "default",
@@ -433,7 +428,6 @@ fn a_task_launched_with_the_default_harness_takes_updates_after_the_default_goes
     e.reconcile().ok();
     assert_eq!(e.status("t1")["execution"]["harness"], "codex");
     e.fleet(&["delete", "taskconfig", "default"]).ok();
-    // Its saved launch holds the harness: a later update is not refused.
     t["spec"]["dispatch"] = json!(false);
     e.apply(t).ok();
     assert_eq!(e.get("t1")["spec"]["dispatch"], false);

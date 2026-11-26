@@ -10,19 +10,10 @@ use crate::kernel::registry::{Registry, Value as SettingValue};
 use crate::kernel::snapshot::{HostRow, Snapshot};
 use crate::kernel::theme::Themes;
 
-/// Set one key on a Lua table, mapping the error to a String — the shape
-/// `publish` otherwise repeats per field.
 fn set(table: &Table, key: &str, value: impl mlua::IntoLua) -> Result<(), String> {
     table.raw_set(key, value).map_err(|e| e.to_string())
 }
 
-/// FNV-1a over a sequence of byte strings, for group keys whose input has no
-/// version counter of its own (the interface inventory, a parameterised want).
-///
-/// The group cache compares keys exactly, so a collision here would hand back a
-/// stale table — but these keys pair the hash with a real version (or hash
-/// inputs a handful of short strings), which keeps the exposure to the same
-/// order as the `always_fresh` counter wrapping.
 fn fnv64<'a>(parts: impl IntoIterator<Item = &'a [u8]>) -> u64 {
     let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
     for part in parts {
@@ -63,26 +54,15 @@ impl LuaHost {
         } = world;
 
         let table = self.lua.create_table().map_err(|e| e.to_string())?;
-        // The largest group by a distance — a table per session with ~30 named
-        // fields and two nested tables — and one whose inputs move rarely: the
-        // snapshot's own generation, what each agent reported about itself, and
-        // whether an attach failed.
         let sessions = self.group(
             "sessions",
             [epoch.snapshot, epoch.meta, epoch.failed, 0],
             || build_sessions(&self.lua, snapshot, attach_errors, starts, meta),
         )?;
-        // A file read is rooted at a session's directory, so the roots follow
-        // the snapshot rather than being asked for separately — and only when
-        // it moved: rebuilding cloned every id and cwd per publish.
         if self.roots_snapshot.get() != Some(epoch.snapshot) {
             self.roots_snapshot.set(Some(epoch.snapshot));
             let mut roots = self.roots.borrow_mut();
             roots.clear();
-            // Files are read with this machine's filesystem, so only a
-            // directory on this machine is a root: a remote session's path
-            // names a directory elsewhere, which a local one of the same
-            // name is not.
             for row in &snapshot.sessions {
                 match &row.cwd {
                     Some(cwd) if row.workspace_on_this_machine() => {
@@ -95,14 +75,6 @@ impl LuaHost {
 
         set(&table, "sessions", sessions)?;
 
-        // Which sessions are producing output, as a set keyed by session id.
-        //
-        // A group of its own, and a deliberately tiny one: the answer moves
-        // with an agent's output, so gating the `sessions` group on it would
-        // rebuild a ~30-field table per session every time a pane started or
-        // stopped printing. One id per printing session is the whole payload,
-        // and it is the only thing that lets a pane animate `running` on
-        // evidence rather than assert a turn it cannot see.
         let printing_value = self.group("printing", [epoch.printing, 0, 0, 0], || {
             let table = self
                 .lua
@@ -120,24 +92,16 @@ impl LuaHost {
         })?;
         set(&table, "repos", repos)?;
 
-        // Built from the snapshot alone, so it changes when the database does
-        // and not once a frame.
         let agents = self.group("agents", [epoch.snapshot, 0, 0, 0], || {
             build_agents(&self.lua, snapshot)
         })?;
         set(&table, "agents", agents)?;
 
-        // `name` identifies, `detail` distinguishes on screen, `backend` is what
-        // a command and a bookmark scope are keyed by — a flow needs all three,
-        // and none follows from another.
-        // Built from the snapshot alone, so it changes when the database does
-        // and not once a frame.
         let hosts = self.group("hosts", [epoch.snapshot, 0, 0, 0], || {
             build_hosts(&self.lua, snapshot)
         })?;
         set(&table, "hosts", hosts)?;
 
-        // Built from the snapshot alone, like the agents and places above.
         let fleets = self.group("fleets", [epoch.snapshot, 0, 0, 0], || {
             build_fleets(&self.lua, snapshot)
         })?;
@@ -169,12 +133,7 @@ impl LuaHost {
         };
         set(&table, "hover", hover)?;
 
-        // Which pane holds focus, by name. `ctx.focused` answers "am I?", but
-        // the footer has to name whoever IS and is not focusable itself.
         set(&table, "focus", focus.unwrap_or(""))?;
-        // The mouse text selection, empty when nothing is selected. A bare scalar
-        // like `focus`: a pane painting it live must be impure, since it moves no
-        // epoch — see `Published::selection`.
         set(&table, "selection", selection.unwrap_or(""))?;
         set(&table, "reloads", self.reloads)?;
 
@@ -193,37 +152,16 @@ impl LuaHost {
         })?;
         set(&table, "registry", reg)?;
 
-        // The selected session's changes, when any have been asked for. The
-        // *absence* of an entry is "not requested"; `pending` is "asked, not
-        // finished" — a slow diff must not read as a clean worktree.
-        //
-        // Gated because this was the heaviest ungated block by a distance: a
-        // Ready diff can carry up to MAX_DIFF_BYTES of body, published line by
-        // line — a Rust String clone plus a Lua string per line, every frame,
-        // forever once computed. The store only changes through its worker
-        // landing a changed answer or an invalidate command. Its own version
-        // keeps unrelated workers from copying the body again; the snapshot
-        // version covers the session set.
         let diffs_value = self.group("diffs", [epoch.snapshot, diffs.version(), 0, 0], || {
             build_diffs(&self.lua, snapshot, diffs)
         })?;
         set(&table, "diffs", diffs_value)?;
 
-        // The links map is maintained compare-before-store (refresh_links), and
-        // an actual change moves the data epoch — so the rebuilt table is owed
-        // only then, not on every frame a linked agent prints.
         let links_value = self.group("links", [epoch.snapshot, epoch.data, 0, 0], || {
             build_links(&self.lua, links)
         })?;
         set(&table, "links", links_value)?;
 
-        // The content search's answer. Absent unless something asked, so an
-        // interface that never searches never pays for it — and gated on the
-        // answer's own serial, not the data epoch. Every worker moves that
-        // epoch (links, diffs, metrics), eight times a second under load, and
-        // each move rebuilt up to 200 hit tables and handed the strip a new
-        // table, which is how it tells that its answer changed. An answer made
-        // outside a store (a test's) has no serial and keeps the epoch.
         let search_key = match search {
             None => [0, 0, 0, 0],
             Some(answer) if answer.serial > 0 => [1, answer.serial, 0, 0],
@@ -232,26 +170,14 @@ impl LuaHost {
         let search_value = self.group("search", search_key, || build_search(&self.lua, *search))?;
         set(&table, "search", search_value)?;
 
-        // Machine, per-agent and account metrics. Each is absent rather than
-        // zero when it has not been sampled, so a panel can distinguish "no
-        // reading yet" from "nothing spent" — v1's info panel draws the same
-        // distinction by omitting the row. A sample can only land through
-        // Metrics::poll, which moves its own sample serial, so the tables are owed
-        // only then — they were rebuilt per frame for readings that move once
-        // a second at most.
         let metrics_value = self.group("metrics", [epoch.snapshot, epoch.metrics, 0, 0], || {
             build_metrics(&self.lua, snapshot, metrics)
         })?;
         set(&table, "metrics", metrics_value)?;
 
-        // What the arrangement needs to know about the chrome bands, and nothing
-        // more: whether the message band wants a row. The message itself is not
-        // here, because placing a band and filling it are different jobs.
         let chrome = self.lua.create_table().map_err(|e| e.to_string())?;
         set(&chrome, "status_rows", *status_rows)?;
         set(&table, "chrome", chrome)?;
-        // The one arrangement input published as a bare scalar; recorded so
-        // the arrangement cache can key on it (see `LayoutKey`).
         self.last_status_rows.set(*status_rows);
 
         let inventory_key = fnv64(inventory.iter().flat_map(|row| {
@@ -275,9 +201,6 @@ impl LuaHost {
         let platform = self.group("platform", [0, 0, 0, 0], || build_platform(&self.lua))?;
         set(&table, "platform", platform)?;
 
-        // Whether a key's release reaches a binding that asked for it (see
-        // `Binding::release`) — what a pane offering press-and-hold reads to
-        // decide whether to offer it or to fall back to press-to-toggle.
         let releases = self.key_releases.get();
         let keyboard = self.group("keyboard", [releases as u64 + 1, 0, 0, 0], || {
             let keyboard = self.lua.create_table().map_err(|e| e.to_string())?;
@@ -300,11 +223,6 @@ impl LuaHost {
         set(&self.lua.globals(), "thurbox", observed)
     }
 
-    /// Publish the settings in force.
-    ///
-    /// Every switch is published, including ones the kernel does not act on: a
-    /// pane that owns its own surface is the only thing that can honour its own
-    /// switch, which is the point of publishing rather than gating centrally.
     fn publish_settings(
         &self,
         table: &Table,
@@ -346,13 +264,6 @@ impl LuaHost {
         wants: &crate::kernel::repos::Wants,
         epoch: &super::Epoch,
     ) -> Result<(), String> {
-        // Each read is gated on the data epoch (an answer landing moves it)
-        // paired with a digest of the question: the flow re-states its wants
-        // through `store`, which moves no version, so the question itself has
-        // to be part of the key. While the flow is open the bookmark rows —
-        // potentially hundreds, six fields each — were otherwise rebuilt and
-        // recrossed into Lua on every frame; this is also what gives the rows
-        // a stable table identity for the flow's own memoization.
         let bookmarks_key = fnv64([
             &b"bookmarks"[..],
             wants.bookmarks.as_deref().unwrap_or("\x01none").as_bytes(),
@@ -389,9 +300,6 @@ impl LuaHost {
         Ok(())
     }
 
-    /// The branches of the repository `store.want_branches` names: empty
-    /// while nothing is asked, `loading` until git answers, and `is_git`
-    /// false for a directory that is no repository.
     fn build_repo_branches(
         &self,
         store: &crate::kernel::repos::RepoStore,
@@ -403,8 +311,6 @@ impl LuaHost {
         let Some(repo) = &wants.branches else {
             return Ok(out);
         };
-        // A remote place's repository is asked as `<host>\0<path>`; the flow
-        // matches the read by its path.
         let path = repo
             .split_once('\0')
             .map_or(repo.as_str(), |(_, path)| path);
@@ -461,8 +367,6 @@ impl LuaHost {
             bookmarks
                 .set("host", host.clone())
                 .map_err(|e| e.to_string())?;
-            // Absent rows and no rows are different states: the first is "still
-            // reading", which a flow renders rather than calling it empty.
             bookmarks
                 .set("loading", store.bookmarks(host).is_none())
                 .map_err(|e| e.to_string())?;
@@ -475,17 +379,12 @@ impl LuaHost {
                     .map_err(|e| e.to_string())?;
                 item.set("parent", opt_lua_string(&self.lua, row.parent.as_deref())?)
                     .map_err(|e| e.to_string())?;
-                // `nil` unless the row carries a name of its own: a bookmark the
-                // user labelled, or one the flow offers where the path is an
-                // implementation detail rather than something they typed.
                 item.set("label", opt_lua_string(&self.lua, row.label.as_deref())?)
                     .map_err(|e| e.to_string())?;
                 item.set("is_parent", row.is_parent)
                     .map_err(|e| e.to_string())?;
                 item.set("offered", row.offered)
                     .map_err(|e| e.to_string())?;
-                // `nil` means never established, which is a third state beside
-                // true and false: it stays worktree-capable.
                 item.set(
                     "is_git",
                     match row.is_git {
@@ -513,11 +412,7 @@ impl LuaHost {
             browse
                 .set("host", host.clone())
                 .map_err(|e| e.to_string())?;
-            // A remote place's `~` is published as the home the runtime
-            // listed, so an entry joined to it is an absolute path there.
             let shown = store.resolved_dir(host, dir).unwrap_or(dir);
-            // Kept for every later listing of the place, so a typed `~/…`
-            // there is expanded to the home its runtime named.
             if let Some(home) = store.resolved_dir(host, "~") {
                 browse
                     .set("home", home.to_string())
@@ -565,9 +460,6 @@ fn build_sessions(
 ) -> Result<Value, String> {
     let sessions = lua.create_table().map_err(|e| e.to_string())?;
     for (index, row) in snapshot.sessions.iter().enumerate() {
-        // Pre-sized: this row takes ~30 named fields, and a table grown one
-        // field at a time rehashes itself on the way there — per session,
-        // per frame.
         let entry = lua
             .create_table_with_capacity(0, 32)
             .map_err(|e| e.to_string())?;
@@ -575,12 +467,6 @@ fn build_sessions(
         set(&entry, "name", to_lua_string(lua, &row.name)?)?;
         set(&entry, "fleet", opt_lua_string(lua, row.fleet())?)?;
         set(&entry, "agent", to_lua_string(lua, &row.agent)?)?;
-        // Three names, three fields, because they are three different facts and
-        // no two of them can stand in for each other: what the row was created
-        // as, what a driver declared it runs (`session reports-as`), and what is
-        // observably in the pane right now. A row created as `zsh` with claude
-        // running in it is otherwise a session the interface can only call
-        // `zsh`.
         set(&entry, "key", opt_lua_string(lua, row.key.as_deref())?)?;
         set(
             &entry,
@@ -593,8 +479,6 @@ fn build_sessions(
             opt_lua_string(lua, row.detected_agent.as_deref())?,
         )?;
         set(&entry, "status", to_lua_string(lua, row.status.as_str())?)?;
-        // Where a Fleet row's status came from, so a pane draws a hook's
-        // report apart from a screen rule's reading and from neither.
         let source = row.status_source.as_ref();
         set(
             &entry,
@@ -627,8 +511,6 @@ fn build_sessions(
             "branch",
             opt_lua_string(lua, row.branch.as_deref())?,
         )?;
-        // What the diff is taken against, so a pane can name the range it is
-        // showing rather than guessing. Distinct from `branch` above.
         set(
             &entry,
             "base_branch",
@@ -654,8 +536,6 @@ fn build_sessions(
             )?,
         )?;
         set(&entry, "worktrees", row.worktree_count)?;
-        // Every repo the session spans, so a group can be labelled with all
-        // of them rather than just the primary.
         let repos = lua.create_table().map_err(|e| e.to_string())?;
         for (position, name) in row.repos.iter().enumerate() {
             repos
@@ -663,9 +543,6 @@ fn build_sessions(
                 .map_err(|e| e.to_string())?;
         }
         set(&entry, "repos", Value::Table(repos))?;
-        // What the agent said about itself over its own terminal. Absent
-        // when it has said nothing, which a row must tell apart from an
-        // empty message.
         let agent_meta = meta.get(&row.id);
         set(
             &entry,
@@ -677,10 +554,6 @@ fn build_sessions(
             "notification",
             opt_lua_string(lua, agent_meta.and_then(|m| m.notification.as_deref()))?,
         )?;
-        // What whoever drives the session wrote under `ui.*` (issue #1523):
-        // a status note, a group label. Already cleaned on the snapshot's
-        // worker, and absent rather than empty so a row with none costs no
-        // table.
         if !row.meta.is_empty() {
             let meta = lua
                 .create_table_with_capacity(0, row.meta.len())
@@ -703,7 +576,6 @@ fn build_sessions(
             set(&stats, "merged", git.merged)?;
             set(&entry, "git", stats)?;
         }
-        // Why this session's terminal is not live, when it is not.
         set(&entry, "attach_error", opt_lua_string(lua, attach_error)?)?;
         let start = starts.get(&row.id);
         set(
@@ -734,8 +606,6 @@ fn build_repos(lua: &Lua, snapshot: &Snapshot) -> Result<Value, String> {
     Ok(Value::Table(repos))
 }
 
-/// `nil` until Fleet has said which harnesses it has: a flow must tell a
-/// pending list from an empty one.
 fn build_agents(lua: &Lua, snapshot: &Snapshot) -> Result<Value, String> {
     let Some(known) = &snapshot.agents else {
         return Ok(Value::Nil);
@@ -749,8 +619,6 @@ fn build_agents(lua: &Lua, snapshot: &Snapshot) -> Result<Value, String> {
     Ok(Value::Table(agents))
 }
 
-/// `nil` until Fleet has said which places it defines: a flow must tell a
-/// pending list from one with no remote place.
 fn build_hosts(lua: &Lua, snapshot: &Snapshot) -> Result<Value, String> {
     hosts_table(lua, snapshot.hosts.as_deref())
 }
@@ -773,8 +641,6 @@ fn hosts_table(lua: &Lua, known: Option<&[HostRow]>) -> Result<Value, String> {
     Ok(Value::Table(hosts))
 }
 
-/// Every listed Fleet, each with its own agents and places, `nil` until
-/// that Fleet has answered.
 fn build_fleets(lua: &Lua, snapshot: &Snapshot) -> Result<Value, String> {
     let fleets = lua.create_table().map_err(|e| e.to_string())?;
     for (index, fleet) in snapshot.fleets.iter().enumerate() {
@@ -909,9 +775,6 @@ fn build_commands(lua: &Lua, inflight: &[InFlight]) -> Result<Value, String> {
             "subject",
             opt_lua_string(lua, entry.subject.as_deref())?,
         )?;
-        // The machine a creation will land on, so a list grouped by host draws
-        // the placeholder under it rather than under whichever group happens
-        // to hold that repository.
         set(&item, "host", opt_lua_string(lua, entry.host.as_deref())?)?;
         set(&item, "error", opt_lua_string(lua, entry.error.as_deref())?)?;
         commands
@@ -946,8 +809,6 @@ fn build_diffs(lua: &Lua, snapshot: &Snapshot, diffs: &DiffStore) -> Result<Valu
                 set(&item, "state", "ready")?;
                 set(&item, "truncated", *truncated)?;
                 set(&item, "raw_bytes", *raw_bytes as i64)?;
-                // A short file list is a different failure from a cut body,
-                // so it is its own field rather than folded into `truncated`.
                 set(&item, "untracked_omitted", *untracked_omitted as i64)?;
                 let list = lua.create_table().map_err(|e| e.to_string())?;
                 for (index, file) in files.iter().enumerate() {
@@ -955,8 +816,6 @@ fn build_diffs(lua: &Lua, snapshot: &Snapshot, diffs: &DiffStore) -> Result<Valu
                     set(&entry, "path", file.path.clone())?;
                     set(&entry, "added", file.added)?;
                     set(&entry, "removed", file.removed)?;
-                    // Both already known to the parser; a pane re-reading the
-                    // body to recover them is the cost of dropping them here.
                     set(&entry, "status", file.status)?;
                     set(
                         &entry,
@@ -1031,7 +890,6 @@ fn build_search(
         set(&entry, "session", hit.session.as_str())?;
         set(&entry, "shell", hit.shell)?;
         set(&entry, "text", hit.text.as_str())?;
-        // 1-based character indices, the shape `lib.fuzzy.spans` lights.
         let positions = lua.create_table().map_err(err)?;
         let mut n = 0;
         for &(start, end) in &hit.ranges {
@@ -1129,15 +987,12 @@ pub(super) fn run_to_lua(lua: &Lua, run: &crate::kernel::runs::Run) -> mlua::Res
             table.set("status", output.status)?;
             table.set("truncated", output.truncated)?;
             table.set("timed_out", output.timed_out)?;
-            // The common question, answered once here rather than by every pane
-            // re-deriving it from a nullable status.
             table.set("ok", output.status == Some(0) && !output.timed_out)?;
         }
     }
     Ok(table)
 }
 
-/// Set a setting value on a table in whatever Lua type it actually is.
 fn set_value(table: &Table, key: &str, value: &SettingValue) -> Result<(), String> {
     match value {
         SettingValue::Bool(b) => table.set(key, *b),
@@ -1160,10 +1015,6 @@ fn opt_lua_string(lua: &Lua, value: Option<&str>) -> Result<Value, String> {
     }
 }
 
-/// An agent's statusline metrics as a Lua table.
-///
-/// Every field is optional on the way in and simply absent on the way out, so a
-/// pane renders the rows it has rather than zeroes for the ones it does not.
 fn agent_metrics_table(lua: &Lua, m: &crate::session::AgentMetrics) -> Result<Table, String> {
     let table = lua.create_table().map_err(|e| e.to_string())?;
     let set = |key: &str, value: Value| -> Result<(), String> {

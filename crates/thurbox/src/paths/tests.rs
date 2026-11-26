@@ -1,11 +1,5 @@
-//! `paths`'s tests, kept together (the `git/tests.rs` pattern): a sibling
-//! file of the same module, so private items stay reachable.
-
 use super::*;
 
-/// The env var `home_dir()` reads on this platform: `USERPROFILE` on
-/// Windows, `HOME` elsewhere. Tests that exercise tilde expansion source the
-/// home directory from the same var so they pass on every target.
 const HOME_VAR: &str = if cfg!(windows) { "USERPROFILE" } else { "HOME" };
 
 #[test]
@@ -16,7 +10,6 @@ fn display_path_uses_basename() {
     );
 }
 
-/// Write an executable marker file, the way a `PATH` lookup expects to find one.
 fn executable_marker(dir: &Path, name: &str) -> PathBuf {
     let p = dir.join(name);
     std::fs::write(&p, b"#!/bin/sh\n").unwrap();
@@ -31,8 +24,6 @@ fn executable_marker(dir: &Path, name: &str) -> PathBuf {
 #[test]
 fn which_on_path_finds_present_and_rejects_absent() {
     let dir = tempfile::TempDir::new().unwrap();
-    // The lookup is verbatim (no `.exe` munging), so a plain marker filename
-    // resolves identically on every platform.
     let marker = "tbx_which_probe_marker";
     executable_marker(dir.path(), marker);
 
@@ -64,15 +55,11 @@ fn resolve_on_path_declines_a_name_that_is_already_a_path() {
     let marker = "tbx_resolve_relative_marker";
     executable_marker(dir.path(), marker);
 
-    // A caller-supplied path is the caller's decision: re-resolving `./x`
-    // against PATH would name a different file.
     let found = with_path(dir.path(), || resolve_on_path(&format!("./{marker}")));
 
     assert_eq!(found, None);
 }
 
-/// A directory named like the binary, or a file nobody can execute, is not what
-/// `execvp` would have picked — so neither is what this may answer with.
 #[test]
 #[cfg(unix)]
 fn resolve_on_path_skips_what_cannot_be_executed() {
@@ -132,11 +119,6 @@ fn default_strategy_is_xdg() {
 
 #[test]
 fn test_build_ignores_config_and_data_dir_override_env() {
-    // Regression: the unit-test harness often runs *inside* a live thurbox
-    // session whose env carries THURBOX_CONFIG_DIR/THURBOX_DATA_DIR pointing
-    // at the developer's real config/data. On the XDG strategy a test build
-    // must ignore those and stay under the per-process temp sandbox, so an
-    // unguarded config write can never clobber the user's live settings.
     reset_to_xdg();
     let saved_cfg = std::env::var_os(CONFIG_DIR_OVERRIDE_ENV);
     let saved_data = std::env::var_os(DATA_DIR_OVERRIDE_ENV);
@@ -163,10 +145,6 @@ fn test_build_ignores_config_and_data_dir_override_env() {
 
 #[test]
 fn a_data_dir_matching_the_default_is_not_a_relocation() {
-    // thurbox injects THURBOX_DATA_DIR into every session it spawns, pointing
-    // at whatever it resolved itself. A `thurbox-cli` inside such a session
-    // must still read as the default instance — otherwise every hook would
-    // look for its sessions on a socket nobody created.
     let default = Path::new("/home/u/.local/share/thurbox");
     assert_eq!(
         relocated_from(
@@ -175,7 +153,6 @@ fn a_data_dir_matching_the_default_is_not_a_relocation() {
         ),
         None
     );
-    // A trailing separator names the same directory.
     assert_eq!(
         relocated_from(
             Some(OsStr::new("/home/u/.local/share/thurbox/")),
@@ -183,7 +160,6 @@ fn a_data_dir_matching_the_default_is_not_a_relocation() {
         ),
         None
     );
-    // Unset, and empty-as-unset.
     assert_eq!(relocated_from(None, Some(default)), None);
     assert_eq!(relocated_from(Some(OsStr::new("")), Some(default)), None);
 }
@@ -195,8 +171,6 @@ fn a_data_dir_elsewhere_is_a_relocation() {
         relocated_from(Some(OsStr::new("/tmp/lab/data")), Some(default)),
         Some(PathBuf::from("/tmp/lab/data"))
     );
-    // No resolvable default (no HOME, no XDG) means there is no default
-    // instance to share with, so the override stands alone.
     assert_eq!(
         relocated_from(Some(OsStr::new("/tmp/lab/data")), None),
         Some(PathBuf::from("/tmp/lab/data"))
@@ -234,7 +208,6 @@ fn thread_local_isolation() {
 
     assert_eq!(config_file(), Some(base1.join("config.toml")));
 
-    // A fresh thread starts with the Xdg default, unaffected by this one.
     let handle =
         std::thread::spawn(|| PATH_STRATEGY.with(|s| matches!(*s.borrow(), PathStrategy::Xdg)));
 
@@ -435,7 +408,6 @@ fn complete_directory_path_with_real_dir() {
 
 #[test]
 fn complete_directory_path_trailing_slash() {
-    // A real directory with a trailing slash lists children — must not panic.
     let temp = tempfile::TempDir::new().unwrap();
     let result = complete_directory_path(&format!("{}/", temp.path().display()));
     assert!(result.is_some() || result.is_none());
@@ -452,7 +424,6 @@ fn complete_directory_path_exact_match() {
 
 #[test]
 fn complete_directory_path_root() {
-    // "/" is a valid directory — shouldn't panic.
     let result = complete_directory_path("/");
     assert!(result.is_some() || result.is_none());
 }
@@ -466,7 +437,6 @@ fn complete_directory_path_with_tempdir() {
     std::fs::create_dir(base.join("project_beta")).unwrap();
     std::fs::create_dir(base.join("other")).unwrap();
 
-    // Two matches, no completion beyond the typed prefix → None.
     let input = format!("{}/project_", base.display());
     let result = complete_directory_path(&input);
     assert_eq!(result, None);
@@ -555,8 +525,6 @@ fn expand_tilde_relative() {
 
 #[test]
 fn expand_tilde_no_home() {
-    // Temporarily unset the home var — use a thread to avoid interfering with
-    // other tests.
     let result = std::thread::spawn(|| {
         let orig = std::env::var_os(HOME_VAR);
         std::env::remove_var(HOME_VAR);
@@ -587,14 +555,13 @@ fn expand_tilde_empty() {
 
 #[test]
 fn expand_tilde_other_user() {
-    // ~otheruser is NOT expanded — only ~ and ~/ are handled.
     assert_eq!(expand_tilde("~otheruser"), PathBuf::from("~otheruser"));
 }
 
 #[cfg(windows)]
 #[test]
 fn expand_tilde_backslash_on_windows() {
-    // On Windows `~\foo` uses the native separator and must expand too.
+    // Windows accepts `\` as a path separator.
     let home = std::env::var(HOME_VAR).unwrap();
     assert_eq!(expand_tilde("~\\foo"), PathBuf::from(&home).join("foo"));
     assert_eq!(
@@ -606,8 +573,7 @@ fn expand_tilde_backslash_on_windows() {
 #[cfg(not(windows))]
 #[test]
 fn expand_tilde_backslash_literal_on_unix() {
-    // On Unix `\` is a legal filename character, not a separator, so
-    // `~\foo` is left untouched.
+    // On Unix `\` is a legal filename character, not a separator.
     assert_eq!(expand_tilde("~\\foo"), PathBuf::from("~\\foo"));
 }
 
@@ -638,7 +604,6 @@ fn complete_directory_path_tilde() {
 
 #[test]
 fn complete_directory_path_tilde_trailing_slash() {
-    // "~/" completions are relative suffixes, never absolute.
     if let Some(s) = complete_directory_path("~/") {
         assert!(!s.starts_with('/'));
     }
@@ -646,13 +611,10 @@ fn complete_directory_path_tilde_trailing_slash() {
 
 #[test]
 fn sanitize_workspace_segment_strips_separators_and_dots() {
-    // Slashes/backslashes/colons and whitespace → `-`; leading/trailing
-    // `.`/`-` trimmed.
     assert_eq!(sanitize_workspace_segment("a/b\\c:d"), "a-b-c-d");
     assert_eq!(sanitize_workspace_segment("  .git  "), "git");
     assert_eq!(sanitize_workspace_segment("my repo"), "my-repo");
     assert_eq!(sanitize_workspace_segment("--.hidden.--"), "hidden");
-    // A session-id UUID (the real workspace-dir input) is unchanged.
     assert_eq!(
         sanitize_workspace_segment("d5715d35-9599-4507-9901-ef33b9476358"),
         "d5715d35-9599-4507-9901-ef33b9476358"
@@ -661,8 +623,6 @@ fn sanitize_workspace_segment_strips_separators_and_dots() {
 
 #[test]
 fn unique_link_name_dedups_with_dash_two_suffix() {
-    // First collision is `-2`, then `-3`; an empty label falls back to
-    // `repo`.
     let mut used = std::collections::HashSet::new();
     assert_eq!(unique_link_name("webapp", &mut used), "webapp");
     assert_eq!(unique_link_name("webapp", &mut used), "webapp-2");
@@ -671,11 +631,6 @@ fn unique_link_name_dedups_with_dash_two_suffix() {
     assert_eq!(unique_link_name("", &mut used), "repo-2");
 }
 
-/// Config written by a test must land in the `cfg(test)` sandbox rather than
-/// the developer's real config dir, and that sandbox must not outlive the
-/// process that made it. Run in a child process by
-/// [`no_unit_test_temp_dir_outlives_the_test_process`], which checks the
-/// reported directory is gone once the child has exited.
 #[test]
 fn the_unit_test_sandbox_holds_written_config() {
     let cfg = config_file().expect("a config path in the test sandbox");
@@ -696,18 +651,8 @@ fn the_unit_test_sandbox_holds_written_config() {
     println!("TEMP_SANDBOX={}", base.display());
 }
 
-/// The unit-test suite must leave nothing behind in the system temp dir.
-///
-/// Both temp sandboxes — `paths`' `cfg(test)` config/data sandbox and
-/// `workspace`'s test base — are only observably cleaned up once the process
-/// that created them is gone, so this re-runs the two tests that create them
-/// in a child copy of this very test binary and asserts the paths they
-/// reported no longer exist. The system temp dir is tmpfs on many machines, so
-/// a per-run leak here is a per-run leak of RAM until reboot.
 #[test]
 fn no_unit_test_temp_dir_outlives_the_test_process() {
-    // Named rather than discovered; a rename trips the "reported both dirs"
-    // assertion below instead of passing vacuously.
     const HELPERS: [&str; 2] = [
         "paths::tests::the_unit_test_sandbox_holds_written_config",
         "workspace::tests::the_workspace_test_base_holds_a_workspace",
@@ -726,11 +671,7 @@ fn no_unit_test_temp_dir_outlives_the_test_process() {
         String::from_utf8_lossy(&out.stderr)
     );
 
-    // Scanned as a substring rather than line-by-line: with --nocapture the
-    // harness's own "test <name> ... " / "ok" progress text shares stdout
-    // with the test's println! on the same fd, unsynchronized, so a marker
-    // can land mid-line (e.g. "...okTEMP_SANDBOX=/tmp/..." or "... ...
-    // TEMP_SANDBOX=/tmp/...\nok") rather than as a line of its own.
+    // The test harness's progress text shares stdout unsynchronized, so a marker can land mid-line.
     const MARKER: &str = "TEMP_SANDBOX=";
     let mut reported = 0;
     let mut rest: &str = &stdout;
@@ -780,8 +721,6 @@ fn env_default_tokens_follow_the_given_environment() {
     assert!(env_token_names("~/.codex/hooks.json").is_empty());
 }
 
-/// A rename alone would give the replacement the staged file's default mode, so
-/// a private config would turn world-readable and a script lose its exec bit.
 #[cfg(unix)]
 #[test]
 fn a_replaced_file_keeps_its_permissions() {
@@ -800,8 +739,6 @@ fn a_replaced_file_keeps_its_permissions() {
     }
 }
 
-/// A file the user made read-only is a refusal: `fs::write` honoured it, and a
-/// rename, which needs only the directory to be writable, must not undo it.
 #[cfg(unix)]
 #[test]
 fn a_read_only_file_is_not_replaced() {
@@ -819,8 +756,6 @@ fn a_read_only_file_is_not_replaced() {
     assert_eq!(left.len(), 1, "a staged file was left behind");
 }
 
-/// The staged copy of a private file is private from its first byte: a crash
-/// before the final permissions are applied must not leave a readable sibling.
 #[cfg(unix)]
 #[test]
 fn a_staged_copy_starts_no_more_open_than_the_file_it_replaces() {
@@ -834,8 +769,6 @@ fn a_staged_copy_starts_no_more_open_than_the_file_it_replaces() {
     assert_eq!(mode & 0o077, 0, "staged file opened as {mode:o}");
 }
 
-/// A staged name a crashed process with the same pid left behind is ours to
-/// reuse, not a reason to fail the save.
 #[test]
 fn a_leftover_staged_file_does_not_block_the_next_save() {
     let dir = tempfile::tempdir().unwrap();
@@ -853,7 +786,6 @@ fn the_wsl_distro_is_read_trimmed_and_an_empty_one_is_none() {
         assert_eq!(current_wsl_distro().as_deref(), Some("Ubuntu"));
     });
     with_wsl_distro(None, || assert_eq!(current_wsl_distro(), None));
-    // A distro that set the variable empty is no distro at all.
     with_wsl_distro(Some("  "), || assert_eq!(current_wsl_distro(), None));
 }
 

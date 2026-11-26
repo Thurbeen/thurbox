@@ -1,11 +1,3 @@
-//! Lua table → [`Node`].
-//!
-//! A mod returns a plain table; nothing here hands it a ratatui object.
-//! That indirection is what makes throwing the VM away on reload safe, and it
-//! is why a malformed tree is a *reported* error rather than a crash: every
-//! failure below returns `Err(String)` naming the path where it happened, so
-//! the host can render it in the offending mod's own region.
-
 use mlua::{Table, Value};
 use ratatui::style::Style;
 
@@ -14,14 +6,6 @@ use super::node::{
     SurfaceSource,
 };
 
-/// Where in the tree an error happened, built as a borrowed chain rather than a
-/// string.
-///
-/// Every descent used to allocate its child's path eagerly —
-/// `&format!("{path}[{}]", index + 1)` — one `String` per node, growing with
-/// depth, on a path that is only ever *read* when something is malformed. It
-/// was ~15% of conversion for text nobody sees. A chain costs nothing to build
-/// and renders itself only when a message is finally formatted.
 #[derive(Clone, Copy)]
 enum Crumb<'a> {
     Root,
@@ -41,13 +25,6 @@ impl std::fmt::Display for Crumb<'_> {
 
 const MAX_DEPTH: usize = 64;
 
-/// Convert a mod's returned value into a node tree.
-/// Read a mod's returned tree.
-///
-/// `owner` is the path of the mod that produced it, needed because a
-/// `surface` naming a **program** names one of that mod's own — the mod
-/// writes `program = "watch"` and the kernel resolves the owner, so naming another
-/// mod's pane is impossible by construction rather than refused by a check.
 pub fn to_node(value: &Value, owner: &str) -> Result<Node, String> {
     convert(value, Crumb::Root, 0, owner)
 }
@@ -105,8 +82,7 @@ impl Fields {
         let mut out = Self::default();
         for pair in table.pairs::<Value, Value>() {
             let (key, value) = pair.map_err(|e| format!("{path}: {e}"))?;
-            // Integer keys are the array part — the children of a box, read in
-            // order below rather than here, where `pairs` promises no order.
+            // Lua's `pairs` promises no order: the array part is read in order below.
             let Value::String(key) = key else { continue };
             let slot = match key.as_bytes().as_ref() {
                 b"type" => &mut out.kind,
@@ -214,10 +190,6 @@ fn convert_table(
             cursor: val_u16(fields.cursor.as_ref(), "cursor", path)?.unwrap_or(0) as usize,
             placeholder: val_string(fields.placeholder.as_ref(), "placeholder", path)?
                 .unwrap_or_default(),
-            // Absent means "not the one being typed into". A pane that draws one
-            // field and never says so gets no caret, which is visible at once —
-            // the alternative default hands the caret to every field on screen
-            // and the last one painted wins, which is not.
             focused: val_bool(fields.focused.as_ref(), "focused", path)?.unwrap_or(false),
             style: read_style_value(fields.style.as_ref(), "style", path)?,
             frame,
@@ -315,9 +287,6 @@ fn read_lines(value: &Value, path: Crumb<'_>, depth: usize) -> Result<Vec<Vec<Ru
             identity: None,
         }]]),
         Value::Table(table) => {
-            // `{ text = ..., style = ... }` is one line, not a list of lines.
-            // One raw read answers it; asking `contains_key` first was a second
-            // crossing into the VM for the same question, per line per frame.
             if !matches!(table.raw_get::<Value>("text"), Ok(Value::Nil) | Err(_)) {
                 return Ok(vec![read_runs(value, path, depth + 1)?]);
             }
@@ -336,7 +305,6 @@ fn read_lines(value: &Value, path: Crumb<'_>, depth: usize) -> Result<Vec<Vec<Ru
     }
 }
 
-/// One line: a string, a `{ text =, style = }` table, or a list of those.
 fn read_runs(value: &Value, path: Crumb<'_>, depth: usize) -> Result<Vec<Run>, String> {
     if depth > MAX_DEPTH {
         return Err(format!(
@@ -388,11 +356,6 @@ fn read_runs(value: &Value, path: Crumb<'_>, depth: usize) -> Result<Vec<Run>, S
     }
 }
 
-/// A run's own `id`/`role`, when it names either.
-///
-/// `class` is deliberately absent: a run is a click target, not a selector
-/// surface, and every read here costs a crossing into the VM per span per
-/// frame — the hottest leaf in the renderer.
 fn read_run_identity(table: &Table, path: Crumb<'_>) -> Result<Option<Box<Identity>>, String> {
     let id = opt_string(table, "id", path)?;
     let role = opt_string(table, "role", path)?;
@@ -417,7 +380,6 @@ fn read_size(fields: &Fields, path: Crumb<'_>) -> Result<Size, String> {
 }
 
 fn read_identity(fields: &Fields, path: Crumb<'_>) -> Result<Identity, String> {
-    // `class` accepts one name or a list, mirroring how it reads in markup.
     let classes = match fields.class.clone().unwrap_or(Value::Nil) {
         Value::Nil => Vec::new(),
         Value::String(s) => s
@@ -447,7 +409,6 @@ fn read_identity(fields: &Fields, path: Crumb<'_>) -> Result<Identity, String> {
 }
 
 fn read_frame(fields: &Fields, path: Crumb<'_>) -> Result<Option<Frame>, String> {
-    // `block` is what the POC called it; keep it working.
     let raw = fields
         .frame
         .clone()
@@ -479,8 +440,7 @@ fn read_frame(fields: &Fields, path: Crumb<'_>) -> Result<Option<Frame>, String>
             };
             let border_type = match opt_string(&spec, "border_type", path)?.as_deref() {
                 Some("rounded") | None => BorderKind::Rounded,
-                // Two spellings for one shape: `square` is what the panes call
-                // it, `plain` is ratatui's name for the same corners.
+                // `plain` is ratatui's name for `square` corners.
                 Some("square") | Some("plain") => BorderKind::Square,
                 Some("thick") => BorderKind::Thick,
                 Some(other) => {
@@ -512,7 +472,6 @@ fn read_frame(fields: &Fields, path: Crumb<'_>) -> Result<Option<Frame>, String>
     }
 }
 
-/// The runs a frame paints onto its own border cells.
 fn read_overlay(spec: &Table, path: Crumb<'_>) -> Result<Option<Box<Overlay>>, String> {
     let raw: Value = spec
         .raw_get("overlay")
@@ -562,10 +521,6 @@ fn align_named(value: Option<&str>, path: Crumb<'_>, key: &str) -> Result<Align,
     }
 }
 
-/// Set `fg`/`bg` on `style`, ignoring any other key.
-///
-/// An unparseable colour leaves the field alone rather than defaulting it: a
-/// typo should lose that one colour, not repaint the span.
 fn apply_color(style: &mut Style, field: &[u8], raw: &str) {
     let Some(color) = parse_color(raw) else {
         return;
@@ -577,7 +532,6 @@ fn apply_color(style: &mut Style, field: &[u8], raw: &str) {
     }
 }
 
-/// The modifier a boolean style key turns on.
 fn modifier_for(field: &[u8]) -> Option<ratatui::style::Modifier> {
     use ratatui::style::Modifier;
     Some(match field {
@@ -591,8 +545,6 @@ fn modifier_for(field: &[u8]) -> Option<ratatui::style::Modifier> {
     })
 }
 
-/// Read a style, which may be a colour shorthand or a full table.
-/// [`read_style_field`] against an already-gathered value.
 fn read_style_value(value: Option<&Value>, key: &str, path: Crumb<'_>) -> Result<Style, String> {
     read_style_raw(value.cloned().unwrap_or(Value::Nil), key, path)
 }
@@ -626,14 +578,10 @@ fn read_style_table(spec: &Table, key: &str, path: Crumb<'_>) -> Result<Style, S
         let field = field.as_bytes();
         match value {
             Value::String(s) => {
-                // Borrowed, not `to_string_lossy`: that was a heap `String` per
-                // colour value right here, and a non-UTF-8 one parses to no
-                // colour either way.
                 if let Ok(s) = s.to_str() {
                     apply_color(&mut style, &field, &s);
                 }
             }
-            // Rare enough (a numeric `fg = 3`) that its `String` stays.
             Value::Integer(n) => {
                 apply_color(&mut style, &field, &n.to_string());
             }
@@ -688,9 +636,6 @@ fn opt_f64(table: &Table, key: &str, path: Crumb<'_>) -> Result<Option<f64>, Str
     }
 }
 
-/// The `opt_*` coercions, against a field already gathered by [`Fields::read`]
-/// rather than a fresh lookup. Same rules, same messages — only the source of
-/// the value differs.
 fn val_string(value: Option<&Value>, key: &str, path: Crumb<'_>) -> Result<Option<String>, String> {
     match value.unwrap_or(&Value::Nil) {
         Value::Nil => Ok(None),
@@ -814,7 +759,6 @@ fn run_to_lua(lua: &mlua::Lua, run: &Run) -> Result<Table, String> {
     Ok(entry)
 }
 
-/// A run list as the sequence of run tables `read_runs` reads back.
 fn runs_to_lua(lua: &mlua::Lua, runs: &[Run]) -> Result<Table, String> {
     let out = lua.create_table().map_err(|e| e.to_string())?;
     for (index, run) in runs.iter().enumerate() {
@@ -863,21 +807,12 @@ pub fn to_lua(lua: &mlua::Lua, node: &Node) -> Result<Value, String> {
             style,
             ..
         } => {
-            // The style MUST round-trip. A decorator is handed the tree and
-            // returns one, so anything dropped here is dropped from the pane --
-            // and a decorator that returns its input untouched (the common
-            // case, when its query is empty) would silently strip every colour
-            // the pane drew. That is exactly what happened: the session list
-            // rendered colourless because search decorates its slot.
             table
                 .set("text", lines_to_lua(lua, lines)?)
                 .map_err(|e| e.to_string())?;
             set("align", string_value(lua, align_name(*align))?)?;
             table.set("wrap", *wrap).map_err(|e| e.to_string())?;
             table.set("scroll", *scroll).map_err(|e| e.to_string())?;
-            // Round-trips for the same reason a run's style does: a decorator
-            // is handed the tree and returns one, so a selection bar dropped
-            // here is a selection bar dropped from the pane.
             if let Some(style) = style_to_lua(lua, style)? {
                 table.set("style", style).map_err(|e| e.to_string())?;
             }
@@ -944,9 +879,6 @@ fn size_to_lua(table: &Table, size: Size) -> Result<(), String> {
     if let Some(fill) = size.fill {
         table.set("fill", fill).map_err(|e| e.to_string())?;
     }
-    // `min`/`max` round-trip for the same reason the styles do: a decorator
-    // handed the tree returns one, so a field dropped here is dropped from the
-    // pane -- and an identity decorator must leave the pane exactly as it was.
     if let Some(min) = size.min {
         table.set("min", min).map_err(|e| e.to_string())?;
     }
@@ -978,9 +910,6 @@ fn identity_to_lua(lua: &mlua::Lua, table: &Table, identity: &Identity) -> Resul
 fn frame_to_lua(lua: &mlua::Lua, frame: &Frame) -> Result<Table, String> {
     let spec = lua.create_table().map_err(|e| e.to_string())?;
     if let Some(title) = &frame.title {
-        // The runs, not `title_text()`: a title carries styled runs (the
-        // session list's badge, the agent pane's status word) and
-        // flattening it here would hand every decorated pane a plain one.
         spec.set("title", runs_to_lua(lua, title)?)
             .map_err(|e| e.to_string())?;
     }
@@ -1068,7 +997,6 @@ mod tests {
     use super::*;
     use mlua::Lua;
 
-    /// Evaluate a Lua expression and convert whatever it returns.
     fn node_of(source: &str) -> Result<Node, String> {
         let lua = Lua::new();
         let value: Value = lua
@@ -1296,10 +1224,6 @@ mod tests {
         assert!(error.contains("nested deeper"), "{error}");
     }
 
-    /// A table that contains itself is a legal Lua value, and `text` reaches the
-    /// run reader rather than the child reader — so it needs its own depth guard.
-    /// Without one this is a stack overflow, which is an abort rather than a
-    /// panic: the terminal-restoring hook never runs.
     #[test]
     fn a_cyclic_text_table_is_refused_rather_than_overflowing() {
         let lua = Lua::new();

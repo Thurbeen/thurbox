@@ -1,6 +1,3 @@
-//! workspace-git against real git repositories in temporary directories: the
-//! rules docs/runtime/README.md gives a workspace, one by one.
-
 use std::fs;
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -8,8 +5,6 @@ use std::process::{Command, Stdio};
 
 use workspace_git::{Answer, Config, make, release};
 
-/// The ambient variables that pin git to another repository. A test run
-/// under a pre-commit hook inherits them.
 const GIT_LOCATION_ENV: [&str; 10] = [
     "GIT_DIR",
     "GIT_WORK_TREE",
@@ -70,7 +65,6 @@ impl Sandbox {
         }
     }
 
-    /// A repository with one commit on `main` holding `README`.
     fn origin(&self, name: &str) -> PathBuf {
         let dir = self.base.join(name);
         fs::create_dir_all(&dir).expect("origin dir");
@@ -81,8 +75,6 @@ impl Sandbox {
         dir
     }
 
-    /// A bare repository cloned from a new origin: a URL to it gets a
-    /// source of its own, as a remote does.
     fn bare(&self, name: &str) -> PathBuf {
         let origin = self.origin(&format!("{name}-work"));
         let bare = self.base.join(format!("{name}.git"));
@@ -99,7 +91,6 @@ impl Sandbox {
         bare
     }
 
-    /// A branch of `origin` holding `file`, `main` left checked out.
     fn branch(&self, origin: &Path, branch: &str, file: &str) {
         git(origin, &["checkout", "-q", "-b", branch]);
         fs::write(origin.join(file), branch).expect("branch file");
@@ -119,7 +110,6 @@ impl Sandbox {
         }
     }
 
-    /// The one source repository workspace-git keeps.
     fn source(&self) -> PathBuf {
         let mut sources: Vec<PathBuf> = fs::read_dir(self.cfg.root.join(".sources"))
             .expect("sources")
@@ -131,7 +121,6 @@ impl Sandbox {
     }
 }
 
-/// `<scheme>://<path>`, spelled as a URL spells a Windows path: `/C:/…`.
 fn url(scheme: &str, path: &Path) -> String {
     let text = path.display().to_string().replace('\\', "/");
     if text.starts_with('/') {
@@ -141,8 +130,6 @@ fn url(scheme: &str, path: &Path) -> String {
     }
 }
 
-/// `path` without Windows' `\\?\` prefix, which `canonicalize` adds and
-/// a URL cannot spell.
 fn plain(path: PathBuf) -> PathBuf {
     match path.to_str().and_then(|p| p.strip_prefix(r"\\?\")) {
         Some(rest) => PathBuf::from(rest),
@@ -150,8 +137,6 @@ fn plain(path: PathBuf) -> PathBuf {
     }
 }
 
-/// Whether `git worktree list --porcelain` output names `tree`. git spells a
-/// Windows path with `/`, so both sides are compared as canonical paths.
 fn lists_worktree(listed: &str, tree: &Path) -> bool {
     let canonical = |p: &Path| plain(p.canonicalize().unwrap_or_else(|_| p.to_path_buf()));
     let tree = canonical(tree);
@@ -161,8 +146,6 @@ fn lists_worktree(listed: &str, tree: &Path) -> bool {
         .any(|p| canonical(Path::new(p)) == tree)
 }
 
-/// The identity workspace-git keys a checkout's lock on: the canonical
-/// directory that holds its `.git`.
 fn main_checkout(checkout: &Path) -> PathBuf {
     plain(checkout.canonicalize().expect("canonical checkout"))
 }
@@ -317,8 +300,7 @@ fn a_dirty_release_is_preserved_and_a_git_file_url_restores_it() {
     let restore = format!("{}#{preserved}", url("git+file", &source));
     let (back, _) = s.made("t.restored", &[restore]);
     let tree = Path::new(&back[0]);
-    // A checkout follows the user's git config: `core.autocrlf` on a
-    // Windows runner writes CRLF.
+    // `core.autocrlf` on a Windows runner checks out CRLF.
     let text = |name: &str| {
         fs::read_to_string(tree.join(name))
             .unwrap()
@@ -501,7 +483,6 @@ fn a_released_branch_origin_already_has_is_pruned() {
     let origin = s.bare("app");
     s.made("t.merged", &[url("git+file", &origin)]);
     release(&s.cfg, "t.merged").expect("release");
-    // The branch's head is origin's main: origin already has it.
     s.made("t.after", &[url("git+file", &origin)]);
     let heads = git(
         &s.source(),
@@ -580,9 +561,6 @@ fn inspect_answers_the_urls_and_directories_of_a_whole_workspace() {
     );
 }
 
-/// Two runtimes on one root, such as two Fleets on different sockets, may
-/// make workspaces of one new repository at once: neither may remove the
-/// source the other is filling.
 #[test]
 fn concurrent_makes_of_one_new_repository_all_succeed() {
     for round in 0..4 {
@@ -611,9 +589,6 @@ fn concurrent_makes_of_one_new_repository_all_succeed() {
     }
 }
 
-/// A `git+file` URL naming a local checkout gets a worktree of the checkout
-/// itself: the checkout lists it, and a commit made in it is in the
-/// checkout at once. No source of its own is made.
 #[test]
 fn a_local_checkout_gets_a_worktree_of_itself() {
     let s = Sandbox::new();
@@ -647,9 +622,6 @@ fn a_local_checkout_gets_a_worktree_of_itself() {
     );
 }
 
-/// A checkout cloned from a bare upstream, and the upstream moved on past
-/// it: both the checkout's `main` and its `origin/main` are behind. Returns
-/// the checkout and the upstream's new `main`.
 fn behind_checkout(s: &Sandbox) -> (PathBuf, String) {
     let upstream = s.bare("app");
     let checkout = s.base.join("app");
@@ -673,8 +645,6 @@ fn behind_checkout(s: &Sandbox) -> (PathBuf, String) {
     (checkout, git(&work, &["rev-parse", "HEAD"]))
 }
 
-/// A checkout's new branch with no base starts from its upstream's default
-/// branch as it is now: the checkout's `origin` is fetched first.
 #[test]
 fn a_checkouts_default_base_is_its_freshly_fetched_upstream() {
     let s = Sandbox::new();
@@ -686,8 +656,6 @@ fn a_checkouts_default_base_is_its_freshly_fetched_upstream() {
     assert_eq!(git(Path::new(&dirs[0]), &["rev-parse", "HEAD"]), moved);
 }
 
-/// `origin/main`, the base the new-session flow offers by default, is the
-/// upstream's `main` fetched at the make.
 #[test]
 fn an_origin_base_on_a_checkout_is_fetched_before_the_make() {
     let s = Sandbox::new();
@@ -702,9 +670,6 @@ fn an_origin_base_on_a_checkout_is_fetched_before_the_make() {
     assert_eq!(git(Path::new(&dirs[0]), &["rev-parse", "HEAD"]), moved);
 }
 
-/// An upstream that changed its default branch is followed: the make's fetch
-/// moves the checkout's `origin/HEAD`, so a new branch with no base starts
-/// from the upstream's new default.
 #[test]
 fn a_checkout_follows_an_upstream_that_changed_its_default_branch() {
     let s = Sandbox::new();
@@ -726,8 +691,6 @@ fn a_checkout_follows_an_upstream_that_changed_its_default_branch() {
     assert_eq!(git(Path::new(&dirs[0]), &["rev-parse", "HEAD"]), develop);
 }
 
-/// With no `origin/HEAD`, a checkout's default base is the fetched
-/// `origin/main`, else `origin/master`.
 #[test]
 fn without_origin_head_the_default_is_origin_main_then_master() {
     for branch in ["main", "master"] {
@@ -756,8 +719,6 @@ fn without_origin_head_the_default_is_origin_main_then_master() {
     }
 }
 
-/// `origin/main` names the remote-tracking branch even when the checkout
-/// has a local branch or tag spelled the same.
 #[test]
 fn an_origin_base_wins_over_a_local_branch_of_that_name() {
     let s = Sandbox::new();
@@ -774,7 +735,6 @@ fn an_origin_base_wins_over_a_local_branch_of_that_name() {
     assert_eq!(git(Path::new(&dirs[0]), &["rev-parse", "HEAD"]), moved);
 }
 
-/// A local branch chosen as the base is still the checkout's own.
 #[test]
 fn a_local_base_on_a_checkout_is_its_own_branch() {
     let s = Sandbox::new();
@@ -787,8 +747,6 @@ fn a_local_base_on_a_checkout_is_its_own_branch() {
     assert_eq!(git(Path::new(&dirs[0]), &["rev-parse", "HEAD"]), local);
 }
 
-/// An existing branch of a checkout is the real one: a commit in the
-/// worktree moves the checkout's branch.
 #[test]
 fn an_existing_branch_of_a_checkout_is_its_real_branch() {
     let s = Sandbox::new();
@@ -809,8 +767,6 @@ fn an_existing_branch_of_a_checkout_is_its_real_branch() {
     );
 }
 
-/// A release of a checkout's worktree keeps its uncommitted work in the
-/// checkout, removes the worktree and keeps the branch.
 #[test]
 fn a_release_preserves_a_checkouts_dirty_work_in_the_checkout() {
     let s = Sandbox::new();
@@ -837,7 +793,6 @@ fn a_release_preserves_a_checkouts_dirty_work_in_the_checkout() {
     );
 }
 
-/// The lock file workspace-git takes for `repository` under `root`.
 fn repository_lock(root: &Path, repository: &Path) -> fs::File {
     use sha2::{Digest, Sha256};
     let digest: String = Sha256::digest(repository.display().to_string().as_bytes())
@@ -854,8 +809,6 @@ fn repository_lock(root: &Path, repository: &Path) -> fs::File {
         .unwrap()
 }
 
-/// The retention never touches a repository another call holds: a make that
-/// finds one locked leaves its preserved work for a later make.
 #[test]
 fn the_retention_leaves_a_repository_another_call_holds() {
     let mut s = Sandbox::new();
@@ -880,9 +833,6 @@ fn the_retention_leaves_a_repository_another_call_holds() {
 
 const PRESERVED_PREFIX: &str = "refs/fleet/preserved";
 
-/// The picker may offer a linked worktree's path. Its worktree is made from
-/// the main checkout, so removing the linked worktree later does not break
-/// the release.
 #[test]
 fn a_linked_worktree_url_makes_its_worktree_from_the_main_checkout() {
     let s = Sandbox::new();
@@ -928,8 +878,6 @@ fn a_linked_worktree_url_makes_its_worktree_from_the_main_checkout() {
     );
 }
 
-/// A URL naming a checkout's subdirectory is the same repository: its make
-/// takes the checkout's one lock.
 #[test]
 fn a_subdirectory_url_takes_the_checkouts_one_lock() {
     let s = Sandbox::new();
@@ -960,8 +908,6 @@ fn a_subdirectory_url_takes_the_checkouts_one_lock() {
     maker.join().unwrap();
 }
 
-/// A discard locks only the repositories its own key uses: a fetch of
-/// another key's source does not hold it up.
 #[test]
 fn a_discard_waits_on_no_other_keys_repository() {
     let s = Sandbox::new();
@@ -985,9 +931,6 @@ fn a_discard_waits_on_no_other_keys_repository() {
     assert!(!s.cfg.root.join("t.mine").exists());
 }
 
-/// With no base and no remote default, a new branch starts from the branch
-/// the directory the URL names has checked out: a linked worktree's own,
-/// not its main checkout's.
 #[test]
 fn a_linked_worktree_with_no_base_starts_from_its_own_head() {
     let s = Sandbox::new();

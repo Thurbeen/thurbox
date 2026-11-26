@@ -1,8 +1,3 @@
-//! `fleet`: the command line of the Rust rewrite. It parses arguments, opens
-//! the store and the runtime the config names, calls fleet-manager, and
-//! prints. Every rule about what may be written lives in fleet-manager and
-//! below; nothing here decides.
-
 mod bootstrap;
 mod config;
 mod migrate;
@@ -38,7 +33,6 @@ use serde_json::{Value, json};
 
 use crate::config::{CONFIG_VERSION, Config, default_data_dir};
 
-/// The released version when CI stamps one, else the manifest's.
 const VERSION: &str = match option_env!("FLEET_RELEASE_VERSION") {
     Some(v) => v,
     None => env!("CARGO_PKG_VERSION"),
@@ -47,10 +41,10 @@ const VERSION: &str = match option_env!("FLEET_RELEASE_VERSION") {
 #[derive(Debug, Parser)]
 #[command(name = "fleet", version = VERSION, about = "Fleet: one agent session per Task, reconciled from a file store.")]
 struct Cli {
-    /// Config file (else FLEET_CONFIG, then the native per-user config).
+    #[arg(help = "Config file (else FLEET_CONFIG, then the native per-user config)")]
     #[arg(long, global = true)]
     config: Option<PathBuf>,
-    /// The data directory (overrides the config file's data.dir).
+    #[arg(help = "The data directory (overrides the config file's data.dir)")]
     #[arg(long, global = true)]
     data_dir: Option<PathBuf>,
     #[command(subcommand)]
@@ -59,117 +53,133 @@ struct Cli {
 
 #[derive(Debug, Subcommand)]
 enum Command {
-    /// Create the local config, offline; an existing config is kept.
-    ///
-    /// Also ensures the TaskConfig default and the Boards shared and fleet
-    /// in the store.
+    #[command(
+        about = "Create the local config, offline; an existing config is kept",
+        long_about = "Create the local config, offline; an existing config is kept.\n\nAlso ensures the TaskConfig default and the Boards shared and fleet in the store."
+    )]
     Init,
-    /// Turn a Fleet 2 config and store into Fleet 3's; the 2.x ones are kept as `.v2`.
+    #[command(
+        about = "Turn a Fleet 2 config and store into Fleet 3's; the 2.x ones are kept as `.v2`"
+    )]
     Migrate {
-        /// Print the plan and change nothing.
+        #[arg(help = "Print the plan and change nothing")]
         #[arg(long)]
         dry_run: bool,
     },
-    /// Keep every due Task reconciling until Ctrl-C.
+    #[command(about = "Keep every due Task reconciling until Ctrl-C")]
     Up {
-        /// Interval between bounded sweeps (100..=10000 ms).
+        #[arg(help = "Interval between bounded sweeps (100..=10000 ms)")]
         #[arg(long, default_value_t = 1000, value_parser = clap::value_parser!(u64).range(100..=10000))]
         poll_ms: u64,
-        /// Manager lease; must outlast both runtime operations and poll interval.
+        #[arg(help = "Manager lease; must outlast both runtime operations and poll interval")]
         #[arg(long)]
         lease_ttl_ms: Option<u64>,
     },
-    /// Create or update resources from a JSON file (an object, an array, or {"items": [...]}); `-` reads stdin.
+    #[command(
+        about = "Create or update resources from a JSON file (an object, an array, or {\"items\": [...]}); `-` reads stdin"
+    )]
     Apply {
         #[arg(short = 'f', long = "filename")]
         file: PathBuf,
         #[arg(long)]
         json: bool,
-        /// Create each object, or refuse one whose name is taken (exit 5),
-        /// leaving it as it is; never update.
+        #[arg(
+            help = "Create each object, or refuse one whose name is taken (exit 5), leaving it as it is; never update"
+        )]
         #[arg(long)]
         create_only: bool,
     },
-    /// Print one resource as JSON.
+    #[command(about = "Print one resource as JSON")]
     Get { kind: String, name: String },
-    /// List every resource of a kind.
+    #[command(about = "List every resource of a kind")]
     List {
         kind: String,
         #[arg(long)]
         json: bool,
     },
-    /// Show what a resource's status says, and whether it is current.
+    #[command(about = "Show what a resource's status says, and whether it is current")]
     Status {
         kind: String,
         name: String,
         #[arg(long)]
         json: bool,
     },
-    /// The worker's answer: record the result of a briefed Task.
+    #[command(about = "The worker's answer: record the result of a briefed Task")]
     Result {
         task: String,
-        /// The generation the brief was delivered for.
+        #[arg(help = "The generation the brief was delivered for")]
         #[arg(long)]
         generation: Option<u64>,
-        /// shipped, stuck, failed or not-applicable.
+        #[arg(help = "shipped, stuck, failed or not-applicable")]
         #[arg(long)]
         outcome: Option<String>,
         #[arg(long, default_value = "")]
         summary: String,
         #[arg(long = "artifact")]
         artifacts: Vec<String>,
-        /// A structured output as NAME=JSON, repeatable.
+        #[arg(help = "A structured output as NAME=JSON, repeatable")]
         #[arg(long = "output")]
         outputs: Vec<String>,
-        /// The whole result as a JSON file instead of the flags above.
+        #[arg(help = "The whole result as a JSON file instead of the flags above")]
         #[arg(long, conflicts_with_all = ["generation", "outcome", "summary", "artifacts", "outputs"])]
         file: Option<PathBuf>,
     },
-    /// The worker's declaration: the change it opened, or any fact as a JSON object with a `kind`.
+    #[command(
+        about = "The worker's declaration: the change it opened, or any fact as a JSON object with a `kind`"
+    )]
     Declare {
         task: String,
-        /// The URL of the change the worker opened; one ChangeRequest is ensured for it and followed.
+        #[arg(
+            help = "The URL of the change the worker opened; one ChangeRequest is ensured for it and followed"
+        )]
         #[arg(long, value_name = "URL", conflicts_with = "json")]
         change_request: Option<String>,
-        /// Any JSON object with a string `kind`, appended as is.
+        #[arg(help = "Any JSON object with a string `kind`, appended as is")]
         #[arg(long, value_name = "OBJECT")]
         json: Option<String>,
     },
-    /// Queue a message for a Task's session; the controller delivers it on its next pass.
+    #[command(
+        about = "Queue a message for a Task's session; the controller delivers it on its next pass"
+    )]
     Send {
         task: String,
-        /// The message, delivered as typed; it may start with a dash.
+        #[arg(help = "The message, delivered as typed; it may start with a dash")]
         #[arg(allow_hyphen_values = true, required_unless_present_any = ["retry", "drop"])]
         text: Option<String>,
-        /// Queue an entry given up on again, under a new key, by its key.
+        #[arg(help = "Queue an entry given up on again, under a new key, by its key")]
         #[arg(long, value_name = "KEY", conflicts_with_all = ["text", "answers", "drop"])]
         retry: Option<String>,
-        /// Remove an entry given up on, by its key; it is never delivered.
+        #[arg(help = "Remove an entry given up on, by its key; it is never delivered")]
         #[arg(long, value_name = "KEY", conflicts_with_all = ["text", "answers", "json"])]
         drop: Option<String>,
-        /// A declared Question this message answers, by id; repeatable.
-        /// Recorded in the Task's status.answered, first answer wins.
-        /// On a Concluded Task the message is an amendment that re-opens it.
+        #[arg(
+            help = "A declared Question this message answers, by id; repeatable. Recorded in the Task's status.answered, first answer wins. On a Concluded Task the message is an amendment that re-opens it"
+        )]
         #[arg(long = "answers", value_name = "ID")]
         answers: Vec<String>,
-        /// Print the appended inbox entry, or the amendment an answer became, as JSON.
+        #[arg(help = "Print the appended inbox entry, or the amendment an answer became, as JSON")]
         #[arg(long)]
         json: bool,
     },
-    /// Ask the Task's controller to pause its session now; a message or `attach --wake` resumes it.
+    #[command(
+        about = "Ask the Task's controller to pause its session now; a message or `attach --wake` resumes it"
+    )]
     Pause { task: String },
-    /// Ask the Task's controller to stop its agent now, mid-turn or paused,
-    /// and start it again in the same session on its conversation.
+    #[command(
+        about = "Ask the Task's controller to stop its agent now, mid-turn or paused, and start it again in the same session on its conversation"
+    )]
     Restart {
         task: String,
-        /// Start a new conversation instead, and brief it again.
+        #[arg(help = "Start a new conversation instead, and brief it again")]
         #[arg(long)]
         fresh: bool,
     },
-    /// Add to a Task's brief: the amendment is kept in its spec, delivered to the same session, and re-opens a Concluded Task.
+    #[command(
+        about = "Add to a Task's brief: the amendment is kept in its spec, delivered to the same session, and re-opens a Concluded Task"
+    )]
     Amend {
         task: String,
-        /// What the amendment adds.
+        #[arg(help = "What the amendment adds")]
         #[arg(
             long,
             allow_hyphen_values = true,
@@ -177,164 +187,177 @@ enum Command {
             conflicts_with = "file"
         )]
         text: Option<String>,
-        /// Read the amendment from a file, or from stdin with `-`.
+        #[arg(help = "Read the amendment from a file, or from stdin with `-`")]
         #[arg(long, value_name = "PATH")]
         file: Option<PathBuf>,
-        /// Why, for whoever reads the Task later.
+        #[arg(help = "Why, for whoever reads the Task later")]
         #[arg(long)]
         reason: Option<String>,
-        /// A new output a result must carry, as NAME=TYPE; a trailing `!`
-        /// makes it required. Repeatable.
+        #[arg(
+            help = "A new output a result must carry, as NAME=TYPE; a trailing `!` makes it required. Repeatable"
+        )]
         #[arg(long = "output", value_name = "NAME=TYPE[!]")]
         outputs: Vec<String>,
-        /// Refuse unless the Task is at this generation.
+        #[arg(help = "Refuse unless the Task is at this generation")]
         #[arg(long, value_name = "N")]
         if_generation: Option<u64>,
-        /// Print what was appended as JSON.
+        #[arg(help = "Print what was appended as JSON")]
         #[arg(long)]
         json: bool,
     },
-    /// Set labels on a Task, KEY=VALUE, and change nothing else of it.
+    #[command(about = "Set labels on a Task, KEY=VALUE, and change nothing else of it")]
     Label {
-        /// `task`: the only kind this sets labels on.
+        #[arg(help = "`task`: the only kind this sets labels on")]
         kind: String,
         name: String,
-        /// `KEY=VALUE`; a label Fleet alone writes is refused.
+        #[arg(help = "`KEY=VALUE`; a label Fleet alone writes is refused")]
         #[arg(required = true, value_parser = parse_label)]
         labels: Vec<(String, String)>,
     },
-    /// Delete a resource; a Task is released by its controller first.
+    #[command(about = "Delete a resource; a Task is released by its controller first")]
     Delete { kind: String, name: String },
-    /// The command that opens a Task's terminal stream: as JSON with
-    /// --json, else one argument per line.
+    #[command(
+        about = "The command that opens a Task's terminal stream: as JSON with --json, else one argument per line"
+    )]
     Attach {
         task: String,
         #[arg(long)]
         json: bool,
-        /// Resume a paused Task first, and wait for it to run again.
+        #[arg(help = "Resume a paused Task first, and wait for it to run again")]
         #[arg(long)]
         wake: bool,
     },
-    /// The command that opens an interactive shell beside a Task's session,
-    /// on its place, as a terminal stream: as JSON with --json, else one
-    /// argument per line.
+    #[command(
+        about = "The command that opens an interactive shell beside a Task's session, on its place, as a terminal stream: as JSON with --json, else one argument per line"
+    )]
     Shell {
         task: String,
         #[arg(long)]
         json: bool,
-        /// Resume a paused Task first, and wait for it to run again.
+        #[arg(help = "Resume a paused Task first, and wait for it to run again")]
         #[arg(long)]
         wake: bool,
     },
-    /// Follow the Tasks: one event per changed or deleted Task, as NDJSON
-    /// with --json, until Ctrl-C or --once.
+    #[command(
+        about = "Follow the Tasks: one event per changed or deleted Task, as NDJSON with --json, until Ctrl-C or --once"
+    )]
     Watch {
-        /// Report only writes after this store revision (a `revision` an
-        /// earlier watch printed).
+        #[arg(
+            help = "Report only writes after this store revision (a `revision` an earlier watch printed)"
+        )]
         #[arg(long, default_value_t = 0)]
         since: u64,
-        /// Stop after the first `synced` event.
+        #[arg(help = "Stop after the first `synced` event")]
         #[arg(long)]
         once: bool,
-        /// Interval between reads of the store (50..=10000 ms).
+        #[arg(help = "Interval between reads of the store (50..=10000 ms)")]
         #[arg(long, default_value_t = 500, value_parser = clap::value_parser!(u64).range(50..=10000))]
         poll_ms: u64,
         #[arg(long)]
         json: bool,
     },
-    /// Run the Task controller under the manager lease until idle, or for at most --max-passes passes.
+    #[command(
+        about = "Run the Task controller under the manager lease until idle, or for at most --max-passes passes"
+    )]
     Reconcile {
         #[arg(long, default_value_t = 50)]
         max_passes: u32,
-        /// The lease holder name; defaults to one unique to this process.
+        #[arg(help = "The lease holder name; defaults to one unique to this process")]
         #[arg(long)]
         holder: Option<String>,
-        /// The manager lease; by default 30 s, raised to twice the longest
-        /// single runtime operation.
+        #[arg(
+            help = "The manager lease; by default 30 s, raised to twice the longest single runtime operation"
+        )]
         #[arg(long)]
         lease_ttl_ms: Option<u64>,
         #[arg(long)]
         json: bool,
     },
-    /// Events on a Board: publish one, or list, wait for or watch what it holds.
+    #[command(about = "Events on a Board: publish one, or list, wait for or watch what it holds")]
     Event {
         #[command(subcommand)]
         command: EventCommand,
     },
-    /// Chat accounts: what a listener runs per event and per beat, and what it starts from.
+    #[command(
+        about = "Chat accounts: what a listener runs per event and per beat, and what it starts from"
+    )]
     Gateway {
         #[command(subcommand)]
         command: GatewayCommand,
     },
-    /// The binary's version and every schema it reads and writes.
+    #[command(about = "The binary's version and every schema it reads and writes")]
     Version {
         #[arg(long)]
         json: bool,
     },
-    /// Report the agent's state from its own hook: appends to the file
-    /// Fleet passed the session as FLEET_SIGNAL_FILE, and does nothing
-    /// outside a session Fleet started.
+    #[command(
+        about = "Report the agent's state from its own hook: appends to the file Fleet passed the session as FLEET_SIGNAL_FILE, and does nothing outside a session Fleet started"
+    )]
     Signal {
         state: SignalState,
-        /// The harness whose profile names the payload's fields (else
-        /// FLEET_HARNESS, which Fleet sets at spawn).
+        #[arg(
+            help = "The harness whose profile names the payload's fields (else FLEET_HARNESS, which Fleet sets at spawn)"
+        )]
         #[arg(long)]
         harness: Option<String>,
-        /// The hook's JSON, when it passes it as an argument; otherwise it
-        /// is read from stdin when stdin is not a terminal.
+        #[arg(
+            help = "The hook's JSON, when it passes it as an argument; otherwise it is read from stdin when stdin is not a terminal"
+        )]
         payload: Option<String>,
     },
-    /// Print a session's signal file on this machine, for the Fleet that
-    /// reads it through a runtime's exec: the end of what it held before
-    /// SINCE, a split line, then the end of what came after. Exits 3 when
-    /// the file is not there.
+    #[command(
+        about = "Print a session's signal file on this machine, for the Fleet that reads it through a runtime's exec: the end of what it held before SINCE, a split line, then the end of what came after. Exits 3 when the file is not there"
+    )]
     #[command(hide = true)]
     SignalRead {
-        /// Print only the file's length in bytes, 0 when it is not there.
+        #[arg(help = "Print only the file's length in bytes, 0 when it is not there")]
         #[arg(long)]
         length: bool,
-        /// The file, `~`-rooted on another host than Fleet's.
+        #[arg(help = "The file, `~`-rooted on another host than Fleet's")]
         file: PathBuf,
-        /// The byte offset a restart left the file at.
+        #[arg(help = "The byte offset a restart left the file at")]
         since: Option<u64>,
-        /// Read a session's outbox instead: print the offset the read
-        /// starts at on a line, then the bytes from this offset on (from
-        /// the start when the file is shorter).
+        #[arg(
+            help = "Read a session's outbox instead: print the offset the read starts at on a line, then the bytes from this offset on (from the start when the file is shorter)"
+        )]
         #[arg(long, value_name = "OFFSET", conflicts_with_all = ["length", "since"])]
         from: Option<u64>,
     },
-    /// Hand TEXT to the Claude Code session listening on SOCKET, the path
-    /// its hooks see in CLAUDE_CODE_MESSAGING_SOCKET: what Fleet runs on a
-    /// session's place, through the runtime's exec, to deliver a message.
+    #[command(
+        about = "Hand TEXT to the Claude Code session listening on SOCKET, the path its hooks see in CLAUDE_CODE_MESSAGING_SOCKET: what Fleet runs on a session's place, through the runtime's exec, to deliver a message"
+    )]
     #[command(hide = true)]
     InboxPost { socket: PathBuf, text: String },
-    /// A raw interactive command as a terminal stream on stdin and stdout:
-    /// what `fleet attach` wraps a runtime's `tty` answer in.
+    #[command(
+        about = "A raw interactive command as a terminal stream on stdin and stdout: what `fleet attach` wraps a runtime's `tty` answer in"
+    )]
     TermBridge {
-        /// The command and its arguments.
+        #[arg(help = "The command and its arguments")]
         #[arg(last = true, required = true)]
         argv: Vec<String>,
     },
-    /// Runtimes: programs that speak the runtime protocol.
+    #[command(about = "Runtimes: programs that speak the runtime protocol")]
     Runtime {
         #[command(subcommand)]
         command: RuntimeCommand,
     },
-    /// The hooks Fleet installs into an agent's own config directory, on
-    /// this machine, for an agent that takes none at launch.
+    #[command(
+        about = "The hooks Fleet installs into an agent's own config directory, on this machine, for an agent that takes none at launch"
+    )]
     Integration {
         #[command(subcommand)]
         command: IntegrationCommand,
     },
-    /// The user service that runs `fleet up` for this store: a systemd user
-    /// unit on Linux, a launchd agent on macOS, a Task Scheduler task on
-    /// Windows. Fleet writes it and drives it.
+    #[command(
+        about = "The user service that runs `fleet up` for this store: a systemd user unit on Linux, a launchd agent on macOS, a Task Scheduler task on Windows. Fleet writes it and drives it"
+    )]
     Service {
         #[command(subcommand)]
         command: ServiceCommand,
     },
-    /// Check this machine: each installed integration, each harness's
-    /// program on PATH, and each host's runtime. Exits 1 only on a fail.
+    #[command(
+        about = "Check this machine: each installed integration, each harness's program on PATH, and each host's runtime. Exits 1 only on a fail"
+    )]
     Doctor {
         #[arg(long)]
         json: bool,
@@ -343,50 +366,54 @@ enum Command {
 
 #[derive(Debug, Subcommand)]
 enum ServiceCommand {
-    /// Write the unit for the config, adopting a unit of the same name and
-    /// keeping its drop-ins, and enable it. Refuses a second unit for the
-    /// same store (exit 5).
+    #[command(
+        about = "Write the unit for the config, adopting a unit of the same name and keeping its drop-ins, and enable it. Refuses a second unit for the same store (exit 5)"
+    )]
     Install {
-        /// The service's name: the unit without `.service`, the agent's
-        /// label, or the task's name.
+        #[arg(
+            help = "The service's name: the unit without `.service`, the agent's label, or the task's name"
+        )]
         #[arg(long, default_value = service::DEFAULT_NAME)]
         name: String,
-        /// Start it now too.
+        #[arg(help = "Start it now too")]
         #[arg(long)]
         now: bool,
     },
-    /// Start the store's unit.
+    #[command(about = "Start the store's unit")]
     Start {
         #[arg(long)]
         name: Option<String>,
     },
-    /// Stop the store's unit; the sessions keep running.
+    #[command(about = "Stop the store's unit; the sessions keep running")]
     Stop {
         #[arg(long)]
         name: Option<String>,
     },
-    /// Restart the store's unit.
+    #[command(about = "Restart the store's unit")]
     Restart {
         #[arg(long)]
         name: Option<String>,
-        /// Restart a running unit only, and wait until a manager started
-        /// since then serves this version. Exits 1 when the unit fails
-        /// first and 7 when the wait runs out.
+        #[arg(
+            help = "Restart a running unit only, and wait until a manager started since then serves this version. Exits 1 when the unit fails first and 7 when the wait runs out"
+        )]
         #[arg(long, value_name = "VERSION")]
         expect: Option<String>,
-        /// How long `--expect` waits, in seconds; by default twice the
-        /// unit's stop timeout, plus one minute.
+        #[arg(
+            help = "How long `--expect` waits, in seconds; by default twice the unit's stop timeout, plus one minute"
+        )]
         #[arg(long, value_name = "SECONDS", requires = "expect")]
         timeout: Option<u64>,
     },
-    /// What the supervisor says of the store's service; exits 0 while it
-    /// runs and 3 while it does not.
+    #[command(
+        about = "What the supervisor says of the store's service; exits 0 while it runs and 3 while it does not"
+    )]
     Status {
         #[arg(long)]
         name: Option<String>,
     },
-    /// Stop and unregister the store's service and remove its file; a
-    /// systemd unit's drop-ins stay.
+    #[command(
+        about = "Stop and unregister the store's service and remove its file; a systemd unit's drop-ins stay"
+    )]
     Uninstall {
         #[arg(long)]
         name: Option<String>,
@@ -395,8 +422,9 @@ enum ServiceCommand {
 
 #[derive(Debug, Subcommand)]
 enum IntegrationCommand {
-    /// Each agent's integration: not-needed, not-installed, current,
-    /// outdated, modified or agent-missing. Every agent without one.
+    #[command(
+        about = "Each agent's integration: not-needed, not-installed, current, outdated, modified or agent-missing. Every agent without one"
+    )]
     Status {
         agent: Option<String>,
         #[arg(long, conflicts_with = "agent")]
@@ -404,10 +432,11 @@ enum IntegrationCommand {
         #[arg(long)]
         json: bool,
     },
-    /// Write the agent's hooks into its config directory, replacing an
-    /// older version Fleet wrote.
+    #[command(
+        about = "Write the agent's hooks into its config directory, replacing an older version Fleet wrote"
+    )]
     Install { agent: String },
-    /// Remove exactly what Fleet wrote for the agent, or for every agent.
+    #[command(about = "Remove exactly what Fleet wrote for the agent, or for every agent")]
     Uninstall {
         #[arg(required_unless_present = "all")]
         agent: Option<String>,
@@ -418,53 +447,55 @@ enum IntegrationCommand {
 
 #[derive(Debug, Subcommand)]
 enum RuntimeCommand {
-    /// Run the conformance suite against a runtime program: `fleet runtime check -- <program> [args]`.
+    #[command(
+        about = "Run the conformance suite against a runtime program: `fleet runtime check -- <program> [args]`"
+    )]
     Check {
-        /// The bound on each call, in milliseconds.
+        #[arg(help = "The bound on each call, in milliseconds")]
         #[arg(long, default_value_t = DEFAULT_CALL_TIMEOUT_MS)]
         call_timeout_ms: u64,
-        /// The program and the arguments it takes before the verb.
+        #[arg(help = "The program and the arguments it takes before the verb")]
         #[arg(last = true, required = true)]
         program: Vec<String>,
     },
-    /// The hosts a Task may name: `local` and each `<runtime>/<place>` it
-    /// does not stand for, or none (`null` with --json) when one `[runtime]`
-    /// serves any host.
+    #[command(
+        about = "The hosts a Task may name: `local` and each `<runtime>/<place>` it does not stand for, or none (`null` with --json) when one `[runtime]` serves any host"
+    )]
     Hosts {
         #[arg(long)]
         json: bool,
     },
-    /// Every place of every runtime, with what the runtime's manifest says
-    /// of it: ready, not ready and why, or unknown when it did not answer.
+    #[command(
+        about = "Every place of every runtime, with what the runtime's manifest says of it: ready, not ready and why, or unknown when it did not answer"
+    )]
     Places {
         #[arg(long)]
         json: bool,
     },
-    /// The folders of a place, read through its runtime's `browse`: each
-    /// subdirectory of `dir` (the place's home when omitted), marked when it
-    /// is a git work tree. Read-only.
+    #[command(
+        about = "The folders of a place, read through its runtime's `browse`: each subdirectory of `dir` (the place's home when omitted), marked when it is a git work tree. Read-only"
+    )]
     Browse {
-        /// The place: `local`, or `<runtime>/<place>`.
+        #[arg(help = "The place: `local`, or `<runtime>/<place>`")]
         place: String,
-        /// An absolute directory on the place.
+        #[arg(help = "An absolute directory on the place")]
         dir: Option<String>,
         #[arg(long)]
         json: bool,
     },
-    /// The branches of a repository on a place, read through its runtime's
-    /// `branches`, with the one a new branch starts from by default.
-    /// Read-only.
+    #[command(
+        about = "The branches of a repository on a place, read through its runtime's `branches`, with the one a new branch starts from by default. Read-only"
+    )]
     Branches {
-        /// The place: `local`, or `<runtime>/<place>`.
+        #[arg(help = "The place: `local`, or `<runtime>/<place>`")]
         place: String,
-        /// The absolute path of the repository on the place.
+        #[arg(help = "The absolute path of the repository on the place")]
         repo: String,
         #[arg(long)]
         json: bool,
     },
 }
 
-/// What a hook reports (`fleet_api::signal::State`).
 #[derive(Debug, Clone, Copy, clap::ValueEnum)]
 enum SignalState {
     Working,
@@ -475,39 +506,41 @@ enum SignalState {
 
 #[derive(Debug, Subcommand)]
 enum GatewayCommand {
-    /// Read one delivery envelope from stdin (or, with --beat, one heartbeat) and record it on the thread's Conversation (or the account's Listener).
+    #[command(
+        about = "Read one delivery envelope from stdin (or, with --beat, one heartbeat) and record it on the thread's Conversation (or the account's Listener)"
+    )]
     Receive {
-        /// The `[gateway.accounts]` entry the listener delivers for.
+        #[arg(help = "The `[gateway.accounts]` entry the listener delivers for")]
         #[arg(long)]
         account: String,
-        /// Stdin holds a heartbeat, not an envelope.
+        #[arg(help = "Stdin holds a heartbeat, not an envelope")]
         #[arg(long)]
         beat: bool,
         #[arg(long)]
         json: bool,
     },
-    /// What a listener needs to connect to an account, with the digest its beats carry.
+    #[command(
+        about = "What a listener needs to connect to an account, with the digest its beats carry"
+    )]
     Account {
         name: String,
         #[arg(long)]
         json: bool,
     },
-    /// Each account's listener: accepted, resolved, inbound, last delivery.
+    #[command(about = "Each account's listener: accepted, resolved, inbound, last delivery")]
     Status {
         #[arg(long)]
         json: bool,
     },
-    /// Download a file shared in the thread a Task is tied to, and print the path it was saved at.
-    ///
-    /// The file must be shared on a message of the Task's Conversation. It
-    /// lands at DIR/fleet-file-FILE_ID-UNIQUE/NAME, in a directory made for
-    /// this call that only you can enter. Exit 1 says the platform will not
-    /// give the file, and why; exit 4 says its answer could not be read.
+    #[command(
+        about = "Download a file shared in the thread a Task is tied to, and print the path it was saved at",
+        long_about = "Download a file shared in the thread a Task is tied to, and print the path it was saved at.\n\nThe file must be shared on a message of the Task's Conversation. It lands at DIR/fleet-file-FILE_ID-UNIQUE/NAME, in a directory made for this call that only you can enter. Exit 1 says the platform will not give the file, and why; exit 4 says its answer could not be read."
+    )]
     File {
         task: String,
-        /// The file's id, as the relayed message names it.
+        #[arg(help = "The file's id, as the relayed message names it")]
         file: String,
-        /// Where to save it; else the system's temporary directory.
+        #[arg(help = "Where to save it; else the system's temporary directory")]
         #[arg(long, value_name = "DIR")]
         out: Option<PathBuf>,
         #[arg(long)]
@@ -517,114 +550,114 @@ enum GatewayCommand {
 
 #[derive(Debug, Subcommand)]
 enum EventCommand {
-    /// Append one event to a Board as cli/USER, and print it with its seq.
-    ///
-    /// Inside a Fleet session (FLEET_EVENT_FILE set), append it to the
-    /// session's outbox instead, and print the line's outbox offset: Fleet
-    /// ingests it into the Board as the session's Task. A session with
-    /// FLEET_SIGNAL_FILE but no FLEET_EVENT_FILE refuses.
+    #[command(
+        about = "Append one event to a Board as cli/USER, and print it with its seq",
+        long_about = "Append one event to a Board as cli/USER, and print it with its seq.\n\nInside a Fleet session (FLEET_EVENT_FILE set), append it to the session's outbox instead, and print the line's outbox offset: Fleet ingests it into the Board as the session's Task. A session with FLEET_SIGNAL_FILE but no FLEET_EVENT_FILE refuses."
+    )]
     Publish {
-        /// The Board to publish to.
+        #[arg(help = "The Board to publish to")]
         #[arg(long, default_value = fleet_api::board::SHARED)]
         board: String,
-        /// The event type: dot-separated segments of a-z, 0-9, '_' and '-';
-        /// the fleet. prefix is Fleet's controllers' own, and refused here.
+        #[arg(
+            help = "The event type: dot-separated segments of a-z, 0-9, '_' and '-'; the fleet. prefix is Fleet's controllers' own, and refused here"
+        )]
         #[arg(long = "type", value_name = "TYPE")]
         event_type: String,
-        /// What the event is about, such as a repository or a path.
+        #[arg(help = "What the event is about, such as a repository or a path")]
         #[arg(long)]
         subject: Option<String>,
-        /// A key that makes a retried publish the same event: the board
-        /// answers the first event published under it, and appends nothing.
+        #[arg(
+            help = "A key that makes a retried publish the same event: the board answers the first event published under it, and appends nothing"
+        )]
         #[arg(long)]
         key: Option<String>,
-        /// An id that ties the events of one piece of work together.
+        #[arg(help = "An id that ties the events of one piece of work together")]
         #[arg(long)]
         correlation: Option<String>,
-        /// The event's data, as JSON.
+        #[arg(help = "The event's data, as JSON")]
         #[arg(long, value_name = "JSON", allow_hyphen_values = true)]
         data: String,
-        /// Inside a session, wait until Fleet has read the line into the
-        /// Board, then print the event with its seq; exit 1 when Fleet
-        /// skipped the line, and 7 with the outbox offset on a timeout.
-        /// Outside a session the publish is already done when it prints.
+        #[arg(
+            help = "Inside a session, wait until Fleet has read the line into the Board, then print the event with its seq; exit 1 when Fleet skipped the line, and 7 with the outbox offset on a timeout. Outside a session the publish is already done when it prints"
+        )]
         #[arg(long)]
         wait: bool,
-        /// How long --wait waits.
+        #[arg(help = "How long --wait waits")]
         #[arg(long, value_name = "MS", default_value_t = 60_000, requires = "wait")]
         timeout_ms: u64,
-        /// Print the event as JSON.
+        #[arg(help = "Print the event as JSON")]
         #[arg(long)]
         json: bool,
     },
-    /// List a Board's events after a cursor, oldest first.
+    #[command(about = "List a Board's events after a cursor, oldest first")]
     List {
-        /// Only events with a seq above this cursor; 0 lists from the start.
+        #[arg(help = "Only events with a seq above this cursor; 0 lists from the start")]
         #[arg(long, value_name = "SEQ", default_value_t = 0)]
         after: u64,
         #[command(flatten)]
         filter: EventFilter,
-        /// The most events to print.
+        #[arg(help = "The most events to print")]
         #[arg(long, value_name = "N", default_value_t = 100)]
         limit: usize,
-        /// Print the events as a JSON array.
+        #[arg(help = "Print the events as a JSON array")]
         #[arg(long)]
         json: bool,
     },
-    /// Wait until a Board holds an event after a cursor that matches, then
-    /// print the matches as list does; exit 7, printing nothing, when none
-    /// comes before the timeout.
+    #[command(
+        about = "Wait until a Board holds an event after a cursor that matches, then print the matches as list does; exit 7, printing nothing, when none comes before the timeout"
+    )]
     Wait {
-        /// Only events with a seq above this cursor: the last seq read.
+        #[arg(help = "Only events with a seq above this cursor: the last seq read")]
         #[arg(long, value_name = "SEQ")]
         after: u64,
         #[command(flatten)]
         filter: EventFilter,
-        /// How long to wait for a match.
+        #[arg(help = "How long to wait for a match")]
         #[arg(long, value_name = "MS")]
         timeout_ms: u64,
-        /// Interval between reads of the Board (50..=10000 ms).
+        #[arg(help = "Interval between reads of the Board (50..=10000 ms)")]
         #[arg(long, default_value_t = 500, value_parser = clap::value_parser!(u64).range(50..=10000))]
         poll_ms: u64,
-        /// The most events to print.
+        #[arg(help = "The most events to print")]
         #[arg(long, value_name = "N", default_value_t = 100)]
         limit: usize,
-        /// Print the events as a JSON array.
+        #[arg(help = "Print the events as a JSON array")]
         #[arg(long)]
         json: bool,
     },
-    /// Print each event after a cursor that matches, oldest first, then
-    /// each new one as it is published, until stdout closes.
+    #[command(
+        about = "Print each event after a cursor that matches, oldest first, then each new one as it is published, until stdout closes"
+    )]
     Watch {
-        /// Only events with a seq above this cursor: the last seq read.
+        #[arg(help = "Only events with a seq above this cursor: the last seq read")]
         #[arg(long, value_name = "SEQ")]
         after: u64,
         #[command(flatten)]
         filter: EventFilter,
-        /// Interval between reads of the Board (50..=10000 ms).
+        #[arg(help = "Interval between reads of the Board (50..=10000 ms)")]
         #[arg(long, default_value_t = 500, value_parser = clap::value_parser!(u64).range(50..=10000))]
         poll_ms: u64,
-        /// Print one event per line as JSON (NDJSON).
+        #[arg(help = "Print one event per line as JSON (NDJSON)")]
         #[arg(long)]
         json: bool,
     },
-    /// Subscribe a Task to a Board: when events after its cursor match,
-    /// Fleet queues one notice in the Task's inbox with their count and seq
-    /// range, and the session reads them with list. While that notice is
-    /// still to deliver, no other notice is queued for the subscription.
+    #[command(
+        about = "Subscribe a Task to a Board: when events after its cursor match, Fleet queues one notice in the Task's inbox with their count and seq range, and the session reads them with list. While that notice is still to deliver, no other notice is queued for the subscription"
+    )]
     Subscribe {
-        /// The Task whose session hears of the events.
+        #[arg(help = "The Task whose session hears of the events")]
         task: String,
         #[command(flatten)]
         filter: EventFilter,
-        /// The seq of the last event the Task knows of already; without it,
-        /// the Board's head when Fleet first reads the subscription.
+        #[arg(
+            help = "The seq of the last event the Task knows of already; without it, the Board's head when Fleet first reads the subscription"
+        )]
         #[arg(long, value_name = "SEQ")]
         after: Option<u64>,
     },
-    /// Remove a Task's subscription to a Board with the same filter.
+    #[command(about = "Remove a Task's subscription to a Board with the same filter")]
     Unsubscribe {
-        /// The Task that subscribes.
+        #[arg(help = "The Task that subscribes")]
         task: String,
         #[command(flatten)]
         filter: EventFilter,
@@ -633,21 +666,21 @@ enum EventCommand {
 
 #[derive(Debug, clap::Args)]
 struct EventFilter {
-    /// The Board to read; Board fleet holds TaskController's fleet.task.*
-    /// events.
+    #[arg(help = "The Board to read; Board fleet holds TaskController's fleet.task.* events")]
     #[arg(long, default_value = fleet_api::board::SHARED)]
     board: String,
-    /// Only this event type; a trailing * matches a prefix.
+    #[arg(help = "Only this event type; a trailing * matches a prefix")]
     #[arg(long = "type", value_name = "TYPE")]
     event_type: Option<String>,
-    /// Only this subject; a trailing * matches a prefix.
+    #[arg(help = "Only this subject; a trailing * matches a prefix")]
     #[arg(long)]
     subject: Option<String>,
-    /// Only events from this source, such as cli/USER, task/NAME or
-    /// controller/task-controller.
+    #[arg(
+        help = "Only events from this source, such as cli/USER, task/NAME or controller/task-controller"
+    )]
     #[arg(long)]
     source: Option<String>,
-    /// Only events with this correlation id.
+    #[arg(help = "Only events with this correlation id")]
     #[arg(long)]
     correlation: Option<String>,
 }
@@ -674,7 +707,6 @@ impl EventFilter {
     }
 }
 
-/// Exit codes, stable for scripts.
 mod exit {
     pub const ERROR: u8 = 1;
     pub const NOT_FOUND: u8 = 3;
@@ -731,7 +763,6 @@ impl From<StoreError> for Failure {
     }
 }
 
-/// `KEY=VALUE`, a label to set; the key is not empty.
 fn parse_label(text: &str) -> Result<(String, String), String> {
     match text.split_once('=') {
         Some((key, value)) if !key.is_empty() => Ok((key.to_string(), value.to_string())),
@@ -739,7 +770,6 @@ fn parse_label(text: &str) -> Result<(String, String), String> {
     }
 }
 
-/// `NAME=TYPE`, with a trailing `!` for a required output.
 fn parse_output_decl(
     position: usize,
     text: &str,
@@ -829,10 +859,6 @@ fn main() -> ExitCode {
         }
         code
     };
-    // A one-shot command answers whoever ran it (thurbox's probes, an agent's
-    // hook), often under a deadline: its output is written, and its flush
-    // stays inside the call bound. Only `up`, stopped by Ctrl-C, waits the
-    // longer bound for its last sweeps (docs/observability.md).
     if name == "up" {
         telemetry.shutdown();
     } else {
@@ -995,8 +1021,6 @@ fn run(cli: Cli) -> Result<(), Failure> {
         default_task_config(&store)?;
         ensure_board(&store, fleet_api::board::SHARED)?;
         ensure_board(&store, fleet_api::board::FLEET)?;
-        // The profiles `fleet doctor` checks: the bundled ones, then the
-        // user's beside this config.
         let harnesses = harness_dir(Some(&path));
         let user = user_profiles(harnesses.as_deref(), true).map_err(fail)?;
         let profiles = fleet_api::harness::Profiles::bundled().with(user);
@@ -1031,8 +1055,6 @@ fn run(cli: Cli) -> Result<(), Failure> {
         command: RuntimeCommand::Hosts { json },
     } = &cli.command
     {
-        // Runtime programs serve exactly their places, as `open_runtime`
-        // wires them; `local` stands for the default runtime's own.
         let hosts = (!config.runtimes.is_empty()).then(|| {
             let places = config.places();
             let mut hosts: Vec<String> = places
@@ -1143,7 +1165,6 @@ fn run(cli: Cli) -> Result<(), Failure> {
         .ok_or_else(|| {
             fail("no data directory: pass --data-dir or set data.dir in the config file")
         })?;
-    // Before the store opens: a doctor writes nothing.
     if let Command::Service { command } = &cli.command {
         if cli.data_dir.is_some() {
             return Err(fail(
@@ -1156,8 +1177,6 @@ fn run(cli: Cli) -> Result<(), Failure> {
     if let Command::Doctor { json } = &cli.command {
         return cmd_doctor(&config, &profiles, &data_dir, *json);
     }
-    // The plugin files a profile names sit under the data dir, where
-    // `open_signals` writes them.
     fleet_api::harness::install(
         profiles.with_assets(
             bootstrap::absolute(&data_dir.join(fleet_api::harness::ASSET_DIR))
@@ -1212,8 +1231,6 @@ fn run(cli: Cli) -> Result<(), Failure> {
             e => e.into(),
         })?
         .with_plugins(&registrations)?;
-    // The ledger sits in the store's directory, which the store must hold
-    // first: it refuses a directory that holds anything else.
     if let Command::Integration { command } = &cli.command {
         return cmd_integration(command, &data_dir);
     }
@@ -1503,17 +1520,12 @@ fn run(cli: Cli) -> Result<(), Failure> {
     }
 }
 
-/// The `harnesses` directory beside the config file.
 fn harness_dir(config: Option<&Path>) -> Option<PathBuf> {
     config
         .and_then(Path::parent)
         .map(|d| d.join(fleet_api::harness::USER_DIR))
 }
 
-/// The user's harness profiles: each `*.toml` in `dir`, in file-name order.
-/// A missing directory is none. `strict`: a file that cannot be read or
-/// parsed is an error; otherwise it alone is left out, so a hook or a view
-/// keeps every other profile.
 fn user_profiles(
     dir: Option<&Path>,
     strict: bool,
@@ -1546,9 +1558,6 @@ fn user_profiles(
     Ok(profiles)
 }
 
-/// `fleet signal`: one line appended to the session's signal file. It needs
-/// no store, and reads the config dir only for a named harness's user
-/// profile, so a hook costs one short process.
 fn cmd_signal(
     state: SignalState,
     harness: Option<String>,
@@ -1581,10 +1590,6 @@ fn cmd_signal(
     };
     let payload = serde_json::from_str::<serde_json::Value>(&text).ok();
     let now = fleet_api::store::Clock::now(&SystemClock);
-    // The profiles Fleet launched the session with: the directory it names
-    // at spawn, else the one beside the config this `fleet` finds. A user
-    // profile that cannot be read never fails the agent's turn: the bundled
-    // profile, or the default fields, read the payload.
     let profile = harness
         .or_else(|| std::env::var(HARNESS_ENV).ok())
         .filter(|h| !h.is_empty())
@@ -1606,8 +1611,6 @@ fn cmd_signal(
             .filter(|a| !a.is_empty()),
         ..Signal::from_hook_with(now, state, payload.as_ref(), &fields)
     };
-    // A session on another host than Fleet's reports to a file under that
-    // host's home, `~/…`, whose directory the first report makes.
     let on_place = file.to_string_lossy().starts_with("~/");
     let file = fleet_runtime::signals::expand_home(Path::new(&file));
     if on_place && let Some(dir) = file.parent() {
@@ -1618,8 +1621,6 @@ fn cmd_signal(
         .map_err(|e| fail(format!("{}: {e}", file.display())))
 }
 
-/// `fleet signal-read`: what Fleet reads of a session's signal file on
-/// another host, through the runtime's exec there.
 fn cmd_signal_read(length: bool, file: &Path, since: Option<u64>) -> Result<(), Failure> {
     use std::io::Write;
     let shown = || file.display().to_string();
@@ -1646,9 +1647,6 @@ fn cmd_signal_read(length: bool, file: &Path, since: Option<u64>) -> Result<(), 
         .map_err(|e| fail(format!("stdout: {e}")))
 }
 
-/// The `fleet gateway` verbs: each reads the `[gateway]` section and calls
-/// the manager's verb; the receive verb runs the adapter's pure event
-/// reading through the port the section names.
 fn cmd_gateway(store: &dyn Store, config: &Config, command: GatewayCommand) -> Result<(), Failure> {
     let Some(section) = &config.gateway else {
         return Err(Failure {
@@ -1826,8 +1824,6 @@ fn cmd_gateway(store: &dyn Store, config: &Config, command: GatewayCommand) -> R
     }
 }
 
-/// The manager's chat side: the port the section opened, the section, and
-/// each account's digest.
 fn gateway_side<'a>(
     config: &Config,
     gateway: Option<&'a GatewayAccounts>,
@@ -1969,9 +1965,6 @@ fn serve_up(
     let runtime = open_runtime(config, &signals)?;
     let forge = open_forge(config)?;
     let gateway = open_gateway(config)?;
-    // Every host the config names, or `local` under one `[runtime]`. One
-    // that answers is enough to start; each other is reported, and its
-    // Tasks wait in their own status.
     let hosts: Vec<String> = if config.runtimes.is_empty() {
         vec![config::LOCAL.to_string()]
     } else {
@@ -2065,8 +2058,6 @@ fn serve_up(
                 .chain(&report.unknowns)
                 .cloned()
                 .collect();
-            // A Task blocked at startup, or needing attention, is reported
-            // here, so no separate status query is needed to see why.
             match store.list("Task") {
                 Observation::Known(tasks) => {
                     for task in tasks {
@@ -2115,8 +2106,6 @@ fn wait_unless_stopped(
     !stopped.load(std::sync::atomic::Ordering::Relaxed)
 }
 
-/// Who `fleet send` speaks as: the login name the environment gives, else
-/// `unknown`. A name with a path separator would read as another source.
 fn current_user() -> String {
     ["USER", "USERNAME", "LOGNAME"]
         .iter()
@@ -2132,7 +2121,6 @@ fn unreachable_version() -> Result<(), Failure> {
     ))
 }
 
-/// `fleet runtime check`: one line per case, and a failure when any fails.
 fn runtime_check(program: &[String], call_timeout_ms: u64) -> Result<(), Failure> {
     let (exe, args) = program
         .split_first()
@@ -2167,9 +2155,6 @@ fn version(json: bool, config: Option<PathBuf>, data_dir: Option<PathBuf>) -> Re
     if json {
         let explicit = config.is_some() || std::env::var_os(config::CONFIG_ENV).is_some();
         let config = config::discover(config);
-        // The user's profiles too, so a view offers their harnesses; one
-        // that does not parse is left out here and refused by every
-        // command that loads the config.
         let user =
             user_profiles(harness_dir(config.as_deref()).as_deref(), false).unwrap_or_default();
         let profiles = fleet_api::harness::Profiles::bundled().with(user);
@@ -2366,7 +2351,6 @@ fn store_of(invocation: &service::Invocation) -> Option<PathBuf> {
     named.data.dir.or_else(default_data_dir)
 }
 
-/// The unit that runs `fleet up` for the store, for `version`, or `null`.
 fn supervisor(data_dir: &Path) -> Value {
     match service::serving_unit(data_dir, &store_of) {
         Ok(Some(unit)) => json!({"kind": service::KIND, "unit": unit.name}),
@@ -2374,13 +2358,6 @@ fn supervisor(data_dir: &Path) -> Value {
     }
 }
 
-/// The manager lease, for `version`: `held` while it is unexpired and its
-/// holder is not proven dead, `false` when none is recorded, it expired or
-/// its holder is dead, `null` with `why` when it cannot be
-/// read. `state`, `version`, `exe` and `config` come from the last
-/// manager's record, `null` when none ran; `why` says when it cannot be
-/// read. Only read: the lease is never taken or renewed, and no store is
-/// created.
 fn manager_lease(config: Option<&Path>, explicit: bool, data_dir: Option<PathBuf>) -> Value {
     let unknown = |why: String| {
         json!({"held": null, "holder": null, "expiresAt": null, "why": why,
@@ -2433,9 +2410,6 @@ fn manager_lease(config: Option<&Path>, explicit: bool, data_dir: Option<PathBuf
     manager
 }
 
-/// The integrations installed on this machine that are outdated, by agent:
-/// what `fleet integration install <agent>` brings up to date. A config or
-/// a ledger that cannot be read lists none: a version never fails.
 fn outdated_integrations(
     profiles: &fleet_api::harness::Profiles,
     config: Option<&Path>,
@@ -2462,8 +2436,6 @@ fn outdated_integrations(
         .collect()
 }
 
-/// `fleet integration`: each verb on this machine, with the profiles the
-/// config installed and the ledger under the data directory.
 fn cmd_integration(command: &IntegrationCommand, data_dir: &Path) -> Result<(), Failure> {
     use fleet_runtime::integration as io;
     let profiles = fleet_api::harness::installed();
@@ -2527,8 +2499,6 @@ fn cmd_integration(command: &IntegrationCommand, data_dir: &Path) -> Result<(), 
         IntegrationCommand::Uninstall { agent, all } => {
             let installed = io::installed(data_dir).map_err(|e| fail(e.to_string()))?;
             let agent = agent.as_deref().unwrap_or_default();
-            // The ledger's own name first: an integration outlives a user
-            // profile removed since.
             let names = if *all {
                 installed
             } else if installed.iter().any(|n| n == agent) {
@@ -2548,14 +2518,9 @@ fn cmd_integration(command: &IntegrationCommand, data_dir: &Path) -> Result<(), 
     }
 }
 
-/// The signal files, one per session on this machine, under the store, and
-/// beside them the plugin files the harness profiles name: every command
-/// that starts a session opens the signals first.
 fn open_signals(data_dir: &Path) -> Result<FileSignals, Failure> {
     let assets = data_dir.join(fleet_api::harness::ASSET_DIR);
-    // A profile names a plugin file inside a JSON string, as opencode's
-    // config does, where a quote or a control character cannot stand as
-    // it is.
+    // opencode's config names a plugin file inside a JSON string, where a quote or control character cannot stand.
     if assets
         .to_string_lossy()
         .chars()
@@ -2572,15 +2537,11 @@ fn open_signals(data_dir: &Path) -> Result<FileSignals, Failure> {
     FileSignals::open(&dir).map_err(|e| fail(format!("{}: {e}", dir.display())))
 }
 
-/// The runtime: the programs under `[runtimes]`, one per place, or the
-/// fake. `local` is the default runtime's `local` place under a second name.
 fn open_runtime(config: &Config, signals: &FileSignals) -> Result<Box<dyn Runtime>, Failure> {
     if !config.runtimes.is_empty() {
         let mut hosts = BTreeMap::new();
         for place in config.places() {
             let mut rt = exec_program(config, &place.runtime);
-            // Its manifest asks about its own place only: a Task on one
-            // place never waits on another's probe.
             rt.places = vec![place.place.clone()];
             rt.place = place.place;
             if place.local {
@@ -2642,10 +2603,6 @@ fn exec_program(config: &Config, name: &str) -> ExecProgram {
     rt
 }
 
-/// The program of the place `id` names (`local`, or `<runtime>/<place>`),
-/// its requests naming that place: how `fleet runtime browse` and
-/// `branches` reach it. A place the config does not define is refused by
-/// name.
 fn place_program(config: &Config, id: &str) -> Result<ExecProgram, Failure> {
     if config.runtimes.is_empty() {
         return Err(fail(
@@ -2677,9 +2634,6 @@ fn place_program(config: &Config, id: &str) -> Result<ExecProgram, Failure> {
     Ok(program)
 }
 
-/// `fleet runtime places`: each place, with its runtime's manifest answer.
-/// A runtime that does not answer leaves each of its places unknown, and one
-/// of protocol 1 serves only `local`.
 fn runtime_places(config: &Config) -> Vec<Value> {
     let places = config.places();
     let mut rows = Vec::new();
@@ -2704,8 +2658,6 @@ fn runtime_places(config: &Config) -> Vec<Value> {
     rows
 }
 
-/// The collector Fleet exports to, for the agents it starts to export to
-/// as well (docs/observability.md, *Coding agents*).
 fn agent_collector() -> Option<fleet_api::harness::Collector> {
     otel_env::collector().map(|c| fleet_api::harness::Collector {
         endpoint: c.endpoint,
@@ -2789,10 +2741,6 @@ fn publish_of(
     })
 }
 
-/// The outbox of the Fleet session this runs in; `None` outside one. A
-/// session Fleet gave a signal file but no outbox cannot publish: Fleet
-/// would never read what it wrote, and publishing as the user instead
-/// would name the wrong source.
 fn session_outbox() -> Result<Option<PathBuf>, Failure> {
     use fleet_api::event::EVENT_FILE_ENV;
     use fleet_api::signal::SIGNAL_FILE_ENV;
@@ -3136,9 +3084,6 @@ fn cmd_event_watch(
     }
 }
 
-/// Write the TaskConfig a Task with no `configRef` takes, when the store
-/// holds none: an idle session pauses after 30 minutes. One that is there is
-/// the user's, and stays as it is.
 fn default_task_config(store: &dyn Store) -> Result<(), Failure> {
     use fleet_api::config::{DEFAULT_PAUSE_AFTER_MS, DEFAULT_TASK_CONFIG, TASK_CONFIG};
     let obj: Object = serde_json::from_value(json!({
@@ -3154,11 +3099,6 @@ fn default_task_config(store: &dyn Store) -> Result<(), Failure> {
     }
 }
 
-/// What `fleet init` set up and what comes next, in a few lines: the
-/// config, the places sessions run in, the coding agents on PATH, and the
-/// commands that follow. A first-time user reads this, so it names the
-/// next command rather than the concepts. `named`: a config chosen with
-/// `--config` or `FLEET_CONFIG`, which every printed command then carries.
 fn init_summary(
     written: bool,
     path: &Path,
@@ -3190,7 +3130,6 @@ fn init_summary(
     } else {
         out.push_str(&format!("  coding agents found: {}\n", agents.join(", ")));
     }
-    // Fleet runs without thurbox, so both ways to start are named.
     let fleet = match named {
         Some(p) => format!("fleet --config {}", p.display()),
         None => "fleet".to_string(),
@@ -3243,8 +3182,6 @@ fn runtime_mux_versions(config: &Config) -> Vec<(String, Option<String>)> {
         .collect()
 }
 
-/// `fleet doctor`: each check's finding, classified by
-/// `fleet_api::doctor`, and a failure when any check failed.
 fn cmd_doctor(
     config: &Config,
     profiles: &fleet_api::harness::Profiles,
@@ -3264,7 +3201,6 @@ fn cmd_doctor(
     }
     match fleet_runtime::integration::read_ledger(data_dir) {
         Ok(ledger) => checks.extend(doctor::left_behind(&ledger, profiles)),
-        // Each profile with an `[install]` table already failed on it above.
         Err(e) if !profiles.list().iter().any(|p| p.install.is_some()) => {
             checks.push(doctor::integration_unknown(
                 fleet_api::integration::LEDGER,
@@ -3342,8 +3278,6 @@ fn cmd_doctor(
     Ok(())
 }
 
-/// The configured forges, one adapter per `[forge.hosts]` entry, or `None`
-/// when the config has no `[forge]` section.
 fn open_forge(config: &Config) -> Result<Option<ForgeHosts>, Failure> {
     let Some(cfg) = &config.forge else {
         return Ok(None);
@@ -3370,11 +3304,6 @@ fn open_forge(config: &Config) -> Result<Option<ForgeHosts>, Failure> {
     ForgeHosts::new(hosts, timeout).map(Some).map_err(fail)
 }
 
-/// The configured chat accounts, one adapter per `[gateway.accounts]`
-/// entry, or `None` when the config has no `[gateway]` section. The section's
-/// own rules ran at load; this is where a platform this build lacks, an
-/// `inbound` its listener cannot deliver by, a fake without a dir, or a
-/// `gateway.logs` channel id the account's adapter cannot read is refused.
 fn open_gateway(config: &Config) -> Result<Option<GatewayAccounts>, Failure> {
     let Some(cfg) = &config.gateway else {
         return Ok(None);
@@ -3389,7 +3318,6 @@ fn open_gateway(config: &Config) -> Result<Option<GatewayAccounts>, Failure> {
     Ok(Some(accounts))
 }
 
-/// The retention defaults a ChangeRequest spec may override.
 fn forge_defaults(config: &Config) -> ChangeRequestDefaults {
     let base = ChangeRequestDefaults::default();
     match &config.forge {
@@ -3401,8 +3329,6 @@ fn forge_defaults(config: &Config) -> ChangeRequestDefaults {
     }
 }
 
-/// The relay and draft defaults a Task's `spec.forge` may override, and the
-/// ready policies it may select.
 fn relay_defaults(config: &Config) -> ForgeDefaults {
     let base = ForgeDefaults::default();
     match &config.forge {
@@ -3418,7 +3344,6 @@ fn relay_defaults(config: &Config) -> ForgeDefaults {
     }
 }
 
-/// The names a Task's `spec.forge.draft.policy` may select.
 fn policy_names(config: &Config) -> std::collections::BTreeSet<String> {
     config
         .forge
@@ -3427,7 +3352,6 @@ fn policy_names(config: &Config) -> std::collections::BTreeSet<String> {
         .unwrap_or_default()
 }
 
-/// `fleet declare`: one of the two forms, through the manager's verbs.
 fn cmd_declare(
     store: &dyn Store,
     config: &Config,
@@ -3484,10 +3408,6 @@ fn cmd_declare(
     }
 }
 
-/// The lease a run holds: the one asked for, refused when it cannot outlast
-/// the longest operation, else the default, raised to twice that operation.
-/// The lease is renewed before every probe and every effect, so one runtime
-/// operation, bounds and grace included, must fit inside it.
 fn lease_for(bound: u64, asked: Option<u64>) -> Result<u64, Failure> {
     match asked {
         Some(ms) if ms <= bound => Err(Failure {
@@ -3504,7 +3424,6 @@ fn lease_for(bound: u64, asked: Option<u64>) -> Result<u64, Failure> {
 
 const DEFAULT_LEASE_MS: u64 = 30_000;
 
-/// Runtime program and forge CLI calls are bounded at half the default lease.
 const DEFAULT_CALL_TIMEOUT_MS: u64 = 15_000;
 
 fn canonical_kind(kind: &str) -> String {
@@ -3523,8 +3442,6 @@ fn canonical_kind(kind: &str) -> String {
     }
 }
 
-/// `task`, `tasks` and `Task` all name Task. Unsupported kinds are refused
-/// here, as on write, never reported as unreadable.
 fn served_kind(store: &dyn Store, kind: &str) -> Result<String, Failure> {
     let lower = kind.to_ascii_lowercase();
     let singular = lower.strip_suffix('s').unwrap_or(&lower);
@@ -3583,9 +3500,6 @@ fn cmd_apply(
         let obj: Object = fleet_api::validate::parse(&format!("item {i}"), &item).map_err(fail)?;
         objs.push(obj);
     }
-    // The TaskConfig a Task takes its defaults from, as the manager
-    // resolves it: the one `configRef` names, else `default`. Of several of
-    // one name in the batch, the last is the one stored; else the store's.
     let task_config = |obj: &Object| {
         let name = obj.spec["configRef"]["name"]
             .as_str()
@@ -3598,9 +3512,6 @@ fn cmd_apply(
                 Observation::Unknown { .. } => None,
             })
     };
-    // A Task with no harness and no `configRef` takes `default`'s, or the
-    // one its saved launch froze. One whose `configRef` names a TaskConfig
-    // not there yet is checked at its launch.
     let launched = |obj: &Object| match store.get(fleet_api::task::KIND, &obj.metadata.name) {
         Observation::Known(Some(stored)) => store.launch(&stored).is_ok_and(|l| l.is_some()),
         _ => false,
@@ -3621,11 +3532,6 @@ fn cmd_apply(
             hint: Some("give the Task a harness, or a harness to the TaskConfig default".into()),
         });
     }
-    // `local` naming no place is refused here, by name: the runtime would
-    // only read the place as unreachable. The host is the manager's rule
-    // (`effective_host`), from the TaskConfig the Task takes. A named
-    // TaskConfig not there yet leaves it untold; with no `default`, the
-    // host is `local`.
     let on_local = |obj: &Object| {
         if obj.kind != fleet_api::task::KIND {
             return false;
@@ -3655,7 +3561,6 @@ fn cmd_apply(
     let mut forge: Option<ForgeHosts> = None;
     let mut gateway: Option<GatewayAccounts> = None;
     let policies = policy_names(config);
-    // A taken name under --create-only is a conflict, whatever the kind.
     let refused = |e: StoreError| match e {
         StoreError::AlreadyExists(_) if create_only => Failure {
             code: exit::CONFLICT,
@@ -3666,7 +3571,6 @@ fn cmd_apply(
     };
     for obj in objs {
         let (outcome, stored) = if obj.kind == fleet_api::conversation::KIND {
-            // The account's adapter parses the address and the name derives from it.
             let Some(section) = &config.gateway else {
                 return Err(Failure {
                     code: exit::ERROR,
@@ -3688,7 +3592,6 @@ fn cmd_apply(
             )
             .map_err(refused)?
         } else if obj.kind == fleet_api::change_request::KIND {
-            // The forge adapter parses the URL and the name derives from it.
             if forge.is_none() {
                 forge = Some(open_forge(config)?.ok_or_else(|| Failure {
                     code: exit::ERROR,
@@ -3729,12 +3632,9 @@ fn print_amended(task: &str, done: &Amended) {
     );
 }
 
-/// What a stream that [`cmd_open`] answers opens.
 #[derive(Clone, Copy)]
 enum Opens {
-    /// The session's own terminal: `fleet attach`.
     View,
-    /// A shell beside the session: `fleet shell`.
     Shell,
 }
 
@@ -3773,8 +3673,6 @@ fn refuse_unresumable(obj: &Object, task: &str, stopped: Stopped) -> Result<(), 
     })
 }
 
-/// Why the Task's session cannot resume, when TaskController said so:
-/// `SessionLost` True with the reason `CannotResume`.
 fn cannot_resume(obj: &Object) -> Option<String> {
     obj.status["conditions"]
         .as_array()?
@@ -3857,10 +3755,6 @@ fn wait_for_resume(store: &dyn Store, task: &str) -> Result<(), Failure> {
     })
 }
 
-/// `fleet attach` and `fleet shell`: the argv that opens a terminal stream
-/// on the Task's session, as `ask` answers it. A runtime's `tty` answer is
-/// a raw interactive command, which a view never sees: it runs under
-/// `fleet term-bridge`, so every view gets a stream.
 fn cmd_open(
     store: &dyn Store,
     task: &str,
@@ -3962,8 +3856,6 @@ fn cmd_open(
     Ok(())
 }
 
-/// `fleet watch`: reads the Tasks every `poll_ms` and prints what moved
-/// ([`Watch`] decides what).
 fn cmd_watch(
     store: &dyn Store,
     since: u64,
@@ -3986,7 +3878,6 @@ fn cmd_watch(
             }
         };
         let Some(events) = watch.read(&tasks).map_err(fail)? else {
-            // A write landed between this read and the last: read again now.
             std::thread::sleep(std::time::Duration::from_millis(5));
             continue;
         };
@@ -3996,7 +3887,6 @@ fn cmd_watch(
             } else {
                 watch_line(&event)
             };
-            // A reader that went away ends the watch.
             if writeln!(out, "{line}").and_then(|()| out.flush()).is_err() {
                 return Ok(());
             }
@@ -4008,21 +3898,6 @@ fn cmd_watch(
     }
 }
 
-/// What `fleet watch` reports from each read of the Tasks.
-///
-/// The cursor is the store's write counter: every write gives the object a
-/// higher `resourceVersion`, so a Task above the cursor changed since. A
-/// deletion leaves nothing to compare, so the first report ends with
-/// `synced`, the names present then: a view resuming with `--since` drops
-/// any other it holds. An unreadable store reports nothing, and the first
-/// read that works after it ends with `synced` again.
-///
-/// A list reads each Task's file on its own, so one read can hold a later
-/// write and miss an earlier one, and a revision reported from it would let
-/// a resume skip the missed write. A read is reported only when the read
-/// before it was the same: the store's writes are serialized, so every
-/// write below the highest revision either read holds was already in place
-/// when the second read began.
 #[derive(Debug)]
 struct Watch {
     since: u64,
@@ -4043,7 +3918,6 @@ impl Watch {
         }
     }
 
-    /// The events one read gives, or `None` while it may be torn.
     fn read(&mut self, tasks: &[Object]) -> Result<Option<Vec<Value>>, String> {
         let state: BTreeMap<String, (String, u64)> = tasks
             .iter()
@@ -4154,7 +4028,6 @@ fn status_summary(obj: &Object) -> Value {
     });
     let own = summary.as_object_mut().expect("object");
     if obj.kind == fleet_api::change_request::KIND {
-        // The bookkeeping and the whole numbered snapshot.
         for k in [
             "ref",
             "observedAt",
@@ -4176,7 +4049,6 @@ fn status_summary(obj: &Object) -> Value {
             own.insert(k.to_string(), field(k));
         }
     } else if obj.kind == fleet_api::conversation::KIND {
-        // The tie, the numbered mirror and the spool.
         for k in [
             "ref",
             "task",
@@ -4453,7 +4325,6 @@ mod tests {
         .expect("an object")
     }
 
-    /// The events of `reads`, one after another, as the watch reports them.
     fn report(watch: &mut Watch, reads: &[Vec<Object>]) -> Vec<Value> {
         reads
             .iter()
@@ -4464,8 +4335,6 @@ mod tests {
 
     #[test]
     fn a_torn_read_never_moves_the_cursor_past_a_write_it_missed() {
-        // The first read took A before a writer moved it to 3 and B after it
-        // moved B to 4: reporting it would say "synced at 4" with A at 1.
         let torn = vec![task("a", 1), task("b", 4)];
         let whole = vec![task("a", 3), task("b", 4)];
         let mut watch = Watch::new(0);
