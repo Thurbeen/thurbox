@@ -84,22 +84,48 @@
   overflow-wrap: anywhere;
 }
 
+.plugin-card-head {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--space-md);
+}
+
+.plugin-avatar {
+  flex: none;
+  width: 32px;
+  height: 32px;
+  margin-top: var(--space-xs);
+  border: 1px solid var(--border);
+  background: var(--bg-code);
+}
+
+.plugin-title {
+  flex: 1;
+  min-width: 0;
+}
+
 .plugin-card h2 {
   font-family: var(--font-mono);
   font-size: 1.35rem;
   text-transform: none;
   letter-spacing: normal;
   text-shadow: none;
-  margin: var(--space-md) 0;
+  margin: 0;
 }
 
-.plugin-badges {
-  display: flex;
-  flex-wrap: wrap;
-  gap: var(--space-sm);
+.plugin-owner {
+  margin: 0;
+  font-family: var(--font-mono);
+  font-size: 0.85rem;
+  color: var(--text-secondary);
+}
+
+.plugin-desc {
+  margin: var(--space-md) 0 0;
 }
 
 .plugin-badge {
+  flex: none;
   padding: var(--space-xs) var(--space-sm);
   border: 1px solid var(--border);
   font-family: var(--font-mono);
@@ -133,6 +159,30 @@
 .plugin-notes {
   margin-bottom: var(--space-md);
   font-size: 0.9rem;
+}
+
+.plugin-topics {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-sm);
+  margin: var(--space-md) 0;
+  padding: 0;
+  list-style: none;
+}
+
+.plugin-topics a {
+  display: inline-block;
+  padding: var(--space-xs) var(--space-sm);
+  border: 1px solid var(--border);
+  font-family: var(--font-mono);
+  font-size: 0.8rem;
+  color: var(--text-secondary);
+  text-decoration: none;
+}
+
+.plugin-topics a:hover {
+  color: var(--text-primary);
+  background: var(--bg-hover);
 }
 
 .plugin-install summary,
@@ -175,6 +225,11 @@
 
 .plugin-install {
   margin: var(--space-lg) 0;
+}
+
+.plugin-submit ol {
+  margin: var(--space-md) 0;
+  padding-left: var(--space-xl);
 }
 
 .plugin-submit {

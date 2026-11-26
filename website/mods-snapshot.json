@@ -1,0 +1,213 @@
+[
+  {
+    "repo": "https://github.com/TMSCH/thurbox-voice",
+    "fullName": "TMSCH/thurbox-voice",
+    "owner": "TMSCH",
+    "name": "thurbox-voice",
+    "description": "Dictation support for Thurbox, using local models",
+    "stars": 1,
+    "pushedAt": "2026-11-20T22:45:29Z",
+    "createdAt": "2026-10-08T22:42:52Z",
+    "topics": [],
+    "official": false,
+    "tagged": false,
+    "version": null,
+    "requiresThurbox": null,
+    "install": "git clone https://github.com/TMSCH/thurbox-voice && cd thurbox-voice\ncargo install --locked --path crates/thurbox-voice\nthurbox-voice pull parakeet\nthurbox-cli mod install git+https://github.com/TMSCH/thurbox-voice\nthurbox-cli mod check",
+    "platforms": [
+      "Linux",
+      "macOS"
+    ],
+    "notes": "Requires Thurbox ≥ 2.56.0, Rust and cmake; Linux also needs pkg-config and ALSA headers. Trust the voice pane to run its helper. Audio stays local. An optional cleanup pass, on by default, sends the transcript and session context to a language model, hosted unless you point it at a local server. See README.",
+    "media": {
+      "url": "https://raw.githubusercontent.com/TMSCH/thurbox-voice/main/media/demo.gif",
+      "alt": "thurbox-voice in the Thurbox interface"
+    }
+  },
+  {
+    "repo": "https://github.com/spscream/thurbox-annotate",
+    "fullName": "spscream/thurbox-annotate",
+    "owner": "spscream",
+    "name": "thurbox-annotate",
+    "description": "Review a coding agent's output inside thurbox and send it numbered feedback — herdr-annotate, wired into thurbox's own panes.",
+    "stars": 1,
+    "pushedAt": "2026-10-26T08:40:06Z",
+    "createdAt": "2026-09-15T12:15:13Z",
+    "topics": [],
+    "official": false,
+    "tagged": false,
+    "version": null,
+    "requiresThurbox": null,
+    "install": "thurbox-cli mod install git+https://github.com/spscream/thurbox-annotate --as mods/41_notes.lua",
+    "platforms": [
+      "Linux",
+      "macOS",
+      "Windows / WSL (Lite clipboard support; Full requires POSIX scripts)"
+    ],
+    "notes": "Shown command installs Lite; requires Thurbox ≥ 2.25.0. Grant run for agent clipboard selection. Full uses plannotator-tui and the program capability; see README for its installer. F2 opens Lite; GIF shows Full.",
+    "media": {
+      "url": "https://raw.githubusercontent.com/spscream/thurbox-annotate/main/media/demo.gif",
+      "alt": "thurbox-annotate in the Thurbox interface"
+    }
+  },
+  {
+    "repo": "https://github.com/spscream/thurbox-files",
+    "fullName": "spscream/thurbox-files",
+    "owner": "spscream",
+    "name": "thurbox-files",
+    "description": "A file column for thurbox v2: a tree of the session's working directory, its context menu, and the agent pane's editor and diff tabs",
+    "stars": 1,
+    "pushedAt": "2026-10-20T14:07:59Z",
+    "createdAt": "2026-09-13T13:38:41Z",
+    "topics": [],
+    "official": false,
+    "tagged": false,
+    "version": null,
+    "requiresThurbox": null,
+    "install": "thurbox-cli mod install git+https://github.com/spscream/thurbox-files --as mods/90_files.lua\nthurbox-cli mod install git+https://github.com/spscream/thurbox-files --as mods/95_files_menu.lua\nthurbox-cli mod install git+https://github.com/spscream/thurbox-files --as mods/20_agent.lua",
+    "platforms": [
+      "Linux (documented setup)",
+      "Other platforms (POSIX tools and nvim required; unverified)"
+    ],
+    "notes": "Follow the README to replace the bundled agent pane, place the files slot in layout.lua and grant capabilities. Requires nvim. Conflicts with the code-review agent pane fork.",
+    "media": {
+      "url": "https://raw.githubusercontent.com/spscream/thurbox-files/main/media/demo.gif",
+      "alt": "thurbox-files in the Thurbox interface"
+    }
+  },
+  {
+    "repo": "https://github.com/Thurbeen/thurbox-fleetlens",
+    "fullName": "Thurbeen/thurbox-fleetlens",
+    "owner": "Thurbeen",
+    "name": "thurbox-fleetlens",
+    "description": "Fleet Lens: browse Fleet v2 resources in a keyboard-first thurbox float",
+    "stars": 0,
+    "pushedAt": "2026-11-26T08:48:17Z",
+    "createdAt": "2026-10-29T10:06:57Z",
+    "topics": [],
+    "official": true,
+    "tagged": true,
+    "version": "v0.1.0",
+    "requiresThurbox": ">=3.24.0",
+    "install": "thurbox-cli mod install git+https://github.com/Thurbeen/thurbox-fleetlens\nthurbox-cli mod check",
+    "platforms": [
+      "Linux"
+    ],
+    "notes": "Reads Fleet only through fleet … --json. Trust the pane to run fleet: Settings (Ctrl+,), then ], select thurbox-fleetlens/plugins/88_fleet_lens.lua and press t. Alt+K opens it. Read-only. The fleetlens settings choose the fleet binary, its config, and the host it runs on (POSIX only).",
+    "media": {
+      "url": "https://raw.githubusercontent.com/Thurbeen/thurbox-fleetlens/main/media/demo.gif",
+      "alt": "thurbox-fleetlens in the Thurbox interface"
+    }
+  },
+  {
+    "repo": "https://github.com/Thurbeen/thurbox-info-panel",
+    "fullName": "Thurbeen/thurbox-info-panel",
+    "owner": "Thurbeen",
+    "name": "thurbox-info-panel",
+    "description": "The info panel for thurbox v2: session, git, agent, usage and system readouts as a Lua pane",
+    "stars": 0,
+    "pushedAt": "2026-11-25T10:50:30Z",
+    "createdAt": "2026-08-19T17:22:33Z",
+    "topics": [
+      "thurbox"
+    ],
+    "official": true,
+    "tagged": true,
+    "version": "v0.2.0",
+    "requiresThurbox": ">=3.24.0",
+    "install": "thurbox-cli mod install git+https://github.com/Thurbeen/thurbox-info-panel",
+    "platforms": [
+      "Linux",
+      "macOS",
+      "Windows (pane; metrics depend on host)"
+    ],
+    "notes": "Requires Thurbox ≥ 2.51.7. Add the info slot to layout.lua, then press F2. Account quotas need quota-axi ≥ 0.1.58 and a run grant; install the optional refresh extension from the cloned mod directory. See README for setup.",
+    "media": {
+      "url": "https://raw.githubusercontent.com/Thurbeen/thurbox-info-panel/main/media/demo.gif",
+      "alt": "thurbox-info-panel in the Thurbox interface"
+    }
+  },
+  {
+    "repo": "https://github.com/Thurbeen/thurbox-code-review",
+    "fullName": "Thurbeen/thurbox-code-review",
+    "owner": "Thurbeen",
+    "name": "thurbox-code-review",
+    "description": "A code-review pane for thurbox v2: the diff of a session's worktree against its base branch, reviewable in the TUI",
+    "stars": 0,
+    "pushedAt": "2026-11-25T08:55:06Z",
+    "createdAt": "2026-08-19T07:43:57Z",
+    "topics": [
+      "thurbox"
+    ],
+    "official": true,
+    "tagged": true,
+    "version": "v0.3.0",
+    "requiresThurbox": ">=3.24.0",
+    "install": "thurbox-cli mod install git+https://github.com/Thurbeen/thurbox-code-review",
+    "platforms": [
+      "Linux",
+      "macOS",
+      "Windows (Lua pane; optional shell commands need a POSIX shell)"
+    ],
+    "notes": "Requires Thurbox ≥ 2.35.0. Replaces the bundled agent pane; follow README setup and capability grants. Cannot combine with the thurbox-files agent pane fork.",
+    "media": {
+      "url": "https://raw.githubusercontent.com/Thurbeen/thurbox-code-review/main/media/demo.gif",
+      "alt": "thurbox-code-review in the Thurbox interface"
+    }
+  },
+  {
+    "repo": "https://github.com/Thurbeen/thurbox-doom",
+    "fullName": "Thurbeen/thurbox-doom",
+    "owner": "Thurbeen",
+    "name": "thurbox-doom",
+    "description": "DOOM as a thurbox v2 pane: a Lua plugin that frames a terminal DOOM port in a session surface",
+    "stars": 0,
+    "pushedAt": "2026-11-25T08:55:03Z",
+    "createdAt": "2026-08-18T07:19:11Z",
+    "topics": [
+      "thurbox"
+    ],
+    "official": true,
+    "tagged": true,
+    "version": "v0.8.0",
+    "requiresThurbox": ">=3.24.0",
+    "install": "thurbox-cli mod install git+https://github.com/Thurbeen/thurbox-doom",
+    "platforms": [
+      "Linux x86_64 (bundled engine)",
+      "Other platforms (bring or build an engine)"
+    ],
+    "notes": "Install code-review for the integrated Doom tab, then grant its agent pane program. F5 opens Doom. GIF shows the earlier standalone pane; README documents current setup.",
+    "media": {
+      "url": "https://raw.githubusercontent.com/Thurbeen/thurbox-doom/main/media/demo.gif",
+      "alt": "thurbox-doom in the Thurbox interface"
+    }
+  },
+  {
+    "repo": "https://github.com/Thurbeen/thurbox-auto-continue",
+    "fullName": "Thurbeen/thurbox-auto-continue",
+    "owner": "Thurbeen",
+    "name": "thurbox-auto-continue",
+    "description": "Headless, LLM-free auto-continue extension for Claude sessions in Thurbox",
+    "stars": 0,
+    "pushedAt": "2026-11-25T08:20:15Z",
+    "createdAt": "2026-09-30T09:45:28Z",
+    "topics": [
+      "thurbox"
+    ],
+    "official": true,
+    "tagged": false,
+    "version": null,
+    "requiresThurbox": null,
+    "install": "git clone https://github.com/Thurbeen/thurbox-auto-continue\ncd thurbox-auto-continue\n./install.sh",
+    "platforms": [
+      "Linux",
+      "macOS",
+      "WSL (install on each host)"
+    ],
+    "notes": "Requires cargo or a prebuilt binary, Claude Code and Thurbox ≥ 2.36.2. Off by default. Follow the README to install both optional panes and grant run. Native Windows unsupported.",
+    "media": {
+      "url": "https://raw.githubusercontent.com/Thurbeen/thurbox-auto-continue/main/media/demo.gif",
+      "alt": "thurbox-auto-continue in the Thurbox interface"
+    }
+  }
+]

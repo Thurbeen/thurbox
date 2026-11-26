@@ -2099,6 +2099,13 @@ when there is more than one. Its place in the load order still comes from the `4
 where a mod came from does not change where it sits. Its own modules are
 requirable by path: `require("thurbox-widget.lib.util")`.
 
+`install` ignores a `[gallery]` table in `mod.toml`. The
+[Mods page](https://thurbox.thurbeen.eu/mods.html) reads it, with the repository's
+`thurbox-mods` topic, to list the mod: its preview, install command, platforms and
+notes. The contributing guide's
+[Mod gallery](https://github.com/Thurbeen/thurbox/blob/main/CONTRIBUTING.md#mod-gallery)
+section lists the fields.
+
 The lock records the **commit**, not the branch. `main` moves; a commit does not, so
 the same spec and lock reproduce the same bytes on another machine. That is also why
 there is no checksum field to maintain: the commit already identifies every byte, and

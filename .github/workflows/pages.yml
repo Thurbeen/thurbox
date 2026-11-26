@@ -13,6 +13,8 @@ on:
       - 'eleventy.config.js'
       - 'package.json'
       - 'package-lock.json'
+      - 'scripts/ci/mods-gallery.mjs'
+      - 'scripts/ci/validate-mods.mjs'
       # The docs pages rendered from the repository: eleventy.config.js's
       # RENDERED_DOCS, which scripts/ci/website.test.mjs holds this list to.
       - 'docs/fleet/**'
@@ -24,6 +26,8 @@ on:
   # scripts/demo/publish-media.sh dispatches this after it replaces the
   # recordings on the `media` release, which no push to main announces.
   workflow_dispatch:
+  schedule:
+    - cron: '23 5 * * *'
 
 permissions:
   contents: read
@@ -62,6 +66,8 @@ jobs:
         run: npm ci
 
       - name: Build site with Eleventy
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
         run: npm run build:website
 
       - uses: actions/configure-pages@45bfe0192ca1faeb007ade9deae92b16b8254a0d # v6.0.0

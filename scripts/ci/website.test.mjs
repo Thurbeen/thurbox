@@ -24,7 +24,7 @@ test('mod catalog lists Voice with its repository, install steps and data flow',
   assert.match(install, /git clone https:\/\/github\.com\/TMSCH\/thurbox-voice/);
   assert.match(install, /thurbox-cli mod install git\+https:\/\/github\.com\/TMSCH\/thurbox-voice/);
   const copy = text(card);
-  assert.match(copy, /transcribed on your machine/i);
+  assert.match(copy, /Audio stays local/i);
   assert.match(copy, /cleanup/i, 'the optional text cleanup pass is disclosed');
   assert.doesNotMatch(copy, /model picker|hold mode|hold to talk/i);
 });
@@ -119,13 +119,26 @@ test('mod catalog lists Fleet Lens in place of the Fleet v1 extension', () => {
   const repo = 'https://github.com/Thurbeen/thurbox-fleetlens';
   const card = cards.find((c) => c.querySelector('h2 a').getAttribute('href') === repo);
   assert.ok(card, 'a catalog card links to thurbox-fleetlens');
-  assert.equal(card.getAttribute('data-kind'), 'pane');
   assert.equal(card.getAttribute('data-badge'), 'official');
   assert.match(text(parse(card.querySelector('pre').innerHTML)), /thurbox-cli mod install git\+https:\/\/github\.com\/Thurbeen\/thurbox-fleetlens/);
   assert.equal(
-    card.querySelector('img').getAttribute('src'),
+    card.querySelector('.plugin-preview img').getAttribute('src'),
     'https://raw.githubusercontent.com/Thurbeen/thurbox-fleetlens/main/media/demo.gif',
   );
+});
+
+test('mod gallery is discovered by topic and documents the mod.toml listing convention', () => {
+  const page = built('mods.html');
+  const copy = text(page);
+  assert.match(copy, /discovered automatically/i);
+  assert.match(copy, /not reviewed/i, 'community listings are flagged as unreviewed');
+  const toml = text(parse(page.querySelector('#submit-mod pre').innerHTML));
+  for (const field of ['[gallery]', 'media', 'media_alt', 'install', 'platforms', 'notes'])
+    assert.ok(toml.includes(field), field);
+  const contributing = readFileSync('CONTRIBUTING.md', 'utf8');
+  assert.match(contributing, /## Mod gallery/);
+  assert.match(contributing, /\[gallery\]/);
+  assert.match(contributing, /website\/mods-snapshot\.json/);
 });
 
 test('homepage presents Fleet and thurbox apart, links each official mod, and stays light on commands', () => {

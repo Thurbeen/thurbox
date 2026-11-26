@@ -1,7 +1,7 @@
 ---
 layout: base.njk
 title: Mods — Thurbox
-description: Official and community mods for Thurbox — panes, extensions, themes and other add-ons.
+description: Official and community mods for Thurbox, discovered from the thurbox-mods GitHub topic.
 extraCss: [mods.css]
 activeNav: mods
 footer: true
@@ -11,48 +11,71 @@ navScrolled: true
   <header class="plugin-intro">
     <p class="plugin-eyebrow">Extend your workspace</p>
     <h1>Mods</h1>
-    <p>Make Thurbox yours. Browse official and community mods, then follow each repository’s README for setup.</p>
-    <p><a href="#submit-mod">Submit a mod</a> · <a href="./docs/interface.html">Mod guide</a></p>
+    <p>Panes, extensions and themes published on GitHub, discovered automatically from the <a href="https://github.com/topics/thurbox-mods"><code>thurbox-mods</code></a> topic. Install one with its command, then follow its README for setup.</p>
+    <p><a href="#submit-mod">Publish yours</a> · <a href="./docs/interface.html">Mod guide</a></p>
   </header>
-  <p class="plugin-notice">Official means maintained by Thurbeen. Community entries are reviewed submissions, with support provided by their authors. Platform notes describe the repositories’ setup, not a compatibility guarantee. Check capability grants and pane conflicts before installing.</p>
-  <form class="plugin-filters" id="plugin-filters" hidden role="search" aria-label="Filter mods">
-    <div><label for="plugin-search">Search mods</label><input id="plugin-search" type="search" placeholder="Name, author or description" /></div>
-    <div><label for="plugin-kind">Kind</label><select id="plugin-kind"><option value="">All kinds</option><option value="pane">Pane</option><option value="extension">Extension</option><option value="agent">Agent</option><option value="theme">Theme</option><option value="other">Other</option></select></div>
+  <p class="plugin-notice">Official mods are maintained by Thurbeen. Community mods list themselves with the topic and are not reviewed by Thurbeen: read the README and check the capability grants a mod asks for before you install it.</p>
+  <form class="plugin-filters" id="plugin-filters" hidden role="search" aria-label="Search and sort mods">
+    <div><label for="plugin-search">Search mods</label><input id="plugin-search" type="search" placeholder="Name, owner, topic or description" /></div>
+    <div><label for="plugin-sort">Sort by</label><select id="plugin-sort"><option value="popular">Popular</option><option value="updated">Recently updated</option><option value="newest">Newest</option><option value="name">Name</option></select></div>
     <div><label for="plugin-badge">Maintainer</label><select id="plugin-badge"><option value="">All maintainers</option><option value="official">Official</option><option value="community">Community</option></select></div>
     <button type="reset">Reset</button>
   </form>
-  <p id="plugin-count" role="status" aria-live="polite" aria-atomic="true">{{ mods | length }} mods</p>
-  <noscript><p>All mods are listed below. Enable JavaScript to search and filter.</p></noscript>
-  <div class="plugin-grid">
-    {% for mod in mods %}
-    <article class="plugin-card" data-plugin data-kind="{{ mod.kind | escape }}" data-badge="{{ mod.badge | escape }}">
-      <div class="plugin-badges"><span class="plugin-badge plugin-badge--{{ mod.badge | escape }}">{{ mod.badge | capitalize }}</span><span class="plugin-badge">{{ mod.kind | capitalize }}</span></div>
-      <h2><a href="{{ mod.repo | escape }}">{{ mod.name | escape }}</a></h2>
-      <p>{{ mod.description | escape }}</p>
+  <p id="plugin-count" role="status" aria-live="polite" aria-atomic="true">{{ gallery | length }} mods</p>
+  <noscript><p>All mods are listed below, most starred first. Enable JavaScript to search, filter and sort.</p></noscript>
+  <div class="plugin-grid" id="plugin-grid">
+    {% for mod in gallery %}
+    {% set badge = "official" if mod.official else "community" %}
+    <article class="plugin-card" data-plugin data-badge="{{ badge }}" data-stars="{{ mod.stars }}" data-pushed="{{ mod.pushedAt | escape }}" data-created="{{ mod.createdAt | escape }}" data-name="{{ mod.name | lower | escape }}">
+      <div class="plugin-card-head">
+        <img class="plugin-avatar" src="https://github.com/{{ mod.owner | urlencode }}.png?size=64" alt="" width="32" height="32" loading="lazy" decoding="async" />
+        <div class="plugin-title">
+          <h2><a href="{{ mod.repo | escape }}">{{ mod.name | escape }}</a></h2>
+          <p class="plugin-owner">by <a href="https://github.com/{{ mod.owner | urlencode }}">{{ mod.owner | escape }}</a></p>
+        </div>
+        <span class="plugin-badge plugin-badge--{{ badge }}">{{ badge | capitalize }}</span>
+      </div>
+      <p class="plugin-desc">{{ mod.description | escape }}</p>
       {% if mod.media %}
       <a class="plugin-preview" href="{{ mod.repo | escape }}#readme"><img src="{{ mod.media.url | escape }}" alt="{{ mod.media.alt | escape }}" loading="lazy" decoding="async" /></a>
       {% else %}
       <div class="plugin-preview"><div class="plugin-preview-placeholder"><span aria-hidden="true">&gt;_</span>No preview yet<br /><a href="{{ mod.repo | escape }}#readme">Explore the README</a></div></div>
       {% endif %}
       <dl class="plugin-meta">
-        <div><dt>Author</dt><dd>{{ mod.author | escape }}</dd></div>
-        <div><dt>Platforms</dt><dd>{{ mod.platforms | join(', ') | escape }}</dd></div>
-        {% if mod.release %}<div><dt>Release</dt><dd>{{ mod.release | escape }}</dd></div>{% endif %}
-        <div><dt>Last update</dt><dd><time datetime="{{ mod.updated | escape }}">{{ mod.updated | escape }}</time></dd></div>
+        <div><dt>Stars</dt><dd class="plugin-stars">{{ mod.stars }}</dd></div>
+        <div><dt>Last update</dt><dd><time datetime="{{ mod.pushedAt | escape }}">{{ mod.pushedAt.slice(0, 10) | escape }}</time></dd></div>
+        {% if mod.version %}<div><dt>Version</dt><dd>{{ mod.version | escape }}</dd></div>{% endif %}
+        {% if mod.requiresThurbox %}<div><dt>Thurbox</dt><dd>{{ mod.requiresThurbox | escape }}</dd></div>{% endif %}
+        {% if mod.platforms | length %}<div><dt>Platforms</dt><dd>{{ mod.platforms | join(', ') | escape }}</dd></div>{% endif %}
       </dl>
+      {% if mod.topics | length %}
+      <ul class="plugin-topics" aria-label="Topics">
+        {% for topic in mod.topics %}<li><a href="https://github.com/topics/{{ topic | urlencode }}">{{ topic | escape }}</a></li>{% endfor %}
+      </ul>
+      {% endif %}
       <details class="plugin-install"><summary>Install command</summary><pre data-wrap data-title="Install"><code class="language-bash">{{ mod.install | escape }}</code></pre></details>
-      <p class="plugin-notes">{{ mod.notes | escape }}</p>
+      {% if mod.notes %}<p class="plugin-notes">{{ mod.notes | escape }}</p>{% endif %}
       <a href="{{ mod.repo | escape }}#readme">Repository &amp; setup →</a>
     </article>
     {% endfor %}
   </div>
   <p id="plugin-empty" hidden>No mods match these filters. Try another search or reset the filters.</p>
   <section class="plugin-submit" id="submit-mod" aria-labelledby="submit-heading">
-    <h2 id="submit-heading">Share your mod</h2>
-    <p>Add the <a href="https://github.com/topics/thurbox-mods"><code>thurbox-mods</code></a> GitHub topic to your repository, then open a PR adding one entry to <a href="https://github.com/Thurbeen/thurbox/blob/main/website/_data/mods.json">mods.json</a>. Include supported platforms, setup notes and a screenshot or GIF when available.</p>
-    <p>The <a href="https://github.com/Thurbeen/thurbox/blob/main/CONTRIBUTING.md#mod-catalog">submission template and schema</a> describe the required fields and checks. Maintainers review entries before they appear here; a topic alone does not publish a listing.</p>
-    <p>This catalog uses checked-in metadata; “Last update” is the recorded repository push date. Updates arrive through reviewed PRs. Media is linked directly from the author’s repository.</p>
-    <details><summary>Official repositories outside this catalog</summary><p><a href="https://github.com/Thurbeen/thurbox-plugin-orchestrator">thurbox-plugin-orchestrator</a> is archived and targets the earlier admin plugin model. <a href="https://github.com/Thurbeen/thurbox-discord">thurbox-discord</a> manages the community Discord server; it is not a Thurbox add-on.</p></details>
+    <h2 id="submit-heading">Publish your mod</h2>
+    <ol>
+      <li>Publish the mod in a public GitHub repository.</li>
+      <li>Add the <a href="https://github.com/topics/thurbox-mods"><code>thurbox-mods</code></a> topic to the repository.</li>
+      <li>Optional: put a screenshot or GIF at <code>media/demo.gif</code>, or describe the listing in your <code>mod.toml</code>, as below.</li>
+    </ol>
+    <p>The site rebuilds every day. It reads each repository’s name, owner, description, stars, last push and topics from GitHub, and its version and required Thurbox version from <code>mod.toml</code>. Forks and archived repositories are left out. No pull request and no review queue.</p>
+    <pre data-title="mod.toml"><code class="language-toml">[gallery]
+media = "media/demo.gif"
+media_alt = "What the screenshot shows"
+install = "thurbox-cli mod install git+https://github.com/you/thurbox-widget"
+platforms = ["Linux", "macOS"]
+notes = "Required capability grants, layout changes and conflicts."</code></pre>
+    <p>Every field is optional. <code>media</code> is a path in the repository or an HTTPS URL. The install command defaults to <code>thurbox-cli mod install git+</code> and the repository URL. The <a href="https://github.com/Thurbeen/thurbox/blob/main/CONTRIBUTING.md#mod-gallery">contributing guide</a> describes the curated overlay that maintainers use for notes and removals.</p>
+    <details><summary>Official repositories outside this gallery</summary><p><a href="https://github.com/Thurbeen/thurbox-plugin-orchestrator">thurbox-plugin-orchestrator</a> is archived and targets the earlier admin plugin model. <a href="https://github.com/Thurbeen/thurbox-discord">thurbox-discord</a> manages the community Discord server; it is not a Thurbox add-on.</p></details>
   </section>
 </div>
 <script src="./js/mods.js"></script>
