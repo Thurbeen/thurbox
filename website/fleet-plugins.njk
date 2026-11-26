@@ -42,7 +42,7 @@ cwd = "/opt/fleet-plugins/fleet-tickets"</code></pre>
       <li>Add the <a href="https://github.com/topics/thurbox-fleet-plugins"><code>thurbox-fleet-plugins</code></a> topic to the repository.</li>
       <li>Add a <code>fleet-plugin.toml</code> at the repository root that lists the kinds the plugin adds, as below.</li>
     </ol>
-    <p>The site rebuilds every day. It reads each repository’s name, owner, description, stars, last push and topics from GitHub, and its kinds, version and required Fleet version from <code>fleet-plugin.toml</code>. Forks and archived repositories are left out. No pull request and no review queue.</p>
+    <p>The site rebuilds every hour. It reads each repository’s name, owner, description, stars, last push and topics from GitHub, and its kinds, version and required Fleet version from <code>fleet-plugin.toml</code>. Forks and archived repositories are left out. No pull request and no review queue.</p>
     <pre data-title="fleet-plugin.toml"><code class="language-toml">name = "fleet-tickets"
 version = "0.1.0"
 requires_fleet = ">=3.0.0"

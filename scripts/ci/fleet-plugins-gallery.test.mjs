@@ -281,3 +281,20 @@ test('the Fleet plugins page renders each plugin, its kinds, install and control
     await rm(output, { recursive: true, force: true });
   }
 });
+
+test('the gallery digest changes with the commit or with either gallery, and only then', async () => {
+  const { galleryDigest } = await import('./gallery.mjs');
+  const base = { commit: 'abc', galleries: { mods: [{ fullName: 'a/b', stars: 1 }], plugins: [] } };
+  const digest = galleryDigest(base);
+  assert.match(digest, /^[0-9a-f]{64}$/);
+  assert.equal(galleryDigest(structuredClone(base)), digest);
+  assert.notEqual(galleryDigest({ ...base, commit: 'def' }), digest);
+  assert.notEqual(
+    galleryDigest({ ...base, galleries: { ...base.galleries, plugins: [{ fullName: 'c/d' }] } }),
+    digest,
+  );
+  assert.notEqual(
+    galleryDigest({ ...base, galleries: { ...base.galleries, mods: [{ fullName: 'a/b', stars: 2 }] } }),
+    digest,
+  );
+});

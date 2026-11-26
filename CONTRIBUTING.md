@@ -373,8 +373,14 @@ mods published before the topic existed on the page.
 ### Build, refresh and fallback
 
 - The site build reads the GitHub API with the workflow's token (`GITHUB_TOKEN`
-  or `GH_TOKEN`). The Deploy Website workflow runs every day, so new and
-  updated mods appear within a day.
+  or `GH_TOKEN`). The Deploy Website workflow runs every hour, at 23 minutes
+  past, so new and updated mods and Fleet plugins appear within the hour. A
+  scheduled run deploys only when `_site/galleries.sha256`, a digest of the
+  commit and both galleries' data, differs from the published one. Each run
+  makes two topic searches and a few other API calls, well inside the search
+  limit of 30 a minute and the workflow token's 1,000 calls an hour; standard
+  runners are free for a public repository, and the Pages limit of 10 builds an
+  hour does not apply to a site deployed from a workflow.
 - If the search fails, is rate-limited or returns incomplete results, the build
   uses [`website/mods-snapshot.json`](website/mods-snapshot.json) and logs a
   warning. A failed fetch never breaks the build or empties the page.

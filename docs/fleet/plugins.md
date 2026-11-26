@@ -217,7 +217,7 @@ gives each limit.
 
 The [Fleet plugins](https://thurbox.thurbeen.eu/fleet-plugins.html) page lists
 the public GitHub repositories that have the `thurbox-fleet-plugins` topic.
-The site finds them each day. To list a plugin:
+The site finds them every hour. To list a plugin:
 
 1. Publish the plugin in a public GitHub repository.
 2. Add the `thurbox-fleet-plugins` topic to the repository.

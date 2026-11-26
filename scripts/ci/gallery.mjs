@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import { readFile, writeFile } from 'node:fs/promises';
 import { parse as parseToml } from 'smol-toml';
 import { validateOverlay } from './validate-mods.mjs';
@@ -139,6 +140,10 @@ function withOverlay(snapshot, curated) {
 
 async function readJson(path) {
   return JSON.parse(await readFile(path, 'utf8'));
+}
+
+export function galleryDigest({ commit, galleries }) {
+  return createHash('sha256').update(JSON.stringify({ commit, galleries })).digest('hex');
 }
 
 export function defineCatalog({

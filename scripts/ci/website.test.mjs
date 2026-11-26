@@ -163,6 +163,18 @@ test('Fleet plugins page lists fleet-reviewer with its kinds, beside the Mods pa
   assert.match(readFileSync('CONTRIBUTING.md', 'utf8'), /## Fleet plugin gallery/);
 });
 
+test('the site rebuilds every hour and skips a scheduled deploy when the galleries did not change', () => {
+  const workflow = readFileSync('.github/workflows/pages.yml', 'utf8');
+  const cron = workflow.match(/- cron: '([^']+)'/)[1].split(' ');
+  assert.equal(cron[1], '*', 'every hour');
+  assert.notEqual(cron[0], '0', 'off the top of the hour, when GitHub delays schedules');
+  assert.match(workflow, /galleries\.sha256/);
+  assert.match(workflow, /github\.event_name != 'schedule'/);
+  assert.match(readFileSync('_site/galleries.sha256', 'utf8'), /^[0-9a-f]{64}\n$/);
+  for (const page of ['mods.html', 'fleet-plugins.html'])
+    assert.match(text(built(page)), /rebuilds every hour/, page);
+});
+
 test('homepage presents Fleet and thurbox apart, links each official mod, and stays light on commands', () => {
   const home = built('index.html');
   const install = 'curl -fsSL https://raw.githubusercontent.com/Thurbeen/thurbox/main/scripts/install.sh | sh';
