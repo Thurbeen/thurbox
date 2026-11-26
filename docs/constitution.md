@@ -128,7 +128,7 @@ binaries have correct versions while keeping the source tree clean.
 - Development builds: version from Cargo.toml (0.0.0-dev)
 
 Every component in this repository is versioned by the one `v*` tag, and
-every crate inherits the workspace's `0.0.0-dev`.
+every crate's `Cargo.toml` stays `0.0.0-dev`.
 
 ### 11. Credentials stay with the agent and the host
 
