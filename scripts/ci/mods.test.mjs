@@ -74,9 +74,9 @@ test('site renders every discovered mod, its GitHub data, controls and escaped t
   await mkdir('tmp', { recursive: true });
   const output = await mkdtemp('tmp/mods-site-');
   const realFetch = globalThis.fetch;
-  const offline = process.env.THURBOX_MODS_OFFLINE;
+  const offline = process.env.THURBOX_GALLERY_OFFLINE;
   globalThis.fetch = async (url) => mockGitHub(url);
-  delete process.env.THURBOX_MODS_OFFLINE;
+  delete process.env.THURBOX_GALLERY_OFFLINE;
   try {
     const site = new Eleventy('website', output, {
       source: 'cli',
@@ -146,7 +146,7 @@ test('site renders every discovered mod, its GitHub data, controls and escaped t
     assert.ok(root.querySelector('label[for="plugin-sort"]'));
     assert.equal(root.querySelector('#plugin-count').getAttribute('aria-live'), 'polite');
     assert.ok(root.querySelector('a[aria-current="page"]'));
-    assert.ok(root.querySelector('script[src="./js/mods.js"]'));
+    assert.ok(root.querySelector('script[src="./js/gallery.js"]'));
 
     const events = {};
     const form = root.querySelector('#plugin-filters');
@@ -159,7 +159,7 @@ test('site renders every discovered mod, its GitHub data, controls and escaped t
     const badge = root.querySelector('#plugin-badge');
     search.value = badge.value = '';
     sort.value = 'popular';
-    runInNewContext(await readFile('website/js/mods.js', 'utf8'), {
+    runInNewContext(await readFile('website/js/gallery.js', 'utf8'), {
       document: {
         getElementById: (id) => root.querySelector(`#${id}`),
         querySelectorAll: (selector) => root.querySelectorAll(selector),
@@ -207,7 +207,7 @@ test('site renders every discovered mod, its GitHub data, controls and escaped t
     assert.equal(root.querySelector('#plugin-empty').hidden, true);
   } finally {
     globalThis.fetch = realFetch;
-    if (offline !== undefined) process.env.THURBOX_MODS_OFFLINE = offline;
+    if (offline !== undefined) process.env.THURBOX_GALLERY_OFFLINE = offline;
     await rm(output, { recursive: true, force: true });
   }
 });
@@ -228,10 +228,10 @@ const fixture = [
 ];
 
 test('registry schema rejects unknown fields, unsafe URLs, invalid values and duplicates', async () => {
-  const { validateMods } = await import('./validate-mods.mjs');
-  assert.deepEqual(validateMods(fixture), []);
-  assert.deepEqual(validateMods([{ repo: 'https://github.com/example/bare' }]), []);
-  assert.ok(validateMods([{ notes: 'no repo' }]).length, 'repo is required');
+  const { validateOverlay } = await import('./validate-mods.mjs');
+  assert.deepEqual(validateOverlay(fixture), []);
+  assert.deepEqual(validateOverlay([{ repo: 'https://github.com/example/bare' }]), []);
+  assert.ok(validateOverlay([{ notes: 'no repo' }]).length, 'repo is required');
   for (const patch of [
     { repo: 'javascript:alert(1)' },
     { repo: 'https://example.com/repo' },
@@ -246,14 +246,14 @@ test('registry schema rejects unknown fields, unsafe URLs, invalid values and du
     { media: { url: 'http://example.com/x.gif', alt: 'x' } },
     { media: { url: 'https://example.com/x.gif', alt: '' } },
   ]) {
-    assert.ok(validateMods([{ ...fixture[0], ...patch }]).length, JSON.stringify(patch));
+    assert.ok(validateOverlay([{ ...fixture[0], ...patch }]).length, JSON.stringify(patch));
   }
   assert.ok(
-    validateMods([fixture[0], { repo: fixture[0].repo.toUpperCase() }]).length,
+    validateOverlay([fixture[0], { repo: fixture[0].repo.toUpperCase() }]).length,
     'duplicate repository',
   );
-  assert.ok(validateMods({}).length);
-  assert.ok(validateMods([null]).length);
+  assert.ok(validateOverlay({}).length);
+  assert.ok(validateOverlay([null]).length);
 });
 
 test('link validation rejects a missing repository and unreachable media', async () => {
@@ -275,6 +275,6 @@ test('link validation rejects a missing repository and unreachable media', async
 });
 
 test('catalog inherits the website single theme', async () => {
-  const css = await readFile('website/css/mods.css', 'utf8');
+  const css = await readFile('website/css/gallery.css', 'utf8');
   assert.doesNotMatch(css, /prefers-color-scheme|:root/);
 });

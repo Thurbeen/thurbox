@@ -4,7 +4,8 @@ import { RenderPlugin } from '@11ty/eleventy';
 import { parse } from 'node-html-parser';
 import Prism from 'prismjs';
 import loadLanguages from 'prismjs/components/index.js';
-import { galleryData } from './scripts/ci/mods-gallery.mjs';
+import { galleryData as modGallery } from './scripts/ci/mods-gallery.mjs';
+import { galleryData as fleetPluginGallery } from './scripts/ci/fleet-plugins-gallery.mjs';
 
 loadLanguages(['bash', 'powershell', 'toml', 'json', 'rust']);
 
@@ -279,7 +280,7 @@ export default function (eleventyConfig) {
     console.log(`[11ty] Wrote _site/css/core.css (${(bytes / 1024).toFixed(1)} KB)`);
   });
 
-  for (const sheet of ['landing', 'docs', 'tutorial', 'mods']) {
+  for (const sheet of ['landing', 'docs', 'tutorial', 'gallery']) {
     eleventyConfig.addPassthroughCopy(`website/css/${sheet}.css`);
   }
   eleventyConfig.addPassthroughCopy('website/js');
@@ -291,7 +292,8 @@ export default function (eleventyConfig) {
 
   eleventyConfig.addPlugin(RenderPlugin);
   eleventyConfig.addGlobalData('repoDocs', listRepoDocs);
-  eleventyConfig.addGlobalData('gallery', () => galleryData());
+  eleventyConfig.addGlobalData('modGallery', () => modGallery());
+  eleventyConfig.addGlobalData('fleetPluginGallery', () => fleetPluginGallery());
   eleventyConfig.amendLibrary('md', (md) => md.core.ruler.push('repo_doc', repoDocRule));
   for (const dir of RENDERED_DOCS) {
     eleventyConfig.addPassthroughCopy(`${dir}/**/*.svg`);

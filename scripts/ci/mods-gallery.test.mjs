@@ -7,7 +7,7 @@ import {
   loadGallery,
   validateGallery,
 } from './mods-gallery.mjs';
-import { validateMods } from './validate-mods.mjs';
+import { validateOverlay } from './validate-mods.mjs';
 
 const API = 'https://api.github.com';
 const RAW = 'https://raw.githubusercontent.com';
@@ -270,7 +270,7 @@ test('offline builds read the snapshot without touching the network', async () =
     curated,
     snapshot,
     request,
-    env: { THURBOX_MODS_OFFLINE: '1' },
+    env: { THURBOX_GALLERY_OFFLINE: '1' },
     warn: () => {},
   });
   assert.deepEqual(gallery, snapshot);
@@ -288,7 +288,7 @@ test('the committed snapshot is valid and lists every curated repository', async
   const snapshot = JSON.parse(await readFile('website/mods-snapshot.json', 'utf8'));
   const registry = JSON.parse(await readFile('website/_data/mods.json', 'utf8'));
   assert.deepEqual(validateGallery(snapshot), []);
-  assert.deepEqual(validateMods(registry), []);
+  assert.deepEqual(validateOverlay(registry), []);
   const listed = new Set(snapshot.map((m) => m.repo.toLowerCase()));
   for (const entry of registry.filter((e) => !e.hidden))
     assert.ok(listed.has(entry.repo.toLowerCase()), entry.repo);
@@ -346,7 +346,7 @@ test('the snapshot fallback follows the current overlay', async () => {
     curated,
     snapshot,
     request: async () => assert.fail('no request offline'),
-    env: { THURBOX_MODS_OFFLINE: '1' },
+    env: { THURBOX_GALLERY_OFFLINE: '1' },
     warn: () => {},
   });
   const { request } = githubMock({ search: () => response(403, {}) });

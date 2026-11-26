@@ -5,7 +5,11 @@ it. This page builds a working plugin step by step:
 [examples/fleet/plugin/files.py](../../examples/fleet/plugin/files.py), a
 `File` kind that keeps one file's content. The
 [Plugin controller](controllers/plugin.md) page is the reference for every
-field and limit.
+field and limit. The [Fleet plugins](https://thurbox.thurbeen.eu/fleet-plugins.html)
+page lists the plugins that other people publish.
+
+A Fleet plugin is not a thurbox mod. A plugin extends Fleet with resource
+kinds. A [mod](../thurbox/mods.md) extends the thurbox interface.
 
 ## What a plugin is
 
@@ -208,6 +212,47 @@ a whole plan that names a reserved status field, acts on a Task that the
 plugin does not own (with `tasks = "own"`), or passes a limit. The
 [Plugin controller interface](controllers/plugin.md#probes-and-reconcile)
 gives each limit.
+
+## Step 6: publish it
+
+The [Fleet plugins](https://thurbox.thurbeen.eu/fleet-plugins.html) page lists
+the public GitHub repositories that have the `thurbox-fleet-plugins` topic.
+The site finds them each day. To list a plugin:
+
+1. Publish the plugin in a public GitHub repository.
+2. Add the `thurbox-fleet-plugins` topic to the repository.
+3. Add a `fleet-plugin.toml` file at the repository root.
+4. In the README, give the `[plugins]` entry to register and the credentials
+   that the plugin needs.
+
+The page reads `fleet-plugin.toml`. Fleet does not read it. Every field is
+optional:
+
+```toml
+name = "files"
+version = "0.1.0"
+requires_fleet = ">=3.0.0"
+kinds = ["File"]
+
+[gallery]
+media = "media/demo.gif"
+media_alt = "What the screenshot shows"
+platforms = ["Linux", "macOS"]
+notes = "Runtimes, credentials and the tasks setting it needs."
+```
+
+| Field | Shows |
+| --- | --- |
+| `kinds` | The kinds that the plugin adds. Use the names that the `manifest` call answers. |
+| `version`, `requires_fleet` | The plugin's version and the Fleet versions it needs. |
+| `description` | The description, when the repository has none. |
+| `[gallery] media`, `media_alt` | A preview: a path in the repository or an HTTPS URL. Without it, the page uses `media/demo.gif` when it exists. |
+| `[gallery] platforms`, `notes` | Platform limits and setup notes. |
+
+The install command is `git clone <repository> /opt/fleet-plugins/<name>`.
+`[gallery] install` replaces it only in a repository that `Thurbeen` owns. The
+[contributing guide](../../CONTRIBUTING.md#fleet-plugin-gallery) describes the
+overlay that maintainers review.
 
 ## Debugging
 

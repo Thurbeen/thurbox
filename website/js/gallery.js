@@ -9,6 +9,7 @@
   var badge = document.getElementById('plugin-badge');
   var count = document.getElementById('plugin-count');
   var empty = document.getElementById('plugin-empty');
+  var noun = count.getAttribute('data-noun') || 'items';
 
   function attr(card, name) {
     return card.getAttribute('data-' + name) || '';
@@ -55,7 +56,7 @@
       card.hidden = !matches;
       if (matches) visible += 1;
     });
-    count.textContent = visible + ' of ' + cards.length + ' mods';
+    count.textContent = visible + ' of ' + cards.length + ' ' + noun;
     empty.hidden = visible !== 0;
   }
 

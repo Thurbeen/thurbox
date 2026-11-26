@@ -378,9 +378,34 @@ mods published before the topic existed on the page.
 - If the search fails, is rate-limited or returns incomplete results, the build
   uses [`website/mods-snapshot.json`](website/mods-snapshot.json) and logs a
   warning. A failed fetch never breaks the build or empties the page.
-- `npm run mods:snapshot` refreshes the snapshot. `THURBOX_MODS_OFFLINE=1`
+- `npm run mods:snapshot` refreshes the snapshot. `THURBOX_GALLERY_OFFLINE=1`
   (`npm run build:website:offline`) builds from the snapshot without network
   calls; `npm run lint:website` builds this way.
 - `npm run check:mods:links` checks the overlay's URLs and runs a live discovery.
 - `npm run test:mods` tests discovery, the fallback and the page against a
   mocked GitHub API.
+
+## Fleet plugin gallery
+
+The [Fleet plugins page](https://thurbox.thurbeen.eu/fleet-plugins.html) lists
+the public GitHub repositories that carry the
+[`thurbox-fleet-plugins`](https://github.com/topics/thurbox-fleet-plugins) topic.
+A Fleet plugin adds resource kinds to Fleet; a mod changes the thurbox
+interface, and has its own [gallery](#mod-gallery). Both pages run on the same
+code (`scripts/ci/gallery.mjs`), so discovery, badges, the overlay, the build
+and the fallback work as the mod gallery describes. Only these differ:
+
+| | Mods | Fleet plugins |
+|---|---|---|
+| Topic | `thurbox-mods` | `thurbox-fleet-plugins` |
+| Manifest at the repository root | `mod.toml` | `fleet-plugin.toml`, read only by the site |
+| Fields read besides `[gallery]` | `version`, `requires_thurbox`, `description` | `version`, `requires_fleet`, `kinds`, `description` |
+| Default install command | `thurbox-cli mod install git+<repository URL>` | `git clone <repository URL> /opt/fleet-plugins/<name>` |
+| Curated overlay | [`website/_data/mods.json`](website/_data/mods.json) | [`website/_data/fleet-plugins.json`](website/_data/fleet-plugins.json) |
+| Snapshot | [`website/mods-snapshot.json`](website/mods-snapshot.json) | [`website/fleet-plugins-snapshot.json`](website/fleet-plugins-snapshot.json) |
+| Scripts | `check:mods`, `test:mods`, `check:mods:links`, `mods:snapshot` | `check:fleet-plugins`, `test:fleet-plugins`, `check:fleet-plugins:links`, `fleet-plugins:snapshot` |
+
+`kinds` lists the CamelCase kind names the plugin's `manifest` call answers;
+the page drops any other value. [Write a plugin](docs/fleet/plugins.md#step-6-publish-it)
+documents `fleet-plugin.toml` for plugin authors. Both overlays share one
+schema, [`website/mods.schema.json`](website/mods.schema.json).

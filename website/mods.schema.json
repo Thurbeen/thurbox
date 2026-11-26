@@ -1,7 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "title": "Thurbox mod gallery overlay",
-  "description": "Curated additions to the mods discovered by the thurbox-mods GitHub topic. Each entry names a repository; its other fields replace what the repository's mod.toml [gallery] table says.",
+  "title": "Thurbox gallery overlay",
+  "description": "Curated additions to a gallery discovered by a GitHub topic: the mods of thurbox-mods (website/_data/mods.json) or the Fleet plugins of thurbox-fleet-plugins (website/_data/fleet-plugins.json). Each entry names a repository; its other fields replace what the [gallery] table of the repository's mod.toml or fleet-plugin.toml says.",
   "type": "array",
   "items": {
     "type": "object",
