@@ -643,6 +643,9 @@ applicable: `h/j/k/l` for navigation, semantic letters for actions
 | `Shift+J` | Session list | Move selected session down | Reorder |
 | `Shift+K` | Session list | Move selected session up | Reorder |
 | `Shift+S` | Session list | Sort sessions alphabetically within repo groups | **S**ort |
+| `s` | Session list | Start a stopped session | **S**tart |
+| `p` | Session list | Pause a running session | **P**ause |
+| `Shift+R` | Session list | Restart the agent on its conversation | **R**estart |
 | `j` / `k` | F1 editor | Select action to rebind | |
 | `Enter` / `r` | F1 editor | Capture a new chord for the selected action | **R**ebind |
 | `d` | F1 editor | Reset selected action to its default chord(s) | **D**efault |

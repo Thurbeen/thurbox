@@ -11,7 +11,8 @@ how they fit together. Each linked page is a reference for one subject.
 ## Install
 
 Fleet runs headless, without thurbox. The installers' fleet-only mode
-installs `fleet`, `runtime-mux` and `workspace-git`, and nothing else:
+installs `fleet`, `runtime-mux`, `runtime-herdr` and `workspace-git`, and nothing
+else:
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/Thurbeen/thurbox/main/scripts/install.sh | sh -s -- --fleet-only

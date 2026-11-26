@@ -139,8 +139,9 @@ breadcrumb: 'thurbox features'
             </li>
             <li>
               Open URLs in terminal output with <code>Ctrl+Click</code>. Select text with a mouse
-              drag, copy with <code>Ctrl+C</code>, paste with <code>Ctrl+V</code>. With no
-              selection, <code>Ctrl+C</code> sends SIGINT to the active session.
+              drag; releasing it copies. Paste with <code>Ctrl+V</code>. <code>Ctrl+C</code> sends
+              SIGINT to the active session; it copies a selection only with
+              <code>[clipboard] copy_on_select = false</code>.
             </li>
             <li>Toggle a shell pane beside the agent with <code>Ctrl+T</code>.</li>
             <li>
@@ -400,9 +401,7 @@ transport = { wsl = "Ubuntu" }</code></pre>
             </li>
             <li>
               <strong>Drag</strong>
-              selects terminal text (
-              <code>Ctrl+C</code>
-              copies);
+              selects terminal text and copies it on release;
               <code>Ctrl+Click</code>
               opens a URL.
             </li>

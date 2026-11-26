@@ -51,27 +51,15 @@ fleet up</code></pre>
   <a href="#service" class="heading-anchor">#</a>
 </h2>
 <p>
-  On a machine you do not sit at, run <code>fleet up</code> as a user systemd service. Then
-  sessions come back after a reboot, without a login. A user service does not read your login
-  <code>PATH</code>: name the directories that hold <code>fleet</code>,
-  <code>runtime-mux</code>, <code>tmux</code> and your coding agents.
-  <code>KillMode=process</code> keeps the tmux server that <code>fleet up</code> starts, and
-  every session on it, when the unit stops or restarts.
+  On a machine you do not sit at, run <code>fleet up</code> as a user service. Then sessions
+  come back after a reboot, without a login. On Linux with a systemd user session, the
+  installer already did this. Otherwise, <code>fleet service install --now</code> writes the
+  unit, records your current <code>PATH</code>, enables the unit and starts it. A user service
+  does not read your login <code>PATH</code>: run it from a shell whose <code>PATH</code> holds
+  <code>fleet</code>, <code>runtime-mux</code>, <code>tmux</code> and your coding agents.
 </p>
-<pre data-title="~/.config/systemd/user/fleet.service"><code class="language-toml">[Unit]
-Description=Fleet manager
-
-[Service]
-Environment=PATH=%h/.local/bin:/usr/local/bin:/usr/bin:/bin
-ExecStart=%h/.local/bin/fleet up
-KillMode=process
-Restart=on-failure
-RestartSec=15
-
-[Install]
-WantedBy=default.target</code></pre>
-<pre><code class="language-bash">loginctl enable-linger "$USER"
-systemctl --user enable --now fleet.service</code></pre>
+<pre><code class="language-bash">fleet service install --now
+loginctl enable-linger "$USER"</code></pre>
 <p>
   thurbox can follow this Fleet from another machine over ssh; see
   <a href="configuration.html#fleets">Fleets</a>.

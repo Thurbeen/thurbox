@@ -36,7 +36,7 @@ Two commands do the move, and neither deletes a 2.x file:
 | `hosts.toml` lists remote machines. | thurbox lists Fleets under `[fleets.<name>]` in `settings.toml`. A Fleet's runtime lists its places. |
 | `agents.toml` defines agents. | Agents are Fleet's harness profiles ([Agents](thurbox/agents.md)). |
 | Automations in `thurbox.db`, and `thurbox-cli automation tick`. | Nothing in thurbox. Use a [CronTask](fleet/resources/cron-task.md). |
-| `spec.model` and `runtime.modelEnv`. | No runtime passes a model. `runtime-mux` refuses a Task that sets `spec.model`. Set the model in the harness's own configuration. |
+| `spec.model` and `runtime.modelEnv`. | No runtime passes a model. Fleet refuses a Task that sets `spec.model`. Set the model in the harness's own configuration. |
 | VEGA ships inside Fleet 2, and `fleet init` writes its workspace. | VEGA installs from [its own repository](https://github.com/Thurbeen/vega). |
 
 Both lines use the same paths: `~/.config/thurbox`, `~/.local/share/thurbox`,
