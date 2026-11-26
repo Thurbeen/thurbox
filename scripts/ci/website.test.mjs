@@ -133,7 +133,7 @@ test('mod gallery is discovered by topic and documents the mod.toml listing conv
   assert.match(copy, /discovered automatically/i);
   assert.match(copy, /not reviewed/i, 'community listings are flagged as unreviewed');
   const toml = text(parse(page.querySelector('#submit-mod pre').innerHTML));
-  for (const field of ['[gallery]', 'media', 'media_alt', 'install', 'platforms', 'notes'])
+  for (const field of ['[gallery]', 'media', 'media_alt', 'platforms', 'notes'])
     assert.ok(toml.includes(field), field);
   const contributing = readFileSync('CONTRIBUTING.md', 'utf8');
   assert.match(contributing, /## Mod gallery/);

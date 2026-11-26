@@ -132,7 +132,7 @@ async function describe(request, repository, curatedEntry, tagged) {
     requiresThurbox: nonEmptyString(manifest.requires_thurbox),
     install:
       nonEmptyString(curatedEntry.install) ??
-      nonEmptyString(listing.install) ??
+      (repository.owner.login === OFFICIAL_OWNER ? nonEmptyString(listing.install) : null) ??
       `thurbox-cli mod install git+${repository.html_url}`,
     platforms: curatedEntry.platforms ?? stringList(listing.platforms) ?? [],
     notes: nonEmptyString(curatedEntry.notes) ?? nonEmptyString(listing.notes),

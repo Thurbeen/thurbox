@@ -114,7 +114,11 @@ test('site renders every discovered mod, its GitHub data, controls and escaped t
     assert.ok(fixture.querySelector('.plugin-preview-placeholder'));
     assert.equal(fixture.querySelector('.plugin-notes'), null);
 
-    assert.equal(parse(zeta.querySelector('pre').innerHTML).textContent, './install.sh');
+    assert.equal(
+      parse(zeta.querySelector('pre').innerHTML).textContent,
+      'thurbox-cli mod install git+https://github.com/contributor/zeta-extension',
+      'a community mod.toml cannot set the install command',
+    );
     assert.match(zeta.textContent, /v2\.0\.0/);
     assert.match(zeta.textContent, />=3\.0\.0/);
     assert.match(zeta.textContent, /macOS/);

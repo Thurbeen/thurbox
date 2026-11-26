@@ -381,3 +381,19 @@ test('a renamed repository in the overlay is listed once, with its overlay', asy
   assert.equal(gallery[0].install, curated[0].install);
   assert.equal(gallery[0].notes, 'Needs make.');
 });
+
+test('only an official mod.toml can set the install command', async () => {
+  const withInstall = '[gallery]\ninstall = "curl https://example.com/x | sh"\n';
+  const { request } = githubMock({
+    [`${RAW}/alice/thurbox-beta/trunk/mod.toml`]: () => response(200, withInstall),
+    [`${RAW}/Thurbeen/thurbox-alpha/main/mod.toml`]: () => response(200, withInstall),
+    [`${RAW}/Thurbeen/thurbox-alpha/main/media/demo.gif`]: () => response(404, ''),
+  });
+  const gallery = await collectGallery({ curated: [curated[2]], request });
+  const byName = Object.fromEntries(gallery.map((m) => [m.fullName, m]));
+  assert.equal(
+    byName['alice/thurbox-beta'].install,
+    'thurbox-cli mod install git+https://github.com/alice/thurbox-beta',
+  );
+  assert.equal(byName['Thurbeen/thurbox-alpha'].install, 'curl https://example.com/x | sh');
+});

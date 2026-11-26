@@ -328,7 +328,7 @@ listings are not reviewed.
 | Version, required Thurbox version | `version` and `requires_thurbox` in `mod.toml` |
 | Description, when the repository has none | `description` in `mod.toml` |
 | Preview | `[gallery] media`, else `media/demo.gif` when the repository has one |
-| Install command | `[gallery] install`, else `thurbox-cli mod install git+<repository URL>` |
+| Install command | `thurbox-cli mod install git+<repository URL>`; `[gallery] install` replaces it for `Thurbeen` repositories only |
 | Platforms, setup notes | `[gallery] platforms` and `notes` |
 
 The `[gallery]` table goes in the `mod.toml` at the repository root, beside the
@@ -344,7 +344,10 @@ notes = "Required capability grants, layout changes and conflicts."
 ```
 
 `media` is a path in the repository or an HTTPS URL. A path cannot leave the
-repository. The site displays the install command; it never runs it.
+repository. The site displays the install command; it never runs it. Because
+community listings are not reviewed, the site reads `install` only from
+`Thurbeen` repositories. A community mod that needs another command asks for it
+in the curated overlay, which maintainers review.
 
 ### Curated overlay
 
@@ -353,7 +356,8 @@ supply. Its schema is [`website/mods.schema.json`](website/mods.schema.json).
 Each entry names a `repo` and can set:
 
 - `install`, `platforms`, `notes` and `media` (`url` and `alt`). These replace
-  the repository's `[gallery]` values.
+  the repository's `[gallery]` values. A reviewed `install` here is the only way
+  a community mod shows a command other than the default.
 - `hidden: true`, which removes the repository from the gallery.
 
 A repository in the overlay is listed even without the topic. That keeps the
