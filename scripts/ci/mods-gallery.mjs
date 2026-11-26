@@ -15,6 +15,7 @@ const SEARCH_RESULT_CAP = 1000;
 const REQUEST_TIMEOUT_MS = 15000;
 const OFFICIAL_OWNER = 'Thurbeen';
 const DEFAULT_MEDIA_PATH = 'media/demo.gif';
+const CONCURRENT_REPOSITORIES = 8;
 
 class FetchError extends Error {}
 
@@ -121,8 +122,8 @@ async function describe(request, repository, curatedEntry, tagged) {
       nonEmptyString(repository.description) ??
       nonEmptyString(manifest.description) ??
       'No description provided.',
-    stars: repository.stargazers_count,
-    pushedAt: repository.pushed_at,
+    stars: repository.stargazers_count ?? 0,
+    pushedAt: repository.pushed_at ?? repository.created_at,
     createdAt: repository.created_at,
     topics: (repository.topics ?? []).filter((topic) => topic !== TOPIC),
     official: repository.owner.login === OFFICIAL_OWNER,
@@ -137,6 +138,20 @@ async function describe(request, repository, curatedEntry, tagged) {
     notes: nonEmptyString(curatedEntry.notes) ?? nonEmptyString(listing.notes),
     media,
   };
+}
+
+async function mapConcurrently(items, limit, work) {
+  const results = new Array(items.length);
+  let next = 0;
+  const worker = async () => {
+    while (next < items.length) {
+      const index = next;
+      next += 1;
+      results[index] = await work(items[index]);
+    }
+  };
+  await Promise.all(Array.from({ length: Math.min(limit, items.length) }, worker));
+  return results;
 }
 
 function byPopularity(a, b) {
@@ -162,10 +177,11 @@ export async function collectGallery({ curated, request = fetch, token }) {
     if (!repository || repository.archived || repository.private) continue;
     repositories.set(key, { repository, tagged: false });
   }
-  const gallery = await Promise.all(
-    [...repositories.entries()].map(([key, { repository, tagged }]) =>
+  const gallery = await mapConcurrently(
+    [...repositories.entries()],
+    CONCURRENT_REPOSITORIES,
+    ([key, { repository, tagged }]) =>
       describe(request, repository, overlay.get(key) ?? {}, tagged),
-    ),
   );
   return gallery.sort(byPopularity);
 }

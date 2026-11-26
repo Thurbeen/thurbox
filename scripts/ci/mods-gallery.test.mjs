@@ -294,3 +294,37 @@ test('the committed snapshot is valid and lists every curated repository', async
     assert.ok(listed.has(entry.repo.toLowerCase()), entry.repo);
   assert.ok(snapshot.some((m) => m.official));
 });
+
+test('repository requests run a few at a time', async () => {
+  const many = Array.from({ length: 40 }, (_, i) => repository(`owner${i}/thurbox-m${i}`));
+  let inFlight = 0;
+  let peak = 0;
+  const request = async (url) => {
+    const parsed = new URL(url);
+    if (parsed.pathname === '/search/repositories')
+      return response(200, { total_count: many.length, incomplete_results: false, items: many });
+    inFlight += 1;
+    peak = Math.max(peak, inFlight);
+    await new Promise((resolve) => setImmediate(resolve));
+    inFlight -= 1;
+    return response(404, '');
+  };
+  const gallery = await collectGallery({ curated: [], request });
+  assert.equal(gallery.length, many.length);
+  assert.ok(peak <= 8, `peak concurrency ${peak}`);
+});
+
+test('a repository GitHub reports without a push or star count still renders', async () => {
+  const { request } = githubMock({
+    search: () =>
+      response(200, {
+        total_count: 1,
+        incomplete_results: false,
+        items: [{ ...official, pushed_at: null, stargazers_count: undefined }],
+      }),
+  });
+  const gallery = await collectGallery({ curated: [], request });
+  assert.equal(gallery[0].pushedAt, official.created_at);
+  assert.equal(gallery[0].stars, 0);
+  assert.deepEqual(validateGallery(gallery), []);
+});
