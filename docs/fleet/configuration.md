@@ -10,8 +10,8 @@ reference owns the config fields.
 
 `init` works offline. To run real sessions, put `runtime-mux` on PATH,
 install tmux, and install and authenticate each harness your Tasks name.
-The [fleet-only install](README.md#install) puts `fleet`, `runtime-mux` and
-`workspace-git` on PATH.
+The [fleet-only install](README.md#install) puts `fleet`, `runtime-mux`,
+`runtime-herdr` and `workspace-git` on PATH.
 Fleet does not install prerequisites or change login state. `up` asks the
 runtime of each configured host for its manifest. When no host answers, `up`
 exits and names the runtime it could not start. When some hosts answer, `up`

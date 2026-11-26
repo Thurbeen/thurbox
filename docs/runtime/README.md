@@ -254,8 +254,8 @@ one line per case, `ok` or `FAIL` with why, and exits non-zero when any fails:
   does not prove that the second call reaches the same one.
 
 The cases start `sleep` and `sh` in the runtime's place. CI runs it, through
-`crates/fleet-cli/tests/e2e_runtime_exec.rs`, against `runtime-mux` and against
-[`examples/runtimes/tmux.sh`](../../examples/runtimes/tmux.sh), a reference
+`crates/fleet-cli/tests/e2e_runtime_exec.rs`, against `runtime-mux`, against
+[`runtime-herdr`](herdr.md#tests) and against [`examples/runtimes/tmux.sh`](../../examples/runtimes/tmux.sh), a reference
 runtime in one POSIX `sh` script over tmux and `jq`. It serializes starts and
 stops with a kernel lock in tmux's private socket directory, taken with
 `flock(1)` or else `perl`, which a killed holder releases.
@@ -604,10 +604,11 @@ A runtime answers one question: run this command, under this key, in this
 directory, at this place, and tell me about it. Where and how is its own
 business.
 
-`runtime-mux` (`crates/runtime-mux`) runs its processes on this machine, in
-tmux, psmux or rmux (ADR-31). A new multiplexer of the tmux family is a
-module in `runtime-mux`, not a runtime. A new kind of place is a runtime. No
-`runtime-*` crate depends on another; shared code is a crates.io dependency.
+`runtime-mux` (`crates/runtime-mux`) runs its processes on this machine or on
+its ssh and WSL places, in tmux, psmux or rmux (ADR-31). A new multiplexer of
+the tmux family is a module in `runtime-mux`, not a runtime. A new kind of
+place is a runtime. No `runtime-*` crate depends on another; shared code is a
+crate of its own, such as `term-stream`, or a crates.io dependency.
 
 Fleet must run a Task on the four required verbs alone, so a runtime without a
 terminal is a full runtime:

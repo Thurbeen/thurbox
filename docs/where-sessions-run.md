@@ -85,7 +85,8 @@ machines of its own. For a session that runs on another machine:
 Status: implemented.
 
 1. Run the installer, `scripts/install.sh` (`install.ps1` on Windows). It
-   installs thurbox, `fleet` and `runtime-mux` together. Also install a
+   installs thurbox, `fleet`, `runtime-mux`, `runtime-herdr` and
+   `workspace-git` together. Also install a
    multiplexer and a coding agent.
 2. Run `fleet init`. It writes the multiplexer runtime and its `local`
    place.

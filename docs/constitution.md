@@ -127,10 +127,8 @@ binaries have correct versions while keeping the source tree clean.
 - Release builds: version from tag (e.g., 1.0.0)
 - Development builds: version from Cargo.toml (0.0.0-dev)
 
-Each component is versioned by its own tag (`thurbox-v*`, `fleet-v*`,
-`runtime-mux-v*`) once they share this repository; until then each
-repository's `v*` tags apply. Fleet's `Cargo.toml` likewise stays
-`0.0.0-dev`.
+Every component in this repository is versioned by the one `v*` tag, and
+every crate's `Cargo.toml` stays `0.0.0-dev`.
 
 ### 11. Credentials stay with the agent and the host
 
@@ -296,7 +294,8 @@ work. `fleet runtime check` holds every runtime to this.
 
 #### R3. runtime-mux module isolation
 
-`runtime-mux` depends on no other crate of the repository, and reads nothing
+`runtime-mux` depends on no crate of the repository but `term-stream` and
+`otel-env`, and reads nothing
 of the program embedding it: the settings it honours and where that program
 keeps its data are passed in (`MuxSettings`). Inside it, the
 module rules in `crates/architecture.toml` give every module under
@@ -316,7 +315,7 @@ build OS ([a host's platform](runtime/runtime-mux.md#a-hosts-platform)).
 | Rule | Enforced by | Where |
 |---|---|---|
 | 1. Components meet only through processes | `crates/architecture.toml` checked by `arch-rules`: every other component is `role = "component"`, held to the crate graph from its manifest and its sources | The workspace; thurbox links `runtime-mux` until Fleet drives the runtimes |
-| 2. Unknown never concludes | Fleet's `Observation` type and contract tests; thurbox's `discover` contract; `fleet runtime check` | Fleet, thurbox, runtime-mux, `examples/runtimes/tmux.sh` |
+| 2. Unknown never concludes | Fleet's `Observation` type and contract tests; thurbox's `discover` contract; `fleet runtime check` | Fleet, thurbox, runtime-mux, runtime-herdr, `examples/runtimes/tmux.sh` |
 | 3. Crash-free operation | Code review | All |
 | 4. Zero warnings | `clippy -D warnings` + `RUSTDOCFLAGS="-D warnings"` + `rumdl` | CI + pre-commit, over every crate |
 | 5. Permissive licenses | `cargo-deny check bans licenses` | `deny.toml` |
@@ -335,7 +334,7 @@ build OS ([a host's platform](runtime/runtime-mux.md#a-hosts-platform)).
 | F3. Intent and receipt | Contract tests in `fleet/contracts.md` | Fleet |
 | F4. One writer per field | `arch-rules` (permitted status writers) | Fleet |
 | R1. A runtime knows no Task | The protocol's schema | Every runtime |
-| R2. Idempotent by key | `fleet runtime check`, run by `crates/fleet-cli/tests/e2e_runtime_exec.rs` | runtime-mux, `examples/runtimes/tmux.sh` |
+| R2. Idempotent by key | `fleet runtime check`, run by `crates/fleet-cli/tests/e2e_runtime_exec.rs` | runtime-mux, runtime-herdr, `examples/runtimes/tmux.sh` |
 | R3. runtime-mux module isolation | `crates/architecture.toml` checked by `arch-rules` | runtime-mux |
 
 ### What `arch-rules` checks
