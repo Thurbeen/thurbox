@@ -96,6 +96,7 @@ existing Task. Tell me what you changed and what each check printed.
 ## Prerequisites
 
 - Linux or macOS. `runtime-herdr` does not run on Windows yet.
+
 - herdr-core 0.1.22 or newer. CI tests with the version that
   `nix/herdr-core.nix` pins, 0.1.22, which is also herdr-core's latest
   stable release. Check yours with `hc --version`. To install or update it:
@@ -108,6 +109,7 @@ existing Task. Tell me what you changed and what each check printed.
 - herdr's desktop app, to see the Tasks. The herdr 1 terminal interface (the
   `herdr` program) does not share herdr-core's terminals, so it does not
   show them.
+
 - A coding-agent CLI, installed and logged in.
 
 ## 1. Install Fleet
@@ -299,7 +301,10 @@ run `hc`.
   `fleet.role=shell`. A second `fleet shell` opens the same one.
 - Fleet pauses on its next pass, once the agent has reported its
   conversation. The pause ends the Task's terminals. The Task stays, and
-  its next start resumes the same conversation.
+  its next start resumes the same conversation. Fleet also pauses an idle
+  Task by itself after its [TaskConfig](../fleet/resources/task-config.md)'s
+  `pauseAfterMs`. Either way, the Task leaves herdr's sidebar until it
+  starts again: [Fleet Lens](#see-every-task-fleet-lens) still lists it.
 - Fleet has no separate stop. `fleet delete task` waits until the agent is
   at rest, at most 5 minutes. Then it ends the Task's terminals, the shell
   among them, removes the worktree, and removes the Task.
@@ -307,6 +312,34 @@ run `hc`.
   session. Fleet starts the Task again in a new terminal. To stop a Task,
   use Fleet.
 - A herdr-core restart or update keeps the Task's process running.
+
+### See every Task: Fleet Lens
+
+[Fleet Lens](https://github.com/Thurbeen/herdr-fleetlens) is a mod for
+herdr's app. It shows Fleet itself, not only the terminals Fleet runs:
+
+- **The Lens.** A float that browses every Fleet kind, plugin kinds included.
+  Tasks with an open Question or a problem come first, and the selected Task's
+  Questions, result and pull requests show in full.
+- **The Fleet Sessions sidebar.** It replaces herdr's agents list. It lists
+  every Task's session, paused ones included, and a click wakes a paused Task
+  (`fleet attach --wake`).
+
+![Fleet Lens: a request typed into VEGA becomes three worker Tasks in herdr, the Lens shows the one asking a Question first and the shipped ones with their result under VEGA, Fleet pauses the idle sessions, and w in the Lens wakes one](https://github.com/Thurbeen/herdr-fleetlens/releases/download/media/fleet-lens.gif)
+
+Install it into herdr's app, then switch to its layout:
+
+```bash
+git clone https://github.com/Thurbeen/herdr-fleetlens
+cd herdr-fleetlens
+./install.sh --home "${HERDR_APP_HOME:-$HOME/.config/herdr-app}" --store <data-dir>
+herdr-app do layout.switch --name fleet
+```
+
+`<data-dir>` is the `dir` under `[data]` in Fleet's `config.toml`. With it,
+the mod follows the store's changes. Without `--store`, it polls Fleet every
+5 seconds. Its [README](https://github.com/Thurbeen/herdr-fleetlens#readme)
+covers the keys and what each view shows.
 
 ## 7. Run VEGA in herdr
 
