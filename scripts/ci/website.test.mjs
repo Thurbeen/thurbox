@@ -101,6 +101,17 @@ test('the site describes only what exists', () => {
   }
 });
 
+test('mod catalog asks authors for the thurbox-mods topic and links its page', () => {
+  const page = built('mods.html');
+  const topic = page.querySelector('a[href="https://github.com/topics/thurbox-mods"]');
+  assert.ok(topic, 'links the thurbox-mods topic page');
+  assert.equal(topic.text, 'thurbox-mods');
+  assert.doesNotMatch(text(page), /\bthurbox-plugin\b(?!-)/);
+  const contributing = readFileSync('CONTRIBUTING.md', 'utf8');
+  assert.match(contributing, /\[`thurbox-mods`\]\(https:\/\/github\.com\/topics\/thurbox-mods\)/);
+  assert.doesNotMatch(contributing, /`thurbox-plugin`/);
+});
+
 test('mod catalog lists Fleet Lens in place of the Fleet v1 extension', () => {
   const cards = built('mods.html').querySelectorAll('[data-plugin]');
   const repos = cards.map((c) => c.querySelector('h2 a').getAttribute('href'));

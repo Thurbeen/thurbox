@@ -308,7 +308,7 @@ By contributing, you agree that your contributions will be licensed under the
 The [Mods page](https://thurbox.thurbeen.eu/mods.html) reads only
 `website/_data/mods.json`. To submit an add-on:
 
-1. Add the `thurbox-plugin` topic to your public GitHub repository.
+1. Add the [`thurbox-mods`](https://github.com/topics/thurbox-mods) topic to your public GitHub repository.
 2. Open a PR adding one object to the catalog, using the template below.
 3. Link setup instructions in your README, including required Thurbox versions,
    capability grants, dependencies, platform limits and conflicts with other panes.
