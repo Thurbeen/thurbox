@@ -14,6 +14,10 @@ is a connector. The reference connector,
 keeps its platform in files. The end-to-end tests drive it through the built
 `fleet` binary.
 
+Microsoft Teams is planned as a connector in a repository of its own,
+`fleet-gateway-teams`
+([Thurbeen/thurbox#1999](https://github.com/Thurbeen/thurbox/issues/1999)).
+
 ## The parts
 
 | Part | Who runs it | What it does |
