@@ -578,7 +578,19 @@ Every create and post is a keyed effect under `status.effects`: the manager
 writes the receipt back under the key, a key with a Known receipt is never
 performed again, and a missing or Unknown receipt is answered by looking
 for the Task, or for the post's marker in the mirror, never by repeating
-the effect blindly. Guarantees, each with its test in
+the effect blindly.
+
+An account whose `platform` names a `[gateway.connectors]` entry is served
+by that program, one bounded process per port call
+([write a gateway connector](connectors.md)). A manifest on another protocol
+or platform, or without a required verb, makes every call Unknown. Fleet
+answers an optional verb that the manifest does not list without a call.
+`credentials` and `options` reach the program in each request and never the
+store. `fleet gateway check -- <program>` is the protocol's conformance
+suite. Tests: `e2e_gateway_connector` and `fleet-gateway`'s `connector`
+tests.
+
+Guarantees, each with its test in
 `conversation_controller`, `e2e_gateway`, `e2e_gateway_wildcard`,
 `e2e_gateway_dm` and `store_contract`:
 

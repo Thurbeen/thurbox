@@ -148,13 +148,40 @@ Keep the credential file readable by the user that runs Fleet only.
 
 ## Check a connector
 
-`fleet version --json` names the protocol as `gatewayProtocol`. To check a
-connector by hand, configure an account and a route, then pipe one event:
+`fleet gateway check -- <program> [args]` is the conformance suite. It
+prints one line per case: `ok`, `skip` with why, or `FAIL` with why. It
+exits non-zero when any case fails. These cases need no platform:
+
+- `manifest` names protocol 1, the platform that `--platform` gives, and
+  every required verb, and lists no verb that protocol 1 does not have;
+- a request on another protocol answers Unknown;
+- an unknown verb answers Unknown;
+- an empty address does not parse, and an address that parses gives the
+  same parts when its own address is parsed again;
+- an event with an empty payload answers `null` or Unknown;
+- `whoami` names an id;
+- `capabilities` report `history` and `reactions` only when the manifest
+  lists `history` and `react`.
+
+With `--channel <address>`, the suite also posts one message in that
+channel. Give it a test channel:
+
+- a post answers `posted`;
+- a second post with the same intent key answers the same message. The case
+  is skipped when `marker` is `none`;
+- `history` of the thread that the post starts holds the message, under its
+  key when `marker` is not `none`. The case is skipped without history.
+
+The flags give the account that each request carries: `--platform`
+(default `check`), `--bot`, `--team`, `--credentials`, and `--option
+KEY=VALUE`, once per option. A value that parses as JSON is JSON.
 
 ```sh
-printf '%s' "$envelope" | fleet gateway receive --account teams-main --json
-fleet reconcile --json
+fleet gateway check --platform teams --credentials /etc/fleet/teams.conf \
+  --option serviceUrl=https://smba.trafficmanager.net/emea/ -- fleet-gateway-teams
 ```
 
-`crates/fleet-cli/tests/e2e_gateway_connector.rs` holds the reference
-connector to the protocol.
+`fleet version --json` names the protocol as `gatewayProtocol`.
+`crates/fleet-cli/tests/e2e_gateway_connector.rs` runs the suite against the
+reference connector, and drives it through `fleet gateway receive` and
+`fleet reconcile`.

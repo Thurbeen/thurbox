@@ -4,7 +4,7 @@ use std::time::Duration;
 
 use fleet_api::gateway::{
     AccountConfig, Capabilities, ConnectorConfig, ConversationRef, Delivery, Envelope, Fetched,
-    Gateway, History, HistoryObservation, HistoryQuery, Identity, Uncertainty,
+    Gateway, History, HistoryObservation, HistoryQuery, Identity, Marker, Uncertainty,
 };
 use fleet_api::plan::EffectOutcome;
 use fleet_api::{Millis, Observation};
@@ -87,9 +87,13 @@ impl ConnectorProgram {
         }
     }
 
-    pub fn call(&self, verb: &str, mut request: Value) -> Answer {
+    pub fn call(&self, verb: &str, request: Value) -> Answer {
+        self.call_speaking(PROTOCOL, verb, request)
+    }
+
+    fn call_speaking(&self, protocol: u64, verb: &str, mut request: Value) -> Answer {
         if let Some(fields) = request.as_object_mut() {
-            fields.insert("protocol".into(), json!(PROTOCOL));
+            fields.insert("protocol".into(), json!(protocol));
         }
         let mut spec = Spec::new(&self.program, self.call_timeout)
             .args(&self.args)
@@ -493,6 +497,232 @@ impl Gateway for ConnectorGateway {
             }
         }
     }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Verdict {
+    Passed,
+    Skipped(String),
+    Failed(String),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Case {
+    pub name: &'static str,
+    pub verdict: Verdict,
+}
+
+const LIVE_CASES: [&str; 3] = [
+    "a post answers posted",
+    "a post with a repeated intent key lands once",
+    "history since the post holds it under its key",
+];
+
+pub fn check(
+    program: &ConnectorProgram,
+    account: &AccountConfig,
+    channel: Option<&str>,
+) -> Vec<Case> {
+    let request = |fields: Value| {
+        let mut request = fields;
+        request["account"] = account_request(Some("check"), account);
+        request
+    };
+    let case = |name: &'static str, result: Result<(), String>| Case {
+        name,
+        verdict: result.map_or_else(Verdict::Failed, |()| Verdict::Passed),
+    };
+    let manifest = match program.manifest(request(json!({}))) {
+        Ok(m) => m,
+        Err(why) => return vec![case(MANIFEST_CASE, Err(why))],
+    };
+    let mut cases = vec![case(MANIFEST_CASE, known_verbs(&manifest))];
+    cases.push(case(
+        "a request on another protocol answers Unknown",
+        answers_unknown(program.call_speaking(PROTOCOL + 1, "whoami", request(json!({})))),
+    ));
+    cases.push(case(
+        "an unknown verb answers Unknown",
+        answers_unknown(program.call("fleet-check-no-such-verb", request(json!({})))),
+    ));
+    let gateway = ConnectorGateway::new(program.clone(), "check", account);
+    cases.push(case(
+        "an address it parses keeps its parts",
+        parses_back(&gateway, &account.platform),
+    ));
+    let envelope = json!({"verified": "connection", "receivedAt": 0, "payload": {}});
+    cases.push(case(
+        "an event it cannot read answers null or Unknown",
+        match gateway.event(
+            account,
+            &serde_json::from_value(envelope).expect("an envelope"),
+        ) {
+            Observation::Known(Some(d)) => Err(format!("an empty payload read as {d:?}")),
+            Observation::Known(None) => Ok(()),
+            Observation::Unknown { why } if why.contains("outside the protocol") => Err(why),
+            Observation::Unknown { .. } => Ok(()),
+        },
+    ));
+    cases.push(case(
+        "whoami names an id",
+        match gateway.whoami("check") {
+            Observation::Known(i) if !i.id.trim().is_empty() => Ok(()),
+            Observation::Known(_) => Err("the id is empty".into()),
+            Observation::Unknown { why } => Err(why),
+        },
+    ));
+    let capabilities = gateway.capabilities("check");
+    cases.push(case(
+        "capabilities promise only verbs the manifest lists",
+        match &capabilities {
+            Observation::Known(c) => promised(c, &manifest),
+            Observation::Unknown { why } => Err(why.clone()),
+        },
+    ));
+    match (channel, capabilities) {
+        (Some(channel), Observation::Known(c)) => cases.extend(live(&gateway, channel, &c)),
+        (Some(_), Observation::Unknown { .. }) => cases.extend(LIVE_CASES.map(|name| Case {
+            name,
+            verdict: Verdict::Skipped("capabilities are unknown".into()),
+        })),
+        (None, _) => cases.extend(LIVE_CASES.map(|name| Case {
+            name,
+            verdict: Verdict::Skipped("no --channel".into()),
+        })),
+    }
+    cases
+}
+
+const MANIFEST_CASE: &str = "the manifest names protocol 1, its platform and every required verb";
+
+fn known_verbs(manifest: &Manifest) -> Result<(), String> {
+    match manifest
+        .verbs
+        .iter()
+        .find(|v| !REQUIRED_VERBS.contains(&v.as_str()) && !OPTIONAL_VERBS.contains(&v.as_str()))
+    {
+        Some(v) => Err(format!(
+            "it lists {v:?}, which protocol {PROTOCOL} does not have"
+        )),
+        None => Ok(()),
+    }
+}
+
+fn answers_unknown(answer: Answer) -> Result<(), String> {
+    match answer {
+        Answer::Unknown { .. } => Ok(()),
+        Answer::Known(v) => Err(format!("it answered Known: {v}")),
+    }
+}
+
+fn parses_back(gateway: &ConnectorGateway, platform: &str) -> Result<(), String> {
+    if let Observation::Known(c) = gateway.parse("check", "") {
+        return Err(format!("an empty address parsed as {c:?}"));
+    }
+    let sample = format!("{platform}:C0CHECK:T0CHECK");
+    let Observation::Known(parsed) = gateway.parse("check", &sample) else {
+        return Ok(());
+    };
+    match gateway.parse("check", &parsed.address()) {
+        Observation::Known(again) if again == parsed => Ok(()),
+        Observation::Known(again) => Err(format!(
+            "{sample} parsed as {parsed:?}, whose address parsed as {again:?}"
+        )),
+        Observation::Unknown { why } => Err(format!(
+            "{sample} parsed, but its address {} did not: {why}",
+            parsed.address()
+        )),
+    }
+}
+
+fn promised(capabilities: &Capabilities, manifest: &Manifest) -> Result<(), String> {
+    for (promise, verb) in [
+        (capabilities.history, "history"),
+        (capabilities.reactions, "react"),
+    ] {
+        if promise && !manifest.verbs.iter().any(|v| v == verb) {
+            let field = if verb == "react" { "reactions" } else { verb };
+            return Err(format!("{field} is true and the manifest lists no {verb}"));
+        }
+    }
+    Ok(())
+}
+
+fn live(gateway: &ConnectorGateway, channel: &str, capabilities: &Capabilities) -> Vec<Case> {
+    let failed = |why: String| {
+        LIVE_CASES
+            .map(|name| Case {
+                name,
+                verdict: Verdict::Failed(why.clone()),
+            })
+            .to_vec()
+    };
+    let channel = match gateway.parse("check", channel) {
+        Observation::Known(c) => c,
+        Observation::Unknown { why } => return failed(format!("--channel: {why}")),
+    };
+    let key = format!(
+        "fleet-check/{}",
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |d| d.as_millis())
+    );
+    let text = "fleet gateway check: a conformance post";
+    let (message, at) = match gateway.post("check", &channel, text, &key) {
+        Observation::Known(EffectOutcome::Posted { message, at }) => (message, at),
+        Observation::Known(other) => return failed(format!("the post answered {other:?}")),
+        Observation::Unknown { why } => return failed(why),
+    };
+    let mut cases = vec![Case {
+        name: LIVE_CASES[0],
+        verdict: Verdict::Passed,
+    }];
+    cases.push(Case {
+        name: LIVE_CASES[1],
+        verdict: if capabilities.marker == Marker::None {
+            Verdict::Skipped("marker is none, so a repeat would post twice".into())
+        } else {
+            match gateway.post("check", &channel, text, &key) {
+                Observation::Known(EffectOutcome::Posted { message: again, .. })
+                    if again == message =>
+                {
+                    Verdict::Passed
+                }
+                Observation::Known(other) => Verdict::Failed(format!(
+                    "the repeat answered {other:?}, not the first post {message}"
+                )),
+                Observation::Unknown { why } => Verdict::Failed(why),
+            }
+        },
+    });
+    let thread = ConversationRef {
+        thread: Some(message.clone()),
+        ..channel
+    };
+    cases.push(Case {
+        name: LIVE_CASES[2],
+        verdict: if !capabilities.history {
+            Verdict::Skipped("capabilities report no history".into())
+        } else {
+            match gateway.history("check", &thread, &HistoryQuery::Since { at }) {
+                HistoryObservation::Known(h) => match h.messages.iter().find(|m| m.id == message) {
+                    None => Verdict::Failed(format!("message {message} is not in it")),
+                    Some(m)
+                        if capabilities.marker != Marker::None
+                            && m.key.as_deref() != Some(key.as_str()) =>
+                    {
+                        Verdict::Failed(format!("message {message} carries key {:?}", m.key))
+                    }
+                    Some(_) => Verdict::Passed,
+                },
+                HistoryObservation::Unsupported => Verdict::Failed(
+                    "capabilities report history and the read is unsupported".into(),
+                ),
+                HistoryObservation::Unknown { why, .. } => Verdict::Failed(why),
+            }
+        },
+    });
+    cases
 }
 
 #[cfg(all(test, unix))]

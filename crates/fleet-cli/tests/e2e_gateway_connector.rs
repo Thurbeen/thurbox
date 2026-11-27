@@ -381,3 +381,92 @@ fn fleet_version_names_the_gateway_connector_protocol() {
     let v = env.fleet(&["version", "--json"]).ok().json();
     assert_eq!(v["gatewayProtocol"], 1, "{v:#}");
 }
+
+fn check(env: &Env, args: &[&str]) -> Run {
+    let program = reference_connector();
+    let mut argv = vec!["gateway", "check"];
+    argv.extend_from_slice(args);
+    argv.extend_from_slice(&["--", program.to_str().unwrap()]);
+    env.fleet(&argv)
+}
+
+#[test]
+fn the_reference_connector_passes_the_offline_conformance_suite() {
+    let Some(env) = connector_env("connector-check") else {
+        return;
+    };
+    let dir = format!("dir={}", platform_dir(&env).display());
+    let run = check(&env, &["--platform", PLATFORM, "--option", &dir]);
+    run.ok()
+        .stdout_has("ok   the manifest names protocol 1, its platform and every required verb")
+        .stdout_has("ok   a request on another protocol answers Unknown")
+        .stdout_has("ok   an unknown verb answers Unknown")
+        .stdout_has("ok   an address it parses keeps its parts")
+        .stdout_has("ok   an event it cannot read answers null or Unknown")
+        .stdout_has("ok   whoami names an id")
+        .stdout_has("ok   capabilities promise only verbs the manifest lists")
+        .stdout_has("skip a post with a repeated intent key lands once: no --channel")
+        .stdout_has("speaks gateway protocol 1 for platform file");
+    assert!(!run.stdout.contains("FAIL"), "{}", run.stdout);
+    assert!(
+        fleet_posts(&env).is_empty(),
+        "an offline check posts nothing"
+    );
+}
+
+#[test]
+fn the_reference_connector_passes_the_live_conformance_cases_on_a_channel() {
+    let Some(env) = connector_env("connector-check-live") else {
+        return;
+    };
+    let dir = format!("dir={}", platform_dir(&env).display());
+    let channel = format!("{PLATFORM}:{CHANNEL}");
+    let run = check(
+        &env,
+        &[
+            "--platform",
+            PLATFORM,
+            "--option",
+            &dir,
+            "--bot",
+            BOT,
+            "--channel",
+            &channel,
+        ],
+    );
+    run.ok()
+        .stdout_has("ok   a post answers posted")
+        .stdout_has("ok   a post with a repeated intent key lands once")
+        .stdout_has("ok   history since the post holds it under its key");
+    assert!(!run.stdout.contains("FAIL"), "{}", run.stdout);
+    let posts = fleet_posts(&env);
+    assert_eq!(posts.len(), 1, "{posts:#?}");
+}
+
+#[test]
+fn a_connector_that_breaks_the_protocol_fails_the_check_by_name() {
+    let env = Env::new("connector-check-broken");
+    let broken = env.root.join("broken.sh");
+    fs::write(
+        &broken,
+        "#!/bin/sh\ncat >/dev/null\ncase $1 in\n\
+manifest) echo '{\"known\":{\"protocol\":1,\"platform\":\"check\",\"verbs\":[\"manifest\",\"parse\",\"event\",\"whoami\",\"capabilities\",\"post\"]}}' ;;\n\
+capabilities) echo '{\"known\":{\"history\":true,\"marker\":\"none\",\"unmentioned\":false,\"threads\":true}}' ;;\n\
+*) echo '{\"known\":{\"id\":\"anything\"}}' ;;\nesac\n",
+    )
+    .unwrap();
+    Command::new("chmod")
+        .arg("755")
+        .arg(&broken)
+        .status()
+        .unwrap();
+    let run = env.fleet(&["gateway", "check", "--", broken.to_str().unwrap()]);
+    run.code(1).stderr_has("conformance cases failed for");
+    for line in [
+        "FAIL a request on another protocol answers Unknown",
+        "FAIL an unknown verb answers Unknown",
+        "FAIL capabilities promise only verbs the manifest lists: history is true and the manifest lists no history",
+    ] {
+        assert!(run.stdout.contains(line), "{line} in\n{}", run.stdout);
+    }
+}
