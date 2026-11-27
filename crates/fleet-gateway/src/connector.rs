@@ -4,7 +4,7 @@ use std::time::Duration;
 
 use fleet_api::gateway::{
     AccountConfig, Capabilities, ConnectorConfig, ConversationRef, Delivery, Envelope, Fetched,
-    Gateway, History, HistoryObservation, HistoryQuery, Identity, Uncertainty,
+    Gateway, History, HistoryObservation, HistoryQuery, Identity, Marker, Uncertainty,
 };
 use fleet_api::plan::EffectOutcome;
 use fleet_api::{Millis, Observation};
@@ -55,16 +55,7 @@ pub enum Answer {
         kind: Option<Uncertainty>,
         retry_after: Option<Millis>,
     },
-}
-
-impl Answer {
-    fn unknown(why: String) -> Answer {
-        Answer::Unknown {
-            why,
-            kind: None,
-            retry_after: None,
-        }
-    }
+    Unreadable(String),
 }
 
 #[derive(Debug, Clone)]
@@ -87,9 +78,13 @@ impl ConnectorProgram {
         }
     }
 
-    pub fn call(&self, verb: &str, mut request: Value) -> Answer {
+    pub fn call(&self, verb: &str, request: Value) -> Answer {
+        self.call_speaking(PROTOCOL, verb, request)
+    }
+
+    fn call_speaking(&self, protocol: u64, verb: &str, mut request: Value) -> Answer {
         if let Some(fields) = request.as_object_mut() {
-            fields.insert("protocol".into(), json!(PROTOCOL));
+            fields.insert("protocol".into(), json!(protocol));
         }
         let mut spec = Spec::new(&self.program, self.call_timeout)
             .args(&self.args)
@@ -103,7 +98,7 @@ impl ConnectorProgram {
             ..
         } = &out
         else {
-            return Answer::unknown(format!(
+            return Answer::Unreadable(format!(
                 "connector {} ({}) {verb}: {}",
                 self.name,
                 self.program,
@@ -121,7 +116,7 @@ impl ConnectorProgram {
                 kind,
                 retry_after,
             },
-            Err(e) => Answer::unknown(format!(
+            Err(e) => Answer::Unreadable(format!(
                 "connector {} {verb} answered outside the protocol: {e}",
                 self.name
             )),
@@ -131,7 +126,7 @@ impl ConnectorProgram {
     pub fn manifest(&self, request: Value) -> Result<Manifest, String> {
         let value = match self.call("manifest", request) {
             Answer::Known(v) => v,
-            Answer::Unknown { why, .. } => return Err(why),
+            Answer::Unknown { why, .. } | Answer::Unreadable(why) => return Err(why),
         };
         let manifest: Manifest = serde_json::from_value(value).map_err(|e| {
             format!(
@@ -240,7 +235,7 @@ impl ConnectorGateway {
         fields: Value,
     ) -> Answer {
         if let Err(why) = self.manifest() {
-            return Answer::unknown(why);
+            return Answer::Unreadable(why);
         }
         self.program.call(verb, self.request(name, config, fields))
     }
@@ -260,7 +255,7 @@ impl ConnectorGateway {
                 },
                 Observation::Known,
             ),
-            Answer::Unknown { why, .. } => Observation::unknown(why),
+            Answer::Unknown { why, .. } | Answer::Unreadable(why) => Observation::unknown(why),
         }
     }
 
@@ -372,6 +367,7 @@ impl Gateway for ConnectorGateway {
                 why,
                 retry_after,
             },
+            Answer::Unreadable(why) => HistoryObservation::unknown(Uncertainty::Unreadable, why),
         }
     }
 
@@ -493,6 +489,245 @@ impl Gateway for ConnectorGateway {
             }
         }
     }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Verdict {
+    Passed,
+    Skipped(String),
+    Failed(String),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Case {
+    pub name: &'static str,
+    pub verdict: Verdict,
+}
+
+const LIVE_CASES: [&str; 3] = [
+    "a post answers posted",
+    "a post with a repeated intent key lands once",
+    "history since the post holds it under its key",
+];
+
+pub fn check(
+    program: &ConnectorProgram,
+    account: &AccountConfig,
+    channel: Option<&str>,
+) -> Vec<Case> {
+    let request = |fields: Value| {
+        let mut request = fields;
+        request["account"] = account_request(Some("check"), account);
+        request
+    };
+    let case = |name: &'static str, result: Result<(), String>| Case {
+        name,
+        verdict: result.map_or_else(Verdict::Failed, |()| Verdict::Passed),
+    };
+    let manifest = match program.manifest(request(json!({}))) {
+        Ok(m) => m,
+        Err(why) => return vec![case(MANIFEST_CASE, Err(why))],
+    };
+    let mut cases = vec![case(MANIFEST_CASE, known_verbs(&manifest))];
+    cases.push(case(
+        "a request on another protocol answers Unknown",
+        answers_unknown(program.call_speaking(PROTOCOL + 1, "whoami", request(json!({})))),
+    ));
+    cases.push(case(
+        "an unknown verb answers Unknown",
+        answers_unknown(program.call("fleet-check-no-such-verb", request(json!({})))),
+    ));
+    let gateway = ConnectorGateway::new(program.clone(), "check", account);
+    cases.push(Case {
+        name: "an address it parses keeps its parts",
+        verdict: parses_back(&gateway, &account.platform),
+    });
+    let envelope = json!({"verified": "connection", "receivedAt": 0, "payload": {}});
+    cases.push(case(
+        "an event it cannot read answers null or Unknown",
+        match gateway.call("event", json!({ "envelope": envelope })) {
+            Answer::Known(Value::Null) | Answer::Unknown { .. } => Ok(()),
+            Answer::Unreadable(why) => Err(why),
+            Answer::Known(value) => Err(format!("an empty payload read as {value}")),
+        },
+    ));
+    cases.push(case(
+        "whoami names an id",
+        match gateway.whoami("check") {
+            Observation::Known(i) if !i.id.trim().is_empty() => Ok(()),
+            Observation::Known(_) => Err("the id is empty".into()),
+            Observation::Unknown { why } => Err(why),
+        },
+    ));
+    let capabilities = gateway.capabilities("check");
+    cases.push(case(
+        "capabilities promise only verbs the manifest lists",
+        match &capabilities {
+            Observation::Known(c) => promised(c, &manifest),
+            Observation::Unknown { why } => Err(why.clone()),
+        },
+    ));
+    match (channel, capabilities) {
+        (Some(channel), Observation::Known(c)) => cases.extend(live(&gateway, channel, &c)),
+        (Some(_), Observation::Unknown { .. }) => cases.extend(LIVE_CASES.map(|name| Case {
+            name,
+            verdict: Verdict::Skipped("capabilities are unknown".into()),
+        })),
+        (None, _) => cases.extend(LIVE_CASES.map(|name| Case {
+            name,
+            verdict: Verdict::Skipped("no --channel".into()),
+        })),
+    }
+    cases
+}
+
+const MANIFEST_CASE: &str = "the manifest names protocol 1, its platform and every required verb";
+
+fn known_verbs(manifest: &Manifest) -> Result<(), String> {
+    match manifest
+        .verbs
+        .iter()
+        .find(|v| !REQUIRED_VERBS.contains(&v.as_str()) && !OPTIONAL_VERBS.contains(&v.as_str()))
+    {
+        Some(v) => Err(format!(
+            "it lists {v:?}, which protocol {PROTOCOL} does not have"
+        )),
+        None => Ok(()),
+    }
+}
+
+fn answers_unknown(answer: Answer) -> Result<(), String> {
+    match answer {
+        Answer::Unknown { .. } => Ok(()),
+        Answer::Unreadable(why) => Err(why),
+        Answer::Known(v) => Err(format!("it answered Known: {v}")),
+    }
+}
+
+fn parsed(gateway: &ConnectorGateway, address: &str) -> Result<Option<ConversationRef>, String> {
+    match gateway.call("parse", json!({ "address": address })) {
+        Answer::Unknown { .. } => Ok(None),
+        Answer::Unreadable(why) => Err(why),
+        Answer::Known(value) => {
+            let parsed: ConversationRef = serde_json::from_value(value.clone())
+                .map_err(|e| format!("{address:?} answered {value}, not a conversation: {e}"))?;
+            gateway.platform_check("parse", &parsed)?;
+            Ok(Some(parsed))
+        }
+    }
+}
+
+fn parses_back(gateway: &ConnectorGateway, platform: &str) -> Verdict {
+    let sample = format!("{platform}:C0CHECK:T0CHECK");
+    let round_trip = || -> Result<Option<()>, String> {
+        if let Some(c) = parsed(gateway, "")? {
+            return Err(format!("an empty address parsed as {c:?}"));
+        }
+        let Some(first) = parsed(gateway, &sample)? else {
+            return Ok(None);
+        };
+        match parsed(gateway, &first.address())? {
+            Some(again) if again == first => Ok(Some(())),
+            Some(again) => Err(format!(
+                "{sample} parsed as {first:?}, whose address parsed as {again:?}"
+            )),
+            None => Err(format!(
+                "{sample} parsed, but its address {} did not",
+                first.address()
+            )),
+        }
+    };
+    match round_trip() {
+        Ok(Some(())) => Verdict::Passed,
+        Ok(None) => Verdict::Skipped(format!("{sample} does not parse, so nothing round-trips")),
+        Err(why) => Verdict::Failed(why),
+    }
+}
+
+fn promised(capabilities: &Capabilities, manifest: &Manifest) -> Result<(), String> {
+    for (promise, verb) in [
+        (capabilities.history, "history"),
+        (capabilities.reactions, "react"),
+    ] {
+        if promise && !manifest.verbs.iter().any(|v| v == verb) {
+            let field = if verb == "react" { "reactions" } else { verb };
+            return Err(format!("{field} is true and the manifest lists no {verb}"));
+        }
+    }
+    Ok(())
+}
+
+fn live(gateway: &ConnectorGateway, channel: &str, capabilities: &Capabilities) -> Vec<Case> {
+    let failed = |why: String| {
+        LIVE_CASES
+            .map(|name| Case {
+                name,
+                verdict: Verdict::Failed(why.clone()),
+            })
+            .to_vec()
+    };
+    let channel = match gateway.parse("check", channel) {
+        Observation::Known(c) => c,
+        Observation::Unknown { why } => return failed(format!("--channel: {why}")),
+    };
+    let key = format!(
+        "fleet-check/{}",
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |d| d.as_millis())
+    );
+    let text = "fleet gateway check: a conformance post";
+    let (message, at) = match gateway.post("check", &channel, text, &key) {
+        Observation::Known(EffectOutcome::Posted { message, at }) => (message, at),
+        Observation::Known(other) => return failed(format!("the post answered {other:?}")),
+        Observation::Unknown { why } => return failed(why),
+    };
+    let mut cases = vec![Case {
+        name: LIVE_CASES[0],
+        verdict: Verdict::Passed,
+    }];
+    cases.push(Case {
+        name: LIVE_CASES[1],
+        verdict: if capabilities.marker == Marker::None {
+            Verdict::Skipped("marker is none, so a repeat would post twice".into())
+        } else {
+            match gateway.post("check", &channel, text, &key) {
+                Observation::Known(EffectOutcome::Posted { message: again, .. })
+                    if again == message =>
+                {
+                    Verdict::Passed
+                }
+                Observation::Known(other) => Verdict::Failed(format!(
+                    "the repeat answered {other:?}, not the first post {message}"
+                )),
+                Observation::Unknown { why } => Verdict::Failed(why),
+            }
+        },
+    });
+    cases.push(Case {
+        name: LIVE_CASES[2],
+        verdict: if !capabilities.history {
+            Verdict::Skipped("capabilities report no history".into())
+        } else {
+            match gateway.history("check", &channel, &HistoryQuery::Since { at }) {
+                HistoryObservation::Known(h) => match h.messages.iter().find(|m| m.id == message) {
+                    None => Verdict::Failed(format!("message {message} is not in it")),
+                    Some(m)
+                        if capabilities.marker == Marker::Metadata
+                            && m.key.as_deref() != Some(key.as_str()) =>
+                    {
+                        Verdict::Failed(format!("message {message} carries key {:?}", m.key))
+                    }
+                    Some(_) => Verdict::Passed,
+                },
+                HistoryObservation::Unsupported => Verdict::Failed(
+                    "capabilities report history and the read is unsupported".into(),
+                ),
+                HistoryObservation::Unknown { why, .. } => Verdict::Failed(why),
+            }
+        },
+    });
+    cases
 }
 
 #[cfg(all(test, unix))]
@@ -718,5 +953,123 @@ mod tests {
         let request: Value = serde_json::from_slice(&std::fs::read(&seen).unwrap()).unwrap();
         assert_eq!(request["account"]["platform"], "chat", "{request:#}");
         assert!(request["account"].get("name").is_none(), "{request:#}");
+    }
+
+    #[test]
+    fn a_nonce_connector_passes_the_live_cases_reading_the_channel_it_posted_in() {
+        let dir = scratch("live-nonce");
+        let manifest = r#"{"known":{"protocol":1,"platform":"chat","verbs":["manifest","parse","event","whoami","capabilities","post","history"]}}"#;
+        let body = format!(
+            r#"case $1 in
+parse) printf '%s\n' '{{"known":{{"platform":"chat","chat":"C1"}}}}' ;;
+whoami) printf '%s\n' '{{"known":{{"id":"B1"}}}}' ;;
+capabilities) printf '%s\n' '{{"known":{{"history":true,"marker":{{"nonce":{{"windowMs":60000}}}},"unmentioned":false,"threads":true}}}}' ;;
+post) printf '%s\n' '{{"known":{{"type":"posted","message":"M1","at":5}}}}' ;;
+history)
+  case $req in
+  *'"thread"'*) printf '%s\n' '{{"unknown":{{"why":"no such thread"}}}}' ;;
+  *) printf '%s\n' '{{"known":{{"messages":[{{"id":"M1","author":{{"id":"B1","name":"bot","kind":"fleet"}},"at":5}}]}}}}' ;;
+  esac ;;
+*) printf '%s\n' '{{"unknown":{{"why":"no"}}}}' ;;
+esac
+manifest_unused='{manifest}'"#
+        );
+        let gateway = scripted(&dir, "nonce", &body);
+        let program = dir.join("nonce.sh");
+        let text = std::fs::read_to_string(&program)
+            .unwrap()
+            .replace(MANIFEST, manifest);
+        std::fs::write(&program, text).unwrap();
+        let cases = check(&gateway.program, &gateway.config, Some("chat:C1"));
+        let live: Vec<_> = cases
+            .iter()
+            .filter(|c| LIVE_CASES.contains(&c.name))
+            .map(|c| (c.name, c.verdict.clone()))
+            .collect();
+        assert_eq!(
+            live,
+            [
+                (LIVE_CASES[0], Verdict::Passed),
+                (LIVE_CASES[1], Verdict::Passed),
+                (LIVE_CASES[2], Verdict::Passed),
+            ],
+            "{cases:#?}"
+        );
+    }
+
+    fn live_verdicts(dir: &Path, name: &str, post: &str, history: &str) -> Vec<Verdict> {
+        let body = format!(
+            r#"case $1 in
+parse) printf '%s\n' '{{"known":{{"platform":"chat","chat":"C1"}}}}' ;;
+whoami) printf '%s\n' '{{"known":{{"id":"B1"}}}}' ;;
+capabilities) printf '%s\n' '{{"known":{{"history":true,"marker":"metadata","unmentioned":false,"threads":true}}}}' ;;
+post) {post} ;;
+history) {history} ;;
+*) printf '%s\n' '{{"unknown":{{"why":"no"}}}}' ;;
+esac"#
+        );
+        let gateway = scripted(dir, name, &body);
+        check(&gateway.program, &gateway.config, Some("chat:C1"))
+            .into_iter()
+            .filter(|c| LIVE_CASES.contains(&c.name))
+            .map(|c| c.verdict)
+            .collect()
+    }
+
+    #[test]
+    fn a_repeat_that_posts_twice_and_a_history_without_the_post_fail_the_live_cases() {
+        let dir = scratch("live-fail");
+        let counter = dir.join("posts");
+        let twice = format!(
+            r#"n=$(cat '{c}' 2>/dev/null || echo 0); n=$((n + 1)); echo $n >'{c}'; printf '{{"known":{{"type":"posted","message":"M%s","at":5}}}}\n' "$n""#,
+            c = counter.display()
+        );
+        let empty = r#"printf '%s\n' '{"known":{"messages":[]}}'"#;
+        let verdicts = live_verdicts(&dir, "twice", &twice, empty);
+        assert_eq!(verdicts[0], Verdict::Passed, "{verdicts:?}");
+        assert!(
+            matches!(&verdicts[1], Verdict::Failed(why) if why.contains("not the first post M1")),
+            "{verdicts:?}"
+        );
+        assert!(
+            matches!(&verdicts[2], Verdict::Failed(why) if why.contains("M1 is not in it")),
+            "{verdicts:?}"
+        );
+    }
+
+    #[test]
+    fn unreadable_event_output_and_a_verb_protocol_1_lacks_fail_their_cases() {
+        let dir = scratch("unreadable");
+        let manifest = r#"{"known":{"protocol":1,"platform":"chat","verbs":["manifest","parse","event","whoami","capabilities","post","bogus"]}}"#;
+        let gateway = scripted(
+            &dir,
+            "garbage",
+            r#"case $1 in
+event) echo 'not json' ;;
+*) printf '%s\n' '{"unknown":{"why":"no"}}' ;;
+esac"#,
+        );
+        let program = dir.join("garbage.sh");
+        let text = std::fs::read_to_string(&program)
+            .unwrap()
+            .replace(MANIFEST, manifest);
+        std::fs::write(&program, text).unwrap();
+        let cases = check(&gateway.program, &gateway.config, None);
+        let verdict = |name: &str| {
+            cases
+                .iter()
+                .find(|c| c.name == name)
+                .map(|c| c.verdict.clone())
+                .unwrap_or_else(|| panic!("no case {name}: {cases:#?}"))
+        };
+        assert!(
+            matches!(verdict(MANIFEST_CASE), Verdict::Failed(why) if why.contains("\"bogus\", which protocol 1 does not have")),
+            "{cases:#?}"
+        );
+        assert!(
+            matches!(verdict("an event it cannot read answers null or Unknown"), Verdict::Failed(why) if why.contains("outside the protocol")),
+            "{cases:#?}"
+        );
+        assert_eq!(verdict("an unknown verb answers Unknown"), Verdict::Passed);
     }
 }

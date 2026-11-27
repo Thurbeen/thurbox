@@ -14,6 +14,10 @@ is a connector. The reference connector,
 keeps its platform in files. The end-to-end tests drive it through the built
 `fleet` binary.
 
+Microsoft Teams is planned as a connector in a repository of its own,
+`fleet-gateway-teams`
+([Thurbeen/thurbox#1999](https://github.com/Thurbeen/thurbox/issues/1999)).
+
 ## The parts
 
 | Part | Who runs it | What it does |
@@ -148,13 +152,49 @@ Keep the credential file readable by the user that runs Fleet only.
 
 ## Check a connector
 
-`fleet version --json` names the protocol as `gatewayProtocol`. To check a
-connector by hand, configure an account and a route, then pipe one event:
+`fleet gateway check -- <program> [args]` is the conformance suite. It
+prints one line per case: `ok`, `skip` with why, or `FAIL` with why. It
+exits non-zero when any case fails. These cases need no platform:
+
+- `manifest` names protocol 1, the platform that `--platform` gives, and
+  every required verb, and lists no verb that protocol 1 does not have;
+- a request on another protocol answers `{"unknown": …}`;
+- an unknown verb answers `{"unknown": …}`;
+- an empty address does not parse, and every answer to `parse` is a
+  conversation on the connector's platform or Unknown;
+- the sample address `<platform>:C0CHECK:T0CHECK`, when it parses, gives the
+  same parts when its own address is parsed again. The case is skipped when
+  the sample does not parse;
+- an event with an empty payload answers `{"known": null}` or
+  `{"unknown": …}`.
+
+In these cases a crash, a non-zero exit or output that Fleet cannot read
+fails. Fleet takes such an answer as Unknown when it serves a connector,
+but the suite reports it. The remaining offline cases:
+
+- `whoami` names an id;
+- `capabilities` report `history` and `reactions` only when the manifest
+  lists `history` and `react`.
+
+With `--channel <address>`, the suite also posts one message in that
+channel. Give it a test channel:
+
+- a post answers `posted`;
+- a second post with the same intent key answers the same message. The case
+  is skipped when `marker` is `none`;
+- a `since` read of `history` on the same address holds the message, under
+  its key when `marker` is `metadata`. The case is skipped without history.
+
+The flags give the account that each request carries: `--platform`
+(default `check`), `--bot`, `--team`, `--credentials`, and `--option
+KEY=VALUE`, once per option. A value that parses as JSON is JSON.
 
 ```sh
-printf '%s' "$envelope" | fleet gateway receive --account teams-main --json
-fleet reconcile --json
+fleet gateway check --platform teams --credentials /etc/fleet/teams.conf \
+  --option serviceUrl=https://smba.trafficmanager.net/emea/ -- fleet-gateway-teams
 ```
 
-`crates/fleet-cli/tests/e2e_gateway_connector.rs` holds the reference
-connector to the protocol.
+`fleet version --json` names the protocol as `gatewayProtocol`.
+`crates/fleet-cli/tests/e2e_gateway_connector.rs` runs the suite against the
+reference connector, and drives it through `fleet gateway receive` and
+`fleet reconcile`.

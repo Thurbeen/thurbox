@@ -507,6 +507,37 @@ enum SignalState {
 #[derive(Debug, Subcommand)]
 enum GatewayCommand {
     #[command(
+        about = "Run the conformance suite against a gateway connector program: `fleet gateway check -- <program> [args]`; with --channel it also posts there"
+    )]
+    Check {
+        #[arg(help = "The bound on each call, in milliseconds")]
+        #[arg(long, default_value_t = DEFAULT_CALL_TIMEOUT_MS)]
+        call_timeout_ms: u64,
+        #[arg(help = "The platform name the connector's manifest must give")]
+        #[arg(long, default_value = "check")]
+        platform: String,
+        #[arg(help = "Fleet's bot id on the platform, as an account's `bot`")]
+        #[arg(long, default_value = "B0CHECK")]
+        bot: String,
+        #[arg(help = "The platform's workspace identity, as an account's `team`")]
+        #[arg(long)]
+        team: Option<String>,
+        #[arg(help = "The credential file's absolute path, as an account's `credentials`")]
+        #[arg(long)]
+        credentials: Option<PathBuf>,
+        #[arg(
+            help = "One `key=value` of the account's `options`; a value that parses as JSON is JSON"
+        )]
+        #[arg(long = "option", value_name = "KEY=VALUE")]
+        options: Vec<String>,
+        #[arg(help = "A channel address to post one conformance message in and read it back")]
+        #[arg(long)]
+        channel: Option<String>,
+        #[arg(help = "The program and the arguments it takes before the verb")]
+        #[arg(last = true, required = true)]
+        program: Vec<String>,
+    },
+    #[command(
         about = "Read one delivery envelope from stdin (or, with --beat, one heartbeat) and record it on the thread's Conversation (or the account's Listener)"
     )]
     Receive {
@@ -993,6 +1024,38 @@ fn run(cli: Cli) -> Result<(), Failure> {
     } = &cli.command
     {
         return runtime_check(program, *call_timeout_ms);
+    }
+    if let Command::Gateway {
+        command:
+            GatewayCommand::Check {
+                call_timeout_ms,
+                platform,
+                bot,
+                team,
+                credentials,
+                options,
+                channel,
+                program,
+            },
+    } = &cli.command
+    {
+        return gateway_check(
+            program,
+            *call_timeout_ms,
+            fleet_api::gateway::AccountConfig {
+                platform: platform.clone(),
+                team: team.clone(),
+                bot: bot.clone(),
+                inbound: fleet_api::gateway::Inbound::Connection,
+                message_content: None,
+                cli: None,
+                curl_config: None,
+                dir: None,
+                credentials: credentials.clone(),
+                options: check_options(options)?,
+            },
+            channel.as_deref(),
+        );
     }
     let explicit_config = cli.config.is_some() || std::env::var_os(config::CONFIG_ENV).is_some();
     let config_path = config::discover(cli.config.clone())
@@ -1656,6 +1719,7 @@ fn cmd_gateway(store: &dyn Store, config: &Config, command: GatewayCommand) -> R
         });
     };
     match command {
+        GatewayCommand::Check { .. } => unreachable_version(),
         GatewayCommand::Receive {
             account,
             beat: is_beat,
@@ -2117,8 +2181,66 @@ fn current_user() -> String {
 
 fn unreachable_version() -> Result<(), Failure> {
     Err(fail(
-        "version, signal and runtime are handled before the store opens",
+        "version, signal, runtime and gateway check are handled before the store opens",
     ))
+}
+
+fn check_options(
+    options: &[String],
+) -> Result<std::collections::BTreeMap<String, serde_json::Value>, Failure> {
+    options
+        .iter()
+        .map(|o| {
+            let (key, value) = o
+                .split_once('=')
+                .ok_or_else(|| fail(format!("--option {o:?} is not KEY=VALUE")))?;
+            let value = serde_json::from_str(value)
+                .unwrap_or_else(|_| serde_json::Value::String(value.to_string()));
+            Ok((key.to_string(), value))
+        })
+        .collect()
+}
+
+fn gateway_check(
+    program: &[String],
+    call_timeout_ms: u64,
+    account: fleet_api::gateway::AccountConfig,
+    channel: Option<&str>,
+) -> Result<(), Failure> {
+    use fleet_gateway::connector::Verdict;
+    let (exe, args) = program
+        .split_first()
+        .ok_or_else(|| fail("name the connector program after --"))?;
+    let connector = fleet_gateway::ConnectorProgram {
+        name: account.platform.clone(),
+        program: exe.clone(),
+        args: args.to_vec(),
+        call_timeout: std::time::Duration::from_millis(call_timeout_ms),
+    };
+    let cases = fleet_gateway::connector::check(&connector, &account, channel);
+    let mut failed = 0;
+    for case in &cases {
+        match &case.verdict {
+            Verdict::Passed => println!("ok   {}", case.name),
+            Verdict::Skipped(why) => println!("skip {}: {why}", case.name),
+            Verdict::Failed(why) => {
+                failed += 1;
+                println!("FAIL {}: {why}", case.name);
+            }
+        }
+    }
+    if failed > 0 {
+        return Err(fail(format!(
+            "{failed} of {} conformance cases failed for {exe}",
+            cases.len()
+        )));
+    }
+    println!(
+        "{exe} speaks gateway protocol {} for platform {}",
+        fleet_gateway::connector::PROTOCOL,
+        account.platform
+    );
+    Ok(())
 }
 
 fn runtime_check(program: &[String], call_timeout_ms: u64) -> Result<(), Failure> {
