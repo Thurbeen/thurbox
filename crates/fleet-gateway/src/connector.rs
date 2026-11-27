@@ -55,16 +55,7 @@ pub enum Answer {
         kind: Option<Uncertainty>,
         retry_after: Option<Millis>,
     },
-}
-
-impl Answer {
-    fn unknown(why: String) -> Answer {
-        Answer::Unknown {
-            why,
-            kind: None,
-            retry_after: None,
-        }
-    }
+    Unreadable(String),
 }
 
 #[derive(Debug, Clone)]
@@ -107,7 +98,7 @@ impl ConnectorProgram {
             ..
         } = &out
         else {
-            return Answer::unknown(format!(
+            return Answer::Unreadable(format!(
                 "connector {} ({}) {verb}: {}",
                 self.name,
                 self.program,
@@ -125,7 +116,7 @@ impl ConnectorProgram {
                 kind,
                 retry_after,
             },
-            Err(e) => Answer::unknown(format!(
+            Err(e) => Answer::Unreadable(format!(
                 "connector {} {verb} answered outside the protocol: {e}",
                 self.name
             )),
@@ -135,7 +126,7 @@ impl ConnectorProgram {
     pub fn manifest(&self, request: Value) -> Result<Manifest, String> {
         let value = match self.call("manifest", request) {
             Answer::Known(v) => v,
-            Answer::Unknown { why, .. } => return Err(why),
+            Answer::Unknown { why, .. } | Answer::Unreadable(why) => return Err(why),
         };
         let manifest: Manifest = serde_json::from_value(value).map_err(|e| {
             format!(
@@ -244,7 +235,7 @@ impl ConnectorGateway {
         fields: Value,
     ) -> Answer {
         if let Err(why) = self.manifest() {
-            return Answer::unknown(why);
+            return Answer::Unreadable(why);
         }
         self.program.call(verb, self.request(name, config, fields))
     }
@@ -264,7 +255,7 @@ impl ConnectorGateway {
                 },
                 Observation::Known,
             ),
-            Answer::Unknown { why, .. } => Observation::unknown(why),
+            Answer::Unknown { why, .. } | Answer::Unreadable(why) => Observation::unknown(why),
         }
     }
 
@@ -376,6 +367,7 @@ impl Gateway for ConnectorGateway {
                 why,
                 retry_after,
             },
+            Answer::Unreadable(why) => HistoryObservation::unknown(Uncertainty::Unreadable, why),
         }
     }
 
@@ -555,6 +547,7 @@ pub fn check(
         "an event it cannot read answers null or Unknown",
         match gateway.call("event", json!({ "envelope": envelope })) {
             Answer::Known(Value::Null) | Answer::Unknown { .. } => Ok(()),
+            Answer::Unreadable(why) => Err(why),
             Answer::Known(value) => Err(format!("an empty payload read as {value}")),
         },
     ));
@@ -606,6 +599,7 @@ fn known_verbs(manifest: &Manifest) -> Result<(), String> {
 fn answers_unknown(answer: Answer) -> Result<(), String> {
     match answer {
         Answer::Unknown { .. } => Ok(()),
+        Answer::Unreadable(why) => Err(why),
         Answer::Known(v) => Err(format!("it answered Known: {v}")),
     }
 }
@@ -613,6 +607,7 @@ fn answers_unknown(answer: Answer) -> Result<(), String> {
 fn parsed(gateway: &ConnectorGateway, address: &str) -> Result<Option<ConversationRef>, String> {
     match gateway.call("parse", json!({ "address": address })) {
         Answer::Unknown { .. } => Ok(None),
+        Answer::Unreadable(why) => Err(why),
         Answer::Known(value) => {
             let parsed: ConversationRef = serde_json::from_value(value.clone())
                 .map_err(|e| format!("{address:?} answered {value}, not a conversation: {e}"))?;
@@ -1040,5 +1035,41 @@ esac"#
             matches!(&verdicts[2], Verdict::Failed(why) if why.contains("M1 is not in it")),
             "{verdicts:?}"
         );
+    }
+
+    #[test]
+    fn unreadable_event_output_and_a_verb_protocol_1_lacks_fail_their_cases() {
+        let dir = scratch("unreadable");
+        let manifest = r#"{"known":{"protocol":1,"platform":"chat","verbs":["manifest","parse","event","whoami","capabilities","post","bogus"]}}"#;
+        let gateway = scripted(
+            &dir,
+            "garbage",
+            r#"case $1 in
+event) echo 'not json' ;;
+*) printf '%s\n' '{"unknown":{"why":"no"}}' ;;
+esac"#,
+        );
+        let program = dir.join("garbage.sh");
+        let text = std::fs::read_to_string(&program)
+            .unwrap()
+            .replace(MANIFEST, manifest);
+        std::fs::write(&program, text).unwrap();
+        let cases = check(&gateway.program, &gateway.config, None);
+        let verdict = |name: &str| {
+            cases
+                .iter()
+                .find(|c| c.name == name)
+                .map(|c| c.verdict.clone())
+                .unwrap_or_else(|| panic!("no case {name}: {cases:#?}"))
+        };
+        assert!(
+            matches!(verdict(MANIFEST_CASE), Verdict::Failed(why) if why.contains("\"bogus\", which protocol 1 does not have")),
+            "{cases:#?}"
+        );
+        assert!(
+            matches!(verdict("an event it cannot read answers null or Unknown"), Verdict::Failed(why) if why.contains("outside the protocol")),
+            "{cases:#?}"
+        );
+        assert_eq!(verdict("an unknown verb answers Unknown"), Verdict::Passed);
     }
 }

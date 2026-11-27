@@ -158,14 +158,20 @@ exits non-zero when any case fails. These cases need no platform:
 
 - `manifest` names protocol 1, the platform that `--platform` gives, and
   every required verb, and lists no verb that protocol 1 does not have;
-- a request on another protocol answers Unknown;
-- an unknown verb answers Unknown;
+- a request on another protocol answers `{"unknown": …}`;
+- an unknown verb answers `{"unknown": …}`;
 - an empty address does not parse, and every answer to `parse` is a
   conversation on the connector's platform or Unknown;
 - the sample address `<platform>:C0CHECK:T0CHECK`, when it parses, gives the
   same parts when its own address is parsed again. The case is skipped when
   the sample does not parse;
-- an event with an empty payload answers `null` or Unknown;
+- an event with an empty payload answers `{"known": null}` or
+  `{"unknown": …}`.
+
+In these cases a crash, a non-zero exit or output that Fleet cannot read
+fails. Fleet takes such an answer as Unknown when it serves a connector,
+but the suite reports it. The remaining offline cases:
+
 - `whoami` names an id;
 - `capabilities` report `history` and `reactions` only when the manifest
   lists `history` and `react`.
