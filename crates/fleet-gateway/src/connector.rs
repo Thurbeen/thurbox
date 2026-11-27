@@ -463,7 +463,9 @@ impl Gateway for ConnectorGateway {
         }
         let fields = json!({ "conversation": conversation, "file": file, "dir": dir });
         match self.ask::<Fetched>("fetch", fields) {
-            Observation::Known(Fetched::Saved { path, .. }) if path.parent() != Some(dir) => {
+            Observation::Known(Fetched::Saved { path, .. })
+                if path.parent() != Some(dir) || path.file_name().is_none() =>
+            {
                 Observation::Known(Fetched::Refused {
                     why: format!(
                         "connector {} saved {} outside {}",
@@ -474,6 +476,176 @@ impl Gateway for ConnectorGateway {
                 })
             }
             other => other,
+        }
+    }
+}
+
+#[cfg(all(test, unix))]
+mod tests {
+    use super::*;
+    use fleet_api::gateway::Inbound;
+    use std::path::PathBuf;
+
+    const MANIFEST: &str = r#"{"known":{"protocol":1,"platform":"chat","verbs":["manifest","parse","event","whoami","capabilities","post","history","fetch"]}}"#;
+
+    fn scratch(name: &str) -> PathBuf {
+        let dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../target/tmp/connector-unit")
+            .join(format!("{name}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    fn connector(dir: &Path, answers: &[(&str, &str)]) -> ConnectorGateway {
+        let mut script = String::from("#!/bin/sh\ncat >/dev/null\ncase $1 in\n");
+        for (verb, answer) in answers {
+            script.push_str(&format!("{verb}) printf '%s\\n' '{answer}' ;;\n"));
+        }
+        script.push_str("*) exit 3 ;;\nesac\n");
+        let program = dir.join("connector.sh");
+        std::fs::write(&program, script).unwrap();
+        std::fs::set_permissions(
+            &program,
+            std::os::unix::fs::PermissionsExt::from_mode(0o755),
+        )
+        .unwrap();
+        let config = AccountConfig {
+            platform: "chat".into(),
+            team: None,
+            bot: "B1".into(),
+            inbound: Inbound::Connection,
+            message_content: None,
+            cli: None,
+            curl_config: None,
+            dir: None,
+            credentials: None,
+            options: Default::default(),
+        };
+        let program = ConnectorProgram::new(
+            "chat",
+            &ConnectorConfig {
+                program: program.to_string_lossy().into_owned(),
+                args: Vec::new(),
+                call_timeout_ms: Some(5_000),
+            },
+            Duration::from_secs(5),
+        );
+        ConnectorGateway::new(program, "chat-main", &config)
+    }
+
+    fn thread() -> ConversationRef {
+        ConversationRef {
+            platform: "chat".into(),
+            chat: "C1".into(),
+            thread: Some("T1".into()),
+        }
+    }
+
+    #[test]
+    fn a_verb_the_manifest_does_not_list_is_answered_without_a_call() {
+        let dir = scratch("unlisted");
+        let gateway = connector(&dir, &[("manifest", MANIFEST)]);
+        assert!(matches!(
+            gateway.react("chat-main", &thread(), "M1", "eyes", true),
+            Observation::Known(EffectOutcome::Failed { why }) if why == "connector chat offers no react"
+        ));
+        assert!(matches!(
+            gateway.open("chat-main", &thread().channel(), "hi", "k1"),
+            Observation::Known(EffectOutcome::Failed { .. })
+        ));
+        assert_eq!(gateway.link("chat-main", &thread()), None);
+    }
+
+    #[test]
+    fn a_manifest_without_a_required_verb_or_for_another_platform_makes_every_call_unknown() {
+        let dir = scratch("manifest");
+        let lacking = connector(
+            &dir,
+            &[(
+                "manifest",
+                r#"{"known":{"protocol":1,"platform":"chat","verbs":["manifest","parse"]}}"#,
+            )],
+        );
+        let Observation::Unknown { why } = lacking.whoami("chat-main") else {
+            panic!("a connector that lacks a verb is not used");
+        };
+        assert_eq!(why, "connector chat lacks the required verb event");
+        let dir = scratch("protocol");
+        let newer = connector(
+            &dir,
+            &[(
+                "manifest",
+                r#"{"known":{"protocol":2,"platform":"chat","verbs":[]}}"#,
+            )],
+        );
+        let Observation::Unknown { why } = newer.capabilities("chat-main") else {
+            panic!("a connector on another protocol is not used");
+        };
+        assert_eq!(why, "connector chat speaks protocol 2, not 1");
+    }
+
+    #[test]
+    fn a_post_answers_only_a_posted_or_failed_outcome() {
+        let dir = scratch("post");
+        let gateway = connector(
+            &dir,
+            &[
+                ("manifest", MANIFEST),
+                ("post", r#"{"known":{"type":"reacted"}}"#),
+            ],
+        );
+        let Observation::Unknown { why } = gateway.post("chat-main", &thread(), "hi", "k1") else {
+            panic!("a reaction is not a post");
+        };
+        assert!(why.contains("an outcome it cannot have"), "{why}");
+    }
+
+    #[test]
+    fn a_history_unknown_keeps_its_kind_and_wait() {
+        let dir = scratch("history");
+        let gateway = connector(
+            &dir,
+            &[
+                ("manifest", MANIFEST),
+                (
+                    "history",
+                    r#"{"unknown":{"why":"slow down","kind":"throttled","retryAfter":3000}}"#,
+                ),
+            ],
+        );
+        let query = HistoryQuery::Since { at: 0 };
+        assert_eq!(
+            gateway.history("chat-main", &thread(), &query),
+            HistoryObservation::Unknown {
+                kind: Uncertainty::Throttled,
+                why: "connector chat history: slow down".into(),
+                retry_after: Some(3000),
+            }
+        );
+    }
+
+    #[test]
+    fn a_fetched_file_outside_the_given_dir_is_refused() {
+        let dir = scratch("fetch");
+        let into = dir.join("files");
+        for (path, kept) in [
+            (into.join("a.png"), true),
+            (dir.join("a.png"), false),
+            (into.join(".."), false),
+        ] {
+            let answer = json!({"known": {"outcome": "saved", "path": path, "bytes": 1}});
+            let gateway = connector(
+                &dir,
+                &[("manifest", MANIFEST), ("fetch", &answer.to_string())],
+            );
+            let got = gateway.fetch("chat-main", &thread(), "F1", &into);
+            assert_eq!(
+                matches!(got, Observation::Known(Fetched::Saved { .. })),
+                kept,
+                "{} answered {got:?}",
+                path.display()
+            );
         }
     }
 }

@@ -43,13 +43,13 @@ fn credentials(env: &Env) -> PathBuf {
     env.root.join("secrets/file-connector.conf")
 }
 
-fn section(env: &Env, connector: &str, account_extra: &str) -> String {
+fn section(env: &Env) -> String {
     let root = env.root.to_string_lossy().replace('\\', "/");
     format!(
         "\n[gateway]\ncallTimeoutMs = 10000\n\n\
-[gateway.connectors.{PLATFORM}]\nprogram = '{program}'\n{connector}\n\
+[gateway.connectors.{PLATFORM}]\nprogram = '{program}'\n\n\
 [gateway.accounts.{ACCOUNT}]\nplatform = \"{PLATFORM}\"\nbot = \"{BOT}\"\ninbound = \"connection\"\n\
-credentials = '{credentials}'\noptions = {{ dir = '{platform}' }}\n{account_extra}\n\
+credentials = '{credentials}'\noptions = {{ dir = '{platform}' }}\n\n\
 [gateway.people.alex]\n{ACCOUNT} = \"{ALEX_ID}\"\n\n\
 [gateway.routes.eng]\naccount = \"{ACCOUNT}\"\nchannels = [\"{CHANNEL}\"]\nmention = \"required\"\nallow = [\"alex\"]\n\
 taskConfig = \"conversation\"\nbrief = \"{root}/briefs/conversation.md\"\nworkspace = {{ base = \"{root}/work/conversations\" }}\n",
@@ -64,7 +64,7 @@ fn connector_env(name: &str) -> Option<Env> {
         return None;
     }
     let env = Env::gateway(name);
-    env.set_gateway(&section(&env, "", ""));
+    env.set_gateway(&section(&env));
     fs::create_dir_all(credentials(&env).parent().unwrap()).unwrap();
     fs::write(credentials(&env), "token = \"s3cr3t-never-stored\"\n").unwrap();
     env.apply(support::object(
@@ -239,7 +239,7 @@ fn a_connector_fleet_cannot_serve_is_refused_with_its_reason() {
     let Some(env) = connector_env("connector-refused") else {
         return;
     };
-    let base = section(&env, "", "");
+    let base = section(&env);
     env.set_gateway(&base.replace(
         &format!("[gateway.connectors.{PLATFORM}]"),
         "[gateway.connectors.slack]",
