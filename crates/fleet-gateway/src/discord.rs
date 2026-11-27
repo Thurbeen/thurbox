@@ -1042,6 +1042,8 @@ mod tests {
             cli: Some("curl".into()),
             curl_config: Some("/etc/fleet/discord-curl.conf".into()),
             dir: None,
+            credentials: None,
+            options: Default::default(),
         }
     }
 

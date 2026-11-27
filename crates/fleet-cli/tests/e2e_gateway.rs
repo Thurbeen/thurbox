@@ -1102,6 +1102,8 @@ fn slack_adapter(curl: &Path, curl_config: &Path, timeout: Duration) -> SlackGat
             cli: Some(curl.to_string_lossy().into_owned()),
             curl_config: Some(curl_config.to_path_buf()),
             dir: None,
+            credentials: None,
+            options: Default::default(),
         },
         timeout,
     )

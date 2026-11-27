@@ -28,6 +28,8 @@ fn account(routed: bool) -> ListenerAccount {
             cli: None,
             curl_config: None,
             dir: Some("gateway".into()),
+            credentials: None,
+            options: Default::default(),
         },
         digest: DIGEST.into(),
         routed,

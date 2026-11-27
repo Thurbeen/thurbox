@@ -2173,6 +2173,7 @@ fn version(json: bool, config: Option<PathBuf>, data_dir: Option<PathBuf>) -> Re
             "runtimeProtocol": fleet_runtime::exec::PROTOCOL,
             "forges": ["azure-devops", "bitbucket-cloud", "github", "gitlab", "fake"],
             "gateways": Platform::ALL,
+            "gatewayProtocol": fleet_gateway::connector::PROTOCOL,
             "skew": version_skew(&manager),
             "manager": manager,
         }));
@@ -3309,7 +3310,8 @@ fn open_gateway(config: &Config) -> Result<Option<GatewayAccounts>, Failure> {
         return Ok(None);
     };
     let timeout = std::time::Duration::from_millis(cfg.defaults().call_timeout_ms);
-    let accounts = GatewayAccounts::new(cfg.accounts.clone(), timeout).map_err(fail)?;
+    let accounts = GatewayAccounts::with_connectors(cfg.accounts.clone(), &cfg.connectors, timeout)
+        .map_err(fail)?;
     if let Some(logs) = &cfg.logs {
         accounts
             .check_channel(&logs.account, &logs.channel)

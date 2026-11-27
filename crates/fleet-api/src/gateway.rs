@@ -497,6 +497,20 @@ pub struct AccountConfig {
     pub curl_config: Option<PathBuf>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub dir: Option<PathBuf>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub credentials: Option<PathBuf>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub options: BTreeMap<String, Value>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ConnectorConfig {
+    pub program: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub args: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub call_timeout_ms: Option<Millis>,
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -608,6 +622,8 @@ pub struct GatewayConfig {
     pub beat_ms: Option<Millis>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub questions: Option<String>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub connectors: BTreeMap<String, ConnectorConfig>,
     #[serde(default)]
     pub accounts: BTreeMap<String, AccountConfig>,
     #[serde(default)]
@@ -873,6 +889,25 @@ impl GatewayConfig {
             }
             if account.cli.as_deref().is_some_and(|c| c.trim().is_empty()) {
                 return Err(format!("{at}: cli is empty"));
+            }
+            if let Some(p) = &account.credentials
+                && !is_absolute_path(&p.to_string_lossy())
+            {
+                return Err(format!("{at}: credentials must be an absolute path"));
+            }
+        }
+        for (name, connector) in &self.connectors {
+            let at = format!("gateway.connectors.{name}");
+            validate_name(name).map_err(|e| format!("{at}: {e}"))?;
+            if connector.program.trim().is_empty() {
+                return Err(format!("{at}: program is empty"));
+            }
+            match connector.call_timeout_ms {
+                Some(0) => return Err(format!("{at}: callTimeoutMs must be at least 1")),
+                Some(ms) if ms > 300_000 => {
+                    return Err(format!("{at}: callTimeoutMs must be at most 300000"));
+                }
+                _ => {}
             }
         }
         for (name, ids) in &self.people {
@@ -1157,6 +1192,8 @@ mod tests {
             cli: None,
             curl_config: None,
             dir: Some("gateway".into()),
+            credentials: None,
+            options: Default::default(),
         }
     }
 

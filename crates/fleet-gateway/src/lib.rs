@@ -1,3 +1,4 @@
+pub mod connector;
 pub mod curl;
 pub mod discord;
 pub mod fake;
@@ -8,11 +9,12 @@ use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
+pub use connector::{ConnectorGateway, ConnectorProgram};
 pub use discord::DiscordGateway;
 pub use fake::{FakeConversation, FakeGateway, FakeGatewayState, GatewayFault, PostRecord};
 use fleet_api::gateway::{
-    AccountConfig, Capabilities, ConversationRef, Delivery, Envelope, Fetched, Gateway,
-    HistoryObservation, HistoryQuery, Identity, Inbound, Uncertainty,
+    AccountConfig, Capabilities, ConnectorConfig, ConversationRef, Delivery, Envelope, Fetched,
+    Gateway, HistoryObservation, HistoryQuery, Identity, Inbound, Uncertainty,
 };
 use fleet_api::plan::EffectOutcome;
 use fleet_api::{Millis, Observation};
@@ -67,16 +69,33 @@ impl GatewayAccounts {
         accounts: BTreeMap<String, AccountConfig>,
         call_timeout: Duration,
     ) -> Result<GatewayAccounts, String> {
+        GatewayAccounts::with_connectors(accounts, &BTreeMap::new(), call_timeout)
+    }
+
+    pub fn with_connectors(
+        accounts: BTreeMap<String, AccountConfig>,
+        connectors: &BTreeMap<String, ConnectorConfig>,
+        call_timeout: Duration,
+    ) -> Result<GatewayAccounts, String> {
+        if let Some(name) = connectors.keys().find(|n| Platform::parse(n).is_some()) {
+            return Err(format!(
+                "gateway.connectors.{name}: {name} is a built-in platform; name the connector otherwise"
+            ));
+        }
         let mut out: BTreeMap<String, (AccountConfig, Box<dyn Gateway>)> = BTreeMap::new();
         for (name, cfg) in accounts {
             let at = format!("gateway.accounts.{name}");
-            let platform = Platform::parse(&cfg.platform).ok_or_else(|| {
-                format!(
-                    "{at}: unknown platform {:?}; this build has {}",
-                    cfg.platform,
-                    Platform::ALL.join(", ")
-                )
-            })?;
+            let Some(platform) = Platform::parse(&cfg.platform) else {
+                let adapter = connector_account(&at, &name, &cfg, connectors, call_timeout)?;
+                out.insert(name, (cfg, adapter));
+                continue;
+            };
+            if cfg.credentials.is_some() || !cfg.options.is_empty() {
+                return Err(format!(
+                    "{at}: credentials and options are a connector account's keys, not {:?}'s",
+                    cfg.platform
+                ));
+            }
             if cfg.message_content.is_some() && platform != Platform::Discord {
                 return Err(format!(
                     "{at}: messageContent is a Discord account's key, not {:?}'s",
@@ -151,7 +170,10 @@ impl GatewayAccounts {
             Some(Platform::Discord) => discord::parse_address(&address),
             Some(Platform::Fake) => fake::parse_address(&address),
             Some(Platform::Slack) => slack::parse_address(&address),
-            None => Err(format!("unknown platform {:?}", cfg.platform)),
+            None => match self.parse(account, &address) {
+                Observation::Known(parsed) => Ok(parsed),
+                Observation::Unknown { why } => Err(why),
+            },
         }?;
         if parsed.thread.is_some() || parsed.chat != channel {
             return Err(format!(
@@ -180,11 +202,12 @@ impl Gateway for GatewayAccounts {
     }
 
     fn event(&self, account: &AccountConfig, envelope: &Envelope) -> Observation<Option<Delivery>> {
-        match self
-            .accounts
-            .values()
-            .find(|(c, _)| c.platform == account.platform)
-        {
+        let same = self.accounts.values().find(|(c, _)| c == account);
+        match same.or_else(|| {
+            self.accounts
+                .values()
+                .find(|(c, _)| c.platform == account.platform)
+        }) {
             Some((_, g)) => g.event(account, envelope),
             None => Observation::unknown(format!(
                 "no configured account runs on platform {:?}",
@@ -285,6 +308,43 @@ impl Gateway for GatewayAccounts {
             }),
         }
     }
+}
+
+fn connector_account(
+    at: &str,
+    name: &str,
+    cfg: &AccountConfig,
+    connectors: &BTreeMap<String, ConnectorConfig>,
+    call_timeout: Duration,
+) -> Result<Box<dyn Gateway>, String> {
+    let Some(connector) = connectors.get(&cfg.platform) else {
+        let mut known = Platform::ALL.join(", ");
+        if !connectors.is_empty() {
+            let names: Vec<&str> = connectors.keys().map(String::as_str).collect();
+            known = format!("{known}, and the connectors {}", names.join(", "));
+        }
+        return Err(format!(
+            "{at}: unknown platform {:?}; this build has {known}",
+            cfg.platform
+        ));
+    };
+    if cfg.inbound != Inbound::Connection {
+        return Err(format!(
+            "{at}: inbound {:?} is not how a connector's listener delivers; use \"connection\"",
+            cfg.inbound.name()
+        ));
+    }
+    if cfg.message_content.is_some()
+        || cfg.cli.is_some()
+        || cfg.curl_config.is_some()
+        || cfg.dir.is_some()
+    {
+        return Err(format!(
+            "{at}: a connector account takes credentials and options, not messageContent, cli, curlConfig or dir"
+        ));
+    }
+    let program = ConnectorProgram::new(&cfg.platform, connector, call_timeout);
+    Ok(Box::new(ConnectorGateway::new(program, name, cfg)))
 }
 
 pub fn fresh_private_dir(parent: &Path, stem: &str) -> std::io::Result<PathBuf> {
@@ -426,6 +486,8 @@ mod tests {
             cli: Some("curl".into()),
             curl_config: Some("/etc/fleet/slack-curl.conf".into()),
             dir: None,
+            credentials: None,
+            options: Default::default(),
         }
     }
 
@@ -663,5 +725,81 @@ mod tests {
         assert_eq!(Platform::parse("telegram"), None);
         assert_eq!(Platform::ALL, ["discord", "fake", "slack"]);
         assert_eq!(Platform::parse("discord"), Some(Platform::Discord));
+    }
+
+    #[test]
+    fn a_connector_account_and_a_built_in_account_keep_their_own_keys() {
+        let connectors = BTreeMap::from([(
+            "teams".to_string(),
+            ConnectorConfig {
+                program: "fleet-gateway-teams".into(),
+                args: Vec::new(),
+                call_timeout_ms: Some(2_000),
+            },
+        )]);
+        let teams = AccountConfig {
+            platform: "teams".into(),
+            cli: None,
+            curl_config: None,
+            credentials: Some("/etc/fleet/teams.conf".into()),
+            ..account("teams")
+        };
+        let accounts = GatewayAccounts::with_connectors(
+            BTreeMap::from([("teams-main".to_string(), teams.clone())]),
+            &connectors,
+            Duration::from_secs(1),
+        )
+        .unwrap();
+        assert_eq!(
+            accounts.operation_bound(),
+            u64::try_from((fleet_exec::worst_case(Duration::from_secs(2)) * 2).as_millis())
+                .unwrap(),
+            "the connector's own timeout bounds its calls, a manifest and a verb"
+        );
+        let refused = |accounts: BTreeMap<String, AccountConfig>| {
+            GatewayAccounts::with_connectors(accounts, &connectors, Duration::from_secs(1))
+                .unwrap_err()
+        };
+        assert_eq!(
+            refused(BTreeMap::from([(
+                "teams-main".to_string(),
+                AccountConfig {
+                    curl_config: Some("/etc/fleet/x.conf".into()),
+                    ..teams.clone()
+                },
+            )])),
+            "gateway.accounts.teams-main: a connector account takes credentials and options, not messageContent, cli, curlConfig or dir"
+        );
+        assert_eq!(
+            refused(BTreeMap::from([(
+                "teams-main".to_string(),
+                AccountConfig {
+                    inbound: Inbound::EventsApi,
+                    ..teams.clone()
+                },
+            )])),
+            "gateway.accounts.teams-main: inbound \"events-api\" is not how a connector's listener delivers; use \"connection\""
+        );
+        assert_eq!(
+            refused(BTreeMap::from([(
+                "slack-main".to_string(),
+                AccountConfig {
+                    inbound: Inbound::SocketMode,
+                    credentials: Some("/etc/fleet/slack.conf".into()),
+                    ..account("slack")
+                },
+            )])),
+            "gateway.accounts.slack-main: credentials and options are a connector account's keys, not \"slack\"'s"
+        );
+        let err = GatewayAccounts::with_connectors(
+            BTreeMap::new(),
+            &BTreeMap::from([("discord".to_string(), connectors["teams"].clone())]),
+            Duration::from_secs(1),
+        )
+        .unwrap_err();
+        assert_eq!(
+            err,
+            "gateway.connectors.discord: discord is a built-in platform; name the connector otherwise"
+        );
     }
 }

@@ -220,6 +220,7 @@ running:
 | [configuration.md](configuration.md) | `fleet init`, `fleet up`, every `fleet.toml` field, the environment file |
 | [integration.md](integration.md) | `fleet integration`: the hooks Fleet installs for an agent that takes none at launch |
 | [plugins.md](plugins.md) | Write a plugin: a new kind and its controller, step by step, with a working example |
+| [connectors.md](connectors.md) | Write a gateway connector: a chat platform in a program outside Fleet, with a reference connector |
 | [signal-contract.md](signal-contract.md) | For an agent vendor: how an agent reports its state through `fleet signal` |
 | [gateway-adapters.md](controllers/gateway-adapters.md) | The Slack and Discord adapters of the gateway port |
 
