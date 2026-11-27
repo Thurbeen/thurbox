@@ -850,6 +850,8 @@ mod tests {
             cli: None,
             curl_config: None,
             dir: None,
+            credentials: None,
+            options: Default::default(),
         }
     }
 

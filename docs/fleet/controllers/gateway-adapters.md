@@ -15,6 +15,11 @@ its own page:
 `slack`. Telegram and Microsoft Teams are mapped on paper only, under the
 [cross-platform check](#cross-platform-check).
 
+Any other platform is a [gateway connector](../connectors.md): a program
+outside Fleet that speaks the gateway connector protocol. A connector keeps
+the rules on this page that are not about `curl`. A new platform is a
+connector, not a new adapter in this crate.
+
 An adapter's `post` carries ConversationController's refusals and busy
 notices, GatewayController's posts for a tied Task, and its top-level log
 posts in the `gateway.logs` channel. An adapter's `open` carries a Question

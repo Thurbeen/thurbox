@@ -320,6 +320,8 @@ fn adapter(env: &Env, curl_config: &std::path::Path) -> DiscordGateway {
             ),
             curl_config: Some(curl_config.to_path_buf()),
             dir: None,
+            credentials: None,
+            options: Default::default(),
         },
         Duration::from_secs(3),
     )

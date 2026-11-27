@@ -447,6 +447,11 @@ Task in the same write as the inbox append, and must wake when a Task
 declares something. A plugin can do none of these. A plugin also
 cannot hold a resident connection, and the platforms need one either way.
 
+A chat platform that Fleet does not build in is a
+[gateway connector](../connectors.md), not a plugin. A connector is the
+port's adapter in a program of its own. Fleet calls it once per port call,
+as it calls a runtime, so the Gateway's controllers stay built in.
+
 A plugin that keeps its own records, works on its own Tasks and polls stays
 a plugin. It meets the Gateway only on a Task: in `status.declared`, in the
 inbox and in `status.answered`.
@@ -491,6 +496,7 @@ In scope:
   answers,
 - routing a child Task's words to its parent,
 - the Slack and Discord adapters, the receive verb and the Listener,
+- the gateway connector protocol, for a platform in a program outside Fleet,
 - marking an admitted request with a working reaction, or a queued one
   while it waits for its Task,
 - marking a relayed message with a working reaction, and with a replied
@@ -507,7 +513,7 @@ Out of scope, deliberately:
 - merging, as for the Forge controller,
 - any judgement about the worth of a message: an intake model, a planner or
   a nudging heartbeat,
-- implementing the Telegram or Teams adapters,
+- implementing the Telegram or Teams connectors,
 - reading people's reactions, edits of Fleet's own posts, and interactive
   components,
 - the listener programs themselves.
