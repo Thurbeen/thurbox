@@ -465,6 +465,7 @@ capabilities) echo '{\"known\":{\"history\":true,\"marker\":\"none\",\"unmention
     for line in [
         "FAIL a request on another protocol answers Unknown",
         "FAIL an unknown verb answers Unknown",
+        "FAIL an address it parses keeps its parts",
         "FAIL capabilities promise only verbs the manifest lists: history is true and the manifest lists no history",
     ] {
         assert!(run.stdout.contains(line), "{line} in\n{}", run.stdout);

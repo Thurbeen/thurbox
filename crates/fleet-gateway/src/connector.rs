@@ -546,21 +546,16 @@ pub fn check(
         answers_unknown(program.call("fleet-check-no-such-verb", request(json!({})))),
     ));
     let gateway = ConnectorGateway::new(program.clone(), "check", account);
-    cases.push(case(
-        "an address it parses keeps its parts",
-        parses_back(&gateway, &account.platform),
-    ));
+    cases.push(Case {
+        name: "an address it parses keeps its parts",
+        verdict: parses_back(&gateway, &account.platform),
+    });
     let envelope = json!({"verified": "connection", "receivedAt": 0, "payload": {}});
     cases.push(case(
         "an event it cannot read answers null or Unknown",
-        match gateway.event(
-            account,
-            &serde_json::from_value(envelope).expect("an envelope"),
-        ) {
-            Observation::Known(Some(d)) => Err(format!("an empty payload read as {d:?}")),
-            Observation::Known(None) => Ok(()),
-            Observation::Unknown { why } if why.contains("outside the protocol") => Err(why),
-            Observation::Unknown { .. } => Ok(()),
+        match gateway.call("event", json!({ "envelope": envelope })) {
+            Answer::Known(Value::Null) | Answer::Unknown { .. } => Ok(()),
+            Answer::Known(value) => Err(format!("an empty payload read as {value}")),
         },
     ));
     cases.push(case(
@@ -615,23 +610,42 @@ fn answers_unknown(answer: Answer) -> Result<(), String> {
     }
 }
 
-fn parses_back(gateway: &ConnectorGateway, platform: &str) -> Result<(), String> {
-    if let Observation::Known(c) = gateway.parse("check", "") {
-        return Err(format!("an empty address parsed as {c:?}"));
+fn parsed(gateway: &ConnectorGateway, address: &str) -> Result<Option<ConversationRef>, String> {
+    match gateway.call("parse", json!({ "address": address })) {
+        Answer::Unknown { .. } => Ok(None),
+        Answer::Known(value) => {
+            let parsed: ConversationRef = serde_json::from_value(value.clone())
+                .map_err(|e| format!("{address:?} answered {value}, not a conversation: {e}"))?;
+            gateway.platform_check("parse", &parsed)?;
+            Ok(Some(parsed))
+        }
     }
+}
+
+fn parses_back(gateway: &ConnectorGateway, platform: &str) -> Verdict {
     let sample = format!("{platform}:C0CHECK:T0CHECK");
-    let Observation::Known(parsed) = gateway.parse("check", &sample) else {
-        return Ok(());
+    let round_trip = || -> Result<Option<()>, String> {
+        if let Some(c) = parsed(gateway, "")? {
+            return Err(format!("an empty address parsed as {c:?}"));
+        }
+        let Some(first) = parsed(gateway, &sample)? else {
+            return Ok(None);
+        };
+        match parsed(gateway, &first.address())? {
+            Some(again) if again == first => Ok(Some(())),
+            Some(again) => Err(format!(
+                "{sample} parsed as {first:?}, whose address parsed as {again:?}"
+            )),
+            None => Err(format!(
+                "{sample} parsed, but its address {} did not",
+                first.address()
+            )),
+        }
     };
-    match gateway.parse("check", &parsed.address()) {
-        Observation::Known(again) if again == parsed => Ok(()),
-        Observation::Known(again) => Err(format!(
-            "{sample} parsed as {parsed:?}, whose address parsed as {again:?}"
-        )),
-        Observation::Unknown { why } => Err(format!(
-            "{sample} parsed, but its address {} did not: {why}",
-            parsed.address()
-        )),
+    match round_trip() {
+        Ok(Some(())) => Verdict::Passed,
+        Ok(None) => Verdict::Skipped(format!("{sample} does not parse, so nothing round-trips")),
+        Err(why) => Verdict::Failed(why),
     }
 }
 
@@ -695,20 +709,16 @@ fn live(gateway: &ConnectorGateway, channel: &str, capabilities: &Capabilities) 
             }
         },
     });
-    let thread = ConversationRef {
-        thread: Some(message.clone()),
-        ..channel
-    };
     cases.push(Case {
         name: LIVE_CASES[2],
         verdict: if !capabilities.history {
             Verdict::Skipped("capabilities report no history".into())
         } else {
-            match gateway.history("check", &thread, &HistoryQuery::Since { at }) {
+            match gateway.history("check", &channel, &HistoryQuery::Since { at }) {
                 HistoryObservation::Known(h) => match h.messages.iter().find(|m| m.id == message) {
                     None => Verdict::Failed(format!("message {message} is not in it")),
                     Some(m)
-                        if capabilities.marker != Marker::None
+                        if capabilities.marker == Marker::Metadata
                             && m.key.as_deref() != Some(key.as_str()) =>
                     {
                         Verdict::Failed(format!("message {message} carries key {:?}", m.key))
@@ -948,5 +958,87 @@ mod tests {
         let request: Value = serde_json::from_slice(&std::fs::read(&seen).unwrap()).unwrap();
         assert_eq!(request["account"]["platform"], "chat", "{request:#}");
         assert!(request["account"].get("name").is_none(), "{request:#}");
+    }
+
+    #[test]
+    fn a_nonce_connector_passes_the_live_cases_reading_the_channel_it_posted_in() {
+        let dir = scratch("live-nonce");
+        let manifest = r#"{"known":{"protocol":1,"platform":"chat","verbs":["manifest","parse","event","whoami","capabilities","post","history"]}}"#;
+        let body = format!(
+            r#"case $1 in
+parse) printf '%s\n' '{{"known":{{"platform":"chat","chat":"C1"}}}}' ;;
+whoami) printf '%s\n' '{{"known":{{"id":"B1"}}}}' ;;
+capabilities) printf '%s\n' '{{"known":{{"history":true,"marker":{{"nonce":{{"windowMs":60000}}}},"unmentioned":false,"threads":true}}}}' ;;
+post) printf '%s\n' '{{"known":{{"type":"posted","message":"M1","at":5}}}}' ;;
+history)
+  case $req in
+  *'"thread"'*) printf '%s\n' '{{"unknown":{{"why":"no such thread"}}}}' ;;
+  *) printf '%s\n' '{{"known":{{"messages":[{{"id":"M1","author":{{"id":"B1","name":"bot","kind":"fleet"}},"at":5}}]}}}}' ;;
+  esac ;;
+*) printf '%s\n' '{{"unknown":{{"why":"no"}}}}' ;;
+esac
+manifest_unused='{manifest}'"#
+        );
+        let gateway = scripted(&dir, "nonce", &body);
+        let program = dir.join("nonce.sh");
+        let text = std::fs::read_to_string(&program)
+            .unwrap()
+            .replace(MANIFEST, manifest);
+        std::fs::write(&program, text).unwrap();
+        let cases = check(&gateway.program, &gateway.config, Some("chat:C1"));
+        let live: Vec<_> = cases
+            .iter()
+            .filter(|c| LIVE_CASES.contains(&c.name))
+            .map(|c| (c.name, c.verdict.clone()))
+            .collect();
+        assert_eq!(
+            live,
+            [
+                (LIVE_CASES[0], Verdict::Passed),
+                (LIVE_CASES[1], Verdict::Passed),
+                (LIVE_CASES[2], Verdict::Passed),
+            ],
+            "{cases:#?}"
+        );
+    }
+
+    fn live_verdicts(dir: &Path, name: &str, post: &str, history: &str) -> Vec<Verdict> {
+        let body = format!(
+            r#"case $1 in
+parse) printf '%s\n' '{{"known":{{"platform":"chat","chat":"C1"}}}}' ;;
+whoami) printf '%s\n' '{{"known":{{"id":"B1"}}}}' ;;
+capabilities) printf '%s\n' '{{"known":{{"history":true,"marker":"metadata","unmentioned":false,"threads":true}}}}' ;;
+post) {post} ;;
+history) {history} ;;
+*) printf '%s\n' '{{"unknown":{{"why":"no"}}}}' ;;
+esac"#
+        );
+        let gateway = scripted(dir, name, &body);
+        check(&gateway.program, &gateway.config, Some("chat:C1"))
+            .into_iter()
+            .filter(|c| LIVE_CASES.contains(&c.name))
+            .map(|c| c.verdict)
+            .collect()
+    }
+
+    #[test]
+    fn a_repeat_that_posts_twice_and_a_history_without_the_post_fail_the_live_cases() {
+        let dir = scratch("live-fail");
+        let counter = dir.join("posts");
+        let twice = format!(
+            r#"n=$(cat '{c}' 2>/dev/null || echo 0); n=$((n + 1)); echo $n >'{c}'; printf '{{"known":{{"type":"posted","message":"M%s","at":5}}}}\n' "$n""#,
+            c = counter.display()
+        );
+        let empty = r#"printf '%s\n' '{"known":{"messages":[]}}'"#;
+        let verdicts = live_verdicts(&dir, "twice", &twice, empty);
+        assert_eq!(verdicts[0], Verdict::Passed, "{verdicts:?}");
+        assert!(
+            matches!(&verdicts[1], Verdict::Failed(why) if why.contains("not the first post M1")),
+            "{verdicts:?}"
+        );
+        assert!(
+            matches!(&verdicts[2], Verdict::Failed(why) if why.contains("M1 is not in it")),
+            "{verdicts:?}"
+        );
     }
 }

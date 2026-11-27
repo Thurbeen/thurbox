@@ -160,8 +160,11 @@ exits non-zero when any case fails. These cases need no platform:
   every required verb, and lists no verb that protocol 1 does not have;
 - a request on another protocol answers Unknown;
 - an unknown verb answers Unknown;
-- an empty address does not parse, and an address that parses gives the
-  same parts when its own address is parsed again;
+- an empty address does not parse, and every answer to `parse` is a
+  conversation on the connector's platform or Unknown;
+- the sample address `<platform>:C0CHECK:T0CHECK`, when it parses, gives the
+  same parts when its own address is parsed again. The case is skipped when
+  the sample does not parse;
 - an event with an empty payload answers `null` or Unknown;
 - `whoami` names an id;
 - `capabilities` report `history` and `reactions` only when the manifest
@@ -173,8 +176,8 @@ channel. Give it a test channel:
 - a post answers `posted`;
 - a second post with the same intent key answers the same message. The case
   is skipped when `marker` is `none`;
-- `history` of the thread that the post starts holds the message, under its
-  key when `marker` is not `none`. The case is skipped without history.
+- a `since` read of `history` on the same address holds the message, under
+  its key when `marker` is `metadata`. The case is skipped without history.
 
 The flags give the account that each request carries: `--platform`
 (default `check`), `--bot`, `--team`, `--credentials`, and `--option
