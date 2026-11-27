@@ -122,6 +122,84 @@ fn tasks(env: &Env) -> Vec<Value> {
         .clone()
 }
 
+fn connector_call(env: &Env, verb: &str, request: Value) -> Value {
+    let mut request = request;
+    request["protocol"] = json!(1);
+    request["account"] = json!({"platform": PLATFORM, "bot": BOT, "inbound": "connection",
+                                "options": {"dir": platform_dir(env)}});
+    let mut child = Command::new(reference_connector())
+        .arg(verb)
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .spawn()
+        .unwrap();
+    use std::io::Write;
+    child
+        .stdin
+        .take()
+        .unwrap()
+        .write_all(request.to_string().as_bytes())
+        .unwrap();
+    let out = child.wait_with_output().unwrap();
+    assert!(out.status.success(), "{out:?}");
+    serde_json::from_slice(&out.stdout).unwrap()
+}
+
+#[test]
+fn the_reference_connectors_history_keeps_the_newest_and_reads_a_channels_top_level() {
+    let Some(env) = connector_env("connector-history") else {
+        return;
+    };
+    let dir = platform_dir(&env);
+    fs::create_dir_all(&dir).unwrap();
+    let mut lines = String::new();
+    for n in 0..5u64 {
+        let mut m = platform_message(T0 + n, ALEX_ID, &format!("message {n}"));
+        m["thread"] = json!(T0.to_string());
+        lines.push_str(&format!("{m}\n"));
+    }
+    lines.push_str(&format!(
+        "{}\n",
+        platform_message(T0 + 10, ALEX_ID, "top level")
+    ));
+    fs::write(dir.join("messages.jsonl"), lines).unwrap();
+    let thread = json!({"platform": PLATFORM, "chat": CHANNEL, "thread": T0.to_string()});
+    let out = connector_call(
+        &env,
+        "history",
+        json!({"conversation": thread, "query": {"type": "after", "id": null, "limit": 2}}),
+    );
+    let ids: Vec<&str> = out["known"]["messages"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|m| m["id"].as_str().unwrap())
+        .collect();
+    assert_eq!(
+        ids,
+        [(T0 + 3).to_string(), (T0 + 4).to_string()],
+        "the newest two: {out:#}"
+    );
+    assert_eq!(out["known"]["leftOut"], 3, "{out:#}");
+    let channel = json!({"platform": PLATFORM, "chat": CHANNEL});
+    let out = connector_call(
+        &env,
+        "history",
+        json!({"conversation": channel, "query": {"type": "since", "at": T0}}),
+    );
+    let ids: Vec<&str> = out["known"]["messages"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|m| m["id"].as_str().unwrap())
+        .collect();
+    assert_eq!(
+        ids,
+        [T0.to_string(), (T0 + 10).to_string()],
+        "a channel reads its top-level messages: {out:#}"
+    );
+}
+
 #[test]
 fn a_strangers_mention_is_mirrored_and_refused_once_through_the_connector() {
     let Some(env) = connector_env("connector-refusal") else {

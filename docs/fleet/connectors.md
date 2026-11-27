@@ -42,7 +42,7 @@ Every request carries `"protocol": 1` and `account`:
 
 | `account` field | Meaning |
 | --- | --- |
-| `name` | The account's name under `[gateway.accounts]`. `event` can omit it. |
+| `name` | The account's name under `[gateway.accounts]`. Absent on `event`: two accounts with the same settings read events alike. |
 | `platform` | The connector's name. |
 | `bot` | Fleet's bot id on the platform. |
 | `inbound` | How the listener delivers. |
@@ -67,7 +67,7 @@ and in `crates/fleet-api/src/gateway.rs`.
 | `open` | no | `channel`, `text`, `intentKey` | `{"type": "opened", "conversation", "message", "at"}` or `failed` |
 | `react` | no | `conversation`, `message`, `reaction`, `on` | `{"type": "reacted", "already"}` or `failed` |
 | `link` | no | `thread` | a URL string, or `null` |
-| `fetch` | no | `conversation`, `file`, `dir` | `{"outcome": "saved", "path", "bytes"}` or `{"outcome": "refused", "why"}` |
+| `fetch` | no | `conversation`, `file`, `dir`, a directory that Fleet made for this call | `{"outcome": "saved", "path", "bytes"}` or `{"outcome": "refused", "why"}` |
 
 Fleet reads the manifest once per process. It refuses the connector when:
 
@@ -102,7 +102,12 @@ built-in adapters apply. These rules apply to every connector:
 - **Identity is an opaque id.** `author.id` is the id that
   `[gateway.people]` maps. A message from `bot` has the author kind `fleet`.
 - **A refusal is Known; anything unclear is Unknown.**
-- **`fetch` saves into `dir` only.** Fleet refuses a path outside it.
+- **`fetch` saves one file directly in `dir`.** Fleet makes `dir` for
+  the call, under the directory that `fleet gateway file` writes to, and
+  only Fleet's user can enter it. Fleet refuses a path anywhere else.
+- **`history` keeps the newest.** An `after` read answers at most `limit`
+  messages, the newest, and counts the rest in `leftOut`. A `since` read is
+  complete. A channel address reads the channel's top-level messages.
 
 ## Configuration
 

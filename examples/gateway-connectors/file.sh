@@ -119,14 +119,16 @@ post | open)
 history)
 	answer "$(jq -cs --argjson req "$req" --arg platform "$platform" --arg bot "$bot" "$TO_MESSAGE"'
 		$req.conversation as $c | $req.query as $q
-		| map(select(.channel == $c.chat and (.thread // .id) == $c.thread))
+		| map(select(.channel == $c.chat
+		             and (if $c.thread then (.thread // .id) == $c.thread else (.thread // .id) == .id end)))
 		| sort_by(.ts)
 		| map(to_message($platform; $bot) | del(.conversation))
-		| if $q.type == "since" then map(select(.at >= $q.at))
-		  elif $q.id then (map(.id) | index($q.id)) as $i | if $i == null then . else .[$i + 1:] end
-		  else . end
-		| if $q.limit then .[:$q.limit] else . end
-		| {known: {messages: ., leftOut: 0}}' "$messages")"
+		| if $q.type == "since" then {messages: map(select(.at >= $q.at)), leftOut: 0}
+		  else (if $q.id then (map(.id) | index($q.id)) as $i | if $i == null then . else .[$i + 1:] end
+		        else . end)
+		       | {messages: .[-$q.limit:], leftOut: ([length - $q.limit, 0] | max)}
+		  end
+		| {known: .}' "$messages")"
 	;;
 *)
 	unknown "this connector has no verb ${verb:-(none)}"

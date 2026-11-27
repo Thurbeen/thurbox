@@ -203,8 +203,7 @@ impl ConnectorGateway {
         }
     }
 
-    fn request(&self, config: &AccountConfig, fields: Value) -> Value {
-        let name = (config == &self.config).then_some(self.account.as_str());
+    fn request(&self, name: Option<&str>, config: &AccountConfig, fields: Value) -> Value {
         let mut request = fields;
         request["account"] = account_request(name, config);
         request
@@ -218,9 +217,9 @@ impl ConnectorGateway {
         if let Some(m) = cached.as_ref() {
             return Ok(m.clone());
         }
-        let manifest = self
-            .program
-            .manifest(self.request(&self.config, json!({})))?;
+        let manifest =
+            self.program
+                .manifest(self.request(Some(&self.account), &self.config, json!({})))?;
         *cached = Some(manifest.clone());
         Ok(manifest)
     }
@@ -229,24 +228,29 @@ impl ConnectorGateway {
         self.manifest().map(|m| m.verbs.iter().any(|v| v == verb))
     }
 
-    fn call(&self, config: &AccountConfig, verb: &str, fields: Value) -> Answer {
-        if let Err(why) = self.manifest() {
-            return Answer::unknown(why);
-        }
-        self.program.call(verb, self.request(config, fields))
+    fn call(&self, verb: &str, fields: Value) -> Answer {
+        self.call_as(Some(&self.account), &self.config, verb, fields)
     }
 
-    fn ask<T: DeserializeOwned>(&self, verb: &str, fields: Value) -> Observation<T> {
-        self.ask_as(&self.config, verb, fields)
-    }
-
-    fn ask_as<T: DeserializeOwned>(
+    fn call_as(
         &self,
+        name: Option<&str>,
         config: &AccountConfig,
         verb: &str,
         fields: Value,
-    ) -> Observation<T> {
-        match self.call(config, verb, fields) {
+    ) -> Answer {
+        if let Err(why) = self.manifest() {
+            return Answer::unknown(why);
+        }
+        self.program.call(verb, self.request(name, config, fields))
+    }
+
+    fn ask<T: DeserializeOwned>(&self, verb: &str, fields: Value) -> Observation<T> {
+        self.read(self.call(verb, fields), verb)
+    }
+
+    fn read<T: DeserializeOwned>(&self, answer: Answer, verb: &str) -> Observation<T> {
+        match answer {
             Answer::Known(value) => serde_json::from_value(value).map_or_else(
                 |e| {
                     Observation::unknown(format!(
@@ -315,7 +319,8 @@ impl Gateway for ConnectorGateway {
 
     fn event(&self, account: &AccountConfig, envelope: &Envelope) -> Observation<Option<Delivery>> {
         let fields = json!({ "envelope": envelope });
-        match self.ask_as::<Option<Delivery>>(account, "event", fields) {
+        let answer = self.call_as(None, account, "event", fields);
+        match self.read::<Option<Delivery>>(answer, "event") {
             Observation::Known(Some(mut delivery)) => {
                 if let Err(why) = self.platform_check("event", delivery.event.conversation()) {
                     return Observation::unknown(why);
@@ -347,7 +352,7 @@ impl Gateway for ConnectorGateway {
             Ok(true) => {}
         }
         let fields = json!({ "conversation": conversation, "query": query });
-        match self.call(&self.config, "history", fields) {
+        match self.call("history", fields) {
             Answer::Known(value) => match serde_json::from_value::<History>(value) {
                 Ok(history) => HistoryObservation::Known(history),
                 Err(e) => HistoryObservation::unknown(
@@ -461,21 +466,31 @@ impl Gateway for ConnectorGateway {
             }
             Ok(true) => {}
         }
-        let fields = json!({ "conversation": conversation, "file": file, "dir": dir });
+        let stem = format!("fleet-file-{}", crate::saved_name(file, ""));
+        let folder = match crate::fresh_private_dir(dir, &stem) {
+            Ok(folder) => folder,
+            Err(e) => return Observation::unknown(format!("{}: {e}", dir.display())),
+        };
+        let fields = json!({ "conversation": conversation, "file": file, "dir": folder });
         match self.ask::<Fetched>("fetch", fields) {
             Observation::Known(Fetched::Saved { path, .. })
-                if path.parent() != Some(dir) || path.file_name().is_none() =>
+                if path.parent() != Some(folder.as_path()) || path.file_name().is_none() =>
             {
+                let _ = std::fs::remove_dir(&folder);
                 Observation::Known(Fetched::Refused {
                     why: format!(
                         "connector {} saved {} outside {}",
                         self.program.name,
                         path.display(),
-                        dir.display()
+                        folder.display()
                     ),
                 })
             }
-            other => other,
+            saved @ Observation::Known(Fetched::Saved { .. }) => saved,
+            other => {
+                let _ = std::fs::remove_dir(&folder);
+                other
+            }
         }
     }
 }
@@ -625,27 +640,83 @@ mod tests {
         );
     }
 
+    fn scripted(dir: &Path, name: &str, body: &str) -> ConnectorGateway {
+        let mut gateway = connector(dir, &[("manifest", MANIFEST)]);
+        let program = dir.join(format!("{name}.sh"));
+        std::fs::write(
+            &program,
+            format!("#!/bin/sh\nreq=$(cat)\ncase $1 in\nmanifest) printf '%s\\n' '{MANIFEST}' ;;\n*)\n{body}\n;;\nesac\n"),
+        )
+        .unwrap();
+        std::fs::set_permissions(
+            &program,
+            std::os::unix::fs::PermissionsExt::from_mode(0o755),
+        )
+        .unwrap();
+        gateway.program.program = program.to_string_lossy().into_owned();
+        gateway
+    }
+
     #[test]
-    fn a_fetched_file_outside_the_given_dir_is_refused() {
+    fn a_fetch_writes_into_a_fresh_private_dir_and_a_file_outside_it_is_refused() {
         let dir = scratch("fetch");
         let into = dir.join("files");
-        for (path, kept) in [
-            (into.join("a.png"), true),
-            (dir.join("a.png"), false),
-            (into.join(".."), false),
+        std::fs::create_dir_all(&into).unwrap();
+        let given = r#"d=$(printf '%s' "$req" | sed 's/.*"dir":"\([^"]*\)".*/\1/')"#;
+        let answer = r#"printf '{"known":{"outcome":"saved","path":"%s","bytes":1}}\n' "$p""#;
+        for (name, place, kept) in [
+            ("inside", "p=\"$d/a.png\"; printf x >\"$p\"", true),
+            ("shared", &*format!("p=\"{}/a.png\"", into.display()), false),
+            ("above", "p=\"$d/..\"", false),
         ] {
-            let answer = json!({"known": {"outcome": "saved", "path": path, "bytes": 1}});
-            let gateway = connector(
-                &dir,
-                &[("manifest", MANIFEST), ("fetch", &answer.to_string())],
-            );
+            let gateway = scripted(&dir, name, &format!("{given}\n{place}\n{answer}"));
             let got = gateway.fetch("chat-main", &thread(), "F1", &into);
-            assert_eq!(
-                matches!(got, Observation::Known(Fetched::Saved { .. })),
-                kept,
-                "{} answered {got:?}",
-                path.display()
+            let Observation::Known(Fetched::Saved { path, .. }) = &got else {
+                assert!(!kept, "{name} answered {got:?}");
+                continue;
+            };
+            assert!(kept, "{name} answered {got:?}");
+            let folder = path.parent().unwrap();
+            assert_eq!(folder.parent(), Some(into.as_path()));
+            assert!(
+                folder
+                    .file_name()
+                    .unwrap()
+                    .to_string_lossy()
+                    .starts_with("fleet-file-F1-"),
+                "{}",
+                folder.display()
             );
+            let mode = std::os::unix::fs::PermissionsExt::mode(
+                &std::fs::metadata(folder).unwrap().permissions(),
+            );
+            assert_eq!(mode & 0o777, 0o700);
         }
+    }
+
+    #[test]
+    fn an_event_request_names_no_account_since_the_port_does_not_say_which() {
+        let dir = scratch("event");
+        let seen = dir.join("event.json");
+        let gateway = scripted(
+            &dir,
+            "event",
+            &format!(
+                "printf '%s' \"$req\" >'{}'\nprintf '%s\\n' '{{\"known\":null}}'",
+                seen.display()
+            ),
+        );
+        let envelope: Envelope = serde_json::from_value(
+            json!({"verified": "connection", "receivedAt": 0, "payload": {}}),
+        )
+        .unwrap();
+        let config = gateway.config.clone();
+        assert!(matches!(
+            gateway.event(&config, &envelope),
+            Observation::Known(None)
+        ));
+        let request: Value = serde_json::from_slice(&std::fs::read(&seen).unwrap()).unwrap();
+        assert_eq!(request["account"]["platform"], "chat", "{request:#}");
+        assert!(request["account"].get("name").is_none(), "{request:#}");
     }
 }
