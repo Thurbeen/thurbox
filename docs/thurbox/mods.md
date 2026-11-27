@@ -31,8 +31,8 @@ thurbox-cli mod list         # every file, where it came from, is it drawn
 ```
 
 `mod new` writes [`examples/lua/mod.lua`](../../examples/lua/mod.lua) under your
-chosen name — a pane that renders, declares a key and a setting, and comments the
-one rule that catches everybody (see **Traps**). Edit it, run `check`, and it is
+chosen name — a pane that renders and declares a key and a setting. **Traps**
+lists the mistakes that only show at runtime. Edit it, run `check`, and it is
 live on the next save: the interface watches the directory.
 
 **Which directory?** Two rules — `THURBOX_UI_DIR` if it is set, otherwise your own
