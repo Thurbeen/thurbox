@@ -33,12 +33,12 @@ messages="$dir/messages.jsonl"
 touch "$messages" || unknown "cannot write $messages"
 printf '%s\n' "$(printf '%s' "$req" | jq -c --arg verb "$verb" '{verb: $verb, account: .account}')" >>"$dir/requests.jsonl"
 
-TO_MESSAGE='def to_message($platform; $bot):
-  {conversation: {platform: $platform, chat: .channel, thread: (.thread // .id)},
+TO_MESSAGE='def to_message(platform; bot):
+  {conversation: {platform: platform, chat: .channel, thread: (.thread // .id)},
    id: .id,
    author: {id: .user, name: (.name // .user),
-            kind: (if .user == $bot then "fleet" else "person" end)},
-   mentionsFleet: (.user != $bot and ((.text // "") | contains("<@" + $bot + ">"))),
+            kind: (if .user == bot then "fleet" else "person" end)},
+   mentionsFleet: (.user != bot and ((.text // "") | contains("<@" + bot + ">"))),
    at: .ts,
    text: (.text // ""),
    startsThread: ((.thread // .id) == .id)}
