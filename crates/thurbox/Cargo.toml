@@ -32,7 +32,7 @@ base64 = "0.23"
 sha2 = "0.11"
 
 mlua = { version = "0.12", default-features = false, features = ["lua54", "vendored"] }
-notify = "8.2"
+notify = "9.0"
 
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time", "process", "io-util", "signal", "net", "fs"] }
 
